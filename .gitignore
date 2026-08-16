@@ -1,0 +1,100 @@
+# ── Secrets and environment ────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets.json
+.secrets/
+
+# ── Database dumps and backups ─────────────────────────────────────────────
+# Never commit these. They contain real user data.
+*.dump
+*.sql.gz
+*.backup
+backups/
+dumps/
+supabase/.temp/
+supabase/.branches/
+
+# ── Personal data exports ──────────────────────────────────────────────────
+exports/
+*.export.json
+*.export.csv
+receipts/
+collection-export*.csv
+
+# ── Dependencies ───────────────────────────────────────────────────────────
+node_modules/
+.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/releases
+
+# ── Build output ───────────────────────────────────────────────────────────
+dist/
+dist-ssr/
+build/
+out/
+.output/
+*.local
+
+# ── Caches ─────────────────────────────────────────────────────────────────
+.vite/
+.cache/
+.turbo/
+.eslintcache
+*.tsbuildinfo
+.parcel-cache/
+
+# ── Test output ────────────────────────────────────────────────────────────
+coverage/
+.nyc_output/
+playwright-report/
+test-results/
+blob-report/
+.playwright/
+
+# ── Scanner artefacts ──────────────────────────────────────────────────────
+# Models and card-image corpora are downloaded at build time, never committed.
+# See docs/SCANNER_RESEARCH.md §4.
+models/
+card-images/
+*.onnx
+*.tflite
+embeddings.bin
+scanner-index*/
+
+# ── Editor and OS ──────────────────────────────────────────────────────────
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.shared.json
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Agent and session state ────────────────────────────────────────────────
+# This repository documents the project, not the conversations that produced it.
+.claude/
+*.session.json
+transcripts/
+claude outputs/
+claude-outputs/
+
+# ── Logs ───────────────────────────────────────────────────────────────────
+*.log
+npm-debug.log*
+pnpm-debug.log*
+logs/
+
+# ── Misc ───────────────────────────────────────────────────────────────────
+tmp/
+temp/
+scratch/
