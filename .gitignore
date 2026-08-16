@@ -85,8 +85,10 @@ desktop.ini
 .claude/
 *.session.json
 transcripts/
+claude_outputs/
 claude outputs/
 claude-outputs/
+output_*.txt
 
 # ── Logs ───────────────────────────────────────────────────────────────────
 *.log

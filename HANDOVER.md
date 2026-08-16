@@ -172,8 +172,11 @@ secrets only, never in this repository.
 
 ## Git and GitHub state
 
-- Local repository initialised on branch `main`.
-- Foundation committed across three coherent commits.
+- Local repository initialised on branch `main`; working tree clean.
+- Author identity is set **repo-locally** to the GitHub-provided `noreply` address so no personal
+  email appears in commit metadata. Global Git config was not touched.
+- Local mentor handoff files under `claude_outputs/` are gitignored and must stay that way. They
+  are not project documentation and must never be committed.
 - **No remote.** Repository must be created **private**.
 - Never change visibility without the owner's explicit approval and a completed pass through
   [docs/PUBLICATION_CHECKLIST.md](docs/PUBLICATION_CHECKLIST.md).
