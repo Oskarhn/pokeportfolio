@@ -1,0 +1,53 @@
+{
+  "name": "pokeportfolio",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "packageManager": "pnpm@10.15.0",
+  "engines": {
+    "node": ">=24.19.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -b --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "check": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test"
+  },
+  "dependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@tanstack/react-query": "^5.101.4",
+    "@tanstack/react-router": "^1.170.29",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "tailwindcss": "^4.3.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.62.1",
+    "@types/node": "^26.2.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.0.5",
+    "@vitest/coverage-v8": "^4.1.10",
+    "eslint": "^10.8.1",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.4",
+    "fast-check": "^4.9.0",
+    "globals": "^17.11.0",
+    "prettier": "^3.9.6",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.67.0",
+    "vite": "^8.2.1",
+    "vite-plugin-pwa": "^1.3.0",
+    "vitest": "^4.1.10"
+  }
+}

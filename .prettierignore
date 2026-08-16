@@ -1,0 +1,8 @@
+dist
+coverage
+playwright-report
+test-results
+dev-dist
+pnpm-lock.yaml
+docs/
+*.md

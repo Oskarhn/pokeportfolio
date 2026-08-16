@@ -22,7 +22,7 @@ Authoritative definition: [PRODUCT_SPEC.md](PRODUCT_SPEC.md).
 
 | Constraint | Detail |
 |---|---|
-| **Budget** | **0 NOK/month.** No paid service, no billing, no card, no domain, without explicit owner approval. When a feature cannot be built well for free, postpone it. |
+| **Budget** | **Target $0/month**, with an owner-approved **$50 USD lifetime discretionary ceiling** (2026-08-17, D-027) that is not pre-authorized spending — see [COST_POLICY.md](COST_POLICY.md) §1. No paid service, no billing, no card, no domain, no subscription, without the owner's explicit approval per purchase. No spending before the free functional baseline (COST_POLICY §1b) exists. When a feature cannot be built well for free, postpone it. |
 | **Privacy** | Repository private. Never made public without owner approval and a completed [PUBLICATION_CHECKLIST](PUBLICATION_CHECKLIST.md) pass. |
 | **Isolation** | RLS on every table. No user can reach another's data. Admin included. |
 | **Honesty** | Absent data is displayed as absent. No fabricated history, no invented precision, no metric labelled as something it is not. |

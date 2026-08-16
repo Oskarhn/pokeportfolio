@@ -7,18 +7,104 @@ preference that conflicts with it.
 
 ## 1. Budget
 
-**0 NOK/month.** Not "cheap". Not "$5 is fine". Zero.
+**Target operating cost: $0/month.** The default posture for every recurring cost is still zero,
+and that has not changed. What changed on 2026-08-17 (see [DECISIONS.md](DECISIONS.md) D-027) is
+that the owner now permits a small **lifetime, total, discretionary ceiling** for the whole
+project:
 
-There is no authorization to incur cost of any kind: subscriptions, one-time purchases,
-usage-based charges, domains, paid tiers, paid add-ons, or anything that begins billing
-automatically after a quota.
+**Absolute lifetime spending ceiling: $50 USD.**
 
-A future decision may allow a small budget. **Never assume it has been made.**
+Read this precisely, because every word is load-bearing:
+
+- It is a **lifetime project total**, not $50/month, not $50/year, not $50 per service.
+- It is a **ceiling the owner may approve draws against**, not a budget already granted to
+  Claude. See §1a.
+- It exists so that a genuinely excellent, cheap, one-time option is not automatically rejected
+  the way it would be under an absolute-zero rule — it does **not** mean spending is now welcome.
+
+The working assumption for day-to-day engineering remains **$0**. Nothing in this section
+authorizes spending a single cent without going through §1a first.
+
+### 1a. The $50 is not pre-authorized
+
+**Claude's current spending authorization is $0.** The $50 figure means only that the owner may
+approve individual purchases later, one at a time, each on its own merits. Before proposing *any*
+paid purchase, paid API, paid license, paid service, domain, hosting plan, dataset or other
+monetary commitment, work through all of the following and present the answers to the owner:
+
+1. What is the concrete problem?
+2. Why is the current free solution inadequate — with evidence, not assertion?
+3. What free alternatives exist per current official sources, and why do they not work?
+4. Is there a reputable open-source, local or self-hosted alternative?
+5. Is postponing the feature preferable to paying for it?
+6. Can the same result be reached through more engineering effort instead of money?
+7. What exactly does the paid option improve?
+8. What is the **exact total cost**?
+9. Can the service ever charge again after this payment (recurring, usage-based, renewal)?
+10. Does it require a payment card on file?
+11. Does it auto-renew?
+12. What are the licensing or usage limitations?
+13. Does the application keep working if the vendor disappears?
+14. Ask the owner explicitly, and wait for a clear yes.
+
+Do not purchase, enable billing on, or activate anything before that explicit approval lands.
+
+### 1b. No spending before a free functional baseline exists
+
+The owner wants to personally use and test a working version of the application — invite-gated
+auth, adding cards, recording purchases and sales, seeing collection value where free pricing
+exists, basic portfolio figures, persistence, real-device use — before a single cent is spent on
+anything optional. "We will need this later" does not justify a purchase now. A mockup, a static
+screenshot, a component-library demo or a passing unit-test suite does not count as that baseline.
+Until it is reached, the practical answer to any paid-service question stays **no**.
+
+### 1c. No ordinary subscriptions
+
+Recurring subscription services are prohibited by default: monthly APIs, monthly hosting
+upgrades, annual SaaS subscriptions, recurring market-data or scanner subscriptions, recurring
+analytics or backup services. A $5/month service is not acceptable merely because it stays under
+the $50 ceiling eventually — recurring cost is rejected on its own terms, not measured against the
+ceiling.
+
+**Narrow exception.** A very inexpensive, long-horizon, effectively one-time cost — roughly the
+class of "~$10 covering several years" — may be *considered*, individually, against the same §1a
+checklist, and counts against the $50 lifetime ceiling. It is not pre-approved by existing here.
+If such a service has auto-renewal, auto-renewal must be disabled where possible and disclosed
+before purchase regardless. One-time, perpetual and prepaid-fixed-cost options are preferred over
+anything usage-metered or subscription-shaped; see §1d.
+
+### 1d. One-time-purchase preference, not a purchase invitation
+
+If spending is ever approved, prefer things that create durable, non-recurring value: a perpetual
+software license, a one-time dataset license usable locally and legally, a permanent development
+tool license, a static asset or one-time domain-like asset only with no reasonable free
+alternative and explicit owner approval. Being "one-time" is necessary, never sufficient — it
+still has to solve a demonstrated problem that survives the §1a checklist.
+
+### 1e. Cost ledger
+
+A running, minimal, durable record — no payment credentials, ever:
+
+```text
+Target operating cost:                 $0
+Maximum approved project lifetime ceiling: $50 USD
+Actually spent:                        $0
+Explicitly approved but not yet spent: $0
+Remaining ceiling:                     $50
+Recurring subscriptions:               prohibited by default
+Payment gate reached (§1b):            no
+```
+
+The remaining ceiling is not money available to spend — it is the maximum the owner is currently
+willing to *consider*. If an item is ever approved, append a row here (or in DECISIONS.md,
+cross-linked) recording: date, item/service, amount, currency and approximate USD equivalent,
+whether one-time or recurring, the owner-approval reference, purpose, and the resulting remaining
+ceiling.
 
 ## 2. Authorization
 
 No paid service, paid tier, or billing-enabled feature may be introduced without the owner's
-explicit approval, obtained first.
+explicit approval, obtained first, per §1a.
 
 Also prohibited without explicit approval:
 

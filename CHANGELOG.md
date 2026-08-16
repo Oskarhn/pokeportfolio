@@ -10,6 +10,25 @@ they were**.
 
 ## [Unreleased]
 
+### Added — 2026-08-17 · M1 foundation and M2 financial domain core
+
+First application code. Vite + React 19 + TypeScript strict scaffold, ESLint/Prettier, Vitest +
+fast-check, Playwright, a minimal PWA shell, and GitHub Actions CI with an open-source secret
+scan — all zero-cost. Pure-TypeScript financial domain layer: `Money` (integer minor units, no
+float), currency metadata, a largest-remainder allocator, FX conversion, `CostBasisState` and
+`MarketValue` as discriminated unions, and the inventory/spending/sales/position metrics from
+FINANCIAL_MODEL.md. Worked examples E1, E3 and E7 reproduce exactly against the real domain
+functions; 64 tests pass, including property tests for the allocator (invariant F6) and
+randomised checks for F1, F3 and F5. No database, no auth, no external service yet — M1/M2 are
+deliberately infrastructure-independent. Detail: `claude_outputs/output_5.txt` (not committed).
+
+### Changed — 2026-08-17 · Cost policy: $50 USD lifetime discretionary ceiling
+
+Target operating cost stays $0/month; a separate, owner-approved, **lifetime** ceiling of $50 USD
+now exists for genuinely excellent one-time options. Not pre-authorized spending — every purchase
+still needs individual approval, and nothing may be spent before a free functional baseline
+exists. See D-027 and docs/COST_POLICY.md §1.
+
 ### Changed — 2026-08-16 · Planning frozen
 
 Scope and product semantics settled; implementation has an authoritative target.

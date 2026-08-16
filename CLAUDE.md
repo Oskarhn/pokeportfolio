@@ -66,15 +66,20 @@ Each has one purpose. Do not duplicate content across them — link instead.
 
 ## Hard rules
 
-**Cost.** The operating budget is **0 NOK/month**. Before introducing any external dependency or
-service, answer: *does this introduce a cost now, or a realistic possibility of automatic
-billing?* If yes — research free alternatives, document the trade-off, and **stop and ask the
-owner.** Never enter payment details, enable billing, upgrade a plan, or treat a free trial as
-production infrastructure. Do not adopt Sentry, PostHog, Resend, a paid scanner API,
-PriceCharting, Scrydex, paid storage, paid monitoring, a paid domain or paid AI inference merely
-because they are common SaaS defaults. When a feature cannot be built well for free, the default
-is to **postpone the feature**, not to spend. Full policy and the verified service matrix:
-[docs/COST_POLICY.md](docs/COST_POLICY.md).
+**Cost.** Target operating cost is **$0/month**. The owner has separately approved a **$50 USD
+lifetime discretionary ceiling** for the whole project (D-027) — this is *not* pre-authorized
+spending. Claude's standing spending authorization remains **$0**; every paid item still requires
+its own explicit owner approval against the checklist in
+[docs/COST_POLICY.md](docs/COST_POLICY.md) §1a, and nothing may be spent before the free
+functional baseline in §1b exists. Ordinary subscriptions stay prohibited by default. Before
+introducing any external dependency or service, answer: *does this introduce a cost now, or a
+realistic possibility of automatic billing?* If yes — research free alternatives, document the
+trade-off, and **stop and ask the owner.** Never enter payment details, enable billing, upgrade a
+plan, or treat a free trial as production infrastructure. Do not adopt Sentry, PostHog, Resend, a
+paid scanner API, PriceCharting, Scrydex, paid storage, paid monitoring, a paid domain or paid AI
+inference merely because they are common SaaS defaults. When a feature cannot be built well for
+free, the default is to **postpone the feature**, not to spend. Full policy, the running cost
+ledger and the verified service matrix: [docs/COST_POLICY.md](docs/COST_POLICY.md).
 
 **Money.** No monetary arithmetic outside `src/domain/`. Components format numbers; they never
 compute them. Integer minor units with an ISO 4217 code, never float. `NULL` money means "not
