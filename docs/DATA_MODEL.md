@@ -197,9 +197,21 @@ WHERE h.card_variant_id IS NOT NULL
 ```
 
 Plus variants held at any point historically (so a sold card's history stays intact) and
-variants on any wishlist once that exists. At 3 000 watched variants × 2 price kinds × 365 days
-× ~48 bytes ≈ **105 MB/year**, with a retention policy that thins rows older than 12 months to
-weekly.
+variants on any wishlist once that exists.
+
+**Price history is per `card_variant`, never per physical copy.** This is what makes tracking
+every energy card affordable. Owning eighty Basic Grass Energy of the same printing produces
+exactly one snapshot row per day, not eighty; quantity is applied at aggregation time, from
+`acquisition_lots`. The snapshot table scales with *distinct printings owned*, which plateaus
+quickly, not with *cards owned*, which does not.
+
+Concretely: a 10 000-card collection realistically spans perhaps 3 000–4 000 distinct variants,
+because duplicates, energies and playsets collapse. At 3 000 watched variants × 2 price kinds ×
+365 days × ~48 bytes ≈ **105 MB/year**, with rows older than 12 months thinned to weekly. The
+holdings and lots themselves are small — roughly 200 bytes per lot, so even 10 000 lots is ~2 MB.
+
+> The binding constraint on the free tier is price history, and price history is decoupled from
+> collection size. This was the key finding that made all-card tracking viable at zero cost.
 
 > A variant enters the watch set the moment it is first acquired. Its price history therefore
 > begins at acquisition, not before. This is a real limitation, documented in
@@ -224,22 +236,85 @@ date and records which date was used.
 
 ### 5.1 `profiles`
 
-`id uuid pk` references `auth.users(id)` on delete cascade. Columns: `display_name`, `locale`
-(default `nb-NO`), `display_currency` (default `NOK`), `theme` (`system`/`light`/`dark`),
-`is_admin bool default false`, `created_at`.
+`id uuid pk` references `auth.users(id)` on delete cascade.
+
+| Group | Columns |
+|---|---|
+| Identity | `display_name`, `is_admin bool default false`, `created_at`, `disabled_at nullable` |
+| Locale | `locale` (default `nb-NO`), `display_currency` (default `NOK`) |
+| Display | `theme` (`system`/`light`/`dark`), `collection_grid_density smallint default 2` (1–4), `collection_default_view` (`grid`/`list`/`table`) |
+| Filtering | `low_value_threshold_minor bigint default 1000` (10 NOK), `hide_low_value_by_default bool default false` |
+| Pricing | `preferred_price_kind` (default `cm_trend`) |
+| Capture | `default_condition`, `default_language`, `default_storage_location_id` — prefills for fast entry and, later, scanner session defaults |
+
+Settings live as columns on `profiles` rather than in a separate key-value settings table. At this
+scale a settings table buys nothing but an extra join and untyped values; columns are typed,
+constrainable and queryable. If the set grows past roughly twenty, revisit.
+
+`collection_grid_density` defaults to 2 but is a per-user preference, never a hardcoded constant.
+Layout code reads it from the profile.
 
 `is_admin` grants invitation management only. It grants **no** read access to another user's
 collection or financial data — see [SECURITY.md](SECURITY.md) §4.
 
-### 5.2 `retailers`, `storage_locations`, `tags`
+### 5.2 Four different ways of grouping cards
 
-All user-scoped (`user_id fk`), all with `name` unique per user. Retailers are user-scoped
-rather than global so that "how much have I spent at Outland" is a private fact and so two
-users' naming habits never collide.
+These are separate concepts and are deliberately not merged. Conflating them produces a model
+where "move this card to the Trade Binder" and "this card is currently cheap" are the same
+operation, which is wrong.
 
-`storage_locations` has `kind` enum (`binder`, `box`, `toploader_box`, `graded_case`, `shelf`,
-`other`) and a `sort_order`. Bulk reassignment is a UI feature over a single FK update, so the
-Later item costs nothing today.
+| Concept | Answers | Cardinality | Changes when |
+|---|---|---|---|
+| **Storage location** | *Where is this card physically?* | One per holding | The user physically moves it |
+| **Custom collection** | *What conceptual group did I put it in?* | Many per holding | The user decides |
+| **Tag** | *Free-form label* | Many per holding | The user decides |
+| **Smart filter** | *What matches this rule right now?* | Computed, stored nowhere | The underlying data changes |
+
+**`retailers`, `storage_locations`, `tags`** — all user-scoped (`user_id fk`), `name` unique per
+user. Retailers are user-scoped rather than global so that "how much have I spent at Outland" is
+a private fact and two users' naming habits never collide. `storage_locations` has a `kind` enum
+(`binder`, `box`, `toploader_box`, `graded_case`, `shelf`, `other`) and a `sort_order`.
+
+### 5.2.1 `custom_collections` and `custom_collection_members`
+
+User-defined groups: *Trade Binder*, *Favourites*, *151 Master Set*, *Childhood Cards*, *Sell*.
+
+| `custom_collections` | `id uuid pk`, `user_id fk`, `name`, `description nullable`, `sort_order int`, `color nullable`, `created_at` |
+|---|---|
+| `custom_collection_members` | `collection_id fk`, `holding_id fk`, `user_id fk`, `sort_order int`, `added_at` — composite PK `(collection_id, holding_id)` |
+
+Membership is many-to-many at **holding** level, not lot level: the user thinks "this card is in
+my trade binder", not "the copy I bought in March is in my trade binder". If they need to
+distinguish two copies, the copies differ in condition or state and are already separate holdings.
+
+Membership is purely organisational. Adding a holding to a collection does not change ownership,
+value, cost basis or anything financial. Removing it deletes the membership row and nothing else.
+
+> **Invariant C1:** deleting a `custom_collection` cascades only to membership rows. No holding,
+> lot or transaction is ever affected. Asserted by test.
+
+### 5.2.2 Smart filters
+
+Not stored as membership. A smart filter is a query over resolved market value and price state,
+evaluated at read time:
+
+```
+Low value      : resolved_value_nok < profiles.low_value_threshold_minor
+                 AND price_state <> 'missing'
+No price       : price_state = 'missing'
+```
+
+Value-based grouping must not be materialised, because a card's value changes daily and
+rewriting membership rows every night would be both expensive and misleading — a card would
+appear to have been "moved" by a price tick.
+
+The *low value* and *no price* filters are deliberately distinct. A card with no price is not a
+cheap card; treating them as one would be the same category error as valuing missing data at zero.
+
+Neither filter removes anything from the collection: matched cards keep their quantity in the
+physical card count, and their market value (where one exists) still contributes to `CMV`. The
+user may choose to collapse them out of the default browsing view; that is a display preference,
+not a deletion, and the count of hidden cards stays visible.
 
 ### 5.3 `purchases` and `purchase_lines`
 
@@ -250,6 +325,7 @@ A purchase is one receipt. It always has at least one line.
 | Column | Notes |
 |---|---|
 | `id uuid pk`, `user_id fk` | |
+| `origin` | enum `manual`, `provisional_opening`. See §5.8.1 |
 | `purchased_on date` | Business event date. Backdating fully supported. |
 | `retailer_id fk nullable` | |
 | `currency` | ISO 4217 |
@@ -293,8 +369,13 @@ money — those belong to lots.
 | `grading_state` | enum `raw`, `pending`, `graded`. `raw` for sealed holdings. |
 | `grader` | enum `psa`, `cgc`, `bgs`, `ace`, `sgc`, `tag`, `other`; null unless graded/pending |
 | `grade numeric(3,1) nullable`, `cert_number text nullable` | |
+| `sealed_intent` | enum `keep_sealed`, `planned_to_open`, `undecided`; null unless `holding_kind = 'sealed'` |
 | `storage_location_id fk nullable`, `is_favorite bool` | |
 | `notes`, `created_at`, `updated_at`, `deleted_at nullable` | |
+
+`sealed_intent` is organisational only. Changing it never alters purchase history, cost basis or
+any financial figure — it exists so "what is my sealed investment worth" can be separated from
+"what is queued to be opened", which are different questions about the same shelf.
 
 Partial unique index so the same physical state does not fragment into duplicate holdings:
 
@@ -328,27 +409,37 @@ The financial heart of the model.
 | Column | Notes |
 |---|---|
 | `id uuid pk`, `holding_id fk`, `user_id fk` | |
-| `origin` | enum `purchase`, `opening`, `trade`, `gift`, `found`, `unknown` |
+| `origin` | enum `purchase`, `opening`, `trade_in`, `gift`, `found`, `pre_tracking`, `other` |
+| `cost_basis_state` | enum `known`, `unallocated_opening`, `not_paid`, `unknown`, `trade_in` |
 | `purchase_line_id fk nullable` | Set when `origin = 'purchase'` |
 | `opening_id fk nullable` | Set when `origin = 'opening'`; **retained permanently, including after sale** |
+| `trade_line_id fk nullable` | Set when `origin = 'trade_in'` |
 | `acquired_on date` | |
 | `quantity int`, `quantity_remaining int` | `0 <= quantity_remaining <= quantity` |
-| `unit_cost_basis_minor bigint **nullable**` | `NULL` = no attributable direct cost. **Never 0 to mean "free".** |
+| `unit_cost_basis_minor bigint **nullable**` | Present only when `cost_basis_state = 'known'`. **Never 0 to mean "free".** |
 | `cost_basis_currency`, `unit_cost_basis_nok_minor nullable` | |
 | `residual_minor int default 0` | Largest-remainder residual so `quantity × unit + residual` = line cost exactly |
 | `notes`, `created_at`, `voided_at nullable` | |
 
-Check constraint enforcing M1:
+`cost_basis_state` is a separate column rather than something inferred from `origin`, because the
+mapping is not one-to-one: a `purchase`-origin lot from a pre-tracking receipt the user no longer
+has is `unknown`, not `known`. Making the user state the reason explicitly is what allows the UI
+to say "cost unknown" rather than showing a blank field that reads as zero.
+
+Check constraint enforcing M1/M2:
 
 ```sql
 CHECK (
-  (origin = 'purchase' AND purchase_line_id IS NOT NULL AND unit_cost_basis_minor IS NOT NULL)
+  (cost_basis_state = 'known'
+     AND unit_cost_basis_minor IS NOT NULL
+     AND purchase_line_id IS NOT NULL)
   OR
-  (origin <> 'purchase' AND unit_cost_basis_minor IS NULL)
+  (cost_basis_state <> 'known' AND unit_cost_basis_minor IS NULL)
 )
 ```
 
-Trades will relax this when implemented; the relaxation is a migration, not a redesign.
+Plus a consistency constraint tying origin to the permitted states — an `opening`-origin lot may
+only be `unallocated_opening`, a `gift`-origin lot only `not_paid`, and so on.
 
 ### 5.6 `lot_cost_adjustments`
 
@@ -375,7 +466,8 @@ reconstructable from canonical data.
 | `kind` | enum `sale`, `opened`, `traded_away`, `write_off`, `correction` |
 | `quantity int` | |
 | `disposed_on date` | |
-| `sale_line_id fk nullable`, `opening_id fk nullable` | |
+| `sale_line_id fk nullable`, `opening_id fk nullable`, `trade_line_id fk nullable` | |
+| `cost_basis_at_disposal_nok_minor nullable` | Frozen copy for non-sale disposals, so a trade's basis survives for whichever item-leg rule is later adopted |
 | `created_at`, `voided_at nullable` | |
 
 > **Invariant D1:** `lot.quantity_remaining = lot.quantity − Σ non-voided disposals`.
@@ -388,15 +480,64 @@ reconstructable from canonical data.
 | `id uuid pk`, `user_id fk` | |
 | `opened_on date` | |
 | `sealed_product_id fk nullable`, `source_lot_id fk nullable` | Null for an unlinked opening |
+| `provisional_purchase_id fk nullable` | The auto-created ledger entry, if the cost was entered manually |
 | `pack_count int nullable` | |
 | `cost_minor nullable`, `cost_currency`, `cost_nok_minor nullable` | |
-| `cost_source` | enum `from_lot`, `manual`, `unknown` |
-| `tracking_completeness` | enum `all_cards`, `selected_pulls`, `unknown` — drives the incompleteness marker (F8 area) |
+| `cost_source` | enum `from_lot`, `unknown` |
+| `tracking_completeness` | enum `all_cards`, `selected_pulls`, `unknown` — defaults to `all_cards`; drives the incompleteness marker (F8 area) |
 | `bulk_remainder_estimate_minor nullable`, `bulk_remainder_count int nullable` | |
 | `notes`, `created_at`, `voided_at nullable` | |
 
 Pulls are not a separate table. A pull **is** an `acquisition_lot` with `origin = 'opening'`
 and `opening_id` set. This is why a sold pull remains attributable to its opening forever.
+
+#### 5.8.1 Provisional purchase for an unlinked opening
+
+Money spent on a product the user never entered as a purchase must still reach the ledger, or
+lifetime spending systematically understates reality. Rather than inventing an opening-local
+cost concept that no other query knows about, the opening creates a **real purchase**:
+
+```
+purchase(origin='provisional_opening')
+  └── purchase_line(line_type='sealed', spend_class='collectible')
+        └── acquisition_lot          ← immediately consumed
+              └── lot_disposal(kind='opened') ──> opening
+```
+
+It behaves as an ordinary purchase everywhere: `GPO`, `CS`, monthly spend, retailer statistics.
+The opening gets a normal `cost_source = 'from_lot'`. No aggregate needs a special case.
+
+**Reconciliation.** When the real receipt is entered, the user links it. In one transaction the
+opening's `source_lot_id` repoints at the real lot, the provisional purchase is voided, and an
+`audit_event` of action `opening_cost_reconciled` records both purchase ids.
+
+```sql
+-- F12: at most one non-voided cost source per opening
+CREATE UNIQUE INDEX openings_one_live_cost
+  ON openings (id)
+  WHERE provisional_purchase_id IS NOT NULL AND source_lot_id IS NOT NULL;
+```
+
+Reconciliation is explicit, never automatic. Fuzzy-matching an opening against a similar-looking
+purchase would silently corrupt the ledger in exactly the cases where the user cannot easily
+check; asking costs one tap.
+
+### 5.8.2 `trades` and `trade_lines`
+
+Schema now, workflow in V1. Present so that a traded-away card is a first-class disposal rather
+than an unrepresentable state.
+
+| `trades` | `id uuid pk`, `user_id fk`, `traded_on date`, `counterparty text nullable`, `cash_paid_minor`, `cash_received_minor`, `currency`, `fx_rate_to_nok`, `*_nok_minor`, `notes`, `created_at`, `voided_at nullable` |
+|---|---|
+| `trade_lines` | `id uuid pk`, `trade_id fk`, `user_id fk`, `direction` enum `out`/`in`, `lot_id fk nullable` (outgoing), `holding_id fk nullable` (incoming target), `quantity`, `market_value_at_trade_nok_minor nullable`, `notes` |
+
+Outgoing lines write a `lot_disposal(kind='traded_away', trade_line_id=…)` carrying
+`cost_basis_at_disposal_nok_minor`. Incoming lines create lots with `origin = 'trade_in'` and
+`cost_basis_state = 'trade_in'`.
+
+Cash legs are ordinary money: `cash_paid` is collectible spend, `cash_received` is proceeds. The
+item legs produce no realized result while the item-leg rule is undecided (F13). Market values at
+trade date are captured on the line because they are unrecoverable afterwards.
 
 ### 5.9 `lot_transfers`
 
@@ -513,7 +654,9 @@ The chain `purchase → sealed → opening → pulls → grading → sale` never
 | Sealed → opened | `lot_disposal(kind='opened')` + `openings.source_lot_id` | Sealed lot retained with `quantity_remaining = 0`; purchase untouched |
 | Opening → pulls | `acquisition_lot(origin='opening', opening_id=…)` | Every pull points at its opening forever |
 | Raw → graded | `lot_transfer(reason='graded')` + `lot_cost_adjustments` | Original cost basis intact; grading costs attributed separately |
+| Opening → provisional purchase | `purchase(origin='provisional_opening')` → lot → immediate `opened` disposal | Money reaches the ledger once; reconciling voids the provisional rather than deleting it |
 | Anything → sold | `sale_line` + `lot_disposal(kind='sale')` | `cost_basis_at_sale` frozen; `opening_id` still readable on the lot |
+| Anything → traded away | `trade_line(direction='out')` + `lot_disposal(kind='traded_away')` | `cost_basis_at_disposal` and market value at trade date both frozen |
 
 **Prohibited implementation:** opening a product by deleting the sealed row and inserting
 unrelated card rows. That destroys `CS`, breaks opening ROI and orphans the purchase.
@@ -539,6 +682,11 @@ Guard rules:
 - Voiding a sale restores `quantity_remaining` on each referenced lot.
 - Correcting a card's identity re-points `holdings.card_variant_id`. Lots, costs and disposals
   are untouched; only the catalog reference and therefore the valuation source change.
+- Voiding a trade restores outgoing lot quantities and voids incoming lots. Blocked if an
+  incoming lot has since been sold.
+- Reconciling an opening voids its provisional purchase. This is the one case where a purchase is
+  voided automatically, and it is audited.
+- Deleting a `custom_collection` removes membership rows only. No holding is affected (C1).
 - Deleting a user's account cascades all user-private data and leaves catalog and market data
   intact.
 
@@ -560,9 +708,26 @@ Beyond primary and foreign keys:
 | `price_snapshots (snapshot_date)` | Retention thinning |
 | `cards` trigram on `name`, plus `(set_id, local_id)` | Card search |
 | `portfolio_snapshots (user_id, snapshot_date)` | Chart range queries |
+| `custom_collection_members (collection_id, sort_order)` | Collection browsing |
+| `custom_collection_members (holding_id)` | "Which collections is this card in" |
+| `holdings (user_id, storage_location_id)` | Location filter |
+| `lot_disposals (user_id, disposed_on DESC)` | History view |
 
-Target: a 5 000-card collection renders its dashboard from `portfolio_snapshots` plus one
-aggregate over open lots — no per-card network round trips.
+### 10.1 Scale target
+
+The requirement that every physical card is individually trackable — energies, commons,
+duplicates — moves the working assumption from thousands of holdings to potentially **10 000+
+lots per user**. Consequences already designed for:
+
+| Concern | Response |
+|---|---|
+| Price history | Per variant, not per copy (§4.2). Decoupled from collection size. |
+| Collection list | Server-side pagination with keyset cursors, plus client virtualisation. Never a full fetch. |
+| Card images | Lazy-loaded, sized to the grid density, from the provider CDN. A 4-per-row grid must not issue thousands of image requests on mount. |
+| Portfolio aggregation | Read from `portfolio_snapshots`, not recomputed per page load. |
+| Counts | `physical_card_count` = Σ `quantity_remaining`; `unique_variant_count` = distinct variants. Both are single aggregate queries and both are displayed. |
+| Export | Streamed/chunked, not assembled in memory. |
+| Grouped display | The default list groups by holding, so 80 identical energies are one row with quantity 80 — a display concern, not a storage one. |
 
 ---
 
@@ -573,6 +738,8 @@ Recorded rather than guessed. None block MVP.
 | Question | Current stance |
 |---|---|
 | Cross-language card equivalence | Deferred. Separate `card_equivalences` table if needed. |
-| Trades | Schema-ready (`origin = 'trade'`), constraint relaxation pending. Cost-basis rule undecided; carryover vs. fair-value both defensible. |
-| Bulk lots as holdings | A "500 bulk commons" purchase currently becomes a `bulk_lot` purchase line with no holding. Revisit if bulk becomes a tracked asset. |
+| Trade item-leg cost basis | Schema complete; the accounting rule (carryover vs. fair value) is deliberately undecided — see [FINANCIAL_MODEL.md](FINANCIAL_MODEL.md) §11. Frozen `cost_basis_at_disposal` keeps both options open. |
+| Basic Energy in the catalog | Energies are ordinary catalog cards and ordinary holdings, with no special-casing. Whether TCGdex's coverage and variant modelling of energies is adequate needs verification at catalog-ingest time. |
+| Bulk remainder | An optional per-opening estimate (count + value), not a holding. It is a convenience for untracked leftovers, never a substitute for individual tracking. |
 | Sealed catalog curation | How curated sealed rows get promoted from user-created ones needs a process, not just a column. |
+| Grouped-row identity | The collection list groups by holding. Whether it should optionally group across conditions ("all my Pikachu #25") is a display question, not a schema one. |

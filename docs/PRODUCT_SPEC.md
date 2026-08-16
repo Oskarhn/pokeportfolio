@@ -68,6 +68,11 @@ Used consistently in code, database, documentation and UI.
 | **Sale** | One disposal transaction. Has one or more lines, each referencing a specific lot. |
 | **Collectible spend** | Money spent on cards, sealed product, grading, and attributable shipping/customs. |
 | **Hobby spend** | Money spent on accessories: sleeves, binders, toploaders, tools. |
+| **Acquisition origin** | How a lot was obtained: purchased, pulled, gifted, traded in, pre-tracking, other. |
+| **Cost-basis state** | Whether a lot's cost is `known`, or absent because it is `unallocated_opening`, `not_paid`, `unknown` or `trade_in`. Never zero. |
+| **Custom collection** | A user-named group of holdings. Purely organisational; many per holding. |
+| **Smart filter** | A rule evaluated at read time, such as "below 10 kr" or "no price". Never stored as membership. |
+| **History** | The area for items no longer owned: sold, traded, other disposals. |
 
 ---
 
@@ -85,40 +90,45 @@ is worth, sell things, and get their data out.
 
 | Area | Included |
 |---|---|
-| Auth | Invite-only, email OTP, server-enforced. Admin creates and revokes invitations. |
+| Auth | Invite-only, email + password, server-enforced. Admin creates and revokes invitations. |
 | Isolation | RLS on every table, verified by automated tests. |
-| Catalog | Card search by name, set, collector number. English and Japanese sets. Variant selection. |
-| Collection | Add holdings manually. Acquisition lots with date, cost, origin. Condition, language, storage location, tags, favourites. Duplicates as separate lots. |
-| Sealed | Sealed products as first-class holdings with their own lots. Manual valuation. |
+| Catalog | Card search by name, set, collector number. English and Japanese sets. Variant selection. Basic Energy and every other card are ordinary catalog entries. |
+| Collection | **Every physical card individually trackable**, including energies, commons and duplicates. Holdings with acquisition lots. Condition, language, storage location, tags, favourites. |
+| Acquisition | Explicit origin: purchased / pulled / gifted / traded in / pre-tracking / other, with cost state rather than a nullable amount. |
+| Organisation | User-defined custom collections (many-to-many), smart value filters, configurable low-value threshold, "no price" filter. |
+| Display | Mobile gallery, **2 columns by default**, user-settable 1–4. List and desktop table views. |
+| Sealed | Sealed products as first-class holdings with their own lots and a `keep / plan to open` intent. Manual valuation. |
+| Graded | Graded cards as a collection type: grader, grade, optional cert number, manual value, normal portfolio inclusion. |
 | Purchases | Multi-line purchases with retailer, shipping, customs, discount, foreign currency, backdating. Deterministic allocation. |
 | Spending ledger | Permanent. Collectible vs hobby split. Monthly and per-retailer aggregates. |
-| Pricing | Daily Cardmarket-sourced snapshots for held raw cards via TCGdex. Manual valuation for everything else. Freshness states. |
+| Pricing | Daily Cardmarket-sourced snapshots for held raw cards via TCGdex. Manual valuation elsewhere. Freshness states. Missing price surfaced, never zero. |
 | FX | Daily Norges Bank rates. Historical rates for historical values. Manual override per purchase. |
-| Dashboard | Collection value, change, spend figures, position, value history, monthly spend, category breakdown, recent activity. |
-| Sales | Multi-line sales with explicit lot selection, fees, shipping. Realized results. |
-| Export | CSV export of collection, purchases, sales, lots. |
+| Dashboard | Collection value primary, position prominent. Change, spend figures, realized result, value history, monthly spend, breakdowns, data-quality counts. |
+| Sales | Multi-line sales with explicit lot selection, fees, shipping. Realized results where a cost basis exists. |
+| History | Dedicated area for items no longer owned: sold, traded, other disposals. |
+| Export | CSV exports **and** full versioned JSON backup. |
 | Shell | Installable PWA, responsive, dark/light/system, safe areas, offline shell. |
 
-**Deliberately excluded from MVP:** openings, scanner, grading workflow, images, receipts,
-bulk desktop editing, JSON backup, import.
+**Deliberately excluded from MVP:** openings, scanner, full grading workflow, trade workflow,
+images and receipts, bulk desktop editing, CSV import.
 
-### V1
+### V1 — in priority order
 
-| Area | Included |
-|---|---|
-| Openings | Full lifecycle with tracked pulls, bulk remainder estimate, opening return, completeness marking. |
-| Grading | Submission tracking, state transitions, cost attribution, profitability analysis. |
-| Scanner | Camera capture, on-device recognition, bulk session flow. |
-| Sealed | Better catalog coverage, improved valuation sources if any become available. |
-| Statistics | Richer charts, per-set analysis, best/worst purchases, gainers/losers. |
-| Desktop | Multi-select, bulk edit of condition/location/tags, bulk delete. |
-| Data | Full JSON backup and restore, CSV import. |
-| Images | Own-card photos, receipt attachments. |
-| Quality | Real-device iOS testing, Android verification, PWA install polish. |
+| # | Area | Included |
+|---|---|---|
+| 1 | **Scanner** | Camera capture, on-device recognition, bulk session flow with session defaults. Highest post-MVP priority because manual entry is the bottleneck created by all-card tracking. |
+| 2 | **Openings** | Full lifecycle, all-cards tracking by default, hits-only option, bulk remainder estimate, opening return with completeness marking, provisional-cost reconciliation UI. |
+| 3 | Grading workflow | Submission, pending, return, cost attribution, profitability analysis. |
+| 4 | Trades | Full workflow over the schema already in place; item-leg accounting rule decided first. |
+| 5 | Desktop bulk tooling | Multi-select, batch condition/location/tags/collections, bulk delete. |
+| 6 | Statistics | Per-set analysis, best/worst purchases, gainers and losers. |
+| 7 | Images | Own-card photos, receipt attachments. |
+| 8 | Data | CSV import, restore from JSON backup. |
+| 9 | Quality | Real-device iOS testing, Android verification, PWA install polish. |
 
 ### Later
 
-Trades, wishlist with target prices, set completion tracking, price alerts, read-only share
+Wishlist with target prices, set completion tracking, price alerts, opt-in read-only share
 links, push notifications, receipt OCR, native clients, configurable condition multipliers,
 cross-language card equivalence.
 
@@ -131,26 +141,75 @@ Acceptance-level statements. Implementation detail belongs in ARCHITECTURE and D
 ### 4.1 Accounts
 
 - An account exists only if an invitation was redeemed. No other path creates one.
-- Login is an email address plus a six-digit code sent to it. The entire flow stays inside the
-  installed app.
+- Login is email plus password. No email is sent during normal login, so the flow works entirely
+  inside the installed app and does not depend on mail delivery.
+- Invitations are one-time links the admin generates in the app and shares over whatever
+  messaging channel they prefer. The app does not send invitation email.
+- Password reset is rare at this scale and uses the platform's low-volume built-in email, with
+  an admin-assisted recovery path as the documented fallback.
 - The admin can create, label, revoke and expire invitations, and disable accounts.
 - The admin cannot view another user's collection or financial data through the application.
 - A user can export their data and delete their account. Deletion is irreversible and says so.
 
 ### 4.2 Collection
 
+**Every physical card is trackable.** Basic Energy, commons, uncommons, duplicates, cards worth
+two øre, cards with no market price at all — all are ordinary first-class inventory. Nothing is
+forced into a bulk aggregate to keep the interface tidy; organisation solves that instead (§4.3).
+A user who wants to register ten thousand individual cards can.
+
+The one bulk concept that exists is an optional per-opening remainder estimate for cards the user
+chose not to enter individually. It is a convenience, never a substitute.
+
 - Cards are found by name, set, or collector number, then a specific variant is chosen.
-- Adding a card requires: variant, condition, language (implied by set), quantity, acquisition
-  date, and either a cost or an explicit origin that has no cost.
-- Three copies of one card bought at three prices are one holding with three lots. The
-  collection list shows one row with quantity 3; the detail view shows all three lots with their
-  dates and costs.
+- Adding a card requires: variant, condition, quantity, acquisition date, and an explicit
+  acquisition origin. Language is implied by the set.
+- **Acquisition origin is always explicit** — purchased, pulled, gifted, traded in, pre-tracking,
+  other. For a purchase the cost is prominent and normally required; the user may choose "cost
+  unknown" deliberately. For every other origin no cost field is shown at all.
+- **A missing cost is never displayed as 0 NOK.** The card shows why there is no cost: "from
+  opening", "gift", "cost unknown".
+- Three copies bought at three prices are one holding with three lots. The list shows one row
+  with quantity 3; the detail view shows every lot with its date, cost and origin.
 - A holding never displays an averaged cost basis as if it were a single purchase price.
 - Graded copies are separate holdings from raw copies of the same variant.
 - Condition is recorded and used for filtering, sorting and export. It does **not** adjust
   market value in MVP, because the price source is not condition-specific, and the UI says so.
+- Two counts are shown and are different numbers: **physical cards owned** and **unique variants**.
 
-### 4.3 Purchases
+### 4.3 Organising a large collection
+
+Because nothing is aggregated away, organisation carries the weight that bulk aggregation
+normally would. Four distinct concepts, deliberately not merged:
+
+| Concept | Question it answers |
+|---|---|
+| Storage location | Where is this card physically? One per card. |
+| Custom collection | What group did I put it in? Many per card. |
+| Tag | Free-form label. Many per card. |
+| Smart filter | What matches this rule right now? Computed, never stored. |
+
+- **Custom collections** are user-named groups: *Trade Binder*, *Favourites*, *151 Master Set*,
+  *Childhood Cards*, *Sell*. A card can be in several. Adding or removing changes nothing about
+  ownership, value or cost.
+- **Smart filters** include a user-configurable low-value threshold (default 10 NOK) and a
+  separate "no price" filter. These are different things and are never conflated: a card with no
+  price is not a cheap card.
+- Low-value cards remain in the collection, in the physical card count, and in collection value.
+  The user may collapse them out of the default browsing view; the count of hidden cards stays
+  visible. **Hiding is not deletion.**
+
+### 4.4 Collection display
+
+- Mobile default is an image-led gallery at **2 cards per row**, user-settable to 1, 2, 3 or 4
+  and persisted per user. Higher densities show compact tiles with less metadata; that is the
+  explicit trade the setting makes, and it is not overridden by design preference.
+- List view and desktop table view are available for tasks where scanning rows beats images.
+- Tapping a card always opens full detail with its lots.
+- Images are lazy-loaded and sized to the current density. A large collection must never issue
+  thousands of image requests on mount.
+
+### 4.5 Purchases
 
 - A purchase is one receipt with one or more lines. Lines may mix cards, sealed product,
   grading fees and accessories.
@@ -164,7 +223,7 @@ Acceptance-level statements. Implementation detail belongs in ARCHITECTURE and D
 - **A purchase is never deleted as a side effect of anything else.** Opening a product, selling
   an item, grading a card — none of these alter purchase history.
 
-### 4.4 Sealed inventory
+### 4.6 Sealed inventory
 
 - Sealed products are holdings with lots, priced by manual valuation until a legitimate source
   exists.
@@ -172,13 +231,18 @@ Acceptance-level statements. Implementation detail belongs in ARCHITECTURE and D
   card value.
 - Manual valuations are visibly marked as manual, with the date they were set.
 
-### 4.5 Openings — V1
+### 4.7 Openings — V1
 
 - An opening links to a sealed lot the user owns, or stands alone with a manually stated cost.
+- **A manually stated cost creates a real ledger entry** so the money appears in lifetime
+  spending. Linking the real purchase later voids the provisional entry — the money is never
+  counted twice. See [FINANCIAL_MODEL.md](FINANCIAL_MODEL.md) §5.5.
 - Opening a linked product reduces the sealed lot and preserves the purchase.
-- The user records the pulls worth recording. Recording every card is possible but never required.
+- **Default tracking mode is every card**, consistent with all-card tracking. A hits-only mode
+  exists for users who do not want to enter 360 cards from a booster box.
 - The user declares whether tracking is complete. When it is not, every display of opening
   return carries an incompleteness marker.
+- Opening result is shown in kroner first, percentage second.
 - An optional bulk remainder estimate covers cards not individually recorded.
 - Opening return compares cost against retained pull value plus proceeds from sold pulls plus
   the bulk estimate.
@@ -186,18 +250,36 @@ Acceptance-level statements. Implementation detail belongs in ARCHITECTURE and D
   It shows "from opening" with a link.
 - Selling a pull remains attributable to its opening permanently.
 
-### 4.6 Sales
+### 4.8 Sales
 
 - A sale has one or more lines, each referencing a specific acquisition lot.
 - The UI suggests oldest-first lot selection and the user can change it. The chosen lot is
   recorded permanently.
 - Fees and outbound shipping reduce net proceeds; shipping charged to the buyer offsets it.
-- Realized result is shown only where the sold lot had a cost basis. Where it did not, the sale
-  is reported as proceeds, not as profit.
+- Realized result is shown only where the sold lot had a cost basis. Where it did not, the result
+  column reads **—** with "cost basis unknown" — never a profit figure derived from a missing cost.
 - Sold items leave current collection value from the sale date forward and do not retroactively
   vanish from history.
 
-### 4.7 Valuation
+### 4.8.1 History — what I no longer own
+
+A dedicated area, separate from Collection. Collection answers *what do I own now*; History
+answers *what did I own, and what happened to it*. Disposed items never clutter the active
+collection view by default.
+
+Sections: **Sold**, **Traded**, **Other disposals** (write-offs, corrections).
+
+A sold entry shows: card, quantity, sale date, marketplace, gross, fees, shipping, net proceeds,
+acquisition origin, cost basis if known, and realized result if defensible.
+
+Sorting includes newest, highest proceeds, highest result, largest loss, item and marketplace.
+**Sorting by result must place unknown-basis rows in their own group** rather than treating them
+as zero cost — otherwise every sold gift ranks as the most profitable sale ever made.
+
+A traded-away entry shows the trade it belonged to, the items on both sides, market values at
+trade date where recorded, and the cash legs. No fabricated profit figure.
+
+### 4.9 Valuation
 
 - Held raw cards are revalued daily from Cardmarket data via TCGdex, in EUR, converted at that
   day's rate.
@@ -208,34 +290,67 @@ Acceptance-level statements. Implementation detail belongs in ARCHITECTURE and D
 - Manual valuation always wins and never overwrites the automatic value.
 - A graded card is never valued from raw-card prices.
 
-### 4.8 Dashboard
+### 4.10 Dashboard
 
-Top-level figures: collection value; latest change in NOK and percent; net invested in
-collectibles; overall position; realized sales result; hobby spend this month.
+**Collection value is the visually primary number.** This remains a collection application first.
+But spending is never buried: overall position sits immediately alongside it, large enough that
+the cost of the hobby is impossible to miss.
 
-Below: collection value over time (1M/3M/1Y/ALL initially), monthly spend, raw/sealed/graded
-breakdown, recent activity.
+Six top-level figures, using the exact terms defined in
+[FINANCIAL_MODEL.md](FINANCIAL_MODEL.md) §9:
+
+1. Collection value — primary
+2. Latest market-value change, NOK and percent
+3. Total hobby spend
+4. Net invested in collectibles
+5. Realized sales result
+6. Overall position — prominent, adjacent to (1)
+
+**Data quality is shown with the value, not hidden.** Directly beneath collection value:
+
+```
+Collection value        42 580 kr
+Automatic pricing       35 200 kr
+Manual valuation         7 380 kr
+4 649 priced · 74 without a price
+```
+
+Secondary: value over time (1M/3M/1Y/ALL initially), monthly spend, raw/sealed/graded split,
+physical card count and unique variant count, cards without a recorded cost, recent activity.
 
 Value history begins when tracking begins. The chart shows a clear origin point rather than
 extrapolating backwards. No figure is labelled as a return unless it mathematically is one.
 
-### 4.9 Search and filtering
+### 4.11 Search and filtering
+
+Filtering carries more weight here than in most collection apps, because nothing is aggregated
+away — it is the mechanism that keeps ten thousand cards navigable.
 
 Search by card name, Pokémon, set, collector number. Filter by set, rarity, condition, language,
-grading state, grader, grade, storage location, tag, favourite, value range, acquisition date
-range, origin, holding kind.
+variant, grading state, grader, grade, storage location, custom collection, tag, favourite, value
+range, low-value threshold, **missing price**, acquisition origin, cost-basis state, purchase date
+range, quantity, holding kind, and currently owned versus previously owned.
 
 Desktop exposes the full filter set; mobile exposes a curated subset plus a search field.
 Filter state lives in the URL and is shareable and bookmarkable — except during a scanner
 session, where it is component state (see ARCHITECTURE §6).
 
-### 4.10 Export
+### 4.12 Export
 
-MVP exports CSV for collection, lots, purchases, purchase lines and sales, with enough
-provenance for external analysis: original currency, FX rate and source, cost basis, dates,
+Both formats ship in MVP.
+
+**CSV** for collection, lots, purchases, purchase lines and sales, with enough provenance for
+external analysis: original currency, FX rate and source, cost basis and its state, dates,
 origin, disposal records.
 
-V1 adds a complete JSON backup covering everything user-owned.
+**JSON backup** covering everything user-owned. This is the primary portable emergency backup, so
+it carries a schema version and an export timestamp in its envelope. A backup that becomes
+unreadable after one migration is not a backup; the version field is what makes forward migration
+of old exports possible.
+
+The application never claims that backups happen automatically. They do not — see
+[COST_POLICY.md](COST_POLICY.md). MVP includes a periodic in-app reminder to export, and the
+repository includes a local script for a full logical dump.
 
 ---
 
@@ -257,7 +372,7 @@ Made to avoid blocking; revisit if any turns out to be wrong.
 
 | Assumption | Basis |
 |---|---|
-| Collection reaches 2 000–5 000 cards | Stated as the planning target |
+| Collection may reach 10 000+ physical cards across perhaps 3 000–4 000 distinct variants | Follows from every card being individually tracked |
 | Existing collection data may be imported later | No current export supplied |
 | English and Japanese cover realistic needs | Stated V1 priority |
 | Trades are not needed in V1 | Deferred; schema is ready |
@@ -273,8 +388,8 @@ None block MVP. Each is recorded where it will be needed.
 
 | Question | Needed by |
 |---|---|
-| Cost-basis rule for trades — carryover or fair value | Trades (Later) |
-| Whether bulk lots should become tracked holdings | Openings (V1) |
+| Cost-basis rule for the item legs of a trade — carryover or fair value | Trades (V1) |
+| Whether TCGdex models Basic Energy printings well enough for per-printing tracking | Catalog ingest (MVP) |
 | How curated sealed catalog entries get promoted from user-created ones | Sealed improvements (V1) |
 | Whether condition multipliers should ever be offered | Later, only with real data |
 | Whether a paid pricing source becomes worth its cost | Reassess after 6 months of use |

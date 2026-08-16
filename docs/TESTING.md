@@ -45,6 +45,11 @@ identifier, asserting every metric in its table:
 | `E8` | Manual valuation replacing a missing provider price |
 | `E9` | Stale price retained and flagged; never zeroed |
 | `E10` | Foreign-currency purchase with frozen NOK conversion |
+| `E11` | Pre-tracking card: `unknown` cost state; sold later shows proceeds and result **—** |
+| `E12` | Gift: `not_paid` state; sold later shows proceeds, not profit |
+| `E13` | Provisional opening purchase, then reconciliation — spend counted exactly once |
+| `E14` | Trade: cash legs counted, item legs produce no realized result |
+| `E15` | Collection with unpriced cards: excluded from value, counted in `UHC`, retained in card count |
 
 If a formula changes, the document and these tests change together. A test that no longer matches
 the document is a documentation bug, not a test to be adjusted quietly.
@@ -55,7 +60,8 @@ One test per entry in the FINANCIAL_MODEL invariant register:
 
 | ID | Assertion |
 |---|---|
-| M1 | No code path writes `0` where `NULL` is meant. Lots with `origin != 'purchase'` always have `NULL` basis. |
+| M1 | No code path writes `0` where `NULL` is meant |
+| M2 | `unit_cost_basis_minor IS NOT NULL` iff `cost_basis_state = 'known'`, over every origin |
 | F1 | `GPO = CS + HS` over randomised purchase sets |
 | F2 | Buyer-paid shipping only offsets seller cost |
 | F3 | `CMV = ACMV + UMV` |
@@ -67,6 +73,48 @@ One test per entry in the FINANCIAL_MODEL invariant register:
 | F9 | Simulated provider outage: values retained, states age, nothing reaches zero |
 | F10 | A graded holding with no manual valuation resolves to `missing`, never to a raw price |
 | F11 | Recomputing after an FX change leaves historical NOK amounts unchanged |
+| F12 | An opening never has two live cost sources; reconciliation does not double-count spend |
+| F13 | No trade produces a realized P/L figure |
+| F14 | A holding with no resolvable value is excluded from `CMV` and counted, never zeroed |
+
+### 2.4 All-card tracking
+
+The requirement that every physical card is trackable creates a class of case that a
+valuable-cards-only model would never hit.
+
+| Test | Assertion |
+|---|---|
+| Basic Energy | Can be found in the catalog, added, and appears in the collection as an ordinary card |
+| Card with no market price | Can be added; excluded from `CMV`; counted in `UHC`; still counted as a physical card |
+| Provider price of genuinely 0.00 | Stored and used as zero with `price_state = 'fresh'` — **not** conflated with a missing price |
+| 80 identical energies | One holding, quantity 80, **one** price-snapshot row per day (D-019) |
+| Physical vs unique count | Both computed; 80 energies contribute 80 to one and 1 to the other |
+| Low-value filter | Matches on current resolved value; updates when the price moves; never materialised as membership |
+| Low value vs no price | A card with no price never appears in the low-value filter |
+| Hidden low-value cards | Still counted in totals and still contributing value; hiding is display-only |
+
+### 2.5 Cost-basis states
+
+| Test | Assertion |
+|---|---|
+| Purchased, cost known | `known`; contributes to `DCB` and `URC` |
+| Purchased, cost explicitly unknown | `unknown`; no amount stored; contributes to `UMV` and `ULC` |
+| Pulled | `unallocated_opening`; no cost field rendered; no per-card ROI available |
+| Gifted | `not_paid`; distinct from `unknown` in both storage and UI copy |
+| Traded in | `trade_in`; contributes to `UMV` |
+| Sold with unknown basis | Result is `NULL`, rendered **—**; contributes to `PUD`, not `RRC` |
+| Sort by result | Unknown-basis rows group separately; never sort as infinite profit |
+
+### 2.6 Organisation and settings
+
+| Test | Assertion |
+|---|---|
+| Collection membership | Adding or removing changes no financial figure |
+| Delete a collection | Membership rows removed; every holding intact (C1) |
+| Multi-membership | One holding in three collections behaves correctly in each |
+| Grid density | Default 2; settable 1–4; persists across sessions |
+| Per-user settings | Two users have independent density, threshold and theme |
+| Threshold change | Low-value filter results change immediately; no data is rewritten |
 
 ### 2.3 Property tests
 
@@ -175,7 +223,9 @@ Playwright, against a seeded synthetic dataset. Both desktop (1440×900) and mob
 | Sell part of a multi-lot holding | Lot selector works; remaining quantity correct; realized result matches E7 |
 | Void a purchase with a downstream sale | Blocked with a message naming the sale |
 | Stale price | Marker rendered; value retained |
-| Collection with 2 000 seeded rows | List interactive; no unbounded query |
+| Collection with 10 000 seeded lots | Grid interactive at every density; keyset pagination; no unbounded query; no image stampede |
+| History view | Sold item absent from Collection, present in History with correct figures |
+| Add a gift, then sell it | No profit figure anywhere in the flow |
 | CSV export | Downloads; row count matches; amounts parse |
 | Install as PWA | Manifest valid, icons present, standalone mode, safe areas correct |
 
@@ -188,10 +238,15 @@ throwing in the console is not passing.
 
 Not micro-benchmarks. Two checks that map to real failure:
 
-- Dashboard first meaningful paint with 5 000 holdings and 12 months of snapshots: under 2 s on a
-  throttled connection.
-- Collection list with 5 000 rows: virtualised, no layout thrash, no N+1 query pattern. Asserted
-  by counting network requests, not by timing.
+- Dashboard first meaningful paint with 10 000 lots and 12 months of snapshots: under 2 s on a
+  throttled connection. It reads `portfolio_snapshots`, so this should be nearly independent of
+  collection size — if it is not, the aggregation is in the wrong place.
+- Collection grid with 10 000 lots: virtualised, keyset-paginated, no layout thrash, no N+1
+  query. Asserted by counting network requests, not by timing.
+- Image requests on first paint at 4-column density: bounded by what is actually visible plus a
+  small prefetch margin.
+- Price-snapshot volume: one row per watched variant per price kind per day. A seeded collection
+  with heavy duplication must not inflate it (D-019).
 
 ---
 

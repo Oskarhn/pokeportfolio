@@ -254,7 +254,7 @@ has publicly shifted focus to Scrydex. Not a viable foundation.
 | Pausing | Free projects pause after ~7 days without database activity; manual resume; restorable within 90 days |
 | Backups | **None on Free.** Supabase recommends regular `supabase db dump`. Pro ($25/mo) adds 7 days of daily backups. |
 | Scheduling | `pg_cron` on all plans including Free; `pg_net` for HTTP from SQL |
-| Auth: email OTP | Stable |
+| Auth: email + password | Stable. Built-in email limited to 2/hour project-wide, so login must not depend on it. |
 | Auth: passkeys | Experimental, requires `auth.experimental.passkey: true` |
 | Verified | 2026-08-16 |
 

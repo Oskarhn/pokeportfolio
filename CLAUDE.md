@@ -14,6 +14,13 @@ global instructions still apply.
 4. Do not redo work marked complete in HANDOVER.
 5. Never ask the user to re-explain the project. Reconstruct state from the repository.
 
+## Planning is frozen
+
+Scope and product semantics are settled — see [docs/PLANNING_FREEZE.md](docs/PLANNING_FREEZE.md).
+Implementation should not reopen them as a side effect of coding. Discovering that something is
+harder than expected means a milestone takes longer, not that scope changes. Reopening requires
+meeting the criteria in PLANNING_FREEZE §9.
+
 ## Documentation precedence
 
 When sources disagree, resolve in this order and then **fix the losing document** — do not leave
@@ -38,6 +45,7 @@ a contradiction in place:
 | `docs/ARCHITECTURE.md` | Stack and why. |
 | `docs/SECURITY.md` | Trust boundaries, RLS, invites, secrets. |
 | `docs/COST_POLICY.md` | Zero-cost constraint and the verified service matrix. |
+| `docs/PLANNING_FREEZE.md` | The frozen scope and semantics implementation answers to. |
 | `docs/TESTING.md` | Test strategy and mandatory gates. |
 | `docs/DEVELOPMENT.md` | Environment, commands, migration rules. |
 | `docs/ROADMAP.md` | Phases and gates. |
@@ -98,8 +106,13 @@ accepts it. Compilation is not evidence. Browser-test UI work; run the financial
 authorization suites for anything touching money or ownership.
 
 **Honesty in the product.** Absent data is displayed as absent. No fabricated history, no
-invented precision, no metric labelled as something it is not. This is the project's core
-quality bar — see the journal entries on zero-cost pulls and condition multipliers.
+invented precision, no metric labelled as something it is not. Missing cost is never `0`; missing
+price is never `0`; a missing result renders as **—**. This is the project's core quality bar —
+see the journal entries on zero-cost pulls and condition multipliers.
+
+**All cards are trackable.** Basic Energy, commons, duplicates and unpriced cards are ordinary
+first-class inventory. Never special-case them, never aggregate them away to keep a view tidy.
+Organisation and filtering are how large collections stay navigable.
 
 ---
 
@@ -158,9 +171,19 @@ simply keep engineering documents focused on the engineering.
 ## Mentor handoff files
 
 After each major project phase, write a detailed phase summary to
-`claude_outputs/output_N.txt` — sequential, exactly that naming (`output_1.txt`, `output_2.txt`,
-…). One number per major phase; do not increment for clarification answers or follow-ups within
-the same phase.
+`claude_outputs/output_N.txt` — exactly that naming (`output_1.txt`, `output_2.txt`, …).
+
+**The phase number is given explicitly in the prompt. Never infer it.** Do not derive it from
+the number of files present, commit count, message count, timestamps, or apparent gaps. If a
+prompt states `PROMPT_NUMBER = 7`, write `output_7.txt` and nothing else.
+
+**Never backfill historical outputs.** A missing `output_5.txt` is not a task. Do not
+reconstruct, renumber or regenerate past outputs unless the owner explicitly asks for an
+archive-repair operation. Creating files nobody asked for makes the archive harder to trust, not
+easier.
+
+One number per major phase. Do not increment for clarification answers, follow-up questions, or
+the owner answering questions that belong to the current phase.
 
 These files are a handoff channel to an external technical reviewer who has none of this
 session's context, so they carry substantially more detail than the chat response: decisions,

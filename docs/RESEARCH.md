@@ -184,11 +184,62 @@ without notice.
 
 **Sources:** https://supabase.com/docs/guides/auth/passkeys · https://supabase.com/docs/reference/javascript/auth-signinwithotp
 
-**Consequence:** email OTP for MVP. Passkeys deferred until stable.
+**Consequence at the time:** email OTP for MVP, passkeys deferred until stable.
 
-**Additional reasoning, not from the docs:** a magic link opened from Mail on iOS launches
-Safari, not the installed PWA, breaking the flow for the primary target platform. This is an
-independent reason to prefer OTP even after passkeys stabilise.
+**Superseded by R18.** The rate-limit finding made OTP unworkable, and the choice became email
+and password. A magic link opened from Mail on iOS also launches Safari rather than the installed
+PWA, so neither email-based flow survived. Passkeys remain deferred on the same grounds.
+
+---
+
+## R18 — Supabase built-in email is limited to 2 auth emails per hour, project-wide
+
+**2026-08-16 · Verified**
+
+**Question:** is email-based login sustainable for 5–10 users at zero cost?
+
+**Finding:** no, not with the built-in provider. The documented limit is **2 emails per hour for
+the whole project** — not per user — covering signup, password recovery and email changes.
+Supabase's own documentation describes the built-in provider as unsuitable for production and
+subject to change without notice. With a custom SMTP provider the limit rises to 30 new users
+per hour and becomes configurable.
+
+**Source:** https://supabase.com/docs/guides/auth/rate-limits · https://supabase.com/docs/guides/auth/auth-smtp
+
+**Free SMTP options evaluated:** SMTP2GO (1 000/month, 200/day, 25/hour without a verified
+domain, five single-sender verifications, no card — the only one confirmed to work without owning
+a domain), Brevo (300/day), Mailjet (6 000/month). **Resend was excluded** despite a 3 000/month
+allowance because it requires a verified domain, and a domain is a purchase — a free plan with a
+paid prerequisite fails the zero-cost test.
+
+**Consequence:** authentication changed to email and password, which sends no email during normal
+login and removes the dependency rather than working around it. Password reset stays on the
+built-in provider — a handful of events per year against a limit of two per hour — with an
+admin-assisted fallback and a documented trigger for adding SMTP2GO if that ever changes.
+Recorded as [D-022](DECISIONS.md).
+
+---
+
+## R19 — All-card tracking does not threaten the storage ceiling
+
+**2026-08-16 · Derived, from verified inputs**
+
+**Question:** does tracking every physical card, including energies and commons, break the 500 MB
+free-tier database limit?
+
+**Finding:** no, because price history is keyed per *card variant*, not per *physical copy*.
+Eighty identical energies produce one snapshot row per day, not eighty. Snapshot volume therefore
+scales with distinct printings owned — which plateaus as duplicates and playsets collapse — rather
+than with cards owned, which does not.
+
+A 10 000-card collection realistically spans 3 000–4 000 distinct variants: ~105 MB/year at two
+price kinds, with thinning after twelve months. Holdings and lots are roughly 200 bytes each, so
+10 000 lots is ~2 MB.
+
+**Consequence:** all-card tracking was adopted without a storage compromise. The real costs are
+query and rendering shaped — keyset pagination, virtualisation, lazy image loading sized to grid
+density, and dashboard figures read from precomputed snapshots. Recorded as
+[D-017](DECISIONS.md) and [D-019](DECISIONS.md).
 
 ---
 

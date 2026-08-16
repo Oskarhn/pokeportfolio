@@ -9,11 +9,12 @@ Work not currently scheduled. Themes, not microtasks. Scheduled work lives in
 
 | Item | Note |
 |---|---|
-| Openings | Phase 10. The second-most distinctive feature after the ledger. |
-| Grading workflow and profitability | Phase 11. `raw_value_at_submission` is already captured in MVP so the analysis is possible later. |
-| Scanner | Phase 12. Core product goal; late only because it depends on everything else working. |
-| Desktop bulk operations | Multi-select, batch condition, location, tags, delete. Cheap once the collection view exists. |
-| JSON backup and restore | The real escape hatch. CSV export in MVP is the interim answer. |
+| Scanner | M15, first post-MVP milestone. All-card tracking makes manual entry the dominant cost of using the app. |
+| Openings | M16. Fully modelled in the schema from MVP, so historical openings can be backdated once the workflow ships. |
+| Grading workflow and profitability | M17. `raw_value_at_submission` is captured from MVP so the analysis remains possible. |
+| Trades | M18. Schema complete; the item-leg accounting rule must be decided before the workflow is built. |
+| Desktop bulk operations | Multi-select, batch condition, location, tags, collections, delete. |
+| Restore from JSON backup | Export ships in MVP; import of a backup is the other half. |
 | CSV import | Needed if existing collection data ever arrives. Format depends on the source. |
 
 ---
@@ -22,7 +23,7 @@ Work not currently scheduled. Themes, not microtasks. Scheduled work lives in
 
 | Item | Blocked on / note |
 |---|---|
-| Trades | Cost-basis rule undecided: carryover versus fair value at trade date. Both defensible; needs a real decision, not a default. Schema is ready (`origin = 'trade'`). |
+| Trade item-leg accounting rule | Carryover versus fair value at trade date. Both defensible; needs a real decision, not a default. Blocks M18, nothing else. Frozen `cost_basis_at_disposal` keeps both options open. |
 | Wishlist with target prices | Cheap once the catalog and pricing exist. Would extend `watched_card_variants` naturally. |
 | Set completion tracking | Needs variant-level completeness rules. Master-set tracking is meaningfully harder than base-set tracking. |
 | Price alerts | Requires notification delivery. Push on iOS works for installed PWAs but adds a subsystem. |
@@ -55,7 +56,7 @@ Work not currently scheduled. Themes, not microtasks. Scheduled work lives in
 | Cardmarket Product Catalogue: does it cover Pokémon sealed, and on what terms? (U2) | Sealed valuation improvement, V1 |
 | Whether a paid pricing source becomes worth its cost (U6) | After six months of manual valuation in practice |
 | TCGdex rate limits and price cadence in practice (U3, U4) | Observe our own ingest logs |
-| Whether an on-device scanner is viable on current iPhones (S2, S6) | Throwaway spike before Phase 12 |
+| Whether an on-device scanner is viable on current iPhones (S2, S6) | Throwaway spike before M15 |
 | Image rights for a distributed scanner index artefact | Before any public artefact hosting |
 | Node release model change from October 2026 | When pinning for the next cycle |
 
@@ -77,6 +78,10 @@ Recorded so they are not proposed again without new information.
 | Offline mutation queue with conflict resolution | Large, bug-prone, no evidence it is needed. Reads work offline; writes fail clearly. |
 | Event sourcing the ledger | Normalised tables with explicit disposal rows already provide full provenance at a fraction of the complexity. |
 | Averaging duplicate cost bases | Destroys provenance and makes realized results arbitrary. See D-001. |
+| Aggregating low-value cards into bulk entries | Makes the interface tidy by making the data lossy. Organisation and filtering solve the same problem without discarding information. See D-017. |
+| Email OTP or magic-link login | The built-in provider allows 2 auth emails/hour project-wide; fixing it means putting a third-party SMTP service on the critical path of every login. Password auth removes the dependency instead. See D-022. |
+| A generic "labels" mechanism covering location, collection, tag and value | Four different kinds of fact with different lifetimes. Merging them makes a price movement look like the user moved a card. See D-018. |
+| Materialising value-based groups as membership rows | Would require rewriting membership nightly as prices move — expensive and misleading. Smart filters are evaluated at read time. |
 | Backfilling price history from current prices | Fabricated data. See D-008. |
 | Valuing graded cards from raw prices | A PSA 10 trades at a large multiple of raw. Not an approximation — a fabrication. Invariant F10. |
 | Per-card ROI for opening pulls | The question is not well-posed at card scale. Answered at opening scope instead. See D-002. |

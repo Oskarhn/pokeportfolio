@@ -97,7 +97,7 @@ The working tree being clean is not sufficient.
       (see [API_SOURCES.md](API_SOURCES.md))
 - [ ] The image-rights uncertainty (U1 in [RESEARCH.md](RESEARCH.md)) is resolved or explicitly
       disclosed — private hotlinking and public distribution are different questions
-- [ ] The working name `PokePortfolio` is reassessed for trademark proximity (D-016)
+- [ ] The working name `PokePortfolio` is reassessed for trademark proximity (D-026)
 - [ ] No scanner index artefact containing derived card imagery is published without resolving
       the same rights question
 

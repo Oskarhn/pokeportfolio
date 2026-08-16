@@ -128,6 +128,8 @@ has infrastructure-level access; this is stated in the README rather than preten
 Hiding a signup button is not access control. The enforcement chain:
 
 1. **Dashboard:** email signup disabled at the Supabase Auth level; no OAuth providers enabled.
+   Password auth means the sign-up endpoint would otherwise be an open door, so this must be
+   verified as part of the invite-only test suite, not assumed from a dashboard toggle.
 2. **Invitation creation:** admin-only RPC generates a high-entropy token, stores only
    `sha256(token)`, returns the plaintext once. Tokens carry `expires_at`, `max_uses` and
    `revoked_at`.
@@ -141,6 +143,24 @@ Hiding a signup button is not access control. The enforcement chain:
 
 Tokens are single-use by default, time-limited, and revocable. Revoking after redemption
 disables the account rather than deleting data.
+
+### 5.1 Passwords
+
+Authentication is email plus password (see [ARCHITECTURE.md](ARCHITECTURE.md) §4). Supabase
+handles hashing; the application never sees or stores a password. Requirements:
+
+- Minimum length enforced server-side, not only in the form.
+- Password strength checked against a common-password list at registration.
+- Rate limiting on sign-in attempts (platform default: 30 per hour per IP, non-configurable).
+- Password reset uses the built-in low-volume email provider. Reset tokens are single-use and
+  short-lived. If delivery fails, an admin-assisted recovery path exists — it must require
+  out-of-band confirmation of identity, because at this scale "a friend says they're locked out"
+  is a plausible social-engineering vector even with ten users.
+- Passwords are never logged, never included in error messages, never in test fixtures.
+
+Choosing password auth over one-time codes trades a delivery dependency for a credential to
+protect. That is the right trade here — but it does mean credential handling is now in scope
+where it previously was not.
 
 ---
 

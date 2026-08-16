@@ -23,7 +23,29 @@ Authoritative definition of every monetary term, formula and allocation rule in 
 | Display currency | NOK. Every stored non-NOK amount carries a frozen NOK conversion (§7). |
 
 **Invariant M1 —** no monetary column may be nullable *to mean zero*. `NULL` always means
-"not applicable / not known", never "0". This distinction is load-bearing for opening pulls (§5).
+"not applicable / not known", never "0". This distinction is load-bearing for opening pulls (§5),
+gifts, and cards acquired before tracking began.
+
+### 1.1 Cost basis is a state, not just a nullable number
+
+A bare `NULL` cost basis conflates situations that are economically different and that the user
+needs told apart. Every acquisition lot therefore carries an explicit `cost_basis_state`:
+
+| State | Meaning | `unit_cost_basis_minor` |
+|---|---|---|
+| `known` | Traced to a purchase line with a real amount | **NOT NULL** |
+| `unallocated_opening` | Came from opening a product. The cost is owned by the opening and is deliberately not divided among pulls (§5). | `NULL` |
+| `not_paid` | Gift, prize, promotional. No money changed hands. | `NULL` |
+| `unknown` | Money was probably paid, but the amount is not recoverable — typically a pre-tracking collection | `NULL` |
+| `trade_in` | Received in a trade. Basis depends on the trade rule (§6). | `NULL` until trades ship |
+
+> **Invariant M2:** `unit_cost_basis_minor IS NOT NULL` **iff** `cost_basis_state = 'known'`.
+> Enforced by check constraint.
+
+Only `known` lots contribute to `DCB`, `URC` and `RRC`. The other four are aggregated and
+surfaced, never silently treated as zero and never silently dropped. The user sees, for example,
+*"1 284 of 4 723 cards have no recorded cost"* rather than a portfolio that quietly implies every
+gift was free profit.
 
 ---
 
@@ -74,9 +96,10 @@ Internal names are canonical. UI labels may differ; the mapping is in §9.
 | Term | Symbol | Definition |
 |---|---|---|
 | **Current market value** | `CMV` | Σ over open lots of `quantity_remaining × resolved_unit_value_nok` (§6). Lots with no resolvable value are **excluded and counted separately**, never treated as zero. |
-| **Attributed-cost market value** | `ACMV` | `CMV` restricted to lots where `unit_cost_basis_minor IS NOT NULL`. |
-| **Unattributed market value** | `UMV` | `CMV` restricted to lots where `unit_cost_basis_minor IS NULL` (opening pulls, gifts). |
+| **Attributed-cost market value** | `ACMV` | `CMV` restricted to lots with `cost_basis_state = 'known'`. |
+| **Unattributed market value** | `UMV` | `CMV` restricted to every other `cost_basis_state`. |
 | **Unvalued holdings count** | `UHC` | Count of open lots with no resolvable value. Surfaced in the UI; never silently dropped. |
+| **Uncosted lot count** | `ULC` | Count of open lots where `cost_basis_state <> 'known'`, broken down by state. Surfaced alongside `CMV`. |
 
 > **Invariant F3:** `CMV = ACMV + UMV`.
 
@@ -84,7 +107,7 @@ Internal names are canonical. UI labels may differ; the mapping is in §9.
 
 | Term | Symbol | Definition |
 |---|---|---|
-| **Direct unit cost basis** | — | `acquisition_lots.unit_cost_basis_nok_minor`. Set only when the lot traces to a purchase line. `NULL` otherwise. |
+| **Direct unit cost basis** | — | `acquisition_lots.unit_cost_basis_nok_minor`. Present only when `cost_basis_state = 'known'` (§1.1). |
 | **Lot cost adjustments** | — | Later costs attributable to a specific lot (grading fee, grading shipping). Stored separately in `lot_cost_adjustments` so the original acquisition cost is never mutated. |
 | **Effective unit cost basis** | `EUCB` | `unit_cost_basis + (Σ adjustments for the lot ÷ original lot quantity)`. `NULL` if `unit_cost_basis` is `NULL`. |
 | **Direct cost basis of inventory** | `DCB` | Σ over open lots of `quantity_remaining × EUCB`, skipping `NULL`. |
@@ -98,7 +121,7 @@ Internal names are canonical. UI labels may differ; the mapping is in §9.
 |---|---|---|
 | **Unrealized result on costed inventory** | `URC` | `ACMV − DCB`. The only figure in the app entitled to be called an unrealized gain/loss. |
 | **Realized result on costed disposals** | `RRC` | Σ over sale lines where `cost_basis_at_sale IS NOT NULL` of `(allocated_net_proceeds − cost_basis_at_sale)`. |
-| **Proceeds from unattributed disposals** | `PUD` | Σ over sale lines where `cost_basis_at_sale IS NULL` of `allocated_net_proceeds`. A pure inflow. **Not** a gain — there is no cost to subtract at item level. |
+| **Proceeds from uncosted disposals** | `PUD` | Σ over sale lines where `cost_basis_at_sale IS NULL` of `allocated_net_proceeds`. A pure inflow. **Not** a gain — there is no item-level cost to subtract. |
 | **Total tracked economic position** | `TTEP` | `CMV + NSP − CS` |
 | **Total hobby position** | `THP` | `CMV + NSP − GPO` = `TTEP − HS` |
 
@@ -265,9 +288,33 @@ Opening is a state transition, never a delete-and-recreate:
 
 `CS` is untouched by all of this. The purchase remains in history permanently.
 
-For an opening with no recorded purchase, `cost_source = 'manual'` and the user supplies a cost.
-That manual cost does **not** enter `CS` — it never left a bank account within this system —
-and opening ROI is flagged as based on an unverified cost.
+### 5.5 Opening with no recorded purchase — provisional cost
+
+A user who opens something they never entered as a purchase still spent that money, and lifetime
+spending would be wrong to omit it. Recording it only as an opening-local number would make the
+most important metric in the product systematically understate reality.
+
+**Mechanism.** Entering an opening with a manual cost and no linked lot creates a real
+`purchase` row marked `origin = 'provisional_opening'`, with one `sealed` line, linked back to
+the opening. It is an ordinary ledger entry: it counts in `GPO` and `CS` like any other, and the
+consumed lot gives the opening a normal `cost_source = 'from_lot'`.
+
+**Reconciliation.** When the real purchase is entered later, the user links it to the opening.
+In one transaction:
+
+1. The opening's `source_lot_id` is repointed at the real purchase's lot.
+2. The provisional purchase is **voided** — retained, excluded from every calculation.
+3. An `audit_event` of action `opening_cost_reconciled` records both purchase ids.
+
+Nothing is deleted, and the money is counted exactly once at every point in time.
+
+> **Invariant F12:** an opening has at most one non-voided cost source. A provisional purchase
+> and a linked real purchase can never both be active for the same opening.
+
+The UI marks a provisionally costed opening as *"Cost entered manually — not linked to a
+purchase"* and offers the link action. Reconciliation is a user action, not an automatic match:
+guessing which of three similar purchases corresponds to an opening would silently corrupt the
+ledger, and the user knows the answer in a single tap.
 
 ---
 
@@ -281,6 +328,11 @@ For each open lot, exactly one value is resolved, in priority order:
 | 2 | Provider snapshot ≤ 3 days old | `fresh` |
 | 3 | Provider snapshot 4–30 days old | `stale` — value used, flagged in UI |
 | 4 | Provider snapshot > 30 days old, or none | `missing` — **excluded from `CMV`**, counted in `UHC` |
+
+A provider snapshot whose value is genuinely `0` is a real observation and is stored and used as
+zero — some bulk commons really do trade at nothing. That is categorically different from having
+no observation, and the two must never collapse into the same state. `price_state` distinguishes
+them; `value_minor = 0` with `price_state = 'fresh'` is valid data.
 
 Provider price selection for raw cards (Cardmarket, EUR):
 
@@ -558,6 +610,110 @@ EUR/NOK for the purchase date: **11.5400**.
 Line attributable cost in NOK: 45.00 × 11.54 + 4.50 × 11.54 = 571.23. Cost basis 571.23,
 frozen. If EUR/NOK moves to 12.00 tomorrow, this purchase still reads 571.23. (F11)
 
+### E11 — Purchased long ago, cost not recoverable
+
+A card from a pre-tracking collection. The user knows they bought it; the amount is gone.
+Recorded with `cost_basis_state = 'unknown'`. Market value 340.
+
+| Metric | Effect |
+|---|---|
+| `GPO`, `CS` | **0** — no purchase row exists, and inventing one would corrupt the ledger |
+| `CMV` | +340, contributing to `UMV` |
+| `DCB`, `URC` | unchanged — the lot is not `known` |
+| `ULC` | +1 in the `unknown` bucket |
+| `TTEP` | +340 |
+
+`TTEP` overstates the true position here, because real money was spent that the system cannot
+see. This is unavoidable and is disclosed rather than hidden: the dashboard shows the uncosted
+lot count next to the position figure.
+
+**Sold later for 300 net:** `NSP` +300, `PUD` +300, `RRC` unchanged. The sale row displays
+*"Proceeds 300 kr · Cost basis unknown"* and its result column reads **—**, not `+300`.
+
+### E12 — Gift
+
+A friend gives the user a card worth 900. `cost_basis_state = 'not_paid'`.
+
+| Metric | Effect |
+|---|---|
+| `GPO`, `CS` | 0 — correctly, no money moved |
+| `CMV` | +900 (`UMV`) |
+| `TTEP` | +900 |
+
+Unlike E11 this is economically accurate: the position genuinely improved by 900 at no cost.
+The distinction between `not_paid` and `unknown` exists precisely so the app can tell these
+apart, even though both store a `NULL` amount.
+
+**Sold later for 850 net:** `NSP` +850, `PUD` +850. Result column **—**. It is tempting to call
+this an 850 profit, and at portfolio level `TTEP` already reflects it correctly; asserting an
+850 item-level *gain* would imply a cost basis of zero, which is the failure mode M1 exists to
+prevent.
+
+### E13 — Opening with a provisional cost, later reconciled
+
+The user opens an ETB they never entered as a purchase and states they paid 799.
+
+**Step 1 — provisional.** A `purchase` with `origin = 'provisional_opening'` is created: one
+sealed line, 799, collectible.
+
+| Metric | Value |
+|---|---|
+| `GPO`, `CS` | 799 |
+| Opening cost | 799, `cost_source = 'from_lot'` |
+| Sealed lot | created, then immediately consumed by the opening |
+
+**Step 2 — the real purchase arrives.** Two weeks later the user enters the actual receipt: ETB
+799 plus 79 shipping, total 878. Naively, `CS` is now 1 677 — the money counted twice.
+
+The user links the opening to the real purchase. In one transaction the opening repoints at the
+real lot and the provisional purchase is voided.
+
+| Metric | After reconciliation |
+|---|---|
+| `GPO`, `CS` | **878** — counted once, and now more accurate than the manual figure |
+| Opening cost | 878 (the real attributable cost including shipping) |
+| Provisional purchase | retained, `voided_at` set, excluded everywhere |
+| Audit | `opening_cost_reconciled` with both purchase ids |
+
+Opening return recomputes against 878. (F12)
+
+### E14 — Trade
+
+Outgoing: card A (`known` basis 400) and card B (`unknown` basis), market values at trade date
+600 and 250. Incoming: card C, market value 700. The user also receives 150 cash.
+
+| Metric | Effect |
+|---|---|
+| `NSP` | +150 — the cash leg is unambiguous |
+| Card A, B | disposed `traded_away`; A's basis 400 frozen as `cost_basis_at_disposal` |
+| `DCB` | −400 |
+| Card C | new lot, `cost_basis_state = 'trade_in'`, contributes 700 to `UMV` |
+| `RRC` | **unchanged** — no realized result is asserted for the item legs (F13) |
+
+The trade detail view shows: outgoing market value 850, incoming market value 700, difference
+−150, cash received +150. Labelled as market values, never summed into realized P/L. When the
+item-leg rule is decided, A's frozen basis makes a retrospective computation possible; B's will
+remain unknown, correctly.
+
+### E15 — A collection where most cards have no price
+
+4 723 physical cards including energies and commons. 4 649 resolve to a price; 74 do not —
+obscure promos, a Japanese jumbo, some very old cards.
+
+| Figure | Value |
+|---|---|
+| `CMV` | 13 540 (from the 4 649 priced cards) |
+| `UHC` | 74 |
+| Physical cards | 4 723 |
+| Unique variants | 1 846 |
+
+The dashboard shows collection value with *"4 649 priced · 74 without a price"* directly beneath
+it, and the 74 are reachable through a filter. They are **not** valued at zero and **not**
+removed from the card count. (F14)
+
+Note also that a provider price of genuinely 0.00 is a different thing from a missing price, and
+the two are stored distinctly: the former is a real observation, the latter is absence of one.
+
 ---
 
 ## 9. Internal term → UI label
@@ -573,9 +729,10 @@ frozen. If EUR/NOK moves to 12.00 tomorrow, this purchase still reads 571.23. (F
 | `NSP` | Sales proceeds |
 | `URC` | Unrealized, costed items |
 | `RRC` | Realized result |
-| `PUD` | Proceeds, opening pulls |
+| `PUD` | Proceeds, uncosted items |
 | `TTEP` | Overall position |
-| `UHC` | Holdings without valuation |
+| `UHC` | Cards without a price |
+| `ULC` | Cards without a recorded cost |
 
 UI labels must not use "profit", "return" or "P/L" for `TTEP` without the qualifier that it
 compares market value against collectible spend. `TTEP` is a position, not a return.
@@ -591,20 +748,56 @@ The app does not compute, and must not label anything as:
 - appraised, insured, or liquidation value;
 - per-card ROI for opening-origin items;
 - condition-adjusted market value, while provider data is not condition-specific;
-- graded market value derived from raw prices.
+- graded market value derived from raw prices;
+- a realized result for any disposal whose lot had no recorded cost — sold gifts, sold pulls,
+  sold pre-tracking cards and traded-away items show proceeds and a result of **—**;
+- a realized result for the item legs of a trade (§11).
 
 Export carries enough provenance (transaction dates, original currency, FX rate and source,
 cost basis, disposal records) that external tax analysis is possible later.
 
 ---
 
-## 11. Invariant register
+## 11. Trades
+
+The full trade workflow ships in V1, but the semantics are settled now so the schema and the
+disposal path do not have to change later.
+
+A trade is one transaction with outgoing items, incoming items, and optionally cash in either
+direction. Outgoing lots are disposed with `kind = 'traded_away'`; incoming items become lots
+with `cost_basis_state = 'trade_in'`.
+
+**Cash legs are real money and behave normally.** Cash paid is collectible spend; cash received
+is proceeds. These are unambiguous and are counted in `CS` and `NSP` respectively.
+
+**The item legs are not assigned a monetary result.** Two rules are defensible — carrying the
+outgoing basis onto the incoming item, or treating the trade as a disposal at fair value followed
+by an acquisition at fair value — and they produce materially different realized results from
+identical facts. Choosing one silently would fabricate precision. So, until the rule is decided:
+
+- Outgoing lots with `cost_basis_state = 'known'` record `cost_basis_at_disposal`, frozen, so the
+  information survives for whichever rule is later adopted.
+- Incoming lots are `trade_in` and contribute to `UMV`, not `ACMV`.
+- No realized P/L is reported for the item legs. The trade detail view shows, separately:
+  outgoing market value at trade date, incoming market value at trade date, the difference, and
+  the cash legs. These are described as market values, not as profit.
+
+> **Invariant F13:** a trade never produces a realized P/L figure while the item-leg rule is
+> undecided. Market-value comparison is displayed as such and is never summed into `RRC`.
+
+Market values at trade date are captured when the trade is recorded, because they are not
+recoverable afterwards — the same reasoning as `raw_value_at_submission` for grading.
+
+---
+
+## 12. Invariant register
 
 Every invariant below has a corresponding automated test. See [TESTING.md](TESTING.md).
 
 | ID | Invariant |
 |---|---|
 | M1 | `NULL` money never means zero |
+| M2 | `unit_cost_basis_minor IS NOT NULL` iff `cost_basis_state = 'known'` |
 | F1 | `GPO = CS + HS` |
 | F2 | Buyer-paid shipping only offsets seller shipping cost |
 | F3 | `CMV = ACMV + UMV` |
@@ -616,3 +809,6 @@ Every invariant below has a corresponding automated test. See [TESTING.md](TESTI
 | F9 | Provider failure never yields a zero value |
 | F10 | Raw prices never value graded cards |
 | F11 | Frozen NOK conversions are never recomputed |
+| F12 | An opening has at most one non-voided cost source |
+| F13 | Trades produce no realized P/L while the item-leg rule is undecided |
+| F14 | A holding with no resolvable market value is excluded from `CMV` and counted in `UHC` — never valued at zero |

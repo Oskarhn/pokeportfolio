@@ -17,7 +17,7 @@ also logged in [DECISIONS.md](DECISIONS.md).
 ┌───────────────▼─────────────────────────────────────────┐
 │  Supabase (EU North, Stockholm)                         │
 │  ├ PostgREST      → CRUD, RLS-enforced                  │
-│  ├ Auth           → email OTP, invite-gated             │
+│  ├ Auth           → email + password, invite-gated      │
 │  ├ Postgres 15    → schema, RLS, constraints, RPC       │
 │  ├ Storage        → images (V1)                         │
 │  ├ Edge Functions → ingest jobs, invite redemption      │
@@ -96,7 +96,7 @@ Verified facts driving the choice (see [RESEARCH.md](RESEARCH.md) for sources an
 | EU regions | `eu-north-1` (Stockholm) selected — closest to Norway |
 | Scheduling | `pg_cron` enabled on all plans including Free; `pg_net` for HTTP from SQL |
 | Backups | **No automated backups on Free.** Manual `supabase db dump` required. |
-| Auth: email OTP | Stable |
+| Auth: email + password | Stable. Built-in email limited to 2/hour project-wide, so login must not depend on it. |
 | Auth: passkeys | Experimental, requires opt-in flag — not an MVP dependency |
 
 **Escape path.** The database is plain PostgreSQL. The only Supabase-specific surfaces are
@@ -114,8 +114,10 @@ and RLS would need JWT plumbing built by hand. Rejected for this scale.
 Free-tier reality is that nobody is backing this up for us. The mitigation is layered:
 
 1. `supabase db dump` run manually before every migration and after significant data entry.
-2. In-app JSON export (V1) as the user-facing escape hatch.
-3. Schema fully reproducible from `supabase/migrations/`.
+2. In-app versioned JSON export, **in MVP**, as the user-facing escape hatch. It carries a schema
+   version and export timestamp so an export taken today survives future migrations.
+3. A periodic in-app reminder to export, because a manual routine nobody performs is not a backup.
+4. Schema fully reproducible from `supabase/migrations/`.
 
 No claim of automatic backup appears anywhere in the product.
 
@@ -123,12 +125,27 @@ No claim of automatic backup appears anywhere in the product.
 
 ## 4. Authentication and invitations
 
-**Email OTP (six-digit code), invite-only, enforced server-side.**
+**Email and password, invite-only, enforced server-side.**
 
-Magic links were rejected for the primary flow on a specific mechanical ground: a link opened
-from Mail on iOS launches Safari, not the installed PWA. The user then authenticates in a
-browser context separate from their home-screen app and has to return and repeat. A six-digit
-code keeps the entire flow inside the installed app.
+Both email-based alternatives were rejected on mechanical grounds, not preference.
+
+*Magic links:* a link opened from Mail on iOS launches Safari, not the installed PWA. The user
+authenticates in a browser context separate from their home-screen app and has to start again.
+
+*Email OTP:* Supabase's built-in email provider allows **2 auth emails per hour, project-wide** —
+not per user — and its documentation describes it as unsuitable for production. One login is one
+email. Onboarding two people in a single sitting exhausts the quota. Fixing this means adding a
+custom SMTP provider to the critical path of every login: another account, another free tier to
+depend on, another deliverability failure mode. For a login that could simply not send email,
+that is a poor trade.
+
+Password auth sends nothing during normal login. Account creation is already gated by the
+invitation Edge Function, so email confirmation is unnecessary and is disabled.
+
+**Password reset** is the one remaining email path, and it is genuinely rare at this scale — a
+handful of events per year against a limit of two per hour. It uses the built-in provider, with
+an admin-assisted recovery path documented as the fallback. If reset volume ever becomes a real
+constraint, a free SMTP tier can be added at that point; it is not on the critical path today.
 
 Passkeys are deferred: Supabase's implementation is explicitly experimental and requires an
 opt-in client flag. Revisit when it stabilises; the auth surface is small enough to extend.
@@ -144,26 +161,21 @@ necessary but not sufficient, so:
 
 Full detail in [SECURITY.md](SECURITY.md).
 
-### 4.1 Email delivery — an unresolved constraint on this choice
+### 4.1 Scale: all-card tracking
 
-Supabase's built-in email provider is limited to **2 auth emails per hour, project-wide** — not
-per user — and its documentation describes it as unsuitable for production and subject to change
-without notice. One login sends one email, so onboarding two people in one sitting already
-exhausts the limit.
+Every physical card is individually tracked, so a user may reach 10 000+ lots. The architectural
+consequences are decided here rather than discovered later:
 
-This does not cost money, but it makes OTP unreliable as specified. Two zero-cost resolutions
-exist, and the choice changes login UX, so it is an owner decision rather than an engineering
-one:
-
-| Option | Effect |
+| Concern | Response |
 |---|---|
-| Custom SMTP via SMTP2GO's free tier | Keeps OTP. 1 000 emails/month, 200/day, 25/hour without a verified domain, five verifiable single-sender addresses, no card. Adds one external account. |
-| Email + password instead of OTP | Sends no email at all. Removes the dependency entirely. Account creation is already gated by an invitation Edge Function, so email confirmation can be disabled. Password reset would be an admin action at this scale. |
+| Price history | Keyed per `card_variant`, never per copy. Volume scales with distinct printings owned, which plateaus. ~105 MB/year against a 500 MB ceiling. |
+| Collection queries | Keyset pagination server-side, virtualisation client-side. Never a full fetch. |
+| Images | Lazy-loaded, sized to the current grid density, served from the provider CDN. |
+| Portfolio figures | Read from `portfolio_snapshots`, so dashboard cost is near-independent of collection size. |
+| Grouped display | Quantity on one row, not N rows. A display concern, not a storage one. |
 
-Resend was excluded despite a larger free tier because it requires a verified domain, and a
-domain is a purchase. See [COST_POLICY.md](COST_POLICY.md) §6.
-
-**Status: pending owner decision.** Until resolved, treat the auth mechanism as provisional.
+The binding free-tier constraint is price history, and price history is decoupled from collection
+size. That is what makes tracking every energy card viable at zero cost.
 
 ---
 

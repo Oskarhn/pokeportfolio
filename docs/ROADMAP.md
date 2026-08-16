@@ -4,204 +4,226 @@ Ordered by dependency, not by time. No date estimates.
 
 Status: **Done** · **In progress** · **Planned** · **Deferred**
 
+Scope is frozen — see [PLANNING_FREEZE.md](PLANNING_FREEZE.md). Milestones may be resequenced on
+dependency grounds; scope may not be widened without reopening the freeze.
+
 ---
 
 ## Phase 0 — Discovery · Done
 
-Product definition, competitor review, feasibility research, decision consolidation.
-
----
+Product definition, competitor review, feasibility research.
 
 ## Phase 1 — Foundation · Done
 
 Canonical documentation, financial model, data model, architecture, security model, test
-strategy, toolchain, Git and GitHub foundation. No application code.
+strategy, zero-cost policy, toolchain, private GitHub repository. No application code.
 
 ---
 
-## Phase 2 — Scaffold · Planned · **next**
+## Implementation milestones
 
-The first code. Ends with an empty but deployable application and a green pipeline.
+Each milestone is a reviewable unit ending in a working, tested increment. **Not one enormous MVP
+branch.** A milestone is complete only when its gate passes; the gate is behaviour, never
+compilation.
 
-| # | Milestone | Done when |
-|---|---|---|
-| 2.1 | Vite + React + TS project, strict config, pnpm, lint, format | `pnpm check` passes on an empty app |
-| 2.2 | Supabase project, `eu-north-1`, first migration, generated types | Migration applies from scratch; types compile |
-| 2.3 | Domain layer skeleton: `Money`, allocator, currency table | Allocator property tests pass (F6) |
-| 2.4 | Test harness: Vitest, fast-check, Playwright, two-client authorization fixture | A deliberately failing isolation test actually fails |
-| 2.5 | CI: install, typecheck, lint, test, build, secret scan | Green on a pull request |
-| 2.6 | PWA shell: manifest, icons, service worker, safe areas, theme | Installs on iPhone; standalone launch correct |
+### M1 — Scaffold and harness · **next**
 
-Gate: `pnpm check` green, CI green, app deploys, PWA installs.
+Vite + React 19 + TypeScript strict. pnpm pinned via Corepack. ESLint, Prettier, Vitest,
+fast-check, Playwright. `pnpm check` as the single gate command. GitHub Actions: install →
+typecheck → lint → test → build → secret scan.
 
----
+**Gate:** `pnpm check` green on an empty app; CI green on a pull request.
 
-## Phase 3 — Identity · Planned
+### M2 — Domain and money
 
-| # | Milestone | Done when |
-|---|---|---|
-| 3.1 | Schema: `profiles`, `invitations`, redemptions, RLS | Policies applied, `WITH CHECK` on every write |
-| 3.2 | `redeem-invitation` Edge Function + `auth.users` trigger backstop | Direct public signup is rejected (S2) |
-| 3.3 | Email OTP login, session persistence, sign-out | Full flow works inside an installed PWA |
-| 3.4 | Admin invitation management | Create, label, revoke, expire |
-| 3.5 | Authorization suite v1 | Every attack in TESTING §4 covered and passing |
+`Money` type (integer minor units + ISO 4217), currency table with per-currency minor-unit
+exponents, largest-remainder allocator, FX conversion helpers. Pure TypeScript, zero
+dependencies on React or Supabase.
 
-Gate: the authorization suite is green and a fresh attempt at unauthorised signup fails.
+**Gate:** allocator property tests pass (F6); worked examples E1, E3 and E7 reproduce exactly in
+memory; a deliberately broken allocation fails the suite.
 
----
+### M3 — Database, RLS and migration tooling
 
-## Phase 4 — Catalog and collection · Planned
+Supabase project (`eu-north-1`, free plan). Migration tooling. Schema for catalog, profiles,
+invitations, holdings, lots, purchases. RLS on every table with `WITH CHECK`. Denormalised
+`user_id` with parent-match triggers. Generated TypeScript types.
 
-| # | Milestone | Done when |
-|---|---|---|
-| 4.1 | Catalog schema + TCGdex ingest for sets, cards, variants (EN + JA) | Catalog populated; provider ids mapped |
-| 4.2 | Card search: name, set, collector number, variant selection | Fast on mobile; usable with 23k cards |
-| 4.3 | `holdings` + `acquisition_lots` schema, RLS, triggers | D1 and S1 enforced and tested |
-| 4.4 | Add to collection manually; condition, language, quantity, origin | Three copies at three prices become three lots |
-| 4.5 | Collection list and detail: filters, sort, lot breakdown | 2 000 seeded rows stay interactive |
-| 4.6 | Storage locations, tags, favourites | |
+**Gate:** migrations apply to an empty and a seeded database; the two-client authorization
+fixture exists and a deliberately failing isolation test actually fails.
 
-Gate: a real card can be added, found, filtered and inspected with its lots visible.
+### M4 — Auth and invitations
 
----
+Email + password. `redeem-invitation` Edge Function as the sole account-creation path, with the
+`auth.users` trigger backstop. Admin invitation management. Password reset via low-volume
+built-in email with an admin-assisted fallback.
 
-## Phase 5 — Money in · Planned
+**Gate:** direct public signup is rejected (S2); the full authorization suite passes; login
+works inside an installed PWA on a phone.
 
-The permanent ledger. The highest-priority product area.
+### M5 — Catalog and search
 
-| # | Milestone | Done when |
-|---|---|---|
-| 5.1 | `purchases` + `purchase_lines` schema, retailers | Check constraints enforced |
-| 5.2 | Allocation engine wired into purchase writes | E3 reproduced exactly, in the database |
-| 5.3 | Purchase entry: multi-line, backdating, shipping, customs, discount | Allocation visible and explained in the UI |
-| 5.4 | Foreign currency + Norges Bank FX ingest, manual override | E10 reproduced; frozen conversion verified (F11) |
-| 5.5 | Purchase creates holdings and lots in one step | |
-| 5.6 | Spending ledger view: monthly, per retailer, collectible vs hobby | F1 holds on real data |
-| 5.7 | Void semantics and guard rules | Voiding a referenced purchase is blocked with a naming error |
+TCGdex ingest for sets, cards and variants, English and Japanese. Provider id mapping. Card
+search by name, set and collector number. Verify Basic Energy coverage and variant modelling
+during ingest — this is a known unknown.
 
-Gate: financial suite green against database-backed data, not just in-memory fixtures.
+**Gate:** search is fast on mobile across the full catalog; energies are findable and selectable
+as ordinary cards.
 
----
+### M6 — Collection: holdings, lots, origin
 
-## Phase 6 — Valuation · Planned
+Add cards manually. Acquisition origin and `cost_basis_state`. Quantity grouping with lot detail.
+Condition, storage location, tags, favourites. Graded cards as a collection type with manual
+value.
 
-| # | Milestone | Done when |
-|---|---|---|
-| 6.1 | `price_snapshots`, `watched_card_variants`, retention | Storage projection matches R13 |
-| 6.2 | `ingest-prices` Edge Function + pg_cron | Idempotent; per-variant failure isolation |
-| 6.3 | Valuation resolver: manual → fresh → stale → missing | F9, F10 verified with a simulated outage |
-| 6.4 | Manual valuation with provenance | Both automatic and manual values inspectable |
-| 6.5 | Freshness indicators throughout the UI | Stale and missing are visible, not silent |
+**Gate:** three copies at three prices become three lots under one holding; a gift shows no cost
+field and no zero; energies and no-price cards can be added.
 
-Gate: a provider outage degrades gracefully and nothing reaches zero.
+### M7 — Organisation and display
 
----
+Custom collections (many-to-many). Smart filters: low-value threshold, missing price. Grid
+density 1–4 with 2 as default, persisted per user. List and desktop table views. Keyset
+pagination and virtualisation.
 
-## Phase 7 — Sealed and sales · Planned
+**Gate:** 10 000 seeded lots stay interactive on a phone; density changes persist across
+sessions; deleting a collection touches no holding (C1).
 
-| # | Milestone | Done when |
-|---|---|---|
-| 7.1 | Sealed products in the catalog; sealed holdings and lots | Sealed valued manually, marked as such |
-| 7.2 | `sales` + `sale_lines`, explicit lot selection with FIFO suggestion | E7 reproduced; `cost_basis_at_sale` frozen |
-| 7.3 | Realized vs unattributed proceeds, correctly separated | F5 holds |
-| 7.4 | Sales history and per-sale detail | |
+### M8 — Purchases and the spending ledger
 
-Gate: selling part of a multi-lot holding produces correct figures and correct history.
+Multi-line purchases, retailers, shipping, customs, discounts, backdating. Allocation engine
+wired into writes. Foreign currency with Norges Bank FX and manual override. Collectible versus
+hobby split. Void semantics and guard rules.
 
----
+**Gate:** E3 and E10 reproduce in the database; `GPO = CS + HS` holds on real data (F1); voiding
+a referenced purchase is blocked with an error naming the blocker.
 
-## Phase 8 — Dashboard · Planned
+### M9 — Pricing and snapshots
 
-| # | Milestone | Done when |
-|---|---|---|
-| 8.1 | `portfolio_snapshots` + recompute queue | Full rebuild equals incremental, byte-identical |
-| 8.2 | `lightweight-charts` spike | Validated or replaced with visx before building on it |
-| 8.3 | Value over time, monthly spend | Ownership timeline correct (TESTING §3) |
-| 8.4 | Headline figures, breakdowns, recent activity | Terminology matches FINANCIAL_MODEL §9 |
-| 8.5 | Empty, loading and error states | An empty account looks intentional, not broken |
+`price_snapshots`, `watched_card_variants`, retention thinning. `ingest-prices` and `ingest-fx`
+Edge Functions on `pg_cron`. Valuation resolver: manual → fresh → stale → missing. Freshness
+indicators throughout.
 
-Gate: figures reconcile against the ledger; no metric is mislabelled.
+**Gate:** a simulated provider outage degrades gracefully and nothing reaches zero (F9, F14);
+snapshot volume matches the projection.
 
----
+### M10 — Sales and History
 
-## Phase 9 — MVP completion · Planned
+Sales with explicit lot selection and FIFO suggestion. Frozen `cost_basis_at_sale`. Realized
+versus uncosted proceeds. The History area: Sold, Traded, Other.
 
-| # | Milestone |
-|---|---|
-| 9.1 | CSV export with full provenance |
-| 9.2 | Settings: theme, locale, account deletion with export offer |
-| 9.3 | E2E suite across desktop and mobile viewports |
-| 9.4 | Real-device iPhone pass |
-| 9.5 | Performance pass at 5 000 holdings |
-| 9.6 | Documentation reconciled with what was actually built |
+**Gate:** E2 and E7 reproduce; a sold gift shows proceeds and a result of **—**; sorting by
+result does not rank unknown-basis rows as infinite profit.
 
-**MVP is complete here.** Usable daily: record everything bought and owned, see its value, sell,
-export.
+### M11 — Sealed inventory
 
----
+Sealed products in the catalog. Sealed holdings with intent. Manual valuation with provenance.
+Sealed segment in collection value.
 
-## Phase 10 — Openings · Planned (V1)
+**Gate:** sealed value is visibly manual; a sealed holding with no valuation is counted, not
+zeroed.
 
-| # | Milestone |
-|---|---|
-| 10.1 | `openings` schema, sealed lot consumption, provenance preserved |
-| 10.2 | Opening entry: linked or manual cost, pack count, tracked pulls |
-| 10.3 | Bulk remainder estimate; completeness flag |
-| 10.4 | Opening return, with incompleteness markers everywhere it appears |
-| 10.5 | Sold pulls remain attributable to their opening |
-| 10.6 | Opening history and per-set analysis |
+### M12 — Dashboard
 
-Gate: E4 and E5 reproduced end to end. No pull shows a zero cost basis or a per-card ROI.
+`portfolio_snapshots` with a recompute queue. `lightweight-charts` spike — validate or fall back
+to visx before building on it. Value over time, monthly spend, headline figures, data-quality
+counts.
+
+**Gate:** full rebuild equals incremental recompute, byte-identical; ownership timeline correct
+(TESTING §3); every figure reconciles against the ledger.
+
+### M13 — Export and backup
+
+CSV exports. Versioned JSON backup with schema version and export timestamp. In-app export
+reminder. Local dump script.
+
+**Gate:** a JSON backup round-trips; amounts parse; the version envelope is present.
+
+### M14 — MVP hardening
+
+E2E suite across desktop and mobile viewports. Real-device iPhone pass. Performance pass at
+10 000 lots. Accessibility pass. Documentation reconciled with what was actually built.
+
+**MVP complete.**
 
 ---
 
-## Phase 11 — Grading · Planned (V1)
+## Post-MVP
 
-Submissions, state transitions, `lot_transfers` from raw to graded holdings, cost attribution
-via `lot_cost_adjustments`, `raw_value_at_submission` captured, profitability analysis.
+### M15 — Scanner  · V1 priority 1
 
-Gate: E6 reproduced. A graded card is never valued from a raw price.
+Ahead of openings, deliberately: all-card tracking makes manual entry the primary usability
+bottleneck, and the scanner is what removes it.
 
----
+1. Re-research the recognition stack. Do not inherit the August 2026 model choices.
+2. Validate on real hardware that camera permission survives an in-route session (R9/S6) —
+   with a throwaway page, **before** building anything.
+3. Offline pipeline: catalog embeddings, index artefact, hosting strategy.
+4. Single-route camera session, one `MediaStream`, in-route overlay (D-006).
+5. Recognition with candidate list and confidence threshold.
+6. Session defaults: origin, opening, condition, language, storage location, custom collection,
+   cost handling.
+7. Batch review before save; manual search fallback.
 
-## Phase 12 — Scanner · Planned (V1)
+**Gate:** measurably faster than manual search against a real stack of cards, verified with a
+timed comparison.
 
-| # | Milestone |
-|---|---|
-| 12.1 | Re-research the recognition stack — do not inherit 2026-08 model choices |
-| 12.2 | Offline pipeline: embeddings for the catalog, index artefact, hosting strategy |
-| 12.3 | Single-route camera session, one `MediaStream`, in-route overlay (D-006) |
-| 12.4 | Recognition with candidate list and confidence threshold |
-| 12.5 | Bulk session: session defaults, per-card override, fast rescan |
-| 12.6 | Manual search fallback |
-| 12.7 | Real-device iOS validation of camera permission persistence (R9) |
+### M16 — Openings · V1 priority 2
 
-Gate: bulk entry is measurably faster than manual search, verified against a real stack of cards.
+Full lifecycle. All-cards tracking by default, hits-only option, bulk remainder estimate.
+Opening return in kroner first. Provisional-cost reconciliation UI.
 
----
+**Gate:** E4, E5 and E13 reproduce end to end. No pull shows a zero cost basis or a per-card ROI.
+Reconciliation cannot double-count (F12).
 
-## Phase 13 — V1 completion · Planned
+### M17 — Grading workflow
 
-Desktop bulk operations, richer statistics, JSON backup and restore, CSV import, images and
-receipts, PWA polish, Android verification, accessibility pass.
+Submissions, state transitions, `lot_transfers`, cost attribution, `raw_value_at_submission`
+captured, profitability analysis.
+
+**Gate:** E6 reproduces. A graded card is never valued from a raw price (F10).
+
+### M18 — Trades
+
+Item-leg accounting rule decided and documented **first**. Then the workflow over the existing
+schema.
+
+**Gate:** E14 reproduces. No fabricated P/L (F13).
+
+### M19 — V1 completion
+
+Desktop bulk operations, richer statistics, images and receipts, CSV import, restore from
+backup, PWA polish, Android verification.
 
 ---
 
 ## Deferred
 
-Trades · wishlist and target prices · set completion · price alerts · read-only share links ·
-push notifications · receipt OCR · native iOS and Android clients · configurable condition
+Wishlist and target prices · set completion · price alerts · opt-in read-only share links · push
+notifications · receipt OCR · native iOS and Android clients · configurable condition
 multipliers · cross-language card equivalence · paid pricing sources.
 
-None are being built. The data model preserves the cheap ones. See [BACKLOG.md](BACKLOG.md).
+Not being built. The data model preserves the cheap ones. See [BACKLOG.md](BACKLOG.md).
 
 ---
 
 ## Ordering rationale
 
-Money before value: the ledger is the product's distinguishing feature and the least dependent
-on unreliable external data. Value before dashboard: charts need something honest to plot.
-Sealed and sales before openings: openings consume sealed lots and produce sellable pulls, so
-both mechanisms must be solid first. Scanner late: it is the highest-risk, most research-dependent
-piece, and it needs a working collection to write into. Scanner late is a sequencing decision,
-not a downgrade — bulk entry speed is a core product goal.
+**Domain before database.** The financial engine is pure functions with no infrastructure
+dependency, so it can be correct and tested before any schema exists. Getting it right first
+means the schema serves a proven model rather than the reverse.
+
+**Auth and RLS early.** Isolation is not a feature that can be added later to a system that grew
+without it. The two-client fixture exists from M3 so every subsequent table inherits the test.
+
+**Collection before purchases.** Purchases create holdings, so the target has to exist first.
+
+**Money before value.** The ledger is the product's distinguishing feature and the least
+dependent on unreliable external data.
+
+**Value before dashboard.** Charts need something honest to plot.
+
+**Scanner before openings.** Reversed from the earlier plan. Tracking every physical card makes
+manual entry the dominant cost of using the app, so the scanner delivers more value per unit of
+work than openings do — even though openings are conceptually closer to the product's core.
+Openings remain fully modelled in the schema throughout, and historical openings can be
+backdated once M16 lands.

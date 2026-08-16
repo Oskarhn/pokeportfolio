@@ -129,6 +129,87 @@ backfilling with today's price.
 
 ---
 
+## 2026-08-16 — Tracking every card, and why it did not blow the storage budget
+
+**Problem.** The requirement changed: instead of tracking valuable cards and aggregating the rest,
+every physical card must be individually trackable — Basic Energy, commons, duplicates, cards
+worth two øre, cards with no market price at all. Working scale moves from a few thousand
+holdings to potentially ten thousand or more.
+
+**The apparent obstacle.** The free database tier caps at 500 MB, and the plan was already to
+accumulate daily price snapshots because no free source provides historical prices. Ten times the
+collection appeared to mean ten times the price history, which would not fit.
+
+**Why it did not.** Price is a property of a *printing*, not of a *copy*. Owning eighty identical
+Basic Grass Energy produces one snapshot row per day, not eighty; quantity lives in the lots and
+is applied at aggregation time. Snapshot volume therefore scales with distinct printings owned —
+which plateaus, because duplicates, playsets and energies collapse — rather than with cards
+owned, which does not.
+
+**Measured expectation.** A 10 000-card collection realistically spans 3 000–4 000 distinct
+variants. At two price kinds and daily snapshots that is roughly 105 MB/year, with thinning after
+twelve months. The holdings and lots themselves are about 200 bytes each, so 10 000 lots is ~2 MB.
+
+**Consequence.** All-card tracking cost nothing in storage terms. The real costs were elsewhere
+and were addressed directly: keyset pagination and virtualisation for the collection view, lazy
+image loading sized to the current grid density, and dashboard figures read from precomputed
+snapshots so their cost is near-independent of collection size.
+
+**Generalisable point.** The instinct that "ten times the data means ten times the storage" was
+wrong because it conflated two different cardinalities. Checking which entity a cost actually
+scales with, before designing around it, turned a blocking constraint into a non-issue.
+
+---
+
+## 2026-08-16 — Cost basis needed a state, not a nullable number
+
+**Context.** An earlier decision established that pack-opening pulls store `NULL` cost basis
+rather than zero, because zero renders as infinite return. Extending tracking to gifts, trades
+and pre-tracking collections produced four more situations that all wanted `NULL`.
+
+**Problem.** They are not the same fact. A gift genuinely cost nothing. A card bought in 2014 for
+a forgotten amount cost real money the system cannot see. A pull's cost exists but belongs to the
+opening. Stored as bare `NULL`, all three are indistinguishable, and the application cannot tell
+the user which kind of ignorance it has.
+
+**Resolution.** `cost_basis_state ∈ {known, unallocated_opening, not_paid, unknown, trade_in}`,
+with the amount present if and only if the state is `known`, enforced by check constraint.
+
+**What it buys.** Correct UI copy — "gift" versus "cost unknown" versus "from opening" instead of
+a blank field that reads as zero. Correct aggregate behaviour, since uncosted lots are counted
+and surfaced rather than silently dropped. And an honest disclosure: the overall position figure
+overstates reality when pre-tracking cards are present, and the app can say so because it knows.
+
+---
+
+## 2026-08-16 — A login that sends no email
+
+**Problem.** The planned authentication was email one-time codes. The zero-cost audit found that
+the platform's built-in email provider allows **two auth emails per hour, project-wide** — not per
+user — and its own documentation calls it unsuitable for production.
+
+**Why that is fatal for OTP.** Every login sends an email. Two logins in an hour, or onboarding
+two people in one sitting, exhausts the quota. The failure is not degraded service; it is being
+locked out of your own application.
+
+**Options.** A custom SMTP provider would fix it, and free tiers exist that need no domain. But
+that puts a third-party service, an account and a deliverability failure mode on the critical
+path of every single login. One candidate with a generous free tier was excluded outright because
+it requires a verified domain — and a domain is a purchase, which fails the zero-cost constraint
+even though the service itself is free.
+
+**Resolution.** Email and password. Normal login sends nothing. Account creation is already gated
+by an invitation function, so email confirmation is unnecessary. Password reset remains an email
+path but is genuinely rare — a handful of events per year against a limit of two per hour — and
+has an admin-assisted fallback.
+
+**Trade acknowledged.** This exchanges a delivery dependency for a credential to protect.
+Password handling is now in scope where it previously was not, and the security model covers it
+explicitly. That is the right trade when the alternative is a login that can rate-limit itself
+out of existence.
+
+---
+
 ## Real-device testing log
 
 Recorded as it happens. Emulation is not evidence of Safari behaviour.

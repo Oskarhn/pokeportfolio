@@ -284,7 +284,198 @@ this product needs. Validated by a spike before the dashboard milestone; if it f
 
 ---
 
-## D-016 — Working name `PokePortfolio`
+## D-017 — Every physical card is individually trackable
+
+**2026-08-16 · Accepted; supersedes a proposal to aggregate low-value cards**
+
+**Context.** An earlier proposal was to record cards above a value threshold individually and
+collapse the rest into bulk entries, on the grounds that tracking 340 commons worth two øre each
+is not worth the effort.
+
+**Decision.** Every physical card is first-class inventory: Basic Energy, commons, duplicates,
+cards with no market price. No card is forced into an aggregate. A user may register ten thousand
+individual cards. The only bulk concept is an optional per-opening remainder estimate for cards
+the user chose not to enter — a convenience, never a substitute.
+
+**Why the earlier proposal was wrong.** It optimised for the wrong thing. Bulk aggregation makes
+the *interface* tidy at the cost of making the *data* lossy — a collection is not "the valuable
+cards plus a number", and set completion, physical card counts and simply finding a card all
+break under aggregation. The tidiness problem is real but it is a presentation problem, and the
+right fix is organisation (D-018) and filtering, not discarding information.
+
+**Consequences.** Working scale moves from thousands of holdings to 10 000+. Addressed by:
+price history keyed per variant rather than per copy, which decouples the binding storage
+constraint from collection size (D-019); keyset pagination and virtualisation; grouped display
+with quantity; lazy image loading. It also makes the scanner the dominant usability lever, which
+is why it moves ahead of openings (D-024).
+
+---
+
+## D-018 — Four distinct grouping concepts, deliberately not merged
+
+**2026-08-16 · Accepted**
+
+**Context.** With nothing aggregated away, organisation carries the weight. There was an obvious
+temptation to build one flexible "labels" mechanism covering everything.
+
+**Decision.** Four separate concepts: **storage location** (physical, one per holding),
+**custom collection** (conceptual group, many per holding), **tag** (free-form label, many), and
+**smart filter** (a rule evaluated at read time, stored nowhere).
+
+**Alternatives.** A single tag system for all four — simpler schema, but "this card is in Binder
+A", "this card is in my Trade Binder project" and "this card is currently worth under 10 kr" are
+different kinds of fact with different lifetimes, and merging them means a price movement looks
+like the user moved a card.
+
+**Consequences.** One extra join table and one extra column. In exchange, value-based grouping is
+never materialised — which matters, because rewriting membership rows nightly as prices move
+would be both expensive and actively misleading.
+
+---
+
+## D-019 — Price history is keyed per card variant, never per physical copy
+
+**2026-08-16 · Accepted**
+
+**Decision.** One `price_snapshots` row per variant per day per price kind, regardless of how
+many copies the user owns. Quantity is applied at aggregation time from `acquisition_lots`.
+
+**Why it matters.** This is what makes D-017 affordable. Snapshot volume scales with *distinct
+printings owned*, which plateaus, not with *cards owned*, which does not. Eighty identical
+energies produce one row per day, not eighty. A 10 000-card collection realistically spans
+3 000–4 000 variants, giving roughly 105 MB/year against a 500 MB free-tier ceiling.
+
+**Consequences.** Portfolio aggregation must always join lots to snapshots rather than reading a
+per-holding stored value. Slightly more query work; the alternative would have made all-card
+tracking impossible on the free tier.
+
+---
+
+## D-020 — Cost basis is a state, not a nullable number
+
+**2026-08-16 · Accepted; refines D-002**
+
+**Context.** D-002 established that opening pulls store `NULL` rather than zero. Extending
+tracking to gifts, trades and pre-tracking collections produced four more `NULL` situations that
+mean genuinely different things.
+
+**Decision.** Every lot carries `cost_basis_state ∈ {known, unallocated_opening, not_paid,
+unknown, trade_in}`, with `unit_cost_basis_minor` present if and only if the state is `known`.
+
+**Why.** A gift with no cost and a card bought in 2014 for a forgotten amount are both `NULL`,
+but they are not the same fact: the gift genuinely cost nothing, while the old card cost real
+money the system cannot see. The app can only tell the user the truth about its own limitations
+if it records which situation applies. It also drives the UI copy — "gift" versus "cost unknown"
+versus "from opening" — instead of a blank field that reads as zero.
+
+**Consequences.** An enum and a check constraint. Every aggregate branches on state. Uncosted
+lots are counted and surfaced (`ULC`) rather than silently excluded.
+
+---
+
+## D-021 — Manually costed openings create a real provisional purchase
+
+**2026-08-16 · Accepted; supersedes the earlier rule that such costs stay out of the ledger**
+
+**Context.** The earlier rule was that an opening entered with a manual cost and no purchase
+record would not count toward lifetime spending, on the grounds that the money never passed
+through the ledger.
+
+**Why that was wrong.** The money *was* spent. Excluding it makes lifetime spending —
+the product's distinguishing metric — systematically understate reality, and does so invisibly.
+Avoiding double counting is a real concern, but the answer is to make counting correct, not to
+skip it.
+
+**Decision.** The opening creates a real `purchase` with `origin = 'provisional_opening'`. It
+behaves as an ordinary ledger entry everywhere. When the real receipt is entered later, the user
+links it: the opening repoints at the real lot and the provisional purchase is voided in the same
+transaction, audited.
+
+**Alternatives.** An opening-local cost field outside the ledger — every spending aggregate would
+need a special case, and one missed case silently understates spending. Automatic matching of
+openings to purchases — would corrupt the ledger in exactly the cases the user cannot easily
+verify.
+
+**Consequences.** One enum value, one nullable FK, one reconciliation action, one invariant
+(F12). Reconciliation is explicit and costs the user a single tap.
+
+---
+
+## D-022 — Email and password, not OTP
+
+**2026-08-16 · Accepted; supersedes D-005**
+
+**Context.** D-005 chose email OTP. The zero-cost audit then established that the platform's
+built-in email provider allows **2 auth emails per hour, project-wide** — not per user — and its
+own documentation describes it as unsuitable for production.
+
+**Why OTP fails here.** Every login sends an email. Onboarding two people in one sitting exhausts
+the quota. The fix would be a custom SMTP provider: free tiers exist that need no domain, but
+that adds a third-party service, an account and a deliverability dependency to the critical path
+of every single login.
+
+**Decision.** Email plus password. No email is sent during normal login. Account creation is
+already gated by an invitation Edge Function, so email confirmation is unnecessary. Password
+reset uses the built-in low-volume email — resets are genuinely rare at this scale — with an
+admin-assisted recovery path as the documented fallback.
+
+**Consequences.** Passwords must be handled properly, which the platform already does. The login
+flow has no external dependency and no rate limit. Passkeys remain a future improvement once the
+platform's implementation leaves experimental status.
+
+---
+
+## D-023 — Collection value is the primary figure; position sits beside it
+
+**2026-08-16 · Accepted; supersedes an earlier recommendation to lead with overall position**
+
+**Decision.** Collection value is the visually primary number. Overall position is immediately
+adjacent and prominent. Data quality — automatic versus manual valuation, priced versus unpriced
+counts — is displayed with the value rather than hidden behind a detail view.
+
+**Rationale.** This is a collection application first. Leading with net position would make it
+read as an investment tracker that happens to contain cards, which is the wrong emphasis for
+something opened daily. But spending must not be buried either, so the two figures share the
+top of the screen.
+
+---
+
+## D-024 — Scanner ships before openings
+
+**2026-08-16 · Accepted; reverses the earlier ordering**
+
+**Context.** The earlier roadmap put openings first post-MVP, on the grounds that they complete
+the financial story and carry less technical risk.
+
+**Decision.** Scanner first, openings second.
+
+**Rationale.** D-017 changes the calculus. When every physical card is tracked, manual entry
+becomes the dominant cost of using the application — a booster box is 360 searches. The scanner
+removes that cost; openings add analytical depth to data the user is struggling to enter in the
+first place. Openings remain fully modelled in the schema throughout, so historical openings can
+be backdated once they ship.
+
+**Consequences.** The riskiest, most research-dependent milestone comes earlier. Mitigated by
+validating the iOS camera-permission assumption on real hardware with a throwaway page *before*
+committing to the scanner build.
+
+---
+
+## D-025 — JSON backup moves into MVP
+
+**2026-08-16 · Accepted; supersedes placing it in V1**
+
+**Decision.** A versioned full JSON export ships in MVP alongside CSV, carrying a schema version
+and export timestamp in its envelope.
+
+**Rationale.** The free plan provides no automated backups. Deferring the only complete export
+format to V1 would mean months of real data with no full recovery path. The version envelope
+exists so that an export taken today remains readable after future migrations — an unversioned
+backup stops being a backup at the first schema change.
+
+---
+
+## D-026 — Working name `PokePortfolio`
 
 **2026-08-16 · Accepted, temporary**
 

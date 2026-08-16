@@ -31,9 +31,13 @@ Notation: **→** step · **⚠** failure or edge case · **✓** completion cri
 
 **Returning login**
 
-→ Email → code → in
-✓ The whole flow stays inside the installed app. No browser hand-off.
+→ Email → password → in
+✓ No email is sent. Nothing to wait for, nothing to rate-limit.
+✓ Works with the platform password manager on iOS
 ✓ Session survives app switch, cold start and reload
+
+⚠ Forgotten password → reset email via the built-in low-volume provider. Rare by design. If it
+  fails or is unavailable, the admin can trigger a recovery — documented, not improvised.
 
 ---
 
@@ -41,21 +45,41 @@ Notation: **→** step · **⚠** failure or edge case · **✓** completion cri
 
 The most-used flow after the ledger. Target: under 20 seconds on a phone.
 
-→ Collection › Add
+→ Collection › Add (or the central **+** on mobile)
 → Search by name, or by set plus collector number
 → Results show thumbnail, name, set, number, rarity
 → Select the card, then the variant (normal / reverse / holo)
-→ Set condition, quantity, acquisition date (defaults to today), origin
-→ If origin is a purchase: cost, currency (defaults NOK), optional link to an existing purchase
-→ Optional: storage location, tags, favourite, notes
+→ Set condition, quantity, acquisition date (defaults to today)
+→ **Choose acquisition origin** — a segmented control, not a dropdown, because it drives what
+  appears next:
+
+| Origin | What the form shows |
+|---|---|
+| Purchased | Cost field, prominent and focused. Currency defaults NOK. Optional link to an existing purchase. A "cost unknown" toggle exists but must be chosen deliberately. |
+| Pulled | Optional opening reference. **No cost field at all.** |
+| Gifted | No cost field. |
+| Traded in | Optional trade reference. No cost field. |
+| Pre-tracking | No cost field. Copy: "cost not recorded". |
+
+→ Optional: storage location, custom collections, tags, favourite, notes
 → Save
-✓ Appears in the collection with the correct lot
+✓ Appears in the collection with the correct lot and origin
 ✓ Dashboard figures move by exactly the expected amount
 
 ⚠ The card already exists in the same state → the same holding gains **a new lot**. The UI says
   so explicitly: "Adding a second lot to an existing holding." It never averages.
-⚠ No cost and origin is `purchase` → blocked, because that combination violates M1
-⚠ Origin is `gift` or `unknown` → cost field disappears entirely rather than defaulting to 0
+⚠ Origin is `purchased` with no cost and no explicit "cost unknown" → blocked (M2)
+⚠ Any non-purchase origin → the cost field is **absent**, not empty and not zero
+
+### F2.1 — Fast repeated entry
+
+Entering hundreds of cards by hand is the reality until the scanner ships, so the add flow keeps
+session defaults: origin, condition, language, storage location, target custom collection and
+cost handling persist between saves within a session and are shown as a compact header the user
+can change. Saving returns focus to the search field.
+
+**No accounting form for an energy card.** Adding a Basic Energy with session defaults set should
+be: search, tap, save. The scanner will reuse exactly these session defaults.
 
 ---
 
@@ -105,7 +129,7 @@ The flow the product exists for. Must tolerate a messy real receipt.
 → Confirm quantity (default 1) and pack count (prefilled from the product)
 → **The dialog states plainly: "The purchase stays in your spending history. This product leaves
   sealed inventory."** — because this is exactly the behaviour users of other apps do not expect
-→ Choose tracking mode: *Selected pulls* (default) or *Every card*
+→ Choose tracking mode: *Every card* (default) or *Hits only*
 → Add pulls: search, or scan once the scanner exists. Each pull is a lot with no cost.
 → Optional: bulk remainder — count and estimated value
 → Save
@@ -115,9 +139,17 @@ The flow the product exists for. Must tolerate a messy real receipt.
 ✓ Opening shows cost, tracked value, and return with an incompleteness marker when tracking is
   not `all_cards`
 
-⚠ Opening without a recorded purchase → cost entered manually, flagged as unverified, and
-  excluded from collectible spend because that money never passed through the ledger
+⚠ Opening without a recorded purchase → the manually entered cost **creates a real ledger entry**
+  so the money appears in lifetime spending. The opening is marked "Cost entered manually — not
+  linked to a purchase" with a **Link purchase** action.
 ⚠ Voiding an opening after a pull has been sold → blocked, naming the sale
+
+**Linking a provisional opening to its real purchase**
+
+→ Opening › Link purchase → pick from recent purchases → confirm
+✓ Total spend does **not** change twice — the provisional entry is voided in the same transaction
+✓ Opening cost updates to the real attributable cost, including that purchase's shipping share
+✓ The confirmation states plainly which figure replaces which, before committing
 
 **A pulled card's detail view** shows: "From opening — Prismatic Evolutions ETB, 14 Mar 2026"
 with a link. It shows no cost basis field, no "0 NOK", and no ROI.
@@ -178,6 +210,57 @@ implementations produce wrong numbers.
 
 ---
 
+## F8.1 — Browse History
+
+→ History (top-level destination, separate from Collection)
+→ Tabs: **Sold** · **Traded** · **Other**
+
+A sold row shows card, quantity, date, marketplace, gross, fees, shipping, net proceeds,
+acquisition origin, cost basis if known, and result.
+
+```
+Charizard ex · SV03 · NM              Sold 12 Jul 2026 · Finn.no
+Net proceeds  1 850 kr    Cost basis  1 200 kr    Result  +650 kr
+
+Pikachu VMAX · SWSH4 · NM             Sold 03 Aug 2026 · Finn.no
+Net proceeds    450 kr    Cost basis  unknown     Result  —
+```
+
+✓ Sorting: newest, highest proceeds, highest result, largest loss, item, marketplace
+✓ **Sorting by result groups unknown-basis rows separately** rather than ranking them as the most
+  profitable sales ever made
+✓ Traded rows link to the trade, showing both sides, market values at trade date and cash legs
+✓ No fabricated profit anywhere in this view
+
+---
+
+## F8.2 — Organise with custom collections
+
+→ Collection › select cards → Add to collection → pick or create
+✓ Nothing about ownership, value or cost changes
+✓ A card can be in several collections at once
+✓ Removing from a collection removes the membership only
+
+→ Collections › a collection → its own view with a total value and card count
+→ Deleting a collection asks for confirmation and states explicitly: **"This removes the group.
+  The 214 cards in it stay in your collection."**
+
+## F8.3 — Low-value and unpriced cards
+
+→ Settings › set a low-value threshold (default 10 kr)
+→ Collection › filter *Low value* — cards currently below the threshold
+→ Collection › filter *No price* — a **separate** filter, because a card with no price is not a
+  cheap card
+
+✓ Both sets remain in the physical card count
+✓ Priced low-value cards still contribute their value to collection value
+✓ Unpriced cards are excluded from collection value and counted where the value is shown
+✓ Optionally collapsed from the default browsing view, with the hidden count visible:
+  *"1 284 low-value cards hidden — show"*
+✓ Hiding is never deletion, and the UI never implies otherwise
+
+---
+
 ## F9 — Fix a mistake
 
 Correction must be cheap, or the ledger will drift from reality.
@@ -199,12 +282,16 @@ merge the lots into it
 ## F10 — Dashboard
 
 → Open the app
+→ Collection value is the largest figure; overall position sits immediately beside it
+→ Data quality renders directly beneath the value — automatic versus manual, priced versus not
 → Headline figures render from the latest portfolio snapshot — no per-card computation on load
 → Value chart, default 3M, with 1M / 1Y / ALL
-→ Below: monthly spend, raw/sealed/graded breakdown, recent activity
+→ Below: monthly spend, raw/sealed/graded breakdown, card counts, recent activity
 
 ✓ Every figure is traceable: tapping "Realized result" opens the sales that produced it
-✓ Stale or missing valuations are surfaced: "3 holdings without a valuation"
+✓ Both counts are shown and are different numbers: physical cards owned, unique variants
+✓ Stale or missing valuations are surfaced: "74 cards without a price"
+✓ Cards with no recorded cost are surfaced too: "1 284 cards without a recorded cost"
 ✓ The chart's origin is explicit — the first tracked date, not an implied earlier zero
 ✓ No figure is labelled a return unless it mathematically is one
 
@@ -225,14 +312,35 @@ price history yet:** the chart says so rather than drawing a flat line.
 
 ---
 
-## F12 — Bulk scan (V1)
+## F11.1 — Quick add
+
+The central **+** in the mobile navigation. Shows only what currently exists; new actions appear
+as their milestones land rather than sitting disabled from day one.
+
+| Available | Action |
+|---|---|
+| MVP | Add card · Add purchase · Add sealed product · Record sale |
+| After the scanner | Scan cards |
+| After openings | Open product |
+| After trades | Record trade |
+
+---
+
+## F12 — Bulk scan (V1, first post-MVP milestone)
 
 Specified now so the scanner is built against a defined target, not improvised.
 
 → Collection › Scan
 → Camera starts. **One permission prompt for the whole session.**
-→ Session defaults set once: condition, language, and optionally a purchase or opening to
-  attribute everything to
+→ Session defaults set once and shown as a persistent header:
+
+```
+Origin      Pulled
+Opening     Surging Sparks Booster Box
+Condition   NM
+Language    English
+Collection  Binder 3
+```
 → Point at a card → identity proposed in an overlay → tap to accept → immediately ready for the
   next card
 → Low confidence → up to three candidates → tap one, or search manually without leaving the session

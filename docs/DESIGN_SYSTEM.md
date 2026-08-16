@@ -16,8 +16,14 @@ quiet.
 
 **Explicitly avoided.** Rounded-card grids as a default layout. Gradient headers. Glassmorphism.
 Emoji as iconography. Six identical stat tiles in a row. Purple-to-blue anything. Decorative
-illustration in empty states. Pokémon branding, logos or type colours as the app's visual
-identity — the app is unaffiliated and should not look otherwise.
+illustration in empty states. Bright yellow-red-blue theming. Anything cartoonish or that reads
+as a children's game. Official logos, wordmarks or any styling implying affiliation.
+
+**Subtle Pokémon awareness, not Pokémon theming.** The subject shows through the data, not the
+chrome: card artwork, set symbols, rarity marks, energy-type indicators used as small functional
+metadata. The interface around them stays a premium data application. If the app were reskinned
+for another collectible, only the artwork and a handful of icons would change — that is the right
+level.
 
 **Deliberately kept.** Real numbers at readable sizes. Tabular figures. Clear hierarchy between
 a headline figure and its supporting detail. Generous touch targets on mobile without wasting
@@ -70,9 +76,34 @@ persisted per profile.
 
 **Mobile-first.** Every screen is designed at 390 px and then given room, not the reverse.
 
+### 4.1 Collection grid density
+
+The mobile collection is image-led. Density is a **user setting**, default 2 columns, persisted
+per profile. The layout reads it from the profile; 2 is never hardcoded.
+
+| Columns | Tile content |
+|---|---|
+| 1 | Large image, name, set, number, condition, quantity, value, origin marker |
+| 2 | **Default.** Image, name, quantity badge, value |
+| 3 | Image, quantity badge, value |
+| 4 | Image, quantity badge. Value on long-press or in detail. |
+
+Higher densities genuinely show less. That is the trade the setting makes, and it is the user's
+to make — a density preference is not overridden because the designer prefers larger tiles.
+Tapping always opens full detail.
+
+Quantity is a badge on the tile, not a duplicated tile. Eighty identical energies are one tile
+reading ×80.
+
+**Images must not stampede.** Lazy-load below the fold, request the size the current density
+actually renders, and virtualise the grid. A 10 000-card collection at 4 columns must not issue
+thousands of requests on mount.
+
+### 4.2 Breakpoints
+
 | Breakpoint | Behaviour |
 |---|---|
-| < 768 | Single column. Bottom tab navigation. Sheets instead of dialogs. Tables become cards. |
+| < 768 | Collection grid at the user's density. Bottom navigation with a central quick-add. Sheets instead of dialogs. Tables become cards. |
 | 768–1279 | Two columns where useful. Sidebar navigation. |
 | ≥ 1280 | Full desktop. Dense tables. Persistent filter panel. Multi-column detail. |
 
@@ -141,7 +172,13 @@ polish item.
 | **Partial** | Data present but incomplete or stale, marked at the point of display. |
 
 The partial state is the one most often skipped and the one this app most needs — stale prices,
-incompletely tracked openings, holdings without valuation, unverified opening costs.
+incompletely tracked openings, cards without a price, cards without a recorded cost, provisional
+opening costs, manually valued sealed and graded inventory.
+
+**Absence has a visual language of its own, and it is not zero.** A missing cost renders as
+"cost unknown" or "from opening", never as `0 kr`. A missing price renders as "no price", never
+as `0 kr`. A missing result renders as **—**, never as a number. Whenever a figure is absent, the
+reason is one tap away.
 
 ---
 

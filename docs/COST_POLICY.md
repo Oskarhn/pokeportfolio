@@ -117,7 +117,7 @@ already lives in Supabase; adding Workers would introduce a second billable surf
 | Accidental-charge risk | **None** while no card is attached and no upgrade is performed |
 | Inactivity | Project pauses after ~7 days without database activity. Manual resume. Restorable within 90 days. |
 | Backups | **None on Free.** Manual `supabase db dump` is the documented recommendation. |
-| Expected usage | ~105 MB/year of price snapshots (held variants only), well under 500 MB with 12-month thinning. 1–10 users against 50 000 MAU. |
+| Expected usage | ~105 MB/year of price snapshots (held variants only, one row per variant per day regardless of how many copies are owned), well under 500 MB with 12-month thinning. Holdings and lots add ~2 MB per 10 000 lots. 1–10 users against 50 000 MAU. |
 | Headroom | Database is the binding constraint, not users |
 | Fallback | Plain PostgreSQL elsewhere — the schema is standard SQL in versioned migrations |
 | Reconsider when | Database exceeds ~350 MB, or free-plan terms change materially |
@@ -137,23 +137,27 @@ a paused project.
 | Overage behaviour | Requests beyond the limit fail with a 429 |
 | Accidental-charge risk | None — but the **functional** risk is severe |
 | Expected usage | One email per login. Sessions persist, so a single user might log in monthly. Onboarding two friends in one sitting already exceeds the limit. |
-| Verdict | **Not sufficient for production use.** Supabase's own documentation describes the built-in provider as unsuitable for production and subject to change without notice. |
+| Verdict | **Not sufficient for login.** Supabase's own documentation describes the built-in provider as unsuitable for production and subject to change without notice. |
 | Source | https://supabase.com/docs/guides/auth/rate-limits · https://supabase.com/docs/guides/auth/auth-smtp |
 
-This is documented as a decision point rather than resolved unilaterally — it changes login UX.
-Free options, all verified 2026-08-16:
+**Resolved: email and password.** Normal login sends no email at all, so the constraint no longer
+touches the critical path. The options that were evaluated, all verified 2026-08-16:
 
-| Option | Free allowance | Domain needed? | Card? | Notes |
+| Option | Free allowance | Domain needed? | Card? | Outcome |
 |---|---|---|---|---|
-| **SMTP2GO** | 1 000/month, 200/day, 25/hour without a verified domain; **5 verified single-sender addresses** | **No** — a plain email address can be verified | No | The only option confirmed to work without owning a domain |
-| Brevo | 300/day | Sender verification available | No | Larger allowance; domain improves deliverability |
-| Mailjet | 6 000/month, 200/day | Sender verification available | No | |
-| Resend | 3 000/month | **Yes — one domain** | No | A domain is a purchase, so this fails the zero-cost test |
-| Password auth instead | n/a | n/a | n/a | Sends no email at all. Removes the dependency entirely. |
+| **Password auth** | n/a — sends nothing | n/a | n/a | **Selected.** Removes the dependency rather than working around it. |
+| SMTP2GO | 1 000/month, 200/day, 25/hour without a verified domain; 5 verified single-sender addresses | **No** | No | Viable, but adds an account and a deliverability dependency to every login |
+| Brevo | 300/day | Sender verification available | No | Same objection |
+| Mailjet | 6 000/month, 200/day | Sender verification available | No | Same objection |
+| Resend | 3 000/month | **Yes — one domain** | No | Rejected: a domain is a purchase, so it fails the zero-cost test outright |
 
-`SMTP2GO` and `password auth` are the two viable zero-cost paths. Resend is excluded precisely
-because a domain costs money — a good illustration of why "the service is free" is not the whole
-question.
+Resend is a useful illustration of why "the service has a free tier" is not the whole question —
+its prerequisite costs money even though its plan does not.
+
+**Password reset** remains an email path, but it is rare: a handful of events per year against a
+limit of two per hour. It uses the built-in provider, with an admin-assisted recovery path as the
+documented fallback. **Transition trigger:** if reset volume ever approaches the limit, add
+SMTP2GO's free tier at that point. It is not needed today and is not adopted speculatively.
 
 ### TCGdex — catalog, images, raw prices
 
@@ -215,7 +219,8 @@ question.
 | Can it run indefinitely at expected usage for 0 NOK? | **Yes**, under current terms |
 | Any service with automatic overage billing? | **None.** GitHub stops at a $0 limit; Supabase restricts; Cloudflare Pages is unlimited on bandwidth |
 | Any card required anywhere? | **No** |
-| Is auth email sustainably free for 5–10 people? | Not with Supabase's built-in provider. Yes with SMTP2GO's free tier, or trivially with password auth |
+| Is auth email sustainably free for 5–10 people? | **Yes** — password auth sends no login email. Password reset is rare and fits the built-in provider, with an admin fallback. |
+| Does all-card tracking break the free tier? | **No.** Price history is keyed per variant, not per copy, so snapshot volume is decoupled from collection size. 10 000 lots is ~2 MB of holdings data. |
 | What if TCGdex disappears? | Our snapshots survive; internal UUID identity is canonical; manual valuation continues. Painful, not fatal. |
 | What if Supabase Free changes? | Schema is standard PostgreSQL in versioned migrations; `pg_dump` export exists. Days of migration work, not a rewrite. |
 | What if Cloudflare changes? | Static assets deploy anywhere. |

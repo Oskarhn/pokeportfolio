@@ -1,6 +1,11 @@
 # Scanner — Research Note
 
-Preparatory only. The scanner is Phase 12; nothing here is implemented.
+Preparatory only. The scanner is **M15, the first post-MVP milestone**; nothing here is
+implemented.
+
+It moved ahead of openings because every physical card is now individually tracked (D-017), which
+makes manual entry the dominant cost of using the application — a booster box is 360 searches.
+The scanner is what removes that cost.
 
 **Re-research before building.** The findings below are dated August 2026. Vision model
 availability moves quickly, and inheriting a specific model choice from a note written a year
@@ -21,8 +26,26 @@ Target flow:
 4. Next card. No navigation, no form, no waiting.
 5. End the session; review and adjust the batch once.
 
-Session-level defaults (condition, language, origin, purchase link) apply to every card, with
-per-card override available in the review step rather than inline.
+### 1.1 Session defaults
+
+The scanner reuses the same session-default mechanism as manual entry (UX_FLOWS F2.1), so the
+two flows behave identically and the concept is already proven before the scanner exists:
+
+| Default | Example |
+|---|---|
+| Acquisition origin | `Pulled` |
+| Opening | Surging Sparks Booster Box |
+| Purchase | a specific receipt, when origin is `purchased` |
+| Condition | NM |
+| Language | English |
+| Storage location | Binder 3 |
+| Custom collection | 151 Master Set |
+| Cost handling | per-card cost, session cost, or none for non-purchase origins |
+
+Set once, shown as a persistent header, changeable mid-session. Per-card override happens in the
+batch review at the end, not inline — interrupting a scan to correct one field defeats the point.
+
+Nothing is written until the review step is confirmed.
 
 ---
 
@@ -75,7 +98,7 @@ author noted that OpenCV rectangle detection failed on video streams, which is w
 detector was used.
 
 **Treat this as an existence proof, not a design.** It demonstrates that the latency budget
-works on a phone. The specific models are the part most likely to be obsolete by Phase 12.
+works on a phone. The specific models are the part most likely to be obsolete by M15.
 
 ### 3.2 Alternatives to re-evaluate
 
@@ -98,7 +121,7 @@ offline job, run when the catalog changes, not on a user's device:
 3. Quantise and pack into a compact artefact.
 4. Ship as a static asset with a version hash; cache in the service worker.
 
-Open questions for Phase 12: artefact size at acceptable accuracy; whether to ship a per-set
+Open questions for M15: artefact size at acceptable accuracy; whether to ship a per-set
 index so a user scanning one set downloads a fraction of the whole; whether Japanese cards get
 their own index or share one.
 
@@ -134,10 +157,16 @@ rather than by recognition.
 |---|---|---|
 | S1 | Accuracy through sleeves, under glare, at angle | Testing on a real, sleeved collection |
 | S2 | Real WebGPU availability across target iPhones | Device testing |
-| S3 | Acceptable index size versus accuracy | Spike during Phase 12 |
+| S3 | Acceptable index size versus accuracy | Spike during M15 |
 | S4 | Whether holo and reverse can be distinguished at all from a camera frame | Spike |
 | S5 | Japanese card coverage and image quality in TCGdex | Probe at build time |
 | S6 | Whether camera permission truly survives an in-route session on current iOS | Real device, early — this gates the whole approach |
+| S7 | Whether Basic Energy printings are distinguishable at all by image | Spike. Energies are visually near-identical across sets; the collector number and set symbol may be the only signal, and both are small. |
 
-S6 is the one that could invalidate the plan. It should be tested with a throwaway page before
-Phase 12 begins, not after the scanner is built.
+S6 is the one that could invalidate the plan. Test it with a throwaway page **before** M15
+begins, not after the scanner is built.
+
+S7 matters more than it looks: all-card tracking means energies are exactly the cards a user most
+wants to bulk-scan, and they may be the hardest to identify. If image recognition cannot separate
+them, the fallback is a fast manual "add N of this printing" path rather than a scanner that
+guesses.

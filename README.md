@@ -2,8 +2,9 @@
 
 A private Pokémon TCG collection and financial tracking application.
 
-**Status:** Foundation complete — architecture, financial model and data model are specified.
-No application code yet. See [ROADMAP.md](docs/ROADMAP.md).
+**Status:** Planning frozen. Architecture, financial model and data model are specified;
+implementation starts at milestone M1. No application code yet.
+See [PLANNING_FREEZE.md](docs/PLANNING_FREEZE.md) and [ROADMAP.md](docs/ROADMAP.md).
 
 > Working name. Not final branding.
 
@@ -45,7 +46,13 @@ or buy/sell signals. Games other than Pokémon.
 
 **Absent data is displayed as absent.** No backfilled price history from today's prices. No
 condition multipliers invented to look precise. No raw-card price standing in for a graded card.
-No cost basis of zero on a pulled card implying infinite return.
+No cost basis of zero on a pulled card implying infinite return. A missing cost, a missing price
+and a missing result each have their own representation, and none of them is `0`.
+
+**Every card counts.** Basic Energy, commons, duplicates and cards with no market price are
+ordinary inventory, not noise to be aggregated away. A collection is not "the valuable cards plus
+a number". Organisation and filtering keep ten thousand cards navigable; discarding information
+would not.
 
 **Money is never a float.** Integer minor units with an explicit currency code. Allocation uses
 largest-remainder rounding so parts sum exactly to the whole.
@@ -65,7 +72,7 @@ result is only reported where a defensible cost basis exists.
 | Frontend | Vite · React 19 · TypeScript strict · TanStack Router + Query |
 | UI | Tailwind CSS v4 · shadcn/ui on Base UI · `lightweight-charts` |
 | Backend | Supabase — PostgreSQL with RLS, Auth, Edge Functions, `pg_cron` |
-| Auth | Email OTP, invite-only, enforced server-side |
+| Auth | Email + password, invite-only, enforced server-side |
 | Data | TCGdex (catalog, images, Cardmarket/TCGplayer prices) · Norges Bank (FX) |
 | Hosting | Cloudflare Pages |
 | Testing | Vitest · fast-check · Playwright |
@@ -102,6 +109,8 @@ committed to this repository.
 | Document | Purpose |
 |---|---|
 | [HANDOVER.md](HANDOVER.md) | Current state — read this first |
+| [PLANNING_FREEZE.md](docs/PLANNING_FREEZE.md) | The frozen scope and semantics |
+| [COST_POLICY.md](docs/COST_POLICY.md) | Zero-cost constraint and verified service matrix |
 | [PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md) | What the product does |
 | [FINANCIAL_MODEL.md](docs/FINANCIAL_MODEL.md) | Every formula and invariant, with worked examples |
 | [DATA_MODEL.md](docs/DATA_MODEL.md) | Schema, ownership, lifecycle |
