@@ -37,6 +37,7 @@ a contradiction in place:
 | `docs/DATA_MODEL.md` | Schema, ownership, lifecycle transitions. |
 | `docs/ARCHITECTURE.md` | Stack and why. |
 | `docs/SECURITY.md` | Trust boundaries, RLS, invites, secrets. |
+| `docs/COST_POLICY.md` | Zero-cost constraint and the verified service matrix. |
 | `docs/TESTING.md` | Test strategy and mandatory gates. |
 | `docs/DEVELOPMENT.md` | Environment, commands, migration rules. |
 | `docs/ROADMAP.md` | Phases and gates. |
@@ -56,6 +57,16 @@ Each has one purpose. Do not duplicate content across them — link instead.
 ---
 
 ## Hard rules
+
+**Cost.** The operating budget is **0 NOK/month**. Before introducing any external dependency or
+service, answer: *does this introduce a cost now, or a realistic possibility of automatic
+billing?* If yes — research free alternatives, document the trade-off, and **stop and ask the
+owner.** Never enter payment details, enable billing, upgrade a plan, or treat a free trial as
+production infrastructure. Do not adopt Sentry, PostHog, Resend, a paid scanner API,
+PriceCharting, Scrydex, paid storage, paid monitoring, a paid domain or paid AI inference merely
+because they are common SaaS defaults. When a feature cannot be built well for free, the default
+is to **postpone the feature**, not to spend. Full policy and the verified service matrix:
+[docs/COST_POLICY.md](docs/COST_POLICY.md).
 
 **Money.** No monetary arithmetic outside `src/domain/`. Components format numbers; they never
 compute them. Integer minor units with an ISO 4217 code, never float. `NULL` money means "not
@@ -139,5 +150,22 @@ Use them when the task matches. Do not invoke them mechanically.
 ## Repository contents
 
 This repository documents the project, not the conversation that produced it. Never commit chat
-transcripts, prompts or agent logs. Never write "Claude decided" or "the AI suggested" in
-documentation. Record the decision, the reasoning, the evidence and the result.
+transcripts, prompts or agent logs. Record the decision, the reasoning, the evidence and the
+result — not who typed it. Canonical documentation must not contain phrasing that frames the work
+as AI-generated or reference the prompt cycle that produced it. Do not falsify authorship either;
+simply keep engineering documents focused on the engineering.
+
+## Mentor handoff files
+
+After each major project phase, write a detailed phase summary to
+`claude_outputs/output_N.txt` — sequential, exactly that naming (`output_1.txt`, `output_2.txt`,
+…). One number per major phase; do not increment for clarification answers or follow-ups within
+the same phase.
+
+These files are a handoff channel to an external technical reviewer who has none of this
+session's context, so they carry substantially more detail than the chat response: decisions,
+research findings, architecture state, risks, open questions and verification results. They
+contain no secrets, tokens or credentials.
+
+`claude_outputs/` is gitignored and **must never be committed.** Verify with `git check-ignore`
+before any commit that touches `.gitignore`.

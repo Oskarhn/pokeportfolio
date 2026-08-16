@@ -144,6 +144,27 @@ necessary but not sufficient, so:
 
 Full detail in [SECURITY.md](SECURITY.md).
 
+### 4.1 Email delivery — an unresolved constraint on this choice
+
+Supabase's built-in email provider is limited to **2 auth emails per hour, project-wide** — not
+per user — and its documentation describes it as unsuitable for production and subject to change
+without notice. One login sends one email, so onboarding two people in one sitting already
+exhausts the limit.
+
+This does not cost money, but it makes OTP unreliable as specified. Two zero-cost resolutions
+exist, and the choice changes login UX, so it is an owner decision rather than an engineering
+one:
+
+| Option | Effect |
+|---|---|
+| Custom SMTP via SMTP2GO's free tier | Keeps OTP. 1 000 emails/month, 200/day, 25/hour without a verified domain, five verifiable single-sender addresses, no card. Adds one external account. |
+| Email + password instead of OTP | Sends no email at all. Removes the dependency entirely. Account creation is already gated by an invitation Edge Function, so email confirmation can be disabled. Password reset would be an admin action at this scale. |
+
+Resend was excluded despite a larger free tier because it requires a verified domain, and a
+domain is a purchase. See [COST_POLICY.md](COST_POLICY.md) §6.
+
+**Status: pending owner decision.** Until resolved, treat the auth mechanism as provisional.
+
 ---
 
 ## 5. Data ingestion
