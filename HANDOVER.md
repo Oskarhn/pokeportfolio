@@ -4,17 +4,19 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-**Last updated:** 2026-08-16 — planning frozen; implementation begins next session.
+**Last updated:** 2026-08-17 — M1 (scaffold and harness) and M2 (financial domain core) complete.
 
 ---
 
 ## Status
 
-**Planning is FROZEN. Implementation has not started. There is no application code.**
+**Planning is FROZEN. M1 and M2 are complete and merged to `main`. M3 (database, RLS, migration
+tooling) is next.**
 
-The next session's job is to begin implementation at milestone **M1**, following
-[docs/ROADMAP.md](docs/ROADMAP.md). Scope is settled — do not reopen it (see
-[docs/PLANNING_FREEZE.md](docs/PLANNING_FREEZE.md) §9).
+The next session's job is to begin **M3**, following [docs/ROADMAP.md](docs/ROADMAP.md). Scope is
+settled — do not reopen it (see [docs/PLANNING_FREEZE.md](docs/PLANNING_FREEZE.md) §9). The cost
+policy was revised in this session (D-027) — read [docs/COST_POLICY.md](docs/COST_POLICY.md) §1
+before assuming the old absolute-zero rule.
 
 ## Read these first, in order
 
@@ -44,7 +46,7 @@ bulk work. Expected scale: 1–10 users, potentially 10 000+ cards each.
 
 | Constraint | Detail |
 |---|---|
-| **Budget: 0 NOK/month** | No paid service, tier, domain or billing without explicit owner approval. When a feature cannot be built well for free, **postpone it**. Never enter payment details or enable billing. |
+| **Budget: target $0/month, $50 USD lifetime ceiling** | The ceiling (D-027) is **not** pre-authorized spending — every purchase still needs individual owner approval per [COST_POLICY.md](docs/COST_POLICY.md) §1a, and nothing may be spent before the free functional baseline (§1b) exists. Actual spend to date: **$0**. When a feature cannot be built well for free, **postpone it**. Never enter payment details or enable billing without that approval. |
 | **Repository stays private** | Never change visibility. Requires owner approval plus a completed [PUBLICATION_CHECKLIST](docs/PUBLICATION_CHECKLIST.md) pass. |
 | **No real data in Git** | All fixtures synthetic. The owner's actual collection never enters the repository. |
 | **Financial and authorization tests are gates** | A milestone touching money or ownership is not done until both suites pass. |
@@ -79,6 +81,9 @@ Full context in [docs/DECISIONS.md](docs/DECISIONS.md).
     change. (D-006)
 16. **`user_id` denormalised onto child tables** for one-line RLS predicates. (D-011)
 17. **Admin has no application access to other users' data.** (SECURITY §4)
+18. **The $50 lifetime cost ceiling is not standing spending authorization** — every purchase
+    still needs individual owner approval, and nothing is spent before a free functional baseline
+    exists. (D-027)
 
 ## Architecture
 
@@ -99,8 +104,9 @@ Full context in [docs/DECISIONS.md](docs/DECISIONS.md).
 
 | Item | State |
 |---|---|
-| Node.js | 24.19.0 LTS installed |
-| pnpm | Via Corepack — **not yet enabled**, do this in M1 |
+| Node.js | 24.19.0 LTS installed, but **not on this machine's default PATH** — full path is `C:\Program Files\nodejs`. Prepend it explicitly in shell commands (`$env:Path = "C:\Program Files\nodejs;" + $env:Path` in PowerShell) until/unless the machine's PATH is fixed outside this repo. |
+| pnpm | 10.15.0, pinned via `package.json` `packageManager`. `corepack enable` fails with `EPERM` on this machine (Program Files isn't user-writable without elevation) — installed instead via `npm install -g pnpm@10.15.0` into the user-writable npm prefix. CI uses Corepack normally (GitHub-hosted runners don't have this permission issue). See docs/DEVELOPMENT.md §1. |
+| TypeScript | **6.0.3, deliberately not the 7.x line** — `typescript-eslint` (as of 2026-08-17) caps its peer range at `<6.1.0`. Revisit when typescript-eslint supports TS 7. |
 | Git | 2.51.1 |
 | GitHub CLI | 2.97.0, authenticated as `Oskarhn` |
 | Docker Desktop | **Not installed.** Needed only for a local Supabase stack; a remote dev project is the documented fallback. |
@@ -110,11 +116,14 @@ Full context in [docs/DECISIONS.md](docs/DECISIONS.md).
 ## Repository
 
 - `https://github.com/Oskarhn/pokeportfolio` — **private**
-- Branch `main`, pushed, working tree clean
+- M1/M2 landed via branch `feat/foundation-domain-core`, PR reviewed, CI green, merged to `main`.
+  See the PR for the exact commit list; `main` is pushed and the working tree is clean after merge.
 - Author identity is set repo-locally to the GitHub `noreply` address. No personal email appears
   anywhere in metadata, content or the object database. Verified.
 - `claude_outputs/` is gitignored and must stay that way. It is a local mentor-handoff channel,
   not project documentation, and must never be committed.
+- `.claude/launch.json` (dev-server preview config) is gitignored and machine-local — recreate it
+  if missing; see docs/DEVELOPMENT.md.
 
 ## Output file convention
 
@@ -124,11 +133,19 @@ expected: 5.
 
 ## Known issues
 
-None in the codebase — there is no codebase.
+- **Node is not on this machine's default shell PATH.** Every shell command that needs
+  node/npm/pnpm must prepend `C:\Program Files\nodejs` (and, for global npm-installed tools,
+  `%APPDATA%\npm`) to `$env:Path` first. This is a machine configuration issue, not a repository
+  issue — CI is unaffected (GitHub-hosted runners don't have it).
+- **TypeScript is pinned to 6.0.3, not 7.x**, solely because `typescript-eslint` doesn't support
+  TS 7 yet (peer range `<6.1.0` as of 2026-08-17). `create-vite` scaffolds 7.x by default; do not
+  let a future `pnpm update` silently jump the major version without re-checking that peer range.
+- `src/data/`, `src/features/`, `src/lib/` do not exist yet — deliberately. They arrive with M3+
+  when there is real content for them (CLAUDE.md's "no placeholder directories" rule).
 
 ## Open uncertainties
 
-None block M1. Detail in [docs/RESEARCH.md](docs/RESEARCH.md).
+None block M3. Detail in [docs/RESEARCH.md](docs/RESEARCH.md).
 
 | # | Uncertainty | Needed by |
 |---|---|---|
@@ -141,20 +158,23 @@ None block M1. Detail in [docs/RESEARCH.md](docs/RESEARCH.md).
 
 ## Next actions
 
-Start at **M1 — Scaffold and harness** ([docs/ROADMAP.md](docs/ROADMAP.md)):
+**M1 and M2 are done.** Start **M3 — Database, RLS and migration tooling**
+([docs/ROADMAP.md](docs/ROADMAP.md)):
 
-1. `corepack enable`, pin pnpm, `.nvmrc` already reads 24.19.0
-2. Scaffold Vite + React 19 + TypeScript strict, plus `noUncheckedIndexedAccess`
-3. ESLint, Prettier, Vitest, fast-check, Playwright
-4. Establish `src/domain` · `src/data` · `src/features` · `src/ui` · `src/routes`
-5. Wire `pnpm check` = typecheck + lint + test
-6. GitHub Actions: install → typecheck → lint → test → build → secret scan
-7. PWA shell: manifest, icons, service worker, safe areas
+1. Create the Supabase project (`eu-north-1`, free plan) — **requires the owner's Supabase
+   account**, see Owner actions below.
+2. Migration tooling (`supabase/migrations/`), `pnpm db:*` scripts (currently placeholders in
+   docs/DEVELOPMENT.md §3, not yet in `package.json`).
+3. Schema for catalog, profiles, invitations, holdings, lots, purchases per
+   [docs/DATA_MODEL.md](docs/DATA_MODEL.md).
+4. RLS on every table with `WITH CHECK`; denormalised `user_id` with parent-match triggers
+   (invariant S1).
+5. Generated TypeScript types (`pnpm db:types`).
+6. The two-client authorization test fixture (`tests/authorization/`) — every subsequent
+   user-private table inherits this test.
 
-**Gate:** `pnpm check` green, CI green on a pull request.
-
-Then M2 (Money type and allocator, with property tests) before touching a database. The financial
-engine is pure TypeScript and can be proven correct before any schema exists.
+**Gate:** migrations apply to an empty and a seeded database; a deliberately failing isolation
+test actually fails.
 
 **Do not** attempt the whole MVP in one branch. Each milestone is a reviewable unit with a
 behavioural gate.
@@ -176,16 +196,39 @@ Verified 2026-08-16 against primary sources; re-check only if something visibly 
 - GitHub Actions free: 2 000 private-repo minutes/month, $0 default spending limit
 - Node 24 is Active LTS
 
+Verified 2026-08-17:
+
+- `typescript-eslint` (latest as of this date) peer-caps TypeScript at `<6.1.0` — TS 7.x is not
+  yet supported. `create-vite` defaults to TS 7.x; this repo pins 6.0.3 instead.
+- `gitleaks` (the CLI/Docker image itself) is MIT-licensed with no license key required for any
+  use case, including private repos. The separate `gitleaks-action` GitHub Marketplace wrapper
+  has its own licensing story for organisations; this repo avoids that question entirely by
+  running the official `zricethezav/gitleaks` Docker image directly in CI instead of the
+  Marketplace action.
+- `corepack enable` fails with `EPERM` on a non-admin Windows account when Node is installed to
+  `C:\Program Files\nodejs` — a Windows/ACL fact, not a pnpm or Corepack bug.
+
 ## Commands
 
-Nothing runs yet. Once M1 lands, see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) §3. The gate
-command is `pnpm check`.
+Live now; see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) §3 for the full table.
+
+```bash
+pnpm install
+pnpm dev          # http://localhost:5173
+pnpm check        # typecheck + lint + format:check + test — the gate, currently green
+pnpm test:e2e     # Playwright, builds + previews first
+pnpm build
+```
+
+64 unit/property tests pass (`tests/financial/`), 4 Playwright smoke tests pass (desktop +
+mobile-iPhone viewport). CI runs the same gate plus a `gitleaks` secret scan on every push and PR.
 
 ## Owner actions outstanding
 
 | # | Action | Blocks |
 |---|---|---|
-| 1 | Create a Supabase account (free plan, no card) | M3 onward. Not needed for M1 or M2. |
+| 1 | Create a Supabase account (free plan, no card) | M3 |
 | 2 | Optional: install Docker Desktop for a local Supabase stack | Local database testing only |
+| 3 | Optional: fix Node's absence from this machine's default PATH | Convenience only — see Known issues |
 
-Nothing blocks starting M1 today.
+Nothing blocks starting M3 today except item 1.

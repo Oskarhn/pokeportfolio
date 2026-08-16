@@ -9,7 +9,8 @@ Target: Windows 11 with PowerShell. Nothing here should be machine-specific.
 | Tool | Version | Install |
 |---|---|---|
 | Node.js | 24.19.0 (Active LTS) | `winget install OpenJS.NodeJS.LTS` — installed 2026-08-16 |
-| pnpm | via Corepack | `corepack enable && corepack prepare pnpm@latest --activate` |
+| pnpm | 10.15.0, pinned via `packageManager` | See note below |
+| TypeScript | 6.0.3 (pinned, not the newer 7.x line) | See note below |
 | Git | 2.51.1+ | Present |
 | GitHub CLI | latest | `winget install GitHub.cli` — installed 2026-08-16 |
 | VS Code | latest | Present |
@@ -25,6 +26,19 @@ The version is pinned in three places that must agree: `.nvmrc`, `package.json` 
 **pnpm** over npm for a strict, non-flat `node_modules` — a package cannot import something it
 did not declare, which prevents a class of bug that only appears in CI. The lockfile is
 committed and CI installs with `--frozen-lockfile`.
+
+**pnpm activation note (this machine).** `corepack enable` fails with `EPERM` here because the
+global Node install under `C:\Program Files\nodejs` is not user-writable without elevation. The
+working alternative, used for this environment, is `npm install -g pnpm@10.15.0` (npm's global
+prefix is the user-writable `%APPDATA%\npm`), with the exact version also pinned in
+`package.json`'s `packageManager` field so CI and any machine where Corepack *does* work both
+resolve to the same pnpm. CI uses `corepack enable && corepack prepare --activate`, which reads
+that same pin.
+
+**TypeScript pin note.** `create-vite` currently scaffolds TypeScript 7.x, but `typescript-eslint`
+(the linting stack this project uses) caps its peer range at `<6.1.0` as of 2026-08-17. TypeScript
+is pinned to the latest 6.x (`6.0.3`) so linting works; revisit the pin once `typescript-eslint`
+publishes 7.x support.
 
 ---
 
@@ -53,29 +67,40 @@ the browser bundle, which makes the split reviewable at a glance.
 
 ## 3. Commands
 
-Defined in `package.json` once the scaffold exists. Stable names, so documentation and CI do not
-drift:
+Defined in `package.json`. Stable names, so documentation and CI do not drift.
+
+Live since M1/M2:
 
 | Command | Does |
 |---|---|
 | `pnpm dev` | Vite dev server |
-| `pnpm build` | Production build |
+| `pnpm build` | Production build (`tsc -b && vite build`) |
 | `pnpm preview` | Serve the production build locally |
-| `pnpm typecheck` | `tsc --noEmit` |
+| `pnpm typecheck` | `tsc -b --noEmit` |
 | `pnpm lint` | ESLint |
+| `pnpm lint:fix` | ESLint, auto-fix |
 | `pnpm format` | Prettier, write |
-| `pnpm test` | Domain and property tests (no infrastructure) |
+| `pnpm format:check` | Prettier, check only (CI uses this) |
+| `pnpm test` | Domain and property tests (`tests/financial/`, no infrastructure) |
+| `pnpm test:watch` | Vitest in watch mode |
+| `pnpm test:e2e` | Playwright (`tests/e2e/`); builds and serves production first |
+| `pnpm check` | typecheck + lint + format:check + test — the pre-commit gate |
+
+`pnpm check` must pass before any commit that touches source. It intentionally excludes
+`test:e2e` — full browser E2E is a milestone-completion gate (TESTING.md §10), not a fast local
+loop.
+
+Arriving with M3 (database) and later:
+
+| Command | Does |
+|---|---|
 | `pnpm test:db` | Database and authorization tests (needs a database) |
-| `pnpm test:e2e` | Playwright |
 | `pnpm db:start` | Local Supabase stack |
 | `pnpm db:migrate` | Apply migrations |
 | `pnpm db:reset` | Reset local database and re-seed |
 | `pnpm db:seed` | Load synthetic seed data |
 | `pnpm db:dump` | Logical backup — run before every migration |
 | `pnpm db:types` | Regenerate TypeScript types from the schema |
-| `pnpm check` | typecheck + lint + test — the pre-commit gate |
-
-`pnpm check` must pass before any commit that touches source.
 
 ---
 
@@ -115,41 +140,48 @@ Nothing in the product may imply that backups happen automatically.
 
 ## 5. Project layout
 
+As it actually exists after M1/M2 — only directories with real content today. `src/data/`,
+`src/features/` and `src/lib/` are not created yet; they arrive when M3+ gives them something to
+hold, per the "no placeholder directories" rule in CLAUDE.md.
+
 ```
 .
 ├─ docs/                     canonical documentation
 ├─ src/
-│  ├─ domain/                pure TS: money, allocation, valuation, all formulas
-│  ├─ data/                  Supabase client, typed queries, provider adapters
-│  ├─ features/              vertical slices
-│  ├─ ui/                    design system components (owned, not a dependency)
-│  ├─ routes/                TanStack Router definitions
-│  └─ lib/                   small shared utilities
-├─ supabase/
-│  ├─ migrations/            timestamped SQL
-│  ├─ functions/             edge functions
-│  └─ seed/                  synthetic seed data
+│  ├─ domain/                pure TS: Money, allocation, FX, cost-basis, market-value,
+│  │                         inventory, spending, sales, position — every FINANCIAL_MODEL formula
+│  ├─ ui/                    design-system components (owned, not a dependency) — AppShell only so far
+│  ├─ router.tsx             TanStack Router route tree (code-based, not file-based, for now)
+│  ├─ main.tsx                entry point
+│  └─ styles/                Tailwind v4 entry
 ├─ tests/
-│  ├─ financial/             mandatory gate
-│  ├─ authorization/         mandatory gate
-│  ├─ db/
-│  └─ e2e/
-└─ .github/workflows/        CI, added with the scaffold
+│  ├─ financial/             mandatory gate — worked examples E1/E3/E7, invariants, allocator properties
+│  └─ e2e/                   Playwright smoke test
+└─ .github/workflows/ci.yml  install → typecheck → lint → format:check → test → build → secret scan
 ```
+
+Arriving with later milestones: `src/data/` (M3, Supabase client and typed queries), `src/features/`
+(M6+, vertical slices), `supabase/migrations/` + `supabase/functions/` + `supabase/seed/` (M3),
+`tests/authorization/` and `tests/db/` (M3).
 
 **Boundary rule:** `src/domain/` imports nothing from React, Supabase or any UI library. If a
 formula needs data, it takes it as an argument. This is what keeps the financial suite free of
-mocks.
+mocks. Verified today: every `src/domain/*.ts` file's only imports are other `src/domain/*.ts`
+files.
 
 ---
 
 ## 6. Conventions
 
-- TypeScript `strict`, plus `noUncheckedIndexedAccess`. No `any` in committed code; `unknown`
-  plus a Zod parse at boundaries.
-- Zod validates every external payload — provider responses and form input alike.
-- Money never crosses a boundary as a bare number. A `Money { minor: bigint, currency: string }`
-  type makes unit mistakes a compile error.
+- TypeScript `strict`, plus `noUncheckedIndexedAccess` and `noImplicitOverride`. No `any` in
+  committed code.
+- Zod (or an equivalent parser) validates every external payload — provider responses and form
+  input alike — once M3+ introduces external payloads. Not adopted yet; nothing external exists
+  for it to validate in M1/M2.
+- Money never crosses a boundary as a bare number. A `Money { minorUnits: bigint, currency:
+  CurrencyCode }` type (`src/domain/money.ts`) makes unit mistakes a compile error. Values are
+  created only through the factory functions in that module — never through a struct literal or a
+  JS float.
 - Prettier for formatting; no debate.
 - Conventional commit prefixes (`feat:`, `fix:`, `docs:`, `chore:`, `test:`, `refactor:`).
 - Comments explain intent and constraints. Code that needs a comment to explain *what* it does
