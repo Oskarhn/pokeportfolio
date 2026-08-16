@@ -475,6 +475,37 @@ backup stops being a backup at the first schema change.
 
 ---
 
+## D-027 — A $50 USD lifetime discretionary ceiling replaces the absolute-zero rule
+
+**2026-08-17 · Accepted**
+
+**Context.** The budget constraint had been an absolute 0 NOK/month with no exception. Prompt 5
+(start of implementation) relaxed this: the owner is willing to consider, individually, a small
+total amount of spending across the whole project's lifetime — never a monthly figure.
+
+**Decision.** Target operating cost stays $0/month — nothing about the day-to-day engineering
+default changes. A separate, **lifetime, project-total, discretionary ceiling of $50 USD** now
+exists. It is not pre-authorized: every paid item still needs its own explicit owner approval
+against the checklist in [COST_POLICY.md](COST_POLICY.md) §1a, and none of it may be spent before
+a free functional baseline exists (§1b) — invite-gated auth, adding cards, recording
+purchases/sales, basic dashboard, persistence, real-device use. Ordinary recurring subscriptions
+remain prohibited by default; a narrow exception exists only for something both very cheap and
+effectively one-time (roughly "~$10 for several years"), still subject to the same approval
+checklist and counted against the $50.
+
+**Alternatives.** Keep the absolute-zero rule — simpler, but would categorically reject a
+genuinely excellent one-time option (e.g. a small perpetual license) purely on principle rather
+than on merit. Grant a standing budget Claude can draw from autonomously — rejected: the owner
+wants each purchase decided individually, not a pool to be spent down.
+
+**Consequences.** [COST_POLICY.md](COST_POLICY.md) carries the full mechanism and a running cost
+ledger (currently: $0 spent, $50 remaining). [PLANNING_FREEZE.md](PLANNING_FREEZE.md) §2 and
+[CLAUDE.md](../CLAUDE.md) reflect the same figures. The practical architecture is unchanged — it
+was already fully achievable at zero cost, and this decision does not obligate spending any of the
+ceiling.
+
+---
+
 ## D-026 — Working name `PokePortfolio`
 
 **2026-08-16 · Accepted, temporary**
