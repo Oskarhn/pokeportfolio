@@ -1,0 +1,143 @@
+# Project Instructions
+
+Instructions for Claude Code sessions working in this repository. Project-specific; the user's
+global instructions still apply.
+
+---
+
+## Start every session
+
+1. Read [HANDOVER.md](HANDOVER.md). It is the current-state document and takes precedence over
+   assumptions carried from anywhere else.
+2. Read only the canonical docs relevant to the task at hand. Do not load all of `docs/`.
+3. Run `git status` and `git log --oneline -10`.
+4. Do not redo work marked complete in HANDOVER.
+5. Never ask the user to re-explain the project. Reconstruct state from the repository.
+
+## Documentation precedence
+
+When sources disagree, resolve in this order and then **fix the losing document** — do not leave
+a contradiction in place:
+
+1. The user's latest explicit instruction
+2. [docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md) — product behaviour
+3. [docs/FINANCIAL_MODEL.md](docs/FINANCIAL_MODEL.md) — every monetary semantic
+4. [docs/DECISIONS.md](docs/DECISIONS.md) — accepted decisions
+5. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/DATA_MODEL.md](docs/DATA_MODEL.md), [docs/SECURITY.md](docs/SECURITY.md)
+6. [HANDOVER.md](HANDOVER.md) — execution state
+7. The implementation
+
+## Canonical documents
+
+| File | Owns |
+|---|---|
+| `HANDOVER.md` | Current state. Read first, update last. |
+| `docs/PRODUCT_SPEC.md` | What the product does. Scope. Non-goals. |
+| `docs/FINANCIAL_MODEL.md` | Every formula, term and invariant involving money. |
+| `docs/DATA_MODEL.md` | Schema, ownership, lifecycle transitions. |
+| `docs/ARCHITECTURE.md` | Stack and why. |
+| `docs/SECURITY.md` | Trust boundaries, RLS, invites, secrets. |
+| `docs/TESTING.md` | Test strategy and mandatory gates. |
+| `docs/DEVELOPMENT.md` | Environment, commands, migration rules. |
+| `docs/ROADMAP.md` | Phases and gates. |
+| `docs/DECISIONS.md` | Decisions that are expensive to reverse. |
+| `docs/RESEARCH.md` | Findings that changed a decision, with sources and dates. |
+| `docs/API_SOURCES.md` | External services: status, terms, failure strategy. |
+| `docs/UX_FLOWS.md` | Workflow behaviour. Source of E2E cases. |
+| `docs/DESIGN_SYSTEM.md` | Visual direction and component conventions. |
+| `docs/SCANNER_RESEARCH.md` | Scanner prep. Re-research before building. |
+| `docs/BACKLOG.md` | Unscheduled work, including what was rejected and why. |
+| `docs/PUBLICATION_CHECKLIST.md` | Gate before the repository ever goes public. |
+| `docs/PROJECT_JOURNAL.md` | Engineering record: real problems and their resolutions. |
+| `CHANGELOG.md` | Released changes. |
+
+Each has one purpose. Do not duplicate content across them — link instead.
+
+---
+
+## Hard rules
+
+**Money.** No monetary arithmetic outside `src/domain/`. Components format numbers; they never
+compute them. Integer minor units with an ISO 4217 code, never float. `NULL` money means "not
+applicable", never zero.
+
+**Financial semantics.** Do not change a formula, invariant or term in FINANCIAL_MODEL without
+an entry in DECISIONS and updated tests. The worked examples in §8 are the test fixtures; if a
+test stops matching the document, the document is what needs examining first.
+
+**Security.** RLS enabled on every table, `WITH CHECK` on every write policy, `user_id`
+denormalized onto child tables with a trigger asserting it matches the parent. Never rely on
+frontend filtering for access control. The `service_role` key never reaches the client bundle.
+
+**Secrets.** Never commit any. Never print one into documentation, logs, error messages, test
+fixtures or commit messages. `.env.example` holds names and placeholders only.
+
+**GitHub visibility.** The repository is private. **Never make it public.** That requires the
+owner's explicit approval plus a completed pass through PUBLICATION_CHECKLIST.
+
+**Real data.** Everything committed is synthetic. Never commit the user's actual collection,
+purchases or valuations.
+
+**Migrations.** Every schema change is a timestamped SQL file in `supabase/migrations/`. Never
+edit an applied migration. Never change the schema through the Supabase dashboard. Run
+`pnpm db:dump` before applying anything to a database holding real data.
+
+**Completion.** A feature is complete when its behaviour has been exercised, not when TypeScript
+accepts it. Compilation is not evidence. Browser-test UI work; run the financial and
+authorization suites for anything touching money or ownership.
+
+**Honesty in the product.** Absent data is displayed as absent. No fabricated history, no
+invented precision, no metric labelled as something it is not. This is the project's core
+quality bar — see the journal entries on zero-cost pulls and condition multipliers.
+
+---
+
+## Working style
+
+- Keep chat output short. Results, findings, blockers, questions, and what the user must do
+  personally. Detailed reasoning goes into the documentation, not the conversation.
+- Batch genuine questions. Continue every unblocked task while one is outstanding.
+- Decide reversible, cheap, internal choices yourself and record them.
+- Ask before: spending money, creating external accounts, irreversible external actions,
+  deleting real data, changing accounting semantics, changing repository visibility.
+- Use current official documentation when facts matter. APIs, pricing, browser support and
+  library versions all move.
+- Update the relevant canonical doc in the same commit as the change it describes.
+- Update HANDOVER before ending a session or when context grows large.
+- No time estimates unless asked.
+
+---
+
+## Skill routing
+
+| Skill | Use for |
+|---|---|
+| `find-docs` | Official docs for any framework, library, API, browser capability, Supabase feature. Prefer over recalled knowledge. |
+| `frontend-design` | Design system, page and component design, responsive behaviour, visual polish. |
+| `webapp-testing` | Browser verification once something runs: flows, mobile viewport, console, network, forms, auth, regressions. |
+| `filesystem-context` | Understanding related files before a significant change. Avoid editing one file blind. |
+| `long-horizon-prompting` | Milestone structure and continuity across sessions. |
+| `harness-engineering` | Repeatable install, run, test, lint, typecheck, build, seed, migrate. |
+| `context-optimization` | Continuously. Push durable conclusions into docs; keep active context focused. |
+| `stop-slop` | Quality control on UI, copy, docs and architecture. Guard against generic output. |
+| `pick-ui-library` | Before adopting any significant UI or component dependency. |
+| `apple-design` | iPhone interaction, safe areas, mobile patterns. **Not** a reason to build native. |
+
+Use them when the task matches. Do not invoke them mechanically.
+
+---
+
+## Commits
+
+- Conventional prefixes: `feat:`, `fix:`, `docs:`, `chore:`, `test:`, `refactor:`.
+- Coherent units of work. Not one giant commit, not dozens of trivial ones.
+- `pnpm check` passes before committing source changes.
+- Review the staged diff for secrets, personal data and machine-specific paths before every commit.
+- Do not commit, push, merge or open a pull request unless asked.
+- No AI or co-author attribution in commit messages.
+
+## Repository contents
+
+This repository documents the project, not the conversation that produced it. Never commit chat
+transcripts, prompts or agent logs. Never write "Claude decided" or "the AI suggested" in
+documentation. Record the decision, the reasoning, the evidence and the result.
