@@ -294,18 +294,24 @@ money — those belong to lots.
 | `grader` | enum `psa`, `cgc`, `bgs`, `ace`, `sgc`, `tag`, `other`; null unless graded/pending |
 | `grade numeric(3,1) nullable`, `cert_number text nullable` | |
 | `storage_location_id fk nullable`, `is_favorite bool` | |
-| `notes`, `created_at`, `updated_at` | |
+| `notes`, `created_at`, `updated_at`, `deleted_at nullable` | |
 
 Partial unique index so the same physical state does not fragment into duplicate holdings:
 
 ```sql
 CREATE UNIQUE INDEX holdings_identity ON holdings (
-  user_id, holding_kind,
+  user_id,
+  holding_kind,
   coalesce(card_variant_id, sealed_product_id),
-  coalesce(condition, 'n/a'), grading_state,
-  coalesce(grader, 'n/a'), coalesce(grade, -1)
+  coalesce(condition::text, ''),
+  grading_state,
+  coalesce(grader::text, ''),
+  coalesce(grade, -1)
 ) WHERE deleted_at IS NULL;
 ```
+
+Enum columns are cast to `text` before coalescing because there is no enum member meaning
+"absent"; the empty string is unambiguous since no enum renders as one.
 
 A graded card is a **separate holding** from the raw copies of the same variant, because it has
 a different market and a different valuation path. Grading moves a lot from the raw holding to
