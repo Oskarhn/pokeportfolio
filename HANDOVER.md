@@ -116,8 +116,9 @@ Full context in [docs/DECISIONS.md](docs/DECISIONS.md).
 ## Repository
 
 - `https://github.com/Oskarhn/pokeportfolio` — **private**
-- M1/M2 landed via branch `feat/foundation-domain-core`, PR reviewed, CI green, merged to `main`.
-  See the PR for the exact commit list; `main` is pushed and the working tree is clean after merge.
+- M1/M2 landed via [PR #1](https://github.com/Oskarhn/pokeportfolio/pull/1)
+  (`feat/foundation-domain-core`), CI green, squash-merged to `main` at `c7051b1`. The source
+  branch is deleted. `main` is pushed and the working tree is clean.
 - Author identity is set repo-locally to the GitHub `noreply` address. No personal email appears
   anywhere in metadata, content or the object database. Verified.
 - `claude_outputs/` is gitignored and must stay that way. It is a local mentor-handoff channel,
