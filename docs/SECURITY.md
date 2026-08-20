@@ -296,6 +296,61 @@ social-engineering vector even with ten users:
 An admin never types, sets or reads another user's password. The old password is never revealed and
 never needs to be.
 
+### 5.9 The privilege surface, and why it is stated rather than inferred
+
+RLS decides which **rows** a session sees. SQL privileges decide which **tables and columns** exist
+for it at all. M4 shipped an escalation because those two were confused: `profiles` had a
+column-restricted `UPDATE` grant that was intended to exclude `is_admin`, the deployed project had
+already granted `authenticated` everything on that table, and **a `GRANT` adds — it never
+restricts**. A signed-in non-admin could set their own admin flag. The authorization suite was
+green, because it tested behaviour and every behaviour it thought to try was correct.
+
+The fix is not "remember to be careful". It is three independent statements of the same fact, each
+of which can fail:
+
+| Leg | What it asserts | Where it runs |
+|---|---|---|
+| `supabase/migrations/20260820140000_m41_privilege_baseline.sql` | The intended surface, as revoke-then-grant | Every environment, applied |
+| `scripts/grant-audit.sql` | That the catalog agrees, privilege by privilege | CI, and by hand against a deployed project |
+| `scripts/remote-security-check.mjs` | That none of it is exploitable, holding only a publishable key | By hand, after any deploy |
+
+`grant-audit.sql` is written as a second, independent statement of intent, not as a summary of the
+migration. If the two disagree, one is a defect — do not reconcile by copying the database's
+answer into the expectation.
+
+**The rule every future migration answers to.** A migration that creates a table, view or function
+in `public` ends with an explicit `revoke … from anon, authenticated` and then grants back exactly
+what is intended, and updates the baseline assertion. An object with no privilege decision is a
+defect, not a default. Naming a column list in a `GRANT` limits nothing if the role already holds
+more.
+
+**System-owned columns.** Every user-owned table now grants `UPDATE` by column list. Absent
+everywhere: `id`, `user_id`, `created_at`, `updated_at`, the parent foreign key on child rows, and
+the provenance columns (`purchases.origin`, `acquisition_lots.origin`,
+`sealed_products.created_by_user_id`). RLS already stops a row moving to another user; taking these
+out of the grant means that is no longer the only thing stopping it. `INSERT` stays whole-table:
+`user_id` must be writable on insert, and RLS `WITH CHECK` is the correct mechanism for a value the
+client legitimately supplies.
+
+**What CI proves, and what it cannot.** CI applies the migrations to an empty database, so on its
+own it can only ever demonstrate that a clean database ends up clean — which is exactly why it
+missed the escalation. It therefore also makes the database *wrong* first
+(`tests/db/sql/hostile_grants.sql`, the legacy auto-expose state the deployed project was in),
+proves the audit rejects that state, re-applies the baseline, and proves it converges. The middle
+step is not decoration: an audit that cannot fail is not a check.
+
+**One accepted exception.** `supabase_admin` holds default privileges in `public` granting `anon`
+and `authenticated` everything on tables, sequences and functions, in the local stack and in a
+hosted project alike. They are unreachable — `postgres` is not a member of that role — and they are
+harmless, because a default privilege attaches only to objects its own role creates and everything
+in `public` here is created by `postgres`. The audit records that grantor as accepted and fails on
+any other. It also checks the resulting grants independently, so if the assumption ever stops
+holding, it surfaces as a failure rather than as silence.
+
+**`graphql_public` is not a second door.** The Data API exposes `public` and `graphql_public`;
+pg_graphql resolves against the same tables under the same role, so it is bounded by the same RLS
+policies and the same column grants. It widens nothing, and needs no separate baseline.
+
 ## 6. Secrets
 
 | Secret | Where it lives | Ever in the client? |
@@ -416,9 +471,36 @@ Every milestone that adds a table or an endpoint must confirm:
       `revoke all on <table> from anon, authenticated` (or `revoke execute on function … from
       public, anon, authenticated`) and then grant back exactly the intended set. Naming a column
       list in a `GRANT` does not limit the role to those columns if it already held more.
+- [ ] **The privilege baseline in `scripts/grant-audit.sql` was updated** for every new table,
+      view, function and column, and CI is green on it. §5.9.
 - [ ] The deployed project was verified, not just CI. Run `scripts/remote-security-check.mjs`
       after any deploy touching auth, invitations, policies or grants.
 
-The last two are not generic advice. Both were written after the deployed project and CI disagreed
-— the second time about whether a signed-in user could set their own `is_admin` flag. See
+The last three are not generic advice. They were written after the deployed project and CI
+disagreed — the second time about whether a signed-in user could set their own `is_admin` flag. See
 PROJECT_JOURNAL.md, 2026-08-20.
+
+---
+
+## 13. Deployment gate
+
+Nine checks, run **against the environment that was deployed to**, after applying migrations,
+pushing config, or deploying a function. Not after a green CI run — CI is a reproducibility gate
+and says nothing about a deployed project. This list exists because every item on it was true in CI
+and one of them was false on the real project.
+
+|   | Check | How |
+|---|---|---|
+| 1 | Public signup is blocked | `POST /auth/v1/signup` → 4xx, message names the invite-only hook |
+| 2 | Auth Admin create without a claim is blocked | Covered by the authorization suite; on a deployed project, by the fact that redemption is the only path that works |
+| 3 | A valid invitation redeems | `scripts/remote-security-check.mjs` phase 2, with `INVITE_TOKEN` set |
+| 4 | A normal user cannot self-promote | Read `is_admin` back after the `PATCH`, not just the status code |
+| 5 | User A cannot read user B | Two sessions, or the suite |
+| 6 | `token_hash` is unreadable, by anyone | `GET /rest/v1/invitations?select=token_hash` → 4xx |
+| 7 | Privileged functions are unreachable | `claim_invitation`, `finalize_…`, `release_…`, `hash_invitation_token`, `before_user_created` |
+| 8 | The auth hook is active on **this** project | It lives in `config.toml`, so it arrives via `supabase config push` — never a dashboard toggle |
+| 9 | The privilege surface matches | Paste `scripts/grant-audit.sql` into the SQL editor; clean means no rows |
+
+1, 3, 4, 6, 7 are what `scripts/remote-security-check.mjs` automates from the attacker's side with
+nothing but a publishable key. 9 is the catalog's own answer, and is the check that would have
+caught M4's escalation before a user could.

@@ -122,13 +122,21 @@ afterAll(async () => {
 })
 
 /**
- * Only PostgreSQL produces "permission denied for column"; nothing in this application raises it,
- * so matching on it cannot be satisfied by an RLS refusal or by a check constraint that happens to
- * fire first. That distinction is the whole assertion — a row-level refusal here would mean the
- * column is still writable and something else stopped this particular attempt.
+ * A refusal from the privilege system, decided before any row was considered.
+ *
+ * PostgreSQL reports this at table granularity, not column granularity: a role holding
+ * column-level UPDATE but no table-level UPDATE gets "permission denied for table profiles" when
+ * it names an ungranted column, not "…for column is_admin". The column wording belongs to SELECT.
+ * Worth writing down, because matching only on the column message produces a test that fails while
+ * the privilege is doing exactly its job.
+ *
+ * Either message is unambiguous about what refused, which is the distinction this whole file rests
+ * on. RLS answers differently — "new row violates row-level security policy" for a WITH CHECK
+ * failure, or zero rows and no error at all for a USING mismatch — so nothing here can be
+ * satisfied by a row-level control standing in for a missing column grant.
  */
-function isColumnPrivilegeRefusal(error: { message?: string } | null): boolean {
-  return /permission denied for column/i.test(error?.message ?? '')
+function isPrivilegeRefusal(error: { message?: string } | null): boolean {
+  return /permission denied for (table|column)/i.test(error?.message ?? '')
 }
 
 for (const { table, writable, systemOwned } of CASES) {
@@ -150,8 +158,8 @@ for (const { table, writable, systemOwned } of CASES) {
           .update({ [column]: value })
           .eq('id', NOWHERE)
         expect(
-          isColumnPrivilegeRefusal(error),
-          `${table}.${column} was not refused by a column privilege: ${error?.message ?? 'no error'}`,
+          isPrivilegeRefusal(error),
+          `${table}.${column} was not refused by the privilege system: ${error?.message ?? 'no error'}`,
         ).toBe(true)
       })
     }
