@@ -101,6 +101,21 @@ test.describe('layout', () => {
     expect(overflow).toBeLessThanOrEqual(0)
   })
 
+  // Companion to the sideways check, and worth stating plainly: this would NOT have caught the
+  // defect that prompted it. An installed iPhone PWA let the sign-in form be scrolled entirely off
+  // the top, because `min-h-dvh` sizes the shell to the largest viewport while the visible area was
+  // smaller. Chromium resolves dvh, svh and the visual viewport to the same number, so this assertion
+  // passed throughout. It is here because "the sign-in screen fits on the screen" is an invariant
+  // worth holding on every viewport the suite runs, not because it guards that bug — the guard for
+  // that one is a person with a phone.
+  test('the sign-in screen fits the viewport without scrolling', async ({ page }) => {
+    await page.goto('/login')
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollHeight - document.documentElement.clientHeight,
+    )
+    expect(overflow).toBeLessThanOrEqual(0)
+  })
+
   test('interactive controls clear a 44px touch target', async ({ page }) => {
     await page.goto('/login')
     const box = await page.getByRole('button', { name: 'Sign in' }).boundingBox()

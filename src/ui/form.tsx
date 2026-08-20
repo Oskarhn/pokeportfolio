@@ -128,8 +128,11 @@ export function AuthLayout({
   description?: string
   children: React.ReactNode
 }) {
+  // `my-auto` centres the form in whatever height is left rather than pinning it to the top with
+  // dead space beneath. On a phone that keeps the fields near the middle of the screen, which is
+  // where a thumb is and where the keyboard is least likely to cover them.
   return (
-    <div className="mx-auto w-full max-w-sm space-y-6 py-6">
+    <div className="mx-auto my-auto w-full max-w-sm space-y-6 py-6">
       <div className="space-y-1.5">
         <h1 className="text-2xl font-semibold tracking-tight text-slate-100">{title}</h1>
         {description ? <p className="text-sm text-slate-400">{description}</p> : null}

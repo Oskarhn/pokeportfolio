@@ -14,8 +14,17 @@ interface AppShellProps {
 export function AppShell({ children }: AppShellProps) {
   const { status, isAdmin, signOut } = useAuth()
 
+  // `svh`, not `dvh`. Both are "the viewport", but dvh is the *largest* it can be — the height with
+  // browser chrome retracted, and on iOS the height with the on-screen keyboard dismissed. Sizing
+  // the shell to that leaves a stretch of empty page below the content whenever the real visible
+  // area is smaller, and that stretch is scrollable: on an installed iPhone PWA the sign-in form
+  // could be scrolled entirely off the top, leaving only the footer link on screen. `svh` is the
+  // *smallest* viewport, so the shell never exceeds what is actually visible.
+  //
+  // Found on real hardware. It does not reproduce in Chromium's mobile emulation, where dvh, svh
+  // and the visual viewport are all the same number.
   return (
-    <div className="flex min-h-dvh flex-col">
+    <div className="flex min-h-svh flex-col">
       <header
         className="flex items-center gap-4 border-b border-slate-800 px-4 py-3"
         style={{ paddingTop: 'max(0.75rem, env(safe-area-inset-top))' }}
@@ -44,7 +53,7 @@ export function AppShell({ children }: AppShellProps) {
         ) : null}
       </header>
       <main
-        className="flex-1 px-4 py-6"
+        className="flex flex-1 flex-col px-4 py-6"
         style={{ paddingBottom: 'max(1.5rem, env(safe-area-inset-bottom))' }}
       >
         {children}
