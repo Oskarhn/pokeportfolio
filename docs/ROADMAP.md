@@ -131,6 +131,27 @@ counts.
 **Gate:** full rebuild equals incremental recompute, byte-identical; ownership timeline correct
 (TESTING §3); every figure reconciles against the ledger.
 
+### M12a — Visual design refinement
+
+Not scheduled by date — it happens once M6, M7, M8 and M12 give the owner enough real surface
+(collection, organisation, purchases, dashboard) to react to actual screens rather than
+descriptions. Until this milestone, the UI stays deliberately basic and neutral per
+[docs/DESIGN_SYSTEM.md](DESIGN_SYSTEM.md) §0 — building final visual polish earlier would mean
+redoing it against references that do not exist yet.
+
+1. Owner supplies reference screenshots/images and, separately, a logo.
+2. Analyse the references for layout density, spacing, typography, navigation, component
+   appearance, chart treatment, card presentation and colour direction — direction, not
+   pixel-for-pixel reproduction of anyone else's proprietary design.
+3. Update [docs/DESIGN_SYSTEM.md](DESIGN_SYSTEM.md) with the resulting concrete tokens.
+4. Apply the redesign through the existing token system (§0's centralization requirement is what
+   makes this step bounded rather than a rewrite).
+5. Integrate the owner's logo through the single swap point established in M3/early milestones.
+6. Browser-test the result on mobile and desktop viewports.
+
+**Gate:** the app visually matches the agreed direction from the references; no proprietary
+design is reproduced pixel-for-pixel; the placeholder PWA icon set is fully replaced.
+
 ### M13 — Export and backup
 
 CSV exports. Versioned JSON backup with schema version and export timestamp. In-app export

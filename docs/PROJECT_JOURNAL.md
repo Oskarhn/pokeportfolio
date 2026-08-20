@@ -210,6 +210,158 @@ out of existence.
 
 ---
 
+## 2026-08-17 — The bigint/PostgREST precision boundary is real, not theoretical
+
+**Problem.** FINANCIAL_MODEL.md requires money as exact integer minor units, so every monetary
+column is Postgres `bigint`. Research into how Supabase's client actually serializes `bigint`
+(supabase/postgrest-js issues #319 and #419) confirmed PostgREST returns `bigint` as a plain JSON
+number by default, and JSON/JS numbers only carry exact precision up to `Number.MAX_SAFE_INTEGER`
+(2^53 − 1).
+
+**Why this mattered enough to test rather than assume.** The project's own rule is "never invent
+project state" — a plausible-sounding claim about a library's behaviour is exactly the kind of
+thing that should be verified against the actual stack, not carried forward from a GitHub issue
+thread. `tests/db/money-boundary.test.ts` inserts a value one integer above the safe threshold
+and proves both halves: selecting with an explicit `total_minor::text` cast round-trips exactly
+via `BigInt()`; selecting the same column without the cast returns a different, silently rounded
+number.
+
+**Resolution.** `src/data/money.ts` documents the boundary and its mitigation before any query
+code exists to use it: every future read of a money column must cast to text in the select list.
+Not a practical risk at this application's real scale — a collection would need to be worth
+roughly 90 quadrillion NOK in øre before it mattered — but the boundary is now tested rather than
+assumed, and the pattern is established before M5+ query code has a chance to get it wrong.
+
+---
+
+## 2026-08-17 — Local Docker unavailability turned into the CI database-testing strategy
+
+**Problem.** M3 needs migrations and RLS policies exercised against a real Postgres instance. The
+development machine has no Docker Desktop installed, so `supabase start` cannot run locally, and
+the prompt explicitly ruled out installing Docker just to unblock this.
+
+**Investigation.** GitHub Actions' `ubuntu-latest` runners ship Docker preinstalled, and the
+Supabase CLI's local stack (`supabase start`, `supabase db reset`) is exactly the Docker-based
+stack the local machine lacks. Supabase's own CI documentation confirms this exact pattern:
+`supabase/setup-cli` (or, as here, the CLI already pinned as a project devDependency) plus
+`supabase start` inside a GitHub Actions job.
+
+**Resolution.** A `db-tests` job runs the full ephemeral local stack on every push and PR —
+migrations from empty, `db reset`, the authorization and database test suites, and generated-type
+export — entirely on the Linux runner, never touching any remote Supabase project or credential.
+This means the M3 gate (migrations apply; RLS isolation tests pass; a broken policy would fail
+red) is provable in CI today, independent of whether or when a remote dev project gets linked.
+The remote free dev project (once the owner creates one) becomes the tool for manual/interactive
+work on the Windows machine, not the thing CI depends on.
+
+**Consequence.** Docker never needed installing on the development machine to satisfy M3's gate.
+If local iteration against a live database becomes valuable later, installing Docker Desktop
+remains available as a separate, owner-approved choice — it was never a blocker.
+
+---
+
+## 2026-08-17 — Ownership triggers deliberately run with invoker rights, not SECURITY DEFINER
+
+**Problem.** The child-parent ownership triggers (`purchase_lines_check_owner`,
+`acquisition_lots_check_owner`, SECURITY.md invariant S1) need to read the parent row's `user_id`
+to compare against the child's. The obvious way to make that read reliable is `SECURITY DEFINER`,
+which bypasses RLS.
+
+**Why that would have been worse.** With `SECURITY DEFINER`, a cross-tenant attempt (user B
+inserting a child row pointing at user A's parent) could see A's real `user_id` and produce a
+precise "owner mismatch" error — which also confirms to B that the targeted parent row exists and
+who owns it. That is an information leak SECURITY.md explicitly asks the test suite to check for
+("empty result, not an error leak").
+
+**Resolution.** The triggers run with default invoker rights. RLS on the parent table already
+hides another user's row from the `SELECT` inside the trigger, so a cross-tenant attempt sees
+`parent_user_id IS NULL` and fails with "not found" rather than "owner mismatch" — rejecting the
+write without confirming the target row's existence. `tests/authorization/purchases.test.ts` and
+`tests/authorization/holdings_and_lots.test.ts` exercise this directly.
+
+**Generalisable point.** The instinct to reach for `SECURITY DEFINER` whenever a trigger needs to
+"see more" is usually solving the wrong problem — here, RLS's own hiding behaviour was the
+correct security property, and definer rights would have quietly undone it.
+
+---
+
+## 2026-08-20 — An enum's own `::text` cast cannot go in an index, and CI caught it first
+
+**Problem.** `holdings_identity` (DATA_MODEL.md §5.4) needs to coalesce `condition` and `grader`
+— both custom enum columns — down to an empty string when null, since no enum member means
+"absent". The natural expression is `coalesce(condition::text, '')`. CI's `db-tests` job failed
+applying the migration to an empty database: `ERROR: functions in index expression must be marked
+IMMUTABLE`.
+
+**Why.** Postgres auto-generates I/O functions for a `CREATE TYPE ... AS ENUM`, and marks the
+enum-to-text conversion `STABLE`, not `IMMUTABLE` — because `ALTER TYPE ... RENAME VALUE` could in
+principle change what a given internal value prints as, which would change an index's contents
+without Postgres knowing. An index expression is required to be provably deterministic forever, so
+`STABLE` isn't good enough, even though nothing in this project ever renames an enum label.
+
+**Resolution.** Two minimal `IMMUTABLE`-marked SQL wrapper functions
+(`card_condition_to_text`, `grader_to_text`) that do exactly the same cast, added in the same
+migration. This is the documented community pattern for this exact error, not a workaround
+invented under pressure — the promise the `IMMUTABLE` marking makes ("same input, same output,
+forever") is one this project can actually keep, since these enums only grow by adding new values,
+never by renaming existing ones.
+
+**Why this is worth recording.** This was caught by CI actually attempting the migration against
+a real, ephemeral Postgres instance — exactly the value the M3 CI investment (see the "Local
+Docker unavailability" entry above) was supposed to provide, on the very first real test of it.
+Neither `pnpm check`, code review, nor reasoning about the SQL in the abstract would have caught
+this; it required a real `CREATE INDEX` to fail.
+
+## 2026-08-20 — Two Supabase-platform assumptions were wrong, and CI caught both in one run
+
+**Problem 1.** After fixing the `holdings_identity` index (previous entry), the same CI run still
+failed: every insert into `holdings`, `purchases` and other new tables from the `service_role`
+test client returned `permission denied for table ..., HINT: GRANT INSERT ON public.holdings TO
+service_role`.
+
+**Why.** `service_role` bypasses RLS, and it was assumed (reasonably, by analogy with a
+superuser) that it also bypasses ordinary `GRANT`-based privilege checks. It does not. Recent
+Supabase projects — local and hosted, per the `auto_expose_new_tables` note already present in
+`supabase/config.toml` before this was discovered — do not auto-expose newly created tables,
+views, sequences or functions to *any* Data API role, `service_role` included. Bypassing RLS and
+having table-level privileges are two separate things.
+
+**Resolution.** Every migration now grants `ALL` on its tables to `service_role` explicitly,
+alongside the narrower `authenticated` grants. The two `IMMUTABLE` wrapper functions from the
+previous entry needed explicit `EXECUTE` grants for the same reason — they run as part of the
+`holdings_identity` index expression on every write, so both writing roles need permission to
+call them.
+
+**Problem 2, more consequential.** With the grants fixed, a second, unrelated failure remained:
+every `signInWithPassword` call in the authorization suite failed with "Email logins are
+disabled" — even though the corresponding user had just been created successfully via the Auth
+admin API.
+
+**Why.** `supabase/config.toml`'s `[auth] enable_signup = false` had been set to enforce
+invite-only signup at the config level, mirroring SECURITY.md §5's "Dashboard: email signup
+disabled at the Supabase Auth level" line. This turned out to conflate two things GoTrue does not
+actually separate cleanly: disabling `enable_signup` disables the email/password grant type
+entirely, including *login* for users who already exist — not only the public self-registration
+endpoint. This is a documented GoTrue limitation (supabase/gotrue#330 and others), not a
+misconfiguration on this project's part, but it was still wrong to rely on here: every legitimately
+invited, redemption-created user in the real product would have been unable to sign in.
+
+**Resolution.** Reverted to the platform default (`enable_signup = true`). Invite-only enforcement
+is not this toggle's job — it is the `auth.users` S2 backstop trigger, already scheduled for M4
+alongside the `redeem-invitation` Edge Function it depends on. Until M4 ships, the public signup
+endpoint is genuinely open in any environment this schema is deployed to; there is no live
+deployment yet, so nothing is exposed today, but this is now stated plainly rather than papered
+over with a config setting that looked protective and was not.
+
+**Generalisable point.** Both mistakes were reasonable extrapolations from how "trusted"
+constructs usually behave (a service-role-style key acting like a superuser; a "disable signup"
+toggle only affecting signup) that turned out to be specific to older platform defaults or a
+cross-cutting implementation detail. Neither was caught by reasoning about the SQL or the config
+in the abstract — both were caught by CI actually running the real stack, on the very first PR
+that exercised it. This is the concrete return on the "Local Docker unavailability turned into the
+CI database-testing strategy" decision from two entries above: real infrastructure surfaces real
+platform behaviour that documentation and code review alone do not.
+
 ## Real-device testing log
 
 Recorded as it happens. Emulation is not evidence of Safari behaviour.

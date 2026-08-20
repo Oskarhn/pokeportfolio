@@ -127,19 +127,31 @@ has infrastructure-level access; this is stated in the README rather than preten
 
 Hiding a signup button is not access control. The enforcement chain:
 
-1. **Dashboard:** email signup disabled at the Supabase Auth level; no OAuth providers enabled.
-   Password auth means the sign-up endpoint would otherwise be an open door, so this must be
-   verified as part of the invite-only test suite, not assumed from a dashboard toggle.
+1. **No OAuth providers enabled.** Password auth is the only auth method.
 2. **Invitation creation:** admin-only RPC generates a high-entropy token, stores only
    `sha256(token)`, returns the plaintext once. Tokens carry `expires_at`, `max_uses` and
    `revoked_at`.
 3. **Redemption:** the `redeem-invitation` Edge Function is the sole account-creation path. It
    validates hash, expiry, use count and revocation inside a transaction, creates the user with
    the service role, and records a `redemption` row.
-4. **Backstop:** a trigger on `auth.users` rejects any insert without a matching redemption.
+4. **Backstop, and the actual enforcement point:** a trigger on `auth.users` rejects any insert
+   without a matching redemption (invariant S2).
+
+**Correction, verified in M3 (docs/PROJECT_JOURNAL.md, 2026-08-20).** An earlier draft of this
+document additionally listed "disable email signup at the Supabase Auth dashboard level" as step
+1, on the reasoning that the sign-up endpoint would otherwise be an open door. That toggle
+(`[auth] enable_signup`) does not do what its name implies: disabling it also disables the
+email/password *login* grant type for every existing user, not only new self-registration — a
+documented GoTrue behaviour (supabase/gotrue#330), confirmed empirically when it broke sign-in
+for admin-created test users in CI. Using it would have broken login for every legitimately
+invited user in the real product. It is **not** part of the enforcement chain. The `auth.users`
+backstop trigger (step 4) is therefore not defense-in-depth behind a config toggle — it is the
+only thing that closes the public signup endpoint, and it must exist before any environment
+running this schema is reachable by anyone outside the project owner.
 
 > **Invariant S2:** no `auth.users` row can exist without a corresponding invitation redemption.
-> Tested by attempting direct signup against the public API.
+> Tested by attempting direct signup against the public API. **Not yet implemented** as of M3 —
+> ships in M4 with the `redeem-invitation` Edge Function it depends on (DATA_MODEL.md §12).
 
 Tokens are single-use by default, time-limited, and revocable. Revoking after redemption
 disables the account rather than deleting data.

@@ -48,6 +48,7 @@ a contradiction in place:
 | `docs/PLANNING_FREEZE.md` | The frozen scope and semantics implementation answers to. |
 | `docs/TESTING.md` | Test strategy and mandatory gates. |
 | `docs/DEVELOPMENT.md` | Environment, commands, migration rules. |
+| `docs/GIT_WORKFLOW.md` | Branch/PR/CI/merge workflow, commit and release conventions. |
 | `docs/ROADMAP.md` | Phases and gates. |
 | `docs/DECISIONS.md` | Decisions that are expensive to reverse. |
 | `docs/RESEARCH.md` | Findings that changed a decision, with sources and dates. |
@@ -156,14 +157,27 @@ Use them when the task matches. Do not invoke them mechanically.
 
 ---
 
-## Commits
+## Git workflow
 
+Full detail in [docs/GIT_WORKFLOW.md](docs/GIT_WORKFLOW.md) — this is the summary a session needs
+without opening it.
+
+- **`main` is stable.** Routine implementation and milestone work happens on a branch
+  (`feat/m3-database-rls`-style names), never as direct commits to `main`. Direct pushes to `main`
+  are a rare, justified exception (typo fixes, urgent CI-config fixes) — not a shortcut for
+  finishing a milestone's leftover documentation after its feature PR already merged.
+- **PR → CI → merge is the standard path for a milestone**, and doing it does not require asking
+  again each time once a work cycle's prompt has authorized it — but the merge itself still
+  deserves the same care as any shared-state action: green CI, a reviewed diff, no secrets. Squash
+  merge; delete the source branch after.
+- Never force-push, never bypass a red CI gate with an admin override, never skip hooks.
+- `pnpm check` passes before any commit that touches source.
 - Conventional prefixes: `feat:`, `fix:`, `docs:`, `chore:`, `test:`, `refactor:`.
 - Coherent units of work. Not one giant commit, not dozens of trivial ones.
-- `pnpm check` passes before committing source changes.
 - Review the staged diff for secrets, personal data and machine-specific paths before every commit.
-- Do not commit, push, merge or open a pull request unless asked.
-- No AI or co-author attribution in commit messages.
+- No AI, Claude, Anthropic or co-author attribution in commit messages or PR descriptions.
+- No release tag per milestone. Tags are for genuinely usable, user-testable builds — see
+  GIT_WORKFLOW.md §8.
 
 ## Repository contents
 

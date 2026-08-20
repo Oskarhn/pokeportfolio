@@ -51,3 +51,56 @@ jobs:
         run: |
           docker run --rm -v "${{ github.workspace }}:/repo" \
             zricethezav/gitleaks:latest detect --source=/repo -v --redact
+
+  # Migrations, RLS and the two-client authorization suite (docs/TESTING.md §4-5), against an
+  # ephemeral local Supabase/Postgres stack — ubuntu-latest ships Docker, so this needs nothing
+  # beyond what's already free. Never touches the real dev/production Supabase project: no
+  # remote credentials are used anywhere in this job. See docs/DEVELOPMENT.md §4 and prompt §57-58.
+  db-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Enable Corepack and activate the pinned pnpm
+        run: |
+          corepack enable
+          corepack prepare --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Start local Supabase stack (applies every migration to an empty database)
+        run: pnpm exec supabase start
+
+      - name: 'Reset and reapply from scratch (reproducibility: empty DB -> migrations -> seed)'
+        run: pnpm exec supabase db reset
+
+      - name: Export local Supabase connection details
+        run: |
+          pnpm exec supabase status -o env > /tmp/supabase-status.env
+          cat /tmp/supabase-status.env
+          {
+            echo "SUPABASE_URL=$(grep '^API_URL=' /tmp/supabase-status.env | cut -d= -f2- | tr -d '\"')"
+            echo "SUPABASE_ANON_KEY=$(grep '^ANON_KEY=' /tmp/supabase-status.env | cut -d= -f2- | tr -d '\"')"
+            echo "SUPABASE_SERVICE_ROLE_KEY=$(grep '^SERVICE_ROLE_KEY=' /tmp/supabase-status.env | cut -d= -f2- | tr -d '\"')"
+          } >> "$GITHUB_ENV"
+
+      - name: Database and authorization tests
+        run: pnpm test:db
+
+      - name: Generate TypeScript types from schema
+        run: pnpm db:types
+
+      - name: Upload generated types (reviewed and committed by hand, not auto-merged)
+        uses: actions/upload-artifact@v4
+        with:
+          name: database-types
+          path: src/data/database.types.ts
+
+      - name: Stop local Supabase stack
+        if: always()
+        run: pnpm exec supabase stop
