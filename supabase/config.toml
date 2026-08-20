@@ -300,7 +300,7 @@ max_frequency = "5s"
 # This is configuration, not schema, so it reaches a remote project through
 # `pnpm exec supabase config push` -- never a dashboard toggle. See docs/DEVELOPMENT.md §6.
 [auth.hook.before_user_created]
-enabled = true
+enabled = false
 uri = "pg-functions://postgres/public/before_user_created"
 
 # This hook runs before a token is issued and allows you to add additional claims based on the authentication method used.
