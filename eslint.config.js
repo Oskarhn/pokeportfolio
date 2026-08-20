@@ -39,6 +39,19 @@ export default tseslint.config(
     },
   },
   {
+    // tests/db and tests/authorization talk to an untyped Supabase client — no generated
+    // Database type is wired in yet (src/data/database.types.ts arrives once `pnpm db:types`
+    // has a live schema to introspect, see docs/DATA_MODEL.md §12). Every row-shaped response is
+    // therefore `any` until that's parametrized in. Revisit this override when it lands.
+    files: ['tests/db/**/*.ts', 'tests/authorization/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+      '@typescript-eslint/no-unsafe-member-access': 'off',
+      '@typescript-eslint/no-unsafe-return': 'off',
+      '@typescript-eslint/no-unsafe-argument': 'off',
+    },
+  },
+  {
     files: ['*.config.{js,ts}', 'eslint.config.js'],
     languageOptions: {
       globals: globals.node,
