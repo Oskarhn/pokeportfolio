@@ -32,6 +32,12 @@ export function AppShell({ children }: AppShellProps) {
         <span className="text-sm font-medium tracking-wide text-slate-300">PokePortfolio</span>
         {status === 'signed-in' ? (
           <nav className="ml-auto flex items-center gap-4">
+            <Link
+              to="/catalog"
+              className="text-sm text-slate-400 underline-offset-4 hover:text-slate-200 hover:underline"
+            >
+              Catalog
+            </Link>
             {isAdmin ? (
               <Link
                 to="/admin/invitations"
