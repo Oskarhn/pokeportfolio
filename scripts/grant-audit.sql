@@ -240,9 +240,10 @@ begin
     ('acquisition_lots.voided_at')
   ),
 
-  -- The complete set of functions a browser may call. Eleven others exist in this schema and are
-  -- reachable by nobody: the five trigger functions, the four service-role redemption internals,
-  -- hash_invitation_token, and before_user_created.
+  -- The complete set of functions a browser may call. Twelve others exist in this schema and are
+  -- reachable by nobody: the six trigger functions (five from M3/M4 plus M5's
+  -- cards_language_matches_set), the four service-role redemption internals, hash_invitation_token,
+  -- and before_user_created.
   expected_routine(kind, obj, grantee, priv) as (values
     ('routine', 'invitation_status(text)',                          'anon',          'EXECUTE'),
     ('routine', 'invitation_status(text)',                          'authenticated', 'EXECUTE'),
@@ -250,7 +251,8 @@ begin
     ('routine', 'create_invitation(text, integer, text)',           'authenticated', 'EXECUTE'),
     ('routine', 'revoke_invitation(uuid)',                          'authenticated', 'EXECUTE'),
     ('routine', 'card_condition_to_text(card_condition)',           'authenticated', 'EXECUTE'),
-    ('routine', 'grader_to_text(grader)',                           'authenticated', 'EXECUTE')
+    ('routine', 'grader_to_text(grader)',                           'authenticated', 'EXECUTE'),
+    ('routine', 'search_cards(text, text, integer, integer)',       'authenticated', 'EXECUTE')
   ),
 
   expected as (
