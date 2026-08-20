@@ -21,7 +21,14 @@ max_rows = 1000
 # without explicit GRANTs. When unset, new entities are NOT auto-exposed, matching the new cloud
 # default. Set to `true` to keep the legacy behaviour of auto-exposing new entities; this is
 # deprecated and the field is removed on 2026-10-30 once the always-revoked behaviour is permanent.
-# auto_expose_new_tables = true
+# Pinned OFF explicitly rather than left unset. Unset means "the current cloud default", and the
+# real dev project turned out to have the legacy behaviour ON: every new public-schema function
+# arrived with an EXECUTE grant to anon and authenticated already attached, which REVOKE ... FROM
+# PUBLIC does not remove. CI and the remote therefore disagreed about the privilege surface. The
+# migrations name roles explicitly now so the outcome no longer depends on this setting at all --
+# this line removes the divergence at its source as well. See
+# 20260820120040_m4_explicit_function_revokes.sql.
+auto_expose_new_tables = false
 
 [api.tls]
 # Enable HTTPS endpoints locally using a self-signed certificate.
