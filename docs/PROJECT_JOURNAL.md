@@ -512,6 +512,76 @@ status check, and a write that is accepted and applied is the entire problem.
 
 ---
 
+## 2026-08-20 — Correct migrations and convergent migrations are not the same property
+
+M4 fixed the `is_admin` escalation, and the fix was right. It also left a question standing that
+nobody had asked yet: **the fix was verified against a database that had never been wrong.** Every
+test ran against an ephemeral stack built from an empty database. That is the same blind spot that
+produced the bug — an environment where the mistake could not manifest.
+
+So the checkpoint started by trying to break it. Three gaps, in increasing order of what they would
+have cost.
+
+**Functions were revoked by name, from a hand-written list.** Tables were swept
+(`revoke all on all tables …`); functions were not. Sixteen names converge sixteen functions and
+say nothing about a seventeenth arriving with a grant nobody wrote — which is precisely the shape
+of the original bug. Now swept with `revoke execute on all routines in schema public`, then four
+granted back.
+
+**Default privileges were never neutralized, and they turned out to be the actual mechanism.** The
+M4 migration blamed an event trigger. Running the audit found something more specific:
+`pg_default_acl` carries entries owned by `supabase_admin` granting `anon` and `authenticated`
+everything on tables, sequences and functions in `public` — in the local stack *and* in a hosted
+project. A sweep is a statement about objects that exist. A default privilege is a standing
+instruction about every object created afterwards, which for this project means every table M5 is
+about to add.
+
+Two things about those entries are worth writing down, because neither is obvious and both were
+initially got wrong. They cannot be revoked: `ALTER DEFAULT PRIVILEGES FOR ROLE` needs membership,
+and `postgres` is not a member of `supabase_admin` in either environment. The first attempt wrapped
+that in an exception handler, which would have put a statement in a migration that has never once
+succeeded — protection-shaped, and not protection. And they do not need to be: a default privilege
+attaches only to objects its own role creates, and everything in `public` here is created by
+`postgres`, because `db push`, `db reset` and the dashboard SQL editor all connect as `postgres`.
+So the migration revokes the defaults for `postgres`, states plainly why it leaves the others
+alone, and the audit accepts that one grantor while failing on every other.
+
+**`UPDATE` was granted whole-table everywhere except `profiles`.** `is_admin` got a column list
+because the stakes were obvious. Nothing else did — so a session could rewrite `user_id`, the
+primary key, `created_at`, and the columns that record what created a row. RLS stops the row moving
+to someone else, so this is not the escalation `is_admin` was. It is the same *shape*: a policy
+carrying weight that belongs to a privilege, on tables where the policy is the only thing standing
+there. Every user-owned table now grants `UPDATE` by column list, with identity and provenance
+absent.
+
+**What actually closes it.** Not care. Three independent statements of the same fact, any of which
+can fail: the migration, `scripts/grant-audit.sql` asserting the catalog agrees, and the remote
+check proving none of it is exploitable. And then CI makes the database *hostile* first — the exact
+legacy auto-expose state the deployed project was in — proves the audit rejects that state,
+re-applies the baseline, and proves it converges. The middle step matters as much as the last:
+an audit that cannot fail is not a check. The first run of it did fail, on real deviations, which is
+the only reason it is worth trusting.
+
+Two smaller things learned, both of which cost a CI round trip:
+
+- `pg_get_function_identity_arguments` includes parameter *names*, so an audit built on it compares
+  `invitation_status(p_token text)` against `invitation_status(text)` and fails on a rename that
+  changes no privilege. Built from `proargtypes` instead — the input signature, which is what
+  actually identifies a grant.
+- PostgreSQL reports an `UPDATE` column-privilege refusal at **table** granularity. A role holding
+  column-level `UPDATE` and no table-level `UPDATE` gets "permission denied for table profiles",
+  not "…for column is_admin"; the column wording belongs to `SELECT`. Asserting on the column
+  message produces a test that fails while the privilege is doing its job.
+
+**SHA-256 for invitation tokens was re-examined and kept.** The instinct to reach for Argon2 comes
+from a different threat model: a slow KDF exists because a password has perhaps 40 bits of entropy
+and must survive offline guessing. An invitation token here is 256 bits from a CSPRNG. There is no
+dictionary to run, so there is nothing for a slow hash to slow down, and the property that matters
+— a database dump contains nothing replayable as a token — is delivered by any preimage-resistant
+hash. Changing it would be cost with no corresponding gain. Left alone.
+
+---
+
 ## Real-device testing log
 
 Recorded as it happens. Emulation is not evidence of Safari behaviour.

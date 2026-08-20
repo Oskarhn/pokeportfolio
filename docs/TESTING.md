@@ -287,6 +287,29 @@ Not micro-benchmarks. Two checks that map to real failure:
 
 ---
 
+## 7a. Privilege-convergence tests
+
+Three steps in `db-tests`, and the order is the point (SECURITY.md §5.9):
+
+1. `scripts/grant-audit.sql` against the freshly migrated database — the intended surface is what
+   the catalog actually holds.
+2. `tests/db/sql/hostile_grants.sql` puts the database into the legacy auto-expose state the
+   deployed project was in, and asserts that state took effect. The audit must then **fail**; if it
+   passes, CI fails on that instead, because an audit that cannot fail is not a check.
+3. `supabase/migrations/20260820140000_m41_privilege_baseline.sql` is re-applied — the real
+   migration file, not a copy, so the test cannot drift from the thing it verifies — and the audit
+   must come back clean.
+
+The suites then run against a database that has been through that cycle, rather than one that was
+never wrong. That distinction is what M4's escalation cost.
+
+`tests/authorization/system_owned_columns.test.ts` asserts the same restrictions behaviourally, one
+column at a time, probing with a filter that matches no rows: PostgreSQL checks column privileges
+when it plans the statement, so this asserts the privilege rather than an interaction between a
+privilege and a fixture.
+
+---
+
 ## 8. Real-device checks
 
 Emulation is not Safari. A manual checklist, recorded with dates in

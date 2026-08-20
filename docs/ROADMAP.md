@@ -62,9 +62,29 @@ Password reset via the low-volume built-in email, with a documented admin-assist
 
 **Gate:** met. Direct public signup is rejected, including for an address that holds a valid
 outstanding invitation and including hand-built requests carrying forged metadata; replay, expiry,
-revocation and concurrent redemption are all rejected; the full authorization suite passes. Login
-inside an installed PWA on real hardware is the one part still outstanding — it needs the remote
-project and a phone, and is tracked in HANDOVER.
+revocation and concurrent redemption are all rejected; the full authorization suite passes.
+
+### M4.1 — Privilege convergence, deployment and real end-to-end — **complete**
+
+Not a feature milestone. A checkpoint that exists because M4's privilege fix was verified only
+against databases that had never been wrong, and because nothing had ever run the product from a
+browser against a real deployment.
+
+Privilege grants now converge from a hostile starting state rather than only from an empty one:
+routines swept instead of enumerated, default privileges revoked, `UPDATE` granted column by column
+on every user-owned table, and the whole surface asserted against the catalog by
+`scripts/grant-audit.sql` — in CI and, unchanged, in the Supabase SQL editor against a deployed
+project. CI reproduces the original bug's environment before proving the migration climbs out of
+it. The GoTrue Admin-API assumption was re-verified against current upstream source, the deferred
+claim foreign key tested from both sides, and SHA-256 for invitation tokens re-examined and kept.
+
+The application is deployed to Cloudflare Pages on the Free plan, built from `main`, with security
+headers generated from the Supabase URL the bundle was built against.
+
+**Gate:** met. The deployment gate in SECURITY.md §13 passes against the development project, the
+invite → account → sign-in → protected route → sign-out path was exercised in a real browser against
+the deployed app, and the installed-PWA check on real hardware — outstanding since M4 — is done.
+See HANDOVER for the exact state.
 
 ### M5 — Catalog and search
 

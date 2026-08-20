@@ -5,14 +5,18 @@ Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) a
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
 **Last updated:** 2026-08-20 — M1 (scaffold and harness), M2 (financial domain core), M3
-(database, migrations, RLS) and M4 (invite-only authentication) complete.
+(database, migrations, RLS), M4 (invite-only authentication) and M4.1 (privilege convergence,
+deployment, real end-to-end) complete.
 
 ---
 
 ## Status
 
-**Planning is FROZEN. M1–M4 are complete and merged to `main`.**
+**Planning is FROZEN. M1–M4 and the M4.1 checkpoint are complete and merged to `main`.**
 **M5 (catalog and search) is next.** See the Repository section for PR numbers.
+
+The application is deployed and reachable: **https://pokeportfolio-dev.pages.dev**. The owner has a
+working administrator account on the development project. Both were outstanding at the end of M4.
 
 Scope is settled — do not reopen it (see [docs/PLANNING_FREEZE.md](docs/PLANNING_FREEZE.md) §9).
 
@@ -126,10 +130,29 @@ intending to exclude `is_admin`, and on the deployed project — which auto-gran
 broad privileges on new tables — it excluded nothing. A signed-in non-admin could set their own
 `is_admin` flag while the authorization suite was green.
 
-Every privilege is now expressed as **revoke, then grant**
-(`20260820120050_m4_revoke_then_grant_table_privileges.sql`). Keep doing that. And note the wider
-lesson: **CI is a reproducibility gate, not a statement about a deployed project.** Run
-`node scripts/remote-security-check.mjs` after any deploy touching auth, policies or grants.
+Every privilege is expressed as **revoke, then grant**, and M4.1 made that converge from a project
+that starts out wrong rather than only from an empty one
+(`20260820140000_m41_privilege_baseline.sql`). What a new session must actually do:
+
+**Any migration that creates a table, view or function in `public` ends with an explicit
+`revoke … from anon, authenticated` and grants back exactly what is intended — and updates the
+expected set in `scripts/grant-audit.sql`.** CI fails otherwise, deliberately. An object with no
+privilege decision is a defect, not a default. `SECURITY.md` §5.9 has the whole picture; the short
+version is that the intended surface is stated in three independent places and any one of them can
+fail the build.
+
+Two facts that will otherwise cost you an afternoon:
+
+- **The auto-exposure mechanism is `ALTER DEFAULT PRIVILEGES`, not only an event trigger.**
+  `pg_default_acl` carries entries owned by `supabase_admin` granting `anon` and `authenticated`
+  everything on new objects in `public`, locally and on the hosted project. They cannot be revoked
+  (`postgres` is not a member of that role) and do not need to be — a default privilege attaches
+  only to objects its own role creates, and everything in `public` here is created by `postgres`.
+  The audit accepts that one grantor and fails on every other. Do not "fix" it.
+- **CI is a reproducibility gate, not a statement about a deployed project.** Run the deployment
+  gate in SECURITY.md §13 after any deploy touching auth, policies or grants — including
+  `scripts/grant-audit.sql` pasted into the Supabase SQL editor, which is the check that would have
+  caught the escalation before a user could.
 
 ## Environment
 
@@ -142,7 +165,8 @@ lesson: **CI is a reproducibility gate, not a statement about a deployed project
 | Docker Desktop | Still not installed. Not a blocker — CI runs the full local Supabase stack on `ubuntu-latest`. `supabase db push` warns about it harmlessly. |
 | Supabase CLI | 2.114.0, pinned as a devDependency. **Authenticated** as of M4. |
 | Playwright browsers | chromium + webkit installed locally. |
-| Cloudflare | No project yet. Create when deployment is first needed. |
+| Cloudflare | **Pages project `pokeportfolio-dev`, Free plan, no payment method.** Git-connected to `main`; preview deployments off. Nothing to install locally — deployment happens on merge. |
+| psql | **Not on this machine.** The privilege audit runs in CI, or in the Supabase SQL editor against a deployed project. Both paths are documented; neither needs a local Postgres. |
 
 ## Remote Supabase project
 
@@ -153,7 +177,8 @@ lesson: **CI is a reproducibility gate, not a statement about a deployed project
 | Region | **`eu-west-3` (Paris)**, not the `eu-north-1` the docs planned. EU either way, so GDPR posture is unchanged and ~20 ms of latency did not justify recreating it and re-entering a database password. A future production project should still choose deliberately rather than inherit this. |
 | Plan | **Free. No payment card. No billing enabled.** |
 | Postgres | 17.6 |
-| State | All 14 migrations applied · `config push` done, so the auth hook is live · `redeem-invitation` deployed · verified 33/33 by `scripts/remote-security-check.mjs` |
+| State | All 15 migrations applied · `config push` done, so the auth hook is live and `site_url` names the deployment · `redeem-invitation` deployed, with `ALLOWED_ORIGINS` naming the deployed origin · `scripts/grant-audit.sql` clean against the live catalog · `scripts/remote-security-check.mjs` green |
+| Accounts | The owner's administrator account, and nothing else. Synthetic test accounts use the RFC 2606 `.invalid` TLD and are removed after use. |
 
 **The remote is never the source of truth.** Schema and security live in `supabase/migrations/` and
 `supabase/config.toml`. A clean environment must be reconstructible from the repository plus
@@ -178,7 +203,8 @@ data. Get the key from the dashboard or
 - `https://github.com/Oskarhn/pokeportfolio` — **private**
 - M1/M2 via [PR #1](https://github.com/Oskarhn/pokeportfolio/pull/1), M3 via
   [PR #2](https://github.com/Oskarhn/pokeportfolio/pull/2), M4 via
-  [PR #3](https://github.com/Oskarhn/pokeportfolio/pull/3). All squash-merged, branches deleted.
+  [PR #3](https://github.com/Oskarhn/pokeportfolio/pull/3), M4.1 via
+  [PR #5](https://github.com/Oskarhn/pokeportfolio/pull/5). All squash-merged, branches deleted.
 - PR #4 was the deliberate negative security test — both invite-only gates disabled to prove the
   suite fails. Closed unmerged, branch deleted. It is not a mistake in the history.
 - `claude_outputs/` is gitignored and must stay that way.
@@ -190,19 +216,20 @@ data. Get the key from the dashboard or
   directly. CI is unaffected.
 - **TypeScript pinned to 6.0.3**, solely because `typescript-eslint` does not support TS 7 yet.
 - **`src/lib/` does not exist yet** — deliberately, per the no-placeholder-directories rule.
-- **No deployment.** Cloudflare Pages is not set up, so the app runs only on `localhost`. Invitation
-  links therefore point at `localhost:5173` today; they are built from the browser's own origin, so
-  they will follow the deployment automatically.
-- **The installed-PWA-on-a-phone check is not done.** It needs the app deployed somewhere a phone
-  can reach. It is the one part of M4's gate still outstanding; see docs/TESTING.md §8.
-- **`m4-remote-check-2@example.invalid` is a leftover synthetic account** on the dev project from the
-  remote verification. Harmless; delete it with
-  `delete from auth.users where email = 'm4-remote-check-2@example.invalid';` when convenient. It is
-  also a live test of the account-deletion cascade.
-- **No administrator exists on the dev project yet.** Run the bootstrap in docs/DEVELOPMENT.md §7
-  once, for the owner's own address, before using the admin invitation screen.
-- **Regenerate `src/data/database.types.ts` (`pnpm db:types`) in the same commit as any migration.**
-  It is generated from CI's ephemeral stack, downloaded from the `database-types` artifact.
+- **Environment variables are baked into the Cloudflare bundle at build time.** Editing one in the
+  dashboard changes nothing until a redeploy — and a wrong value fails silently, as a generic
+  "Could not reach the server". `node scripts/deployment-check.mjs` exists because of exactly that.
+- **A service worker serves the previous shell on the first load after a deploy.** `autoUpdate`
+  takes over on the next load. Normal PWA behaviour, but it briefly makes a corrected deployment
+  look uncorrected — reload before concluding anything about a fresh deploy.
+- **The deployed CSP is exercised only on Cloudflare.** `vite dev` and `vite preview` ignore
+  `_headers`, so a policy mistake is invisible locally. `deployment-check.mjs` is the compensating
+  control; run it after any deploy.
+- **`supabase_admin`'s default privileges in `public` cannot be revoked.** Documented above and in
+  SECURITY.md §5.9. Safe, for a stated reason. Not a TODO.
+- **Regenerate `src/data/database.types.ts` (`pnpm db:types`) in the same commit as any migration
+  that changes the schema.** It is generated from CI's ephemeral stack, downloaded from the
+  `database-types` artifact. M4.1's migration changes privileges only, so the file is unchanged.
 
 ## Open uncertainties
 
@@ -219,7 +246,7 @@ None block M5. Detail in [docs/RESEARCH.md](docs/RESEARCH.md).
 
 ## Next actions
 
-**M1–M4 are done.** Start **M5 — Catalog and search**
+**M1–M4 and M4.1 are done.** Start **M5 — Catalog and search**
 ([docs/ROADMAP.md](docs/ROADMAP.md)). Before writing ingest code:
 
 1. **Re-verify TCGdex** against its current documentation. The M3-era findings (23 444 EN cards,
@@ -230,12 +257,9 @@ None block M5. Detail in [docs/RESEARCH.md](docs/RESEARCH.md).
 3. Ingest runs server-side into the shared catalog tables, which have **no client write grant** —
    that is deliberate, so the ingest path is a service-role/Edge Function concern.
 4. Every external payload gets parsed and validated at the boundary (DEVELOPMENT.md §6).
-
-Two small things worth doing early, neither of which is M5:
-
-- **Deploy to Cloudflare Pages.** It unblocks the installed-PWA check, real invitation links and
-  phone testing, and it is free.
-- **Bootstrap the owner's admin account** on the dev project (DEVELOPMENT.md §7).
+5. **Every migration that adds a table ends with revoke-then-grant, and updates the expected set in
+   `scripts/grant-audit.sql`.** M5 adds more tables than any milestone so far, so this is the one
+   most likely to be forgotten and the one CI will refuse to let you forget.
 
 **Do not** attempt the whole MVP in one branch. Each milestone is a reviewable unit with a
 behavioural gate.
@@ -271,6 +295,24 @@ Verified 2026-08-20 (M4, and all load-bearing — see RESEARCH R21–R23):
   and `GRANT` is additive — so a narrow grant does not restrict. This produced a live privilege
   escalation that CI could not see. See the journal entry.
 
+Verified 2026-08-20 (M4.1):
+
+- **The auto-exposure mechanism is `pg_default_acl` entries owned by `supabase_admin`**, present in
+  the local stack and the hosted project alike, granting `anon` and `authenticated` everything on
+  new objects in `public`. Unreachable from a migration and harmless — see the schema note above.
+- **GoTrue's Admin API still invokes no Before User Created hook**, re-verified at
+  `supabase/auth@bc32168e13fdc928c98b449fc76bc3fdb9a293c5` (master, 2026-08-20; release v2.196.0).
+  RESEARCH R21 carries the detail and what protects the project if it changes.
+- `REVOKE` on a table also revokes that role's column privileges on it, and `ALL TABLES IN SCHEMA`
+  covers views and foreign tables but **not materialized views** — if M5 adds one, it needs its own
+  line in the baseline migration.
+- **PostgreSQL reports an `UPDATE` column-privilege refusal at table granularity** — "permission
+  denied for table profiles", not "…for column is_admin". The column wording belongs to `SELECT`.
+- **Cloudflare Pages, Free:** SPA fallback is automatic when the output has no top-level
+  `404.html`; `_headers` supports 100 rules; `.nvmrc` is respected but `packageManager`/Corepack is
+  **not**, so pnpm is pinned with `PNPM_VERSION`. Build image v3 defaults: Node 22.16.0, pnpm
+  10.11.1.
+
 ## Commands
 
 ```bash
@@ -288,24 +330,38 @@ Remote, all deliberate acts rather than a loop (DEVELOPMENT.md §3):
 pnpm exec supabase db push
 pnpm exec supabase config push
 pnpm exec supabase functions deploy redeem-invitation
-node scripts/remote-security-check.mjs
+pnpm exec supabase secrets set ALLOWED_ORIGINS=https://pokeportfolio-dev.pages.dev
 ```
 
-**Green as of the M4 merge:** 67 domain/property tests · 26 Playwright tests (desktop + iPhone) ·
-11 database and authorization test files, including 18 invite-only attack cases, 22 admin
-authorization cases and the function-grant surface · 33/33 remote checks against the dev project.
+Then the deployment gate (SECURITY.md §13) — never skip it after touching auth, policies or grants:
+
+```bash
+node scripts/remote-security-check.mjs   # Supabase, publishable key only
+node scripts/deployment-check.mjs        # Cloudflare, what browsers actually receive
+```
+
+Plus `scripts/grant-audit.sql` pasted into the Supabase SQL editor. It reads catalog metadata only;
+clean means "Success. No rows returned."
+
+Deployment itself needs no command. Merging to `main` builds it.
+
+**Green as of the M4.1 merge:** 67 domain/property tests · 26 Playwright tests (desktop + iPhone) ·
+**176 database and authorization tests across 13 files**, including 18 invite-only attack cases, 22
+admin authorization cases, the function-grant surface, the system-owned columns and the claim
+mechanics · 17/17 remote checks against the dev project · deployment checks against Cloudflare ·
+`grant-audit.sql` clean against the live catalog.
+
 CI runs `build-and-test` (gate + E2E + gitleaks) and `db-tests` (ephemeral Supabase stack → migrate
-→ assert the Edge Function is reachable → suites → generate types) on every push and PR, with **no
-remote credentials anywhere**.
+→ assert the Edge Function is reachable → **assert the privilege baseline → make the database
+hostile, prove the audit rejects it, re-apply, prove convergence** → suites → generate types) on
+every push and PR, with **no remote credentials anywhere**.
 
 ## Owner actions outstanding
 
 | # | Action | Blocks |
 |---|---|---|
-| 1 | Bootstrap the admin account on the dev project (DEVELOPMENT.md §7) | Using the admin invitation screen |
-| 2 | Delete the leftover `m4-remote-check-2@example.invalid` account | Nothing — tidiness |
-| 3 | Optional: create a free Cloudflare Pages project | Installed-PWA check, phone testing, real invitation links |
-| 4 | Optional: install Docker Desktop | Local iteration convenience only |
-| 5 | Optional: fix Node/pnpm absence from the default PATH | Convenience only |
+| 1 | Optional: install Docker Desktop | Local iteration convenience only |
+| 2 | Optional: fix Node/pnpm absence from the default PATH | Convenience only |
 
-Nothing blocks starting M5.
+Nothing blocks starting M5. The admin account, the deployment and the installed-PWA check are all
+done.

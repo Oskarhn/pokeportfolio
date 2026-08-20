@@ -111,7 +111,7 @@ describe.each(TABLES)('RLS isolation: %s', (table) => {
     expect(error).not.toBeNull()
   })
 
-  it('cannot reassign an owned row to another user (rejected by WITH CHECK)', async () => {
+  it('cannot reassign an owned row to another user (no column grant, and WITH CHECK behind it)', async () => {
     const { data: created } = await clientA
       .from(table)
       .insert({ user_id: userA.id, name: `${table}-reassign-${Date.now()}` })

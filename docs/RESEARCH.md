@@ -362,6 +362,25 @@ fact rather than a documented
 guarantee, it is verified continuously rather than trusted: the authorization suite asserts both
 that public signup fails *and* that redemption succeeds, so a change in either direction fails CI.
 
+**Re-verified 2026-08-20 (M4.1)** against `supabase/auth` at commit
+`bc32168e13fdc928c98b449fc76bc3fdb9a293c5` (`master`, 2026-08-20; latest release `v2.196.0`,
+2026-08-18; the dev project runs GoTrue `v2.195.0`). Unchanged: a repository code search for
+`triggerBeforeUserCreated` returns nine files — `hooks.go`, where it is defined, and the eight
+self-service paths listed above. `internal/api/admin.go` at that commit contains no occurrence of
+`BeforeUserCreated`, and `adminUserCreate` constructs the user through `models.NewUser` /
+`models.NewUserWithPasswordHash` and persists it directly, with no hook call anywhere in the
+function.
+
+Pin the version, not the branch, when reading this later: `master` moves, and the point of
+recording a commit is that a future session can tell whether it is looking at the same code.
+
+**What protects this if it changes.** Not the assumption — the triangle around it. Public signup
+must fail, Admin creation without a claim must fail, and a valid redemption must succeed; all three
+are asserted, and no two of them can be satisfied by an accident. If a future GoTrue started
+invoking the hook from the Admin API, redemption would break loudly and CI would fail, which is the
+safe direction: the gate would close too far rather than open. Gate 2, the `auth.users` trigger,
+holds regardless of what GoTrue does, because it is not GoTrue's to change.
+
 ---
 
 ## R22 — Supabase API key terminology is mid-migration
