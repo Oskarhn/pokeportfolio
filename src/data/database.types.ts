@@ -7,6 +7,11 @@ export type Json =
   | Json[]
 
 export type Database = {
+  // Allows to automatically instantiate createClient with right options
+  // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
+  __InternalSupabase: {
+    PostgrestVersion: "14.15"
+  }
   public: {
     Tables: {
       acquisition_lots: {
@@ -85,22 +90,34 @@ export type Database = {
         Row: {
           created_at: string
           id: string
+          is_active: boolean
+          language: string
+          last_seen_at: string | null
           name: string
           slug: string
+          tcgdex_series_id: string | null
           updated_at: string
         }
         Insert: {
           created_at?: string
           id?: string
+          is_active?: boolean
+          language: string
+          last_seen_at?: string | null
           name: string
           slug: string
+          tcgdex_series_id?: string | null
           updated_at?: string
         }
         Update: {
           created_at?: string
           id?: string
+          is_active?: boolean
+          language?: string
+          last_seen_at?: string | null
           name?: string
           slug?: string
+          tcgdex_series_id?: string | null
           updated_at?: string
         }
         Relationships: []
@@ -111,7 +128,9 @@ export type Database = {
           card_count_total: number | null
           created_at: string
           id: string
+          is_active: boolean
           language: string
+          last_seen_at: string | null
           logo_url: string | null
           name: string
           released_on: string | null
@@ -126,7 +145,9 @@ export type Database = {
           card_count_total?: number | null
           created_at?: string
           id?: string
+          is_active?: boolean
           language: string
+          last_seen_at?: string | null
           logo_url?: string | null
           name: string
           released_on?: string | null
@@ -141,7 +162,9 @@ export type Database = {
           card_count_total?: number | null
           created_at?: string
           id?: string
+          is_active?: boolean
           language?: string
+          last_seen_at?: string | null
           logo_url?: string | null
           name?: string
           released_on?: string | null
@@ -166,37 +189,46 @@ export type Database = {
           card_id: string
           cardmarket_product_id: string | null
           created_at: string
+          finish: Database["public"]["Enums"]["card_finish"]
           id: string
           is_active: boolean
+          last_seen_at: string | null
           size: Database["public"]["Enums"]["card_size"]
+          stamp: string
+          subtype: string
           tcgdex_variant_id: string | null
           tcgplayer_product_id: string | null
           updated_at: string
-          variant_type: Database["public"]["Enums"]["variant_type"]
         }
         Insert: {
           card_id: string
           cardmarket_product_id?: string | null
           created_at?: string
+          finish: Database["public"]["Enums"]["card_finish"]
           id?: string
           is_active?: boolean
+          last_seen_at?: string | null
           size?: Database["public"]["Enums"]["card_size"]
+          stamp?: string
+          subtype?: string
           tcgdex_variant_id?: string | null
           tcgplayer_product_id?: string | null
           updated_at?: string
-          variant_type: Database["public"]["Enums"]["variant_type"]
         }
         Update: {
           card_id?: string
           cardmarket_product_id?: string | null
           created_at?: string
+          finish?: Database["public"]["Enums"]["card_finish"]
           id?: string
           is_active?: boolean
+          last_seen_at?: string | null
           size?: Database["public"]["Enums"]["card_size"]
+          stamp?: string
+          subtype?: string
           tcgdex_variant_id?: string | null
           tcgplayer_product_id?: string | null
           updated_at?: string
-          variant_type?: Database["public"]["Enums"]["variant_type"]
         }
         Relationships: [
           {
@@ -215,6 +247,9 @@ export type Database = {
           id: string
           illustrator: string | null
           image_base_url: string | null
+          is_active: boolean
+          language: string
+          last_seen_at: string | null
           local_id: string
           name: string
           rarity: string | null
@@ -228,6 +263,9 @@ export type Database = {
           id?: string
           illustrator?: string | null
           image_base_url?: string | null
+          is_active?: boolean
+          language: string
+          last_seen_at?: string | null
           local_id: string
           name: string
           rarity?: string | null
@@ -241,6 +279,9 @@ export type Database = {
           id?: string
           illustrator?: string | null
           image_base_url?: string | null
+          is_active?: boolean
+          language?: string
+          last_seen_at?: string | null
           local_id?: string
           name?: string
           rarity?: string | null
@@ -257,6 +298,48 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      catalog_sync_runs: {
+        Row: {
+          cards_seen: number
+          cards_upserted: number
+          error: string | null
+          finished_at: string | null
+          id: number
+          language: string
+          started_at: string
+          status: string
+          tcgdex_series_id: string | null
+          tcgdex_set_id: string
+          variants_upserted: number
+        }
+        Insert: {
+          cards_seen?: number
+          cards_upserted?: number
+          error?: string | null
+          finished_at?: string | null
+          id?: never
+          language: string
+          started_at?: string
+          status: string
+          tcgdex_series_id?: string | null
+          tcgdex_set_id: string
+          variants_upserted?: number
+        }
+        Update: {
+          cards_seen?: number
+          cards_upserted?: number
+          error?: string | null
+          finished_at?: string | null
+          id?: never
+          language?: string
+          started_at?: string
+          status?: string
+          tcgdex_series_id?: string | null
+          tcgdex_set_id?: string
+          variants_upserted?: number
+        }
+        Relationships: []
       }
       holdings: {
         Row: {
@@ -916,9 +999,32 @@ export type Database = {
         Args: { p_invitation_id: string }
         Returns: undefined
       }
+      search_cards: {
+        Args: {
+          p_language?: string
+          p_limit?: number
+          p_offset?: number
+          p_query: string
+        }
+        Returns: {
+          card_id: string
+          category: string
+          illustrator: string
+          image_base_url: string
+          language: string
+          local_id: string
+          name: string
+          rarity: string
+          set_id: string
+          set_name: string
+          total_count: number
+          variant_count: number
+        }[]
+      }
     }
     Enums: {
       card_condition: "MT" | "NM" | "EX" | "GD" | "LP" | "PL" | "PO"
+      card_finish: "normal" | "holo" | "reverse" | "other"
       card_size: "standard" | "oversized"
       collection_view: "grid" | "list" | "table"
       cost_basis_state: "known" | "not_paid" | "unknown"
@@ -958,14 +1064,6 @@ export type Database = {
         | "shelf"
         | "other"
       theme_preference: "system" | "light" | "dark"
-      variant_type:
-        | "normal"
-        | "holo"
-        | "reverse"
-        | "first_edition"
-        | "promo"
-        | "stamped"
-        | "other"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -1094,6 +1192,7 @@ export const Constants = {
   public: {
     Enums: {
       card_condition: ["MT", "NM", "EX", "GD", "LP", "PL", "PO"],
+      card_finish: ["normal", "holo", "reverse", "other"],
       card_size: ["standard", "oversized"],
       collection_view: ["grid", "list", "table"],
       cost_basis_state: ["known", "not_paid", "unknown"],
@@ -1136,16 +1235,6 @@ export const Constants = {
         "other",
       ],
       theme_preference: ["system", "light", "dark"],
-      variant_type: [
-        "normal",
-        "holo",
-        "reverse",
-        "first_edition",
-        "promo",
-        "stamped",
-        "other",
-      ],
     },
   },
 } as const
-

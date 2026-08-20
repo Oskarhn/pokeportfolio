@@ -82,15 +82,35 @@ variant is the natural join point.
 
 | Table | Key columns |
 |---|---|
-| `card_series` | `id uuid pk`, `slug`, `name` |
-| `card_sets` | `id uuid pk`, `series_id fk`, `slug`, `name`, `language`, `card_count_official int`, `card_count_total int`, `released_on date`, `logo_url`, `symbol_url` |
-| `cards` | `id uuid pk`, `set_id fk`, `local_id text` (collector number as printed), `name`, `rarity`, `category`, `illustrator`, `image_base_url` |
-| `card_variants` | `id uuid pk`, `card_id fk`, `variant_type` enum, `size` enum, `is_active bool` |
+| `card_series` | `id uuid pk`, `slug`, `name`, `language`, `tcgdex_series_id`, `is_active bool`, `last_seen_at` |
+| `card_sets` | `id uuid pk`, `series_id fk`, `slug`, `name`, `language`, `card_count_official int`, `card_count_total int`, `released_on date`, `logo_url`, `symbol_url`, `is_active bool`, `last_seen_at` |
+| `cards` | `id uuid pk`, `set_id fk`, `local_id text` (collector number as printed), `name`, `rarity`, `category`, `illustrator`, `image_base_url`, `language` (denormalized from the set, trigger-enforced), `is_active bool`, `last_seen_at` |
+| `card_variants` | `id uuid pk`, `card_id fk`, `finish` enum, `stamp text`, `subtype text`, `size` enum, `is_active bool`, `last_seen_at` |
 
-`variant_type` enum: `normal`, `holo`, `reverse`, `first_edition`, `promo`, `stamped`, `other`.
-Extensible via migration; the provider's own variant vocabulary is mapped into it at ingest.
+**`finish`, `stamp` and `subtype` are three independent dimensions (D-033), not one enum.** M3
+shipped a single `variant_type` enum (`normal`, `holo`, `reverse`, `first_edition`, `promo`,
+`stamped`, `other`) that treated finish and edition as mutually exclusive values of the same column.
+M5's ingest found a real card that disproves that: Base Set Charizard has a variant that is holo,
+shadowless *and* first-edition simultaneously. `finish` is a small enum (`normal`/`holo`/`reverse`/
+`other`); `stamp` and `subtype` are free text because TCGdex's own vocabulary for them is not a
+documented closed set. Uniqueness is `(card_id, finish, stamp, subtype, size)`, with `''` — not
+`NULL` — meaning "provider did not report one", chosen so the constraint can be a plain column-list
+unique constraint that Postgres/PostgREST upsert can target directly (an expression index over
+`coalesce(..., '')` cannot be an `ON CONFLICT` target — found by running the ingest function for
+real, not by inspection).
 
 `local_id` is text, not integer: collector numbers include `SV049`, `TG12`, `H31`, `001/165`.
+
+**Provider-id uniqueness is scoped by `language`, not global (D-034).** TCGdex reuses ids across
+languages — `neo1` names both English "Neo Genesis" and Japanese "金、銀、新世界へ...", and both
+series lists contain a series id `neo` — so `card_series`, `card_sets` and `cards` all carry
+`language` and their provider-id uniqueness is `unique (language, tcgdex_*_id)`. `cards.language` is
+denormalized from `card_sets.language` (the same technique `user_id` uses on user-owned child
+tables), with a trigger asserting it never drifts from the parent.
+
+**`is_active` and `last_seen_at` exist so an upstream deletion never destroys internal identity**
+(M5 prompt §19). A card or set TCGdex stops listing is deactivated on its next sync, never deleted —
+a holding referencing a deactivated variant stays valid, it just stops appearing in search.
 
 ### 3.2 Language and international identity
 
@@ -109,6 +129,24 @@ Consequences, deliberately accepted:
 
 TCGdex confirms this shape: `/v2/en/sets` returns 218 sets, `/v2/ja/sets` returns 177, with
 entirely different identifiers (`base1` vs `PMCG1`).
+
+### 3.3a Search and sync observability (M5)
+
+`search_cards(p_query, p_language, p_limit, p_offset)` is a `SECURITY INVOKER`, `STABLE` Postgres
+function — invoker rights because `authenticated` already holds plain `SELECT` on every table it
+reads, so there is no privilege gap for a `DEFINER` to bridge. It ranks over `cards` joined to
+`card_sets`, splitting a trailing collector-number-shaped token off the query (`"Base Set 4"` →
+text `"Base Set"` + number `"4"`) so combined name/number queries work without a natural-language
+parser. Every predicate is a bound parameter; nothing concatenates caller input into SQL text.
+Trigram indexes on `cards.name` (M3) and `card_sets.name` (M5) accelerate both the `%` similarity
+operator and `ILIKE '%term%'`, which is what makes short and Japanese queries workable without a
+second search engine.
+
+`catalog_sync_runs` is a service-role-only log, one row per `(language, tcgdex_set_id)` ingest
+attempt: status, counts, an error string, timestamps. RLS enabled with no policies (same shape as
+`invitation_claims`) — unreachable through the Data API under every role a browser can hold. It
+answers "when was English/Japanese last synced, did anything fail, which set" without building
+anything closer to monitoring than a table.
 
 ### 3.3 `sealed_products`
 
@@ -139,12 +177,22 @@ mapping table:
 
 | Table | Provider columns |
 |---|---|
+| `card_series` | `tcgdex_series_id` |
 | `card_sets` | `tcgdex_set_id` |
 | `cards` | `tcgdex_card_id` |
 | `card_variants` | `tcgdex_variant_id`, `cardmarket_product_id`, `tcgplayer_product_id` |
 | `sealed_products` | `cardmarket_product_id`, `tcgplayer_product_id` |
 
-Each has a partial unique index (`WHERE col IS NOT NULL`).
+`card_series`/`card_sets`/`cards` have a plain (non-partial) unique constraint on
+`(language, tcgdex_*_id)` — plain rather than `WHERE col IS NOT NULL` because Postgres already
+treats every `NULL` as distinct from every other value in an ordinary unique constraint, so the
+partial form bought nothing and, found the hard way, cannot be a PostgREST upsert `on_conflict`
+target (D-034). `card_variants`' three provider columns are plain indexed columns with **no**
+uniqueness at all: `tcgdex_variant_id` is sometimes the literal string `"generated"` (TCGdex's own
+placeholder for "no real cross-reference", mapped to `NULL` by the adapter rather than stored), and
+`cardmarket_product_id`/`tcgplayer_product_id` are marketplace listing ids that can legitimately be
+shared by sibling finishes of the same card (D-034) — informational for M9's price ingest, never a
+claim of one-to-one identity.
 
 Rationale: a polymorphic `provider_refs` table cannot carry real foreign keys and would need
 application-level integrity enforcement — a poor trade at this scale. Explicit columns are
@@ -735,7 +783,8 @@ Beyond primary and foreign keys:
 | `purchases (user_id, purchased_on DESC)` | Ledger and monthly spend |
 | `price_snapshots (card_variant_id, snapshot_date DESC)` | Latest-price resolution |
 | `price_snapshots (snapshot_date)` | Retention thinning |
-| `cards` trigram on `name`, plus `(set_id, local_id)` | Card search |
+| `cards` trigram on `name`, plus `(set_id, local_id)`, `local_id`, `language` | Card search |
+| `card_sets` trigram on `name` | Set-name search |
 | `portfolio_snapshots (user_id, snapshot_date)` | Chart range queries |
 | `custom_collection_members (collection_id, sort_order)` | Collection browsing |
 | `custom_collection_members (holding_id)` | "Which collections is this card in" |

@@ -639,3 +639,82 @@ maintenance than it buys for ten invited users choosing a 12-character password.
 
 **Consequences.** Enforced by GoTrue server-side, so it holds for any caller regardless of the
 client. Re-checked before the invitation is claimed, so a too-short password never burns one.
+
+---
+
+## D-033 — `card_variants` identity is finish + stamp + subtype, three columns, not one enum
+
+**2026-08-20 · Accepted**
+
+**Decision.** The M3 `variant_type` enum (`normal`, `holo`, `reverse`, `first_edition`, `promo`,
+`stamped`, `other`) is replaced by three columns: `finish` (enum: `normal`/`holo`/`reverse`/`other`),
+`stamp` (free text, e.g. `1st-edition`), and `subtype` (free text print-run marker, e.g.
+`shadowless`, `unlimited`, `1999-2000-copyright`). Uniqueness moves from `(card_id, variant_type,
+size)` to `(card_id, finish, stamp, subtype, size)`.
+
+**Rationale.** Evidence, not preference (PLANNING_FREEZE.md §9's bar for reopening a schema
+decision). A real TCGdex response for `base1-4` (Charizard, Base Set) carries a `variants_detailed`
+entry with `type: "holo"`, `subtype: "shadowless"`, `stamp: ["1st-edition"]` simultaneously — holo,
+shadowless *and* first-edition on one physical card. The old enum treats `holo` and
+`first_edition` as mutually exclusive values of the same column, so it cannot represent that card at
+all without lying at ingest time. `stamp` and `subtype` are free text rather than enums because
+TCGdex's own vocabulary for them is not documented as closed (`wPromo`'s boolean flag implies at
+least one stamp value never observed in the samples this decision was made from), and a provider
+adding a new subtype should not be able to fail an ingest.
+
+**Alternatives considered.** Keeping `variant_type` and adding a boolean `is_first_edition` column
+was rejected: it only solves the one collision actually observed and leaves the same category error
+for the next one (a future stamped promo, say). Three columns matching TCGdex's own dimensions is
+the smallest change that stops guessing at the shape of future data.
+
+**Consequences.** `supabase/migrations/20260820150000_m5_catalog_language_and_variant_corrections.sql`
+and `20260820153000_m5_card_variants_identity_constraint_fix.sql`. Made now, before M6 attaches
+holdings to `card_variants`, per PLANNING_FREEZE.md §9's "new evidence" test and M5's own mandate
+(this document's prompt §11-§12) to correct the model while the catalog is still empty. No holding
+or lot semantics change — this is catalog shape only.
+
+---
+
+## D-034 — Provider identifiers are scoped by language; marketplace product ids are not unique per variant
+
+**2026-08-20 · Accepted**
+
+**Decision.** Every TCGdex-provider-id uniqueness constraint in the catalog (`card_series`,
+`card_sets`, `cards`) is now `unique (language, tcgdex_*_id)`, not a bare `unique (tcgdex_*_id)`.
+`card_variants.cardmarket_product_id` and `.tcgplayer_product_id` are plain indexed columns, not
+unique ones.
+
+**Rationale.** Both are measured facts, not assumptions. TCGdex's English and Japanese set lists
+both contain a set id `neo1` (English "Neo Genesis", Japanese "金、銀、新世界へ..."), and both series
+lists contain a series id `neo` — a global unique index on either column would have rejected the
+second language's row outright. Separately, `swsh1-2` (Roselia, Sword & Shield) has both a `normal`
+and a `reverse` variant, and TCGdex's own pricing payload gives both finishes the identical
+TCGplayer `productId` — one marketplace listing covers two priced finishes, so treating that id as
+a per-variant identity was already wrong, not merely inconvenient.
+
+**Consequences.** Internal `uuid` identity remains canonical throughout (DATA_MODEL.md §3.4) —
+these are mapping columns, and none of this changes what a future holding points at. The product-id
+columns are kept, indexed, because M9's price ingest will still want to look up "which rows share
+this listing"; they simply stop claiming to be identity.
+
+---
+
+## D-035 — Catalog ingest is triggered by an operator-held bearer secret, not a user session
+
+**2026-08-20 · Accepted**
+
+**Decision.** `sync-catalog` (the ingest Edge Function) checks `Authorization: Bearer
+<CATALOG_SYNC_SECRET>` against a Supabase Function secret, the same mechanical shape as
+`redeem-invitation`'s `verify_jwt = false` but a different actual gate: a secret the operator
+generated and holds, not a token bound to an invited email address.
+
+**Rationale.** There is no signed-in user on the other end of a catalog sync — it is run by whoever
+operates the deployment, from a script, not from the product's UI. Requiring a Supabase user JWT
+would mean either inventing a fake "sync admin" account or reusing the owner's real admin session
+from a script, both worse than a narrow, single-purpose secret that grants exactly one capability
+and nothing else. This is the same class of credential as a CI deploy key, not a step up from it.
+
+**Consequences.** `sync-catalog` is unreachable from the browser bundle (no code path calls it with
+this secret, and the secret is never shipped to a client). The secret is rotatable independently of
+every other credential in the system by re-running `supabase secrets set CATALOG_SYNC_SECRET=...`
+and updating the operator's own environment; no user-facing behaviour depends on it.
