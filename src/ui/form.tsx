@@ -130,9 +130,20 @@ export function AuthLayout({
 }) {
   // `my-auto` centres the form in whatever height is left rather than pinning it to the top with
   // dead space beneath. On a phone that keeps the fields near the middle of the screen, which is
-  // where a thumb is and where the keyboard is least likely to cover them.
+  // where a thumb is.
+  //
+  // The uneven padding — 24px top, 96px bottom — sits the content ~36px above true centre. When a
+  // box is centred, its *content* is offset from the middle by half the difference between its top
+  // and bottom padding, so this is a deliberate 1cm nudge upward rather than a stray value.
+  //
+  // It is there for iOS. The on-screen keyboard carries an accessory bar above it (the field-
+  // stepping and Done controls), and that bar was covering the "Forgot your password?" link on an
+  // installed iPhone PWA while a field had focus. The bar's height is not exposed to CSS —
+  // env(keyboard-inset-*) is not available in iOS Safari — so there is nothing to subtract; the
+  // options are a fixed offset or a VisualViewport listener repositioning the form on every
+  // resize. A dozen lines of JavaScript fighting the browser for a centimetre is the worse trade.
   return (
-    <div className="mx-auto my-auto w-full max-w-sm space-y-6 py-6">
+    <div className="mx-auto my-auto w-full max-w-sm space-y-6 pt-6 pb-24">
       <div className="space-y-1.5">
         <h1 className="text-2xl font-semibold tracking-tight text-slate-100">{title}</h1>
         {description ? <p className="text-sm text-slate-400">{description}</p> : null}
