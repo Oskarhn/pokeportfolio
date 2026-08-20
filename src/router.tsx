@@ -1,5 +1,25 @@
 import { createRootRoute, createRoute, createRouter, Outlet } from '@tanstack/react-router'
 import { AppShell } from './ui/AppShell'
+import { RedirectIfSignedIn, RequireAdmin, RequireSession } from './auth/guards'
+import { LoginPage } from './features/auth/LoginPage'
+import { InvitePage } from './features/auth/InvitePage'
+import { ForgotPasswordPage } from './features/auth/ForgotPasswordPage'
+import { ResetPasswordPage } from './features/auth/ResetPasswordPage'
+import { InvitationsPage } from './features/admin/InvitationsPage'
+import { HomePage } from './features/home/HomePage'
+
+/**
+ * Three route classes (docs/UX_FLOWS.md):
+ *
+ *   public     /login, /invite/$token, /forgot-password, /reset-password
+ *   protected  /
+ *   admin      /admin/invitations
+ *
+ * The guards wrap components rather than running in `beforeLoad` because the session is restored
+ * asynchronously from storage: a loader-time check would have to either block first paint or race
+ * the restore. A wrapper renders a skeleton until the answer is known, which is the honest
+ * representation of "we do not know yet".
+ */
 
 const rootRoute = createRootRoute({
   component: () => (
@@ -13,16 +33,60 @@ const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
   component: () => (
-    <div className="space-y-2">
-      <h1 className="text-2xl font-semibold">PokePortfolio</h1>
-      <p className="text-sm text-slate-400">
-        Engineering foundation is up. Product screens have not been built yet.
-      </p>
-    </div>
+    <RequireSession>
+      <HomePage />
+    </RequireSession>
   ),
 })
 
-const routeTree = rootRoute.addChildren([indexRoute])
+const loginRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/login',
+  component: () => (
+    <RedirectIfSignedIn>
+      <LoginPage />
+    </RedirectIfSignedIn>
+  ),
+})
+
+const inviteRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/invite/$token',
+  component: InvitePage,
+})
+
+const forgotPasswordRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/forgot-password',
+  component: ForgotPasswordPage,
+})
+
+// Not wrapped in RedirectIfSignedIn: arriving here *with* a session is the success case, because
+// the recovery link established one.
+const resetPasswordRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/reset-password',
+  component: ResetPasswordPage,
+})
+
+const adminInvitationsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/admin/invitations',
+  component: () => (
+    <RequireAdmin>
+      <InvitationsPage />
+    </RequireAdmin>
+  ),
+})
+
+const routeTree = rootRoute.addChildren([
+  indexRoute,
+  loginRoute,
+  inviteRoute,
+  forgotPasswordRoute,
+  resetPasswordRoute,
+  adminInvitationsRoute,
+])
 
 export const router = createRouter({ routeTree })
 

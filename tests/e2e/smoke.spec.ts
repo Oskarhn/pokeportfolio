@@ -14,7 +14,8 @@ test('the app shell loads with no console errors', async ({ page }) => {
   const response = await page.goto('/')
   expect(response?.ok()).toBe(true)
 
-  await expect(page.getByRole('heading', { name: 'PokePortfolio' })).toBeVisible()
+  // `/` is protected, so an anonymous visit lands on the sign-in form rather than the app.
+  await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
   expect(consoleErrors).toEqual([])
 })
 

@@ -514,3 +514,128 @@ Internal working name and repository slug `pokeportfolio`. Not branding. "Poke" 
 to a trademark that it must be reconsidered before any public release; the name appears in the
 repository slug and documentation only, never baked into a database schema, package namespace or
 domain. Renaming later is a find-and-replace, by design.
+
+---
+
+## D-028 — Invite-only is two server-side gates, and the auth hook denies unconditionally
+
+**2026-08-20 · Accepted; supersedes the M3 plan of an `auth.users` trigger alone**
+
+**Context.** M3 shipped the invitation schema but nothing that closed `/auth/v1/signup`, and
+documented that honestly. The planned fix was a single `auth.users` backstop trigger. Since then
+Supabase's **Before User Created** auth hook became generally available on the free plan, which
+changed what the best answer is.
+
+**Decision.** Both, with distinct jobs.
+
+Gate 1 is the Before User Created hook, implemented as `public.before_user_created`, which
+**rejects every invocation unconditionally**. Reading `supabase/auth` at master establishes that
+GoTrue calls this hook from every self-service account-creation path and from none of the Auth Admin
+API (RESEARCH.md R21). Since the only path this product uses is the Admin API — from a server-side function that has
+already proven token possession — the hook has nothing to evaluate.
+
+Gate 2 is a `BEFORE INSERT` trigger on `auth.users` requiring a live `invitation_claims` row.
+
+**Alternatives.**
+
+*A hook that allows signup when the address has a valid invitation.* Rejected, and this is the
+important one: it would let anyone who knew an invited address call `/auth/v1/signup` and set the
+password before the invited person opened their link. Knowing an address is not possessing a token.
+
+*A hook that trusts `user_metadata`.* Rejected. Anything a public signup client can send is
+attacker-controlled by definition.
+
+*Trigger only.* Would work, but leaves public signup failing with a database-level error rather than
+a clear 403, and puts the entire property on one mechanism.
+
+*Hook only.* Rejected because the hook is configuration. A project that received `db push` but not
+`config push` would be running with the door open. The trigger travels with the migrations.
+
+**Consequences.** `auth.admin.createUser` no longer works on its own for anyone, including test
+fixtures and the Supabase dashboard — a claim must exist first. That is a feature, and the
+authorization fixture now takes the real privileged route. Deploying to a new environment requires
+`supabase config push`, which DEVELOPMENT.md §3 calls out explicitly. If a future GoTrue release
+began invoking the hook from the Admin API, redemption would break loudly rather than the gate
+opening quietly.
+
+---
+
+## D-029 — Invitations bind to an address, and redeemed accounts are created already confirmed
+
+**2026-08-20 · Accepted**
+
+**Decision.** `invitations.email` is `NOT NULL`; the redemption function creates the account for
+that address and ignores any address in the request body. The account is created with
+`email_confirm: true`.
+
+**Rationale.** Binding the token to an address means a stolen token cannot be redirected to an
+attacker's own account. Auto-confirmation is not a weakening: an administrator chose the address and
+delivered a 256-bit secret to it out of band, so possession of that secret is *stronger* evidence of
+control over the address than clicking a confirmation link would be. It also keeps account creation
+entirely off the built-in mail provider's two-emails-per-hour budget, which is reserved for password
+recovery — the reason D-022 chose passwords over OTP in the first place.
+
+**The trust assumption, stated plainly:** the owner is responsible for sending an invitation link
+only to the person they intend, over a channel they trust. The link is the credential. This applies
+to invitation redemption only, and never to public signup, which has no success path at all.
+
+---
+
+## D-030 — Invitation tokens are hashed with SHA-256, not a password hash
+
+**2026-08-20 · Accepted**
+
+**Decision.** `encode(sha256(token), 'hex')`. Not bcrypt, not argon2.
+
+**Rationale.** Slow hashing exists because a human-chosen password has perhaps 40 bits of entropy
+and must survive an offline dictionary attack. An invitation token here is 32 bytes from
+`gen_random_bytes` — 256 bits, with no dictionary and no feasible offline search for a slow hash to
+slow down. The property that matters is that the database never holds anything replayable as a
+token, even to someone with a full dump, and a fast cryptographic hash delivers exactly that while
+keeping lookup a single indexed equality.
+
+**Consequences.** Lookup is by unique index on the hash, so comparison is of hashes and never of the
+secret — no hand-written byte comparison enters the codebase. Revisit only if tokens ever become
+low-entropy, which would be a different and worse decision to make first.
+
+---
+
+## D-031 — Invitation management is a Postgres RPC; only redemption is an Edge Function
+
+**2026-08-20 · Accepted**
+
+**Decision.** `create_invitation` and `revoke_invitation` are `SECURITY DEFINER` Postgres
+functions callable by an authenticated admin. `redeem-invitation` is the only Edge Function in the
+system.
+
+**Rationale.** The only privileged thing invitation creation does is generate random bytes and store
+a hash, both native to Postgres, and the admin already has an authenticated session for
+`is_admin()` to check. Wrapping that in an Edge Function would add a deployment surface, a CORS
+surface and a service-role credential to protect, for no security gain. Redemption is genuinely
+different: it must create an `auth.users` row, which requires the Auth Admin API, which requires
+the secret key, which must never reach a browser.
+
+**Consequences.** One function to deploy and one credential boundary to reason about instead of
+three. The admin screen talks to PostgREST like every other screen.
+
+---
+
+## D-032 — Password policy is length-only: minimum 12, no composition rules
+
+**2026-08-20 · Accepted**
+
+**Decision.** `minimum_password_length = 12`, `password_requirements = ""`, plus a short
+obvious-password list and a 72-byte ceiling in the redemption function.
+
+**Rationale.** Composition rules ("one uppercase, one symbol") reliably produce `Passw0rd!` and
+fight password managers; NIST SP 800-63B advises against them. Length is the property that actually
+resists guessing, and every account here is created through a flow that already offers to generate
+and save a password. 72 bytes is bcrypt's silent truncation point — rejecting is honest, truncating
+is not.
+
+**Alternatives.** Supabase's leaked-password check against HaveIBeenPwned is a paid-plan feature and
+therefore out (COST_POLICY §1). Shipping a breach corpus of our own would cost more in bundle and
+maintenance than it buys for ten invited users choosing a 12-character password.
+
+**Consequences.** Enforced by GoTrue server-side, so it holds for any caller regardless of the
+client. Re-checked before the invitation is claimed, so a too-short password never burns one.

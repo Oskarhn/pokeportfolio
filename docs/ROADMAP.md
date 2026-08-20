@@ -52,14 +52,19 @@ invitations, holdings, lots, purchases. RLS on every table with `WITH CHECK`. De
 **Gate:** migrations apply to an empty and a seeded database; the two-client authorization
 fixture exists and a deliberately failing isolation test actually fails.
 
-### M4 — Auth and invitations
+### M4 — Auth and invitations — **complete**
 
-Email + password. `redeem-invitation` Edge Function as the sole account-creation path, with the
-`auth.users` trigger backstop. Admin invitation management. Password reset via low-volume
-built-in email with an admin-assisted fallback.
+Email + password. Two independent server-side gates close account creation: the Before User Created
+auth hook, which rejects every self-service signup path GoTrue exposes, and a `BEFORE INSERT`
+trigger on `auth.users` demanding a live invitation claim (invariant S2). `redeem-invitation` is
+the sole account-creation path; invitation issue and revocation are admin-gated Postgres RPCs.
+Password reset via the low-volume built-in email, with a documented admin-assisted fallback.
 
-**Gate:** direct public signup is rejected (S2); the full authorization suite passes; login
-works inside an installed PWA on a phone.
+**Gate:** met. Direct public signup is rejected, including for an address that holds a valid
+outstanding invitation and including hand-built requests carrying forged metadata; replay, expiry,
+revocation and concurrent redemption are all rejected; the full authorization suite passes. Login
+inside an installed PWA on real hardware is the one part still outstanding — it needs the remote
+project and a phone, and is tracked in HANDOVER.
 
 ### M5 — Catalog and search
 

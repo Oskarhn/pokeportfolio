@@ -139,8 +139,10 @@ custom SMTP provider to the critical path of every login: another account, anoth
 depend on, another deliverability failure mode. For a login that could simply not send email,
 that is a poor trade.
 
-Password auth sends nothing during normal login. Account creation is already gated by the
-invitation Edge Function, so email confirmation is unnecessary and is disabled.
+Password auth sends nothing during normal login. Account creation is gated by an invitation whose
+token was delivered out of band, so the account is created already confirmed — a confirmation email
+would prove less than the 256-bit secret the person already used, and would spend the mail quota
+that password recovery needs.
 
 **Password reset** is the one remaining email path, and it is genuinely rare at this scale — a
 handful of events per year against a limit of two per hour. It uses the built-in provider, with
@@ -153,16 +155,24 @@ opt-in client flag. Revisit when it stabilises; the auth surface is small enough
 **Invite enforcement.** Supabase's default is open signup. The dashboard/config "disable signup"
 toggle is **not** the fix — verified in M3 (docs/PROJECT_JOURNAL.md, 2026-08-20): it disables the
 email/password login grant type for every existing user, not only new self-registration, which
-would break sign-in for legitimate invited users too. So:
+would break sign-in for legitimate invited users too.
 
-- Account creation happens only through a `redeem_invitation` Edge Function that validates the
-  token hash, expiry, use count and revocation, then creates the user with the service role.
-- Two separate `auth.users` triggers, not one: `handle_new_user` (AFTER INSERT, ships in M3)
-  creates the `profiles` row; a distinct backstop trigger (BEFORE INSERT, ships in M4 alongside
-  the Edge Function) rejects any insert lacking a valid redemption record. A single AFTER INSERT
-  trigger cannot reject the insert it fires on.
+What closes it instead, as of M4, is two independent server-side gates:
 
-Full detail in [SECURITY.md](SECURITY.md).
+- **The Before User Created auth hook** rejects every self-service account-creation path GoTrue
+  exposes. It does not fire for the Auth Admin API, which is the asymmetry the whole design rests
+  on — so the hook can deny unconditionally rather than trying to distinguish good signups from
+  bad ones.
+- **A `BEFORE INSERT` trigger on `auth.users`** demands a live invitation claim. This is
+  distinct from `handle_new_user` (AFTER INSERT, M3), which creates the `profiles` row: a single
+  AFTER INSERT trigger cannot reject the insert it fires on, which is why there are two.
+
+`redeem-invitation` is the only Edge Function in the system, because account creation is the only
+operation that needs the Auth Admin API. Issuing and revoking invitations are Postgres RPCs — the
+one privileged thing they do is generate a token, which Postgres does natively, and an Edge Function
+would have added a deployment surface and a secret to protect for nothing.
+
+Full detail in [SECURITY.md](SECURITY.md) §5.
 
 ### 4.1 Scale: all-card tracking
 

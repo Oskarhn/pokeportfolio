@@ -336,6 +336,65 @@ version numbers and every release becoming LTS. Worth revisiting the pin then.
 
 ---
 
+## R21 — Supabase Before User Created hook, and what GoTrue actually invokes it from
+
+**2026-08-20 · Verified against official documentation and the GoTrue source**
+
+Supabase's Auth Hooks documentation lists **Before User Created** as available on Free and Pro. It
+receives the event as JSON, returns `{}` to allow or an `{ error: { http_code, message } }`
+object to reject, and can be implemented as a Postgres function or an HTTP endpoint. Postgres hooks
+run inside the auth transaction with a 2-second budget, and their errors propagate to the client
+rather than being retried. Configurable as code:
+`[auth.hook.before_user_created] enabled/uri` in `config.toml`, pushed to a project with
+`supabase config push`.
+
+The load-bearing fact is not in the documentation, and was established by reading
+`supabase/auth` at master. `triggerBeforeUserCreated` is invoked from `signup.go`,
+`mail.go`, `anonymous.go`, `external.go`, `web3.go`, `samlacs.go`, `token_oidc.go` and
+`invite.go` — every self-service account-creation path — and **`internal/api/admin.go`, which
+serves the Auth Admin API, contains no hook invocation at all.** A GitHub code search for
+`BeforeUserCreated` across the repository returns those files and not `admin.go`.
+
+**Consequence:** the hook can deny unconditionally while `auth.admin.createUser` still works, which
+is the entire basis of D-028. (Note the numbering: R18 and R19 were already taken by the email
+rate-limit and storage findings, so the M4 research starts at R21.) Because this is a source-level
+fact rather than a documented
+guarantee, it is verified continuously rather than trusted: the authorization suite asserts both
+that public signup fails *and* that redemption succeeds, so a change in either direction fails CI.
+
+---
+
+## R22 — Supabase API key terminology is mid-migration
+
+**2026-08-20 · Verified against official documentation**
+
+Supabase is replacing the legacy `anon` and `service_role` JWTs with `sb_publishable_…` and
+`sb_secret_…` keys. Both work simultaneously; legacy keys stay valid until explicitly disabled and
+are documented as deprecated by end of 2026. Secret keys additionally refuse to work from a browser
+(matched on the `User-Agent` header) — a backstop, not a substitute for keeping them server-side.
+
+**Consequence:** security semantics are unchanged, so no architecture depends on this. The local
+Supabase stack still emits the legacy pair, so both names appear in this repository; remote projects
+use the new keys. SECURITY.md §6 carries both names in the secrets table.
+
+---
+
+## R23 — Supabase config as code reaches remote projects
+
+**2026-08-20 · Verified against the CLI reference and `supabase --help`**
+
+`supabase config push` updates a linked remote project from local `supabase/config.toml`. This
+matters because Gate 1 of the invite-only enforcement is a config entry, not a migration: without
+it, "remember to toggle this in the dashboard" would have been an un-versioned security control.
+`supabase projects create` likewise exists, so remote project creation does not require the
+dashboard either.
+
+**Consequence:** the invite-only gate is fully reproducible from this repository plus an access
+token. DEVELOPMENT.md §3 lists `config push` alongside `db push` and states why skipping it
+leaves an environment with one gate missing.
+
+---
+
 ## Open uncertainties
 
 Carried deliberately. Each is a real gap, not a guess in disguise.

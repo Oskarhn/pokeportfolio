@@ -362,6 +362,156 @@ that exercised it. This is the concrete return on the "Local Docker unavailabili
 CI database-testing strategy" decision from two entries above: real infrastructure surfaces real
 platform behaviour that documentation and code review alone do not.
 
+## 2026-08-20 — The invite-only gate turned on a fact the documentation does not state
+
+**Problem.** M3 left `/auth/v1/signup` open and said so. The planned fix was a single
+`auth.users` trigger rejecting any insert without a redemption. Between M3 and M4, Supabase's
+**Before User Created** hook became generally available on the free plan — a mechanism designed for
+exactly this — so continuing with the older plan purely because an older document said so would have
+been the wrong instinct.
+
+**The hard part** was not choosing the hook. It was working out what the hook may safely do.
+
+The obvious implementation is "allow this signup if the address has a valid outstanding invitation".
+That is a hole. Anyone who knew an invited person's address could call `/auth/v1/signup` and choose
+the password themselves, before the invited person ever opened their link. Knowing an address is not
+possessing a token, and a gate built on the first is not a gate.
+
+The alternative is to have the hook deny *everything* and create accounts through some path the hook
+does not cover. That only works if such a path exists and is server-only. Supabase's documentation
+does not say whether `auth.admin.createUser` triggers the hook — the page is written from the
+perspective of restricting signups, not of exempting privileged creation.
+
+**Investigation.** Reading the GoTrue source settled it. `triggerBeforeUserCreated` is invoked from
+`signup.go`, `mail.go`, `anonymous.go`, `external.go`, `web3.go`, `samlacs.go`,
+`token_oidc.go` and `invite.go`. `internal/api/admin.go` — the Auth Admin API — invokes no hook
+at all. A repository-wide search for `BeforeUserCreated` returns those files and not `admin.go`.
+
+**Resolution.** The hook rejects unconditionally. There is no metadata to forge, no address to be on
+a list, and no window between validation and creation for anyone to race. Behind it, a
+`BEFORE INSERT` trigger on `auth.users` demands a live claim, because the hook is *configuration*
+— a project that received `db push` but not `config push` would be running with the door open —
+and because the trigger closes what the hook does not, namely the Admin API and the dashboard.
+
+**What this cost.** `auth.admin.createUser` no longer works on its own for anybody, including the
+authorization suite's fixtures. M3 had anticipated exactly this and used it as a reason to defer.
+The right answer turned out to be to embrace it: the fixture now issues an invitation, claims it,
+creates the user and finalizes the redemption — the same route the Edge Function takes. It is a
+better fixture than the one it replaced, because it exercises the real path instead of stepping
+around it.
+
+**What is deliberately fragile, and watched.** The whole design rests on a source-level fact rather
+than a documented guarantee. If a future GoTrue release invoked the hook from the Admin API, our
+redemption would break. That is the right failure direction — loud, and caught by CI, rather than a
+gate quietly opening — and the suite asserts both halves, that public signup fails *and* that
+redemption succeeds, so drift in either direction fails the build.
+
+---
+
+## 2026-08-20 — Account deletion was impossible, and no test could have noticed
+
+**Problem.** An adversarial review of the M3 schema, run before writing any M4 code, found that
+every user-private table declared `user_id uuid not null references auth.users (id)` with no
+`ON DELETE` action. PostgreSQL defaults that to `NO ACTION`, so deleting an `auth.users` row
+failed the moment that user owned a single row anywhere. SECURITY.md §8 described account deletion
+as a cascade. It was not one.
+
+**Why nothing caught it.** The M3 fixture calls `auth.admin.deleteUser` in `afterAll` and
+discards the result, and no M3 test ever wrote an `invitation_redemptions` row — the one table
+whose FK would have failed first. The suite was green and the schema was wrong. A test that ignores
+a return value is not a test of that value.
+
+**Resolution.** All eight foreign keys now declare `ON DELETE CASCADE`, applied by looking the
+constraint names up in `pg_constraint` rather than assuming PostgreSQL's default naming — a
+migration that silently no-ops because a name drifted is worse than one that fails loudly.
+`invitations.created_by` is the deliberate exception at `ON DELETE SET NULL`: an invitation is an
+audit record of an administrative action, and outliving its issuer is the point.
+
+**The generalisable bit.** This was found by reading the schema against the document that describes
+it, not by running anything. Some classes of defect have no failing test to write until something
+else makes them load-bearing — M4 is what would have made this one bite.
+
+---
+
+## 2026-08-20 — Proving the invite-only suite by breaking the gate on purpose
+
+**Problem.** An attack test that has never failed is not evidence. `expect(error).not.toBeNull()`
+passes for a great many reasons, most of which have nothing to do with the control being tested.
+
+**Method.** The same technique M3 used on an RLS policy, applied to the M4 gate. A throwaway branch
+disabled *both* controls — `enabled = false` on the auth hook, and a temporary migration dropping
+the `auth.users` trigger — and opened a pull request purely to make CI run against an ephemeral
+stack. No remote project was touched, and nothing merged.
+
+**Result.** `db-tests` failed 9 of 10 test files. The two gate-specific assertions failed exactly
+as designed and can be read off individually: *"answers a public signup with the invite-only hook"*
+identifies gate 1, and *"rejects Auth Admin user creation with no invitation claim"* identifies gate
+2. Every public-signup attack case failed, including the invited-address one. So did the redemption
+bookkeeping, and so did most of the other suites — because the fixture that creates test users runs
+through the claim mechanism, an unenforced gate makes the fixture itself fail. The suite is
+load-bearing in both directions.
+
+The branch was closed and deleted immediately. The feature branch's own CI was green before and
+after.
+
+---
+
+## 2026-08-20 — A green authorization suite and a real privilege escalation, at the same time
+
+**Problem.** With M4's gates proven in CI and the deliberate negative test done, the first deploy to
+a real Supabase project should have been a formality. The verification run against it found two
+things CI could not see. The second was the privilege escalation the whole authorization suite
+exists to prevent: a signed-in, non-admin session could
+
+    PATCH /rest/v1/profiles?id=eq.<its own id>   {"is_admin": true}
+
+and PostgREST accepted it. Every test was green.
+
+**Cause.** A Supabase project can carry an event trigger that grants the Data API roles broad
+privileges on every newly created public-schema table and function — the legacy
+`auto_expose_new_tables` behaviour. The local stack CI uses has it off, matching the current cloud
+default. This project had it on. So on the remote, `authenticated` already held full `UPDATE` on
+`public.profiles` before M3's carefully column-restricted grant ever ran.
+
+And **a GRANT is additive**. M3 wrote
+
+    grant update (display_name, locale, …) on public.profiles to authenticated;
+
+meaning "these columns and no others". SQL does not read it that way: it adds those columns to
+whatever the role already has. Where the role already had everything, it added nothing and
+restricted nothing. That migration's own comment — that the restriction held "at the SQL privilege
+level, independent of any RLS policy" — was true of the intent and false of the deployment.
+
+RLS did not save it, and could not have. `profiles_update_own` has `USING (id = auth.uid())`
+with a matching `WITH CHECK`, and the row being updated genuinely *is* the caller's own, so the
+policy is satisfied. The column grant was the only thing between a user and the admin flag.
+
+The same mechanism had already produced the milder first finding: `REVOKE EXECUTE … FROM PUBLIC`
+removes PUBLIC's implicit grant and nothing else, so three functions were locked on CI and reachable
+on the remote. Those three were pure computations over caller input and disclosed nothing — which is
+exactly why it was worth chasing rather than shrugging at. The mechanism that made a harmless
+function reachable is the mechanism that made the admin flag writable.
+
+**Resolution.** Every privilege is now restated as revoke-then-grant, for tables and functions
+alike, and not only where the bug bit — the defect is the assumption that a narrow grant restricts,
+and that assumption had been made everywhere. `anon` ends with no table privileges at all;
+anonymous reads answer 401 rather than an empty array. `config.toml` additionally pins
+`auto_expose_new_tables = false`, so the two environments stop diverging at the source, though the
+migrations no longer depend on that.
+
+**The uncomfortable part, kept in view.** CI was green throughout, and CI was not lying about the
+code — it was faithfully testing a database whose privileges did not match the one users would hit.
+An ephemeral stack rebuilt from migrations is an excellent reproducibility gate and is *not* a
+statement about a deployed project. The response is `scripts/remote-security-check.mjs`: the same
+assertions, run against a real deployment with nothing but the publishable key, so it can never leak
+a credential and there is no excuse for skipping it. It is in the security checklist now.
+
+The final run was 33/33 against the real project, with the escalation asserted on the stored value
+rather than the HTTP status — because a write that is accepted and then filtered would pass a
+status check, and a write that is accepted and applied is the entire problem.
+
+---
+
 ## Real-device testing log
 
 Recorded as it happens. Emulation is not evidence of Safari behaviour.

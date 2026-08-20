@@ -1,0 +1,109 @@
+import { test, expect } from '@playwright/test'
+
+/**
+ * Browser coverage of the auth surface, deliberately scoped to what is deterministic without a
+ * Supabase project (docs/TESTING.md §6). The preview server is built against a placeholder
+ * Supabase URL, so every network call fails the same way every time — which is enough to exercise
+ * routing, guards, form semantics, error states and the mobile layout, and keeps public CI free of
+ * any dependency on remote credentials.
+ *
+ * What is *not* here: a real sign-in, and a real redemption. Those need a live stack and are
+ * covered against one in tests/authorization/, which is also where the security assertions belong
+ * — the browser is not what enforces any of them.
+ */
+
+test.describe('routing and guards', () => {
+  test('an anonymous visit to the app lands on sign-in', async ({ page }) => {
+    await page.goto('/')
+    await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
+    await expect(page).toHaveURL(/\/login$/)
+  })
+
+  test('the admin route is not reachable without a session', async ({ page }) => {
+    await page.goto('/admin/invitations')
+    await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Invitations' })).toHaveCount(0)
+  })
+
+  test('there is no way to create an account from the sign-in screen', async ({ page }) => {
+    await page.goto('/login')
+    await expect(page.getByText(/create account/i)).toHaveCount(0)
+    await expect(page.getByText(/sign up/i)).toHaveCount(0)
+    await expect(page.getByText(/invite-only/i)).toBeVisible()
+  })
+})
+
+test.describe('sign-in form', () => {
+  test('carries the attributes a password manager needs', async ({ page }) => {
+    await page.goto('/login')
+    await expect(page.getByLabel('Email')).toHaveAttribute('autocomplete', 'username')
+    await expect(page.getByLabel('Password')).toHaveAttribute('autocomplete', 'current-password')
+    await expect(page.getByLabel('Email')).toHaveAttribute('type', 'email')
+  })
+
+  test('reveals and re-hides the password without clearing it', async ({ page }) => {
+    await page.goto('/login')
+    const password = page.getByLabel('Password')
+    await password.fill('a-typed-password')
+    await expect(password).toHaveAttribute('type', 'password')
+
+    await page.getByRole('button', { name: 'Show' }).click()
+    await expect(password).toHaveAttribute('type', 'text')
+    await expect(password).toHaveValue('a-typed-password')
+
+    await page.getByRole('button', { name: 'Hide' }).click()
+    await expect(password).toHaveAttribute('type', 'password')
+  })
+
+  test('reports a failed sign-in without saying which half was wrong', async ({ page }) => {
+    await page.goto('/login')
+    await page.getByLabel('Email').fill('nobody@example.invalid')
+    await page.getByLabel('Password').fill('not-the-right-password')
+    await page.getByRole('button', { name: 'Sign in' }).click()
+
+    const alert = page.getByRole('alert')
+    await expect(alert).toBeVisible({ timeout: 15_000 })
+    await expect(alert).toHaveText(/did not work/i)
+    await expect(alert).not.toHaveText(/no such|not found|unknown user/i)
+  })
+})
+
+test.describe('invitation redemption', () => {
+  test('an unusable invitation says so and offers the way forward', async ({ page }) => {
+    await page.goto('/invite/this-token-was-never-issued-anywhere-at-all')
+    await expect(page.getByRole('heading', { name: 'Invitation unavailable' })).toBeVisible({
+      timeout: 15_000,
+    })
+    await expect(page.getByRole('link', { name: 'Go to sign in' })).toBeVisible()
+  })
+})
+
+test.describe('password recovery', () => {
+  test('the request form answers the same way regardless of the address', async ({ page }) => {
+    await page.goto('/forgot-password')
+    await page.getByLabel('Email').fill('someone@example.invalid')
+    await page.getByRole('button', { name: 'Send recovery link' }).click()
+    await expect(page.getByRole('alert')).toContainText(/if that address has an account/i)
+  })
+
+  test('a reset link that established no session is reported as unusable', async ({ page }) => {
+    await page.goto('/reset-password')
+    await expect(page.getByRole('heading', { name: 'Recovery link unavailable' })).toBeVisible()
+  })
+})
+
+test.describe('layout', () => {
+  test('the sign-in screen does not scroll sideways', async ({ page }) => {
+    await page.goto('/login')
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    )
+    expect(overflow).toBeLessThanOrEqual(0)
+  })
+
+  test('interactive controls clear a 44px touch target', async ({ page }) => {
+    await page.goto('/login')
+    const box = await page.getByRole('button', { name: 'Sign in' }).boundingBox()
+    expect(box?.height ?? 0).toBeGreaterThanOrEqual(44)
+  })
+})

@@ -155,9 +155,14 @@ dashboard quietly lie.
 
 ## 4. Authorization suite — mandatory
 
-Lives in `tests/authorization/`. Two real users created through the real signup path, two
-authenticated Supabase clients, every assertion against the live API — not against application
-code that could be bypassed.
+Lives in `tests/authorization/`. Real users, real authenticated Supabase clients, every assertion
+against the live API — not against application code that could be bypassed.
+
+Fixture users are created the way the `redeem-invitation` function creates them: issue an
+invitation, claim it, create the user through the Auth Admin API, record the redemption. Since M4
+that is the only way, for anyone — the S2 trigger rejects an Auth Admin insert with no claim just as
+it rejects a public signup. Every step of that route needs the secret key, which is exactly why a
+browser cannot walk it.
 
 For every user-private table:
 
@@ -174,16 +179,35 @@ For every user-private table:
 | A enumerates `profiles` | Only own row |
 | A reads B's Storage objects | Denied (once storage exists) |
 
-Plus invite-only enforcement:
+Plus invite-only enforcement (`tests/authorization/invite_only.test.ts`). Every row here is a
+named test, and the ones that matter most are the ones a weaker design would pass:
 
 | Attack | Expected |
 |---|---|
-| Direct `signUp` against the public API with no invitation | Rejected (S2) |
+| `signUp` for an address nobody invited | Rejected by the hook, with an invite-only message |
+| **`signUp` for an address that holds a valid outstanding invitation** | **Rejected — and the invitation still works for the real invitee afterwards, with their password, not the attacker's** |
+| `signUp` carrying forged `user_metadata` claiming an invitation | Rejected |
+| Hand-built `/auth/v1/signup` body with `app_metadata`, `role: service_role` | Rejected |
+| Auth Admin `createUser` with no invitation claim | Rejected by the S2 trigger — this is the test that fails if the trigger is dropped |
+| Redeem a token nobody issued, or one altered by a character | Rejected |
 | Redeem an expired invitation | Rejected |
 | Redeem a revoked invitation | Rejected |
-| Redeem a single-use invitation twice | Second attempt rejected |
-| Guess a token | Infeasible; only the hash is stored |
-| Admin reads another user's purchases through the app API | Denied — `is_admin` grants no data access |
+| Replay a token that already worked | Rejected; still exactly one redemption row |
+| Redeem with an attacker's address in the request body | Ignored; the account is the invited address, and no account exists for the attacker's |
+| Redeem with a password below the policy | Rejected, **and the invitation is still usable** |
+| Two redemptions of one invitation in flight at once | Exactly one account, one redemption row, `use_count` of 1 |
+| Guess a token | Infeasible: 256 bits, and only the hash is stored |
+| Read `token_hash` as an admin, by column or by `*` | Refused at the SQL privilege level |
+| Insert an invitation row directly to plant a chosen hash | Refused; no write grant |
+| Call `claim_invitation` / `finalize` / `release` as a user **or as an admin** | Refused; service role only |
+| Read `invitation_claims` from any session | Nothing; no policy, no grant |
+| Set `is_admin` on your own profile | Refused; column has no client UPDATE grant |
+| Admin reads another user's purchases, holdings or lots through the app API | Denied — `is_admin()` grants no data access |
+
+**The suite is proven, not assumed.** Both gates were deliberately disabled on a throwaway branch
+and CI was watched to fail on the named tests, before being reverted — the same technique M3 used
+on an RLS policy. A security assertion nobody has watched fail is a security assertion nobody has
+tested. See PROJECT_JOURNAL.md.
 
 The suite is written table-driven so adding a table means adding a row, not a file. A new
 user-private table without an entry fails a meta-test that compares the table list against the
@@ -213,10 +237,23 @@ Constraints and triggers, exercised directly:
 Playwright, against a seeded synthetic dataset. Both desktop (1440×900) and mobile
 (iPhone viewport, 390×844) for every flow.
 
+Deterministic browser coverage runs against a build configured with a **placeholder** Supabase URL,
+so every network call fails identically and public CI needs no remote credential. That is enough for
+routing, guards, form semantics, error states and layout. Flows that need a live stack are proven in
+the authorization suite instead, which is also where they belong — the browser is not what enforces
+any of them.
+
 | Flow | Assertions |
 |---|---|
-| Redeem invitation → account exists → sign in with OTP | Session persists across reload |
-| Sign out → protected route | Redirect to login, no data flash |
+| Anonymous visit to `/` or `/admin/invitations` | Lands on sign-in; the admin screen does not render |
+| Sign-in form | Password-manager `autocomplete` attributes; show/hide preserves the value; paste never blocked |
+| Failed sign-in | One message, announced via `role="alert"`, naming neither half as the wrong one |
+| Unusable invitation link | One message plus a way forward |
+| Recovery request | Same confirmation regardless of the address |
+| Recovery link with no session | Reported as unusable rather than silently blank |
+| Layout | No horizontal overflow; controls clear a 44px touch target |
+| Redeem invitation → sign in → session persists across reload | Against a live stack; manual or remote, not public CI |
+| Add a card manually | Appears in collection; correct lot; dashboard totals move by the right amount |
 | Add a card manually | Appears in collection; correct lot; dashboard totals move by the right amount |
 | Multi-line purchase with shipping | Allocation matches E3 exactly, visible in the UI |
 | Foreign-currency purchase | Original and NOK both shown; rate prefilled |
@@ -260,7 +297,10 @@ Emulation is not Safari. A manual checklist, recorded with dates in
 - [ ] Safe areas correct with the home indicator, in both orientations
 - [ ] Keyboard does not obscure form fields; numeric keypad for amount inputs
 - [ ] Session survives an app switch and a cold start
-- [ ] OTP email arrives and the code can be entered without leaving the app
+- [ ] An invitation link opens, shows the invited address, and the platform password manager offers
+      to generate and save a password
+- [ ] Sign in with the saved credential, without leaving the installed app
+- [ ] Password recovery email arrives and the link opens the reset screen
 - [ ] Camera permission persists through a scanner session (the R9 risk, when the scanner exists)
 - [ ] Charts respond to touch; pinch and pan behave
 - [ ] Android: install, launch, core flows
@@ -287,11 +327,29 @@ three lines is worth more as a test than one of 90.
 Added when the application scaffold exists, not before — an empty pipeline in a docs-only
 repository is noise.
 
+Two jobs, on every push to `main` and every pull request.
+
 ```
-install (frozen lockfile) → typecheck → lint → domain + property tests → build → secret scan
+build-and-test  install → typecheck → lint → format → domain + property tests → build
+                → browser E2E (desktop + iPhone) → secret scan
+db-tests        supabase start → db reset → assert redeem-invitation is reachable
+                → database + authorization suites → generate types
 ```
 
-Database and authorization suites run on a schedule and before merges that touch migrations or
-policies, since they need a live Postgres. E2E runs before milestone completion.
+`db-tests` runs a full ephemeral Supabase stack on the runner — migrations from empty, seed, then
+every database and authorization test. It uses **no remote credentials of any kind**, which is what
+keeps CI reproducible from Git alone and keeps the real project out of the blast radius.
+
+**CI is a reproducibility gate, not a statement about a deployed project.** That distinction cost
+a real finding: the same migrations produced different privileges on CI and on the dev project,
+because the project auto-granted the Data API roles more than the migrations then revoked. Green CI
+coexisted with a live privilege escalation. `scripts/remote-security-check.mjs` closes the gap —
+the same assertions against a real deployment, using only the publishable key, so running it can
+never leak a credential. It is a step in the security checklist, not an optional extra.
+
+The reachability check before the auth suite is not ceremony. If the edge runtime were not serving
+`redeem-invitation`, the redemption tests would fail for an unrelated reason, or worse, a future
+refactor could make them vacuous. Asserting a nonsense token comes back `400` from our own handler
+proves the thing under test is actually there.
 
 Migrations are applied deliberately through the Supabase CLI, never automatically from CI.
