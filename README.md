@@ -2,9 +2,10 @@
 
 A private Pokémon TCG collection and financial tracking application.
 
-**Status:** Planning frozen. Architecture, financial model and data model are specified;
-implementation starts at milestone M1. No application code yet.
-See [PLANNING_FREEZE.md](docs/PLANNING_FREEZE.md) and [ROADMAP.md](docs/ROADMAP.md).
+**Status:** Planning frozen. M1 (scaffold), M2 (financial domain core) and M3 (database,
+migrations, RLS) are complete. M4 (auth and invitations) is next — no user-facing screens yet.
+See [HANDOVER.md](HANDOVER.md), [PLANNING_FREEZE.md](docs/PLANNING_FREEZE.md) and
+[ROADMAP.md](docs/ROADMAP.md).
 
 > Working name. Not final branding.
 
@@ -118,6 +119,7 @@ committed to this repository.
 | [SECURITY.md](docs/SECURITY.md) | Trust boundaries, RLS, invitations |
 | [TESTING.md](docs/TESTING.md) | Strategy and mandatory gates |
 | [DEVELOPMENT.md](docs/DEVELOPMENT.md) | Environment and commands |
+| [GIT_WORKFLOW.md](docs/GIT_WORKFLOW.md) | Branch, PR, CI and release conventions |
 | [ROADMAP.md](docs/ROADMAP.md) | Phases and completion gates |
 | [DECISIONS.md](docs/DECISIONS.md) | Decisions expensive to reverse |
 | [RESEARCH.md](docs/RESEARCH.md) | Findings, sources, open uncertainties |
