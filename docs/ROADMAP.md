@@ -26,7 +26,7 @@ Each milestone is a reviewable unit ending in a working, tested increment. **Not
 branch.** A milestone is complete only when its gate passes; the gate is behaviour, never
 compilation.
 
-### M1 — Scaffold and harness · **next**
+### M1 — Scaffold and harness · **complete**
 
 Vite + React 19 + TypeScript strict. pnpm pinned via Corepack. ESLint, Prettier, Vitest,
 fast-check, Playwright. `pnpm check` as the single gate command. GitHub Actions: install →
@@ -34,7 +34,7 @@ typecheck → lint → test → build → secret scan.
 
 **Gate:** `pnpm check` green on an empty app; CI green on a pull request.
 
-### M2 — Domain and money
+### M2 — Domain and money · **complete**
 
 `Money` type (integer minor units + ISO 4217), currency table with per-currency minor-unit
 exponents, largest-remainder allocator, FX conversion helpers. Pure TypeScript, zero
@@ -43,7 +43,7 @@ dependencies on React or Supabase.
 **Gate:** allocator property tests pass (F6); worked examples E1, E3 and E7 reproduce exactly in
 memory; a deliberately broken allocation fails the suite.
 
-### M3 — Database, RLS and migration tooling
+### M3 — Database, RLS and migration tooling · **complete**
 
 Supabase project (`eu-north-1`, free plan). Migration tooling. Schema for catalog, profiles,
 invitations, holdings, lots, purchases. RLS on every table with `WITH CHECK`. Denormalised

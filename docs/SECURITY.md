@@ -61,6 +61,18 @@ Applies to `card_series`, `card_sets`, `cards`, `card_variants`, `price_snapshot
 `sealed_price_snapshots`, `fx_rates`. Curated `sealed_products` follow the same pattern;
 user-created rows add `OR created_by_user_id = auth.uid()`.
 
+**`search_cards(...)` (M5)** is the one read path that is a function rather than a table grant: a
+`SECURITY INVOKER`, `STABLE` Postgres function, `EXECUTE` granted to `authenticated` only (never
+`anon` — ARCHITECTURE.md §2's "every screen is authenticated" holds here too). Invoker rights
+because the function reads only tables `authenticated` can already `SELECT` directly; a `DEFINER`
+would grant nothing a plain grant does not already. Every parameter is bound — nothing concatenates
+caller input into SQL text — and `tests/authorization/catalog.test.ts` asserts wildcard/SQL-special
+input degrades to "no match" rather than an error.
+
+**`catalog_sync_runs` (M5)** is RLS-enabled with zero policies and zero grants to `anon` or
+`authenticated` — the same shape as `invitation_claims` (§5.4): unreachable through the Data API
+under every browser-held role, written only by `sync-catalog` under the service role.
+
 ### 3.2 User-private tables
 
 Every user-private table carries `user_id uuid NOT NULL REFERENCES auth.users(id)` and:
@@ -360,6 +372,12 @@ policies and the same column grants. It widens nothing, and needs no separate ba
 | Supabase secret key (legacy: `service_role`) | Edge Function environment only, injected by the platform | **Never** |
 | Database password | Password manager, never in the repo | Never |
 | Supabase CLI access token | `supabase login` keyring, never in the repo | Never |
+| `CATALOG_SYNC_SECRET` (M5) | Edge Function environment (`supabase secrets set`), plus the operator's own shell environment when running `scripts/run-catalog-sync.mjs` | **Never** |
+
+**`CATALOG_SYNC_SECRET` is not the service-role key and is not a step up from a CI deploy key**
+(D-035). It gates exactly one capability — invoking `sync-catalog` — and is checked with a
+constant-time comparison against a single bearer header. It is never the Supabase secret key, never
+placed in `.env.local`, and no code path ships it to the browser bundle.
 
 Supabase is migrating from `anon`/`service_role` JWTs to `sb_publishable_…`/`sb_secret_…` keys,
 with the legacy pair deprecated at the end of 2026. The security semantics are unchanged — one is

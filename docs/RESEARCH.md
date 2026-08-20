@@ -414,6 +414,81 @@ leaves an environment with one gate missing.
 
 ---
 
+## R24 — TCGdex `variants_detailed[]` is real, three-dimensional, and imperfect
+
+**2026-08-20 · Verified by live request, M5**
+
+The M3-era research note that TCGdex exposes `variants_detailed[]` with per-variant pricing was
+correct but incomplete — re-verified rather than assumed, per this milestone's own mandate. Live
+requests to `/v2/en/cards/base1-4` (Charizard, Base Set), `/v2/en/cards/base1-98` (Fire Energy),
+`/v2/en/cards/swsh1-1` and `/v2/en/cards/swsh1-2` (Sword & Shield era) show:
+
+- Each entry carries `type` (finish), an optional `subtype` (print-run/era: `shadowless`,
+  `unlimited`, `1999-2000-copyright`, `no-rarity`), an optional `stamp[]` array (`1st-edition`),
+  `size`, `variantId`, and per-variant `pricing`.
+- Base Set Charizard has a variant that is `holo` + `shadowless` + `1st-edition` at once — three
+  independent dimensions, which the M3 `variant_type` enum could not represent as one value. Drove
+  D-033.
+- `variantId` is sometimes the literal string `"generated"` (Celebi V, Roselia, a promo Grookey all
+  observed with it) — TCGdex's own placeholder, not a real cross-reference, and it repeats across
+  unrelated cards.
+- Pricing product ids are not per-variant: Roselia's `normal` and `reverse` variants share one
+  TCGplayer `productId`. Drove D-034.
+- `variants_detailed` is sometimes absent or empty; the adapter falls back to the boolean
+  `variants{}` flags so no card is left with zero variants.
+
+**Consequence:** `supabase/functions/_shared/tcgdex.ts` is the one place any of this is read;
+`tests/data/tcgdex-provider.test.ts` pins the mapping against these exact real payloads so a future
+provider change is caught by a failing test rather than a silent ingest defect.
+
+---
+
+## R25 — TCGdex identifiers collide across languages; GraphQL and bulk export were both rejected
+
+**2026-08-20 · Verified by live request, M5**
+
+`/v2/en/sets` and `/v2/ja/sets` both return a set id `neo1`; `/v2/en/series` and `/v2/ja/series`
+both return a series id `neo`. TCGdex ids are unique **within a language**, not globally — the
+M3-era schema's global unique indexes on `tcgdex_set_id`/`tcgdex_card_id` (and the missing provider
+column on `card_series` entirely) would have broken on the second language's ingest. Drove D-034.
+
+Two ingest strategies were evaluated against REST and rejected: **GraphQL** (`/v2/graphql` is
+reachable and introspectable, but the `cards`/`card` root query fields carry no language argument at
+all, and `tcgdex.dev/graphql` states its documentation is still in progress — not a foundation to
+build language-correct ingest on) and a **bulk database dump** (`github.com/tcgdex/cards-database`
+is per-card JSON files structured for API/SDK consumption, not a single exportable archive). REST,
+one set per request plus one request per card in it, is the strategy actually used —
+API_SOURCES.md's "Catalog ingest strategy" section has the shape.
+
+---
+
+## R26 — Pokémon TCG Pocket is a separate, cleanly identifiable series
+
+**2026-08-20 · Verified by live request, M5**
+
+TCGdex's English catalog includes Pokémon TCG Pocket (digital-only, out of scope for this physical-
+inventory app per M5 prompt §8) as its own series, `serie.id === "tcgp"` — 15 sets as of this date
+(`A1`, `A1a`, `A2`, `A2a`, `A2b`, `A3`, `A3a`, `A3b`, `A4`, `A4a`, `B1`, `B1a`, `B2`, `B2a`, `P-A`).
+No Pocket series exists in the Japanese catalog as of this date. The exclusion is exact and
+mechanical (a series id equality check), not a heuristic over set names — checked both in the
+ingest orchestrator (so a Pocket set is never even requested) and inside `sync-catalog` itself
+(so the exclusion holds even if something calls the function directly with a Pocket set id).
+
+---
+
+## R27 — TCGdex rate-limit behaviour, observed (resolves U3)
+
+**2026-08-20 · Observed from the M5 full-catalog ingest run**
+
+The FAQ's "no published hard rate limit, please be considerate" was tested against a real run: ~380
+sets (203 English, ~177 Japanese minus Pocket exclusions) fetched sequentially, bounded concurrency
+5 within each set for card detail, ~400–600 ms pause with jitter between sets. No `429` or other
+rate-limit response was observed across the run. Kept conservative regardless — this is a one-time/
+manual-refresh operation (M5 prompt §32), not a pattern that runs often enough to need to find the
+provider's actual ceiling.
+
+---
+
 ## Open uncertainties
 
 Carried deliberately. Each is a real gap, not a guess in disguise.
@@ -422,7 +497,7 @@ Carried deliberately. Each is a real gap, not a guess in disguise.
 |---|---|---|---|
 | U1 | Whether TCGdex has any arrangement with Cardmarket or TCGplayer for relaying price data | Nothing at private scale; would matter before public release | Ask maintainers; re-read terms if published |
 | U2 | Whether Cardmarket's public Product Catalogue covers Pokémon sealed products, and its terms | Sealed valuation improvement (V1) | One authenticated inspection |
-| U3 | TCGdex rate limits in practice | Ingest batch sizing | Observe our own ingest logs; start conservative |
+| ~~U3~~ | ~~TCGdex rate limits in practice~~ — **resolved, R27**: no rate-limit response observed across a ~380-set full-catalog ingest at bounded concurrency 5 | — | — |
 | U4 | TCGdex price update cadence | Snapshot scheduling | Compare `updated` timestamps across our own daily runs |
 | U5 | Real-device iOS behaviour of the installed PWA | PWA polish (V1) | Test on hardware |
 | U6 | Whether manual sealed and graded valuation is tolerable in daily use | Whether a paid source becomes worth its cost | Reassess after real use |

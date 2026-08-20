@@ -582,6 +582,93 @@ hash. Changing it would be cost with no corresponding gain. Left alone.
 
 ---
 
+## 2026-08-20 — A real card disproved the variant schema before any user data existed to break
+
+M3 modelled a card's ownable printings as one `variant_type` enum: `normal`, `holo`, `reverse`,
+`first_edition`, `promo`, `stamped`, `other`. It looked complete at design time — every value from
+the provider's boolean flags had a slot. The first real card fetched for M5's ingest disproved it.
+
+Base Set Charizard's `variants_detailed[]` contains an entry that is simultaneously `type: "holo"`,
+`subtype: "shadowless"`, and `stamp: ["1st-edition"]`. There is no value of `variant_type` that
+represents "holo and shadowless and first-edition" — the enum treats finish and edition as the same
+axis, and this card needs three independent ones. Fitting it would have meant picking one label and
+losing information a collector actually cares about (shadowless commands a real price premium over
+unlimited, independent of first-edition status).
+
+The fix (D-033) replaced the enum with three columns — `finish`, `stamp`, `subtype` — matching
+TCGdex's own dimensions rather than inventing a taxonomy. The two free-text columns are a deliberate
+choice: the enum's failure mode was assuming a closed vocabulary, and there was no reason to build a
+second closed vocabulary five minutes later. `tests/data/tcgdex-provider.test.ts` pins the mapping
+against the real Charizard payload (trimmed, captured 2026-08-20) specifically so a change to this
+shape fails a test rather than silently mis-categorising a card again.
+
+The lesson generalises past this one schema. **A card's provider payload is the closest thing this
+project has to a spec for physical printings, and reading a few of them before finalising a
+schema is cheaper than migrating one after real collection data depends on it** — which is exactly
+why M5 does this now, before M6 attaches holdings to `card_variants`, and why PLANNING_FREEZE.md §9
+treats "a provider changed, a measurement failed" as legitimate grounds to reopen a decision that
+looked settled.
+
+---
+
+## 2026-08-20 — Provider ids are unique per language, not globally, and two ON CONFLICT bugs followed from getting that wrong twice
+
+The M3 schema put a global `unique` index on `card_sets.tcgdex_set_id` and `cards.tcgdex_card_id`,
+and gave `card_series` no provider-id column at all. A live request settled whether that was safe:
+`/v2/en/sets` and `/v2/ja/sets` both return a set id `neo1`; both series lists return a series id
+`neo`. TCGdex's id space is scoped **per language**, not global. Ingesting Japanese Neo Genesis
+after English Neo Genesis would have thrown a unique-violation on the very row that proves the
+catalog needs to support Japanese at all.
+
+Fixed by adding `language` to `card_series` (plus the provider-id column it should have had from
+M3) and scoping every provider-id uniqueness constraint to `(language, tcgdex_*_id)`. First pass at
+the fix used a *partial* unique index — `WHERE tcgdex_set_id IS NOT NULL`, which reads as a
+reasonable guard against two curated rows both being `NULL`. Running the actual ingest function
+against the real project failed immediately: `there is no unique or exclusion constraint matching
+the ON CONFLICT specification`. PostgREST's `upsert(... {onConflict: 'language,tcgdex_set_id'})`
+asks Postgres to match a unique constraint or index by its literal column list, and Postgres will
+not infer a match against a *partial* index from a bare column list — the predicate has to be
+restated in the conflict clause itself, which the client library's simple form does not do.
+
+The partial predicate was not buying anything to begin with: a plain (non-partial) unique
+constraint on a nullable column already permits any number of `NULL`s, because SQL treats every
+`NULL` as unequal to every other value, including another `NULL`. Dropping `WHERE ... IS NOT NULL`
+lost nothing and made the constraint upsert-targetable
+(`20260820154000_m5_provider_id_upsert_targets.sql`). The `card_variants` identity index had the
+identical shape of bug from a different angle — built as an *expression* index
+(`coalesce(stamp, ''), coalesce(subtype, '')`) so two `NULL` stamps would not collide, which is
+correct in principle and equally un-targetable by `on_conflict`. Fixed by making `stamp`/`subtype`
+`NOT NULL DEFAULT ''` instead, so the identity constraint could be a plain column-list constraint.
+
+Both bugs share one root cause: a schema decision that looked right by inspection and was wrong the
+first time it had to survive an actual `INSERT ... ON CONFLICT`. Neither was visible in the
+migration SQL, in `pnpm typecheck`, or in a code review — only in running the real ingest against a
+real project, which is the reason this milestone budgeted for that rather than treating "the
+migration applied" as proof the ingest would work.
+
+---
+
+## 2026-08-20 — A marketplace product id is not a per-variant identity either
+
+Continuing the same audit: `card_variants.cardmarket_product_id` and `.tcgplayer_product_id` had
+unique indexes, on the assumption that a marketplace lists each finish as a separate product.
+`swsh1-2` (Roselia, Sword & Shield) disproves it — its `normal` and `reverse` variants share one
+TCGplayer `productId` in TCGdex's own response; the marketplace prices both finishes under one
+listing with per-finish price fields, not two listings. Ingesting Roselia would have failed the
+same unique constraint on the second variant.
+
+Fixed by dropping uniqueness on both columns entirely (D-034) — they remain indexed, because M9's
+price ingest will still want to join on them, but they no longer claim an identity property the
+data does not have. Combined with the `"generated"` sentinel TCGdex returns for `variantId` when it
+has no real cross-reference (observed on several modern cards, mapped to `NULL` rather than stored
+as a fake id), the pattern across all three provider-id columns on `card_variants` is the same:
+**verify a "this uniquely identifies X" assumption against a real payload before encoding it as a
+database constraint** — the two vintage/finish-rich cards this milestone happened to fetch first
+were exactly the ones that disproved it, and a synthetic test fixture written from imagination
+would not have.
+
+---
+
 ## Real-device testing log
 
 Recorded as it happens. Emulation is not evidence of Safari behaviour.

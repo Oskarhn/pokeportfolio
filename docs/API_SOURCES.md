@@ -18,17 +18,55 @@ No API keys, tokens or credentials appear in this file, ever.
 | Authentication | **None.** No API key. |
 | Cost | Free |
 | Rate limits | None published. FAQ: *"There are no published hard rate limits, but please be considerate."* |
-| Verified | 2026-08-16, by direct request from the development machine |
+| Verified | 2026-08-16, re-verified 2026-08-20 for M5 (ingest), by direct request from the development machine |
 
-### Coverage verified by live request
+### Coverage verified by live request (2026-08-20)
 
 | Probe | Result |
 |---|---|
-| `/v2/en/sets` | 218 sets |
-| `/v2/ja/sets` | 177 sets, native Japanese names, disjoint identifiers (`PMCG1` vs `base1`) |
-| `/v2/en/cards` | 23 444 cards |
-| `/v2/en/cards/{id}` | Full card with `variants_detailed[]` including pricing |
-| `/v2/en/sets?name=like:Prismatic` | Set filtering works |
+| `/v2/en/sets` | 218 sets (unchanged since 2026-08-16) |
+| `/v2/ja/sets` | 177 sets, native Japanese names |
+| `/v2/en/cards` | 23 444 cards (lite list: `id`, `localId`, `name`, `image?`) |
+| `/v2/ja/cards` | 8 159 cards |
+| `/v2/en/cards/{id}`, `/v2/ja/cards/{id}` | Full card with `variants_detailed[]` including pricing |
+| `/v2/en/sets/{id}` | Full set detail: `serie{id,name}`, `cardCount{official,total,firstEd,holo,normal,reverse}`, lite `cards[]` |
+| `/v2/en/series`, `/v2/en/series/{id}` | Series list and detail, `sets[]` |
+| GraphQL, `/v2/graphql` | Reachable, but the `cards`/`card` root fields have **no language argument** and the docs page (`tcgdex.dev/graphql`) states documentation is in progress — **rejected for M5** in favour of REST, which is fully documented and where language scoping is unambiguous (per-path, `/v2/{lang}/...`) |
+| Bulk/database dump | None found. `github.com/tcgdex/cards-database` is per-card JSON files meant to be consumed via the API/SDKs, not a bulk export — REST per-set is the practical ingest path |
+| **Identifier collision across languages** | `/v2/en/sets` and `/v2/ja/sets` both contain a set id `neo1`; both series lists contain a series id `neo`. **Provider ids are not globally unique — they are unique only within a language.** Drove D-034. |
+| Image CDN | `https://assets.tcgdex.net/{lang}/{series}/{set}/{localId}/{quality}.{ext}`, `quality` ∈ `low` (245×337) / `high` (600×825), `ext` ∈ `webp` (recommended, transparent) / `png` / `jpg` (opaque, avoid). `image_base_url` stores the URL up to `{localId}`; the app appends `/{quality}.webp`. |
+
+### `variants_detailed[]` — real, but not the whole story
+
+Confirmed live (not assumed from an older note): TCGdex does expose a per-variant `variants_detailed[]`
+array with `type` (finish: `normal`/`holo`/`reverse`), an optional `subtype` (print-run/era —
+`shadowless`, `unlimited`, `1999-2000-copyright`, `no-rarity` all observed), an optional `stamp[]`
+array (`1st-edition` observed), `size`, and per-variant `variantId`/`pricing`. Base Set Charizard's
+response has a variant that is holo, shadowless *and* first-edition at once — three dimensions on
+one row, which is what drove the finish/stamp/subtype schema correction (D-033) rather than reusing
+the flat `variant_type` enum M3 shipped.
+
+Two things it does **not** reliably provide, found only by inspecting real payloads:
+
+- `variantId` is sometimes the literal string `"generated"` — TCGdex's own placeholder meaning "no
+  real cross-reference to a marketplace product", not a value that identifies anything, and it
+  repeats across unrelated cards. The adapter maps it to `NULL`.
+- `pricing.cardmarket.idProduct` and `pricing.tcgplayer.<finish>.productId` are not one-per-variant:
+  `swsh1-2` (Roselia) has both a `normal` and a `reverse` variant sharing the same TCGplayer
+  `productId`. Stored as plain indexed columns, never unique (D-034).
+
+`variants_detailed` is sometimes absent or empty for older/sparsely-catalogued cards; the adapter
+falls back to the boolean `variants{firstEdition,holo,normal,reverse,wPromo}` flags so every card
+still gets at least one ownable variant row.
+
+### Pokémon TCG Pocket exclusion
+
+TCGdex's `en` catalog includes Pokémon TCG Pocket — a **digital-only** product line, out of scope
+for this physical-inventory app (M5 prompt §8). It is its own series, `serie.id === "tcgp"` (15 sets
+as of 2026-08-20: `A1`, `A1a`, `A2`, …, `P-A` for promos). The ingest orchestrator filters these
+sets out before requesting them, and `sync-catalog` refuses them independently if asked (defense in
+depth — the set-detail response's `serie.id` is checked server-side, not trusted from the caller).
+No Pocket series was found in the Japanese catalog as of this date.
 
 ### Price data shape
 
@@ -73,6 +111,20 @@ Conflating these would be a real error, so they are answered separately.
    for the user's own portfolio, do not republish as a price feed, do not build a public price
    service. **Unresolved:** whether TCGdex has an arrangement with either marketplace. Recorded
    as an open uncertainty in [RESEARCH.md](RESEARCH.md) rather than assumed either way.
+
+### Catalog ingest strategy (M5)
+
+REST, one Edge Function invocation per `(language, set)` — chosen over GraphQL (undocumented,
+no language argument on the list queries) and a bulk dump (none exists). `supabase/functions/
+sync-catalog` fetches one set's detail plus every card in it (bounded concurrency, 5 in flight),
+upserts series → set → cards → variants on `(language, tcgdex_*_id)` / `(card_id, finish, stamp,
+subtype, size)` keys, and writes one `catalog_sync_runs` row per attempt. `scripts/
+run-catalog-sync.mjs` drives it set-by-set with a pause and jitter between calls and capped
+retries with backoff on transient failure — see DEVELOPMENT.md for the exact command. A set is a
+safe unit of work against Supabase's Edge Function wall-clock budget (the largest observed set is
+~450 cards; at concurrency 5 that is comfortably under a minute). Idempotent by construction:
+re-running a set changes only `last_seen_at`. A card TCGdex stops listing for a set is marked
+`is_active = false`, never deleted — DATA_MODEL.md §3.1.
 
 ### Failure strategy
 
@@ -248,7 +300,7 @@ has publicly shifted focus to Scrydex. Not a viable foundation.
 | | |
 |---|---|
 | Docs | https://supabase.com/docs |
-| Region | `eu-north-1` (Stockholm) |
+| Region | `eu-north-1` (Stockholm) planned; the dev project actually runs in `eu-west-3` (Paris) — still EU, see HANDOVER.md |
 | Plan | Free |
 | Free limits | 500 MB database, 1 GB storage, 5 GB egress, 50 000 MAU, 500 000 edge invocations, 2 active projects |
 | Pausing | Free projects pause after ~7 days without database activity; manual resume; restorable within 90 days |

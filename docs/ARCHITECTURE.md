@@ -235,6 +235,17 @@ Adapters translate provider shapes into canonical types at the boundary. No busi
 references `tcgdex`, `cardmarket.trend` or any provider field path. Deliberately three small
 interfaces, not a plugin framework.
 
+**M5 implements the catalog half.** `supabase/functions/_shared/tcgdex.ts` is the
+`CardCatalogProvider` adapter — hand-rolled explicit validators rather than a schema library,
+proportionate to the ~10 fields actually read out of a much larger provider payload. `supabase/
+functions/sync-catalog` ingests one `(language, set)` per invocation (bounded by the Edge Function
+wall-clock budget, D-035's rationale for why it is operator-triggered rather than a browser-facing
+admin action), and `scripts/run-catalog-sync.mjs` drives a full sync set-by-set with backoff and
+pacing. `public.search_cards(...)` is the read side — a `SECURITY INVOKER` Postgres function, not a
+service, since the app's own database already holds everything a search needs (M5 prompt §6: the
+product never calls TCGdex live for an ordinary search). See API_SOURCES.md's "Catalog ingest
+strategy" and DATA_MODEL.md §3.3a for the shapes.
+
 ---
 
 ## 6. PWA and the scanner constraint
