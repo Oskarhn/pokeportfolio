@@ -52,7 +52,7 @@ export function InvitationsPage() {
         })
         .single()
       if (rpcError) throw new Error(rpcError.message)
-      return data as CreatedInvitation
+      return data
     },
     onSuccess: (data) => {
       setIssued(data)
@@ -164,7 +164,7 @@ export function InvitationsPage() {
           <div className="h-20 animate-pulse rounded-lg bg-slate-800/60" />
         ) : invitations.isError ? (
           <FormMessage tone="error">Could not load invitations.</FormMessage>
-        ) : invitations.data && invitations.data.length > 0 ? (
+        ) : invitations.data.length > 0 ? (
           <ul className="divide-y divide-slate-800 rounded-lg border border-slate-800">
             {invitations.data.map((invitation) => (
               <li

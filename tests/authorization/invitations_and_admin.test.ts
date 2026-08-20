@@ -3,6 +3,7 @@ import {
   createInvitationDirect,
   createServiceClient,
   createSyntheticUser,
+  type IssuedInvitation,
   deleteSyntheticUser,
   promoteToAdmin,
   randomInvitationToken,
@@ -58,19 +59,20 @@ describe('invitation management is admin-only', () => {
     const { data, error } = await adminClient
       .rpc('create_invitation', { p_email: email, p_expires_in_hours: 48, p_label: 'a friend' })
       .maybeSingle()
+    const issued = data as IssuedInvitation | null
 
     expect(error).toBeNull()
-    expect(data?.invited_email).toBe(email)
-    expect(typeof data?.token).toBe('string')
-    expect((data?.token as string).length).toBeGreaterThanOrEqual(43)
+    expect(issued?.invited_email).toBe(email)
+    expect(typeof issued?.token).toBe('string')
+    expect(issued?.token.length).toBeGreaterThanOrEqual(43)
 
     // The token is returned to the caller and nowhere else — the row holds a hash.
     const { data: stored } = await service
       .from('invitations')
       .select('token_hash, email, created_by')
-      .eq('id', data?.invitation_id)
+      .eq('id', issued?.invitation_id)
       .single()
-    expect(stored?.token_hash).not.toBe(data?.token)
+    expect(stored?.token_hash).not.toBe(issued?.token)
     expect(stored?.email).toBe(email)
     expect(stored?.created_by).toBe(admin.id)
   })
@@ -81,7 +83,9 @@ describe('invitation management is admin-only', () => {
       .rpc('create_invitation', { p_email: `  ${local}@Example.INVALID  ` })
       .maybeSingle()
 
-    expect(data?.invited_email).toBe(`${local.toLowerCase()}@example.invalid`)
+    expect((data as IssuedInvitation | null)?.invited_email).toBe(
+      `${local.toLowerCase()}@example.invalid`,
+    )
   })
 
   it('refuses an address that is not an address', async () => {
@@ -112,14 +116,15 @@ describe('invitation management is admin-only', () => {
   it('revoking makes a previously-good invitation unusable immediately', async () => {
     const email = `revoked-before-use-${Date.now()}@example.invalid`
     const { data } = await adminClient.rpc('create_invitation', { p_email: email }).maybeSingle()
+    const issued = data as IssuedInvitation
 
     const { error } = await adminClient.rpc('revoke_invitation', {
-      p_invitation_id: data?.invitation_id,
+      p_invitation_id: issued.invitation_id,
     })
     expect(error).toBeNull()
 
     const password = syntheticPassword()
-    const result = await redeemInvitation(data?.token as string, password)
+    const result = await redeemInvitation(issued.token, password)
     expect(result.status).toBe(400)
     expect(result.body.error).toBe('invitation_invalid')
   })
@@ -197,7 +202,7 @@ describe('the privileged redemption internals are not reachable from a session',
   it('invitation_claims is invisible to every session', async () => {
     for (const client of [plainClient, adminClient]) {
       const { data, error } = await client.from('invitation_claims').select()
-      expect(error !== null || (data ?? []).length === 0).toBe(true)
+      expect(error !== null || data.length === 0).toBe(true)
     }
   })
 })

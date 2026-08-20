@@ -6,6 +6,7 @@ import {
   deleteSyntheticUser,
   hashInvitationToken,
   randomInvitationToken,
+  readInvitationStatus,
   redeemInvitation,
   syntheticPassword,
   type TestClient,
@@ -368,22 +369,17 @@ describe('invitation redemption', () => {
 describe('invitation_status (the public pre-check)', () => {
   it('reports a valid invitation and the address it is for', async () => {
     const invitation = await createInvitationDirect(service)
-    const { data, error } = await createAnonClient()
-      .rpc('invitation_status', { p_token: invitation.token })
-      .maybeSingle()
+    const status = await readInvitationStatus(invitation.token)
 
-    expect(error).toBeNull()
-    expect(data?.valid).toBe(true)
-    expect(data?.invited_email).toBe(invitation.email)
+    expect(status?.valid).toBe(true)
+    expect(status?.invited_email).toBe(invitation.email)
   })
 
   it('never returns an address for a token it cannot match', async () => {
     for (const token of [randomInvitationToken(), 'x', 'not-a-token-at-all']) {
-      const { data } = await createAnonClient()
-        .rpc('invitation_status', { p_token: token })
-        .maybeSingle()
-      expect(data?.valid).toBe(false)
-      expect(data?.invited_email).toBeNull()
+      const status = await readInvitationStatus(token)
+      expect(status?.valid).toBe(false)
+      expect(status?.invited_email).toBeNull()
     }
   })
 
@@ -394,11 +390,9 @@ describe('invitation_status (the public pre-check)', () => {
     })
 
     for (const invitation of [revoked, expired]) {
-      const { data } = await createAnonClient()
-        .rpc('invitation_status', { p_token: invitation.token })
-        .maybeSingle()
-      expect(data?.valid).toBe(false)
-      expect(data?.invited_email).toBeNull()
+      const status = await readInvitationStatus(invitation.token)
+      expect(status?.valid).toBe(false)
+      expect(status?.invited_email).toBeNull()
     }
   })
 })

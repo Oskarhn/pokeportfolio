@@ -71,12 +71,12 @@ export function InvitePage() {
     }
 
     setBusy(true)
-    const { data, error: invokeError } = await supabase.functions.invoke<RedeemResponse>(
-      'redeem-invitation',
-      { body: { token, password } },
-    )
+    const invoked = await supabase.functions.invoke('redeem-invitation', {
+      body: { token, password },
+    })
+    const data = invoked.data as RedeemResponse | null
 
-    if (invokeError || !data?.ok) {
+    if (invoked.error || !data?.ok) {
       setBusy(false)
       // supabase-js reports a non-2xx as a FunctionsHttpError without parsing the body, so the
       // server's own message is not always reachable here. The generic invitation message is the

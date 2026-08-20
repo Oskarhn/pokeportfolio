@@ -340,6 +340,51 @@ export type Database = {
           },
         ]
       }
+      invitation_claims: {
+        Row: {
+          consumed_at: string | null
+          consumed_user_id: string | null
+          created_at: string
+          email: string
+          expires_at: string
+          id: string
+          invitation_id: string
+        }
+        Insert: {
+          consumed_at?: string | null
+          consumed_user_id?: string | null
+          created_at?: string
+          email: string
+          expires_at: string
+          id?: string
+          invitation_id: string
+        }
+        Update: {
+          consumed_at?: string | null
+          consumed_user_id?: string | null
+          created_at?: string
+          email?: string
+          expires_at?: string
+          id?: string
+          invitation_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "invitation_claims_invitation_id_fkey"
+            columns: ["invitation_id"]
+            isOneToOne: false
+            referencedRelation: "invitation_overview"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "invitation_claims_invitation_id_fkey"
+            columns: ["invitation_id"]
+            isOneToOne: false
+            referencedRelation: "invitations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       invitation_redemptions: {
         Row: {
           id: string
@@ -364,6 +409,13 @@ export type Database = {
             foreignKeyName: "invitation_redemptions_invitation_id_fkey"
             columns: ["invitation_id"]
             isOneToOne: false
+            referencedRelation: "invitation_overview"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "invitation_redemptions_invitation_id_fkey"
+            columns: ["invitation_id"]
+            isOneToOne: false
             referencedRelation: "invitations"
             referencedColumns: ["id"]
           },
@@ -372,7 +424,8 @@ export type Database = {
       invitations: {
         Row: {
           created_at: string
-          created_by: string
+          created_by: string | null
+          email: string
           expires_at: string
           id: string
           label: string | null
@@ -383,7 +436,8 @@ export type Database = {
         }
         Insert: {
           created_at?: string
-          created_by: string
+          created_by?: string | null
+          email: string
           expires_at: string
           id?: string
           label?: string | null
@@ -394,7 +448,8 @@ export type Database = {
         }
         Update: {
           created_at?: string
-          created_by?: string
+          created_by?: string | null
+          email?: string
           expires_at?: string
           id?: string
           label?: string | null
@@ -774,18 +829,93 @@ export type Database = {
       }
     }
     Views: {
-      [_ in never]: never
+      invitation_overview: {
+        Row: {
+          created_at: string | null
+          created_by: string | null
+          email: string | null
+          expires_at: string | null
+          id: string | null
+          label: string | null
+          max_uses: number | null
+          revoked_at: string | null
+          status: string | null
+          use_count: number | null
+        }
+        Insert: {
+          created_at?: string | null
+          created_by?: string | null
+          email?: string | null
+          expires_at?: string | null
+          id?: string | null
+          label?: string | null
+          max_uses?: number | null
+          revoked_at?: string | null
+          status?: never
+          use_count?: number | null
+        }
+        Update: {
+          created_at?: string | null
+          created_by?: string | null
+          email?: string | null
+          expires_at?: string | null
+          id?: string | null
+          label?: string | null
+          max_uses?: number | null
+          revoked_at?: string | null
+          status?: never
+          use_count?: number | null
+        }
+        Relationships: []
+      }
     }
     Functions: {
+      before_user_created: { Args: { event: Json }; Returns: Json }
       card_condition_to_text: {
         Args: { value: Database["public"]["Enums"]["card_condition"] }
         Returns: string
+      }
+      claim_invitation: {
+        Args: { p_token: string }
+        Returns: {
+          claim_id: string
+          invited_email: string
+        }[]
+      }
+      create_invitation: {
+        Args: { p_email: string; p_expires_in_hours?: number; p_label?: string }
+        Returns: {
+          expires_at: string
+          invitation_id: string
+          invited_email: string
+          token: string
+        }[]
+      }
+      finalize_invitation_redemption: {
+        Args: { p_claim_id: string; p_user_id: string }
+        Returns: undefined
       }
       grader_to_text: {
         Args: { value: Database["public"]["Enums"]["grader"] }
         Returns: string
       }
+      hash_invitation_token: { Args: { p_token: string }; Returns: string }
+      invitation_status: {
+        Args: { p_token: string }
+        Returns: {
+          invited_email: string
+          valid: boolean
+        }[]
+      }
       is_admin: { Args: never; Returns: boolean }
+      release_invitation_claim: {
+        Args: { p_claim_id: string }
+        Returns: undefined
+      }
+      revoke_invitation: {
+        Args: { p_invitation_id: string }
+        Returns: undefined
+      }
     }
     Enums: {
       card_condition: "MT" | "NM" | "EX" | "GD" | "LP" | "PL" | "PO"

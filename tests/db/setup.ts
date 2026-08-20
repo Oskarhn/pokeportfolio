@@ -78,6 +78,25 @@ export function randomInvitationToken(): string {
     .replace(/=+$/, '')
 }
 
+/**
+ * The row shapes the invitation RPCs return. The clients in this directory are deliberately
+ * untyped (see eslint.config.js) — they impersonate an attacker holding nothing but a key, and
+ * a generated schema type would quietly stop half these tests from compiling the moment they try
+ * something the schema says is impossible. These interfaces name what the SQL actually returns,
+ * at the few points a test reads a value rather than an error.
+ */
+export interface IssuedInvitation {
+  invitation_id: string
+  token: string
+  invited_email: string
+  expires_at: string
+}
+
+export interface InvitationStatus {
+  valid: boolean
+  invited_email: string | null
+}
+
 export interface DirectInvitation {
   id: string
   token: string
@@ -137,7 +156,8 @@ export async function createSyntheticUser(
   const invitation = await createInvitationDirect(service, { email })
 
   const claim = await service.rpc('claim_invitation', { p_token: invitation.token }).maybeSingle()
-  if (claim.error || !claim.data) {
+  const claimed = claim.data as { claim_id: string } | null
+  if (claim.error || !claimed) {
     throw new Error(
       `failed to claim invitation for ${label}: ${claim.error?.message ?? 'no claim'}`,
     )
@@ -153,7 +173,7 @@ export async function createSyntheticUser(
   }
 
   const finalized = await service.rpc('finalize_invitation_redemption', {
-    p_claim_id: claim.data.claim_id,
+    p_claim_id: claimed.claim_id,
     p_user_id: data.user.id,
   })
   if (finalized.error) {
@@ -217,6 +237,15 @@ export async function redeemInvitation(token: string, password: string): Promise
     body = {}
   }
   return { status: response.status, body }
+}
+
+/** Reads the public invitation pre-check the invite page uses, with the anon key. */
+export async function readInvitationStatus(token: string): Promise<InvitationStatus | null> {
+  const { data, error } = await createAnonClient()
+    .rpc('invitation_status', { p_token: token })
+    .maybeSingle()
+  if (error) throw new Error(`invitation_status failed: ${error.message}`)
+  return data as InvitationStatus | null
 }
 
 /** Fixed catalog ids from supabase/seed/0001_catalog.sql. */
