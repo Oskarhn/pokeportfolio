@@ -19,7 +19,7 @@ let user: SyntheticUser
 
 // 2^53 + 1 — the smallest positive integer a JS double cannot represent exactly.
 const HUGE_MINOR_UNITS = '9007199254740993'
-const HUGE_MINOR_UNITS_AS_UNSAFE_NUMBER = Number.MAX_SAFE_INTEGER + 2
+const HUGE_MINOR_UNITS_EXACT = 9_007_199_254_740_993n
 
 beforeAll(async () => {
   service = createServiceClient()
@@ -82,7 +82,9 @@ describe('bigint money column boundary', () => {
       .single()
 
     // This is the failure mode the boundary exists to prevent: the JS number PostgREST
-    // returned is NOT the value that was stored.
-    expect(uncast!.total_minor).not.toBe(HUGE_MINOR_UNITS_AS_UNSAFE_NUMBER)
+    // returned, converted back to a bigint, is NOT the value that was stored. (Comparing against
+    // a JS number literal here would be self-defeating — 9_007_199_254_740_993 as a *number*
+    // literal already rounds to the same wrong value at parse time, which is exactly the bug.)
+    expect(BigInt(uncast!.total_minor)).not.toBe(HUGE_MINOR_UNITS_EXACT)
   })
 })

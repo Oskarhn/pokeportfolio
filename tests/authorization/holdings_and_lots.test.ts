@@ -28,14 +28,16 @@ afterAll(async () => {
   await deleteSyntheticUser(service, userB.id)
 })
 
-async function createHolding(client: TestClient, userId: string) {
+// holdings_identity is a real unique constraint (user_id, holding_kind, variant, condition, ...) —
+// every call site below passes a distinct `condition` so tests sharing userA don't collide on it.
+async function createHolding(client: TestClient, userId: string, condition: string) {
   const { data, error } = await client
     .from('holdings')
     .insert({
       user_id: userId,
       holding_kind: 'raw_card',
       card_variant_id: seedCatalog.pikachuVariantId,
-      condition: 'NM',
+      condition,
     })
     .select()
     .single()
@@ -81,13 +83,13 @@ async function createOwnedPurchaseLine(client: TestClient, userId: string) {
 
 describe('RLS isolation: holdings', () => {
   it('owner can create and read their own holding', async () => {
-    const holding = await createHolding(clientA, userA.id)
+    const holding = await createHolding(clientA, userA.id, 'NM')
     const { data } = await clientA.from('holdings').select().eq('id', holding.id).single()
     expect(data?.user_id).toBe(userA.id)
   })
 
   it('a stranger cannot read, update or delete another user holding', async () => {
-    const holding = await createHolding(clientA, userA.id)
+    const holding = await createHolding(clientA, userA.id, 'LP')
 
     const { data: read } = await clientB.from('holdings').select().eq('id', holding.id)
     expect(read).toEqual([])
@@ -116,7 +118,7 @@ describe('RLS isolation: holdings', () => {
 
 describe('RLS isolation: acquisition_lots (S1 child-parent ownership)', () => {
   it('owner can create a lot on their own holding, linked to their own purchase line', async () => {
-    const holding = await createHolding(clientA, userA.id)
+    const holding = await createHolding(clientA, userA.id, 'EX')
     const line = await createOwnedPurchaseLine(clientA, userA.id)
 
     const { data, error } = await clientA
@@ -141,7 +143,7 @@ describe('RLS isolation: acquisition_lots (S1 child-parent ownership)', () => {
   })
 
   it('rejects a lot with user_id=B pointing at A holding (critical cross-tenant attack)', async () => {
-    const holdingA = await createHolding(clientA, userA.id)
+    const holdingA = await createHolding(clientA, userA.id, 'GD')
 
     const { error } = await clientB.from('acquisition_lots').insert({
       holding_id: holdingA.id,
@@ -156,7 +158,7 @@ describe('RLS isolation: acquisition_lots (S1 child-parent ownership)', () => {
   })
 
   it('rejects a lot on B own holding that cites A purchase_line (defence in depth)', async () => {
-    const holdingB = await createHolding(clientB, userB.id)
+    const holdingB = await createHolding(clientB, userB.id, 'NM')
     const lineA = await createOwnedPurchaseLine(clientA, userA.id)
 
     const { error } = await clientB.from('acquisition_lots').insert({
@@ -176,7 +178,7 @@ describe('RLS isolation: acquisition_lots (S1 child-parent ownership)', () => {
   })
 
   it('a stranger cannot read another user lot', async () => {
-    const holding = await createHolding(clientA, userA.id)
+    const holding = await createHolding(clientA, userA.id, 'PL')
     const line = await createOwnedPurchaseLine(clientA, userA.id)
     const { data: lot } = await clientA
       .from('acquisition_lots')
