@@ -792,6 +792,14 @@ needs. Local/CI signup is already closed from the config side
 (`supabase/config.toml` → `[auth] enable_signup = false`). See SECURITY.md and HANDOVER.md for
 the current boundary.
 
+**`holdings_identity`'s enum-to-text casts need IMMUTABLE wrapper functions.** Postgres marks an
+enum type's built-in `::text` cast `STABLE`, not `IMMUTABLE` (labels can in principle be renamed),
+so the literal `condition::text` / `grader::text` shown in §5.4 cannot appear directly in an index
+expression — confirmed by CI actually failing to apply the migration on first attempt, not
+predicted in advance. `card_condition_to_text()` and `grader_to_text()` in the same migration are
+thin `IMMUTABLE`-marked wrappers that exist solely to make the index possible; this project does
+not rename these enums' labels, only adds new ones by migration, so the promise they make is safe.
+
 **Money serialization boundary.** `bigint` minor-unit columns are exact in Postgres, but
 PostgREST serializes `bigint` as a plain JSON number by default, and JSON/JS numbers only carry
 exact integer precision up to `Number.MAX_SAFE_INTEGER` (2^53 − 1). Every query that selects a

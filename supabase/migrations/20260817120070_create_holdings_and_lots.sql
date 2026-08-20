@@ -47,15 +47,34 @@ create table public.holdings (
   )
 );
 
+-- Postgres marks an enum's built-in ::text cast STABLE, not IMMUTABLE, because enum labels can
+-- in principle be renamed (ALTER TYPE ... RENAME VALUE) -- so it cannot appear directly in an
+-- index expression. These wrappers exist solely to make the identity index below possible; they
+-- are IMMUTABLE because this project does not rename card_condition/grader labels, only adds new
+-- ones by migration.
+create or replace function public.card_condition_to_text(value public.card_condition)
+returns text
+language sql
+immutable
+set search_path = ''
+as $$ select value::text $$;
+
+create or replace function public.grader_to_text(value public.grader)
+returns text
+language sql
+immutable
+set search_path = ''
+as $$ select value::text $$;
+
 -- Prevents the same physical state fragmenting into duplicate holdings (DATA_MODEL.md §5.4).
--- Enum columns are cast to text before coalescing: there is no enum member meaning "absent".
+-- Enum columns are converted to text before coalescing: there is no enum member meaning "absent".
 create unique index holdings_identity on public.holdings (
   user_id,
   holding_kind,
   coalesce(card_variant_id, sealed_product_id),
-  coalesce(condition::text, ''),
+  coalesce(public.card_condition_to_text(condition), ''),
   grading_state,
-  coalesce(grader::text, ''),
+  coalesce(public.grader_to_text(grader), ''),
   coalesce(grade, -1)
 ) where deleted_at is null;
 

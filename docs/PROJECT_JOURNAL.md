@@ -285,6 +285,33 @@ correct security property, and definer rights would have quietly undone it.
 
 ---
 
+## 2026-08-20 — An enum's own `::text` cast cannot go in an index, and CI caught it first
+
+**Problem.** `holdings_identity` (DATA_MODEL.md §5.4) needs to coalesce `condition` and `grader`
+— both custom enum columns — down to an empty string when null, since no enum member means
+"absent". The natural expression is `coalesce(condition::text, '')`. CI's `db-tests` job failed
+applying the migration to an empty database: `ERROR: functions in index expression must be marked
+IMMUTABLE`.
+
+**Why.** Postgres auto-generates I/O functions for a `CREATE TYPE ... AS ENUM`, and marks the
+enum-to-text conversion `STABLE`, not `IMMUTABLE` — because `ALTER TYPE ... RENAME VALUE` could in
+principle change what a given internal value prints as, which would change an index's contents
+without Postgres knowing. An index expression is required to be provably deterministic forever, so
+`STABLE` isn't good enough, even though nothing in this project ever renames an enum label.
+
+**Resolution.** Two minimal `IMMUTABLE`-marked SQL wrapper functions
+(`card_condition_to_text`, `grader_to_text`) that do exactly the same cast, added in the same
+migration. This is the documented community pattern for this exact error, not a workaround
+invented under pressure — the promise the `IMMUTABLE` marking makes ("same input, same output,
+forever") is one this project can actually keep, since these enums only grow by adding new values,
+never by renaming existing ones.
+
+**Why this is worth recording.** This was caught by CI actually attempting the migration against
+a real, ephemeral Postgres instance — exactly the value the M3 CI investment (see the "Local
+Docker unavailability" entry above) was supposed to provide, on the very first real test of it.
+Neither `pnpm check`, code review, nor reasoning about the SQL in the abstract would have caught
+this; it required a real `CREATE INDEX` to fail.
+
 ## Real-device testing log
 
 Recorded as it happens. Emulation is not evidence of Safari behaviour.
