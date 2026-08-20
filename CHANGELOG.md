@@ -50,6 +50,15 @@ Fixed, from an adversarial review of the M3 foundation: account deletion was imp
 — `token_hash` was admin-readable through the Data API, and functions relied on `PUBLIC`'s
 default `EXECUTE`. Password policy is now 12 characters minimum with no composition rules.
 
+Deployed to a free `pokeportfolio-dev` project, and verifying it there found what CI could not:
+the project auto-grants the Data API roles broad privileges on new tables and functions, and a
+`GRANT` is additive — so M3's column-restricted `profiles` grant restricted nothing, and a
+signed-in non-admin could set their own `is_admin` flag while the authorization suite was green.
+Every privilege is now restated as revoke-then-grant for tables and functions alike, `anon` holds
+no table privileges at all, and `scripts/remote-security-check.mjs` runs the same assertions
+against a real deployment with nothing but the publishable key. Final remote run: 33/33, with the
+escalation asserted on the stored value rather than the HTTP status.
+
 Cost: $0; no billing enabled anywhere. Detail: `claude_outputs/output_7.txt` (not committed).
 
 ### Added — 2026-08-17 · M3 database foundation, migrations and RLS

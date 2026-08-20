@@ -411,5 +411,14 @@ Every milestone that adds a table or an endpoint must confirm:
 - [ ] No new secret reachable from the client bundle
 - [ ] Destructive paths write an `audit_event`
 - [ ] No user data in new log statements
-- [ ] No new function relies on `PUBLIC`'s default `EXECUTE` — revoke, then grant explicitly
 - [ ] Any new `SECURITY DEFINER` function pins `search_path = ''` and uses no dynamic SQL
+- [ ] **Privileges are revoked before they are granted.** A `GRANT` adds; it never restricts.
+      `revoke all on <table> from anon, authenticated` (or `revoke execute on function … from
+      public, anon, authenticated`) and then grant back exactly the intended set. Naming a column
+      list in a `GRANT` does not limit the role to those columns if it already held more.
+- [ ] The deployed project was verified, not just CI. Run `scripts/remote-security-check.mjs`
+      after any deploy touching auth, invitations, policies or grants.
+
+The last two are not generic advice. Both were written after the deployed project and CI disagreed
+— the second time about whether a signed-in user could set their own `is_admin` flag. See
+PROJECT_JOURNAL.md, 2026-08-20.

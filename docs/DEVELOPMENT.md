@@ -122,6 +122,7 @@ each is a deliberate act against a remote project rather than part of a loop:
 | `pnpm exec supabase db push` | Apply pending migrations to the linked remote |
 | `pnpm exec supabase config push` | Push `config.toml` — **including the invite-only auth hook** — to the linked remote |
 | `pnpm exec supabase functions deploy redeem-invitation` | Deploy the redemption function |
+| `node scripts/remote-security-check.mjs` | Verify a **deployed** project's security posture. Needs `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY`; add `INVITE_TOKEN` for the full redemption phase. Run it after any deploy touching auth, invitations, policies or grants. |
 
 `config push` is not optional housekeeping. Gate 1 of the invite-only enforcement lives in
 `config.toml`, so a remote project that has had migrations pushed but not config is running with

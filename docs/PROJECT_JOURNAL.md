@@ -456,6 +456,62 @@ after.
 
 ---
 
+## 2026-08-20 — A green authorization suite and a real privilege escalation, at the same time
+
+**Problem.** With M4's gates proven in CI and the deliberate negative test done, the first deploy to
+a real Supabase project should have been a formality. The verification run against it found two
+things CI could not see. The second was the privilege escalation the whole authorization suite
+exists to prevent: a signed-in, non-admin session could
+
+    PATCH /rest/v1/profiles?id=eq.<its own id>   {"is_admin": true}
+
+and PostgREST accepted it. Every test was green.
+
+**Cause.** A Supabase project can carry an event trigger that grants the Data API roles broad
+privileges on every newly created public-schema table and function — the legacy
+`auto_expose_new_tables` behaviour. The local stack CI uses has it off, matching the current cloud
+default. This project had it on. So on the remote, `authenticated` already held full `UPDATE` on
+`public.profiles` before M3's carefully column-restricted grant ever ran.
+
+And **a GRANT is additive**. M3 wrote
+
+    grant update (display_name, locale, …) on public.profiles to authenticated;
+
+meaning "these columns and no others". SQL does not read it that way: it adds those columns to
+whatever the role already has. Where the role already had everything, it added nothing and
+restricted nothing. That migration's own comment — that the restriction held "at the SQL privilege
+level, independent of any RLS policy" — was true of the intent and false of the deployment.
+
+RLS did not save it, and could not have. `profiles_update_own` has `USING (id = auth.uid())`
+with a matching `WITH CHECK`, and the row being updated genuinely *is* the caller's own, so the
+policy is satisfied. The column grant was the only thing between a user and the admin flag.
+
+The same mechanism had already produced the milder first finding: `REVOKE EXECUTE … FROM PUBLIC`
+removes PUBLIC's implicit grant and nothing else, so three functions were locked on CI and reachable
+on the remote. Those three were pure computations over caller input and disclosed nothing — which is
+exactly why it was worth chasing rather than shrugging at. The mechanism that made a harmless
+function reachable is the mechanism that made the admin flag writable.
+
+**Resolution.** Every privilege is now restated as revoke-then-grant, for tables and functions
+alike, and not only where the bug bit — the defect is the assumption that a narrow grant restricts,
+and that assumption had been made everywhere. `anon` ends with no table privileges at all;
+anonymous reads answer 401 rather than an empty array. `config.toml` additionally pins
+`auto_expose_new_tables = false`, so the two environments stop diverging at the source, though the
+migrations no longer depend on that.
+
+**The uncomfortable part, kept in view.** CI was green throughout, and CI was not lying about the
+code — it was faithfully testing a database whose privileges did not match the one users would hit.
+An ephemeral stack rebuilt from migrations is an excellent reproducibility gate and is *not* a
+statement about a deployed project. The response is `scripts/remote-security-check.mjs`: the same
+assertions, run against a real deployment with nothing but the publishable key, so it can never leak
+a credential and there is no excuse for skipping it. It is in the security checklist now.
+
+The final run was 33/33 against the real project, with the escalation asserted on the stored value
+rather than the HTTP status — because a write that is accepted and then filtered would pass a
+status check, and a write that is accepted and applied is the entire problem.
+
+---
+
 ## Real-device testing log
 
 Recorded as it happens. Emulation is not evidence of Safari behaviour.

@@ -340,6 +340,13 @@ db-tests        supabase start → db reset → assert redeem-invitation is reac
 every database and authorization test. It uses **no remote credentials of any kind**, which is what
 keeps CI reproducible from Git alone and keeps the real project out of the blast radius.
 
+**CI is a reproducibility gate, not a statement about a deployed project.** That distinction cost
+a real finding: the same migrations produced different privileges on CI and on the dev project,
+because the project auto-granted the Data API roles more than the migrations then revoked. Green CI
+coexisted with a live privilege escalation. `scripts/remote-security-check.mjs` closes the gap —
+the same assertions against a real deployment, using only the publishable key, so running it can
+never leak a credential. It is a step in the security checklist, not an optional extra.
+
 The reachability check before the auth suite is not ceremony. If the edge runtime were not serving
 `redeem-invitation`, the redemption tests would fail for an unrelated reason, or worse, a future
 refactor could make them vacuous. Asserting a nonsense token comes back `400` from our own handler
