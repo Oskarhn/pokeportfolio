@@ -120,15 +120,19 @@ afterAll(async () => {
 })
 
 /**
- * "Refused" means the privilege system said no — Postgres `42501`, surfaced by PostgREST as 401.
- * A function that runs and *then* raises its own error is callable, and that is a different fact:
- * create_invitation is callable by any session and refuses non-admins from inside, which is the
- * design. Matching on the privilege error rather than on "did it error" is what keeps those two
- * apart.
+ * "Refused" means the privilege system said no, before the function body ran. A function that runs
+ * and *then* raises its own error is callable, and that is a different fact: create_invitation is
+ * reachable by any session and refuses non-admins from inside, which is the design.
+ *
+ * Matched on the message, not on SQLSTATE. `42501` looks like the obvious discriminator and is not
+ * one — `create_invitation` and `revoke_invitation` deliberately raise `not_authorized` with that
+ * same code, because insufficient_privilege is the honest classification for what they are
+ * rejecting. Only Postgres itself produces "permission denied for function", and only when the
+ * caller holds no EXECUTE grant.
  */
 function isPrivilegeRefusal(error: { code?: string; message?: string } | null): boolean {
   if (!error) return false
-  return error.code === '42501' || /permission denied for function/i.test(error.message ?? '')
+  return /permission denied for function/i.test(error.message ?? '')
 }
 
 describe('function EXECUTE grants: anonymous callers', () => {
