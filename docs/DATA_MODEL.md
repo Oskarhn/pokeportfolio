@@ -619,14 +619,43 @@ equality is a test.
 
 | Column | Notes |
 |---|---|
-| `id uuid pk`, `token_hash text` | Only the hash is stored. The plaintext token is shown once, at creation. |
-| `created_by uuid fk`, `note text nullable` | |
-| `expires_at timestamptz`, `max_uses int default 1`, `use_count int default 0` | |
-| `revoked_at`, `created_at` | |
-| `redemptions` child table | `invitation_id`, `user_id`, `redeemed_at` |
+| `id uuid pk`, `token_hash text unique` | Only `sha256(token)` is stored. The plaintext is returned once, at creation, and is not recoverable afterwards — not even by an admin, because `token_hash` has no column-level SELECT grant. |
+| `email text not null` | The single address this invitation authorizes an account for. Normalized `lower(btrim(...))`, matching what GoTrue does to every address it stores. Knowing the address is not authorization; the token is. Binding them means a stolen token cannot be redirected. |
+| `created_by uuid fk nullable` | The admin who issued it. `NULL` means a bootstrap invitation issued through privileged database access (DEVELOPMENT.md §7). `ON DELETE SET NULL` — the record outlives its issuer. |
+| `label text nullable` | The admin's own bookkeeping. Never shown to the recipient. |
+| `expires_at timestamptz`, `max_uses int default 1`, `use_count int default 0` | Default expiry 7 days, settable 1 hour to 30 days. `use_count` counts *successful* redemptions; availability is computed from `invitation_claims`, not from this column. |
+| `revoked_at`, `created_at` | Revoking also drops any in-flight claim. |
 
-No email column is required — the admin shares the link out of band. An optional `label` field
-exists for the admin's own bookkeeping.
+Reachable from a browser only as `invitation_overview`, a `security_invoker` view that carries a
+derived `active` / `expired` / `revoked` / `redeemed` status and structurally has no
+`token_hash` column to ask for. Direct INSERT/UPDATE/DELETE on `invitations` are not granted to
+`authenticated` at all — a hand-rolled client insert could otherwise store an attacker-chosen hash.
+
+### `invitation_redemptions`
+
+`invitation_id`, `user_id` (unique, `ON DELETE CASCADE`), `redeemed_at`. Written only by
+`finalize_invitation_redemption` under the service role. Admin-readable, because it is the record
+of which invitation produced which account; that is the whole of what admin sees about another
+person, and it opens nothing else.
+
+### `invitation_claims`
+
+The short-lived server-side authorization that makes invariant S2 enforceable without trusting
+anything a client sends.
+
+| Column | Notes |
+|---|---|
+| `id`, `invitation_id fk`, `email` | |
+| `expires_at` | Two minutes. Long enough for one account creation, short enough that an abandoned attempt frees the invitation on its own. |
+| `consumed_at`, `consumed_user_id fk` | Stamped by the `auth.users` BEFORE INSERT trigger, in the same transaction as the insert it authorizes. The FK is `DEFERRABLE INITIALLY DEFERRED` because the referenced row does not exist yet at that moment. |
+
+A partial unique index on `(email) WHERE consumed_at IS NULL` allows at most one live claim per
+address, which together with a `FOR UPDATE` lock on the invitation row is what makes double
+redemption impossible rather than merely unlikely.
+
+**RLS enabled with no policies and no grants to `anon` or `authenticated`.** Unreachable through
+the Data API under every role a browser can hold. Only `service_role` and the SECURITY DEFINER
+functions touch it.
 
 ### `audit_events`
 
@@ -785,17 +814,17 @@ typed against.
 `card_size` enum: `standard`, `oversized` (covers jumbo/oversized promos; extend by migration if
 a TCGdex-observed size doesn't fit either).
 
-**S2 (`auth.users` backstop trigger) is deferred to M4**, alongside the `redeem-invitation` Edge
-Function it depends on. Enabling the reject-if-no-redemption trigger before that Edge Function
-exists would also block the service-role-created synthetic users the M3 authorization suite
-needs. `supabase/config.toml`'s `[auth] enable_signup` is **not** a substitute in the meantime —
-confirmed empirically in CI (a known GoTrue behaviour: disabling it disables the email/password
-*login* grant type for every existing user, not only new self-registration, which would have
-broken sign-in for legitimate redemption-created users too). It stays at the platform default
-(`true`). Until the S2 trigger ships in M4, nothing in this repository closes the public
-`/auth/v1/signup` endpoint — acceptable because no environment with this schema is
-publicly deployed yet, and it is the explicit next action. See SECURITY.md and HANDOVER.md for
-the current boundary.
+**S2 shipped in M4 and the boundary this note described is closed.** The public
+`/auth/v1/signup` endpoint is now answered by the Before User Created hook, and `auth.users`
+carries a BEFORE INSERT trigger demanding a live invitation claim. `[auth] enable_signup` remains
+at the platform default and is still not part of the enforcement chain, for the reason M3 found
+empirically: disabling it disables the email/password *login* grant for every existing user, not
+only new self-registration. See SECURITY.md §5.
+
+The M3 concern that the trigger would block the authorization suite's synthetic users turned out to
+be right, and is handled rather than avoided: the fixture now takes the same privileged route the
+redemption function takes — issue, claim, create, finalize. That is a better fixture than the old
+one, because it exercises the real path instead of stepping around it.
 
 **`holdings_identity`'s enum-to-text casts need IMMUTABLE wrapper functions.** Postgres marks an
 enum type's built-in `::text` cast `STABLE`, not `IMMUTABLE` (labels can in principle be renamed),
@@ -804,6 +833,12 @@ expression — confirmed by CI actually failing to apply the migration on first 
 predicted in advance. `card_condition_to_text()` and `grader_to_text()` in the same migration are
 thin `IMMUTABLE`-marked wrappers that exist solely to make the index possible; this project does
 not rename these enums' labels, only adds new ones by migration, so the promise they make is safe.
+
+**M4 corrections to this schema.** Two, both found by an adversarial review rather than by a test
+failure. Every `user_id` foreign key to `auth.users` had no `ON DELETE` action, so account
+deletion — which SECURITY.md §8 describes as a cascade — was impossible for any user owning a single
+row; all eight now cascade. And `invitations` allowed an admin to read `token_hash` through the
+Data API, which the column-level grant now prevents.
 
 **Money serialization boundary.** `bigint` minor-unit columns are exact in Postgres, but
 PostgREST serializes `bigint` as a plain JSON number by default, and JSON/JS numbers only carry

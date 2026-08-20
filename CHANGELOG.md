@@ -10,6 +10,48 @@ they were**.
 
 ## [Unreleased]
 
+### Added — 2026-08-20 · M4 invite-only authentication and account security
+
+Account creation is closed. Two independent server-side gates enforce it: a **Before User Created
+auth hook** that rejects every self-service signup path GoTrue exposes, and a `BEFORE INSERT`
+trigger on `auth.users` requiring a live invitation claim (invariant S2). The hook rejects
+unconditionally rather than checking anything, because GoTrue does not invoke it from the Auth Admin
+API — verified against the `supabase/auth` source — which means there is no forgeable metadata and
+no race window. A hook that merely allowed signup for invited addresses was considered and rejected:
+it would have let anyone who knew an invited address set the password first.
+
+Invitations now bind to a single address, store only `sha256(token)`, expire (7 days by default),
+are single-use and revocable, and expose no `token_hash` through the Data API even to an admin.
+Redemption is a three-step claim/create/finalize flow whose availability is computed from claims
+rather than a counter, so an abandoned attempt frees itself in two minutes and no sequence of
+failures can burn an invitation permanently; concurrency is handled by a row lock plus a partial
+unique index, not by application-level check-then-act. `redeem-invitation` is the only Edge
+Function — invitation issue and revocation are admin-gated Postgres RPCs, because generating a token
+needs no Deno runtime and no second copy of the secret key.
+
+Application: sign-in, invitation redemption, password recovery, an admin invitation screen, session
+handling, and public/protected/admin route classes. Provisional visually, but with the parts that
+would be a bug in any visual direction — password-manager `autocomplete` attributes, paste never
+blocked, errors announced rather than only coloured, 44px touch targets, and one sign-in error
+message so the form does not become an account-enumeration oracle.
+
+Testing: an 18-case invite-only attack suite run against the live API with the publishable key
+(uninvited signup, **invited-address signup**, forged `user_metadata`, a hand-built
+`/auth/v1/signup` carrying `app_metadata` and `role: service_role`, Auth Admin creation with no
+claim, replay, tampering, expiry, revocation, an attacker-supplied address in the redemption body, a
+rejected password leaving the invitation usable, and two redemptions racing one token), 22 admin
+authorization cases, and 26 browser cases at desktop and iPhone viewports. Both gates were
+deliberately disabled on a throwaway branch and CI watched to fail on the named tests before being
+reverted. CI now runs the browser suite and asserts the Edge Function is reachable before the auth
+tests, so redemption cases cannot pass by being skipped.
+
+Fixed, from an adversarial review of the M3 foundation: account deletion was impossible — eight
+`user_id` foreign keys to `auth.users` had no `ON DELETE` action, contradicting SECURITY.md §8
+— `token_hash` was admin-readable through the Data API, and functions relied on `PUBLIC`'s
+default `EXECUTE`. Password policy is now 12 characters minimum with no composition rules.
+
+Cost: $0; no billing enabled anywhere. Detail: `claude_outputs/output_7.txt` (not committed).
+
 ### Added — 2026-08-17 · M3 database foundation, migrations and RLS
 
 Real persistent-storage foundation. Supabase project structure (`supabase/`), CLI pinned as a

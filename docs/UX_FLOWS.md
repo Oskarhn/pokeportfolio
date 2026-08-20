@@ -11,23 +11,33 @@ Notation: **→** step · **⚠** failure or edge case · **✓** completion cri
 
 **Admin creates an invitation**
 
-→ Settings › Invitations › Create
-→ Optional label for the admin's own bookkeeping
-→ Choose expiry (default 7 days) and uses (default 1)
-→ The token is displayed **once**, with a copy button and a plain warning that it will not be
-  shown again
-✓ Only the hash is stored; the plaintext is never retrievable
+→ Invitations › enter the recipient's email address
+→ Optional note for the admin's own bookkeeping
+→ Expiry defaults to 7 days, uses to 1
+→ The link is displayed **once**, with a copy button and a plain statement that this is the only
+  time it is shown
+→ The admin sends it over a channel they already trust — Signal, iMessage, in person. The
+  application never emails it.
+✓ Only the hash is stored; the plaintext is never retrievable, by anyone, including the admin
+✓ The outstanding list shows address, status and expiry, and offers Revoke while a link is active
 
 **Recipient redeems**
 
 → Opens the link on their phone
-→ Enters their email address
-→ Receives a six-digit code, enters it in the same screen
-→ Account and profile created; landed on an empty dashboard
-✓ Empty state explains the first useful action rather than showing zeroes in a grid
+→ Sees the address the account will be created for — they do not type it, and cannot change it
+→ Chooses a password twice, with the platform password manager offering to generate and save one
+→ Account and profile created, signed in, landed on the app
+✓ No email, no code to wait for, nothing to rate-limit
+✓ The invitation URL is replaced rather than pushed, so the raw token is not one Back press away
 
-⚠ Expired, revoked or already-used token → a specific message naming which, not a generic failure
-⚠ No token at all → signup is rejected server-side, not merely hidden
+⚠ Expired, revoked, already used or simply wrong → one message: the link is not valid, ask for a
+  new one. The distinction is visible to the admin in the invitations list, not to the public
+  caller, because naming which one confirms facts about invitations to someone who may not hold a
+  valid token.
+⚠ A password below the minimum → the invitation stays usable; a typo does not burn a link
+⚠ No token at all → account creation is rejected server-side by two independent gates, not merely
+  hidden. There is no "create account" control anywhere in the interface, but its absence is
+  presentation, not the control.
 
 **Returning login**
 
@@ -36,8 +46,10 @@ Notation: **→** step · **⚠** failure or edge case · **✓** completion cri
 ✓ Works with the platform password manager on iOS
 ✓ Session survives app switch, cold start and reload
 
-⚠ Forgotten password → reset email via the built-in low-volume provider. Rare by design. If it
-  fails or is unavailable, the admin can trigger a recovery — documented, not improvised.
+⚠ Forgotten password → reset email via the built-in low-volume provider. Rare by design. The form
+  confirms the same way whether or not the address has an account.
+⚠ If delivery fails, the owner confirms identity out of band and generates a recovery link by
+  hand — documented in SECURITY.md §5.8, not improvised. An admin never sets someone's password.
 
 ---
 

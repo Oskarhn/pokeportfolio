@@ -34,7 +34,7 @@ Untrusted ─── browser client ─── Supabase edge ─── Postgres (R
 | Boundary | Control |
 |---|---|
 | Browser → Supabase | Anon key plus a user JWT. The anon key grants nothing on its own; RLS is the gate. |
-| Edge Function → Postgres | `service_role`, bypasses RLS. Only two functions use it, both with narrow, audited jobs. |
+| Edge Function → Postgres | The secret (`service_role`) key, which bypasses RLS. Exactly one function holds it — `redeem-invitation` — and it does nothing with it but call four named, narrowly-granted database functions and the Auth Admin API. |
 | Repository → GitHub | Private repo, `.gitignore`, `.env.example` placeholders only, secret scanning. |
 | External providers | Outbound only, server-side only, no credentials required by any current provider. |
 
@@ -105,16 +105,28 @@ Each is a named test in the authorization suite. See [TESTING.md](TESTING.md) §
 
 ## 4. Admin role
 
-`profiles.is_admin` grants exactly three abilities:
+`profiles.is_admin` grants exactly two abilities today:
 
-1. Create invitations
-2. Revoke invitations
-3. Disable a user account
+1. Create invitations (`create_invitation`)
+2. Revoke invitations (`revoke_invitation`)
 
-It grants **no read access to any other user's collection, purchases, sales, openings or
-valuations.** No RLS policy anywhere references `is_admin` for user-private data. Admin actions
-are limited to `invitations` and a narrow `admin_disable_user` RPC, and every one writes an
-`audit_event`.
+Disabling an account is a third intended capability. `profiles.disabled_at` exists for it, but no
+RPC does yet — it arrives with the milestone that gives it a workflow, alongside `audit_events`,
+which is likewise not yet a table (DATA_MODEL.md §12). Until then, disabling is an infrastructure
+operation, not an application one, and this document does not pretend otherwise.
+
+Admin status grants **no read access to any other user's collection, purchases, sales, openings or
+valuations.** No RLS policy anywhere references `is_admin()` for user-private data — the only
+policies that call it are on `invitations` and `invitation_redemptions`, which are the admin's
+own management surface rather than anybody's private records.
+
+The one thing admin legitimately sees about another person is the address they were invited at, and
+`invitation_redemptions` links that address to a user id. That link is the closest thing to a
+bridge into user-private data, so it has its own negative test: holding it opens nothing else.
+
+Admin is also not a privilege level in the database. The privileged redemption internals
+(`claim_invitation`, `finalize_invitation_redemption`, `release_invitation_claim`) are granted
+to `service_role` alone and are refused for an admin exactly as they are for anyone else.
 
 Operational database access through the Supabase dashboard is a separate, infrastructure-level
 capability. It exists, it is unavoidable for whoever owns the project, and it is deliberately
@@ -125,65 +137,179 @@ has infrastructure-level access; this is stated in the README rather than preten
 
 ## 5. Invite-only enforcement
 
-Hiding a signup button is not access control. The enforcement chain:
+Hiding a signup button is not access control. Implemented in M4; every claim below is asserted by
+a named test in `tests/authorization/invite_only.test.ts`.
 
-1. **No OAuth providers enabled.** Password auth is the only auth method.
-2. **Invitation creation:** admin-only RPC generates a high-entropy token, stores only
-   `sha256(token)`, returns the plaintext once. Tokens carry `expires_at`, `max_uses` and
-   `revoked_at`.
-3. **Redemption:** the `redeem-invitation` Edge Function is the sole account-creation path. It
-   validates hash, expiry, use count and revocation inside a transaction, creates the user with
-   the service role, and records a `redemption` row.
-4. **Backstop, and the actual enforcement point:** a trigger on `auth.users` rejects any insert
-   without a matching redemption (invariant S2).
+> **Invariant S2:** no `auth.users` row can exist except as the result of redeeming an invitation
+> token the redeeming party actually possesses.
 
-**Correction, verified in M3 (docs/PROJECT_JOURNAL.md, 2026-08-20).** An earlier draft of this
-document additionally listed "disable email signup at the Supabase Auth dashboard level" as step
-1, on the reasoning that the sign-up endpoint would otherwise be an open door. That toggle
-(`[auth] enable_signup`) does not do what its name implies: disabling it also disables the
-email/password *login* grant type for every existing user, not only new self-registration — a
-documented GoTrue behaviour (supabase/gotrue#330), confirmed empirically when it broke sign-in
-for admin-created test users in CI. Using it would have broken login for every legitimately
-invited user in the real product. It is **not** part of the enforcement chain. The `auth.users`
-backstop trigger (step 4) is therefore not defense-in-depth behind a config toggle — it is the
-only thing that closes the public signup endpoint, and it must exist before any environment
-running this schema is reachable by anyone outside the project owner.
+The adversary this is written against knows the project URL, holds the publishable key, knows an
+invited person's email address, ignores our frontend, edits the JavaScript, and calls
+`/auth/v1/signup` directly with a body of their choosing.
 
-> **Invariant S2:** no `auth.users` row can exist without a corresponding invitation redemption.
-> Tested by attempting direct signup against the public API. **Not yet implemented** as of M3 —
-> ships in M4 with the `redeem-invitation` Edge Function it depends on (DATA_MODEL.md §12).
+### 5.1 Two gates
 
-Tokens are single-use by default, time-limited, and revocable. Revoking after redemption
-disables the account rather than deleting data.
+**Gate 1 — the Before User Created auth hook.** `public.before_user_created` rejects
+unconditionally, with a 403 and a message naming the reason.
 
-### 5.1 Passwords
+GoTrue invokes this hook on every self-service account-creation path — password signup, magic link,
+anonymous, OAuth, SAML, OIDC, Web3, admin invite-by-email. It does **not** invoke it from the Auth
+Admin API. Verified by reading `supabase/auth` at master: `triggerBeforeUserCreated` is called from
+`signup.go`, `mail.go`, `anonymous.go`, `external.go`, `web3.go`, `samlacs.go`, `token_oidc.go` and
+`invite.go`, while `internal/api/admin.go` contains no hook invocation at all.
 
-Authentication is email plus password (see [ARCHITECTURE.md](ARCHITECTURE.md) §4). Supabase
-handles hashing; the application never sees or stores a password. Requirements:
+That asymmetry is the whole design. Because the only account-creation path we use is the Admin API,
+called from a server-side function that has already proven token possession, the hook needs to
+inspect nothing. There is no metadata to forge, no address to be "on the list", and no window to
+race.
 
-- Minimum length enforced server-side, not only in the form.
-- Password strength checked against a common-password list at registration.
-- Rate limiting on sign-in attempts (platform default: 30 per hour per IP, non-configurable).
-- Password reset uses the built-in low-volume email provider. Reset tokens are single-use and
-  short-lived. If delivery fails, an admin-assisted recovery path exists — it must require
-  out-of-band confirmation of identity, because at this scale "a friend says they're locked out"
-  is a plausible social-engineering vector even with ten users.
-- Passwords are never logged, never included in error messages, never in test fixtures.
+It also fails in the right direction. If a future GoTrue release started calling the hook from the
+Admin API too, redemption would stop working and the authorization suite would fail loudly, rather
+than the gate quietly opening.
 
-Choosing password auth over one-time codes trades a delivery dependency for a credential to
-protect. That is the right trade here — but it does mean credential handling is now in scope
-where it previously was not.
+**Gate 2 — a `BEFORE INSERT` trigger on `auth.users`.** `public.enforce_invited_signup` demands a
+live row in `invitation_claims` matching the address, and consumes it in the same transaction as
+the insert it authorizes.
 
----
+The hook is configuration: it lives in `supabase/config.toml` and reaches a project through
+`supabase config push`. A trigger travels with the migrations and cannot be left un-toggled in an
+environment. The trigger also closes what the hook does not — creating a user through the Auth
+Admin API or the Supabase dashboard — so even service-role access cannot mint an account outside
+the redemption flow without deliberately writing a claim first.
+
+### 5.2 Why not "allow signup if this address has an invitation"
+
+Because it would be a hole, not a gate. If the hook permitted public signup for any address with an
+outstanding invitation, anyone who knew that address could call `/auth/v1/signup` and choose the
+password before the invited person ever opened their link. **Knowing an address is not possessing
+the token.** Making the hook deny everything, and creating accounts only through a path that proves
+token possession first, removes the attack rather than narrowing its window.
+
+For the same reason, nothing in the enforcement chain reads `user_metadata`. Anything a public
+signup client can send is attacker-controlled by definition, so it can never be the authorization.
+
+### 5.3 What `enable_signup` does not do
+
+An earlier draft of this document listed "disable email signup at the dashboard" as step one. That
+toggle (`[auth] enable_signup`) does not do what its name implies: disabling it also disables the
+email/password *login* grant for every existing user, not only new self-registration — a documented
+GoTrue behaviour (supabase/gotrue#330), confirmed empirically when it broke sign-in for
+admin-created test users in M3's CI. It stays at the platform default and is **not** part of the
+enforcement chain.
+
+### 5.4 The invitation itself
+
+| Property | How |
+|---|---|
+| Unguessable | 32 bytes from `gen_random_bytes`, base64url — 256 bits, 43 characters |
+| Never stored | Only `encode(sha256(token), 'hex')` reaches the database |
+| Never re-readable | `create_invitation` returns the raw token once; `token_hash` has no column-level SELECT grant for `authenticated`, so not even an admin can read it back |
+| Address-bound | `invitations.email` fixes the account the token can create; a redeemer's own address in the request body is ignored |
+| Time-limited | `expires_at`, default 7 days, configurable between 1 hour and 30 days |
+| Single-use | `max_uses`, default 1, counted from claims |
+| Revocable | `revoke_invitation` stamps `revoked_at` and drops any in-flight claim |
+
+SHA-256 rather than bcrypt or argon2 is deliberate. Password hashing is slow because a password has
+perhaps 40 bits of entropy and must survive an offline dictionary attack. A 256-bit CSPRNG token
+has no dictionary, so a slow hash has nothing to slow down. What matters is that the database never
+holds anything replayable as a token, even to someone holding a full dump — and a fast
+cryptographic hash gives exactly that. Lookup is equality on the hash through a unique index: a
+comparison of hashes, never of the secret, and no hand-written byte comparison anywhere.
+
+### 5.5 Redemption, and what happens when it fails
+
+`redeem-invitation` is the sole account-creation path. Three steps, in this order:
+
+1. `claim_invitation` — validates the token hash, expiry, revocation and remaining uses under a
+   `FOR UPDATE` lock on the invitation row, then issues a two-minute claim.
+2. `auth.admin.createUser` — creates the account. Gate 2 spends the claim inside GoTrue's own
+   transaction.
+3. `finalize_invitation_redemption` — records the redemption and increments `use_count`.
+
+Availability is counted from claims — consumed ones plus live unexpired ones — rather than from a
+stored counter. That is what makes failure deterministic: a redemption that dies after claiming
+releases its hold when the claim expires, with no cleanup job, and **no sequence of failures can
+burn an invitation permanently**. A rejected password releases the claim immediately rather than
+waiting out the two minutes.
+
+Concurrency is handled by the database, not by a check-then-act in application code: the row lock
+serializes claims on one invitation, and a partial unique index on
+`invitation_claims (email) WHERE consumed_at IS NULL` makes a second live claim for an address
+impossible. Two simultaneous redemptions of one invitation produce exactly one account.
+
+The account is created with `email_confirm: true`. Confirmation would be theatre here: an
+administrator chose the address and delivered a 256-bit secret to it out of band, and possession of
+that secret is stronger evidence of control over the address than a confirmation click. It also
+keeps account creation off the built-in mail provider's two-emails-per-hour budget, which is
+reserved for password recovery. **The trust assumption is explicit:** the owner is responsible for
+sending an invitation link only to the person they intend, over a channel they trust. The link is
+the credential.
+
+### 5.6 The initial administrator
+
+There is no "first user to register becomes admin" path, and no email address hardcoded anywhere.
+Bootstrapping an environment takes privileged database access, once, and is documented in
+[DEVELOPMENT.md](DEVELOPMENT.md) §7: issue an invitation with `created_by` null through the SQL
+editor or `psql`, redeem it through the ordinary UI, then set `is_admin` on that profile with the
+same privileged access. The bootstrap runs through the same two gates as every other account.
+
+`profiles.is_admin` has no client UPDATE grant at all — the column is excluded from the
+column-level grant, so a user cannot set it regardless of any RLS policy. Promotion is a
+service-role operation.
+
+### 5.7 Passwords
+
+Authentication is email plus password (see [ARCHITECTURE.md](ARCHITECTURE.md) §4). Supabase handles
+hashing; the application never sees or stores one.
+
+- **Minimum 12 characters**, enforced by GoTrue server-side (`minimum_password_length`), so it
+  holds for any caller. Re-checked in `redeem-invitation` before the invitation is claimed, so a
+  too-short password never consumes one.
+- **No composition rules.** `password_requirements` is empty. Requiring "one uppercase, one symbol"
+  reliably produces `Passw0rd!` and fights password managers; NIST SP 800-63B advises against it.
+- **A short obvious-password list**, plus rejection of near-single-character passwords and
+  passwords containing the address' local part. Deliberately not a breach corpus: Supabase's
+  HaveIBeenPwned check is a paid-plan feature, and shipping our own would cost more than it buys
+  for ten invited users choosing a 12-character password.
+- **Maximum 72 bytes**, rejected rather than truncated, because bcrypt silently ignores the rest.
+- Rate limiting on sign-in is the platform default (`sign_in_sign_ups`, 30 per 5 minutes per IP).
+- Passwords are never logged, never in error messages, never in test fixtures.
+
+### 5.8 Password recovery
+
+Self-service recovery uses the built-in low-volume email provider — around two auth emails per hour
+project-wide, described by Supabase as best-effort. For five to ten users that is an acceptable
+recovery channel, and it is precisely why account creation sends no email at all. Reset tokens are
+single-use and short-lived. The request form confirms unconditionally, so it does not become the
+account-enumeration oracle the Supabase API deliberately is not.
+
+If delivery fails, an **admin-assisted path** exists. It is documented and manual rather than a
+polished UI, because at this scale "a friend says they're locked out" is a plausible
+social-engineering vector even with ten users:
+
+1. The owner confirms identity **out of band**, over a channel already associated with that person
+   — not over email, and not through whatever channel made the request.
+2. The owner generates a recovery link with the Auth Admin API
+   (`generateLink({ type: 'recovery' })`) and delivers it over that confirmed channel.
+3. The person sets their own password through the ordinary reset screen.
+
+An admin never types, sets or reads another user's password. The old password is never revealed and
+never needs to be.
 
 ## 6. Secrets
 
 | Secret | Where it lives | Ever in the client? |
 |---|---|---|
-| Supabase anon key | `.env.local`, build-time env | Yes — public by design |
+| Supabase publishable key (legacy: `anon`) | `.env.local`, build-time env | Yes — public by design |
 | Supabase project URL | Same | Yes |
-| Supabase `service_role` key | Supabase Edge Function secrets only | **Never** |
+| Supabase secret key (legacy: `service_role`) | Edge Function environment only, injected by the platform | **Never** |
 | Database password | Password manager, never in the repo | Never |
+| Supabase CLI access token | `supabase login` keyring, never in the repo | Never |
+
+Supabase is migrating from `anon`/`service_role` JWTs to `sb_publishable_…`/`sb_secret_…` keys,
+with the legacy pair deprecated at the end of 2026. The security semantics are unchanged — one is
+public by design, the other never leaves the server — and the local stack still emits the legacy
+pair, so both names appear in this repository. Remote projects use the new keys.
 
 Rules:
 
@@ -226,7 +352,12 @@ opening with 3 tracked pulls" — rather than asking a generic "are you sure?".
 
 **Account deletion** removes all user-private data by cascade and deletes the `auth.users` row.
 Catalog and market data are unaffected. The action requires re-authentication and is irreversible;
-the UI says so and offers an export first.
+the UI says so and offers an export first. No UI exists yet — the capability arrives with its own
+milestone — but the cascade behind it is real as of M4: every `user_id` foreign key to
+`auth.users` declares `ON DELETE CASCADE`, which M3 had left as the default `NO ACTION`,
+making deletion impossible for any user who owned a single row. `invitations.created_by` is the
+deliberate exception, using `ON DELETE SET NULL`, because an invitation is an audit record of an
+administrative action and outliving its issuer is the point.
 
 ---
 
@@ -280,3 +411,5 @@ Every milestone that adds a table or an endpoint must confirm:
 - [ ] No new secret reachable from the client bundle
 - [ ] Destructive paths write an `audit_event`
 - [ ] No user data in new log statements
+- [ ] No new function relies on `PUBLIC`'s default `EXECUTE` — revoke, then grant explicitly
+- [ ] Any new `SECURITY DEFINER` function pins `search_path = ''` and uses no dynamic SQL
