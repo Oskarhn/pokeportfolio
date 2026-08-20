@@ -10,6 +10,37 @@ they were**.
 
 ## [Unreleased]
 
+### Added — 2026-08-20 · M5 Pokémon catalog, TCGdex ingestion and search
+
+The application exposes real Pokémon TCG product functionality for the first time. TCGdex
+re-verified from live requests rather than assumed: REST chosen over GraphQL (undocumented, no
+language argument on the list queries) and over a bulk dump (none exists).
+
+Two real schema defects, found by inspecting live TCGdex responses before M6 attaches holdings to
+`card_variants`: the variant model (a real card — Base Set Charizard — is holo, shadowless and
+first-edition at once, which the M3 `variant_type` enum could not represent; replaced with
+independent `finish`/`stamp`/`subtype` columns) and provider-id scoping (TCGdex reuses ids like
+`neo1` across English and Japanese; every provider-id uniqueness constraint is now scoped to
+`(language, id)`, and `card_series` gained the provider-id column M3 omitted). A third defect —
+marketplace product ids are not one-per-variant — dropped uniqueness from `card_variants`'
+`cardmarket_product_id`/`tcgplayer_product_id`.
+
+`sync-catalog` (Edge Function) ingests one `(language, set)` per invocation: idempotent upserts,
+Pokémon TCG Pocket excluded via `serie.id` (checked server-side), upstream deletions deactivate
+rather than destroy identity. Gated by an operator bearer secret rather than a user session.
+`scripts/run-catalog-sync.mjs` drives a full sync. The real English and Japanese physical catalog
+was ingested into the development Supabase project — counts in HANDOVER.md.
+
+`search_cards` (Postgres function) ranks cards by name/set trigram similarity plus a collector-
+number-token heuristic, language-filterable, invoker rights. `/catalog` and `/catalog/$cardId`:
+debounced search, language filter, infinite-scroll results, card detail with real variant data, no
+"Add to collection" (that is M6). Browser-verified against the real remote catalog, desktop and
+mobile.
+
+CI's hostile-grant privilege-convergence test needed its own fix: re-applying only the M4.1 baseline
+migration dropped `search_cards`'s grant, since that file's sweep predates the function. A new
+pure-privilege migration restates the complete current surface.
+
 ### Added — 2026-08-20 · M4.1 privilege convergence, deployment and real end-to-end validation
 
 M4 closed a live privilege escalation. M4.1 answers the question that fix raised: whether the
