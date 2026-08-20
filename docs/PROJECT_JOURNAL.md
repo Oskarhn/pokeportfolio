@@ -669,6 +669,42 @@ would not have.
 
 ---
 
+## 2026-08-20 — The hostile-grant convergence test itself needed to know about M5, and only CI could tell us
+
+M4.1 built a real safety net: grant hostile privileges, prove the audit rejects them, re-apply "the
+baseline migration," prove it converges. It worked exactly as designed — for M4's surface. The M5
+branch's first real CI run against the ephemeral stack failed the convergence step with `MISSING
+routine authenticated EXECUTE search_cards(text, text, integer, integer)`.
+
+The mechanism: `revoke execute on all routines in schema public from anon, authenticated` in
+`20260820140000_m41_privilege_baseline.sql` is a sweep — it revokes *every* function's grant,
+including ones that did not exist in August when that file was written. Re-applying only that file
+after a hostile-grant test therefore converges to exactly the M4.1-era surface, dropping anything a
+later migration added on top. `search_cards`'s own grant (in `20260820151000_m5_catalog_search.sql`)
+never gets reasserted, because nothing tells the hostile-grant recovery step to run that file too —
+and it could not simply run every privilege-bearing migration since M4.1 in sequence anyway, because
+some of them also `CREATE TABLE`, which is not safe to replay against a database that already has
+that table.
+
+The fix mirrors what M4.1 did to M4: a new pure-privilege migration
+(`20260820157000_m5_privilege_baseline.sql`) that restates the *complete* current surface — M4.1's
+grants plus `search_cards` — and nothing but `REVOKE`/`GRANT`/`ALTER DEFAULT PRIVILEGES`, so it is
+safe to re-run any number of times. `.github/workflows/ci.yml` now re-applies this file instead of
+M4.1's for the convergence check.
+
+This was not discoverable by re-reading the M4.1 migration, by `pnpm typecheck`, or by running
+`grant-audit.sql` against a database that had only ever been migrated forward once (which is what
+`pnpm exec supabase db push` against the linked remote project does, and which this session did,
+repeatedly, before pushing the branch — every one of those runs showed a clean audit). It surfaced
+only because CI's hostile-grant test specifically manufactures the "wrong starting state, then
+recover" scenario the M4 escalation actually was. **The lesson restates one already in this
+document, one level up: a check designed to prevent a class of bug needs to be re-verified against
+every future addition to that class, not just written once and trusted** — and the reason M4.1
+built the convergence test as a *replayable procedure* rather than a one-time fix is exactly what
+made this failure loud and specific instead of silent.
+
+---
+
 ## Real-device testing log
 
 Recorded as it happens. Emulation is not evidence of Safari behaviour.

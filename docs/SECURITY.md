@@ -322,9 +322,18 @@ of which can fail:
 
 | Leg | What it asserts | Where it runs |
 |---|---|---|
-| `supabase/migrations/20260820140000_m41_privilege_baseline.sql` | The intended surface, as revoke-then-grant | Every environment, applied |
+| `supabase/migrations/20260820157000_m5_privilege_baseline.sql` | The **current** intended surface, as revoke-then-grant — supersedes `20260820140000_m41_privilege_baseline.sql` for this purpose without editing it | Every environment, applied |
 | `scripts/grant-audit.sql` | That the catalog agrees, privilege by privilege | CI, and by hand against a deployed project |
 | `scripts/remote-security-check.mjs` | That none of it is exploitable, holding only a publishable key | By hand, after any deploy |
+
+**A pure-privilege baseline migration needs restating, not just extending, whenever a milestone
+adds a browser-reachable table or function.** Found by M5's first real CI run, not by inspection:
+the hostile-grant convergence test below re-applies "the baseline migration" by a fixed filename,
+and that file's own sweep (`revoke execute on all routines ...`) revokes every function's grant,
+including ones written after it. Re-applying only the M4.1 file converges to a stale surface. Each
+milestone that adds to the browser-reachable surface should therefore create a new pure-privilege
+migration restating the *complete* current grant list (M5's does; PROJECT_JOURNAL.md has the
+failure), and point the CI convergence step at that newest one.
 
 `grant-audit.sql` is written as a second, independent statement of intent, not as a summary of the
 migration. If the two disagree, one is a defect — do not reconcile by copying the database's
