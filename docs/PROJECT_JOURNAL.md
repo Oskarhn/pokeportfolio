@@ -210,6 +210,81 @@ out of existence.
 
 ---
 
+## 2026-08-17 — The bigint/PostgREST precision boundary is real, not theoretical
+
+**Problem.** FINANCIAL_MODEL.md requires money as exact integer minor units, so every monetary
+column is Postgres `bigint`. Research into how Supabase's client actually serializes `bigint`
+(supabase/postgrest-js issues #319 and #419) confirmed PostgREST returns `bigint` as a plain JSON
+number by default, and JSON/JS numbers only carry exact precision up to `Number.MAX_SAFE_INTEGER`
+(2^53 − 1).
+
+**Why this mattered enough to test rather than assume.** The project's own rule is "never invent
+project state" — a plausible-sounding claim about a library's behaviour is exactly the kind of
+thing that should be verified against the actual stack, not carried forward from a GitHub issue
+thread. `tests/db/money-boundary.test.ts` inserts a value one integer above the safe threshold
+and proves both halves: selecting with an explicit `total_minor::text` cast round-trips exactly
+via `BigInt()`; selecting the same column without the cast returns a different, silently rounded
+number.
+
+**Resolution.** `src/data/money.ts` documents the boundary and its mitigation before any query
+code exists to use it: every future read of a money column must cast to text in the select list.
+Not a practical risk at this application's real scale — a collection would need to be worth
+roughly 90 quadrillion NOK in øre before it mattered — but the boundary is now tested rather than
+assumed, and the pattern is established before M5+ query code has a chance to get it wrong.
+
+---
+
+## 2026-08-17 — Local Docker unavailability turned into the CI database-testing strategy
+
+**Problem.** M3 needs migrations and RLS policies exercised against a real Postgres instance. The
+development machine has no Docker Desktop installed, so `supabase start` cannot run locally, and
+the prompt explicitly ruled out installing Docker just to unblock this.
+
+**Investigation.** GitHub Actions' `ubuntu-latest` runners ship Docker preinstalled, and the
+Supabase CLI's local stack (`supabase start`, `supabase db reset`) is exactly the Docker-based
+stack the local machine lacks. Supabase's own CI documentation confirms this exact pattern:
+`supabase/setup-cli` (or, as here, the CLI already pinned as a project devDependency) plus
+`supabase start` inside a GitHub Actions job.
+
+**Resolution.** A `db-tests` job runs the full ephemeral local stack on every push and PR —
+migrations from empty, `db reset`, the authorization and database test suites, and generated-type
+export — entirely on the Linux runner, never touching any remote Supabase project or credential.
+This means the M3 gate (migrations apply; RLS isolation tests pass; a broken policy would fail
+red) is provable in CI today, independent of whether or when a remote dev project gets linked.
+The remote free dev project (once the owner creates one) becomes the tool for manual/interactive
+work on the Windows machine, not the thing CI depends on.
+
+**Consequence.** Docker never needed installing on the development machine to satisfy M3's gate.
+If local iteration against a live database becomes valuable later, installing Docker Desktop
+remains available as a separate, owner-approved choice — it was never a blocker.
+
+---
+
+## 2026-08-17 — Ownership triggers deliberately run with invoker rights, not SECURITY DEFINER
+
+**Problem.** The child-parent ownership triggers (`purchase_lines_check_owner`,
+`acquisition_lots_check_owner`, SECURITY.md invariant S1) need to read the parent row's `user_id`
+to compare against the child's. The obvious way to make that read reliable is `SECURITY DEFINER`,
+which bypasses RLS.
+
+**Why that would have been worse.** With `SECURITY DEFINER`, a cross-tenant attempt (user B
+inserting a child row pointing at user A's parent) could see A's real `user_id` and produce a
+precise "owner mismatch" error — which also confirms to B that the targeted parent row exists and
+who owns it. That is an information leak SECURITY.md explicitly asks the test suite to check for
+("empty result, not an error leak").
+
+**Resolution.** The triggers run with default invoker rights. RLS on the parent table already
+hides another user's row from the `SELECT` inside the trigger, so a cross-tenant attempt sees
+`parent_user_id IS NULL` and fails with "not found" rather than "owner mismatch" — rejecting the
+write without confirming the target row's existence. `tests/authorization/purchases.test.ts` and
+`tests/authorization/holdings_and_lots.test.ts` exercise this directly.
+
+**Generalisable point.** The instinct to reach for `SECURITY DEFINER` whenever a trigger needs to
+"see more" is usually solving the wrong problem — here, RLS's own hiding behaviour was the
+correct security property, and definer rights would have quietly undone it.
+
+---
+
 ## Real-device testing log
 
 Recorded as it happens. Emulation is not evidence of Safari behaviour.

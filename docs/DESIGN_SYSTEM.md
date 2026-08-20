@@ -5,6 +5,42 @@ a full token table before any interface exists produces values nobody validated.
 
 ---
 
+## 0. Current phase: provisional, not final
+
+Recorded explicitly so a future session does not read "the UI is functional" as licence to
+invent the final visual identity.
+
+The owner has set the intended sequence:
+
+```
+working product structure → basic clean UI → owner-supplied reference screenshots
+  → owner-supplied/approved logo → dedicated visual redesign/polish phase
+```
+
+Until reference screenshots arrive, build UI with a **clean, restrained, neutral** baseline —
+this section's direction below already describes that baseline (dense, typographic, quiet chrome
+around the card artwork), and it holds. Explicitly avoid, beyond what §1 already rules out:
+spending significant effort on subjective visual polish, inventing a bespoke component purely for
+aesthetics, or treating the current placeholder PWA icon set as anything but a placeholder.
+
+**Design tokens stay centralized regardless of phase.** Semantic CSS custom properties
+(`--background`, `--foreground`, `--surface`, `--muted`, `--border`, `--accent`, `--positive`,
+`--negative`, and typography/spacing/radius tokens as they're introduced) are the one place visual
+properties live. Feature components consume tokens; they never hardcode a colour, a radius or a
+font size. This is what keeps the eventual redesign a token-file change rather than an 80-file
+hunt — see ROADMAP.md's visual design refinement milestone for when that redesign happens and
+what it consumes (the owner's reference images, analysed for layout density, spacing, typography,
+navigation, card presentation and colour direction, then written back into this document before
+implementation).
+
+**Logo and identity.** No final logo exists yet and none is designed until the owner provides or
+approves one. The current placeholder PWA icon set (`public/icons/`) stays in place. When a real
+identity arrives, it must be swappable from one location — icon files referenced by
+`vite-plugin-pwa`'s manifest config and a single header/logo component, never hardcoded into
+individual screens — so the eventual swap is an asset replacement, not a per-component hunt.
+
+---
+
 ## 1. Direction
 
 A financial instrument that happens to hold Pokémon cards.

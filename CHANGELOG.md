@@ -10,6 +10,29 @@ they were**.
 
 ## [Unreleased]
 
+### Added — 2026-08-17 · M3 database foundation, migrations and RLS
+
+Real persistent-storage foundation. Supabase project structure (`supabase/`), CLI pinned as a
+project devDependency, eight timestamped migrations covering the shared catalog
+(`card_series`/`card_sets`/`cards`/`card_variants`/`sealed_products`), profiles, invitations
+(schema only — enforcement lands with M4's Edge Function), user-scoped reference data
+(`retailers`/`storage_locations`/`tags`), purchases/purchase_lines and holdings/acquisition_lots.
+Row Level Security enabled on every table with explicit `WITH CHECK` on every write policy;
+`user_id` denormalized onto every child table with an ownership-verifying trigger (invariant S1);
+`profiles.is_admin` locked down at the SQL column-privilege level, not just RLS. A two-client
+authorization suite (`tests/authorization/`) exercises the real PostgREST API as two distinct
+authenticated users, covering every user-private table plus the critical cross-tenant
+child-parent attack and the "admin has zero access to other users' private data" property. A
+database constraint suite (`tests/db/`) proves the FINANCIAL_MODEL invariants the schema is
+supposed to enforce (M1/M2 cost-basis-state consistency, the holdings identity index, purchase
+total/line-total arithmetic checks) actually reject bad data. The Postgres `bigint` /
+PostgREST JSON-number precision boundary for money columns is documented and proven with a real
+round-trip test, not assumed. CI gained a `db-tests` job that runs the full migration and
+authorization suite against an ephemeral local Supabase stack on every push and PR — no remote
+credentials involved. Existing M1/M2 gates (64 domain tests, Playwright smoke tests, typecheck,
+lint, format, build) remain green throughout. Cost: $0; no billing enabled anywhere. Detail:
+`claude_outputs/output_6.txt` (not committed).
+
 ### Added — 2026-08-17 · M1 foundation and M2 financial domain core
 
 First application code. Vite + React 19 + TypeScript strict scaffold, ESLint/Prettier, Vitest +

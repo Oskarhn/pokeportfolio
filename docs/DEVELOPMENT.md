@@ -59,6 +59,14 @@ gitignored and must never be committed.
 | `VITE_SUPABASE_ANON_KEY` | yes | Anon key — public by design, RLS is the gate |
 | `SUPABASE_PROJECT_REF` | no | CLI target for migrations |
 
+`pnpm test:db` additionally reads `SUPABASE_URL`, `SUPABASE_ANON_KEY` and
+`SUPABASE_SERVICE_ROLE_KEY` from the process environment (not `.env.local` — these are shell
+exports, deliberately not part of the app's own env file). Locally: `pnpm db:start`, then export
+the three values from `pnpm exec supabase status -o env`. In CI, the `db-tests` job exports them
+itself from the ephemeral stack it starts — see `.github/workflows/ci.yml`. The service-role
+value here is the **local** stack's well-known development key, not a production secret; it is
+still never written to a committed file.
+
 The `service_role` key is **never** placed in any `.env` file in this repository. It lives only
 in Supabase Edge Function secrets. Any variable without the `VITE_` prefix is unreachable from
 the browser bundle, which makes the split reviewable at a glance.
@@ -88,33 +96,49 @@ Live since M1/M2:
 
 `pnpm check` must pass before any commit that touches source. It intentionally excludes
 `test:e2e` — full browser E2E is a milestone-completion gate (TESTING.md §10), not a fast local
-loop.
+loop. It also excludes `test:db` — the database and authorization suites, added in M3, need a
+live Postgres and are a separate, infrastructure-dependent gate.
 
-Arriving with M3 (database) and later:
+Live since M3 (database):
 
 | Command | Does |
 |---|---|
-| `pnpm test:db` | Database and authorization tests (needs a database) |
-| `pnpm db:start` | Local Supabase stack |
-| `pnpm db:migrate` | Apply migrations |
-| `pnpm db:reset` | Reset local database and re-seed |
-| `pnpm db:seed` | Load synthetic seed data |
-| `pnpm db:dump` | Logical backup — run before every migration |
-| `pnpm db:types` | Regenerate TypeScript types from the schema |
+| `pnpm test:db` | Database and authorization tests (needs `pnpm db:start` first, or CI's ephemeral stack) |
+| `pnpm db:start` | Local Supabase stack (needs Docker — see §4) |
+| `pnpm db:stop` | Stop the local Supabase stack |
+| `pnpm db:migrate` | Apply pending migrations to an already-running local database |
+| `pnpm db:reset` | Reset local database to current migrations and re-seed from `supabase/seed/` |
+| `pnpm db:seed` | Currently an alias for `db:reset` — the CLI has no standalone "just seed" command distinct from a full reset; see §4 |
+| `pnpm db:dump` | Logical backup of the **linked remote** project — run before applying anything there |
+| `pnpm db:types` | Regenerate `src/data/database.types.ts` from the local schema |
 
 ---
 
 ## 4. Database workflow
 
-Two ways to run a database. Both work; the local one is preferred.
+Three ways to run a database, each serving a different purpose — this is a hybrid, not a
+either/or choice.
 
-**Local (preferred).** `pnpm db:start` runs the full Supabase stack in Docker. Fast, offline,
-destructible, and the only way to test migrations safely. Requires Docker Desktop, which is not
-currently installed on this machine.
+**CI (authoritative for the M3+ gate).** `.github/workflows/ci.yml`'s `db-tests` job runs the
+full local Supabase stack in Docker on GitHub's `ubuntu-latest` runner — which has Docker
+preinstalled — on every push and PR. It applies every migration to an empty database, resets and
+reapplies to prove reproducibility, runs the database and authorization suites, and generates
+TypeScript types. This never touches any remote project or credential, so it is safe to run on
+every commit and is what actually proves the M3 gate ("migrations apply to an empty and a seeded
+database; the isolation suite passes"), independent of this machine's local setup.
 
-**Remote dev project (fallback).** A second free Supabase project used only for development,
-separate from any project holding real data. No Docker needed. Slower, and a bad migration
-affects a shared resource — so `pnpm db:dump` first, always.
+**Local (optional, needs Docker).** `pnpm db:start` runs the same stack locally. Fast, offline,
+destructible, and the most convenient way to iterate on a migration before pushing. Requires
+Docker Desktop, which is **not currently installed on this development machine** — installing it
+is a reasonable future convenience but was never a blocker, since CI covers the gate without it.
+
+**Remote dev project (for manual/interactive work, once linked).** A second free Supabase
+project, separate from any project holding real data — see the Supabase environment note in
+HANDOVER.md for whether one is linked yet. Useful for `pnpm dev` against real persisted data and
+for the owner to poke around in Studio. Not what CI depends on. A bad migration here affects a
+shared resource, so `pnpm db:dump` first, always, and never treat Dashboard-applied SQL as
+canonical — capture it into a migration immediately or it does not count as done (§ migration
+rules below).
 
 ### Migration rules
 
@@ -140,29 +164,41 @@ Nothing in the product may imply that backups happen automatically.
 
 ## 5. Project layout
 
-As it actually exists after M1/M2 — only directories with real content today. `src/data/`,
-`src/features/` and `src/lib/` are not created yet; they arrive when M3+ gives them something to
+As it actually exists after M1/M2/M3 — only directories with real content today. `src/features/`
+and `src/lib/` are not created yet; they arrive when a later milestone gives them something to
 hold, per the "no placeholder directories" rule in CLAUDE.md.
 
 ```
 .
 ├─ docs/                     canonical documentation
+├─ supabase/
+│  ├─ config.toml            local stack config — signup disabled (invite-only), Postgres 17
+│  ├─ migrations/            timestamped SQL, one reviewable concern per file (§ below)
+│  └─ seed/                  synthetic catalog fixtures loaded by `db:reset`
 ├─ src/
 │  ├─ domain/                pure TS: Money, allocation, FX, cost-basis, market-value,
 │  │                         inventory, spending, sales, position — every FINANCIAL_MODEL formula
+│  ├─ data/                  Supabase client (src/data/supabase-client.ts), the bigint/money
+│  │                         serialization boundary (src/data/money.ts); database.types.ts is
+│  │                         generated by `pnpm db:types`, not hand-written
 │  ├─ ui/                    design-system components (owned, not a dependency) — AppShell only so far
 │  ├─ router.tsx             TanStack Router route tree (code-based, not file-based, for now)
 │  ├─ main.tsx                entry point
 │  └─ styles/                Tailwind v4 entry
 ├─ tests/
 │  ├─ financial/             mandatory gate — worked examples E1/E3/E7, invariants, allocator properties
+│  ├─ data/                  pure unit tests for the src/data/ boundary (no database)
+│  ├─ db/                    constraint/trigger tests and the money-boundary proof — needs a database
+│  ├─ authorization/         two-client RLS attack suite, table-driven — needs a database
 │  └─ e2e/                   Playwright smoke test
-└─ .github/workflows/ci.yml  install → typecheck → lint → format:check → test → build → secret scan
+├─ vitest.db.config.ts       separate Vitest project for tests/db + tests/authorization (`pnpm test:db`)
+└─ .github/workflows/ci.yml  build-and-test (install → typecheck → lint → format:check → test →
+                              build → secret scan) plus db-tests (ephemeral Supabase stack → migrate
+                              → authorization suite → generate types)
 ```
 
-Arriving with later milestones: `src/data/` (M3, Supabase client and typed queries), `src/features/`
-(M6+, vertical slices), `supabase/migrations/` + `supabase/functions/` + `supabase/seed/` (M3),
-`tests/authorization/` and `tests/db/` (M3).
+Arriving with later milestones: `src/features/` (M6+, vertical slices), `supabase/functions/` (M4,
+the redeem-invitation Edge Function).
 
 **Boundary rule:** `src/domain/` imports nothing from React, Supabase or any UI library. If a
 formula needs data, it takes it as an argument. This is what keeps the financial suite free of

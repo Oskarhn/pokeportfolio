@@ -743,3 +743,61 @@ Recorded rather than guessed. None block MVP.
 | Bulk remainder | An optional per-opening estimate (count + value), not a holding. It is a convenience for untracked leftovers, never a substitute for individual tracking. |
 | Sealed catalog curation | How curated sealed rows get promoted from user-created ones needs a process, not just a column. |
 | Grouped-row identity | The collection list groups by holding. Whether it should optionally group across conditions ("all my Pikachu #25") is a display question, not a schema one. |
+
+---
+
+## 12. M3 implementation notes
+
+Recorded here because they are scoping/sequencing facts about *this* document's schema, not
+product decisions — nothing here changes a term, formula or invariant, so none of it needed a
+DECISIONS entry.
+
+**Tables deferred past M3.** ROADMAP.md's M3 entry lists catalog, profiles, invitations,
+holdings, lots and purchases only. Everything else arrives with the milestone that first needs
+it: `lot_disposals` and `lot_cost_adjustments` (first disposal-producing milestone — M10 sales,
+ahead of M16 openings in current ROADMAP order), `openings` (M16), `trades` and `lot_transfers`
+(M18), `grading_submissions` (M17), `sales`/`sale_lines` (M10), `manual_valuations` (M11),
+`price_snapshots`/`sealed_price_snapshots`/`fx_rates`/`watched_card_variants` (M9),
+`portfolio_snapshots` (M12), `custom_collections`/`custom_collection_members` (M7),
+`audit_events` (first milestone with a void/hard-delete path to audit).
+
+**Enum vocabulary tracks table availability.** `lot_origin` ships in M3 with `purchase`, `gift`,
+`found`, `pre_tracking`, `other` only — `opening` and `trade_in` are added by
+`ALTER TYPE ... ADD VALUE` in the migrations that introduce `openings` (M16) and `trades` (M18),
+alongside the `opening_id`/`trade_line_id` columns those origins need on `acquisition_lots`.
+Likewise `cost_basis_state` ships with `known`, `not_paid`, `unknown`; `unallocated_opening` and
+`trade_in` arrive with their respective milestones. An enum value with no supporting column to
+attach it to is a trap, not a convenience.
+
+**`acquisition_lots` has no `opening_id`, `trade_line_id`, `sale_line_id` or `lot_disposals` link
+in M3**, for the same reason. `quantity_remaining` is constrained to
+`0 <= quantity_remaining <= quantity` only; the D1 invariant trigger
+(`quantity_remaining = quantity − Σ non-voided disposals`) arrives with `lot_disposals`, since
+there is no disposal path yet that could violate it.
+
+**`purchase_lines.target_lot_id` (grading fee attribution) is deferred to M17**, alongside
+`lot_cost_adjustments` — it has no purpose until a grading workflow can write to it.
+
+**`profiles.preferred_price_kind` is deferred to M9**, alongside the `price_kind` enum it is
+typed against.
+
+**`card_variants.size`** — this document names the column but not its members. Implemented as
+`card_size` enum: `standard`, `oversized` (covers jumbo/oversized promos; extend by migration if
+a TCGdex-observed size doesn't fit either).
+
+**S2 (`auth.users` backstop trigger) is deferred to M4**, alongside the `redeem-invitation` Edge
+Function it depends on. Enabling the reject-if-no-redemption trigger before that Edge Function
+exists would also block the service-role-created synthetic users the M3 authorization suite
+needs. Local/CI signup is already closed from the config side
+(`supabase/config.toml` → `[auth] enable_signup = false`). See SECURITY.md and HANDOVER.md for
+the current boundary.
+
+**Money serialization boundary.** `bigint` minor-unit columns are exact in Postgres, but
+PostgREST serializes `bigint` as a plain JSON number by default, and JSON/JS numbers only carry
+exact integer precision up to `Number.MAX_SAFE_INTEGER` (2^53 − 1). Every query that selects a
+money column must cast it to text in the select list (e.g. `total_minor::text`) and parse the
+result with `BigInt()` — see `src/data/money.ts` and the proof in
+`tests/db/money-boundary.test.ts`, which inserts a value one above that threshold and shows the
+cast path stays exact while the uncast path does not. Not a practical risk at this app's actual
+scale (collection values are nowhere near 2^53 øre), but the boundary is real and now tested
+rather than assumed.
