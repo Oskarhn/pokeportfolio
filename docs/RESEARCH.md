@@ -489,6 +489,31 @@ provider's actual ceiling.
 
 ---
 
+## R28 — Two real ingest gaps, from the full English + Japanese run
+
+**2026-08-20 · Observed from the M5 full-catalog ingest, ~380 sets, 32,690 cards**
+
+Six sets returned 404 specifically when requested from the Supabase Edge Function's network path,
+while an identical request from this development machine, at the same moment, returned 200 — and a
+sanity-check re-sync of an unrelated known-good set from the Edge Function immediately afterward
+succeeded. Points at TCGdex's own edge/CDN infrastructure being inconsistent by request origin
+rather than at a defect in the ingest code. Affected: `swsh9.5tg`, `swsh10.5tg`, `swsh11.5tg`,
+`swsh12.5tg` (English), `sn10a`, `sn11` (Japanese) — well under 1% of the catalog by card count.
+
+Separately, comparing summed `cardCount.total` against actual ingested rows across 374 sets found 76
+mismatches; 72 of them are sets where TCGdex's own set-detail response has a non-zero `cardCount`
+but a literally empty `cards[]` array (verified directly, e.g. `ja/CS2b`: `cardCount.total: 101`,
+`cards: []`). Most are the same Japanese product cataloged under many set ids (regional SKUs), with
+only one of each family actually populated. A provider data-completeness gap, not an ingest defect.
+The remaining 4 sets have small (1-14 card) genuine short-counts against their own `cardCount`,
+consistent with "provider incompleteness is normal" — not investigated further given the size.
+
+**Consequence:** no code change from either finding. Documented so a future re-sync attempt (for the
+six 404s) and a future full re-ingest (which will re-hit the same 72 empty-`cards[]` sets) are not
+mistaken for regressions.
+
+---
+
 ## Open uncertainties
 
 Carried deliberately. Each is a real gap, not a guess in disguise.

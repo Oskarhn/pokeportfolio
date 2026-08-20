@@ -705,6 +705,41 @@ made this failure loud and specific instead of silent.
 
 ---
 
+## 2026-08-20 — Two ingest gaps, investigated instead of accepted or invented around
+
+The full English + Japanese ingest completed at 32,690 cards / 47,083 variants across 374 of 380
+attempted sets, and the temptation with any large real-data run is to call a 98%+ set success rate
+good enough and move on. Two of the six missing sets' worth of investigation turned out to matter.
+
+**Six sets 404'd from the Edge Function specifically.** A direct `curl` from this development
+machine, run at the same moment a retry from `sync-catalog` was failing, returned `200` for the
+identical URL. A sanity-check re-sync of an unrelated, known-good set (`base1`) from the Edge
+Function immediately afterward succeeded normally. That combination rules out both "the set doesn't
+exist" and "the function is broken" — what's left is TCGdex's own edge/CDN infrastructure answering
+inconsistently depending on which network the request arrives from. Nothing to fix on this side;
+recorded as a known gap with the exact retry command that should close it once TCGdex's edge state
+settles.
+
+**72 sets have a `cardCount` and an empty `cards[]`.** The reconciliation check this milestone's
+prompt asked for (compare summed provider counts against actual ingested rows) found 76 mismatched
+sets, not zero. The instinct at that point is to assume an ingest bug — a pagination limit, a
+concurrency race, something dropping cards silently. Fetching one of the mismatched sets
+(`ja/CS2b`) directly showed `cardCount.total: 101` and `cards: []` in the same TCGdex response.
+`sync-catalog` had done the only correct thing available to it: create the set row from the metadata
+that existed, and ingest zero cards from a card list that was empty. Most of these turned out to be
+the same physical Japanese product (`トリプレットビート`, "Triplet Beat") catalogued under a dozen
+different set ids, presumably one per regional SKU — plausibly TCGdex's own de-duplication marking
+eleven of the twelve as pointers rather than populating each with its own 101-row card list.
+
+The shared lesson: a reconciliation check exists to produce a number that needs explaining, not a
+number that needs to be zero. Both gaps above were explainable from live data in a few minutes each,
+and neither is a defect in this project's code — but *finding that out* required treating the
+mismatch as a question rather than either ignoring it (M5 prompt §35 explicitly forbids "silently
+accept unexplained large mismatches") or assuming the bug must be ours and trying to patch around
+data the provider itself does not have.
+
+---
+
 ## Real-device testing log
 
 Recorded as it happens. Emulation is not evidence of Safari behaviour.
