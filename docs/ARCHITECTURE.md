@@ -301,12 +301,34 @@ Financial and authorization tests are mandatory gates. See [TESTING.md](TESTING.
 
 ## 9. Deployment
 
-**Cloudflare Pages.** Static SPA build, unlimited bandwidth on the free plan, commercial use
-permitted, no egress billing. Vercel Hobby was rejected on its non-commercial restriction.
+**Cloudflare Pages, Free plan, no payment method.** Static SPA build, unlimited bandwidth,
+commercial use permitted, no egress billing. Vercel Hobby was rejected on its non-commercial
+restriction.
 
-CI (GitHub Actions, added once the application scaffold exists): install → typecheck → lint →
-unit tests → build → secret scan. Migrations are applied deliberately via the Supabase CLI, not
-automatically from CI.
+Git-connected: Cloudflare builds `main` on merge, so the deployed development app is whatever last
+passed CI and review. Build command `pnpm build`, output `dist`, and the only environment variables
+are the two browser-safe Supabase values that ship in the bundle anyway. Preview deployments are
+off — one branch, one deployment. No custom domain; the provider URL is the URL.
+
+The Cloudflare build carries **no secret of any kind.** The Supabase secret key and the database
+password live in the Supabase platform and the owner's password manager respectively, and neither
+has any business in a frontend build.
+
+**SPA routing** needs no configuration: Pages serves `index.html` for unmatched paths when the
+output has no top-level `404.html`, which a Vite build does not produce. `/invite/<token>` therefore
+resolves on a cold load, before any service worker exists.
+
+**Security headers** are emitted as `_headers` by a small plugin in `vite.config.ts` rather than
+checked in, so the `connect-src` in the Content-Security-Policy is derived from the
+`VITE_SUPABASE_URL` the bundle was actually built against and cannot drift from it. The policy is
+`script-src 'self'` with no inline script — the build emits none — plus `'unsafe-inline'` for style
+*attributes*, which the safe-area padding needs. `_headers` is ignored by `vite dev` and
+`vite preview`, so the policy is exercised on the deployment and has to be verified there.
+
+CI (GitHub Actions): install → typecheck → lint → unit tests → build → E2E → secret scan, plus an
+ephemeral Postgres job for migrations, privileges and authorization. **No remote credential appears
+in CI at all** — not Supabase's, not Cloudflare's. Migrations, `config push` and function deploys
+are deliberate acts through the Supabase CLI, never automatic.
 
 ---
 

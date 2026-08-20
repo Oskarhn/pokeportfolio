@@ -10,6 +10,35 @@ they were**.
 
 ## [Unreleased]
 
+### Added — 2026-08-20 · M4.1 privilege convergence, deployment and real end-to-end validation
+
+M4 closed a live privilege escalation. M4.1 answers the question that fix raised: whether the
+migrations reach the intended privilege surface from a project that starts out wrong, rather than
+only from an empty database. Three gaps said no.
+
+Function grants were revoked from a hand-written list of names, so a function arriving pre-granted
+would have survived — swept now, then granted back to exactly four. Default privileges were never
+neutralized, and they turned out to be the real mechanism: `pg_default_acl` carries entries granting
+`anon` and `authenticated` everything on new objects in `public`, in every environment. The ones
+owned by `postgres` are revoked; the ones owned by `supabase_admin` are unreachable, documented, and
+harmless because a default privilege attaches only to objects its own role creates. And `UPDATE` was
+granted whole-table on every user-owned table except `profiles`, leaving `user_id`, primary keys,
+`created_at` and the provenance columns writable by their owner with only RLS standing there — now
+granted column by column, with identity and provenance absent.
+
+`scripts/grant-audit.sql` asserts that surface against the catalog as an independent second
+statement of intent, and runs unchanged in the Supabase SQL editor against a deployed project — the
+check that was missing when CI and the real project disagreed. CI makes the database hostile first,
+proves the audit rejects that state, re-applies the baseline and proves it converges.
+
+Also: the deferred `invitation_claims.consumed_user_id` foreign key tested from both sides, claim
+expiry recovery, `finalize_invitation_redemption` idempotency, the GoTrue Admin-API assumption
+re-verified against current upstream source, and the SHA-256 token decision re-examined and kept.
+
+Deployment: the application is served over HTTPS from Cloudflare Pages on the Free plan, built from
+`main`, with a Content-Security-Policy generated from the Supabase URL the bundle was built against
+so the two cannot drift.
+
 ### Added — 2026-08-20 · M4 invite-only authentication and account security
 
 Account creation is closed. Two independent server-side gates enforce it: a **Before User Created
