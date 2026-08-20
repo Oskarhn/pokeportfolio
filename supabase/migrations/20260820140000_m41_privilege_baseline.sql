@@ -70,33 +70,22 @@ alter default privileges for role postgres in schema public
 alter default privileges for role postgres in schema public
   revoke all on types from anon, authenticated;
 
--- A hosted project may also carry default privileges granted by `supabase_admin`, which `postgres`
--- is not always a member of. Attempted, not assumed: if the grant cannot be reached from here it
--- is reported rather than silently skipped, and `scripts/grant-audit.sql` lists whatever remains
--- so the gap is visible instead of imagined.
--- One statement per iteration, each in its own exception scope: a block that wrapped all three
--- would roll the successful ones back along with the failure.
-do $$
-declare
-  v_kind text;
-begin
-  foreach v_kind in array array['tables', 'sequences', 'functions'] loop
-    begin
-      execute format(
-        'alter default privileges for role supabase_admin in schema public '
-        || 'revoke all on %s from anon, authenticated',
-        v_kind
-      );
-    exception
-      when insufficient_privilege or undefined_object then
-        raise notice
-          'default privileges on % for supabase_admin were not reachable from this role (%). '
-          'Run scripts/grant-audit.sql against the deployed project to confirm none remain.',
-          v_kind, sqlerrm;
-    end;
-  end loop;
-end;
-$$;
+-- `supabase_admin` also holds default privileges in this schema granting anon and authenticated
+-- everything on tables, sequences and functions — in the local stack and in a hosted project
+-- alike. They are deliberately not touched here, and the reason is worth stating rather than
+-- leaving as an omission.
+--
+-- They cannot be: ALTER DEFAULT PRIVILEGES FOR ROLE requires membership in that role, and
+-- `postgres` is not a member of `supabase_admin` in either environment. Attempting it and
+-- swallowing the failure would put a statement in this file that has never once succeeded, which
+-- reads as protection and is not.
+--
+-- They do not need to be: a default privilege attaches only to objects created by its own role.
+-- Everything in `public` here is created by `postgres` — `supabase db push`, `supabase db reset`
+-- and the dashboard SQL editor all connect as `postgres` — so those defaults never reach a table
+-- of ours. scripts/grant-audit.sql records this as accepted for `supabase_admin` and fails for
+-- every other grantor, and it independently checks the grants that would actually result, so a
+-- change in this assumption surfaces as a failure rather than as silence.
 
 -- ── 3. Functions: sweep, then grant back exactly four ────────────────────────────────────────
 --

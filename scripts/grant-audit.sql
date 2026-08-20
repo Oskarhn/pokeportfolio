@@ -68,12 +68,17 @@ begin
   actual_routine as (
     select
       'routine' as kind,
-      -- Built by hand rather than via `regprocedure`: that cast schema-qualifies or not depending
-      -- on search_path, and this file has to give the same answer in psql and in the Supabase SQL
-      -- editor, which do not agree about it.
-      p.proname::text || '('
-        || replace(pg_catalog.pg_get_function_identity_arguments(p.oid), 'public.', '')
-        || ')' as obj,
+      -- Built from proargtypes rather than from regprocedure or
+      -- pg_get_function_identity_arguments. regprocedure schema-qualifies or not depending on
+      -- search_path, and psql and the Supabase SQL editor do not agree about search_path;
+      -- pg_get_function_identity_arguments includes parameter *names*, which would make this file
+      -- fail on a rename that changes no privilege at all. proargtypes is the input signature and
+      -- nothing else, which is exactly what identifies the grant.
+      p.proname::text || '(' || coalesce((
+        select string_agg(replace(pg_catalog.format_type(t, null), 'public.', ''), ', '
+                          order by ord)
+          from unnest(p.proargtypes) with ordinality as sig(t, ord)
+      ), '') || ')' as obj,
       a.grantee::regrole::text as grantee,
       a.privilege_type::text as priv
     from pg_proc p
@@ -98,6 +103,23 @@ begin
 
   -- Standing instructions about objects that do not exist yet. The mechanism that would let M5's
   -- tables arrive pre-granted, invisible to any check that only looks at what exists today.
+  --
+  -- `supabase_admin` is excluded, and the exclusion is a finding rather than a convenience. Both
+  -- the local stack and a hosted project ship default privileges owned by that role granting
+  -- anon and authenticated everything on tables, sequences and functions in `public`. They are
+  -- unreachable: ALTER DEFAULT PRIVILEGES FOR ROLE requires membership, and `postgres` is not a
+  -- member of `supabase_admin` in either environment — which is also why
+  -- 20260820140000_m41_privilege_baseline.sql does not try.
+  --
+  -- What makes that acceptable rather than a hole is that a default privilege applies only to
+  -- objects its own role creates. Every object in `public` here is created by `postgres`:
+  -- `supabase db push`, `supabase db reset` and the dashboard SQL editor all connect as
+  -- `postgres`, so `supabase_admin`'s defaults never attach to anything of ours. And if that ever
+  -- stopped being true, the relation and routine checks above would fail on the resulting grant —
+  -- this section is the leading indicator, not the only one.
+  --
+  -- Any other grantor is a genuine deviation and fails, which is what the hostile-state test in
+  -- CI exercises: it sets these for `postgres`, the role that does create our tables.
   actual_default as (
     select
       'default-privilege' as kind,
@@ -109,6 +131,7 @@ begin
     cross join lateral aclexplode(d.defaclacl) a
     where n.nspname = 'public'
       and a.grantee::regrole::text in ('anon', 'authenticated')
+      and d.defaclrole::regrole::text <> 'supabase_admin'
   ),
 
   actual as (
