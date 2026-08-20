@@ -92,10 +92,11 @@ describe('search_cards: authenticated read, no catalog mutation surface', () => 
 
   it('an authenticated user cannot read catalog_sync_runs directly', async () => {
     const { data, error } = await clientA.from('catalog_sync_runs').select()
-    // RLS with zero policies denies every row rather than erroring — an empty result is the
-    // correct shape for "this table has nothing to say to you", not a thrown error.
-    expect(error).toBeNull()
-    expect(data).toEqual([])
+    // No SELECT grant at all (not just "no RLS policy") — Postgres denies at the privilege check,
+    // before RLS is ever evaluated, so this is a permission error rather than an empty result.
+    expect(error).not.toBeNull()
+    expect(error?.code).toBe('42501')
+    expect(data).toBeNull()
   })
 
   it('an authenticated user cannot insert into catalog_sync_runs', async () => {
