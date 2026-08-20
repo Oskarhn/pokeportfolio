@@ -588,4 +588,26 @@ Recorded as it happens. Emulation is not evidence of Safari behaviour.
 
 | Date | Device / OS | Tested | Result |
 |---|---|---|---|
-| — | — | — | Not yet performed |
+| 2026-08-20 | iPhone, Safari | Add to Home Screen from `pokeportfolio-dev.pages.dev`; launch from the icon | **Pass.** Installs and launches standalone. |
+| 2026-08-20 | iPhone, installed PWA | Sign-in screen rendering | **Pass**, but see the defect below — the screen was complete and not clipped, and could be scrolled away. |
+| 2026-08-20 | iPhone, installed PWA | Sign in, sign out | **Pass.** |
+| 2026-08-20 | iPhone, installed PWA | Session survives closing the app, swiping it out of the switcher, and relaunching | **Pass.** Still signed in. |
+| 2026-08-20 | iPhone, installed PWA | Scroll behaviour on the sign-in screen | **Defect.** The form could be scrolled entirely off the top, leaving only "Forgot your password?" on screen. Fixed in PR #6; awaiting re-verification. |
+
+### The one defect the phone found, and why nothing else could
+
+`min-h-dvh` sized the shell to the **largest** viewport — browser chrome retracted, keyboard
+dismissed. Whenever the genuinely visible area is smaller than that, the difference is empty page
+below the content, and empty page scrolls. `min-h-svh` is the **smallest** viewport, so the shell
+never claims more height than is on screen.
+
+Chromium's mobile emulation resolves `dvh`, `svh` and the visual viewport to the same number.
+Measured directly on the deployment at a 375×812 viewport, `scrollHeight - clientHeight` was
+exactly `0` — no overflow, nothing to find. The Playwright suite had run this page at an iPhone
+viewport on every commit since M4 and was green throughout.
+
+So the vertical-fit assertion added alongside the fix is deliberately labelled in the test file as
+**not** a regression guard for this bug: it passed before the fix as well as after. It holds a real
+invariant on every viewport the suite runs, and that is all it does. The guard for this class of
+defect is a person with a phone, which is why this table exists and why the header above it says
+emulation is not evidence.
