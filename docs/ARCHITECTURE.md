@@ -15,10 +15,10 @@ also logged in [DECISIONS.md](DECISIONS.md).
 └───────────────┬─────────────────────────────────────────┘
                 │ HTTPS, anon key + user JWT
 ┌───────────────▼─────────────────────────────────────────┐
-│  Supabase (EU North, Stockholm)                         │
+│  Supabase (EU West, Paris — see §3)                     │
 │  ├ PostgREST      → CRUD, RLS-enforced                  │
 │  ├ Auth           → email + password, invite-gated      │
-│  ├ Postgres 15    → schema, RLS, constraints, RPC       │
+│  ├ Postgres 17    → schema, RLS, constraints, RPC       │
 │  ├ Storage        → images (V1)                         │
 │  ├ Edge Functions → ingest jobs, invite redemption      │
 │  └ pg_cron+pg_net → daily scheduling                    │
@@ -93,7 +93,7 @@ Verified facts driving the choice (see [RESEARCH.md](RESEARCH.md) for sources an
 |---|---|
 | Free plan | 500 MB DB, 1 GB storage, 5 GB egress, 50 000 MAU, 2 active projects |
 | Project pausing | Free projects pause after ~7 days without database activity; manual resume; restorable within 90 days |
-| EU regions | `eu-north-1` (Stockholm) selected — closest to Norway |
+| EU regions | Planned `eu-north-1` (Stockholm), closest to Norway. The development project was actually created in **`eu-west-3` (Paris)** — still EU, so the GDPR posture is unchanged, and roughly 20 ms of latency did not justify recreating it. A future production project should choose deliberately rather than inherit this. |
 | Scheduling | `pg_cron` enabled on all plans including Free; `pg_net` for HTTP from SQL |
 | Backups | **No automated backups on Free.** Manual `supabase db dump` required. |
 | Auth: email + password | Stable. Built-in email limited to 2/hour project-wide, so login must not depend on it. |
