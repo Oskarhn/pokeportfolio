@@ -269,19 +269,30 @@ uses the privileged half of the same flow the redeem-invitation function uses.
 both of which already require credentials the owner alone holds:
 
 ```sql
-insert into public.invitations (token_hash, email, created_by, label, expires_at)
-values (
-  public.hash_invitation_token('<paste a long random string here>'),
-  lower(btrim('<the owner''s address>')),
-  null,                                    -- null created_by = issued out of band
-  'bootstrap',
-  now() + interval '2 hours'
-);
+with fresh as (
+  select lower(btrim('<the owner''s address>')) as email,
+         replace(replace(rtrim(encode(extensions.gen_random_bytes(32), 'base64'), '='),
+                 '+', '-'), '/', '_') as token
+),
+ins as (
+  insert into public.invitations (token_hash, email, created_by, label, expires_at)
+  select public.hash_invitation_token(f.token), f.email,
+         null,                                  -- null created_by = issued out of band
+         'bootstrap', now() + interval '2 hours'
+  from fresh f
+  returning id
+)
+select f.token from fresh f;
 ```
 
-Generate the random string with something that is actually random —
-`openssl rand -base64 32 | tr '+/' '-_' | tr -d '='` — not by typing one. Keep the expiry short;
-this one is redeemed within minutes.
+The token is generated *in the database* and returned once, rather than typed in. That matters for
+more than convenience: a token pasted into a statement has been on a clipboard, in a scrollback,
+and possibly in a chat window, whereas this one exists in exactly one place — the query result in
+front of the person running it. The database stores only the SHA-256 either way.
+
+Keep the expiry short; this one is redeemed within minutes. Data-modifying CTEs run to completion
+whether or not the outer query reads them, so the `ins` branch executes even though nothing selects
+from it.
 
 **2. Redeem it through the ordinary UI**, at `/invite/<that string>`. A normal, non-admin account
 is created, with a normal profile.
@@ -313,7 +324,53 @@ a seed file or in a commit message.
 
 ---
 
-## 9. Debugging
+## 9. Deployment
+
+The development app is served from **Cloudflare Pages, Free plan, no payment method**, at
+`https://pokeportfolio-dev.pages.dev`. Git-connected: merging to `main` triggers a build. Nobody
+deploys by hand, and nothing is uploaded from a laptop.
+
+| Setting | Value |
+|---|---|
+| Repository | `Oskarhn/pokeportfolio` (private, via the Cloudflare GitHub App) |
+| Production branch | `main` · preview deployments **off** |
+| Build command | `pnpm build` · output `dist` |
+| Node / pnpm | `.nvmrc` pins Node; `PNPM_VERSION` pins pnpm — Pages does not read `packageManager` |
+| Environment | `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `PNPM_VERSION` |
+
+**Those are the only three variables, and none of them is a secret.** The publishable key ships in
+the bundle by design. The Supabase secret key lives in the Edge Function environment and the
+database password in the owner's password manager; neither belongs in a frontend build, and a
+frontend build has no use for either.
+
+**Environment variables are baked in at build time.** Editing one in the dashboard changes nothing
+until a redeploy. This is not theoretical — the first deployment of this project went out with two
+transposed characters in the Supabase project ref, so every request failed and the invite page said
+"Could not reach the server". Verify after any change to them:
+
+```bash
+curl -s https://pokeportfolio-dev.pages.dev/ | grep -o 'assets/index-[A-Za-z0-9_-]*\.js'
+curl -s https://pokeportfolio-dev.pages.dev/assets/<that file> | grep -o 'https://[a-z]*\.supabase\.co'
+```
+
+**Three things outside Cloudflare have to agree with the deployed origin**, and all three fail
+quietly rather than loudly:
+
+| What | Where | Symptom if wrong |
+|---|---|---|
+| `ALLOWED_ORIGINS` | `supabase secrets set` | Redemption blocked by CORS before the token is read |
+| `site_url` | `config.toml` → `config push` | Recovery links point at the wrong host |
+| `connect-src` in the CSP | derived from `VITE_SUPABASE_URL` at build | Every Supabase call blocked |
+
+The third is generated rather than written precisely so it cannot be the one that drifts —
+`vite.config.ts` emits `_headers`, and the build fails outright if `VITE_SUPABASE_URL` is unset.
+
+**After any deploy, run the gate in [SECURITY.md](SECURITY.md) §13.** Nine checks, against the
+environment that was deployed to. A green CI run is not one of them.
+
+---
+
+## 10. Debugging
 
 - Vite dev server with source maps.
 - React DevTools and TanStack Query DevTools in development builds only.
