@@ -257,12 +257,12 @@ begin
 
   if v_diff is not null then
     raise exception E'browser-reachable privilege surface does not match the baseline:\n\n%\n\n'
-      E'UNEXPECTED means a privilege exists that nothing in supabase/migrations/ asked for — the '
-      E'shape of the M4 escalation, and the reason this check exists. MISSING means the baseline '
-      E'says a privilege should be there and it is not; something the application needs is about '
-      E'to break. Reconcile toward '
-      E'supabase/migrations/20260820140000_m41_privilege_baseline.sql, not toward whatever the '
-      E'database happens to contain.', v_diff;
+      'UNEXPECTED means a privilege exists that nothing in supabase/migrations/ asked for — the '
+      'shape of the M4 escalation, and the reason this check exists. MISSING means the baseline '
+      'says a privilege should be there and it is not; something the application needs is about '
+      'to break. Reconcile toward '
+      'supabase/migrations/20260820140000_m41_privilege_baseline.sql, not toward whatever the '
+      'database happens to contain.', v_diff;
   end if;
 
   raise notice 'privilege baseline OK: anon and authenticated hold exactly the intended surface.';

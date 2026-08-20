@@ -44,8 +44,15 @@ jobs:
       - name: Domain and property tests
         run: pnpm test
 
+      # The same placeholder Supabase configuration the E2E suite builds against
+      # (playwright.config.ts). vite.config.ts derives the deployed Content-Security-Policy from
+      # VITE_SUPABASE_URL and refuses to build without it, so a build that quietly emitted a policy
+      # naming nothing is not possible — here or on Cloudflare.
       - name: Build
         run: pnpm build
+        env:
+          VITE_SUPABASE_URL: http://127.0.0.1:54321
+          VITE_SUPABASE_ANON_KEY: ci-placeholder-not-a-key
 
       - name: Install Playwright browsers
         run: pnpm exec playwright install --with-deps chromium webkit
