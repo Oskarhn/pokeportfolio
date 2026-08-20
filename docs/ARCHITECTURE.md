@@ -325,6 +325,14 @@ checked in, so the `connect-src` in the Content-Security-Policy is derived from 
 *attributes*, which the safe-area padding needs. `_headers` is ignored by `vite dev` and
 `vite preview`, so the policy is exercised on the deployment and has to be verified there.
 
+Cloudflare's own default `Access-Control-Allow-Origin: *` on Pages assets is left alone
+deliberately. Everything served from this origin is the public bundle, and no credential lives
+here — the Supabase session is in `localStorage`, which CORS cannot reach, and there are no cookies
+on this domain. Removing it would buy nothing and risks the kind of manifest or font fetch that
+quietly needs it. The service worker precaches the static shell and registers exactly one route, a
+navigation fallback to `index.html`; there is no `runtimeCaching` rule, so no Supabase response is
+ever written to a cache.
+
 CI (GitHub Actions): install → typecheck → lint → unit tests → build → E2E → secret scan, plus an
 ephemeral Postgres job for migrations, privileges and authorization. **No remote credential appears
 in CI at all** — not Supabase's, not Cloudflare's. Migrations, `config push` and function deploys
