@@ -139,8 +139,13 @@ jobs:
             exit 1
           fi
           echo "audit correctly rejected the hostile state; re-applying the baseline migration"
+          # The *latest* pure-privilege restatement, not M4.1's specifically — see
+          # 20260820157000_m5_privilege_baseline.sql's header for why re-applying only M4.1's file
+          # would converge to a stale surface once a later milestone adds a browser-reachable
+          # object. Whichever migration most recently restated the complete grant list is the one
+          # that belongs here.
           psql "$DB_URL" -v ON_ERROR_STOP=1 \
-            -f supabase/migrations/20260820140000_m41_privilege_baseline.sql
+            -f supabase/migrations/20260820157000_m5_privilege_baseline.sql
           psql "$DB_URL" -v ON_ERROR_STOP=1 -f scripts/grant-audit.sql
 
       # supabase start runs the edge runtime and serves supabase/functions, but a suite that

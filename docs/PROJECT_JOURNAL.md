@@ -582,6 +582,164 @@ hash. Changing it would be cost with no corresponding gain. Left alone.
 
 ---
 
+## 2026-08-20 — A real card disproved the variant schema before any user data existed to break
+
+M3 modelled a card's ownable printings as one `variant_type` enum: `normal`, `holo`, `reverse`,
+`first_edition`, `promo`, `stamped`, `other`. It looked complete at design time — every value from
+the provider's boolean flags had a slot. The first real card fetched for M5's ingest disproved it.
+
+Base Set Charizard's `variants_detailed[]` contains an entry that is simultaneously `type: "holo"`,
+`subtype: "shadowless"`, and `stamp: ["1st-edition"]`. There is no value of `variant_type` that
+represents "holo and shadowless and first-edition" — the enum treats finish and edition as the same
+axis, and this card needs three independent ones. Fitting it would have meant picking one label and
+losing information a collector actually cares about (shadowless commands a real price premium over
+unlimited, independent of first-edition status).
+
+The fix (D-033) replaced the enum with three columns — `finish`, `stamp`, `subtype` — matching
+TCGdex's own dimensions rather than inventing a taxonomy. The two free-text columns are a deliberate
+choice: the enum's failure mode was assuming a closed vocabulary, and there was no reason to build a
+second closed vocabulary five minutes later. `tests/data/tcgdex-provider.test.ts` pins the mapping
+against the real Charizard payload (trimmed, captured 2026-08-20) specifically so a change to this
+shape fails a test rather than silently mis-categorising a card again.
+
+The lesson generalises past this one schema. **A card's provider payload is the closest thing this
+project has to a spec for physical printings, and reading a few of them before finalising a
+schema is cheaper than migrating one after real collection data depends on it** — which is exactly
+why M5 does this now, before M6 attaches holdings to `card_variants`, and why PLANNING_FREEZE.md §9
+treats "a provider changed, a measurement failed" as legitimate grounds to reopen a decision that
+looked settled.
+
+---
+
+## 2026-08-20 — Provider ids are unique per language, not globally, and two ON CONFLICT bugs followed from getting that wrong twice
+
+The M3 schema put a global `unique` index on `card_sets.tcgdex_set_id` and `cards.tcgdex_card_id`,
+and gave `card_series` no provider-id column at all. A live request settled whether that was safe:
+`/v2/en/sets` and `/v2/ja/sets` both return a set id `neo1`; both series lists return a series id
+`neo`. TCGdex's id space is scoped **per language**, not global. Ingesting Japanese Neo Genesis
+after English Neo Genesis would have thrown a unique-violation on the very row that proves the
+catalog needs to support Japanese at all.
+
+Fixed by adding `language` to `card_series` (plus the provider-id column it should have had from
+M3) and scoping every provider-id uniqueness constraint to `(language, tcgdex_*_id)`. First pass at
+the fix used a *partial* unique index — `WHERE tcgdex_set_id IS NOT NULL`, which reads as a
+reasonable guard against two curated rows both being `NULL`. Running the actual ingest function
+against the real project failed immediately: `there is no unique or exclusion constraint matching
+the ON CONFLICT specification`. PostgREST's `upsert(... {onConflict: 'language,tcgdex_set_id'})`
+asks Postgres to match a unique constraint or index by its literal column list, and Postgres will
+not infer a match against a *partial* index from a bare column list — the predicate has to be
+restated in the conflict clause itself, which the client library's simple form does not do.
+
+The partial predicate was not buying anything to begin with: a plain (non-partial) unique
+constraint on a nullable column already permits any number of `NULL`s, because SQL treats every
+`NULL` as unequal to every other value, including another `NULL`. Dropping `WHERE ... IS NOT NULL`
+lost nothing and made the constraint upsert-targetable
+(`20260820154000_m5_provider_id_upsert_targets.sql`). The `card_variants` identity index had the
+identical shape of bug from a different angle — built as an *expression* index
+(`coalesce(stamp, ''), coalesce(subtype, '')`) so two `NULL` stamps would not collide, which is
+correct in principle and equally un-targetable by `on_conflict`. Fixed by making `stamp`/`subtype`
+`NOT NULL DEFAULT ''` instead, so the identity constraint could be a plain column-list constraint.
+
+Both bugs share one root cause: a schema decision that looked right by inspection and was wrong the
+first time it had to survive an actual `INSERT ... ON CONFLICT`. Neither was visible in the
+migration SQL, in `pnpm typecheck`, or in a code review — only in running the real ingest against a
+real project, which is the reason this milestone budgeted for that rather than treating "the
+migration applied" as proof the ingest would work.
+
+---
+
+## 2026-08-20 — A marketplace product id is not a per-variant identity either
+
+Continuing the same audit: `card_variants.cardmarket_product_id` and `.tcgplayer_product_id` had
+unique indexes, on the assumption that a marketplace lists each finish as a separate product.
+`swsh1-2` (Roselia, Sword & Shield) disproves it — its `normal` and `reverse` variants share one
+TCGplayer `productId` in TCGdex's own response; the marketplace prices both finishes under one
+listing with per-finish price fields, not two listings. Ingesting Roselia would have failed the
+same unique constraint on the second variant.
+
+Fixed by dropping uniqueness on both columns entirely (D-034) — they remain indexed, because M9's
+price ingest will still want to join on them, but they no longer claim an identity property the
+data does not have. Combined with the `"generated"` sentinel TCGdex returns for `variantId` when it
+has no real cross-reference (observed on several modern cards, mapped to `NULL` rather than stored
+as a fake id), the pattern across all three provider-id columns on `card_variants` is the same:
+**verify a "this uniquely identifies X" assumption against a real payload before encoding it as a
+database constraint** — the two vintage/finish-rich cards this milestone happened to fetch first
+were exactly the ones that disproved it, and a synthetic test fixture written from imagination
+would not have.
+
+---
+
+## 2026-08-20 — The hostile-grant convergence test itself needed to know about M5, and only CI could tell us
+
+M4.1 built a real safety net: grant hostile privileges, prove the audit rejects them, re-apply "the
+baseline migration," prove it converges. It worked exactly as designed — for M4's surface. The M5
+branch's first real CI run against the ephemeral stack failed the convergence step with `MISSING
+routine authenticated EXECUTE search_cards(text, text, integer, integer)`.
+
+The mechanism: `revoke execute on all routines in schema public from anon, authenticated` in
+`20260820140000_m41_privilege_baseline.sql` is a sweep — it revokes *every* function's grant,
+including ones that did not exist in August when that file was written. Re-applying only that file
+after a hostile-grant test therefore converges to exactly the M4.1-era surface, dropping anything a
+later migration added on top. `search_cards`'s own grant (in `20260820151000_m5_catalog_search.sql`)
+never gets reasserted, because nothing tells the hostile-grant recovery step to run that file too —
+and it could not simply run every privilege-bearing migration since M4.1 in sequence anyway, because
+some of them also `CREATE TABLE`, which is not safe to replay against a database that already has
+that table.
+
+The fix mirrors what M4.1 did to M4: a new pure-privilege migration
+(`20260820157000_m5_privilege_baseline.sql`) that restates the *complete* current surface — M4.1's
+grants plus `search_cards` — and nothing but `REVOKE`/`GRANT`/`ALTER DEFAULT PRIVILEGES`, so it is
+safe to re-run any number of times. `.github/workflows/ci.yml` now re-applies this file instead of
+M4.1's for the convergence check.
+
+This was not discoverable by re-reading the M4.1 migration, by `pnpm typecheck`, or by running
+`grant-audit.sql` against a database that had only ever been migrated forward once (which is what
+`pnpm exec supabase db push` against the linked remote project does, and which this session did,
+repeatedly, before pushing the branch — every one of those runs showed a clean audit). It surfaced
+only because CI's hostile-grant test specifically manufactures the "wrong starting state, then
+recover" scenario the M4 escalation actually was. **The lesson restates one already in this
+document, one level up: a check designed to prevent a class of bug needs to be re-verified against
+every future addition to that class, not just written once and trusted** — and the reason M4.1
+built the convergence test as a *replayable procedure* rather than a one-time fix is exactly what
+made this failure loud and specific instead of silent.
+
+---
+
+## 2026-08-20 — Two ingest gaps, investigated instead of accepted or invented around
+
+The full English + Japanese ingest completed at 32,690 cards / 47,083 variants across 374 of 380
+attempted sets, and the temptation with any large real-data run is to call a 98%+ set success rate
+good enough and move on. Two of the six missing sets' worth of investigation turned out to matter.
+
+**Six sets 404'd from the Edge Function specifically.** A direct `curl` from this development
+machine, run at the same moment a retry from `sync-catalog` was failing, returned `200` for the
+identical URL. A sanity-check re-sync of an unrelated, known-good set (`base1`) from the Edge
+Function immediately afterward succeeded normally. That combination rules out both "the set doesn't
+exist" and "the function is broken" — what's left is TCGdex's own edge/CDN infrastructure answering
+inconsistently depending on which network the request arrives from. Nothing to fix on this side;
+recorded as a known gap with the exact retry command that should close it once TCGdex's edge state
+settles.
+
+**72 sets have a `cardCount` and an empty `cards[]`.** The reconciliation check this milestone's
+prompt asked for (compare summed provider counts against actual ingested rows) found 76 mismatched
+sets, not zero. The instinct at that point is to assume an ingest bug — a pagination limit, a
+concurrency race, something dropping cards silently. Fetching one of the mismatched sets
+(`ja/CS2b`) directly showed `cardCount.total: 101` and `cards: []` in the same TCGdex response.
+`sync-catalog` had done the only correct thing available to it: create the set row from the metadata
+that existed, and ingest zero cards from a card list that was empty. Most of these turned out to be
+the same physical Japanese product (`トリプレットビート`, "Triplet Beat") catalogued under a dozen
+different set ids, presumably one per regional SKU — plausibly TCGdex's own de-duplication marking
+eleven of the twelve as pointers rather than populating each with its own 101-row card list.
+
+The shared lesson: a reconciliation check exists to produce a number that needs explaining, not a
+number that needs to be zero. Both gaps above were explainable from live data in a few minutes each,
+and neither is a defect in this project's code — but *finding that out* required treating the
+mismatch as a question rather than either ignoring it (M5 prompt §35 explicitly forbids "silently
+accept unexplained large mismatches") or assuming the bug must be ours and trying to patch around
+data the provider itself does not have.
+
+---
+
 ## Real-device testing log
 
 Recorded as it happens. Emulation is not evidence of Safari behaviour.

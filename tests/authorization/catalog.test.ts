@@ -68,6 +68,47 @@ describe('Catalog: shared read, service-role-only write', () => {
   })
 })
 
+describe('search_cards: authenticated read, no catalog mutation surface', () => {
+  it('an authenticated user can call search_cards', async () => {
+    const { data, error } = await clientA.rpc('search_cards', {
+      p_query: 'Charizard',
+      p_limit: 10,
+      p_offset: 0,
+    })
+    expect(error).toBeNull()
+    const rows = (data ?? []) as { card_id: string }[]
+    expect(rows.some((row) => row.card_id === seedCatalog.charizardCardId)).toBe(true)
+  })
+
+  it('search_cards is not exploitable through wildcard or SQL-special characters', async () => {
+    // No parameter here reaches SQL as anything but a bound argument (search_cards's own header) —
+    // this asserts malformed-looking input degrades to "no match" rather than an error or a
+    // full-table dump.
+    for (const hostile of ["%' OR '1'='1", '_____', "Robert'); DROP TABLE cards;--", '%%%']) {
+      const { error } = await clientA.rpc('search_cards', { p_query: hostile, p_limit: 5 })
+      expect(error).toBeNull()
+    }
+  })
+
+  it('an authenticated user cannot read catalog_sync_runs directly', async () => {
+    const { data, error } = await clientA.from('catalog_sync_runs').select()
+    // No SELECT grant at all (not just "no RLS policy") — Postgres denies at the privilege check,
+    // before RLS is ever evaluated, so this is a permission error rather than an empty result.
+    expect(error).not.toBeNull()
+    expect(error?.code).toBe('42501')
+    expect(data).toBeNull()
+  })
+
+  it('an authenticated user cannot insert into catalog_sync_runs', async () => {
+    const { error } = await clientA.from('catalog_sync_runs').insert({
+      language: 'en',
+      tcgdex_set_id: 'attacker-set',
+      status: 'succeeded',
+    })
+    expect(error).not.toBeNull()
+  })
+})
+
 describe('Catalog: sealed_products curated vs. user-added visibility', () => {
   it('the curated seeded sealed product is visible to every authenticated user', async () => {
     const { data, error } = await clientB

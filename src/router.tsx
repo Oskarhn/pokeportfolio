@@ -7,12 +7,14 @@ import { ForgotPasswordPage } from './features/auth/ForgotPasswordPage'
 import { ResetPasswordPage } from './features/auth/ResetPasswordPage'
 import { InvitationsPage } from './features/admin/InvitationsPage'
 import { HomePage } from './features/home/HomePage'
+import { CatalogPage } from './features/catalog/CatalogPage'
+import { CardDetailPage } from './features/catalog/CardDetailPage'
 
 /**
  * Three route classes (docs/UX_FLOWS.md):
  *
  *   public     /login, /invite/$token, /forgot-password, /reset-password
- *   protected  /
+ *   protected  /, /catalog, /catalog/$cardId
  *   admin      /admin/invitations
  *
  * The guards wrap components rather than running in `beforeLoad` because the session is restored
@@ -69,6 +71,26 @@ const resetPasswordRoute = createRoute({
   component: ResetPasswordPage,
 })
 
+const catalogRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/catalog',
+  component: () => (
+    <RequireSession>
+      <CatalogPage />
+    </RequireSession>
+  ),
+})
+
+const catalogCardRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/catalog/$cardId',
+  component: () => (
+    <RequireSession>
+      <CardDetailPage />
+    </RequireSession>
+  ),
+})
+
 const adminInvitationsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/admin/invitations',
@@ -85,6 +107,8 @@ const routeTree = rootRoute.addChildren([
   inviteRoute,
   forgotPasswordRoute,
   resetPasswordRoute,
+  catalogRoute,
+  catalogCardRoute,
   adminInvitationsRoute,
 ])
 

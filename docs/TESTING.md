@@ -230,6 +230,25 @@ Constraints and triggers, exercised directly:
 - Cascade on account deletion removes all user-private rows and no catalog rows
 - Every migration applies to an empty database and to a seeded one
 
+**M5 catalog (`tests/db/catalog_constraints.test.ts`, `tests/db/search_cards.test.ts`,
+`tests/data/tcgdex-provider.test.ts`, `tests/authorization/catalog.test.ts`):**
+
+- `card_variants_identity_key` rejects a duplicate `(card_id, finish, stamp, subtype, size)`, and
+  allows two rows differing only by stamp/subtype on the same card (the shape D-033 exists for)
+- Two sibling variants of one card may share a `tcgplayer_product_id`/`cardmarket_product_id`
+  (D-034 — no longer a unique column)
+- The same `tcgdex_set_id` is accepted in two different languages; a genuine duplicate within one
+  language is still rejected
+- `cards.language` must match its set's language, enforced on insert and on re-pointing `set_id`
+- `catalog_sync_runs` accepts a service-role write and is invisible to `authenticated`
+- `search_cards`: name, set, collector number, combined name+number (including a `4/102`-style
+  query), Japanese text, language filter, Energy category, no-result, wildcard/SQL-special input,
+  pagination stability, a multi-variant card's `variant_count`, a missing-image card's
+  `image_base_url` staying `NULL` rather than a placeholder
+- The TCGdex provider adapter's mapping, pinned against real captured payloads (not synthesized
+  shapes): the finish/stamp/subtype split, the `"generated"` sentinel, the boolean-flags fallback,
+  Pocket-series detection
+
 ---
 
 ## 6. E2E
@@ -246,6 +265,7 @@ any of them.
 | Flow | Assertions |
 |---|---|
 | Anonymous visit to `/` or `/admin/invitations` | Lands on sign-in; the admin screen does not render |
+| Anonymous visit to `/catalog` or `/catalog/$cardId` | Lands on sign-in; the catalog screen does not render |
 | Sign-in form | Password-manager `autocomplete` attributes; show/hide preserves the value; paste never blocked |
 | Failed sign-in | One message, announced via `role="alert"`, naming neither half as the wrong one |
 | Unusable invitation link | One message plus a way forward |

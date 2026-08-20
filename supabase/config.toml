@@ -416,6 +416,13 @@ allow_dynamic_registration = false
 enabled = true
 verify_jwt = false
 
+# sync-catalog is operator-triggered (scripts/run-catalog-sync.mjs), never called from the browser
+# bundle, and authenticates its caller against CATALOG_SYNC_SECRET rather than a user JWT — there
+# is no signed-in session to require, only an operator holding a secret. See the function header.
+[functions.sync-catalog]
+enabled = true
+verify_jwt = false
+
 [edge_runtime]
 enabled = true
 # Supported request policies: `oneshot`, `per_worker`.

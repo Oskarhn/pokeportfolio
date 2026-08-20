@@ -25,6 +25,17 @@ test.describe('routing and guards', () => {
     await expect(page.getByRole('heading', { name: 'Invitations' })).toHaveCount(0)
   })
 
+  test('the catalog route is not reachable without a session', async ({ page }) => {
+    await page.goto('/catalog')
+    await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Catalog' })).toHaveCount(0)
+  })
+
+  test('a catalog card detail deep link is not reachable without a session', async ({ page }) => {
+    await page.goto('/catalog/00000000-0000-0000-0000-000000000000')
+    await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
+  })
+
   test('there is no way to create an account from the sign-in screen', async ({ page }) => {
     await page.goto('/login')
     await expect(page.getByText(/create account/i)).toHaveCount(0)

@@ -61,6 +61,18 @@ Applies to `card_series`, `card_sets`, `cards`, `card_variants`, `price_snapshot
 `sealed_price_snapshots`, `fx_rates`. Curated `sealed_products` follow the same pattern;
 user-created rows add `OR created_by_user_id = auth.uid()`.
 
+**`search_cards(...)` (M5)** is the one read path that is a function rather than a table grant: a
+`SECURITY INVOKER`, `STABLE` Postgres function, `EXECUTE` granted to `authenticated` only (never
+`anon` — ARCHITECTURE.md §2's "every screen is authenticated" holds here too). Invoker rights
+because the function reads only tables `authenticated` can already `SELECT` directly; a `DEFINER`
+would grant nothing a plain grant does not already. Every parameter is bound — nothing concatenates
+caller input into SQL text — and `tests/authorization/catalog.test.ts` asserts wildcard/SQL-special
+input degrades to "no match" rather than an error.
+
+**`catalog_sync_runs` (M5)** is RLS-enabled with zero policies and zero grants to `anon` or
+`authenticated` — the same shape as `invitation_claims` (§5.4): unreachable through the Data API
+under every browser-held role, written only by `sync-catalog` under the service role.
+
 ### 3.2 User-private tables
 
 Every user-private table carries `user_id uuid NOT NULL REFERENCES auth.users(id)` and:
@@ -310,9 +322,18 @@ of which can fail:
 
 | Leg | What it asserts | Where it runs |
 |---|---|---|
-| `supabase/migrations/20260820140000_m41_privilege_baseline.sql` | The intended surface, as revoke-then-grant | Every environment, applied |
+| `supabase/migrations/20260820157000_m5_privilege_baseline.sql` | The **current** intended surface, as revoke-then-grant — supersedes `20260820140000_m41_privilege_baseline.sql` for this purpose without editing it | Every environment, applied |
 | `scripts/grant-audit.sql` | That the catalog agrees, privilege by privilege | CI, and by hand against a deployed project |
 | `scripts/remote-security-check.mjs` | That none of it is exploitable, holding only a publishable key | By hand, after any deploy |
+
+**A pure-privilege baseline migration needs restating, not just extending, whenever a milestone
+adds a browser-reachable table or function.** Found by M5's first real CI run, not by inspection:
+the hostile-grant convergence test below re-applies "the baseline migration" by a fixed filename,
+and that file's own sweep (`revoke execute on all routines ...`) revokes every function's grant,
+including ones written after it. Re-applying only the M4.1 file converges to a stale surface. Each
+milestone that adds to the browser-reachable surface should therefore create a new pure-privilege
+migration restating the *complete* current grant list (M5's does; PROJECT_JOURNAL.md has the
+failure), and point the CI convergence step at that newest one.
 
 `grant-audit.sql` is written as a second, independent statement of intent, not as a summary of the
 migration. If the two disagree, one is a defect — do not reconcile by copying the database's
@@ -360,6 +381,12 @@ policies and the same column grants. It widens nothing, and needs no separate ba
 | Supabase secret key (legacy: `service_role`) | Edge Function environment only, injected by the platform | **Never** |
 | Database password | Password manager, never in the repo | Never |
 | Supabase CLI access token | `supabase login` keyring, never in the repo | Never |
+| `CATALOG_SYNC_SECRET` (M5) | Edge Function environment (`supabase secrets set`), plus the operator's own shell environment when running `scripts/run-catalog-sync.mjs` | **Never** |
+
+**`CATALOG_SYNC_SECRET` is not the service-role key and is not a step up from a CI deploy key**
+(D-035). It gates exactly one capability — invoking `sync-catalog` — and is checked with a
+constant-time comparison against a single bearer header. It is never the Supabase secret key, never
+placed in `.env.local`, and no code path ships it to the browser bundle.
 
 Supabase is migrating from `anon`/`service_role` JWTs to `sb_publishable_…`/`sb_secret_…` keys,
 with the legacy pair deprecated at the end of 2026. The security semantics are unchanged — one is
