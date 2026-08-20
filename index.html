@@ -4,6 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#0f172a" />
+    <!--
+      Invitation tokens travel in the URL path (/invite/<token>). no-referrer means no outbound
+      request — card artwork from the provider CDN included — can ever carry that path in a
+      Referer header. Nothing in this application needs referrers. See docs/SECURITY.md §5.
+    -->
+    <meta name="referrer" content="no-referrer" />
     <meta
       name="description"
       content="PokePortfolio — a private Pokémon TCG collection and financial tracker."

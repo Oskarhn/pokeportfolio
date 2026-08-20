@@ -178,17 +178,23 @@ refresh_token_reuse_interval = 10
 # email/password grant type for every existing user, not only new self-registration. Setting it
 # false would break sign-in for legitimate redemption-created users too, so it stays at the
 # platform default (true). Invite-only enforcement is the auth.users backstop trigger (invariant
-# S2, DATA_MODEL.md §12), which ships in M4 alongside the redeem-invitation Edge Function it
-# depends on -- see SECURITY.md §5 and HANDOVER.md for the current M3/M4 boundary.
+# S2) plus [auth.hook.before_user_created] further down this file -- see SECURITY.md §5.
 enable_signup = true
 # Allow/disallow anonymous sign-ins to your project.
 enable_anonymous_sign_ins = false
 # Allow/disallow testing manual linking of accounts
 enable_manual_linking = false
 # Passwords shorter than this value will be rejected as weak. Minimum 6, recommended 8 or more.
-minimum_password_length = 6
+# 12 rather than the platform default of 6: this application holds personal financial records,
+# every account is created through a flow that already assumes a password manager, and length is
+# the password property that most reliably resists guessing. GoTrue enforces it server-side, so
+# it holds for any caller; redeem-invitation re-checks it before claiming an invitation so a
+# rejected password never consumes one. See docs/SECURITY.md §5.1.
+minimum_password_length = 12
 # Passwords that do not meet the following requirements will be rejected as weak. Supported values
 # are: `letters_digits`, `lower_upper_letters_digits`, `lower_upper_letters_digits_symbols`
+# Deliberately empty. Composition rules ("one uppercase, one symbol") push people towards short
+# predictable passwords and fight password managers; NIST SP 800-63B advises against them.
 password_requirements = ""
 
 # Configure passkey sign-ins.
@@ -284,9 +290,18 @@ max_frequency = "5s"
 # inactivity_timeout = "8h"
 
 # This hook runs before a new user is created and allows developers to reject the request based on the incoming user object.
-# [auth.hook.before_user_created]
-# enabled = true
-# uri = "pg-functions://postgres/auth/before-user-created-hook"
+#
+# GATE 1 of invite-only enforcement (docs/SECURITY.md §5, migration
+# 20260820120030_m4_signup_gate.sql). public.before_user_created rejects unconditionally: GoTrue
+# invokes this hook on every self-service account-creation path (password signup, magic link,
+# OAuth, anonymous) but not from the Auth Admin API the redeem-invitation function uses, so the
+# only route to an account runs through a proven invitation token.
+#
+# This is configuration, not schema, so it reaches a remote project through
+# `pnpm exec supabase config push` -- never a dashboard toggle. See docs/DEVELOPMENT.md §6.
+[auth.hook.before_user_created]
+enabled = true
+uri = "pg-functions://postgres/public/before_user_created"
 
 # This hook runs before a token is issued and allows you to add additional claims based on the authentication method used.
 # [auth.hook.custom_access_token]
@@ -378,6 +393,14 @@ enabled = false
 authorization_url_path = "/oauth/consent"
 # Allow dynamic client registration
 allow_dynamic_registration = false
+
+# redeem-invitation is the only account-creation path in the product, and the person redeeming an
+# invitation has no session yet -- so it must be invokable without a user JWT. "Publicly
+# invokable" is not "unrestricted": the function authenticates the invitation token itself
+# against a stored SHA-256 hash before it does anything. See docs/SECURITY.md §5.
+[functions.redeem-invitation]
+enabled = true
+verify_jwt = false
 
 [edge_runtime]
 enabled = true
