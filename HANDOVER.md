@@ -191,6 +191,14 @@ real multi-variant data, mobile viewport — desktop and mobile both clean.
 **UI:** `/catalog` (search) and `/catalog/$cardId` (detail), both behind `RequireSession`. No
 "Add to collection" — that is M6.
 
+**Deployed and verified.** PR #9 merged; Cloudflare rebuilt `main` (bundle `index-w9CHprYD.js`).
+`node scripts/deployment-check.mjs` 27/27, `scripts/remote-security-check.mjs` 17/17,
+`grant-audit.sql` clean against the live catalog — all three re-run after the merge, not assumed
+from the pre-merge state. A second throwaway synthetic account
+(`m5-deploy-verify@example.invalid`, deleted after use) redeemed a real invitation on the actual
+`pokeportfolio-dev.pages.dev` origin and ran a real search there, confirming the deployed bundle —
+not just the local dev server — talks to the real catalog correctly.
+
 **Full ingest counts (English + Japanese, into `pokeportfolio-dev`):** English — 20 series, 199
 sets, 20,946 cards, 32,857 variants, 568 Energy cards. Japanese — 14 series, 175 sets, 11,744 cards,
 14,226 variants, 197 Energy cards. Total: 32,690 cards, 47,083 variants. 9,300 cards (28%) have no
@@ -268,7 +276,10 @@ data. Get the key from the dashboard or
 - M1/M2 via [PR #1](https://github.com/Oskarhn/pokeportfolio/pull/1), M3 via
   [PR #2](https://github.com/Oskarhn/pokeportfolio/pull/2), M4 via
   [PR #3](https://github.com/Oskarhn/pokeportfolio/pull/3), M4.1 via
-  [PR #5](https://github.com/Oskarhn/pokeportfolio/pull/5). All squash-merged, branches deleted.
+  [PR #5](https://github.com/Oskarhn/pokeportfolio/pull/5) plus real-device follow-ups
+  [#6](https://github.com/Oskarhn/pokeportfolio/pull/6)/[#7](https://github.com/Oskarhn/pokeportfolio/pull/7)/[#8](https://github.com/Oskarhn/pokeportfolio/pull/8),
+  M5 via [PR #9](https://github.com/Oskarhn/pokeportfolio/pull/9). All squash-merged, branches
+  deleted.
 - PR #4 was the deliberate negative security test — both invite-only gates disabled to prove the
   suite fails. Closed unmerged, branch deleted. It is not a mistake in the history.
 - `claude_outputs/` is gitignored and must stay that way.
