@@ -86,7 +86,7 @@ invite → account → sign-in → protected route → sign-out path was exercis
 the deployed app, and the installed-PWA check on real hardware — outstanding since M4 — is done.
 See HANDOVER for the exact state.
 
-### M5 — Catalog and search
+### M5 — Catalog and search · **complete**
 
 TCGdex ingest for sets, cards and variants, English and Japanese. Provider id mapping. Card
 search by name, set and collector number. Verify Basic Energy coverage and variant modelling
