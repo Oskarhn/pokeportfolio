@@ -47,6 +47,23 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Install Playwright browsers
+        run: pnpm exec playwright install --with-deps chromium webkit
+
+      # Auth UI, routing and guards, at desktop and iPhone viewports. Builds against a
+      # placeholder Supabase URL on purpose (playwright.config.ts) so no remote credential is
+      # ever needed here -- real auth flows are proven in the db-tests job below.
+      - name: Browser E2E
+        run: pnpm test:e2e
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report
+          retention-days: 7
+
       - name: Secret scan (gitleaks, open source, no license key)
         run: |
           docker run --rm -v "${{ github.workspace }}:/repo" \
@@ -82,12 +99,28 @@ jobs:
       - name: Export local Supabase connection details
         run: |
           pnpm exec supabase status -o env > /tmp/supabase-status.env
-          cat /tmp/supabase-status.env
           {
             echo "SUPABASE_URL=$(grep '^API_URL=' /tmp/supabase-status.env | cut -d= -f2- | tr -d '\"')"
             echo "SUPABASE_ANON_KEY=$(grep '^ANON_KEY=' /tmp/supabase-status.env | cut -d= -f2- | tr -d '\"')"
             echo "SUPABASE_SERVICE_ROLE_KEY=$(grep '^SERVICE_ROLE_KEY=' /tmp/supabase-status.env | cut -d= -f2- | tr -d '\"')"
           } >> "$GITHUB_ENV"
+
+      # supabase start runs the edge runtime and serves supabase/functions, but a suite that
+      # silently skipped the redeem-invitation tests because the function was unreachable
+      # would be worse than useless -- so reachability is asserted before the suite runs. A
+      # nonsense token must come back 400 from our own handler; anything else means the
+      # function is not there.
+      - name: Verify the redeem-invitation function is served
+        run: |
+          for attempt in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" -H "apikey: $SUPABASE_ANON_KEY" -H "Authorization: Bearer $SUPABASE_ANON_KEY" -d "{\"token\":\"definitely-not-a-real-invitation-token\"}" "$SUPABASE_URL/functions/v1/redeem-invitation" || true)
+            if [ "$code" = "400" ]; then echo "redeem-invitation is serving (HTTP $code)"; exit 0; fi
+            echo "attempt $attempt: HTTP $code"
+            sleep 4
+          done
+          echo "redeem-invitation never became reachable"
+          pnpm exec supabase status || true
+          exit 1
 
       - name: Database and authorization tests
         run: pnpm test:db
