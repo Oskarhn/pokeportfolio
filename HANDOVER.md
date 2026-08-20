@@ -4,7 +4,7 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-**Last updated:** 2026-08-17 — M1 (scaffold and harness), M2 (financial domain core) and M3
+**Last updated:** 2026-08-20 — M1 (scaffold and harness), M2 (financial domain core) and M3
 (database, migrations, RLS) complete.
 
 ---
@@ -123,10 +123,12 @@ Full context in [docs/DECISIONS.md](docs/DECISIONS.md).
 - M1/M2 landed via [PR #1](https://github.com/Oskarhn/pokeportfolio/pull/1)
   (`feat/foundation-domain-core`), CI green, squash-merged to `main` at `c7051b1`. The source
   branch is deleted.
-- M3 landed via PR #`<filled in at merge — see docs/GIT_WORKFLOW.md for the standard workflow>`
-  (`feat/m3-database-rls`), CI green including the new `db-tests` job, squash-merged to `main` at
-  `<commit filled in at merge>`. The source branch is deleted. `main` is pushed and the working
-  tree is clean.
+- M3 landed via [PR #2](https://github.com/Oskarhn/pokeportfolio/pull/2)
+  (`feat/m3-database-rls`), CI green (both `build-and-test` and the new `db-tests` job),
+  squash-merged to `main`. The source branch is deleted. Run `git log --oneline -5` for the exact
+  merge commit rather than trusting a hash pasted here — this file is edited before the merge
+  actually happens, so it cannot know that hash in advance without a follow-up direct-to-main
+  commit, which is exactly the pattern docs/GIT_WORKFLOW.md §7 says not to repeat.
 - `docs/GIT_WORKFLOW.md` (new in M3) is now the canonical reference for the branch/PR/CI/merge
   process every subsequent milestone follows.
 - Author identity is set repo-locally to the GitHub `noreply` address. No personal email appears
@@ -151,11 +153,12 @@ expected: 7.
 - **TypeScript is pinned to 6.0.3, not 7.x**, solely because `typescript-eslint` doesn't support
   TS 7 yet (peer range `<6.1.0` as of 2026-08-17). `create-vite` scaffolds 7.x by default; do not
   let a future `pnpm update` silently jump the major version without re-checking that peer range.
-- **`src/data/database.types.ts` does not exist in the repository yet.** `pnpm db:types` needs a
-  live schema to introspect; the M3 PR generates it via CI's ephemeral stack and uploads it as a
-  workflow artifact rather than assuming its shape. Whoever picks up M4/M5 should run
-  `pnpm db:start && pnpm db:types` (or download the CI artifact) and commit the result in the
-  first commit that actually needs typed queries — do not hand-write this file.
+- `src/data/database.types.ts` is committed and wired into `src/data/supabase-client.ts` — real,
+  generated from CI's ephemeral stack (downloaded from the `database-types` workflow artifact),
+  not hand-written. **Regenerate it (`pnpm db:types`) in the same commit as any future migration**
+  so it never drifts from the real schema (DEVELOPMENT.md §4). Note that generated `bigint`
+  columns type as plain `number` — that is a boundary `src/data/money.ts` exists to guard, not a
+  bug in the generator.
 - `src/features/`, `src/lib/` do not exist yet — deliberately. They arrive when a later milestone
   gives them real content (CLAUDE.md's "no placeholder directories" rule).
 - **The `auth.users` S2 backstop trigger (reject signup without a redemption) is not implemented
