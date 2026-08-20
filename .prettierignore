@@ -6,3 +6,4 @@ dev-dist
 pnpm-lock.yaml
 docs/
 *.md
+src/data/database.types.ts
