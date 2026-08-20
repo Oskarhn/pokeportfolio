@@ -103,7 +103,38 @@ jobs:
             echo "SUPABASE_URL=$(grep '^API_URL=' /tmp/supabase-status.env | cut -d= -f2- | tr -d '\"')"
             echo "SUPABASE_ANON_KEY=$(grep '^ANON_KEY=' /tmp/supabase-status.env | cut -d= -f2- | tr -d '\"')"
             echo "SUPABASE_SERVICE_ROLE_KEY=$(grep '^SERVICE_ROLE_KEY=' /tmp/supabase-status.env | cut -d= -f2- | tr -d '\"')"
+            echo "DB_URL=$(grep '^DB_URL=' /tmp/supabase-status.env | cut -d= -f2- | tr -d '\"')"
           } >> "$GITHUB_ENV"
+
+      # The privilege checks below talk to Postgres directly. Every runner image ships psql, but
+      # a job that silently skipped this because the binary moved would be the same class of
+      # false green the checks exist to prevent.
+      - name: Ensure a psql client is present
+        run: |
+          if ! command -v psql >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+          fi
+          psql --version
+
+      # What the catalog actually grants `anon` and `authenticated`, asserted against the intended
+      # surface rather than inferred from behaviour. docs/SECURITY.md §5.9.
+      - name: Privilege surface matches the baseline
+        run: psql "$DB_URL" -v ON_ERROR_STOP=1 -f scripts/grant-audit.sql
+
+      # The M4 escalation, encoded. Make the database wrong in exactly the way the deployed project
+      # was, prove the audit notices, re-apply the hardening migration, prove it converges. The
+      # middle step matters as much as the last one: an audit that cannot fail is not a check.
+      - name: Convergence from a hostile privilege state
+        run: |
+          psql "$DB_URL" -v ON_ERROR_STOP=1 -f tests/db/sql/hostile_grants.sql
+          if psql "$DB_URL" -v ON_ERROR_STOP=1 -f scripts/grant-audit.sql 2>/dev/null; then
+            echo "::error::the audit passed on a database with hostile grants — the audit is broken"
+            exit 1
+          fi
+          echo "audit correctly rejected the hostile state; re-applying the baseline migration"
+          psql "$DB_URL" -v ON_ERROR_STOP=1 \
+            -f supabase/migrations/20260820140000_m41_privilege_baseline.sql
+          psql "$DB_URL" -v ON_ERROR_STOP=1 -f scripts/grant-audit.sql
 
       # supabase start runs the edge runtime and serves supabase/functions, but a suite that
       # silently skipped the redeem-invitation tests because the function was unreachable
