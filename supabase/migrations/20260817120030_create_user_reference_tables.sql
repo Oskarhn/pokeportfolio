@@ -60,3 +60,6 @@ create policy tags_owner on public.tags
   with check (user_id = (select auth.uid()));
 
 grant select, insert, update, delete on public.retailers, public.storage_locations, public.tags to authenticated;
+
+-- service_role needs explicit grants too — see the note in 20260817120020_create_catalog_tables.sql.
+grant all on public.retailers, public.storage_locations, public.tags to service_role;

@@ -312,6 +312,56 @@ Docker unavailability" entry above) was supposed to provide, on the very first r
 Neither `pnpm check`, code review, nor reasoning about the SQL in the abstract would have caught
 this; it required a real `CREATE INDEX` to fail.
 
+## 2026-08-20 — Two Supabase-platform assumptions were wrong, and CI caught both in one run
+
+**Problem 1.** After fixing the `holdings_identity` index (previous entry), the same CI run still
+failed: every insert into `holdings`, `purchases` and other new tables from the `service_role`
+test client returned `permission denied for table ..., HINT: GRANT INSERT ON public.holdings TO
+service_role`.
+
+**Why.** `service_role` bypasses RLS, and it was assumed (reasonably, by analogy with a
+superuser) that it also bypasses ordinary `GRANT`-based privilege checks. It does not. Recent
+Supabase projects — local and hosted, per the `auto_expose_new_tables` note already present in
+`supabase/config.toml` before this was discovered — do not auto-expose newly created tables,
+views, sequences or functions to *any* Data API role, `service_role` included. Bypassing RLS and
+having table-level privileges are two separate things.
+
+**Resolution.** Every migration now grants `ALL` on its tables to `service_role` explicitly,
+alongside the narrower `authenticated` grants. The two `IMMUTABLE` wrapper functions from the
+previous entry needed explicit `EXECUTE` grants for the same reason — they run as part of the
+`holdings_identity` index expression on every write, so both writing roles need permission to
+call them.
+
+**Problem 2, more consequential.** With the grants fixed, a second, unrelated failure remained:
+every `signInWithPassword` call in the authorization suite failed with "Email logins are
+disabled" — even though the corresponding user had just been created successfully via the Auth
+admin API.
+
+**Why.** `supabase/config.toml`'s `[auth] enable_signup = false` had been set to enforce
+invite-only signup at the config level, mirroring SECURITY.md §5's "Dashboard: email signup
+disabled at the Supabase Auth level" line. This turned out to conflate two things GoTrue does not
+actually separate cleanly: disabling `enable_signup` disables the email/password grant type
+entirely, including *login* for users who already exist — not only the public self-registration
+endpoint. This is a documented GoTrue limitation (supabase/gotrue#330 and others), not a
+misconfiguration on this project's part, but it was still wrong to rely on here: every legitimately
+invited, redemption-created user in the real product would have been unable to sign in.
+
+**Resolution.** Reverted to the platform default (`enable_signup = true`). Invite-only enforcement
+is not this toggle's job — it is the `auth.users` S2 backstop trigger, already scheduled for M4
+alongside the `redeem-invitation` Edge Function it depends on. Until M4 ships, the public signup
+endpoint is genuinely open in any environment this schema is deployed to; there is no live
+deployment yet, so nothing is exposed today, but this is now stated plainly rather than papered
+over with a config setting that looked protective and was not.
+
+**Generalisable point.** Both mistakes were reasonable extrapolations from how "trusted"
+constructs usually behave (a service-role-style key acting like a superuser; a "disable signup"
+toggle only affecting signup) that turned out to be specific to older platform defaults or a
+cross-cutting implementation detail. Neither was caught by reasoning about the SQL or the config
+in the abstract — both were caught by CI actually running the real stack, on the very first PR
+that exercised it. This is the concrete return on the "Local Docker unavailability turned into the
+CI database-testing strategy" decision from two entries above: real infrastructure surfaces real
+platform behaviour that documentation and code review alone do not.
+
 ## Real-device testing log
 
 Recorded as it happens. Emulation is not evidence of Safari behaviour.

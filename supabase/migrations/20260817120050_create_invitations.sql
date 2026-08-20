@@ -7,9 +7,12 @@
 -- Function it depends on. Enabling the backstop now, before that Edge Function exists, would
 -- also reject the service-role-created synthetic users the M3 authorization test fixture needs
 -- (tests/authorization/) unless they too were given fake redemption rows — adding complexity to
--- a mechanism that cannot be end-to-end tested until M4 anyway. Local Auth signup is already
--- disabled at the project-config level (supabase/config.toml, [auth] enable_signup = false),
--- which closes the same door from the other direction for local/CI development.
+-- a mechanism that cannot be end-to-end tested until M4 anyway. `[auth] enable_signup = false`
+-- is NOT a substitute in the meantime: confirmed empirically in CI, disabling it also disables
+-- the email/password *login* grant type for every existing user, not just new self-registration
+-- (a known GoTrue behaviour), which would break sign-in for legitimate redemption-created users
+-- too. So it stays at the platform default, and nothing closes the public signup endpoint until
+-- the S2 trigger ships in M4 — see DATA_MODEL.md §12.
 
 create table public.invitations (
   id uuid primary key default gen_random_uuid(),
@@ -57,3 +60,6 @@ grant select on public.invitation_redemptions to authenticated;
 
 -- No INSERT policy on invitation_redemptions for `authenticated`: redemption rows are written
 -- only by the M4 redeem-invitation Edge Function, using the service role, which bypasses RLS.
+
+-- service_role needs explicit grants too — see the note in 20260817120020_create_catalog_tables.sql.
+grant all on public.invitations, public.invitation_redemptions to service_role;

@@ -173,9 +173,14 @@ enable_refresh_token_rotation = true
 # Requires enable_refresh_token_rotation = true.
 refresh_token_reuse_interval = 10
 # Allow/disallow new user signups to your project.
-# Invite-only product (SECURITY.md §5): public signup is disabled at the Auth level. The sole
-# account-creation path is the redeem-invitation Edge Function (M4), which uses the service role.
-enable_signup = false
+# NOT the invite-only enforcement mechanism, despite the name -- confirmed empirically in CI
+# (supabase/gotrue#330 and community reports): disabling this also disables *login* via the
+# email/password grant type for every existing user, not only new self-registration. Setting it
+# false would break sign-in for legitimate redemption-created users too, so it stays at the
+# platform default (true). Invite-only enforcement is the auth.users backstop trigger (invariant
+# S2, DATA_MODEL.md §12), which ships in M4 alongside the redeem-invitation Edge Function it
+# depends on -- see SECURITY.md §5 and HANDOVER.md for the current M3/M4 boundary.
+enable_signup = true
 # Allow/disallow anonymous sign-ins to your project.
 enable_anonymous_sign_ins = false
 # Allow/disallow testing manual linking of accounts
@@ -220,8 +225,8 @@ web3 = 30
 
 [auth.email]
 # Allow/disallow new user signups via email to your project.
-# Kept in sync with [auth] enable_signup above — invite-only, see SECURITY.md §5.
-enable_signup = false
+# Kept in sync with [auth] enable_signup above — see the note there.
+enable_signup = true
 # If enabled, a user will be required to confirm any email change on both the old, and new email
 # addresses. If disabled, only the new email is required to confirm.
 double_confirm_changes = true

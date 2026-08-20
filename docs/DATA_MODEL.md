@@ -788,8 +788,13 @@ a TCGdex-observed size doesn't fit either).
 **S2 (`auth.users` backstop trigger) is deferred to M4**, alongside the `redeem-invitation` Edge
 Function it depends on. Enabling the reject-if-no-redemption trigger before that Edge Function
 exists would also block the service-role-created synthetic users the M3 authorization suite
-needs. Local/CI signup is already closed from the config side
-(`supabase/config.toml` → `[auth] enable_signup = false`). See SECURITY.md and HANDOVER.md for
+needs. `supabase/config.toml`'s `[auth] enable_signup` is **not** a substitute in the meantime —
+confirmed empirically in CI (a known GoTrue behaviour: disabling it disables the email/password
+*login* grant type for every existing user, not only new self-registration, which would have
+broken sign-in for legitimate redemption-created users too). It stays at the platform default
+(`true`). Until the S2 trigger ships in M4, nothing in this repository closes the public
+`/auth/v1/signup` endpoint — acceptable because no environment with this schema is
+publicly deployed yet, and it is the explicit next action. See SECURITY.md and HANDOVER.md for
 the current boundary.
 
 **`holdings_identity`'s enum-to-text casts need IMMUTABLE wrapper functions.** Postgres marks an

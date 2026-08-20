@@ -99,4 +99,7 @@ as $$
   select coalesce((select p.is_admin from public.profiles p where p.id = auth.uid()), false);
 $$;
 
-grant execute on function public.is_admin() to authenticated;
+grant execute on function public.is_admin() to authenticated, service_role;
+
+-- service_role needs explicit grants too — see the note in 20260817120020_create_catalog_tables.sql.
+grant all on public.profiles to service_role;

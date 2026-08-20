@@ -66,6 +66,13 @@ immutable
 set search_path = ''
 as $$ select value::text $$;
 
+-- Recent Supabase projects do not auto-expose new public-schema functions to any Data API role
+-- (see the note in 20260817120020_create_catalog_tables.sql) — these two are evaluated as part
+-- of the holdings_identity index expression on every INSERT/UPDATE, so both roles that write to
+-- holdings need EXECUTE.
+grant execute on function public.card_condition_to_text(public.card_condition), public.grader_to_text(public.grader)
+  to authenticated, service_role;
+
 -- Prevents the same physical state fragmenting into duplicate holdings (DATA_MODEL.md §5.4).
 -- Enum columns are converted to text before coalescing: there is no enum member meaning "absent".
 create unique index holdings_identity on public.holdings (
@@ -182,3 +189,8 @@ create policy acquisition_lots_owner_update on public.acquisition_lots
 
 grant select, insert, update, delete on public.holdings to authenticated;
 grant select, insert, update on public.acquisition_lots to authenticated;
+
+-- service_role needs explicit grants too — see the note in 20260817120020_create_catalog_tables.sql.
+-- Unlike `authenticated`, service_role keeps DELETE on acquisition_lots for the same reason as
+-- purchases/purchase_lines (see that migration): void-only is a client-facing restriction.
+grant all on public.holdings, public.acquisition_lots to service_role;

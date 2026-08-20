@@ -131,3 +131,9 @@ create policy purchase_lines_owner_update on public.purchase_lines
   with check (user_id = (select auth.uid()));
 
 grant select, insert, update on public.purchases, public.purchase_lines to authenticated;
+
+-- service_role needs explicit grants too — see the note in 20260817120020_create_catalog_tables.sql.
+-- Unlike `authenticated`, service_role keeps DELETE: the void-only restriction above is about
+-- what the client app can do, not server-side/administrative access, which SECURITY.md §4
+-- already discloses as inherent to operating the deployment.
+grant all on public.purchases, public.purchase_lines to service_role;

@@ -159,10 +159,16 @@ expected: 7.
 - `src/features/`, `src/lib/` do not exist yet — deliberately. They arrive when a later milestone
   gives them real content (CLAUDE.md's "no placeholder directories" rule).
 - **The `auth.users` S2 backstop trigger (reject signup without a redemption) is not implemented
-  yet.** This is a deliberate M3/M4 boundary, not an oversight — see DATA_MODEL.md §12 and
-  SECURITY.md. It ships in M4 with the `redeem-invitation` Edge Function it depends on. Local/CI
-  signup is already closed at the config level (`supabase/config.toml`, `[auth] enable_signup =
-  false`), so this is not currently exploitable in any environment this project controls.
+  yet, and — corrected mid-M3 after a real CI failure — nothing else closes that door either.**
+  `[auth] enable_signup = false` looked like the obvious config-level stopgap and was tried first,
+  but it turned out to also disable email/password *login* for every existing user, not just new
+  self-registration (a known GoTrue behaviour, confirmed empirically when it broke the M3
+  authorization suite in CI). It was reverted to the platform default (`true`). This is a
+  deliberate M3/M4 boundary, not an oversight — see DATA_MODEL.md §12 and SECURITY.md — but unlike
+  the earlier draft of this file claimed, it **is** currently exploitable (public signup works)
+  in any environment this schema is deployed to. Nothing here has a public deployment yet, so
+  there is no live exposure today, but the S2 trigger is not optional polish for M4 — it is the
+  only thing that will actually close this.
 - **No remote Supabase project is linked yet.** M3's gate did not require one (CI's ephemeral
   stack proved it). M4 needs one for the Edge Function and for `pnpm dev` against real data — see
   Owner actions below.

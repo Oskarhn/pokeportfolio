@@ -150,14 +150,17 @@ constraint, a free SMTP tier can be added at that point; it is not on the critic
 Passkeys are deferred: Supabase's implementation is explicitly experimental and requires an
 opt-in client flag. Revisit when it stabilises; the auth surface is small enough to extend.
 
-**Invite enforcement.** Supabase's default is open signup. Disabling signup in the dashboard is
-necessary but not sufficient, so:
+**Invite enforcement.** Supabase's default is open signup. The dashboard/config "disable signup"
+toggle is **not** the fix — verified in M3 (docs/PROJECT_JOURNAL.md, 2026-08-20): it disables the
+email/password login grant type for every existing user, not only new self-registration, which
+would break sign-in for legitimate invited users too. So:
 
-- Dashboard signup is disabled.
 - Account creation happens only through a `redeem_invitation` Edge Function that validates the
   token hash, expiry, use count and revocation, then creates the user with the service role.
-- A `handle_new_user` trigger creates the `profiles` row and rejects any `auth.users` insert
-  lacking a valid redemption record.
+- Two separate `auth.users` triggers, not one: `handle_new_user` (AFTER INSERT, ships in M3)
+  creates the `profiles` row; a distinct backstop trigger (BEFORE INSERT, ships in M4 alongside
+  the Edge Function) rejects any insert lacking a valid redemption record. A single AFTER INSERT
+  trigger cannot reject the insert it fires on.
 
 Full detail in [SECURITY.md](SECURITY.md).
 

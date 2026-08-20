@@ -135,7 +135,15 @@ create policy sealed_products_delete_own on public.sealed_products
 -- Grants ------------------------------------------------------------------------------------
 -- No grants to `anon` anywhere in this schema: every screen in the product is authenticated
 -- (ARCHITECTURE.md §2), so there is no reason for the anon key to reach any table.
--- Catalog writes are service_role only (service_role is not subject to grants or RLS).
+--
+-- service_role bypasses RLS but is NOT exempt from ordinary GRANTs — recent Supabase projects
+-- (local and hosted) do not auto-expose newly created tables to any Data API role, including
+-- service_role (supabase/config.toml's `auto_expose_new_tables` note). It is trusted
+-- infrastructure access (SECURITY.md §4), so it gets ALL privileges explicitly, table by table,
+-- rather than the same restricted grant `authenticated` gets.
 
 grant select on public.card_series, public.card_sets, public.cards, public.card_variants to authenticated;
 grant select, insert, update, delete on public.sealed_products to authenticated;
+
+grant all on public.card_series, public.card_sets, public.cards, public.card_variants, public.sealed_products
+  to service_role;
