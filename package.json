@@ -18,10 +18,19 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:db": "vitest run --config vitest.db.config.ts",
     "test:e2e": "playwright test",
-    "check": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test"
+    "check": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test",
+    "db:start": "supabase start",
+    "db:stop": "supabase stop",
+    "db:migrate": "supabase migration up",
+    "db:reset": "supabase db reset",
+    "db:seed": "supabase db reset",
+    "db:dump": "supabase db dump --linked -f supabase/dumps/pre-migration.sql",
+    "db:types": "supabase gen types typescript --local --schema public > src/data/database.types.ts"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.112.3",
     "@tailwindcss/vite": "^4.3.3",
     "@tanstack/react-query": "^5.101.4",
     "@tanstack/react-router": "^1.170.29",
@@ -44,6 +53,7 @@
     "fast-check": "^4.9.0",
     "globals": "^17.11.0",
     "prettier": "^3.9.6",
+    "supabase": "^2.114.0",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.67.0",
     "vite": "^8.2.1",
