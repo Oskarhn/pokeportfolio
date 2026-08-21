@@ -51,6 +51,20 @@ const ManualCardPage = lazy(() =>
 const InvitationsPage = lazy(() =>
   import('./features/admin/InvitationsPage').then((m) => ({ default: m.InvitationsPage })),
 )
+const PurchasesListPage = lazy(() =>
+  import('./features/purchases/PurchasesListPage').then((m) => ({ default: m.PurchasesListPage })),
+)
+const PurchaseFormPage = lazy(() =>
+  import('./features/purchases/PurchaseFormPage').then((m) => ({ default: m.PurchaseFormPage })),
+)
+const PurchaseDetailPage = lazy(() =>
+  import('./features/purchases/PurchaseDetailPage').then((m) => ({
+    default: m.PurchaseDetailPage,
+  })),
+)
+const PurchaseEditPage = lazy(() =>
+  import('./features/purchases/PurchaseEditPage').then((m) => ({ default: m.PurchaseEditPage })),
+)
 
 /** Matches the layout these pages render into (AppShell's `<main>`) closely enough that arriving
  *  content doesn't jump — a skeleton rather than a spinner-over-blank-region, per
@@ -298,6 +312,50 @@ const profileRoute = createRoute({
   ),
 })
 
+// ── M8: the purchase ledger. Not a primary-nav destination (reached via the central + menu and a
+// Home shortcut, UX_FLOWS.md F3/M8 prompt §15) — same "protected" route class as everything else
+// behind RequireSession.
+
+const purchasesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/purchases',
+  component: () => (
+    <RequireSession>
+      <PurchasesListPage />
+    </RequireSession>
+  ),
+})
+
+const purchaseNewRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/purchases/new',
+  component: () => (
+    <RequireSession>
+      <PurchaseFormPage />
+    </RequireSession>
+  ),
+})
+
+const purchaseDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/purchases/$purchaseId',
+  component: () => (
+    <RequireSession>
+      <PurchaseDetailPage />
+    </RequireSession>
+  ),
+})
+
+const purchaseEditRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/purchases/$purchaseId/edit',
+  component: () => (
+    <RequireSession>
+      <PurchaseEditPage />
+    </RequireSession>
+  ),
+})
+
 const legacyMoreRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/more',
@@ -330,6 +388,10 @@ const routeTree = rootRoute.addChildren([
   legacyCollectionHoldingRoute,
   legacyManualCardRoute,
   addRoute,
+  purchasesRoute,
+  purchaseNewRoute,
+  purchaseDetailRoute,
+  purchaseEditRoute,
   profileRoute,
   legacyMoreRoute,
   adminInvitationsRoute,
