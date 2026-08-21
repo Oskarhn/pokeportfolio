@@ -273,6 +273,20 @@ begin
 end;
 $$;
 
+-- PostgreSQL grants EXECUTE on a newly created function to PUBLIC by default, and every role
+-- (anon and authenticated included) automatically holds whatever PUBLIC holds. Revoking from a
+-- *named* role, as the M6 privilege baseline (20260821120100) does for anon/authenticated, cannot
+-- touch a grant held by PUBLIC — the two are separate ACL entries. Established the hard way in M4
+-- (20260820120040_m4_explicit_function_revokes.sql): revoke from `public` explicitly, at creation
+-- time, then grant back only the intended roles. Skipping this step here (caught by CI, not by
+-- inspection) left all three functions anon-callable despite the baseline's later sweep.
+revoke execute on function public.add_card_acquisition(
+  uuid, uuid, public.grading_state, public.card_condition, public.grader, numeric,
+  text, boolean, text, public.lot_origin, public.cost_basis_state, bigint, int, date, uuid, text, bigint
+) from public;
+revoke execute on function public.set_manual_valuation(uuid, bigint, text, date) from public;
+revoke execute on function public.void_acquisition_lot(uuid, text) from public;
+
 grant execute on function public.add_card_acquisition(
   uuid, uuid, public.grading_state, public.card_condition, public.grader, numeric,
   text, boolean, text, public.lot_origin, public.cost_basis_state, bigint, int, date, uuid, text, bigint

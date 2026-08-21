@@ -222,7 +222,9 @@ describe('acquisition_lots: origin/cost-basis-state consistency', () => {
 })
 
 describe('manual_valuations', () => {
-  async function createGradedHolding() {
+  // holdings_identity is a real unique constraint — every call site below passes a distinct grade
+  // so tests sharing `user` don't collide (same convention as holdings_and_lots.test.ts).
+  async function createGradedHolding(grade: number) {
     const { data, error } = await service
       .from('holdings')
       .insert({
@@ -231,7 +233,7 @@ describe('manual_valuations', () => {
         card_variant_id: seedCatalog.charizardVariantId,
         grading_state: 'graded',
         grader: 'psa',
-        grade: 10,
+        grade,
       })
       .select('id')
       .single()
@@ -240,7 +242,7 @@ describe('manual_valuations', () => {
   }
 
   it('rejects a non-NOK currency (no FX exists yet to freeze a conversion — M6 scope cut)', async () => {
-    const holding = await createGradedHolding()
+    const holding = await createGradedHolding(9)
     const { error } = await service.from('manual_valuations').insert({
       user_id: user.id,
       holding_id: holding.id,
@@ -252,7 +254,7 @@ describe('manual_valuations', () => {
   })
 
   it('allows only one active valuation per holding at a time', async () => {
-    const holding = await createGradedHolding()
+    const holding = await createGradedHolding(10)
     const first = await service.from('manual_valuations').insert({
       user_id: user.id,
       holding_id: holding.id,
