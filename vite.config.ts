@@ -3,6 +3,14 @@ import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+
+// Single source of truth for the app version shown in Profile's footer (M7.1 prompt §65) —
+// package.json, not a hardcoded string that drifts from it.
+const packageJson = JSON.parse(
+  readFileSync(fileURLToPath(new URL('./package.json', import.meta.url)), 'utf-8'),
+) as { version: string }
 
 /**
  * Emits Cloudflare Pages' `_headers` file, with `connect-src` derived from the Supabase URL this
@@ -80,6 +88,9 @@ function cloudflareHeaders(): Plugin {
 
 // https://vite.dev/config/
 export default defineConfig({
+  define: {
+    __APP_VERSION__: JSON.stringify(packageJson.version),
+  },
   plugins: [
     react(),
     tailwindcss(),
@@ -91,8 +102,8 @@ export default defineConfig({
         name: 'PokePortfolio',
         short_name: 'PokePortfolio',
         description: 'A private Pokémon TCG collection and financial tracker.',
-        theme_color: '#0f172a',
-        background_color: '#0f172a',
+        theme_color: '#101113',
+        background_color: '#101113',
         display: 'standalone',
         start_url: '/',
         scope: '/',

@@ -1,8 +1,7 @@
 import { Link, useParams } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { getSet, listCardsInSet } from '../../data/catalog'
-import { CardImage } from './CardImage'
-import { AddQuickButton } from './AddQuickButton'
+import { CardResultCard } from './CardResultCard'
 
 /** Browsing a set's cards from Search (M7 prompt §14): real set metadata — name, language,
  *  symbol, release date, card count — then every card in it with the same quick-add + as card
@@ -61,11 +60,11 @@ export function SetDetailPage() {
 
       <section className="space-y-3">
         {cards.isPending ? (
-          <ul className="space-y-2" aria-busy="true">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3" aria-busy="true">
             {Array.from({ length: 6 }, (_, i) => (
-              <li key={i} className="h-20 animate-pulse rounded-lg bg-slate-800/60" />
+              <div key={i} className="aspect-[5/7] animate-pulse rounded-xl bg-slate-800/60" />
             ))}
-          </ul>
+          </div>
         ) : cards.isError ? (
           <p role="alert" className="text-sm text-rose-300">
             Cards could not be loaded.
@@ -73,32 +72,11 @@ export function SetDetailPage() {
         ) : cards.data.length === 0 ? (
           <p className="text-sm text-slate-500">No cards ingested for this set yet.</p>
         ) : (
-          <ul className="divide-y divide-slate-800 rounded-lg border border-slate-800">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
             {cards.data.map((card) => (
-              <li key={card.cardId} className="flex items-center gap-2 p-3">
-                <Link
-                  to="/catalog/$cardId"
-                  params={{ cardId: card.cardId }}
-                  className="flex min-w-0 flex-1 items-center gap-3 focus-visible:outline-none"
-                >
-                  <CardImage
-                    imageBaseUrl={card.imageBaseUrl}
-                    alt={card.name}
-                    quality="low"
-                    className="h-16 w-12 shrink-0"
-                  />
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium text-slate-100">{card.name}</p>
-                    <p className="truncate text-xs text-slate-400">
-                      #{card.localId}
-                      {card.rarity ? ` · ${card.rarity}` : ''}
-                    </p>
-                  </div>
-                </Link>
-                <AddQuickButton cardId={card.cardId} cardName={card.name} />
-              </li>
+              <CardResultCard key={card.cardId} card={card} />
             ))}
-          </ul>
+          </div>
         )}
       </section>
     </div>

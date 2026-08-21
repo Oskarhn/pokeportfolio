@@ -18,11 +18,17 @@ export function VirtualGrid({
   density,
   onEndReached,
   hasMore,
+  selectMode = false,
+  selectedIds,
+  onToggleSelect,
 }: {
   tiles: PortfolioTile[]
   density: number
   onEndReached: () => void
   hasMore: boolean
+  selectMode?: boolean
+  selectedIds?: Set<string>
+  onToggleSelect?: (holdingId: string) => void
 }) {
   const columns = useResponsiveColumns(density)
   const rowCount = Math.ceil(tiles.length / columns) + (hasMore ? 1 : 0)
@@ -74,7 +80,14 @@ export function VirtualGrid({
               ) : (
                 <div className={`grid gap-3 ${gridColumnsClass(density)}`}>
                   {rowTiles.map((tile) => (
-                    <GridTile key={tile.holdingId} tile={tile} density={density} />
+                    <GridTile
+                      key={tile.holdingId}
+                      tile={tile}
+                      density={density}
+                      selectMode={selectMode}
+                      selected={selectedIds?.has(tile.holdingId)}
+                      onToggleSelect={onToggleSelect}
+                    />
                   ))}
                 </div>
               )}

@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react'
 import {
   createRootRoute,
   createRoute,
@@ -11,28 +12,69 @@ import { LoginPage } from './features/auth/LoginPage'
 import { InvitePage } from './features/auth/InvitePage'
 import { ForgotPasswordPage } from './features/auth/ForgotPasswordPage'
 import { ResetPasswordPage } from './features/auth/ResetPasswordPage'
-import { InvitationsPage } from './features/admin/InvitationsPage'
 import { HomePage } from './features/home/HomePage'
-import { CatalogPage } from './features/catalog/CatalogPage'
-import { CardDetailPage } from './features/catalog/CardDetailPage'
-import { SetDetailPage } from './features/catalog/SetDetailPage'
-import { PortfolioPage } from './features/portfolio/PortfolioPage'
-import { HoldingDetailPage } from './features/collection/HoldingDetailPage'
-import { AddToCollectionPage } from './features/collection/AddToCollectionPage'
-import { ManualCardPage } from './features/collection/ManualCardPage'
 import { ProfilePage } from './features/profile/ProfilePage'
-import { MorePage } from './features/more/MorePage'
 import type { CardCondition, Grader } from './data/collection'
 import type { PortfolioSortOrder } from './data/portfolio'
 import type { CollectionView } from './data/profile'
+
+// Route-level code splitting (M7.1 prompt §83 — bundle size, "if appropriate, not a separate
+// milestone"): Home/Profile/auth screens are on every session's critical path and stay eager;
+// everything reached by navigating further in — Search, Portfolio (which pulls in TanStack
+// Virtual), holding detail/add flows, admin — loads on demand instead of inflating the bundle
+// every signed-in user downloads just to see Home.
+const CatalogPage = lazy(() =>
+  import('./features/catalog/CatalogPage').then((m) => ({ default: m.CatalogPage })),
+)
+const CardDetailPage = lazy(() =>
+  import('./features/catalog/CardDetailPage').then((m) => ({ default: m.CardDetailPage })),
+)
+const SetDetailPage = lazy(() =>
+  import('./features/catalog/SetDetailPage').then((m) => ({ default: m.SetDetailPage })),
+)
+const PortfolioPage = lazy(() =>
+  import('./features/portfolio/PortfolioPage').then((m) => ({ default: m.PortfolioPage })),
+)
+const HoldingDetailPage = lazy(() =>
+  import('./features/collection/HoldingDetailPage').then((m) => ({
+    default: m.HoldingDetailPage,
+  })),
+)
+const AddToCollectionPage = lazy(() =>
+  import('./features/collection/AddToCollectionPage').then((m) => ({
+    default: m.AddToCollectionPage,
+  })),
+)
+const ManualCardPage = lazy(() =>
+  import('./features/collection/ManualCardPage').then((m) => ({ default: m.ManualCardPage })),
+)
+const InvitationsPage = lazy(() =>
+  import('./features/admin/InvitationsPage').then((m) => ({ default: m.InvitationsPage })),
+)
+
+/** Matches the layout these pages render into (AppShell's `<main>`) closely enough that arriving
+ *  content doesn't jump — a skeleton rather than a spinner-over-blank-region, per
+ *  DESIGN_SYSTEM.md §7's loading-state rule. */
+function RouteFallback() {
+  return (
+    <div className="mx-auto w-full max-w-2xl animate-pulse space-y-4 py-2">
+      <div className="h-9 w-2/3 rounded-full bg-slate-800/60" />
+      <div className="h-40 rounded-2xl bg-slate-800/60" />
+    </div>
+  )
+}
 
 /**
  * Three route classes (docs/UX_FLOWS.md):
  *
  *   public     /login, /invite/$token, /forgot-password, /reset-password
  *   protected  /, /catalog, /catalog/$cardId, /catalog/sets/$setId, /portfolio,
- *              /portfolio/$holdingId, /portfolio/manual/new, /add, /profile, /more
+ *              /portfolio/$holdingId, /portfolio/manual/new, /add, /profile
  *   admin      /admin/invitations
+ *
+ * `/more` (M7) is gone as of M7.1 (owner decision: no More destination remains — its only real
+ * content, admin invitations, moved into Profile). `/more` redirects to `/profile` rather than
+ * disappearing, matching the established `/collection*` redirect pattern below.
  *
  * The guards wrap components rather than running in `beforeLoad` because the session is restored
  * asynchronously from storage: a loader-time check would have to either block first paint or race
@@ -47,7 +89,9 @@ import type { CollectionView } from './data/profile'
 const rootRoute = createRootRoute({
   component: () => (
     <AppShell>
-      <Outlet />
+      <Suspense fallback={<RouteFallback />}>
+        <Outlet />
+      </Suspense>
     </AppShell>
   ),
 })
@@ -254,14 +298,10 @@ const profileRoute = createRoute({
   ),
 })
 
-const moreRoute = createRoute({
+const legacyMoreRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/more',
-  component: () => (
-    <RequireSession>
-      <MorePage />
-    </RequireSession>
-  ),
+  beforeLoad: () => redirect({ to: '/profile' }),
 })
 
 const adminInvitationsRoute = createRoute({
@@ -291,7 +331,7 @@ const routeTree = rootRoute.addChildren([
   legacyManualCardRoute,
   addRoute,
   profileRoute,
-  moreRoute,
+  legacyMoreRoute,
   adminInvitationsRoute,
 ])
 

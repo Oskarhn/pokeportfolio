@@ -63,9 +63,12 @@ test.describe('routing and guards', () => {
     await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
   })
 
-  test('the More route is not reachable without a session', async ({ page }) => {
+  test('legacy /more redirects to /profile, which is not reachable without a session (M7.1)', async ({
+    page,
+  }) => {
     await page.goto('/more')
     await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
+    await expect(page).toHaveURL(/\/login$/)
   })
 
   test.describe('legacy /collection links redirect to /portfolio (M7)', () => {
