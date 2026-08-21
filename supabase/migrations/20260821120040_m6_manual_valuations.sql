@@ -5,7 +5,7 @@
 -- FINANCIAL_MODEL.md §6) and every provider-price table stay M9's, exactly as
 -- ROADMAP/DATA_MODEL originally sequenced them. M6 UI reads the single active row per holding
 -- directly; it does not implement price fallback because there is no other price source to fall
--- back to yet. See DECISIONS.md D-036 for the reconciliation of this sequencing note.
+-- back to yet. See DECISIONS.md D-038 for the reconciliation of this sequencing note.
 --
 -- History preserved, never updated in place (DATA_MODEL.md §5.12): setting a new value supersedes
 -- the old row rather than overwriting it, so what a holding was believed worth on a given date

@@ -4,6 +4,6 @@
 -- value; RLS's WITH CHECK (user_id = auth.uid()) remains the actual enforcement either way, so
 -- this changes nothing about what is allowed, only what a caller has to type.
 
-alter table public.storage_locations alter column user_id set default (select auth.uid());
-alter table public.tags alter column user_id set default (select auth.uid());
-alter table public.holding_tags alter column user_id set default (select auth.uid());
+alter table public.storage_locations alter column user_id set default auth.uid();
+alter table public.tags alter column user_id set default auth.uid();
+alter table public.holding_tags alter column user_id set default auth.uid();

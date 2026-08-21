@@ -14,7 +14,7 @@ create table public.manual_card_definitions (
   id uuid primary key default gen_random_uuid(),
   -- Defaulted so a client insert never has to state the obvious; RLS WITH CHECK still enforces
   -- user_id = auth.uid() independently, so the default is a convenience, not the access control.
-  user_id uuid not null default (select auth.uid()) references auth.users (id) on delete cascade,
+  user_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
   name text not null,
   set_name text,
   collector_number text,
