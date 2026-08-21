@@ -195,6 +195,21 @@ applied to `pokeportfolio-dev`, `grant-audit.sql` clean, `remote-security-check.
 1), `deployment-check.mjs` 28/28 against the real rebuilt bundle. Owner-side signed-in verification
 still outstanding — this session cannot create or sign in with a synthetic account (see HANDOVER.md).
 
+### M8.1 — Portfolio correction / Purchase discoverability · **complete**
+
+Not a numbered product milestone — a focused correction pass after the owner tested the deployed
+M8 build and found Portfolio's select mode had no way to remove an accidentally-added card, and
+did not discover how to record a Purchase despite M8 shipping the ledger. Full detail:
+`claude_outputs/output_14.txt`, DECISIONS.md D-051.
+
+**Gate:** the audit required before building bulk removal found and fixed a real defect —
+`void_acquisition_lot`'s parent-purchase auto-void rule counted only other live lots, so a
+card+accessory purchase had its accessory spend silently voided as a side effect of correcting the
+card. Corrected to count lines, not lots; `remove_holdings_from_portfolio(uuid[])` ships as the
+atomic, all-or-nothing bulk surface. **Met** — 336 database/authorization tests (up from 320),
+CI green, deployed and verified (`grant-audit.sql` clean, `remote-security-check.mjs` 17/17,
+`deployment-check.mjs` 28/28).
+
 ### M9 — Pricing and snapshots
 
 `price_snapshots`, `watched_card_variants`, retention thinning. `ingest-prices` and `ingest-fx`
