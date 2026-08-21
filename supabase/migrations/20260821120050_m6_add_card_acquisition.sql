@@ -184,9 +184,7 @@ comment on function public.add_card_acquisition(
   uuid, uuid, public.grading_state, public.card_condition, public.grader, numeric,
   text, boolean, text, public.lot_origin, public.cost_basis_state, bigint, int, date, uuid, text, bigint
 ) is
-  'Atomic add-to-collection: finds or creates the holding, then writes one acquisition lot (and, '
-  || 'when the cost is known, the single-line purchase it traces to). See SECURITY.md §5.9/§12 and '
-  || 'DATA_MODEL.md §5.4-5.5.';
+  'Atomic add-to-collection: finds or creates the holding, then writes one acquisition lot (and, when the cost is known, the single-line purchase it traces to). See SECURITY.md §5.9/§12 and DATA_MODEL.md §5.4-5.5.';
 
 -- set_manual_valuation: supersede-then-insert, so a graded/sealed holding's value history stays
 -- append-only (DATA_MODEL.md §5.12) even though the client only ever calls one RPC.
