@@ -48,8 +48,10 @@ async function removeHoldings(client: TestClient, holdingIds: string[]) {
   return { data: data as RemoveResultRow[] | null, error }
 }
 
+// purchase_spending_summary derives its result entirely from auth.uid() (SECURITY INVOKER) and
+// carries no grant to service_role — it must be called as the user, not as service.
 async function spending() {
-  const { data } = await service.rpc('purchase_spending_summary').single<{
+  const { data } = await clientA.rpc('purchase_spending_summary').single<{
     gpo_nok_minor: string
     cs_nok_minor: string
     hs_nok_minor: string
