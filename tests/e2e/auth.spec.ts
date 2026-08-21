@@ -63,6 +63,28 @@ test.describe('routing and guards', () => {
     await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
   })
 
+  test('the Purchases route is not reachable without a session', async ({ page }) => {
+    await page.goto('/purchases')
+    await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Purchases' })).toHaveCount(0)
+  })
+
+  test('the new-purchase route is not reachable without a session', async ({ page }) => {
+    await page.goto('/purchases/new')
+    await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Record purchase' })).toHaveCount(0)
+  })
+
+  test('a purchase detail deep link is not reachable without a session', async ({ page }) => {
+    await page.goto('/purchases/00000000-0000-0000-0000-000000000000')
+    await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
+  })
+
+  test('a purchase edit deep link is not reachable without a session', async ({ page }) => {
+    await page.goto('/purchases/00000000-0000-0000-0000-000000000000/edit')
+    await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
+  })
+
   test('legacy /more redirects to /profile, which is not reachable without a session (M7.1)', async ({
     page,
   }) => {
