@@ -872,3 +872,48 @@ only how CI *selects* the current one, not what any of them contain. A future mi
 browser-reachable object still needs its own new `*_privilege_baseline.sql` restatement (that part
 was never the fragile step — `grant-audit.sql` and the checklist in SECURITY.md §12 already demand
 it), but the CI wiring around it no longer needs a matching hand-edit.
+
+---
+
+## 2026-08-21 — Two more privilege bugs CI could not see, both caught by the real deployment
+
+**Problem.** After M6's PR merged with CI green, the same two-layer pattern M4/M4.1 established —
+CI proves reproducibility, only the real deployed project proves correctness — caught two more real
+defects in the same session, neither of which any ephemeral-stack test could have found.
+
+**Finding 1 — anon could call the new RPCs.** `add_card_acquisition`, `set_manual_valuation` and
+`void_acquisition_lot` were reachable by an anonymous session on the real deployed project, despite
+never being granted EXECUTE. Cause: PostgreSQL grants EXECUTE on a newly created function to
+`PUBLIC` by default, and every role (`anon` included) automatically holds whatever `PUBLIC` holds —
+a *separate* ACL entry from any grant made to a named role. `REVOKE EXECUTE ... FROM anon,
+authenticated` (the M6 privilege baseline's blanket sweep) cannot touch it; only
+`REVOKE ... FROM PUBLIC` can. This is the exact defect class M4 already found and documented
+(`20260820120040_m4_explicit_function_revokes.sql`) — every other function-creating migration in
+this project revokes from `public` at creation time, and these three new ones simply skipped that
+step. Caught immediately by `tests/authorization/function_grants.test.ts`'s anonymous-caller case
+the moment CI ran against a real ephemeral stack for the first time — not by the grant-audit (which,
+by construction, only ever checks grants held by `anon`/`authenticated` by name, and structurally
+cannot see a `PUBLIC` grant; this is a known limitation of that check, not a new one). Fixed in the
+same migration that created the functions, matching the established M4 pattern exactly.
+
+**Finding 2 — account deletion failed on two new tables.** Running the real add-to-collection flow
+against `pokeportfolio-dev` with synthetic accounts (M6 prompt §98) and then cleaning them up, the
+cleanup itself failed: `manual_valuations_user_id_fkey` had no `ON DELETE` action.
+`holding_tags.user_id` carried the identical defect. This is the same class of bug M4 fixed for the
+original eight `user_id -> auth.users(id)` references (PROJECT_JOURNAL.md, 2026-08-20) — these two
+new M6 tables just didn't inherit the fix, because nothing re-derives "does every FK to auth.users
+cascade" from first principles each time a table is added; it has to be remembered per table. No
+existing test asserted account-deletion cascade behaviour at all — SECURITY.md §8's promise had
+never actually been exercised by CI for *any* table, only fixed once by hand in M4. Fixed with a
+migration restoring `ON DELETE CASCADE` on both columns, verified by actually deleting the synthetic
+accounts against the real project (cascaded cleanly, zero orphaned rows, checked directly), and a
+new regression test (`tests/db/m6_constraints.test.ts`, "account deletion cascades every M6 table")
+that creates a user, gives it one row in every M6 table, deletes it, and asserts nothing survives —
+the first such test in the suite for any table, not just the two this incident touched.
+
+**Consequence.** Both are one-line-per-defect fixes with an outsized lesson: a rule enforced once,
+by hand, at the moment it was discovered (M4's cascade fix; the "revoke from public" convention)
+does not propagate to new tables on its own. Nothing mechanical currently re-checks "does every new
+`user_id -> auth.users(id)` FK cascade" or "did every new function get revoked from PUBLIC" across a
+whole migration the way `grant-audit.sql` mechanically re-checks the *table/column* privilege
+surface. Worth a real check in a future milestone, rather than trusting memory a third time.
