@@ -13,7 +13,7 @@ import {
  * (docs/SECURITY.md §3.3, docs/TESTING.md §4). Table-driven: adding a table to this list is
  * the whole cost of covering it.
  */
-const TABLES = ['retailers', 'storage_locations', 'tags'] as const
+const TABLES = ['retailers', 'storage_locations', 'tags', 'manual_card_definitions'] as const
 
 let service: TestClient
 let userA: SyntheticUser

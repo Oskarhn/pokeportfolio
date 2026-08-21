@@ -36,6 +36,28 @@ test.describe('routing and guards', () => {
     await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
   })
 
+  test('the collection route is not reachable without a session', async ({ page }) => {
+    await page.goto('/collection')
+    await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Collection' })).toHaveCount(0)
+  })
+
+  test('a collection holding deep link is not reachable without a session', async ({ page }) => {
+    await page.goto('/collection/00000000-0000-0000-0000-000000000000')
+    await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
+  })
+
+  test('the manual-card route is not reachable without a session', async ({ page }) => {
+    await page.goto('/collection/manual/new')
+    await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Add a card manually' })).toHaveCount(0)
+  })
+
+  test('the add-to-collection route is not reachable without a session', async ({ page }) => {
+    await page.goto('/add?variantId=00000000-0000-0000-0000-000000000000')
+    await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
+  })
+
   test('there is no way to create an account from the sign-in screen', async ({ page }) => {
     await page.goto('/login')
     await expect(page.getByText(/create account/i)).toHaveCount(0)

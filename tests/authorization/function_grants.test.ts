@@ -103,6 +103,27 @@ const FUNCTIONS: FunctionCase[] = [
     authenticated: REFUSED,
     why: 'the invite-only gate itself; only supabase_auth_admin invokes it',
   },
+  {
+    name: 'add_card_acquisition',
+    args: { p_quantity: 0 }, // deliberately invalid — reaching the body's own validation is enough
+    anon: REFUSED,
+    authenticated: CALLABLE,
+    why: 'the M6 atomic add-to-collection surface; reachable by any session, RLS/derived auth.uid() do the rest',
+  },
+  {
+    name: 'set_manual_valuation',
+    args: { p_holding_id: '00000000-0000-0000-0000-000000000000', p_value_minor: -1 },
+    anon: REFUSED,
+    authenticated: CALLABLE,
+    why: 'reachable by any session; the body itself refuses a negative amount',
+  },
+  {
+    name: 'void_acquisition_lot',
+    args: { p_lot_id: '00000000-0000-0000-0000-000000000000' },
+    anon: REFUSED,
+    authenticated: CALLABLE,
+    why: 'reachable by any session; the body itself refuses a lot the caller does not own',
+  },
 ]
 
 let service: TestClient
@@ -163,6 +184,10 @@ describe('trigger functions are not an API surface', () => {
     'purchase_lines_check_owner',
     'acquisition_lots_check_owner',
     'enforce_invited_signup',
+    'holdings_check_manual_card_owner',
+    'holding_tags_check_owner',
+    'manual_valuations_check_owner',
+    'profiles_check_default_storage_owner',
   ]
 
   for (const name of triggerFunctions) {
