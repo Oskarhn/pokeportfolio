@@ -4,37 +4,41 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-**Last updated:** 2026-08-23 — M1 (scaffold and harness), M2 (financial domain core), M3
+**Last updated:** 2026-08-24 — M1 (scaffold and harness), M2 (financial domain core), M3
 (database, migrations, RLS), M4 (invite-only authentication), M4.1 (privilege convergence,
 deployment, real end-to-end), M5 (catalog, TCGdex ingest, search), M6 (collection: holdings, lots,
-origin, cost), M7 (Portfolio: organisation, display, navigation) and **M7.1 (owner UI/UX
-refinement pass)** complete in code, merged, and deployed. M7's PR
-([#14](https://github.com/Oskarhn/pokeportfolio/pull/14)) merged after CI-green; a follow-up CSP
+origin, cost), M7 (Portfolio: organisation, display, navigation), M7.1 (owner UI/UX refinement
+pass) and **M8 (purchases and the spending ledger)** complete in code, merged, and deployed. M7's
+PR ([#14](https://github.com/Oskarhn/pokeportfolio/pull/14)) merged after CI-green; a follow-up CSP
 fix ([#15](https://github.com/Oskarhn/pokeportfolio/pull/15)) merged after browser verification
 found card thumbnails were blocked in production. M7.1's two PRs
 ([#18](https://github.com/Oskarhn/pokeportfolio/pull/18),
-[#19](https://github.com/Oskarhn/pokeportfolio/pull/19)) merged after CI-green — see "M7.1 —
-owner UI/UX refinement" below for the full account. **The owner's real-device check is still
-outstanding — it was never done for M7 either, and M7.1 changed even more of the primary UI, so
-it now covers both.**
+[#19](https://github.com/Oskarhn/pokeportfolio/pull/19)) merged after CI-green. **M8's PR
+([#21](https://github.com/Oskarhn/pokeportfolio/pull/21)) merged after CI-green** — see "M8 —
+Purchases and the spending ledger" below for the full account. **The owner's real-device check
+from M7/M7.1 is still outstanding, and M8 now needs its own signed-in deployed check too — this
+session cannot create or sign in with a synthetic account (see "M8" below for exactly what to
+check).**
 
 ---
 
 ## Status
 
-**Planning is FROZEN. M1–M7.1 are complete in code, merged, and deployed.** M8 (purchases and the
-spending ledger) is next, once the owner has done a short real-device check (see "M7.1 — owner
-UI/UX refinement" below) and reacted to the deployed UI.
+**Planning is FROZEN. M1–M8 are complete in code, merged, and deployed.** M9 (pricing and
+snapshots) is next, once the owner has reacted to the deployed UI and done the outstanding
+real-device/signed-in checks below.
 
-The application is deployed and reachable: **https://pokeportfolio-dev.pages.dev**, on the M7.1
-state (PRs #14, #15, #18 and #19 all merged). The owner has a working administrator account on the
-development project, the shared catalog holds the real English and Japanese physical Pokémon TCG
-card set (M5), and the deployed build lets the owner search a card (with visible card artwork,
+The application is deployed and reachable: **https://pokeportfolio-dev.pages.dev**, on the M8
+state (PRs #14, #15, #18, #19 and #21 all merged). The owner has a working administrator account on
+the development project, the shared catalog holds the real English and Japanese physical Pokémon
+TCG card set (M5), and the deployed build lets the owner search a card (with visible card artwork,
 a set-browsing carousel, and a favourite filter), add it to their Portfolio with real acquisition
-provenance and cost, and browse it in `/portfolio` — grid/list/table views, sort (including a new
-card-number sort), filters, custom collections, and select-mode bulk actions. Primary navigation
-is now Home/Search/Portfolio/Profile plus a central quick-add — More is gone, and admin
-invitations live under Profile. Theme (light/dark/system) actually applies.
+provenance and cost, browse it in `/portfolio` — grid/list/table views, sort (including a new
+card-number sort), filters, custom collections, and select-mode bulk actions — and now **record a
+real multi-line purchase** (`/purchases`) with retailers, shipping/customs/discount allocation,
+foreign currency via Norges Bank or a manual rate, and safe edit/void. Primary navigation is still
+Home/Search/Portfolio/Profile plus a central quick-add — Purchases is reached through it and a Home
+shortcut, not a new nav tab. Theme (light/dark/system) actually applies.
 
 **M6 also migrated the project's Supabase API keys** (D-039) — see "Security: key migration" below
 before touching anything credential-related. The legacy `anon`/`service_role` pair is now
@@ -507,7 +511,12 @@ of the deployed bundle (it is public by design) rather than from that command.
   M5 via [PR #9](https://github.com/Oskarhn/pokeportfolio/pull/9) plus a docs follow-up
   [#10](https://github.com/Oskarhn/pokeportfolio/pull/10), M6 via
   [PR #11](https://github.com/Oskarhn/pokeportfolio/pull/11) plus the cascade-fix follow-up
-  [#12](https://github.com/Oskarhn/pokeportfolio/pull/12). All squash-merged, branches deleted.
+  [#12](https://github.com/Oskarhn/pokeportfolio/pull/12), M7 via
+  [PR #14](https://github.com/Oskarhn/pokeportfolio/pull/14) plus the CSP fix
+  [#15](https://github.com/Oskarhn/pokeportfolio/pull/15), M7.1 via
+  [PR #18](https://github.com/Oskarhn/pokeportfolio/pull/18) plus the deployment-check fix
+  [#19](https://github.com/Oskarhn/pokeportfolio/pull/19), M8 via
+  [PR #21](https://github.com/Oskarhn/pokeportfolio/pull/21). All squash-merged, branches deleted.
 - PR #4 was the deliberate negative security test — both invite-only gates disabled to prove the
   suite fails. Closed unmerged, branch deleted. It is not a mistake in the history.
 - `claude_outputs/` is gitignored and must stay that way.
@@ -773,13 +782,153 @@ Search, Portfolio and Profile signed in, the theme toggle actually switching the
 mode, and the CSV export producing a real file — all of that needs a real signed-in pass, which
 is now folded into the single owner real-device ask below rather than a separate step.
 
+## M8 — Purchases and the spending ledger
+
+Turns M6's single-card fast-purchase path into a real multi-line ledger over the same
+`purchases`/`purchase_lines` tables (DATA_MODEL.md §16, FINANCIAL_MODEL.md §1-4/§7, DECISIONS.md
+D-047–D-050, PROJECT_JOURNAL.md 2026-08-24). Full detail: `claude_outputs/output_13.txt`.
+
+**The write surface.** `create_purchase`/`update_purchase`/`void_purchase`/
+`purchase_spending_summary()`, all `SECURITY INVOKER`, same shape as `add_card_acquisition`.
+Shipping/customs/discount are allocated by `allocate_largest_remainder(bigint, bigint[])` — a SQL
+port of `src/domain/allocation.ts`'s `allocate()`, proven byte-identical to it across a shared
+corpus of cases (`tests/db/m8_purchase_ledger.test.ts`) — and the purchase's frozen NOK total is
+*also* allocated across lines the same way, weighted by each line's original-currency attributable
+cost, rather than rounding each line's NOK amount independently. That second detail is what keeps
+invariant F1 (`GPO = CS + HS`) exact for a foreign-currency purchase; independent per-line rounding
+can drift a few øre from a single rounding of the purchase total. E3 and E10 both reproduce exactly
+against real persisted rows, not just the pure-TypeScript fixtures M2 already had.
+
+**Editing is intentionally narrower than "edit anything" (D-047).** `update_purchase` can change
+every purchase-level field (date, retailer, currency, FX, shipping/customs/discount, notes) and an
+existing line's quantity/unit price/spend class/description, recomputing every allocation and — for
+a line with an open lot — that lot's cost basis, atomically. It **cannot add or remove a line**:
+`acquisition_lots.purchase_line_id` is a real foreign key with no cascade, so deleting a line with a
+lot still attached would either orphan real inventory history or require silently voiding/creating
+lots as a side effect of an amount correction. Void and re-enter is the correction path for a wrong
+line set, same as "Purchase entered twice" in UX_FLOWS.md.
+
+**Card/sealed lines always create inventory (D-048).** No per-line "skip holding" checkbox —
+`bulk_lot` is the existing line type for money spent on a group before individual entry, and using
+it avoids a purchase line that counts as collectible spend with nothing to trace it to.
+
+**Downstream-blocker detection exists but is untested by any real product flow yet.** Both
+`update_purchase` and `void_purchase` refuse to touch a purchase if any lot it produced has
+`quantity_remaining <> quantity` (something has disposed part of it) — the correct general rule,
+but nothing can trigger that state for real until a disposal-producing milestone ships (sales M10,
+openings M16, grading M17, trades M18). The tests simulate it by directly setting
+`quantity_remaining` under the service role. A future milestone adding a real disposal path does
+not need to touch this guard logic — it will simply start being exercised for real.
+
+**`void_acquisition_lot` corrected, not just extended (D-047's neighbour).** Its
+auto-void-the-parent-purchase check used to count other live lots citing the *same purchase line*
+before M8; that is only correct because every M6-created purchase has exactly one line. Widened to
+count live lots anywhere in the whole parent purchase — a strict generalization, so every purchase
+that already existed behaves identically, and a multi-line M8 purchase no longer has its entire
+receipt voided as a side effect of correcting one card via the pre-existing per-lot void control.
+
+**Foreign currency.** `fx_rates` (market data, `SELECT` for `authenticated`, writes only from the
+new `fetch-fx-rate` Edge Function under the service role — a user's manual override never touches
+this table). Norges Bank's endpoint/orientation re-verified live 2026-08-24 (API_SOURCES.md): the
+returned number is NOK per one unit of the base currency, exactly `fx_rate_to_nok`; a date with no
+trading (weekend/holiday) simply has no observation, which is what makes "use the most recent prior
+business-day rate" correct by construction — the resolver requests a 10-day window ending at the
+target date and takes the last observation, rather than guessing a fallback date. `fetch-fx-rate`
+answers every business outcome as HTTP 200 with an `{ ok, ... }` body (D-049) — supabase-js does not
+reliably surface a non-2xx Edge Function response, confirmed against the exact same client
+`redeem-invitation`'s own integration already works around. E10 reproduces exactly (57123 NOK
+minor units) using a fixed manual rate in tests — CI never depends on the live Norges Bank API;
+`scripts/verify-norges-bank-contract.mjs` is the separate, manual, occasional real-API check
+(never run in CI), and `tests/data/norges-bank.test.ts` is the deterministic no-network regression
+that does run there, pinned against a real captured response.
+
+**Grading lines are spend-only in M8 (D-050).** `grading_fee`/`grading_shipping` lines count
+correctly in `GPO`/`CS` but do not attach to a lot's cost basis — `target_lot_id`/
+`lot_cost_adjustments` remain M17's, unchanged from DATA_MODEL.md §12's original sequencing; nothing
+found while building M8 contradicted it.
+
+**Two pre-existing, previously-unexercised gaps found and fixed** (same defect class as the M4/M6/
+M7 `user_id`-default/PUBLIC-EXECUTE findings): `retailers.user_id` had no `default auth.uid()` since
+M3 (M8 is the first feature to create a retailer from the client); `purchases.retailer_id` had no
+ownership-check trigger at all (M8 is the first to set it from client input). Both fixed with a
+dedicated migration each, following the established `*_check_owner()` trigger pattern.
+
+**UI.** `/purchases` (ledger + GPO/CS/HS summary), `/purchases/new` (multi-line editor — catalog or
+manual card search, sealed product picker, accessory/fee/shipping/customs/other lines, retailer
+picker with inline create, foreign-currency FX section, live allocation preview computed with the
+same `allocate()`/`allocateMoney()` domain functions the database RPC's SQL port reproduces),
+`/purchases/$purchaseId` (every line's allocation and attributable cost visible), 
+`/purchases/$purchaseId/edit` (D-047's narrower scope). Reachable from the central + menu ("Record
+purchase") and a new Home "Total spent" shortcut — not a new bottom-nav tab. M6's existing
+single-card fast-purchase flow (`/add`) is untouched and its purchases appear in the M8 ledger
+without any migration or re-save, counted exactly once.
+
+**Known limitations, recorded rather than silently accepted:**
+
+- A foreign-currency multi-quantity `card` line's lot-level per-unit NOK cost basis can be up to one
+  øre short of the line's exact NOK total (no separate NOK residual column on `acquisition_lots`,
+  only one in the lot's original currency) — narrow enough (multi-quantity + non-NOK + card line,
+  simultaneously) that it was not judged worth the schema churn. Never visible in `GPO`/`CS`/`HS`,
+  which are computed from `purchase_lines`, not from lots.
+- The sealed-product line picker is a plain `<select>` over the whole curated `sealed_products`
+  table — a full sealed catalog browsing/search UI is M11's, not built here (M8 prompt §22).
+- Editing cannot change a purchase's currency in the shipped UI (the RPC itself accepts a new
+  currency; the form just doesn't offer changing it) — a defensible simplification, not a database
+  limitation.
+- No receipt image upload/OCR (out of scope, M8 prompt §72).
+
+**Verification, actually run, not just described:**
+
+- `pnpm check` (typecheck/lint/format/85 domain+property+data tests, up from 80 — the new
+  `tests/data/norges-bank.test.ts`) green locally; `pnpm build` green (placeholder env);
+  `pnpm test:e2e` **58/58** (up from 50 — four new `/purchases*` guard cases × desktop+iPhone).
+- CI green on PR #21: `build-and-test` and `db-tests` — **320 database/authorization tests across
+  22 files** (up from 269/19 at M7), including the hostile-grant convergence proof. One real CI-only
+  finding, fixed on the branch before merge: two *pre-existing* test fixtures
+  (`tests/authorization/purchases.test.ts`, `tests/authorization/holdings_and_lots.test.ts`) inserted
+  a `purchase_lines` row directly, relying on `attributable_cost_minor`'s default of 0 while
+  `line_total_minor` was non-zero — the new `purchase_lines_attributable_cost_matches_allocation`
+  CHECK correctly rejects that shape; the fixtures were updated to state the invariant explicitly,
+  nothing about the constraint changed.
+- Before pushing migrations: queried the real `pokeportfolio-dev` project directly
+  (`supabase db query --linked`) to confirm zero existing rows would violate either new CHECK
+  constraint — the project currently holds **zero purchases**, so both validated trivially, but this
+  was confirmed rather than assumed given the constraints touch every existing purchase row.
+- All five M8 migrations applied to `pokeportfolio-dev` (`supabase db push`); `grant-audit.sql`
+  clean (`supabase db query --linked`); `remote-security-check.mjs` **17/17** (phase 1 — no
+  `INVITE_TOKEN` available this session, same as M7.1); `fetch-fx-rate` deployed
+  (`supabase functions deploy fetch-fx-rate --use-api`) and confirmed to reject a request with no
+  user JWT (`HTTP 401` via a direct `curl`, proving `verify_jwt = true` is actually enforced, not
+  just declared in `config.toml`); `deployment-check.mjs` **28/28** against the real rebuilt bundle
+  after merge (34 precache entries including all four new `Purchase*` chunks — confirmed the
+  service-worker manifest genuinely updated, not stale, by polling until the new chunk names
+  appeared).
+
+**Not done this session, and why:** no signed-in deployed walkthrough. Creating or signing into even
+a throwaway `.invalid` synthetic account is outside what this session performs, regardless of
+project convention (same boundary M7.1's session already documented). Everything reachable
+*without* signing in was verified live, above.
+
 ## Next actions
 
-**M1–M7.1 are done, merged, and deployed.** Ask the owner for one short real-device check (see the
-checklist immediately below), then start **M8 — Purchases and the spending ledger**
-([docs/ROADMAP.md](docs/ROADMAP.md)): multi-line purchases, retailers, shipping, customs,
-discounts, backdating, the allocation engine wired into writes, foreign currency via Norges Bank
-FX, collectible/hobby split, void semantics.
+**M1–M8 are done, merged, and deployed.** Ask the owner for:
+
+1. The real-device check still outstanding since M7/M7.1 (checklist below, unchanged).
+2. **A short signed-in M8 check**, using clearly synthetic amounts:
+   - Open the central **+** menu → **Record purchase**. Log one small NOK purchase with two lines
+     (e.g. an accessory line and a manual-card line) plus a shipping charge; confirm the allocation
+     preview before saving matches the saved detail page.
+   - Optionally, one EUR purchase using **Manual rate** (skip the Norges Bank fetch, so no live-API
+     dependency in the check itself); confirm the NOK total shown matches `original amount ×
+     entered rate`.
+   - Open **Purchases** from Home's "Total spent" shortcut; confirm the summary figures match what
+     was just entered.
+   - **Void** both test purchases (Purchase detail → Void). Confirm they disappear from the
+     headline totals but remain visible with "Show voided" checked.
+   - Report anything that looked wrong, confusing, or ugly on a real phone — this is also the first
+     real screen time the M8 UI has had outside this session's own review.
+
+Then start **M9 — Pricing and snapshots** ([docs/ROADMAP.md](docs/ROADMAP.md)).
 
 **Real-device check needed (combines the outstanding M7 item with M7.1's own changes):** nav
 symmetry and the + button's position/tap target, safe-area/home-indicator clearance, the Search
@@ -897,6 +1046,26 @@ adding route-level code splitting:
   also hoist a dependency shared between an eager and a lazy importer (here: the Supabase client)
   into its own chunk neither directly references.
 
+Verified 2026-08-24 (M8):
+
+- **Norges Bank's `EXR` endpoint orientation, re-confirmed live**: `BASE_CUR` is the first currency
+  in the pair, and the returned number is NOK per one unit of it — a live request for
+  `B.EUR.NOK.SP` over 2026-08-10..2026-08-14 returned `10.986` for 2026-08-13 and `10.9325` for
+  2026-08-14, matching the 2026-08-16 verification already on record exactly. A date with no
+  trading (weekend/holiday) has no observation in the response at all, not a null value — pinned as
+  a fixture in `tests/data/norges-bank.test.ts`.
+- **`supabase.functions.invoke` does not reliably surface a non-2xx Edge Function response body**
+  (already known from `redeem-invitation`'s own client, `src/features/auth/InvitePage.tsx` —
+  restated here because `fetch-fx-rate` made the opposite choice deliberately, D-049): every
+  business outcome is HTTP 200 with an `{ ok, ... }` body instead, so `data` is always reliably
+  populated regardless of which supabase-js version or code path is in play.
+- **A new `ALTER TABLE ... ADD CONSTRAINT CHECK` migration validates against every existing row**,
+  including on the real deployed project — confirmed by querying `pokeportfolio-dev` directly
+  before pushing (`select count(*) from purchases where ...`) rather than assuming the two new M8
+  CHECK constraints were safe. The real project currently holds zero `purchases` rows, so both
+  validated trivially, but the check itself (not just the assumption) is the reusable habit for a
+  future migration that tightens an existing constraint against a project that *does* hold data.
+
 ## Commands
 
 ```bash
@@ -915,8 +1084,15 @@ pnpm exec supabase db push
 pnpm exec supabase config push
 pnpm exec supabase functions deploy redeem-invitation
 pnpm exec supabase functions deploy sync-catalog --use-api   # --use-api avoids needing Docker
+pnpm exec supabase functions deploy fetch-fx-rate --use-api  # M8
 pnpm exec supabase secrets set ALLOWED_ORIGINS=https://pokeportfolio-dev.pages.dev
 pnpm exec supabase secrets set CATALOG_SYNC_SECRET=<random>  # operator secret, D-035
+```
+
+M8's manual, occasional, never-in-CI live Norges Bank contract check (API_SOURCES.md, prompt §93):
+
+```bash
+node scripts/verify-norges-bank-contract.mjs
 ```
 
 Full catalog refresh (M5), not part of any loop — initial ingest plus manual refresh only:
@@ -980,15 +1156,31 @@ CI runs `build-and-test` (gate + E2E + gitleaks) and `db-tests` (ephemeral Supab
 hostile, prove the audit rejects it, re-apply, prove convergence** → suites → generate types) on
 every push and PR, with **no remote credentials anywhere**.
 
+**Green on PR #21 (`feat/m8-purchases-ledger`), merged:** 85 domain/property/data tests (up from
+80 — `tests/data/norges-bank.test.ts`) · database/authorization suite green on CI, **320 tests
+across 22 files** (up from 269/19 at M7 — `tests/db/m8_purchase_ledger.test.ts`,
+`tests/authorization/m8_purchases.test.ts`, plus five new routines and one new trigger function
+added to `tests/authorization/function_grants.test.ts`), including the hostile-grant convergence
+proof · 58 Playwright tests (up from 50 — four new `/purchases*` guard cases × desktop+iPhone) ·
+`pnpm typecheck`/`pnpm lint`/`pnpm format:check`/`pnpm build` all green. All five M8 migrations
+pushed to `pokeportfolio-dev`, `grant-audit.sql` clean, `remote-security-check.mjs` phase 1 17/17,
+`fetch-fx-rate` deployed and confirmed to require a real session (`HTTP 401` with no JWT),
+`deployment-check.mjs` **28/28** against the real rebuilt bundle (34 precache entries, all four new
+`Purchase*` chunks present — polled until the service worker's manifest genuinely updated rather
+than trusting a stale edge cache).
+
 ## Owner actions outstanding
 
 | # | Action | Blocks |
 |---|---|---|
-| 1 | Optional: install Docker Desktop | Local iteration convenience — every M7/M7.1 DB/authorization test still had to wait for CI this session instead of running locally first |
+| 1 | Optional: install Docker Desktop | Local iteration convenience — every M7/M7.1/M8 DB/authorization test still had to wait for CI this session instead of running locally first |
 | 2 | Optional: fix Node/pnpm absence from the default PATH | Convenience only |
-| 3 | A short real-device check on the now-deployed M7.1 build (see "M7.1 — owner UI/UX refinement" above for the exact checklist) | Final sign-off on the new nav/theme/gestures on real hardware — outstanding since M7, and M7.1 changed even more of the primary UI |
-| 4 | Give feedback on the deployed M7.1 UI (nav, Home, Search, Portfolio, Profile, theme) | Informs M8+ and the eventual M12a visual pass — not a blocker, but the owner explicitly wants to be asked here |
-| 5 | Optional, whenever convenient: sign in and click through Home/Search/Portfolio/Profile once from a real session | This session could not do it itself — creating even a throwaway synthetic account requires entering a password, which is outside what this session performs regardless of project convention (see "Not done this session, and why" above) |
+| 3 | A short real-device check on the deployed M7.1 UI (see "M7.1 — owner UI/UX refinement" above for the exact checklist) | Final sign-off on the nav/theme/gestures on real hardware — outstanding since M7 |
+| 4 | **A short signed-in M8 check** (see "M8 — Purchases and the spending ledger" → "Next actions" above for the exact steps: record two small synthetic purchases, one NOK/multi-line and one EUR/manual-rate, check the Purchases summary, void both) | The one thing this session could not verify itself — see below |
+| 5 | Give feedback on the deployed M7.1/M8 UI (nav, Home, Search, Portfolio, Profile, Purchases, theme) | Informs M9+ and the eventual M12a visual pass — not a blocker, but the owner explicitly wants to be asked here |
 
-The admin account, the M6 deployment, the API-key model and the installed-PWA check remain done
-from before M7.
+This session could not perform items 3/4 itself: creating or signing into even a throwaway
+synthetic account requires entering a password, which is outside what this session performs
+regardless of project convention (same boundary M7.1's session already documented, restated in
+"M8" above). The admin account, the M6 deployment, the API-key model and the installed-PWA check
+remain done from before M7.

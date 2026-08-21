@@ -1066,3 +1066,70 @@ RPC or schema change. Portfolio's select-mode bulk actions (`src/data/customColl
 `bulkSetFavorite`) are plain multi-row `INSERT .. ON CONFLICT DO NOTHING`/`DELETE .. IN (...)`/
 `UPDATE .. IN (...)` statements under the same RLS policies §5.2.1 already specifies — invariant
 C1 (nothing financial changes) applies exactly as it does to the single-holding versions.
+
+## 16. M8 implementation notes
+
+**No new tables for `purchases`/`purchase_lines`/`acquisition_lots`/`holdings`** — M8 extends the
+existing M3/M6 schema with a real multi-line write path over the same tables, exactly as §5.3
+already anticipated ("M8 adds the ability to build a richer multi-line purchase over the same
+tables; it does not introduce a different *kind* of purchase"). Two new CHECK constraints state
+invariants the RPC layer already had to keep: `purchases_total_nok_matches_rate`
+(`total_nok_minor = round(total_minor * fx_rate_to_nok)`) and
+`purchase_lines_attributable_cost_matches_allocation` (`attributable_cost_minor = line_total_minor +
+allocated_shipping_minor + allocated_customs_minor - allocated_discount_minor`) — both validated
+cleanly against every row M6's `add_card_acquisition` had ever written, including real purchases on
+the deployed project, since that RPC's shipping/customs/discount are always zero.
+
+**`fx_rates`** (new table, §4.3 already specified its shape): market-data class, `SELECT` for
+`authenticated`, writes only from the `fetch-fx-rate` Edge Function under the service role. A user's
+manual FX override is never written here — it lives entirely on their own `purchases` row
+(`fx_source = 'manual'`) — so no session can poison another user's automatic resolution or the
+shared cache (SECURITY.md §5.9's "no browser-reachable write" pattern, applied to market data).
+
+**The write surface**: `create_purchase`, `update_purchase` (D-047's scope: cannot add/remove
+lines), `void_purchase` (whole-receipt void with downstream-blocker detection), and
+`purchase_spending_summary()` (`GPO`/`CS`/`HS`/purchase count in one query). All `SECURITY INVOKER`,
+same reasoning as `add_card_acquisition`: `authenticated` already holds the underlying table
+grants, ownership derives entirely from `auth.uid()`, and RLS applies to every statement exactly as
+if the caller had issued it directly. `allocate_largest_remainder(bigint, bigint[])` is a SQL port
+of the M2 TypeScript allocator (`src/domain/allocation.ts`) that both RPCs call — proven
+byte-identical to the TypeScript reference across a shared corpus of cases
+(`tests/db/m8_purchase_ledger.test.ts`), including for the frozen NOK total itself: rather than
+rounding each line's NOK amount independently (which can drift a few øre from a single rounding of
+the purchase total), the total is allocated across lines the same largest-remainder way, weighted by
+each line's original-currency attributable cost. This is what keeps invariant F1 (`GPO = CS + HS`)
+exact for a foreign-currency purchase, not merely a NOK one.
+
+**`void_acquisition_lot` corrected** (M8 prompt §62): its auto-void-parent-purchase check now looks
+for another live lot anywhere in the whole parent purchase, not only lots citing the same
+`purchase_line`. The old check was correct only because every M6-created purchase has exactly one
+line; a multi-line M8 purchase would otherwise have its entire receipt voided the moment the last
+lot from any *one* of its several lines was individually voided. A strict generalization — the two
+checks agree exactly for a single-line purchase — so this is a correction for every purchase that
+already exists, not a behaviour change.
+
+**Two pre-existing gaps found and fixed, both previously unexercised** (same defect class as M4/M6/
+M7's `user_id`-default and PUBLIC-EXECUTE findings — see PROJECT_JOURNAL.md 2026-08-24):
+`retailers.user_id` had no `default auth.uid()` since M3 (unlike `storage_locations`/`tags`, fixed
+for the same reason in M6) — nothing created a retailer directly from the client before M8.
+`purchases.retailer_id` had no ownership-check trigger at all — nothing set a non-null `retailer_id`
+from client-supplied input before M8's `create_purchase`/`update_purchase`. Both fixed with a
+dedicated migration each, following the established `*_check_owner()` trigger pattern.
+
+**Card/sealed lines always produce a holding and lot (D-048)** — no optional "skip inventory"
+checkbox; `bulk_lot` is the existing line type for money spent on a group before individual entry.
+**An edit cannot add or remove lines (D-047)** — voiding and re-entering is the correction path for
+a wrong line set, as it already was for a bigger mistake (UX_FLOWS.md). **Grading-fee/shipping lines
+record spend only in M8 (D-050)** — `target_lot_id`/`lot_cost_adjustments` remain M17's, per §12's
+existing deferred-table list, unchanged by anything found while building M8.
+
+**Known precision limitation, disclosed rather than silently accepted:** a foreign-currency `card`
+line's *lot-level* per-unit NOK cost basis (`acquisition_lots.unit_cost_basis_nok_minor`, used only
+for `DCB`/per-item display) is computed by floor division of the line's already-exact
+`attributable_cost_nok_minor` by quantity, with no separate NOK residual column — `residual_minor`
+exists only in the lot's original currency. For a multi-quantity foreign-currency card line this can
+leave the lot's own NOK unit-cost total up to one øre short of the line's exact NOK amount, which
+remains authoritative for `GPO`/`CS`/`HS` (computed from `purchase_lines`, not from lots) and is
+therefore never visible in any invariant this milestone's tests assert. Narrow enough (multi-quantity
++ non-NOK + card line, simultaneously) that adding a second residual column was not judged worth the
+schema churn; revisit if a real receipt exercises it.

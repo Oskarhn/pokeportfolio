@@ -1147,3 +1147,54 @@ elsewhere in the same milestone" is a real, recurring shape in this project's ow
 the second time — see 20260821120070 itself fixing three tables' defaults in one pass). Checking
 the live database directly, rather than trusting a file read, is what caught this before a
 redundant migration shipped.
+
+## 2026-08-24 — M8: two more user_id-default-class gaps, and a void scope bug that only mattered once purchases got a second line
+
+**Problem 1.** `retailers.user_id` had no `default auth.uid()` since M3 — the same defect class as
+the `storage_locations`/`tags`/`holding_tags` gaps M6 already found and fixed
+(`20260821120070_m6_user_id_defaults.sql`), just on a fourth table nothing had exercised yet.
+`retailers` shipped in the same M3 migration as `storage_locations`/`tags` but was not in scope for
+M6's fix, because nothing in M6's UI created a retailer directly from the client — M8's own
+`src/data/retailers.ts` is the first code path that does. Found by writing that code and hitting a
+`null value in column "user_id" violates not-null constraint` against a real Supabase stack, not by
+inspection. Fixed the same way as the M6 precedent:
+`20260824120005_m8_retailers_user_id_default.sql`.
+
+**Problem 2.** `purchases.retailer_id` had no ownership-check trigger at all, on any migration,
+since M3. The foreign key only proves the referenced row exists, not that it belongs to the same
+user — exactly the "inserting a child row pointing at another user's parent" attack SECURITY.md
+§3.3 already lists, just against a column nothing had ever set to a client-supplied non-null value
+before M8. `add_card_acquisition` (M6) never touches `retailer_id` at all. Found while writing the
+cross-tenant authorization test for `create_purchase`'s `p_retailer_id` argument — asked "what
+actually stops this" and the honest answer was nothing. Fixed with a new
+`purchases_check_retailer_owner()` trigger, the same `*_check_owner()` shape
+`acquisition_lots_check_owner`/`holdings_check_manual_card_owner` already use
+(`20260824120007_m8_purchases_retailer_owner_check.sql`).
+
+**Problem 3, a real logic bug rather than a missing-default gap.** `void_acquisition_lot`'s
+auto-void-the-parent-purchase check (M6, `20260821120050_m6_add_card_acquisition.sql`) counted
+other live lots citing the *same purchase line* before deciding to void the whole parent purchase.
+That is correct only because every purchase M6 could create has exactly one line. Once M8 makes a
+real multi-line purchase possible, the same check would have voided an entire multi-card receipt
+the moment the *first* of its several lines' lots was individually voided via the pre-existing
+per-lot void control on the holding detail page — silently erasing the other lines' spend from
+`GPO`/`CS` as a side effect of correcting one card. Found by design review while writing M8's own
+`void_purchase` (asking "does the existing void path already handle this correctly for more than
+one line" rather than assuming M6's version generalized), not by a failing test — there was no test
+for it because no multi-line purchase could exist before this milestone. Fixed by widening the
+check to count live lots anywhere in the whole parent purchase
+(`20260824120010_m8_purchase_ledger.sql`), a strict generalization that leaves every existing
+single-line purchase's behaviour unchanged, and added a regression test
+(`tests/db/m8_purchase_ledger.test.ts`, "void_acquisition_lot: parent-purchase scope corrected")
+that creates a two-card-line purchase, voids one lot, asserts the purchase is still live, voids the
+second, and asserts it now voids.
+
+**Consequence.** All three are the same underlying lesson stated three ways: a code path that has
+never been exercised by real client input is not verified by the mere fact that CI has been green
+around it. M3's `retailers`/`purchases.retailer_id` and M6's `void_acquisition_lot` were each
+written correctly for the traffic that existed at the time they shipped; none of the three had a
+test that could have caught the gap, because the gap only exists once a *different* milestone's
+code starts calling them a *different* way. The standing mitigation is the one this project already
+follows elsewhere (M4/M6/M7's own findings): when a milestone is the first to actually exercise an
+existing table or function from a new angle, re-derive whether its existing guarantees still hold
+for that angle — do not assume "it shipped before, so it was checked."

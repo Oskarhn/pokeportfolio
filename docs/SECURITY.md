@@ -126,6 +126,32 @@ parameter is bound; the sort parameter is a Postgres enum, so an invalid value c
 the function body, and every `ORDER BY`/cursor comparison branches on that enum explicitly rather
 than concatenating caller input into SQL text (M7 prompt §75).
 
+### 3.2.2 M8: the purchase-ledger write surface and the FX cache
+
+`create_purchase`/`update_purchase`/`void_purchase`/`purchase_spending_summary` follow exactly the
+`add_card_acquisition` shape (§3.2.1's reasoning, restated): `SECURITY INVOKER`, ownership derives
+from `auth.uid()` alone with no `user_id` argument to forge, and every statement they run is subject
+to RLS exactly as if the caller had issued it directly. What *is* caller-supplied — a retailer id, a
+storage location id, another purchase's line id — is checked explicitly: a new
+`purchases_check_retailer_owner()` trigger (S1 defence in depth, the same pattern
+`acquisition_lots_check_owner`/`holdings_check_manual_card_owner` already use) rejects a
+`retailer_id` belonging to someone else, and `create_purchase`'s card-line path reuses
+`acquisition_lots_check_owner`'s existing `storage_location_id` check for free, since it writes
+through the same `INSERT INTO acquisition_lots` any other code path would.
+
+`fx_rates` (DATA_MODEL.md §16) is market data, not user-private: `SELECT` for `authenticated`, no
+`INSERT`/`UPDATE`/`DELETE` grant at all. Writes happen only inside the `fetch-fx-rate` Edge
+Function under the service role, so no signed-in session — however many browsers it authenticates
+from — can insert a hostile rate into another user's automatic FX resolution. A user's own manual
+override never touches this table; it is a plain column on their own `purchases` row.
+
+`fetch-fx-rate` itself requires a real user JWT (`verify_jwt = true` in `supabase/config.toml`,
+unlike `redeem-invitation`/`sync-catalog`, which both have a documented reason to opt out). It talks
+to exactly one fixed host (`_shared/norges-bank.ts`'s `NORGES_BANK_HOST` constant — no
+caller-supplied URL, no SSRF surface), validates the currency code and date shape before making any
+network call, bounds the request with an 8-second timeout, and structurally validates the response
+shape before trusting any field in it.
+
 ### 3.3 Attack surface the tests must cover
 
 - Direct read of another user's row by id

@@ -1073,6 +1073,119 @@ stripping to fit inside this milestone. The prompt's own instruction for M7.1 is
 "serious attempt" does not mean shipping something materially security-sensitive without the
 safeguards SECURITY.md already requires for exactly this feature.
 
+---
+
+## D-047 — Editing a purchase cannot add or remove lines
+
+**2026-08-24 · Accepted**
+
+**Context.** M8's `update_purchase` needs to recompute allocations and cost basis atomically when a
+user corrects amounts, dates, charges or FX on an existing purchase. `acquisition_lots.purchase_line_id`
+is a real foreign key with no `ON DELETE` cascade or `SET NULL` — deleting a `purchase_lines` row
+that still has a lot referencing it either orphans real inventory history or requires the edit path
+to silently void/reassign lots as a side effect of an amount correction, which is exactly the kind
+of implicit destructive behaviour DATA_MODEL.md §9 exists to rule out.
+
+**Decision.** `update_purchase` accepts exactly the existing set of line ids — same count, same ids
+— and edits only their quantity, unit price, spend class and description, plus every purchase-level
+field (date, retailer, currency, FX, shipping/customs/discount, notes). Supplying a different set of
+line ids is rejected outright, naming the reason. Adding or removing a line from a purchase already
+saved means voiding it and recording a new one — the same correction UX_FLOWS.md's "Purchase entered
+twice" case already describes for a bigger mistake.
+
+**Alternatives.** A general line-level diff (add new lines, soft-delete removed ones, migrate their
+lots) was considered and rejected as disproportionate: it multiplies the ways an edit can interact
+with future disposal-producing milestones (sales, openings, grading, trades) for a correction class
+(wrong line set) that is materially rarer than a wrong amount, and that the existing void-and-re-enter
+path already handles safely.
+
+**Consequences.** The purchase editor UI reflects this directly — a fixed list of existing lines,
+no add/remove control — rather than offering an action the RPC would just reject.
+
+---
+
+## D-048 — A card or sealed purchase line always creates inventory; no optional "skip holding" toggle
+
+**2026-08-24 · Accepted**
+
+**Context.** UX_FLOWS.md F3 describes an "offered: create holdings for the 4 card and sealed lines?
+checkbox per line, on by default" step. Implementing a genuine opt-out means a `card`/`sealed` line
+that counts as collectible spend with no corresponding lot — a state nothing else in the schema
+represents, and one invariant M2/F7-style reasoning already treats as suspicious (spend with no
+traceable item).
+
+**Decision.** A `card` line always requires a catalog variant or a manual card, a `sealed` line
+always requires a catalog product, and both always produce exactly one holding and one lot. A user
+who genuinely doesn't want individual per-card entry yet uses the existing `bulk_lot` line type
+(DATA_MODEL.md §5.3, M8 prompt §24) — "money spent on a group before all cards are individually
+recorded" is precisely that state, already modelled, already excluded from fabricating individual
+holdings.
+
+**Alternatives.** Build the literal checkbox, storing a `card`/`sealed` line with no lot when
+unchecked — rejected: it produces a class of purchase line that looks identical to every other
+collectible line but is silently unlinked from any owned item, which is a worse UX than steering the
+user to the line type that already exists for this exact situation.
+
+**Consequences.** A minor deviation from UX_FLOWS.md's literal wording, functionally equivalent via
+`bulk_lot`. Documented here rather than silently diverging from the spec.
+
+---
+
+## D-049 — fetch-fx-rate always answers HTTP 200 with an `{ ok, ... }` body
+
+**2026-08-24 · Accepted**
+
+**Context.** `src/features/auth/InvitePage.tsx`'s existing integration with `redeem-invitation`
+already carries a hedge: "supabase-js reports a non-2xx as a FunctionsHttpError without parsing the
+body, so the server's own message is not always reachable here." Building `fetch-fx-rate`'s client
+(`src/data/fx.ts`) the same way — real HTTP status codes for `no_rate_found`/`norges_bank_unreachable`
+/validation failures — would inherit that same unreliability for a function whose whole point is
+telling the UI *which* failure occurred (§80's "offer retry vs. manual entry" distinction depends on
+knowing why it failed).
+
+**Decision.** Every business outcome (success, no rate found, upstream unreachable, invalid input) is
+HTTP 200 with a discriminated `{ ok: boolean, ... }` body — 2xx responses are always reliably parsed
+by `supabase-js`, sidestepping the ambiguity entirely. Real HTTP status codes (401, 405) stay reserved
+for genuine transport/gateway failures the ordinary signed-in UI path can never trigger.
+
+**Alternatives.** Match `redeem-invitation`'s existing real-status-code convention for consistency —
+rejected: that function's caller already works around the same unreliability with a generic fallback
+message, which is acceptable there (one message covers every failure) but not here (the UI needs to
+distinguish "try again" from "enter a rate manually").
+
+**Consequences.** `fetch-fx-rate` and `redeem-invitation` now follow two different HTTP-status
+conventions for the same underlying supabase-js limitation. Not reconciled in this milestone —
+retrofitting `redeem-invitation` is out of M8's scope and its existing behaviour is already handled
+correctly by its one caller.
+
+---
+
+## D-050 — Grading-fee/shipping lines record spend only; lot linkage stays with M17
+
+**2026-08-24 · Accepted**
+
+**Context.** M8's prompt describes attaching a `grading_fee`/`grading_shipping` line to a specific
+lot via `target_lot_id` and a `lot_cost_adjustments` row. Neither exists in the schema yet:
+`purchase_lines.target_lot_id` and `lot_cost_adjustments` are both explicitly deferred to M17 in
+DATA_MODEL.md §12 ("has no purpose until a grading workflow can write to it"), which predates this
+milestone and was not contradicted by anything found while building M8.
+
+**Decision.** `grading_fee`/`grading_shipping` are ordinary collectible-spend line types in M8 —
+they count correctly in `GPO`/`CS`, they can be recorded against a purchase — but they do not attach
+to a lot's effective cost basis. That wiring, and the grading-submission workflow it belongs to,
+remains M17's, unchanged from the original sequencing.
+
+**Alternatives.** Add `target_lot_id` and a minimal `lot_cost_adjustments` table now, ahead of M17 —
+rejected: DATA_MODEL.md §12's deferred-table list is a deliberate sequencing decision from before
+this milestone, and nothing discovered while building M8 constitutes the "concrete contradiction"
+PLANNING_FREEZE.md §9 requires to reopen it. Pulling grading cost-basis forward would also start
+building real grading-submission surface area (raw-value-at-submission, grading delta) this
+milestone was explicitly told not to.
+
+**Consequences.** A grading fee purchase is honestly recorded as spend today; its effect on a
+specific card's effective cost basis (`EUCB`, FINANCIAL_MODEL.md §2.5) waits for M17 as originally
+planned. No user-visible regression, since M6/M7 never wired this either.
+
 **Alternatives.** Ship upload without EXIF stripping "for now" — rejected outright: an inventory of
 valuable physical property is precisely the case SECURITY.md §7 was written for, and shipping the
 gap knowingly is worse than not shipping the feature.
