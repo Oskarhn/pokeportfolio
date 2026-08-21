@@ -7,9 +7,10 @@ interface AppShellProps {
 }
 
 /**
- * Minimal application frame. Product navigation arrives at M6; what the header carries today is
- * the part authentication needs — who you are, the way out, and the admin entry point when the
- * account has it.
+ * Minimal application frame. A plain top-nav header for now — the frozen mobile bottom navigation
+ * with a central quick-add (UX_FLOWS.md) is deliberately not built yet; M7 owns navigation
+ * refinement once Collection, Catalog and Admin give it enough real destinations to design
+ * against (M6 prompt §83).
  */
 export function AppShell({ children }: AppShellProps) {
   const { status, isAdmin, signOut } = useAuth()
@@ -32,6 +33,12 @@ export function AppShell({ children }: AppShellProps) {
         <span className="text-sm font-medium tracking-wide text-slate-300">PokePortfolio</span>
         {status === 'signed-in' ? (
           <nav className="ml-auto flex items-center gap-4">
+            <Link
+              to="/collection"
+              className="text-sm text-slate-400 underline-offset-4 hover:text-slate-200 hover:underline"
+            >
+              Collection
+            </Link>
             <Link
               to="/catalog"
               className="text-sm text-slate-400 underline-offset-4 hover:text-slate-200 hover:underline"

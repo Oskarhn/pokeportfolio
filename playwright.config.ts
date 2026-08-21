@@ -32,7 +32,8 @@ export default defineConfig({
     // against a live stack in tests/authorization/, not here (docs/TESTING.md §6).
     env: {
       VITE_SUPABASE_URL: process.env.VITE_SUPABASE_URL ?? 'http://127.0.0.1:54321',
-      VITE_SUPABASE_ANON_KEY: process.env.VITE_SUPABASE_ANON_KEY ?? 'e2e-placeholder-not-a-key',
+      VITE_SUPABASE_PUBLISHABLE_KEY:
+        process.env.VITE_SUPABASE_PUBLISHABLE_KEY ?? 'e2e-placeholder-not-a-key',
     },
   },
 })

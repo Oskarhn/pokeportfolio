@@ -55,6 +55,16 @@ Notation: **→** step · **⚠** failure or edge case · **✓** completion cri
 
 ## F2 — Add a card manually
 
+**M6 status.** Built close to this flow, with three differences worth recording rather than
+silently deviating from: (1) the central mobile **+** and the bottom navigation it lives in do not
+exist yet — AppShell still carries a plain top-nav header, and the entry point is "Add to
+collection" on a catalog card's variant, plus a manual-entry link from an empty catalog search
+(M6 prompt §83, M7 owns navigation refinement); (2) F2.1's session defaults are not implemented —
+`add_card_acquisition`'s argument shape was deliberately designed so the scanner (M15) can supply
+them later without a business-logic change, but nothing pre-fills them yet; (3) "Existing
+collection" is this document's `pre_tracking` origin, both cost-unknown by construction. See
+HANDOVER.md for the exact M6 routes.
+
 The most-used flow after the ledger. Target: under 20 seconds on a phone.
 
 → Collection › Add (or the central **+** on mobile)

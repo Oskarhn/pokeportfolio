@@ -115,7 +115,15 @@ export function CatalogPage() {
           The catalog could not be searched. Try again.
         </p>
       ) : results.length === 0 ? (
-        <p className="py-8 text-center text-sm text-slate-500">No cards match “{trimmed}”.</p>
+        <div className="space-y-2 py-8 text-center">
+          <p className="text-sm text-slate-500">No cards match "{trimmed}".</p>
+          <Link
+            to="/collection/manual/new"
+            className="text-sm text-sky-400 underline-offset-4 hover:underline"
+          >
+            Card not listed? Add it manually
+          </Link>
+        </div>
       ) : (
         <>
           <ul className="divide-y divide-slate-800 rounded-lg border border-slate-800">

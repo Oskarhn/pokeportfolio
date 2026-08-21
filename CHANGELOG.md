@@ -10,6 +10,58 @@ they were**.
 
 ## [Unreleased]
 
+### Added — 2026-08-21 · M6 Collection: holdings, acquisition lots, origin and cost
+
+The application becomes usable as a personal collection tracker: search a card, add it, record how
+it was acquired and (where applicable) what it cost, see it in `/collection`, add another copy
+later without losing the first acquisition's provenance, inspect the lots behind a holding.
+
+**Schema.** A holding now has three possible identity sources, not two: `manual_card_id`
+alongside `card_variant_id`/`sealed_product_id`, exactly one non-null (D-037) — the honest fallback
+for a physical card the shared catalog does not (yet) list, user-private and never written into
+the catalog tables. `storage_location_id` moved from `holdings` to `acquisition_lots` (D-036) after
+a concrete two-binder scenario proved the original one-per-holding cardinality wrong. `lot_origin`
+gained `opening` ("Pulled") and `trade_in`, and `cost_basis_state` gained `unallocated_opening` and
+`trade_in`, both pulled forward from their originally-planned M16/M18 arrival without the
+`opening_id`/`trade_line_id` linking columns, which still wait for those milestones (D-038).
+`manual_valuations` shipped early too, for a directly-owned graded card's manual value, currency
+fixed to NOK pending FX (M9). `holding_tags` is the new many-to-many join for M6's tags.
+
+**Read/write surface.** `add_card_acquisition` — a single SECURITY INVOKER RPC that finds-or-creates
+the identity-matching holding (race-safe via the real `holdings_identity` unique index) and writes
+one acquisition lot, plus a real single-line purchase when the cost is known — is the one atomic
+add-to-collection operation; nothing about it can leave an orphaned holding or a lot with no valid
+parent. `void_acquisition_lot` is the mistake-correction path (void semantics, never a raw delete;
+voids the sole purchase a known-cost lot created too, so a corrected mistake never leaves a ghost
+spend in `GPO`/`CS`). `set_manual_valuation` supersedes-then-inserts so a graded holding's value
+history stays append-only. `holding_summaries` is a `security_invoker` view giving the Collection
+list one query instead of one per row.
+
+**UI.** `/collection` (2-column mobile grid, desktop responsive, empty/loading/error states),
+`/collection/$holdingId` (identity, lots, void, favourite, manual value for graded), `/add`
+(progressive form: quantity, raw/graded, origin-driven cost disclosure, storage, favourite, notes),
+`/collection/manual/new` (the catalog-missing fallback). "Add to collection" now lives on
+`/catalog/$cardId`'s variant list; an empty catalog search offers the manual-entry link.
+
+**Security.** Migrated `pokeportfolio-dev` to Supabase's current `sb_publishable_…`/`sb_secret_…`
+key pair (D-039), closing out the M5 key-exposure note: the legacy service-role value returned by
+`supabase projects api-keys` into a prior session's transcript is deactivated once the new pair is
+verified working end to end, without rotating the JWT signing secret (which would have invalidated
+every user session for no reason connected to the actual exposure). `VITE_SUPABASE_ANON_KEY`
+renamed to `VITE_SUPABASE_PUBLISHABLE_KEY`; both Edge Functions read `SUPABASE_SECRET_KEYS` first,
+falling back to the legacy variable only for the local stack. CI's hostile-grant convergence step
+no longer hardcodes a baseline migration filename — it selects the lexicographically-latest
+`*_privilege_baseline.sql` and fails outright if none exists, closing the fragility SECURITY.md
+§5.9 flagged after M5.
+
+**Tests.** `tests/db/m6_constraints.test.ts` (identity XOR, origin/cost-state consistency, S1
+ownership triggers for the three new relationships), `tests/authorization/m6_collection.test.ts`
+(RPC happy paths — energy, manual card, graded with manual value, pulled, reused holding — and
+cross-tenant attacks against the RPC's caller-supplied arguments), `manual_card_definitions` folded
+into the generic owned-tables attack matrix, five new Playwright route-guard cases.
+
+See DECISIONS.md D-036 through D-039, HANDOVER.md and `claude_outputs/output_10.txt` for full detail.
+
 ### Added — 2026-08-20 · M5 Pokémon catalog, TCGdex ingestion and search
 
 The application exposes real Pokémon TCG product functionality for the first time. TCGdex

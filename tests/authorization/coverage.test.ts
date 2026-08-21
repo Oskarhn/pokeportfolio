@@ -17,6 +17,9 @@ const ALL_USER_PRIVATE_TABLES = [
   'purchase_lines',
   'holdings',
   'acquisition_lots',
+  'manual_card_definitions',
+  'holding_tags',
+  'manual_valuations',
 ] as const
 
 const COVERED_TABLES = [
@@ -28,6 +31,9 @@ const COVERED_TABLES = [
   'purchase_lines', // purchases.test.ts
   'holdings', // holdings_and_lots.test.ts
   'acquisition_lots', // holdings_and_lots.test.ts
+  'manual_card_definitions', // simple-owned-tables.test.ts, m6_collection.test.ts
+  'holding_tags', // m6_collection.test.ts
+  'manual_valuations', // m6_collection.test.ts
 ] as const
 
 describe('authorization suite coverage', () => {

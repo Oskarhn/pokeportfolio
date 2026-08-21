@@ -769,3 +769,106 @@ So the vertical-fit assertion added alongside the fix is deliberately labelled i
 invariant on every viewport the suite runs, and that is all it does. The guard for this class of
 defect is a person with a phone, which is why this table exists and why the header above it says
 emulation is not evidence.
+
+---
+
+## 2026-08-21 — A concrete two-binder scenario found a real cardinality mistake before real data existed
+
+**Problem.** M6 needed to check DATA_MODEL.md's storage-location design against an actual scenario
+before building the add-to-collection flow against it: the owner has two identical NM copies of a
+card in Binder 1 and a third, equally identical, copy in Binder 2. `holdings_identity` correctly
+merges all three into one holding — same variant, same condition, same grading state, nothing about
+those three columns differs. But `holdings.storage_location_id` was a single column. One holding,
+one location column, three copies split across two locations: unrepresentable.
+
+**Investigation.** The document itself (§5.2) states the cardinality as "one per holding" without
+qualification, and the M3 schema matched it faithfully. The question was not whether the code
+matched the document — it did — but whether the document's own stated cardinality was actually
+correct for a case a Pokémon collector will hit constantly (splitting a playset across a binder and
+a trade box is closer to normal than exceptional).
+
+**Finding.** It wasn't correct. A `holding` answers "what do I own, in what state" — variant,
+condition, grading. Location is a fact about *where a specific batch currently sits*, which is
+exactly what an `acquisition_lot` already models (a batch acquired together, at one cost, on one
+date). The document's own §5.4 elsewhere says ordinary lot differences, not new holdings, are the
+right place for variation that isn't a different physical state — location had just never been
+checked against that rule.
+
+**Consequence.** `storage_location_id` moved from `holdings` to `acquisition_lots` in the same
+migration set that added the M6 schema (D-036), before any real collection data existed to migrate.
+Same shape as M5's D-033/D-034 catalog-identity corrections, and the same lesson repeats: a schema
+that has never been checked against a real physical scenario is a guess with good formatting, not a
+verified design. `profiles.default_storage_location_id` needed no change — its role as a prefill
+default survives the reinterpretation from "default holding location" to "default lot location"
+without a column change.
+
+---
+
+## 2026-08-21 — Closing out the M5 key-exposure note without a session-invalidating overreaction
+
+**Problem.** M5 recorded that `supabase projects api-keys`, run to fetch the anon key for local
+dev, returned `pokeportfolio-dev`'s complete key set — including the legacy `service_role`
+secret — into that session's transcript. Not requested, not used, not stored, not committed
+(verified by the M5 session itself), but present, and HANDOVER.md's standing position was that the
+owner should consider rotating it as a precaution. M6 was the milestone that actually closes that
+out, since it is the first to write real (if still synthetic-in-CI) user collection data.
+
+**Investigation.** The obvious mitigation — rotate the JWT signing secret, the historical way to
+invalidate a leaked `service_role` value — was checked against current Supabase documentation
+rather than assumed. It would invalidate *every* issued user JWT project-wide, not just the
+service-role credential, because the signing secret underlies all of them. For a value that was
+never actually used or persisted anywhere, forcing every invited user to sign in again is a
+disproportionate response to research first, not a default to reach for.
+
+**Finding.** Supabase's current migration path (verified 2026-08-21, not assumed from the M4/M4.1
+session's note that the migration existed) replaces the legacy `anon`/`service_role` JWT pair with
+named `sb_publishable_…`/`sb_secret_…` keys. Both can be created alongside the legacy pair without
+disturbing it; Edge Functions receive the new secret automatically via a `SUPABASE_SECRET_KEYS`
+JSON map, no redeploy required for the injection itself, only for the function code that reads it;
+and legacy keys can be **deactivated** rather than deleted — reversible, and does not invalidate
+issued user sessions, because API-key authentication and JWT signing are different mechanisms
+layered on top of each other.
+
+**Consequence.** D-039. The command that caused the original exposure
+(`supabase projects api-keys`) is never run again — new-key creation is a dashboard action the
+project owner performs directly. `supabase/functions/_shared/service-key.ts` prefers
+`SUPABASE_SECRET_KEYS`, falling back to the legacy variable only for the local stack, which has not
+changed and still emits only the old pair. The frontend env var renamed from
+`VITE_SUPABASE_ANON_KEY` to `VITE_SUPABASE_PUBLISHABLE_KEY`. Legacy keys are deactivated only after
+the new pair is verified working end to end against the real deployed project — never assumed
+correct from a green CI run alone, the same discipline SECURITY.md §13's deployment gate already
+demanded for anything touching auth, policies or grants.
+
+---
+
+## 2026-08-21 — The privilege-baseline convergence check pointed at a filename, and filenames get stale
+
+**Problem.** SECURITY.md §5.9 already named this as a known fragility after M5: CI's hostile-grant
+convergence step re-applies "the baseline migration" by a hardcoded filename
+(`20260820157000_m5_privilege_baseline.sql`), and every milestone that adds a browser-reachable
+table or function needs a new pure-privilege restatement — meaning the hardcoded filename goes
+stale on exactly the milestone that needs the check to still work. M6 is that milestone: it adds
+`manual_card_definitions`, `holding_tags`, `manual_valuations` and three RPCs to the browser-
+reachable surface, and would have needed the same manual CI edit M5 needed relative to M4.1's file,
+with the same risk of someone forgetting it on M7.
+
+**Investigation.** The options considered: keep the hardcoded pointer and rely on remembering to
+update it (the status quo, already flagged as fragile); teach the hostile-grant test to replay
+every privilege-bearing migration in sequence (rejected in M5's own file header — replaying
+migrations that also `CREATE TABLE` is not idempotent, so this was never actually available);
+or select the baseline by a naming convention CI can discover on its own.
+
+**Finding.** Every privilege-restatement migration this project has wri­tten is already named
+`*_privilege_baseline.sql`, and migration filenames are timestamp-prefixed by convention — so a
+plain lexicographic sort of that glob always yields the newest one, with no heuristic that could
+guess wrong. The only new failure mode is the discovery step itself finding nothing, which is
+distinguishable from every other failure and should stop the build rather than silently reuse
+whatever the last successful run had.
+
+**Consequence.** `.github/workflows/ci.yml`'s convergence step now does
+`ls supabase/migrations/*_privilege_baseline.sql | sort | tail -n 1` and fails outright if the glob
+is empty, instead of naming a file. Immutable historical migrations are untouched — this changes
+only how CI *selects* the current one, not what any of them contain. A future milestone that adds a
+browser-reachable object still needs its own new `*_privilege_baseline.sql` restatement (that part
+was never the fragile step — `grant-audit.sql` and the checklist in SECURITY.md §12 already demand
+it), but the CI wiring around it no longer needs a matching hand-edit.

@@ -313,7 +313,7 @@ operation, which is wrong.
 
 | Concept | Answers | Cardinality | Changes when |
 |---|---|---|---|
-| **Storage location** | *Where is this card physically?* | One per holding | The user physically moves it |
+| **Storage location** | *Where is this card physically?* | One per lot (§5.5; was one per holding until M6's D-036 correction) | The user physically moves that batch |
 | **Custom collection** | *What conceptual group did I put it in?* | Many per holding | The user decides |
 | **Tag** | *Free-form label* | Many per holding | The user decides |
 | **Smart filter** | *What matches this rule right now?* | Computed, stored nowhere | The underlying data changes |
@@ -322,6 +322,11 @@ operation, which is wrong.
 user. Retailers are user-scoped rather than global so that "how much have I spent at Outland" is
 a private fact and two users' naming habits never collide. `storage_locations` has a `kind` enum
 (`binder`, `box`, `toploader_box`, `graded_case`, `shelf`, `other`) and a `sort_order`.
+
+**`holding_tags`** (M6): many-to-many join, `(holding_id, tag_id)` composite PK plus a denormalized
+`user_id` (S1). Membership only — adding or removing a tag changes nothing financial, same
+reasoning as `custom_collection_members`' invariant C1 below, which `custom_collections` itself
+(the grouping concept, not the join table) still ships with in M7.
 
 ### 5.2.1 `custom_collections` and `custom_collection_members`
 
@@ -412,18 +417,23 @@ money — those belong to lots.
 |---|---|
 | `id uuid pk`, `user_id fk` | |
 | `holding_kind` | enum `raw_card`, `graded_card`, `sealed` |
-| `card_variant_id fk nullable`, `sealed_product_id fk nullable` | Exactly one non-null, enforced by check constraint |
+| `card_variant_id fk nullable`, `sealed_product_id fk nullable`, `manual_card_id fk nullable` | Exactly one non-null, enforced by check constraint (M6, D-037 — see §5.4.1) |
 | `condition` | Null for sealed and for graded |
 | `grading_state` | enum `raw`, `pending`, `graded`. `raw` for sealed holdings. |
 | `grader` | enum `psa`, `cgc`, `bgs`, `ace`, `sgc`, `tag`, `other`; null unless graded/pending |
 | `grade numeric(3,1) nullable`, `cert_number text nullable` | |
 | `sealed_intent` | enum `keep_sealed`, `planned_to_open`, `undecided`; null unless `holding_kind = 'sealed'` |
-| `storage_location_id fk nullable`, `is_favorite bool` | |
+| `is_favorite bool` | |
 | `notes`, `created_at`, `updated_at`, `deleted_at nullable` | |
 
 `sealed_intent` is organisational only. Changing it never alters purchase history, cost basis or
 any financial figure — it exists so "what is my sealed investment worth" can be separated from
 "what is queued to be opened", which are different questions about the same shelf.
+
+**`storage_location_id` lives on `acquisition_lots`, not here** — moved there in M6 (D-036) after a
+concrete scenario proved the original "one per holding" cardinality wrong: two identical NM copies
+in Binder 1 and a third in Binder 2 are correctly one holding (`holdings_identity` below merges
+them) but cannot share one location column. See §5.5.
 
 Partial unique index so the same physical state does not fragment into duplicate holdings:
 
@@ -431,7 +441,7 @@ Partial unique index so the same physical state does not fragment into duplicate
 CREATE UNIQUE INDEX holdings_identity ON holdings (
   user_id,
   holding_kind,
-  coalesce(card_variant_id, sealed_product_id),
+  coalesce(card_variant_id, sealed_product_id, manual_card_id),
   coalesce(condition::text, ''),
   grading_state,
   coalesce(grader::text, ''),
@@ -450,6 +460,31 @@ a new graded holding via `lot_transfers` (§5.9).
 lot mechanics (quantity, cost basis, partial disposal) are identical, and unifying them means
 one code path for valuation, sales and export.
 
+#### 5.4.1 `manual_card_definitions` — the catalog-missing fallback (M6, D-017/D-037)
+
+A user-private identity source alongside the shared catalog, for a physical card the ingest has
+not (yet) covered. M5's real ingest found permanent provider gaps — dozens of sets with a
+non-zero card count and an empty `cards[]` array, ~9,300 cards with no image, six sets that never
+ingested at all — so "the shared catalog has this card" cannot be a precondition for ownership
+without silently breaking D-017.
+
+| Column | Notes |
+|---|---|
+| `id uuid pk`, `user_id fk` | |
+| `name text not null` | |
+| `set_name`, `collector_number`, `language`, `finish`, `stamp`, `subtype text nullable` | Free text — deliberately not the catalog's typed enums/foreign keys, since nothing here is verified provider data |
+| `size card_size nullable` | Reuses the catalog's enum; a genuinely closed vocabulary, unlike the fields above |
+| `notes text nullable`, `created_at`, `updated_at` | |
+
+No provider id, no rarity, no price, no image requirement — see M6 prompt §18. Ownership class
+"User-private" (§1): full CRUD restricted to `user_id = auth.uid()`, never visible to another user,
+never written into `cards`/`card_variants`.
+
+**Future reconciliation**, not built in M6: when the shared catalog later gains the missing card,
+repointing a holding's `card_variant_id` at the canonical variant and clearing `manual_card_id` is
+the existing "correct a card's identity" lifecycle operation (§9), applied to this column. No lot,
+cost or disposal history is disturbed.
+
 ### 5.5 `acquisition_lots`
 
 The financial heart of the model.
@@ -457,17 +492,30 @@ The financial heart of the model.
 | Column | Notes |
 |---|---|
 | `id uuid pk`, `holding_id fk`, `user_id fk` | |
-| `origin` | enum `purchase`, `opening`, `trade_in`, `gift`, `found`, `pre_tracking`, `other` |
+| `origin` | enum `purchase`, `opening`, `trade_in`, `gift`, `found`, `pre_tracking`, `other`. UI labels: opening → "Pulled", pre_tracking → "Existing collection". |
 | `cost_basis_state` | enum `known`, `unallocated_opening`, `not_paid`, `unknown`, `trade_in` |
-| `purchase_line_id fk nullable` | Set when `origin = 'purchase'` |
-| `opening_id fk nullable` | Set when `origin = 'opening'`; **retained permanently, including after sale** |
-| `trade_line_id fk nullable` | Set when `origin = 'trade_in'` |
+| `purchase_line_id fk nullable` | Set when `origin = 'purchase'`, or when `origin = 'other'` with a known cost |
 | `acquired_on date` | |
 | `quantity int`, `quantity_remaining int` | `0 <= quantity_remaining <= quantity` |
 | `unit_cost_basis_minor bigint **nullable**` | Present only when `cost_basis_state = 'known'`. **Never 0 to mean "free".** |
 | `cost_basis_currency`, `unit_cost_basis_nok_minor nullable` | |
 | `residual_minor int default 0` | Largest-remainder residual so `quantity × unit + residual` = line cost exactly |
+| `storage_location_id fk nullable` | Relocated here from `holdings` in M6 (D-036) — where a specific batch of copies physically sits, not a property of the holding as a whole |
 | `notes`, `created_at`, `voided_at nullable` | |
+
+**`opening_id`/`trade_line_id` do not exist yet.** `origin` gained the `opening` and `trade_in`
+enum values in M6 (D-038, pulled forward from their originally-planned M16/M18 arrival) so a pulled
+or traded-in card is recordable now, but the columns that will eventually link a lot back to its
+`openings`/`trades` row arrive with those tables, per §12's "enum vocabulary tracks table
+availability" pattern. A `origin = 'opening'` lot in M6 simply has no opening reference yet — this
+is the "later opening reconciliation/linking must remain possible" case that pattern already
+anticipated. `cost_basis_state`'s consistency mapping to `origin` (below) is what stops a pull ever
+being priced as if it were a purchase in the meantime.
+
+An `origin = 'purchase'` lot with a known cost is created together with a real, ordinary
+`purchases`/`purchase_lines` row by M6's `add_card_acquisition` RPC (a single line, no shipping, no
+discount) — not a "provisional" purchase. M8 adds the ability to build a richer multi-line purchase
+over the same tables; it does not introduce a different *kind* of purchase.
 
 `cost_basis_state` is a separate column rather than something inferred from `origin`, because the
 mapping is not one-to-one: a `purchase`-origin lot from a pre-tracking receipt the user no longer
@@ -486,8 +534,18 @@ CHECK (
 )
 ```
 
-Plus a consistency constraint tying origin to the permitted states — an `opening`-origin lot may
-only be `unallocated_opening`, a `gift`-origin lot only `not_paid`, and so on.
+Plus a consistency constraint tying origin to the permitted states, shipped in M6
+(`acquisition_lots_origin_cost_state_consistency`):
+
+| `origin` | Permitted `cost_basis_state` |
+|---|---|
+| `purchase` | `known`, `unknown` |
+| `opening` | `unallocated_opening` only |
+| `gift` | `not_paid` only |
+| `trade_in` | `trade_in` only |
+| `pre_tracking` | `unknown` only |
+| `found` | `not_paid`, `unknown` |
+| `other` | `known`, `not_paid`, `unknown` |
 
 ### 5.6 `lot_cost_adjustments`
 
@@ -628,12 +686,23 @@ when a lot is later edited. `NULL` propagates from a `NULL` lot cost basis and m
 
 ### 5.12 `manual_valuations`
 
+**Shipped in M6** (D-038), pulled forward from its originally-planned M11 arrival because the M6
+gate requires a directly-owned graded card to carry a manual value in MVP. Only this entry table
+ships now — the valuation *resolver* (manual → fresh → stale → missing, FINANCIAL_MODEL.md §6) and
+every provider-price table remain M9's/M11's, exactly as originally sequenced, because M6 has no
+other price source for a resolver to fall back to.
+
 | Column | Notes |
 |---|---|
 | `id uuid pk`, `user_id fk`, `holding_id fk` | |
-| `value_minor`, `currency`, `value_nok_minor` | |
+| `value_minor`, `currency`, `value_nok_minor` | Currency fixed to `'NOK'` by check constraint in M6 — no FX ingestion exists before M9, so a non-NOK value would have no honest NOK conversion to freeze. Lifted by a future migration once FX exists, not an application-layer decision. |
 | `effective_from date`, `superseded_at timestamptz nullable` | History preserved; never updated in place |
-| `note`, `created_by`, `created_at` | |
+| `note`, `created_at` | M6 omits a separate `created_by` column — every row's creator is already its `user_id`, and RLS already scopes it; nothing in M6 distinguishes an admin- or system-set valuation from the owner's own. |
+
+Set/superseded through `set_manual_valuation(p_holding_id, p_value_minor, p_note, p_effective_from)`
+— a small SECURITY INVOKER RPC that supersedes the current active row and inserts the new one in
+one call, keeping the append-only history real without asking the client to do it in two requests.
+A partial unique index (`holding_id WHERE superseded_at IS NULL`) enforces at most one active row.
 
 Manual valuations never overwrite `price_snapshots`. The resolver simply prefers them
 (FINANCIAL_MODEL §6). Both values remain inspectable in the holding detail view.
@@ -834,18 +903,50 @@ DECISIONS entry.
 holdings, lots and purchases only. Everything else arrives with the milestone that first needs
 it: `lot_disposals` and `lot_cost_adjustments` (first disposal-producing milestone — M10 sales,
 ahead of M16 openings in current ROADMAP order), `openings` (M16), `trades` and `lot_transfers`
-(M18), `grading_submissions` (M17), `sales`/`sale_lines` (M10), `manual_valuations` (M11),
+(M18), `grading_submissions` (M17),
+`sales`/`sale_lines` (M10),
 `price_snapshots`/`sealed_price_snapshots`/`fx_rates`/`watched_card_variants` (M9),
 `portfolio_snapshots` (M12), `custom_collections`/`custom_collection_members` (M7),
 `audit_events` (first milestone with a void/hard-delete path to audit).
+`manual_card_definitions`, `holding_tags` and `manual_valuations` were **not** on this deferred
+list — see the M6 notes below for the two (`lot_origin`/`cost_basis_state` values, and
+`manual_valuations`) that shipped ahead of their originally-planned milestone.
 
-**Enum vocabulary tracks table availability.** `lot_origin` ships in M3 with `purchase`, `gift`,
-`found`, `pre_tracking`, `other` only — `opening` and `trade_in` are added by
-`ALTER TYPE ... ADD VALUE` in the migrations that introduce `openings` (M16) and `trades` (M18),
-alongside the `opening_id`/`trade_line_id` columns those origins need on `acquisition_lots`.
-Likewise `cost_basis_state` ships with `known`, `not_paid`, `unknown`; `unallocated_opening` and
-`trade_in` arrive with their respective milestones. An enum value with no supporting column to
-attach it to is a trap, not a convenience.
+**Enum vocabulary tracks table availability, with two M6 exceptions (D-038).** `lot_origin` shipped
+in M3 with `purchase`, `gift`, `found`, `pre_tracking`, `other` only; M6 added `opening` and
+`trade_in` by `ALTER TYPE ... ADD VALUE` *without* the `opening_id`/`trade_line_id` columns those
+origins will eventually need on `acquisition_lots` — those still arrive with `openings` (M16) and
+`trades` (M18). Likewise `cost_basis_state` shipped with `known`, `not_paid`, `unknown`; M6 added
+`unallocated_opening` and `trade_in`. D-017 (every physical card trackable) required a pulled or
+traded-in card to be recordable in M6 itself, not after M16/M18 — see DECISIONS.md D-038 for the
+reasoning and DATA_MODEL.md §5.5 for what a lot with no linking column yet looks like. Elsewhere in
+this document, "an enum value with no supporting column to attach it to is a trap, not a
+convenience" remains the default rule; D-038 is the one deliberate, documented exception to it.
+
+## 13. M6 implementation notes
+
+**Storage location relocated from `holdings` to `acquisition_lots` (D-036).** §5.2/§5.4/§5.5 above
+reflect the corrected location; this note exists so a reader who remembers the earlier "one per
+holding" text knows it changed and why (a shared holding cannot represent copies split across two
+physical locations).
+
+**Manual card fallback (§5.4.1, D-037)** and **`opening`/`trade_in` origins plus
+`manual_valuations` pulled forward (D-038)** are both described in place above; listed here only so
+this section's index of "what M6 changed relative to the original plan" is complete in one place.
+
+**`add_card_acquisition`, `set_manual_valuation`, `void_acquisition_lot`** are the three new
+SECURITY INVOKER RPCs (`supabase/migrations/20260821120050_m6_add_card_acquisition.sql`).
+`add_card_acquisition` is the one non-trivial one: it finds-or-creates the identity-matching
+holding (racing INSERTs resolved by catching `unique_violation` against `holdings_identity` and
+re-reading, rather than an application-level lock) and writes one acquisition lot — and, when the
+cost is known, the ordinary single-line purchase it traces to — inside one function call, which is
+already one transaction. See SECURITY.md §5.9 for the privilege reasoning and TESTING.md for the
+cross-tenant attack cases this RPC's argument surface (storage location, manual card) is tested
+against.
+
+**`holding_summaries`** (`supabase/migrations/20260821120060_m6_holding_summaries_view.sql`) is a
+`security_invoker = true` view aggregating open quantity per holding and joining the display facts
+the Collection list needs — one query, not one query per row (§10.1's scale concern, now real).
 
 **`acquisition_lots` has no `opening_id`, `trade_line_id`, `sale_line_id` or `lot_disposals` link
 in M3**, for the same reason. `quantity_remaining` is constrained to

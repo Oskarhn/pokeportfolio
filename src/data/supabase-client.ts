@@ -14,13 +14,14 @@ import type { Database } from './database.types'
  */
 
 const url = import.meta.env.VITE_SUPABASE_URL as string | undefined
-const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined
+const publishableKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string | undefined
 
-if (!url || !anonKey) {
+if (!url || !publishableKey) {
   throw new Error(
-    'VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY must be set. Copy .env.example to .env.local ' +
-      'and fill in the values from the Supabase project dashboard — see docs/DEVELOPMENT.md §2.',
+    'VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY must be set. Copy .env.example to ' +
+      '.env.local and fill in the values from the Supabase project dashboard — see ' +
+      'docs/DEVELOPMENT.md §2.',
   )
 }
 
-export const supabase = createClient<Database>(url, anonKey)
+export const supabase = createClient<Database>(url, publishableKey)

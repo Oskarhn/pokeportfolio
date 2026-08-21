@@ -718,3 +718,138 @@ and nothing else. This is the same class of credential as a CI deploy key, not a
 this secret, and the secret is never shipped to a client). The secret is rotatable independently of
 every other credential in the system by re-running `supabase secrets set CATALOG_SYNC_SECRET=...`
 and updating the operator's own environment; no user-facing behaviour depends on it.
+
+---
+
+## D-036 — Storage location lives on the acquisition lot, not the holding
+
+**2026-08-21 · Accepted; corrects DATA_MODEL.md §5.2's original "one per holding" cardinality**
+
+**Context.** M6 built the real add-to-collection flow and checked a concrete scenario before
+writing user data against the schema: two identical NM copies of a card in Binder 1 and a third,
+equally identical, in Binder 2. `holdings_identity` correctly merges all three into one holding
+(same variant, same condition, same grading state — DATA_MODEL.md §5.4), but `holdings` carried a
+single `storage_location_id` column, so a shared holding could name only one location. The three
+copies could not be represented as physically split.
+
+**Decision.** `storage_location_id` moves from `holdings` to `acquisition_lots`. A batch of copies
+acquired together and stored together is exactly what a lot already models; location becomes an
+ordinary lot-level fact, the same way condition or grading state would if they varied (they can't,
+by construction of the identity index — but location legitimately does).
+
+**Alternatives.** Keep location on the holding and make it part of `holdings_identity`, so a
+location difference creates a new holding — rejected because M6 prompt §21 and DATA_MODEL.md §5.4
+are explicit that ordinary lot differences, not new holdings, are the right place for variation
+that isn't a different physical *state* of the card. A holding answers "what do I own"; a lot
+answers "which batch, from when, at what cost, and where" — location is a "where", not a "what".
+
+**Consequences.** Same shape as M5's D-033/D-034: a real scenario found and fixed before any real
+user data existed, not migrated out from under it later. `profiles.default_storage_location_id`
+keeps its original meaning as a prefill default for new lots rather than new holdings — a small
+reinterpretation, not a schema change. DATA_MODEL.md §5.2/§5.4/§5.5 updated in the same commit.
+
+---
+
+## D-037 — Manual card definitions: a user-private identity source alongside the shared catalog
+
+**2026-08-21 · Accepted**
+
+**Context.** D-017 requires every physical card to be trackable. M5's real ingest found permanent
+provider gaps — dozens of sets with a non-zero card count and an empty `cards[]` array, ~9,300
+cards with no image, six sets that never ingested at all (HANDOVER.md, "M5 — Catalog"). Making
+"the shared catalog has this card" a precondition for ownership would silently violate D-017 for
+every gap, present and future.
+
+**Decision.** A third nullable identity source on `holdings`: `manual_card_id`, referencing a new
+user-private `manual_card_definitions` table (name, set name, collector number, language, finish,
+stamp, subtype, size, notes — no provider id, no rarity, no price, no image requirement). The
+three-way check constraint on `holdings` enforces exactly one of `card_variant_id` /
+`sealed_product_id` / `manual_card_id` — never zero, never two.
+
+**Alternatives.** Block adding an unlisted card until the catalog is manually extended by an
+operator — rejected: it makes the user's own collection depend on someone else's ingest schedule,
+and it would require a write path into the shared catalog from unverified user input, which
+DATA_MODEL.md §3 explicitly reserves for the service role. Store a "provisional" row directly in
+`cards`/`card_variants` — rejected: it pollutes the shared catalog with unverified per-user facts
+and every other user would see it once it existed.
+
+**Consequences.** A manual card is ordinary Collection inventory: it carries lots, condition,
+storage, cost, tags, and counts toward the physical card total, exactly like a catalog card. It is
+never visible to another user (plain user-private RLS) and never merges into the shared catalog by
+itself. A future reconciliation operation — repoint a holding's `card_variant_id` at a
+newly-ingested canonical variant and clear `manual_card_id` — is the existing "correct a card's
+identity" lifecycle operation (DATA_MODEL.md §9) applied to this column; no new mechanism is
+required, and no lot, cost or disposal history is disturbed by it. Not built in M6: the
+reconciliation *UI* is deferred, since nothing about the data model blocks adding it later.
+
+---
+
+## D-038 — `opening`/`trade_in` origins and manual valuations pulled forward from M16/M18/M9
+
+**2026-08-21 · Accepted; deliberate deviation from the M3 sequencing note in DATA_MODEL.md §12**
+
+**Context.** DATA_MODEL.md §12 originally planned `lot_origin` values `opening` and `trade_in`,
+and the `manual_valuations` table, to ship alongside the milestones that give them a full
+workflow — M16 (openings), M18 (trades), M9 (pricing). But the M6 gate itself requires a user to
+record a pulled card and a directly-owned graded card with a manual value *today*, and D-017 makes
+"come back once M16/M18/M9 exist" an unacceptable answer for a card physically pulled from a pack
+this week.
+
+**Decision.** Ship the enum values and the `manual_valuations` table now, without their eventual
+supporting infrastructure: `acquisition_lots.origin` gains `opening` (UI label "Pulled") and
+`trade_in` with no `opening_id`/`trade_line_id` column yet — a lot just has no opening/trade
+reference until M16/M18 add one and link it. `manual_valuations` ships as a plain entry table; the
+provider-price resolver (manual → fresh → stale → missing, FINANCIAL_MODEL.md §6) stays M9's
+entirely, because M6 has no other price source for it to resolve against.
+
+**Alternatives.** Wait for M16/M18/M9 — rejected, violates D-017 for the exact case (openings) the
+product's cost model was built to handle honestly. Model "pulled" as `origin = 'other'` with a
+note — rejected, loses the ability to distinguish a pull from an unusual purchase later, and the
+cost-basis-state consistency constraint (`unallocated_opening` only pairs with `opening`) exists
+specifically so a pull can never be silently priced as if it were paid for.
+
+**Consequences.** When M16 ships, `acquisition_lots.opening_id` is added as a nullable column and
+existing `opening`-origin lots become linking candidates, not a migration hazard — DATA_MODEL.md
+§5.5 already anticipated exactly this ("later opening reconciliation/linking must remain
+possible"). Same reasoning applies to `trade_in` and M18. ROADMAP.md's M6 entry and DATA_MODEL.md
+§12 are corrected in the same commit rather than left contradicting the shipped schema.
+
+---
+
+## D-039 — Migrate to Supabase publishable/secret API keys; retire the legacy pair by deactivation
+
+**2026-08-21 · Accepted**
+
+**Context.** An M5-session command (`supabase projects api-keys`, run to fetch the anon key for
+local dev) returned `pokeportfolio-dev`'s full key set, including the legacy `service_role` secret,
+into the session transcript — not requested, not used, not stored, not committed, but present and
+therefore treated as potentially exposed (HANDOVER.md, PROJECT_JOURNAL.md). Supabase's current,
+official migration path (verified 2026-08-21) replaces the legacy `anon`/`service_role` JWT pair
+with named `sb_publishable_…`/`sb_secret_…` keys, both created alongside the legacy pair without
+disturbing it, with Edge Functions receiving the new secret automatically via
+`SUPABASE_SECRET_KEYS` (a JSON map, one entry per named key) with no redeploy required for the
+injection itself.
+
+**Decision.** Create the new publishable/secret key pair through the dashboard (an action only the
+project owner can take without re-triggering the exact command that caused the exposure). Migrate
+the frontend's build-time env var from `VITE_SUPABASE_ANON_KEY` to
+`VITE_SUPABASE_PUBLISHABLE_KEY`, and both Edge Functions (`redeem-invitation`, `sync-catalog`) to
+prefer `SUPABASE_SECRET_KEYS` over the legacy `SUPABASE_SERVICE_ROLE_KEY`, falling back to the
+legacy variable only because the *local* Supabase stack still emits it (`supabase/functions/_shared/
+service-key.ts`). Once verified working end to end, deactivate — not delete — the legacy
+`anon`/`service_role` keys in the dashboard.
+
+**Alternatives.** Rotate the JWT signing secret, the historical way to invalidate a leaked
+`service_role` value — rejected. It invalidates every existing user's session (the signing secret
+underlies every issued JWT, not just the service-role one), which is a large, user-visible action
+disproportionate to an exposure that was never used or persisted anywhere, and current Supabase
+guidance offers a narrower path that does not carry that cost. Do nothing, on the reasoning that
+the value was never actually used — rejected: "potentially exposed" is the standing conclusion in
+HANDOVER.md/PROJECT_JOURNAL.md, and a real, low-cost, reversible mitigation exists.
+
+**Consequences.** No forced re-login: deactivating legacy keys does not invalidate issued user
+JWTs, only the API-key-level authentication Supabase layers on top. Reversible: current Supabase
+tooling allows re-activating a deactivated legacy key if a missed client turns up depending on it.
+`docs/SECURITY.md` §6 and `HANDOVER.md` restate the terminology (current hosted keys vs. the local
+stack's legacy fixture variables vs. the browser-safe key vs. the privileged backend key) so a
+future session does not read the old anon/service_role framing as still describing production.
