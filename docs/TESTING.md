@@ -213,6 +213,20 @@ The suite is written table-driven so adding a table means adding a row, not a fi
 user-private table without an entry fails a meta-test that compares the table list against the
 covered list.
 
+**M7 (`tests/authorization/m7_portfolio.test.ts`, `tests/db/m7_constraints.test.ts`).**
+`custom_collections` fits the generic owned-table attack matrix and is folded into it; what needs
+its own coverage is `custom_collection_members` (ownership depends on *two* parent rows, like
+`holding_tags`) and the `list_portfolio`/`portfolio_counts` RPCs, which have no `user_id` argument
+to forge — every predicate derives from `auth.uid()`. Tested there: a stranger cannot read, insert
+into or delete membership from another user's collection either direction (their holding into the
+stranger's collection, or the stranger's holding into their own collection); `list_portfolio` never
+returns another user's rows; sort correctness (`name_asc` actually sorts alphabetically); filter
+correctness (favourite, custom collection); and keyset-pagination completeness (walking the cursor
+one row at a time returns every matching holding exactly once, in the same order as a single large
+page). Invariant C1 (deleting a collection touches no holding/lot) is asserted directly against the
+service-role client in the `tests/db/` file, matching the existing C1-style pattern in
+`tests/db/m6_constraints.test.ts`.
+
 **M6 (`tests/authorization/m6_collection.test.ts`, `tests/db/m6_constraints.test.ts`).** The
 generic table-driven attack matrix above covers `manual_card_definitions` (folded into
 `simple-owned-tables.test.ts` — its shape is uniform enough to fit) but not `holding_tags` or
@@ -316,6 +330,15 @@ Not micro-benchmarks. Two checks that map to real failure:
   small prefetch margin.
 - Price-snapshot volume: one row per watched variant per price kind per day. A seeded collection
   with heavy duplication must not inflate it (D-019).
+- **M7's 10 000-lot Portfolio gate.** `scripts/portfolio-perf-benchmark.mjs` seeds an isolated
+  synthetic account (never the owner's real one — M7 prompt §101) with 10 000+ lots — duplicates,
+  five conditions, tags, storage locations, custom-collection membership — and times
+  `list_portfolio` across every sort mode, one filtered query, a keyset second page and
+  `portfolio_counts()`, reporting milliseconds/rows/payload bytes rather than asserting a fixed
+  threshold (a hardcoded millisecond budget on a shared CI runner would be exactly the
+  "microbenchmark theatre" this section already warns against). The milestone gate itself is
+  behavioural — a real browser at this scale stays interactive, verified manually and recorded in
+  HANDOVER.md/PROJECT_JOURNAL.md, not by this script's numbers alone.
 
 ---
 
@@ -334,6 +357,12 @@ Three steps in `db-tests`, and the order is the point (SECURITY.md §5.9):
 
 The suites then run against a database that has been through that cycle, rather than one that was
 never wrong. That distinction is what M4's escalation cost.
+
+**M7 extends step 2** to also grant blanket `EXECUTE` on every routine to `PUBLIC` — the privilege
+class named-role revokes cannot touch (SECURITY.md §5.9/§3.2.1, D-042) — so the audit's new
+PUBLIC-grant check is proven able to fail before the re-applied baseline is trusted to have fixed
+it, the same "an audit that cannot fail is not a check" reasoning applied to the gap M6's own
+journal entry flagged as unclosed.
 
 `tests/authorization/system_owned_columns.test.ts` asserts the same restrictions behaviourally, one
 column at a time, probing with a filter that matches no rows: PostgreSQL checks column privileges

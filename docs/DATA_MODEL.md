@@ -328,7 +328,7 @@ a private fact and two users' naming habits never collide. `storage_locations` h
 reasoning as `custom_collection_members`' invariant C1 below, which `custom_collections` itself
 (the grouping concept, not the join table) still ships with in M7.
 
-### 5.2.1 `custom_collections` and `custom_collection_members`
+### 5.2.1 `custom_collections` and `custom_collection_members` — shipped in M7
 
 User-defined groups: *Trade Binder*, *Favourites*, *151 Master Set*, *Childhood Cards*, *Sell*.
 
@@ -344,7 +344,14 @@ Membership is purely organisational. Adding a holding to a collection does not c
 value, cost basis or anything financial. Removing it deletes the membership row and nothing else.
 
 > **Invariant C1:** deleting a `custom_collection` cascades only to membership rows. No holding,
-> lot or transaction is ever affected. Asserted by test.
+> lot or transaction is ever affected. Asserted by test
+> (`tests/db/m7_constraints.test.ts`).
+
+No RPC layer wraps CRUD here — create/rename/delete a collection and add/remove a holding are
+plain owner-scoped table writes under RLS, the same shape as `storage_locations`/`tags`
+(SECURITY.md §3.2.1). `list_portfolio`/`portfolio_counts` (§10.1) are the read side: a
+`custom_collection_id` filter parameter joins membership the same way any other Portfolio filter
+does, so quick chips and the full filter panel share one query shape.
 
 ### 5.2.2 Smart filters
 
@@ -869,10 +876,10 @@ lots per user**. Consequences already designed for:
 | Concern | Response |
 |---|---|
 | Price history | Per variant, not per copy (§4.2). Decoupled from collection size. |
-| Collection list | Server-side pagination with keyset cursors, plus client virtualisation. Never a full fetch. |
+| Collection list | Server-side pagination with keyset cursors, plus client virtualisation. Never a full fetch. **Shipped in M7**: `list_portfolio(...)` (SECURITY.md §3.2.1) is the one query the Portfolio grid/list/table views call, keyset-paginated (never `OFFSET`) and virtualised client-side with TanStack Virtual. |
 | Card images | Lazy-loaded, sized to the grid density, from the provider CDN. A 4-per-row grid must not issue thousands of image requests on mount. |
-| Portfolio aggregation | Read from `portfolio_snapshots`, not recomputed per page load. |
-| Counts | `physical_card_count` = Σ `quantity_remaining`; `unique_variant_count` = distinct variants. Both are single aggregate queries and both are displayed. |
+| Portfolio aggregation | Read from `portfolio_snapshots`, not recomputed per page load — once that table exists (M12). Until then, `portfolio_counts()` is one cheap aggregate query, not a per-row client sum. |
+| Counts | `physical_card_count` = Σ `quantity_remaining`; `unique_holding_count` = distinct open holdings. Both are single aggregate queries (`portfolio_counts()`, M7) and both are displayed. |
 | Export | Streamed/chunked, not assembled in memory. |
 | Grouped display | The default list groups by holding, so 80 identical energies are one row with quantity 80 — a display concern, not a storage one. |
 
@@ -906,7 +913,7 @@ ahead of M16 openings in current ROADMAP order), `openings` (M16), `trades` and 
 (M18), `grading_submissions` (M17),
 `sales`/`sale_lines` (M10),
 `price_snapshots`/`sealed_price_snapshots`/`fx_rates`/`watched_card_variants` (M9),
-`portfolio_snapshots` (M12), `custom_collections`/`custom_collection_members` (M7),
+`portfolio_snapshots` (M12), `custom_collections`/`custom_collection_members` (**shipped M7**),
 `audit_events` (first milestone with a void/hard-delete path to audit).
 `manual_card_definitions`, `holding_tags` and `manual_valuations` were **not** on this deferred
 list — see the M6 notes below for the two (`lot_origin`/`cost_basis_state` values, and
@@ -989,6 +996,41 @@ failure. Every `user_id` foreign key to `auth.users` had no `ON DELETE` action, 
 deletion — which SECURITY.md §8 describes as a cascade — was impossible for any user owning a single
 row; all eight now cascade. And `invitations` allowed an admin to read `token_hash` through the
 Data API, which the column-level grant now prevents.
+
+## 14. M7 implementation notes
+
+**`custom_collections`/`custom_collection_members` shipped exactly as §5.2.1 originally specified**
+— the column *shape* needed no correction, unlike M5/M6's catalog/holdings fixes. One real bug
+did surface, caught by CI rather than by inspection: `custom_collection_members.user_id` was
+missing `default auth.uid()` (present on `custom_collections`/`manual_card_definitions`), which
+made a real authenticated-client insert fail RLS rather than succeed. Fixed before merge —
+PROJECT_JOURNAL.md 2026-08-22.
+
+**`list_portfolio(...)` and `portfolio_counts()`** (`supabase/migrations/20260822120010_m7_portfolio_query.sql`,
+performance-corrected by `20260822120030`/`20260822120040`) are the Portfolio's entire server-side
+query surface: sort (an enum, `portfolio_sort_order`), every quick/full filter, and keyset
+pagination in one `SECURITY INVOKER` function each. Neither reads from a view — both query
+`holdings`/`acquisition_lots`/`card_variants`/`cards`/`card_sets`/`manual_card_definitions`/
+`manual_valuations` directly, because the filter joins and keyset cursor this milestone needs do
+not fit `holding_summaries` (M6) cleanly. `holding_summaries` itself is unchanged and still backs
+the holding detail page's single-row read. Both aggregate a holding's lot data via a
+`MATERIALIZED` CTE doing a plain `LEFT JOIN ... GROUP BY` — the same shape `holding_summaries`
+itself uses — rather than a per-holding `LATERAL` subquery, which real 10,000-lot measurement
+against `pokeportfolio-dev` found to be 10-40× slower (DECISIONS.md's performance-correction note,
+PROJECT_JOURNAL.md 2026-08-22). Any future query over `holdings`/`acquisition_lots` needing a
+per-row aggregate should follow this GROUP BY shape from the start, not rediscover the difference.
+
+**Value before M9 (D-041).** `list_portfolio`'s notion of "value" is exactly one real, honest
+number: a graded holding's active `manual_valuations` row. Every raw-card holding is genuinely
+`NULL` and falls into a second, deterministically-ordered (by name) bucket — never a fabricated
+figure, never the acquisition cost standing in for market value. The keyset cursor for
+`value_desc`/`value_asc` carries `(value, has_value, name, holding_id)` and the SQL branches
+explicitly on which bucket the cursor's row was in.
+
+**`profiles.collection_default_sort`** (new enum `portfolio_sort_order`, default `value_desc`)
+joins `collection_grid_density`/`collection_default_view` as the third Portfolio display
+preference. All three are read by the client and can be overridden per-request via URL search
+params (`src/router.tsx`'s `PortfolioSearch`) without changing the stored default.
 
 **Money serialization boundary.** `bigint` minor-unit columns are exact in Postgres, but
 PostgREST serializes `bigint` as a plain JSON number by default, and JSON/JS numbers only carry

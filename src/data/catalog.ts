@@ -167,6 +167,98 @@ export async function getCardVariantWithCard(
   }
 }
 
+export interface CatalogSet {
+  id: string
+  name: string
+  language: CatalogLanguage
+  releasedOn: string | null
+  cardCountOfficial: number | null
+  cardCountTotal: number | null
+  logoUrl: string | null
+  symbolUrl: string | null
+}
+
+/** Set search is a plain table read, not an RPC (M7 prompt §14) — `card_sets` already grants
+ *  `SELECT` to `authenticated` as ordinary shared-catalog data, so a trigram-backed `ilike` here
+ *  needs no new browser-reachable surface. */
+export async function searchSets(params: {
+  query: string
+  language: CatalogLanguage | null
+  limit?: number
+}): Promise<CatalogSet[]> {
+  let query = supabase
+    .from('card_sets')
+    .select(
+      'id, name, language, released_on, card_count_official, card_count_total, logo_url, symbol_url',
+    )
+    .ilike('name', `%${params.query}%`)
+    .order('released_on', { ascending: false, nullsFirst: false })
+    .limit(params.limit ?? 40)
+  if (params.language) query = query.eq('language', params.language)
+  const { data, error } = await query
+  if (error) throw new Error(error.message)
+
+  return data.map((row) => ({
+    id: row.id,
+    name: row.name,
+    language: row.language as CatalogLanguage,
+    releasedOn: row.released_on,
+    cardCountOfficial: row.card_count_official,
+    cardCountTotal: row.card_count_total,
+    logoUrl: row.logo_url,
+    symbolUrl: row.symbol_url,
+  }))
+}
+
+export async function getSet(setId: string): Promise<CatalogSet | null> {
+  const { data, error } = await supabase
+    .from('card_sets')
+    .select(
+      'id, name, language, released_on, card_count_official, card_count_total, logo_url, symbol_url',
+    )
+    .eq('id', setId)
+    .maybeSingle()
+  if (error) throw new Error(error.message)
+  if (!data) return null
+  return {
+    id: data.id,
+    name: data.name,
+    language: data.language as CatalogLanguage,
+    releasedOn: data.released_on,
+    cardCountOfficial: data.card_count_official,
+    cardCountTotal: data.card_count_total,
+    logoUrl: data.logo_url,
+    symbolUrl: data.symbol_url,
+  }
+}
+
+/** Browsing a set's cards (M7 prompt §14: "selecting a set should allow browsing/searching cards
+ *  from that set"). Plain table read over `cards`, same privilege shape as `getCard`. */
+export async function listCardsInSet(setId: string): Promise<CatalogSearchResult[]> {
+  const { data, error } = await supabase
+    .from('cards')
+    .select(
+      'id, name, local_id, rarity, category, illustrator, image_base_url, language, set_id, card_sets(name)',
+    )
+    .eq('set_id', setId)
+    .order('local_id')
+  if (error) throw new Error(error.message)
+
+  return data.map((row) => ({
+    cardId: row.id,
+    name: row.name,
+    localId: row.local_id,
+    rarity: row.rarity,
+    category: row.category,
+    illustrator: row.illustrator,
+    imageBaseUrl: row.image_base_url,
+    language: row.language as CatalogLanguage,
+    setId: row.set_id,
+    setName: row.card_sets.name,
+    variantCount: 0,
+  }))
+}
+
 export type ImageQuality = 'low' | 'high'
 
 /** TCGdex asset CDN convention: `{imageBaseUrl}/{quality}.webp` (docs/API_SOURCES.md). */

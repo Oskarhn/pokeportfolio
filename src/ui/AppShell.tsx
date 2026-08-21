@@ -1,19 +1,22 @@
 import type { ReactNode } from 'react'
-import { Link } from '@tanstack/react-router'
 import { useAuth } from '../auth/useAuth'
+import { BottomNav } from '../features/nav/BottomNav'
+import { DesktopNav } from '../features/nav/DesktopNav'
 
 interface AppShellProps {
   children: ReactNode
 }
 
 /**
- * Minimal application frame. A plain top-nav header for now — the frozen mobile bottom navigation
- * with a central quick-add (UX_FLOWS.md) is deliberately not built yet; M7 owns navigation
- * refinement once Collection, Catalog and Admin give it enough real destinations to design
- * against (M6 prompt §83).
+ * Application frame (M7 prompt §10-11). Mobile gets a slim branding header plus a fixed bottom
+ * navigation bar with a central quick-add; desktop gets a single top navigation row covering the
+ * same five destinations plus Add (DesignSystem.md §4.2's "sidebar/top nav at ≥768px, not a
+ * stretched phone tab bar" — a plain top row was the simpler choice that meets the same
+ * requirement without inventing a persistent sidebar this app does not otherwise need).
  */
 export function AppShell({ children }: AppShellProps) {
-  const { status, isAdmin, signOut } = useAuth()
+  const { status } = useAuth()
+  const signedIn = status === 'signed-in'
 
   // `svh`, not `dvh`. Both are "the viewport", but dvh is the *largest* it can be — the height with
   // browser chrome retracted, and on iOS the height with the on-screen keyboard dismissed. Sizing
@@ -27,50 +30,23 @@ export function AppShell({ children }: AppShellProps) {
   return (
     <div className="flex min-h-svh flex-col">
       <header
-        className="flex items-center gap-4 border-b border-slate-800 px-4 py-3"
+        className="flex items-center border-b border-slate-800 px-4 py-3 md:hidden"
         style={{ paddingTop: 'max(0.75rem, env(safe-area-inset-top))' }}
       >
         <span className="text-sm font-medium tracking-wide text-slate-300">PokePortfolio</span>
-        {status === 'signed-in' ? (
-          <nav className="ml-auto flex items-center gap-4">
-            <Link
-              to="/collection"
-              className="text-sm text-slate-400 underline-offset-4 hover:text-slate-200 hover:underline"
-            >
-              Collection
-            </Link>
-            <Link
-              to="/catalog"
-              className="text-sm text-slate-400 underline-offset-4 hover:text-slate-200 hover:underline"
-            >
-              Catalog
-            </Link>
-            {isAdmin ? (
-              <Link
-                to="/admin/invitations"
-                className="text-sm text-slate-400 underline-offset-4 hover:text-slate-200 hover:underline"
-              >
-                Invitations
-              </Link>
-            ) : null}
-            <button
-              type="button"
-              onClick={() => {
-                void signOut()
-              }}
-              className="min-h-11 text-sm text-slate-400 underline-offset-4 hover:text-slate-200 hover:underline"
-            >
-              Sign out
-            </button>
-          </nav>
-        ) : null}
       </header>
+      {signedIn ? <DesktopNav /> : null}
       <main
-        className="flex flex-1 flex-col px-4 py-6"
-        style={{ paddingBottom: 'max(1.5rem, env(safe-area-inset-bottom))' }}
+        className={
+          signedIn
+            ? 'flex flex-1 flex-col px-4 py-6 pb-[calc(4.5rem+env(safe-area-inset-bottom))] md:pb-6'
+            : 'flex flex-1 flex-col px-4 py-6'
+        }
+        style={signedIn ? undefined : { paddingBottom: 'max(1.5rem, env(safe-area-inset-bottom))' }}
       >
         {children}
       </main>
+      {signedIn ? <BottomNav /> : null}
     </div>
   )
 }

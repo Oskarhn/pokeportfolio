@@ -5,6 +5,13 @@ disagree, one of them is wrong and the conflict must be resolved, not tolerated.
 
 Monetary behaviour is specified in [FINANCIAL_MODEL.md](FINANCIAL_MODEL.md) and is not repeated here.
 
+**Terminology note (M7, DECISIONS.md D-040).** "Collection" below is the ordinary noun — a
+person's collection of cards — describing product behaviour. Where this document means the
+specific user-facing screen that browses owned cards, that screen is named **Portfolio**
+(`/portfolio`) in the actual UI, navigation and copy. Internal domain/table naming
+(`holdings`, `holding_summaries`, the `custom_collection` concept itself) is unaffected — only the
+one owned-card-browsing screen's user-facing name changed.
+
 ---
 
 ## 1. What this is
@@ -151,7 +158,7 @@ Acceptance-level statements. Implementation detail belongs in ARCHITECTURE and D
 - The admin cannot view another user's collection or financial data through the application.
 - A user can export their data and delete their account. Deletion is irreversible and says so.
 
-### 4.2 Collection
+### 4.2 Portfolio
 
 **Every physical card is trackable.** Basic Energy, commons, uncommons, duplicates, cards worth
 two øre, cards with no market price at all — all are ordinary first-class inventory. Nothing is
@@ -199,7 +206,7 @@ normally would. Four distinct concepts, deliberately not merged:
   The user may collapse them out of the default browsing view; the count of hidden cards stays
   visible. **Hiding is not deletion.**
 
-### 4.4 Collection display
+### 4.4 Portfolio display
 
 - Mobile default is an image-led gallery at **2 cards per row**, user-settable to 1, 2, 3 or 4
   and persisted per user. Higher densities show compact tiles with less metadata; that is the
@@ -263,9 +270,9 @@ normally would. Four distinct concepts, deliberately not merged:
 
 ### 4.8.1 History — what I no longer own
 
-A dedicated area, separate from Collection. Collection answers *what do I own now*; History
+A dedicated area, separate from Portfolio. Portfolio answers *what do I own now*; History
 answers *what did I own, and what happened to it*. Disposed items never clutter the active
-collection view by default.
+Portfolio view by default.
 
 Sections: **Sold**, **Traded**, **Other disposals** (write-offs, corrections).
 

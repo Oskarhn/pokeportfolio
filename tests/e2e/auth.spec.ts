@@ -36,19 +36,19 @@ test.describe('routing and guards', () => {
     await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
   })
 
-  test('the collection route is not reachable without a session', async ({ page }) => {
-    await page.goto('/collection')
+  test('the Portfolio route is not reachable without a session', async ({ page }) => {
+    await page.goto('/portfolio')
     await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
-    await expect(page.getByRole('heading', { name: 'Collection' })).toHaveCount(0)
+    await expect(page.getByRole('heading', { name: 'Portfolio' })).toHaveCount(0)
   })
 
-  test('a collection holding deep link is not reachable without a session', async ({ page }) => {
-    await page.goto('/collection/00000000-0000-0000-0000-000000000000')
+  test('a Portfolio holding deep link is not reachable without a session', async ({ page }) => {
+    await page.goto('/portfolio/00000000-0000-0000-0000-000000000000')
     await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
   })
 
   test('the manual-card route is not reachable without a session', async ({ page }) => {
-    await page.goto('/collection/manual/new')
+    await page.goto('/portfolio/manual/new')
     await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Add a card manually' })).toHaveCount(0)
   })
@@ -56,6 +56,35 @@ test.describe('routing and guards', () => {
   test('the add-to-collection route is not reachable without a session', async ({ page }) => {
     await page.goto('/add?variantId=00000000-0000-0000-0000-000000000000')
     await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
+  })
+
+  test('the Profile route is not reachable without a session', async ({ page }) => {
+    await page.goto('/profile')
+    await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
+  })
+
+  test('the More route is not reachable without a session', async ({ page }) => {
+    await page.goto('/more')
+    await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
+  })
+
+  test.describe('legacy /collection links redirect to /portfolio (M7)', () => {
+    test('/collection redirects', async ({ page }) => {
+      await page.goto('/collection')
+      await expect(page).toHaveURL(/\/login$/)
+    })
+
+    test('/collection/$holdingId redirects, preserving the id', async ({ page }) => {
+      await page.goto('/collection/00000000-0000-0000-0000-000000000000')
+      // Redirected to /portfolio/$holdingId, then bounced to sign-in because there is no session —
+      // the id survives the rename either way, which is the point of the redirect.
+      await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
+    })
+
+    test('/collection/manual/new redirects', async ({ page }) => {
+      await page.goto('/collection/manual/new')
+      await expect(page).toHaveURL(/\/login$/)
+    })
   })
 
   test('there is no way to create an account from the sign-in screen', async ({ page }) => {

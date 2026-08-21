@@ -99,6 +99,25 @@ trigger asserting `child.user_id = parent.user_id` is simpler to verify and fast
 `WITH CHECK` is mandatory on every policy. Without it a user can `UPDATE` a row they own and
 reassign `user_id` to someone else.
 
+### 3.2.1 M7: custom collections and the Portfolio browsing RPCs
+
+`custom_collections` follows the plain user-private shape above with no RPC layer at all — create,
+rename, delete and browse are ordinary owner-scoped table operations under RLS, the same shape as
+`storage_locations`/`tags`. `custom_collection_members` has two parents (a collection and a
+holding) and follows `holding_tags`' shape exactly: `user_id` denormalized, a trigger asserting it
+matches *both* parents' owners (S1), no `UPDATE` policy since a membership row is inserted or
+deleted, never edited. Deleting a collection cascades to membership rows only via a plain FK
+`on delete cascade` — invariant C1, DATA_MODEL.md §5.2.1.
+
+`portfolio_counts()` and `list_portfolio(...)` are both `SECURITY INVOKER` (M7 prompt §74):
+`authenticated` already holds `SELECT` on every table they read, so a `DEFINER` would grant
+nothing a plain grant does not already, and RLS on `holdings`/`acquisition_lots`/
+`custom_collection_members` applies to every statement exactly as if the caller had issued it
+directly — the same reasoning `search_cards` and `add_card_acquisition` already use. Every filter
+parameter is bound; the sort parameter is a Postgres enum, so an invalid value cannot even reach
+the function body, and every `ORDER BY`/cursor comparison branches on that enum explicitly rather
+than concatenating caller input into SQL text (M7 prompt §75).
+
 ### 3.3 Attack surface the tests must cover
 
 - Direct read of another user's row by id
@@ -359,6 +378,22 @@ missed the escalation. It therefore also makes the database *wrong* first
 (`tests/db/sql/hostile_grants.sql`, the legacy auto-expose state the deployed project was in),
 proves the audit rejects that state, re-applies the baseline, and proves it converges. The middle
 step is not decoration: an audit that cannot fail is not a check.
+
+**The PUBLIC-EXECUTE blind spot, closed in M7 (D-042).** PostgreSQL grants `EXECUTE` on a newly
+created function to `PUBLIC` by default — a separate ACL entry from anything granted to or revoked
+from a *named* role, so `REVOKE ... FROM anon, authenticated` never touches it. Through M6,
+`grant-audit.sql` only ever compared `anon`/`authenticated` grants against an expected list, so a
+function that skipped the "revoke ... from public" step at creation (the convention M4 established
+after finding exactly this gap for three named-role grants) could carry a live PUBLIC grant the
+audit could not see. M7 closes this the same three-part way as the named-role surface: a one-time
+`revoke execute on all routines in schema public from public` sweep in the privilege baseline, an
+`alter default privileges ... revoke execute on functions from public` so a future function that
+forgets the per-creation revoke does not arrive PUBLIC-executable either, and a new PUBLIC-grant
+check in `grant-audit.sql` asserting the expected PUBLIC-EXECUTE surface on every `public`-schema
+routine is empty (`invitation_status`'s deliberate `anon` reachability is a named-role grant, not a
+PUBLIC one, and is unaffected). `tests/db/sql/hostile_grants.sql` now also grants blanket PUBLIC
+execute as part of its hostile state, so the convergence test proves this new check can fail before
+proving the baseline fixes it.
 
 **One accepted exception.** `supabase_admin` holds default privileges in `public` granting `anon`
 and `authenticated` everything on tables, sequences and functions, in the local stack and in a

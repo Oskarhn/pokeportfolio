@@ -353,6 +353,82 @@ export type Database = {
         }
         Relationships: []
       }
+      custom_collection_members: {
+        Row: {
+          added_at: string
+          collection_id: string
+          holding_id: string
+          sort_order: number
+          user_id: string
+        }
+        Insert: {
+          added_at?: string
+          collection_id: string
+          holding_id: string
+          sort_order?: number
+          user_id?: string
+        }
+        Update: {
+          added_at?: string
+          collection_id?: string
+          holding_id?: string
+          sort_order?: number
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "custom_collection_members_collection_id_fkey"
+            columns: ["collection_id"]
+            isOneToOne: false
+            referencedRelation: "custom_collections"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "custom_collection_members_holding_id_fkey"
+            columns: ["holding_id"]
+            isOneToOne: false
+            referencedRelation: "holding_summaries"
+            referencedColumns: ["holding_id"]
+          },
+          {
+            foreignKeyName: "custom_collection_members_holding_id_fkey"
+            columns: ["holding_id"]
+            isOneToOne: false
+            referencedRelation: "holdings"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      custom_collections: {
+        Row: {
+          color: string | null
+          created_at: string
+          description: string | null
+          id: string
+          name: string
+          sort_order: number
+          user_id: string
+        }
+        Insert: {
+          color?: string | null
+          created_at?: string
+          description?: string | null
+          id?: string
+          name: string
+          sort_order?: number
+          user_id?: string
+        }
+        Update: {
+          color?: string | null
+          created_at?: string
+          description?: string | null
+          id?: string
+          name?: string
+          sort_order?: number
+          user_id?: string
+        }
+        Relationships: []
+      }
       holding_tags: {
         Row: {
           created_at: string
@@ -702,6 +778,7 @@ export type Database = {
       }
       profiles: {
         Row: {
+          collection_default_sort: Database["public"]["Enums"]["portfolio_sort_order"]
           collection_default_view: Database["public"]["Enums"]["collection_view"]
           collection_grid_density: number
           created_at: string
@@ -722,6 +799,7 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          collection_default_sort?: Database["public"]["Enums"]["portfolio_sort_order"]
           collection_default_view?: Database["public"]["Enums"]["collection_view"]
           collection_grid_density?: number
           created_at?: string
@@ -742,6 +820,7 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          collection_default_sort?: Database["public"]["Enums"]["portfolio_sort_order"]
           collection_default_view?: Database["public"]["Enums"]["collection_view"]
           collection_grid_density?: number
           created_at?: string
@@ -1221,6 +1300,75 @@ export type Database = {
         }[]
       }
       is_admin: { Args: never; Returns: boolean }
+      list_portfolio: {
+        Args: {
+          p_condition?: Database["public"]["Enums"]["card_condition"]
+          p_cursor_acquired_on?: string
+          p_cursor_added_at?: string
+          p_cursor_has_value?: boolean
+          p_cursor_holding_id?: string
+          p_cursor_name?: string
+          p_cursor_quantity?: number
+          p_cursor_set_name?: string
+          p_cursor_value_minor?: number
+          p_custom_collection_id?: string
+          p_favorite?: boolean
+          p_grader?: Database["public"]["Enums"]["grader"]
+          p_graded?: boolean
+          p_language?: string
+          p_limit?: number
+          p_low_value?: boolean
+          p_manual_only?: boolean
+          p_missing_value?: boolean
+          p_query?: string
+          p_set_id?: string
+          p_sort?: Database["public"]["Enums"]["portfolio_sort_order"]
+          p_storage_location_id?: string
+          p_tag_id?: string
+        }
+        Returns: {
+          acquired_on_max: string | null
+          acquired_on_min: string | null
+          card_image_base_url: string | null
+          card_language: string | null
+          card_local_id: string | null
+          card_name: string | null
+          card_set_id: string | null
+          card_set_name: string | null
+          card_variant_id: string | null
+          cert_number: string | null
+          condition: Database["public"]["Enums"]["card_condition"] | null
+          created_at: string
+          grade: number | null
+          grader: Database["public"]["Enums"]["grader"] | null
+          grading_state: Database["public"]["Enums"]["grading_state"]
+          has_multiple_storage_locations: boolean | null
+          holding_id: string
+          holding_kind: Database["public"]["Enums"]["holding_kind"]
+          is_favorite: boolean
+          lot_count: number
+          manual_card_id: string | null
+          manual_collector_number: string | null
+          manual_language: string | null
+          manual_name: string | null
+          manual_set_name: string | null
+          notes: string | null
+          quantity: number
+          resolved_value_nok_minor: string | null
+          variant_finish: Database["public"]["Enums"]["card_finish"] | null
+          variant_stamp: string | null
+          variant_subtype: string | null
+        }[]
+      }
+      portfolio_counts: {
+        Args: never
+        Returns: {
+          graded_count: string
+          manual_count: string
+          physical_card_count: string
+          unique_holding_count: string
+        }[]
+      }
       release_invitation_claim: {
         Args: { p_claim_id: string }
         Returns: undefined
@@ -1315,6 +1463,17 @@ export type Database = {
         | "other"
         | "opening"
         | "trade_in"
+      portfolio_sort_order:
+        | "value_desc"
+        | "value_asc"
+        | "name_asc"
+        | "name_desc"
+        | "set_asc"
+        | "quantity_desc"
+        | "acquired_newest"
+        | "acquired_oldest"
+        | "added_newest"
+        | "added_oldest"
       purchase_origin: "manual" | "provisional_opening"
       sealed_intent: "keep_sealed" | "planned_to_open" | "undecided"
       sealed_product_type:
@@ -1497,6 +1656,18 @@ export const Constants = {
         "other",
         "opening",
         "trade_in",
+      ],
+      portfolio_sort_order: [
+        "value_desc",
+        "value_asc",
+        "name_asc",
+        "name_desc",
+        "set_asc",
+        "quantity_desc",
+        "acquired_newest",
+        "acquired_oldest",
+        "added_newest",
+        "added_oldest",
       ],
       purchase_origin: ["manual", "provisional_opening"],
       sealed_intent: ["keep_sealed", "planned_to_open", "undecided"],

@@ -10,6 +10,56 @@ they were**.
 
 ## [Unreleased]
 
+### Added — 2026-08-22 · M7 Portfolio: organisation, display and navigation
+
+The Collection screen becomes **Portfolio** (user-facing rename, D-040; `/collection*` routes
+redirect) and gains the display/organisation surface the product was missing: grid density 1–4
+(mobile default 2, desktop 4), list and table views (table also on mobile, horizontally
+scrollable), a visible Sort by control, quick and full filters, and playlist-like custom
+collections. Real primary navigation ships for the first time: a mobile bottom bar
+(Home/Search/Portfolio/More/Profile, central quick-add) and an equivalent desktop top nav.
+
+**Schema.** `custom_collections`/`custom_collection_members` (DATA_MODEL.md §5.2.1), shipped
+exactly as originally specified — plain owner-RLS tables, no RPC layer, invariant C1 enforced by a
+plain `on delete cascade`. `profiles.collection_default_sort` (new enum `portfolio_sort_order`,
+default `value_desc`) joins the existing density/view preferences.
+
+**Read surface.** `list_portfolio(...)` and `portfolio_counts()` — both `SECURITY INVOKER`,
+replacing the M6 client-side full-column count sum — are the Portfolio's entire sort/filter/keyset-
+pagination query. "Value" sorting resolves to a graded holding's real manual valuation and nothing
+else pre-M9 (D-041): never the acquisition cost standing in for market value, and every raw-card
+holding's `NULL` value sorts deterministically by name rather than as zero. Pagination is real
+keyset (never `OFFSET`) via an explicit two-bucket cursor.
+
+**Search.** Cards/Sets segmented search; set results carry real metadata (name, language, symbol,
+release date, card count) from a plain `card_sets` read, no new RPC. Every card result — in Cards
+mode or inside a set — carries an independent quick-add **+** that preselects a card's only variant
+or opens its detail page for a real choice among several, reusing the M6 add flow exactly.
+
+**Security.** Closed the PUBLIC-EXECUTE privilege blind spot SECURITY.md §5.9 had documented as a
+known gap since M6 (D-042): every routine in `public` is now swept clear of PostgreSQL's implicit
+PUBLIC grant, a new default-privilege statement stops a future function from arriving
+PUBLIC-executable, and `scripts/grant-audit.sql` gained its own PUBLIC-grant check —
+`tests/db/sql/hostile_grants.sql` proves it can fail before proving the baseline fixes it.
+
+**Performance.** TanStack Virtual windows the grid/list/table views. `list_portfolio`/
+`portfolio_counts` were measured against a real 7,500-holding/10,109-lot synthetic account on
+`pokeportfolio-dev`: the first version (a per-holding `LATERAL` aggregate) took 5.5-8 s per call
+with two sort modes timing out; rewritten as a `LEFT JOIN ... GROUP BY` CTE (the shape
+`holding_summaries` already used correctly) and re-measured at 130-570 ms across every sort mode
+and keyset page. `scripts/portfolio-perf-benchmark.mjs` is the repeatable version of the same
+measurement for a future session with local Docker.
+
+**Tests.** `tests/db/m7_constraints.test.ts` (S1 trigger on the two-parent membership table,
+invariant C1, and account-deletion cascade for both new M7 tables — found missing on
+`custom_collection_members.user_id` by the real benchmark cleanup, fixed with
+`20260822120050_m7_custom_collection_members_cascade_fix.sql`). `tests/authorization/m7_portfolio.test.ts`
+(custom-collection CRUD and cross-tenant attacks; `list_portfolio` isolation, sort correctness,
+filter correctness, keyset-pagination completeness; `portfolio_counts` correctness). Updated
+Playwright route-guard coverage for the renamed/new routes and the legacy-redirect behaviour.
+
+See DECISIONS.md D-040 through D-042, HANDOVER.md and `claude_outputs/output_11.txt` for full detail.
+
 ### Added — 2026-08-21 · M6 Collection: holdings, acquisition lots, origin and cost
 
 The application becomes usable as a personal collection tracker: search a card, add it, record how

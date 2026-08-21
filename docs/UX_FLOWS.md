@@ -7,6 +7,27 @@ Notation: **→** step · **⚠** failure or edge case · **✓** completion cri
 
 ---
 
+## F0 — Primary navigation (shipped M7)
+
+Five direct destinations, always reachable, plus a central quick-add action (F11.1) that is an
+action, never a sixth destination:
+
+| Destination | Route | What it is |
+|---|---|---|
+| **Home** | `/` | The future investment-style portfolio dashboard (F10). M7 shows only truthful current data — physical/graded/manual counts — with an honestly-marked "not available yet" panel where the value figure and chart will live once M9/M12 exist. |
+| **Search** | `/catalog` | The renamed Catalog — Cards and Sets modes, per-result quick-add (F2 below), reserved layout for a future value column (M9). |
+| **Portfolio** | `/portfolio` | The user's owned-card browser — grid/list/table, density, sort, quick + full filters, custom collections (F8.2/F8.3). User-facing name for what the schema still calls a holding/collection (DECISIONS.md D-040). |
+| **More** | `/more` | Secondary real functionality only — admin invitations when applicable, a link into Profile's display settings. No disabled future-feature entries. |
+| **Profile** | `/profile` | Account identity and Portfolio display defaults — display name, theme, low-value threshold, sign out. |
+
+Mobile: a fixed bottom navigation bar with the central **+** raised above it, centred independently
+of the five equal-width tabs (`src/features/nav/BottomNav.tsx` — see that file's own comment for
+the geometry). Desktop: a single top navigation row covering the same five destinations plus Add
+(`DesktopNav.tsx`). Safe-area-aware on both; the bottom bar never covers scrollable content
+(AppShell reserves matching bottom padding).
+
+---
+
 ## F1 — Invitation and first login
 
 **Admin creates an invitation**
@@ -55,15 +76,13 @@ Notation: **→** step · **⚠** failure or edge case · **✓** completion cri
 
 ## F2 — Add a card manually
 
-**M6 status.** Built close to this flow, with three differences worth recording rather than
-silently deviating from: (1) the central mobile **+** and the bottom navigation it lives in do not
-exist yet — AppShell still carries a plain top-nav header, and the entry point is "Add to
-collection" on a catalog card's variant, plus a manual-entry link from an empty catalog search
-(M6 prompt §83, M7 owns navigation refinement); (2) F2.1's session defaults are not implemented —
-`add_card_acquisition`'s argument shape was deliberately designed so the scanner (M15) can supply
-them later without a business-logic change, but nothing pre-fills them yet; (3) "Existing
-collection" is this document's `pre_tracking` origin, both cost-unknown by construction. See
-HANDOVER.md for the exact M6 routes.
+**M6/M7 status.** The central mobile **+** and its bottom navigation shipped in M7
+(`src/features/nav/BottomNav.tsx`/`QuickAddMenu.tsx`) — see F13 below. Two differences remain
+worth recording rather than silently deviating from: (1) F2.1's session defaults are still not
+implemented — `add_card_acquisition`'s argument shape was deliberately designed so the scanner
+(M15) can supply them later without a business-logic change, but nothing pre-fills them yet;
+(2) "Existing collection" is this document's `pre_tracking` origin, cost-unknown by construction.
+See HANDOVER.md for the exact routes (`/portfolio` as of M7, D-040).
 
 The most-used flow after the ledger. Target: under 20 seconds on a phone.
 
@@ -102,6 +121,21 @@ can change. Saving returns focus to the search field.
 
 **No accounting form for an energy card.** Adding a Basic Energy with session defaults set should
 be: search, tap, save. The scanner will reuse exactly these session defaults.
+
+### F2.2 — Search: cards, sets and per-result quick-add (shipped M7)
+
+→ Search (F0) › Cards/Sets segmented control
+→ **Cards mode**: results as before, each row now carries a **+** independent of the row's own
+  tap target (M7 prompt §15-17) — tapping the row opens card detail, tapping **+** starts adding
+  it
+→ A card with exactly one ownable variant: **+** preselects it and goes straight to `/add`
+→ A card with several variants: **+** opens card detail, which already lists every variant with
+  its own add action — the required variant-selection step, not duplicated
+→ **Sets mode**: real set metadata (name, language, symbol/logo, release date, card count) —
+  `card_sets`, a plain authenticated read, not a new RPC
+→ Selecting a set opens its card list, with the same per-row **+**
+✓ No card value is shown yet (M9); the result row layout reserves the space so adding it later is
+  a small change, not a redesign
 
 ---
 
@@ -258,21 +292,30 @@ Net proceeds    450 kr    Cost basis  unknown     Result  —
 
 ## F8.2 — Organise with custom collections
 
-→ Collection › select cards → Add to collection → pick or create
+**Shipped in M7**, exactly as specified below plus one addition: a horizontal collection chip
+row sits directly on the Portfolio page (owner requirement, M7 prompt §86) so opening a binder
+never requires a detour through More.
+
+→ Portfolio › collection chip row → pick an existing chip, or "+ Collections" to create one
+→ Holding detail › Collections section → toggle chips to add/remove this holding
 ✓ Nothing about ownership, value or cost changes
 ✓ A card can be in several collections at once
 ✓ Removing from a collection removes the membership only
 
-→ Collections › a collection → its own view with a total value and card count
-→ Deleting a collection asks for confirmation and states explicitly: **"This removes the group.
-  The 214 cards in it stay in your collection."**
+→ Portfolio › a collection chip → the same grid/list/table, filtered to that collection, with the
+  ordinary Sort by control (no manual reordering — playlist-like, not drag-and-drop, M7 prompt §41)
+→ Deleting a collection (via the chip row's "Collections" manager) asks for confirmation and
+  states explicitly: **"This removes the group. The cards in it stay in your Portfolio."**
 
 ## F8.3 — Low-value and unpriced cards
 
-→ Settings › set a low-value threshold (default 10 kr)
-→ Collection › filter *Low value* — cards currently below the threshold
-→ Collection › filter *No price* — a **separate** filter, because a card with no price is not a
-  cheap card
+→ Profile › set a low-value threshold (default 10 kr)
+→ Portfolio › Filters › *Low value* — a graded holding's manual value at or under the threshold.
+  Raw-card market pricing does not exist before M9, so this filter is honestly scoped to
+  manually-valued holdings only until then (DECISIONS.md D-041) — never the acquisition cost
+  standing in for it.
+→ Portfolio › Filters › *Missing value* — a **separate** filter, because a card with no price is
+  not a cheap card
 
 ✓ Both sets remain in the physical card count
 ✓ Priced low-value cards still contribute their value to collection value
@@ -301,7 +344,17 @@ merge the lots into it
 
 ---
 
-## F10 — Dashboard
+## F10 — Dashboard (Home)
+
+**M7 status.** This is Home's eventual shape, owned by M9 (value) and M12 (snapshots, chart).
+M7 built the `/` destination (F0) with only truthful, currently-available figures — physical card
+count, unique holdings, graded count, manual-entry count — and an honestly-marked "Portfolio
+value — not available yet" panel exactly where the primary figure and chart below will live. No
+sample data, no fabricated total, no placeholder line graph. The owner's stated requirement for
+this eventual view, recorded so M12 does not miss it: the current Portfolio value should read as
+the single most prominent number, next to a stock/investment-style value-over-time chart — see
+DECISIONS/ROADMAP M12 and M7 prompt §17-18/§106 for the full framing. M12 also owns the
+chart-library spike (`lightweight-charts`, D-015).
 
 → Open the app
 → Collection value is the largest figure; overall position sits immediately beside it
@@ -336,15 +389,24 @@ price history yet:** the chart says so rather than drawing a flat line.
 
 ## F11.1 — Quick add
 
-The central **+** in the mobile navigation. Shows only what currently exists; new actions appear
-as their milestones land rather than sitting disabled from day one.
+**Shipped in M7** as the central **+** in both the mobile bottom navigation and the desktop top
+navigation — one shared sheet (`QuickAddMenu`), reached the same way from either. Shows only what
+currently exists; new actions appear as their milestones land rather than sitting disabled from
+day one (M7 prompt §12 was explicit that a menu of dead actions is worse than a short one).
 
-| Available | Action |
+| Available now (M7) | Action |
 |---|---|
-| MVP | Add card · Add purchase · Add sealed product · Record sale |
-| After the scanner | Scan cards |
-| After openings | Open product |
-| After trades | Record trade |
+| Search cards | Opens Search (`/catalog`) |
+| Add card manually | Opens the catalog-missing-card form (`/portfolio/manual/new`) |
+
+| Arrives later | Action |
+|---|---|
+| M8 | Add purchase |
+| M11 | Add sealed product |
+| M10 | Record sale |
+| After the scanner (M15) | Scan cards |
+| After openings (M16) | Open product |
+| After trades (M18) | Record trade |
 
 ---
 

@@ -917,3 +917,157 @@ does not propagate to new tables on its own. Nothing mechanical currently re-che
 `user_id -> auth.users(id)` FK cascade" or "did every new function get revoked from PUBLIC" across a
 whole migration the way `grant-audit.sql` mechanically re-checks the *table/column* privilege
 surface. Worth a real check in a future milestone, rather than trusting memory a third time.
+
+---
+
+## 2026-08-22 — Closing the PUBLIC-EXECUTE check this journal's own previous entry flagged
+
+**Problem.** The 2026-08-21 entry above ended by naming the gap explicitly: "did every new function
+get revoked from PUBLIC" had no mechanical check, only the M4 convention of remembering to add
+`revoke ... from public` at every function's creation. M7 was the first milestone since that entry
+to add anything to the browser-reachable surface (`portfolio_counts`, `list_portfolio`), so it was
+the first real opportunity to close the gap rather than just remembering the convention a fourth
+time.
+
+**Finding.** `scripts/grant-audit.sql`'s `actual_routine`/`expected_routine` CTEs only ever compared
+grants held by `anon`/`authenticated` — looked up via `aclexplode(...)::regrole::text in
+('anon','authenticated')`. PUBLIC's ACL entry has grantee oid `0`, which does not cast to a real
+`regrole` at all, so it was structurally invisible to that filter, not merely unchecked by
+oversight. A second CTE matching `a.grantee = 0` directly (bypassing the `::regrole` cast
+entirely) is what makes the check possible, and it needed to be a genuinely separate CTE rather
+than an extra `OR` branch on the existing one, since the two use different comparison mechanics.
+
+**Verification.** Re-derived the check from first principles rather than trusting it would work:
+`tests/db/sql/hostile_grants.sql` now also runs `grant execute on all routines in schema public to
+public` as part of its hostile-state setup, with a same-file sanity assertion (querying
+`pg_proc.proacl` directly for a known function, the identical technique the audit itself uses)
+proving the hostile grant actually took effect before the convergence test relies on it. This
+follows the exact "make the database wrong first, prove the check rejects it, prove the baseline
+fixes it" shape TESTING.md §7a already established for the named-role surface — the same audit
+methodology applied to a hole that methodology had previously missed.
+
+**Consequence.** Every routine in `public` — twenty-plus functions across five milestones — is now
+swept clear of PUBLIC's implicit grant in the M7 privilege baseline. The sweep itself only touches
+grantee oid `0`, never a named role's own ACL entry, so no *named* grant was removed by this
+change — but that turned out not to be the whole story, because `search_cards` had never held a
+named `service_role` grant at all and was relying on PUBLIC for that access. See the next entry:
+this was believed verified when written, and CI's first real run proved otherwise within the hour.
+`alter default privileges ... revoke execute on functions from public` means a future migration
+that forgets the per-creation revoke no longer needs to be remembered at all for this specific
+failure mode — the default itself changed. See DECISIONS.md D-042.
+
+---
+
+## 2026-08-22 — Closing the PUBLIC gap immediately exposed the dependency it had been masking
+
+**Problem.** The entry above claimed the PUBLIC-EXECUTE sweep was "verified: ... none of them lost
+any grant a named role actually needs" — reasoned through by inspecting every migration's grant
+statements, not by running anything, because this machine has no local Docker. Pushing the branch
+and letting CI's ephemeral-stack `db-tests` job actually apply the migrations and run the suites,
+for the first time, failed both CI jobs. The gap between "reasoned through" and "actually run" was
+exactly the size of three real bugs.
+
+**Finding 1 — `search_cards` had been PUBLIC-callable by omission, not by design, since M5.**
+`tests/db/search_cards.test.ts` calls `search_cards` through the **service-role** client — a
+deliberate choice, since that file is about functional correctness ("do the right rows come back"),
+not access control, which lives in `tests/authorization/catalog.test.ts` instead. But
+`search_cards` was never explicitly granted to `service_role` in any migration; `authenticated` was
+the only named grant it ever had. It worked anyway, for over a year of this project's own
+milestones, purely because PostgreSQL's implicit PUBLIC-EXECUTE default meant `service_role` — like
+every other role — could call it regardless. The M7 sweep revoked that default for real, and the
+very next CI run turned "works by accident" into `permission denied for function search_cards`, on
+every single one of that file's 16 tests. Fixed by making the grant explicit
+(`to authenticated, service_role`) — the correct, deliberate version of the access that was already
+happening, not a widening of anything.
+
+**Finding 2 — a real RLS bug in `custom_collection_members`, not a test artifact.**
+`custom_collections.user_id` and `manual_card_definitions.user_id` both default to `auth.uid()`, so
+a client insert that only supplies the columns it actually knows about (never `user_id`) still
+satisfies `WITH CHECK (user_id = auth.uid())`. `custom_collection_members.user_id` was written
+without that default — an oversight, not a deliberate choice; nothing in DATA_MODEL.md's own
+specification asked for the two tables to behave differently. The result: `src/data/
+customCollections.ts`'s `addHoldingToCollection` — real application code, not a fixture — would
+have failed for every real user the moment it ran, rejected by RLS with a NULL `user_id` rather
+than the NOT NULL constraint one might expect, because Postgres evaluates the policy's `WITH CHECK`
+expression against whatever value ends up in the row, and NULL simply fails the equality check
+rather than tripping a separate error path. Caught by
+`tests/authorization/m7_portfolio.test.ts`'s own CRUD test, which does exactly what the real UI
+does (an authenticated client, no explicit `user_id`) rather than the service-role shortcut most
+fixtures use. Fixed with `default auth.uid()`, matching the other two tables. The identical bug was
+then found, by inspection, in M6's already-shipped `holding_tags` table — flagged as a separate
+follow-up rather than fixed here, since that migration may already be applied to the real project
+and this repository's own rule is to never edit an applied migration.
+
+**Finding 3 — a self-inflicted test bug, included here because it looks identical to a real one
+until inspected.** `tests/db/m7_constraints.test.ts`'s `createHolding()` helper used one fixed
+`(seedCatalog variant, condition)` pair for every call. Two different `it()` blocks calling it for
+the same synthetic user collided on `holdings_identity`'s partial unique index — a correct
+rejection of a genuinely duplicate identity, not a schema defect. Distinguishable from Findings 1-2
+by the error itself (`duplicate key value violates unique constraint`, not a permission or RLS
+error) and by which file changed to fix it (the test's own fixture, not a migration). Fixed by
+creating a fresh `manual_card_definitions` row — guaranteed unique — per call instead.
+
+**Consequence.** All three fixed in one follow-up commit on the same PR (#14); CI's second run
+passed both jobs, 269/269 database and authorization tests (up from 251 at the M6 merge). The
+lesson restates one this journal has recorded before, in a new shape: reasoning carefully about SQL
+from first principles is necessary but is not the same claim as "this has been run," and the
+gap between those two claims is exactly where bugs live. A machine without Docker does not get to
+skip that gap — it just moves the first real run from a local terminal to CI, which is precisely
+what happened here.
+
+---
+
+## 2026-08-22 — CI green is not the same claim as fast, and the 10,000-lot gate proved it
+
+**Problem.** CI's `db-tests` job proved `list_portfolio`/`portfolio_counts` *correct* — 269/269
+tests passing against an ephemeral stack seeded with a handful of rows. It says nothing about
+whether either function is fast enough to be usable at the scale M7's own gate names explicitly:
+10,000+ lots, staying interactive on a phone (M7 prompt §53/§57, ROADMAP.md's M7 gate). That
+requires actual data at that scale, which only exists once seeded — so this was checked directly
+against `pokeportfolio-dev` with a real, isolated, disposable synthetic account rather than
+assumed from CI's green checkmark.
+
+**Finding.** Seeded 7,500 holdings and 10,109 acquisition lots (real duplication, five conditions,
+tags, storage locations, custom-collection membership) for one throwaway `.invalid` account, then
+called `list_portfolio` across every sort mode and `portfolio_counts()` exactly as the deployed app
+would. Results: 5.5-8 seconds per call, and two sort modes — including `value_desc`, the *permanent
+default* — failed outright with `57014 canceling statement due to statement timeout`. Root cause:
+both functions computed each holding's aggregate quantity via `LEFT JOIN LATERAL (select sum(...)
+... where l.holding_id = h.id) q on true` — a correlated subquery that PostgreSQL must re-evaluate
+once per outer row, forcing a nested-loop plan across 7,500 holdings. `holding_summaries` (M6) had
+already solved the identical problem correctly, using a plain `LEFT JOIN ... GROUP BY` instead —
+that shape lets the planner choose a hash join and a single hash-aggregate pass over both tables,
+touching each once rather than probing `acquisition_lots` once per holding. Neither M7 function
+followed that precedent; both were written with LATERAL because it reads slightly more directly as
+"the aggregate for this row," and nothing surfaced the performance difference until data at real
+scale existed to measure it against.
+
+**Fix.** Rewrote both functions' aggregation as a `MATERIALIZED` CTE using the same
+`LEFT JOIN ... GROUP BY` shape as `holding_summaries`, restricted to the caller's own holdings
+before the join to `acquisition_lots` even happens. Every filter, cursor comparison and ORDER BY
+expression is unchanged — only how the aggregate columns are computed. Re-measured against the
+*same* seeded data (no re-seed needed, proving the fix in isolation): every sort mode, the filtered
+query, and the keyset second page all completed in 130-570 ms; `portfolio_counts()` dropped from
+~5.4 s to ~140 ms after its own first (plan-caching) call. `20260822120030_m7_portfolio_query_perf_fix.sql`,
+`20260822120040_m7_portfolio_counts_perf_fix.sql`.
+
+**A second, unrelated bug surfaced while cleaning up.** Deleting the synthetic benchmark account
+afterward failed with a foreign-key violation: `custom_collection_members.user_id` referenced
+`auth.users(id)` with no `ON DELETE` action. This is the third time this exact defect class has
+been found — M4 fixed it for the original eight `user_id` columns, M6 fixed it again for
+`holding_tags`/`manual_valuations`, and this session's own custom_collections migration got
+`custom_collections.user_id` right (`on delete cascade`) but missed its sibling table's identical
+column. Fixed (`20260822120050_m7_custom_collection_members_cascade_fix.sql`), verified by actually
+deleting the synthetic account a second time (succeeded, zero residue across holdings, lots,
+collections and memberships, checked directly), and a new regression test added
+(`tests/db/m7_constraints.test.ts`, "account deletion cascades every M7 table") matching the
+pattern M6 established for exactly this failure mode.
+
+**Consequence.** Three real findings from one deliberate real-infrastructure test that CI could not
+have produced (CI never seeds 10,000 rows, and ephemeral accounts are usually deleted with almost
+nothing attached to them): a severe, gate-failing performance defect in the milestone's single most
+important query, and a second instance of a defect class this project has now hit three times.
+The recurring shape across M4/M6/M7's cascade misses — a rule fixed once, by hand, at the moment
+it was found, that does not propagate to the next new table — is the same lesson the 2026-08-21
+entry already named as worth a mechanical check rather than memory. It remains unbuilt; this entry
+is the third data point arguing for it, not a fourth attempt to fix it by remembering harder.

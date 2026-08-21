@@ -88,6 +88,29 @@ begin
       and a.grantee::regrole::text in ('anon', 'authenticated')
   ),
 
+  -- M7: the PUBLIC-EXECUTE blind spot (M7 prompt §69-71). PostgreSQL grants EXECUTE on a new
+  -- function to PUBLIC by default — a separate ACL entry from anything granted or revoked from a
+  -- *named* role, so `actual_routine`/`expected_routine` above (which only ever look at
+  -- anon/authenticated) cannot see it. `aclexplode` represents the PUBLIC grantee as a null
+  -- `grantee` column (grantee oid 0, which does not cast to a real `regrole`), so it is matched
+  -- directly rather than through the ::regrole::text cast the named-role CTEs use.
+  actual_routine_public as (
+    select
+      'routine-public' as kind,
+      p.proname::text || '(' || coalesce((
+        select string_agg(replace(pg_catalog.format_type(t, null), 'public.', ''), ', '
+                          order by ord)
+          from unnest(p.proargtypes) with ordinality as sig(t, ord)
+      ), '') || ')' as obj,
+      'PUBLIC' as grantee,
+      a.privilege_type::text as priv
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    cross join lateral aclexplode(p.proacl) a
+    where n.nspname = 'public'
+      and a.grantee = 0
+  ),
+
   -- Schema-level. USAGE is required and expected; CREATE is not.
   actual_schema as (
     select
@@ -138,6 +161,7 @@ begin
     select * from actual_relation
     union all select * from actual_column
     union all select * from actual_routine
+    union all select * from actual_routine_public
     union all select * from actual_schema
     union all select * from actual_default
   ),
@@ -192,7 +216,14 @@ begin
     ('table', 'holding_tags',           'authenticated', 'DELETE'),
     ('table', 'manual_valuations',      'authenticated', 'SELECT'),
     ('table', 'manual_valuations',      'authenticated', 'INSERT'),
-    ('view',  'holding_summaries',      'authenticated', 'SELECT')
+    ('view',  'holding_summaries',      'authenticated', 'SELECT'),
+    -- M7: custom collections (playlist-like groups) and their membership join table.
+    ('table', 'custom_collections',         'authenticated', 'SELECT'),
+    ('table', 'custom_collections',         'authenticated', 'INSERT'),
+    ('table', 'custom_collections',         'authenticated', 'DELETE'),
+    ('table', 'custom_collection_members',  'authenticated', 'SELECT'),
+    ('table', 'custom_collection_members',  'authenticated', 'INSERT'),
+    ('table', 'custom_collection_members',  'authenticated', 'DELETE')
     -- invitations: column-level SELECT only, below. invitation_claims: nothing, ever.
   ),
 
@@ -209,7 +240,8 @@ begin
   expected_column_update(obj) as (values
     ('profiles.display_name'), ('profiles.locale'), ('profiles.display_currency'),
     ('profiles.theme'), ('profiles.collection_grid_density'),
-    ('profiles.collection_default_view'), ('profiles.low_value_threshold_minor'),
+    ('profiles.collection_default_view'), ('profiles.collection_default_sort'),
+    ('profiles.low_value_threshold_minor'),
     ('profiles.hide_low_value_by_default'), ('profiles.default_condition'),
     ('profiles.default_language'), ('profiles.default_storage_location_id'),
 
@@ -258,7 +290,11 @@ begin
     ('manual_card_definitions.notes'),
 
     -- M6: manual valuations — append-only; superseded_at is the one post-insert write.
-    ('manual_valuations.superseded_at')
+    ('manual_valuations.superseded_at'),
+
+    -- M7: custom collections — name/description/ordering/color, never user_id or membership.
+    ('custom_collections.name'), ('custom_collections.description'),
+    ('custom_collections.sort_order'), ('custom_collections.color')
   ),
 
   -- The complete set of functions a browser may call. Twelve others exist in this schema and are
@@ -280,7 +316,23 @@ begin
      'boolean, text, lot_origin, cost_basis_state, bigint, integer, date, uuid, text, bigint)',
      'authenticated', 'EXECUTE'),
     ('routine', 'set_manual_valuation(uuid, bigint, text, date)',   'authenticated', 'EXECUTE'),
-    ('routine', 'void_acquisition_lot(uuid, text)',                 'authenticated', 'EXECUTE')
+    ('routine', 'void_acquisition_lot(uuid, text)',                 'authenticated', 'EXECUTE'),
+    -- M7: Portfolio counts and the sorted/filtered/keyset-paginated browsing surface.
+    ('routine', 'portfolio_counts()', 'authenticated', 'EXECUTE'),
+    ('routine',
+     'list_portfolio(portfolio_sort_order, integer, text, uuid, card_condition, boolean, ' ||
+     'grader, boolean, text, boolean, uuid, uuid, uuid, boolean, boolean, uuid, text, text, ' ||
+     'bigint, date, timestamp with time zone, bigint, boolean)',
+     'authenticated', 'EXECUTE')
+  ),
+
+  -- M7: the expected PUBLIC-EXECUTE surface for every routine in `public` is empty. No project
+  -- application routine is ever meant to be callable by an unauthenticated, unidentified grantee —
+  -- `invitation_status`'s deliberate anon-reachability (SECURITY.md §5) is still a grant to the
+  -- *named* `anon` role, not to PUBLIC, and is asserted in `expected_routine` above, unaffected by
+  -- this being empty.
+  expected_routine_public(kind, obj, grantee, priv) as (
+    select 'routine-public', null::text, null::text, null::text where false
   ),
 
   expected as (
@@ -289,6 +341,7 @@ begin
     union all select 'column', obj, 'authenticated', 'SELECT' from expected_column_select
     union all select 'column', obj, 'authenticated', 'UPDATE' from expected_column_update
     union all select kind, obj, grantee, priv from expected_routine
+    union all select kind, obj, grantee, priv from expected_routine_public
   ),
 
   -- ── DIFF ──────────────────────────────────────────────────────────────────────────────────

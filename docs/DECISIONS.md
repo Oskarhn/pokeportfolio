@@ -853,3 +853,117 @@ tooling allows re-activating a deactivated legacy key if a missed client turns u
 `docs/SECURITY.md` §6 and `HANDOVER.md` restate the terminology (current hosted keys vs. the local
 stack's legacy fixture variables vs. the browser-safe key vs. the privileged backend key) so a
 future session does not read the old anon/service_role framing as still describing production.
+
+---
+
+## D-040 — User-facing route renamed `/collection` → `/portfolio`; legacy paths redirect
+
+**2026-08-22 · Accepted**
+
+**Context.** M7's owner UI requirements pass renamed the user-facing surface from "Collection" to
+"Portfolio" throughout — navigation labels, headings, copy. The route itself named the same thing
+(`/collection`), and a URL a user might have bookmarked or an existing E2E test asserted against
+is a real, if small, compatibility surface.
+
+**Decision.** The canonical route becomes `/portfolio` (`/portfolio/$holdingId`,
+`/portfolio/manual/new`). `/collection`, `/collection/$holdingId` and `/collection/manual/new`
+remain as thin `beforeLoad` redirects to their new equivalents, preserving the holding id across
+the redirect. Internal domain/table/RPC naming is unchanged — `holdings`, `holding_summaries`,
+`add_card_acquisition` and the `src/features/collection/` folder for pages that did not
+structurally change (`HoldingDetailPage`, `AddToCollectionPage`, `ManualCardPage`) all keep their
+existing names, per the "internal naming does not need to chase user-facing wording" principle
+this project already applies to `PokePortfolio`/`pokeportfolio` (D-026).
+
+**Alternatives.** Keep `/collection` as the URL and only change visible copy — the more
+minimal-churn option, and genuinely defensible; rejected because a user-facing name that
+disagrees with its own URL is a small, permanent seam, and TanStack Router route renames plus a
+redirect route cost little. Renaming the internal `collection` feature folder and every table to
+match — rejected as pure churn with no behavioural benefit, and directly against
+`docs/PRODUCT_SPEC.md`'s standing instruction not to let UI wording drive schema/domain naming.
+
+**Consequences.** Three new redirect route definitions in `src/router.tsx`, each a single
+`beforeLoad: () => redirect(...)`. Playwright coverage (`tests/e2e/auth.spec.ts`) asserts the
+redirect lands where intended. No stored links, bookmarks or external references break.
+
+---
+
+## D-041 — Portfolio's default sort resolves to a real (not fabricated) value pre-M9, via a
+two-bucket keyset
+
+**2026-08-22 · Accepted**
+
+**Context.** The owner's permanent default sort is "Value: high to low" (M7 prompt §29), but no
+raw-card market price exists before M9. Two paths were available: fabricate a stand-in ordering
+key (e.g. acquisition cost) so `value_desc` "works" today, or genuinely sort by value where a value
+exists and fall back to a deterministic secondary order where it does not.
+
+**Decision.** `list_portfolio`'s `value_desc`/`value_asc` sort a holding's value as the active
+manual valuation on a graded card (`manual_valuations`, shipped in M6) — real, known money, never
+the acquisition cost standing in for market value. Every raw-card holding has a genuinely `NULL`
+value and falls into a second, deterministic bucket ordered by name. Pagination is real keyset
+across both buckets: the cursor carries `(value, has_value, name, holding_id)` and the WHERE clause
+branches explicitly on which bucket the cursor's row was in, never an `OFFSET`.
+
+**Alternatives.** Sort by acquisition cost as a value proxy — rejected outright: this is exactly
+the "acquisition cost standing in for market value" the prompt explicitly forbids (M7 prompt §30),
+and it would silently misrepresent a bargain purchase of a valuable card as worthless. Disable
+`value_desc` entirely until M9 — rejected: it is the permanent default, so the toolbar would have
+to special-case "value sort doesn't work yet" everywhere it appears, and it discards the real
+partial data (graded manual valuations) already available.
+
+**Consequences.** When M9 adds a real resolved value for raw cards, only the single SQL expression
+computing "value" inside `list_portfolio` needs to change (from "active manual valuation only" to
+"resolver: manual → fresh → stale → missing") — the two-bucket keyset shape, the cursor contract
+and every caller of the RPC stay exactly as they are. Documented in the migration
+(`20260822120010_m7_portfolio_query.sql`) so this is not rediscovered as a TODO.
+
+**Performance correction, found by the real 10,000-lot benchmark, not by CI (2026-08-22).** The
+original `list_portfolio`/`portfolio_counts` bodies computed each holding's aggregate quantity via
+a `LEFT JOIN LATERAL` correlated subquery per row — correct, but structurally a nested-loop plan:
+one subquery evaluation per holding. Against a real 7,500-holding/10,109-lot synthetic account on
+`pokeportfolio-dev`, this measured 5.5-8 seconds per call, and two of nine sort modes
+(`value_desc` — the permanent default — and `added_newest`) timed out outright
+(`57014 canceling statement due to statement timeout`). Rewritten as a `MATERIALIZED` CTE doing a
+plain `LEFT JOIN ... GROUP BY` — the same shape `holding_summaries` (M6) already uses — which lets
+the planner pick a single hash-join-plus-hash-aggregate pass instead of one subquery per row.
+Re-measured against the identical seeded data: 130-570 ms across every sort mode, filter and
+keyset page. See `20260822120030_m7_portfolio_query_perf_fix.sql`,
+`20260822120040_m7_portfolio_counts_perf_fix.sql`, and PROJECT_JOURNAL.md 2026-08-22 for the full
+account. No caller-visible contract changed — same parameters, same return shape, same semantics.
+
+---
+
+## D-042 — Closing the PUBLIC-EXECUTE privilege blind spot
+
+**2026-08-22 · Accepted**
+
+**Context.** SECURITY.md §5.9 already documented, as a known fact from M6, that PostgreSQL grants
+`EXECUTE` on a new function to `PUBLIC` by default — a separate ACL entry from anything granted or
+revoked from a *named* role — and that `scripts/grant-audit.sql` had never checked for it, only for
+`anon`/`authenticated` grants by name. That was recorded as a known limitation, not yet closed.
+
+**Decision.** Close it in three parts, mirroring the shape SECURITY.md §5.9 already uses for the
+named-role surface: (1) a one-time sweep, `revoke execute on all routines in schema public from
+public`, in the M7 privilege baseline; (2) `alter default privileges ... revoke execute on
+functions from public`, so a future function that forgets the per-migration `revoke ... from
+public` step no longer arrives PUBLIC-executable either; (3) a new PUBLIC-grant check in
+`scripts/grant-audit.sql`, asserting the PUBLIC-EXECUTE surface on every routine in `public` is
+empty. `tests/db/sql/hostile_grants.sql` now also grants `PUBLIC` blanket execute as part of its
+hostile state, so CI's convergence test proves the new check can actually fail before proving the
+baseline fixes it (TESTING.md §7a's "an audit that cannot fail is not a check").
+
+**Alternatives.** Wait for a real incident (an actual PUBLIC-callable function found in
+production) before building the check — rejected: M4 and M6 both already found *named-role*
+grant gaps of this same general shape by luck (a real deployment check, not by design), and a
+third instance of the same defect class is exactly what a systematic fix is for.
+
+**Consequences.** One real behavioural change, found immediately: `search_cards` predates the M4
+"revoke from public at creation" convention and had never been explicitly revoked from `PUBLIC`,
+so `service_role` had been calling it via that implicit default rather than a named grant — CI's
+first run against this migration failed 16 tests in `tests/db/search_cards.test.ts` with
+`permission denied for function search_cards` the moment the sweep removed it. Fixed with an
+explicit `grant ... to authenticated, service_role`, the correct and now-deliberate version of an
+access pattern that had been accidental. Every other function was unaffected, confirmed by the
+same CI run rather than by inspection alone (PROJECT_JOURNAL.md, 2026-08-22, "Closing the PUBLIC
+gap immediately exposed the dependency it had been masking"). `docs/SECURITY.md` §5.9 updated to
+describe the closed state rather than the known gap.
