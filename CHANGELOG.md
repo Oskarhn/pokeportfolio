@@ -60,6 +60,16 @@ Playwright route-guard coverage for the renamed/new routes and the legacy-redire
 
 See DECISIONS.md D-040 through D-042, HANDOVER.md and `claude_outputs/output_11.txt` for full detail.
 
+### Fixed — 2026-08-22 · Content-Security-Policy blocked M7's card artwork in production
+
+`img-src` had no external host, so every card thumbnail M7 renders (search results, Portfolio grid
+tiles) was silently blocked by the deployed CSP — a gap flagged in a `vite.config.ts` comment since
+M5 and never revisited once M7 started actually rendering artwork. Found by browser-verifying the
+merged M7 build against `pokeportfolio-dev.pages.dev`, since `_headers` only applies on Cloudflare
+Pages and CI never exercises it. Fixed by naming `https://assets.tcgdex.net` explicitly in
+`img-src` (docs/API_SOURCES.md's documented image CDN host), not by loosening to `https:`. See
+PROJECT_JOURNAL.md 2026-08-22.
+
 ### Added — 2026-08-21 · M6 Collection: holdings, acquisition lots, origin and cost
 
 The application becomes usable as a personal collection tracker: search a card, add it, record how

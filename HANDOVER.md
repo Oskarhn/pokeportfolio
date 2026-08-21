@@ -7,25 +7,26 @@ Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) a
 **Last updated:** 2026-08-22 — M1 (scaffold and harness), M2 (financial domain core), M3
 (database, migrations, RLS), M4 (invite-only authentication), M4.1 (privilege convergence,
 deployment, real end-to-end), M5 (catalog, TCGdex ingest, search), M6 (collection: holdings, lots,
-origin, cost) and M7 (Portfolio: organisation, display, navigation) complete in code. M7's PR
-([#14](https://github.com/Oskarhn/pokeportfolio/pull/14)) is open with **CI green** — see "M7
-verification state" below for exactly what that does and does not yet prove, since the branch is
-not merged and nothing has been pushed to the real project yet.
+origin, cost) and M7 (Portfolio: organisation, display, navigation) complete in code, merged, and
+deployed. M7's PR ([#14](https://github.com/Oskarhn/pokeportfolio/pull/14)) merged after CI-green;
+a follow-up CSP fix ([#15](https://github.com/Oskarhn/pokeportfolio/pull/15)) merged after browser
+verification found card thumbnails were blocked in production — see "M7 verification state" below
+for the full account. Only the owner's real-iPhone check remains outstanding.
 
 ---
 
 ## Status
 
-**Planning is FROZEN. M1–M7 are complete in code, CI-green on PR #14.** M8 (purchases and the
-spending ledger) is next, once M7 finishes merging and deploying. See "M7 verification state"
-immediately below before assuming anything about M7 beyond what is explicitly marked done.
+**Planning is FROZEN. M1–M7 are complete in code, merged, and deployed.** M8 (purchases and the
+spending ledger) is next, once the owner has done a short real-iPhone check on M7 (see "M7
+verification state" immediately below) and reacted to the deployed UI.
 
-The application is deployed and reachable: **https://pokeportfolio-dev.pages.dev**, on the M6
-state — M7 has not yet been merged or deployed as of this handover (see below). The owner has a
-working administrator account on the development project, the shared catalog holds the real
-English and Japanese physical Pokémon TCG card set (M5), and the deployed M6 build lets the owner
-search a card, add it to their collection with real acquisition provenance and cost, and see it in
-`/collection`.
+The application is deployed and reachable: **https://pokeportfolio-dev.pages.dev**, on the M7
+state (PRs #14 and #15 both merged). The owner has a working administrator account on the
+development project, the shared catalog holds the real English and Japanese physical Pokémon TCG
+card set (M5), and the deployed build lets the owner search a card (with visible card artwork),
+add it to their Portfolio with real acquisition provenance and cost, and browse it in
+`/portfolio` — grid/list/table views, sort, filters, and custom collections.
 
 **M6 also migrated the project's Supabase API keys** (D-039) — see "Security: key migration" below
 before touching anything credential-related. The legacy `anon`/`service_role` pair is now
@@ -95,15 +96,31 @@ migration may already be applied to the real project.
    Account fully deleted afterward, verified zero residue. **This run is what found and fixed
    findings 4 and 5 above** — the actual point of the gate.
 
+**Done since, against the real deployment:**
+
+4. ~~Merge PR #14, confirm the Cloudflare deploy, and browser-verify the deployed Portfolio UI~~ —
+   **done.** PR #14 merged. Browser-verified live on `pokeportfolio-dev.pages.dev` end to end via a
+   throwaway `.invalid` synthetic account created through the real invite-redemption flow: Home,
+   Search Cards mode with per-result quick-add, the full M6 add-to-collection flow reused from a
+   search result (condition, acquisition origin, cost validation all behaved correctly), Portfolio
+   grid/list/table views, More, Profile. Zero console/network errors other than one real finding
+   (item 6). Account deleted afterward, zero residue confirmed across every M6/M7 user-owned table.
+6. **Found during that verification, fixed on a follow-up PR:** the Content-Security-Policy's
+   `img-src` had never been given an external host, so every card thumbnail M7 renders (search
+   results, Portfolio grid tiles) was silently blocked in production — a gap `vite.config.ts`
+   explicitly flagged in a comment since M5 ("will need that origin added here") that nobody
+   revisited when M7 started actually rendering artwork from it. CI cannot catch this class of bug:
+   `_headers` only applies on Cloudflare Pages, and `vite dev`/`vite preview` ignore it entirely, so
+   it is only ever exercised on a real deployment. Fixed by naming `https://assets.tcgdex.net`
+   explicitly in `img-src` (not by loosening to `https:`) — `fix/m7-csp-image-host`, PR #15, CI
+   green, merged, re-verified live (card artwork now loads).
+
 **Not yet done:**
 
-4. Merge PR #14, confirm the Cloudflare deploy, and browser-verify the deployed Portfolio UI —
-   grid/list/table, density, sort, filters, custom collections, bottom nav — the way M5/M6 verified
-   their deployed builds.
-5. A short real-iPhone check (M7 prompt §120) — genuinely needs the owner's own phone; ask for it
-   only once step 4 is done.
+5. A short real-iPhone check (M7 prompt §120) — genuinely needs the owner's own phone; this is the
+   only remaining step.
 
-Do not report M7 as fully finished to the owner until items 4-5 also happen.
+Do not report M7 as fully finished to the owner until item 5 also happens.
 
 ## Read these first, in order
 
@@ -602,8 +619,11 @@ badge, theme, low-value threshold, sign out. `MorePage.tsx`: admin invitations (
 the old top nav) plus a link into Profile — no disabled future-feature entries.
 
 **Security.** Closed the PUBLIC-EXECUTE privilege blind spot M6's own journal entry had flagged as
-unclosed (D-042, PROJECT_JOURNAL.md 2026-08-22) — see "M7 verification state" above for the fact
-that this has been written and reasoned through but not yet proven by CI on this machine.
+unclosed (D-042, PROJECT_JOURNAL.md 2026-08-22) — proven in CI (hostile-grants convergence) and
+against the real project (`grant-audit.sql` clean, `remote-security-check.mjs` 33/33). Separately,
+browser-verifying the deployed build found the CSP's `img-src` had no external host, silently
+blocking every card thumbnail in production since M5 — see "M7 verification state" above and
+PR #15.
 
 **Performance.** Verified against a real 7,500-holding/10,109-lot synthetic account on
 `pokeportfolio-dev` — not simulated, not assumed from CI. The first version (`LEFT JOIN LATERAL`
@@ -640,8 +660,8 @@ the Supabase secret key, which this session never fetches — this run instead u
 
 ## Next actions
 
-**M1–M7 are done in code.** Finish M7's actual verification first (the five numbered items under
-"M7 verification state" above), then start **M8 — Purchases and the spending ledger**
+**M1–M7 are done, merged, and deployed.** Ask the owner for the short real-iPhone check (item 5
+under "M7 verification state" above), then start **M8 — Purchases and the spending ledger**
 ([docs/ROADMAP.md](docs/ROADMAP.md)): multi-line purchases, retailers, shipping, customs,
 discounts, backdating, the allocation engine wired into writes, foreign currency via Norges Bank
 FX, collectible/hobby split, void semantics.
@@ -795,14 +815,17 @@ Deployment itself needs no command. Merging to `main` builds it.
 27/27 deployment checks · `grant-audit.sql` clean against the live project · a real end-to-end M6
 collection flow against the deployed bundle with synthetic accounts, zero residue.
 
-**Green on PR #14 (`feat/m7-portfolio-display`), CI-verified, not yet merged:** 80 domain/
-property/data tests (unchanged — M7 added no `src/domain` logic) · 50 Playwright tests (desktop +
-iPhone; +12 unique cases for the new/renamed routes and the `/collection` → `/portfolio`
-redirects) · **269 database and authorization tests across 19 files** (up from 251/17 at M6 — the
-two new M7 files, `tests/db/m7_constraints.test.ts` and `tests/authorization/m7_portfolio.test.ts`)
-· the new PUBLIC-grant audit check and its hostile-grants proof, both passing · `pnpm typecheck`/
-`pnpm lint`/`pnpm format:check`/`pnpm build` all green. This is CI against the ephemeral stack —
-**not yet run against `pokeportfolio-dev`** (see "M7 verification state" above, items 2-5).
+**Green on PR #14 (`feat/m7-portfolio-display`), merged, and since verified against the real
+project:** 80 domain/property/data tests (unchanged — M7 added no `src/domain` logic) · 50
+Playwright tests (desktop + iPhone; +12 unique cases for the new/renamed routes and the
+`/collection` → `/portfolio` redirects) · **269 database and authorization tests across 19 files**
+(up from 251/17 at M6 — the two new M7 files, `tests/db/m7_constraints.test.ts` and
+`tests/authorization/m7_portfolio.test.ts`) · the new PUBLIC-grant audit check and its
+hostile-grants proof, both passing · `pnpm typecheck`/`pnpm lint`/`pnpm format:check`/`pnpm build`
+all green. Migrations pushed to `pokeportfolio-dev`, `grant-audit.sql` clean,
+`remote-security-check.mjs` 33/33, the real 10,000-lot benchmark passed. **Green on PR #15
+(`fix/m7-csp-image-host`), merged:** the CSP `img-src` fix found during deployed-browser
+verification (see "M7 verification state" above) — same CI suites, all green.
 
 CI runs `build-and-test` (gate + E2E + gitleaks) and `db-tests` (ephemeral Supabase stack → migrate
 → assert the Edge Function is reachable → **assert the privilege baseline → make the database
@@ -815,8 +838,8 @@ every push and PR, with **no remote credentials anywhere**.
 |---|---|---|
 | 1 | Optional: install Docker Desktop | Local iteration convenience — every M7 DB/authorization test still had to wait for CI this session instead of running locally first |
 | 2 | Optional: fix Node/pnpm absence from the default PATH | Convenience only |
-| 3 | A short real-iPhone check once the deployed M7 build exists (M7 prompt §120) | Final sign-off on the new bottom nav/gestures on real hardware |
-| 4 | Give feedback on the first Portfolio UI version (grid/list/table, nav, filters, custom collections) once deployed | Informs M8+ and the eventual M12a visual pass — not a blocker, but the owner explicitly wants to be asked here |
+| 3 | A short real-iPhone check on the now-deployed M7 build (M7 prompt §120): bottom nav fit, + easy to press, no Home-indicator overlap, Portfolio scroll, 2-column mobile grid, filter sheet usable, table reachable, Search + works | Final sign-off on the new bottom nav/gestures on real hardware |
+| 4 | Give feedback on the deployed Portfolio UI version (grid/list/table, nav, filters, custom collections) | Informs M8+ and the eventual M12a visual pass — not a blocker, but the owner explicitly wants to be asked here |
 
 The admin account, the M6 deployment, the API-key model and the installed-PWA check remain done
 from before M7.
