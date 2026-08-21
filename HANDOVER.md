@@ -4,20 +4,30 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-**Last updated:** 2026-08-20 — M1 (scaffold and harness), M2 (financial domain core), M3
+**Last updated:** 2026-08-21 — M1 (scaffold and harness), M2 (financial domain core), M3
 (database, migrations, RLS), M4 (invite-only authentication), M4.1 (privilege convergence,
-deployment, real end-to-end) and M5 (catalog, TCGdex ingest, search) complete.
+deployment, real end-to-end), M5 (catalog, TCGdex ingest, search) and M6 (collection: holdings,
+lots, origin, cost) complete.
 
 ---
 
 ## Status
 
-**Planning is FROZEN. M1–M5 are complete.** M6 (collection: holdings, lots, origin) is next. See
-the Repository section for PR numbers.
+**Planning is FROZEN. M1–M6 are complete.** M7 (organisation and display) is next — but read
+"Before M7 starts" below first; there is a real prerequisite. See the Repository section for PR
+numbers.
 
 The application is deployed and reachable: **https://pokeportfolio-dev.pages.dev**. The owner has a
-working administrator account on the development project, and the shared catalog now holds the real
-English and Japanese physical Pokémon TCG card set — see "M5 — Catalog, ingest and search" below.
+working administrator account on the development project, the shared catalog holds the real
+English and Japanese physical Pokémon TCG card set (M5), and the owner can now search a card, add
+it to their collection with real acquisition provenance and cost, and see it in `/collection` (M6).
+
+**M6 also migrated the project's Supabase API keys** (D-039) — see "Security: key migration" below
+before touching anything credential-related. The legacy `anon`/`service_role` pair is now
+**deactivated** on `pokeportfolio-dev`. If you are about to run `supabase projects api-keys`,
+stop: that exact command is what caused the M5 exposure this migration closed out. It stays
+unnecessary for everyday work; if you ever genuinely need it, use `--reveal` deliberately and never
+capture the output into anything persisted.
 
 Scope is settled — do not reopen it (see [docs/PLANNING_FREEZE.md](docs/PLANNING_FREEZE.md) §9).
 
@@ -89,6 +99,16 @@ Full context in [docs/DECISIONS.md](docs/DECISIONS.md).
 25. **Provider ids are scoped per language; marketplace product ids are not per-variant identity.**
     (D-034)
 26. **Catalog ingest is gated by an operator secret, not a user session.** (D-035)
+27. **Storage location lives on the acquisition lot, not the holding.** (D-036) — a shared holding
+    cannot represent identical copies split across two physical locations.
+28. **A holding has three possible identity sources** — `card_variant_id` / `sealed_product_id` /
+    `manual_card_id` — **exactly one non-null.** (D-037) `manual_card_definitions` is the
+    user-private fallback for a catalog-missing card; never written into the shared catalog.
+29. **`lot_origin`/`cost_basis_state` gained `opening`/`trade_in`/`unallocated_opening`/`trade_in`
+    ahead of M16/M18**, without the `opening_id`/`trade_line_id` linking columns those milestones
+    still own. (D-038) A "Pulled" lot has no opening reference yet; that is expected, not a bug.
+30. **Supabase key model migrated to `sb_publishable_…`/`sb_secret_…`; legacy `anon`/`service_role`
+    is deactivated, not deleted, and was not rotated via the JWT signing secret.** (D-039)
 
 ## Architecture
 
@@ -219,12 +239,110 @@ and card images are out of scope (M11/M9/never-cached-locally respectively). Car
 hotlinked from `assets.tcgdex.net`, never copied into Supabase Storage or committed — same
 considered-not-established licensing position as before M5, restated in API_SOURCES.md.
 
-**One incident worth flagging to a new session immediately:** while fetching the anon key for local
-dev via `supabase projects api-keys`, that command's response included the project's secret
-(`service_role`) key in full — not requested, not needed, but present in this session's transcript.
-It was not used, stored in any file, or committed anywhere (verified). **The owner should consider
-rotating `pokeportfolio-dev`'s secret key** as a precaution; nothing in the repository depends on
-its current value, since the Edge Functions get it injected fresh by the platform regardless.
+**The key-exposure incident flagged here is resolved as of M6** — see "Security: key migration"
+immediately below. It is kept in this document's history rather than deleted so a future session
+understands why the key model looks the way it does.
+
+## M6 — Collection: holdings, lots, origin and cost
+
+Search a card, add it to the collection, record how it was acquired and (where applicable) what
+it cost, see it in `/collection`, add another copy later without losing the first lot's
+provenance, inspect the lots behind a holding. See DECISIONS.md D-036–D-039 for the four material
+decisions and PROJECT_JOURNAL.md (2026-08-21 entries) for what real deployment verification found
+and fixed.
+
+**Manual card fallback (D-037).** `holdings` now has three possible identity sources —
+`card_variant_id` / `sealed_product_id` / `manual_card_id` — exactly one non-null. A manual card
+(`manual_card_definitions`) is the honest answer for a physical card the shared catalog does not
+list: name, set name, collector number, language, finish, stamp, subtype, notes — no provider id,
+no rarity, no price, no image requirement. User-private, never written into the shared catalog,
+never visible to another user. Reachable from `/catalog`'s empty-search state and from
+`/collection/manual/new`.
+
+**Storage location relocated to the lot (D-036).** `holdings.storage_location_id` moved to
+`acquisition_lots.storage_location_id` — a real two-binder scenario proved the original
+one-per-holding cardinality couldn't represent identical copies split across two locations.
+`profiles.default_storage_location_id` keeps its role as a prefill default, now for new lots.
+
+**Origins pulled forward (D-038).** `lot_origin` gained `opening` (UI label "Pulled") and
+`trade_in`; `cost_basis_state` gained `unallocated_opening` and `trade_in` — ahead of their
+originally-planned M16/M18 arrival, required by D-017. Neither `opening_id` nor `trade_line_id`
+exists yet; those columns and the linking workflow are still M16's/M18's. A full
+origin → permitted-cost-basis-state mapping replaces the M3 gift-only check
+(`acquisition_lots_origin_cost_state_consistency`).
+
+**Manual valuations (pulled forward from M11).** `manual_valuations` — append-only, superseded via
+`set_manual_valuation(p_holding_id, p_value_minor, p_note, p_effective_from)`, currency fixed to
+NOK pending FX (M9). Wired to graded holdings in the M6 UI; the resolver (manual → fresh → stale →
+missing) stays M9's, since M6 has no other price source to resolve against.
+
+**The atomic surface.** `add_card_acquisition` (SECURITY INVOKER) finds-or-creates the
+identity-matching holding — race-safe via the real `holdings_identity` unique index, catching
+`unique_violation` and re-reading rather than locking — and writes one acquisition lot, plus a
+real single-line `purchases`/`purchase_lines` row when the cost is known (not "provisional" — a
+complete, ordinary purchase as far as it goes; M8 adds richer multi-line purchases over the same
+tables). `void_acquisition_lot` is the mistake-correction path: void semantics, and voids the sole
+purchase a known-cost lot exclusively created so a corrected mistake never leaves a ghost spend in
+`GPO`/`CS`. `holding_summaries` (`security_invoker` view) gives the Collection list one query.
+
+**UI:** `/collection` (2-column mobile grid — M7 owns the configurable density setting),
+`/collection/$holdingId` (identity, lots, void, favourite, manual value), `/add` (progressive
+form: quantity, raw/graded, origin-driven cost disclosure, storage, favourite, notes),
+`/collection/manual/new`. "Add to collection" lives on each variant in `/catalog/$cardId`.
+
+**Security: key migration (D-039).** `pokeportfolio-dev` moved to named
+`sb_publishable_…`/`sb_secret_…` keys, closing out the M5 exposure note. `VITE_SUPABASE_ANON_KEY`
+renamed to `VITE_SUPABASE_PUBLISHABLE_KEY` everywhere (code, `.env.example`, CI, Cloudflare env).
+Both Edge Functions read `SUPABASE_SECRET_KEYS` first (`supabase/functions/_shared/service-key.ts`),
+falling back to the legacy `SUPABASE_SERVICE_ROLE_KEY` only because the *local* stack still emits
+it. **The legacy `anon`/`service_role` pair is deactivated on the real project as of this
+milestone** — verified working end to end *before* deactivation and *again after* (33/33 remote
+checks, real redemption + real add-to-collection flow, both times), reversible if ever needed.
+Never rotated via the JWT signing secret, so no user session was invalidated.
+
+**Two real bugs found by testing against the actual deployed project, not by CI** (CI was green on
+both before the real test ran):
+
+1. `add_card_acquisition`/`set_manual_valuation`/`void_acquisition_lot` were anon-callable despite
+   no direct grant — PostgreSQL grants EXECUTE on a new function to `PUBLIC` by default, a separate
+   ACL entry from anything later revoked from `anon` by name. Same defect class M4 already found
+   and fixed (`20260820120040_m4_explicit_function_revokes.sql`); these three just skipped the
+   "revoke from public at creation" step every other function-creating migration follows. Fixed in
+   the same migration, `grant-audit.sql` unaffected (it never modelled a `PUBLIC` grant either way
+   — a known limitation of that check, not a new one).
+2. `holding_tags.user_id`/`manual_valuations.user_id` had no `ON DELETE` action, so deleting an
+   account that had tagged a holding or set a manual valuation failed outright. Same defect class
+   M4 fixed for the original eight `user_id → auth.users(id)` references. Fixed
+   (`20260821130000_m6_user_id_cascade_fix.sql`), verified by actually deleting a synthetic account
+   with one row in every M6 table against the real project (cascaded cleanly, zero orphans), and a
+   new regression test now exists for account-deletion cascade generally
+   (`tests/db/m6_constraints.test.ts`) — the first such test in the suite for *any* table.
+
+**CI privilege-baseline fragility fixed (SECURITY.md §5.9's own flagged issue).** The hostile-grant
+convergence step no longer hardcodes a baseline migration filename — it selects the
+lexicographically-latest `*_privilege_baseline.sql` and fails outright if none exists.
+`20260821120100_m6_privilege_baseline.sql` is the current one.
+
+**Deployed and verified.** PR #11 (M6 feature) and PR #12 (the cascade fix) merged; Cloudflare
+rebuilt `main` after the Cloudflare env var was updated to `VITE_SUPABASE_PUBLISHABLE_KEY` and the
+deployment was manually retried (env var changes don't trigger a rebuild on their own).
+`deployment-check.mjs` 27/27, `remote-security-check.mjs` 33/33 (with `INVITE_TOKEN` — full
+redemption phase), `grant-audit.sql` clean against the live project (`supabase db query --linked`).
+Three synthetic `.invalid` accounts exercised the real flow (search, purchased card, reused
+holding, manual card, graded card + manual value, bulk Energy ×12, Collection aggregation) against
+the actual deployed bundle and actual ingested catalog, then were deleted — zero residue, checked
+directly.
+
+**Known limitations:** `database.types.ts` was regenerated from CI's artifact this session (no
+local Docker to run `pnpm db:types` directly) — diffed field-for-field identical to a careful
+hand-authored version first, so this is the same trustworthy output the command would have
+produced. Session defaults for fast repeated entry (UX_FLOWS.md F2.1) are not implemented — the
+RPC's argument shape was designed so the scanner (M15) can supply them later without a
+business-logic change, but nothing pre-fills them yet. The mobile bottom navigation with a central
+quick-add (the frozen UX plan) is not built; AppShell still carries a plain top-nav header — M7
+owns navigation refinement once there is more to navigate. No dedicated `frontend-design` skill
+pass was run; the Collection UI matches the existing Catalog/Auth screens' established Tailwind
+patterns directly, consistent with DESIGN_SYSTEM.md §0's "provisional, not final" phase.
 
 ## Environment
 
@@ -249,7 +367,7 @@ its current value, since the Edge Functions get it injected fresh by the platfor
 | Region | **`eu-west-3` (Paris)**, not the `eu-north-1` the docs planned. EU either way, so GDPR posture is unchanged and ~20 ms of latency did not justify recreating it and re-entering a database password. A future production project should still choose deliberately rather than inherit this. |
 | Plan | **Free. No payment card. No billing enabled.** |
 | Postgres | 17.6 |
-| State | All migrations applied (15 through M4.1, +7 for M5) · `config push` done, so the auth hook is live and `site_url` names the deployment · `redeem-invitation` and `sync-catalog` deployed, with `ALLOWED_ORIGINS`/`CATALOG_SYNC_SECRET` set · `scripts/grant-audit.sql` clean against the live catalog (verified via `supabase db query --linked`) · `scripts/remote-security-check.mjs` green · shared catalog populated with the real English + Japanese physical card set (M5) |
+| State | All migrations applied (15 through M4.1, +7 for M5, +10 for M6) · `config push` done, so the auth hook is live and `site_url` names the deployment · `redeem-invitation` and `sync-catalog` deployed (current code, reading `SUPABASE_SECRET_KEYS`), with `ALLOWED_ORIGINS`/`CATALOG_SYNC_SECRET` set · `scripts/grant-audit.sql` clean against the live project (verified via `supabase db query --linked`) · `scripts/remote-security-check.mjs` 33/33 · shared catalog populated with the real English + Japanese physical card set (M5) · **legacy `anon`/`service_role` keys deactivated (M6, D-039)** — the project now authenticates browsers via `sb_publishable_…` and Edge Functions via `sb_secret_…` only |
 | Accounts | The owner's administrator account, and nothing else. Synthetic test accounts use the RFC 2606 `.invalid` TLD and are removed after use. |
 
 **The remote is never the source of truth.** Schema and security live in `supabase/migrations/` and
@@ -262,13 +380,15 @@ secrets. If you find drift, reconcile toward the repository.
 |---|---|
 | Database password | The owner's password manager. Claude has never seen it. |
 | Supabase CLI access token | The CLI's own credential store, created by `supabase login`. |
-| Publishable key (legacy `anon`) | `.env.local` (gitignored). Public by design. |
-| Secret key (legacy `service_role`) | The Supabase platform only, injected into the Edge Function environment. Never fetched into a session, never in the repo, never in `claude_outputs/`. |
+| Publishable key (`sb_publishable_…`, M6) | `.env.local` (gitignored) and Cloudflare Pages env var `VITE_SUPABASE_PUBLISHABLE_KEY`. Public by design — it is embedded in every browser bundle served, which is exactly how this session obtained it to run the remote checks below, rather than via any key-listing CLI command. |
+| Secret key (`sb_secret_…`, M6) | The Supabase platform only, injected into the Edge Function environment as `SUPABASE_SECRET_KEYS`. Never fetched into a session, never in the repo, never in `claude_outputs/`. |
+| Legacy `anon`/`service_role` | **Deactivated** on `pokeportfolio-dev` as of M6 (D-039). Reversible from the dashboard if ever needed; not deleted. |
 
-`.env.local` currently points at **placeholders**, not the remote project. Point it at
-`https://nopmkroeygmlvndzjjqs.supabase.co` plus the publishable key to run `pnpm dev` against real
-data. Get the key from the dashboard or
-`.\node_modules\.bin\supabase.CMD projects api-keys --project-ref nopmkroeygmlvndzjjqs`.
+`.env.local` is filled in and points at the real project
+(`https://nopmkroeygmlvndzjjqs.supabase.co` plus the current publishable key) as of M6. **Do not
+run `supabase projects api-keys` to refresh it** — that command is what caused the M5 exposure this
+milestone closed out. If the publishable key is ever needed again, it is safe to read directly out
+of the deployed bundle (it is public by design) rather than from that command.
 
 ## Repository
 
@@ -278,8 +398,10 @@ data. Get the key from the dashboard or
   [PR #3](https://github.com/Oskarhn/pokeportfolio/pull/3), M4.1 via
   [PR #5](https://github.com/Oskarhn/pokeportfolio/pull/5) plus real-device follow-ups
   [#6](https://github.com/Oskarhn/pokeportfolio/pull/6)/[#7](https://github.com/Oskarhn/pokeportfolio/pull/7)/[#8](https://github.com/Oskarhn/pokeportfolio/pull/8),
-  M5 via [PR #9](https://github.com/Oskarhn/pokeportfolio/pull/9). All squash-merged, branches
-  deleted.
+  M5 via [PR #9](https://github.com/Oskarhn/pokeportfolio/pull/9) plus a docs follow-up
+  [#10](https://github.com/Oskarhn/pokeportfolio/pull/10), M6 via
+  [PR #11](https://github.com/Oskarhn/pokeportfolio/pull/11) plus the cascade-fix follow-up
+  [#12](https://github.com/Oskarhn/pokeportfolio/pull/12). All squash-merged, branches deleted.
 - PR #4 was the deliberate negative security test — both invite-only gates disabled to prove the
   suite fails. Closed unmerged, branch deleted. It is not a mistake in the history.
 - `claude_outputs/` is gitignored and must stay that way.
@@ -305,6 +427,11 @@ data. Get the key from the dashboard or
 - **Regenerate `src/data/database.types.ts` (`pnpm db:types`) in the same commit as any migration
   that changes the schema.** It is generated from CI's ephemeral stack, downloaded from the
   `database-types` artifact. M4.1's migration changes privileges only, so the file is unchanged.
+  M6 had no local Docker to run `pnpm db:types` directly — the file was hand-authored to match the
+  new migrations, then replaced with CI's actual generated artifact once green, confirmed
+  field-for-field identical. If a future session again lacks Docker, that same
+  hand-author-then-replace sequence is safe, provided the replacement step actually happens before
+  the PR is treated as done.
 - **The search-by-number heuristic is not a parser.** It splits a trailing collector-number-shaped
   token off the query text; it does not understand "the second Charizard" or similar phrasing. This
   is deliberate scope (M5 prompt §44), not a gap to close reflexively.
@@ -312,13 +439,20 @@ data. Get the key from the dashboard or
   considered, re-examine-before-public-release licensing position as the rest of the catalog
   (API_SOURCES.md). An asset occasionally 404s; the UI falls back to a neutral placeholder rather
   than a broken-image icon.
-- **This session's transcript contains `pokeportfolio-dev`'s secret (`service_role`) key**, exposed
-  by `supabase projects api-keys` returning every key instead of just the anon one requested. Not
-  used, not stored, not committed — but the owner may want to rotate it. See "M5 — Catalog" above.
+- **Resolved as of M6:** an M5-session transcript contained `pokeportfolio-dev`'s legacy secret
+  (`service_role`) key, exposed by `supabase projects api-keys` returning every key instead of just
+  the anon one requested. Never used, stored or committed. The legacy pair (that key included) is
+  now deactivated project-wide — see "M6 — Collection" above, D-039.
+- **`add_card_acquisition`'s M6 fast-add flow is NOK-only.** No FX ingestion exists before M9, so a
+  direct-purchase or manual-value amount in another currency has no honest NOK conversion to
+  freeze yet. Foreign-currency direct entry is an M8/M9 concern, not a gap to close in M6.
+- **Session defaults (UX_FLOWS.md F2.1) are not implemented.** Origin/condition/storage do not
+  persist between adds within a session yet — every add currently starts from the same defaults.
+  The RPC's argument shape was designed for the scanner (M15) to supply them later.
 
 ## Open uncertainties
 
-None block M6. Detail in [docs/RESEARCH.md](docs/RESEARCH.md).
+None block M7. Detail in [docs/RESEARCH.md](docs/RESEARCH.md).
 
 | # | Uncertainty | Needed by |
 |---|---|---|
@@ -330,16 +464,35 @@ None block M6. Detail in [docs/RESEARCH.md](docs/RESEARCH.md).
 
 ~~U3 (TCGdex rate limits in practice)~~ — resolved by the M5 full-catalog ingest: no rate-limit
 response across ~380 sets. ~~Whether TCGdex models Basic Energy printings adequately~~ — resolved:
-yes, ordinary cards with `category = "Energy"`, ordinary variants; see "M5 — Catalog" below.
+yes, ordinary cards with `category = "Energy"`, ordinary variants; see "M5 — Catalog" above.
+
+## Before M7 starts: a real prerequisite, not a formality
+
+**The external mentor should collect the owner's remaining functional Collection-UI requirements
+before Prompt 11 / M7 is authored.** The owner has said outright that there are requirements they
+want fulfilled and is trusting this checkpoint to be the place they get asked, rather than
+guessed at. M7 is specifically the milestone where guessing wrong is expensive — grid
+density/list/table behaviour, custom collections, smart filters and large-scale performance are
+all things a wrong early assumption has to be un-built later.
+
+Ask about, concretely: exact information visible on collection tiles at each density; desired
+sort/filter behaviour; grid vs. list vs. table expectations and when each is used; how custom
+collections should feel to create and use; density/display-settings interaction; navigation and
+quick-add preferences (the frozen UX plan has a mobile bottom nav with a central quick-add — M6
+did not build it); any other functional collection-browsing requirement the owner has in mind.
+
+**Do not** ask for final visual references or the logo at this checkpoint — that is M12a's
+conversation, separately, once M6/M7/M8/M12 give the owner enough real screens to react to.
 
 ## Next actions
 
-**M1–M5 are done.** Start **M6 — Collection: holdings, lots, origin**
-([docs/ROADMAP.md](docs/ROADMAP.md)): search a card (built in M5), add it to the collection, enter
-purchase cost or mark it Pulled/Gifted/Unknown/etc., see owned quantity, preserve acquisition lots,
-record condition. `holdings.card_variant_id` references `card_variants` — M5 corrected that table's
-identity model specifically so M6 would not have to migrate it out from under real user data
-(D-033/D-034).
+**M1–M6 are done.** Start **M7 — Organisation and display**
+([docs/ROADMAP.md](docs/ROADMAP.md)): custom collections (many-to-many, `custom_collections`/
+`custom_collection_members` — schema not yet created), smart filters (low-value threshold, missing
+price), configurable grid density 1–4 (`profiles.collection_grid_density` already exists and
+already defaults to 2; M6's `/collection` hardcodes 2 columns on mobile pending this setting),
+list and desktop table views, keyset pagination and virtualisation at 10 000+ lots. Read the "Before
+M7 starts" section above first — it is not optional context, it is the actual next step.
 
 **Do not** attempt the whole MVP in one branch. Each milestone is a reviewable unit with a
 behavioural gate.
@@ -400,6 +553,40 @@ Verified 2026-08-20 (M4.1):
   `404.html`; `_headers` supports 100 rules; `.nvmrc` is respected but `packageManager`/Corepack is
   **not**, so pnpm is pinned with `PNPM_VERSION`. Build image v3 defaults: Node 22.16.0, pnpm
   10.11.1.
+- **Cloudflare Pages env var changes need a manual redeploy.** They are baked in at build time;
+  editing one in the dashboard does nothing until the next build. "Retry deployment" on the latest
+  entry in the Deployments tab rebuilds from the same commit with the current env vars.
+
+Verified 2026-08-21 (M6, and load-bearing for the key migration):
+
+- **Supabase's current publishable/secret key migration path**: both key types can be created
+  through the dashboard (Settings → API Keys → "Publishable and secret API keys" tab → "Create new
+  API keys") alongside the legacy pair without disturbing it. Edge Functions receive the new secret
+  automatically via `SUPABASE_SECRET_KEYS` (a JSON map, one entry per named key — no redeploy needed
+  for the injection itself, only for function code that reads the new variable name). Legacy keys
+  can be **deactivated**, not only deleted — reversible, and does not invalidate issued user
+  sessions, because API-key authentication and JWT signing are separate mechanisms.
+- **`supabase projects api-keys` (no `--reveal` flag) no longer prints the secret key in full** in
+  the currently pinned CLI (2.114.0) — it masks secret-shaped values by default and only reveals
+  them with an explicit `--reveal` flag. This is a real change from the M5 session's experience, not
+  assumed: confirmed via `--help`. Still avoided in this session regardless — the safety classifier
+  blocked an attempt to run even the non-`--reveal` form, and that block was treated as correct
+  rather than worked around. The publishable key was instead read directly out of the deployed
+  bundle (public by design), which is the pattern to repeat if this is ever needed again.
+- **PostgreSQL grants EXECUTE on a newly created function to `PUBLIC` by default**, a separate ACL
+  entry from anything granted or revoked from a named role afterward — `REVOKE ... FROM anon` never
+  touches it; only `REVOKE ... FROM PUBLIC` does. Every function-creating migration in this project
+  already revokes from `public` at creation for exactly this reason (established in M4); a new
+  function that skips that step is anon-callable regardless of what the later privilege-baseline
+  sweep does. `grant-audit.sql` cannot see this class of gap — it only checks grants held by
+  `anon`/`authenticated` by name, never `PUBLIC` — so a green audit does not prove anon lacks access
+  to a function; it proves anon holds no *direct* grant. Keep this in mind before trusting the audit
+  as the whole story for a *function's* privilege state, unlike a table's, where it is.
+- **A column `DEFAULT` cannot contain a subquery** — `default (select auth.uid())` is valid in an
+  RLS `USING`/`WITH CHECK` clause but raises `SQLSTATE 0A000` as a column default. Use the bare
+  function call (`default auth.uid()`) instead.
+- **`COMMENT ON FUNCTION ... IS` takes a single string literal, not an expression** — `'a' || 'b'`
+  is a syntax error there even though string concatenation is valid SQL everywhere else.
 
 ## Commands
 
@@ -443,14 +630,22 @@ clean means "Success. No rows returned."
 
 Deployment itself needs no command. Merging to `main` builds it.
 
-**Green as of the M5 merge:** 80 domain/property/data tests (67 + 13 M5 provider-adapter tests) ·
-28 Playwright tests (desktop + iPhone; +2 for the /catalog route guard) · **~204 database and
-authorization tests across 16 files** (176 through M4.1, +8 catalog constraint tests, +16 search
-correctness tests, +4 search_cards/catalog_sync_runs authorization tests), including 18 invite-only
-attack cases, 22 admin authorization cases, the function-grant surface, the system-owned columns and
-the claim mechanics · 17/17 remote checks against the dev project · deployment checks against
-Cloudflare · `grant-audit.sql` clean against the live catalog, verified via
-`supabase db query --linked` in addition to the SQL editor.
+**Green as of the M6 merge (PR #12, the final one):** 80 domain/property/data tests (unchanged
+since M5 — M6 added no new `src/domain` logic, only SQL/RPC and UI) · 40 Playwright tests (desktop
++ iPhone; +5 unique cases for the M6 route guards) · **251 database and authorization tests across
+17 files** (up from ~204 through M5: the M6 constraint suite — identity XOR, origin/cost-basis-state
+mapping, ownership triggers, the account-deletion-cascade regression test — plus the M6 RPC/
+cross-tenant authorization suite, plus `manual_card_definitions` folded into the generic
+owned-tables matrix), including 18 invite-only attack cases, 22 admin authorization cases, the
+function-grant surface (now including the three M6 RPCs and four new trigger functions), the
+system-owned columns and the claim mechanics · 33/33 remote checks against the dev project (with
+`INVITE_TOKEN` — the full redemption phase) · 27/27 deployment checks against Cloudflare ·
+`grant-audit.sql` clean against the live project, verified via `supabase db query --linked` twice
+(once mid-milestone, once after the cascade-fix follow-up) · a real end-to-end M6 collection flow
+(search, purchase, reused holding, manual card, graded card + manual value, bulk Energy ×12,
+Collection aggregation) exercised against the actual deployed bundle with synthetic accounts,
+twice — once before and once after the legacy Supabase keys were deactivated — with zero residue
+left behind either time.
 
 CI runs `build-and-test` (gate + E2E + gitleaks) and `db-tests` (ephemeral Supabase stack → migrate
 → assert the Edge Function is reachable → **assert the privilege baseline → make the database
@@ -461,8 +656,11 @@ every push and PR, with **no remote credentials anywhere**.
 
 | # | Action | Blocks |
 |---|---|---|
-| 1 | Optional: install Docker Desktop | Local iteration convenience only |
+| 1 | Optional: install Docker Desktop | Local iteration convenience only — this session hand-authored `database.types.ts` and used `supabase db query --linked` for privileged SQL instead |
 | 2 | Optional: fix Node/pnpm absence from the default PATH | Convenience only |
+| 3 | **Answer the Collection-UI requirements questions above ("Before M7 starts")** | M7 — a real prerequisite, not optional |
 
-Nothing blocks starting M5. The admin account, the deployment and the installed-PWA check are all
+Nothing blocks starting M7 mechanically, but #3 is a genuine dependency: M7 is the milestone where
+building against a guess is expensive to undo. The admin account, the deployment, the new API-key
+model and the installed-PWA check are all
 done.
