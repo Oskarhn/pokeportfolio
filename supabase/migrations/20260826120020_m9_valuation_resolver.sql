@@ -99,57 +99,57 @@ begin
   -- "unresolved", never 0/1) and the snapshot is not already beyond the missing threshold.
   pivot as materialized (
     select
-      card_variant_id,
-      max(value_nok_minor::bigint) filter (
-        where provider = 'tcgdex_cardmarket' and fx_resolved and age_days <= 30
+      c.card_variant_id,
+      max(c.value_nok_minor::bigint) filter (
+        where c.provider = 'tcgdex_cardmarket' and c.fx_resolved and c.age_days <= 30
       ) as cm_value,
-      max(price_kind) filter (
-        where provider = 'tcgdex_cardmarket' and fx_resolved and age_days <= 30
+      max(c.price_kind) filter (
+        where c.provider = 'tcgdex_cardmarket' and c.fx_resolved and c.age_days <= 30
       ) as cm_kind,
-      max(source_currency) filter (
-        where provider = 'tcgdex_cardmarket' and fx_resolved and age_days <= 30
+      max(c.source_currency) filter (
+        where c.provider = 'tcgdex_cardmarket' and c.fx_resolved and c.age_days <= 30
       ) as cm_currency,
-      max(value_minor) filter (
-        where provider = 'tcgdex_cardmarket' and fx_resolved and age_days <= 30
+      max(c.value_minor) filter (
+        where c.provider = 'tcgdex_cardmarket' and c.fx_resolved and c.age_days <= 30
       ) as cm_source_value,
-      max(snapshot_date) filter (
-        where provider = 'tcgdex_cardmarket' and fx_resolved and age_days <= 30
+      max(c.snapshot_date) filter (
+        where c.provider = 'tcgdex_cardmarket' and c.fx_resolved and c.age_days <= 30
       ) as cm_date,
-      max(provider_updated_at) filter (
-        where provider = 'tcgdex_cardmarket' and fx_resolved and age_days <= 30
+      max(c.provider_updated_at) filter (
+        where c.provider = 'tcgdex_cardmarket' and c.fx_resolved and c.age_days <= 30
       ) as cm_updated,
-      max(age_days) filter (
-        where provider = 'tcgdex_cardmarket' and fx_resolved and age_days <= 30
+      max(c.age_days) filter (
+        where c.provider = 'tcgdex_cardmarket' and c.fx_resolved and c.age_days <= 30
       ) as cm_age,
-      max(fx_rate_used) filter (
-        where provider = 'tcgdex_cardmarket' and fx_resolved and age_days <= 30
+      max(c.fx_rate_used) filter (
+        where c.provider = 'tcgdex_cardmarket' and c.fx_resolved and c.age_days <= 30
       ) as cm_fx_rate,
-      max(value_nok_minor::bigint) filter (
-        where provider = 'tcgdex_tcgplayer' and fx_resolved and age_days <= 30
+      max(c.value_nok_minor::bigint) filter (
+        where c.provider = 'tcgdex_tcgplayer' and c.fx_resolved and c.age_days <= 30
       ) as tp_value,
-      max(price_kind) filter (
-        where provider = 'tcgdex_tcgplayer' and fx_resolved and age_days <= 30
+      max(c.price_kind) filter (
+        where c.provider = 'tcgdex_tcgplayer' and c.fx_resolved and c.age_days <= 30
       ) as tp_kind,
-      max(source_currency) filter (
-        where provider = 'tcgdex_tcgplayer' and fx_resolved and age_days <= 30
+      max(c.source_currency) filter (
+        where c.provider = 'tcgdex_tcgplayer' and c.fx_resolved and c.age_days <= 30
       ) as tp_currency,
-      max(value_minor) filter (
-        where provider = 'tcgdex_tcgplayer' and fx_resolved and age_days <= 30
+      max(c.value_minor) filter (
+        where c.provider = 'tcgdex_tcgplayer' and c.fx_resolved and c.age_days <= 30
       ) as tp_source_value,
-      max(snapshot_date) filter (
-        where provider = 'tcgdex_tcgplayer' and fx_resolved and age_days <= 30
+      max(c.snapshot_date) filter (
+        where c.provider = 'tcgdex_tcgplayer' and c.fx_resolved and c.age_days <= 30
       ) as tp_date,
-      max(provider_updated_at) filter (
-        where provider = 'tcgdex_tcgplayer' and fx_resolved and age_days <= 30
+      max(c.provider_updated_at) filter (
+        where c.provider = 'tcgdex_tcgplayer' and c.fx_resolved and c.age_days <= 30
       ) as tp_updated,
-      max(age_days) filter (
-        where provider = 'tcgdex_tcgplayer' and fx_resolved and age_days <= 30
+      max(c.age_days) filter (
+        where c.provider = 'tcgdex_tcgplayer' and c.fx_resolved and c.age_days <= 30
       ) as tp_age,
-      max(fx_rate_used) filter (
-        where provider = 'tcgdex_tcgplayer' and fx_resolved and age_days <= 30
+      max(c.fx_rate_used) filter (
+        where c.provider = 'tcgdex_tcgplayer' and c.fx_resolved and c.age_days <= 30
       ) as tp_fx_rate
-    from candidate
-    group by card_variant_id
+    from candidate c
+    group by c.card_variant_id
   )
   select
     p.card_variant_id,
@@ -364,7 +364,10 @@ begin
           and fr.source = 'norges_bank' and fr.rate_date <= d.snapshot_date
         order by fr.rate_date desc limit 1
       ) as rate
-    from (select distinct source_currency as base_currency, snapshot_date from raw where source_currency <> 'NOK') d
+    from (
+      select distinct raw.source_currency as base_currency, raw.snapshot_date
+      from raw where raw.source_currency <> 'NOK'
+    ) d
   ),
   converted as materialized (
     select

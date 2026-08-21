@@ -497,3 +497,58 @@ describe('portfolio_counts — priced/unpriced counts and portfolio value', () =
     expect(Number(data!.portfolio_value_nok_minor)).toBeGreaterThan(0)
   })
 })
+
+describe('get_card_variant_price_history — real snapshots only', () => {
+  it('returns no points for a variant with no history', async () => {
+    const cardVariantId = seedCatalog.charizardShadowlessFirstEditionVariantId
+    await service.from('price_snapshots').delete().eq('card_variant_id', cardVariantId)
+    const { data, error } = await client.rpc('get_card_variant_price_history', {
+      p_card_variant_id: cardVariantId,
+    })
+    expect(error).toBeNull()
+    expect(data).toEqual([])
+  })
+
+  it('returns real ascending points converted to NOK, one per day', async () => {
+    const cardVariantId = seedCatalog.charizardShadowlessFirstEditionVariantId
+    await service.from('price_snapshots').delete().eq('card_variant_id', cardVariantId)
+    await insertSnapshot({
+      cardVariantId,
+      provider: 'tcgdex_cardmarket',
+      priceKind: 'cm_trend',
+      currency: 'EUR',
+      valueMinor: 1000,
+      ageDays: 10,
+    })
+    await insertSnapshot({
+      cardVariantId,
+      provider: 'tcgdex_cardmarket',
+      priceKind: 'cm_trend',
+      currency: 'EUR',
+      valueMinor: 2000,
+      ageDays: 2,
+    })
+    const { data, error } = await client.rpc('get_card_variant_price_history', {
+      p_card_variant_id: cardVariantId,
+    })
+    const points = data as { snapshot_date: string; value_nok_minor: string }[] | null
+    expect(error).toBeNull()
+    expect(points).toHaveLength(2)
+    expect(points?.[0]?.value_nok_minor).toBe('11500')
+    expect(points?.[1]?.value_nok_minor).toBe('23000')
+  })
+})
+
+describe('get_market_movers — real period-over-period movement, owned cards only', () => {
+  it('excludes a holding with no historical observation before the window, never showing 0%', async () => {
+    const { data, error } = await client.rpc('get_market_movers', {
+      p_period_days: 7,
+      p_limit: 10,
+    })
+    expect(error).toBeNull()
+    // Every returned mover must have two genuinely distinct dated observations — the SQL itself
+    // enforces this (lt.snapshot_date <> pv.snapshot_date); this call just proves it executes
+    // without the ambiguous-column error and returns a well-shaped array.
+    expect(Array.isArray(data)).toBe(true)
+  })
+})

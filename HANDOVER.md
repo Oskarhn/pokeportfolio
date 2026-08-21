@@ -4,31 +4,181 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-**Last updated:** 2026-08-25 — M1 (scaffold and harness), M2 (financial domain core), M3
-(database, migrations, RLS), M4 (invite-only authentication), M4.1 (privilege convergence,
-deployment, real end-to-end), M5 (catalog, TCGdex ingest, search), M6 (collection: holdings, lots,
-origin, cost), M7 (Portfolio: organisation, display, navigation), M7.1 (owner UI/UX refinement
-pass), M8 (purchases and the spending ledger) and **M8.1 (Portfolio correction / Purchase
-discoverability)** complete in code, merged, and deployed. M7's PR
-([#14](https://github.com/Oskarhn/pokeportfolio/pull/14)) merged after CI-green; a follow-up CSP
-fix ([#15](https://github.com/Oskarhn/pokeportfolio/pull/15)) merged after browser verification
-found card thumbnails were blocked in production. M7.1's two PRs
-([#18](https://github.com/Oskarhn/pokeportfolio/pull/18),
-[#19](https://github.com/Oskarhn/pokeportfolio/pull/19)) merged after CI-green. M8's PR
-([#21](https://github.com/Oskarhn/pokeportfolio/pull/21)) merged after CI-green. **M8.1's PR
-([#23](https://github.com/Oskarhn/pokeportfolio/pull/23)) merged after CI-green** — see "M8.1 —
-Portfolio correction / Purchase discoverability" below for the full account. **The owner's
-real-device check from M7/M7.1 and the signed-in M8 check are both still outstanding, and M8.1 now
-needs its own signed-in check too — this session cannot create or sign in with a synthetic account
-(see "M8.1" below for exactly what to check).**
+**Last updated:** 2026-08-26 — M1–M8.1 remain complete in code, merged, and deployed (unchanged
+since the last update). **M9 (pricing and snapshots) is implemented and its PR
+([#25](https://github.com/Oskarhn/pokeportfolio/pull/25), branch `feat/m9-pricing-snapshots`) is
+open** — see "M9 — Pricing and snapshots" below for exactly what is and is not yet verified before
+a future session treats it as done. **This session could not use local Docker** (unchanged
+constraint since M3/§4 below), so the entire M9 database layer (11 new/rewritten SQL functions
+across 8 migrations, RLS/grants, the hostile-grant convergence proof) has been proven by careful
+manual review and by every check this machine *can* run locally
+(`pnpm check`/`pnpm build`/`pnpm test:e2e`, all green — see below) but **not yet by CI's
+`db-tests` job against a real ephemeral Postgres, and not yet against the real
+`pokeportfolio-dev` project.** A future session's first job, if picking this up mid-flight, is to
+check PR #25's CI status and, if green, proceed through the deployment steps this session did not
+reach (or could not verify) — listed explicitly at the end of the M9 section.
 
 ---
 
 ## Status
 
-**Planning is FROZEN. M1–M8.1 are complete in code, merged, and deployed.** M9 (pricing and
-snapshots) is next, once the owner has reacted to the deployed UI and done the outstanding
-real-device/signed-in checks below.
+**Planning is FROZEN. M1–M8.1 are complete in code, merged, and deployed. M9 is implemented,
+locally green, and awaiting CI + real-deployment verification (PR #25).** Do not report M9 as
+"complete" to the owner until CI is green and the real-project deployment steps below have
+actually run — this session's own standing rule (HANDOVER.md's own opening line) applies to this
+paragraph as much as to any other.
+
+## M9 — Pricing and snapshots
+
+Real raw-card market values, wired from TCGdex-relayed Cardmarket/TCGplayer data through to
+Portfolio, Home, Holding Detail and Card Detail. Full account: `claude_outputs/output_15.txt`.
+Decisions: DECISIONS.md D-052 through D-055.
+
+**Research, done before writing any code.** Live TCGdex probes 2026-08-21/22 (today's date at
+research time) against five real cards confirmed the documented pricing schema is unchanged but
+revealed a real complexity API_SOURCES.md's existing notes had not fully captured: two
+incompatible-looking pricing shapes coexist in real payloads (embedded per-variant pricing vs.
+card-level-only fields), and the card-level Cardmarket "-holo" slot can belong to a product that
+matches none of a card's declared variants. Full reasoning: PROJECT_JOURNAL.md 2026-08-26 ("Real
+TCGdex pricing payloads disagreed with each other..."). Current Supabase Cron/Vault/pg_net guidance
+was independently re-checked (WebFetch against `supabase.com/docs/guides/cron` and
+`.../functions/schedule-functions`) — the documented pattern (Vault secret, `net.http_post` inside
+`cron.schedule`) matches what M9 implements; **not independently confirmed against the real hosted
+project**, since applying the cron migration to `pokeportfolio-dev` did not happen this session (see
+"Not done" below). Norges Bank's API needed no re-verification beyond M8's own 2026-08-24 check.
+
+**Variant-safe price mapping** (`supabase/functions/_shared/tcgdex.ts`'s pricing section,
+`fetchCardPricing`) — prefers a `variants_detailed[i].pricing` object when TCGdex has assigned one
+explicitly (least ambiguous), falls back to the card-level top-level `pricing` object only when
+unambiguous (exactly one variant of the relevant finish), and resolves to no price rather than a
+guess otherwise (prompt §15). Locked in against five real captured payloads plus one deliberately
+constructed ambiguous case, `tests/data/tcgdex-pricing.test.ts` (16 tests, all passing locally).
+Cardmarket fallback: `trend → avg30 → avg7 → avg`. TCGplayer: `marketPrice` only, no fallback chain
+(FINANCIAL_MODEL.md §6).
+
+**Schema** (`supabase/migrations/20260826120000_m9_price_snapshots.sql` through `..._m9_privilege_
+baseline.sql`, 8 files): `price_snapshots` (market data, one already-fallback-chosen row per
+provider per variant per day — D-053 corrects DATA_MODEL.md §4.1's original per-price_kind sketch
+for storage-volume reasons), `watched_card_variants` (service-role-only view, any lot ever created
+for a variant keeps it watched forever, voided or not — D-055), `price_sync_runs` (service-role-only
+observability, mirrors `catalog_sync_runs`), `select_price_sync_batch`/`thin_price_snapshots`
+(service-role-only helpers for the ingest/retention jobs).
+
+**The resolver** — `resolve_variant_market_values(p_card_variant_ids uuid[])`, called exactly once
+per query with the full array of needed variant ids, never per-row (DATA_MODEL.md §17). Implements
+FINANCIAL_MODEL.md §6 (manual → fresh → stale → missing) and the newly-activated `use_eu_pricing`
+provider preference (D-052: Cardmarket preferred whenever it has a non-missing price; TCGplayer only
+as fallback; freshness never compared across providers to override the preference). FX conversion
+uses the snapshot date's own rate (most recent Norges Bank observation on or before it), computed
+once per distinct (currency, date) pair actually present, not per variant (prompt §76). Three
+callers: `get_holding_value_provenance` (Holding Detail's full provenance, applies the F10
+graded-card exclusion), `get_card_variant_price_history` (Card Detail's real-snapshots-only chart
+data), `get_market_movers` (Home's Market Movers section).
+
+**`list_portfolio`/`portfolio_counts` rewritten** (`20260826120030_m9_list_portfolio_resolver.sql`)
+— value_desc/asc now sorts by real **holding total** (unit × quantity, D-052), the low-value/
+missing-value filters use the real **unit** value, and `portfolio_counts` gained
+`priced_holding_count`/`unpriced_holding_count`/`portfolio_value_nok_minor` plus an optional
+`p_custom_collection_id` scope parameter (both signature changes, both re-granted in the privilege
+baseline). **A real M7.1 regression was found and fixed in the same rewrite**: M7.1's number-sort
+migration had to `DROP`+`CREATE` `list_portfolio` (a new parameter changes a function's identity)
+and, in retyping the body, silently reverted the real M7 10,000-lot-benchmark performance fix back
+to a per-holding `LATERAL` aggregate — see D-054/PROJECT_JOURNAL.md. Restored to the
+materialized-CTE shape in this same migration. **The large-Portfolio benchmark has not been re-run
+against real data this session** (no Docker, and the real project was not reached — see "Not done"
+below); a future session must run `scripts/portfolio-perf-benchmark.mjs` before treating M9's
+Portfolio performance as proven, not just "should be fine because the shape is right."
+
+**Scheduled ingest.** `ingest-prices` (every 15 minutes, bounded batch via
+`select_price_sync_batch`, card-level fetch dedup, idempotent upsert keyed on the provider's own
+`updated` date) and `ingest-fx` (daily, EUR+USD → NOK, reuses `_shared/norges-bank.ts` unchanged)
+run on `pg_cron`/`pg_net`, both gated by a `PRICE_SYNC_SECRET` bearer secret compared
+constant-time (same shape as M5's `CATALOG_SYNC_SECRET`), read from Supabase Vault at call time —
+never a migration literal. `thin_price_snapshots` runs weekly as a plain SQL cron command (no HTTP
+round trip). `search-prices` (user-JWT-gated) answers Search/Card Detail's on-demand, non-persisted
+current-price questions for catalog cards the user may not own, bounded to ≤20 cards per call.
+
+**UI.** Portfolio grid/list/table show the resolved holding-total value with a stale marker.
+Home shows the real Collection value (with priced/unpriced counts), a real Market Movers section
+(7-day window, top 5, "not enough history yet" when empty — never a fake 0%), and Most Valuable
+Cards now filters on the real resolved value. Holding Detail has a unified "Current value" section
+(manual override or automatic provenance — provider/price kind/source currency/FX rate/snapshot
+date — for *any* holding kind, not just graded, per prompt §36) with a working "Return to market
+value" action (`clear_manual_valuation`, supersedes without inserting a replacement, history
+preserved). Card Detail shows each variant's real on-demand current price (source currency, not
+converted to NOK — see the known limitation below) and a real price-history chart
+(`src/ui/PriceHistoryChart.tsx` — 0/1/2+ real points handled honestly, never a fabricated line).
+Profile's "Use European pricing" copy updated from "applies once market pricing is enabled" to
+describe what it actually does now.
+
+**Verified, actually run, not just described:** `pnpm typecheck`/`pnpm lint`/`pnpm format:check`
+all green; `pnpm test` **100/100** (up from 85 — the 16 new `tests/data/tcgdex-pricing.test.ts`
+cases; the DB-level `tests/db/m9_valuation_resolver.test.ts` needs the ephemeral stack and is not
+part of this count); `pnpm build` green (placeholder env); `pnpm test:e2e` **58/58** (unchanged —
+no new routes). PR #25 opened; CI status was pending as of this update — **check it before doing
+anything else if picking this up.**
+
+**Not done this session, and why — a future session's actual to-do list:**
+
+1. **CI's `db-tests` job has not been confirmed green.** This is the load-bearing check for
+   everything in the DB layer (11 SQL functions, the hostile-grant convergence proof,
+   `tests/db/m9_valuation_resolver.test.ts`'s 20-ish cases) — this session's own local checks
+   cannot substitute for it, only reduce the odds of a surprise. **Check PR #25 first.**
+2. **No migration has been pushed to `pokeportfolio-dev`.** `supabase db push` for the 8 new M9
+   migrations has not run against the real project.
+3. **No Edge Function has been deployed.** `ingest-prices`/`ingest-fx`/`search-prices` exist only
+   in the repository.
+4. **`PRICE_SYNC_SECRET` has not been generated or set anywhere** — not as an Edge Function secret,
+   not in Supabase Vault. Scheduled ingestion cannot run for real until both copies exist (they must
+   match). Generate it yourself (e.g. `openssl rand -hex 32`), never ask the owner to paste it into
+   chat, never print it into `claude_outputs/` or this file.
+5. **`pg_cron`/`pg_net` extension activation against the real hosted project is unverified.** The
+   migration uses `create extension if not exists pg_cron;`/`... pg_net with schema extensions;`,
+   which is the common documented Supabase pattern, but this session could not confirm it against
+   `pokeportfolio-dev` specifically. If `supabase db push` fails on
+   `20260826120050_m9_cron_schedule.sql` specifically, the likely fix is enabling `pg_cron` via the
+   Supabase Dashboard's Database → Extensions UI first (a documented one-click path for exactly this
+   "the migration role lacks the privilege" case), then re-running `db push`.
+6. **No real initial price-sync batch has run.** Prompt §29 asks for one bounded initial sync so the
+   owner's own already-owned raw cards get values immediately rather than waiting for the first cron
+   tick — this needs the function deployed and the secret set first.
+7. **`grant-audit.sql`/`remote-security-check.mjs`/`deployment-check.mjs` have not been re-run
+   against the real project** for this change.
+8. **The real 10,000-lot Portfolio benchmark has not been re-run.** D-054's fix should restore
+   M7's 130-570 ms, but "should" is not "measured" — the resolver join is new and needs its own
+   `EXPLAIN ANALYZE` against real data, not just reasoning about the query shape.
+9. **`database.types.ts` was hand-updated, not regenerated** (same no-Docker constraint as every
+   milestone since M6) — diffed carefully against the actual SQL return types (all money columns
+   cast to `text`, matching the established PostgREST-bigint-precision boundary rule) but not
+   verified against a real `supabase gen types` output. Two service-role-only functions
+   (`select_price_sync_batch`, `thin_price_snapshots`) were deliberately **not** added to this file
+   — nothing in `src/` calls them, so omitting them causes no compile error, but a real regeneration
+   would include them and should be diffed carefully (same `p_fx_rate_to_nok`-string-divergence
+   caution M8.1 already recorded applies here: check the diff, don't blindly overwrite).
+10. **COST_POLICY.md's storage projection was not updated with a measured number** — this session
+    computed the schema but had no live Postgres to measure actual row/index bytes against
+    (`pg_total_relation_size`). A future session with either Docker or real-project access should
+    seed a representative batch of `price_snapshots` rows and measure for real, then update
+    COST_POLICY.md/DATA_MODEL.md §4.2 with the actual figure rather than the inherited estimate.
+11. **No owner-facing signed-in check has happened** — same standing boundary as M7.1/M8/M8.1
+    (this session does not create or sign into any account, synthetic or real).
+
+**Known, disclosed simplifications (not gaps to silently close later):**
+
+- Search's compact result-tile grid (`CardResultCard.tsx`) does not show per-tile pricing — only
+  Card Detail does. Wiring it in properly needs an honest NOK-range display strategy (prompt §49)
+  this session did not have time to design carefully; showing a raw source-currency figure on a
+  dense grid tile risked looking like a NOK price.
+- On-demand Search/Card Detail current prices display in their **original source currency** (EUR/
+  USD), not converted to NOK — unlike Portfolio/Holding Detail, which use the real
+  `resolve_variant_market_values` resolver and are always NOK-correct. A live client-side FX
+  conversion for this specific display path is a reasonable follow-up, not implemented here.
+- Market Movers is a Home-page section with a fixed 7-day window and no sort-mode toggle yet — the
+  SQL function (`get_market_movers`) already accepts a period/limit, so this is UI-only remaining
+  work. UX_FLOWS.md F16 records the gap against the owner's fuller original spec.
+- Sealed-product pricing is out of scope by design (M11), unaffected by M9.
+
+## Deployed state (still M8.1 — M9 has not been merged or deployed yet)
 
 The application is deployed and reachable: **https://pokeportfolio-dev.pages.dev**, on the M8.1
 state (PRs #14, #15, #18, #19, #21, #22 and #23 all merged). The owner has a working administrator

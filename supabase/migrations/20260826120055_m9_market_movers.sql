@@ -77,16 +77,18 @@ begin
     left join fx_lookup fx on fx.base_currency = s.source_currency and fx.snapshot_date = s.snapshot_date
   ),
   latest as materialized (
-    select distinct on (card_variant_id) card_variant_id, snapshot_date, value_nok_minor
+    select distinct on (converted.card_variant_id)
+      converted.card_variant_id, converted.snapshot_date, converted.value_nok_minor
     from converted
     where value_nok_minor is not null
-    order by card_variant_id, snapshot_date desc
+    order by converted.card_variant_id, converted.snapshot_date desc
   ),
   previous as materialized (
-    select distinct on (card_variant_id) card_variant_id, snapshot_date, value_nok_minor
+    select distinct on (converted.card_variant_id)
+      converted.card_variant_id, converted.snapshot_date, converted.value_nok_minor
     from converted
     where value_nok_minor is not null and snapshot_date <= current_date - v_period
-    order by card_variant_id, snapshot_date desc
+    order by converted.card_variant_id, converted.snapshot_date desc
   )
   select
     o.holding_id,
