@@ -73,9 +73,13 @@ export interface PortfolioTile {
   manualSetName: string | null
   manualCollectorNumber: string | null
   manualLanguage: string | null
-  /** Known only for a graded holding with an active manual valuation (M6). NULL for every raw
-   *  card until M9 — never a fabricated value, never the acquisition cost. */
-  resolvedValueMinor: bigint | null
+  /** Resolved market value (FINANCIAL_MODEL.md §6): manual → fresh → stale → missing. NULL means
+   *  no resolvable value — never a fabricated figure, never the acquisition cost (M9). */
+  unitValueMinor: bigint | null
+  /** unitValueMinor × open quantity — the Portfolio's sort key (D-052: a portfolio view answers
+   *  "what's my biggest position", not "what's the priciest single card"). */
+  holdingValueMinor: bigint | null
+  priceState: 'manual' | 'fresh' | 'stale' | 'missing'
   acquiredOnMin: string | null
   acquiredOnMax: string | null
   hasMultipleStorageLocations: boolean
@@ -115,8 +119,8 @@ export function cursorFromTile(tile: PortfolioTile): PortfolioCursor {
     quantity: tile.quantity,
     acquiredOn: tile.acquiredOnMax ?? tile.acquiredOnMin,
     addedAt: tile.createdAt,
-    valueMinor: tile.resolvedValueMinor,
-    hasValue: tile.resolvedValueMinor !== null,
+    valueMinor: tile.holdingValueMinor,
+    hasValue: tile.holdingValueMinor !== null,
     numberKey: tile.numberSortKey,
   }
 }
@@ -170,7 +174,9 @@ interface ListPortfolioRow {
   manual_set_name: string | null
   manual_collector_number: string | null
   manual_language: string | null
-  resolved_value_nok_minor: string | null
+  unit_value_nok_minor: string | null
+  holding_value_nok_minor: string | null
+  price_state: 'manual' | 'fresh' | 'stale' | 'missing' | null
   acquired_on_min: string | null
   acquired_on_max: string | null
   has_multiple_storage_locations: boolean | null
@@ -206,8 +212,11 @@ function mapRow(row: ListPortfolioRow): PortfolioTile {
     manualSetName: row.manual_set_name,
     manualCollectorNumber: row.manual_collector_number,
     manualLanguage: row.manual_language,
-    resolvedValueMinor:
-      row.resolved_value_nok_minor === null ? null : parseMinorUnits(row.resolved_value_nok_minor),
+    unitValueMinor:
+      row.unit_value_nok_minor === null ? null : parseMinorUnits(row.unit_value_nok_minor),
+    holdingValueMinor:
+      row.holding_value_nok_minor === null ? null : parseMinorUnits(row.holding_value_nok_minor),
+    priceState: row.price_state ?? 'missing',
     acquiredOnMin: row.acquired_on_min,
     acquiredOnMax: row.acquired_on_max,
     hasMultipleStorageLocations: row.has_multiple_storage_locations ?? false,
@@ -268,6 +277,13 @@ export interface PortfolioCounts {
   uniqueHoldingCount: number
   gradedCount: number
   manualCount: number
+  /** Holdings with a resolved value (manual/fresh/stale) vs none — surfaced honestly rather than
+   *  silently valuing the unpriced ones at zero (FINANCIAL_MODEL.md §2.4/F14, prompt §43/§69). */
+  pricedHoldingCount: number
+  unpricedHoldingCount: number
+  /** Current Portfolio Value (CMV) in NOK minor units — sum of resolved unit value × open
+   *  quantity over every priced holding. */
+  portfolioValueMinor: bigint
 }
 
 interface PortfolioCountsRow {
@@ -275,11 +291,14 @@ interface PortfolioCountsRow {
   unique_holding_count: string
   graded_count: string
   manual_count: string
+  priced_holding_count: string
+  unpriced_holding_count: string
+  portfolio_value_nok_minor: string
 }
 
-export async function getPortfolioCounts(): Promise<PortfolioCounts> {
+export async function getPortfolioCounts(customCollectionId?: string): Promise<PortfolioCounts> {
   const { data, error } = await supabase
-    .rpc('portfolio_counts')
+    .rpc('portfolio_counts', { p_custom_collection_id: customCollectionId })
     .single()
     .overrideTypes<PortfolioCountsRow, { merge: false }>()
   if (error) throw new Error(error.message)
@@ -288,5 +307,8 @@ export async function getPortfolioCounts(): Promise<PortfolioCounts> {
     uniqueHoldingCount: Number(data.unique_holding_count),
     gradedCount: Number(data.graded_count),
     manualCount: Number(data.manual_count),
+    pricedHoldingCount: Number(data.priced_holding_count),
+    unpricedHoldingCount: Number(data.unpriced_holding_count),
+    portfolioValueMinor: parseMinorUnits(data.portfolio_value_nok_minor),
   }
 }

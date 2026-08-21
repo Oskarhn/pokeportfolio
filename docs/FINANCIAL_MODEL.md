@@ -340,6 +340,24 @@ Provider price selection for raw cards (Cardmarket, EUR):
 2. `avg30` if `trend` is absent
 3. `avg7`, then `avg` — each fallback recorded in `price_kind` so provenance is inspectable
 
+Provider price selection for raw cards (TCGplayer, USD): `marketPrice` only. `low`/`mid`/`high`
+are not a fallback chain — a low price is not automatically a fair market value, and no financial
+model decision has been made to treat it as one (M9 prompt §18). If `marketPrice` is absent,
+TCGplayer has no candidate for that variant on that day.
+
+**Provider preference (M9, D-052).** `profiles.use_eu_pricing` decides which provider is tried
+first when both could resolve a price for the same variant:
+
+- `use_eu_pricing = true` (the product default, D-044): Cardmarket is used whenever it resolves to
+  a non-missing (fresh or stale) price. TCGplayer is used only when Cardmarket has none.
+- `use_eu_pricing = false`: the exact mirror — TCGplayer first, Cardmarket only as a fallback.
+
+Freshness is never compared *across* providers to override this preference — a stale Cardmarket
+price still wins over a fresher TCGplayer one when EU pricing is selected. This is the simplest
+reading of the owner's stated preference ("use European pricing when available") and the one
+`resolve_variant_market_values` implements; every M9 surface calls that one function rather than
+re-deriving the rule (DATA_MODEL.md §17).
+
 > **Invariant F9:** a provider failure may never reduce a value to zero. On failure the last
 > known snapshot is retained and its age drives `price_state`. Tested with a simulated outage.
 

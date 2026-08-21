@@ -1198,3 +1198,76 @@ code starts calling them a *different* way. The standing mitigation is the one t
 follows elsewhere (M4/M6/M7's own findings): when a milestone is the first to actually exercise an
 existing table or function from a new angle, re-derive whether its existing guarantees still hold
 for that angle — do not assume "it shipped before, so it was checked."
+
+---
+
+## 2026-08-26 — A performance fix silently reverted itself the next time the function had to be rewritten
+
+**Problem.** M9 needed to rewrite `list_portfolio`'s body regardless (to add the resolver join), so
+before touching it, its current shape was read in full rather than assumed. It still had the
+`join lateral (select sum(...) ... where l.holding_id = h.id) q on true` per-holding aggregate the
+real M7 10,000-lot benchmark had already found forces a nested-loop plan — the exact defect
+`20260822120030_m7_portfolio_query_perf_fix.sql` fixed, measured at 130-570 ms afterward.
+
+**How it came back.** M7.1's number-sort feature (`20260823120010_m71_number_sort.sql`) added a
+new parameter to `list_portfolio`. Postgres identifies a function by name *and* argument types, so
+`CREATE OR REPLACE` cannot add a parameter — it silently creates a second overload instead of
+replacing the first, which then fails at call time with "function is not unique." The correct fix
+(`DROP FUNCTION` with the exact old signature, then `CREATE FUNCTION`) is what that migration
+correctly did. But dropping and recreating means retyping the entire function body from a source
+other than "diff against the previous version" — and the version that got retyped was, in effect,
+reconstructed from the pre-perf-fix mental model, not from the actually-shipped
+`with lot_agg as materialized (...) group by h.id` shape. `portfolio_counts()` was untouched by
+M7.1 (its own signature never changed), so it kept the correct shape the whole time — the
+regression is specific to the one function whose signature happened to change.
+
+**Nothing caught it for three milestones.** CI's ephemeral fixtures are far too small to make a
+nested-loop plan visibly slow; the difference only shows up against thousands of rows, which is
+exactly the scale CI deliberately does not seed (that is what `scripts/portfolio-perf-benchmark.mjs`
+against a real project is for, and nobody re-ran it between M7.1 and M9).
+
+**Fix.** Restored the materialized-CTE shape in the same M9 migration that already had to rewrite
+`list_portfolio`'s body for the resolver join (`20260826120030_m9_list_portfolio_resolver.sql`),
+rather than filing it as a separate bug report. Recorded as DECISIONS.md D-054.
+
+**The generalizable lesson.** A migration that must `DROP`+`CREATE` a function for a reason
+unrelated to its performance-critical internals (a new parameter, a new return column) is exactly
+the moment a previous performance fix can silently regress, because the whole body is being retyped
+by hand rather than edited surgically with a diff against what shipped. The standing mitigation:
+when a `DROP FUNCTION`/`CREATE FUNCTION` pair is needed for an unrelated reason, read the *current*
+migration file in full first — not a summary, not a memory of what it should contain — and carry
+forward any non-obvious shape (a materialized CTE instead of the naive join, an index hint, a
+specific `FILTER` clause) explicitly, the same discipline PROJECT_JOURNAL.md already recommends for
+re-deriving guarantees when a new caller exercises existing code from a new angle.
+
+---
+
+## 2026-08-26 — Real TCGdex pricing payloads disagreed with each other about where a variant's price lives
+
+**Problem.** M9's price-mapping adapter needs to attach a Cardmarket/TCGplayer price to the *exact*
+`card_variant` it belongs to — finish, stamp, subtype, size (D-033) — never a guess, because a wrong
+price on the wrong printing is worse than no price at all (prompt §15).
+
+**Investigation.** Rather than designing the mapper from the API_SOURCES.md description alone, five
+real cards were fetched live and inspected field-by-field: a Base Set Charizard (multiple declared
+variants, only one carrying real embedded pricing), a Sword & Shield-era common (`swsh1-2` Roselia:
+no embedded pricing on *any* variant, both `variantId: "generated"`), a Scarlet & Violet common
+(same card-level-only shape), and a Basic Energy card with six declared variants
+(`sve-001`) where the plain "reverse, no stamp" printing and a professor-program-stamped sibling
+both carried their *own* distinct Cardmarket `idProduct` — genuinely different products despite
+looking identical at the finish/subtype level TCGdex's boolean flags alone would suggest.
+
+**Finding.** Two incompatible-looking pricing shapes both occur on real cards, not as an edge case
+but as the *common* case for one of them: (1) `variants_detailed[i].pricing`, present and
+variant-scoped, when TCGdex has bothered to assign it — the least ambiguous evidence available; (2)
+the card-level top-level `pricing` object, the *only* source for an ordinary modern normal/reverse
+card, where Cardmarket carries just two slots (base fields for "normal", `-holo`-suffixed fields for
+whichever *one* non-normal finish exists) and TCGplayer is keyed by named finish bucket. The
+Charizard payload also proved the card-level `-holo` fields can belong to a Cardmarket product that
+matches *none* of the card's own declared variants — real, observed, not a hypothetical worry.
+
+**Consequence.** The mapper (`_shared/tcgdex.ts`'s pricing section) tries embedded pricing first,
+and falls back to the card-level fields only when the ambiguity checks pass (exactly one variant of
+the relevant finish exists); anything else resolves to no price. All five real payloads are locked
+in as regression fixtures (`tests/data/tcgdex-pricing.test.ts`) so a genuine upstream shape change
+would fail a specific, real assertion rather than only being noticed in production.

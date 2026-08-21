@@ -1,0 +1,154 @@
+import { supabase } from './supabase-client'
+import { parseMinorUnits } from './money'
+
+/**
+ * On-demand catalog pricing (search-prices Edge Function, M9 prompt §48-50) and real snapshot
+ * history (get_card_variant_price_history RPC, prompt §51-53). Neither persists anything — a
+ * search does not become history (DATA_MODEL.md §4.2); only the scheduled ingest job writes
+ * `price_snapshots`.
+ *
+ * Search/Card Detail current-price references are shown in their own source currency (EUR/USD),
+ * not converted to NOK — unlike Portfolio/Holding Detail, whose values come from the real
+ * `resolve_variant_market_values` resolver and are always NOK. Converting an on-demand reference
+ * for display would need its own live FX lookup; showing the real source currency plainly is more
+ * honest than a conversion this path does not yet perform.
+ */
+
+export interface SearchPriceResult {
+  cardVariantId: string
+  cardId: string
+  priceState: 'available' | 'missing'
+  provider: 'tcgdex_cardmarket' | 'tcgdex_tcgplayer' | null
+  sourceCurrency: string | null
+  sourceValueMinor: bigint | null
+  providerUpdatedAt: string | null
+}
+
+interface SearchPricesFunctionRow {
+  cardVariantId: string
+  cardId: string
+  priceState: 'available' | 'missing'
+  provider: 'tcgdex_cardmarket' | 'tcgdex_tcgplayer' | null
+  priceKind: string | null
+  sourceCurrency: string | null
+  sourceValueMinor: number | null
+  providerUpdatedAt: string | null
+}
+
+interface SearchPricesFunctionBody {
+  ok: boolean
+  results?: SearchPricesFunctionRow[]
+  error?: string
+}
+
+const MAX_CARD_IDS = 20
+
+/** Bounded batch (<=20 cards) — never one request per visible card (prompt §48). Silently returns
+ *  an empty map on failure: pricing is a secondary enhancement and must never break Search/Card
+ *  Detail's primary catalog browsing (prompt §80). */
+export async function searchPrices(
+  cardIds: string[],
+  useEuPricing: boolean,
+): Promise<Map<string, SearchPriceResult>> {
+  const bounded = cardIds.slice(0, MAX_CARD_IDS)
+  if (bounded.length === 0) return new Map()
+
+  try {
+    const invoked = await supabase.functions.invoke('search-prices', {
+      body: { cardIds: bounded, useEuPricing },
+    })
+    const body = invoked.data as SearchPricesFunctionBody | null
+    if (invoked.error || !body?.ok || !body.results) return new Map()
+
+    return new Map(
+      body.results.map((r) => [
+        r.cardVariantId,
+        {
+          cardVariantId: r.cardVariantId,
+          cardId: r.cardId,
+          priceState: r.priceState,
+          provider: r.provider,
+          sourceCurrency: r.sourceCurrency,
+          sourceValueMinor:
+            r.sourceValueMinor === null ? null : BigInt(Math.round(r.sourceValueMinor)),
+          providerUpdatedAt: r.providerUpdatedAt,
+        },
+      ]),
+    )
+  } catch {
+    return new Map()
+  }
+}
+
+export interface PriceHistoryPoint {
+  snapshotDate: string
+  valueNokMinor: bigint
+  provider: 'tcgdex_cardmarket' | 'tcgdex_tcgplayer'
+}
+
+interface PriceHistoryRow {
+  snapshot_date: string
+  value_nok_minor: string
+  provider: 'tcgdex_cardmarket' | 'tcgdex_tcgplayer'
+  price_kind: string
+}
+
+/** Real snapshots only — never a fabricated point, never an avg7/avg30 rolling statistic
+ *  mistaken for history (D-008). Empty for a variant nobody has ever owned (watched_card_variants
+ *  never covered it) or one owned for less than a day. */
+export interface MarketMover {
+  holdingId: string
+  cardVariantId: string
+  cardName: string | null
+  cardImageBaseUrl: string | null
+  currentValueMinor: bigint
+  previousValueMinor: bigint
+  changeMinor: bigint
+  changePct: number | null
+}
+
+interface MarketMoverRow {
+  holding_id: string
+  card_variant_id: string
+  card_name: string | null
+  card_image_base_url: string | null
+  current_value_nok_minor: string
+  previous_value_nok_minor: string
+  change_nok_minor: string
+  change_pct: number | null
+}
+
+/** Real price movement of currently-owned, currently-priced holdings only (prompt §54-55/§94) —
+ *  never a global catalog ranking, never a realized-P/L figure. A holding with no historical
+ *  observation in the window is simply absent, never shown as 0% movement. */
+export async function getMarketMovers(periodDays: number, limit = 10): Promise<MarketMover[]> {
+  const { data, error } = await supabase
+    .rpc('get_market_movers', { p_period_days: periodDays, p_limit: limit })
+    .overrideTypes<MarketMoverRow[], { merge: false }>()
+  if (error) throw new Error(error.message)
+  return data.map((row) => ({
+    holdingId: row.holding_id,
+    cardVariantId: row.card_variant_id,
+    cardName: row.card_name,
+    cardImageBaseUrl: row.card_image_base_url,
+    currentValueMinor: parseMinorUnits(row.current_value_nok_minor),
+    previousValueMinor: parseMinorUnits(row.previous_value_nok_minor),
+    changeMinor: parseMinorUnits(row.change_nok_minor),
+    changePct: row.change_pct,
+  }))
+}
+
+export async function getCardVariantPriceHistory(
+  cardVariantId: string,
+  since?: string,
+): Promise<PriceHistoryPoint[]> {
+  const { data, error } = await supabase
+    .rpc('get_card_variant_price_history', { p_card_variant_id: cardVariantId, p_since: since })
+    .overrideTypes<PriceHistoryRow[], { merge: false }>()
+  if (error) throw new Error(error.message)
+  return data.map((row) => ({
+    snapshotDate: row.snapshot_date,
+    valueNokMinor: parseMinorUnits(row.value_nok_minor),
+    provider: row.provider,
+  }))
+}

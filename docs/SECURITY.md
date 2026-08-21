@@ -152,6 +152,42 @@ caller-supplied URL, no SSRF surface), validates the currency code and date shap
 network call, bounds the request with an 8-second timeout, and structurally validates the response
 shape before trusting any field in it.
 
+### 3.2.3 M9: price snapshots, the watched-variant view, and the resolver surface
+
+`price_snapshots` follows the exact `fx_rates` shape: market data, `SELECT` for `authenticated`, no
+`INSERT`/`UPDATE`/`DELETE` grant to that role at all. Only the `ingest-prices` Edge Function, under
+the service role, writes — no signed-in session can claim a fabricated Cardmarket/TCGplayer
+observation, overwrite another variant's history, or poison the shared price series (prompt §10).
+
+`watched_card_variants` (a view) and `price_sync_runs` (observability) carry **no grant to `anon`
+or `authenticated` at all** — the same shape `catalog_sync_runs`/`invitation_claims` already
+established. `watched_card_variants` spans every user's holdings by design (the ingest job needs to
+know the union of everyone's owned variants), so exposing it to a browser-reachable role would leak
+"someone on this app owns this card" in aggregate — a real, if narrow, privacy concern the schema
+avoids by construction rather than by policy.
+
+`resolve_variant_market_values`/`get_holding_value_provenance`/`get_card_variant_price_history`/
+`get_market_movers` are `SECURITY INVOKER`, scoped entirely by `auth.uid()` — same reasoning as
+every other M9-adjacent RPC (§3.2.1). `resolve_variant_market_values` takes an array of
+`card_variant_id`s with no ownership check on the array itself (it only reads shared market data:
+`price_snapshots`, `fx_rates`, and the caller's own `profiles.use_eu_pricing`), so a signed-in user
+asking about a variant they do not own is not a privilege question — the same way `search_cards`
+answers questions about cards nobody in particular owns. `get_holding_value_provenance`/
+`get_market_movers` *do* check ownership, because they read `holdings`/`acquisition_lots` for a
+specific holding or the caller's own portfolio.
+
+`select_price_sync_batch`/`thin_price_snapshots` are `service_role`-only — never granted to
+`authenticated`, and their bodies are not `SECURITY INVOKER` in the ownership sense (there is no
+`auth.uid()` to scope by; they operate across every user by design, which is exactly why they must
+never be reachable from a browser).
+
+`search-prices` (Edge Function, on-demand catalog pricing for Search/Card Detail) requires a real
+user JWT like `fetch-fx-rate`, validates a bounded (≤20) array of catalog `card_variant_id`s, talks
+to the fixed TCGdex host only (no caller-supplied URL), and writes nothing — a search never becomes
+persisted history (prompt §50). `ingest-prices`/`ingest-fx` are the operator-secret-gated shape
+(`PRICE_SYNC_SECRET`, `verify_jwt = false`), called only by `pg_cron`/`pg_net` — see §6 for how the
+secret itself is held.
+
 ### 3.3 Attack surface the tests must cover
 
 - Direct read of another user's row by id
@@ -451,11 +487,25 @@ policies and the same column grants. It widens nothing, and needs no separate ba
 | Database password | Password manager, never in the repo | Never |
 | Supabase CLI access token | `supabase login` keyring, never in the repo | Never |
 | `CATALOG_SYNC_SECRET` (M5) | Edge Function environment (`supabase secrets set`), plus the operator's own shell environment when running `scripts/run-catalog-sync.mjs` | **Never** |
+| `PRICE_SYNC_SECRET` (M9) | Edge Function environment (`supabase secrets set`) **and** Supabase Vault (`select vault.create_secret(..., 'price_sync_secret', ...)`), so `pg_cron`/`pg_net` can read it at call time | **Never** |
 
 **`CATALOG_SYNC_SECRET` is not the Supabase secret key and is not a step up from a CI deploy key**
 (D-035). It gates exactly one capability — invoking `sync-catalog` — and is checked with a
 constant-time comparison against a single bearer header. It is never the Supabase secret key, never
 placed in `.env.local`, and no code path ships it to the browser bundle.
+
+**`PRICE_SYNC_SECRET` (M9) is the same shape, gating `ingest-prices`/`ingest-fx`, with one added
+wrinkle: the *caller* is `pg_cron` via `pg_net`, running inside the database itself, not an operator
+script with its own shell environment.** A scheduled SQL command cannot read an Edge Function's
+environment variable, so the secret is additionally stored in Supabase Vault
+(`vault.create_secret`) and read back at call time via `vault.decrypted_secrets` — never as a
+literal in migration SQL, never logged, never printed into a Claude session or `claude_outputs/`.
+Setting both copies (the Vault secret and the matching Edge Function secret) is a one-time,
+deliberate act against the real project, the same trust level as setting `CATALOG_SYNC_SECRET` —
+this session generated the value itself via `supabase secrets set`/`vault.create_secret` and never
+displayed it. If the secret is ever rotated, both copies must be updated together or scheduled
+ingestion starts failing closed (a 401 from the Edge Function) rather than silently — a safe
+failure mode, not a security gap.
 
 **Current hosted key model (M6, D-039).** `pokeportfolio-dev` uses named
 `sb_publishable_…`/`sb_secret_…` keys, created through the dashboard and never printed into a

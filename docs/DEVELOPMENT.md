@@ -168,6 +168,19 @@ Live since M7 (Portfolio performance):
 one of its two gates missing. Gate 2, the `auth.users` trigger, travels with the migrations and
 would still hold — but "one gate is enough" is not the posture this project takes.
 
+Live since M9 (pricing and snapshots):
+
+| Command | Does |
+|---|---|
+| `pnpm exec supabase functions deploy ingest-prices --use-api` / `... deploy ingest-fx --use-api` / `... deploy search-prices --use-api` | Deploy the three M9 Edge Functions |
+| `pnpm exec supabase secrets set PRICE_SYNC_SECRET=<random>` | Set `ingest-prices`/`ingest-fx`'s bearer secret (same shape as `CATALOG_SYNC_SECRET`, SECURITY.md §6) |
+| `pnpm exec supabase db query --linked -f <one-off.sql>` with `select vault.create_secret('<same random value>', 'price_sync_secret', 'ingest-prices/ingest-fx bearer secret, M9');` | Stores the **same** secret in Supabase Vault so `pg_cron`/`pg_net` can read it at call time — a one-time act against the real project, never in a committed migration file, never displayed. Both copies (Vault + Edge Function secret) must match. |
+| `select * from cron.job;` / `select * from cron.job_run_details order by start_time desc limit 20;` (via `supabase db query --linked -f`) | Inspect scheduled jobs and recent run history against a real project (prompt §65) — no credentials in the output |
+
+Cron scheduling itself (`cron.schedule(...)`) lives in the migration
+(`20260826120050_m9_cron_schedule.sql`) and needs no separate deploy step — it applies with `db
+push` like any other schema change. Only the Vault secret is set out-of-band.
+
 ---
 
 ## 4. Database workflow

@@ -22,12 +22,16 @@ export function MoneyDisplay({
   hidden = false,
   size = 'md',
   displayCurrency,
+  stale = false,
 }: {
   state: 'known' | 'missing'
   minorUnits?: bigint
   hidden?: boolean
   size?: 'lg' | 'md' | 'sm'
   displayCurrency?: string
+  /** M9: the resolved value is real but the underlying snapshot is 4-30 days old
+   *  (FINANCIAL_MODEL.md §6) — shown as a subtle marker, never hidden or treated as missing. */
+  stale?: boolean
 }) {
   const sizeClass = {
     lg: 'text-3xl font-semibold tracking-tight',
@@ -55,6 +59,14 @@ export function MoneyDisplay({
       {showConversionNote ? (
         <span className="text-xs font-normal text-slate-500">
           NOK — {displayCurrency} shown once conversion exists
+        </span>
+      ) : null}
+      {state === 'known' && stale && !hidden ? (
+        <span
+          className="rounded-full border border-amber-800/60 bg-amber-950/40 px-1.5 py-0.5 text-[10px] font-medium text-amber-400"
+          title="This price hasn't refreshed in a few days — still used, just not brand new."
+        >
+          stale
         </span>
       ) : null}
     </span>

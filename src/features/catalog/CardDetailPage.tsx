@@ -1,7 +1,10 @@
 import { Link, useParams } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { getCard, getCardVariants } from '../../data/catalog'
+import { getCardVariantPriceHistory, searchPrices } from '../../data/pricing'
+import { getMyProfile } from '../../data/profile'
 import { CardImage } from './CardImage'
+import { PriceHistoryChart } from '../../ui/PriceHistoryChart'
 
 const FINISH_LABEL: Record<string, string> = {
   normal: 'Normal',
@@ -10,7 +13,12 @@ const FINISH_LABEL: Record<string, string> = {
   other: 'Other',
 }
 
-const PERIODS = ['1M', '3M', '6M', '1Y', 'MAX'] as const
+function sourceValueText(sourceCurrency: string | null, sourceValueMinor: bigint | null): string {
+  if (sourceCurrency === null || sourceValueMinor === null) return '—'
+  const symbol =
+    sourceCurrency === 'EUR' ? '€' : sourceCurrency === 'USD' ? '$' : `${sourceCurrency} `
+  return `${symbol}${(Number(sourceValueMinor) / 100).toFixed(2)}`
+}
 
 /**
  * Card detail (M7.1 prompt §32-35): a large image at top, then one rounded information surface
@@ -29,6 +37,21 @@ export function CardDetailPage() {
     queryKey: ['catalog-card-variants', cardId],
     queryFn: () => getCardVariants(cardId),
     enabled: card.isSuccess && card.data !== null,
+  })
+  const profile = useQuery({ queryKey: ['my-profile'], queryFn: getMyProfile })
+  const useEuPricing = profile.data?.useEuPricing ?? true
+  // On-demand, non-persisted current references (prompt §48) — one bounded request for this one
+  // card, never per-variant. A pricing failure never blocks the catalog page itself (prompt §80).
+  const prices = useQuery({
+    queryKey: ['card-search-prices', cardId, useEuPricing],
+    queryFn: () => searchPrices([cardId], useEuPricing),
+    enabled: card.isSuccess && card.data !== null,
+  })
+  const primaryVariantId = variants.data?.[0]?.id
+  const history = useQuery({
+    queryKey: ['card-variant-price-history', primaryVariantId],
+    queryFn: () => getCardVariantPriceHistory(primaryVariantId as string),
+    enabled: primaryVariantId !== undefined,
   })
 
   if (card.isPending) {
@@ -102,46 +125,54 @@ export function CardDetailPage() {
             </p>
           ) : variants.data.length > 0 ? (
             <ul className="divide-y divide-slate-800 rounded-xl border border-slate-800">
-              {variants.data.map((v) => (
-                <li key={v.id} className="flex items-center justify-between gap-3 p-3 text-sm">
-                  <span className="text-slate-200">
-                    {FINISH_LABEL[v.finish] ?? v.finish}
-                    {v.subtype ? ` · ${v.subtype}` : ''}
-                    {v.stamp ? ` · ${v.stamp}` : ''}
-                    {v.size === 'oversized' ? ' · Oversized' : ''}
-                  </span>
-                  <span className="flex items-center gap-3">
-                    {!v.isActive ? (
-                      <span className="text-xs text-slate-500">No longer listed</span>
-                    ) : null}
-                    <Link
-                      to="/add"
-                      search={{ variantId: v.id }}
-                      className="min-h-9 rounded-full bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-500"
-                    >
-                      Add to collection
-                    </Link>
-                  </span>
-                </li>
-              ))}
+              {variants.data.map((v) => {
+                const price = prices.data?.get(v.id)
+                return (
+                  <li key={v.id} className="flex items-center justify-between gap-3 p-3 text-sm">
+                    <span className="text-slate-200">
+                      {FINISH_LABEL[v.finish] ?? v.finish}
+                      {v.subtype ? ` · ${v.subtype}` : ''}
+                      {v.stamp ? ` · ${v.stamp}` : ''}
+                      {v.size === 'oversized' ? ' · Oversized' : ''}
+                      <span className="ml-2 text-xs text-slate-500">
+                        {prices.isPending
+                          ? '…'
+                          : price?.priceState === 'available'
+                            ? sourceValueText(price.sourceCurrency, price.sourceValueMinor)
+                            : '—'}
+                      </span>
+                    </span>
+                    <span className="flex items-center gap-3">
+                      {!v.isActive ? (
+                        <span className="text-xs text-slate-500">No longer listed</span>
+                      ) : null}
+                      <Link
+                        to="/add"
+                        search={{ variantId: v.id }}
+                        className="min-h-9 rounded-full bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-500"
+                      >
+                        Add to collection
+                      </Link>
+                    </span>
+                  </li>
+                )
+              })}
             </ul>
           ) : (
             <p className="text-sm text-slate-500">No known variants for this printing.</p>
           )}
         </div>
 
-        {/* Reserved for the real price-history chart (M9's snapshots, M12's chart-library spike).
-            Honestly unavailable — never a fabricated line or percentage (M7.1 prompt §34-35). */}
+        {/* Real snapshots only (D-008) — never an avg7/avg30 rolling statistic mistaken for a
+            historical point, never a fabricated line (prompt §52/§95-96). Only variants this app
+            has actually tracked (owned at some point) have any history at all. */}
         <div className="space-y-2 border-t border-slate-800 pt-4">
           <h2 className="text-sm font-semibold text-slate-300">Price history</h2>
-          <div className="flex h-20 items-center justify-center rounded-xl border border-dashed border-slate-800 text-xs text-slate-500">
-            Not available yet
-          </div>
-          <div className="flex justify-between text-[11px] font-medium text-slate-600">
-            {PERIODS.map((period) => (
-              <span key={period}>{period}</span>
-            ))}
-          </div>
+          {history.isPending && primaryVariantId ? (
+            <div className="h-20 animate-pulse rounded-xl bg-slate-800/60" />
+          ) : (
+            <PriceHistoryChart points={history.data ?? []} />
+          )}
         </div>
       </div>
     </div>

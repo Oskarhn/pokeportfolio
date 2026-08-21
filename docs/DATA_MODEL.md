@@ -207,45 +207,62 @@ constrainable, indexable and readable. Adding a fifth provider is one migration.
 
 ### 4.1 `price_snapshots`
 
+**Shipped in M9** (`20260826120000_m9_price_snapshots.sql`), one deliberate correction from this
+section's original pre-M9 sketch: see D-053. The ingest job resolves the FINANCIAL_MODEL.md §6
+fallback chain *before* writing and stores only the winning value per provider per variant per
+day, so `price_kind` is provenance metadata on the row, not part of its identity.
+
 | Column | Notes |
 |---|---|
-| `id bigint pk` | |
-| `card_variant_id fk` | |
-| `provider` | enum `tcgdex_cardmarket`, `tcgdex_tcgplayer`, `manual` |
-| `price_kind` | enum `cm_trend`, `cm_avg30`, `cm_avg7`, `cm_avg`, `cm_low`, `tp_market`, `tp_low` |
-| `source_currency` | ISO 4217 |
-| `value_minor bigint` | In `source_currency` |
-| `snapshot_date date` | The business date the price represents |
-| `provider_updated_at timestamptz` | Provider's own freshness claim |
+| `id bigint pk` | `generated always as identity` |
+| `card_variant_id fk` | references `card_variants(id)` |
+| `provider` | enum `price_provider`: `tcgdex_cardmarket`, `tcgdex_tcgplayer` |
+| `price_kind` | enum `price_kind`: `cm_trend`, `cm_avg30`, `cm_avg7`, `cm_avg`, `tp_market` — whichever candidate won the §6 fallback for this row |
+| `source_currency` | ISO 4217 — always `EUR` for `tcgdex_cardmarket`, `USD` for `tcgdex_tcgplayer` |
+| `value_minor bigint` | In `source_currency`. A genuine `0` is a real observation (F14), never collapsed with "no row". |
+| `snapshot_date date` | The provider's own business date for this observation (`providerUpdatedAt`'s date), not the day we happened to fetch it — see §4.2's idempotency note. |
+| `provider_updated_at timestamptz` | Provider's own freshness claim, when given |
 | `retrieved_at timestamptz` | When we fetched it |
 
-Unique on `(card_variant_id, provider, price_kind, snapshot_date)`.
-Index on `(card_variant_id, snapshot_date DESC)`.
+Unique on `(card_variant_id, provider, snapshot_date)` — **not** `..., price_kind, ...` as
+originally sketched (D-053). Index on `(card_variant_id, snapshot_date DESC)` for latest-price
+resolution, and a plain index on `(snapshot_date)` for retention thinning.
 
-Storing multiple `price_kind` rows per variant per day costs little and makes the fallback
-chain in FINANCIAL_MODEL §6 auditable after the fact.
+Manual valuation is a separate table (§5.12) — `price_snapshots` never has a `provider = 'manual'`
+row; the resolver treats "an active manual valuation exists" and "a provider snapshot exists" as
+two entirely different lookups (`resolve_variant_market_values`, §14 M9 implementation notes).
 
-**`sealed_price_snapshots`** mirrors this shape keyed on `sealed_product_id`.
+RLS: `SELECT` for any `authenticated` user (market data, DATA_MODEL.md §1); no insert/update/delete
+policy exists for that role at all — only `service_role` (the `ingest-prices` Edge Function) writes.
+
+Sealed price snapshots are not implemented in M9 — sealed valuation remains manual (§6.3, M11).
 
 ### 4.2 What gets snapshotted
 
-Snapshotting all ~23 400 English variants daily would consume the Supabase free tier's 500 MB
-in roughly a year for data nobody looks at.
+Snapshotting all ~47 000 English+Japanese variants daily would consume a meaningful slice of the
+Supabase free tier's 500 MB for data nobody looks at.
 
-Instead the daily job reads a view:
+Instead the daily job reads a view, shipped in M9 exactly this shape
+(`20260826120000_m9_price_snapshots.sql`):
 
 ```sql
-CREATE VIEW watched_card_variants AS
-SELECT DISTINCT h.card_variant_id
-FROM holdings h
-JOIN acquisition_lots l ON l.holding_id = h.id
-WHERE h.card_variant_id IS NOT NULL
-  AND l.voided_at IS NULL
-  AND l.quantity_remaining > 0;
+create view public.watched_card_variants as
+select distinct h.card_variant_id
+from public.holdings h
+join public.acquisition_lots l on l.holding_id = h.id
+where h.card_variant_id is not null;
 ```
 
-Plus variants held at any point historically (so a sold card's history stays intact) and
-variants on any wishlist once that exists.
+Deliberately **not** filtered by `l.voided_at is null` or `l.quantity_remaining > 0` — any lot
+ever created for a variant keeps it watched forever, whether the lot is currently open, fully
+disposed, or voided as a correction (D-055). The model cannot safely distinguish "voided because
+this was a same-day mistake" from "voided because the card was genuinely later removed
+(M8.1's Remove from Portfolio)" — both look identical in the schema — so it errs toward keeping
+too much history rather than silently destroying a real one. Service/infrastructure-only: no
+grant to `anon`/`authenticated` at all (this view spans every user's holdings, and a browser has
+no legitimate reason to learn in aggregate which cards anyone owns) — `service_role` bypasses RLS
+and is the only role that ever queries it, via the bounded work-queue helper
+`select_price_sync_batch(p_batch_size)`.
 
 **Price history is per `card_variant`, never per physical copy.** This is what makes tracking
 every energy card affordable. Owning eighty Basic Grass Energy of the same printing produces
@@ -254,9 +271,12 @@ exactly one snapshot row per day, not eighty; quantity is applied at aggregation
 quickly, not with *cards owned*, which does not.
 
 Concretely: a 10 000-card collection realistically spans perhaps 3 000–4 000 distinct variants,
-because duplicates, energies and playsets collapse. At 3 000 watched variants × 2 price kinds ×
-365 days × ~48 bytes ≈ **105 MB/year**, with rows older than 12 months thinned to weekly. The
-holdings and lots themselves are small — roughly 200 bytes per lot, so even 10 000 lots is ~2 MB.
+because duplicates, energies and playsets collapse. At ~3 500 watched variants × up to 2 provider
+rows × 365 days, with rows older than 12 months thinned to weekly
+(`thin_price_snapshots()`) — measured row footprint and the resulting free-tier projection are
+recorded in COST_POLICY.md/`claude_outputs/output_15.txt`, not assumed from the pre-M9 estimate.
+The holdings and lots themselves are small — roughly 200 bytes per lot, so even 10 000 lots is
+~2 MB.
 
 > The binding constraint on the free tier is price history, and price history is decoupled from
 > collection size. This was the key finding that made all-card tracking viable at zero cost.
@@ -264,6 +284,12 @@ holdings and lots themselves are small — roughly 200 bytes per lot, so even 10
 > A variant enters the watch set the moment it is first acquired. Its price history therefore
 > begins at acquisition, not before. This is a real limitation, documented in
 > [RESEARCH.md](RESEARCH.md), and is preferable to fabricating pre-ownership history.
+
+**Idempotency (prompt §21).** `snapshot_date` is the provider's own `updated` timestamp for that
+observation, truncated to a date — not "today". A cron tick that receives the same unchanged
+provider observation upserts onto the same `(card_variant_id, provider, snapshot_date)` row rather
+than fabricating a new day's fact; a provider's price genuinely changing on a later real business
+date is what produces the next distinct row.
 
 ### 4.3 `fx_rates`
 
@@ -1133,3 +1159,48 @@ remains authoritative for `GPO`/`CS`/`HS` (computed from `purchase_lines`, not f
 therefore never visible in any invariant this milestone's tests assert. Narrow enough (multi-quantity
 + non-NOK + card line, simultaneously) that adding a second residual column was not judged worth the
 schema churn; revisit if a real receipt exercises it.
+
+## 17. M9 implementation notes
+
+**`resolve_variant_market_values(p_card_variant_ids uuid[])`** is the one reusable, set-oriented
+resolver (`20260826120020_m9_valuation_resolver.sql`) implementing FINANCIAL_MODEL.md §6: fresh →
+stale → missing over the provider data, honouring `profiles.use_eu_pricing` (D-052). It does *not*
+apply the manual-valuation override itself — that is per-holding, not per-variant, and every caller
+(`list_portfolio`, `portfolio_counts`, `get_holding_value_provenance`, `get_market_movers`) applies
+"an active `manual_valuations` row always wins" on top of this function's output. Called exactly
+once per query with the full array of `card_variant_id`s that query needs — never in a per-row
+`LATERAL` (D-054 records the M7.1 regression this milestone also fixed while rewriting
+`list_portfolio`'s body regardless).
+
+**F10 (raw prices never value graded cards)** is enforced by every caller explicitly checking
+`holding_kind = 'raw_card'` before using the resolver's output for a given holding — a graded
+holding's `card_variant_id` still points at the same real printing (grading does not change
+identity), so the resolver itself will happily return a value for it; the exclusion is the caller's
+job, not something baked into the resolver.
+
+**`get_holding_value_provenance(p_holding_id uuid)`** — Holding Detail's single-row read: manual
+override if active, else the resolver, with quantity and the holding-total figure (D-052) alongside
+full provenance (provider, price kind, source currency/value, FX rate, snapshot date).
+
+**`get_card_variant_price_history(p_card_variant_id uuid, p_since date)`** — real snapshots only,
+one resolved (already-converted, already-preference-applied) point per day a snapshot exists. Never
+interpolates, never treats `avg7`/`avg30` as historical points (D-008).
+
+**`get_market_movers(p_period_days int, p_limit int)`** — ranks the caller's own currently-owned,
+currently-priced raw-card holdings by real period-over-period price movement, using the same
+provider-preference rule. A holding with no historical observation at or before the window start is
+excluded, never shown as 0% movement (prompt §54). No cross-user data — scoped to `auth.uid()`
+throughout, same as every other M9 RPC.
+
+**Money-column serialization.** Every M9 function returning a money-shaped `bigint` casts it to
+`text` in its final `SELECT`, per §14's existing PostgREST boundary rule — `resolve_variant_market_
+values`, `get_holding_value_provenance`, `get_card_variant_price_history` and `get_market_movers`
+all do this; only internal CTEs within a function body use the native `bigint`/`numeric` types for
+arithmetic.
+
+**Scheduling.** `ingest-prices`/`ingest-fx` (Edge Functions, bearer-secret-gated like `sync-catalog`)
+are invoked by `pg_cron` via `pg_net`, with the bearer secret read from Supabase Vault at call time
+(`20260826120050_m9_cron_schedule.sql`) — never a literal in migration SQL. `thin_price_snapshots()`
+is scheduled directly as a SQL command (no HTTP round trip needed for a same-database function).
+Full architecture, batch sizing and cadence reasoning: ARCHITECTURE.md and
+`claude_outputs/output_15.txt`.

@@ -806,6 +806,104 @@ export type Database = {
           },
         ]
       }
+      price_snapshots: {
+        Row: {
+          card_variant_id: string
+          id: number
+          price_kind: Database["public"]["Enums"]["price_kind"]
+          provider: Database["public"]["Enums"]["price_provider"]
+          provider_updated_at: string | null
+          retrieved_at: string
+          snapshot_date: string
+          source_currency: string
+          value_minor: number
+        }
+        Insert: {
+          card_variant_id: string
+          id?: number
+          price_kind: Database["public"]["Enums"]["price_kind"]
+          provider: Database["public"]["Enums"]["price_provider"]
+          provider_updated_at?: string | null
+          retrieved_at?: string
+          snapshot_date: string
+          source_currency: string
+          value_minor: number
+        }
+        Update: {
+          card_variant_id?: string
+          id?: number
+          price_kind?: Database["public"]["Enums"]["price_kind"]
+          provider?: Database["public"]["Enums"]["price_provider"]
+          provider_updated_at?: string | null
+          retrieved_at?: string
+          snapshot_date?: string
+          source_currency?: string
+          value_minor?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "price_snapshots_card_variant_id_fkey"
+            columns: ["card_variant_id"]
+            isOneToOne: false
+            referencedRelation: "card_variants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      price_sync_runs: {
+        Row: {
+          ambiguous_mapping_count: number
+          batch_size: number
+          cards_fetched: number
+          created_at: string
+          error: string | null
+          finished_at: string | null
+          id: number
+          kind: string
+          missing_provider_count: number
+          provider_error_count: number
+          snapshots_unchanged: number
+          snapshots_written: number
+          started_at: string
+          status: string
+          variants_considered: number
+        }
+        Insert: {
+          ambiguous_mapping_count?: number
+          batch_size?: number
+          cards_fetched?: number
+          created_at?: string
+          error?: string | null
+          finished_at?: string | null
+          id?: number
+          kind: string
+          missing_provider_count?: number
+          provider_error_count?: number
+          snapshots_unchanged?: number
+          snapshots_written?: number
+          started_at: string
+          status: string
+          variants_considered?: number
+        }
+        Update: {
+          ambiguous_mapping_count?: number
+          batch_size?: number
+          cards_fetched?: number
+          created_at?: string
+          error?: string | null
+          finished_at?: string | null
+          id?: number
+          kind?: string
+          missing_provider_count?: number
+          provider_error_count?: number
+          snapshots_unchanged?: number
+          snapshots_written?: number
+          started_at?: string
+          status?: string
+          variants_considered?: number
+        }
+        Relationships: []
+      }
       profiles: {
         Row: {
           collection_default_sort: Database["public"]["Enums"]["portfolio_sort_order"]
@@ -1271,6 +1369,18 @@ export type Database = {
         }
         Relationships: []
       }
+      watched_card_variants: {
+        Row: {
+          card_variant_id: string | null
+        }
+        Insert: {
+          card_variant_id?: string | null
+        }
+        Update: {
+          card_variant_id?: string | null
+        }
+        Relationships: []
+      }
     }
     Functions: {
       add_card_acquisition: {
@@ -1313,6 +1423,10 @@ export type Database = {
           claim_id: string
           invited_email: string
         }[]
+      }
+      clear_manual_valuation: {
+        Args: { p_holding_id: string }
+        Returns: undefined
       }
       create_invitation: {
         Args: { p_email: string; p_expires_in_hours?: number; p_label?: string }
@@ -1368,6 +1482,44 @@ export type Database = {
       finalize_invitation_redemption: {
         Args: { p_claim_id: string; p_user_id: string }
         Returns: undefined
+      }
+      get_card_variant_price_history: {
+        Args: { p_card_variant_id: string; p_since?: string }
+        Returns: {
+          price_kind: Database["public"]["Enums"]["price_kind"]
+          provider: Database["public"]["Enums"]["price_provider"]
+          snapshot_date: string
+          value_nok_minor: string
+        }[]
+      }
+      get_holding_value_provenance: {
+        Args: { p_holding_id: string }
+        Returns: {
+          fx_rate: number | null
+          holding_value_nok_minor: string | null
+          price_kind: Database["public"]["Enums"]["price_kind"] | null
+          price_state: string
+          provider: Database["public"]["Enums"]["price_provider"] | null
+          provider_updated_at: string | null
+          quantity: string
+          snapshot_date: string | null
+          source_currency: string | null
+          source_value_minor: string | null
+          unit_value_nok_minor: string | null
+        }[]
+      }
+      get_market_movers: {
+        Args: { p_limit?: number; p_period_days?: number }
+        Returns: {
+          card_image_base_url: string | null
+          card_name: string | null
+          card_variant_id: string
+          change_nok_minor: string
+          change_pct: number | null
+          current_value_nok_minor: string
+          holding_id: string
+          previous_value_nok_minor: string
+        }[]
       }
       grader_to_text: {
         Args: { value: Database["public"]["Enums"]["grader"] }
@@ -1435,10 +1587,12 @@ export type Database = {
           manual_language: string | null
           manual_name: string | null
           manual_set_name: string | null
+          holding_value_nok_minor: string | null
           notes: string | null
           number_sort_key: string | null
+          price_state: string | null
           quantity: number
-          resolved_value_nok_minor: string | null
+          unit_value_nok_minor: string | null
           variant_finish: Database["public"]["Enums"]["card_finish"] | null
           variant_stamp: string | null
           variant_subtype: string | null
@@ -1449,12 +1603,15 @@ export type Database = {
         Returns: string
       }
       portfolio_counts: {
-        Args: never
+        Args: { p_custom_collection_id?: string }
         Returns: {
           graded_count: string
           manual_count: string
           physical_card_count: string
+          portfolio_value_nok_minor: string
+          priced_holding_count: string
           unique_holding_count: string
+          unpriced_holding_count: string
         }[]
       }
       purchase_spending_summary: {
@@ -1477,6 +1634,21 @@ export type Database = {
           blocked_reason: string | null
           holding_id: string
           physical_count: number
+        }[]
+      }
+      resolve_variant_market_values: {
+        Args: { p_card_variant_ids: string[] }
+        Returns: {
+          card_variant_id: string
+          fx_rate: number | null
+          price_kind: Database["public"]["Enums"]["price_kind"] | null
+          price_state: string
+          provider: Database["public"]["Enums"]["price_provider"] | null
+          provider_updated_at: string | null
+          snapshot_date: string | null
+          source_currency: string | null
+          source_value_minor: string | null
+          value_nok_minor: string | null
         }[]
       }
       revoke_invitation: {
@@ -1629,6 +1801,8 @@ export type Database = {
         | "added_oldest"
         | "number_asc"
         | "number_desc"
+      price_kind: "cm_trend" | "cm_avg30" | "cm_avg7" | "cm_avg" | "tp_market"
+      price_provider: "tcgdex_cardmarket" | "tcgdex_tcgplayer"
       purchase_origin: "manual" | "provisional_opening"
       sealed_intent: "keep_sealed" | "planned_to_open" | "undecided"
       sealed_product_type:
@@ -1826,6 +2000,8 @@ export const Constants = {
         "number_asc",
         "number_desc",
       ],
+      price_kind: ["cm_trend", "cm_avg30", "cm_avg7", "cm_avg", "tp_market"],
+      price_provider: ["tcgdex_cardmarket", "tcgdex_tcgplayer"],
       purchase_origin: ["manual", "provisional_opening"],
       sealed_intent: ["keep_sealed", "planned_to_open", "undecided"],
       sealed_product_type: [

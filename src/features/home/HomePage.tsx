@@ -10,6 +10,7 @@ import {
 import { getCollectionMemberCount } from '../../data/customCollections'
 import { getMyProfile, updateMyProfile } from '../../data/profile'
 import { getSpendingSummary } from '../../data/purchases'
+import { getMarketMovers } from '../../data/pricing'
 import { ScopeSelector } from '../../ui/ScopeSelector'
 import { CurrencySelector } from '../../ui/CurrencySelector'
 import { MoneyDisplay, ValuePrivacyToggle } from '../../ui/MoneyDisplay'
@@ -34,9 +35,8 @@ export function HomePage() {
 
   const profile = useQuery({ queryKey: ['my-profile'], queryFn: getMyProfile })
   const counts = useQuery({
-    queryKey: ['portfolio-counts'],
-    queryFn: getPortfolioCounts,
-    enabled: scopeId === null,
+    queryKey: ['portfolio-counts', scopeId],
+    queryFn: () => getPortfolioCounts(scopeId ?? undefined),
   })
   const scopeCount = useQuery({
     queryKey: ['collection-member-count', scopeId],
@@ -68,10 +68,17 @@ export function HomePage() {
   })
 
   const valuedTopCards = (topCards.data?.results ?? []).filter(
-    (tile) => tile.resolvedValueMinor !== null,
+    (tile) => tile.unitValueMinor !== null,
   )
 
   const spending = useQuery({ queryKey: ['spending-summary'], queryFn: getSpendingSummary })
+
+  // Market Movers (prompt §54-55/§94): real price movement of owned, priced holdings over the
+  // last 7 days. Never a global catalog ranking, never a sale/realized-result figure.
+  const movers = useQuery({
+    queryKey: ['market-movers'],
+    queryFn: () => getMarketMovers(7, 5),
+  })
 
   return (
     <div className="mx-auto w-full max-w-2xl space-y-6 py-2">
@@ -92,7 +99,8 @@ export function HomePage() {
 
         <div className="flex items-end justify-between">
           <MoneyDisplay
-            state="missing"
+            state={counts.data && counts.data.pricedHoldingCount > 0 ? 'known' : 'missing'}
+            minorUnits={counts.data?.portfolioValueMinor}
             size="lg"
             hidden={hideValues}
             displayCurrency={profile.data?.displayCurrency}
@@ -104,9 +112,14 @@ export function HomePage() {
             }}
           />
         </div>
-        <p className="text-xs text-slate-500">
-          Market value becomes available once pricing is enabled.
-        </p>
+        {counts.data ? (
+          <p className="text-xs text-slate-500">
+            {counts.data.pricedHoldingCount} priced
+            {counts.data.unpricedHoldingCount > 0
+              ? ` · ${counts.data.unpricedHoldingCount} without a price`
+              : ''}
+          </p>
+        ) : null}
 
         {/* Reserved for the real value-over-time chart (M12, lightweight-charts spike — D-015).
             Period controls establish the layout only; they are not interactive yet. */}
@@ -194,6 +207,41 @@ export function HomePage() {
           <p className="rounded-xl border border-dashed border-slate-800 p-4 text-sm text-slate-500">
             No valued cards yet — set a value on a graded card, or check back once market pricing
             arrives.
+          </p>
+        )}
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="text-sm font-semibold text-slate-300">Market movers · 7 days</h2>
+        {movers.isPending ? (
+          <div className="h-14 animate-pulse rounded-xl bg-slate-800/60" />
+        ) : movers.data && movers.data.length > 0 ? (
+          <ul className="divide-y divide-slate-800 rounded-xl border border-slate-800">
+            {movers.data.map((m) => (
+              <li key={m.holdingId} className="flex items-center justify-between gap-3 p-3 text-sm">
+                <Link
+                  to="/portfolio/$holdingId"
+                  params={{ holdingId: m.holdingId }}
+                  className="min-w-0 truncate text-slate-200 hover:underline"
+                >
+                  {m.cardName ?? 'Unknown card'}
+                </Link>
+                <span
+                  className={`shrink-0 tabular-nums ${m.changeMinor >= 0n ? 'text-emerald-400' : 'text-rose-400'}`}
+                >
+                  {m.changeMinor >= 0n ? '+' : ''}
+                  {formatNokMinor(m.changeMinor)} NOK
+                  {m.changePct !== null
+                    ? ` (${m.changePct >= 0 ? '+' : ''}${m.changePct.toFixed(1)}%)`
+                    : ''}
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="rounded-xl border border-dashed border-slate-800 p-4 text-sm text-slate-500">
+            Not enough price history yet to show movement — check back once your cards have been
+            tracked for a few days.
           </p>
         )}
       </section>

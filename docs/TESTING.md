@@ -213,6 +213,24 @@ The suite is written table-driven so adding a table means adding a row, not a fi
 user-private table without an entry fails a meta-test that compares the table list against the
 covered list.
 
+**M9 (`tests/db/m9_valuation_resolver.test.ts`, `tests/data/tcgdex-pricing.test.ts`).** The
+valuation resolver is proven at the SQL layer, not just via the pure-TypeScript domain module
+(`tests/financial/market-value.test.ts`, unchanged) — FX conversion, the `use_eu_pricing`
+provider-preference branch and the F10 graded-card exclusion only exist in
+`resolve_variant_market_values`/`get_holding_value_provenance`, so those need their own coverage
+against real persisted rows: manual overriding fresh, fresh vs. stale vs. missing at the exact
+3/30-day boundaries, a genuine zero observation resolving to `fresh` rather than `missing` (F14), a
+graded holding never picking up its underlying printing's raw price even when one exists, quantity
+multiplication for the holding-total figure, a simulated outage aging a snapshot from `fresh` →
+`stale` → `missing` without ever zeroing the value (F9), and both directions of the
+`use_eu_pricing` preference including its unambiguous fallback. The variant-safe price *mapping*
+(TCGdex payload → candidate price per exact variant) is a separate, deterministic, no-network suite
+against real captured payloads (`tests/data/tcgdex-pricing.test.ts`, same pattern as
+`tests/data/tcgdex-provider.test.ts`/`norges-bank.test.ts`) — it locks in the embedded-vs-card-level
+mapping rules and proves an ambiguous card-level shape resolves to no price rather than a guess
+(prompt §15), including a real zero-price observation and a real missing-provider case captured
+live rather than synthesized.
+
 **M7 (`tests/authorization/m7_portfolio.test.ts`, `tests/db/m7_constraints.test.ts`).**
 `custom_collections` fits the generic owned-table attack matrix and is folded into it; what needs
 its own coverage is `custom_collection_members` (ownership depends on *two* parent rows, like

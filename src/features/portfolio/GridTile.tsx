@@ -119,14 +119,25 @@ export function GridTile({
 }
 
 /** Never a fabricated value, and never zero for "unknown" (DESIGN_SYSTEM.md §7 — absence is not
- *  zero). Reserves a stable line so a later real value (M9) is a small change, not a layout one. */
+ *  zero). Shows the holding's TOTAL value (unit × quantity, D-052) — a stack of 20 owned copies
+ *  reads as what it's actually worth, not one copy's price. A stale (4-30 day old) resolved value
+ *  still shows, with a subtle marker, never hidden (FINANCIAL_MODEL.md §6). */
 function ValueLine({ tile, compact }: { tile: PortfolioTile; compact?: boolean }) {
-  if (tile.resolvedValueMinor === null) {
+  if (tile.holdingValueMinor === null) {
     return <p className={compact ? 'text-[10px] text-slate-600' : 'text-xs text-slate-600'}>—</p>
   }
   return (
-    <p className={compact ? 'text-[10px] text-slate-300' : 'text-xs text-slate-300'}>
-      {formatNokMinor(tile.resolvedValueMinor)} NOK
+    <p
+      className={
+        compact
+          ? 'flex items-center gap-1 text-[10px] text-slate-300'
+          : 'flex items-center gap-1 text-xs text-slate-300'
+      }
+    >
+      {formatNokMinor(tile.holdingValueMinor)} NOK
+      {tile.priceState === 'stale' ? (
+        <span className="size-1.5 rounded-full bg-amber-500" title="Price is a few days old" />
+      ) : null}
     </p>
   )
 }
