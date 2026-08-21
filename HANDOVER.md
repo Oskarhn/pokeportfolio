@@ -76,9 +76,14 @@ categories** (full account: PROJECT_JOURNAL.md 2026-08-22, both entries):
    by actually deleting the account a second time (succeeded, zero residue), and a new regression
    test added (`tests/db/m7_constraints.test.ts`, "account deletion cascades every M7 table").
 
-The identical latent `user_id`-default bug from item 2 also exists in M6's already-shipped
-`holding_tags` table — flagged as a separate follow-up task rather than edited here, since that
-migration may already be applied to the real project.
+Item 2's bug was originally suspected to also exist in M6's `holding_tags` table (same shape,
+found by reading just the table's `create table` statement) — **checked and it does not**:
+`20260821120070_m6_user_id_defaults.sql`, later the same M6 milestone, already added
+`default auth.uid()` to `holding_tags.user_id`, confirmed live on `pokeportfolio-dev`. No migration
+needed. The real gap underneath the false alarm — no authorization test actually exercised a real
+client insert relying on that default — is now closed
+(`tests/authorization/m6_collection.test.ts`, "holding_tags: ownership and the user_id default").
+Full account: PROJECT_JOURNAL.md 2026-08-22, "A bug report built on an incomplete inspection".
 
 **Done this session, against the real `pokeportfolio-dev` project:**
 

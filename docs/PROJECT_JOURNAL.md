@@ -993,10 +993,10 @@ expression against whatever value ends up in the row, and NULL simply fails the 
 rather than tripping a separate error path. Caught by
 `tests/authorization/m7_portfolio.test.ts`'s own CRUD test, which does exactly what the real UI
 does (an authenticated client, no explicit `user_id`) rather than the service-role shortcut most
-fixtures use. Fixed with `default auth.uid()`, matching the other two tables. The identical bug was
-then found, by inspection, in M6's already-shipped `holding_tags` table — flagged as a separate
-follow-up rather than fixed here, since that migration may already be applied to the real project
-and this repository's own rule is to never edit an applied migration.
+fixtures use. Fixed with `default auth.uid()`, matching the other two tables. Inspection of just
+`20260821120030_m6_holding_tags.sql` suggested the identical bug existed in M6's already-shipped
+`holding_tags` table, and this entry originally flagged that as a separate follow-up — **wrong**,
+corrected below (2026-08-22, "A bug report built on an incomplete inspection").
 
 **Finding 3 — a self-inflicted test bug, included here because it looks identical to a real one
 until inspected.** `tests/db/m7_constraints.test.ts`'s `createHolding()` helper used one fixed
@@ -1108,3 +1108,42 @@ browser loading an actual deployed page) is precisely the step CI cannot perform
 lesson is the same one M5/M6/M7's deployment checklists already encode — browser-verify the live
 build, not just CI — reinforced here because this is the first time that step, rather than a
 database script, is what found the bug.
+
+## 2026-08-22 — A bug report built on an incomplete inspection
+
+**Problem.** The 2026-08-22 entry above ("Closing the PUBLIC gap...") claimed, based on reading
+`20260821120030_m6_holding_tags.sql` alone, that `holding_tags.user_id` had the same missing-default
+defect as `custom_collection_members.user_id` and flagged it as a follow-up. A later report repeated
+that claim in more detail, reasoning from the same single migration file: `user_id uuid not null
+references auth.users (id)`, no default, and `src/data/collection.ts`'s `setHoldingTags()` inserting
+`{ holding_id, tag_id }` without `user_id` — which does look like exactly the shape that fails RLS.
+
+**Finding.** It does not fail. `20260821120070_m6_user_id_defaults.sql`, committed later the same
+M6 milestone, already runs `alter table public.holding_tags alter column user_id set default
+auth.uid();` alongside the identical fix for `storage_locations` and `tags`. Both the original
+follow-up flag and the later report read only the table's `create table` statement and never
+checked whether a subsequent migration in the same milestone touched the same column — an
+incomplete inspection producing a false positive, the mirror image of this project's more usual
+failure mode (reasoning that turns out right only once something actually runs). Confirmed directly
+against the live project before writing this entry: `select column_default from
+information_schema.columns where table_name = 'holding_tags' and column_name = 'user_id'` returns
+`auth.uid()` on `pokeportfolio-dev` right now.
+
+**What was real.** The suspicion was not baseless — it was the *correct* generalization from the
+`custom_collection_members` finding, checking a sibling table for the identical defect class,
+exactly the instinct that has caught real bugs elsewhere in this project (the M4/M6/M7 cascade
+misses). It just needed one more `grep` before being reported as fact. And a genuine, smaller gap
+sat underneath the false one: no authorization test exercised a real authenticated-client insert
+into `holding_tags` relying on that default — every existing test either uses the service-role
+client (`tests/db/m6_constraints.test.ts`'s ownership-trigger tests, which bypass RLS) or supplies
+`user_id` explicitly. `tests/authorization/coverage.test.ts`'s `COVERED_TABLES` comment claimed
+`holding_tags` was covered by `m6_collection.test.ts`; it was not, until now. Added the missing
+test there, matching the shape `m7_portfolio.test.ts` already uses for `custom_collection_members`.
+
+**Consequence.** No migration needed — the fix already exists and is already deployed. The real
+takeaway is procedural: a claim about schema state is a claim about the *current* state of every
+migration file touching that column, not just the one that created it, and "already fixed
+elsewhere in the same milestone" is a real, recurring shape in this project's own history (this is
+the second time — see 20260821120070 itself fixing three tables' defaults in one pass). Checking
+the live database directly, rather than trusting a file read, is what caught this before a
+redundant migration shipped.
