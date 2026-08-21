@@ -95,14 +95,20 @@ during ingest — this is a known unknown.
 **Gate:** search is fast on mobile across the full catalog; energies are findable and selectable
 as ordinary cards.
 
-### M6 — Collection: holdings, lots, origin
+### M6 — Collection: holdings, lots, origin — **complete**
 
-Add cards manually. Acquisition origin and `cost_basis_state`. Quantity grouping with lot detail.
-Condition, storage location, tags, favourites. Graded cards as a collection type with manual
-value.
+Manual-card fallback for the catalog's real gaps (D-037). Acquisition origin and
+`cost_basis_state`, including `opening`/`trade_in` pulled forward from M16/M18 (D-038). Quantity
+grouping with lot detail via the atomic `add_card_acquisition` RPC. Condition, storage location
+(relocated to the lot, D-036), tags, favourites. Graded cards as a collection type with manual
+value (`manual_valuations`, pulled forward from M11).
 
-**Gate:** three copies at three prices become three lots under one holding; a gift shows no cost
-field and no zero; energies and no-price cards can be added.
+**Gate:** met. Three copies at three prices become three lots under one holding (verified in CI
+and against the real deployed project); a gift/pull shows no cost field and no zero; energies
+(bulk quantity 12, real ingested catalog) and manual catalog-missing cards can be added; raw and
+graded never merge. `/collection`, `/collection/$holdingId`, `/add`, `/collection/manual/new`
+deployed and browser-verified. See HANDOVER.md and `claude_outputs/output_10.txt` for full detail,
+including the M5 key-exposure follow-up (D-039) closed out in the same milestone.
 
 ### M7 — Organisation and display
 
