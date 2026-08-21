@@ -57,14 +57,43 @@ if (bundlePath) {
   record('the bundle is served', asset.status === 200, `HTTP ${asset.status} · ${bundle.length} B`)
 }
 
+// M7.1 introduced route-level code splitting (React.lazy) — Search, Portfolio, holding detail
+// etc. now ship as separate chunks the entry bundle never references directly, and the bundler
+// also hoists shared dependencies (notably the Supabase client) into their own chunk when both an
+// eager and a lazy importer use them. So "the bundle" for the checks below has to mean every JS
+// asset actually shipped, not just the one entry file index.html links to — otherwise a secret or
+// a wrong project id in a lazy chunk would sail through unchecked, which is a worse gap than the
+// one this whole script exists to close. The service worker's precache manifest (fetched early,
+// not just where the PWA checks read it below) is the one place that already lists every such
+// asset, because `vite-plugin-pwa`'s `globPatterns` sweeps the whole build output.
+const swForAssetList = await get('/sw.js')
+const precachedJsPaths = [
+  ...new Set(
+    (swForAssetList.text.match(/\{url:"(assets\/[^"]+\.js)"/g) ?? []).map((m) => m.slice(6, -1)),
+  ),
+]
+if (bundlePath && !precachedJsPaths.includes(bundlePath)) precachedJsPaths.push(bundlePath)
+
+const allAssets = await Promise.all(
+  precachedJsPaths.map(async (path) => ({ path, text: (await get(`/${path}`)).text })),
+)
+const allJs = allAssets.map((a) => a.text).join('\n')
+record(
+  'every shipped JS chunk was fetched for the checks below',
+  allAssets.length > 0,
+  `${allAssets.length} chunk(s): ${precachedJsPaths.join(', ')}`,
+)
+
 // The check that would have caught the original defect. Asserted on the built artefact, because
 // the dashboard field and the artefact are different things and only one of them reaches a browser.
+// Scanned across every chunk (see above) — the Supabase client (and therefore its baked-in URL)
+// can legitimately live in a shared chunk rather than the entry file.
 {
-  const found = [...new Set(bundle.match(/https:\/\/[a-z0-9-]+\.supabase\.co/g) ?? [])]
+  const found = [...new Set(allJs.match(/https:\/\/[a-z0-9-]+\.supabase\.co/g) ?? [])]
   record(
-    'the bundle points at exactly the expected Supabase project',
+    'the deployed JS points at exactly the expected Supabase project',
     found.length === 1 && found[0] === supabaseOrigin,
-    found.length ? found.join(', ') : '(no Supabase origin in the bundle)',
+    found.length ? found.join(', ') : '(no Supabase origin in any shipped chunk)',
   )
 
   // Resolve the origin the *bundle* names, not the one that was expected. A well-formed URL for a
@@ -86,9 +115,9 @@ if (bundlePath) {
 }
 
 record(
-  'no source map is shipped alongside the bundle',
-  !/sourceMappingURL/.test(bundle),
-  /sourceMappingURL/.test(bundle) ? 'bundle references a .map' : 'none',
+  'no source map is shipped alongside any chunk',
+  !/sourceMappingURL/.test(allJs),
+  /sourceMappingURL/.test(allJs) ? 'a chunk references a .map' : 'none',
 )
 
 // A secret key is `sb_secret_<token>`, or in the legacy form a JWT whose payload claims
@@ -99,10 +128,10 @@ record(
 // client. Grepping for the prefix therefore fails on every correct bundle, which is worse than not
 // checking — a check that always fails gets ignored, and then it is not there on the day it matters.
 {
-  const modernKey = /sb_secret_[A-Za-z0-9_-]{16,}/.exec(bundle)?.[0]
+  const modernKey = /sb_secret_[A-Za-z0-9_-]{16,}/.exec(allJs)?.[0]
 
   let serviceRoleJwt = null
-  for (const jwt of bundle.match(/eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\./g) ?? []) {
+  for (const jwt of allJs.match(/eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\./g) ?? []) {
     try {
       const payload = JSON.parse(Buffer.from(jwt.split('.')[1], 'base64url').toString('utf8'))
       if (payload.role === 'service_role') serviceRoleJwt = payload.role
@@ -112,7 +141,7 @@ record(
   }
 
   record(
-    'no secret key of either generation is in the bundle',
+    'no secret key of either generation is in any shipped chunk',
     !modernKey && !serviceRoleJwt,
     modernKey ? 'sb_secret_ key present' : serviceRoleJwt ? 'service_role JWT present' : 'none',
   )
@@ -191,7 +220,7 @@ for (const path of ['/login', '/invite/a-token-that-does-not-exist', '/admin/inv
     )
   }
 
-  const sw = await get('/sw.js')
+  const sw = swForAssetList // already fetched above, to build the full JS asset list
   record('the service worker is served', sw.status === 200, `HTTP ${sw.status}`)
   record(
     'it must revalidate rather than being cached for a day',
