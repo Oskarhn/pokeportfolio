@@ -6,7 +6,14 @@ import { portfolioDisplayName, portfolioSubtitle } from '../../data/portfolio'
 import { CardImage } from '../catalog/CardImage'
 import { CONDITION_LABEL } from '../collection/labels'
 import { formatNokMinor } from '../../ui/money-format'
+import { CheckIcon } from '../../ui/icons'
 import { useScrollMargin } from './useScrollMargin'
+
+interface SelectModeProps {
+  selectMode?: boolean
+  selectedIds?: Set<string>
+  onToggleSelect?: (holdingId: string) => void
+}
 
 function valueText(tile: PortfolioTile): string {
   return tile.resolvedValueMinor === null ? '—' : `${formatNokMinor(tile.resolvedValueMinor)} NOK`
@@ -25,11 +32,14 @@ export function PortfolioListView({
   tiles,
   onEndReached,
   hasMore,
+  selectMode = false,
+  selectedIds,
+  onToggleSelect,
 }: {
   tiles: PortfolioTile[]
   onEndReached: () => void
   hasMore: boolean
-}) {
+} & SelectModeProps) {
   const parentRef = useRef<HTMLDivElement>(null)
   const scrollMargin = useScrollMargin(parentRef)
   const count = tiles.length + (hasMore ? 1 : 0)
@@ -70,35 +80,72 @@ export function PortfolioListView({
                   Loading more…
                 </div>
               ) : (
-                <Link
-                  to="/portfolio/$holdingId"
-                  params={{ holdingId: tile.holdingId }}
-                  className="flex min-h-16 items-center gap-3 px-3 py-2 hover:bg-slate-800/60 focus-visible:bg-slate-800/60 focus-visible:outline-none"
-                >
-                  <CardImage
-                    imageBaseUrl={tile.cardImageBaseUrl}
-                    alt={portfolioDisplayName(tile)}
-                    quality="low"
-                    className="h-14 w-10 shrink-0"
-                  />
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium text-slate-100">
-                      {portfolioDisplayName(tile)}
-                      {tile.isFavorite ? ' ★' : ''}
-                    </p>
-                    <p className="truncate text-xs text-slate-400">{portfolioSubtitle(tile)}</p>
-                    <p className="truncate text-xs text-slate-500">
-                      {conditionText(tile)}
-                      {tile.hasMultipleStorageLocations ? ' · Multiple locations' : ''}
-                    </p>
-                  </div>
-                  <div className="shrink-0 text-right">
-                    {tile.quantity > 1 ? (
-                      <p className="text-sm font-semibold text-slate-200">×{tile.quantity}</p>
-                    ) : null}
-                    <p className="text-xs text-slate-400">{valueText(tile)}</p>
-                  </div>
-                </Link>
+                (() => {
+                  const rowContent = (
+                    <>
+                      {selectMode ? (
+                        <span
+                          aria-hidden
+                          className={`flex size-5 shrink-0 items-center justify-center rounded-full border-2 ${
+                            selectedIds?.has(tile.holdingId)
+                              ? 'border-sky-500 bg-sky-600 text-white'
+                              : 'border-slate-600'
+                          }`}
+                        >
+                          {selectedIds?.has(tile.holdingId) ? (
+                            <CheckIcon className="size-3" strokeWidth={3} />
+                          ) : null}
+                        </span>
+                      ) : null}
+                      <CardImage
+                        imageBaseUrl={tile.cardImageBaseUrl}
+                        alt={portfolioDisplayName(tile)}
+                        quality="low"
+                        className="h-14 w-10 shrink-0"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium text-slate-100">
+                          {portfolioDisplayName(tile)}
+                          {tile.isFavorite ? ' ★' : ''}
+                        </p>
+                        <p className="truncate text-xs text-slate-400">{portfolioSubtitle(tile)}</p>
+                        <p className="truncate text-xs text-slate-500">
+                          {conditionText(tile)}
+                          {tile.hasMultipleStorageLocations ? ' · Multiple locations' : ''}
+                        </p>
+                      </div>
+                      <div className="shrink-0 text-right">
+                        {tile.quantity > 1 ? (
+                          <p className="text-sm font-semibold text-slate-200">×{tile.quantity}</p>
+                        ) : null}
+                        <p className="text-xs text-slate-400">{valueText(tile)}</p>
+                      </div>
+                    </>
+                  )
+                  if (selectMode) {
+                    return (
+                      <button
+                        type="button"
+                        aria-pressed={selectedIds?.has(tile.holdingId)}
+                        onClick={() => {
+                          onToggleSelect?.(tile.holdingId)
+                        }}
+                        className="flex min-h-16 w-full items-center gap-3 px-3 py-2 text-left hover:bg-slate-800/60 focus-visible:bg-slate-800/60 focus-visible:outline-none"
+                      >
+                        {rowContent}
+                      </button>
+                    )
+                  }
+                  return (
+                    <Link
+                      to="/portfolio/$holdingId"
+                      params={{ holdingId: tile.holdingId }}
+                      className="flex min-h-16 items-center gap-3 px-3 py-2 hover:bg-slate-800/60 focus-visible:bg-slate-800/60 focus-visible:outline-none"
+                    >
+                      {rowContent}
+                    </Link>
+                  )
+                })()
               )}
             </div>
           )
@@ -116,11 +163,14 @@ export function PortfolioTableView({
   tiles,
   onEndReached,
   hasMore,
+  selectMode = false,
+  selectedIds,
+  onToggleSelect,
 }: {
   tiles: PortfolioTile[]
   onEndReached: () => void
   hasMore: boolean
-}) {
+} & SelectModeProps) {
   const parentRef = useRef<HTMLTableSectionElement>(null)
   const scrollMargin = useScrollMargin(parentRef)
   const count = tiles.length + (hasMore ? 1 : 0)
@@ -141,6 +191,7 @@ export function PortfolioTableView({
       <table className="w-full min-w-[720px] border-collapse text-sm">
         <thead className="sticky top-0 bg-slate-950 text-left text-xs text-slate-500">
           <tr>
+            {selectMode ? <th className="w-8 p-2" aria-label="Select" /> : null}
             <th className="p-2 font-medium">Card</th>
             <th className="p-2 font-medium">Set / #</th>
             <th className="p-2 font-medium">Qty</th>
@@ -171,17 +222,53 @@ export function PortfolioTableView({
                   <td className="h-10 w-full justify-center text-slate-500">Loading more…</td>
                 ) : (
                   <>
+                    {selectMode ? (
+                      <td className="w-8 p-2">
+                        <button
+                          type="button"
+                          aria-pressed={selectedIds?.has(tile.holdingId)}
+                          aria-label={`Select ${portfolioDisplayName(tile)}`}
+                          onClick={() => {
+                            onToggleSelect?.(tile.holdingId)
+                          }}
+                          className={`flex size-5 items-center justify-center rounded-full border-2 ${
+                            selectedIds?.has(tile.holdingId)
+                              ? 'border-sky-500 bg-sky-600 text-white'
+                              : 'border-slate-600'
+                          }`}
+                        >
+                          {selectedIds?.has(tile.holdingId) ? (
+                            <CheckIcon className="size-3" strokeWidth={3} />
+                          ) : null}
+                        </button>
+                      </td>
+                    ) : null}
                     <td className="min-w-0 flex-[2] gap-2 p-2">
-                      <Link
-                        to="/portfolio/$holdingId"
-                        params={{ holdingId: tile.holdingId }}
-                        className="flex min-w-0 items-center gap-2 hover:underline"
-                      >
-                        <span className="truncate font-medium text-slate-100">
-                          {portfolioDisplayName(tile)}
-                        </span>
-                        {tile.isFavorite ? <span className="text-amber-400">★</span> : null}
-                      </Link>
+                      {selectMode ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onToggleSelect?.(tile.holdingId)
+                          }}
+                          className="flex min-w-0 items-center gap-2 text-left hover:underline"
+                        >
+                          <span className="truncate font-medium text-slate-100">
+                            {portfolioDisplayName(tile)}
+                          </span>
+                          {tile.isFavorite ? <span className="text-amber-400">★</span> : null}
+                        </button>
+                      ) : (
+                        <Link
+                          to="/portfolio/$holdingId"
+                          params={{ holdingId: tile.holdingId }}
+                          className="flex min-w-0 items-center gap-2 hover:underline"
+                        >
+                          <span className="truncate font-medium text-slate-100">
+                            {portfolioDisplayName(tile)}
+                          </span>
+                          {tile.isFavorite ? <span className="text-amber-400">★</span> : null}
+                        </Link>
+                      )}
                     </td>
                     <td className="min-w-0 flex-[1.5] p-2 text-slate-400">
                       {portfolioSubtitle(tile)}

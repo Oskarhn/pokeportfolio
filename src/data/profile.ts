@@ -22,6 +22,14 @@ export interface Profile {
   collectionDefaultSort: Database['public']['Enums']['portfolio_sort_order']
   lowValueThresholdMinor: bigint
   hideLowValueByDefault: boolean
+  displayCurrency: string
+  defaultLanguage: string | null
+  /** M7.1 §19: the Home/Portfolio value-privacy "eye" preference. Display-only — never changes
+   *  what is computed, only whether an honest figure or its mask is rendered. */
+  hideValues: boolean
+  /** M7.1 §56: "use European pricing when available". Stored ahead of M9 — genuinely inert until
+   *  a resolver reads it; never claim it changes a value yet. */
+  useEuPricing: boolean
 }
 
 interface ProfileRow {
@@ -34,11 +42,16 @@ interface ProfileRow {
   collection_default_sort: Database['public']['Enums']['portfolio_sort_order']
   low_value_threshold_minor: string
   hide_low_value_by_default: boolean
+  display_currency: string
+  default_language: string | null
+  hide_values: boolean
+  use_eu_pricing: boolean
 }
 
 const SELECT_COLUMNS =
   'id, display_name, is_admin, theme, collection_grid_density, collection_default_view, ' +
-  'collection_default_sort, low_value_threshold_minor::text, hide_low_value_by_default'
+  'collection_default_sort, low_value_threshold_minor::text, hide_low_value_by_default, ' +
+  'display_currency, default_language, hide_values, use_eu_pricing'
 
 function mapProfile(row: ProfileRow): Profile {
   return {
@@ -51,6 +64,10 @@ function mapProfile(row: ProfileRow): Profile {
     collectionDefaultSort: row.collection_default_sort,
     lowValueThresholdMinor: parseMinorUnits(row.low_value_threshold_minor),
     hideLowValueByDefault: row.hide_low_value_by_default,
+    displayCurrency: row.display_currency,
+    defaultLanguage: row.default_language,
+    hideValues: row.hide_values,
+    useEuPricing: row.use_eu_pricing,
   }
 }
 
@@ -72,6 +89,10 @@ export interface ProfileUpdate {
   collectionDefaultSort?: Database['public']['Enums']['portfolio_sort_order']
   lowValueThresholdMinor?: bigint
   hideLowValueByDefault?: boolean
+  displayCurrency?: string
+  defaultLanguage?: string | null
+  hideValues?: boolean
+  useEuPricing?: boolean
 }
 
 export async function updateMyProfile(update: ProfileUpdate): Promise<void> {
@@ -93,6 +114,10 @@ export async function updateMyProfile(update: ProfileUpdate): Promise<void> {
   if (update.hideLowValueByDefault !== undefined) {
     patch.hide_low_value_by_default = update.hideLowValueByDefault
   }
+  if (update.displayCurrency !== undefined) patch.display_currency = update.displayCurrency
+  if ('defaultLanguage' in update) patch.default_language = update.defaultLanguage
+  if (update.hideValues !== undefined) patch.hide_values = update.hideValues
+  if (update.useEuPricing !== undefined) patch.use_eu_pricing = update.useEuPricing
 
   const { data: userData } = await supabase.auth.getUser()
   const userId = userData.user?.id

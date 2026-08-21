@@ -244,6 +244,8 @@ begin
     ('profiles.low_value_threshold_minor'),
     ('profiles.hide_low_value_by_default'), ('profiles.default_condition'),
     ('profiles.default_language'), ('profiles.default_storage_location_id'),
+    -- M7.1: value-privacy eye and the European-pricing preference (inert until M9).
+    ('profiles.hide_values'), ('profiles.use_eu_pricing'),
 
     ('sealed_products.set_id'), ('sealed_products.product_type'), ('sealed_products.name'),
     ('sealed_products.language'), ('sealed_products.pack_count'), ('sealed_products.image_url'),
@@ -319,11 +321,14 @@ begin
     ('routine', 'void_acquisition_lot(uuid, text)',                 'authenticated', 'EXECUTE'),
     -- M7: Portfolio counts and the sorted/filtered/keyset-paginated browsing surface.
     ('routine', 'portfolio_counts()', 'authenticated', 'EXECUTE'),
+    -- M7.1: list_portfolio gained the number_asc/number_desc keyset cursor field (text, trailing).
     ('routine',
      'list_portfolio(portfolio_sort_order, integer, text, uuid, card_condition, boolean, ' ||
      'grader, boolean, text, boolean, uuid, uuid, uuid, boolean, boolean, uuid, text, text, ' ||
-     'bigint, date, timestamp with time zone, bigint, boolean)',
-     'authenticated', 'EXECUTE')
+     'bigint, date, timestamp with time zone, bigint, boolean, text)',
+     'authenticated', 'EXECUTE'),
+    -- M7.1: the collector-number natural-sort key function list_portfolio's number_asc/desc use.
+    ('routine', 'natural_sort_key(text)', 'authenticated', 'EXECUTE')
   ),
 
   -- M7: the expected PUBLIC-EXECUTE surface for every routine in `public` is empty. No project

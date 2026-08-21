@@ -138,6 +138,49 @@ Merged and deployed to `pokeportfolio-dev.pages.dev`, then browser-verified end 
 verification found and fixed one further defect (the CSP's `img-src` silently blocking all card
 artwork, PROJECT_JOURNAL.md 2026-08-22, PR #15). Only the owner's real-iPhone check remains.
 
+### M7.1 — Owner UI/UX refinement · **complete**
+
+Not a numbered product milestone — a focused correction pass after the owner reviewed the
+deployed M7 UI and gave substantial concrete feedback, applied before M8/M9/M12 build further
+screens on top of a structure the owner had already flagged. Full detail: `claude_outputs/output_12.txt`,
+DECISIONS.md D-043–D-046.
+
+Primary navigation restructured to four destinations (Home/Search/Portfolio/Profile) plus a
+central quick-add, replacing M7's five-tab-plus-spacer geometry; More removed, its one real
+function (admin invitations) moved into Profile. Global "PokePortfolio" wordmark removed from
+authenticated chrome. Visual baseline reworked from the rejected provisional blue/slate palette to
+a neutral warm-graphite surface scale with a restrained bronze/copper accent, dark mode made
+actually functional (`data-theme` + a pre-paint bootstrap script), radius bumped app-wide, nav/
+sheets lightly translucent — all via a token-remap technique that re-themes the whole existing
+Tailwind-utility codebase without a per-component rewrite (DESIGN_SYSTEM.md §3.1).
+
+Home restructured around a portfolio-app hierarchy: scope selector (shared with Portfolio, no
+second grouping model), currency preference, a value-privacy eye, a reserved value/chart panel,
+and a "most valuable cards" section — every M9/M12-dependent figure honestly unavailable, never
+fabricated. Search rebuilt around a dominant top search bar, a real set-browsing carousel, a
+favourite filter reusing existing holding state, and image-led card results. Card detail rebuilt
+image-first with a clickable set link and a reserved price-history slot. Portfolio gained a
+"search in your portfolio" bar, a favourite star, an action menu, select-mode with functional bulk
+actions (add/remove-to-collection, favourite — all purely organisational), a real Portfolio CSV
+export pulled forward from M13 in the narrow single-user-current-state sense, and a genuine
+card-number sort (`number_asc`/`number_desc`, natural-sort ordering over real collector numbers).
+Profile rebuilt as the account/settings hub: theme now works, European-pricing preference stored
+ahead of M9, default view/density, preferred card language, admin invitations, provider
+attribution and a real build-sourced version string.
+
+Deliberately not built, and recorded rather than silently skipped: profile picture upload (needs
+SECURITY.md §7's storage safeguards a bare upload would skip, D-046), bulk "Remove from Portfolio"
+(needs a real batch-void RPC, D-045), account reset/delete UI, portfolio share links, price
+alerts, Trade Analyzer, Market Movers (UX_FLOWS.md F15/F16) — all recorded in BACKLOG.md with
+their real dependencies rather than faked.
+
+**Gate:** met. `pnpm check` green; the new `natural_sort_key`/`list_portfolio` number-sort surface
+and the two new `profiles` columns have authorization coverage; the privilege baseline was
+restated and CI's hostile-grant convergence re-verifies it; a route-level code-splitting pass
+brought the initial JS bundle down from M7's ~638 KB to ~320 KB (97.8 KB gzipped, verified by a
+real production build) without a new dependency. Deployed and browser-verified; only the owner's
+real-device check remains outstanding (same open item M7 already carried forward).
+
 ### M8 — Purchases and the spending ledger
 
 Multi-line purchases, retailers, shipping, customs, discounts, backdating. Allocation engine

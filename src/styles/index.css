@@ -1,8 +1,144 @@
 @import 'tailwindcss';
 
+/*
+ * M7.1 visual baseline (DESIGN_SYSTEM.md §11, owner feedback pass — see docs/PROJECT_JOURNAL.md).
+ * The provisional M7 palette was two hardcoded values (--color-background/--color-foreground) with
+ * every component reaching for Tailwind's stock `slate-*`/`sky-*`/`rose-*`/`emerald-*` utilities
+ * directly. Rather than rewrite ~20 feature files' class names, this rebinds those existing
+ * palette *tokens* to semantic custom properties that flip between light and dark — Tailwind v4
+ * generates every `bg-slate-900`/`text-sky-400`/etc. utility from the CSS variable of the same
+ * name, so overriding the variable re-themes every consumer at once, correctly, in both modes,
+ * without touching a single component. New code should keep using the same slate/sky/rose/emerald
+ * vocabulary for exactly this reason — introducing a second, parallel token vocabulary would
+ * fragment rather than centralize (DESIGN_SYSTEM.md §0's "design tokens stay centralized").
+ *
+ * Palette direction: neutral warm graphite (not blue), a restrained bronze/copper accent (evokes a
+ * foil card edge without theming the UI as a card), gain/loss kept as green/red per §3. Radius is
+ * bumped app-wide via the same token-override technique for the "rounded, macOS-like" direction.
+ */
+
 @theme {
-  --color-background: #0f172a;
-  --color-foreground: #e2e8f0;
+  --radius-lg: 0.875rem;
+  --radius-xl: 1.125rem;
+  --radius-2xl: 1.375rem;
+  --radius-3xl: 1.75rem;
+
+  --color-background: var(--pp-background);
+  --color-foreground: var(--pp-text-primary);
+
+  /* Neutral scale -> semantic surface/text roles. */
+  --color-slate-950: var(--pp-background);
+  --color-slate-900: var(--pp-surface);
+  --color-slate-800: var(--pp-step-1);
+  --color-slate-700: var(--pp-step-2);
+  --color-slate-600: var(--pp-text-tertiary);
+  --color-slate-500: var(--pp-text-tertiary);
+  --color-slate-400: var(--pp-text-secondary);
+  --color-slate-300: var(--pp-text-secondary);
+  --color-slate-200: var(--pp-text-primary);
+  --color-slate-100: var(--pp-text-primary);
+  --color-slate-50: var(--pp-surface-2);
+
+  /* Accent scale -> the bronze/copper accent. Interactive elements and focus rings only
+     (DESIGN_SYSTEM.md §3) — never used for decoration or branding. */
+  --color-sky-950: var(--pp-accent);
+  --color-sky-900: var(--pp-accent);
+  --color-sky-800: var(--pp-accent);
+  --color-sky-700: var(--pp-accent);
+  --color-sky-600: var(--pp-accent);
+  --color-sky-500: var(--pp-accent);
+  --color-sky-400: var(--pp-accent-soft);
+  --color-sky-300: var(--pp-accent-soft);
+  --color-sky-200: var(--pp-accent-soft);
+  --color-sky-100: var(--pp-accent-wash);
+  --color-sky-50: var(--pp-accent-wash);
+
+  /* Loss. Gain/loss colour is never decorative (DESIGN_SYSTEM.md §3) — always paired with a sign
+     or arrow elsewhere in the UI, never the only encoding. */
+  --color-rose-950: var(--pp-negative-wash);
+  --color-rose-900: var(--pp-negative-border);
+  --color-rose-600: var(--pp-negative-text);
+  --color-rose-500: var(--pp-negative-text);
+  --color-rose-400: var(--pp-negative-text);
+  --color-rose-300: var(--pp-negative-text);
+  --color-rose-200: var(--pp-negative-text);
+
+  /* Gain. */
+  --color-emerald-950: var(--pp-positive-wash);
+  --color-emerald-900: var(--pp-positive-border);
+  --color-emerald-600: var(--pp-positive-text);
+  --color-emerald-500: var(--pp-positive-text);
+  --color-emerald-400: var(--pp-positive-text);
+  --color-emerald-300: var(--pp-positive-text);
+  --color-emerald-200: var(--pp-positive-text);
+}
+
+/* Light — the default. Warm off-white, never the rejected blue-white. */
+:root {
+  color-scheme: light;
+  --pp-background: #faf9f6;
+  --pp-surface: #ffffff;
+  --pp-surface-2: #f1efea;
+  --pp-step-1: #e8e5dd;
+  --pp-step-2: #d6d2c7;
+  --pp-text-primary: #17181a;
+  --pp-text-secondary: #53534d;
+  --pp-text-tertiary: #767569;
+  --pp-accent: #8f5f35;
+  --pp-accent-soft: #8f5f35;
+  --pp-accent-wash: #f1e4d6;
+  --pp-negative-text: #b3261e;
+  --pp-negative-wash: #fbeae9;
+  --pp-negative-border: #f3c6c2;
+  --pp-positive-text: #16794e;
+  --pp-positive-wash: #e8f5ee;
+  --pp-positive-border: #bfe3d1;
+}
+
+/* System dark — only when the user has not explicitly overridden to light. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+    --pp-background: #101113;
+    --pp-surface: #17181b;
+    --pp-surface-2: #1d1e22;
+    --pp-step-1: #2a2b2f;
+    --pp-step-2: #393a40;
+    --pp-text-primary: #f4f3ef;
+    --pp-text-secondary: #b7b6ae;
+    --pp-text-tertiary: #87867d;
+    --pp-accent: #c99a66;
+    --pp-accent-soft: #d9b489;
+    --pp-accent-wash: #3a2e1f;
+    --pp-negative-text: #f2938c;
+    --pp-negative-wash: #3a2220;
+    --pp-negative-border: #6b3530;
+    --pp-positive-text: #6fcb9b;
+    --pp-positive-wash: #163629;
+    --pp-positive-border: #2b5943;
+  }
+}
+
+/* Explicit dark override wins in both directions — set by the Profile theme control. */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --pp-background: #101113;
+  --pp-surface: #17181b;
+  --pp-surface-2: #1d1e22;
+  --pp-step-1: #2a2b2f;
+  --pp-step-2: #393a40;
+  --pp-text-primary: #f4f3ef;
+  --pp-text-secondary: #b7b6ae;
+  --pp-text-tertiary: #87867d;
+  --pp-accent: #c99a66;
+  --pp-accent-soft: #d9b489;
+  --pp-accent-wash: #3a2e1f;
+  --pp-negative-text: #f2938c;
+  --pp-negative-wash: #3a2220;
+  --pp-negative-border: #6b3530;
+  --pp-positive-text: #6fcb9b;
+  --pp-positive-wash: #163629;
+  --pp-positive-border: #2b5943;
 }
 
 body {
@@ -10,4 +146,13 @@ body {
   color: var(--color-foreground);
   min-height: 100vh;
   min-height: 100dvh;
+  transition:
+    background-color 200ms ease,
+    color 200ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body {
+    transition: none;
+  }
 }

@@ -1,26 +1,39 @@
-import { useCallback, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
-import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { listPortfolio, getPortfolioCounts, type PortfolioFilters } from '../../data/portfolio'
 import { getMyProfile, updateMyProfile, type CollectionView } from '../../data/profile'
 import type { PortfolioSortOrder } from '../../data/portfolio'
 import { CollectionsBar } from './CollectionsBar'
 import { PortfolioToolbar } from './PortfolioToolbar'
+import { PortfolioActionMenu } from './PortfolioActionMenu'
+import { PortfolioActionShortcuts } from './PortfolioActionShortcuts'
+import { BulkActionsBar } from './BulkActionsBar'
 import { VirtualGrid } from './VirtualGrid'
 import { PortfolioListView, PortfolioTableView } from './ListAndTableViews'
+import { ScopeSelector } from '../../ui/ScopeSelector'
+import { CurrencySelector } from '../../ui/CurrencySelector'
+import { MoneyDisplay, ValuePrivacyToggle } from '../../ui/MoneyDisplay'
+import { useDebouncedValue } from '../../ui/useDebouncedValue'
+import { SearchIcon, XIcon, StarIcon } from '../../ui/icons'
 
 /**
- * Portfolio: the user's owned-card browser (M7 prompt §22-46). "Portfolio" is the user-facing
- * name for what the domain still calls a collection (DECISIONS/PRODUCT_SPEC — internal naming is
- * unchanged, only the surface). Grid/List/Table, density 1-4, sort, quick + full filters and
- * custom collections all read one URL-backed state so back navigation and shared links behave
- * (M7 prompt §38); Sort/Density/View changes also persist to the profile so they survive a
- * session (M7 prompt §66/§118).
+ * Portfolio: the user's owned-card browser (M7.1 prompt §37-46, owner feedback pass). No generic
+ * "Portfolio" page-title chrome any more — identity comes from the content, starting with a search
+ * bar the same way Search does. Scope selector, currency and value-privacy header match Home's
+ * exactly (same components, same profile preferences — M7.1 prompt §74). Grid/List/Table, density
+ * 1-4, sort, quick + full filters and custom collections still read one URL-backed state so back
+ * navigation and shared links behave (M7); Sort/Density/View changes still persist to the profile.
  */
 export function PortfolioPage() {
   const search = useSearch({ from: '/portfolio' })
   const navigate = useNavigate({ from: '/portfolio' })
   const queryClient = useQueryClient()
+
+  const [queryInput, setQueryInput] = useState(search.q ?? '')
+  const debouncedQuery = useDebouncedValue(queryInput, 250)
+  const [selectMode, setSelectMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
 
   const profile = useQuery({ queryKey: ['my-profile'], queryFn: getMyProfile })
   const counts = useQuery({ queryKey: ['portfolio-counts'], queryFn: getPortfolioCounts })
@@ -29,6 +42,24 @@ export function PortfolioPage() {
     search.sort ?? profile.data?.collectionDefaultSort ?? 'value_desc'
   const view: CollectionView = search.view ?? profile.data?.collectionDefaultView ?? 'grid'
   const density = search.density ?? profile.data?.collectionGridDensity ?? 2
+
+  const updateSearch = useCallback(
+    (patch: Partial<typeof search>) => {
+      void navigate({ search: (prev) => ({ ...prev, ...patch }), replace: true })
+    },
+    [navigate],
+  )
+
+  // The search box debounces locally, then pushes into the URL — the URL stays the single source
+  // of truth for every filter (PRODUCT_SPEC.md §4.11: "filter state lives in the URL and is
+  // shareable"), same as every other Portfolio filter; this only decides *when* that write happens.
+  useEffect(() => {
+    const trimmed = debouncedQuery.trim()
+    if (trimmed !== (search.q ?? '')) {
+      updateSearch({ q: trimmed || undefined })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally excludes search.q/updateSearch: this effect only reacts to the debounced input value, not to external URL changes.
+  }, [debouncedQuery])
 
   const filters: PortfolioFilters = useMemo(
     () => ({
@@ -65,12 +96,19 @@ export function PortfolioPage() {
     }
   }, [portfolio])
 
-  const updateSearch = useCallback(
-    (patch: Partial<typeof search>) => {
-      void navigate({ search: (prev) => ({ ...prev, ...patch }), replace: true })
+  const hideValues = profile.data?.hideValues ?? false
+  const toggleHideValues = useMutation({
+    mutationFn: (next: boolean) => updateMyProfile({ hideValues: next }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['my-profile'] })
     },
-    [navigate],
-  )
+  })
+  const setCurrency = useMutation({
+    mutationFn: (currency: string) => updateMyProfile({ displayCurrency: currency }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['my-profile'] })
+    },
+  })
 
   const filterCount = Object.values(filters).filter((v) => v !== undefined && v !== '').length
   const hasAnyFilter = filterCount > 0 || search.collectionId !== undefined
@@ -80,17 +118,124 @@ export function PortfolioPage() {
       ? `${counts.data.uniqueHoldingCount.toLocaleString('nb-NO')} holdings · ${counts.data.physicalCardCount.toLocaleString('nb-NO')} cards`
       : `${tiles.length.toLocaleString('nb-NO')}${hasMore ? '+' : ''} matching`
 
+  function toggleSelected(holdingId: string) {
+    setSelectedIds((current) => {
+      const next = new Set(current)
+      if (next.has(holdingId)) next.delete(holdingId)
+      else next.add(holdingId)
+      return next
+    })
+  }
+
+  function enterSelectMode() {
+    setSelectMode(true)
+    setSelectedIds(new Set())
+  }
+
+  function exitSelectMode() {
+    setSelectMode(false)
+    setSelectedIds(new Set())
+  }
+
   return (
     <div className="mx-auto w-full max-w-6xl space-y-4 py-2">
-      <header className="flex flex-wrap items-end justify-between gap-3">
-        <h1 className="text-2xl font-semibold tracking-tight text-slate-100">Portfolio</h1>
+      <h1 className="sr-only">Portfolio</h1>
+
+      <div className="flex items-center gap-2">
+        <div className="relative min-w-0 flex-1">
+          <SearchIcon className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-500" />
+          <input
+            type="search"
+            value={queryInput}
+            onChange={(event) => {
+              setQueryInput(event.target.value)
+            }}
+            placeholder="Search in your portfolio"
+            autoComplete="off"
+            autoCapitalize="none"
+            aria-label="Search in your portfolio"
+            className="min-h-11 w-full rounded-full border border-slate-700 bg-slate-900 py-2 pl-9 pr-9 text-base text-slate-100 placeholder:text-slate-500 outline-none focus-visible:border-sky-500 focus-visible:ring-2 focus-visible:ring-sky-500/40"
+          />
+          {queryInput ? (
+            <button
+              type="button"
+              onClick={() => {
+                setQueryInput('')
+              }}
+              aria-label="Clear search"
+              className="absolute right-2 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded-full text-slate-500 hover:bg-slate-800 hover:text-slate-300"
+            >
+              <XIcon className="size-4" />
+            </button>
+          ) : null}
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            updateSearch({ favorite: search.favorite ? undefined : true })
+          }}
+          aria-pressed={search.favorite === true}
+          aria-label="Show only favourite holdings"
+          className={`flex size-11 shrink-0 items-center justify-center rounded-full border ${
+            search.favorite
+              ? 'border-amber-400/60 bg-amber-400/10 text-amber-400'
+              : 'border-slate-700 text-slate-400 hover:bg-slate-800'
+          }`}
+        >
+          <StarIcon filled={search.favorite === true} className="size-5" />
+        </button>
+        <PortfolioActionMenu
+          sort={sort}
+          onSortChange={(next) => {
+            updateSearch({ sort: next })
+            void updateMyProfile({ collectionDefaultSort: next })
+            void queryClient.invalidateQueries({ queryKey: ['my-profile'] })
+          }}
+          onEnterSelectMode={enterSelectMode}
+        />
         <Link
           to="/catalog"
-          className="min-h-11 rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-500"
+          className="hidden min-h-11 items-center rounded-full bg-sky-600 px-4 text-sm font-semibold text-white hover:bg-sky-500 sm:flex"
         >
           Add card
         </Link>
-      </header>
+      </div>
+
+      <section className="space-y-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+        <div className="flex items-center justify-between">
+          <ScopeSelector
+            value={search.collectionId ?? null}
+            onChange={(id) => {
+              updateSearch({ collectionId: id ?? undefined })
+            }}
+          />
+          <CurrencySelector
+            value={profile.data?.displayCurrency ?? 'NOK'}
+            onChange={(currency) => {
+              setCurrency.mutate(currency)
+            }}
+          />
+        </div>
+        <div className="flex items-end justify-between">
+          <MoneyDisplay
+            state="missing"
+            size="lg"
+            hidden={hideValues}
+            displayCurrency={profile.data?.displayCurrency}
+          />
+          <ValuePrivacyToggle
+            hidden={hideValues}
+            onToggle={() => {
+              toggleHideValues.mutate(!hideValues)
+            }}
+          />
+        </div>
+        <p className="text-xs text-slate-500">
+          Market value becomes available once pricing is enabled.
+        </p>
+      </section>
+
+      <PortfolioActionShortcuts filters={filters} onEnterSelectMode={enterSelectMode} />
 
       <CollectionsBar
         activeId={search.collectionId}
@@ -141,25 +286,55 @@ export function PortfolioPage() {
       {portfolio.isPending ? (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4" aria-busy="true">
           {Array.from({ length: 10 }, (_, i) => (
-            <div key={i} className="aspect-[5/7] animate-pulse rounded-lg bg-slate-800/60" />
+            <div key={i} className="aspect-[5/7] animate-pulse rounded-xl bg-slate-800/60" />
           ))}
         </div>
       ) : portfolio.isError ? (
         <p
           role="alert"
-          className="rounded-lg border border-rose-900/60 bg-rose-950/40 p-3 text-sm text-rose-200"
+          className="rounded-xl border border-rose-900/60 bg-rose-950/40 p-3 text-sm text-rose-200"
         >
           The Portfolio could not be loaded. Try again.
         </p>
       ) : tiles.length === 0 ? (
         <EmptyState hasFilters={hasAnyFilter} inCollection={search.collectionId !== undefined} />
       ) : view === 'grid' ? (
-        <VirtualGrid tiles={tiles} density={density} onEndReached={fetchNext} hasMore={hasMore} />
+        <VirtualGrid
+          tiles={tiles}
+          density={density}
+          onEndReached={fetchNext}
+          hasMore={hasMore}
+          selectMode={selectMode}
+          selectedIds={selectedIds}
+          onToggleSelect={toggleSelected}
+        />
       ) : view === 'list' ? (
-        <PortfolioListView tiles={tiles} onEndReached={fetchNext} hasMore={hasMore} />
+        <PortfolioListView
+          tiles={tiles}
+          onEndReached={fetchNext}
+          hasMore={hasMore}
+          selectMode={selectMode}
+          selectedIds={selectedIds}
+          onToggleSelect={toggleSelected}
+        />
       ) : (
-        <PortfolioTableView tiles={tiles} onEndReached={fetchNext} hasMore={hasMore} />
+        <PortfolioTableView
+          tiles={tiles}
+          onEndReached={fetchNext}
+          hasMore={hasMore}
+          selectMode={selectMode}
+          selectedIds={selectedIds}
+          onToggleSelect={toggleSelected}
+        />
       )}
+
+      {selectMode ? (
+        <BulkActionsBar
+          selectedIds={selectedIds}
+          activeCollectionId={search.collectionId}
+          onClear={exitSelectMode}
+        />
+      ) : null}
     </div>
   )
 }
@@ -172,7 +347,7 @@ function EmptyState({ hasFilters, inCollection }: { hasFilters: boolean; inColle
         <p className="text-sm text-slate-400">No cards match the current filters.</p>
         <Link
           to="/portfolio"
-          className="inline-block min-h-11 rounded-lg border border-slate-700 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
+          className="inline-block min-h-11 rounded-xl border border-slate-700 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
         >
           Clear filters
         </Link>
@@ -185,7 +360,7 @@ function EmptyState({ hasFilters, inCollection }: { hasFilters: boolean; inColle
         <p className="text-sm text-slate-400">This collection has no cards yet.</p>
         <Link
           to="/catalog"
-          className="inline-block min-h-11 rounded-lg border border-slate-700 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
+          className="inline-block min-h-11 rounded-xl border border-slate-700 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
         >
           Search the catalog to add one
         </Link>
@@ -199,7 +374,7 @@ function EmptyState({ hasFilters, inCollection }: { hasFilters: boolean; inColle
       </p>
       <Link
         to="/catalog"
-        className="inline-block min-h-11 rounded-lg border border-slate-700 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
+        className="inline-block min-h-11 rounded-xl border border-slate-700 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
       >
         Search the catalog
       </Link>

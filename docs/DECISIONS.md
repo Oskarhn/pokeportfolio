@@ -967,3 +967,116 @@ access pattern that had been accidental. Every other function was unaffected, co
 same CI run rather than by inspection alone (PROJECT_JOURNAL.md, 2026-08-22, "Closing the PUBLIC
 gap immediately exposed the dependency it had been masking"). `docs/SECURITY.md` §5.9 updated to
 describe the closed state rather than the known gap.
+
+---
+
+## D-043 — Primary navigation drops to four destinations plus a central action; More is removed
+
+**2026-08-23 · Accepted; supersedes M7's five-tab bar**
+
+**Context.** The owner reviewed the deployed M7 UI and found the five-destination bottom bar
+(Home, Search, Portfolio, More, Profile) visually unbalanced, and More itself carried no content
+that couldn't live somewhere more specific — admin invitations (visible to admins only) and a
+link into Profile's own display settings.
+
+**Decision.** Mobile navigation becomes Home | Search | **+** | Portfolio | Profile: two
+destinations either side of the central quick-add, an intentionally symmetrical four-tab shape
+replacing M7's six-equal-flex-slot-plus-spacer geometry (DESIGN_SYSTEM.md §4.2, rewritten in the
+same commit). `/more` remains a route — a thin `beforeLoad` redirect to `/profile`, matching the
+existing `/collection*` → `/portfolio*` pattern (D-040) — so no bookmarked or shared link breaks.
+Admin invitations moved into Profile, gated the same way (`is_admin`), with no change to the
+underlying route or its `RequireAdmin` guard.
+
+**Alternatives.** Keep five tabs and only restyle — rejected: the owner's specific complaint was
+the geometry itself (an odd destination count forcing a spacer trick), not the visual treatment
+layered on top of it. Fold More's content into a global settings icon instead of Profile —
+rejected: Profile was already becoming the account/settings hub (§50 below), and a second
+settings entry point would be the "two systems that can disagree" pattern this project avoids
+elsewhere (DATA_MODEL.md §5.2's grouping-concepts reasoning is the same shape of argument).
+
+**Consequences.** `src/features/nav/BottomNav.tsx`/`DesktopNav.tsx` rewritten; `src/features/more/`
+deleted (no remaining reference). The global "PokePortfolio" wordmark that appeared top-left on
+every authenticated screen is also removed in the same pass (owner feedback: it read as
+mechanical branding) — it now appears only on Home's mobile view and the authentication screens.
+Final logo integration is still M12a's.
+
+---
+
+## D-044 — Value-privacy and European-pricing preferences stored ahead of the data they govern
+
+**2026-08-23 · Accepted**
+
+**Context.** The owner asked for a Home/Portfolio value-privacy "eye" control and a "use European
+pricing" setting. Neither raw-card market value nor a pricing-region resolver exists before M9
+(D-041's same constraint), but both are genuine user preferences the owner wants captured now
+rather than re-litigated when M9 ships.
+
+**Decision.** Two new `profiles` columns, following the same "ship the preference ahead of its
+consumer" shape D-038 already established for `opening`/`trade_in`/`manual_valuations`:
+`hide_values boolean default false` (display-only — masks an already-computed figure as "••••",
+changes nothing about what is computed) and `use_eu_pricing boolean default true` (genuinely inert
+until M9's resolver reads it; the Profile UI says so explicitly rather than implying it already
+works). Both join the standard column-restricted `UPDATE` grant
+(`20260823120030_m71_privilege_baseline.sql`).
+
+**Alternatives.** Wait for M9 to add both columns alongside the resolver — rejected for the same
+reason D-038 rejected waiting: the owner's preference is a real fact today, and "come back later"
+is a worse answer than storing it now and having M9 consume it unchanged.
+
+**Consequences.** `default true` for `use_eu_pricing` follows the product's existing Europe/Norway
+orientation (Cardmarket EUR via TCGdex, Norges Bank FX) rather than an arbitrary default. When M9
+ships, only the resolver needs to read this column — no UI or schema change.
+
+---
+
+## D-045 — Bulk "Remove from Portfolio" deferred; only safe bulk actions ship in M7.1
+
+**2026-08-23 · Accepted**
+
+**Context.** The owner asked for a Portfolio multi-select mode with bulk actions including removal.
+Multi-select and bulk add/remove-to-collection and bulk favourite are purely organisational
+(DATA_MODEL.md §5.2.1's C1 reasoning: no financial consequence). Bulk *removal* is not — it means
+voiding acquisition lots, potentially many at once, and must never be a hard `DELETE` (DATA_MODEL.md
+§9's void-semantics table) or leave a purchase referencing a partially-voided set of lots.
+
+**Decision.** Ship select mode with bulk add-to-collection, remove-from-current-collection and
+bulk favourite/unfavourite now — all reversible, all organisational, all a single bounded
+PostgREST statement under existing RLS. Bulk "Remove from Portfolio" is not built in M7.1: it
+needs a real batch-void RPC (transaction-safe, correctly guarding a purchase with a live downstream
+reference, auditable) that does not yet exist, and building one under this milestone's time budget
+risked exactly the unsafe/partial operation DATA_MODEL.md §9 exists to prevent.
+
+**Alternatives.** Ship a bulk delete that loops individual void calls client-side — rejected: not
+transaction-safe (a failure partway through leaves some lots voided and others not, with no clear
+recovery), and the prompt's own guidance is explicit that shipping something unsafe here is worse
+than deferring it.
+
+**Consequences.** Recorded in BACKLOG.md as a real, scoped future item: a `bulk_void_lots(uuid[])`
+RPC (or equivalent), atomic, guarded the same way `void_acquisition_lot` already is. Portfolio's
+select-mode UI (`BulkActionsBar.tsx`) is built to add a "Remove from Portfolio" action later without
+a redesign — the sheet/action-list shape already accepts more buttons.
+
+---
+
+## D-046 — Profile picture upload deferred rather than attempted under this milestone's scope
+
+**2026-08-23 · Accepted**
+
+**Context.** The owner asked for the ability to change a profile picture. SECURITY.md §7 already
+specifies the shape a correct implementation needs: private per-user storage paths, strict
+size/MIME validation, re-encoding, EXIF stripping (a real disclosure risk — phone photos carry GPS
+coordinates, and this app already treats "storage location" as sensitive, SECURITY.md §1), and
+signed URLs rather than a public bucket. None of that infrastructure exists yet.
+
+**Decision.** Defer, rather than ship a version that skips validation, re-encoding or EXIF
+stripping to fit inside this milestone. The prompt's own instruction for M7.1 is explicit that a
+"serious attempt" does not mean shipping something materially security-sensitive without the
+safeguards SECURITY.md already requires for exactly this feature.
+
+**Alternatives.** Ship upload without EXIF stripping "for now" — rejected outright: an inventory of
+valuable physical property is precisely the case SECURITY.md §7 was written for, and shipping the
+gap knowingly is worse than not shipping the feature.
+
+**Consequences.** `ProfilePage.tsx` shows no picture-upload control at all — never a button that
+looks functional and silently does nothing. Recorded in BACKLOG.md as a concretely scoped future
+item with SECURITY.md §7's requirements restated as its acceptance bar.

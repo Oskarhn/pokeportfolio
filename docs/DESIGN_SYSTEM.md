@@ -23,6 +23,14 @@ around the card artwork), and it holds. Explicitly avoid, beyond what §1 alread
 spending significant effort on subjective visual polish, inventing a bespoke component purely for
 aesthetics, or treating the current placeholder PWA icon set as anything but a placeholder.
 
+**M7.1 update.** The owner has now used the deployed M7 build and given direct, specific feedback
+(a real screen, not a description) — this counts as real signal within the "provisional, not
+final" phase, distinct from the eventual M12a pass, which still waits on the owner's own reference
+images and logo. M7.1 corrects the concrete token values in §3 and the bottom-nav geometry in
+§4.2 to match that feedback; M12a remains the milestone that replaces the placeholder PWA icon set
+and does a full pass against the owner's own references. Nothing here is presented to the owner as
+"final" — it is the corrected provisional baseline.
+
 **Design tokens stay centralized regardless of phase.** Semantic CSS custom properties
 (`--background`, `--foreground`, `--surface`, `--muted`, `--border`, `--accent`, `--positive`,
 `--negative`, and typography/spacing/radius tokens as they're introduced) are the one place visual
@@ -104,7 +112,37 @@ an app about whether numbers went up or down.
 
 Dark mode is a first-class palette, not an inverted light one. Both meet WCAG AA on text and
 AA on non-text interactive elements. System preference is the default; a manual override is
-persisted per profile.
+persisted per profile and actually applies (`src/ui/theme.ts` sets `data-theme` on `<html>`;
+`index.html` carries a small inline bootstrap script so a returning user's explicit choice applies
+before first paint, not just after the profile round-trips).
+
+### 3.1 M7.1 concrete tokens
+
+Owner feedback on the deployed M7 build rejected the provisional blue/slate palette as reading
+"AI-generated". Replaced with a neutral warm-graphite surface scale and a restrained bronze/copper
+accent (evokes a foil card edge as functional metadata, not Pokémon theming — §1's "subtle
+awareness, not theming" rule). Implemented as CSS custom properties in `src/styles/index.css`,
+with Tailwind's own `slate`/`sky`/`rose`/`emerald` palette tokens rebound to them — every existing
+`bg-slate-900`/`text-sky-400`/etc. utility across the codebase is theme-aware for free, without a
+per-component rewrite. New code keeps using that same vocabulary rather than inventing a second
+one.
+
+| Token | Light | Dark |
+|---|---|---|
+| `--pp-background` | `#faf9f6` | `#101113` |
+| `--pp-surface` | `#ffffff` | `#17181b` |
+| `--pp-surface-2` | `#f1efea` | `#1d1e22` |
+| `--pp-step-1` (hairline borders / hover fill) | `#e8e5dd` | `#2a2b2f` |
+| `--pp-step-2` (input borders) | `#d6d2c7` | `#393a40` |
+| `--pp-text-primary` | `#17181a` | `#f4f3ef` |
+| `--pp-text-secondary` | `#53534d` | `#b7b6ae` |
+| `--pp-text-tertiary` | `#767569` | `#87867d` |
+| `--pp-accent` | `#8f5f35` | `#c99a66` |
+| `--pp-positive-text` / `--pp-negative-text` | `#16794e` / `#b3261e` | `#6fcb9b` / `#f2938c` |
+
+Radius is bumped app-wide the same token-override way: `--radius-lg`/`--radius-2xl` etc. raised
+above Tailwind's defaults in `@theme`, so every existing `rounded-lg`/`rounded-2xl` reads rounder
+without a class-name sweep (owner's "macOS-like" direction, §68 of the M7.1 prompt).
 
 ---
 
@@ -171,15 +209,18 @@ inconsistency to be resolved.
 bottom tab bar sits above the home indicator, not under it. Verified on hardware, not in a
 simulator.
 
-**Bottom navigation geometry, shipped M7** (`src/features/nav/BottomNav.tsx`). Five destinations
-(Home, Search, Portfolio, More, Profile) is an odd number, so a raised central + action cannot sit
-in a real middle *tab* without either an even, artificially-padded six-column grid or sacrificing
-a destination into an overflow menu — both rejected. The resolution: six equal flex slots (five
-tabs plus one empty spacer between Search and Portfolio), so the bar's true horizontal centre
-falls on the spacer/Portfolio boundary; the + button is a separate, absolutely-positioned circle
-at `left: 50%`, floating above the bar rather than occupying a slot. It reads as centred without
-faking a sixth labelled column. Desktop does not reuse this shape — DesktopNav.tsx is a
-conventional single top row, per §4.2's "sidebar/top nav at ≥768px, not a stretched phone tab bar."
+**Bottom navigation geometry, M7.1** (`src/features/nav/BottomNav.tsx`, supersedes M7's five-tab
+shape — DECISIONS.md D-043). Four destinations (Home, Search, Portfolio, Profile) — an even
+number — sit in five equal CSS grid columns: Home, Search, an empty centre column, Portfolio,
+Profile. The bar's true horizontal centre falls in the middle of that centre column, exactly
+where the raised circular **+** sits (absolutely positioned, independent of the grid — same
+"floating above the bar rather than occupying a slot" technique M7 used, just over an even tab
+count so it needs no spacer trick). Two destinations either side of **+**, intentionally
+symmetrical. Desktop does not reuse this shape — DesktopNav.tsx is a conventional single top row,
+per §4.2's "sidebar/top nav at ≥768px, not a stretched phone tab bar." Both bars are lightly
+translucent (`bg-slate-950/85 backdrop-blur-xl`, reading through the M7.1 token remap as
+`--pp-surface` at 85% over a blur) — content scrolls underneath rather than the bar consuming a
+fully opaque strip, per the owner's "navigation may be translucent" direction.
 
 **Toolbar controls stay independently visible, never collapsed behind one icon** (M7 prompt §93).
 Sort, Density, View and Filters are four separate buttons on both mobile and desktop

@@ -23,13 +23,18 @@ export const SORT_LABEL: Record<PortfolioSortOrder, string> = {
   acquired_oldest: 'Acquired: oldest first',
   added_newest: 'Newest added',
   added_oldest: 'Oldest added',
+  number_asc: 'Card number: low to high',
+  number_desc: 'Card number: high to low',
 }
 
-/** Order matches the visible "Sort by" menu (M7 prompt §31). `value_desc` first — the intended
- *  permanent default — then the rest grouped by what they sort on. */
+/** Order matches the visible "Sort by" menu (M7.1 prompt §41). `value_desc` first — the intended
+ *  permanent default — then the rest grouped by what they sort on. Price-change sorts stay absent
+ *  until M9 has real price-change data (M7.1 prompt §41) — never fake-enabled. */
 export const SORT_OPTIONS: PortfolioSortOrder[] = [
   'value_desc',
   'value_asc',
+  'number_asc',
+  'number_desc',
   'set_asc',
   'name_asc',
   'name_desc',
@@ -74,6 +79,7 @@ export interface PortfolioTile {
   acquiredOnMin: string | null
   acquiredOnMax: string | null
   hasMultipleStorageLocations: boolean
+  numberSortKey: string
 }
 
 export function portfolioDisplayName(tile: PortfolioTile): string {
@@ -98,6 +104,7 @@ export interface PortfolioCursor {
   addedAt: string
   valueMinor: bigint | null
   hasValue: boolean
+  numberKey: string
 }
 
 export function cursorFromTile(tile: PortfolioTile): PortfolioCursor {
@@ -110,6 +117,7 @@ export function cursorFromTile(tile: PortfolioTile): PortfolioCursor {
     addedAt: tile.createdAt,
     valueMinor: tile.resolvedValueMinor,
     hasValue: tile.resolvedValueMinor !== null,
+    numberKey: tile.numberSortKey,
   }
 }
 
@@ -166,6 +174,7 @@ interface ListPortfolioRow {
   acquired_on_min: string | null
   acquired_on_max: string | null
   has_multiple_storage_locations: boolean | null
+  number_sort_key: string | null
 }
 
 function mapRow(row: ListPortfolioRow): PortfolioTile {
@@ -202,6 +211,7 @@ function mapRow(row: ListPortfolioRow): PortfolioTile {
     acquiredOnMin: row.acquired_on_min,
     acquiredOnMax: row.acquired_on_max,
     hasMultipleStorageLocations: row.has_multiple_storage_locations ?? false,
+    numberSortKey: row.number_sort_key ?? '',
   }
 }
 
@@ -242,6 +252,7 @@ export async function listPortfolio(params: {
       p_cursor_added_at: cursor?.addedAt,
       p_cursor_value_minor: cursor?.valueMinor === null ? undefined : Number(cursor?.valueMinor),
       p_cursor_has_value: cursor?.hasValue,
+      p_cursor_number_key: cursor?.numberKey,
     })
     .overrideTypes<ListPortfolioRow[], { merge: false }>()
   if (error) throw new Error(error.message)

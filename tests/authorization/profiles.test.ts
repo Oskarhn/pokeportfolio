@@ -91,4 +91,30 @@ describe('RLS isolation: profiles', () => {
     const { error } = await clientA.from('profiles').insert({ id: userA.id, display_name: 'dup' })
     expect(error).not.toBeNull()
   })
+
+  // M7.1: value-privacy eye and the European-pricing preference (prompt §19/§56).
+  it('a user can update their own hide_values and use_eu_pricing preferences', async () => {
+    const { error } = await clientA
+      .from('profiles')
+      .update({ hide_values: true, use_eu_pricing: false })
+      .eq('id', userA.id)
+    expect(error).toBeNull()
+    const { data } = await clientA
+      .from('profiles')
+      .select('hide_values, use_eu_pricing')
+      .eq('id', userA.id)
+      .single()
+    expect(data?.hide_values).toBe(true)
+    expect(data?.use_eu_pricing).toBe(false)
+  })
+
+  it('hide_values defaults false and use_eu_pricing defaults true for a new account', async () => {
+    const { data } = await clientB
+      .from('profiles')
+      .select('hide_values, use_eu_pricing')
+      .eq('id', userB.id)
+      .single()
+    expect(data?.hide_values).toBe(false)
+    expect(data?.use_eu_pricing).toBe(true)
+  })
 })

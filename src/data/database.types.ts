@@ -791,12 +791,14 @@ export type Database = {
           display_currency: string
           display_name: string | null
           hide_low_value_by_default: boolean
+          hide_values: boolean
           id: string
           is_admin: boolean
           locale: string
           low_value_threshold_minor: number
           theme: Database["public"]["Enums"]["theme_preference"]
           updated_at: string
+          use_eu_pricing: boolean
         }
         Insert: {
           collection_default_sort?: Database["public"]["Enums"]["portfolio_sort_order"]
@@ -812,12 +814,14 @@ export type Database = {
           display_currency?: string
           display_name?: string | null
           hide_low_value_by_default?: boolean
+          hide_values?: boolean
           id: string
           is_admin?: boolean
           locale?: string
           low_value_threshold_minor?: number
           theme?: Database["public"]["Enums"]["theme_preference"]
           updated_at?: string
+          use_eu_pricing?: boolean
         }
         Update: {
           collection_default_sort?: Database["public"]["Enums"]["portfolio_sort_order"]
@@ -833,12 +837,14 @@ export type Database = {
           display_currency?: string
           display_name?: string | null
           hide_low_value_by_default?: boolean
+          hide_values?: boolean
           id?: string
           is_admin?: boolean
           locale?: string
           low_value_threshold_minor?: number
           theme?: Database["public"]["Enums"]["theme_preference"]
           updated_at?: string
+          use_eu_pricing?: boolean
         }
         Relationships: [
           {
@@ -1308,6 +1314,7 @@ export type Database = {
           p_cursor_has_value?: boolean
           p_cursor_holding_id?: string
           p_cursor_name?: string
+          p_cursor_number_key?: string
           p_cursor_quantity?: number
           p_cursor_set_name?: string
           p_cursor_value_minor?: number
@@ -1353,12 +1360,17 @@ export type Database = {
           manual_name: string | null
           manual_set_name: string | null
           notes: string | null
+          number_sort_key: string | null
           quantity: number
           resolved_value_nok_minor: string | null
           variant_finish: Database["public"]["Enums"]["card_finish"] | null
           variant_stamp: string | null
           variant_subtype: string | null
         }[]
+      }
+      natural_sort_key: {
+        Args: { p_text: string }
+        Returns: string
       }
       portfolio_counts: {
         Args: never
@@ -1474,6 +1486,8 @@ export type Database = {
         | "acquired_oldest"
         | "added_newest"
         | "added_oldest"
+        | "number_asc"
+        | "number_desc"
       purchase_origin: "manual" | "provisional_opening"
       sealed_intent: "keep_sealed" | "planned_to_open" | "undecided"
       sealed_product_type:
@@ -1668,6 +1682,8 @@ export const Constants = {
         "acquired_oldest",
         "added_newest",
         "added_oldest",
+        "number_asc",
+        "number_desc",
       ],
       purchase_origin: ["manual", "provisional_opening"],
       sealed_intent: ["keep_sealed", "planned_to_open", "undecided"],

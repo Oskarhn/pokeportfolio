@@ -356,6 +356,35 @@ export async function toggleFavorite(holdingId: string, isFavorite: boolean): Pr
   if (error) throw new Error(error.message)
 }
 
+/** Search's favourite filter (M7.1 prompt §25): "catalog cards corresponding to holdings the user
+ *  has marked Favourite" — a direct read of existing favourite state, not a second wishlist
+ *  system. Returns the distinct catalog `card_id`s so Search can filter its already-fetched
+ *  results client-side; a raw-card holding is the only kind with a `card_variant_id` to trace back
+ *  to a catalog card, so graded/manual/sealed favourites are outside what Search can filter on
+ *  (Portfolio's own favourite star already covers those directly). */
+export async function getFavoritedCardIds(): Promise<Set<string>> {
+  const { data, error } = await supabase
+    .from('holdings')
+    .select('card_variants(card_id)')
+    .eq('is_favorite', true)
+    .not('card_variant_id', 'is', null)
+    .overrideTypes<{ card_variants: { card_id: string } | null }[], { merge: false }>()
+  if (error) throw new Error(error.message)
+  return new Set(data.flatMap((row) => (row.card_variants ? [row.card_variants.card_id] : [])))
+}
+
+/** Bulk favourite/unfavourite for Portfolio select mode (M7.1 prompt §43). One statement, not a
+ *  loop — `is_favorite` carries no financial consequence, so a plain `IN (...)` update under RLS
+ *  is the correct shape (same reasoning as custom-collection membership, C1). */
+export async function bulkSetFavorite(holdingIds: string[], isFavorite: boolean): Promise<void> {
+  if (holdingIds.length === 0) return
+  const { error } = await supabase
+    .from('holdings')
+    .update({ is_favorite: isFavorite })
+    .in('id', holdingIds)
+  if (error) throw new Error(error.message)
+}
+
 export async function updateHoldingNotes(holdingId: string, notes: string | null): Promise<void> {
   const { error } = await supabase.from('holdings').update({ notes }).eq('id', holdingId)
   if (error) throw new Error(error.message)
