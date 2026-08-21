@@ -432,6 +432,25 @@ verify_jwt = false
 enabled = true
 verify_jwt = true
 
+# ingest-prices/ingest-fx (M9) are cron-triggered via pg_cron/pg_net, never called from the browser
+# bundle. They authenticate against PRICE_SYNC_SECRET, the same operator-secret shape as
+# sync-catalog, read out of Supabase Vault by the scheduled job rather than a signed-in session —
+# see the M9 cron-scheduling migration and the function headers.
+[functions.ingest-prices]
+enabled = true
+verify_jwt = false
+
+[functions.ingest-fx]
+enabled = true
+verify_jwt = false
+
+# search-prices (M9) is called from the signed-in Search/Card Detail screens for on-demand,
+# non-persisted current price references — a real user session is required, same reasoning as
+# fetch-fx-rate. See the function header.
+[functions.search-prices]
+enabled = true
+verify_jwt = true
+
 [edge_runtime]
 enabled = true
 # Supported request policies: `oneshot`, `per_worker`.

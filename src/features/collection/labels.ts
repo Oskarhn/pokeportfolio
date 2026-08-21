@@ -41,3 +41,17 @@ export const FINISH_LABEL: Record<string, string> = {
   reverse: 'Reverse holo',
   other: 'Other',
 }
+
+/** M9 provenance labels (prompt §81) — factual attribution, never "Official Cardmarket API". */
+export const PROVIDER_LABEL: Record<string, string> = {
+  tcgdex_cardmarket: 'Cardmarket, via TCGdex',
+  tcgdex_tcgplayer: 'TCGplayer, via TCGdex',
+}
+
+export const PRICE_KIND_LABEL: Record<string, string> = {
+  cm_trend: 'Trend',
+  cm_avg30: '30-day average',
+  cm_avg7: '7-day average',
+  cm_avg: 'Average',
+  tp_market: 'Market price',
+}

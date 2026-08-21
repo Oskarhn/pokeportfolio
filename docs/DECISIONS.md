@@ -1248,3 +1248,143 @@ deliberately simple.
 **Consequences.** `ProfilePage.tsx` shows no picture-upload control at all — never a button that
 looks functional and silently does nothing. Recorded in BACKLOG.md as a concretely scoped future
 item with SECURITY.md §7's requirements restated as its acceptance bar.
+
+---
+
+## D-052 — M9 provider preference policy, and Portfolio value sorts by holding total, not unit price
+
+**2026-08-26 · Accepted**
+
+**Context.** M9 activates `use_eu_pricing` (D-044) but the owner's stated preference ("use European
+pricing when available") does not by itself say what happens when only one provider has a price, or
+when both do but one is stale and the other fresh. Separately, D-041's provisional value sort needs
+a real answer now: does "Value: high to low" compare a holding's *unit* price or its *quantity ×
+unit* total.
+
+**Decision — provider preference.** `use_eu_pricing = true` prefers Cardmarket whenever it resolves
+to a non-missing (fresh or stale) price; TCGplayer is used only when Cardmarket has none.
+`use_eu_pricing = false` is the exact mirror. Freshness is never compared *across* providers to
+override this preference — a stale Cardmarket price still wins over a fresher TCGplayer one when EU
+pricing is selected. `resolve_variant_market_values` (`20260826120020_m9_valuation_resolver.sql`) is
+the single implementation; every other M9 surface (list_portfolio, portfolio_counts, Holding Detail
+provenance, Card Detail history, Market Movers) calls it rather than re-deriving the rule.
+
+**Decision — sort key is the holding's total value.** `unit_value_nok_minor` (resolved value ×
+quantity 1) drives the low-value/missing-value *filters* — "is this specific printing cheap" is a
+per-item question (DATA_MODEL.md §5.2.2). `holding_value_nok_minor` (`unit_value_nok_minor ×
+quantity_remaining`) drives the `value_desc`/`value_asc` *sort* and its keyset cursor — a portfolio
+view answering "what's my biggest position" should not rank ×20 owned Basic Energy below a single
+low-value rare merely because only unit prices were compared. Both figures are returned by
+`list_portfolio`; the Portfolio grid tile shows the total (prompt §46's own worked example, "×3 ·
+450 kr", is a total).
+
+**Alternatives.** Rank providers by freshness first, preference second — rejected: it silently
+overrides the very setting the owner asked for, on a per-card basis they cannot see or predict.
+Sort by unit price, matching a plain price-comparison shop — rejected: this is an inventory app,
+not a price list, and the existing D-041 note about the eventual real resolver already anticipated
+"what's my biggest position" as the more useful question. Add a whole second sort mode ("Total
+value" vs "Unit value") instead of picking one for `value_desc`/`value_asc` — rejected as scope the
+owner never asked for; revisit only if real usage shows a need for both.
+
+**Consequences.** Both rules are covered by `tests/db/m9_valuation_resolver.test.ts` (provider
+preference and fallback, quantity multiplication) and documented in FINANCIAL_MODEL.md §6.
+
+---
+
+## D-053 — `price_snapshots` stores one already-chosen value per provider per day, not every raw field
+
+**2026-08-26 · Accepted; corrects the DATA_MODEL.md §4.1 sketch written before M9 shipped**
+
+**Context.** The original sketch (written at M6, before a real ingest existed) had `price_snapshots`
+unique on `(card_variant_id, provider, price_kind, snapshot_date)`, implying every Cardmarket
+price_kind (`trend`/`avg30`/`avg7`/`avg`) and every TCGplayer field would be persisted for every
+watched variant every day. Multiplied across the ~3,000-4,000 watched-variant scale target, that is
+a 4-6× storage cost over the ~105 MB/year projection COST_POLICY.md already commits to, for data the
+FINANCIAL_MODEL.md §6 fallback chain would immediately collapse to one winning value anyway.
+
+**Decision.** The ingest function (`ingest-prices`) resolves the §6 fallback chain *before*
+writing — walks `trend → avg30 → avg7 → avg` for Cardmarket, takes `marketPrice` for TCGplayer — and
+persists exactly one row per `(card_variant_id, provider, snapshot_date)`, with `price_kind`
+recording which candidate won. Provenance stays fully auditable (a stored row always says whether it
+was `cm_trend` or a fallback), without the multi-row-per-day cost. The unique index is
+`(card_variant_id, provider, snapshot_date)` — `price_kind` is an attribute of the row, not part of
+its identity.
+
+**Alternatives.** Store the full sketch (every price_kind, every day) — rejected on the storage math
+above. Store only the winning value with no `price_kind` column — rejected: it would silence
+provenance ("was this really the trend, or did we fall back to a 30-day average") for no storage
+saving, since `price_kind` is a single small enum column, not the expensive part.
+
+**Consequences.** DATA_MODEL.md §4.1 is updated in the same commit as this decision. The measured
+per-provider-per-day row cost and the resulting free-tier projection are recorded in
+COST_POLICY.md/output_15.txt.
+
+---
+
+## D-054 — M7.1's `list_portfolio` rewrite silently reintroduced the M7 LATERAL performance defect; fixed as part of the M9 resolver rewrite
+
+**2026-08-26 · Accepted**
+
+**Context.** `20260822120030_m7_portfolio_query_perf_fix.sql` replaced `list_portfolio`'s per-holding
+`LEFT JOIN LATERAL` lot aggregate with a `with lot_agg as materialized (...) left join
+acquisition_lots ... group by h.id` shape, after the real 10,000-lot benchmark measured the LATERAL
+form at 5.5-8 seconds per call with two sort modes timing out outright. `20260823120010_m71_number_
+sort.sql` (M7.1) had to `DROP FUNCTION` and `CREATE FUNCTION` again — adding a parameter changes a
+function's identity, so `CREATE OR REPLACE` was not available — and in rewriting the body from
+scratch, reverted to the original `join lateral (select sum(...) ... where l.holding_id = h.id) q on
+true` shape. Nothing caught it: CI's ephemeral fixtures are far too small to expose the nested-loop
+plan, and no session between M7.1 and M9 re-ran the real benchmark.
+
+**Decision.** M9 needed to rewrite `list_portfolio`'s body anyway (to add the resolver join), so the
+materialized-CTE `lot_agg` shape is restored in the same migration
+(`20260826120030_m9_list_portfolio_resolver.sql`) rather than filed as a separate follow-up. The
+resolver join (`resolve_variant_market_values`) follows the identical rule from the start: called
+ONCE per query with the full array of the user's distinct `card_variant_id`s, never once per
+holding.
+
+**Alternatives.** File it as a separate bug-fix migration — rejected: the function's body is being
+rewritten regardless, and shipping a rewrite that reintroduces a known-bad shape while fixing an
+unrelated one would be worse than fixing both together. Leave it for a future session to find via
+another real benchmark — rejected: the M9 prompt explicitly requires re-running the large-Portfolio
+benchmark (§73), which would have caught this anyway; fixing it now means that benchmark measures
+the actually-shipped shape instead of a still-broken one.
+
+**Consequences.** `portfolio_counts()` was not affected — its own `20260822120040_m7_portfolio_
+counts_perf_fix.sql` was never touched by a later signature change, so it kept the materialized-CTE
+shape throughout. The lesson generalizes: **a migration that must `DROP`+`CREATE` a function for an
+unrelated reason (a new parameter, a new return column) is exactly the moment a previous
+performance fix can silently regress**, because the whole body is being retyped by hand rather than
+edited surgically. A future session doing this again should diff the aggregate-computation shape
+against the previous version explicitly, not just against a mental model of "what changed."
+
+---
+
+## D-055 — `watched_card_variants` keeps a variant watched for any lot ever created, voided or not
+
+**2026-08-26 · Accepted**
+
+**Context.** DATA_MODEL.md §4.2's original sketch said the daily job should watch "currently owned
+canonical card variants... plus variants held at any point historically." The M9 prompt (§11) asks
+to additionally exclude "corrected/voided accidental entries with no legitimate ownership history,
+if the model can distinguish them safely" from history-preserving variants — but a voided
+`acquisition_lot` looks structurally identical whether it was a same-day fat-finger correction or a
+genuine later disposal (M8.1's Remove from Portfolio, a real product-level "I no longer own this"
+event that predates any actual sale/trade milestone).
+
+**Decision.** `watched_card_variants` includes a `card_variant_id` the moment any `acquisition_lot`
+row exists for it, regardless of `voided_at` — i.e. it does not attempt the correction-vs-disposal
+distinction the prompt flagged as possibly-unsafe. This errs toward preserving too much price
+history rather than silently destroying a real one; the cost of watching one extra variant born from
+a same-day correction is negligible (one more row set in a table already budgeted for thousands),
+while wrongly un-watching a variant that was genuinely, legitimately owned and later removed would
+be a real, hard-to-notice loss of history.
+
+**Alternatives.** Exclude a lot whose `voided_at` is within some short window of its `created_at` (a
+heuristic "probably a same-day correction") — rejected: an arbitrary threshold is exactly the kind
+of invented precision the project avoids elsewhere (D-009's rejection of condition multipliers is
+the same shape of argument), and a legitimately-disposed-of card removed the same day it was noticed
+to be a mistake would be wrongly excluded by it too.
+
+**Consequences.** DATA_MODEL.md §4.2 is updated to state this explicitly. Revisit only if the actual
+watched-variant count in production materially exceeds the ~3,000-4,000 projection because of this
+choice — measured in output_15.txt/COST_POLICY.md.

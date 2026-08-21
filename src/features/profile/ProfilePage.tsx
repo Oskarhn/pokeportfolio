@@ -51,7 +51,10 @@ const LANGUAGE_OPTIONS: { value: string | null; label: string }[] = [
 export function ProfilePage() {
   const { email, isAdmin, signOut } = useAuth()
   const profile = useQuery({ queryKey: ['my-profile'], queryFn: getMyProfile })
-  const counts = useQuery({ queryKey: ['portfolio-counts'], queryFn: getPortfolioCounts })
+  const counts = useQuery({
+    queryKey: ['portfolio-counts'],
+    queryFn: () => getPortfolioCounts(),
+  })
 
   return (
     <div className="mx-auto w-full max-w-md space-y-6 py-2">
@@ -297,7 +300,7 @@ function ProfileSettings({ profile, isAdmin }: { profile: Profile; isAdmin: bool
           <span className="text-slate-200">
             Use European pricing
             <span className="block text-xs font-normal text-slate-500">
-              Applies once market pricing is enabled
+              Prefer Cardmarket (EUR) over TCGplayer (USD) when both have a price
             </span>
           </span>
           <input

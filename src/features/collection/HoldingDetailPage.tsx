@@ -2,13 +2,15 @@ import { useMemo, useState } from 'react'
 import { Link, useParams } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  getActiveManualValuation,
+  clearManualValuation,
   getHoldingLots,
   getHoldingSummary,
+  getHoldingValueProvenance,
   setManualValuation,
   toggleFavorite,
   voidAcquisitionLot,
 } from '../../data/collection'
+import { MoneyDisplay } from '../../ui/MoneyDisplay'
 import {
   addHoldingToCollection,
   getHoldingCollectionIds,
@@ -18,7 +20,14 @@ import {
 import { CardImage } from '../catalog/CardImage'
 import { Button, FormMessage, TextField } from '../../ui/form'
 import { formatNokMinor, parseNokInput } from '../../ui/money-format'
-import { CONDITION_LABEL, FINISH_LABEL, GRADER_LABEL, ORIGIN_LABEL } from './labels'
+import {
+  CONDITION_LABEL,
+  FINISH_LABEL,
+  GRADER_LABEL,
+  ORIGIN_LABEL,
+  PRICE_KIND_LABEL,
+  PROVIDER_LABEL,
+} from './labels'
 
 /** Storage is a lot-level fact (D-036) — a holding's lots may legitimately sit in different
  *  places. Never pick one arbitrarily (M7 prompt §62): show the shared location when every open
@@ -51,10 +60,9 @@ export function HoldingDetailPage() {
     queryKey: ['holding-lots', holdingId],
     queryFn: () => getHoldingLots(holdingId),
   })
-  const manualValuation = useQuery({
-    queryKey: ['holding-manual-valuation', holdingId],
-    queryFn: () => getActiveManualValuation(holdingId),
-    enabled: holding.data?.holdingKind === 'graded_card',
+  const provenance = useQuery({
+    queryKey: ['holding-value-provenance', holdingId],
+    queryFn: () => getHoldingValueProvenance(holdingId),
   })
   const collections = useQuery({ queryKey: ['custom-collections'], queryFn: listCustomCollections })
   const membership = useQuery({
@@ -90,7 +98,18 @@ export function HoldingDetailPage() {
     mutationFn: (valueMinor: bigint) => setManualValuation({ holdingId, valueMinor }),
     onSuccess: async () => {
       setManualValueInput('')
-      await queryClient.invalidateQueries({ queryKey: ['holding-manual-valuation', holdingId] })
+      await queryClient.invalidateQueries({ queryKey: ['holding-value-provenance', holdingId] })
+      await queryClient.invalidateQueries({ queryKey: ['portfolio'] })
+      await queryClient.invalidateQueries({ queryKey: ['portfolio-counts'] })
+    },
+  })
+
+  const clearValuationMutation = useMutation({
+    mutationFn: () => clearManualValuation(holdingId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['holding-value-provenance', holdingId] })
+      await queryClient.invalidateQueries({ queryKey: ['portfolio'] })
+      await queryClient.invalidateQueries({ queryKey: ['portfolio-counts'] })
     },
   })
 
@@ -220,49 +239,95 @@ export function HoldingDetailPage() {
         </div>
       </div>
 
-      {h.holdingKind === 'graded_card' ? (
-        <section className="space-y-2 rounded-lg border border-slate-800 p-3">
-          <h2 className="text-sm font-semibold text-slate-300">Manual value</h2>
-          {manualValuation.data ? (
-            <p className="text-sm text-slate-200">
-              {formatNokMinor(manualValuation.data.valueMinor)} NOK
-              <span className="ml-2 text-xs text-slate-500">
-                as of {manualValuation.data.effectiveFrom} · your own estimate, not a market price
-              </span>
-            </p>
-          ) : (
-            <p className="text-sm text-slate-500">No manual value set.</p>
-          )}
-          <div className="flex items-end gap-2">
-            <TextField
-              label="Set value (NOK)"
-              inputMode="decimal"
-              placeholder="2500"
-              value={manualValueInput}
-              onChange={(event) => {
-                setManualValueInput(event.target.value)
-              }}
-            />
-            <Button
-              type="button"
-              variant="quiet"
-              className="w-auto shrink-0"
-              disabled={valuationMutation.isPending}
-              onClick={() => {
-                setValueError(null)
-                try {
-                  valuationMutation.mutate(parseNokInput(manualValueInput))
-                } catch {
-                  setValueError('Enter a valid amount.')
+      <section className="space-y-3 rounded-lg border border-slate-800 p-3">
+        <h2 className="text-sm font-semibold text-slate-300">Current value</h2>
+
+        {provenance.isPending ? (
+          <div className="h-10 animate-pulse rounded-lg bg-slate-800/60" />
+        ) : (
+          <>
+            <div className="flex items-center justify-between">
+              <MoneyDisplay
+                state={
+                  provenance.data?.holdingValueMinor !== undefined &&
+                  provenance.data.holdingValueMinor !== null
+                    ? 'known'
+                    : 'missing'
                 }
-              }}
-            >
-              Save
-            </Button>
-          </div>
-          {valueError ? <FormMessage tone="error">{valueError}</FormMessage> : null}
-        </section>
-      ) : null}
+                minorUnits={provenance.data?.holdingValueMinor ?? undefined}
+                stale={provenance.data?.priceState === 'stale'}
+              />
+              {h.quantity > 1 && provenance.data?.unitValueMinor !== null ? (
+                <span className="text-xs text-slate-500">
+                  {formatNokMinor(provenance.data?.unitValueMinor ?? 0n)} NOK / card × {h.quantity}
+                </span>
+              ) : null}
+            </div>
+
+            {provenance.data?.priceState === 'manual' ? (
+              <p className="text-xs text-slate-500">
+                Your own estimate, not a market price.{' '}
+                <button
+                  type="button"
+                  className="text-sky-400 underline-offset-4 hover:underline disabled:opacity-50"
+                  disabled={clearValuationMutation.isPending}
+                  onClick={() => {
+                    clearValuationMutation.mutate()
+                  }}
+                >
+                  Return to market value
+                </button>
+              </p>
+            ) : provenance.data?.priceState === 'fresh' ||
+              provenance.data?.priceState === 'stale' ? (
+              <p className="text-xs text-slate-500">
+                {provenance.data.provider ? PROVIDER_LABEL[provenance.data.provider] : ''} ·{' '}
+                {provenance.data.priceKind ? PRICE_KIND_LABEL[provenance.data.priceKind] : ''}
+                {provenance.data.sourceValueMinor !== null && provenance.data.sourceCurrency
+                  ? ` · ${(Number(provenance.data.sourceValueMinor) / 100).toFixed(2)} ${provenance.data.sourceCurrency}`
+                  : ''}
+                {provenance.data.snapshotDate ? ` · as of ${provenance.data.snapshotDate}` : ''}
+                {provenance.data.priceState === 'stale' ? ' · price hasn’t refreshed recently' : ''}
+              </p>
+            ) : h.holdingKind === 'graded_card' ? (
+              <p className="text-xs text-slate-500">
+                Graded cards need a manual value — raw market prices never value a graded copy.
+              </p>
+            ) : (
+              <p className="text-xs text-slate-500">No market value available yet for this card.</p>
+            )}
+
+            <div className="flex items-end gap-2 pt-1">
+              <TextField
+                label="Set manual value (NOK)"
+                inputMode="decimal"
+                placeholder="2500"
+                value={manualValueInput}
+                onChange={(event) => {
+                  setManualValueInput(event.target.value)
+                }}
+              />
+              <Button
+                type="button"
+                variant="quiet"
+                className="w-auto shrink-0"
+                disabled={valuationMutation.isPending}
+                onClick={() => {
+                  setValueError(null)
+                  try {
+                    valuationMutation.mutate(parseNokInput(manualValueInput))
+                  } catch {
+                    setValueError('Enter a valid amount.')
+                  }
+                }}
+              >
+                {provenance.data?.priceState === 'manual' ? 'Update' : 'Set'}
+              </Button>
+            </div>
+            {valueError ? <FormMessage tone="error">{valueError}</FormMessage> : null}
+          </>
+        )}
+      </section>
 
       {/* Acquisition cost summary first, lot-by-lot history behind an expandable section
           (M7 prompt §47-48) — the detail page leads with identity/quantity/condition/storage/cost

@@ -529,12 +529,24 @@ Depends on M9 (a real card value to sum) and M18 (the trade workflow/schema alre
 DATA_MODEL.md §5.8.2). No fairness figure may ever be fabricated or estimated from acquisition
 cost — the same "never a value that isn't real" rule as every other figure in this document.
 
-## F16 — Market Movers (future, recorded M7.1 prompt §49 — needs M9 price history)
+## F16 — Market Movers — **foundation shipped M9** (owner spec recorded M7.1 prompt §49)
 
-→ Portfolio → Market Movers → owned cards ranked by price movement
-→ Sort options: highest increase, largest decrease, absolute movement, low movement
-✓ Ranks only cards with real price history (M9); a card with no price history is excluded, not
-  ranked as zero movement
+Current shape, Home page, `get_market_movers(p_period_days, p_limit)`:
+
+→ Home → "Market movers · 7 days" → owned, currently-priced raw-card holdings ranked by
+  |change| over the last 7 days, top 5
+✓ Ranks only holdings with a real historical observation on/before the window start; a holding
+  with no such observation is excluded, never shown as 0% movement (F9/F14's same principle)
+✓ No cross-user ranking — always scoped to the caller's own Portfolio
+✓ Price movement only, never a realized/sale figure (invariant F13's neighbour — see FINANCIAL_
+  MODEL.md §10's explicit-non-claims list; a mover is not a disposal)
+
+**Not yet built, recorded as the remaining gap toward the owner's fuller spec:** a dedicated
+Market Movers screen/route (currently a compact Home section only), the sort-option toggle
+(highest increase / largest decrease / absolute movement / low movement — today always sorts by
+absolute movement), and a configurable period (today fixed at 7 days). Revisit once real usage
+shows which of these the owner actually wants next; the SQL function already accepts a period/limit
+parameter, so most of this is UI-only work.
 
 ---
 

@@ -203,7 +203,7 @@ already lives in Supabase; adding Workers would introduce a second billable surf
 | Accidental-charge risk | **None** while no card is attached and no upgrade is performed |
 | Inactivity | Project pauses after ~7 days without database activity. Manual resume. Restorable within 90 days. |
 | Backups | **None on Free.** Manual `supabase db dump` is the documented recommendation. |
-| Expected usage | ~105 MB/year of price snapshots (held variants only, one row per variant per day regardless of how many copies are owned), well under 500 MB with 12-month thinning. Holdings and lots add ~2 MB per 10 000 lots. 1–10 users against 50 000 MAU. |
+| Expected usage | Price snapshots: watched (ever-acquired) variants only, up to one row per provider per variant per day (M9, D-053) — a *computed* estimate, not yet measured against a real Postgres: raw tuple + three-index overhead is roughly 200-300 bytes/row (higher than the pre-M9 ~48-byte sketch, which appears to have omitted index cost), so a full year's *unthinned* accumulation at ~3,500 watched variants x 2 providers x 365 days could approach or exceed 500 MB on its own before 12-month retention thinning has had a chance to apply — see DATA_MODEL.md §4.2 and `claude_outputs/output_15.txt`'s "STORAGE PROJECTION" for the full reasoning and the explicit recommendation to measure real bytes against the deployed project before the watched set grows large. Holdings and lots add ~2 MB per 10 000 lots. 1–10 users against 50 000 MAU. |
 | Headroom | Database is the binding constraint, not users |
 | Fallback | Plain PostgreSQL elsewhere — the schema is standard SQL in versioned migrations |
 | Reconsider when | Database exceeds ~350 MB, or free-plan terms change materially |
@@ -252,7 +252,7 @@ SMTP2GO's free tier at that point. It is not needed today and is not adopted spe
 | Free allowance | Unlimited in practice. No API key. No published hard rate limits. |
 | Card required | No |
 | Accidental-charge risk | None |
-| Expected usage | One daily batch over held variants |
+| Expected usage | Bounded batches (≤200 variants) every 15 minutes, card-level fetch deduplicated (M9) — the whole watched set cycles roughly once a day, well within TCGdex's own "no hard limit, be considerate" posture (API_SOURCES.md) |
 | Fallback | Our own accumulated `price_snapshots` survive independently; manual valuation covers the gap |
 | Reconsider when | Rate limiting appears, or the service becomes unreliable |
 | Source | https://tcgdex.dev/faq |
@@ -264,7 +264,7 @@ SMTP2GO's free tier at that point. It is not needed today and is not adopted spe
 | Free allowance | Open public data, no key, no limits published |
 | Card required | No |
 | Accidental-charge risk | None |
-| Expected usage | One call per day for three currency pairs |
+| Expected usage | One call per day for two currency pairs (EUR, USD → NOK — GBP not ingested, nothing in the product needs it) |
 | Fallback | The European Central Bank publishes a comparable free feed |
 | Source | https://www.norges-bank.no/en/topics/statistics/open-data/guide-data-warehouse/ |
 
@@ -310,7 +310,7 @@ SMTP2GO's free tier at that point. It is not needed today and is not adopted spe
 | What if TCGdex disappears? | Our snapshots survive; internal UUID identity is canonical; manual valuation continues. Painful, not fatal. |
 | What if Supabase Free changes? | Schema is standard PostgreSQL in versioned migrations; `pg_dump` export exists. Days of migration work, not a rewrite. |
 | What if Cloudflare changes? | Static assets deploy anywhere. |
-| Are we storing too much price history? | No — held variants only, ~105 MB/year, thinned after 12 months |
+| Are we storing too much price history? | Held (watched) variants only, one already-fallback-chosen row per provider per day (D-053), thinned after 12 months — but the *unthinned* first-year volume is a real, computed watch-item (not yet measured against real Postgres), see the Supabase row above |
 | Will images breach free storage? | No — catalog artwork is hotlinked from the provider, never copied. User photos are V1 and capped. |
 | Is a paid domain assumed anywhere? | **No.** Deployment uses the free `*.pages.dev` subdomain. This is why Resend was excluded. |
 | Will GitHub Actions cost anything? | No — 2 000 free minutes, $0 spending limit |

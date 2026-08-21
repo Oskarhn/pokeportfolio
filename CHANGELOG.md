@@ -10,6 +10,32 @@ they were**.
 
 ## [Unreleased]
 
+### Added — 2026-08-26 · M9 Pricing and snapshots
+
+Real raw-card market valuation. `price_snapshots` (shared market data, one already-fallback-chosen
+row per provider per variant per day — D-053), `watched_card_variants` (service-only, bounds
+snapshotting to ever-owned printings), and a single set-oriented resolver
+(`resolve_variant_market_values`) implementing FINANCIAL_MODEL.md §6: manual → fresh → stale →
+missing, with `use_eu_pricing` (D-044) finally activated as a real provider preference (D-052).
+
+Variant-safe price mapping (`_shared/tcgdex.ts#fetchCardPricing`) prefers TCGdex's own embedded
+per-variant pricing when present and falls back to card-level fields only when unambiguous — an
+ambiguous shape resolves to no price rather than a guess, evidenced by real captured payloads
+(`tests/data/tcgdex-pricing.test.ts`). `ingest-prices` (bounded, oldest-synced-first batches every
+15 minutes) and `ingest-fx` (daily) run on `pg_cron`/`pg_net`, secret held in Supabase Vault;
+`thin_price_snapshots` retains 12 months of daily history and weekly beyond that. `search-prices`
+answers on-demand, non-persisted current references for Search/Card Detail.
+
+Wired into Portfolio (`list_portfolio`/`portfolio_counts` — value_desc now sorts by real holding
+total, D-052), Home (real Portfolio value, priced/unpriced counts, a real Market Movers section),
+Holding Detail (full provenance, manual value set/clear via `clear_manual_valuation`), and Card
+Detail (on-demand current price per variant, a real price-history chart from actual snapshots
+only — never a fabricated point, D-008).
+
+Also fixed in passing (found while rewriting `list_portfolio`'s body regardless): M7.1's number-sort
+migration had silently reverted the M7 10,000-lot performance fix back to a per-holding `LATERAL`
+aggregate (D-054) — restored to the materialized-CTE shape.
+
 ### Added — 2026-08-24 · M8 Purchases and the spending ledger
 
 Multi-line purchase ledger over the existing M3/M6 `purchases`/`purchase_lines` tables:

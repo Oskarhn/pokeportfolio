@@ -210,14 +210,19 @@ atomic, all-or-nothing bulk surface. **Met** — 336 database/authorization test
 CI green, deployed and verified (`grant-audit.sql` clean, `remote-security-check.mjs` 17/17,
 `deployment-check.mjs` 28/28).
 
-### M9 — Pricing and snapshots
+### M9 — Pricing and snapshots — **complete**
 
-`price_snapshots`, `watched_card_variants`, retention thinning. `ingest-prices` and `ingest-fx`
-Edge Functions on `pg_cron`. Valuation resolver: manual → fresh → stale → missing. Freshness
-indicators throughout.
+`price_snapshots`, `watched_card_variants`, retention thinning (`thin_price_snapshots`).
+`ingest-prices` and `ingest-fx` Edge Functions on `pg_cron`/`pg_net`, secret held in Supabase
+Vault. Valuation resolver (`resolve_variant_market_values`): manual → fresh → stale → missing,
+`use_eu_pricing` provider preference (D-052). Wired into Portfolio (`list_portfolio`,
+`portfolio_counts`), Home, Holding Detail (full provenance + manual set/clear), Card Detail
+(on-demand current price + real snapshot history), and a real Market Movers foundation
+(`get_market_movers`). Full detail: `claude_outputs/output_15.txt`.
 
-**Gate:** a simulated provider outage degrades gracefully and nothing reaches zero (F9, F14);
-snapshot volume matches the projection.
+**Gate:** a simulated provider outage degrades gracefully and nothing reaches zero (F9, F14) —
+verified in `tests/db/m9_valuation_resolver.test.ts`; snapshot volume matches the projection
+(COST_POLICY.md).
 
 ### M10 — Sales and History
 

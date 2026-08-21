@@ -206,6 +206,71 @@ export async function setManualValuation(params: {
   if (error) throw new Error(error.message)
 }
 
+/** Returns a holding to its automatic resolved value (M9 prompt §37) — supersedes the active
+ *  manual valuation without inserting a replacement. History is preserved, never deleted. */
+export async function clearManualValuation(holdingId: string): Promise<void> {
+  const { error } = await supabase.rpc('clear_manual_valuation', { p_holding_id: holdingId })
+  if (error) throw new Error(error.message)
+}
+
+export type PriceState = 'manual' | 'fresh' | 'stale' | 'missing'
+
+export interface HoldingValueProvenance {
+  priceState: PriceState
+  unitValueMinor: bigint | null
+  quantity: number
+  holdingValueMinor: bigint | null
+  provider: 'tcgdex_cardmarket' | 'tcgdex_tcgplayer' | null
+  priceKind: string | null
+  sourceCurrency: string | null
+  sourceValueMinor: bigint | null
+  fxRate: number | null
+  snapshotDate: string | null
+  providerUpdatedAt: string | null
+}
+
+interface HoldingValueProvenanceRow {
+  price_state: PriceState
+  unit_value_nok_minor: string | null
+  quantity: string
+  holding_value_nok_minor: string | null
+  provider: 'tcgdex_cardmarket' | 'tcgdex_tcgplayer' | null
+  price_kind: string | null
+  source_currency: string | null
+  source_value_minor: string | null
+  fx_rate: number | null
+  snapshot_date: string | null
+  provider_updated_at: string | null
+}
+
+/** Full FINANCIAL_MODEL.md §6 provenance for one holding — the Holding Detail page's "where did
+ *  this number come from" section (prompt §34/§47). Never fabricated: `missing` fields stay null. */
+export async function getHoldingValueProvenance(
+  holdingId: string,
+): Promise<HoldingValueProvenance> {
+  const { data, error } = await supabase
+    .rpc('get_holding_value_provenance', { p_holding_id: holdingId })
+    .single()
+    .overrideTypes<HoldingValueProvenanceRow, { merge: false }>()
+  if (error) throw new Error(error.message)
+  return {
+    priceState: data.price_state,
+    unitValueMinor:
+      data.unit_value_nok_minor === null ? null : parseMinorUnits(data.unit_value_nok_minor),
+    quantity: Number(data.quantity),
+    holdingValueMinor:
+      data.holding_value_nok_minor === null ? null : parseMinorUnits(data.holding_value_nok_minor),
+    provider: data.provider,
+    priceKind: data.price_kind,
+    sourceCurrency: data.source_currency,
+    sourceValueMinor:
+      data.source_value_minor === null ? null : parseMinorUnits(data.source_value_minor),
+    fxRate: data.fx_rate,
+    snapshotDate: data.snapshot_date,
+    providerUpdatedAt: data.provider_updated_at,
+  }
+}
+
 export interface ManualCardDefinition {
   id: string
   name: string

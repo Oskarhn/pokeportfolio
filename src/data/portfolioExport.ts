@@ -62,12 +62,10 @@ export async function buildPortfolioCsv(filters?: PortfolioFilters): Promise<str
           variant,
           tile.grade !== null ? String(tile.grade) : '',
           tile.hasMultipleStorageLocations ? 'Multiple locations' : '',
-          tile.holdingKind === 'graded_card' && tile.resolvedValueMinor === null
+          tile.holdingKind === 'graded_card' && tile.unitValueMinor === null
             ? 'No manual value set'
             : '',
-          tile.resolvedValueMinor !== null
-            ? (Number(tile.resolvedValueMinor) / 100).toFixed(2)
-            : '',
+          tile.holdingValueMinor !== null ? (Number(tile.holdingValueMinor) / 100).toFixed(2) : '',
         ]
           .map(csvField)
           .join(','),

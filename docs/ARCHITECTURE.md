@@ -194,19 +194,34 @@ size. That is what makes tracking every energy card viable at zero cost.
 
 ## 5. Data ingestion
 
-Two scheduled jobs, both Edge Functions invoked by `pg_cron` via `pg_net`.
+Three scheduled jobs (M9, `20260826120050_m9_cron_schedule.sql`), all `pg_cron` entries; the two
+that call an Edge Function do so via `pg_net`, reading the bearer secret from Supabase Vault at
+call time rather than a literal in the schedule.
 
 | Job | Schedule | Work |
 |---|---|---|
-| `ingest-fx` | 17:00 CET daily | Norges Bank EXR API → `fx_rates` for EUR, USD, GBP → NOK |
-| `ingest-prices` | 09:00 CET daily | Read `watched_card_variants`, fetch TCGdex in batches, write `price_snapshots`, then recompute dirty `portfolio_snapshots` |
+| `ingest-prices` | every 15 minutes | `select_price_sync_batch` (oldest-last-synced-first, bounded) → dedup by `cards.id` → fetch TCGdex → variant-safe map → upsert `price_snapshots` |
+| `ingest-fx` | 17:00 UTC daily | Norges Bank EXR API → `fx_rates` for EUR, USD → NOK (well after Norges Bank's ~16:00 CET publication) |
+| `thin_price_snapshots` (retention) | weekly, Sunday 03:00 UTC | A plain SQL command, no Edge Function/HTTP round trip |
 
-Ordering matters: prices run after TCGdex's own ~08:03 UTC refresh; FX runs after Norges Bank's
-~16:00 CET publication.
+`ingest-prices` runs frequently and in small batches rather than once daily — Edge Functions have a
+wall-clock budget, and ~3,000-4,000 watched variants do not fit one invocation. At batch size 200
+this cycles the whole watched set roughly once a day with comfortable margin, one variant refreshing
+again only once its snapshot becomes the oldest in the queue. GBP is not ingested — nothing in the
+current product needs it, and adding an unused currency to a scheduled job would just be cost with
+no consumer.
 
-Both jobs are idempotent — a re-run for the same date upserts on the natural key. Both record
-partial failures per variant rather than aborting the batch, and neither ever writes a zero
-price (F9).
+All three jobs are idempotent — a re-run for the same provider observation upserts onto the same
+`(card_variant_id, provider, snapshot_date)` row rather than fabricating a new day's fact
+(DATA_MODEL.md §4.2's idempotency note). `ingest-prices` records partial failures per card rather
+than aborting the batch, and never writes a zero price on failure — the last known snapshot is
+simply left untouched, aging into `stale` then `missing` (F9). Run observability for all three
+lives in `price_sync_runs` (service-role-only, same shape as `catalog_sync_runs`).
+
+An on-demand fourth path, `search-prices` (Edge Function, user-JWT-gated), answers Search/Card
+Detail's "what does this cost right now" for catalog cards the user has not necessarily acquired —
+it never persists to `price_snapshots`; only the scheduled `ingest-prices` job produces history
+(DATA_MODEL.md §4.2).
 
 Legitimate daily activity keeps the Supabase project from idling. This is a side effect of work
 the app genuinely needs, not a heartbeat contrived to game the free tier, and the app must still
@@ -245,6 +260,17 @@ pacing. `public.search_cards(...)` is the read side — a `SECURITY INVOKER` Pos
 service, since the app's own database already holds everything a search needs (M5 prompt §6: the
 product never calls TCGdex live for an ordinary search). See API_SOURCES.md's "Catalog ingest
 strategy" and DATA_MODEL.md §3.3a for the shapes.
+
+**M9 implements the pricing half inside the same adapter, not a separate `MarketPriceProvider`
+module.** `_shared/tcgdex.ts#fetchCardPricing` extends the existing catalog adapter (same file,
+same "everything about TCGdex's shape lives here" boundary) rather than a new interface — pricing
+and catalog data arrive in the same TCGdex response, so splitting them into two provider objects
+would mean fetching the same payload twice or threading it through an extra layer for no real
+decoupling benefit at the current one-provider scale. The variant-safe mapping rules (embedded
+per-variant pricing preferred; card-level fallback only when unambiguous; ambiguous → no price) are
+documented in the file's own header, evidenced by real captured payloads in
+`tests/data/tcgdex-pricing.test.ts`. `FxRateProvider` is realized directly as `_shared/norges-bank.ts`,
+unchanged since M8 and reused by `ingest-fx` without modification.
 
 ---
 

@@ -36,7 +36,10 @@ export function PortfolioPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
 
   const profile = useQuery({ queryKey: ['my-profile'], queryFn: getMyProfile })
-  const counts = useQuery({ queryKey: ['portfolio-counts'], queryFn: getPortfolioCounts })
+  const counts = useQuery({
+    queryKey: ['portfolio-counts'],
+    queryFn: () => getPortfolioCounts(),
+  })
 
   const sort: PortfolioSortOrder =
     search.sort ?? profile.data?.collectionDefaultSort ?? 'value_desc'

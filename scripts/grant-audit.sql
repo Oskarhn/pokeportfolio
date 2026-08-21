@@ -225,7 +225,11 @@ begin
     ('table', 'custom_collection_members',  'authenticated', 'INSERT'),
     ('table', 'custom_collection_members',  'authenticated', 'DELETE'),
     -- M8: the Norges Bank FX-rate cache — market data, read-only for the browser.
-    ('table', 'fx_rates',                   'authenticated', 'SELECT')
+    ('table', 'fx_rates',                   'authenticated', 'SELECT'),
+    -- M9: shared price-history market data, read-only for the browser. watched_card_variants and
+    -- price_sync_runs get no grant at all, to anon or authenticated — service-role/infra-only
+    -- (prompt §11/§28), same shape as catalog_sync_runs.
+    ('table', 'price_snapshots',            'authenticated', 'SELECT')
     -- invitations: column-level SELECT only, below. invitation_claims: nothing, ever.
   ),
 
@@ -301,10 +305,10 @@ begin
     ('custom_collections.sort_order'), ('custom_collections.color')
   ),
 
-  -- The complete set of functions a browser may call. Twelve others exist in this schema and are
-  -- reachable by nobody: the six trigger functions (five from M3/M4 plus M5's
-  -- cards_language_matches_set), the four service-role redemption internals, hash_invitation_token,
-  -- and before_user_created.
+  -- The complete set of functions a browser may call. Every other function in this schema is
+  -- reachable by nobody: trigger functions, the service-role redemption internals, the M5 ingest
+  -- helpers, and M9's select_price_sync_batch/thin_price_snapshots (service-role-only, same
+  -- reasoning as catalog_sync_runs).
   expected_routine(kind, obj, grantee, priv) as (values
     ('routine', 'invitation_status(text)',                          'anon',          'EXECUTE'),
     ('routine', 'invitation_status(text)',                          'authenticated', 'EXECUTE'),
@@ -322,7 +326,7 @@ begin
     ('routine', 'set_manual_valuation(uuid, bigint, text, date)',   'authenticated', 'EXECUTE'),
     ('routine', 'void_acquisition_lot(uuid, text)',                 'authenticated', 'EXECUTE'),
     -- M7: Portfolio counts and the sorted/filtered/keyset-paginated browsing surface.
-    ('routine', 'portfolio_counts()', 'authenticated', 'EXECUTE'),
+    ('routine', 'portfolio_counts(uuid)', 'authenticated', 'EXECUTE'),
     -- M7.1: list_portfolio gained the number_asc/number_desc keyset cursor field (text, trailing).
     ('routine',
      'list_portfolio(portfolio_sort_order, integer, text, uuid, card_condition, boolean, ' ||
@@ -342,7 +346,14 @@ begin
     ('routine', 'void_purchase(uuid, text)', 'authenticated', 'EXECUTE'),
     ('routine', 'purchase_spending_summary()', 'authenticated', 'EXECUTE'),
     -- M8.1: the bulk-safe Remove from Portfolio surface.
-    ('routine', 'remove_holdings_from_portfolio(uuid[])', 'authenticated', 'EXECUTE')
+    ('routine', 'remove_holdings_from_portfolio(uuid[])', 'authenticated', 'EXECUTE'),
+    -- M9: the valuation resolver surface. select_price_sync_batch/thin_price_snapshots are
+    -- service-role-only and deliberately absent here, same reasoning as catalog_sync_runs.
+    ('routine', 'clear_manual_valuation(uuid)', 'authenticated', 'EXECUTE'),
+    ('routine', 'resolve_variant_market_values(uuid[])', 'authenticated', 'EXECUTE'),
+    ('routine', 'get_holding_value_provenance(uuid)', 'authenticated', 'EXECUTE'),
+    ('routine', 'get_card_variant_price_history(uuid, date)', 'authenticated', 'EXECUTE'),
+    ('routine', 'get_market_movers(integer, integer)', 'authenticated', 'EXECUTE')
   ),
 
   -- M7: the expected PUBLIC-EXECUTE surface for every routine in `public` is empty. No project

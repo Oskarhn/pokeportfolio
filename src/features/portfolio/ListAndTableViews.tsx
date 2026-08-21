@@ -16,7 +16,9 @@ interface SelectModeProps {
 }
 
 function valueText(tile: PortfolioTile): string {
-  return tile.resolvedValueMinor === null ? '—' : `${formatNokMinor(tile.resolvedValueMinor)} NOK`
+  if (tile.holdingValueMinor === null) return '—'
+  const suffix = tile.priceState === 'stale' ? ' ·' : ''
+  return `${formatNokMinor(tile.holdingValueMinor)} NOK${suffix}`
 }
 
 function conditionText(tile: PortfolioTile): string {
