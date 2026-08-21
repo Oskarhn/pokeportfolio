@@ -361,6 +361,49 @@ describe('void_acquisition_lot', () => {
   })
 })
 
+describe('holding_tags: ownership and the user_id default', () => {
+  // The actual coverage gap docs/TESTING.md §4 and tests/authorization/coverage.test.ts's
+  // COVERED_TABLES comment both claimed this file already closed: every other test touching
+  // holding_tags (tests/db/m6_constraints.test.ts's S1-trigger tests) uses the service-role
+  // client, which bypasses RLS entirely and so cannot prove a real client insert — one that omits
+  // user_id and relies on `holding_tags.user_id default auth.uid()`
+  // (20260821120070_m6_user_id_defaults.sql) — is actually accepted. custom_collection_members
+  // shipped the identical shape without this default (M7, tests/authorization/m7_portfolio.test.ts's
+  // own CRUD test caught it); holding_tags itself was re-checked against the live project during
+  // that investigation and confirmed already correct — see PROJECT_JOURNAL.md 2026-08-22 — but had
+  // no test proving it either way. This closes that gap for real, the way the M7 test does for its
+  // table.
+  it('a real authenticated-client insert relies on the user_id default, not a caller-supplied value', async () => {
+    const { data: card } = await addCard(clientA, {
+      p_card_variant_id: seedCatalog.grassEnergyVariantId,
+      p_condition: 'NM',
+      p_origin: 'pre_tracking',
+      p_cost_basis_state: 'unknown',
+      p_quantity: 1,
+      p_acquired_on: today,
+    })
+    const { data: tag, error: tagError } = await clientA
+      .from('tags')
+      .insert({ name: `holding-tags-default-check-${Date.now()}` })
+      .select('id')
+      .single()
+    expect(tagError).toBeNull()
+
+    const { error: insertError } = await clientA
+      .from('holding_tags')
+      .insert({ holding_id: card!.holding_id, tag_id: tag!.id })
+    expect(insertError).toBeNull()
+
+    const { data: row } = await service
+      .from('holding_tags')
+      .select('user_id')
+      .eq('holding_id', card!.holding_id)
+      .eq('tag_id', tag!.id)
+      .single()
+    expect(row?.user_id).toBe(userA.id)
+  })
+})
+
 describe('holding_summaries: RLS isolation (security_invoker view)', () => {
   it('a stranger cannot see another user holding through the Collection list view', async () => {
     const { data } = await addCard(clientA, {
