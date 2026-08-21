@@ -56,20 +56,24 @@ gitignored and must never be committed.
 | Variable | Client-visible | Purpose |
 |---|---|---|
 | `VITE_SUPABASE_URL` | yes | Project URL |
-| `VITE_SUPABASE_ANON_KEY` | yes | Anon key — public by design, RLS is the gate |
+| `VITE_SUPABASE_PUBLISHABLE_KEY` | yes | Publishable key (M6, D-039; formerly `VITE_SUPABASE_ANON_KEY`/the legacy anon key) — public by design, RLS is the gate |
 | `SUPABASE_PROJECT_REF` | no | CLI target for migrations |
 
 `pnpm test:db` additionally reads `SUPABASE_URL`, `SUPABASE_ANON_KEY` and
 `SUPABASE_SERVICE_ROLE_KEY` from the process environment (not `.env.local` — these are shell
-exports, deliberately not part of the app's own env file). Locally: `pnpm db:start`, then export
-the three values from `pnpm exec supabase status -o env`. In CI, the `db-tests` job exports them
-itself from the ephemeral stack it starts — see `.github/workflows/ci.yml`. The service-role
-value here is the **local** stack's well-known development key, not a production secret; it is
-still never written to a committed file.
+exports, deliberately not part of the app's own env file, and deliberately still the legacy names:
+this is what `supabase status -o env` actually prints for the **local** stack, which has not
+changed). Locally: `pnpm db:start`, then export the three values from
+`pnpm exec supabase status -o env`. In CI, the `db-tests` job exports them itself from the
+ephemeral stack it starts — see `.github/workflows/ci.yml`. The service-role value here is the
+**local** stack's well-known development key, not a production secret; it is still never written
+to a committed file.
 
-The `service_role` key is **never** placed in any `.env` file in this repository. It lives only
-in Supabase Edge Function secrets. Any variable without the `VITE_` prefix is unreachable from
-the browser bundle, which makes the split reviewable at a glance.
+The Supabase secret key is **never** placed in any `.env` file in this repository. It lives only
+in the Edge Function environment, injected by the platform as `SUPABASE_SECRET_KEYS` on
+`pokeportfolio-dev` (M6) — `supabase/functions/_shared/service-key.ts` reads it, falling back to
+the legacy `SUPABASE_SERVICE_ROLE_KEY` only for the local stack. Any variable without the `VITE_`
+prefix is unreachable from the browser bundle, which makes the split reviewable at a glance.
 
 ---
 
@@ -359,7 +363,7 @@ deploys by hand, and nothing is uploaded from a laptop.
 | Production branch | `main` · preview deployments **off** |
 | Build command | `pnpm build` · output `dist` |
 | Node / pnpm | `.nvmrc` pins Node; `PNPM_VERSION` pins pnpm — Pages does not read `packageManager` |
-| Environment | `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `PNPM_VERSION` |
+| Environment | `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`, `PNPM_VERSION` |
 
 **Those are the only three variables, and none of them is a secret.** The publishable key ships in
 the bundle by design. The Supabase secret key lives in the Edge Function environment and the

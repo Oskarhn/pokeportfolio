@@ -182,7 +182,17 @@ begin
     ('table', 'purchase_lines',         'authenticated', 'SELECT'),
     ('table', 'purchase_lines',         'authenticated', 'INSERT'),
     ('table', 'acquisition_lots',       'authenticated', 'SELECT'),
-    ('table', 'acquisition_lots',       'authenticated', 'INSERT')
+    ('table', 'acquisition_lots',       'authenticated', 'INSERT'),
+    -- M6: manual card fallback, holding tags, manual valuations, and the Collection list view.
+    ('table', 'manual_card_definitions', 'authenticated', 'SELECT'),
+    ('table', 'manual_card_definitions', 'authenticated', 'INSERT'),
+    ('table', 'manual_card_definitions', 'authenticated', 'DELETE'),
+    ('table', 'holding_tags',           'authenticated', 'SELECT'),
+    ('table', 'holding_tags',           'authenticated', 'INSERT'),
+    ('table', 'holding_tags',           'authenticated', 'DELETE'),
+    ('table', 'manual_valuations',      'authenticated', 'SELECT'),
+    ('table', 'manual_valuations',      'authenticated', 'INSERT'),
+    ('view',  'holding_summaries',      'authenticated', 'SELECT')
     -- invitations: column-level SELECT only, below. invitation_claims: nothing, ever.
   ),
 
@@ -214,8 +224,9 @@ begin
     ('tags.name'),
 
     ('holdings.holding_kind'), ('holdings.card_variant_id'), ('holdings.sealed_product_id'),
+    ('holdings.manual_card_id'),
     ('holdings.condition'), ('holdings.grading_state'), ('holdings.grader'), ('holdings.grade'),
-    ('holdings.cert_number'), ('holdings.sealed_intent'), ('holdings.storage_location_id'),
+    ('holdings.cert_number'), ('holdings.sealed_intent'),
     ('holdings.is_favorite'), ('holdings.notes'), ('holdings.deleted_at'),
 
     ('purchases.purchased_on'), ('purchases.retailer_id'), ('purchases.currency'),
@@ -237,7 +248,17 @@ begin
     ('acquisition_lots.quantity_remaining'), ('acquisition_lots.unit_cost_basis_minor'),
     ('acquisition_lots.cost_basis_currency'), ('acquisition_lots.unit_cost_basis_nok_minor'),
     ('acquisition_lots.residual_minor'), ('acquisition_lots.notes'),
-    ('acquisition_lots.voided_at')
+    ('acquisition_lots.voided_at'), ('acquisition_lots.storage_location_id'),
+
+    -- M6: manual card fallback — every user-supplied identifying field.
+    ('manual_card_definitions.name'), ('manual_card_definitions.set_name'),
+    ('manual_card_definitions.collector_number'), ('manual_card_definitions.language'),
+    ('manual_card_definitions.finish'), ('manual_card_definitions.stamp'),
+    ('manual_card_definitions.subtype'), ('manual_card_definitions.size'),
+    ('manual_card_definitions.notes'),
+
+    -- M6: manual valuations — append-only; superseded_at is the one post-insert write.
+    ('manual_valuations.superseded_at')
   ),
 
   -- The complete set of functions a browser may call. Twelve others exist in this schema and are
@@ -252,7 +273,14 @@ begin
     ('routine', 'revoke_invitation(uuid)',                          'authenticated', 'EXECUTE'),
     ('routine', 'card_condition_to_text(card_condition)',           'authenticated', 'EXECUTE'),
     ('routine', 'grader_to_text(grader)',                           'authenticated', 'EXECUTE'),
-    ('routine', 'search_cards(text, text, integer, integer)',       'authenticated', 'EXECUTE')
+    ('routine', 'search_cards(text, text, integer, integer)',       'authenticated', 'EXECUTE'),
+    -- M6: the atomic collection-writing surface.
+    ('routine',
+     'add_card_acquisition(uuid, uuid, grading_state, card_condition, grader, numeric, text, ' ||
+     'boolean, text, lot_origin, cost_basis_state, bigint, integer, date, uuid, text, bigint)',
+     'authenticated', 'EXECUTE'),
+    ('routine', 'set_manual_valuation(uuid, bigint, text, date)',   'authenticated', 'EXECUTE'),
+    ('routine', 'void_acquisition_lot(uuid, text)',                 'authenticated', 'EXECUTE')
   ),
 
   expected as (

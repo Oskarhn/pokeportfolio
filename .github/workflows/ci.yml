@@ -52,7 +52,7 @@ jobs:
         run: pnpm build
         env:
           VITE_SUPABASE_URL: http://127.0.0.1:54321
-          VITE_SUPABASE_ANON_KEY: ci-placeholder-not-a-key
+          VITE_SUPABASE_PUBLISHABLE_KEY: ci-placeholder-not-a-key
 
       - name: Install Playwright browsers
         run: pnpm exec playwright install --with-deps chromium webkit
@@ -139,13 +139,22 @@ jobs:
             exit 1
           fi
           echo "audit correctly rejected the hostile state; re-applying the baseline migration"
-          # The *latest* pure-privilege restatement, not M4.1's specifically — see
-          # 20260820157000_m5_privilege_baseline.sql's header for why re-applying only M4.1's file
-          # would converge to a stale surface once a later milestone adds a browser-reachable
-          # object. Whichever migration most recently restated the complete grant list is the one
-          # that belongs here.
-          psql "$DB_URL" -v ON_ERROR_STOP=1 \
-            -f supabase/migrations/20260820157000_m5_privilege_baseline.sql
+          # The *latest* pure-privilege restatement, selected by filename convention rather than
+          # hardcoded — every migration that restates the complete grant list is named
+          # "*_privilege_baseline.sql", and migration filenames are timestamp-prefixed, so a plain
+          # sort picks the newest one. This closes the fragility a hardcoded filename produced at
+          # M5 (SECURITY.md §5.9, M6 prompt §14): re-applying only an older restatement converges
+          # to a surface missing every grant a later milestone added, and a maintainer had to
+          # remember to update this step by hand on every milestone that touched the
+          # browser-reachable surface. A missing baseline file now fails the build outright rather
+          # than silently reusing a stale one.
+          baseline=$(ls supabase/migrations/*_privilege_baseline.sql | sort | tail -n 1)
+          if [ -z "$baseline" ]; then
+            echo "::error::no *_privilege_baseline.sql migration found — cannot verify convergence"
+            exit 1
+          fi
+          echo "using $baseline as the current privilege baseline"
+          psql "$DB_URL" -v ON_ERROR_STOP=1 -f "$baseline"
           psql "$DB_URL" -v ON_ERROR_STOP=1 -f scripts/grant-audit.sql
 
       # supabase start runs the edge runtime and serves supabase/functions, but a suite that

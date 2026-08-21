@@ -24,6 +24,7 @@
 
 import { createClient } from 'npm:@supabase/supabase-js@2.112.3'
 import { checkPassword } from './password.ts'
+import { resolveServiceRoleKey } from '../_shared/service-key.ts'
 
 const ALLOWED_ORIGINS = (Deno.env.get('ALLOWED_ORIGINS') ?? 'http://localhost:5173')
   .split(',')
@@ -86,7 +87,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
   }
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL')
-  const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+  const serviceRoleKey = resolveServiceRoleKey()
   if (!supabaseUrl || !serviceRoleKey) {
     console.error('redeem-invitation is missing its Supabase environment configuration')
     return json(request, 500, { error: 'server_error' })

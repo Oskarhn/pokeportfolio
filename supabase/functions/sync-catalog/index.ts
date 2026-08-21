@@ -30,6 +30,7 @@ import {
   type Language,
   type ProviderCard,
 } from '../_shared/tcgdex.ts'
+import { resolveServiceRoleKey } from '../_shared/service-key.ts'
 
 const CARD_FETCH_CONCURRENCY = 5
 
@@ -108,7 +109,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
   }
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL')
-  const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+  const serviceRoleKey = resolveServiceRoleKey()
   if (!supabaseUrl || !serviceRoleKey) {
     console.error('sync-catalog is missing its Supabase environment configuration')
     return json(500, { error: 'server_error' })

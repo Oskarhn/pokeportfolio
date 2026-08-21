@@ -13,7 +13,7 @@ also logged in [DECISIONS.md](DECISIONS.md).
 │  Vite · TypeScript · TanStack Router/Query · Tailwind   │
 │  Domain layer (pure TS): financial engine, allocators   │
 └───────────────┬─────────────────────────────────────────┘
-                │ HTTPS, anon key + user JWT
+                │ HTTPS, publishable key + user JWT
 ┌───────────────▼─────────────────────────────────────────┐
 │  Supabase (EU West, Paris — see §3)                     │
 │  ├ PostgREST      → CRUD, RLS-enforced                  │
@@ -46,8 +46,8 @@ It does not:
   crawlable, or shareable server-rendered content.
 - The backend is Supabase. Server components would mostly proxy PostgREST calls that the
   client can make directly, with RLS enforcing the same rules either way.
-- The only true secret is the Supabase `service_role` key, which lives in Edge Functions.
-  The client only ever holds the anon key, which is public by design.
+- The only true secret is the Supabase secret key, which lives in Edge Functions. The client
+  only ever holds the publishable key, which is public by design (SECURITY.md §6).
 - The scanner will be a long-lived, camera-holding, WebGPU-inferencing client surface.
   A pure client router gives exact control over what unmounts and when — see §6.
 - Static output deploys anywhere. No hosting lock-in, no non-commercial licence clause.

@@ -376,22 +376,38 @@ policies and the same column grants. It widens nothing, and needs no separate ba
 
 | Secret | Where it lives | Ever in the client? |
 |---|---|---|
-| Supabase publishable key (legacy: `anon`) | `.env.local`, build-time env | Yes — public by design |
+| Supabase publishable key (`VITE_SUPABASE_PUBLISHABLE_KEY`) | `.env.local`, build-time env, Cloudflare Pages env | Yes — public by design |
 | Supabase project URL | Same | Yes |
-| Supabase secret key (legacy: `service_role`) | Edge Function environment only, injected by the platform | **Never** |
+| Supabase secret key | Edge Function environment only, injected by the platform via `SUPABASE_SECRET_KEYS` | **Never** |
 | Database password | Password manager, never in the repo | Never |
 | Supabase CLI access token | `supabase login` keyring, never in the repo | Never |
 | `CATALOG_SYNC_SECRET` (M5) | Edge Function environment (`supabase secrets set`), plus the operator's own shell environment when running `scripts/run-catalog-sync.mjs` | **Never** |
 
-**`CATALOG_SYNC_SECRET` is not the service-role key and is not a step up from a CI deploy key**
+**`CATALOG_SYNC_SECRET` is not the Supabase secret key and is not a step up from a CI deploy key**
 (D-035). It gates exactly one capability — invoking `sync-catalog` — and is checked with a
 constant-time comparison against a single bearer header. It is never the Supabase secret key, never
 placed in `.env.local`, and no code path ships it to the browser bundle.
 
-Supabase is migrating from `anon`/`service_role` JWTs to `sb_publishable_…`/`sb_secret_…` keys,
-with the legacy pair deprecated at the end of 2026. The security semantics are unchanged — one is
-public by design, the other never leaves the server — and the local stack still emits the legacy
-pair, so both names appear in this repository. Remote projects use the new keys.
+**Current hosted key model (M6, D-039).** `pokeportfolio-dev` uses named
+`sb_publishable_…`/`sb_secret_…` keys, created through the dashboard and never printed into a
+session — `supabase projects api-keys` is not used, because that exact command is what returned the
+legacy secret into a transcript in M5 (see PROJECT_JOURNAL.md). Edge Functions read the secret from
+`SUPABASE_SECRET_KEYS` (a JSON map, `supabase/functions/_shared/service-key.ts`), falling back to
+the legacy `SUPABASE_SERVICE_ROLE_KEY` environment variable only because that is the shape the
+*local* Supabase stack still emits — the fallback exists for `supabase start`, never for a deployed
+project. The frontend reads `VITE_SUPABASE_PUBLISHABLE_KEY` (renamed from `VITE_SUPABASE_ANON_KEY`
+in the same migration). The legacy `anon`/`service_role` keys are deactivated, not deleted, once
+the new pair is verified working end to end — reversible if a missed client turns up depending on
+them, and does not invalidate any issued user session, since deactivating an API key and rotating
+the JWT signing secret are different operations.
+
+Three vocabulary layers, kept distinct so a future session does not conflate them: the **current
+hosted keys** above (what `pokeportfolio-dev` actually uses); the **local stack's legacy fixture
+variables** (`SUPABASE_ANON_KEY`/`SUPABASE_SERVICE_ROLE_KEY`, still emitted by `supabase start` and
+read only by `tests/db/setup.ts` and CI's ephemeral stack — never a real project); the
+**browser-safe key** (whichever of the two client-visible forms is in play, public by design,
+RLS is the actual gate); and the **privileged backend key** (whichever of the two server-only forms
+is in play, never shipped to a client, never fetched by a command that prints the whole key set).
 
 Rules:
 
