@@ -9,12 +9,17 @@ import { InvitationsPage } from './features/admin/InvitationsPage'
 import { HomePage } from './features/home/HomePage'
 import { CatalogPage } from './features/catalog/CatalogPage'
 import { CardDetailPage } from './features/catalog/CardDetailPage'
+import { CollectionPage } from './features/collection/CollectionPage'
+import { HoldingDetailPage } from './features/collection/HoldingDetailPage'
+import { AddToCollectionPage } from './features/collection/AddToCollectionPage'
+import { ManualCardPage } from './features/collection/ManualCardPage'
 
 /**
  * Three route classes (docs/UX_FLOWS.md):
  *
  *   public     /login, /invite/$token, /forgot-password, /reset-password
- *   protected  /, /catalog, /catalog/$cardId
+ *   protected  /, /catalog, /catalog/$cardId, /collection, /collection/$holdingId,
+ *              /collection/manual/new, /add
  *   admin      /admin/invitations
  *
  * The guards wrap components rather than running in `beforeLoad` because the session is restored
@@ -91,6 +96,55 @@ const catalogCardRoute = createRoute({
   ),
 })
 
+const collectionRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/collection',
+  component: () => (
+    <RequireSession>
+      <CollectionPage />
+    </RequireSession>
+  ),
+})
+
+const collectionHoldingRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/collection/$holdingId',
+  component: () => (
+    <RequireSession>
+      <HoldingDetailPage />
+    </RequireSession>
+  ),
+})
+
+const manualCardRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/collection/manual/new',
+  component: () => (
+    <RequireSession>
+      <ManualCardPage />
+    </RequireSession>
+  ),
+})
+
+interface AddSearch {
+  variantId?: string
+  manualCardId?: string
+}
+
+const addRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/add',
+  validateSearch: (search: Record<string, unknown>): AddSearch => ({
+    variantId: typeof search.variantId === 'string' ? search.variantId : undefined,
+    manualCardId: typeof search.manualCardId === 'string' ? search.manualCardId : undefined,
+  }),
+  component: () => (
+    <RequireSession>
+      <AddToCollectionPage />
+    </RequireSession>
+  ),
+})
+
 const adminInvitationsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/admin/invitations',
@@ -109,6 +163,10 @@ const routeTree = rootRoute.addChildren([
   resetPasswordRoute,
   catalogRoute,
   catalogCardRoute,
+  collectionRoute,
+  collectionHoldingRoute,
+  manualCardRoute,
+  addRoute,
   adminInvitationsRoute,
 ])
 

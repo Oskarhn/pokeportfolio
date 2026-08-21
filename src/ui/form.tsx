@@ -1,4 +1,11 @@
-import { useId, useState, type ButtonHTMLAttributes, type InputHTMLAttributes } from 'react'
+import {
+  useId,
+  useState,
+  type ButtonHTMLAttributes,
+  type InputHTMLAttributes,
+  type ReactNode,
+  type SelectHTMLAttributes,
+} from 'react'
 
 /**
  * The small set of form primitives the auth screens need.
@@ -87,6 +94,85 @@ export function PasswordField({ label, hint, error, id, ...props }: FieldProps) 
         </p>
       ) : null}
     </div>
+  )
+}
+
+type SelectProps = SelectHTMLAttributes<HTMLSelectElement> & {
+  label: string
+  hint?: string
+}
+
+export function SelectField({ label, hint, id, children, ...props }: SelectProps) {
+  const generatedId = useId()
+  const fieldId = id ?? generatedId
+  const describedBy = hint ? `${fieldId}-hint` : undefined
+
+  return (
+    <div className="space-y-1.5">
+      <label htmlFor={fieldId} className="block text-sm font-medium text-slate-300">
+        {label}
+      </label>
+      <select id={fieldId} aria-describedby={describedBy} className={inputClass} {...props}>
+        {children}
+      </select>
+      {hint ? (
+        <p id={`${fieldId}-hint`} className="text-xs text-slate-500">
+          {hint}
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
+/** A labelled set of mutually-exclusive choices rendered as buttons rather than native radios —
+ *  matches the language-filter control on /catalog, so a chosen option always has the same look
+ *  across the app. */
+export function ChoiceGroup<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string
+  value: T
+  options: readonly (readonly [T, string])[]
+  onChange: (value: T) => void
+}) {
+  const groupId = useId()
+  return (
+    <div className="space-y-1.5">
+      <span id={groupId} className="block text-sm font-medium text-slate-300">
+        {label}
+      </span>
+      <div className="flex flex-wrap gap-2" role="group" aria-labelledby={groupId}>
+        {options.map(([optionValue, optionLabel]) => (
+          <button
+            key={optionValue}
+            type="button"
+            aria-pressed={value === optionValue}
+            onClick={() => {
+              onChange(optionValue)
+            }}
+            className={`min-h-11 rounded-lg border px-3 text-sm font-medium transition-colors ${
+              value === optionValue
+                ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                : 'border-slate-700 text-slate-300 hover:bg-slate-800'
+            }`}
+          >
+            {optionLabel}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+export function FormSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <fieldset className="space-y-3 border-t border-slate-800 pt-4 first:border-t-0 first:pt-0">
+      <legend className="mb-1 text-sm font-semibold text-slate-200">{title}</legend>
+      {children}
+    </fieldset>
   )
 }
 

@@ -126,6 +126,47 @@ export async function getCardVariants(cardId: string): Promise<CatalogVariant[]>
   }))
 }
 
+export interface CatalogVariantWithCard extends CatalogVariant {
+  cardId: string
+  cardName: string
+  localId: string
+  imageBaseUrl: string | null
+  language: CatalogLanguage
+  setName: string
+}
+
+/** The single fetch the Add-to-Collection flow needs when it arrives with only a variant id
+ *  (e.g. a deep link, or after a page reload) — one request rather than the two CardDetailPage
+ *  needs when it already has the card id in the route. */
+export async function getCardVariantWithCard(
+  variantId: string,
+): Promise<CatalogVariantWithCard | null> {
+  const { data, error } = await supabase
+    .from('card_variants')
+    .select(
+      'id, finish, stamp, subtype, size, is_active, card_id, cards(name, local_id, image_base_url, language, card_sets(name))',
+    )
+    .eq('id', variantId)
+    .maybeSingle()
+  if (error) throw new Error(error.message)
+  if (!data?.cards) return null
+
+  return {
+    id: data.id,
+    finish: data.finish,
+    stamp: data.stamp,
+    subtype: data.subtype,
+    size: data.size,
+    isActive: data.is_active,
+    cardId: data.card_id,
+    cardName: data.cards.name,
+    localId: data.cards.local_id,
+    imageBaseUrl: data.cards.image_base_url,
+    language: data.cards.language as CatalogLanguage,
+    setName: data.cards.card_sets.name,
+  }
+}
+
 export type ImageQuality = 'low' | 'high'
 
 /** TCGdex asset CDN convention: `{imageBaseUrl}/{quality}.webp` (docs/API_SOURCES.md). */

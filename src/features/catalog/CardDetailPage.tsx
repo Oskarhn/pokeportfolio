@@ -13,8 +13,9 @@ const FINISH_LABEL: Record<string, string> = {
 /**
  * Confirms the identity of one search result and shows what is actually ownable about it — the
  * variant list is the M5-era proof that the finish/stamp/subtype model can represent a real card
- * (M5 prompt §54). No "Add to collection": that workflow belongs to M6 and a half-built version of
- * it here would be worse than not having one (M5 prompt §53).
+ * (M5 prompt §54). Each variant now links straight into the M6 add flow (M6 prompt §55): a card
+ * with only one variant does not force an extra tap, a card with several never silently defaults
+ * to the first one.
  */
 export function CardDetailPage() {
   const { cardId } = useParams({ from: '/catalog/$cardId' })
@@ -102,9 +103,18 @@ export function CardDetailPage() {
                   {v.stamp ? ` · ${v.stamp}` : ''}
                   {v.size === 'oversized' ? ' · Oversized' : ''}
                 </span>
-                {!v.isActive ? (
-                  <span className="text-xs text-slate-500">No longer listed</span>
-                ) : null}
+                <span className="flex items-center gap-3">
+                  {!v.isActive ? (
+                    <span className="text-xs text-slate-500">No longer listed</span>
+                  ) : null}
+                  <Link
+                    to="/add"
+                    search={{ variantId: v.id }}
+                    className="min-h-9 rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-500"
+                  >
+                    Add to collection
+                  </Link>
+                </span>
               </li>
             ))}
           </ul>

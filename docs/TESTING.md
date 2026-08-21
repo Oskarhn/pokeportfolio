@@ -213,6 +213,18 @@ The suite is written table-driven so adding a table means adding a row, not a fi
 user-private table without an entry fails a meta-test that compares the table list against the
 covered list.
 
+**M6 (`tests/authorization/m6_collection.test.ts`, `tests/db/m6_constraints.test.ts`).** The
+generic table-driven attack matrix above covers `manual_card_definitions` (folded into
+`simple-owned-tables.test.ts` — its shape is uniform enough to fit) but not `holding_tags` or
+`manual_valuations`, whose ownership depends on *two* parent rows rather than one, or the
+`add_card_acquisition`/`void_acquisition_lot` RPCs, which have no `user_id` argument to forge in
+the first place — every write derives its owner from `auth.uid()` inside the function body
+(SECURITY INVOKER). What is tested there instead: the RPC's resulting rows always belong to the
+caller regardless of what else is asked for; a caller-supplied `storage_location_id` or
+`manual_card_id` belonging to another user is rejected; a stranger cannot void another user's lot;
+and `holding_summaries` (a `security_invoker` view) hides another user's holding exactly as the
+underlying tables would.
+
 ---
 
 ## 5. Database tests
