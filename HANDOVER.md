@@ -883,7 +883,7 @@ without any migration or re-save, counted exactly once.
   `tests/data/norges-bank.test.ts`) green locally; `pnpm build` green (placeholder env);
   `pnpm test:e2e` **58/58** (up from 50 — four new `/purchases*` guard cases × desktop+iPhone).
 - CI green on PR #21: `build-and-test` and `db-tests` — **320 database/authorization tests across
-  22 files** (up from 269/19 at M7), including the hostile-grant convergence proof. One real CI-only
+  21 files** (up from 269/19 at M7), including the hostile-grant convergence proof. One real CI-only
   finding, fixed on the branch before merge: two *pre-existing* test fixtures
   (`tests/authorization/purchases.test.ts`, `tests/authorization/holdings_and_lots.test.ts`) inserted
   a `purchase_lines` row directly, relying on `attributable_cost_minor`'s default of 0 while
@@ -1158,7 +1158,7 @@ every push and PR, with **no remote credentials anywhere**.
 
 **Green on PR #21 (`feat/m8-purchases-ledger`), merged:** 85 domain/property/data tests (up from
 80 — `tests/data/norges-bank.test.ts`) · database/authorization suite green on CI, **320 tests
-across 22 files** (up from 269/19 at M7 — `tests/db/m8_purchase_ledger.test.ts`,
+across 21 files** (up from 269/19 at M7 — `tests/db/m8_purchase_ledger.test.ts`,
 `tests/authorization/m8_purchases.test.ts`, plus five new routines and one new trigger function
 added to `tests/authorization/function_grants.test.ts`), including the hostile-grant convergence
 proof · 58 Playwright tests (up from 50 — four new `/purchases*` guard cases × desktop+iPhone) ·
@@ -1167,7 +1167,10 @@ pushed to `pokeportfolio-dev`, `grant-audit.sql` clean, `remote-security-check.m
 `fetch-fx-rate` deployed and confirmed to require a real session (`HTTP 401` with no JWT),
 `deployment-check.mjs` **28/28** against the real rebuilt bundle (34 precache entries, all four new
 `Purchase*` chunks present — polled until the service worker's manifest genuinely updated rather
-than trusting a stale edge cache).
+than trusting a stale edge cache). **Green on PR #22 (`docs/m8-deployment-verification-and-
+handover`), merged.** Both merges' own post-merge `push`-triggered CI runs on `main` are also
+green (`build-and-test`/`db-tests`), confirmed directly from the Actions history, not assumed from
+the PR-triggered runs alone.
 
 ## Owner actions outstanding
 
