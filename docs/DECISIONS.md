@@ -943,7 +943,13 @@ production) before building the check — rejected: M4 and M6 both already found
 grant gaps of this same general shape by luck (a real deployment check, not by design), and a
 third instance of the same defect class is exactly what a systematic fix is for.
 
-**Consequences.** No behavioural change to any existing function — every one already correctly
-excluded `PUBLIC` at creation (M4 §5.9's convention), so the sweep only formalizes what was already
-true and prevents future drift. `docs/SECURITY.md` §5.9 updated to describe the closed state rather
-than the known gap.
+**Consequences.** One real behavioural change, found immediately: `search_cards` predates the M4
+"revoke from public at creation" convention and had never been explicitly revoked from `PUBLIC`,
+so `service_role` had been calling it via that implicit default rather than a named grant — CI's
+first run against this migration failed 16 tests in `tests/db/search_cards.test.ts` with
+`permission denied for function search_cards` the moment the sweep removed it. Fixed with an
+explicit `grant ... to authenticated, service_role`, the correct and now-deliberate version of an
+access pattern that had been accidental. Every other function was unaffected, confirmed by the
+same CI run rather than by inspection alone (PROJECT_JOURNAL.md, 2026-08-22, "Closing the PUBLIC
+gap immediately exposed the dependency it had been masking"). `docs/SECURITY.md` §5.9 updated to
+describe the closed state rather than the known gap.

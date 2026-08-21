@@ -7,17 +7,18 @@ Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) a
 **Last updated:** 2026-08-22 — M1 (scaffold and harness), M2 (financial domain core), M3
 (database, migrations, RLS), M4 (invite-only authentication), M4.1 (privilege convergence,
 deployment, real end-to-end), M5 (catalog, TCGdex ingest, search), M6 (collection: holdings, lots,
-origin, cost) and M7 (Portfolio: organisation, display, navigation) complete in code, on a feature
-branch, with local checks green — see "M7 verification state" below for exactly what is and is not
-yet confirmed, because this session had no local Docker and has not yet pushed to the real project.
+origin, cost) and M7 (Portfolio: organisation, display, navigation) complete in code. M7's PR
+([#14](https://github.com/Oskarhn/pokeportfolio/pull/14)) is open with **CI green** — see "M7
+verification state" below for exactly what that does and does not yet prove, since the branch is
+not merged and nothing has been pushed to the real project yet.
 
 ---
 
 ## Status
 
-**Planning is FROZEN. M1–M7 are complete in code.** M8 (purchases and the spending ledger) is
-next. See the Repository section for PR numbers, and "M7 verification state" immediately below
-before assuming anything about M7 beyond what is explicitly marked done.
+**Planning is FROZEN. M1–M7 are complete in code, CI-green on PR #14.** M8 (purchases and the
+spending ledger) is next, once M7 finishes merging and deploying. See "M7 verification state"
+immediately below before assuming anything about M7 beyond what is explicitly marked done.
 
 The application is deployed and reachable: **https://pokeportfolio-dev.pages.dev**, on the M6
 state — M7 has not yet been merged or deployed as of this handover (see below). The owner has a
@@ -37,31 +38,35 @@ Scope is settled — do not reopen it (see [docs/PLANNING_FREEZE.md](docs/PLANNI
 
 ## M7 verification state — read before assuming anything is deployed
 
-This machine has no local Docker (§4/Environment table, unchanged since M3), so this session could
-not run `pnpm db:start`/`pnpm test:db` against a real Postgres at all. What that means concretely:
+This machine has no local Docker (§4/Environment table, unchanged since M3), so `pnpm db:start`/
+`pnpm test:db` could never run against a real Postgres on this machine directly — CI's ephemeral
+stack (`ubuntu-latest`, which does have Docker) is what actually proved the SQL, and it has now
+done so.
 
-**Actually verified, on this machine:** `pnpm typecheck`, `pnpm lint`, `pnpm format:check`,
-`pnpm test` (80/80 domain tests, unchanged — M7 touched no `src/domain` logic), `pnpm build`, and
-`pnpm test:e2e` (50/50 Playwright, desktop + iPhone, including the new `/portfolio`/`/profile`/
-`/more` route-guard cases and the `/collection` → `/portfolio` redirect assertions) are all green
-against the actual M7 branch.
+**Actually verified, green:** `pnpm typecheck`, `pnpm lint`, `pnpm format:check`, `pnpm test`
+(80/80 domain tests, unchanged — M7 touched no `src/domain` logic), `pnpm build`, `pnpm test:e2e`
+(50/50 Playwright, desktop + iPhone) all pass locally. **CI's `db-tests` job is green on PR #14:
+19/19 test files, 269/269 database and authorization tests** (up from 251 at the M6 merge) —
+every M7 migration, `list_portfolio`'s keyset-cursor SQL, the new PUBLIC-grant audit check and its
+hostile-grants proof, and both new M7 test files actually ran against a real ephemeral Postgres
+and passed. `build-and-test` is also green (gate + E2E + gitleaks).
 
-**Written but not yet run anywhere:** every SQL migration
-(`20260822120000_m7_custom_collections.sql`, `20260822120010_m7_portfolio_query.sql`,
-`20260822120020_m7_privilege_baseline.sql`), the updated `scripts/grant-audit.sql` and
-`tests/db/sql/hostile_grants.sql`, and the two new test files
-(`tests/db/m7_constraints.test.ts`, `tests/authorization/m7_portfolio.test.ts`). These have been
-read through carefully and are believed correct, but **"believed correct" is not the same as
-"CI has run them"** — the very next thing to do with this branch is push it and let GitHub Actions'
-`db-tests` job (which does have Docker, on `ubuntu-latest`) actually apply the migrations and run
-the suites. If CI finds a defect in the `list_portfolio` keyset-cursor SQL (the most complex single
-piece of M7 — see DATA_MODEL.md §14) or anything else, fix it on this branch before merging; do not
-treat this handover's description of the design as proof it works.
+**Real bugs CI's first run actually caught — fixed on the branch, not just described** (see
+PROJECT_JOURNAL.md 2026-08-22 for the full account): (1) `search_cards` needed an explicit
+`service_role` grant once the PUBLIC-EXECUTE sweep (D-042) removed the implicit default the
+`tests/db/search_cards.test.ts` service-role client had been silently relying on; (2)
+`custom_collection_members.user_id` needed `default auth.uid()` — without it, a real
+authenticated-client insert (the app's own `addHoldingToCollection` code path) was rejected by
+RLS; (3) a test-only bug in `tests/db/m7_constraints.test.ts`'s fixture helper, reusing one fixed
+holding identity across multiple tests for the same synthetic user. The same latent user_id-default
+bug found in (2) also exists in M6's already-shipped `holding_tags` table — flagged as a separate
+follow-up task rather than edited here, since that migration may already be applied to the real
+project.
 
 **Not yet done at all, and each needs an explicit decision before M7 is actually finished per the
 prompt's own acceptance criteria:**
 
-1. Open the PR and confirm CI is green (`db-tests` in particular — see above).
+1. ~~Open the PR and confirm CI is green~~ — **done.** PR #14, both jobs passing.
 2. `pnpm exec supabase db push` / `config push` against `pokeportfolio-dev`, then
    `scripts/remote-security-check.mjs` and `grant-audit.sql` against the real deployed project
    (SECURITY.md §13's deployment gate) — not yet run this session.
@@ -74,8 +79,10 @@ prompt's own acceptance criteria:**
 5. A short real-iPhone check (M7 prompt §120) — genuinely needs the owner's own phone; ask for it
    only once step 4 is done.
 
-Do not report M7 as "deployed" or "verified end-to-end" to the owner until the above actually
-happened — say specifically which of the five remain.
+Do not report M7 as "deployed" or "verified end-to-end" to the owner until items 2-5 actually
+happen — CI green (item 1) is real progress, but it proves reproducibility against an ephemeral
+stack, not correctness against the real deployed project (SECURITY.md §5.9's own standing lesson).
+Say specifically which of 2-5 remain.
 
 ## Read these first, in order
 
@@ -759,20 +766,19 @@ Deployment itself needs no command. Merging to `main` builds it.
 27/27 deployment checks · `grant-audit.sql` clean against the live project · a real end-to-end M6
 collection flow against the deployed bundle with synthetic accounts, zero residue.
 
-**M7, on this branch, verified only on this machine (no Docker — see "M7 verification state"
-above for exactly what that does and does not cover):** 80 domain/property/data tests (unchanged —
-M7 added no `src/domain` logic) · 50 Playwright tests (desktop + iPhone; +12 unique cases for the
-new/renamed routes and the `/collection` → `/portfolio` redirects) · `pnpm typecheck`/`pnpm lint`/
-`pnpm format:check`/`pnpm build` all green. **Not yet run on this machine, pending CI:** the two
-new files in `tests/db/`/`tests/authorization/` (`m7_constraints.test.ts`, `m7_portfolio.test.ts`),
-the updated `grant-audit.sql` and `hostile_grants.sql`, and therefore the actual applied-migration
-test-count total for M7 — do not quote a number until CI has reported one.
+**Green on PR #14 (`feat/m7-portfolio-display`), CI-verified, not yet merged:** 80 domain/
+property/data tests (unchanged — M7 added no `src/domain` logic) · 50 Playwright tests (desktop +
+iPhone; +12 unique cases for the new/renamed routes and the `/collection` → `/portfolio`
+redirects) · **269 database and authorization tests across 19 files** (up from 251/17 at M6 — the
+two new M7 files, `tests/db/m7_constraints.test.ts` and `tests/authorization/m7_portfolio.test.ts`)
+· the new PUBLIC-grant audit check and its hostile-grants proof, both passing · `pnpm typecheck`/
+`pnpm lint`/`pnpm format:check`/`pnpm build` all green. This is CI against the ephemeral stack —
+**not yet run against `pokeportfolio-dev`** (see "M7 verification state" above, items 2-5).
 
 CI runs `build-and-test` (gate + E2E + gitleaks) and `db-tests` (ephemeral Supabase stack → migrate
 → assert the Edge Function is reachable → **assert the privilege baseline → make the database
 hostile, prove the audit rejects it, re-apply, prove convergence** → suites → generate types) on
-every push and PR, with **no remote credentials anywhere**. This is the next thing to check for
-this branch — see "M7 verification state" above.
+every push and PR, with **no remote credentials anywhere**.
 
 ## Owner actions outstanding
 

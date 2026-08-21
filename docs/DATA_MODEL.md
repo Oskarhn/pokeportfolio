@@ -1000,7 +1000,11 @@ Data API, which the column-level grant now prevents.
 ## 14. M7 implementation notes
 
 **`custom_collections`/`custom_collection_members` shipped exactly as §5.2.1 originally specified**
-— no schema surprises found this milestone, unlike M5/M6's catalog/holdings corrections.
+— the column *shape* needed no correction, unlike M5/M6's catalog/holdings fixes. One real bug
+did surface, caught by CI rather than by inspection: `custom_collection_members.user_id` was
+missing `default auth.uid()` (present on `custom_collections`/`manual_card_definitions`), which
+made a real authenticated-client insert fail RLS rather than succeed. Fixed before merge —
+PROJECT_JOURNAL.md 2026-08-22.
 
 **`list_portfolio(...)` and `portfolio_counts()`** (`supabase/migrations/20260822120010_m7_portfolio_query.sql`)
 are the Portfolio's entire server-side query surface: sort (an enum, `portfolio_sort_order`),

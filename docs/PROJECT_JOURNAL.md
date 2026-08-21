@@ -947,8 +947,70 @@ fixes it" shape TESTING.md §7a already established for the named-role surface �
 methodology applied to a hole that methodology had previously missed.
 
 **Consequence.** Every routine in `public` — twenty-plus functions across five milestones — is now
-swept clear of PUBLIC's implicit grant in the M7 privilege baseline, none of them lost any grant a
-named role actually needs (verified: the sweep only touches grantee oid `0`, never a named role's
-own entry), and `alter default privileges ... revoke execute on functions from public` means a
-future migration that forgets the per-creation revoke no longer needs to be remembered at all for
-this specific failure mode — the default itself changed. See DECISIONS.md D-042.
+swept clear of PUBLIC's implicit grant in the M7 privilege baseline. The sweep itself only touches
+grantee oid `0`, never a named role's own ACL entry, so no *named* grant was removed by this
+change — but that turned out not to be the whole story, because `search_cards` had never held a
+named `service_role` grant at all and was relying on PUBLIC for that access. See the next entry:
+this was believed verified when written, and CI's first real run proved otherwise within the hour.
+`alter default privileges ... revoke execute on functions from public` means a future migration
+that forgets the per-creation revoke no longer needs to be remembered at all for this specific
+failure mode — the default itself changed. See DECISIONS.md D-042.
+
+---
+
+## 2026-08-22 — Closing the PUBLIC gap immediately exposed the dependency it had been masking
+
+**Problem.** The entry above claimed the PUBLIC-EXECUTE sweep was "verified: ... none of them lost
+any grant a named role actually needs" — reasoned through by inspecting every migration's grant
+statements, not by running anything, because this machine has no local Docker. Pushing the branch
+and letting CI's ephemeral-stack `db-tests` job actually apply the migrations and run the suites,
+for the first time, failed both CI jobs. The gap between "reasoned through" and "actually run" was
+exactly the size of three real bugs.
+
+**Finding 1 — `search_cards` had been PUBLIC-callable by omission, not by design, since M5.**
+`tests/db/search_cards.test.ts` calls `search_cards` through the **service-role** client — a
+deliberate choice, since that file is about functional correctness ("do the right rows come back"),
+not access control, which lives in `tests/authorization/catalog.test.ts` instead. But
+`search_cards` was never explicitly granted to `service_role` in any migration; `authenticated` was
+the only named grant it ever had. It worked anyway, for over a year of this project's own
+milestones, purely because PostgreSQL's implicit PUBLIC-EXECUTE default meant `service_role` — like
+every other role — could call it regardless. The M7 sweep revoked that default for real, and the
+very next CI run turned "works by accident" into `permission denied for function search_cards`, on
+every single one of that file's 16 tests. Fixed by making the grant explicit
+(`to authenticated, service_role`) — the correct, deliberate version of the access that was already
+happening, not a widening of anything.
+
+**Finding 2 — a real RLS bug in `custom_collection_members`, not a test artifact.**
+`custom_collections.user_id` and `manual_card_definitions.user_id` both default to `auth.uid()`, so
+a client insert that only supplies the columns it actually knows about (never `user_id`) still
+satisfies `WITH CHECK (user_id = auth.uid())`. `custom_collection_members.user_id` was written
+without that default — an oversight, not a deliberate choice; nothing in DATA_MODEL.md's own
+specification asked for the two tables to behave differently. The result: `src/data/
+customCollections.ts`'s `addHoldingToCollection` — real application code, not a fixture — would
+have failed for every real user the moment it ran, rejected by RLS with a NULL `user_id` rather
+than the NOT NULL constraint one might expect, because Postgres evaluates the policy's `WITH CHECK`
+expression against whatever value ends up in the row, and NULL simply fails the equality check
+rather than tripping a separate error path. Caught by
+`tests/authorization/m7_portfolio.test.ts`'s own CRUD test, which does exactly what the real UI
+does (an authenticated client, no explicit `user_id`) rather than the service-role shortcut most
+fixtures use. Fixed with `default auth.uid()`, matching the other two tables. The identical bug was
+then found, by inspection, in M6's already-shipped `holding_tags` table — flagged as a separate
+follow-up rather than fixed here, since that migration may already be applied to the real project
+and this repository's own rule is to never edit an applied migration.
+
+**Finding 3 — a self-inflicted test bug, included here because it looks identical to a real one
+until inspected.** `tests/db/m7_constraints.test.ts`'s `createHolding()` helper used one fixed
+`(seedCatalog variant, condition)` pair for every call. Two different `it()` blocks calling it for
+the same synthetic user collided on `holdings_identity`'s partial unique index — a correct
+rejection of a genuinely duplicate identity, not a schema defect. Distinguishable from Findings 1-2
+by the error itself (`duplicate key value violates unique constraint`, not a permission or RLS
+error) and by which file changed to fix it (the test's own fixture, not a migration). Fixed by
+creating a fresh `manual_card_definitions` row — guaranteed unique — per call instead.
+
+**Consequence.** All three fixed in one follow-up commit on the same PR (#14); CI's second run
+passed both jobs, 269/269 database and authorization tests (up from 251 at the M6 merge). The
+lesson restates one this journal has recorded before, in a new shape: reasoning carefully about SQL
+from first principles is necessary but is not the same claim as "this has been run," and the
+gap between those two claims is exactly where bugs live. A machine without Docker does not get to
+skip that gap — it just moves the first real run from a local terminal to CI, which is precisely
+what happened here.
