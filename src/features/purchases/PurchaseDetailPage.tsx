@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link, useParams } from '@tanstack/react-router'
+import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getPurchase, voidPurchase } from '../../data/purchases'
 import { toDecimalString, type Money } from '../../domain/money'
@@ -19,6 +19,8 @@ function fmt(minorUnits: bigint, currency: string): string {
  */
 export function PurchaseDetailPage() {
   const { purchaseId } = useParams({ from: '/purchases/$purchaseId' })
+  const { created } = useSearch({ from: '/purchases/$purchaseId' })
+  const navigate = useNavigate({ from: '/purchases/$purchaseId' })
   const queryClient = useQueryClient()
   const [voidSheetOpen, setVoidSheetOpen] = useState(false)
   const [voidReason, setVoidReason] = useState('')
@@ -100,6 +102,27 @@ export function PurchaseDetailPage() {
           </div>
         ) : null}
       </div>
+
+      {created ? (
+        <div className="flex items-center justify-between gap-3 rounded-2xl border border-emerald-900/60 bg-emerald-950/40 p-3 text-sm text-emerald-200">
+          <span>Purchase recorded.</span>
+          <span className="flex shrink-0 items-center gap-3">
+            <Link to="/portfolio" className="font-medium underline-offset-4 hover:underline">
+              View Portfolio
+            </Link>
+            <button
+              type="button"
+              onClick={() => {
+                void navigate({ search: {}, replace: true })
+              }}
+              aria-label="Dismiss"
+              className="text-emerald-300/70 hover:text-emerald-200"
+            >
+              ✕
+            </button>
+          </span>
+        </div>
+      ) : null}
 
       <div className="grid grid-cols-2 gap-3 rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-sm sm:grid-cols-4">
         <Field label="Date" value={purchase.purchasedOn} />

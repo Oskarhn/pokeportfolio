@@ -417,6 +417,40 @@ export async function voidAcquisitionLot(lotId: string, reason?: string): Promis
   if (error) throw new Error(error.message)
 }
 
+export interface RemoveHoldingsResult {
+  holdingId: string
+  blocked: boolean
+  blockedReason: string | null
+  physicalCount: number
+}
+
+interface RemoveHoldingsRow {
+  holding_id: string
+  blocked: boolean
+  blocked_reason: string | null
+  physical_count: number
+}
+
+/** Portfolio select mode's "Remove from Portfolio" (M8.1). Atomic and all-or-nothing: if any
+ *  selected holding is blocked, nothing is voided and every row reports why — see
+ *  remove_holdings_from_portfolio (20260825120000_m81_void_acquisition_lot_fix.sql) and
+ *  DECISIONS.md D-051. */
+export async function removeHoldingsFromPortfolio(
+  holdingIds: string[],
+): Promise<RemoveHoldingsResult[]> {
+  if (holdingIds.length === 0) return []
+  const { data, error } = await supabase
+    .rpc('remove_holdings_from_portfolio', { p_holding_ids: holdingIds })
+    .overrideTypes<RemoveHoldingsRow[], { merge: false }>()
+  if (error) throw new Error(error.message)
+  return data.map((row) => ({
+    holdingId: row.holding_id,
+    blocked: row.blocked,
+    blockedReason: row.blocked_reason,
+    physicalCount: row.physical_count,
+  }))
+}
+
 export interface AddCardAcquisitionInput {
   cardVariantId?: string
   manualCardId?: string

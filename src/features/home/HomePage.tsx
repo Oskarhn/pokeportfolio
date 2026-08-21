@@ -141,7 +141,10 @@ export function HomePage() {
       >
         <span className="flex items-center gap-3">
           <ChartIcon className="size-5 text-slate-400" />
-          <span className="text-sm font-medium text-slate-200">Spending</span>
+          <span>
+            <span className="block text-sm font-medium text-slate-200">Purchases</span>
+            <span className="block text-xs text-slate-500">View your receipts →</span>
+          </span>
         </span>
         <span className="text-right">
           <span className="block text-sm font-semibold text-slate-100">

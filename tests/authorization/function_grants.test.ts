@@ -164,6 +164,13 @@ const FUNCTIONS: FunctionCase[] = [
     authenticated: CALLABLE,
     why: 'M8: the GPO/CS/HS aggregate; every predicate derives from auth.uid(), no argument to forge',
   },
+  {
+    name: 'remove_holdings_from_portfolio',
+    args: { p_holding_ids: ['00000000-0000-0000-0000-000000000000'] },
+    anon: REFUSED,
+    authenticated: CALLABLE,
+    why: 'M8.1: bulk-safe Remove from Portfolio; the body itself refuses a holding the caller does not own',
+  },
 ]
 
 let service: TestClient

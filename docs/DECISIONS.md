@@ -1073,6 +1073,10 @@ stripping to fit inside this milestone. The prompt's own instruction for M7.1 is
 "serious attempt" does not mean shipping something materially security-sensitive without the
 safeguards SECURITY.md already requires for exactly this feature.
 
+**Alternatives.** Ship upload without EXIF stripping "for now" — rejected outright: an inventory of
+valuable physical property is precisely the case SECURITY.md §7 was written for, and shipping the
+gap knowingly is worse than not shipping the feature.
+
 ---
 
 ## D-047 — Editing a purchase cannot add or remove lines
@@ -1186,9 +1190,60 @@ milestone was explicitly told not to.
 specific card's effective cost basis (`EUCB`, FINANCIAL_MODEL.md §2.5) waits for M17 as originally
 planned. No user-visible regression, since M6/M7 never wired this either.
 
-**Alternatives.** Ship upload without EXIF stripping "for now" — rejected outright: an inventory of
-valuable physical property is precisely the case SECURITY.md §7 was written for, and shipping the
-gap knowingly is worse than not shipping the feature.
+---
+
+## D-051 — void_acquisition_lot's parent-purchase rule corrected to count lines, not lots; bulk removal reuses it unchanged
+
+**2026-08-25 · Accepted**
+
+**Context.** M8.1 was asked to audit `void_acquisition_lot` before building a bulk "Remove from
+Portfolio" action on top of it (BACKLOG.md's `bulk_void_lots(uuid[])` item, D-045). The audit found
+a real bug: the M8-era auto-void-parent-purchase check (`20260824120010_m8_purchase_ledger.sql`)
+counted only *other live lots* on the same purchase. That is correct exactly when every line on the
+purchase produces a lot — true for the two-card case the existing test already covered — and wrong
+the moment a purchase has a line that never produces one at all (`accessory`, `shipping_standalone`,
+`customs_standalone`, `grading_fee`, `grading_shipping`, `bulk_lot`, `other`). Voiding the sole
+`card`/`sealed` lot on such a purchase made the check see zero other live lots and auto-void the
+whole receipt, silently erasing the accessory's real, unrelated spend from `CS`/`HS`/`GPO`.
+
+A second, related gap: `void_acquisition_lot` never checked `quantity_remaining` before voiding, so
+a lot already partially disposed elsewhere (once a disposal-producing milestone ships: sales M10,
+openings M16, grading M17, trades M18) could have its cost basis silently erased by a later,
+unrelated correction. `update_purchase`/`void_purchase` already guard the equivalent whole-purchase
+case (D-047's neighbour); this had no equivalent for a single lot.
+
+**Decision.** Auto-void the parent purchase only when every *other* line on it is already accounted
+for — a `card`/`sealed` line whose own lot is also voided, or no other line exists. A line that can
+never have a lot always counts as "not accounted for", permanently blocking auto-void while it
+exists. This is a strict correction: it agrees with the old check on every purchase that exists
+today (every existing purchase's lines all produce lots, or it is the M6 single-line shape), and
+differs only on the case that was wrong. Separately, `void_acquisition_lot` now refuses to void a
+lot whose `quantity_remaining <> quantity`, naming the blocker — the same guard shape
+`update_purchase`/`void_purchase` already use, currently unreachable through any real product flow
+(same caveat HANDOVER.md already records for those two) but implemented now so a later
+disposal-producing milestone does not have to touch this function.
+
+Bulk removal (`remove_holdings_from_portfolio(uuid[])`) does **not** duplicate any of this logic —
+it calls `void_acquisition_lot` once per live lot of every selected holding, inside one transaction,
+and is blocked only by the same `quantity_remaining` guard. A holding tied to a multi-line purchase
+is never blocked from bulk removal: the corrected parent-purchase rule already keeps the purchase
+and its unrelated spend intact without needing the user to visit the purchase page first.
+
+**Alternatives.** Block "Remove from Portfolio" outright whenever a holding's lot traces to any
+multi-line purchase, pointing the user at the purchase page to correct it there instead — this was
+the initial reading of the prompt's own §8 guidance, but the *existing, already-shipped* two-card
+test (`tests/db/m8_purchase_ledger.test.ts`) already establishes that voiding one card's lot from a
+multi-card purchase while the purchase stays alive is intended, correct behaviour, not something
+needing a block. Rejected once the real, tested product behaviour was read: the money for a voided
+card's own line stays counted in `CS` until the whole purchase is voided (individually, from
+`/purchases/$id`) — that is accepted, existing design, not a gap this milestone introduces or needs
+to close.
+
+**Consequences.** The pre-existing per-lot "Void" button on Holding Detail (M6/M7) inherits both
+fixes for free, since it calls the same RPC — a real, if previously unexercised, correctness
+improvement to a feature already in production. `remove_holdings_from_portfolio` needed no blocker
+logic of its own beyond the ownership check and a thin per-holding read of the same guard, kept
+deliberately simple.
 
 **Consequences.** `ProfilePage.tsx` shows no picture-upload control at all — never a button that
 looks functional and silently does nothing. Recorded in BACKLOG.md as a concretely scoped future

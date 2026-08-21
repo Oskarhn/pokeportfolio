@@ -331,6 +331,7 @@ export function PortfolioPage() {
       {selectMode ? (
         <BulkActionsBar
           selectedIds={selectedIds}
+          tiles={tiles}
           activeCollectionId={search.collectionId}
           onClear={exitSelectMode}
         />

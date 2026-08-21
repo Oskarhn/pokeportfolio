@@ -104,13 +104,17 @@ export function PurchasesListPage() {
           ))}
         </ul>
       ) : (
-        <div className="rounded-2xl border border-dashed border-slate-800 px-4 py-10 text-center">
-          <p className="text-sm text-slate-400">No purchases recorded yet.</p>
+        <div className="mx-auto max-w-sm space-y-2 rounded-2xl border border-dashed border-slate-800 px-4 py-10 text-center">
+          <p className="text-sm font-medium text-slate-300">No purchases recorded</p>
+          <p className="text-sm text-slate-500">
+            Record a purchase when you bought several items together, need to include shipping or
+            customs, or just want the receipt in your spending history.
+          </p>
           <Link
             to="/purchases/new"
             className="mt-4 inline-flex min-h-11 items-center justify-center rounded-lg bg-sky-600 px-4 text-sm font-semibold text-white hover:bg-sky-500"
           >
-            Record your first purchase
+            Record purchase
           </Link>
         </div>
       )}
