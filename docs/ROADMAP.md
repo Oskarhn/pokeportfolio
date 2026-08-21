@@ -134,6 +134,9 @@ by replacing a per-holding `LATERAL` aggregate with the same `LEFT JOIN ... GROU
 (DECISIONS.md, PROJECT_JOURNAL.md 2026-08-22). `scripts/portfolio-perf-benchmark.mjs` is the
 repeatable version of the same measurement for a future session with local Docker. The
 PUBLIC-EXECUTE privilege blind spot flagged as a known limitation after M6 is closed (D-042).
+Merged and deployed to `pokeportfolio-dev.pages.dev`, then browser-verified end to end; that
+verification found and fixed one further defect (the CSP's `img-src` silently blocking all card
+artwork, PROJECT_JOURNAL.md 2026-08-22, PR #15). Only the owner's real-iPhone check remains.
 
 ### M8 — Purchases and the spending ledger
 

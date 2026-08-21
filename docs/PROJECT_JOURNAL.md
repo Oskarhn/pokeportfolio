@@ -1071,3 +1071,40 @@ The recurring shape across M4/M6/M7's cascade misses — a rule fixed once, by h
 it was found, that does not propagate to the next new table — is the same lesson the 2026-08-21
 entry already named as worth a mechanical check rather than memory. It remains unbuilt; this entry
 is the third data point arguing for it, not a fourth attempt to fix it by remembering harder.
+
+## 2026-08-22 — A CSP gap named in a code comment three milestones ago, closed only once a real screen needed it
+
+**Problem.** `vite.config.ts`'s Cloudflare-headers plugin has restricted `img-src` to
+`'self' data: blob:` since M4 introduced the generated Content-Security-Policy, with a comment
+added at M5 reading: "No external image host yet. M5's card artwork comes from the TCGdex CDN and
+will need that origin added here — deliberately, not by loosening this to `https:`." M5 and M6
+never actually rendered a `<img>` pointed at that CDN (search results and holding detail showed
+text/metadata only), so the gap the comment predicted stayed theoretical through two milestones of
+CI passing. M7 is the first milestone that renders real card artwork — search results and Portfolio
+grid tiles — and nobody revisited the comment when that code was written, because the CSP is not
+part of what `pnpm build`, `pnpm test`, or CI's `build-and-test`/`db-tests` jobs exercise: `_headers`
+is a Cloudflare Pages-only file, ignored entirely by `vite dev` and `vite preview`.
+
+**Finding.** Only surfaced by browser-verifying the actual deployed `pokeportfolio-dev.pages.dev`
+build after merging PR #14 — every `assets.tcgdex.net` image request was blocked at the browser
+level with `Refused to load ... violates ... "img-src 'self' data: blob:"`, console-visible but
+silent in the UI (the grid tile's text fallback rendered instead, so nothing *looked* broken enough
+to demand investigation without actually opening devtools). This is exactly the failure mode the
+original comment worried about avoiding by naming an explicit origin rather than loosening to
+`https:` — except the origin was never added, so the restriction just quietly ate the feature it
+was protecting against loosening.
+
+**Fix.** Added `https://assets.tcgdex.net` to `img-src` explicitly (docs/API_SOURCES.md's
+documented image CDN host), still not `https:` generally. `fix/m7-csp-image-host`, PR #15. Verified
+by building locally with a placeholder `VITE_SUPABASE_URL` and confirming the generated
+`dist/_headers` CSP string included the new host, then re-verified against the live deployment
+after merge and a Cloudflare rebuild — card artwork now loads with zero console errors.
+
+**Consequence.** A security header is exactly the kind of configuration M4's own journal entry
+already named as "correct where it was written and wrong where it ran" — except here the risk ran
+the other way: not a hole opened, but a legitimate feature silently disabled by a restriction
+nobody has any automated way to notice going stale, because the thing that would notice (an actual
+browser loading an actual deployed page) is precisely the step CI cannot perform. The standing
+lesson is the same one M5/M6/M7's deployment checklists already encode — browser-verify the live
+build, not just CI — reinforced here because this is the first time that step, rather than a
+database script, is what found the bug.
