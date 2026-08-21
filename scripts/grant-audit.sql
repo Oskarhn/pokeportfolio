@@ -223,7 +223,9 @@ begin
     ('table', 'custom_collections',         'authenticated', 'DELETE'),
     ('table', 'custom_collection_members',  'authenticated', 'SELECT'),
     ('table', 'custom_collection_members',  'authenticated', 'INSERT'),
-    ('table', 'custom_collection_members',  'authenticated', 'DELETE')
+    ('table', 'custom_collection_members',  'authenticated', 'DELETE'),
+    -- M8: the Norges Bank FX-rate cache — market data, read-only for the browser.
+    ('table', 'fx_rates',                   'authenticated', 'SELECT')
     -- invitations: column-level SELECT only, below. invitation_claims: nothing, ever.
   ),
 
@@ -328,7 +330,17 @@ begin
      'bigint, date, timestamp with time zone, bigint, boolean, text)',
      'authenticated', 'EXECUTE'),
     -- M7.1: the collector-number natural-sort key function list_portfolio's number_asc/desc use.
-    ('routine', 'natural_sort_key(text)', 'authenticated', 'EXECUTE')
+    ('routine', 'natural_sort_key(text)', 'authenticated', 'EXECUTE'),
+    -- M8: the largest-remainder allocator and the purchase-ledger write/void/summary surface.
+    ('routine', 'allocate_largest_remainder(bigint, bigint[])', 'authenticated', 'EXECUTE'),
+    ('routine',
+     'create_purchase(date, text, jsonb, uuid, bigint, bigint, bigint, numeric, date, fx_source, text)',
+     'authenticated', 'EXECUTE'),
+    ('routine',
+     'update_purchase(uuid, date, text, jsonb, uuid, bigint, bigint, bigint, numeric, date, fx_source, text)',
+     'authenticated', 'EXECUTE'),
+    ('routine', 'void_purchase(uuid, text)', 'authenticated', 'EXECUTE'),
+    ('routine', 'purchase_spending_summary()', 'authenticated', 'EXECUTE')
   ),
 
   -- M7: the expected PUBLIC-EXECUTE surface for every routine in `public` is empty. No project

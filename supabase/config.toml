@@ -423,6 +423,15 @@ verify_jwt = false
 enabled = true
 verify_jwt = false
 
+# fetch-fx-rate is called from the signed-in purchase form (M8) to resolve/cache a Norges Bank
+# rate. Unlike redeem-invitation/sync-catalog, this one *does* require a real user session --
+# verify_jwt stays at its default (true) rather than being turned off, since fx_rates is shared
+# cache data behind an ordinary authenticated screen, not a pre-session or operator-only surface.
+# See the function header for the full reasoning.
+[functions.fetch-fx-rate]
+enabled = true
+verify_jwt = true
+
 [edge_runtime]
 enabled = true
 # Supported request policies: `oneshot`, `per_worker`.
