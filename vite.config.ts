@@ -46,9 +46,9 @@ function cloudflareHeaders(): Plugin {
         // padding on an older phone is worse than this allowance, which buys an attacker nothing
         // while script-src holds.
         "style-src 'self' 'unsafe-inline'",
-        // No external image host yet. M5's card artwork comes from the TCGdex CDN and will need
-        // that origin added here — deliberately, not by loosening this to `https:`.
-        "img-src 'self' data: blob:",
+        // M7 renders card artwork (search results, Portfolio grid tiles) from the TCGdex CDN
+        // (docs/API_SOURCES.md) — named explicitly, not by loosening this to `https:`.
+        "img-src 'self' data: blob: https://assets.tcgdex.net",
         "font-src 'self'",
         `connect-src 'self' ${origin} ${realtime}`,
         "manifest-src 'self'",
