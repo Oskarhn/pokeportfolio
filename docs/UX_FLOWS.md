@@ -158,9 +158,16 @@ be: search, tap, save. The scanner will reuse exactly these session defaults.
 
 ---
 
-## F3 — Record a purchase
+## F3 — Record a purchase · **implemented M8**
 
 The flow the product exists for. Must tolerate a messy real receipt.
+
+Shipped shape, two deliberate deviations from the description below (DECISIONS.md D-047/D-048):
+a card/sealed line always creates its holding — no per-line checkbox; a user who does not want
+individual entry yet uses a `bulk_lot` line instead. Editing a saved purchase can change dates,
+retailer, per-line quantity/price/spend-class and purchase-level charges, but not which lines
+exist — void and re-enter for that correction, same as "Purchase entered twice" further down this
+document.
 
 → Purchases › New
 → Date (backdating allowed), retailer, currency
@@ -467,11 +474,11 @@ day one (M7 prompt §12 was explicit that a menu of dead actions is worse than a
 |---|---|
 | Search cards | Opens Search (`/catalog`) |
 | Add card manually | Opens the catalog-missing-card form (`/portfolio/manual/new`) |
+| Record purchase (M8) | Opens the multi-line purchase ledger form (`/purchases/new`) |
 | Scan card (M7.1) | Establishes the scanner's future position in this menu; shows "Card scanner is not available yet" — no permission request, no capture code (D-006 still governs the real implementation) |
 
 | Arrives later | Action |
 |---|---|
-| M8 | Add purchase |
 | M11 | Add sealed product |
 | M10 | Record sale |
 | M15 | The Scan card entry above becomes real |

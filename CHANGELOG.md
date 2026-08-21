@@ -10,6 +10,36 @@ they were**.
 
 ## [Unreleased]
 
+### Added — 2026-08-24 · M8 Purchases and the spending ledger
+
+Multi-line purchase ledger over the existing M3/M6 `purchases`/`purchase_lines` tables:
+`create_purchase`, `update_purchase`, `void_purchase`, `purchase_spending_summary` (GPO/CS/HS in
+one query). Shipping, customs and discount allocated with a SQL port of the M2 largest-remainder
+allocator — proven byte-identical to the TypeScript reference — and the frozen NOK total is itself
+allocated the same way rather than rounded per line, keeping `GPO = CS + HS` (F1) exact for a
+foreign-currency purchase. Retailers, backdating, card/sealed/manual-card/accessory/grading/
+bulk/standalone lines, spend-class default and override, safe edit (quantity/price/spend-class/
+charges only — a line set cannot change, D-047), safe void with downstream-blocker detection. Card
+and sealed lines always produce a real holding and lot (D-048); `bulk_lot` remains the line for
+deferred individual entry.
+
+**Foreign currency.** `fx_rates` (market-data cache, service-role writes only) and a new
+`fetch-fx-rate` Edge Function resolving/caching a Norges Bank rate for a (currency, date) pair —
+orientation and endpoint re-verified live against the real API this milestone. Manual FX override
+supported, written only to the caller's own purchase, never the shared cache. A zero-decimal
+currency (JPY) is exercised end to end, proving money never assumes a 2-digit exponent.
+
+**UI.** `/purchases`, `/purchases/new`, `/purchases/$purchaseId`, `/purchases/$purchaseId/edit` —
+reachable from the central + menu ("Record purchase") and a new Home "Total spent" shortcut. No
+market value or P/L anywhere in this milestone (D-023 untouched; M9 still owns pricing).
+
+**Corrected two pre-existing, previously-unexercised gaps** (PROJECT_JOURNAL.md 2026-08-24):
+`retailers.user_id` had no `default auth.uid()` since M3; `purchases.retailer_id` had no
+ownership-check trigger at all. Also corrected `void_acquisition_lot`'s (M6) parent-purchase void
+scope, which only checked the one purchase line a lot belonged to — safe while every purchase had
+exactly one line, wrong once M8 makes multi-line purchases real; a strict generalization, so every
+existing purchase's behaviour is unchanged.
+
 ### Added — 2026-08-22 · M7 Portfolio: organisation, display and navigation
 
 The Collection screen becomes **Portfolio** (user-facing rename, D-040; `/collection*` routes

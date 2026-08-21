@@ -227,6 +227,25 @@ page). Invariant C1 (deleting a collection touches no holding/lot) is asserted d
 service-role client in the `tests/db/` file, matching the existing C1-style pattern in
 `tests/db/m6_constraints.test.ts`.
 
+**M8 (`tests/db/m8_purchase_ledger.test.ts`, `tests/authorization/m8_purchases.test.ts`,
+`tests/data/norges-bank.test.ts`).** E3 and E10 are now proven twice — once as pure TypeScript
+(`tests/financial/worked-examples.test.ts`/`fx.test.ts`) and once against real persisted rows via
+`create_purchase`, which is the "database parity with the domain engine" requirement (the SQL port
+of the largest-remainder allocator, `allocate_largest_remainder`, is asserted byte-identical to
+`src/domain/allocation.ts`'s `allocate()` across a shared corpus in the same file). F1 (`GPO = CS +
+HS`) is asserted over `purchase_spending_summary()`, including after a void. `void_purchase`'s and
+`update_purchase`'s downstream-blocker checks are exercised by directly setting a lot's
+`quantity_remaining` below `quantity` under the service role — a proxy for the real thing, since no
+disposal-producing milestone (sales M10, openings M16, grading M17, trades M18) has shipped yet to
+create one for real; the guard logic itself does not know or care which milestone eventually writes
+that state. The `void_acquisition_lot` correction (D-047's neighbour, M8 prompt §62) is proven by
+voiding one of a two-card-line purchase's two lots and confirming the parent purchase does not void
+prematurely, then voiding the second and confirming it now does. `tests/data/norges-bank.test.ts` is
+a deterministic, no-network regression against a real captured Norges Bank response (TESTING.md's
+own "deterministic, no-network" pattern for provider adapters, matching
+`tests/data/tcgdex-provider.test.ts`) — it proves the BASE_CUR/rate orientation and the
+weekend-fallback behaviour without CI ever depending on the live API, per M8 prompt §92.
+
 **M6 (`tests/authorization/m6_collection.test.ts`, `tests/db/m6_constraints.test.ts`).** The
 generic table-driven attack matrix above covers `manual_card_definitions` (folded into
 `simple-owned-tables.test.ts` — its shape is uniform enough to fit) but not `holding_tags` or

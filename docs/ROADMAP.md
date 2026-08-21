@@ -181,14 +181,19 @@ brought the initial JS bundle down from M7's ~638 KB to ~320 KB (97.8 KB gzipped
 real production build) without a new dependency. Deployed and browser-verified; only the owner's
 real-device check remains outstanding (same open item M7 already carried forward).
 
-### M8 — Purchases and the spending ledger
+### M8 — Purchases and the spending ledger · **complete**
 
 Multi-line purchases, retailers, shipping, customs, discounts, backdating. Allocation engine
 wired into writes. Foreign currency with Norges Bank FX and manual override. Collectible versus
 hobby split. Void semantics and guard rules.
 
 **Gate:** E3 and E10 reproduce in the database; `GPO = CS + HS` holds on real data (F1); voiding
-a referenced purchase is blocked with an error naming the blocker.
+a referenced purchase is blocked with an error naming the blocker. **Met** — see
+`claude_outputs/output_13.txt` and HANDOVER.md. Deployed and verified: CI green (85 domain/property
+tests, 320 database/authorization tests including the hostile-grant convergence proof), migrations
+applied to `pokeportfolio-dev`, `grant-audit.sql` clean, `remote-security-check.mjs` 17/17 (phase
+1), `deployment-check.mjs` 28/28 against the real rebuilt bundle. Owner-side signed-in verification
+still outstanding — this session cannot create or sign in with a synthetic account (see HANDOVER.md).
 
 ### M9 — Pricing and snapshots
 

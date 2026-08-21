@@ -152,8 +152,9 @@ abstraction (ARCHITECTURE §5) and by owning our own price history.
 | Authentication | None |
 | Cost | Free |
 | Format | SDMX-JSON or CSV |
+| Manual contract check | `node scripts/verify-norges-bank-contract.mjs` — never run in CI (M8 prompt §93); `tests/data/norges-bank.test.ts` is the deterministic regression that does run there |
 | Publication | ~16:00 CET, business days only |
-| Verified | 2026-08-16 — live request returned EUR/NOK `10.986` (2026-08-13), `10.9325` (2026-08-14) |
+| Verified | 2026-08-16 — live request returned EUR/NOK `10.986` (2026-08-13), `10.9325` (2026-08-14). Re-verified 2026-08-24 (M8): identical values for the same dates, requested with `format=sdmx-json&startPeriod=2026-08-10&endPeriod=2026-08-14&locale=en`. Confirmed from the real response structure — not assumed — that `BASE_CUR` is the first currency in the pair and the returned number is NOK per one unit of it (`fx_rate_to_nok` directly), and that a date with no trading (weekend/holiday) simply has no observation in the series rather than a null value; the fixed captured payload and this reasoning are pinned as a regression test in `tests/data/norges-bank.test.ts`. |
 
 Official central-bank reference rates. Business-day only, so the resolver falls back to the most
 recent prior date and records which date was used. Manual per-purchase override supported
