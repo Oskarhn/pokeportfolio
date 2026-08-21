@@ -231,7 +231,11 @@ export function PurchaseFormPage() {
       await queryClient.invalidateQueries({ queryKey: ['purchases'] })
       await queryClient.invalidateQueries({ queryKey: ['spending-summary'] })
       await queryClient.invalidateQueries({ queryKey: ['portfolio'] })
-      await navigate({ to: '/purchases/$purchaseId', params: { purchaseId: purchase.id } })
+      await navigate({
+        to: '/purchases/$purchaseId',
+        params: { purchaseId: purchase.id },
+        search: { created: true },
+      })
     },
     onError: (err: Error) => {
       setError(err.message)
@@ -240,7 +244,13 @@ export function PurchaseFormPage() {
 
   return (
     <div className="mx-auto w-full max-w-2xl space-y-5 py-4 pb-24">
-      <h1 className="text-xl font-semibold tracking-tight text-slate-100">Record purchase</h1>
+      <div>
+        <h1 className="text-xl font-semibold tracking-tight text-slate-100">Record purchase</h1>
+        <p className="mt-1 text-sm text-slate-400">
+          Record the items from one receipt. Shipping, customs and discounts are allocated
+          automatically across every line.
+        </p>
+      </div>
 
       <div className="grid grid-cols-2 gap-3">
         <TextField

@@ -339,6 +339,9 @@ const purchaseNewRoute = createRoute({
 const purchaseDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/purchases/$purchaseId',
+  validateSearch: (search: Record<string, unknown>): { created?: boolean } => ({
+    created: bool(search.created),
+  }),
   component: () => (
     <RequireSession>
       <PurchaseDetailPage />

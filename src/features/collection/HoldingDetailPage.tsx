@@ -70,13 +70,19 @@ export function HoldingDetailPage() {
     },
   })
 
+  const [voidError, setVoidError] = useState<string | null>(null)
   const voidMutation = useMutation({
     mutationFn: (lotId: string) => voidAcquisitionLot(lotId),
     onSuccess: async () => {
+      setVoidError(null)
       await queryClient.invalidateQueries({ queryKey: ['holding-lots', holdingId] })
       await queryClient.invalidateQueries({ queryKey: ['holding-summary', holdingId] })
       await queryClient.invalidateQueries({ queryKey: ['portfolio'] })
       await queryClient.invalidateQueries({ queryKey: ['portfolio-counts'] })
+      await queryClient.invalidateQueries({ queryKey: ['spending-summary'] })
+    },
+    onError: (error: Error) => {
+      setVoidError(error.message)
     },
   })
 
@@ -314,7 +320,9 @@ export function HoldingDetailPage() {
                         type="button"
                         onClick={() => {
                           if (
-                            confirm('Void this acquisition? It stays visible but no longer counts.')
+                            confirm(
+                              'Remove this acquisition from your Portfolio? Use this only to correct an entry — selling or trading a card will have separate workflows. It stays visible in history but no longer counts.',
+                            )
                           ) {
                             voidMutation.mutate(lot.id)
                           }
@@ -325,6 +333,11 @@ export function HoldingDetailPage() {
                       </button>
                     )}
                   </div>
+                  {voidError && voidMutation.variables === lot.id ? (
+                    <p role="alert" className="text-xs text-rose-300">
+                      {voidError}
+                    </p>
+                  ) : null}
                   <p className="text-xs text-slate-400">
                     {lot.costBasisState === 'known' && lot.unitCostBasisMinor !== null
                       ? `${formatNokMinor(lot.unitCostBasisMinor)} NOK / card`

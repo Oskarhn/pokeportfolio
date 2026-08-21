@@ -1470,6 +1470,15 @@ export type Database = {
         Args: { p_claim_id: string }
         Returns: undefined
       }
+      remove_holdings_from_portfolio: {
+        Args: { p_holding_ids: string[] }
+        Returns: {
+          blocked: boolean
+          blocked_reason: string | null
+          holding_id: string
+          physical_count: number
+        }[]
+      }
       revoke_invitation: {
         Args: { p_invitation_id: string }
         Returns: undefined

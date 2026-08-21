@@ -566,6 +566,90 @@ describe('void_acquisition_lot: parent-purchase scope corrected for multi-line p
       .single()
     expect(nowVoided?.voided_at).not.toBeNull() // last live lot gone: the whole receipt voids
   })
+
+  // M8.1 (prompt §6): the M8-era check above only ever counted *other live lots*, which happened
+  // to be correct for the two-card case (both lines produce a lot) but is wrong the moment a
+  // receipt has a line that never produces one at all — the exact regression this proves fixed.
+  it('never auto-voids a purchase while an accessory line still represents real spend (M8.1 fix)', async () => {
+    const { data: purchase } = await callCreate(clientA, {
+      p_purchased_on: today,
+      p_currency: 'NOK',
+      p_lines: [
+        {
+          line_type: 'card',
+          card_variant_id: seedCatalog.charizardVariantId,
+          condition: 'NM',
+          quantity: 1,
+          unit_price_minor: 1000,
+        },
+        { line_type: 'accessory', description: 'Deck box', quantity: 1, unit_price_minor: 500 },
+      ],
+    })
+    const lines = await linesFor(purchase!.id)
+    const cardLine = lines.find((l) => l.line_type === 'card')!
+    const { data: cardLot } = await service
+      .from('acquisition_lots')
+      .select('id')
+      .eq('purchase_line_id', cardLine.id)
+      .single()
+
+    const { error } = await clientA.rpc('void_acquisition_lot', { p_lot_id: cardLot!.id })
+    expect(error).toBeNull()
+
+    const { data: afterPurchase } = await service
+      .from('purchases')
+      .select('voided_at')
+      .eq('id', purchase!.id)
+      .single()
+    // The bug: this used to be non-null (the accessory's 500 øre silently vanished from CS/HS).
+    expect(afterPurchase?.voided_at).toBeNull()
+
+    const { data: accessoryLine } = await service
+      .from('purchase_lines')
+      .select('line_total_minor, spend_class')
+      .eq('purchase_id', purchase!.id)
+      .eq('line_type', 'accessory')
+      .single()
+    expect(accessoryLine?.line_total_minor).toBe(500)
+    expect(accessoryLine?.spend_class).toBe('hobby')
+  })
+
+  it('refuses to void a lot that has already been partially disposed elsewhere', async () => {
+    const { data: purchase } = await callCreate(clientA, {
+      p_purchased_on: today,
+      p_currency: 'NOK',
+      p_lines: [
+        {
+          line_type: 'card',
+          card_variant_id: seedCatalog.pikachuVariantId,
+          condition: 'NM',
+          quantity: 3,
+          unit_price_minor: 200,
+        },
+      ],
+    })
+    const lines = await linesFor(purchase!.id)
+    const { data: lot } = await service
+      .from('acquisition_lots')
+      .select('id')
+      .eq('purchase_line_id', lines[0]!.id)
+      .single()
+
+    // No disposal-producing milestone ships yet (M10 sales, M16 openings, ...) — simulated the same
+    // way update_purchase/void_purchase's own blocker tests already do, directly under service role.
+    await service.from('acquisition_lots').update({ quantity_remaining: 1 }).eq('id', lot!.id)
+
+    const { error } = await clientA.rpc('void_acquisition_lot', { p_lot_id: lot!.id })
+    expect(error).not.toBeNull()
+    expect(error?.message).toMatch(/partially disposed/i)
+
+    const { data: stillLive } = await service
+      .from('acquisition_lots')
+      .select('voided_at')
+      .eq('id', lot!.id)
+      .single()
+    expect(stillLive?.voided_at).toBeNull()
+  })
 })
 
 describe('fx_rates: market data, service-role writes only', () => {

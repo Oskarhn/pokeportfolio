@@ -340,7 +340,9 @@ begin
      'update_purchase(uuid, date, text, jsonb, uuid, bigint, bigint, bigint, numeric, date, fx_source, text)',
      'authenticated', 'EXECUTE'),
     ('routine', 'void_purchase(uuid, text)', 'authenticated', 'EXECUTE'),
-    ('routine', 'purchase_spending_summary()', 'authenticated', 'EXECUTE')
+    ('routine', 'purchase_spending_summary()', 'authenticated', 'EXECUTE'),
+    -- M8.1: the bulk-safe Remove from Portfolio surface.
+    ('routine', 'remove_holdings_from_portfolio(uuid[])', 'authenticated', 'EXECUTE')
   ),
 
   -- M7: the expected PUBLIC-EXECUTE surface for every routine in `public` is empty. No project
