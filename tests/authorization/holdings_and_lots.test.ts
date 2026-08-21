@@ -74,6 +74,10 @@ async function createOwnedPurchaseLine(client: TestClient, userId: string) {
       quantity: 1,
       unit_price_minor: 5_000,
       line_total_minor: 5_000,
+      // purchase_lines_attributable_cost_matches_allocation (M8): with no purchase-level
+      // shipping/customs/discount, attributable cost is exactly the line total.
+      attributable_cost_minor: 5_000,
+      attributable_cost_nok_minor: 5_000,
     })
     .select()
     .single()

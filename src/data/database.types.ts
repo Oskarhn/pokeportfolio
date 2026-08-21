@@ -429,6 +429,36 @@ export type Database = {
         }
         Relationships: []
       }
+      fx_rates: {
+        Row: {
+          base_currency: string
+          id: number
+          quote_currency: string
+          rate: number
+          rate_date: string
+          retrieved_at: string
+          source: Database["public"]["Enums"]["fx_source"]
+        }
+        Insert: {
+          base_currency: string
+          id?: number
+          quote_currency: string
+          rate: number
+          rate_date: string
+          retrieved_at?: string
+          source: Database["public"]["Enums"]["fx_source"]
+        }
+        Update: {
+          base_currency?: string
+          id?: number
+          quote_currency?: string
+          rate?: number
+          rate_date?: string
+          retrieved_at?: string
+          source?: Database["public"]["Enums"]["fx_source"]
+        }
+        Relationships: []
+      }
       holding_tags: {
         Row: {
           created_at: string
@@ -1033,7 +1063,7 @@ export type Database = {
           name: string
           notes?: string | null
           updated_at?: string
-          user_id: string
+          user_id?: string
         }
         Update: {
           created_at?: string
@@ -1268,6 +1298,10 @@ export type Database = {
           lot_id: string
         }[]
       }
+      allocate_largest_remainder: {
+        Args: { p_total: number; p_weights: number[] }
+        Returns: number[]
+      }
       before_user_created: { Args: { event: Json }; Returns: Json }
       card_condition_to_text: {
         Args: { value: Database["public"]["Enums"]["card_condition"] }
@@ -1288,6 +1322,48 @@ export type Database = {
           invited_email: string
           token: string
         }[]
+      }
+      create_purchase: {
+        Args: {
+          p_currency: string
+          p_customs_minor?: number
+          p_discount_minor?: number
+          p_fx_rate_date?: string
+          p_fx_rate_to_nok?: string
+          p_fx_source?: Database["public"]["Enums"]["fx_source"]
+          p_lines: Json
+          p_notes?: string
+          p_purchased_on: string
+          p_retailer_id?: string
+          p_shipping_minor?: number
+        }
+        Returns: {
+          created_at: string
+          currency: string
+          customs_minor: number
+          discount_minor: number
+          fx_rate_date: string
+          fx_rate_to_nok: number
+          fx_source: Database["public"]["Enums"]["fx_source"]
+          id: string
+          notes: string | null
+          origin: Database["public"]["Enums"]["purchase_origin"]
+          purchased_on: string
+          retailer_id: string | null
+          shipping_minor: number
+          subtotal_minor: number
+          total_minor: number
+          total_nok_minor: number
+          updated_at: string
+          user_id: string
+          voided_at: string | null
+        }
+        SetofOptions: {
+          from: "*"
+          to: "purchases"
+          isOneToOne: true
+          isSetofReturn: false
+        }
       }
       finalize_invitation_redemption: {
         Args: { p_claim_id: string; p_user_id: string }
@@ -1381,6 +1457,15 @@ export type Database = {
           unique_holding_count: string
         }[]
       }
+      purchase_spending_summary: {
+        Args: never
+        Returns: {
+          cs_nok_minor: string
+          gpo_nok_minor: string
+          hs_nok_minor: string
+          purchase_count: number
+        }[]
+      }
       release_invitation_claim: {
         Args: { p_claim_id: string }
         Returns: undefined
@@ -1437,8 +1522,55 @@ export type Database = {
           isSetofReturn: false
         }
       }
+      update_purchase: {
+        Args: {
+          p_currency: string
+          p_customs_minor?: number
+          p_discount_minor?: number
+          p_fx_rate_date?: string
+          p_fx_rate_to_nok?: string
+          p_fx_source?: Database["public"]["Enums"]["fx_source"]
+          p_lines: Json
+          p_notes?: string
+          p_purchase_id: string
+          p_purchased_on: string
+          p_retailer_id?: string
+          p_shipping_minor?: number
+        }
+        Returns: {
+          created_at: string
+          currency: string
+          customs_minor: number
+          discount_minor: number
+          fx_rate_date: string
+          fx_rate_to_nok: number
+          fx_source: Database["public"]["Enums"]["fx_source"]
+          id: string
+          notes: string | null
+          origin: Database["public"]["Enums"]["purchase_origin"]
+          purchased_on: string
+          retailer_id: string | null
+          shipping_minor: number
+          subtotal_minor: number
+          total_minor: number
+          total_nok_minor: number
+          updated_at: string
+          user_id: string
+          voided_at: string | null
+        }
+        SetofOptions: {
+          from: "*"
+          to: "purchases"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
       void_acquisition_lot: {
         Args: { p_lot_id: string; p_reason?: string }
+        Returns: undefined
+      }
+      void_purchase: {
+        Args: { p_purchase_id: string; p_reason?: string }
         Returns: undefined
       }
     }

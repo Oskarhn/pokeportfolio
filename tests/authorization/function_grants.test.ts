@@ -124,6 +124,46 @@ const FUNCTIONS: FunctionCase[] = [
     authenticated: CALLABLE,
     why: 'reachable by any session; the body itself refuses a lot the caller does not own',
   },
+  {
+    name: 'allocate_largest_remainder',
+    args: { p_total: 0, p_weights: [] }, // deliberately invalid — reaching the body's own validation is enough
+    anon: REFUSED,
+    authenticated: CALLABLE,
+    why: 'M8: pure allocation helper create_purchase/update_purchase call; no table access at all',
+  },
+  {
+    name: 'create_purchase',
+    args: { p_purchased_on: '2026-01-01', p_currency: 'NOK', p_lines: [] }, // deliberately invalid — zero lines
+    anon: REFUSED,
+    authenticated: CALLABLE,
+    why: 'M8: the multi-line purchase write surface; reachable by any session, RLS/derived auth.uid() do the rest',
+  },
+  {
+    name: 'update_purchase',
+    args: {
+      p_purchase_id: '00000000-0000-0000-0000-000000000000',
+      p_purchased_on: '2026-01-01',
+      p_currency: 'NOK',
+      p_lines: [],
+    },
+    anon: REFUSED,
+    authenticated: CALLABLE,
+    why: 'M8: reachable by any session; the body itself refuses a purchase the caller does not own',
+  },
+  {
+    name: 'void_purchase',
+    args: { p_purchase_id: '00000000-0000-0000-0000-000000000000' },
+    anon: REFUSED,
+    authenticated: CALLABLE,
+    why: 'M8: reachable by any session; the body itself refuses a purchase the caller does not own',
+  },
+  {
+    name: 'purchase_spending_summary',
+    args: {},
+    anon: REFUSED,
+    authenticated: CALLABLE,
+    why: 'M8: the GPO/CS/HS aggregate; every predicate derives from auth.uid(), no argument to forge',
+  },
 ]
 
 let service: TestClient
@@ -188,6 +228,7 @@ describe('trigger functions are not an API surface', () => {
     'holding_tags_check_owner',
     'manual_valuations_check_owner',
     'profiles_check_default_storage_owner',
+    'purchases_check_retailer_owner',
   ]
 
   for (const name of triggerFunctions) {

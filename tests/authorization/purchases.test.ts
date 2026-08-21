@@ -64,6 +64,10 @@ describe('RLS isolation: purchases and purchase_lines', () => {
         quantity: 1,
         unit_price_minor: 10_000,
         line_total_minor: 10_000,
+        // purchase_lines_attributable_cost_matches_allocation (M8): no shipping/customs/discount
+        // on this purchase, so attributable cost is exactly the line total.
+        attributable_cost_minor: 10_000,
+        attributable_cost_nok_minor: 10_000,
       })
       .select()
       .single()

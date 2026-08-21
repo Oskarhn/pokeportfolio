@@ -9,10 +9,13 @@ import {
 } from '../../data/portfolio'
 import { getCollectionMemberCount } from '../../data/customCollections'
 import { getMyProfile, updateMyProfile } from '../../data/profile'
+import { getSpendingSummary } from '../../data/purchases'
 import { ScopeSelector } from '../../ui/ScopeSelector'
 import { CurrencySelector } from '../../ui/CurrencySelector'
 import { MoneyDisplay, ValuePrivacyToggle } from '../../ui/MoneyDisplay'
+import { formatNokMinor } from '../../ui/money-format'
 import { CardImage } from '../catalog/CardImage'
+import { ChartIcon } from '../../ui/icons'
 
 const PERIODS = ['1D', '1W', '1M', '3M', '6M', '1Y', 'MAX'] as const
 
@@ -67,6 +70,8 @@ export function HomePage() {
   const valuedTopCards = (topCards.data?.results ?? []).filter(
     (tile) => tile.resolvedValueMinor !== null,
   )
+
+  const spending = useQuery({ queryKey: ['spending-summary'], queryFn: getSpendingSummary })
 
   return (
     <div className="mx-auto w-full max-w-2xl space-y-6 py-2">
@@ -129,6 +134,22 @@ export function HomePage() {
           <StatTile label="Cards in this collection" value={scopeCount.data} wide />
         )}
       </section>
+
+      <Link
+        to="/purchases"
+        className="flex min-h-16 items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-900/60 px-4 py-3 hover:bg-slate-800/40"
+      >
+        <span className="flex items-center gap-3">
+          <ChartIcon className="size-5 text-slate-400" />
+          <span className="text-sm font-medium text-slate-200">Spending</span>
+        </span>
+        <span className="text-right">
+          <span className="block text-sm font-semibold text-slate-100">
+            {spending.data ? `${formatNokMinor(spending.data.gpoNokMinor)} kr` : '—'}
+          </span>
+          <span className="block text-xs text-slate-500">Total spent</span>
+        </span>
+      </Link>
 
       <section className="space-y-3">
         <div className="flex items-center justify-between">

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { Sheet } from '../../ui/Sheet'
-import { SearchIcon, PlusIcon, CameraIcon } from '../../ui/icons'
+import { SearchIcon, PlusIcon, CameraIcon, ChartIcon } from '../../ui/icons'
 
 /**
  * The central + action (M7.1 prompt §24). Shows only what genuinely exists today. "Scan card"
@@ -39,6 +39,19 @@ export function QuickAddMenu({ open, onClose }: { open: boolean; onClose: () => 
               Add card manually
               <span className="block text-xs font-normal text-slate-500">
                 For a card the catalog does not list
+              </span>
+            </span>
+          </Link>
+          <Link
+            to="/purchases/new"
+            onClick={onClose}
+            className="flex min-h-14 items-center gap-3 rounded-xl border border-slate-800 px-4 text-sm font-medium text-slate-100 hover:bg-slate-800/60"
+          >
+            <ChartIcon className="size-5 text-slate-400" />
+            <span>
+              Record purchase
+              <span className="block text-xs font-normal text-slate-500">
+                Log a receipt — cards, accessories, shipping
               </span>
             </span>
           </Link>
