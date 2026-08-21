@@ -4,29 +4,37 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-**Last updated:** 2026-08-22 — M1 (scaffold and harness), M2 (financial domain core), M3
+**Last updated:** 2026-08-23 — M1 (scaffold and harness), M2 (financial domain core), M3
 (database, migrations, RLS), M4 (invite-only authentication), M4.1 (privilege convergence,
 deployment, real end-to-end), M5 (catalog, TCGdex ingest, search), M6 (collection: holdings, lots,
-origin, cost) and M7 (Portfolio: organisation, display, navigation) complete in code, merged, and
-deployed. M7's PR ([#14](https://github.com/Oskarhn/pokeportfolio/pull/14)) merged after CI-green;
-a follow-up CSP fix ([#15](https://github.com/Oskarhn/pokeportfolio/pull/15)) merged after browser
-verification found card thumbnails were blocked in production — see "M7 verification state" below
-for the full account. Only the owner's real-iPhone check remains outstanding.
+origin, cost), M7 (Portfolio: organisation, display, navigation) and **M7.1 (owner UI/UX
+refinement pass)** complete in code, merged, and deployed. M7's PR
+([#14](https://github.com/Oskarhn/pokeportfolio/pull/14)) merged after CI-green; a follow-up CSP
+fix ([#15](https://github.com/Oskarhn/pokeportfolio/pull/15)) merged after browser verification
+found card thumbnails were blocked in production. M7.1's two PRs
+([#18](https://github.com/Oskarhn/pokeportfolio/pull/18),
+[#19](https://github.com/Oskarhn/pokeportfolio/pull/19)) merged after CI-green — see "M7.1 —
+owner UI/UX refinement" below for the full account. **The owner's real-device check is still
+outstanding — it was never done for M7 either, and M7.1 changed even more of the primary UI, so
+it now covers both.**
 
 ---
 
 ## Status
 
-**Planning is FROZEN. M1–M7 are complete in code, merged, and deployed.** M8 (purchases and the
-spending ledger) is next, once the owner has done a short real-iPhone check on M7 (see "M7
-verification state" immediately below) and reacted to the deployed UI.
+**Planning is FROZEN. M1–M7.1 are complete in code, merged, and deployed.** M8 (purchases and the
+spending ledger) is next, once the owner has done a short real-device check (see "M7.1 — owner
+UI/UX refinement" below) and reacted to the deployed UI.
 
-The application is deployed and reachable: **https://pokeportfolio-dev.pages.dev**, on the M7
-state (PRs #14 and #15 both merged). The owner has a working administrator account on the
+The application is deployed and reachable: **https://pokeportfolio-dev.pages.dev**, on the M7.1
+state (PRs #14, #15, #18 and #19 all merged). The owner has a working administrator account on the
 development project, the shared catalog holds the real English and Japanese physical Pokémon TCG
-card set (M5), and the deployed build lets the owner search a card (with visible card artwork),
-add it to their Portfolio with real acquisition provenance and cost, and browse it in
-`/portfolio` — grid/list/table views, sort, filters, and custom collections.
+card set (M5), and the deployed build lets the owner search a card (with visible card artwork,
+a set-browsing carousel, and a favourite filter), add it to their Portfolio with real acquisition
+provenance and cost, and browse it in `/portfolio` — grid/list/table views, sort (including a new
+card-number sort), filters, custom collections, and select-mode bulk actions. Primary navigation
+is now Home/Search/Portfolio/Profile plus a central quick-add — More is gone, and admin
+invitations live under Profile. Theme (light/dark/system) actually applies.
 
 **M6 also migrated the project's Supabase API keys** (D-039) — see "Security: key migration" below
 before touching anything credential-related. The legacy `anon`/`service_role` pair is now
@@ -663,13 +671,121 @@ the Supabase secret key, which this session never fetches — this run instead u
   (`HoldingDetailPage`, `AddToCollectionPage`, `ManualCardPage`) are reached from `/portfolio/...`
   routes now — deliberate minimal-churn choice (D-040), not an oversight.
 
+## M7.1 — Owner UI/UX refinement
+
+Not a numbered product milestone — a focused correction pass after the owner reviewed the
+deployed M7 UI and gave substantial concrete feedback, applied before M8/M9/M12 build further
+screens on top of a structure the owner had already flagged (DECISIONS.md D-043–D-046,
+`claude_outputs/output_12.txt`).
+
+**Navigation.** Bottom/desktop nav rebuilt to four destinations — Home, Search, Portfolio,
+Profile — plus a central quick-add, symmetrical two either side of **+**, replacing M7's
+five-tab-plus-spacer geometry. More is gone: `/more` redirects to `/profile`
+(`src/features/more/` deleted); its one real function, admin invitations, moved into Profile,
+still admin-gated. Global "PokePortfolio" wordmark removed from authenticated chrome — it now
+appears only on Home's mobile view and the auth screens.
+
+**Visual baseline.** The provisional blue/slate palette the owner flagged as "AI-generated" is
+replaced by a neutral warm-graphite surface scale and a restrained bronze/copper accent
+(DESIGN_SYSTEM.md §3.1's concrete token table). Implemented by rebinding Tailwind's own
+`slate`/`sky`/`rose`/`emerald` palette tokens to CSS custom properties in `src/styles/index.css`
+that flip for light/dark — every existing `bg-slate-900`/`text-sky-400`/etc. utility across the
+whole codebase is theme-aware for free, with no per-component rewrite. Theme preference
+(`profiles.theme`) now actually applies: `src/ui/theme.ts` sets `data-theme` on `<html>`, and
+`index.html` carries a small inline bootstrap script so a returning user's explicit choice applies
+before first paint. Radius bumped app-wide the same token-override way. Nav/sheets lightly
+translucent (`backdrop-blur`).
+
+**Home, Search, Portfolio, Profile** all substantially restructured per the owner's detailed spec
+— see UX_FLOWS.md F0/F2.3/F8.4/F8.5/F10 and DESIGN_SYSTEM.md for the shipped shape, and F15/F16
+for the two future specs (Trade Analyzer, Market Movers) recorded but not built. Highlights:
+
+- Home: shared scope selector (Portfolio Main / a custom collection — same `custom_collections`
+  model as Portfolio, never a second grouping system), currency preference, a value-privacy eye,
+  a reserved value/chart panel, a "most valuable cards" section that only ever shows holdings with
+  a *real* resolved value.
+- Search: dominant top search bar, a camera/scanner affordance (honestly "not available yet", no
+  permission request, D-006 still governs the real M15 implementation), a favourite filter reusing
+  existing holding state, a real set-browsing carousel (newest sets first, by language), image-led
+  card results.
+- Card detail: image-first, then one rounded info panel; the set name is now a real link to
+  `/catalog/sets/$setId`; a reserved (empty, honest) price-history slot.
+- Portfolio: a "search in your portfolio" bar (server-side, reuses `list_portfolio`'s existing
+  `p_query`), a favourite star, an action menu (Sort/Select), select mode with functional bulk
+  actions (add/remove-to-collection, favourite — all purely organisational, C1), a real Portfolio
+  CSV export (pulled forward from M13 in the narrow current-state-only sense — M13 still owns the
+  full suite), and a new **card-number sort** (`number_asc`/`number_desc`, natural-sort ordering
+  over real collector numbers, not a fabricated ranking key).
+- Profile: rebuilt as the account/settings hub — working theme control, a European-pricing
+  preference (`profiles.use_eu_pricing`, stored ahead of M9, genuinely inert until then), default
+  Portfolio view/density, preferred card language, admin invitations, provider attribution, and a
+  real app-version string sourced from `package.json` at build time (`__APP_VERSION__`).
+
+**Database.** Four new migrations
+(`20260823120000_m71_portfolio_sort_number_enum.sql` through
+`20260823120030_m71_privilege_baseline.sql`): the `number_asc`/`number_desc` enum values, a new
+`natural_sort_key(text)` IMMUTABLE SQL function, `list_portfolio`'s signature growing one trailing
+cursor parameter (dropped and recreated, not `CREATE OR REPLACE`d — a new parameter changes a
+Postgres function's identity), two new `profiles` columns (`hide_values`, `use_eu_pricing`), and a
+restated privilege baseline. All four applied to `pokeportfolio-dev` via `supabase db push`.
+`database.types.ts` was hand-updated to match (no local Docker, same pattern M6 used) — replace it
+with CI's generated artifact the next time a session has Docker available, per that same
+precedent.
+
+**Deliberately not built**, recorded rather than silently skipped (BACKLOG.md, D-045/D-046):
+profile-picture upload (needs SECURITY.md §7's storage safeguards — private paths, size/MIME
+validation, re-encoding, EXIF stripping — that a quick implementation would have skipped), bulk
+"Remove from Portfolio" (needs a real transaction-safe batch-void RPC that does not exist yet),
+account reset/delete UI, portfolio share links, price alerts, Trade Analyzer, Market Movers.
+
+**Bundle size.** M7's ~638 KB initial bundle (flagged as a known limitation) is now ~320 KB
+(98 KB gzipped) via route-level code splitting (`React.lazy` in `src/router.tsx`) — Home/Profile/
+auth stay eager, everything reached by navigating further in loads on demand. No new dependency.
+
+**Verification, actually run against the real project and the real deployment, not just CI:**
+
+- `pnpm typecheck`/`pnpm lint`/`pnpm format:check`/`pnpm test` (80 domain tests, unchanged) all
+  green locally. `pnpm build` succeeds; bundle size measured from the real output.
+- CI green on both PRs: `build-and-test` and `db-tests` (full migration application, hostile-grant
+  convergence, the complete authorization suite including two new test files' worth of coverage
+  for `hide_values`/`use_eu_pricing` and `natural_sort_key`/number sort).
+- All four M7.1 migrations applied to `pokeportfolio-dev` (`supabase db push`).
+- `scripts/grant-audit.sql` clean against the live project (`supabase db query --linked`).
+- `scripts/remote-security-check.mjs` phase 1: 17/17 (no `INVITE_TOKEN` available this session —
+  phase 2/full redemption not re-run; nothing in M7.1 touched the redemption path itself).
+- `scripts/deployment-check.mjs` against `https://pokeportfolio-dev.pages.dev`: **found and fixed
+  a real gap in the check itself** (PR #19) — it only ever scanned the single entry bundle for the
+  correct Supabase project/no leaked secret/no source map, and M7.1's route-level code splitting
+  moved most of that surface (including the shared Supabase client) into separate chunks the old
+  check never looked at. Fixed to scan every chunk listed in the service worker's own precache
+  manifest. Re-run after the fix: **28/28 checks pass**, a strictly wider check than before, not
+  just a relabelled one.
+
+**Not done this session, and why:** the deployed-UI walkthrough with a fresh synthetic account
+that M6/M7 each did (search, add, browse, sign out, delete the account afterward) was **not**
+performed this session. Creating an account and choosing/entering a password — even for a
+throwaway `.invalid` synthetic fixture immediately deleted afterward — falls under this session's
+own standing prohibition on creating accounts or entering passwords, which holds regardless of
+project convention. Everything reachable *without* signing in (routing/guards, security headers,
+the PWA manifest and service worker, the bundle's Supabase project/secret-key posture) was
+verified live, above. What was **not** verified live: the actual rendered appearance of Home,
+Search, Portfolio and Profile signed in, the theme toggle actually switching the palette, select
+mode, and the CSV export producing a real file — all of that needs a real signed-in pass, which
+is now folded into the single owner real-device ask below rather than a separate step.
+
 ## Next actions
 
-**M1–M7 are done, merged, and deployed.** Ask the owner for the short real-iPhone check (item 5
-under "M7 verification state" above), then start **M8 — Purchases and the spending ledger**
+**M1–M7.1 are done, merged, and deployed.** Ask the owner for one short real-device check (see the
+checklist immediately below), then start **M8 — Purchases and the spending ledger**
 ([docs/ROADMAP.md](docs/ROADMAP.md)): multi-line purchases, retailers, shipping, customs,
 discounts, backdating, the allocation engine wired into writes, foreign currency via Norges Bank
 FX, collectible/hobby split, void semantics.
+
+**Real-device check needed (combines the outstanding M7 item with M7.1's own changes):** nav
+symmetry and the + button's position/tap target, safe-area/home-indicator clearance, the Search
+top bar and set carousel, the Portfolio search bar and scope/value header, 2-column mobile grid,
+select mode, sheets, Profile's theme toggle actually changing the palette, light and dark both,
+translucent-nav legibility over scrolled content, scrolling generally.
 
 **Do not** attempt the whole MVP in one branch. Each milestone is a reviewable unit with a
 behavioural gate.
@@ -765,6 +881,22 @@ Verified 2026-08-21 (M6, and load-bearing for the key migration):
 - **`COMMENT ON FUNCTION ... IS` takes a single string literal, not an expression** — `'a' || 'b'`
   is a syntax error there even though string concatenation is valid SQL everywhere else.
 
+Verified 2026-08-23 (M7.1), load-bearing for anyone touching `scripts/deployment-check.mjs` or
+adding route-level code splitting:
+
+- **`CREATE OR REPLACE FUNCTION` cannot add a parameter.** Postgres identifies a function by name
+  plus argument *types*; a new parameter (even with a default) changes that identity, so
+  `CREATE OR REPLACE` creates a second overload instead of replacing the first — and a call that
+  could match either via defaults then fails with "function is not unique". `DROP FUNCTION` (the
+  exact old signature) then `CREATE FUNCTION` is the correct sequence, same as
+  `20260823120010_m71_number_sort.sql` does for `list_portfolio`.
+- **`vite-plugin-pwa`'s service-worker precache manifest is the reliable way to enumerate every JS
+  chunk a code-split build actually ships**, when a script needs to (`deployment-check.mjs` now
+  does) — `index.html` only references the entry chunk and any eagerly-needed ones; lazy chunks
+  reached via `React.lazy`/dynamic `import()` are never linked from it at all, and the bundler can
+  also hoist a dependency shared between an eager and a lazy importer (here: the Supabase client)
+  into its own chunk neither directly references.
+
 ## Commands
 
 ```bash
@@ -832,6 +964,17 @@ all green. Migrations pushed to `pokeportfolio-dev`, `grant-audit.sql` clean,
 (`fix/m7-csp-image-host`), merged:** the CSP `img-src` fix found during deployed-browser
 verification (see "M7 verification state" above) — same CI suites, all green.
 
+**Green on PR #18 (`feat/m7-1-ui-refinement`) and PR #19 (`fix/m71-deployment-check-lazy-chunks`),
+both merged:** 80 domain/property/data tests (unchanged — M7.1 added no `src/domain` logic) ·
+database/authorization suite green on CI including the two new test files' worth of M7.1 coverage
+(`hide_values`/`use_eu_pricing` in `tests/authorization/profiles.test.ts`,
+`natural_sort_key`/`number_asc`/`number_desc` in `tests/authorization/m7_portfolio.test.ts`) · one
+updated E2E case (`/more`'s legacy redirect) · `pnpm typecheck`/`pnpm lint`/`pnpm format:check`/
+`pnpm build` all green, bundle ~320 KB (98 KB gzipped, down from ~638 KB). Migrations pushed to
+`pokeportfolio-dev`, `grant-audit.sql` clean, `remote-security-check.mjs` phase 1 17/17,
+`deployment-check.mjs` **28/28** after PR #19's fix (the check itself had a real gap against
+M7.1's code-split output — see the M7.1 section above).
+
 CI runs `build-and-test` (gate + E2E + gitleaks) and `db-tests` (ephemeral Supabase stack → migrate
 → assert the Edge Function is reachable → **assert the privilege baseline → make the database
 hostile, prove the audit rejects it, re-apply, prove convergence** → suites → generate types) on
@@ -841,10 +984,11 @@ every push and PR, with **no remote credentials anywhere**.
 
 | # | Action | Blocks |
 |---|---|---|
-| 1 | Optional: install Docker Desktop | Local iteration convenience — every M7 DB/authorization test still had to wait for CI this session instead of running locally first |
+| 1 | Optional: install Docker Desktop | Local iteration convenience — every M7/M7.1 DB/authorization test still had to wait for CI this session instead of running locally first |
 | 2 | Optional: fix Node/pnpm absence from the default PATH | Convenience only |
-| 3 | A short real-iPhone check on the now-deployed M7 build (M7 prompt §120): bottom nav fit, + easy to press, no Home-indicator overlap, Portfolio scroll, 2-column mobile grid, filter sheet usable, table reachable, Search + works | Final sign-off on the new bottom nav/gestures on real hardware |
-| 4 | Give feedback on the deployed Portfolio UI version (grid/list/table, nav, filters, custom collections) | Informs M8+ and the eventual M12a visual pass — not a blocker, but the owner explicitly wants to be asked here |
+| 3 | A short real-device check on the now-deployed M7.1 build (see "M7.1 — owner UI/UX refinement" above for the exact checklist) | Final sign-off on the new nav/theme/gestures on real hardware — outstanding since M7, and M7.1 changed even more of the primary UI |
+| 4 | Give feedback on the deployed M7.1 UI (nav, Home, Search, Portfolio, Profile, theme) | Informs M8+ and the eventual M12a visual pass — not a blocker, but the owner explicitly wants to be asked here |
+| 5 | Optional, whenever convenient: sign in and click through Home/Search/Portfolio/Profile once from a real session | This session could not do it itself — creating even a throwaway synthetic account requires entering a password, which is outside what this session performs regardless of project convention (see "Not done this session, and why" above) |
 
 The admin account, the M6 deployment, the API-key model and the installed-PWA check remain done
 from before M7.
