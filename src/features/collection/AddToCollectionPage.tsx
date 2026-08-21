@@ -96,9 +96,9 @@ export function AddToCollectionPage() {
   const addMutation = useMutation({
     mutationFn: addCardAcquisition,
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['collection-holdings'] })
-      await queryClient.invalidateQueries({ queryKey: ['collection-counts'] })
-      await navigate({ to: '/collection' })
+      await queryClient.invalidateQueries({ queryKey: ['portfolio'] })
+      await queryClient.invalidateQueries({ queryKey: ['portfolio-counts'] })
+      await navigate({ to: '/portfolio' })
     },
   })
 

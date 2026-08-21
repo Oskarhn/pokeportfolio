@@ -17,8 +17,6 @@ export type HoldingKind = Database['public']['Enums']['holding_kind']
 export type LotOrigin = Database['public']['Enums']['lot_origin']
 export type CostBasisState = Database['public']['Enums']['cost_basis_state']
 
-const PAGE_SIZE = 30
-
 export interface HoldingSummary {
   holdingId: string
   holdingKind: HoldingKind
@@ -45,11 +43,6 @@ export interface HoldingSummary {
   manualSetName: string | null
   manualCollectorNumber: string | null
   manualLanguage: string | null
-}
-
-export interface HoldingSummaryPage {
-  results: HoldingSummary[]
-  hasMore: boolean
 }
 
 /** Every generated view column is nullable — Postgres carries no NOT NULL metadata for a view —
@@ -93,25 +86,6 @@ function mapHoldingSummary(
     manualCollectorNumber: row.manual_collector_number,
     manualLanguage: row.manual_language,
   }
-}
-
-/** Only holdings with at least one open, non-voided unit — a fully-voided holding drops out. */
-export async function listHoldings(params: {
-  offset?: number
-  limit?: number
-}): Promise<HoldingSummaryPage> {
-  const offset = params.offset ?? 0
-  const limit = params.limit ?? PAGE_SIZE
-  const { data, error } = await supabase
-    .from('holding_summaries')
-    .select('*')
-    .gt('quantity', 0)
-    .order('created_at', { ascending: false })
-    .range(offset, offset + limit)
-  if (error) throw new Error(error.message)
-
-  const hasMore = data.length > limit
-  return { results: data.slice(0, limit).map(mapHoldingSummary), hasMore }
 }
 
 export async function getHoldingSummary(holdingId: string): Promise<HoldingSummary | null> {
@@ -468,21 +442,4 @@ export async function addCardAcquisition(
     .single()
   if (error) throw new Error(error.message)
   return { holdingId: data.holding_id, lotId: data.lot_id }
-}
-
-/** Total physical cards and unique holdings currently owned (DATA_MODEL.md §10.1). Two cheap
- *  aggregate queries over the same view, never a full fetch. */
-export async function getCollectionCounts(): Promise<{
-  physicalCardCount: number
-  uniqueHoldingCount: number
-}> {
-  const { data, error } = await supabase
-    .from('holding_summaries')
-    .select('quantity')
-    .gt('quantity', 0)
-  if (error) throw new Error(error.message)
-  return {
-    physicalCardCount: data.reduce((sum, row) => sum + (row.quantity ?? 0), 0),
-    uniqueHoldingCount: data.length,
-  }
 }
