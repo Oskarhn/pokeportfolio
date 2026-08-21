@@ -4,29 +4,31 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-**Last updated:** 2026-08-26 — M1–M8.1 remain complete in code, merged, and deployed (unchanged
-since the last update). **M9 (pricing and snapshots) is implemented and its PR
-([#25](https://github.com/Oskarhn/pokeportfolio/pull/25), branch `feat/m9-pricing-snapshots`) is
-open** — see "M9 — Pricing and snapshots" below for exactly what is and is not yet verified before
-a future session treats it as done. **This session could not use local Docker** (unchanged
-constraint since M3/§4 below), so the entire M9 database layer (11 new/rewritten SQL functions
-across 8 migrations, RLS/grants, the hostile-grant convergence proof) has been proven by careful
-manual review and by every check this machine *can* run locally
-(`pnpm check`/`pnpm build`/`pnpm test:e2e`, all green — see below) but **not yet by CI's
-`db-tests` job against a real ephemeral Postgres, and not yet against the real
-`pokeportfolio-dev` project.** A future session's first job, if picking this up mid-flight, is to
-check PR #25's CI status and, if green, proceed through the deployment steps this session did not
-reach (or could not verify) — listed explicitly at the end of the M9 section.
+**Last updated:** 2026-08-26 — M1–M8.1 remain complete in code, merged, and deployed. **M9
+(pricing and snapshots) is complete in code, merged
+([PR #25](https://github.com/Oskarhn/pokeportfolio/pull/25)), and deployed** — migrations applied,
+three Edge Functions deployed, the `pg_cron`/`pg_net`/Vault scheduling verified working end to end
+against the real project with a real ingested batch (see "M9 — Pricing and snapshots" below for
+the full account). This session could not use local Docker (unchanged constraint since M3/§4
+below), so the SQL layer was proven by CI's `db-tests` job against a real ephemeral Postgres
+instead — which is exactly what caught two real bugs (ambiguous-column plpgsql errors that
+`CREATE FUNCTION` itself cannot validate) neither manual review nor `pnpm check` could have found,
+both fixed before merge. **Two real gaps remain, disclosed rather than silently accepted:** the
+real 10,000-lot Portfolio benchmark has not been re-run (this session cannot create a synthetic
+account at all, a harder constraint than prior sessions' "cannot sign in" — see the M9 section),
+and the exact real-Postgres storage footprint of `price_snapshots` is computed, not measured.
 
 ---
 
 ## Status
 
-**Planning is FROZEN. M1–M8.1 are complete in code, merged, and deployed. M9 is implemented,
-locally green, and awaiting CI + real-deployment verification (PR #25).** Do not report M9 as
-"complete" to the owner until CI is green and the real-project deployment steps below have
-actually run — this session's own standing rule (HANDOVER.md's own opening line) applies to this
-paragraph as much as to any other.
+**Planning is FROZEN. M1–M9 are complete in code, merged, and deployed** (PR #25). The real
+10,000-lot Portfolio benchmark re-run and a real owner-facing signed-in check are the two
+outstanding items before M9 is fully closed out — ask the owner for the latter; the former needs
+either a future session able to fetch the Supabase secret key or the owner's own involvement,
+since creating any synthetic account is outside what this session performs at all (stricter than
+prior milestones' "cannot sign in" boundary — this session cannot create the account in the first
+place, full stop).
 
 ## M9 — Pricing and snapshots
 
@@ -113,55 +115,73 @@ describe what it actually does now.
 
 **Verified, actually run, not just described:** `pnpm typecheck`/`pnpm lint`/`pnpm format:check`
 all green; `pnpm test` **100/100** (up from 85 — the 16 new `tests/data/tcgdex-pricing.test.ts`
-cases; the DB-level `tests/db/m9_valuation_resolver.test.ts` needs the ephemeral stack and is not
-part of this count); `pnpm build` green (placeholder env); `pnpm test:e2e` **58/58** (unchanged —
-no new routes). PR #25 opened; CI status was pending as of this update — **check it before doing
-anything else if picking this up.**
+cases); `pnpm build` green; `pnpm test:e2e` **58/58** (unchanged — no new routes). CI green on both
+jobs (`build-and-test`; `db-tests` — **353/353 database and authorization tests**, up from 336 at
+M8.1, including the hostile-grant convergence proof) — this took three pushes, because CI's real
+ephemeral Postgres caught two real plpgsql bugs (`CREATE FUNCTION` does not validate embedded SQL;
+see PROJECT_JOURNAL.md/output_15.txt for the full account) that neither local review nor
+`pnpm check` could ever have found. PR #25 merged (squash, branch deleted); post-merge CI on `main`
+also green.
+
+**Deployed and verified against the real `pokeportfolio-dev` project, this session:**
+
+- All 8 M9 migrations applied (`supabase db push`) — including `pg_cron`/`pg_net` extension
+  activation, which worked on the first real attempt (the earlier uncertainty about this is
+  resolved).
+- All three Edge Functions deployed (`ingest-prices`, `ingest-fx`, `search-prices`).
+- `PRICE_SYNC_SECRET` generated (a fresh random value, this session's own act — never printed,
+  never logged, never asked of the owner) and set as both the Edge Function secret and the
+  Supabase Vault secret; both copies confirmed matching by real use (see below). Temp files
+  holding the value were deleted immediately after use.
+- Live `curl` checks: `ingest-prices`/`ingest-fx` both return `401` for a wrong bearer secret;
+  `search-prices` returns `401` with no JWT at all.
+- `grant-audit.sql` clean against the real project. `remote-security-check.mjs` **17/17** (phase 1
+  — no `INVITE_TOKEN` available this session, same as every session since M7.1).
+- Real `cron.job` rows confirmed: `m9-ingest-prices` (every 15 min), `m9-ingest-fx` (daily 17:00
+  UTC), `m9-retention-thin` (weekly) — all active.
+- **A real initial price-sync batch happened on its own**, via the real first 15-minute cron
+  tick — no manual trigger needed. `price_sync_runs` shows one real `prices` run (2 variants
+  considered, 2 cards fetched, 4 snapshots written, zero errors); `price_snapshots` independently
+  confirms 4 real rows across 2 distinct variants and both providers. This is genuine end-to-end
+  proof — Vault secret, cron schedule, Edge Function auth, TCGdex fetch, variant mapping and the
+  write path all working together for real, not just against CI's ephemeral stack. (The real batch
+  size of 2 just reflects how few `card_variants` the real project currently holds — expected, not
+  a bug.)
+- `deployment-check.mjs` **28/28** against the rebuilt Cloudflare bundle (new hashes for every
+  changed chunk — `PortfolioPage`, `HoldingDetailPage`, `CardDetailPage`, `CatalogPage`, etc. —
+  confirming the deploy genuinely picked up the change).
 
 **Not done this session, and why — a future session's actual to-do list:**
 
-1. **CI's `db-tests` job has not been confirmed green.** This is the load-bearing check for
-   everything in the DB layer (11 SQL functions, the hostile-grant convergence proof,
-   `tests/db/m9_valuation_resolver.test.ts`'s 20-ish cases) — this session's own local checks
-   cannot substitute for it, only reduce the odds of a surprise. **Check PR #25 first.**
-2. **No migration has been pushed to `pokeportfolio-dev`.** `supabase db push` for the 8 new M9
-   migrations has not run against the real project.
-3. **No Edge Function has been deployed.** `ingest-prices`/`ingest-fx`/`search-prices` exist only
-   in the repository.
-4. **`PRICE_SYNC_SECRET` has not been generated or set anywhere** — not as an Edge Function secret,
-   not in Supabase Vault. Scheduled ingestion cannot run for real until both copies exist (they must
-   match). Generate it yourself (e.g. `openssl rand -hex 32`), never ask the owner to paste it into
-   chat, never print it into `claude_outputs/` or this file.
-5. **`pg_cron`/`pg_net` extension activation against the real hosted project is unverified.** The
-   migration uses `create extension if not exists pg_cron;`/`... pg_net with schema extensions;`,
-   which is the common documented Supabase pattern, but this session could not confirm it against
-   `pokeportfolio-dev` specifically. If `supabase db push` fails on
-   `20260826120050_m9_cron_schedule.sql` specifically, the likely fix is enabling `pg_cron` via the
-   Supabase Dashboard's Database → Extensions UI first (a documented one-click path for exactly this
-   "the migration role lacks the privilege" case), then re-running `db push`.
-6. **No real initial price-sync batch has run.** Prompt §29 asks for one bounded initial sync so the
-   owner's own already-owned raw cards get values immediately rather than waiting for the first cron
-   tick — this needs the function deployed and the secret set first.
-7. **`grant-audit.sql`/`remote-security-check.mjs`/`deployment-check.mjs` have not been re-run
-   against the real project** for this change.
-8. **The real 10,000-lot Portfolio benchmark has not been re-run.** D-054's fix should restore
-   M7's 130-570 ms, but "should" is not "measured" — the resolver join is new and needs its own
-   `EXPLAIN ANALYZE` against real data, not just reasoning about the query shape.
-9. **`database.types.ts` was hand-updated, not regenerated** (same no-Docker constraint as every
+1. **The real 10,000-lot Portfolio benchmark has not been re-run**, and this is a harder blocker
+   than it sounds: `scripts/portfolio-perf-benchmark.mjs` needs either the Supabase secret key
+   (this session does not fetch it, unchanged rule since M6) or a real password sign-in to a
+   synthetic account for the timed calls — and creating *any* account, synthetic or not, is on
+   this session's own prohibited-actions list unconditionally, stricter than the "cannot sign in"
+   boundary prior sessions worked around. A future session that can fetch the secret key (or work
+   with the owner directly) should run this — D-054's fix should restore M7's 130-570 ms, but
+   "should" is not "measured," and the resolver join is genuinely new SQL.
+2. **`price_snapshots`' real storage footprint is computed, not measured.** Run
+   `select pg_total_relation_size('price_snapshots')` against the real project once the watched
+   set has grown past a handful of rows, and update COST_POLICY.md/DATA_MODEL.md §4.2 with the
+   actual figure — see output_15.txt's "STORAGE PROJECTION" for the concern (the pre-M9 ~48-byte
+   estimate omitted index overhead; a real year's unthinned accumulation could plausibly approach
+   the 500 MB budget on its own before 12-month retention has a chance to apply).
+3. **`ingest-fx`'s first real run has not been observed** — scheduled 17:00 UTC daily, had not
+   reached that time this session. Check `price_sync_runs` for a `kind='fx'` row.
+4. **`database.types.ts` was hand-updated, not regenerated** (same no-Docker constraint as every
    milestone since M6) — diffed carefully against the actual SQL return types (all money columns
    cast to `text`, matching the established PostgREST-bigint-precision boundary rule) but not
    verified against a real `supabase gen types` output. Two service-role-only functions
    (`select_price_sync_batch`, `thin_price_snapshots`) were deliberately **not** added to this file
    — nothing in `src/` calls them, so omitting them causes no compile error, but a real regeneration
    would include them and should be diffed carefully (same `p_fx_rate_to_nok`-string-divergence
-   caution M8.1 already recorded applies here: check the diff, don't blindly overwrite).
-10. **COST_POLICY.md's storage projection was not updated with a measured number** — this session
-    computed the schema but had no live Postgres to measure actual row/index bytes against
-    (`pg_total_relation_size`). A future session with either Docker or real-project access should
-    seed a representative batch of `price_snapshots` rows and measure for real, then update
-    COST_POLICY.md/DATA_MODEL.md §4.2 with the actual figure rather than the inherited estimate.
-11. **No owner-facing signed-in check has happened** — same standing boundary as M7.1/M8/M8.1
-    (this session does not create or sign into any account, synthetic or real).
+   caution M8.1 already recorded applies here).
+5. **Retention (`thin_price_snapshots`) has not been tested against synthetic >1-year data** — the
+   real project has no data old enough yet for this to matter today, but the function's logic was
+   reasoned through, not proven against a seeded dataset the way prompt §88 asked for.
+6. **No owner-facing signed-in check has happened** — same standing boundary as M7.1/M8/M8.1 (this
+   session does not create or sign into any account, synthetic or real).
 
 **Known, disclosed simplifications (not gaps to silently close later):**
 
@@ -178,10 +198,11 @@ anything else if picking this up.**
   work. UX_FLOWS.md F16 records the gap against the owner's fuller original spec.
 - Sealed-product pricing is out of scope by design (M11), unaffected by M9.
 
-## Deployed state (still M8.1 — M9 has not been merged or deployed yet)
+## Deployed state (now M9 — PR #25 merged and deployed)
 
-The application is deployed and reachable: **https://pokeportfolio-dev.pages.dev**, on the M8.1
-state (PRs #14, #15, #18, #19, #21, #22 and #23 all merged). The owner has a working administrator
+The application is deployed and reachable: **https://pokeportfolio-dev.pages.dev**, on the M9
+state (PRs #14, #15, #18, #19, #21, #22, #23 and #25 all merged; M9's #25 is the newest). The
+owner has a working administrator
 account on the development project, the shared catalog holds the real English and Japanese physical
 Pokémon TCG card set (M5), and the deployed build lets the owner search a card (with visible card
 artwork, a set-browsing carousel, and a favourite filter), add it to their Portfolio with real
@@ -1467,6 +1488,23 @@ clean, `remote-security-check.mjs` phase 1 17/17, `deployment-check.mjs` **28/28
 rebuilt bundle (new hashes for every changed chunk, confirming the deploy genuinely picked up the
 change).
 
+**Green on PR #25 (`feat/m9-pricing-snapshots`), merged:** 100 domain/property/data tests (up from
+85 — 16 new `tests/data/tcgdex-pricing.test.ts` cases against real captured TCGdex payloads) ·
+database/authorization suite green on CI, **353 tests across 24 files** (up from 336/23 at
+M8.1 — `tests/db/m9_valuation_resolver.test.ts`), including the hostile-grant convergence proof —
+took three pushes; CI's real ephemeral Postgres caught two genuine plpgsql bugs (ambiguous-column
+errors `CREATE FUNCTION` cannot validate) that no local check could have found, both fixed before
+the suite went green · 58 Playwright tests (unchanged — no new routes) · `pnpm typecheck`/
+`pnpm lint`/`pnpm format:check`/`pnpm build` all green. All 8 M9 migrations pushed to
+`pokeportfolio-dev` (including `pg_cron`/`pg_net` activation, confirmed working on the real
+project); `grant-audit.sql` clean; `remote-security-check.mjs` phase 1 17/17; three Edge Functions
+deployed (`ingest-prices`/`ingest-fx`/`search-prices`), all confirmed to reject unauthorized
+requests via real `curl` checks; `PRICE_SYNC_SECRET` generated and set (Edge Function secret +
+Supabase Vault, matching); real `cron.job` rows confirmed active; **a real initial price-sync
+batch ran via the real cron tick** (2 variants, 4 snapshots written, zero errors — verified via
+`price_sync_runs` and `price_snapshots` directly); `deployment-check.mjs` **28/28** against the
+real rebuilt bundle.
+
 ## Owner actions outstanding
 
 | # | Action | Blocks |
@@ -1476,10 +1514,12 @@ change).
 | 3 | A short real-device check on the deployed M7.1 UI (see "M7.1 — owner UI/UX refinement" above for the exact checklist) | Final sign-off on the nav/theme/gestures on real hardware — outstanding since M7 |
 | 4 | **A short signed-in M8 check** (see "M8 — Purchases and the spending ledger" → "Next actions" above for the exact steps: record two small synthetic purchases, one NOK/multi-line and one EUR/manual-rate, check the Purchases summary, void both) | The one thing this session could not verify itself — see below |
 | 5 | **A short signed-in M8.1 check** (see "M8.1" → "Next actions" above: add and remove a card via Portfolio Select, confirm the central + menu's Record purchase is easy to find, record one small purchase and confirm the success banner) | Same boundary as item 4 |
-| 6 | Give feedback on the deployed M7.1/M8/M8.1 UI (nav, Home, Search, Portfolio, Profile, Purchases, theme) | Informs M9+ and the eventual M12a visual pass — not a blocker, but the owner explicitly wants to be asked here |
+| 6 | Give feedback on the deployed M7.1/M8/M8.1/M9 UI (nav, Home, Search, Portfolio, Profile, Purchases, theme, real values) | Informs M10+ and the eventual M12a visual pass — not a blocker, but the owner explicitly wants to be asked here |
+| 7 | **A short signed-in M9 check** — see "M9 — Pricing and snapshots" → prompt §101's outline: open Portfolio and confirm an automatically-priced raw card shows a real value; open the card and check value/source/freshness; confirm the Portfolio total updates; toggle hide/show values; search a common card and confirm visible price references; check Market Movers (may honestly say insufficient history on day one) | Same boundary as items 4/5 |
+| 8 | If a real 10,000-lot Portfolio benchmark re-run is wanted soon rather than waiting for a future session with secret-key access, the owner (or an operator with the Supabase secret key) can run `scripts/portfolio-perf-benchmark.mjs` directly | Confirms M9's resolver join did not regress M7's 130-570 ms — not urgent, since the query shape follows the same proven discipline, but not yet measured |
 
-This session could not perform items 3/4/5 itself: creating or signing into even a throwaway
+This session could not perform items 3/4/5/7 itself: creating or signing into even a throwaway
 synthetic account requires entering a password, which is outside what this session performs
 regardless of project convention (same boundary M7.1's session already documented, restated in
-"M8"/"M8.1" above). The admin account, the M6 deployment, the API-key model and the installed-PWA
-check remain done from before M7.
+"M8"/"M8.1"/"M9" above). The admin account, the M6 deployment, the API-key model and the
+installed-PWA check remain done from before M7.
