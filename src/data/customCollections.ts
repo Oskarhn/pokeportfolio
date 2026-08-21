@@ -93,6 +93,46 @@ export async function removeHoldingFromCollection(
   if (error) throw new Error(error.message)
 }
 
+/** Bulk membership writes for Portfolio select mode (M7.1 prompt §43). `ignoreDuplicates` makes
+ *  adding an already-member holding a no-op rather than a conflict error — the composite PK
+ *  (collection_id, holding_id) is the natural upsert target. Purely organisational, same as the
+ *  single-holding versions above: invariant C1, nothing financial moves. */
+export async function addHoldingsToCollection(
+  collectionId: string,
+  holdingIds: string[],
+): Promise<void> {
+  if (holdingIds.length === 0) return
+  const { error } = await supabase.from('custom_collection_members').upsert(
+    holdingIds.map((holdingId) => ({ collection_id: collectionId, holding_id: holdingId })),
+    { onConflict: 'collection_id,holding_id', ignoreDuplicates: true },
+  )
+  if (error) throw new Error(error.message)
+}
+
+export async function removeHoldingsFromCollection(
+  collectionId: string,
+  holdingIds: string[],
+): Promise<void> {
+  if (holdingIds.length === 0) return
+  const { error } = await supabase
+    .from('custom_collection_members')
+    .delete()
+    .eq('collection_id', collectionId)
+    .in('holding_id', holdingIds)
+  if (error) throw new Error(error.message)
+}
+
+/** Row count for Home's scope selector (M7.1 prompt §17) — how many holdings sit in a chosen
+ *  custom collection, without pulling any rows. `head: true` makes this a count-only request. */
+export async function getCollectionMemberCount(collectionId: string): Promise<number> {
+  const { count, error } = await supabase
+    .from('custom_collection_members')
+    .select('*', { count: 'exact', head: true })
+    .eq('collection_id', collectionId)
+  if (error) throw new Error(error.message)
+  return count ?? 0
+}
+
 /** Which collections a single holding currently belongs to — used by the holding detail page and
  *  the "add to collection" action sheet to show current membership. */
 export async function getHoldingCollectionIds(holdingId: string): Promise<string[]> {

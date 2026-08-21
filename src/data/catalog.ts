@@ -210,6 +210,36 @@ export async function searchSets(params: {
   }))
 }
 
+/** The Search set carousel (M7.1 prompt §28): newest physical sets first, filtered by language.
+ *  Plain table read, same privilege shape as `searchSets` — Pokémon TCG Pocket is already excluded
+ *  at ingest time (M5, `serie.id === 'tcgp'`), so nothing here needs to filter it again. */
+export async function listRecentSets(params: {
+  language: CatalogLanguage | null
+  limit?: number
+}): Promise<CatalogSet[]> {
+  let query = supabase
+    .from('card_sets')
+    .select(
+      'id, name, language, released_on, card_count_official, card_count_total, logo_url, symbol_url',
+    )
+    .order('released_on', { ascending: false, nullsFirst: false })
+    .limit(params.limit ?? 20)
+  if (params.language) query = query.eq('language', params.language)
+  const { data, error } = await query
+  if (error) throw new Error(error.message)
+
+  return data.map((row) => ({
+    id: row.id,
+    name: row.name,
+    language: row.language as CatalogLanguage,
+    releasedOn: row.released_on,
+    cardCountOfficial: row.card_count_official,
+    cardCountTotal: row.card_count_total,
+    logoUrl: row.logo_url,
+    symbolUrl: row.symbol_url,
+  }))
+}
+
 export async function getSet(setId: string): Promise<CatalogSet | null> {
   const { data, error } = await supabase
     .from('card_sets')

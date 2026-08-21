@@ -368,6 +368,70 @@ describe('list_portfolio: isolation, sort and filter', () => {
   })
 })
 
+describe('natural_sort_key (M7.1 prompt §41/§72)', () => {
+  it('orders numeric runs numerically, not lexically, and keeps a stable alphanumeric fallback', async () => {
+    const { data, error } = await clientA.rpc('natural_sort_key', { p_text: '4/102' })
+    expect(error).toBeNull()
+    expect(data).toBe('00000004/00000102')
+
+    const cases: [string, string][] = [
+      ['9', '00000009'],
+      ['10', '00000010'],
+      ['H31', 'h00000031'],
+      ['TG12', 'tg00000012'],
+      ['SV049', 'sv00000049'],
+    ]
+    for (const [input, expected] of cases) {
+      const result = await clientA.rpc('natural_sort_key', { p_text: input })
+      expect(result.error).toBeNull()
+      expect(result.data).toBe(expected)
+    }
+  })
+})
+
+describe('list_portfolio: number_asc/number_desc (M7.1 prompt §41/§72)', () => {
+  it('sorts manual-card holdings by collector number, numerically within digit runs', async () => {
+    const numbers = ['9', '10', '2']
+    const holdingIds: string[] = []
+    for (const number of numbers) {
+      const { data: manual, error: manualError } = await clientA
+        .from('manual_card_definitions')
+        .insert({ name: `Number sort test ${number}`, collector_number: number })
+        .select('id')
+        .single()
+      expect(manualError).toBeNull()
+      const added = await addCard(clientA, {
+        p_manual_card_id: manual!.id,
+        p_condition: 'NM',
+        p_origin: 'pre_tracking',
+        p_cost_basis_state: 'unknown',
+        p_quantity: 1,
+        p_acquired_on: today,
+      })
+      expect(added.error).toBeNull()
+      holdingIds.push(added.data!.holding_id)
+    }
+
+    const { data, error } = await listPortfolio(clientA, { p_sort: 'number_asc', p_limit: 500 })
+    expect(error).toBeNull()
+    const ours = data
+      .filter((row) => holdingIds.includes(row.holding_id))
+      .map((row) => row.holding_id)
+    // Ascending: "2" then "9" then "10" — a plain string sort would put "10" before "2".
+    expect(ours).toEqual([holdingIds[2], holdingIds[0], holdingIds[1]])
+
+    const { data: desc, error: descError } = await listPortfolio(clientA, {
+      p_sort: 'number_desc',
+      p_limit: 500,
+    })
+    expect(descError).toBeNull()
+    const oursDesc = desc
+      .filter((row) => holdingIds.includes(row.holding_id))
+      .map((row) => row.holding_id)
+    expect(oursDesc).toEqual([holdingIds[1], holdingIds[0], holdingIds[2]])
+  })
+})
+
 describe('portfolio_counts', () => {
   it("counts only the caller's own open holdings", async () => {
     const result = await clientA.rpc('portfolio_counts').single()
