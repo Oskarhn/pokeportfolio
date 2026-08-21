@@ -157,6 +157,12 @@ through the CLI's own authenticated session — no `psql`, no database password 
 for one-off inspection during development. Same trust level as the SQL editor (DEVELOPMENT.md §7):
 privileged, deliberate, never for routine schema changes (those stay in `supabase/migrations/`).
 
+Live since M7 (Portfolio performance):
+
+| Command | Does |
+|---|---|
+| `SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... SUPABASE_ANON_KEY=... node scripts/portfolio-perf-benchmark.mjs [--lots=10000] [--keep]` | Seeds one throwaway synthetic account with N lots and times `list_portfolio`/`portfolio_counts`. Deletes the account (cascading every row it created) on exit unless `--keep` is passed. **Never run this against the owner's real account** — an isolated `.invalid` synthetic account only (M7 prompt §101), against either the local stack or a throwaway/dev project. |
+
 `config push` is not optional housekeeping. Gate 1 of the invite-only enforcement lives in
 `config.toml`, so a remote project that has had migrations pushed but not config is running with
 one of its two gates missing. Gate 2, the `auth.users` trigger, travels with the migrations and

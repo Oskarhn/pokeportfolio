@@ -135,6 +135,23 @@ reading ×80.
 actually renders, and virtualise the grid. A 10 000-card collection at 4 columns must not issue
 thousands of requests on mount.
 
+**Shipped in M7** (`src/features/portfolio/`). One `collection_grid_density` value maps to
+different column counts by breakpoint rather than a fixed number, so "2" reads as the owner's
+mobile default and "desktop standard is roughly 4" without a second stored preference:
+
+| Density | < 640px | 640–1023px | ≥ 1024px |
+|---|---|---|---|
+| 1 (large) | 1 | 2 | 3 |
+| 2 (default) | **2** | 3 | **4** |
+| 3 (compact) | 3 | 4 | 6 |
+| 4 (dense) | 4 | 5 | 8 |
+
+The virtualizer (`VirtualGrid.tsx`, TanStack Virtual) needs the *current* column count before CSS
+ever lays anything out, so `useResponsiveColumns` mirrors this exact table in JS via a window-width
+listener — this is the one place the breakpoint values exist in two forms, and they must be kept
+in sync if either changes. List/Table views (`ListAndTableViews.tsx`) are windowed 1-D
+virtualizations of the same `list_portfolio` data.
+
 ### 4.2 Breakpoints
 
 | Breakpoint | Behaviour |
@@ -153,6 +170,21 @@ inconsistency to be resolved.
 **Safe areas.** `viewport-fit=cover` plus `env(safe-area-inset-*)` on every fixed element. The
 bottom tab bar sits above the home indicator, not under it. Verified on hardware, not in a
 simulator.
+
+**Bottom navigation geometry, shipped M7** (`src/features/nav/BottomNav.tsx`). Five destinations
+(Home, Search, Portfolio, More, Profile) is an odd number, so a raised central + action cannot sit
+in a real middle *tab* without either an even, artificially-padded six-column grid or sacrificing
+a destination into an overflow menu — both rejected. The resolution: six equal flex slots (five
+tabs plus one empty spacer between Search and Portfolio), so the bar's true horizontal centre
+falls on the spacer/Portfolio boundary; the + button is a separate, absolutely-positioned circle
+at `left: 50%`, floating above the bar rather than occupying a slot. It reads as centred without
+faking a sixth labelled column. Desktop does not reuse this shape — DesktopNav.tsx is a
+conventional single top row, per §4.2's "sidebar/top nav at ≥768px, not a stretched phone tab bar."
+
+**Toolbar controls stay independently visible, never collapsed behind one icon** (M7 prompt §93).
+Sort, Density, View and Filters are four separate buttons on both mobile and desktop
+(`PortfolioToolbar.tsx`); only their panels are sheets. Desktop places Density immediately next to
+Sort by, per the owner's explicit request.
 
 ---
 

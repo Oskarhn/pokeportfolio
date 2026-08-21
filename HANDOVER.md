@@ -4,23 +4,27 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-**Last updated:** 2026-08-21 — M1 (scaffold and harness), M2 (financial domain core), M3
+**Last updated:** 2026-08-22 — M1 (scaffold and harness), M2 (financial domain core), M3
 (database, migrations, RLS), M4 (invite-only authentication), M4.1 (privilege convergence,
-deployment, real end-to-end), M5 (catalog, TCGdex ingest, search) and M6 (collection: holdings,
-lots, origin, cost) complete.
+deployment, real end-to-end), M5 (catalog, TCGdex ingest, search), M6 (collection: holdings, lots,
+origin, cost) and M7 (Portfolio: organisation, display, navigation) complete in code, on a feature
+branch, with local checks green — see "M7 verification state" below for exactly what is and is not
+yet confirmed, because this session had no local Docker and has not yet pushed to the real project.
 
 ---
 
 ## Status
 
-**Planning is FROZEN. M1–M6 are complete.** M7 (organisation and display) is next — but read
-"Before M7 starts" below first; there is a real prerequisite. See the Repository section for PR
-numbers.
+**Planning is FROZEN. M1–M7 are complete in code.** M8 (purchases and the spending ledger) is
+next. See the Repository section for PR numbers, and "M7 verification state" immediately below
+before assuming anything about M7 beyond what is explicitly marked done.
 
-The application is deployed and reachable: **https://pokeportfolio-dev.pages.dev**. The owner has a
+The application is deployed and reachable: **https://pokeportfolio-dev.pages.dev**, on the M6
+state — M7 has not yet been merged or deployed as of this handover (see below). The owner has a
 working administrator account on the development project, the shared catalog holds the real
-English and Japanese physical Pokémon TCG card set (M5), and the owner can now search a card, add
-it to their collection with real acquisition provenance and cost, and see it in `/collection` (M6).
+English and Japanese physical Pokémon TCG card set (M5), and the deployed M6 build lets the owner
+search a card, add it to their collection with real acquisition provenance and cost, and see it in
+`/collection`.
 
 **M6 also migrated the project's Supabase API keys** (D-039) — see "Security: key migration" below
 before touching anything credential-related. The legacy `anon`/`service_role` pair is now
@@ -30,6 +34,48 @@ unnecessary for everyday work; if you ever genuinely need it, use `--reveal` del
 capture the output into anything persisted.
 
 Scope is settled — do not reopen it (see [docs/PLANNING_FREEZE.md](docs/PLANNING_FREEZE.md) §9).
+
+## M7 verification state — read before assuming anything is deployed
+
+This machine has no local Docker (§4/Environment table, unchanged since M3), so this session could
+not run `pnpm db:start`/`pnpm test:db` against a real Postgres at all. What that means concretely:
+
+**Actually verified, on this machine:** `pnpm typecheck`, `pnpm lint`, `pnpm format:check`,
+`pnpm test` (80/80 domain tests, unchanged — M7 touched no `src/domain` logic), `pnpm build`, and
+`pnpm test:e2e` (50/50 Playwright, desktop + iPhone, including the new `/portfolio`/`/profile`/
+`/more` route-guard cases and the `/collection` → `/portfolio` redirect assertions) are all green
+against the actual M7 branch.
+
+**Written but not yet run anywhere:** every SQL migration
+(`20260822120000_m7_custom_collections.sql`, `20260822120010_m7_portfolio_query.sql`,
+`20260822120020_m7_privilege_baseline.sql`), the updated `scripts/grant-audit.sql` and
+`tests/db/sql/hostile_grants.sql`, and the two new test files
+(`tests/db/m7_constraints.test.ts`, `tests/authorization/m7_portfolio.test.ts`). These have been
+read through carefully and are believed correct, but **"believed correct" is not the same as
+"CI has run them"** — the very next thing to do with this branch is push it and let GitHub Actions'
+`db-tests` job (which does have Docker, on `ubuntu-latest`) actually apply the migrations and run
+the suites. If CI finds a defect in the `list_portfolio` keyset-cursor SQL (the most complex single
+piece of M7 — see DATA_MODEL.md §14) or anything else, fix it on this branch before merging; do not
+treat this handover's description of the design as proof it works.
+
+**Not yet done at all, and each needs an explicit decision before M7 is actually finished per the
+prompt's own acceptance criteria:**
+
+1. Open the PR and confirm CI is green (`db-tests` in particular — see above).
+2. `pnpm exec supabase db push` / `config push` against `pokeportfolio-dev`, then
+   `scripts/remote-security-check.mjs` and `grant-audit.sql` against the real deployed project
+   (SECURITY.md §13's deployment gate) — not yet run this session.
+3. `scripts/portfolio-perf-benchmark.mjs` against an isolated synthetic account, for a real
+   10 000-lot measurement (TESTING.md §7/§104) — the script exists and is documented but has never
+   been executed; no numbers are recorded anywhere in this handover, and none should be assumed.
+4. Merge, confirm the Cloudflare deploy, and browser-verify the actual deployed Portfolio UI —
+   grid/list/table, density, sort, filters, custom collections, bottom nav — the way M5/M6 verified
+   their deployed builds. Not yet done.
+5. A short real-iPhone check (M7 prompt §120) — genuinely needs the owner's own phone; ask for it
+   only once step 4 is done.
+
+Do not report M7 as "deployed" or "verified end-to-end" to the owner until the above actually
+happened — say specifically which of the five remain.
 
 ## Read these first, in order
 
@@ -285,10 +331,12 @@ tables). `void_acquisition_lot` is the mistake-correction path: void semantics, 
 purchase a known-cost lot exclusively created so a corrected mistake never leaves a ghost spend in
 `GPO`/`CS`. `holding_summaries` (`security_invoker` view) gives the Collection list one query.
 
-**UI:** `/collection` (2-column mobile grid — M7 owns the configurable density setting),
-`/collection/$holdingId` (identity, lots, void, favourite, manual value), `/add` (progressive
-form: quantity, raw/graded, origin-driven cost disclosure, storage, favourite, notes),
-`/collection/manual/new`. "Add to collection" lives on each variant in `/catalog/$cardId`.
+**UI (as originally shipped in M6; superseded by M7's Portfolio browsing surface — see "M7 —
+Portfolio" below for the current routes and behaviour):** `/collection` (2-column mobile grid,
+hardcoded pending M7's density setting), `/collection/$holdingId` (identity, lots, void,
+favourite, manual value), `/add` (progressive form: quantity, raw/graded, origin-driven cost
+disclosure, storage, favourite, notes), `/collection/manual/new`. "Add to collection" lived on
+each variant in `/catalog/$cardId`.
 
 **Security: key migration (D-039).** `pokeportfolio-dev` moved to named
 `sb_publishable_…`/`sb_secret_…` keys, closing out the M5 exposure note. `VITE_SUPABASE_ANON_KEY`
@@ -466,33 +514,101 @@ None block M7. Detail in [docs/RESEARCH.md](docs/RESEARCH.md).
 response across ~380 sets. ~~Whether TCGdex models Basic Energy printings adequately~~ — resolved:
 yes, ordinary cards with `category = "Energy"`, ordinary variants; see "M5 — Catalog" above.
 
-## Before M7 starts: a real prerequisite, not a formality
+## M7 — Portfolio: organisation, display and navigation
 
-**The external mentor should collect the owner's remaining functional Collection-UI requirements
-before Prompt 11 / M7 is authored.** The owner has said outright that there are requirements they
-want fulfilled and is trusting this checkpoint to be the place they get asked, rather than
-guessed at. M7 is specifically the milestone where guessing wrong is expensive — grid
-density/list/table behaviour, custom collections, smart filters and large-scale performance are
-all things a wrong early assumption has to be un-built later.
+Owner UI requirements pass (Prompt 11), implemented directly rather than deferred — see
+"M7 verification state" above for what has and has not actually been run. Full detail:
+`claude_outputs/output_11.txt`.
 
-Ask about, concretely: exact information visible on collection tiles at each density; desired
-sort/filter behaviour; grid vs. list vs. table expectations and when each is used; how custom
-collections should feel to create and use; density/display-settings interaction; navigation and
-quick-add preferences (the frozen UX plan has a mobile bottom nav with a central quick-add — M6
-did not build it); any other functional collection-browsing requirement the owner has in mind.
+**Terminology (D-040).** The user-facing screen that browses owned cards is now **Portfolio**,
+not Collection — navigation, headings, copy. `/collection`, `/collection/$holdingId` and
+`/collection/manual/new` redirect to their `/portfolio` equivalents rather than disappearing.
+Internal naming (`holdings`, `holding_summaries`, `add_card_acquisition`, the
+`src/features/collection/` folder for the pages that did not structurally change) is unchanged —
+see PRODUCT_SPEC.md's terminology note.
 
-**Do not** ask for final visual references or the logo at this checkpoint — that is M12a's
-conversation, separately, once M6/M7/M8/M12 give the owner enough real screens to react to.
+**Navigation, shipped for the first time.** Mobile bottom nav (Home, Search, Portfolio, More,
+Profile, central **+**) and an equivalent desktop top nav — the frozen UX plan M6 explicitly
+deferred. `src/features/nav/{BottomNav,DesktopNav,QuickAddMenu}.tsx`. Bottom-nav geometry
+(six equal flex slots, an absolutely-positioned raised + button so five destinations coexist with
+a genuinely centred action): DESIGN_SYSTEM.md §4.2. The + shows only what exists today — Search
+cards, Add manually — never Purchase/Sealed/Sale/Scan/Opening before those milestones ship
+(UX_FLOWS.md F11.1).
+
+**Portfolio browsing.** Grid (density 1–4, mobile default 2 / desktop 4 — DESIGN_SYSTEM.md §4.1),
+List, and Table (also on mobile, horizontally scrollable) — all three window their rows via
+TanStack Virtual (`src/features/portfolio/{VirtualGrid,ListAndTableViews}.tsx`) over one
+keyset-paginated RPC, `list_portfolio` (DATA_MODEL.md §14). Sort by is visible, ten options, and
+`value_desc` is the permanent intended default — resolving to a graded holding's real manual
+valuation and a deterministic name-ordered fallback for every raw card, never the acquisition cost
+standing in for market value (DECISIONS.md D-041; this is the transitional pre-M9 behaviour to
+re-examine only when M9's valuation resolver exists). Density/View/Sort chosen in the toolbar
+persist to the profile (`collection_grid_density`/`collection_default_view`/
+`collection_default_sort`) and are also reflected in the URL (`/portfolio?sort=...&density=...`)
+so back-navigation and shared links behave.
+
+**Filters.** Quick chips (Sort/Density/View buttons plus a Filters button showing the active
+count) and a full filter sheet (`FiltersSheet.tsx`) share one state — condition, raw/graded,
+grader, favourite, manual-only, custom collection, low value, missing value. Low value/missing
+value are honestly scoped to a graded holding's manual valuation before M9 (D-041) — never a fake
+raw-card figure.
+
+**Custom collections.** `custom_collections`/`custom_collection_members` shipped exactly as
+DATA_MODEL.md §5.2.1 already specified — plain owner-RLS tables, no RPC layer
+(SECURITY.md §3.2.1). A horizontal chip row on the Portfolio page (`CollectionsBar.tsx`) makes
+them discoverable without a detour through More; the same chip row's "+ Collections" opens
+create/rename/delete. No drag-and-drop reordering (owner decision) — the ordinary Sort by control
+works the same way inside a filtered collection.
+
+**Search.** Renamed "Search" in navigation (route stays `/catalog`). Cards/Sets segmented control
+— Sets is a plain `card_sets` read with real metadata (name, language, symbol, release date, card
+count), no new RPC (`CatalogPage.tsx`, `SetDetailPage.tsx`). Every card result — in Cards mode or
+inside a set — carries an independent quick-add **+** (`AddQuickButton.tsx`) that preselects a
+card's only variant and jumps straight to `/add`, or opens card detail for a real choice among
+several — the exact M6 add flow, reused rather than duplicated.
+
+**Home/Profile/More.** `HomePage.tsx` shows only truthful current data (physical/graded/manual
+counts) with an honestly-marked "Portfolio value — not available yet" panel reserved for M9/M12 —
+no sample chart, no fabricated total. `ProfilePage.tsx`: display name (editable), email, admin
+badge, theme, low-value threshold, sign out. `MorePage.tsx`: admin invitations (moved here from
+the old top nav) plus a link into Profile — no disabled future-feature entries.
+
+**Security.** Closed the PUBLIC-EXECUTE privilege blind spot M6's own journal entry had flagged as
+unclosed (D-042, PROJECT_JOURNAL.md 2026-08-22) — see "M7 verification state" above for the fact
+that this has been written and reasoned through but not yet proven by CI on this machine.
+
+**Performance.** `scripts/portfolio-perf-benchmark.mjs` — a repeatable 10 000+-lot seed-and-time
+tool against an isolated synthetic account. Written, documented, **not yet run** (see "M7
+verification state" above) — no numbers exist to report yet.
+
+**Known limitations, recorded rather than silently accepted:**
+
+- The initial JS bundle is ~638 KB (180 KB gzipped) after adding TanStack Virtual and the M7
+  feature set — a code-splitting pass (dynamic `import()` per route) would help but was not done
+  this milestone; not a regression that blocks anything, just larger than ideal.
+- The Table view's virtualization uses an absolutely-positioned `<tr>`/`display: block` `<tbody>`
+  trick (the standard TanStack Virtual recipe for tables) — this is not fully semantic HTML table
+  markup and may read slightly worse to a screen reader than a plain table; not accessibility-audited
+  beyond the baseline (visible focus, real labels, 44px targets) this project already holds every
+  surface to.
+- Quick filter chips for Set/Value/Condition open the same full `FiltersSheet` rather than
+  dedicated one-tap mini-pickers (M7 prompt §34 asked for "clean chips/buttons/popovers" without
+  mandating three separate implementations) — a scope simplification, not a missing feature; the
+  Graded chip is the one genuinely one-tap boolean toggle.
+- No dedicated desktop popover/sidebar variant of the filter/sort/density panels — the same
+  `Sheet` component (bottom sheet on mobile, centred modal on desktop) serves both, per
+  DESIGN_SYSTEM.md §0's "provisional, not final" phase.
+- `src/features/collection/` keeps its M6 name even though its three remaining pages
+  (`HoldingDetailPage`, `AddToCollectionPage`, `ManualCardPage`) are reached from `/portfolio/...`
+  routes now — deliberate minimal-churn choice (D-040), not an oversight.
 
 ## Next actions
 
-**M1–M6 are done.** Start **M7 — Organisation and display**
-([docs/ROADMAP.md](docs/ROADMAP.md)): custom collections (many-to-many, `custom_collections`/
-`custom_collection_members` — schema not yet created), smart filters (low-value threshold, missing
-price), configurable grid density 1–4 (`profiles.collection_grid_density` already exists and
-already defaults to 2; M6's `/collection` hardcodes 2 columns on mobile pending this setting),
-list and desktop table views, keyset pagination and virtualisation at 10 000+ lots. Read the "Before
-M7 starts" section above first — it is not optional context, it is the actual next step.
+**M1–M7 are done in code.** Finish M7's actual verification first (the five numbered items under
+"M7 verification state" above), then start **M8 — Purchases and the spending ledger**
+([docs/ROADMAP.md](docs/ROADMAP.md)): multi-line purchases, retailers, shipping, customs,
+discounts, backdating, the allocation engine wired into writes, foreign currency via Norges Bank
+FX, collectible/hobby split, void semantics.
 
 **Do not** attempt the whole MVP in one branch. Each milestone is a reviewable unit with a
 behavioural gate.
@@ -618,6 +734,14 @@ CATALOG_SYNC_SECRET=<the secret set above> \
 node scripts/run-catalog-sync.mjs --language=en --language=ja
 ```
 
+M7's 10 000-lot Portfolio benchmark, against an isolated synthetic account only — never the
+owner's real one (DEVELOPMENT.md, "Live since M7"):
+
+```bash
+SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... SUPABASE_ANON_KEY=... \
+node scripts/portfolio-perf-benchmark.mjs --lots=10000
+```
+
 Then the deployment gate (SECURITY.md §13) — never skip it after touching auth, policies or grants:
 
 ```bash
@@ -630,37 +754,35 @@ clean means "Success. No rows returned."
 
 Deployment itself needs no command. Merging to `main` builds it.
 
-**Green as of the M6 merge (PR #12, the final one):** 80 domain/property/data tests (unchanged
-since M5 — M6 added no new `src/domain` logic, only SQL/RPC and UI) · 40 Playwright tests (desktop
-+ iPhone; +5 unique cases for the M6 route guards) · **251 database and authorization tests across
-17 files** (up from ~204 through M5: the M6 constraint suite — identity XOR, origin/cost-basis-state
-mapping, ownership triggers, the account-deletion-cascade regression test — plus the M6 RPC/
-cross-tenant authorization suite, plus `manual_card_definitions` folded into the generic
-owned-tables matrix), including 18 invite-only attack cases, 22 admin authorization cases, the
-function-grant surface (now including the three M6 RPCs and four new trigger functions), the
-system-owned columns and the claim mechanics · 33/33 remote checks against the dev project (with
-`INVITE_TOKEN` — the full redemption phase) · 27/27 deployment checks against Cloudflare ·
-`grant-audit.sql` clean against the live project, verified via `supabase db query --linked` twice
-(once mid-milestone, once after the cascade-fix follow-up) · a real end-to-end M6 collection flow
-(search, purchase, reused holding, manual card, graded card + manual value, bulk Energy ×12,
-Collection aggregation) exercised against the actual deployed bundle with synthetic accounts,
-twice — once before and once after the legacy Supabase keys were deactivated — with zero residue
-left behind either time.
+**Green as of the M6 merge (PR #12):** 80 domain/property/data tests · 40 Playwright tests
+(desktop + iPhone) · 251 database and authorization tests across 17 files · 33/33 remote checks ·
+27/27 deployment checks · `grant-audit.sql` clean against the live project · a real end-to-end M6
+collection flow against the deployed bundle with synthetic accounts, zero residue.
+
+**M7, on this branch, verified only on this machine (no Docker — see "M7 verification state"
+above for exactly what that does and does not cover):** 80 domain/property/data tests (unchanged —
+M7 added no `src/domain` logic) · 50 Playwright tests (desktop + iPhone; +12 unique cases for the
+new/renamed routes and the `/collection` → `/portfolio` redirects) · `pnpm typecheck`/`pnpm lint`/
+`pnpm format:check`/`pnpm build` all green. **Not yet run on this machine, pending CI:** the two
+new files in `tests/db/`/`tests/authorization/` (`m7_constraints.test.ts`, `m7_portfolio.test.ts`),
+the updated `grant-audit.sql` and `hostile_grants.sql`, and therefore the actual applied-migration
+test-count total for M7 — do not quote a number until CI has reported one.
 
 CI runs `build-and-test` (gate + E2E + gitleaks) and `db-tests` (ephemeral Supabase stack → migrate
 → assert the Edge Function is reachable → **assert the privilege baseline → make the database
 hostile, prove the audit rejects it, re-apply, prove convergence** → suites → generate types) on
-every push and PR, with **no remote credentials anywhere**.
+every push and PR, with **no remote credentials anywhere**. This is the next thing to check for
+this branch — see "M7 verification state" above.
 
 ## Owner actions outstanding
 
 | # | Action | Blocks |
 |---|---|---|
-| 1 | Optional: install Docker Desktop | Local iteration convenience only — this session hand-authored `database.types.ts` and used `supabase db query --linked` for privileged SQL instead |
+| 1 | Optional: install Docker Desktop | Local iteration convenience — every M7 DB/authorization test still had to wait for CI this session instead of running locally first |
 | 2 | Optional: fix Node/pnpm absence from the default PATH | Convenience only |
-| 3 | **Answer the Collection-UI requirements questions above ("Before M7 starts")** | M7 — a real prerequisite, not optional |
+| 3 | **Decide whether to push M7's migrations to `pokeportfolio-dev` and run the 10 000-lot benchmark now, or review the PR/CI result first** | M7's remaining verification steps (see "M7 verification state" above) touch real infrastructure — a deliberate checkpoint, not a blocker |
+| 4 | A short real-iPhone check once the deployed M7 build exists (M7 prompt §120) | Final sign-off on the new bottom nav/gestures on real hardware |
+| 5 | Give feedback on the first Portfolio UI version (grid/list/table, nav, filters, custom collections) once deployed | Informs M8+ and the eventual M12a visual pass — not a blocker, but the owner explicitly wants to be asked here |
 
-Nothing blocks starting M7 mechanically, but #3 is a genuine dependency: M7 is the milestone where
-building against a guess is expensive to undo. The admin account, the deployment, the new API-key
-model and the installed-PWA check are all
-done.
+The admin account, the M6 deployment, the API-key model and the installed-PWA check remain done
+from before M7.

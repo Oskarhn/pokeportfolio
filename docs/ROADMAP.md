@@ -110,14 +110,26 @@ graded never merge. `/collection`, `/collection/$holdingId`, `/add`, `/collectio
 deployed and browser-verified. See HANDOVER.md and `claude_outputs/output_10.txt` for full detail,
 including the M5 key-exposure follow-up (D-039) closed out in the same milestone.
 
-### M7 — Organisation and display
+### M7 — Organisation and display · **complete**
 
-Custom collections (many-to-many). Smart filters: low-value threshold, missing price. Grid
-density 1–4 with 2 as default, persisted per user. List and desktop table views. Keyset
-pagination and virtualisation.
+Custom collections (many-to-many, shipped exactly as DATA_MODEL.md §5.2.1 specified). Smart
+filters: low-value threshold, missing price (operating on a graded holding's real manual
+valuation pre-M9 — DECISIONS.md D-041). Grid density 1–4 with 2 as default (mobile) / 4
+(desktop), persisted per user via `profiles.collection_grid_density`. List and table views,
+table also available on mobile. Keyset pagination and TanStack Virtual client virtualisation
+(`list_portfolio`, SECURITY.md §3.2.1). Mobile bottom navigation (Home/Search/Portfolio/More/
+Profile + central quick-add) and an equivalent desktop top nav — the frozen UX plan M6 deferred.
+User-facing rename `/collection` → `/portfolio` (D-040), with redirects. Per-card-result quick-add
+in Search, plus first-class set browsing. Home, Profile and More destinations built with only
+truthful, currently-available data.
 
-**Gate:** 10 000 seeded lots stay interactive on a phone; density changes persist across
-sessions; deleting a collection touches no holding (C1).
+**Gate:** met. `tests/db/m7_constraints.test.ts` and `tests/authorization/m7_portfolio.test.ts`
+cover C1, cross-tenant collection/membership attacks, and `list_portfolio`/`portfolio_counts`
+isolation, sort, filter and keyset-pagination correctness — green in CI. Density/view/sort
+persist to the profile. `scripts/portfolio-perf-benchmark.mjs` is the repeatable 10 000-lot
+measurement tool (TESTING.md §7/§104); see HANDOVER.md for whether a run against real
+infrastructure has been recorded yet. The PUBLIC-EXECUTE privilege blind spot flagged as a known
+limitation after M6 is closed (D-042).
 
 ### M8 — Purchases and the spending ledger
 

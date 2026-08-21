@@ -917,3 +917,38 @@ does not propagate to new tables on its own. Nothing mechanical currently re-che
 `user_id -> auth.users(id)` FK cascade" or "did every new function get revoked from PUBLIC" across a
 whole migration the way `grant-audit.sql` mechanically re-checks the *table/column* privilege
 surface. Worth a real check in a future milestone, rather than trusting memory a third time.
+
+---
+
+## 2026-08-22 — Closing the PUBLIC-EXECUTE check this journal's own previous entry flagged
+
+**Problem.** The 2026-08-21 entry above ended by naming the gap explicitly: "did every new function
+get revoked from PUBLIC" had no mechanical check, only the M4 convention of remembering to add
+`revoke ... from public` at every function's creation. M7 was the first milestone since that entry
+to add anything to the browser-reachable surface (`portfolio_counts`, `list_portfolio`), so it was
+the first real opportunity to close the gap rather than just remembering the convention a fourth
+time.
+
+**Finding.** `scripts/grant-audit.sql`'s `actual_routine`/`expected_routine` CTEs only ever compared
+grants held by `anon`/`authenticated` — looked up via `aclexplode(...)::regrole::text in
+('anon','authenticated')`. PUBLIC's ACL entry has grantee oid `0`, which does not cast to a real
+`regrole` at all, so it was structurally invisible to that filter, not merely unchecked by
+oversight. A second CTE matching `a.grantee = 0` directly (bypassing the `::regrole` cast
+entirely) is what makes the check possible, and it needed to be a genuinely separate CTE rather
+than an extra `OR` branch on the existing one, since the two use different comparison mechanics.
+
+**Verification.** Re-derived the check from first principles rather than trusting it would work:
+`tests/db/sql/hostile_grants.sql` now also runs `grant execute on all routines in schema public to
+public` as part of its hostile-state setup, with a same-file sanity assertion (querying
+`pg_proc.proacl` directly for a known function, the identical technique the audit itself uses)
+proving the hostile grant actually took effect before the convergence test relies on it. This
+follows the exact "make the database wrong first, prove the check rejects it, prove the baseline
+fixes it" shape TESTING.md §7a already established for the named-role surface — the same audit
+methodology applied to a hole that methodology had previously missed.
+
+**Consequence.** Every routine in `public` — twenty-plus functions across five milestones — is now
+swept clear of PUBLIC's implicit grant in the M7 privilege baseline, none of them lost any grant a
+named role actually needs (verified: the sweep only touches grantee oid `0`, never a named role's
+own entry), and `alter default privileges ... revoke execute on functions from public` means a
+future migration that forgets the per-creation revoke no longer needs to be remembered at all for
+this specific failure mode — the default itself changed. See DECISIONS.md D-042.
