@@ -7,24 +7,26 @@ Notation: **→** step · **⚠** failure or edge case · **✓** completion cri
 
 ---
 
-## F0 — Primary navigation (shipped M7)
+## F0 — Primary navigation (M7.1, supersedes M7's five-tab bar — DECISIONS.md D-043)
 
-Five direct destinations, always reachable, plus a central quick-add action (F11.1) that is an
-action, never a sixth destination:
+Four direct destinations, always reachable, plus a central quick-add action (F11.1) that is an
+action, never a fifth destination. Intentionally symmetrical: two either side of **+**.
 
 | Destination | Route | What it is |
 |---|---|---|
-| **Home** | `/` | The future investment-style portfolio dashboard (F10). M7 shows only truthful current data — physical/graded/manual counts — with an honestly-marked "not available yet" panel where the value figure and chart will live once M9/M12 exist. |
-| **Search** | `/catalog` | The renamed Catalog — Cards and Sets modes, per-result quick-add (F2 below), reserved layout for a future value column (M9). |
-| **Portfolio** | `/portfolio` | The user's owned-card browser — grid/list/table, density, sort, quick + full filters, custom collections (F8.2/F8.3). User-facing name for what the schema still calls a holding/collection (DECISIONS.md D-040). |
-| **More** | `/more` | Secondary real functionality only — admin invitations when applicable, a link into Profile's display settings. No disabled future-feature entries. |
-| **Profile** | `/profile` | Account identity and Portfolio display defaults — display name, theme, low-value threshold, sign out. |
+| **Home** | `/` | The investment-style portfolio dashboard (F10). Scope selector, currency preference and value-privacy control; honestly-marked "not available yet" wherever a real value or chart would render once M9/M12 exist. |
+| **Search** | `/catalog` | Cards and Sets modes, a dominant top search field, a set-browsing carousel, per-result quick-add (F2 below), a camera affordance reserved for M15 (F11.1), reserved layout for a future value column (M9). |
+| **Portfolio** | `/portfolio` | The user's owned-card browser — a top search field scoped to owned cards, favourite filter, an action menu (sort/select), grid/list/table, density, quick + full filters, custom collections (F8.2/F8.3), select-mode bulk actions (F8.4). User-facing name for what the schema still calls a holding/collection (DECISIONS.md D-040). |
+| **Profile** | `/profile` | Account identity and settings hub — display name, theme (now functional, light/dark/system), Portfolio display defaults, low-value threshold, European-pricing preference, preferred card language, admin invitations (admins only), sign out, provider attribution and app version. |
 
-Mobile: a fixed bottom navigation bar with the central **+** raised above it, centred independently
-of the five equal-width tabs (`src/features/nav/BottomNav.tsx` — see that file's own comment for
-the geometry). Desktop: a single top navigation row covering the same five destinations plus Add
-(`DesktopNav.tsx`). Safe-area-aware on both; the bottom bar never covers scrollable content
-(AppShell reserves matching bottom padding).
+**More is gone (D-043).** Its one real function — admin invitations — moved into Profile;
+`/more` remains as a redirect to `/profile` so no bookmarked link breaks. Mobile: a fixed,
+translucent bottom navigation bar with the central **+** raised above it, centred over the gap
+between Search and Portfolio (`src/features/nav/BottomNav.tsx`). Desktop: a single top navigation
+row covering the same four destinations plus Add (`DesktopNav.tsx`). Safe-area-aware on both; the
+bottom bar never covers scrollable content (AppShell reserves matching bottom padding). No global
+"PokePortfolio" wordmark in authenticated chrome any more — brand appears only on Home (mobile)
+and the authentication screens.
 
 ---
 
@@ -136,6 +138,23 @@ be: search, tap, save. The scanner will reuse exactly these session defaults.
 → Selecting a set opens its card list, with the same per-row **+**
 ✓ No card value is shown yet (M9); the result row layout reserves the space so adding it later is
   a small change, not a redesign
+
+### F2.3 — Search top bar, set carousel and favourite filter (M7.1)
+
+→ A dominant top search field ("Search for cards") with a magnifying-glass icon and a clear ×,
+  plus a camera affordance and a star beside it
+→ **Camera**: establishes the scanner's future position; tapping it shows "Card scanner is not
+  available yet" — no permission request, no capture code (M15 owns the real behaviour, D-006)
+→ **Star**: filters results to catalog cards behind a holding the user has marked Favourite — a
+  direct read of existing favourite state (`holdings.is_favorite`), never a second wishlist system
+→ Below the search controls, quick filters (Cards/Sets, language) and, when browsing with no
+  query, a horizontally-scrollable strip of real sets — newest first, filtered by language, real
+  set logo/symbol art
+→ A compact sort menu offers Product name A→Z/Z→A and Card number low→high/high→low (natural
+  order — DECISIONS.md's number-sort reasoning, §41/§72 below applies the same way here) over the
+  already-fetched result set. Price-based sort stays absent until M9.
+✓ Card results are image-led units (artwork, name, set, rarity · number, language/variant count,
+  independent +), not a generic list row
 
 ---
 
@@ -307,6 +326,11 @@ never requires a detour through More.
 → Deleting a collection (via the chip row's "Collections" manager) asks for confirmation and
   states explicitly: **"This removes the group. The cards in it stay in your Portfolio."**
 
+**M7.1 addition.** Home's scope selector ("Portfolio Main ▼" or a named collection,
+`src/ui/ScopeSelector.tsx`) reads and writes the exact same `custom_collections` model — never a
+second grouping system (M7.1 prompt §17/§44/§74). Pre-M9 it changes which real count/top-cards
+data Home shows; once M9/M12 exist, the same selected scope drives valuation and history too.
+
 ## F8.3 — Low-value and unpriced cards
 
 → Profile › set a low-value threshold (default 10 kr)
@@ -323,6 +347,33 @@ never requires a detour through More.
 ✓ Optionally collapsed from the default browsing view, with the hidden count visible:
   *"1 284 low-value cards hidden — show"*
 ✓ Hiding is never deletion, and the UI never implies otherwise
+
+## F8.4 — Portfolio select mode and bulk actions (M7.1)
+
+→ Portfolio's action menu (beside the search field) → Select
+→ Grid/List/Table each grow a per-tile selection affordance (checkbox-style), keyed by holding id
+  so a selection survives a virtualized tile unmounting and remounting on scroll
+→ A sticky bar shows the selected count, Cancel, and the actions currently safe to run in bulk:
+  **Add to collection** (picks a collection, upserts membership), **Remove from this collection**
+  (only when currently scoped to one), **Favourite**
+✓ Every bulk action here is purely organisational (C1) — nothing financial changes
+⚠ Bulk **removal from the Portfolio** (voiding lots) is deliberately not offered yet — it needs a
+  transaction-safe batch-void operation this milestone did not build rather than an unsafe
+  approximation (DECISIONS.md D-045, BACKLOG.md)
+
+## F8.5 — The value display contract (M7.1)
+
+One component (`src/ui/MoneyDisplay.tsx`) renders every monetary figure across Home, Portfolio and
+Profile, in exactly one of three states, never conflated:
+
+```
+known    NOK 12 450
+hidden   ••••          (the value-privacy eye is on — src/ui/ScopeSelector.tsx's sibling control)
+missing  —              (no code path fabricates a number here)
+```
+
+A future price resolver (M9) or chart (M12) wires into this component unchanged — only the value
+it is handed changes, never its states or their meaning.
 
 ---
 
@@ -346,15 +397,33 @@ merge the lots into it
 
 ## F10 — Dashboard (Home)
 
-**M7 status.** This is Home's eventual shape, owned by M9 (value) and M12 (snapshots, chart).
-M7 built the `/` destination (F0) with only truthful, currently-available figures — physical card
-count, unique holdings, graded count, manual-entry count — and an honestly-marked "Portfolio
-value — not available yet" panel exactly where the primary figure and chart below will live. No
-sample data, no fabricated total, no placeholder line graph. The owner's stated requirement for
-this eventual view, recorded so M12 does not miss it: the current Portfolio value should read as
-the single most prominent number, next to a stock/investment-style value-over-time chart — see
-DECISIONS/ROADMAP M12 and M7 prompt §17-18/§106 for the full framing. M12 also owns the
-chart-library spike (`lightweight-charts`, D-015).
+**M7.1 status.** M7.1 built the real structure of this eventual view (M7.1 prompt §15-20):
+
+```
+[brand, mobile only]
+Portfolio Main ▼                              [NOK ▾]
+—                                                 [eye]
+Market value becomes available once pricing is enabled.
+[value-over-time chart placeholder]   1D 1W 1M 3M 6M 1Y MAX
+
+Physical cards   Unique holdings   Graded   Manual entries   (or, scoped to a collection: its count)
+
+Most valuable cards                                    View all →
+[four cards, only if a real manual valuation exists — otherwise an honest empty state]
+
+[Search cards]  [Open Portfolio]
+```
+
+Every element that depends on M9 (raw pricing) or M12 (snapshots/chart) is honestly unavailable —
+no sample data, no fabricated total, no placeholder line graph. "Most valuable cards" only ever
+shows holdings with a real resolved value (currently: a graded holding's manual valuation); it
+never ranks by acquisition cost. "View all" links to `/portfolio?sort=value_desc`. The scope
+selector and currency/privacy controls are shared components with Portfolio (F8.2/F8.5) — not a
+second implementation. The owner's stated requirement for the still-missing pieces, recorded so
+M9/M12 do not miss them: the current Portfolio value should read as the single most prominent
+number, next to a stock/investment-style value-over-time chart — see DECISIONS/ROADMAP M12 and M7
+prompt §17-18/§106 for the full framing. M12 also owns the chart-library spike
+(`lightweight-charts`, D-015).
 
 → Open the app
 → Collection value is the largest figure; overall position sits immediately beside it
@@ -394,17 +463,18 @@ navigation — one shared sheet (`QuickAddMenu`), reached the same way from eith
 currently exists; new actions appear as their milestones land rather than sitting disabled from
 day one (M7 prompt §12 was explicit that a menu of dead actions is worse than a short one).
 
-| Available now (M7) | Action |
+| Available now | Action |
 |---|---|
 | Search cards | Opens Search (`/catalog`) |
 | Add card manually | Opens the catalog-missing-card form (`/portfolio/manual/new`) |
+| Scan card (M7.1) | Establishes the scanner's future position in this menu; shows "Card scanner is not available yet" — no permission request, no capture code (D-006 still governs the real implementation) |
 
 | Arrives later | Action |
 |---|---|
 | M8 | Add purchase |
 | M11 | Add sealed product |
 | M10 | Record sale |
-| After the scanner (M15) | Scan cards |
+| M15 | The Scan card entry above becomes real |
 | After openings (M16) | Open product |
 | After trades (M18) | Record trade |
 
@@ -433,6 +503,31 @@ Collection  Binder 3
 ✓ No navigation and no URL change at any point while the camera is live (D-006)
 ✓ Faster than manual search, measured against a real stack of cards
 ✓ Nothing is saved until the review step is confirmed
+
+---
+
+## F15 — Trade Analyzer (future, recorded M7.1 prompt §48 — needs M9 values + M18 trade workflow)
+
+The owner's exact specification, recorded now so a future session builds this and not something
+approximate:
+
+→ Portfolio → Trade Analyzer → Create new trade → name the trade
+→ Two sides, **YOU** and **THEM**, each: add products (cards), a running total value, and an
+  optional cash amount
+→ A fairness scale renders as a horizontal bar from "very good for user" through "fair" to
+  "bad for user", with an indicator positioned by the two sides' real values
+→ Save, or discard on back/exit — asked explicitly, not silently dropped
+
+Depends on M9 (a real card value to sum) and M18 (the trade workflow/schema already exists,
+DATA_MODEL.md §5.8.2). No fairness figure may ever be fabricated or estimated from acquisition
+cost — the same "never a value that isn't real" rule as every other figure in this document.
+
+## F16 — Market Movers (future, recorded M7.1 prompt §49 — needs M9 price history)
+
+→ Portfolio → Market Movers → owned cards ranked by price movement
+→ Sort options: highest increase, largest decrease, absolute movement, low movement
+✓ Ranks only cards with real price history (M9); a card with no price history is excluded, not
+  ranked as zero movement
 
 ---
 

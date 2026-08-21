@@ -290,8 +290,9 @@ date and records which date was used.
 |---|---|
 | Identity | `display_name`, `is_admin bool default false`, `created_at`, `disabled_at nullable` |
 | Locale | `locale` (default `nb-NO`), `display_currency` (default `NOK`) |
-| Display | `theme` (`system`/`light`/`dark`), `collection_grid_density smallint default 2` (1–4), `collection_default_view` (`grid`/`list`/`table`) |
+| Display | `theme` (`system`/`light`/`dark`, now actually applied — DESIGN_SYSTEM.md §3), `collection_grid_density smallint default 2` (1–4), `collection_default_view` (`grid`/`list`/`table`), `collection_default_sort` (M7), `hide_values bool default false` (M7.1 value-privacy eye) |
 | Filtering | `low_value_threshold_minor bigint default 1000` (10 NOK), `hide_low_value_by_default bool default false` |
+| Pricing preference | `use_eu_pricing bool default true` (M7.1) — stored ahead of M9's resolver; genuinely inert until it exists (D-044) |
 | Pricing | `preferred_price_kind` (default `cm_trend`) |
 | Capture | `default_condition`, `default_language`, `default_storage_location_id` — prefills for fast entry and, later, scanner session defaults |
 
@@ -1041,3 +1042,27 @@ result with `BigInt()` — see `src/data/money.ts` and the proof in
 cast path stays exact while the uncast path does not. Not a practical risk at this app's actual
 scale (collection values are nowhere near 2^53 øre), but the boundary is real and now tested
 rather than assumed.
+
+## 15. M7.1 implementation notes
+
+**`portfolio_sort_order` gained `number_asc`/`number_desc`** (owner request — card-number sort
+was the one obviously-missing mode, M7.1 prompt §41/§72). Backed by `natural_sort_key(text)`, a
+new `IMMUTABLE SQL` function that splits a collector-number string into alternating digit/non-digit
+runs and zero-pads the digit runs, giving "4" < "9" < "10" < "H31" ordering instead of a plain
+string sort's "10" < "4" < "9" < "H31". Applies to `coalesce(card.local_id, manual_card.collector_number, '')`
+— real data already on the row, never a fabricated ranking key. `list_portfolio`'s signature grew
+one trailing cursor parameter (`p_cursor_number_key text`) and its return type grew one column
+(`number_sort_key text`) for exactly this sort's keyset cursor — the function was dropped and
+recreated rather than `CREATE OR REPLACE`d, because adding a parameter changes a function's
+identity in Postgres (name + argument types), and `CREATE OR REPLACE` with a different signature
+creates a second overload instead of replacing the first.
+
+**Two new `profiles` columns**, both described in §5.1 above: `hide_values` (display-only
+value-privacy preference) and `use_eu_pricing` (stored ahead of M9, D-044).
+
+**`custom_collection_members` gained bulk read/write helpers at the client layer only** — no new
+RPC or schema change. Portfolio's select-mode bulk actions (`src/data/customCollections.ts`'s
+`addHoldingsToCollection`/`removeHoldingsFromCollection`, `src/data/collection.ts`'s
+`bulkSetFavorite`) are plain multi-row `INSERT .. ON CONFLICT DO NOTHING`/`DELETE .. IN (...)`/
+`UPDATE .. IN (...)` statements under the same RLS policies §5.2.1 already specifies — invariant
+C1 (nothing financial changes) applies exactly as it does to the single-holding versions.

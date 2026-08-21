@@ -16,6 +16,12 @@ Work not currently scheduled. Themes, not microtasks. Scheduled work lives in
 | Desktop bulk operations | Multi-select, batch condition, location, tags, collections, delete. |
 | Restore from JSON backup | Export ships in MVP; import of a backup is the other half. |
 | CSV import | Needed if existing collection data ever arrives. Format depends on the source. |
+| Bulk "Remove from Portfolio" | M7.1 shipped select-mode bulk add/remove-to-collection and bulk favourite (all purely organisational, C1), but not bulk removal — that needs a real `bulk_void_lots(uuid[])`-style RPC: transaction-safe, guarding a purchase with a live downstream reference the same way `void_acquisition_lot` already does, never a hard `DELETE`. See DECISIONS.md D-045. |
+| Profile picture upload | Owner-requested (M7.1 prompt §52). Deferred rather than shipped without the safeguards SECURITY.md §7 already specifies for user uploads: private per-user storage paths, strict size/MIME validation, server-side re-encoding, EXIF stripping (phone photos carry GPS — a real disclosure risk for an inventory of valuables), signed URLs, no public bucket. See DECISIONS.md D-046. |
+| Account reset / delete UI | The cascade behind account deletion is real as of M4 (every `user_id` FK to `auth.users` is `ON DELETE CASCADE`, SECURITY.md §8) but no application UI or RPC exists yet — needs explicit confirmation, re-authentication if current Supabase guidance supports it, and verification that deletion leaves zero orphaned rows. Owner-requested, M7.1 prompt §64. |
+| Portfolio share links | Owner-requested toggle generating a read-only URL (M7.1 prompt §57). Already listed below as "Read-only share links" — restated here because M7.1 explicitly declined to build even a UI stub for it: a working-looking toggle that does nothing is worse than no toggle (M7.1 prompt §57's own instruction). |
+| Trade Analyzer | Owner's exact future specification recorded in UX_FLOWS.md F15 (M7.1 prompt §48): create a trade, two sides (cards + optional cash), a fairness scale from "very good for user" to "bad for user". Needs real card values (M9) and the trade workflow (M18) before the fairness calculation can be anything but fabricated. Portfolio's action-shortcut row (`PortfolioActionShortcuts.tsx`) already reserves its position. |
+| Market Movers | Owner's future requirement (M7.1 prompt §49, UX_FLOWS.md F16): rank owned cards by price movement (highest increase, largest decrease, absolute, low movement). Needs M9's price history. Portfolio's action-shortcut row already reserves its position. |
 
 ---
 
@@ -26,8 +32,8 @@ Work not currently scheduled. Themes, not microtasks. Scheduled work lives in
 | Trade item-leg accounting rule | Carryover versus fair value at trade date. Both defensible; needs a real decision, not a default. Blocks M18, nothing else. Frozen `cost_basis_at_disposal` keeps both options open. |
 | Wishlist with target prices | Cheap once the catalog and pricing exist. Would extend `watched_card_variants` naturally. |
 | Set completion tracking | Needs variant-level completeness rules. Master-set tracking is meaningfully harder than base-set tracking. |
-| Price alerts | Requires notification delivery. Push on iOS works for installed PWAs but adds a subsystem. |
-| Read-only share links | Signed, expiring, scoped to a subset. Must not weaken RLS — a separate read path, not a policy exception. |
+| Price alerts | Requires notification delivery. Push on iOS works for installed PWAs but adds a subsystem. Owner-requested watchlist form (M7.1 prompt §58): notify when a held card's price moves by a threshold — needs M9's price history plus this delivery subsystem. No UI stub shipped in M7.1 (a toggle that does nothing is worse than none). |
+| Read-only share links | Signed, expiring, scoped to a subset. Must not weaken RLS — a separate read path, not a policy exception. Owner-requested as a Profile toggle (M7.1 prompt §57); explicitly not implemented even as a UI stub until a real security design exists. |
 | Own-card photography | Storage cost, EXIF stripping, re-encoding. Specified in SECURITY §7. |
 | Receipt attachments | Same infrastructure as above. |
 | Configurable condition multipliers | Only with real data behind them. See D-009 — inventing percentages was already rejected once. |

@@ -109,6 +109,14 @@ matches *both* parents' owners (S1), no `UPDATE` policy since a membership row i
 deleted, never edited. Deleting a collection cascades to membership rows only via a plain FK
 `on delete cascade` — invariant C1, DATA_MODEL.md §5.2.1.
 
+**M7.1**: `list_portfolio`'s signature grew a trailing cursor parameter for the new
+`number_asc`/`number_desc` sort (DATA_MODEL.md §15) — dropped and recreated rather than
+`CREATE OR REPLACE`d, since a new parameter changes a Postgres function's identity, and the
+privilege baseline (`20260823120030_m71_privilege_baseline.sql`) restates the complete grant
+surface the same way every prior milestone's baseline has. `natural_sort_key(text)` is a new
+`IMMUTABLE SQL`, `STABLE`-safe helper with no table access at all — `authenticated`-only,
+`PUBLIC` revoked like every other function since D-042.
+
 `portfolio_counts()` and `list_portfolio(...)` are both `SECURITY INVOKER` (M7 prompt §74):
 `authenticated` already holds `SELECT` on every table they read, so a `DEFINER` would grant
 nothing a plain grant does not already, and RLS on `holdings`/`acquisition_lots`/
