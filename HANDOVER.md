@@ -4,39 +4,42 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-**Last updated:** 2026-08-24 — M1 (scaffold and harness), M2 (financial domain core), M3
+**Last updated:** 2026-08-25 — M1 (scaffold and harness), M2 (financial domain core), M3
 (database, migrations, RLS), M4 (invite-only authentication), M4.1 (privilege convergence,
 deployment, real end-to-end), M5 (catalog, TCGdex ingest, search), M6 (collection: holdings, lots,
 origin, cost), M7 (Portfolio: organisation, display, navigation), M7.1 (owner UI/UX refinement
-pass) and **M8 (purchases and the spending ledger)** complete in code, merged, and deployed. M7's
-PR ([#14](https://github.com/Oskarhn/pokeportfolio/pull/14)) merged after CI-green; a follow-up CSP
+pass), M8 (purchases and the spending ledger) and **M8.1 (Portfolio correction / Purchase
+discoverability)** complete in code, merged, and deployed. M7's PR
+([#14](https://github.com/Oskarhn/pokeportfolio/pull/14)) merged after CI-green; a follow-up CSP
 fix ([#15](https://github.com/Oskarhn/pokeportfolio/pull/15)) merged after browser verification
 found card thumbnails were blocked in production. M7.1's two PRs
 ([#18](https://github.com/Oskarhn/pokeportfolio/pull/18),
-[#19](https://github.com/Oskarhn/pokeportfolio/pull/19)) merged after CI-green. **M8's PR
-([#21](https://github.com/Oskarhn/pokeportfolio/pull/21)) merged after CI-green** — see "M8 —
-Purchases and the spending ledger" below for the full account. **The owner's real-device check
-from M7/M7.1 is still outstanding, and M8 now needs its own signed-in deployed check too — this
-session cannot create or sign in with a synthetic account (see "M8" below for exactly what to
-check).**
+[#19](https://github.com/Oskarhn/pokeportfolio/pull/19)) merged after CI-green. M8's PR
+([#21](https://github.com/Oskarhn/pokeportfolio/pull/21)) merged after CI-green. **M8.1's PR
+([#23](https://github.com/Oskarhn/pokeportfolio/pull/23)) merged after CI-green** — see "M8.1 —
+Portfolio correction / Purchase discoverability" below for the full account. **The owner's
+real-device check from M7/M7.1 and the signed-in M8 check are both still outstanding, and M8.1 now
+needs its own signed-in check too — this session cannot create or sign in with a synthetic account
+(see "M8.1" below for exactly what to check).**
 
 ---
 
 ## Status
 
-**Planning is FROZEN. M1–M8 are complete in code, merged, and deployed.** M9 (pricing and
+**Planning is FROZEN. M1–M8.1 are complete in code, merged, and deployed.** M9 (pricing and
 snapshots) is next, once the owner has reacted to the deployed UI and done the outstanding
 real-device/signed-in checks below.
 
-The application is deployed and reachable: **https://pokeportfolio-dev.pages.dev**, on the M8
-state (PRs #14, #15, #18, #19 and #21 all merged). The owner has a working administrator account on
-the development project, the shared catalog holds the real English and Japanese physical Pokémon
-TCG card set (M5), and the deployed build lets the owner search a card (with visible card artwork,
-a set-browsing carousel, and a favourite filter), add it to their Portfolio with real acquisition
-provenance and cost, browse it in `/portfolio` — grid/list/table views, sort (including a new
-card-number sort), filters, custom collections, and select-mode bulk actions — and now **record a
-real multi-line purchase** (`/purchases`) with retailers, shipping/customs/discount allocation,
-foreign currency via Norges Bank or a manual rate, and safe edit/void. Primary navigation is still
+The application is deployed and reachable: **https://pokeportfolio-dev.pages.dev**, on the M8.1
+state (PRs #14, #15, #18, #19, #21, #22 and #23 all merged). The owner has a working administrator
+account on the development project, the shared catalog holds the real English and Japanese physical
+Pokémon TCG card set (M5), and the deployed build lets the owner search a card (with visible card
+artwork, a set-browsing carousel, and a favourite filter), add it to their Portfolio with real
+acquisition provenance and cost, browse it in `/portfolio` — grid/list/table views, sort (including
+a card-number sort), filters, custom collections, and select-mode bulk actions **including a real
+"Remove from Portfolio"** — record a real multi-line purchase (`/purchases`) with retailers,
+shipping/customs/discount allocation, foreign currency via Norges Bank or a manual rate, and safe
+edit/void, now **more discoverable** from the central + menu and Home. Primary navigation is still
 Home/Search/Portfolio/Profile plus a central quick-add — Purchases is reached through it and a Home
 shortcut, not a new nav tab. Theme (light/dark/system) actually applies.
 
@@ -516,7 +519,9 @@ of the deployed bundle (it is public by design) rather than from that command.
   [#15](https://github.com/Oskarhn/pokeportfolio/pull/15), M7.1 via
   [PR #18](https://github.com/Oskarhn/pokeportfolio/pull/18) plus the deployment-check fix
   [#19](https://github.com/Oskarhn/pokeportfolio/pull/19), M8 via
-  [PR #21](https://github.com/Oskarhn/pokeportfolio/pull/21). All squash-merged, branches deleted.
+  [PR #21](https://github.com/Oskarhn/pokeportfolio/pull/21) plus the deployment-verification docs
+  update [#22](https://github.com/Oskarhn/pokeportfolio/pull/22), M8.1 via
+  [PR #23](https://github.com/Oskarhn/pokeportfolio/pull/23). All squash-merged, branches deleted.
 - PR #4 was the deliberate negative security test — both invite-only gates disabled to prove the
   suite fails. Closed unmerged, branch deleted. It is not a mistake in the history.
 - `claude_outputs/` is gitignored and must stay that way.
@@ -909,9 +914,108 @@ a throwaway `.invalid` synthetic account is outside what this session performs, 
 project convention (same boundary M7.1's session already documented). Everything reachable
 *without* signing in was verified live, above.
 
+## M8.1 — Portfolio correction / Purchase discoverability
+
+Not a numbered product milestone — a focused correction pass after the owner tested the deployed
+M8 build and reported two concrete usability gaps: no way to remove an accidentally-added card from
+Portfolio, and no clear way to find or create a Purchase despite M8 shipping the ledger. Full
+detail: `claude_outputs/output_14.txt`, DECISIONS.md D-051.
+
+**The audit found a real bug before any UI was built.** The prompt required auditing
+`void_acquisition_lot`'s M8-era parent-purchase auto-void rule against a mixed receipt before
+wiring bulk removal to it. The check only ever counted *other live lots* on the purchase — correct
+exactly when every line produces a lot (true for M8's own "two-card purchase" test), wrong the
+moment a purchase has a line that never produces one at all (`accessory`,
+`shipping_standalone`/`customs_standalone`, `grading_fee`/`grading_shipping`, `bulk_lot`, `other`).
+Voiding the sole card lot in a card+accessory purchase made the check see zero other live lots and
+auto-void the *whole* receipt, silently erasing the accessory's real, unrelated spend from
+`CS`/`HS`/`GPO`. Corrected to count *lines*, not lots: auto-void the parent purchase only when
+every other line is already accounted for (a card/sealed line whose own lot is also voided, or no
+other line exists) — a strict generalization, so every purchase that existed before this migration
+behaves identically, and only the wrong case changes. Regression test:
+`tests/db/m8_purchase_ledger.test.ts`, "never auto-voids a purchase while an accessory line still
+represents real spend".
+
+**A second, related gap, also fixed:** `void_acquisition_lot` never checked `quantity_remaining`
+before voiding — `update_purchase`/`void_purchase` already refuse to touch a purchase with a
+partially-disposed lot; the same guard now exists on a single lot's void too. Currently unreachable
+through any real product flow (no disposal-producing milestone has shipped — same caveat HANDOVER
+already records for those two), implemented pre-emptively.
+
+**Remove from Portfolio.** `remove_holdings_from_portfolio(uuid[])` (SECURITY INVOKER) is the new
+atomic, all-or-nothing bulk surface — BACKLOG.md's deferred `bulk_void_lots(uuid[])` item (D-045),
+now shipped. It voids every live lot of every given holding by calling the corrected
+`void_acquisition_lot` itself, so the parent-purchase correction above applies uniformly whether a
+holding is removed individually (the pre-existing Holding Detail "Void" button, which inherits both
+fixes for free) or in bulk. The only way a holding can be "blocked" is the same
+`quantity_remaining` guard; when any selected holding is blocked, the whole call performs zero
+mutations and reports which holdings and why — never a partial removal. Portfolio's `BulkActionsBar`
+gained a "Remove" button and two sheets: a confirmation (holding/physical-copy counts, the
+correction-not-sale disclaimer) and a blocked-results sheet. **A multi-line purchase never blocks
+removal** — the corrected auto-void rule already keeps the purchase and its unrelated spend intact
+without the user needing to visit the purchase page first; this was a deliberate departure from the
+prompt's initial "block for any multi-line purchase" framing, made after finding M8's own
+already-shipped two-card-purchase test asserts the opposite (voiding one card's lot while the
+purchase stays alive is intended behaviour, not a gap) — see D-051's "Alternatives" for the full
+reasoning.
+
+**Purchase discoverability.** The architecture was already correct (central + menu, a Home
+shortcut, `/purchases` empty state) — M8.1 made it *obvious*: the + menu reordered to Add card /
+Record purchase / Add card manually / Scan card with clearer one-line descriptions; Home's spending
+row now reads as a link ("Purchases — View your receipts →") rather than an unexplained figure; the
+purchases empty state and the new-purchase form both explain the concept in one sentence; saving a
+purchase now shows a dismissible "Purchase recorded" banner with a Portfolio link on the detail page
+it already navigated to (`?created=true`, `purchaseDetailRoute`'s new `validateSearch`). The
+"market pricing not available yet" copy on Portfolio/Home was already in place from M7.1 —
+confirmed adequate, not touched (never on every card, never mentions a milestone number).
+
+**Database.** One migration pair
+(`20260825120000_m81_void_acquisition_lot_fix.sql`,
+`20260825120010_m81_privilege_baseline.sql`): the two `void_acquisition_lot` fixes above, the new
+`remove_holdings_from_portfolio` function, and the restated privilege baseline. Both applied to
+`pokeportfolio-dev` (`supabase db push`).
+
+**Known limitation, found while verifying.** `src/data/database.types.ts` cannot be blindly
+replaced with a fresh `supabase gen types` / CI artifact — diffed this session against the real
+CI-generated output and found one deliberate, pre-existing divergence: `create_purchase`/
+`update_purchase`'s `p_fx_rate_to_nok` is hand-typed `string` (the app passes a decimal string,
+`src/data/purchases.ts`, to avoid float imprecision on a `numeric(18,8)` parameter) where the
+generator infers `number`. Blindly overwriting with a fresh generated file breaks the build
+(`src/data/purchases.ts` no longer typechecks). A future session with Docker regenerating this file
+must re-apply that one field's type by hand afterward, same as the rest of the file already is.
+Every other diff found (nullability on `list_portfolio`'s return columns, `id?: never` vs
+`id?: number`, minor formatting) is a harmless, long-standing generator-output quirk, not something
+introduced this session — `remove_holdings_from_portfolio`'s own added type block matched the CI
+artifact exactly except this same nullability quirk on `blocked_reason` (harmless: the client
+already overrides the type via `.overrideTypes()`, `src/data/collection.ts`).
+
+**Verification, actually run, not just described:**
+
+- `pnpm check` (typecheck/lint/format/85 domain tests, unchanged — M8.1 touched no `src/domain`
+  logic) green locally; `pnpm build` green (placeholder env); `pnpm test:e2e` 58/58 (unchanged — no
+  new routes, only a new search param on an existing one, so no new guard case was needed).
+- CI green on PR #23 (after one fix-up commit for a test-only bug — `purchase_spending_summary` was
+  called via the service-role client instead of the authenticated user's, and the RPC carries no
+  grant to `service_role`): **336 database/authorization tests across 23 files** (up from 320/21 at
+  M8 — `tests/db/m81_remove_from_portfolio.test.ts`, `tests/authorization/m81_portfolio_removal.test.ts`,
+  two new cases in `tests/db/m8_purchase_ledger.test.ts` reproducing the fixed bug and the new
+  guard, two new cases in `tests/authorization/function_grants.test.ts`), including the hostile-grant
+  convergence proof.
+- Both M8.1 migrations applied to `pokeportfolio-dev` (`supabase db push`); `grant-audit.sql` clean
+  (`supabase db query --linked`, zero rows); `remote-security-check.mjs` phase 1 **17/17** (no
+  `INVITE_TOKEN` available this session, same as M7.1/M8); `deployment-check.mjs` **28/28** against
+  the real rebuilt bundle after merge (new hashes for `PortfolioPage`, `PurchaseFormPage`,
+  `PurchaseDetailPage`, `PurchasesListPage`, `HoldingDetailPage` confirmed the deploy genuinely
+  picked up the change, not a stale edge cache).
+
+**Not done this session, and why:** no signed-in deployed walkthrough of the new Remove/Purchase-
+discoverability UI. Creating or signing into even a throwaway `.invalid` synthetic account is
+outside what this session performs, regardless of project convention (same boundary every M6+
+session has documented). Everything reachable *without* signing in was verified live, above.
+
 ## Next actions
 
-**M1–M8 are done, merged, and deployed.** Ask the owner for:
+**M1–M8.1 are done, merged, and deployed.** Ask the owner for:
 
 1. The real-device check still outstanding since M7/M7.1 (checklist below, unchanged).
 2. **A short signed-in M8 check**, using clearly synthetic amounts:
@@ -927,6 +1031,16 @@ project convention (same boundary M7.1's session already documented). Everything
      headline totals but remain visible with "Show voided" checked.
    - Report anything that looked wrong, confusing, or ugly on a real phone — this is also the first
      real screen time the M8 UI has had outside this session's own review.
+3. **A short signed-in M8.1 check:**
+   - Add one temporary card, then Portfolio → Select → select it → **Remove**. Confirm the
+     confirmation sheet's copy makes sense, the card disappears, and the physical/holding counts on
+     Home and Portfolio fall accordingly.
+   - Press the central **+** — confirm **Record purchase** is now easy to find and its one-line
+     description makes sense next to **Add card**.
+   - Record one small purchase (e.g. one card 100 NOK, one accessory 50 NOK, shipping 20 NOK —
+     expected: Total spent 170 NOK, Collectibles 113.33 NOK, Accessories 56.67 NOK) and confirm the
+     "Purchase recorded" banner and its Portfolio link appear on the detail page.
+   - Report anything that looked wrong, confusing, or ugly.
 
 Then start **M9 — Pricing and snapshots** ([docs/ROADMAP.md](docs/ROADMAP.md)).
 
@@ -1066,6 +1180,25 @@ Verified 2026-08-24 (M8):
   validated trivially, but the check itself (not just the assumption) is the reusable habit for a
   future migration that tightens an existing constraint against a project that *does* hold data.
 
+Verified 2026-08-25 (M8.1):
+
+- **`PERFORM some_function(col) FROM table WHERE ...` in plpgsql calls the function once per row
+  the FROM/WHERE clause matches**, exactly like a `SELECT` with the same target list would, and
+  each call sees the *previous* calls' writes within the same statement (Postgres increments the
+  command counter between rows) — confirmed by reasoning through `remove_holdings_from_portfolio`'s
+  design (it relies on this: voiding two lots of the same multi-line purchase in one `PERFORM`
+  statement correctly auto-voids the purchase only once the *second* call sees the first's
+  `voided_at`) and by CI's green run of the corresponding test. A useful idiom for "call this
+  function for its side effects over a set of rows" without a client-side loop.
+- **`database.types.ts` cannot be blindly regenerated and swapped in** — diffed this session's
+  hand-added type block against a real CI-generated artifact (byte-identical except one field) and
+  found the file as a whole carries at least one *deliberate* divergence from what
+  `supabase gen types` would produce: `create_purchase`/`update_purchase`'s `p_fx_rate_to_nok` is
+  typed `string` by hand (the app passes a decimal string to avoid float imprecision on a
+  `numeric(18,8)` parameter) where the generator infers `number`. A full-file replacement compiles
+  cleanly except for this one spot — `src/data/purchases.ts` fails to typecheck. A future session
+  with Docker regenerating this file must re-apply that field's type by hand afterward.
+
 ## Commands
 
 ```bash
@@ -1172,18 +1305,31 @@ handover`), merged.** Both merges' own post-merge `push`-triggered CI runs on `m
 green (`build-and-test`/`db-tests`), confirmed directly from the Actions history, not assumed from
 the PR-triggered runs alone.
 
+**Green on PR #23 (`fix/m81-portfolio-remove-purchase-ux`), merged:** 85 domain/property/data
+tests (unchanged — M8.1 touched no `src/domain` logic) · database/authorization suite green on CI,
+**336 tests across 23 files** (up from 320/21 at M8 — `tests/db/m81_remove_from_portfolio.test.ts`,
+`tests/authorization/m81_portfolio_removal.test.ts`, two new cases in
+`tests/db/m8_purchase_ledger.test.ts`, two new cases in
+`tests/authorization/function_grants.test.ts`), including the hostile-grant convergence proof · 58
+Playwright tests (unchanged — no new routes) · `pnpm typecheck`/`pnpm lint`/`pnpm format:check`/
+`pnpm build` all green. Both M8.1 migrations pushed to `pokeportfolio-dev`, `grant-audit.sql`
+clean, `remote-security-check.mjs` phase 1 17/17, `deployment-check.mjs` **28/28** against the real
+rebuilt bundle (new hashes for every changed chunk, confirming the deploy genuinely picked up the
+change).
+
 ## Owner actions outstanding
 
 | # | Action | Blocks |
 |---|---|---|
-| 1 | Optional: install Docker Desktop | Local iteration convenience — every M7/M7.1/M8 DB/authorization test still had to wait for CI this session instead of running locally first |
+| 1 | Optional: install Docker Desktop | Local iteration convenience — every M7/M7.1/M8/M8.1 DB/authorization test still had to wait for CI this session instead of running locally first |
 | 2 | Optional: fix Node/pnpm absence from the default PATH | Convenience only |
 | 3 | A short real-device check on the deployed M7.1 UI (see "M7.1 — owner UI/UX refinement" above for the exact checklist) | Final sign-off on the nav/theme/gestures on real hardware — outstanding since M7 |
 | 4 | **A short signed-in M8 check** (see "M8 — Purchases and the spending ledger" → "Next actions" above for the exact steps: record two small synthetic purchases, one NOK/multi-line and one EUR/manual-rate, check the Purchases summary, void both) | The one thing this session could not verify itself — see below |
-| 5 | Give feedback on the deployed M7.1/M8 UI (nav, Home, Search, Portfolio, Profile, Purchases, theme) | Informs M9+ and the eventual M12a visual pass — not a blocker, but the owner explicitly wants to be asked here |
+| 5 | **A short signed-in M8.1 check** (see "M8.1" → "Next actions" above: add and remove a card via Portfolio Select, confirm the central + menu's Record purchase is easy to find, record one small purchase and confirm the success banner) | Same boundary as item 4 |
+| 6 | Give feedback on the deployed M7.1/M8/M8.1 UI (nav, Home, Search, Portfolio, Profile, Purchases, theme) | Informs M9+ and the eventual M12a visual pass — not a blocker, but the owner explicitly wants to be asked here |
 
-This session could not perform items 3/4 itself: creating or signing into even a throwaway
+This session could not perform items 3/4/5 itself: creating or signing into even a throwaway
 synthetic account requires entering a password, which is outside what this session performs
 regardless of project convention (same boundary M7.1's session already documented, restated in
-"M8" above). The admin account, the M6 deployment, the API-key model and the installed-PWA check
-remain done from before M7.
+"M8"/"M8.1" above). The admin account, the M6 deployment, the API-key model and the installed-PWA
+check remain done from before M7.
