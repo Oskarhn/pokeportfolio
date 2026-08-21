@@ -362,3 +362,66 @@ describe('holding_tags ownership (S1 defence in depth)', () => {
     expect(error).not.toBeNull()
   })
 })
+
+describe('account deletion cascades every M6 table (SECURITY.md §8)', () => {
+  // Own synthetic user, created and deleted within the test itself rather than the shared
+  // beforeAll/afterAll fixture above, since deletion is exactly what is under test here.
+  //
+  // Regression guard for a real gap found running the real add-to-collection flow against the
+  // deployed project (M6 prompt §98): holding_tags.user_id and manual_valuations.user_id
+  // referenced auth.users(id) with no ON DELETE action, so deleting an account that had tagged a
+  // holding or set a manual valuation failed outright — see 20260821130000_m6_user_id_cascade_fix.
+  it('deleting the account cascades holdings, lots, manual cards, tags and manual valuations', async () => {
+    const owner = await createSyntheticUser(service, 'm6-cascade')
+
+    const { data: manualCard } = await service
+      .from('manual_card_definitions')
+      .insert({ user_id: owner.id, name: 'cascade-check-card' })
+      .select('id')
+      .single()
+
+    const { data: holding } = await service
+      .from('holdings')
+      .insert({
+        user_id: owner.id,
+        holding_kind: 'graded_card',
+        card_variant_id: seedCatalog.charizardVariantId,
+        grading_state: 'graded',
+        grader: 'bgs',
+        grade: 9,
+      })
+      .select('id')
+      .single()
+
+    const { data: tag } = await service
+      .from('tags')
+      .insert({ user_id: owner.id, name: 'cascade-check-tag' })
+      .select('id')
+      .single()
+
+    await service
+      .from('holding_tags')
+      .insert({ holding_id: holding!.id, tag_id: tag!.id, user_id: owner.id })
+    await service.from('manual_valuations').insert({
+      user_id: owner.id,
+      holding_id: holding!.id,
+      value_minor: 100_000,
+      value_nok_minor: 100_000,
+    })
+
+    await deleteSyntheticUser(service, owner.id)
+
+    const [holdings, manualCards, tags, holdingTags, valuations] = await Promise.all([
+      service.from('holdings').select('id').eq('user_id', owner.id),
+      service.from('manual_card_definitions').select('id').eq('id', manualCard!.id),
+      service.from('tags').select('id').eq('id', tag!.id),
+      service.from('holding_tags').select('holding_id').eq('user_id', owner.id),
+      service.from('manual_valuations').select('id').eq('user_id', owner.id),
+    ])
+    expect(holdings.data).toEqual([])
+    expect(manualCards.data).toEqual([])
+    expect(tags.data).toEqual([])
+    expect(holdingTags.data).toEqual([])
+    expect(valuations.data).toEqual([])
+  })
+})
