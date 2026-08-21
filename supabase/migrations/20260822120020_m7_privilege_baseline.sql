@@ -58,7 +58,15 @@ grant execute on function public.create_invitation(text, int, text) to authentic
 grant execute on function public.revoke_invitation(uuid) to authenticated;
 grant execute on function public.card_condition_to_text(public.card_condition) to authenticated;
 grant execute on function public.grader_to_text(public.grader) to authenticated;
-grant execute on function public.search_cards(text, text, int, int) to authenticated;
+-- service_role needs an explicit grant here too, newly so as of this migration: search_cards was
+-- never revoked from PUBLIC before M7 (it predates the convention this migration now applies
+-- project-wide), so tests/db/search_cards.test.ts's service-role client had been silently riding
+-- PostgreSQL's implicit PUBLIC-EXECUTE default the whole time — exactly the blind spot D-042
+-- closes. Closing it for real removes that free ride, so the grant it was standing in for needs
+-- to become an explicit, deliberate one instead (same "service_role needs explicit grants too"
+-- rule already applied to every table). search_cards is read-only and STABLE; no privilege is
+-- being widened, only stated.
+grant execute on function public.search_cards(text, text, int, int) to authenticated, service_role;
 
 -- M6: the atomic collection-writing surface.
 grant execute on function public.add_card_acquisition(

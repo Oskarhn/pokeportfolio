@@ -31,7 +31,9 @@ import { createHash, randomUUID } from 'node:crypto'
 const url = process.env.SUPABASE_URL
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
 if (!url || !serviceRoleKey) {
-  throw new Error('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set — see this file\'s header.')
+  throw new Error(
+    "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set — see this file's header.",
+  )
 }
 
 const args = new Set(process.argv.slice(2))
@@ -227,7 +229,9 @@ async function main() {
   // sign-in against the publishable/anon key, not the service role.
   const publishableKey = process.env.SUPABASE_ANON_KEY ?? process.env.SUPABASE_PUBLISHABLE_KEY
   if (!publishableKey) {
-    throw new Error('SUPABASE_ANON_KEY (local) or SUPABASE_PUBLISHABLE_KEY (remote) must be set too.')
+    throw new Error(
+      'SUPABASE_ANON_KEY (local) or SUPABASE_PUBLISHABLE_KEY (remote) must be set too.',
+    )
   }
   const userClient = createClient(url, publishableKey, {
     auth: { autoRefreshToken: false, persistSession: false },

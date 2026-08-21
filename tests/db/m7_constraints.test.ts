@@ -3,7 +3,6 @@ import {
   createServiceClient,
   createSyntheticUser,
   deleteSyntheticUser,
-  seedCatalog,
   type SyntheticUser,
   type TestClient,
 } from './setup'
@@ -33,13 +32,31 @@ afterAll(async () => {
 
 const today = new Date().toISOString().slice(0, 10)
 
+let manualCardCounter = 0
+
+/** Each call creates its own manual_card_definitions row, so `holdings_identity` (scoped by
+ *  user + coalesce(card_variant_id, sealed_product_id, manual_card_id) + condition + ...) never
+ *  collides across the several holdings one test file creates for the same owner — unlike reusing
+ *  a fixed seedCatalog variant + condition pair, which a second call for the same owner would
+ *  conflict with. */
 async function createHolding(owner: SyntheticUser) {
+  manualCardCounter += 1
+  const { data: manualCard, error: manualError } = await service
+    .from('manual_card_definitions')
+    .insert({
+      user_id: owner.id,
+      name: `M7 constraint test card ${Date.now()}-${manualCardCounter}`,
+    })
+    .select('id')
+    .single()
+  if (manualError) throw manualError
+
   const { data, error } = await service
     .from('holdings')
     .insert({
       user_id: owner.id,
       holding_kind: 'raw_card',
-      card_variant_id: seedCatalog.pikachuVariantId,
+      manual_card_id: manualCard.id,
       condition: 'NM',
     })
     .select('id')

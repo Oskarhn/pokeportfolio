@@ -43,7 +43,12 @@ grant all on public.custom_collections to service_role;
 create table public.custom_collection_members (
   collection_id uuid not null references public.custom_collections (id) on delete cascade,
   holding_id uuid not null references public.holdings (id) on delete cascade,
-  user_id uuid not null references auth.users (id),
+  -- Defaulted, same convention as custom_collections/manual_card_definitions above: the client
+  -- inserts {collection_id, holding_id} only, never a user_id it would have to get right. RLS
+  -- WITH CHECK still enforces user_id = auth.uid() independently, so the default is a convenience,
+  -- not the access control. Found the hard way — a real authenticated-client insert (not a
+  -- service-role fixture) is rejected by RLS, not a NOT NULL error, when this default is missing.
+  user_id uuid not null default auth.uid() references auth.users (id),
   sort_order int not null default 0,
   added_at timestamptz not null default now(),
   primary key (collection_id, holding_id)

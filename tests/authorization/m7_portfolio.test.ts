@@ -241,9 +241,10 @@ describe('custom_collections: cross-tenant attacks', () => {
       .insert({ name: 'Guarded' })
       .select('id')
       .single()
-    await clientA
+    const { error: setupError } = await clientA
       .from('custom_collection_members')
       .insert({ collection_id: mine!.id, holding_id: myCard.data!.holding_id })
+    expect(setupError).toBeNull()
 
     await clientB
       .from('custom_collection_members')
@@ -318,9 +319,10 @@ describe('list_portfolio: isolation, sort and filter', () => {
       .insert({ name: 'Filter test collection' })
       .select('id')
       .single()
-    await clientA
+    const { error: setupError } = await clientA
       .from('custom_collection_members')
       .insert({ collection_id: collection!.id, holding_id: card.data!.holding_id })
+    expect(setupError).toBeNull()
 
     const { data, error } = await listPortfolio(clientA, {
       p_sort: 'name_asc',
