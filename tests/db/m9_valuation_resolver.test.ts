@@ -67,6 +67,7 @@ async function insertHolding(opts: {
   cardVariantId: string
   quantity: number
   grade?: number
+  condition?: string
 }) {
   const { data: holding, error: holdingError } = await service
     .from('holdings')
@@ -74,7 +75,7 @@ async function insertHolding(opts: {
       user_id: user.id,
       holding_kind: opts.holdingKind,
       card_variant_id: opts.cardVariantId,
-      condition: opts.holdingKind === 'raw_card' ? 'NM' : null,
+      condition: opts.holdingKind === 'raw_card' ? (opts.condition ?? 'NM') : null,
       grading_state: opts.holdingKind === 'graded_card' ? 'graded' : 'raw',
       grader: opts.holdingKind === 'graded_card' ? 'psa' : null,
       grade: opts.grade ?? null,
@@ -370,6 +371,10 @@ describe('quantity multiplication — holding total value (§44)', () => {
       holdingKind: 'raw_card',
       cardVariantId: seedCatalog.grassEnergyVariantId,
       quantity: 3,
+      // A distinct condition from the earlier "stale" test's NM holding of the same variant —
+      // holdings_identity is keyed on (variant, condition, ...), so reusing NM here would collide
+      // with, rather than merge into, that existing holding.
+      condition: 'LP',
     })
     // grassEnergyVariantId already has a stale 1150-minor-unit snapshot from an earlier test.
     const p = await provenance(holdingId)
@@ -457,7 +462,7 @@ describe('use_eu_pricing provider preference (D-052)', () => {
       .rpc('resolve_variant_market_values', { p_card_variant_ids: [cardVariantId] })
       .single<{ provider: string; value_nok_minor: string }>()
     expect(us.data?.provider).toBe('tcgdex_tcgplayer')
-    expect(us.data?.value_nok_minor).toBe('500000') // 5000 USD-minor = 50.00 USD * 10.0
+    expect(us.data?.value_nok_minor).toBe('50000') // 5000 USD-minor = 50.00 USD * 10.0 = 500.00 NOK
 
     await client.from('profiles').update({ use_eu_pricing: true }).eq('id', user.id)
   })

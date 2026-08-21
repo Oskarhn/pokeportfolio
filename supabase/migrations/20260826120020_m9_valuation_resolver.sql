@@ -298,15 +298,22 @@ begin
     return;
   end if;
 
+  -- resolve_variant_market_values only returns a row for a variant that has at least one
+  -- snapshot ever (its GROUP BY produces no group otherwise) — a variant with zero history
+  -- must still resolve to exactly one "missing" row here, so this is a LEFT JOIN against a
+  -- single-row source, never a bare `FROM resolve_variant_market_values(...)` that would
+  -- silently return zero rows instead.
   return query
   select
-    r.price_state,
+    coalesce(r.price_state, 'missing'),
     r.value_nok_minor,
     v_quantity::text,
     (r.value_nok_minor::bigint * v_quantity)::text,
     r.provider, r.price_kind, r.source_currency, r.source_value_minor, r.fx_rate,
     r.snapshot_date, r.provider_updated_at
-  from public.resolve_variant_market_values(array[v_holding.card_variant_id]) r;
+  from (select v_holding.card_variant_id as cvid) x
+  left join public.resolve_variant_market_values(array[v_holding.card_variant_id]) r
+    on r.card_variant_id = x.cvid;
 end;
 $$;
 
