@@ -7,11 +7,6 @@ export type Json =
   | Json[]
 
 export type Database = {
-  // Allows to automatically instantiate createClient with right options
-  // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
-  __InternalSupabase: {
-    PostgrestVersion: "14.15"
-  }
   public: {
     Tables: {
       acquisition_lots: {
@@ -73,6 +68,13 @@ export type Database = {
           voided_at?: string | null
         }
         Relationships: [
+          {
+            foreignKeyName: "acquisition_lots_holding_id_fkey"
+            columns: ["holding_id"]
+            isOneToOne: false
+            referencedRelation: "holding_summaries"
+            referencedColumns: ["holding_id"]
+          },
           {
             foreignKeyName: "acquisition_lots_holding_id_fkey"
             columns: ["holding_id"]
@@ -351,6 +353,49 @@ export type Database = {
         }
         Relationships: []
       }
+      holding_tags: {
+        Row: {
+          created_at: string
+          holding_id: string
+          tag_id: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          holding_id: string
+          tag_id: string
+          user_id?: string
+        }
+        Update: {
+          created_at?: string
+          holding_id?: string
+          tag_id?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "holding_tags_holding_id_fkey"
+            columns: ["holding_id"]
+            isOneToOne: false
+            referencedRelation: "holding_summaries"
+            referencedColumns: ["holding_id"]
+          },
+          {
+            foreignKeyName: "holding_tags_holding_id_fkey"
+            columns: ["holding_id"]
+            isOneToOne: false
+            referencedRelation: "holdings"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "holding_tags_tag_id_fkey"
+            columns: ["tag_id"]
+            isOneToOne: false
+            referencedRelation: "tags"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       holdings: {
         Row: {
           card_variant_id: string | null
@@ -429,137 +474,6 @@ export type Database = {
             columns: ["sealed_product_id"]
             isOneToOne: false
             referencedRelation: "sealed_products"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      holding_tags: {
-        Row: {
-          created_at: string
-          holding_id: string
-          tag_id: string
-          user_id: string
-        }
-        Insert: {
-          created_at?: string
-          holding_id: string
-          tag_id: string
-          user_id?: string
-        }
-        Update: {
-          created_at?: string
-          holding_id?: string
-          tag_id?: string
-          user_id?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "holding_tags_holding_id_fkey"
-            columns: ["holding_id"]
-            isOneToOne: false
-            referencedRelation: "holdings"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "holding_tags_tag_id_fkey"
-            columns: ["tag_id"]
-            isOneToOne: false
-            referencedRelation: "tags"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      manual_card_definitions: {
-        Row: {
-          collector_number: string | null
-          created_at: string
-          finish: string | null
-          id: string
-          language: string | null
-          name: string
-          notes: string | null
-          set_name: string | null
-          size: Database["public"]["Enums"]["card_size"] | null
-          stamp: string | null
-          subtype: string | null
-          updated_at: string
-          user_id: string
-        }
-        Insert: {
-          collector_number?: string | null
-          created_at?: string
-          finish?: string | null
-          id?: string
-          language?: string | null
-          name: string
-          notes?: string | null
-          set_name?: string | null
-          size?: Database["public"]["Enums"]["card_size"] | null
-          stamp?: string | null
-          subtype?: string | null
-          updated_at?: string
-          user_id?: string
-        }
-        Update: {
-          collector_number?: string | null
-          created_at?: string
-          finish?: string | null
-          id?: string
-          language?: string | null
-          name?: string
-          notes?: string | null
-          set_name?: string | null
-          size?: Database["public"]["Enums"]["card_size"] | null
-          stamp?: string | null
-          subtype?: string | null
-          updated_at?: string
-          user_id?: string
-        }
-        Relationships: []
-      }
-      manual_valuations: {
-        Row: {
-          created_at: string
-          currency: string
-          effective_from: string
-          holding_id: string
-          id: string
-          note: string | null
-          superseded_at: string | null
-          user_id: string
-          value_minor: number
-          value_nok_minor: number
-        }
-        Insert: {
-          created_at?: string
-          currency?: string
-          effective_from?: string
-          holding_id: string
-          id?: string
-          note?: string | null
-          superseded_at?: string | null
-          user_id: string
-          value_minor: number
-          value_nok_minor: number
-        }
-        Update: {
-          created_at?: string
-          currency?: string
-          effective_from?: string
-          holding_id?: string
-          id?: string
-          note?: string | null
-          superseded_at?: string | null
-          user_id?: string
-          value_minor?: number
-          value_nok_minor?: number
-        }
-        Relationships: [
-          {
-            foreignKeyName: "manual_valuations_holding_id_fkey"
-            columns: ["holding_id"]
-            isOneToOne: false
-            referencedRelation: "holdings"
             referencedColumns: ["id"]
           },
         ]
@@ -683,6 +597,108 @@ export type Database = {
           use_count?: number
         }
         Relationships: []
+      }
+      manual_card_definitions: {
+        Row: {
+          collector_number: string | null
+          created_at: string
+          finish: string | null
+          id: string
+          language: string | null
+          name: string
+          notes: string | null
+          set_name: string | null
+          size: Database["public"]["Enums"]["card_size"] | null
+          stamp: string | null
+          subtype: string | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          collector_number?: string | null
+          created_at?: string
+          finish?: string | null
+          id?: string
+          language?: string | null
+          name: string
+          notes?: string | null
+          set_name?: string | null
+          size?: Database["public"]["Enums"]["card_size"] | null
+          stamp?: string | null
+          subtype?: string | null
+          updated_at?: string
+          user_id?: string
+        }
+        Update: {
+          collector_number?: string | null
+          created_at?: string
+          finish?: string | null
+          id?: string
+          language?: string | null
+          name?: string
+          notes?: string | null
+          set_name?: string | null
+          size?: Database["public"]["Enums"]["card_size"] | null
+          stamp?: string | null
+          subtype?: string | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      manual_valuations: {
+        Row: {
+          created_at: string
+          currency: string
+          effective_from: string
+          holding_id: string
+          id: string
+          note: string | null
+          superseded_at: string | null
+          user_id: string
+          value_minor: number
+          value_nok_minor: number
+        }
+        Insert: {
+          created_at?: string
+          currency?: string
+          effective_from?: string
+          holding_id: string
+          id?: string
+          note?: string | null
+          superseded_at?: string | null
+          user_id: string
+          value_minor: number
+          value_nok_minor: number
+        }
+        Update: {
+          created_at?: string
+          currency?: string
+          effective_from?: string
+          holding_id?: string
+          id?: string
+          note?: string | null
+          superseded_at?: string | null
+          user_id?: string
+          value_minor?: number
+          value_nok_minor?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "manual_valuations_holding_id_fkey"
+            columns: ["holding_id"]
+            isOneToOne: false
+            referencedRelation: "holding_summaries"
+            referencedColumns: ["holding_id"]
+          },
+          {
+            foreignKeyName: "manual_valuations_holding_id_fkey"
+            columns: ["holding_id"]
+            isOneToOne: false
+            referencedRelation: "holdings"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       profiles: {
         Row: {
@@ -1053,6 +1069,54 @@ export type Database = {
       }
     }
     Views: {
+      holding_summaries: {
+        Row: {
+          card_image_base_url: string | null
+          card_language: string | null
+          card_local_id: string | null
+          card_name: string | null
+          card_set_name: string | null
+          card_variant_id: string | null
+          cert_number: string | null
+          condition: Database["public"]["Enums"]["card_condition"] | null
+          created_at: string | null
+          grade: number | null
+          grader: Database["public"]["Enums"]["grader"] | null
+          grading_state: Database["public"]["Enums"]["grading_state"] | null
+          holding_id: string | null
+          holding_kind: Database["public"]["Enums"]["holding_kind"] | null
+          is_favorite: boolean | null
+          lot_count: number | null
+          manual_card_id: string | null
+          manual_collector_number: string | null
+          manual_language: string | null
+          manual_name: string | null
+          manual_set_name: string | null
+          notes: string | null
+          quantity: number | null
+          updated_at: string | null
+          user_id: string | null
+          variant_finish: Database["public"]["Enums"]["card_finish"] | null
+          variant_stamp: string | null
+          variant_subtype: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "holdings_card_variant_id_fkey"
+            columns: ["card_variant_id"]
+            isOneToOne: false
+            referencedRelation: "card_variants"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "holdings_manual_card_id_fkey"
+            columns: ["manual_card_id"]
+            isOneToOne: false
+            referencedRelation: "manual_card_definitions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       invitation_overview: {
         Row: {
           created_at: string | null
@@ -1089,39 +1153,6 @@ export type Database = {
           revoked_at?: string | null
           status?: never
           use_count?: number | null
-        }
-        Relationships: []
-      }
-      holding_summaries: {
-        Row: {
-          card_image_base_url: string | null
-          card_language: string | null
-          card_local_id: string | null
-          card_name: string | null
-          card_set_name: string | null
-          card_variant_id: string | null
-          cert_number: string | null
-          condition: Database["public"]["Enums"]["card_condition"] | null
-          created_at: string | null
-          grade: number | null
-          grader: Database["public"]["Enums"]["grader"] | null
-          grading_state: Database["public"]["Enums"]["grading_state"] | null
-          holding_id: string | null
-          holding_kind: Database["public"]["Enums"]["holding_kind"] | null
-          is_favorite: boolean | null
-          lot_count: number | null
-          manual_card_id: string | null
-          manual_collector_number: string | null
-          manual_language: string | null
-          manual_name: string | null
-          manual_set_name: string | null
-          notes: string | null
-          quantity: number | null
-          updated_at: string | null
-          user_id: string | null
-          variant_finish: Database["public"]["Enums"]["card_finish"] | null
-          variant_stamp: string | null
-          variant_subtype: string | null
         }
         Relationships: []
       }
@@ -1238,6 +1269,12 @@ export type Database = {
           user_id: string
           value_minor: number
           value_nok_minor: number
+        }
+        SetofOptions: {
+          from: "*"
+          to: "manual_valuations"
+          isOneToOne: true
+          isSetofReturn: false
         }
       }
       void_acquisition_lot: {
@@ -1487,3 +1524,4 @@ export const Constants = {
     },
   },
 } as const
+
