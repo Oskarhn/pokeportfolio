@@ -198,3 +198,38 @@ describe('custom_collections: invariant C1', () => {
     expect(remaining).toEqual([{ collection_id: c2!.id }])
   })
 })
+
+describe('account deletion cascades every M7 table (SECURITY.md §8)', () => {
+  // Own synthetic user, created and deleted within the test itself rather than the shared
+  // beforeAll/afterAll fixture above, since deletion is exactly what is under test here.
+  //
+  // Regression guard for a real gap found deleting the 10,000-lot performance-benchmark synthetic
+  // account against the actual deployed project (not by this suite, and not by CI):
+  // custom_collection_members.user_id referenced auth.users(id) with no ON DELETE action, so
+  // deleting an account that had added a holding to a custom collection failed outright with a
+  // foreign-key violation — the third time this exact defect class has been found (M4's original
+  // eight columns, M6's holding_tags/manual_valuations, now this) — see
+  // 20260822120050_m7_custom_collection_members_cascade_fix.sql and PROJECT_JOURNAL.md 2026-08-22.
+  it('deleting the account cascades custom collections and their membership', async () => {
+    const owner = await createSyntheticUser(service, 'm7-cascade')
+    const holdingId = await createHolding(owner)
+
+    const { data: collection } = await service
+      .from('custom_collections')
+      .insert({ user_id: owner.id, name: 'cascade-check-collection' })
+      .select('id')
+      .single()
+    await service
+      .from('custom_collection_members')
+      .insert({ collection_id: collection!.id, holding_id: holdingId, user_id: owner.id })
+
+    await deleteSyntheticUser(service, owner.id)
+
+    const [collections, memberships] = await Promise.all([
+      service.from('custom_collections').select('id').eq('id', collection!.id),
+      service.from('custom_collection_members').select('collection_id').eq('user_id', owner.id),
+    ])
+    expect(collections.data).toEqual([])
+    expect(memberships.data).toEqual([])
+  })
+})

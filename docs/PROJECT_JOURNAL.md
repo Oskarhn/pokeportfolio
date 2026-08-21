@@ -1014,3 +1014,60 @@ from first principles is necessary but is not the same claim as "this has been r
 gap between those two claims is exactly where bugs live. A machine without Docker does not get to
 skip that gap — it just moves the first real run from a local terminal to CI, which is precisely
 what happened here.
+
+---
+
+## 2026-08-22 — CI green is not the same claim as fast, and the 10,000-lot gate proved it
+
+**Problem.** CI's `db-tests` job proved `list_portfolio`/`portfolio_counts` *correct* — 269/269
+tests passing against an ephemeral stack seeded with a handful of rows. It says nothing about
+whether either function is fast enough to be usable at the scale M7's own gate names explicitly:
+10,000+ lots, staying interactive on a phone (M7 prompt §53/§57, ROADMAP.md's M7 gate). That
+requires actual data at that scale, which only exists once seeded — so this was checked directly
+against `pokeportfolio-dev` with a real, isolated, disposable synthetic account rather than
+assumed from CI's green checkmark.
+
+**Finding.** Seeded 7,500 holdings and 10,109 acquisition lots (real duplication, five conditions,
+tags, storage locations, custom-collection membership) for one throwaway `.invalid` account, then
+called `list_portfolio` across every sort mode and `portfolio_counts()` exactly as the deployed app
+would. Results: 5.5-8 seconds per call, and two sort modes — including `value_desc`, the *permanent
+default* — failed outright with `57014 canceling statement due to statement timeout`. Root cause:
+both functions computed each holding's aggregate quantity via `LEFT JOIN LATERAL (select sum(...)
+... where l.holding_id = h.id) q on true` — a correlated subquery that PostgreSQL must re-evaluate
+once per outer row, forcing a nested-loop plan across 7,500 holdings. `holding_summaries` (M6) had
+already solved the identical problem correctly, using a plain `LEFT JOIN ... GROUP BY` instead —
+that shape lets the planner choose a hash join and a single hash-aggregate pass over both tables,
+touching each once rather than probing `acquisition_lots` once per holding. Neither M7 function
+followed that precedent; both were written with LATERAL because it reads slightly more directly as
+"the aggregate for this row," and nothing surfaced the performance difference until data at real
+scale existed to measure it against.
+
+**Fix.** Rewrote both functions' aggregation as a `MATERIALIZED` CTE using the same
+`LEFT JOIN ... GROUP BY` shape as `holding_summaries`, restricted to the caller's own holdings
+before the join to `acquisition_lots` even happens. Every filter, cursor comparison and ORDER BY
+expression is unchanged — only how the aggregate columns are computed. Re-measured against the
+*same* seeded data (no re-seed needed, proving the fix in isolation): every sort mode, the filtered
+query, and the keyset second page all completed in 130-570 ms; `portfolio_counts()` dropped from
+~5.4 s to ~140 ms after its own first (plan-caching) call. `20260822120030_m7_portfolio_query_perf_fix.sql`,
+`20260822120040_m7_portfolio_counts_perf_fix.sql`.
+
+**A second, unrelated bug surfaced while cleaning up.** Deleting the synthetic benchmark account
+afterward failed with a foreign-key violation: `custom_collection_members.user_id` referenced
+`auth.users(id)` with no `ON DELETE` action. This is the third time this exact defect class has
+been found — M4 fixed it for the original eight `user_id` columns, M6 fixed it again for
+`holding_tags`/`manual_valuations`, and this session's own custom_collections migration got
+`custom_collections.user_id` right (`on delete cascade`) but missed its sibling table's identical
+column. Fixed (`20260822120050_m7_custom_collection_members_cascade_fix.sql`), verified by actually
+deleting the synthetic account a second time (succeeded, zero residue across holdings, lots,
+collections and memberships, checked directly), and a new regression test added
+(`tests/db/m7_constraints.test.ts`, "account deletion cascades every M7 table") matching the
+pattern M6 established for exactly this failure mode.
+
+**Consequence.** Three real findings from one deliberate real-infrastructure test that CI could not
+have produced (CI never seeds 10,000 rows, and ephemeral accounts are usually deleted with almost
+nothing attached to them): a severe, gate-failing performance defect in the milestone's single most
+important query, and a second instance of a defect class this project has now hit three times.
+The recurring shape across M4/M6/M7's cascade misses — a rule fixed once, by hand, at the moment
+it was found, that does not propagate to the next new table — is the same lesson the 2026-08-21
+entry already named as worth a mechanical check rather than memory. It remains unbuilt; this entry
+is the third data point arguing for it, not a fourth attempt to fix it by remembering harder.

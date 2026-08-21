@@ -42,16 +42,21 @@ PUBLIC grant, a new default-privilege statement stops a future function from arr
 PUBLIC-executable, and `scripts/grant-audit.sql` gained its own PUBLIC-grant check —
 `tests/db/sql/hostile_grants.sql` proves it can fail before proving the baseline fixes it.
 
-**Performance.** TanStack Virtual windows the grid/list/table views; `scripts/portfolio-perf-benchmark.mjs`
-seeds a synthetic 10 000+-lot account (duplicates, five conditions, tags, storage, custom-collection
-membership) and times every sort mode plus keyset pagination and `portfolio_counts()`, against an
-isolated account it deletes afterward.
+**Performance.** TanStack Virtual windows the grid/list/table views. `list_portfolio`/
+`portfolio_counts` were measured against a real 7,500-holding/10,109-lot synthetic account on
+`pokeportfolio-dev`: the first version (a per-holding `LATERAL` aggregate) took 5.5-8 s per call
+with two sort modes timing out; rewritten as a `LEFT JOIN ... GROUP BY` CTE (the shape
+`holding_summaries` already used correctly) and re-measured at 130-570 ms across every sort mode
+and keyset page. `scripts/portfolio-perf-benchmark.mjs` is the repeatable version of the same
+measurement for a future session with local Docker.
 
 **Tests.** `tests/db/m7_constraints.test.ts` (S1 trigger on the two-parent membership table,
-invariant C1). `tests/authorization/m7_portfolio.test.ts` (custom-collection CRUD and cross-tenant
-attacks; `list_portfolio` isolation, sort correctness, filter correctness, keyset-pagination
-completeness; `portfolio_counts` correctness). Updated Playwright route-guard coverage for the
-renamed/new routes and the legacy-redirect behaviour.
+invariant C1, and account-deletion cascade for both new M7 tables — found missing on
+`custom_collection_members.user_id` by the real benchmark cleanup, fixed with
+`20260822120050_m7_custom_collection_members_cascade_fix.sql`). `tests/authorization/m7_portfolio.test.ts`
+(custom-collection CRUD and cross-tenant attacks; `list_portfolio` isolation, sort correctness,
+filter correctness, keyset-pagination completeness; `portfolio_counts` correctness). Updated
+Playwright route-guard coverage for the renamed/new routes and the legacy-redirect behaviour.
 
 See DECISIONS.md D-040 through D-042, HANDOVER.md and `claude_outputs/output_11.txt` for full detail.
 

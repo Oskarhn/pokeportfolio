@@ -39,50 +39,71 @@ Scope is settled — do not reopen it (see [docs/PLANNING_FREEZE.md](docs/PLANNI
 ## M7 verification state — read before assuming anything is deployed
 
 This machine has no local Docker (§4/Environment table, unchanged since M3), so `pnpm db:start`/
-`pnpm test:db` could never run against a real Postgres on this machine directly — CI's ephemeral
-stack (`ubuntu-latest`, which does have Docker) is what actually proved the SQL, and it has now
-done so.
+`pnpm test:db` could never run against a real Postgres on this machine directly. CI's ephemeral
+stack proved correctness; `pokeportfolio-dev` itself proved performance and deployment behaviour.
+Both have now actually run, not just been described.
 
 **Actually verified, green:** `pnpm typecheck`, `pnpm lint`, `pnpm format:check`, `pnpm test`
 (80/80 domain tests, unchanged — M7 touched no `src/domain` logic), `pnpm build`, `pnpm test:e2e`
-(50/50 Playwright, desktop + iPhone) all pass locally. **CI's `db-tests` job is green on PR #14:
-19/19 test files, 269/269 database and authorization tests** (up from 251 at the M6 merge) —
-every M7 migration, `list_portfolio`'s keyset-cursor SQL, the new PUBLIC-grant audit check and its
-hostile-grants proof, and both new M7 test files actually ran against a real ephemeral Postgres
-and passed. `build-and-test` is also green (gate + E2E + gitleaks).
+(50/50 Playwright, desktop + iPhone) all pass locally. CI's `db-tests` job is green on PR #14:
+19/19 test files, 269/269 database and authorization tests (up from 251 at the M6 merge). CI's
+`build-and-test` is also green (gate + E2E + gitleaks).
 
-**Real bugs CI's first run actually caught — fixed on the branch, not just described** (see
-PROJECT_JOURNAL.md 2026-08-22 for the full account): (1) `search_cards` needed an explicit
-`service_role` grant once the PUBLIC-EXECUTE sweep (D-042) removed the implicit default the
-`tests/db/search_cards.test.ts` service-role client had been silently relying on; (2)
-`custom_collection_members.user_id` needed `default auth.uid()` — without it, a real
-authenticated-client insert (the app's own `addHoldingToCollection` code path) was rejected by
-RLS; (3) a test-only bug in `tests/db/m7_constraints.test.ts`'s fixture helper, reusing one fixed
-holding identity across multiple tests for the same synthetic user. The same latent user_id-default
-bug found in (2) also exists in M6's already-shipped `holding_tags` table — flagged as a separate
-follow-up task rather than edited here, since that migration may already be applied to the real
-project.
+**Real bugs found by actually running things, all fixed on the branch — five in total, three
+categories** (full account: PROJECT_JOURNAL.md 2026-08-22, both entries):
 
-**Not yet done at all, and each needs an explicit decision before M7 is actually finished per the
-prompt's own acceptance criteria:**
+1. CI's first run: `search_cards` needed an explicit `service_role` grant once the PUBLIC-EXECUTE
+   sweep (D-042) removed the implicit default `tests/db/search_cards.test.ts`'s service-role
+   client had been silently relying on.
+2. CI's first run: `custom_collection_members.user_id` needed `default auth.uid()` — without it, a
+   real authenticated-client insert (the app's own `addHoldingToCollection` code path) was
+   rejected by RLS.
+3. CI's first run: a test-only fixture bug in `tests/db/m7_constraints.test.ts`, reusing one fixed
+   holding identity across multiple tests for the same synthetic user.
+4. **The real 10 000-lot benchmark: `list_portfolio`/`portfolio_counts` were genuinely too slow to
+   ship** — 5.5-8 seconds per call against 7,500 holdings/10,109 lots, with `value_desc` (the
+   *permanent default sort*) and `added_newest` actually timing out
+   (`57014 canceling statement due to statement timeout`). Root cause: a `LEFT JOIN LATERAL`
+   per-holding aggregate, which forces a nested-loop plan, instead of the plain
+   `LEFT JOIN ... GROUP BY` shape `holding_summaries` (M6) already uses correctly. Rewritten as a
+   `MATERIALIZED` CTE with that shape; re-measured against the *same* seeded data at
+   **130-570 ms across every sort mode, the filtered query and keyset pagination** —
+   `20260822120030_m7_portfolio_query_perf_fix.sql`, `20260822120040_m7_portfolio_counts_perf_fix.sql`.
+5. Deleting the benchmark synthetic account afterward failed: `custom_collection_members.user_id`
+   had no `ON DELETE CASCADE` — the third time this project has hit this exact defect class (M4,
+   M6, now this). Fixed (`20260822120050_m7_custom_collection_members_cascade_fix.sql`), verified
+   by actually deleting the account a second time (succeeded, zero residue), and a new regression
+   test added (`tests/db/m7_constraints.test.ts`, "account deletion cascades every M7 table").
 
-1. ~~Open the PR and confirm CI is green~~ — **done.** PR #14, both jobs passing.
-2. `pnpm exec supabase db push` / `config push` against `pokeportfolio-dev`, then
-   `scripts/remote-security-check.mjs` and `grant-audit.sql` against the real deployed project
-   (SECURITY.md §13's deployment gate) — not yet run this session.
-3. `scripts/portfolio-perf-benchmark.mjs` against an isolated synthetic account, for a real
-   10 000-lot measurement (TESTING.md §7/§104) — the script exists and is documented but has never
-   been executed; no numbers are recorded anywhere in this handover, and none should be assumed.
-4. Merge, confirm the Cloudflare deploy, and browser-verify the actual deployed Portfolio UI —
+The identical latent `user_id`-default bug from item 2 also exists in M6's already-shipped
+`holding_tags` table — flagged as a separate follow-up task rather than edited here, since that
+migration may already be applied to the real project.
+
+**Done this session, against the real `pokeportfolio-dev` project:**
+
+1. ~~Open the PR and confirm CI is green~~ — **done.** PR #14, both jobs passing (269/269 db tests).
+2. ~~`supabase db push` / `remote-security-check.mjs` / `grant-audit.sql` against the real
+   project~~ — **done.** All six M7 migrations applied; `grant-audit.sql` clean (verified twice,
+   before and after the perf/cascade fixes); `remote-security-check.mjs` 17/17 (phase 1) then
+   33/33 (phase 2, full redemption) against a throwaway `.invalid` invitation, deleted after use.
+3. ~~The 10 000-lot benchmark~~ — **done, against a real isolated synthetic account (7,500
+   holdings, 10,109 lots), not the local stack.** Seeded and queried via direct SQL/HTTP rather
+   than running `scripts/portfolio-perf-benchmark.mjs` itself, because that script needs the
+   Supabase secret key and this session never fetches it — the equivalent verification used
+   privileged `supabase db query --linked` access (already legitimately available, no secret key)
+   for seeding/cleanup and the publishable key + a real password sign-in for the timed RPC calls.
+   Account fully deleted afterward, verified zero residue. **This run is what found and fixed
+   findings 4 and 5 above** — the actual point of the gate.
+
+**Not yet done:**
+
+4. Merge PR #14, confirm the Cloudflare deploy, and browser-verify the deployed Portfolio UI —
    grid/list/table, density, sort, filters, custom collections, bottom nav — the way M5/M6 verified
-   their deployed builds. Not yet done.
+   their deployed builds.
 5. A short real-iPhone check (M7 prompt §120) — genuinely needs the owner's own phone; ask for it
    only once step 4 is done.
 
-Do not report M7 as "deployed" or "verified end-to-end" to the owner until items 2-5 actually
-happen — CI green (item 1) is real progress, but it proves reproducibility against an ephemeral
-stack, not correctness against the real deployed project (SECURITY.md §5.9's own standing lesson).
-Say specifically which of 2-5 remain.
+Do not report M7 as fully finished to the owner until items 4-5 also happen.
 
 ## Read these first, in order
 
@@ -584,9 +605,17 @@ the old top nav) plus a link into Profile — no disabled future-feature entries
 unclosed (D-042, PROJECT_JOURNAL.md 2026-08-22) — see "M7 verification state" above for the fact
 that this has been written and reasoned through but not yet proven by CI on this machine.
 
-**Performance.** `scripts/portfolio-perf-benchmark.mjs` — a repeatable 10 000+-lot seed-and-time
-tool against an isolated synthetic account. Written, documented, **not yet run** (see "M7
-verification state" above) — no numbers exist to report yet.
+**Performance.** Verified against a real 7,500-holding/10,109-lot synthetic account on
+`pokeportfolio-dev` — not simulated, not assumed from CI. The first version (`LEFT JOIN LATERAL`
+per-holding aggregation) measured 5.5-8 seconds per call and two sort modes — including
+`value_desc`, the permanent default — timed out outright. Rewritten as a `MATERIALIZED` CTE using
+the same `LEFT JOIN ... GROUP BY` shape `holding_summaries` already uses; re-measured at
+**130-570 ms** across every sort mode, the filtered query and keyset pagination
+(`20260822120030_m7_portfolio_query_perf_fix.sql`, `20260822120040_m7_portfolio_counts_perf_fix.sql`
+— full account in PROJECT_JOURNAL.md 2026-08-22). `scripts/portfolio-perf-benchmark.mjs` remains
+the repeatable version of this same measurement for a future session with local Docker (it needs
+the Supabase secret key, which this session never fetches — this run instead used
+`supabase db query --linked` for seeding/cleanup and the publishable key for the timed calls).
 
 **Known limitations, recorded rather than silently accepted:**
 
@@ -786,9 +815,8 @@ every push and PR, with **no remote credentials anywhere**.
 |---|---|---|
 | 1 | Optional: install Docker Desktop | Local iteration convenience — every M7 DB/authorization test still had to wait for CI this session instead of running locally first |
 | 2 | Optional: fix Node/pnpm absence from the default PATH | Convenience only |
-| 3 | **Decide whether to push M7's migrations to `pokeportfolio-dev` and run the 10 000-lot benchmark now, or review the PR/CI result first** | M7's remaining verification steps (see "M7 verification state" above) touch real infrastructure — a deliberate checkpoint, not a blocker |
-| 4 | A short real-iPhone check once the deployed M7 build exists (M7 prompt §120) | Final sign-off on the new bottom nav/gestures on real hardware |
-| 5 | Give feedback on the first Portfolio UI version (grid/list/table, nav, filters, custom collections) once deployed | Informs M8+ and the eventual M12a visual pass — not a blocker, but the owner explicitly wants to be asked here |
+| 3 | A short real-iPhone check once the deployed M7 build exists (M7 prompt §120) | Final sign-off on the new bottom nav/gestures on real hardware |
+| 4 | Give feedback on the first Portfolio UI version (grid/list/table, nav, filters, custom collections) once deployed | Informs M8+ and the eventual M12a visual pass — not a blocker, but the owner explicitly wants to be asked here |
 
 The admin account, the M6 deployment, the API-key model and the installed-PWA check remain done
 from before M7.

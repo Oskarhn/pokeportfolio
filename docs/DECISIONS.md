@@ -917,6 +917,20 @@ computing "value" inside `list_portfolio` needs to change (from "active manual v
 and every caller of the RPC stay exactly as they are. Documented in the migration
 (`20260822120010_m7_portfolio_query.sql`) so this is not rediscovered as a TODO.
 
+**Performance correction, found by the real 10,000-lot benchmark, not by CI (2026-08-22).** The
+original `list_portfolio`/`portfolio_counts` bodies computed each holding's aggregate quantity via
+a `LEFT JOIN LATERAL` correlated subquery per row — correct, but structurally a nested-loop plan:
+one subquery evaluation per holding. Against a real 7,500-holding/10,109-lot synthetic account on
+`pokeportfolio-dev`, this measured 5.5-8 seconds per call, and two of nine sort modes
+(`value_desc` — the permanent default — and `added_newest`) timed out outright
+(`57014 canceling statement due to statement timeout`). Rewritten as a `MATERIALIZED` CTE doing a
+plain `LEFT JOIN ... GROUP BY` — the same shape `holding_summaries` (M6) already uses — which lets
+the planner pick a single hash-join-plus-hash-aggregate pass instead of one subquery per row.
+Re-measured against the identical seeded data: 130-570 ms across every sort mode, filter and
+keyset page. See `20260822120030_m7_portfolio_query_perf_fix.sql`,
+`20260822120040_m7_portfolio_counts_perf_fix.sql`, and PROJECT_JOURNAL.md 2026-08-22 for the full
+account. No caller-visible contract changed — same parameters, same return shape, same semantics.
+
 ---
 
 ## D-042 — Closing the PUBLIC-EXECUTE privilege blind spot

@@ -1006,13 +1006,19 @@ missing `default auth.uid()` (present on `custom_collections`/`manual_card_defin
 made a real authenticated-client insert fail RLS rather than succeed. Fixed before merge —
 PROJECT_JOURNAL.md 2026-08-22.
 
-**`list_portfolio(...)` and `portfolio_counts()`** (`supabase/migrations/20260822120010_m7_portfolio_query.sql`)
-are the Portfolio's entire server-side query surface: sort (an enum, `portfolio_sort_order`),
-every quick/full filter, and keyset pagination in one `SECURITY INVOKER` function each. Neither
-reads from a view — both query `holdings`/`acquisition_lots`/`card_variants`/`cards`/`card_sets`/
-`manual_card_definitions`/`manual_valuations` directly, because the filter joins and keyset cursor
-this milestone needs do not fit `holding_summaries` (M6) cleanly. `holding_summaries` itself is
-unchanged and still backs the holding detail page's single-row read.
+**`list_portfolio(...)` and `portfolio_counts()`** (`supabase/migrations/20260822120010_m7_portfolio_query.sql`,
+performance-corrected by `20260822120030`/`20260822120040`) are the Portfolio's entire server-side
+query surface: sort (an enum, `portfolio_sort_order`), every quick/full filter, and keyset
+pagination in one `SECURITY INVOKER` function each. Neither reads from a view — both query
+`holdings`/`acquisition_lots`/`card_variants`/`cards`/`card_sets`/`manual_card_definitions`/
+`manual_valuations` directly, because the filter joins and keyset cursor this milestone needs do
+not fit `holding_summaries` (M6) cleanly. `holding_summaries` itself is unchanged and still backs
+the holding detail page's single-row read. Both aggregate a holding's lot data via a
+`MATERIALIZED` CTE doing a plain `LEFT JOIN ... GROUP BY` — the same shape `holding_summaries`
+itself uses — rather than a per-holding `LATERAL` subquery, which real 10,000-lot measurement
+against `pokeportfolio-dev` found to be 10-40× slower (DECISIONS.md's performance-correction note,
+PROJECT_JOURNAL.md 2026-08-22). Any future query over `holdings`/`acquisition_lots` needing a
+per-row aggregate should follow this GROUP BY shape from the start, not rediscover the difference.
 
 **Value before M9 (D-041).** `list_portfolio`'s notion of "value" is exactly one real, honest
 number: a graded holding's active `manual_valuations` row. Every raw-card holding is genuinely

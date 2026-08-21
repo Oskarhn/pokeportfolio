@@ -126,10 +126,14 @@ truthful, currently-available data.
 **Gate:** met. `tests/db/m7_constraints.test.ts` and `tests/authorization/m7_portfolio.test.ts`
 cover C1, cross-tenant collection/membership attacks, and `list_portfolio`/`portfolio_counts`
 isolation, sort, filter and keyset-pagination correctness — green in CI. Density/view/sort
-persist to the profile. `scripts/portfolio-perf-benchmark.mjs` is the repeatable 10 000-lot
-measurement tool (TESTING.md §7/§104); see HANDOVER.md for whether a run against real
-infrastructure has been recorded yet. The PUBLIC-EXECUTE privilege blind spot flagged as a known
-limitation after M6 is closed (D-042).
+persist to the profile. The 10 000-lot performance gate was measured for real against
+`pokeportfolio-dev` (7,500 holdings, 10,109 lots on an isolated, deleted-after synthetic account):
+the first implementation measured 5.5-8 s per call with two sort modes timing out outright, fixed
+by replacing a per-holding `LATERAL` aggregate with the same `LEFT JOIN ... GROUP BY` shape
+`holding_summaries` already used, re-measured at 130-570 ms across every sort mode and keyset page
+(DECISIONS.md, PROJECT_JOURNAL.md 2026-08-22). `scripts/portfolio-perf-benchmark.mjs` is the
+repeatable version of the same measurement for a future session with local Docker. The
+PUBLIC-EXECUTE privilege blind spot flagged as a known limitation after M6 is closed (D-042).
 
 ### M8 — Purchases and the spending ledger
 
