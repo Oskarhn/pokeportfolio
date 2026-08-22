@@ -239,7 +239,12 @@ begin
     -- M10 prerequisite: the never-shipped lot_cost_adjustments table (DATA_MODEL.md §5.6),
     -- created now because create_sale is the first real reader. SELECT only — no controlled write
     -- RPC exists yet (M17 owns it).
-    ('table', 'lot_cost_adjustments',       'authenticated', 'SELECT')
+    ('table', 'lot_cost_adjustments',       'authenticated', 'SELECT'),
+    -- M12: the snapshot cache — owner-readable only (RLS scopes rows to auth.uid()), no write
+    -- grant of any kind: rebuild_portfolio_snapshots under the service role is the sole writer.
+    ('table', 'portfolio_snapshots',        'authenticated', 'SELECT')
+    -- portfolio_recompute_queue / portfolio_recompute_runs get NO grant at all, to anon or
+    -- authenticated — service/internal-only, same shape as catalog_sync_runs/price_sync_runs.
     -- invitations: column-level SELECT only, below. invitation_claims: nothing, ever.
   ),
 
@@ -386,7 +391,18 @@ begin
      'update_sale(uuid, date, text, jsonb, text, bigint, bigint, bigint, numeric, date, fx_source, text)',
      'authenticated', 'EXECUTE'),
     ('routine', 'void_sale(uuid, text)', 'authenticated', 'EXECUTE'),
-    ('routine', 'sales_summary()', 'authenticated', 'EXECUTE')
+    ('routine', 'sales_summary()', 'authenticated', 'EXECUTE'),
+    -- M12: the dashboard read surface (20260830120030_m12_dashboard_reads.sql). The engine
+    -- functions (rebuild_portfolio_snapshots / drain_portfolio_recompute_queue /
+    -- enqueue_portfolio_daily_maintenance / enqueue_portfolio_recompute /
+    -- m12_recompute_pending_for_self) and every m12_* trigger function are service/internal-only
+    -- and deliberately absent here, same reasoning as select_price_sync_batch.
+    ('routine', 'get_dashboard_summary()', 'authenticated', 'EXECUTE'),
+    ('routine',
+     'get_portfolio_history(text, date, date)',
+     'authenticated', 'EXECUTE'),
+    ('routine', 'get_monthly_spend(integer)', 'authenticated', 'EXECUTE'),
+    ('routine', 'get_recent_activity(integer)', 'authenticated', 'EXECUTE')
   ),
 
   -- M7: the expected PUBLIC-EXECUTE surface for every routine in `public` is empty. No project
