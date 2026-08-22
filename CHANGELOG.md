@@ -10,6 +10,27 @@ they were**.
 
 ## [Unreleased]
 
+### Added — 2026-08-27 · M9.1 Pricing closeout
+
+Closes the explicit M9 acceptance gaps found by review before M10 begins. Search result tiles show
+batched real prices (honest range/from-price display, no N+1). Card Detail has an exact selected-
+variant price/history (fixes the M9 defect where the chart always used the first declared variant).
+Market Movers is a real dedicated screen (`/market-movers`, 1D/7D/30D periods, four sort modes,
+ranked by per-unit % change never quantity-weighted kroner — D-056). Display currency is a real,
+presentation-only NOK↔EUR/USD conversion everywhere a resolved value is shown (D-057).
+
+`price_snapshots` storage capacity is measured against a representative synthetic dataset (245.30
+bytes/row, not the earlier estimate) and retention shortened from 12 months daily to 60 days daily
++ weekly beyond — the previous policy projected to exceed the entire free-tier database budget at
+documented realistic scale (D-058). The 18-month retention test, the value_desc/value_asc
+pagination edge matrix, and the real 10,000-lot Portfolio benchmark are now permanent CI steps
+(previously disclosed as "not measured" since M7).
+
+Two real bugs found and fixed before merge: a stale privilege-baseline/grant-audit entry for
+`get_market_movers`'s changed signature, and a `search-prices` bug where `fx_rates.rate` arrives as
+a JSON number (not decimal text) over a plain PostgREST `select` — would have made every
+`search-prices` call fail silently in production. Full account: `claude_outputs/output_16.txt`.
+
 ### Added — 2026-08-26 · M9 Pricing and snapshots
 
 Real raw-card market valuation. `price_snapshots` (shared market data, one already-fallback-chosen

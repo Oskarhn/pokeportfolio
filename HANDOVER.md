@@ -4,31 +4,25 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-**Last updated:** 2026-08-26 — M1–M8.1 remain complete in code, merged, and deployed. **M9
-(pricing and snapshots) is complete in code, merged
-([PR #25](https://github.com/Oskarhn/pokeportfolio/pull/25)), and deployed** — migrations applied,
-three Edge Functions deployed, the `pg_cron`/`pg_net`/Vault scheduling verified working end to end
-against the real project with a real ingested batch (see "M9 — Pricing and snapshots" below for
-the full account). This session could not use local Docker (unchanged constraint since M3/§4
-below), so the SQL layer was proven by CI's `db-tests` job against a real ephemeral Postgres
-instead — which is exactly what caught two real bugs (ambiguous-column plpgsql errors that
-`CREATE FUNCTION` itself cannot validate) neither manual review nor `pnpm check` could have found,
-both fixed before merge. **Two real gaps remain, disclosed rather than silently accepted:** the
-real 10,000-lot Portfolio benchmark has not been re-run (this session cannot create a synthetic
-account at all, a harder constraint than prior sessions' "cannot sign in" — see the M9 section),
-and the exact real-Postgres storage footprint of `price_snapshots` is computed, not measured.
+**Last updated:** 2026-08-27 — M1–M9 remain complete in code, merged, and deployed. **M9.1
+(pricing closeout) is complete in code, merged, and deployed** — closes every explicit M9
+acceptance gap the output_15 mentor review flagged: Search results now show batched real prices,
+Card Detail has an exact-variant-aware price/history, Market Movers is a real dedicated screen,
+display currency actually converts, `price_snapshots` capacity is measured (not estimated) and
+retention shortened accordingly (D-058), the 18-month retention test and the value pagination edge
+matrix now exist, and — critically — the real 10,000-lot Portfolio benchmark and the real
+storage-capacity benchmark both now run **automatically in CI on every push**, closing the "not
+measured" disclosure M9 shipped with. See "M9.1 — Pricing closeout" below for the full account,
+`claude_outputs/output_16.txt` for the complete session record.
 
 ---
 
 ## Status
 
-**Planning is FROZEN. M1–M9 are complete in code, merged, and deployed** (PR #25). The real
-10,000-lot Portfolio benchmark re-run and a real owner-facing signed-in check are the two
-outstanding items before M9 is fully closed out — ask the owner for the latter; the former needs
-either a future session able to fetch the Supabase secret key or the owner's own involvement,
-since creating any synthetic account is outside what this session performs at all (stricter than
-prior milestones' "cannot sign in" boundary — this session cannot create the account in the first
-place, full stop).
+**Planning is FROZEN. M1–M9.1 are complete in code, merged, and deployed.** No outstanding gaps
+from M9 remain undisclosed. The only standing item is the same one every milestone since M7.1 has
+carried: a real owner-facing signed-in check, which needs the owner's own device/account — ask for
+it using the checklist in the M9.1 section below.
 
 ## M9 — Pricing and snapshots
 
@@ -197,6 +191,131 @@ also green.
   SQL function (`get_market_movers`) already accepts a period/limit, so this is UI-only remaining
   work. UX_FLOWS.md F16 records the gap against the owner's fuller original spec.
 - Sealed-product pricing is out of scope by design (M11), unaffected by M9.
+
+## M9.1 — Pricing closeout
+
+Not a new milestone (docs/PLANNING_FREEZE.md still governs) — closes the explicit M9 acceptance
+gaps `claude_outputs/output_15.txt`'s mentor review found, before M10 (Sales and History) begins.
+Full account: `claude_outputs/output_16.txt`. Decisions: DECISIONS.md D-056 through D-058.
+
+**Search pricing.** `CardResultCard`/`CatalogPage` now show batched real current prices — one
+bounded `search-prices` request per ≤20-card result page (`SEARCH_PRICES_MAX_CARD_IDS`), never
+per-tile, cached per exact id-batch by TanStack Query. Honest range display
+(`src/domain/pricing-summary.ts#summarizeCardPricing`, pure and unit-tested): a single priced
+variant shows its price; several priced variants show a min–max range; partial coverage shows
+"From X kr", never implying full coverage; zero priced variants shows nothing (not a fabricated
+"—" on every unpriced tile, a deliberate density choice for a grid dominated by unpriced commons/
+energies). A pricing failure degrades silently to no price shown — never breaks the grid.
+
+**Display currency is real now (D-057).** `search-prices` converts each price to an exact NOK
+reference server-side (same `fx_rates` lookup-by-observation-date pattern
+`resolve_variant_market_values` uses), alongside the untouched source-currency provenance —
+closing M9's own disclosed "shows EUR/USD, not NOK" gap. `MoneyDisplay` now does real,
+presentation-only NOK↔EUR/USD conversion using the latest cached `fx_rates` row and the exact
+bigint reciprocal-rate helpers in `src/domain/fx.ts` (`invertRate`/`convertNokToDisplayCurrency`)
+— canonical storage stays NOK everywhere; nothing about this touches `price_snapshots`, purchase
+FX, or cost basis. No cached rate yet (e.g. before the first `ingest-fx` run) → shows NOK with a
+plain "rate not available yet" note, never a fabricated number.
+
+**Card Detail is exact-variant-aware.** Fixed the real M9 defect: price/history always used
+`variants[0]` regardless of which variant a viewer actually cared about. Now an explicit selected
+variant (URL-encoded, `?variantId=`, no global store) drives current price, source provenance and
+the history chart together — switching variants never leaves a stale chart on screen. Default is
+the first variant in catalog order (deterministic identity ordering), never auto-switched once
+async pricing arrives.
+
+**Market Movers is the real screen the owner originally asked for.** `/market-movers`: 1D/7D/30D
+periods, four sort modes (highest increase / largest decrease / most movement / least movement),
+all URL-encoded. `get_market_movers` gained a `p_sort` parameter (identity-changing DROP+CREATE,
+`20260827120000_m91_market_movers_sort.sql` — TESTING.md §6a's own new standing checklist, added
+because this migration is the exact scenario D-054 warned about) and a `holding_impact_nok_minor`
+secondary figure. **Every sort mode ranks by per-unit `change_pct`, never holding-total kroner
+(D-056)** — quantity never distorts the ranking, proven directly in
+`tests/db/m91_market_movers.test.ts`. Reached from the Portfolio shortcut (no longer a muted
+placeholder) and Home's "View all"; Home keeps its compact fixed-7-day preview unchanged.
+
+**`price_snapshots` capacity is measured, and retention changed (D-058).** Real measurement — not
+the earlier computed estimate — against a representative 365,000-row synthetic dataset in CI's
+disposable ephemeral Postgres (`scripts/price-snapshots-storage-benchmark.sql`, now a permanent
+`db-tests` step, never touching real data): **245.30 bytes/row** (table + its two indexes;
+`price_snapshots_unique_per_day` is the single largest index, larger than the table itself). At
+the documented realistic scale (~3,500 watched variants, 2 providers), M9's 12-month daily
+placeholder projected to **~609 MB unthinned in year one alone — over the entire free-tier budget
+on this one table.** Retention shortened to **60 days daily, thinned to weekly beyond that**
+(`20260827130000_m91_retention_window.sql`, `create or replace`, no signature change): ~226 MB
+worst case at 1 year, ~317 MB at 2 years — real headroom restored. Full projection table:
+COST_POLICY.md §6. `tests/db/m91_retention.test.ts` proves the new threshold against an 18-month
+synthetic dataset (recent/old boundary, per-week/per-provider/per-variant separation, idempotency,
+history still usable after thinning).
+
+**Value pagination correctness proven.** `tests/db/m91_value_pagination.test.ts` walks
+`list_portfolio`'s `value_desc`/`value_asc` keyset pagination one row at a time against a seeded
+dataset built specifically to produce a real 5-way tie group (manual vs provider, fresh vs stale,
+same unit different quantity, different unit same total, all landing on the identical holding-
+total) — proves no duplicate or omitted row under a real tie, for the full portfolio and a
+custom-collection scope, and that a genuine zero-valued holding never collapses into the missing
+bucket.
+
+**The 10,000-lot Portfolio benchmark and the storage benchmark are now CI-integrated,** closing
+the biggest disclosed M9 gap (no session between M9 and M9.1 had re-run either against real data —
+the prior blocker, "cannot fetch the Supabase secret key or sign in," turned out to have a safe
+answer all along: both scripts only need the ephemeral stack's own local well-known service-role
+key, already exported for `pnpm test:db`, never a production credential). **Real measured
+steady-state performance:** all sort modes, filters, keyset second pages and `portfolio_counts()`
+land at **33-90 ms** once past first-use plan compilation — at or better than M7's original
+130-570 ms baseline, meaning M9's resolver join introduced no steady-state regression. **A real,
+disclosed finding, not swept under the rug:** the very first invocation of each distinct sort-mode
+query shape measured 4-7.5 seconds in CI's environment; re-running the identical `value_desc`
+first-page query later in the same session measured 64.7 ms — strong circumstantial evidence this
+is a one-time PL/pgSQL plan-compilation cost paid once per (small, local, ephemeral-stack)
+connection-pool member, not a per-request execution cost, but this was not confirmed with
+`EXPLAIN ANALYZE` and should be re-verified against the real deployed project's connection
+behaviour by a future session before being treated as fully closed. The perf-benchmark script
+itself needed two real fixes along the way: it previously assumed the existing catalog had enough
+`(variant, condition)` identity slots to avoid collisions, which CI's small ephemeral seed catalog
+broke immediately — it now seeds its own ~3,500-variant synthetic catalog (matching the documented
+production scale) and tracks every combo it has ever picked, never risking a duplicate insert
+regardless of catalog size.
+
+**Real FX cron verified end-to-end.** `ingest-fx` had not yet reached its first scheduled 17:00 UTC
+run this session (checked: `cron.job`/`cron.job_run_details` against the real project, current
+time 08:53 UTC) — invoked it once manually via the exact same `net.http_post`/Vault-secret path the
+cron job itself uses (never printing the secret, never a second auth mechanism). Real result: HTTP
+200, `{"ok":true,"results":[{"currency":"EUR","ok":true,...},{"currency":"USD","ok":true,...}]}`,
+a genuine `price_sync_runs` row (`kind='fx'`, `succeeded`, 2 snapshots written), and real cached
+`fx_rates` rows (EUR/NOK, USD/NOK, `source='norges_bank'`, dated 2026-08-21 — Norges Bank's most
+recent business day). The scheduled daily tick will now also fire normally going forward.
+
+**Two real bugs found and fixed before merge, neither by CI's automated suites:** a stale
+`scripts/grant-audit.sql` entry for `get_market_movers`'s old two-argument signature (CI's
+privilege-convergence step caught this one correctly and immediately); and `search-prices`'
+NOK-conversion code reading `fx_rates.rate` as if it were already decimal text, when PostgREST
+actually serializes a plain `numeric` column `select` as a JSON number — would have made every
+`search-prices` call 500 in production, silently degrading every Search/Card Detail price to "—"
+(caught by code review against the project's own established "cast money to text" convention, not
+by any test — see PROJECT_JOURNAL.md 2026-08-27 for both, including the standing gap this second
+one exposes: no test coverage exists yet for Edge Function business logic, only for the pure
+mapping layer).
+
+**Verified, actually run:** `pnpm check` (typecheck/lint/format/domain tests, **108/108**, up from
+100 — the new `tests/data/pricing.test.ts`) green locally. CI green on both jobs after several real
+iterations (`build-and-test`; `db-tests` — **370/370 database and authorization tests**, up from
+353 at M9, including the new M9.1 retention/pagination/market-movers suites, the storage benchmark,
+and the 10k-lot benchmark, all now permanent `db-tests` steps). PR #27 — see "Owner check" below
+for what remains a manual step.
+
+**Not done this session, disclosed rather than silently accepted:**
+
+1. The first-invocation query-plan-compilation timing (above) was not confirmed with
+   `EXPLAIN ANALYZE` or re-measured against the real hosted project's connection pooling
+   (Supavisor) behaviour — a future session should do this before treating list_portfolio's
+   performance as fully proven at production scale, though the steady-state numbers give no reason
+   for concern.
+2. No new automated test coverage exists for Edge Function HTTP-handler logic (only the pure
+   mapping layer, `tests/data/tcgdex-pricing.test.ts`) — the fx_rates-numeric-serialization bug
+   this session found and fixed would have been the first thing such coverage caught.
+3. A real owner-facing signed-in check has not happened — same standing boundary as every session
+   since M7.1.
 
 ## Deployed state (now M9 — PR #25 merged and deployed)
 
