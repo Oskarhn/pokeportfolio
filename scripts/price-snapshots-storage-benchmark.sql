@@ -25,8 +25,8 @@ begin
 end $$;
 
 with series as (
-  insert into public.card_series (slug, name)
-  values ('m91-storage-bench-series', 'M9.1 Storage Benchmark Series')
+  insert into public.card_series (slug, name, language)
+  values ('m91-storage-bench-series', 'M9.1 Storage Benchmark Series', 'en')
   returning id
 ),
 one_set as (
@@ -35,8 +35,8 @@ one_set as (
   returning id
 ),
 new_cards as (
-  insert into public.cards (set_id, local_id, name)
-  select one_set.id, i::text, 'Storage Bench Card ' || i
+  insert into public.cards (set_id, local_id, name, language)
+  select one_set.id, i::text, 'Storage Bench Card ' || i, 'en'
   from one_set, generate_series(1, 500) as i
   returning id
 ),
