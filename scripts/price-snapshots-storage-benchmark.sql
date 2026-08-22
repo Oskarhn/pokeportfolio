@@ -50,7 +50,7 @@ insert into public.price_snapshots
 select
   v.id,
   p.provider,
-  case when p.provider = 'tcgdex_cardmarket' then 'cm_trend' else 'tp_market' end,
+  case when p.provider = 'tcgdex_cardmarket' then 'cm_trend' else 'tp_market' end::public.price_kind,
   case when p.provider = 'tcgdex_cardmarket' then 'EUR' else 'USD' end,
   (100 + floor(random() * 900))::bigint,
   current_date - d.n,
