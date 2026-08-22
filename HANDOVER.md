@@ -4,31 +4,34 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-**Last updated:** 2026-08-28 — M1–M10 are complete in code, merged and deployed. **M10 (Sales and
-History) is closed.** Real sales with explicit lot selection (FIFO is only a suggestion), frozen
-cost basis, and a functional History/Sold area. Two real prerequisite gaps closed as part of it:
-`acquisition_lots.residual_nok_minor` (a silent NOK-side rounding leak for foreign-currency
-multi-unit lots) and `lot_cost_adjustments` (documented since M3, never actually created).
-`create_sale`/`update_sale`/`void_sale` are SECURITY DEFINER — a deliberate, documented exception
-to this project's SECURITY INVOKER default, because frozen cost basis/allocated amounts/realized
-result must be unreachable by any direct write (prompt §107), not merely policed after the fact.
-CI's own first real run caught two genuine bugs (a pre-existing `create_purchase` defect for graded
-cards with a redundant condition value, and a cross-test-file `price_snapshots` fixture collision)
-— both fixed, CI green on the second push (398/398 database and authorization tests, up from 370).
-Migrations applied to `pokeportfolio-dev`, `grant-audit.sql` clean, `remote-security-check.mjs`
-17/17, deployed and verified (mostly — see "M10 — Sales and History" below for one disclosed
-verification workaround). Full account: DECISIONS.md D-060, `claude_outputs/output_18.txt`. See
-"M10 — Sales and History" below.
+**Last updated:** 2026-08-29 — M1–M11 are complete in code, merged and deployed. **M11 (Sealed
+Inventory) is closed.** Sealed products (booster packs/boxes, ETBs, bundles, tins) are first-class
+Portfolio inventory, reusing the existing card acquisition/purchase/valuation/sale machinery end to
+end. Curated catalog (a modest, individually-sourced seed of seven real products) plus user-created
+private products; manual-only valuation with a visible Cards/Sealed value segment that always sums
+to the total. A real cardinality defect (`sealed_intent` sketched on `holdings` since M3 — cannot
+represent mixed intent among identical physical units) was found and fixed before any UI depended
+on it: relocated to `acquisition_lots` (D-061), with a new `set_sealed_lot_intent` split RPC. CI's
+own runs caught four further real bugs before merge (an untyped CASE expression breaking every
+known-cost `add_card_acquisition` call; a dropped `storage_location_id` ownership check the M11
+trigger replacement silently removed; two test-fixture isolation bugs; and a real security gap —
+neither `create_purchase` nor `add_card_acquisition` verified a referenced sealed product was
+curated or the caller's own before writing against it) — all fixed, CI green
+(415/415 database and authorization tests, up from 398). `scripts/deployment-check.mjs` moved from
+one unbounded `Promise.all` to bounded concurrency, closing the harness gap M10 left open — the
+full automated gate ran again and passed 28/28 against the real deployment, the first complete run
+since M9. Migrations applied to `pokeportfolio-dev`, `grant-audit.sql` clean,
+`remote-security-check.mjs` 17/17. Full account: DECISIONS.md D-061, `claude_outputs/output_19.txt`.
+See "M11 — Sealed Inventory" below.
 
 ---
 
 ## Status
 
-**Planning is FROZEN. M1–M10 are merged. No open M9-family or M10 item remains.** The only standing
+**Planning is FROZEN. M1–M11 are merged. No open M9/M10/M11-family item remains.** The only standing
 item carried across every milestone since M7.1 is a real owner-facing signed-in check, which needs
-the owner's own device/account — ask for it using the checklist in the "M10 — Sales and History"
-section below (it now also covers the one temporary-sale/void walkthrough that section asks for).
-Next: **M11 — Sealed Inventory.**
+the owner's own device/account — ask for it using the checklist in the "M11 — Sealed Inventory"
+section below. Next: **M12 — Dashboard.**
 
 ## M9 — Pricing and snapshots
 
@@ -589,24 +592,160 @@ use. Both caught by CI's real ephemeral Postgres on the first push, neither by l
    without an account). If a future session wants scripted E2E coverage for the sale flow, it can
    be added without any application change.
 
-## Deployed state (now M10 — PR #31 merged and deployed)
+## M11 — Sealed Inventory
 
-The application is deployed and reachable: **https://pokeportfolio-dev.pages.dev**, on the M10
-state (PRs #14 through #31 all merged; M10's #31 is the newest — #26/#29 were M9/M9.1 docs
-handovers, #27 was the M9.1 feature set, #28/#30 were the M9.1/M9.2 Portfolio-performance fixes,
-#31 is the first user-visible addition since #27). The owner has
-a working administrator account on the development project, the shared catalog holds the real
-English and Japanese physical Pokémon TCG card set (M5), and the deployed build lets the owner
-search a card (with visible card artwork, a set-browsing carousel, and a favourite filter), add it
-to their Portfolio with real acquisition provenance and cost, browse it in `/portfolio` — grid/
-list/table views, sort (including a card-number sort), filters, custom collections, and select-mode
-bulk actions **including a real "Remove from Portfolio" and a real "Sell"** — record a real
-multi-line purchase (`/purchases`) with retailers, shipping/customs/discount allocation, foreign
-currency via Norges Bank or a manual rate, and safe edit/void — and now record a real **sale**
-(`/sales/new`) with explicit lot selection, frozen cost basis, and browse **History** (`/history`)
-for what's actually been sold, all reached from the central + menu and Home, same discoverability
-pattern purchases already had. Primary navigation is still Home/Search/Portfolio/Profile plus a
-central quick-add — neither Purchases nor Sales/History are a new nav tab. Theme (light/dark/
+Sealed products (booster packs/boxes, ETBs, bundles, tins, collection boxes) are first-class
+Portfolio inventory, reusing the existing card acquisition/purchase/valuation/sale machinery rather
+than a parallel system. Full account: `claude_outputs/output_19.txt`. Decision: DECISIONS.md D-061.
+
+**Audit first, before any UI.** Most of the sealed schema already existed from earlier milestones
+and had never been exercised: `sealed_products` (curated-vs-private RLS, M3), `holdings.
+sealed_product_id` (M3), `purchase_lines.sealed_product_id`/`line_type='sealed'` (M3/M8 —
+`create_purchase` already created a real holding+lot for a sealed line, not a financial-only
+record), `manual_valuations` (M6, D-038, already generic over `holding_id`). Real gaps: no sealed
+identity in `list_portfolio`/`portfolio_counts`/`holding_summaries`, no direct-add path outside a
+purchase, no sealed browsing/detail/add UI, and one real schema defect (next).
+
+**The intent-cardinality defect (D-061).** `sealed_intent` had been sketched on `holdings` since
+M3. Tested directly against the scenario the prompt named — three identical booster boxes, two
+"keep sealed" and one "planned to open" — and it cannot be represented: `holdings_identity`
+correctly merges all three into one holding row, so a holding-level intent column has exactly one
+slot for the whole position. `create_purchase` already defaulted every new sealed holding's intent
+to `'undecided'` and never revisited it on a matching repeat acquisition. **Fixed**: relocated to
+`acquisition_lots` (same structural move `storage_location_id` went through in M6, D-036, not a new
+pattern). New RPC `set_sealed_lot_intent(p_lot_id, p_intent, p_quantity default null)` — SECURITY
+INVOKER, splits a lot into two (new sibling at the new intent, original shrunk by the same amount)
+when only part of its remaining quantity changes; both keep the original's cost-basis columns
+unchanged, conserving total cost basis exactly. `list_portfolio`/`holding_summaries` aggregate a
+holding's lots into `qty_keep_sealed`/`qty_planned_to_open`/`qty_undecided`, inside the existing
+materialized lot-aggregation CTE — no new join, no per-row correlated subquery.
+
+**Schema** (`supabase/migrations/20260829120000` through `..._m11_privilege_baseline.sql` and two
+more, 7 files): the D-061 relocation + `set_sealed_lot_intent`; `list_portfolio`/`portfolio_counts`
+DROP+CREATE for sealed identity, the three intent filters (`p_holding_kind`/`p_sealed_product_type`/
+`p_sealed_intent`), and the `cards_value_nok_minor`/`sealed_value_nok_minor` segment (always sum to
+the total); `add_card_acquisition` DROP+CREATE for `p_sealed_product_id`/`p_sealed_intent` (a direct
+add path outside a purchase); a deliberately modest curated seed (seven real products, individually
+sourced by live web search at migration time — see output_19.txt for full provenance); the
+privilege baseline; `holding_summaries` view extended (CREATE OR REPLACE, additive columns only,
+not a DROP+CREATE — Postgres allows a view to gain trailing columns without changing its identity);
+`create_purchase` CREATE OR REPLACE for the `sealed_intent` write it had been missing plus an
+optional per-line `sealed_intent` field.
+
+**Manual valuation, sale/history — fully reused, zero schema change.** `set_manual_valuation`/
+`clear_manual_valuation`/`get_holding_value_provenance` already resolved manual-or-missing for any
+non-`raw_card` kind since M9 (F10). A sealed lot sells through `create_sale`/`void_sale` completely
+unmodified — verified directly, not assumed. `data/sales.ts` and `PurchaseDetailPage`/
+`SaleDetailPage` already fell back to `sealedProductName` correctly (built generically in M8/M10,
+before M11 existed to need it).
+
+**UI.** `CatalogPage` gained a third "Sealed" mode (debounced, offset-paginated search over curated
++ own custom products, an "Add a custom sealed product" CTA, a product detail route at
+`/catalog/sealed/$sealedProductId` — no price chart, no market data). A direct add flow at
+`/portfolio/sealed/new` (reachable from the central + menu, a product's detail page, or a Holding
+Detail "Add another copy" link) mirrors `AddToCollectionPage`'s origin/cost-basis logic with a
+narrower origin set (purchase/gift/pre_tracking/other — no found/opening/trade_in, enforced by a
+narrower TypeScript union, not just which buttons render). Portfolio gained a type filter (All/Raw/
+Graded/Sealed), sealed-only refinements (product type, intent) under the same filter sheet, and a
+Cards/Sealed value-breakdown line in its header (Home and Profile got the same breakdown — both had
+been showing a stale pre-M9 "pricing not enabled yet" placeholder even for the already-working card
+value, corrected in the same pass since the same sections were being edited anyway). Holding Detail
+shows sealed identity, the intent breakdown, the existing manual-valuation section verbatim, and a
+per-lot "Change intent" action. All value displays respect the existing hide-values privacy eye — a
+real gap (the new breakdown lines initially ignored it) found in review and fixed before merge.
+
+**Real bugs found and fixed, none silently absorbed** (all before/during this session's own PR, all
+proven by a passing CI run afterward, none discovered post-merge):
+
+1. `create_purchase`'s acquisition-lot INSERT never set `sealed_intent` — found by this session's
+   own audit before any test ran against it, fixed in the same migration set.
+2. An untyped `CASE WHEN ... THEN 'sealed' ELSE 'card' END` in `add_card_acquisition` resolved to
+   `text` with no cast to the `line_type` enum column — CI's first run caught it; it broke every
+   known-cost `add_card_acquisition` call, not just sealed ones, cascading into unrelated M6/M8.1
+   fixture-dependent test failures. Fixed with an explicit `::public.line_type` cast.
+3. `acquisition_lots_check_owner`'s M11 replacement was diffed against the M3 original rather than
+   M6's later extension (`20260821120020`), silently dropping the `storage_location_id` ownership
+   check M6 had added. CI's second run caught it via `tests/db/m6_constraints.test.ts`; restored,
+   with a standing comment naming which version to diff against next time.
+4. Two cross-test isolation bugs in the new M11 test files (several cases reused the shared curated
+   seed product across count-sensitive assertions, which `holdings_identity` legally merges across
+   `it` blocks for the same synthetic user; a helper never set `created_by_user_id`, required
+   explicitly by RLS). Fixed with per-test isolated custom products and an explicit creator id.
+5. **Real security gap**, found by CI's own authorization suite: neither `create_purchase` nor
+   `add_card_acquisition` verified a caller-supplied `sealed_product_id` was curated or the caller's
+   own before writing against it — RLS hid a private product from listing, but a forged id sailed
+   through both write paths. Fixed: both (SECURITY INVOKER) now `exists (select 1 from
+   sealed_products where id = ...)` under RLS as the caller before writing.
+6. M10 security-preflight documentation correction (prompt's own audit item): older owner-check
+   trigger comments described RLS as the reason a cross-tenant id fails, which is not the operative
+   mechanism when the same trigger fires from inside a SECURITY DEFINER cascade
+   (`create_sale`/`update_sale`/`void_sale`, or the D1 trigger). Never load-bearing either way — the
+   real guarantee is each trigger's own explicit `user_id` comparison. Documentation-only
+   (docs/SECURITY.md §3.2.4), no SQL changed, no exploit exists.
+
+**`scripts/deployment-check.mjs` harness fix.** M10 disclosed a local `ConnectTimeoutError` from one
+unbounded `Promise.all` over ~28-34 Cloudflare chunks. Changed to a bounded 5-way concurrency pool
+plus an explicit 15s per-request timeout. Verified this session: **28/28 checks passed** against
+the real deployment — the first fully automated, complete run since M9.
+
+**Verified, actually run:** `pnpm check` (typecheck/lint/format/domain tests, 108/108, unchanged)
+green locally. `pnpm test:e2e` 58/58 (unchanged — no new route-level e2e coverage, matching the
+established pattern since M6). `pnpm build` green (both locally, with real env vars sourced from
+`.env.local`, and via Cloudflare's own build on merge). CI green on both jobs after four iterations
+(see bugs 1-5 above) — **415/415 database and authorization tests, up from 398 at M10** (+17: 10 in
+`tests/db/m11_sealed_inventory.test.ts`, 7 in `tests/authorization/m11_sealed.test.ts`). The 10k-lot
+benchmark was re-run (mandatory — `list_portfolio` changed) and shows no regression: all 12 sorts
+under 1500ms, comparable to the M9.2/M10 baseline (60–252ms range; number_asc/desc remain the
+slowest at ~138ms, unrelated to M11 — natural-sort-key computation). `grant-audit.sql` clean and
+hostile-grant convergence clean, both against the real project and against the new M11 privilege
+baseline. PR #33 merged (squash, branch deleted); post-merge CI on `main` green.
+
+**Deployed and verified against the real `pokeportfolio-dev` project, this session:**
+
+- All 7 M11 migrations applied (`supabase db push --linked`).
+- `grant-audit.sql` clean against the real project.
+- `remote-security-check.mjs` 17/17 (phase 1 — no `INVITE_TOKEN` available this session, same as
+  every session since M7.1).
+- Cloudflare Pages rebuilt automatically on merge; confirmed live via the service worker's precache
+  manifest listing the new sealed chunks (`sealedProducts`, `SealedProductImage`,
+  `SealedProductDetailPage`, `AddSealedProductPage`).
+- `deployment-check.mjs` **28/28**, in full, for the first time since M9.
+
+**Known, disclosed simplifications (not gaps to silently close later):**
+
+- The curated seed is seven individually-sourced real products — real coverage, nowhere near a
+  complete catalog. The custom-product path is the intended long-term coverage mechanism, per
+  design (prompt §14).
+- No image upload for a custom sealed product — deliberately deferred to a later Images milestone
+  (prompt §13); a generic per-type placeholder covers both curated and custom rows without
+  expanding the CSP.
+- No sealed catalog curation/promotion workflow (a private row can never become curated) —
+  explicitly out of scope; tracked in DATA_MODEL.md's open-questions table since before M11.
+- No new Playwright e2e coverage for the sealed flows — matches the established pattern since M6.
+
+**Not done this session, and why:**
+
+1. Owner-facing signed-in check — same standing boundary as every milestone since M7.1. See "Owner
+   check" in `claude_outputs/output_19.txt` for the exact steps.
+
+## Deployed state (now M11 — PR #33 merged and deployed)
+
+The application is deployed and reachable: **https://pokeportfolio-dev.pages.dev**, on the M11
+state (PRs #14 through #33 all merged; M11's #33 is the newest — #32 was the M10 docs handover).
+The owner has a working administrator account on the development project, the shared catalog holds
+the real English and Japanese physical Pokémon TCG card set (M5), and the deployed build lets the
+owner search a card (with visible card artwork, a set-browsing carousel, and a favourite filter) or
+a **sealed product** (curated + their own custom products), add either to their Portfolio with real
+acquisition provenance and cost, browse it in `/portfolio` — grid/list/table views, sort, filters
+(including a Raw/Graded/Sealed type filter), custom collections, and select-mode bulk actions
+including a real "Remove from Portfolio" and a real "Sell" — record a real multi-line purchase
+(`/purchases`) with retailers, shipping/customs/discount allocation (now including sealed lines),
+foreign currency via Norges Bank or a manual rate, and safe edit/void — record a real **sale**
+(`/sales/new`, sealed lots included) with explicit lot selection and frozen cost basis, and browse
+**History** (`/history`) for what's actually been sold — all reached from the central + menu and
+Home, same discoverability pattern purchases already had. Primary navigation is still Home/Search/
+Portfolio/Profile plus a central quick-add — neither Purchases nor Sales/History nor a sealed tab
+are new nav destinations (Sealed is a mode within the existing Search screen). Theme (light/dark/
 system) actually applies.
 
 **M6 also migrated the project's Supabase API keys** (D-039) — see "Security: key migration" below
@@ -1911,10 +2050,11 @@ real rebuilt bundle.
 | 5 | **A short signed-in M8.1 check** (see "M8.1" → "Next actions" above: add and remove a card via Portfolio Select, confirm the central + menu's Record purchase is easy to find, record one small purchase and confirm the success banner) | Same boundary as item 4 |
 | 6 | Give feedback on the deployed M7.1/M8/M8.1/M9 UI (nav, Home, Search, Portfolio, Profile, Purchases, theme, real values) | Informs M10+ and the eventual M12a visual pass — not a blocker, but the owner explicitly wants to be asked here |
 | 7 | **A short signed-in M9 check** — see "M9 — Pricing and snapshots" → prompt §101's outline: open Portfolio and confirm an automatically-priced raw card shows a real value; open the card and check value/source/freshness; confirm the Portfolio total updates; toggle hide/show values; search a common card and confirm visible price references; check Market Movers (may honestly say insufficient history on day one) | Same boundary as items 4/5 |
-| 8 | If a real 10,000-lot Portfolio benchmark re-run is wanted soon rather than waiting for a future session with secret-key access, the owner (or an operator with the Supabase secret key) can run `scripts/portfolio-perf-benchmark.mjs` directly | Confirms M9's resolver join did not regress M7's 130-570 ms — not urgent, since the query shape follows the same proven discipline, but not yet measured |
+| 8 | ~~Real 10,000-lot Portfolio benchmark re-run~~ | **Resolved M9.2/M11** — the benchmark is now a permanent CI step (D-059), re-run again for M11's `list_portfolio` change with no regression (output_19.txt) |
+| 9 | **A short signed-in M11 check** — see "M11 — Sealed Inventory" → "Owner check" in `claude_outputs/output_19.txt` for the exact steps: Search → Sealed, add one product, set quantity/intent, set and clear a manual value, confirm the Cards/Sealed breakdown, create one custom sealed product | Same boundary as items 4/5/7 |
 
-This session could not perform items 3/4/5/7 itself: creating or signing into even a throwaway
+This session could not perform items 3/4/5/7/9 itself: creating or signing into even a throwaway
 synthetic account requires entering a password, which is outside what this session performs
 regardless of project convention (same boundary M7.1's session already documented, restated in
-"M8"/"M8.1"/"M9" above). The admin account, the M6 deployment, the API-key model and the
+every milestone since). The admin account, the M6 deployment, the API-key model and the
 installed-PWA check remain done from before M7.
