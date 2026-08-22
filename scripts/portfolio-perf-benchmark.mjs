@@ -87,15 +87,60 @@ async function createSyntheticUser(label) {
   return { id: created.user.id, email, password }
 }
 
-async function fetchCatalogVariantIds(limit) {
-  const { data, error } = await service.from('card_variants').select('id').limit(limit)
-  if (error) throw error
-  if (data.length === 0) {
-    throw new Error(
-      'No card_variants found — run the catalog sync (or apply supabase/seed/) before this benchmark.',
-    )
+// M9.1: seeds its own synthetic catalog rather than depending on whatever card_variants happen to
+// already exist (CI's ephemeral seed catalog turned out to hold only a handful — nowhere near
+// enough combo space for 10,000 holdings across 5 conditions without exhausting real identity
+// slots almost immediately, which surfaced as unique_violation errors on holdings_identity, not
+// as a slow-but-correct result). COST_POLICY.md/DATA_MODEL.md §4.2's own real-scale estimate is
+// ~3,000-4,000 distinct variants for a 10,000-card collection — this matches that, rather than an
+// arbitrary round number, so the benchmark's duplication shape is representative, not an
+// artificial worst case.
+const SYNTHETIC_VARIANT_COUNT = 3500
+
+async function seedSyntheticCatalog(count) {
+  const { data: series, error: seriesError } = await service
+    .from('card_series')
+    .insert({ slug: `perf-bench-series-${Date.now()}`, name: 'Perf Benchmark Series', language: 'en' })
+    .select('id')
+    .single()
+  if (seriesError) throw seriesError
+
+  const { data: set, error: setError } = await service
+    .from('card_sets')
+    .insert({
+      series_id: series.id,
+      slug: `perf-bench-set-${Date.now()}`,
+      name: 'Perf Benchmark Set',
+      language: 'en',
+    })
+    .select('id')
+    .single()
+  if (setError) throw setError
+
+  const cardIds = []
+  const CARD_BATCH = 500
+  for (let start = 0; start < count; start += CARD_BATCH) {
+    const batch = Array.from({ length: Math.min(CARD_BATCH, count - start) }, (_, i) => ({
+      set_id: set.id,
+      local_id: String(start + i + 1),
+      name: `Perf Bench Card ${String(start + i + 1)}`,
+      language: 'en',
+    }))
+    const { data: inserted, error } = await service.from('cards').insert(batch).select('id')
+    if (error) throw error
+    cardIds.push(...inserted.map((r) => r.id))
   }
-  return data.map((r) => r.id)
+
+  const variantIds = []
+  for (let start = 0; start < cardIds.length; start += CARD_BATCH) {
+    const batch = cardIds
+      .slice(start, start + CARD_BATCH)
+      .map((cardId) => ({ card_id: cardId, finish: 'normal', stamp: '', subtype: '' }))
+    const { data: inserted, error } = await service.from('card_variants').insert(batch).select('id')
+    if (error) throw error
+    variantIds.push(...inserted.map((r) => r.id))
+  }
+  return variantIds
 }
 
 const CONDITIONS = ['MT', 'NM', 'EX', 'GD', 'LP', 'PL', 'PO']
@@ -139,38 +184,47 @@ async function seed(userId, variantIds) {
   //
   // usedCombos guards the OTHER direction: two "new" rows independently picking the same random
   // (variant, condition) is a real, not hypothetical, collision once LOT_COUNT approaches the
-  // catalog's combo space (variantIds.length x CONDITIONS.length) — certain against CI's small
-  // ephemeral seed catalog (a few hundred variants), and the whole bulk INSERT rejects on any one
-  // row's unique_violation. Once a fresh combo can't be found within a bounded number of
-  // attempts, fall back to reuse instead — exactly the D-017 shape anyway (M9.1 fix).
+  // catalog's combo space (variantIds.length x CONDITIONS.length) — the whole bulk INSERT rejects
+  // on any one row's unique_violation. Every combo this run has ever picked is tracked exactly
+  // once (never just "seen recently"), mapped to the holding that owns it — already-committed
+  // (`known`) or still awaiting this batch's own insert (`pending`, resolved below) — so a
+  // colliding pick is routed to its real owner instead of attempted as a second, duplicate
+  // holdings row, regardless of how small the combo space is relative to a single batch (M9.1 fix
+  // — found via CI against an ephemeral seed catalog with only a handful of card_variants).
   const knownHoldingIds = []
-  const usedCombos = new Set()
+  const usedCombos = new Map() // comboKey -> { kind: 'known', id } | { kind: 'pending', index }
   const BATCH = 200
   let created = 0
 
   while (created < LOT_COUNT) {
     const batchSize = Math.min(BATCH, LOT_COUNT - created)
     const newHoldingRows = []
-    const lotTargets = [] // resolved after new holdings are inserted, in the same order
+    const lotTargets = [] // { kind: 'known', id } | { kind: 'pending', index }
 
     for (let i = 0; i < batchSize; i += 1) {
-      const canReuse = knownHoldingIds.length > 0
-      let variantId, condition, comboKey
-      if (!(canReuse && Math.random() < 0.3)) {
-        let attempts = 0
-        do {
-          variantId = variantIds[Math.floor(Math.random() * variantIds.length)]
-          condition = CONDITIONS[Math.floor(Math.random() * CONDITIONS.length)]
-          comboKey = `${variantId}:${condition}`
-          attempts += 1
-        } while (usedCombos.has(comboKey) && attempts < 30)
-      }
-
-      if (variantId === undefined || (usedCombos.has(comboKey) && canReuse)) {
-        lotTargets.push(knownHoldingIds[Math.floor(Math.random() * knownHoldingIds.length)])
+      const wantsReuse = knownHoldingIds.length > 0 && Math.random() < 0.3
+      if (wantsReuse) {
+        const id = knownHoldingIds[Math.floor(Math.random() * knownHoldingIds.length)]
+        lotTargets.push({ kind: 'known', id })
         continue
       }
-      usedCombos.add(comboKey)
+
+      let variantId, condition, comboKey
+      let attempts = 0
+      do {
+        variantId = variantIds[Math.floor(Math.random() * variantIds.length)]
+        condition = CONDITIONS[Math.floor(Math.random() * CONDITIONS.length)]
+        comboKey = `${variantId}:${condition}`
+        attempts += 1
+      } while (usedCombos.has(comboKey) && attempts < 30)
+
+      const existingTarget = usedCombos.get(comboKey)
+      if (existingTarget) {
+        lotTargets.push(existingTarget)
+        continue
+      }
+      const target = { kind: 'pending', index: newHoldingRows.length }
+      usedCombos.set(comboKey, target)
       newHoldingRows.push({
         user_id: userId,
         holding_kind: 'raw_card',
@@ -178,7 +232,7 @@ async function seed(userId, variantIds) {
         condition,
         is_favorite: Math.random() < 0.05,
       })
-      lotTargets.push(null) // filled in once the batch insert returns ids, below
+      lotTargets.push(target)
     }
 
     let newIds = []
@@ -190,11 +244,14 @@ async function seed(userId, variantIds) {
       if (insertError) throw insertError
       newIds = inserted.map((r) => r.id)
       knownHoldingIds.push(...newIds)
+      // Promote this batch's now-committed combos so a later batch reuses by id directly.
+      for (const [key, target] of usedCombos) {
+        if (target.kind === 'pending') usedCombos.set(key, { kind: 'known', id: newIds[target.index] })
+      }
     }
 
-    let nextNewIndex = 0
-    const lotRows = lotTargets.map((existingId) => {
-      const holdingId = existingId ?? newIds[nextNewIndex++]
+    const lotRows = lotTargets.map((target) => {
+      const holdingId = target.kind === 'known' ? target.id : newIds[target.index]
       return {
         holding_id: holdingId,
         user_id: userId,
@@ -286,7 +343,7 @@ async function main() {
   })
 
   try {
-    const variantIds = await fetchCatalogVariantIds(2000)
+    const variantIds = await seedSyntheticCatalog(SYNTHETIC_VARIANT_COUNT)
     await seedPricing(variantIds)
     const { collectionId } = await seed(user.id, variantIds)
 
