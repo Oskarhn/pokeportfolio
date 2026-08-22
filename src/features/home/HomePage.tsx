@@ -10,13 +10,14 @@ import {
 import { getCollectionMemberCount } from '../../data/customCollections'
 import { getMyProfile, updateMyProfile } from '../../data/profile'
 import { getSpendingSummary } from '../../data/purchases'
+import { getSalesSummary } from '../../data/sales'
 import { getMarketMovers } from '../../data/pricing'
 import { ScopeSelector } from '../../ui/ScopeSelector'
 import { CurrencySelector } from '../../ui/CurrencySelector'
 import { MoneyDisplay, ValuePrivacyToggle } from '../../ui/MoneyDisplay'
 import { formatNokMinor } from '../../ui/money-format'
 import { CardImage } from '../catalog/CardImage'
-import { ChartIcon } from '../../ui/icons'
+import { ChartIcon, TagIcon } from '../../ui/icons'
 
 const PERIODS = ['1D', '1W', '1M', '3M', '6M', '1Y', 'MAX'] as const
 
@@ -72,6 +73,7 @@ export function HomePage() {
   )
 
   const spending = useQuery({ queryKey: ['spending-summary'], queryFn: getSpendingSummary })
+  const salesSummary = useQuery({ queryKey: ['sales-summary'], queryFn: getSalesSummary })
 
   // Market Movers (prompt §54-55/§94): real price movement of owned, priced holdings over the
   // last 7 days. Never a global catalog ranking, never a sale/realized-result figure.
@@ -164,6 +166,26 @@ export function HomePage() {
             {spending.data ? `${formatNokMinor(spending.data.gpoNokMinor)} kr` : '—'}
           </span>
           <span className="block text-xs text-slate-500">Total spent</span>
+        </span>
+      </Link>
+
+      <Link
+        to="/history"
+        search={{ tab: 'sold' }}
+        className="flex min-h-16 items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-900/60 px-4 py-3 hover:bg-slate-800/40"
+      >
+        <span className="flex items-center gap-3">
+          <TagIcon className="size-5 text-slate-400" />
+          <span>
+            <span className="block text-sm font-medium text-slate-200">History</span>
+            <span className="block text-xs text-slate-500">Sold, traded and more →</span>
+          </span>
+        </span>
+        <span className="text-right">
+          <span className="block text-sm font-semibold text-slate-100">
+            {salesSummary.data ? `${formatNokMinor(salesSummary.data.nspNokMinor)} kr` : '—'}
+          </span>
+          <span className="block text-xs text-slate-500">Net sales proceeds</span>
         </span>
       </Link>
 

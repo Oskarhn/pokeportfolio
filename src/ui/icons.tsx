@@ -250,3 +250,14 @@ export function SwapIcon(props: SVGProps<SVGSVGElement>) {
     </Icon>
   )
 }
+
+/** A price tag — used for "Record sale" (M10), the sale-side counterpart to ChartIcon's purchase
+ *  ledger glyph. */
+export function TagIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <path d="M11.5 4.5h5.5a1.5 1.5 0 0 1 1.5 1.5v5.5a1.5 1.5 0 0 1-.44 1.06l-8 8a1.5 1.5 0 0 1-2.12 0l-4.5-4.5a1.5 1.5 0 0 1 0-2.12l8-8A1.5 1.5 0 0 1 11.5 4.5Z" />
+      <circle cx="15" cy="9" r="1" fill="currentColor" stroke="none" />
+    </Icon>
+  )
+}
