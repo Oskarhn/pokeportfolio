@@ -78,6 +78,21 @@ export function allocateMoney(total: Money, weights: readonly bigint[]): Money[]
   return shares.map((share) => fromMinorUnits(share, total.currency))
 }
 
+/**
+ * Signed variant of `allocate` — the total may be negative (a sale can
+ * genuinely net a loss, FINANCIAL_MODEL.md §2.2/prompt §109), while weights
+ * must still be non-negative. Delegates to `allocate` on the magnitude and
+ * negates the result: `allocateSigned(-T, w) === allocate(T, w).map(-)`.
+ * Mirrors the SQL port `allocate_largest_remainder_signed`
+ * (20260828120010_m10_sales_rpc.sql) — see tests/db for the parity proof.
+ */
+export function allocateSigned(total: bigint, weights: readonly bigint[]): bigint[] {
+  if (total >= 0n) {
+    return allocate(total, weights)
+  }
+  return allocate(-total, weights).map((share) => -share)
+}
+
 /** Sums a set of allocated Money shares back to the original total. */
 export function sumShares(currency: CurrencyCode, shares: readonly Money[]): Money {
   return shares.reduce((acc, share) => add(acc, share), fromMinorUnits(0n, currency))

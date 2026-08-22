@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from '@tanstack/react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   bulkSetFavorite,
@@ -10,7 +11,7 @@ import { portfolioDisplayName, type PortfolioTile } from '../../data/portfolio'
 import { CollectionPickerSheet } from './CollectionPickerSheet'
 import { Sheet } from '../../ui/Sheet'
 import { Button, FormMessage } from '../../ui/form'
-import { XIcon, StarIcon, TrashIcon } from '../../ui/icons'
+import { XIcon, StarIcon, TrashIcon, TagIcon } from '../../ui/icons'
 
 /**
  * Portfolio select mode's action bar (M7.1 prompt §42-43, extended M8.1 prompt §11-13). Add/
@@ -133,6 +134,16 @@ export function BulkActionsBar({
         <StarIcon className="size-4" />
         Favourite
       </button>
+      {ids.length > 0 ? (
+        <Link
+          to="/sales/new"
+          search={{ holdingIds: ids.join(',') }}
+          className="flex min-h-9 items-center gap-1.5 rounded-full border border-slate-700 px-3 text-sm font-medium text-slate-200 hover:bg-slate-800"
+        >
+          <TagIcon className="size-4" />
+          Sell
+        </Link>
+      ) : null}
       <button
         type="button"
         disabled={ids.length === 0}

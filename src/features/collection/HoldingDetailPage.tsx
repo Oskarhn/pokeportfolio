@@ -236,6 +236,15 @@ export function HoldingDetailPage() {
             <dt className="text-slate-500">Storage</dt>
             <dd className="text-slate-200">{storage ?? '—'}</dd>
           </dl>
+          {h.quantity > 0 ? (
+            <Link
+              to="/sales/new"
+              search={{ holdingIds: holdingId }}
+              className="mt-2 flex min-h-10 w-fit items-center rounded-lg border border-slate-700 px-4 text-sm font-semibold text-slate-200 hover:bg-slate-800"
+            >
+              Sell
+            </Link>
+          ) : null}
         </div>
       </div>
 

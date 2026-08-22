@@ -188,6 +188,38 @@ persisted history (prompt §50). `ingest-prices`/`ingest-fx` are the operator-se
 (`PRICE_SYNC_SECRET`, `verify_jwt = false`), called only by `pg_cron`/`pg_net` — see §6 for how the
 secret itself is held.
 
+### 3.2.4 M10: the sale ledger — SECURITY DEFINER, deliberately (DECISIONS.md D-060)
+
+`create_sale`/`update_sale`/`void_sale` break the SECURITY INVOKER pattern every other write RPC in
+this project follows, for a reason the M10 prompt (§107) states explicitly: frozen cost basis,
+allocated amounts and realized result must be genuinely unreachable by a direct write, not merely
+policed by a `CHECK` constraint after the fact — a materially stronger bar than M8 accepted for
+`purchases.total_nok_minor` (still directly `UPDATE`-grantable, because `update_purchase`'s
+SECURITY INVOKER body needs the grant, and the only exposure is a user corrupting their own private
+ledger, never a cross-tenant issue).
+
+**What this actually buys.** `authenticated` holds `SELECT` only on `sales`/`sale_lines`/
+`lot_disposals` — **no** `INSERT`/`UPDATE` grant at all, verified directly in
+`tests/authorization/m10_sales.test.ts` ("authenticated holds no INSERT/UPDATE grant on any of the
+three tables, even for own rows"). Every write happens inside the three functions, which run with
+the owning role's privileges rather than the caller's. What replaces the grant/RLS layer as the
+authorization boundary is the same discipline every SECURITY INVOKER RPC in this codebase already
+has: `v_user_id := auth.uid()` resolved once at the top, and every subsequent `SELECT`/`UPDATE`
+explicitly filtered by `user_id = v_user_id` before it touches a caller-supplied id (a foreign
+`lot_id` or `sale_id` therefore fails as "not found"/"unavailable", never confirming the row exists
+— prompt §106, no cross-tenant existence oracle). "No `p_user_id` argument" and "derive the caller
+from `auth.uid()`" — the parts of the SECURITY INVOKER convention that actually guard against
+impersonation — are unchanged; only the INVOKER/DEFINER choice moves.
+
+`recompute_lot_quantity_remaining` (the D1 trigger on `lot_disposals`, DATA_MODEL.md §5.7) is
+SECURITY DEFINER for the identical reason, applied to `acquisition_lots.quantity_remaining` — the
+one column a user could otherwise "revive" to sell twice.
+
+`lot_cost_adjustments` (DATA_MODEL.md §5.6 — documented since M3, finally created in M10) gets
+`SELECT` only, no `INSERT` at all: no validated write path exists yet (M17 owns the real "record a
+grading submission" RPC), and a bare `INSERT` grant with no such validation would let a user inflate
+their own cost basis by citing any unrelated purchase line of theirs.
+
 ### 3.3 Attack surface the tests must cover
 
 - Direct read of another user's row by id

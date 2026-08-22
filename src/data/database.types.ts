@@ -23,6 +23,7 @@ export type Database = {
           quantity: number
           quantity_remaining: number
           residual_minor: number
+          residual_nok_minor: number
           storage_location_id: string | null
           unit_cost_basis_minor: number | null
           unit_cost_basis_nok_minor: number | null
@@ -42,6 +43,7 @@ export type Database = {
           quantity: number
           quantity_remaining: number
           residual_minor?: number
+          residual_nok_minor?: number
           storage_location_id?: string | null
           unit_cost_basis_minor?: number | null
           unit_cost_basis_nok_minor?: number | null
@@ -61,6 +63,7 @@ export type Database = {
           quantity?: number
           quantity_remaining?: number
           residual_minor?: number
+          residual_nok_minor?: number
           storage_location_id?: string | null
           unit_cost_basis_minor?: number | null
           unit_cost_basis_nok_minor?: number | null
@@ -704,6 +707,117 @@ export type Database = {
         }
         Relationships: []
       }
+      lot_cost_adjustments: {
+        Row: {
+          amount_minor: number
+          amount_nok_minor: number
+          created_at: string
+          currency: string
+          id: string
+          kind: Database["public"]["Enums"]["lot_cost_adjustment_kind"]
+          lot_id: string
+          note: string | null
+          occurred_on: string
+          purchase_line_id: string
+          user_id: string
+        }
+        Insert: {
+          amount_minor: number
+          amount_nok_minor: number
+          created_at?: string
+          currency: string
+          id?: string
+          kind: Database["public"]["Enums"]["lot_cost_adjustment_kind"]
+          lot_id: string
+          note?: string | null
+          occurred_on: string
+          purchase_line_id: string
+          user_id: string
+        }
+        Update: {
+          amount_minor?: number
+          amount_nok_minor?: number
+          created_at?: string
+          currency?: string
+          id?: string
+          kind?: Database["public"]["Enums"]["lot_cost_adjustment_kind"]
+          lot_id?: string
+          note?: string | null
+          occurred_on?: string
+          purchase_line_id?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "lot_cost_adjustments_lot_id_fkey"
+            columns: ["lot_id"]
+            isOneToOne: false
+            referencedRelation: "acquisition_lots"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "lot_cost_adjustments_purchase_line_id_fkey"
+            columns: ["purchase_line_id"]
+            isOneToOne: false
+            referencedRelation: "purchase_lines"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      lot_disposals: {
+        Row: {
+          cost_basis_at_disposal_nok_minor: number | null
+          created_at: string
+          disposed_on: string
+          id: string
+          kind: Database["public"]["Enums"]["disposal_kind"]
+          lot_id: string
+          quantity: number
+          sale_line_id: string | null
+          user_id: string
+          voided_at: string | null
+        }
+        Insert: {
+          cost_basis_at_disposal_nok_minor?: number | null
+          created_at?: string
+          disposed_on: string
+          id?: string
+          kind: Database["public"]["Enums"]["disposal_kind"]
+          lot_id: string
+          quantity: number
+          sale_line_id?: string | null
+          user_id: string
+          voided_at?: string | null
+        }
+        Update: {
+          cost_basis_at_disposal_nok_minor?: number | null
+          created_at?: string
+          disposed_on?: string
+          id?: string
+          kind?: Database["public"]["Enums"]["disposal_kind"]
+          lot_id?: string
+          quantity?: number
+          sale_line_id?: string | null
+          user_id?: string
+          voided_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "lot_disposals_lot_id_fkey"
+            columns: ["lot_id"]
+            isOneToOne: false
+            referencedRelation: "acquisition_lots"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "lot_disposals_sale_line_id_fkey"
+            columns: ["sale_line_id"]
+            isOneToOne: false
+            referencedRelation: "sale_lines"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       manual_card_definitions: {
         Row: {
           collector_number: string | null
@@ -1173,6 +1287,147 @@ export type Database = {
         }
         Relationships: []
       }
+      sale_lines: {
+        Row: {
+          allocated_fees_minor: number
+          allocated_shipping_charged_minor: number
+          allocated_shipping_minor: number
+          cost_basis_at_sale_nok_minor: number | null
+          created_at: string
+          id: string
+          line_gross_minor: number
+          lot_id: string
+          net_proceeds_minor: number
+          net_proceeds_nok_minor: number
+          quantity: number
+          realized_result_nok_minor: number | null
+          sale_id: string
+          unit_gross_minor: number
+          user_id: string
+        }
+        Insert: {
+          allocated_fees_minor?: number
+          allocated_shipping_charged_minor?: number
+          allocated_shipping_minor?: number
+          cost_basis_at_sale_nok_minor?: number | null
+          created_at?: string
+          id?: string
+          line_gross_minor: number
+          lot_id: string
+          net_proceeds_minor: number
+          net_proceeds_nok_minor: number
+          quantity: number
+          realized_result_nok_minor?: number | null
+          sale_id: string
+          unit_gross_minor: number
+          user_id: string
+        }
+        Update: {
+          allocated_fees_minor?: number
+          allocated_shipping_charged_minor?: number
+          allocated_shipping_minor?: number
+          cost_basis_at_sale_nok_minor?: number | null
+          created_at?: string
+          id?: string
+          line_gross_minor?: number
+          lot_id?: string
+          net_proceeds_minor?: number
+          net_proceeds_nok_minor?: number
+          quantity?: number
+          realized_result_nok_minor?: number | null
+          sale_id?: string
+          unit_gross_minor?: number
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "sale_lines_lot_id_fkey"
+            columns: ["lot_id"]
+            isOneToOne: false
+            referencedRelation: "acquisition_lots"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sale_lines_sale_id_fkey"
+            columns: ["sale_id"]
+            isOneToOne: false
+            referencedRelation: "sales"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      sales: {
+        Row: {
+          created_at: string
+          currency: string
+          fees_minor: number
+          fx_rate_date: string
+          fx_rate_to_nok: number
+          fx_source: Database["public"]["Enums"]["fx_source"]
+          gross_minor: number
+          id: string
+          idempotency_key: string
+          marketplace: string | null
+          net_proceeds_minor: number
+          net_proceeds_nok_minor: number
+          notes: string | null
+          proceeds_from_uncosted_nok_minor: number
+          realized_result_nok_minor: number | null
+          shipping_charged_minor: number
+          shipping_cost_minor: number
+          sold_on: string
+          updated_at: string
+          user_id: string
+          voided_at: string | null
+        }
+        Insert: {
+          created_at?: string
+          currency: string
+          fees_minor?: number
+          fx_rate_date: string
+          fx_rate_to_nok: number
+          fx_source: Database["public"]["Enums"]["fx_source"]
+          gross_minor: number
+          id?: string
+          idempotency_key: string
+          marketplace?: string | null
+          net_proceeds_minor: number
+          net_proceeds_nok_minor: number
+          notes?: string | null
+          proceeds_from_uncosted_nok_minor?: number
+          realized_result_nok_minor?: number | null
+          shipping_charged_minor?: number
+          shipping_cost_minor?: number
+          sold_on: string
+          updated_at?: string
+          user_id: string
+          voided_at?: string | null
+        }
+        Update: {
+          created_at?: string
+          currency?: string
+          fees_minor?: number
+          fx_rate_date?: string
+          fx_rate_to_nok?: number
+          fx_source?: Database["public"]["Enums"]["fx_source"]
+          gross_minor?: number
+          id?: string
+          idempotency_key?: string
+          marketplace?: string | null
+          net_proceeds_minor?: number
+          net_proceeds_nok_minor?: number
+          notes?: string | null
+          proceeds_from_uncosted_nok_minor?: number
+          realized_result_nok_minor?: number | null
+          shipping_charged_minor?: number
+          shipping_cost_minor?: number
+          sold_on?: string
+          updated_at?: string
+          user_id?: string
+          voided_at?: string | null
+        }
+        Relationships: []
+      }
       sealed_products: {
         Row: {
           cardmarket_product_id: string | null
@@ -1412,6 +1667,10 @@ export type Database = {
         Args: { p_total: number; p_weights: number[] }
         Returns: number[]
       }
+      allocate_largest_remainder_signed: {
+        Args: { p_total: number; p_weights: number[] }
+        Returns: number[]
+      }
       before_user_created: { Args: { event: Json }; Returns: Json }
       card_condition_to_text: {
         Args: { value: Database["public"]["Enums"]["card_condition"] }
@@ -1475,6 +1734,51 @@ export type Database = {
         SetofOptions: {
           from: "*"
           to: "purchases"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
+      create_sale: {
+        Args: {
+          p_currency: string
+          p_fees_minor?: number
+          p_fx_rate_date?: string
+          p_fx_rate_to_nok?: string
+          p_fx_source?: Database["public"]["Enums"]["fx_source"]
+          p_idempotency_key: string
+          p_lines: Json
+          p_marketplace?: string
+          p_notes?: string
+          p_shipping_charged_minor?: number
+          p_shipping_cost_minor?: number
+          p_sold_on: string
+        }
+        Returns: {
+          created_at: string
+          currency: string
+          fees_minor: number
+          fx_rate_date: string
+          fx_rate_to_nok: number
+          fx_source: Database["public"]["Enums"]["fx_source"]
+          gross_minor: number
+          id: string
+          idempotency_key: string
+          marketplace: string | null
+          net_proceeds_minor: number
+          net_proceeds_nok_minor: number
+          notes: string | null
+          proceeds_from_uncosted_nok_minor: number
+          realized_result_nok_minor: number | null
+          shipping_charged_minor: number
+          shipping_cost_minor: number
+          sold_on: string
+          updated_at: string
+          user_id: string
+          voided_at: string | null
+        }
+        SetofOptions: {
+          from: "*"
+          to: "sales"
           isOneToOne: true
           isSetofReturn: false
         }
@@ -1661,6 +1965,19 @@ export type Database = {
         Args: { p_invitation_id: string }
         Returns: undefined
       }
+      sales_summary: {
+        Args: never
+        Returns: {
+          buyer_shipping_nok_minor: string
+          fees_nok_minor: string
+          gross_nok_minor: string
+          nsp_nok_minor: string
+          outbound_shipping_nok_minor: string
+          pud_nok_minor: string
+          rrc_nok_minor: string
+          sale_count: number
+        }[]
+      }
       search_cards: {
         Args: {
           p_language?: string
@@ -1752,12 +2069,61 @@ export type Database = {
           isSetofReturn: false
         }
       }
+      update_sale: {
+        Args: {
+          p_currency: string
+          p_fees_minor?: number
+          p_fx_rate_date?: string
+          p_fx_rate_to_nok?: string
+          p_fx_source?: Database["public"]["Enums"]["fx_source"]
+          p_lines: Json
+          p_marketplace?: string
+          p_notes?: string
+          p_sale_id: string
+          p_shipping_charged_minor?: number
+          p_shipping_cost_minor?: number
+          p_sold_on: string
+        }
+        Returns: {
+          created_at: string
+          currency: string
+          fees_minor: number
+          fx_rate_date: string
+          fx_rate_to_nok: number
+          fx_source: Database["public"]["Enums"]["fx_source"]
+          gross_minor: number
+          id: string
+          idempotency_key: string
+          marketplace: string | null
+          net_proceeds_minor: number
+          net_proceeds_nok_minor: number
+          notes: string | null
+          proceeds_from_uncosted_nok_minor: number
+          realized_result_nok_minor: number | null
+          shipping_charged_minor: number
+          shipping_cost_minor: number
+          sold_on: string
+          updated_at: string
+          user_id: string
+          voided_at: string | null
+        }
+        SetofOptions: {
+          from: "*"
+          to: "sales"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
       void_acquisition_lot: {
         Args: { p_lot_id: string; p_reason?: string }
         Returns: undefined
       }
       void_purchase: {
         Args: { p_purchase_id: string; p_reason?: string }
+        Returns: undefined
+      }
+      void_sale: {
+        Args: { p_reason?: string; p_sale_id: string }
         Returns: undefined
       }
     }
@@ -1772,6 +2138,7 @@ export type Database = {
         | "unknown"
         | "unallocated_opening"
         | "trade_in"
+      disposal_kind: "sale" | "opened" | "traded_away" | "write_off" | "correction"
       fx_source: "norges_bank" | "manual"
       grader: "psa" | "cgc" | "bgs" | "ace" | "sgc" | "tag" | "other"
       grading_state: "raw" | "pending" | "graded"
@@ -1786,6 +2153,7 @@ export type Database = {
         | "shipping_standalone"
         | "customs_standalone"
         | "other"
+      lot_cost_adjustment_kind: "grading_fee" | "grading_shipping" | "restoration" | "other"
       lot_origin:
         | "purchase"
         | "gift"
@@ -1973,6 +2341,7 @@ export const Constants = {
         "unallocated_opening",
         "trade_in",
       ],
+      disposal_kind: ["sale", "opened", "traded_away", "write_off", "correction"],
       fx_source: ["norges_bank", "manual"],
       grader: ["psa", "cgc", "bgs", "ace", "sgc", "tag", "other"],
       grading_state: ["raw", "pending", "graded"],
@@ -1988,6 +2357,7 @@ export const Constants = {
         "customs_standalone",
         "other",
       ],
+      lot_cost_adjustment_kind: ["grading_fee", "grading_shipping", "restoration", "other"],
       lot_origin: [
         "purchase",
         "gift",

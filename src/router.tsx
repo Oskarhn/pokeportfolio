@@ -68,6 +68,18 @@ const PurchaseEditPage = lazy(() =>
 const MarketMoversPage = lazy(() =>
   import('./features/portfolio/MarketMoversPage').then((m) => ({ default: m.MarketMoversPage })),
 )
+const SaleFormPage = lazy(() =>
+  import('./features/sales/SaleFormPage').then((m) => ({ default: m.SaleFormPage })),
+)
+const SaleDetailPage = lazy(() =>
+  import('./features/sales/SaleDetailPage').then((m) => ({ default: m.SaleDetailPage })),
+)
+const SaleEditPage = lazy(() =>
+  import('./features/sales/SaleEditPage').then((m) => ({ default: m.SaleEditPage })),
+)
+const HistoryPage = lazy(() =>
+  import('./features/history/HistoryPage').then((m) => ({ default: m.HistoryPage })),
+)
 
 /** Matches the layout these pages render into (AppShell's `<main>`) closely enough that arriving
  *  content doesn't jump — a skeleton rather than a spinner-over-blank-region, per
@@ -384,6 +396,62 @@ const marketMoversRoute = createRoute({
   ),
 })
 
+// ── M10: the sale ledger and History. Not primary-nav destinations (prompt §15/§55) — reached via
+// the central + menu, Portfolio's select mode ("Sell selected"), a Holding Detail's "Sell" button,
+// and History's own "Record sale" entries.
+
+const salesNewRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/sales/new',
+  validateSearch: (
+    search: Record<string, unknown>,
+  ): { holdingId?: string; holdingIds?: string } => ({
+    holdingId: str(search.holdingId),
+    holdingIds: str(search.holdingIds),
+  }),
+  component: () => (
+    <RequireSession>
+      <SaleFormPage />
+    </RequireSession>
+  ),
+})
+
+const saleDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/sales/$saleId',
+  validateSearch: (search: Record<string, unknown>): { created?: boolean } => ({
+    created: bool(search.created),
+  }),
+  component: () => (
+    <RequireSession>
+      <SaleDetailPage />
+    </RequireSession>
+  ),
+})
+
+const saleEditRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/sales/$saleId/edit',
+  component: () => (
+    <RequireSession>
+      <SaleEditPage />
+    </RequireSession>
+  ),
+})
+
+const historyRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/history',
+  validateSearch: (search: Record<string, unknown>): { tab?: 'sold' | 'traded' | 'other' } => ({
+    tab: str(search.tab) as 'sold' | 'traded' | 'other' | undefined,
+  }),
+  component: () => (
+    <RequireSession>
+      <HistoryPage />
+    </RequireSession>
+  ),
+})
+
 const legacyMoreRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/more',
@@ -421,6 +489,10 @@ const routeTree = rootRoute.addChildren([
   purchaseDetailRoute,
   purchaseEditRoute,
   marketMoversRoute,
+  salesNewRoute,
+  saleDetailRoute,
+  saleEditRoute,
+  historyRoute,
   profileRoute,
   legacyMoreRoute,
   adminInvitationsRoute,

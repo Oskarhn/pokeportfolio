@@ -254,13 +254,17 @@ DECISIONS.md D-059.
 supported sort/filter/keyset path interactive (comfortably under TESTING.md §31's targets) with no
 statement timeout — proven in `claude_outputs/output_17.txt`, not just asserted.
 
-### M10 — Sales and History
+### M10 — Sales and History — **complete**
 
 Sales with explicit lot selection and FIFO suggestion. Frozen `cost_basis_at_sale`. Realized
 versus uncosted proceeds. The History area: Sold, Traded, Other.
 
 **Gate:** E2 and E7 reproduce; a sold gift shows proceeds and a result of **—**; sorting by
-result does not rank unknown-basis rows as infinite profit.
+result does not rank unknown-basis rows as infinite profit. **Met** — `tests/db/m10_sales.test.ts`
+proves E2/E7 exactly, the unknown-basis/mixed-basis paths, the residual-consumption rule, F5 and
+D1, void/double-void, concurrency and idempotency; result-sort `NULLS LAST` proven both directions.
+Sold is fully functional; Traded honestly defers to M18; Other has nothing to show yet. Full
+account: `claude_outputs/output_18.txt`. Decisions: DECISIONS.md D-060.
 
 ### M11 — Sealed inventory
 

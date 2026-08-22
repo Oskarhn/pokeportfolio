@@ -256,7 +256,7 @@ with a link. It shows no cost basis field, no "0 NOK", and no ROI.
 
 ---
 
-## F7 — Sell
+## F7 — Sell · **implemented M10**
 
 → Sales › New, or Collection › item › Sell
 → Date, marketplace, currency
@@ -277,7 +277,7 @@ with a link. It shows no cost basis field, no "0 NOK", and no ROI.
 
 ---
 
-## F8 — Sell part of a duplicate holding
+## F8 — Sell part of a duplicate holding · **implemented M10**
 
 The case that justifies the whole lot model. Called out separately because it is where naive
 implementations produce wrong numbers.
@@ -292,7 +292,7 @@ implementations produce wrong numbers.
 
 ---
 
-## F8.1 — Browse History
+## F8.1 — Browse History · **implemented M10 (Sold only)**
 
 → History (top-level destination, separate from Collection)
 → Tabs: **Sold** · **Traded** · **Other**
@@ -480,10 +480,13 @@ day one (M7 prompt §12 was explicit that a menu of dead actions is worse than a
 | Arrives later | Action |
 |---|---|
 | M11 | Add sealed product |
-| M10 | Record sale |
 | M15 | The Scan card entry above becomes real |
 | After openings (M16) | Open product |
 | After trades (M18) | Record trade |
+
+**Record sale shipped in M10** — a fifth entry in this menu, plus Portfolio's select-mode "Sell"
+action and a Holding Detail "Sell" button, all opening `/sales/new` with the relevant holding(s)
+pre-loaded.
 
 ---
 

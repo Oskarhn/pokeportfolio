@@ -1359,3 +1359,89 @@ for planner statistics explicitly — autovacuum's eventual consistency is a fin
 usage patterns and a dangerous one for a benchmark's own artificial one. The next session that
 writes a CI benchmark seeding more than a trivial number of rows into a table it is about to query
 should run `ANALYZE` first, on purpose, rather than rediscover this the same way this session did.
+
+---
+
+## 2026-08-28 — Two tables DATA_MODEL.md had described for milestones that never revisited them
+
+**Problem.** M10 (Sales and History) needed to freeze an exact effective cost basis for a sale —
+`unit_cost_basis` plus its share of any `lot_cost_adjustments` (grading fees etc., FINANCIAL_MODEL.md
+§4.4/E6). Writing the RPC surfaced that `lot_cost_adjustments` did not exist as a table anywhere in
+`supabase/migrations/`. DATA_MODEL.md §5.6 has documented its shape since M3, and M3's own scope
+note explicitly deferred it alongside `lot_disposals`/`openings`/`trades`/`lot_transfers` — the
+difference is that every one of those got picked back up by the milestone that needed it
+(`lot_disposals` this same session; `openings`/`trades`/`lot_transfers` still correctly wait for
+M16/M17/M18), while `lot_cost_adjustments` fell through: M6 wired the grading *fields* onto
+`holdings` (grader/grade/cert_number) without also shipping the table those fields' financial
+consequences were supposed to live in, and nothing since (M8, M9) needed to read it, so the gap
+stayed invisible. Documentation describing a table is not evidence the table exists — this is the
+second time in this project a review-by-reading-the-doc missed a real schema gap (the first was
+M4's privilege-surface documentation matching intent but not the deployed database, HANDOVER.md's
+"the thing most worth knowing before touching the schema").
+
+**A second, related gap, found while writing the residual test for the same freeze.**
+`acquisition_lots.residual_minor` (M6) keeps `quantity × unit + residual = attributable_cost` exact
+in a lot's original currency, but `create_purchase`/`update_purchase` computed the *NOK-side* unit
+cost with a plain floor division and never stored what it dropped. Invisible for every NOK-currency
+purchase this project's synthetic fixtures have ever exercised (`attributable = attributable_nok`
+exactly when `fx_rate = 1`, so the existing original-currency residual happened to cover it) — a
+real, silent leak of up to `quantity − 1` øre only for a foreign-currency purchase of a
+`quantity > 1` lot, a combination no existing test (financial, db, or authorization) had reason to
+construct before a *sale* needed the exact NOK figure.
+
+**Resolution.** Both closed as real, disclosed migrations rather than routed around:
+`20260828115000_m10_lot_cost_adjustments.sql` creates the table to its documented shape, granting
+`authenticated` `SELECT` only (no validated write path exists until M17's real "record a grading
+submission" RPC — a bare `INSERT` grant today would let a user inflate their own cost basis by
+citing any unrelated purchase line). `20260828110000_m10_lot_residual_nok_fix.sql` adds
+`residual_nok_minor`, backfills it from each lot's own `purchase_lines.attributable_cost_nok_minor`
+(the source of truth was already there, just not reconciled into a residual), and re-creates
+`create_purchase`/`update_purchase` (same signature, no privilege churn) to compute it going
+forward. Full reasoning, and the residual-consumption rule this unblocked (which of a lot's several
+eventual disposals gets the leftover øre): DECISIONS.md D-060.
+
+**The generalizable lesson:** when a milestone's own DATA_MODEL section describes a table, check
+`supabase/migrations/` before assuming it shipped — a scope note deferring several tables together
+does not mean every one of them gets picked up together later; each needs its own milestone to
+actually need it before anyone notices it is still missing. Silent floor-division remainders are
+the same lesson in miniature: they cost nothing until a feature needs the *exact* total, which is
+usually much later than the code that dropped the remainder.
+
+---
+
+## 2026-08-28 — Freezing sale history genuinely needed a stronger privilege model than purchases had
+
+**Problem.** M10's own prompt (§107) asked for something M8's purchase ledger never had to satisfy:
+frozen cost basis, allocated amounts and realized result must be *unreachable* by a direct write
+from the browser, not merely correct when written through the intended RPC. M8's
+`purchases.total_nok_minor` is directly `UPDATE`-grantable to `authenticated`, because
+`update_purchase` (SECURITY INVOKER, this project's default since M4.1) needs that grant to do its
+own job — the accepted residual risk is a user corrupting their own private purchase row via a raw
+PATCH, never a cross-tenant issue, and nothing in M8's prompt asked for more than that.
+
+**Why the same shape doesn't satisfy M10.** A SECURITY INVOKER `update_sale` would need
+`authenticated` to hold `UPDATE` on `sale_lines.cost_basis_at_sale_nok_minor` and
+`realized_result_nok_minor` for its own legitimate write to succeed — which is exactly the grant
+that would let a user rewrite their own realized profit/loss figure directly, no RPC involved. A
+`CHECK` constraint can keep a row internally *consistent* (e.g. `realized_result = net_proceeds −
+cost_basis`) but cannot stop a coordinated forgery that changes several columns to a
+still-self-consistent, still-wrong story.
+
+**Resolution.** `create_sale`/`update_sale`/`void_sale` are `SECURITY DEFINER` — the first RPCs in
+this project's write surface to deviate from the INVOKER default, done under the exact escape hatch
+the house rule names ("unless an actual documented requirement proves otherwise"). `authenticated`
+now holds `SELECT` only on `sales`/`sale_lines`/`lot_disposals`, verified directly in
+`tests/authorization/m10_sales.test.ts` (a same-owner direct `INSERT`/`UPDATE` is rejected
+identically to a cross-tenant one — there is no privilege to exploit, not merely a check to defeat).
+What replaces RLS/grants as the authorization boundary inside these three functions is the same
+discipline every other RPC here already had: `v_user_id := auth.uid()` resolved once, every
+subsequent statement filtered by it explicitly. The one precedent already in the codebase for this
+exact pattern — `recompute_lot_quantity_remaining`, the D1 trigger — had already made the same call
+for `acquisition_lots.quantity_remaining` a few migrations earlier in this same session, for the
+identical reason (a column an attacker could otherwise use to "revive" already-sold inventory).
+
+**The generalizable lesson:** SECURITY INVOKER's blast radius is bounded by whatever grant its own
+writes need — which is fine right up until one of those columns is something a user must never be
+able to set directly, at which point INVOKER cannot express the requirement at all, no matter how
+careful the RPC's own validation is. Recognising that boundary before writing the grants (not after
+an authorization test found a hole) is what made this a design decision instead of a late patch.
