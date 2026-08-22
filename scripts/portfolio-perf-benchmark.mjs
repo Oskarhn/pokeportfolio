@@ -4,10 +4,13 @@
  * §104). Seeds a synthetic user with a large, varied, synthetic collection — duplicates, multiple
  * conditions, raw and graded holdings, tags, storage locations, custom collection membership —
  * then times the real `list_portfolio`/`portfolio_counts` RPCs the Portfolio page calls, across
- * every sort mode and a couple of representative filters. Reports numbers; it does not assert a
- * pass/fail threshold, because a fixed millisecond budget on a shared CI runner is exactly the
- * "microbenchmark theatre" the prompt says not to build. The milestone gate this backs is
- * behavioural — a real browser stays interactive — verified separately (HANDOVER.md/output_11).
+ * every sort mode and a couple of representative filters. Reports numbers, and (M9.2, DECISIONS.md
+ * D-059) fails the step if any call exceeds one generous catastrophic threshold (1.5s) or errors
+ * outright — not a tight millisecond budget (still not "microbenchmark theatre"), but this defect
+ * class has now recurred three times without CI ever failing on its own benchmark, and an explicit
+ * ANALYZE before timing (below) removed the measurement noise that justified never gating on this.
+ * The milestone gate this backs is also behavioural — a real browser stays interactive — verified
+ * separately (HANDOVER.md/output_11).
  *
  * SAFETY. This inserts real rows — deliberately many of them — so it must run against either an
  * ephemeral/local Supabase stack or a throwaway synthetic account, never the owner's real account
@@ -43,17 +46,19 @@ const args = new Set(process.argv.slice(2))
 const lotArg = [...args].find((a) => a.startsWith('--lots='))
 const LOT_COUNT = lotArg ? Number(lotArg.split('=')[1]) : 10_000
 const KEEP = args.has('--keep')
-const SKIP_EXPLAIN = args.has('--skip-explain')
 
-// M9.2 (docs/TESTING.md §7, HANDOVER.md's M9.1 "root cause not yet identified"): when a direct
-// Postgres connection string is available (CI's db-tests job exports DB_URL after `supabase
-// status`, same env this benchmark already runs in — see .github/workflows/ci.yml), this script
-// also runs scripts/portfolio-perf-explain.sql via psql: once immediately after the bulk seed
-// (before any ANALYZE — the planner statistics a real bulk-insert-then-query leaves behind) and
-// once again after an explicit ANALYZE of the tables list_portfolio actually touches. This is the
-// real evidence the investigation needs, not a guess about which plan node is expensive. Silently
-// skipped (not failed) when DB_URL/psql are unavailable, since the timed RPC benchmark below is
-// still meaningful without it — this only adds diagnostic depth.
+// M9.2 investigation tool (docs/TESTING.md §7, DECISIONS.md D-059): scripts/portfolio-perf-explain.sql
+// captures real EXPLAIN (ANALYZE, BUFFERS, SETTINGS) evidence, run twice — pre- and post-ANALYZE —
+// via psql when a direct Postgres connection string is available (CI's db-tests job exports DB_URL
+// after `supabase status`). This is what found the real M9.2 root cause: right after this script's
+// own bulk seed, every seeded table's pg_class.reltuples is -1 ("never analyzed" — a fresh CI
+// Postgres instance has no autovacuum worker cycle in that short a window), so the planner falls
+// back to its no-statistics defaults for holdings/acquisition_lots/card_variants/cards/card_sets/
+// price_snapshots alike — and BOTH list_portfolio and portfolio_counts() were equally catastrophic
+// (7.4-7.9s) before ANALYZE, not just list_portfolio. Not run by default (it adds ~40s per CI run
+// for evidence this investigation has already banked) — pass --explain to re-run it, e.g. to
+// re-verify after a future migration changes one of these tables' shape.
+const RUN_EXPLAIN = args.has('--explain')
 const DB_URL = process.env.DB_URL
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url))
 const EXPLAIN_SQL_PATH = path.join(SCRIPT_DIR, 'portfolio-perf-explain.sql')
@@ -79,7 +84,7 @@ function runPsql(argsList) {
 }
 
 function runExplainPhase(phase, userId) {
-  if (!DB_URL || SKIP_EXPLAIN) return
+  if (!DB_URL || !RUN_EXPLAIN) return
   try {
     console.log(`\n=== EXPLAIN capture: ${phase} ===`)
     const output = runPsql([
@@ -395,11 +400,11 @@ async function seedPricing(variantIds) {
   }
 }
 
-// M9.1: never throws. This benchmark's own stated design (TESTING.md §7) is to REPORT numbers,
-// never assert a pass/fail threshold — a real Postgres statement timeout on one query is itself a
-// number worth reporting, not a reason to crash the whole run and hide every other measurement.
-// A caller that needs the actual rows (for a cursor) still gets `data: null` on failure and must
-// handle that explicitly.
+// M9.1: never throws. A real Postgres statement timeout on one query is itself a number worth
+// reporting, not a reason to crash the whole run and hide every other measurement — callers below
+// decide what a failure means (M9.2: it now fails the step, see SLOW_MS below), this function just
+// reports. A caller that needs the actual rows (for a cursor) still gets `data: null` on failure and
+// must handle that explicitly.
 async function timeRpc(client, name, args) {
   const t0 = performance.now()
   const { data, error, count } = await client.rpc(name, args)
@@ -416,29 +421,41 @@ async function timeRpc(client, name, args) {
   }
 }
 
+// M9.2 (TESTING.md §7/§41, DECISIONS.md D-059): this defect class has now recurred three times
+// (M7's LATERAL regression, M9.1's statement timeout, both traced to real causes only after a
+// dedicated investigation) without CI ever failing on its own benchmark — TESTING.md §7's original
+// "never assert a threshold" reasoning was about a *tight* millisecond budget being unfair on a
+// shared runner, not about ignoring an outright multi-second regression or timeout forever. Now that
+// the benchmark seeds representative planner statistics before timing anything (analyzeSeededTables,
+// above — this is what made the M9.1 "one call 7.5s, another 64.7ms" ambiguity disappear), a result
+// past SLOW_MS is real, not noise, and the whole point of catching this earlier is a red CI job, not
+// a log line nobody reads. Every result below (repeated-sort rows and every single-shot call) is
+// checked against this one generous, catastrophic-only threshold; process.exitCode is set to 1 if
+// anything trips it, failing the `db-tests` job.
+const SLOW_MS = 1500
+let anyFailure = false
+
 function report(label, result) {
   if (result.error) {
     console.log(`  ${label.padEnd(16)} FAILED after ${result.ms.toFixed(1)} ms: ${result.error}`)
+    anyFailure = true
   } else {
+    const flag = result.ms > SLOW_MS ? '  SLOW' : ''
     console.log(
-      `  ${label.padEnd(16)} ${result.ms.toFixed(1).padStart(7)} ms  ${String(result.rows).padStart(3)} rows  ${result.payloadBytes.toLocaleString()} bytes`,
+      `  ${label.padEnd(16)} ${result.ms.toFixed(1).padStart(7)} ms  ${String(result.rows).padStart(3)} rows  ${result.payloadBytes.toLocaleString()} bytes${flag}`,
     )
+    if (result.ms > SLOW_MS) anyFailure = true
   }
 }
 
-// M9.2 (TESTING.md §7/§41): a single timed call cannot distinguish "this sort is slow" from "this
-// was the unlucky first call before a plan/cache warmed up" (docs/PROJECT_JOURNAL.md, the same
-// ambiguity the M9.1 investigation left open — one identical query measured both ~7.5s and 64.7ms
-// within the same run). Every supported sort now reports first/median/max over several repeated
-// calls, and results feed a summary table so a reviewer sees the whole picture at a glance instead
-// of scrolling logs. A real Postgres statement timeout (57014) is reported as a row, never treated
-// as a crash — this script's own stated design (see timeRpc's comment) — and is exactly the kind of
-// result this table is built to make impossible to miss.
+// A single timed call cannot distinguish "this sort is slow" from "this was the unlucky first call
+// before a plan/cache warmed up" (docs/PROJECT_JOURNAL.md, the same ambiguity the M9.1 investigation
+// left open). Every supported sort reports first/median/max over several repeated calls, feeding a
+// summary table so a reviewer sees the whole picture at a glance instead of scrolling logs. A real
+// Postgres statement timeout (57014) is reported as a row, never treated as a crash — this script's
+// own stated design (see timeRpc's comment) — and is exactly the kind of result this table exists to
+// make impossible to miss.
 const REPEATS_PER_SORT = 3
-// Slower than this on ANY run and the row is flagged, matching TESTING.md §31's interactive-app
-// target (<1s preferred, ~1.5s outer bound) — reported, not enforced as a CI failure (§7's own
-// "no hardcoded millisecond budget" rule); see the summary table note printed at the end.
-const SLOW_MS = 1500
 
 const summaryRows = []
 
@@ -465,6 +482,7 @@ async function timeSortRepeated(client, sort, extraArgs = {}) {
   const max = timings[timings.length - 1]
   const median = timings[Math.floor(timings.length / 2)]
   const status = sawError ? `FAILED: ${sawError}` : max > SLOW_MS ? 'SLOW' : 'ok'
+  if (sawError || max > SLOW_MS) anyFailure = true
   summaryRows.push({ sort, first, median, max, rows: sampleRowCount, status })
   console.log(
     `  ${sort.padEnd(16)} first ${first.toFixed(1).padStart(7)} ms  median ${median.toFixed(1).padStart(7)} ms  max ${max.toFixed(1).padStart(7)} ms  ${status}`,
@@ -484,7 +502,7 @@ function printSummaryTable() {
   const slow = summaryRows.filter((r) => r.status !== 'ok')
   if (slow.length > 0) {
     console.log(
-      `\n::warning::${slow.length} Portfolio benchmark row(s) exceeded ${SLOW_MS} ms or failed outright: ` +
+      `\n::error::${slow.length} Portfolio benchmark row(s) exceeded ${SLOW_MS} ms or failed outright: ` +
         slow.map((r) => r.sort).join(', '),
     )
   } else {
@@ -648,6 +666,15 @@ async function main() {
     )
 
     console.log(`\nSeeded holdings: ~${LOT_COUNT} lots (with ~30% identity reuse).`)
+
+    if (anyFailure) {
+      console.log(
+        `\n::error::Portfolio benchmark: at least one call exceeded ${SLOW_MS} ms or failed — ` +
+          'failing this step (DECISIONS.md D-059 policy: this defect class has recurred before, ' +
+          'and planner statistics are now representative, so a catastrophic result here is real).',
+      )
+      process.exitCode = 1
+    }
   } finally {
     if (KEEP) {
       console.log(`\n--keep set: leaving synthetic account ${user.email} (${user.id}) in place.`)

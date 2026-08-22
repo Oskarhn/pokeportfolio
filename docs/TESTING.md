@@ -386,17 +386,35 @@ Not micro-benchmarks. Two checks that map to real failure:
   synthetic account (never the owner's real one — M7 prompt §101) with 10 000+ lots — duplicates,
   five conditions, tags, storage locations, custom-collection membership, and (M9.1) real
   `price_snapshots` for ~70% of the variant pool so value_desc/low-value/missing-value exercise
-  the resolver realistically — and times `list_portfolio` across every sort mode, filtered/scoped
-  queries, both value_desc keyset pages and `portfolio_counts()`, reporting milliseconds/rows/
-  payload bytes rather than asserting a fixed threshold (a hardcoded millisecond budget on a shared
-  CI runner would be exactly the "microbenchmark theatre" this section already warns against).
+  the resolver realistically — and times `list_portfolio` across every sort mode (3 repeated runs
+  each, reporting first/median/max), filtered/scoped queries, both value_desc keyset pages and
+  `portfolio_counts()`.
   **M9.1 wired this into CI itself** (`db-tests`, after the database/authorization suites): the
   script only needs the ephemeral stack's own local well-known service-role key, already exported
   for `pnpm test:db`, so the real 10k-lot timings are measured on every push rather than only when
-  a session happens to have production credentials — closing the gap M9's own handover disclosed
-  ("has not been re-run"). The milestone gate itself is still also behavioural — a real browser at
-  this scale stays interactive, verified manually and recorded in HANDOVER.md/PROJECT_JOURNAL.md,
-  not by this script's numbers alone.
+  a session happens to have production credentials.
+  **M9.2 fixed a real benchmark-validity defect (DECISIONS.md D-059):** immediately after the bulk
+  seed, every seeded table's planner statistics are Postgres's literal "never analyzed" sentinel (a
+  fresh ephemeral instance has had no autovacuum cycle in that short a window) — the planner falls
+  back to no-information defaults and produces a catastrophic plan for *any* query touching those
+  tables, `portfolio_counts()` included, regardless of that function's own shape. This is not a
+  production risk (real holdings accumulate incrementally, and autovacuum's autoanalyze keeps
+  statistics continuously current), but it made the benchmark measure the wrong thing. The script
+  now runs `ANALYZE` on the seeded tables before timing anything — the same effect autovacuum
+  provides in production, just synchronous rather than eventually-consistent — closing the gap
+  between "milliseconds after a synthetic bulk insert" and a representative production state.
+  **The benchmark now fails the step (non-zero exit, failing `db-tests`) if any call exceeds one
+  generous catastrophic threshold (1.5s) or errors outright** — D-059's policy change: this defect
+  class recurred three times without CI ever failing on its own benchmark, and with representative
+  statistics guaranteed before every timed call, a multi-second result is no longer measurement
+  noise. This is still not a tight per-sort millisecond budget (the "microbenchmark theatre" this
+  section warns against) — it is one wide backstop wide enough that ordinary CI-runner variance
+  cannot trip it. `scripts/portfolio-perf-explain.sql` (`--explain` flag, not run by default) is
+  available for a future investigation: it captures real `EXPLAIN (ANALYZE, BUFFERS, SETTINGS)`
+  evidence pre- and post-`ANALYZE`, impersonating the seeded synthetic user via the same JWT-claim
+  technique Supabase's own stack uses. The milestone gate itself is still also behavioural — a real
+  browser at this scale stays interactive, verified manually and recorded in
+  HANDOVER.md/PROJECT_JOURNAL.md, not by this script's numbers alone.
 - **Price-snapshot storage capacity.** `scripts/price-snapshots-storage-benchmark.sql`, also run in
   CI's `db-tests` job against the same disposable ephemeral database, seeds a representative
   365,000-row synthetic `price_snapshots` dataset (500 variants × 2 providers × 365 days) and
