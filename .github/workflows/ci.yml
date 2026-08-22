@@ -188,6 +188,15 @@ jobs:
       - name: Portfolio 10k-lot performance benchmark
         run: node scripts/portfolio-perf-benchmark.mjs
 
+      # M12 snapshot-engine gate (TESTING.md §7, prompt §98-§102): rebuild timings at realistic
+      # scale (30/90/365-day ranges over ~10k lots with daily price history), one production-
+      # shaped daily incremental drain, the four signed-in Home read RPCs, and real on-disk
+      # storage of portfolio_snapshots — measured post-ANALYZE like the gate above, against this
+      # same disposable ephemeral database. Same single-generous-threshold policy (D-059):
+      # background rebuilds get a wide budget; Home reads fail past 1.5s.
+      - name: Portfolio snapshots performance & storage benchmark
+        run: node scripts/portfolio-snapshots-benchmark.mjs
+
       # M9.1 capacity gate (COST_POLICY.md, DATA_MODEL.md §4.2): measures real Postgres storage for
       # price_snapshots against a representative synthetic dataset in this disposable ephemeral
       # database — never against a database holding real data. See the script header for why.
