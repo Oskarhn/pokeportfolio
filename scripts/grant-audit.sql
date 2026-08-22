@@ -229,7 +229,17 @@ begin
     -- M9: shared price-history market data, read-only for the browser. watched_card_variants and
     -- price_sync_runs get no grant at all, to anon or authenticated — service-role/infra-only
     -- (prompt §11/§28), same shape as catalog_sync_runs.
-    ('table', 'price_snapshots',            'authenticated', 'SELECT')
+    ('table', 'price_snapshots',            'authenticated', 'SELECT'),
+    -- M10: the sale ledger (DATA_MODEL.md §5.7/§5.11). SELECT only — create_sale/update_sale/
+    -- void_sale are SECURITY DEFINER (prompt §107), so authenticated needs no INSERT/UPDATE grant
+    -- on any of the three tables at all; every write happens inside those functions.
+    ('table', 'sales',                      'authenticated', 'SELECT'),
+    ('table', 'sale_lines',                 'authenticated', 'SELECT'),
+    ('table', 'lot_disposals',              'authenticated', 'SELECT'),
+    -- M10 prerequisite: the never-shipped lot_cost_adjustments table (DATA_MODEL.md §5.6),
+    -- created now because create_sale is the first real reader. SELECT only — no controlled write
+    -- RPC exists yet (M17 owns it).
+    ('table', 'lot_cost_adjustments',       'authenticated', 'SELECT')
     -- invitations: column-level SELECT only, below. invitation_claims: nothing, ever.
   ),
 
@@ -287,7 +297,10 @@ begin
     ('acquisition_lots.acquired_on'), ('acquisition_lots.quantity'),
     ('acquisition_lots.quantity_remaining'), ('acquisition_lots.unit_cost_basis_minor'),
     ('acquisition_lots.cost_basis_currency'), ('acquisition_lots.unit_cost_basis_nok_minor'),
-    ('acquisition_lots.residual_minor'), ('acquisition_lots.notes'),
+    ('acquisition_lots.residual_minor'),
+    -- M10 (20260828110000): the NOK-side counterpart of residual_minor.
+    ('acquisition_lots.residual_nok_minor'),
+    ('acquisition_lots.notes'),
     ('acquisition_lots.voided_at'), ('acquisition_lots.storage_location_id'),
 
     -- M6: manual card fallback — every user-supplied identifying field.
@@ -303,6 +316,8 @@ begin
     -- M7: custom collections — name/description/ordering/color, never user_id or membership.
     ('custom_collections.name'), ('custom_collections.description'),
     ('custom_collections.sort_order'), ('custom_collections.color')
+    -- M10: the sale ledger (sales/sale_lines/lot_disposals) has no UPDATE grant at all — see the
+    -- table-level comment above. Nothing belongs in this list for those three tables.
   ),
 
   -- The complete set of functions a browser may call. Every other function in this schema is
@@ -353,7 +368,17 @@ begin
     ('routine', 'resolve_variant_market_values(uuid[])', 'authenticated', 'EXECUTE'),
     ('routine', 'get_holding_value_provenance(uuid)', 'authenticated', 'EXECUTE'),
     ('routine', 'get_card_variant_price_history(uuid, date)', 'authenticated', 'EXECUTE'),
-    ('routine', 'get_market_movers(integer, integer, market_mover_sort)', 'authenticated', 'EXECUTE')
+    ('routine', 'get_market_movers(integer, integer, market_mover_sort)', 'authenticated', 'EXECUTE'),
+    -- M10: the signed largest-remainder wrapper and the sale-ledger write/void/summary surface.
+    ('routine', 'allocate_largest_remainder_signed(bigint, bigint[])', 'authenticated', 'EXECUTE'),
+    ('routine',
+     'create_sale(date, text, jsonb, uuid, text, bigint, bigint, bigint, numeric, date, fx_source, text)',
+     'authenticated', 'EXECUTE'),
+    ('routine',
+     'update_sale(uuid, date, text, jsonb, text, bigint, bigint, bigint, numeric, date, fx_source, text)',
+     'authenticated', 'EXECUTE'),
+    ('routine', 'void_sale(uuid, text)', 'authenticated', 'EXECUTE'),
+    ('routine', 'sales_summary()', 'authenticated', 'EXECUTE')
   ),
 
   -- M7: the expected PUBLIC-EXECUTE surface for every routine in `public` is empty. No project
