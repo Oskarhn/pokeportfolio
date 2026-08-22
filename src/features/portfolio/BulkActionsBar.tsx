@@ -179,7 +179,7 @@ export function BulkActionsBar({
       >
         <div className="space-y-3">
           <p className="text-sm text-slate-300">
-            {physicalCount} physical card{physicalCount === 1 ? '' : 's'} will no longer be tracked.
+            {physicalCount} physical item{physicalCount === 1 ? '' : 's'} will no longer be tracked.
           </p>
           <ul className="max-h-32 space-y-0.5 overflow-y-auto text-xs text-slate-400">
             {selectedTiles.slice(0, 8).map((tile) => (

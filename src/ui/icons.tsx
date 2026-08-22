@@ -261,3 +261,14 @@ export function TagIcon(props: SVGProps<SVGSVGElement>) {
     </Icon>
   )
 }
+
+/** A closed shipping/product box — sealed inventory's glyph (M11), distinct from PortfolioIcon's
+ *  open binder shape so a sealed product never reads as just another card. */
+export function BoxIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <path d="M3.5 8.2 12 4l8.5 4.2v8.6L12 21l-8.5-4.2V8.2Z" />
+      <path d="M3.5 8.2 12 12m0 0 8.5-3.8M12 12v9" />
+    </Icon>
+  )
+}

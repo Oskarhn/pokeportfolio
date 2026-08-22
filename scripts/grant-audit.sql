@@ -276,7 +276,7 @@ begin
     ('holdings.holding_kind'), ('holdings.card_variant_id'), ('holdings.sealed_product_id'),
     ('holdings.manual_card_id'),
     ('holdings.condition'), ('holdings.grading_state'), ('holdings.grader'), ('holdings.grade'),
-    ('holdings.cert_number'), ('holdings.sealed_intent'),
+    ('holdings.cert_number'),
     ('holdings.is_favorite'), ('holdings.notes'), ('holdings.deleted_at'),
 
     ('purchases.purchased_on'), ('purchases.retailer_id'), ('purchases.currency'),
@@ -302,6 +302,8 @@ begin
     ('acquisition_lots.residual_nok_minor'),
     ('acquisition_lots.notes'),
     ('acquisition_lots.voided_at'), ('acquisition_lots.storage_location_id'),
+    -- M11 (20260829120000): moved here from holdings — see that migration's header.
+    ('acquisition_lots.sealed_intent'),
 
     -- M6: manual card fallback — every user-supplied identifying field.
     ('manual_card_definitions.name'), ('manual_card_definitions.set_name'),
@@ -334,19 +336,25 @@ begin
     ('routine', 'grader_to_text(grader)',                           'authenticated', 'EXECUTE'),
     ('routine', 'search_cards(text, text, integer, integer)',       'authenticated', 'EXECUTE'),
     -- M6: the atomic collection-writing surface.
+    -- M11: gained p_sealed_product_id/p_sealed_intent (DROP+CREATE — an added parameter is a new
+    -- signature for Postgres's own matching rules; the old 17-arg form no longer exists to grant).
     ('routine',
      'add_card_acquisition(uuid, uuid, grading_state, card_condition, grader, numeric, text, ' ||
-     'boolean, text, lot_origin, cost_basis_state, bigint, integer, date, uuid, text, bigint)',
+     'boolean, text, lot_origin, cost_basis_state, bigint, integer, date, uuid, text, bigint, ' ||
+     'uuid, sealed_intent)',
      'authenticated', 'EXECUTE'),
     ('routine', 'set_manual_valuation(uuid, bigint, text, date)',   'authenticated', 'EXECUTE'),
     ('routine', 'void_acquisition_lot(uuid, text)',                 'authenticated', 'EXECUTE'),
+    -- M11: the sealed-lot intent surface — organisational only (20260829120000).
+    ('routine', 'set_sealed_lot_intent(uuid, sealed_intent, integer)', 'authenticated', 'EXECUTE'),
     -- M7: Portfolio counts and the sorted/filtered/keyset-paginated browsing surface.
     ('routine', 'portfolio_counts(uuid)', 'authenticated', 'EXECUTE'),
-    -- M7.1: list_portfolio gained the number_asc/number_desc keyset cursor field (text, trailing).
+    -- M11: list_portfolio gained p_holding_kind/p_sealed_product_type/p_sealed_intent (trailing).
     ('routine',
      'list_portfolio(portfolio_sort_order, integer, text, uuid, card_condition, boolean, ' ||
      'grader, boolean, text, boolean, uuid, uuid, uuid, boolean, boolean, uuid, text, text, ' ||
-     'bigint, date, timestamp with time zone, bigint, boolean, text)',
+     'bigint, date, timestamp with time zone, bigint, boolean, text, holding_kind, ' ||
+     'sealed_product_type, sealed_intent)',
      'authenticated', 'EXECUTE'),
     -- M7.1: the collector-number natural-sort key function list_portfolio's number_asc/desc use.
     ('routine', 'natural_sort_key(text)', 'authenticated', 'EXECUTE'),

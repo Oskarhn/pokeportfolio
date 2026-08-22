@@ -91,6 +91,16 @@ appears daily; treated as daily and verified by our own ingest logs over time.
 | Graded prices | Absent | Graded valuation is manual |
 | Condition-specific prices | Absent | No condition adjustment; see FINANCIAL_MODEL §6.1 |
 
+**Reverified for M11 (2026, sealed inventory milestone).** Before building the sealed-product
+catalog, re-checked whether a sealed-product endpoint had appeared since the row above was written:
+fetched `tcgdex.dev`'s REST reference and `/rest/other-fields` directly. Confirmed unchanged — the
+documented resource categories are still exactly cards, sets and series (plus card-level metadata:
+rarities, illustrators, energy types, regulation marks); no sealed/booster-box/ETB endpoint exists
+anywhere in the current documentation. The one sealed-adjacent mention on the whole site is the TCG
+Pocket integration's "check which card is in which Booster" — card-distribution metadata, not a
+sealed-product catalog or sealed pricing. M11's architecture (curated + user-created sealed catalog,
+manual-only valuation) is unchanged by this reverification.
+
 ### Licensing — three separate questions
 
 Conflating these would be a real error, so they are answered separately.

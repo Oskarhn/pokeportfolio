@@ -1,7 +1,7 @@
 import { supabase } from './supabase-client'
 import { parseMinorUnits } from './money'
 import type { Database, Json } from './database.types'
-import type { CardCondition, Grader, GradingState } from './collection'
+import type { CardCondition, Grader, GradingState, SealedIntent } from './collection'
 
 /**
  * The M8 purchase ledger (DATA_MODEL.md §5.3, FINANCIAL_MODEL.md §1-4/§7). Components call these,
@@ -21,6 +21,8 @@ export interface PurchaseLineInput {
   cardVariantId?: string
   manualCardId?: string
   sealedProductId?: string
+  /** Organisational only (prompt §20) — defaults to 'undecided' server-side when omitted. */
+  sealedIntent?: SealedIntent
   condition?: CardCondition
   gradingState?: GradingState
   grader?: Grader
@@ -43,6 +45,7 @@ function serializeLine(line: PurchaseLineInput): Json {
     card_variant_id: line.cardVariantId,
     manual_card_id: line.manualCardId,
     sealed_product_id: line.sealedProductId,
+    sealed_intent: line.sealedIntent,
     condition: line.condition,
     grading_state: line.gradingState,
     grader: line.grader,
@@ -336,29 +339,6 @@ export async function getPurchase(purchaseId: string): Promise<PurchaseDetail | 
     retailerName: data.retailers?.name ?? null,
     lines: data.purchase_lines.map(mapPurchaseLine),
   }
-}
-
-export interface SealedProductOption {
-  id: string
-  name: string
-  language: string
-  productType: string
-}
-
-/** The curated sealed-product list (DATA_MODEL.md §3.3) — a full sealed catalog browsing UI is
- *  M11's, this is only enough to pick a product for a purchase line (M8 prompt §22). */
-export async function listSealedProducts(): Promise<SealedProductOption[]> {
-  const { data, error } = await supabase
-    .from('sealed_products')
-    .select('id, name, language, product_type')
-    .order('name')
-  if (error) throw new Error(error.message)
-  return data.map((row) => ({
-    id: row.id,
-    name: row.name,
-    language: row.language,
-    productType: row.product_type,
-  }))
 }
 
 export interface SpendingSummary {

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
-import { Link } from '@tanstack/react-router'
-import { useInfiniteQuery, useQueries, useQuery } from '@tanstack/react-query'
+import { Link, useNavigate } from '@tanstack/react-router'
+import { useInfiniteQuery, useMutation, useQueries, useQuery } from '@tanstack/react-query'
 import {
   searchCards,
   searchSets,
@@ -11,18 +11,28 @@ import {
 import { getFavoritedCardIds } from '../../data/collection'
 import { searchPrices, summarizeCardPricing, SEARCH_PRICES_MAX_CARD_IDS } from '../../data/pricing'
 import { getMyProfile } from '../../data/profile'
+import {
+  createCustomSealedProduct,
+  searchSealedProducts,
+  SEALED_PRODUCT_TYPE_LABEL,
+  SEALED_PRODUCT_TYPES,
+  type SealedProductType,
+} from '../../data/sealedProducts'
 import { CardResultCard } from './CardResultCard'
+import { SealedResultCard } from './SealedResultCard'
 import { SetCarousel } from './SetCarousel'
 import { Sheet } from '../../ui/Sheet'
+import { Button, ChoiceGroup, FormMessage, SelectField, TextField } from '../../ui/form'
 import { naturalCompare } from '../../ui/naturalSort'
 import { useDebouncedValue } from '../../ui/useDebouncedValue'
 import { SearchIcon, XIcon, CameraIcon, StarIcon, SortIcon, CheckIcon } from '../../ui/icons'
 
 const PAGE_SIZE = 40
+const SEALED_PAGE_SIZE = 30
 const DEBOUNCE_MS = 250
 
 type LanguageFilter = CatalogLanguage | 'all'
-type SearchMode = 'cards' | 'sets'
+type SearchMode = 'cards' | 'sets' | 'sealed'
 type CardSort = 'relevance' | 'name_asc' | 'name_desc' | 'number_asc' | 'number_desc'
 
 const SORT_LABEL: Record<CardSort, string> = {
@@ -70,6 +80,7 @@ export function CatalogPage() {
   const [sort, setSort] = useState<CardSort>('relevance')
   const [sortOpen, setSortOpen] = useState(false)
   const [scanNotice, setScanNotice] = useState(false)
+  const [customFormOpen, setCustomFormOpen] = useState(false)
   const debouncedQuery = useDebouncedValue(query, DEBOUNCE_MS)
   const trimmed = debouncedQuery.trim()
 
@@ -93,6 +104,25 @@ export function CatalogPage() {
     queryFn: () => searchSets({ query: trimmed, language: language === 'all' ? null : language }),
     enabled: mode === 'sets' && trimmed.length > 0,
   })
+
+  // Sealed's catalog is expected to stay small (data/sealedProducts.ts's own comment) — unlike
+  // Cards/Sets, browsing runs immediately rather than waiting for typed input, and is offset- not
+  // keyset-paginated to match that module's contract.
+  const sealedSearch = useInfiniteQuery({
+    queryKey: ['catalog-sealed-search', trimmed],
+    queryFn: ({ pageParam }) =>
+      searchSealedProducts({
+        query: trimmed || undefined,
+        offset: pageParam,
+        limit: SEALED_PAGE_SIZE,
+      }),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, allPages) =>
+      lastPage.length === SEALED_PAGE_SIZE ? allPages.length * SEALED_PAGE_SIZE : undefined,
+    enabled: mode === 'sealed',
+  })
+  const sealedResults = sealedSearch.data?.pages.flat() ?? []
+  const hasMoreSealed = sealedSearch.hasNextPage
 
   // Search's favourite star (M7.1 prompt §25): filters results to catalog cards behind a
   // Favourite holding — direct reuse of the existing favourite state, not a second wishlist.
@@ -224,6 +254,7 @@ export function CatalogPage() {
           [
             ['cards', 'Cards'],
             ['sets', 'Sets'],
+            ['sealed', 'Sealed'],
           ] as const
         ).map(([value, label]) => (
           <button
@@ -242,30 +273,34 @@ export function CatalogPage() {
             {label}
           </button>
         ))}
-        <span className="mx-1 w-px self-stretch bg-slate-800" aria-hidden />
-        {(
-          [
-            ['all', 'All languages'],
-            ['en', 'English'],
-            ['ja', 'Japanese'],
-          ] as const
-        ).map(([value, label]) => (
-          <button
-            key={value}
-            type="button"
-            aria-pressed={language === value}
-            onClick={() => {
-              setLanguage(value)
-            }}
-            className={`min-h-8 rounded-full border px-3 text-xs font-medium transition-colors ${
-              language === value
-                ? 'border-sky-500 bg-sky-600/20 text-sky-200'
-                : 'border-slate-700 text-slate-300 hover:bg-slate-800'
-            }`}
-          >
-            {label}
-          </button>
-        ))}
+        {mode !== 'sealed' ? (
+          <>
+            <span className="mx-1 w-px self-stretch bg-slate-800" aria-hidden />
+            {(
+              [
+                ['all', 'All languages'],
+                ['en', 'English'],
+                ['ja', 'Japanese'],
+              ] as const
+            ).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                aria-pressed={language === value}
+                onClick={() => {
+                  setLanguage(value)
+                }}
+                className={`min-h-8 rounded-full border px-3 text-xs font-medium transition-colors ${
+                  language === value
+                    ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                    : 'border-slate-700 text-slate-300 hover:bg-slate-800'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </>
+        ) : null}
       </div>
 
       {trimmed.length === 0 && mode === 'cards' ? (
@@ -275,7 +310,7 @@ export function CatalogPage() {
         </div>
       ) : null}
 
-      {trimmed.length === 0 ? (
+      {trimmed.length === 0 && mode !== 'sealed' ? (
         mode === 'cards' ? null : (
           <p className="py-8 text-center text-sm text-slate-500">Start typing to search sets.</p>
         )
@@ -303,6 +338,67 @@ export function CatalogPage() {
           </ul>
         ) : (
           <p className="py-8 text-center text-sm text-slate-500">No sets match "{trimmed}".</p>
+        )
+      ) : mode === 'sealed' ? (
+        sealedSearch.isPending ? (
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3" aria-busy="true">
+            {Array.from({ length: 6 }, (_, i) => (
+              <div key={i} className="aspect-square animate-pulse rounded-xl bg-slate-800/60" />
+            ))}
+          </div>
+        ) : sealedSearch.isError ? (
+          <p
+            role="alert"
+            className="rounded-xl border border-rose-900/60 bg-rose-950/40 p-3 text-sm text-rose-200"
+          >
+            The sealed catalog could not be searched. Try again.
+          </p>
+        ) : sealedResults.length === 0 ? (
+          <div className="space-y-3 py-8 text-center">
+            <p className="text-sm text-slate-500">
+              {trimmed
+                ? `No sealed products match "${trimmed}".`
+                : 'No sealed products in the catalog yet.'}
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                setCustomFormOpen(true)
+              }}
+              className="text-sm text-sky-400 underline-offset-4 hover:underline"
+            >
+              Add a custom sealed product
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {sealedResults.map((product) => (
+                <SealedResultCard key={product.id} product={product} />
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setCustomFormOpen(true)
+              }}
+              className="min-h-11 w-full rounded-xl border border-dashed border-slate-700 text-sm font-medium text-slate-300 hover:bg-slate-800/40"
+            >
+              + Add a custom sealed product
+            </button>
+            {hasMoreSealed ? (
+              <button
+                type="button"
+                onClick={() => {
+                  void sealedSearch.fetchNextPage()
+                }}
+                disabled={sealedSearch.isFetchingNextPage}
+                className="min-h-11 w-full rounded-xl border border-slate-700 text-sm font-medium text-slate-200 hover:bg-slate-800 disabled:opacity-60"
+              >
+                {sealedSearch.isFetchingNextPage ? 'Loading…' : 'Load more'}
+              </button>
+            ) : null}
+          </>
         )
       ) : cardSearch.isPending ? (
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3" aria-busy="true">
@@ -391,6 +487,127 @@ export function CatalogPage() {
       >
         <p className="text-sm text-slate-300">Card scanner is not available yet.</p>
       </Sheet>
+
+      <CustomSealedProductForm
+        key={customFormOpen ? 'custom-sealed-open' : 'custom-sealed-closed'}
+        open={customFormOpen}
+        onClose={() => {
+          setCustomFormOpen(false)
+        }}
+        initialName={mode === 'sealed' ? trimmed : ''}
+      />
     </div>
+  )
+}
+
+/** The catalog-gap fallback for sealed products (M11 prompt §12-13) — mirrors ManualCardPage's
+ *  role for cards: only what identifies the product, no image field (no upload path exists yet),
+ *  routes straight into the add flow with the freshly created product pre-selected rather than
+ *  leaving the owner to find it again. Private to its creator (sealed_products_read RLS) — never
+ *  visible to anyone else, and always shows the "Custom" marker once it does. */
+function CustomSealedProductForm({
+  open,
+  onClose,
+  initialName,
+}: {
+  open: boolean
+  onClose: () => void
+  initialName: string
+}) {
+  const navigate = useNavigate()
+  const [name, setName] = useState(initialName)
+  const [language, setLanguage] = useState<CatalogLanguage>('en')
+  const [productType, setProductType] = useState<SealedProductType>('booster_box')
+  const [packCount, setPackCount] = useState('')
+  const [error, setError] = useState<string | null>(null)
+
+  const createMutation = useMutation({
+    mutationFn: createCustomSealedProduct,
+    onSuccess: async (product) => {
+      onClose()
+      await navigate({ to: '/portfolio/sealed/new', search: { sealedProductId: product.id } })
+    },
+    onError: (mutationError: Error) => {
+      setError(mutationError.message)
+    },
+  })
+
+  return (
+    <Sheet open={open} onClose={onClose} title="Add a custom sealed product">
+      <div className="space-y-4">
+        <p className="text-xs text-slate-500">
+          For a product the shared catalog doesn't have yet. Private to your account — no image
+          required.
+        </p>
+        <TextField
+          label="Product name"
+          value={name}
+          onChange={(event) => {
+            setName(event.target.value)
+          }}
+          placeholder="e.g. Scarlet & Violet Booster Box"
+        />
+        <ChoiceGroup
+          label="Language"
+          value={language}
+          onChange={setLanguage}
+          options={[
+            ['en', 'English'],
+            ['ja', 'Japanese'],
+          ]}
+        />
+        <SelectField
+          label="Product type"
+          value={productType}
+          onChange={(event) => {
+            setProductType(event.target.value as SealedProductType)
+          }}
+        >
+          {SEALED_PRODUCT_TYPES.map((t) => (
+            <option key={t} value={t}>
+              {SEALED_PRODUCT_TYPE_LABEL[t]}
+            </option>
+          ))}
+        </SelectField>
+        <TextField
+          label="Pack count"
+          hint="Optional"
+          type="number"
+          inputMode="numeric"
+          min={1}
+          value={packCount}
+          onChange={(event) => {
+            setPackCount(event.target.value)
+          }}
+        />
+        {error ? <FormMessage tone="error">{error}</FormMessage> : null}
+        <Button
+          type="button"
+          disabled={createMutation.isPending}
+          onClick={() => {
+            setError(null)
+            if (name.trim() === '') {
+              setError('Enter a product name.')
+              return
+            }
+            const packCountNumber =
+              packCount.trim() === '' ? undefined : Number.parseInt(packCount, 10)
+            createMutation.mutate({
+              name: name.trim(),
+              language,
+              productType,
+              packCount:
+                packCountNumber !== undefined &&
+                Number.isFinite(packCountNumber) &&
+                packCountNumber > 0
+                  ? packCountNumber
+                  : undefined,
+            })
+          }}
+        >
+          {createMutation.isPending ? 'Saving…' : 'Add product'}
+        </Button>
+      </div>
+    </Sheet>
   )
 }

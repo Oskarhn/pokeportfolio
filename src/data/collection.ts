@@ -16,6 +16,38 @@ export type GradingState = Database['public']['Enums']['grading_state']
 export type HoldingKind = Database['public']['Enums']['holding_kind']
 export type LotOrigin = Database['public']['Enums']['lot_origin']
 export type CostBasisState = Database['public']['Enums']['cost_basis_state']
+export type SealedIntent = Database['public']['Enums']['sealed_intent']
+export type SealedProductType = Database['public']['Enums']['sealed_product_type']
+
+export const SEALED_INTENT_LABEL: Record<SealedIntent, string> = {
+  keep_sealed: 'Keep sealed',
+  planned_to_open: 'Planned to open',
+  undecided: 'Undecided',
+}
+
+/** Shared breakdown text for a sealed holding's mixed-intent lots (PortfolioTile and
+ *  HoldingSummary both carry the same three counts — see their doc comments for why they can
+ *  legitimately be split across lots). Only non-zero buckets are shown, joined in the same fixed
+ *  order as SEALED_INTENT_LABEL, so a holding with a single intent reads as one clean label rather
+ *  than "2 Keep sealed · 0 Planned to open · 0 Undecided". Empty string when every count is zero
+ *  (a non-sealed holding, or a sealed holding with none of its quantity remaining). */
+export function sealedIntentBreakdown(counts: {
+  qtyKeepSealed: number
+  qtyPlannedToOpen: number
+  qtyUndecided: number
+}): string {
+  const parts: string[] = []
+  if (counts.qtyKeepSealed > 0) {
+    parts.push(`${counts.qtyKeepSealed} ${SEALED_INTENT_LABEL.keep_sealed}`)
+  }
+  if (counts.qtyPlannedToOpen > 0) {
+    parts.push(`${counts.qtyPlannedToOpen} ${SEALED_INTENT_LABEL.planned_to_open}`)
+  }
+  if (counts.qtyUndecided > 0) {
+    parts.push(`${counts.qtyUndecided} ${SEALED_INTENT_LABEL.undecided}`)
+  }
+  return parts.join(' · ')
+}
 
 export interface HoldingSummary {
   holdingId: string
@@ -43,6 +75,20 @@ export interface HoldingSummary {
   manualSetName: string | null
   manualCollectorNumber: string | null
   manualLanguage: string | null
+  sealedProductId: string | null
+  sealedProductType: SealedProductType | null
+  sealedProductName: string | null
+  sealedProductLanguage: string | null
+  sealedPackCount: number | null
+  sealedImageUrl: string | null
+  sealedSetId: string | null
+  sealedSetName: string | null
+  sealedIsCustom: boolean
+  /** Per-lot intent breakdown among this holding's remaining quantity — see PortfolioTile's
+   *  identical fields (data/portfolio.ts) for the full rationale (prompt §17-19). */
+  qtyKeepSealed: number
+  qtyPlannedToOpen: number
+  qtyUndecided: number
 }
 
 /** Every generated view column is nullable — Postgres carries no NOT NULL metadata for a view —
@@ -85,6 +131,18 @@ function mapHoldingSummary(
     manualSetName: row.manual_set_name,
     manualCollectorNumber: row.manual_collector_number,
     manualLanguage: row.manual_language,
+    sealedProductId: row.sealed_product_id,
+    sealedProductType: row.sealed_product_type,
+    sealedProductName: row.sealed_product_name,
+    sealedProductLanguage: row.sealed_product_language,
+    sealedPackCount: row.sealed_pack_count,
+    sealedImageUrl: row.sealed_image_url,
+    sealedSetId: row.sealed_set_id,
+    sealedSetName: row.sealed_set_name,
+    sealedIsCustom: row.sealed_is_custom ?? false,
+    qtyKeepSealed: row.qty_keep_sealed ?? 0,
+    qtyPlannedToOpen: row.qty_planned_to_open ?? 0,
+    qtyUndecided: row.qty_undecided ?? 0,
   }
 }
 
@@ -112,6 +170,9 @@ export interface AcquisitionLot {
   notes: string | null
   voidedAt: string | null
   createdAt: string
+  /** Null for anything but a sealed holding's lot (prompt §56 — same lot mechanics as cards, plus
+   *  this one field). */
+  sealedIntent: SealedIntent | null
 }
 
 interface AcquisitionLotRow {
@@ -128,13 +189,14 @@ interface AcquisitionLotRow {
   voided_at: string | null
   created_at: string
   storage_locations: { name: string } | null
+  sealed_intent: SealedIntent | null
 }
 
 export async function getHoldingLots(holdingId: string): Promise<AcquisitionLot[]> {
   const { data, error } = await supabase
     .from('acquisition_lots')
     .select(
-      'id, origin, cost_basis_state, acquired_on, quantity, quantity_remaining, unit_cost_basis_minor::text, cost_basis_currency, storage_location_id, notes, voided_at, created_at, storage_locations(name)',
+      'id, origin, cost_basis_state, acquired_on, quantity, quantity_remaining, unit_cost_basis_minor::text, cost_basis_currency, storage_location_id, notes, voided_at, created_at, storage_locations(name), sealed_intent',
     )
     .eq('holding_id', holdingId)
     .order('acquired_on', { ascending: false })
@@ -156,7 +218,25 @@ export async function getHoldingLots(holdingId: string): Promise<AcquisitionLot[
     notes: row.notes,
     voidedAt: row.voided_at,
     createdAt: row.created_at,
+    sealedIntent: row.sealed_intent,
   }))
+}
+
+/** Organisational-only intent change for one sealed lot (prompt §59-60). Splits the lot
+ *  server-side when `quantity` covers only part of what remains in it — see
+ *  set_sealed_lot_intent (20260829120000_m11_sealed_intent_lot_level.sql) for why a plain UPDATE
+ *  cannot do this atomically. Never touches cost basis, spend or market value. */
+export async function setSealedLotIntent(params: {
+  lotId: string
+  intent: SealedIntent
+  quantity?: number
+}): Promise<void> {
+  const { error } = await supabase.rpc('set_sealed_lot_intent', {
+    p_lot_id: params.lotId,
+    p_intent: params.intent,
+    p_quantity: params.quantity,
+  })
+  if (error) throw new Error(error.message)
 }
 
 export interface ManualValuation {
@@ -519,6 +599,8 @@ export async function removeHoldingsFromPortfolio(
 export interface AddCardAcquisitionInput {
   cardVariantId?: string
   manualCardId?: string
+  /** A sealed_products.id — mutually exclusive with cardVariantId/manualCardId (prompt §23). */
+  sealedProductId?: string
   gradingState: GradingState
   condition?: CardCondition
   grader?: Grader
@@ -535,6 +617,9 @@ export interface AddCardAcquisitionInput {
   storageLocationId?: string
   lotNotes?: string
   manualValueMinor?: bigint
+  /** Required when sealedProductId is set — organisational only (prompt §20). Defaults to
+   *  'undecided' server-side if omitted. */
+  sealedIntent?: SealedIntent
 }
 
 export interface AddCardAcquisitionResult {
@@ -549,6 +634,7 @@ export async function addCardAcquisition(
     .rpc('add_card_acquisition', {
       p_card_variant_id: input.cardVariantId,
       p_manual_card_id: input.manualCardId,
+      p_sealed_product_id: input.sealedProductId,
       p_grading_state: input.gradingState,
       p_condition: input.condition,
       p_grader: input.grader,
@@ -566,6 +652,7 @@ export async function addCardAcquisition(
       p_lot_notes: input.lotNotes,
       p_manual_value_minor:
         input.manualValueMinor === undefined ? undefined : Number(input.manualValueMinor),
+      p_sealed_intent: input.sealedIntent,
     })
     .single()
   if (error) throw new Error(error.message)

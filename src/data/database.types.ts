@@ -24,6 +24,7 @@ export type Database = {
           quantity_remaining: number
           residual_minor: number
           residual_nok_minor: number
+          sealed_intent: Database["public"]["Enums"]["sealed_intent"] | null
           storage_location_id: string | null
           unit_cost_basis_minor: number | null
           unit_cost_basis_nok_minor: number | null
@@ -44,6 +45,7 @@ export type Database = {
           quantity_remaining: number
           residual_minor?: number
           residual_nok_minor?: number
+          sealed_intent?: Database["public"]["Enums"]["sealed_intent"] | null
           storage_location_id?: string | null
           unit_cost_basis_minor?: number | null
           unit_cost_basis_nok_minor?: number | null
@@ -64,6 +66,7 @@ export type Database = {
           quantity_remaining?: number
           residual_minor?: number
           residual_nok_minor?: number
+          sealed_intent?: Database["public"]["Enums"]["sealed_intent"] | null
           storage_location_id?: string | null
           unit_cost_basis_minor?: number | null
           unit_cost_basis_nok_minor?: number | null
@@ -520,7 +523,6 @@ export type Database = {
           is_favorite: boolean
           manual_card_id: string | null
           notes: string | null
-          sealed_intent: Database["public"]["Enums"]["sealed_intent"] | null
           sealed_product_id: string | null
           updated_at: string
           user_id: string
@@ -539,7 +541,6 @@ export type Database = {
           is_favorite?: boolean
           manual_card_id?: string | null
           notes?: string | null
-          sealed_intent?: Database["public"]["Enums"]["sealed_intent"] | null
           sealed_product_id?: string | null
           updated_at?: string
           user_id: string
@@ -558,7 +559,6 @@ export type Database = {
           is_favorite?: boolean
           manual_card_id?: string | null
           notes?: string | null
-          sealed_intent?: Database["public"]["Enums"]["sealed_intent"] | null
           sealed_product_id?: string | null
           updated_at?: string
           user_id?: string
@@ -1562,6 +1562,18 @@ export type Database = {
           manual_set_name: string | null
           notes: string | null
           quantity: number | null
+          qty_keep_sealed: number | null
+          qty_planned_to_open: number | null
+          qty_undecided: number | null
+          sealed_image_url: string | null
+          sealed_is_custom: boolean | null
+          sealed_pack_count: number | null
+          sealed_product_id: string | null
+          sealed_product_language: string | null
+          sealed_product_name: string | null
+          sealed_product_type: Database["public"]["Enums"]["sealed_product_type"] | null
+          sealed_set_id: string | null
+          sealed_set_name: string | null
           updated_at: string | null
           user_id: string | null
           variant_finish: Database["public"]["Enums"]["card_finish"] | null
@@ -1655,6 +1667,8 @@ export type Database = {
           p_manual_value_minor?: number
           p_origin?: Database["public"]["Enums"]["lot_origin"]
           p_quantity?: number
+          p_sealed_intent?: Database["public"]["Enums"]["sealed_intent"]
+          p_sealed_product_id?: string
           p_storage_location_id?: string
           p_unit_cost_basis_minor?: number
         }
@@ -1860,12 +1874,15 @@ export type Database = {
           p_favorite?: boolean
           p_grader?: Database["public"]["Enums"]["grader"]
           p_graded?: boolean
+          p_holding_kind?: Database["public"]["Enums"]["holding_kind"]
           p_language?: string
           p_limit?: number
           p_low_value?: boolean
           p_manual_only?: boolean
           p_missing_value?: boolean
           p_query?: string
+          p_sealed_intent?: Database["public"]["Enums"]["sealed_intent"]
+          p_sealed_product_type?: Database["public"]["Enums"]["sealed_product_type"]
           p_set_id?: string
           p_sort?: Database["public"]["Enums"]["portfolio_sort_order"]
           p_storage_location_id?: string
@@ -1902,6 +1919,18 @@ export type Database = {
           number_sort_key: string | null
           price_state: string | null
           quantity: number
+          qty_keep_sealed: number
+          qty_planned_to_open: number
+          qty_undecided: number
+          sealed_image_url: string | null
+          sealed_is_custom: boolean | null
+          sealed_pack_count: number | null
+          sealed_product_id: string | null
+          sealed_product_language: string | null
+          sealed_product_name: string | null
+          sealed_product_type: Database["public"]["Enums"]["sealed_product_type"] | null
+          sealed_set_id: string | null
+          sealed_set_name: string | null
           unit_value_nok_minor: string | null
           variant_finish: Database["public"]["Enums"]["card_finish"] | null
           variant_stamp: string | null
@@ -1915,11 +1944,17 @@ export type Database = {
       portfolio_counts: {
         Args: { p_custom_collection_id?: string }
         Returns: {
+          cards_value_nok_minor: string
           graded_count: string
           manual_count: string
           physical_card_count: string
           portfolio_value_nok_minor: string
           priced_holding_count: string
+          sealed_holding_count: string
+          sealed_priced_holding_count: string
+          sealed_unit_count: string
+          sealed_unpriced_holding_count: string
+          sealed_value_nok_minor: string
           unique_holding_count: string
           unpriced_holding_count: string
         }[]
@@ -2022,6 +2057,40 @@ export type Database = {
         SetofOptions: {
           from: "*"
           to: "manual_valuations"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
+      set_sealed_lot_intent: {
+        Args: {
+          p_intent: Database["public"]["Enums"]["sealed_intent"]
+          p_lot_id: string
+          p_quantity?: number
+        }
+        Returns: {
+          acquired_on: string
+          cost_basis_currency: string | null
+          cost_basis_state: Database["public"]["Enums"]["cost_basis_state"]
+          created_at: string
+          holding_id: string
+          id: string
+          notes: string | null
+          origin: Database["public"]["Enums"]["lot_origin"]
+          purchase_line_id: string | null
+          quantity: number
+          quantity_remaining: number
+          residual_minor: number
+          residual_nok_minor: number
+          sealed_intent: Database["public"]["Enums"]["sealed_intent"] | null
+          storage_location_id: string | null
+          unit_cost_basis_minor: number | null
+          unit_cost_basis_nok_minor: number | null
+          user_id: string
+          voided_at: string | null
+        }
+        SetofOptions: {
+          from: "*"
+          to: "acquisition_lots"
           isOneToOne: true
           isSetofReturn: false
         }

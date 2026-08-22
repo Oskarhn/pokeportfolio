@@ -8,12 +8,16 @@ import {
 } from '../../data/catalog'
 import {
   listStorageLocations,
+  SEALED_INTENT_LABEL,
   type CardCondition,
   type Grader,
   type GradingState,
+  type SealedIntent,
 } from '../../data/collection'
-import { listSealedProducts, type LineType, type SpendClass } from '../../data/purchases'
+import { searchSealedProducts, SEALED_PRODUCT_TYPE_LABEL } from '../../data/sealedProducts'
+import type { LineType, SpendClass } from '../../data/purchases'
 import { ChoiceGroup, SelectField, TextField } from '../../ui/form'
+import { useDebouncedValue } from '../../ui/useDebouncedValue'
 import { LINE_TYPE_OPTIONS, SPEND_ONLY_LINE_TYPES } from './labels'
 
 const CONDITIONS: CardCondition[] = ['MT', 'NM', 'EX', 'GD', 'LP', 'PL', 'PO']
@@ -27,6 +31,8 @@ export interface LineDraft {
   cardDisplayName: string
   manualCardName: string
   sealedProductId: string | null
+  sealedProductDisplayName: string
+  sealedIntent: SealedIntent
   gradingState: GradingState
   condition: CardCondition
   grader: Grader
@@ -52,6 +58,8 @@ export function newLineDraft(lineType: LineType = 'card'): LineDraft {
     cardDisplayName: '',
     manualCardName: '',
     sealedProductId: null,
+    sealedProductDisplayName: '',
+    sealedIntent: 'undecided',
     gradingState: 'raw',
     condition: 'NM',
     grader: 'psa',
@@ -403,6 +411,11 @@ function CardLineFields({
   )
 }
 
+/** M11 upgrade of the sealed line's product picker (M8's own comment on the old `listSealedProducts`
+ *  plain-select called out that "a full sealed catalog browsing UI is M11's" — this is that catalog,
+ *  in miniature): a debounced typeahead over the real searchSealedProducts, same shape as
+ *  CardLineFields' catalog search a few lines up. No condition/grader/collector-number fields here,
+ *  same as before — a sealed line never had them, and it still doesn't. */
 function SealedLineFields({
   draft,
   onChange,
@@ -410,23 +423,78 @@ function SealedLineFields({
   draft: LineDraft
   onChange: (patch: Partial<LineDraft>) => void
 }) {
-  const products = useQuery({ queryKey: ['sealed-products'], queryFn: listSealedProducts })
+  const [query, setQuery] = useState('')
+  const debouncedQuery = useDebouncedValue(query, 250)
+
+  const results = useQuery({
+    queryKey: ['purchase-line-sealed-search', debouncedQuery],
+    queryFn: () => searchSealedProducts({ query: debouncedQuery || undefined, limit: 8 }),
+    enabled: !draft.sealedProductId,
+  })
+
   return (
-    <SelectField
-      label="Sealed product"
-      value={draft.sealedProductId ?? ''}
-      onChange={(event) => {
-        onChange({ sealedProductId: event.target.value || null })
-      }}
-    >
-      <option value="" disabled>
-        Choose a product
-      </option>
-      {(products.data ?? []).map((product) => (
-        <option key={product.id} value={product.id}>
-          {product.name} ({product.language})
-        </option>
-      ))}
-    </SelectField>
+    <div className="space-y-3">
+      {draft.sealedProductId ? (
+        <div className="flex items-center justify-between rounded-lg border border-sky-800 bg-sky-950/30 px-3 py-2 text-sm text-sky-100">
+          <span>{draft.sealedProductDisplayName}</span>
+          <button
+            type="button"
+            className="text-xs text-sky-300 hover:text-sky-200"
+            onClick={() => {
+              onChange({ sealedProductId: null, sealedProductDisplayName: '' })
+            }}
+          >
+            Change
+          </button>
+        </div>
+      ) : (
+        <>
+          <TextField
+            label="Search sealed products"
+            value={query}
+            onChange={(event) => {
+              setQuery(event.target.value)
+            }}
+            placeholder="Booster box, ETB, tin…"
+          />
+          {results.data && results.data.length > 0 ? (
+            <ul className="max-h-48 space-y-1 overflow-y-auto">
+              {results.data.map((product) => (
+                <li key={product.id}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onChange({
+                        sealedProductId: product.id,
+                        sealedProductDisplayName: `${product.name} (${product.language})`,
+                      })
+                      setQuery('')
+                    }}
+                    className="flex w-full items-center justify-between rounded-lg border border-slate-800 px-3 py-2 text-left text-sm text-slate-200 hover:bg-slate-800/60"
+                  >
+                    <span className="truncate">{product.name}</span>
+                    <span className="shrink-0 text-xs text-slate-500">
+                      {SEALED_PRODUCT_TYPE_LABEL[product.productType]}
+                      {product.setName ? ` · ${product.setName}` : ''}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </>
+      )}
+
+      <ChoiceGroup
+        label="Intent"
+        value={draft.sealedIntent}
+        onChange={(value) => {
+          onChange({ sealedIntent: value })
+        }}
+        options={(Object.keys(SEALED_INTENT_LABEL) as SealedIntent[]).map(
+          (i) => [i, SEALED_INTENT_LABEL[i]] as const,
+        )}
+      />
+    </div>
   )
 }

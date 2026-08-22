@@ -3,10 +3,25 @@ import { Sheet } from '../../ui/Sheet'
 import { Button } from '../../ui/form'
 import { CONDITION_LABEL, GRADER_LABEL } from '../collection/labels'
 import type { PortfolioFilters } from '../../data/portfolio'
-import type { CardCondition, Grader } from '../../data/collection'
+import {
+  SEALED_INTENT_LABEL,
+  type CardCondition,
+  type Grader,
+  type HoldingKind,
+  type SealedIntent,
+} from '../../data/collection'
+import { SEALED_PRODUCT_TYPE_LABEL, SEALED_PRODUCT_TYPES } from '../../data/sealedProducts'
 
 const CONDITIONS = Object.keys(CONDITION_LABEL) as CardCondition[]
 const GRADERS = Object.keys(GRADER_LABEL) as Grader[]
+const SEALED_INTENTS = Object.keys(SEALED_INTENT_LABEL) as SealedIntent[]
+
+const TYPE_OPTIONS: readonly [HoldingKind | undefined, string][] = [
+  [undefined, 'All'],
+  ['raw_card', 'Raw cards'],
+  ['graded_card', 'Graded'],
+  ['sealed', 'Sealed'],
+]
 
 /**
  * The full filter interface (M7 prompt §33/§84). Quick chips and this panel read and write the
@@ -38,25 +53,24 @@ export function FiltersSheet({
       <div className="max-h-[70vh] space-y-5 overflow-y-auto">
         <fieldset className="space-y-2">
           <legend className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-            Raw / Graded
+            Type
           </legend>
           <div className="flex gap-2">
-            {(
-              [
-                [undefined, 'All'],
-                [false, 'Raw'],
-                [true, 'Graded'],
-              ] as const
-            ).map(([value, label]) => (
+            {TYPE_OPTIONS.map(([value, label]) => (
               <button
                 key={label}
                 type="button"
-                aria-pressed={draft.graded === value}
+                aria-pressed={draft.holdingKind === value}
                 onClick={() => {
-                  setDraft((d) => ({ ...d, graded: value, grader: value ? d.grader : undefined }))
+                  setDraft((d) => ({
+                    ...d,
+                    holdingKind: value,
+                    sealedProductType: value === 'sealed' ? d.sealedProductType : undefined,
+                    sealedIntent: value === 'sealed' ? d.sealedIntent : undefined,
+                  }))
                 }}
                 className={`min-h-9 flex-1 rounded-lg border text-sm font-medium ${
-                  draft.graded === value
+                  draft.holdingKind === value
                     ? 'border-sky-500 bg-sky-600/20 text-sky-200'
                     : 'border-slate-700 text-slate-300 hover:bg-slate-800'
                 }`}
@@ -67,56 +81,153 @@ export function FiltersSheet({
           </div>
         </fieldset>
 
-        {draft.graded ? (
-          <fieldset className="space-y-2">
-            <legend className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-              Grader
-            </legend>
-            <div className="flex flex-wrap gap-2">
-              {GRADERS.map((g) => (
-                <button
-                  key={g}
-                  type="button"
-                  aria-pressed={draft.grader === g}
-                  onClick={() => {
-                    setDraft((d) => ({ ...d, grader: d.grader === g ? undefined : g }))
-                  }}
-                  className={`min-h-9 rounded-lg border px-3 text-sm font-medium ${
-                    draft.grader === g
-                      ? 'border-sky-500 bg-sky-600/20 text-sky-200'
-                      : 'border-slate-700 text-slate-300 hover:bg-slate-800'
-                  }`}
-                >
-                  {GRADER_LABEL[g]}
-                </button>
-              ))}
-            </div>
-          </fieldset>
+        {draft.holdingKind === 'sealed' ? (
+          <>
+            <fieldset className="space-y-2">
+              <legend className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Product type
+              </legend>
+              <div className="flex flex-wrap gap-2">
+                {SEALED_PRODUCT_TYPES.map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    aria-pressed={draft.sealedProductType === t}
+                    onClick={() => {
+                      setDraft((d) => ({
+                        ...d,
+                        sealedProductType: d.sealedProductType === t ? undefined : t,
+                      }))
+                    }}
+                    className={`min-h-9 rounded-lg border px-3 text-sm font-medium ${
+                      draft.sealedProductType === t
+                        ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                        : 'border-slate-700 text-slate-300 hover:bg-slate-800'
+                    }`}
+                  >
+                    {SEALED_PRODUCT_TYPE_LABEL[t]}
+                  </button>
+                ))}
+              </div>
+            </fieldset>
+
+            <fieldset className="space-y-2">
+              <legend className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Intent
+              </legend>
+              <div className="flex flex-wrap gap-2">
+                {SEALED_INTENTS.map((intent) => (
+                  <button
+                    key={intent}
+                    type="button"
+                    aria-pressed={draft.sealedIntent === intent}
+                    onClick={() => {
+                      setDraft((d) => ({
+                        ...d,
+                        sealedIntent: d.sealedIntent === intent ? undefined : intent,
+                      }))
+                    }}
+                    className={`min-h-9 rounded-lg border px-3 text-sm font-medium ${
+                      draft.sealedIntent === intent
+                        ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                        : 'border-slate-700 text-slate-300 hover:bg-slate-800'
+                    }`}
+                  >
+                    {SEALED_INTENT_LABEL[intent]}
+                  </button>
+                ))}
+              </div>
+            </fieldset>
+          </>
         ) : (
-          <fieldset className="space-y-2">
-            <legend className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-              Condition
-            </legend>
-            <div className="flex flex-wrap gap-2">
-              {CONDITIONS.map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  aria-pressed={draft.condition === c}
-                  onClick={() => {
-                    setDraft((d) => ({ ...d, condition: d.condition === c ? undefined : c }))
-                  }}
-                  className={`min-h-9 rounded-lg border px-3 text-sm font-medium ${
-                    draft.condition === c
-                      ? 'border-sky-500 bg-sky-600/20 text-sky-200'
-                      : 'border-slate-700 text-slate-300 hover:bg-slate-800'
-                  }`}
-                >
-                  {CONDITION_LABEL[c]}
-                </button>
-              ))}
-            </div>
-          </fieldset>
+          <>
+            <fieldset className="space-y-2">
+              <legend className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Raw / Graded
+              </legend>
+              <div className="flex gap-2">
+                {(
+                  [
+                    [undefined, 'All'],
+                    [false, 'Raw'],
+                    [true, 'Graded'],
+                  ] as const
+                ).map(([value, label]) => (
+                  <button
+                    key={label}
+                    type="button"
+                    aria-pressed={draft.graded === value}
+                    onClick={() => {
+                      setDraft((d) => ({
+                        ...d,
+                        graded: value,
+                        grader: value ? d.grader : undefined,
+                      }))
+                    }}
+                    className={`min-h-9 flex-1 rounded-lg border text-sm font-medium ${
+                      draft.graded === value
+                        ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                        : 'border-slate-700 text-slate-300 hover:bg-slate-800'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </fieldset>
+
+            {draft.graded ? (
+              <fieldset className="space-y-2">
+                <legend className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Grader
+                </legend>
+                <div className="flex flex-wrap gap-2">
+                  {GRADERS.map((g) => (
+                    <button
+                      key={g}
+                      type="button"
+                      aria-pressed={draft.grader === g}
+                      onClick={() => {
+                        setDraft((d) => ({ ...d, grader: d.grader === g ? undefined : g }))
+                      }}
+                      className={`min-h-9 rounded-lg border px-3 text-sm font-medium ${
+                        draft.grader === g
+                          ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                          : 'border-slate-700 text-slate-300 hover:bg-slate-800'
+                      }`}
+                    >
+                      {GRADER_LABEL[g]}
+                    </button>
+                  ))}
+                </div>
+              </fieldset>
+            ) : (
+              <fieldset className="space-y-2">
+                <legend className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Condition
+                </legend>
+                <div className="flex flex-wrap gap-2">
+                  {CONDITIONS.map((c) => (
+                    <button
+                      key={c}
+                      type="button"
+                      aria-pressed={draft.condition === c}
+                      onClick={() => {
+                        setDraft((d) => ({ ...d, condition: d.condition === c ? undefined : c }))
+                      }}
+                      className={`min-h-9 rounded-lg border px-3 text-sm font-medium ${
+                        draft.condition === c
+                          ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                          : 'border-slate-700 text-slate-300 hover:bg-slate-800'
+                      }`}
+                    >
+                      {CONDITION_LABEL[c]}
+                    </button>
+                  ))}
+                </div>
+              </fieldset>
+            )}
+          </>
         )}
 
         <fieldset className="space-y-2">
@@ -124,8 +235,8 @@ export function FiltersSheet({
             Value
           </legend>
           <p className="text-xs text-slate-500">
-            Market pricing for raw cards is not available yet. These only apply to a graded card's
-            manual value.
+            Raw cards use real market pricing. Graded cards and sealed products need a manual value
+            instead — these filters read whichever applies to each holding.
           </p>
           <div className="flex flex-wrap gap-2">
             <button

@@ -45,8 +45,9 @@ const LANGUAGE_OPTIONS: { value: string | null; label: string }[] = [
 /**
  * Profile: identity page and account/settings hub (M7.1 prompt §50-65, owner feedback pass —
  * supersedes M7's single flat form). More is gone; admin invitations live here now, visible to
- * admins only. Real fields only — Sealed/Value/Performance stats and profile-picture upload are
- * either honestly unavailable or, for the picture, deliberately deferred (see the note below).
+ * admins only. Real fields only. Portfolio value and the Sealed stat are real as of M9/M11
+ * (portfolio_counts) — Performance stats and profile-picture upload are either honestly
+ * unavailable or, for the picture, deliberately deferred (see the note below).
  */
 export function ProfilePage() {
   const { email, isAdmin, signOut } = useAuth()
@@ -81,10 +82,33 @@ export function ProfilePage() {
       <section className="grid grid-cols-2 gap-3">
         <StatTile label="Cards" value={counts.data?.physicalCardCount} />
         <StatTile label="Graded" value={counts.data?.gradedCount} />
+        <StatTile label="Sealed units" value={counts.data?.sealedUnitCount} wide />
       </section>
-      <div className="-mt-3 rounded-xl border border-dashed border-slate-800 p-3 text-xs text-slate-500">
-        Portfolio value: <MoneyDisplay state="missing" size="sm" /> — available once market pricing
-        is enabled.
+      <div className="-mt-3 space-y-1 rounded-xl border border-dashed border-slate-800 p-3 text-xs text-slate-500">
+        <div className="flex items-center justify-between">
+          <span>Portfolio value</span>
+          <MoneyDisplay
+            state={counts.data && counts.data.pricedHoldingCount > 0 ? 'known' : 'missing'}
+            minorUnits={counts.data?.portfolioValueMinor}
+            size="sm"
+            hidden={profile.data?.hideValues ?? false}
+          />
+        </div>
+        {counts.data && counts.data.sealedHoldingCount > 0 ? (
+          <p>
+            {profile.data?.hideValues ? (
+              <span aria-label="Value hidden">Cards •••• · Sealed ••••</span>
+            ) : (
+              <>
+                Cards {formatNokMinor(counts.data.cardsValueMinor)} NOK · Sealed{' '}
+                {formatNokMinor(counts.data.sealedValueMinor)} NOK
+              </>
+            )}
+            {counts.data.sealedUnpricedHoldingCount > 0
+              ? ` · ${counts.data.sealedUnpricedHoldingCount} sealed without a valuation`
+              : ''}
+          </p>
+        ) : null}
       </div>
 
       {profile.isPending ? (
@@ -118,9 +142,17 @@ export function ProfilePage() {
   )
 }
 
-function StatTile({ label, value }: { label: string; value: number | undefined }) {
+function StatTile({
+  label,
+  value,
+  wide = false,
+}: {
+  label: string
+  value: number | undefined
+  wide?: boolean
+}) {
   return (
-    <div className="rounded-xl border border-slate-800 p-4">
+    <div className={`rounded-xl border border-slate-800 p-4 ${wide ? 'col-span-2' : ''}`}>
       <p className="text-2xl font-semibold tabular-nums text-slate-100">
         {value === undefined ? '—' : value.toLocaleString('nb-NO')}
       </p>

@@ -3,7 +3,9 @@ import { useWindowVirtualizer } from '@tanstack/react-virtual'
 import { Link } from '@tanstack/react-router'
 import type { PortfolioTile } from '../../data/portfolio'
 import { portfolioDisplayName, portfolioSubtitle } from '../../data/portfolio'
+import { sealedIntentBreakdown } from '../../data/collection'
 import { CardImage } from '../catalog/CardImage'
+import { SealedProductImage } from '../catalog/SealedProductImage'
 import { CONDITION_LABEL } from '../collection/labels'
 import { formatNokMinor } from '../../ui/money-format'
 import { CheckIcon } from '../../ui/icons'
@@ -25,7 +27,19 @@ function conditionText(tile: PortfolioTile): string {
   if (tile.holdingKind === 'graded_card') {
     return `${tile.grader?.toUpperCase() ?? ''} ${tile.grade ?? ''}`.trim() || '—'
   }
+  // Sealed holdings carry no condition (card-only field) — falls through to the same '—' a raw
+  // card with no recorded condition would show, never a blank cell (prompt §41's own rule).
   return tile.condition ? CONDITION_LABEL[tile.condition] : '—'
+}
+
+/** List view's denser row has room for the intent breakdown next to condition/grade (Table's
+ *  single fixed "Condition / grade" column does not, so Table keeps conditionText() as-is and
+ *  shows '—' for a sealed row there instead). */
+function rowMetaText(tile: PortfolioTile): string {
+  if (tile.holdingKind === 'sealed') {
+    return sealedIntentBreakdown(tile) || '—'
+  }
+  return conditionText(tile)
 }
 
 /** More information-dense than Grid (M7 prompt §44) — mobile rows target 56-64px per
@@ -99,20 +113,34 @@ export function PortfolioListView({
                           ) : null}
                         </span>
                       ) : null}
-                      <CardImage
-                        imageBaseUrl={tile.cardImageBaseUrl}
-                        alt={portfolioDisplayName(tile)}
-                        quality="low"
-                        className="h-14 w-10 shrink-0"
-                      />
+                      {tile.holdingKind === 'sealed' ? (
+                        <SealedProductImage
+                          imageUrl={tile.sealedImageUrl}
+                          productType={tile.sealedProductType ?? 'other'}
+                          alt={portfolioDisplayName(tile)}
+                          className="h-14 w-10 shrink-0"
+                        />
+                      ) : (
+                        <CardImage
+                          imageBaseUrl={tile.cardImageBaseUrl}
+                          alt={portfolioDisplayName(tile)}
+                          quality="low"
+                          className="h-14 w-10 shrink-0"
+                        />
+                      )}
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-medium text-slate-100">
                           {portfolioDisplayName(tile)}
                           {tile.isFavorite ? ' ★' : ''}
+                          {tile.holdingKind === 'sealed' && tile.sealedIsCustom ? (
+                            <span className="ml-1 rounded bg-slate-800 px-1 py-0.5 text-[9px] font-medium text-slate-400">
+                              Custom
+                            </span>
+                          ) : null}
                         </p>
                         <p className="truncate text-xs text-slate-400">{portfolioSubtitle(tile)}</p>
                         <p className="truncate text-xs text-slate-500">
-                          {conditionText(tile)}
+                          {rowMetaText(tile)}
                           {tile.hasMultipleStorageLocations ? ' · Multiple locations' : ''}
                         </p>
                       </div>
@@ -258,6 +286,11 @@ export function PortfolioTableView({
                             {portfolioDisplayName(tile)}
                           </span>
                           {tile.isFavorite ? <span className="text-amber-400">★</span> : null}
+                          {tile.holdingKind === 'sealed' && tile.sealedIsCustom ? (
+                            <span className="shrink-0 rounded bg-slate-800 px-1 py-0.5 text-[9px] font-medium text-slate-400">
+                              Custom
+                            </span>
+                          ) : null}
                         </button>
                       ) : (
                         <Link
@@ -269,6 +302,11 @@ export function PortfolioTableView({
                             {portfolioDisplayName(tile)}
                           </span>
                           {tile.isFavorite ? <span className="text-amber-400">★</span> : null}
+                          {tile.holdingKind === 'sealed' && tile.sealedIsCustom ? (
+                            <span className="shrink-0 rounded bg-slate-800 px-1 py-0.5 text-[9px] font-medium text-slate-400">
+                              Custom
+                            </span>
+                          ) : null}
                         </Link>
                       )}
                     </td>

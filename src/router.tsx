@@ -14,8 +14,8 @@ import { ForgotPasswordPage } from './features/auth/ForgotPasswordPage'
 import { ResetPasswordPage } from './features/auth/ResetPasswordPage'
 import { HomePage } from './features/home/HomePage'
 import { ProfilePage } from './features/profile/ProfilePage'
-import type { CardCondition, Grader } from './data/collection'
-import type { PortfolioSortOrder } from './data/portfolio'
+import type { CardCondition, Grader, HoldingKind, SealedIntent } from './data/collection'
+import type { PortfolioSortOrder, SealedProductType } from './data/portfolio'
 import type { CollectionView } from './data/profile'
 
 // Route-level code splitting (M7.1 prompt §83 — bundle size, "if appropriate, not a separate
@@ -47,6 +47,16 @@ const AddToCollectionPage = lazy(() =>
 )
 const ManualCardPage = lazy(() =>
   import('./features/collection/ManualCardPage').then((m) => ({ default: m.ManualCardPage })),
+)
+const AddSealedProductPage = lazy(() =>
+  import('./features/collection/AddSealedProductPage').then((m) => ({
+    default: m.AddSealedProductPage,
+  })),
+)
+const SealedProductDetailPage = lazy(() =>
+  import('./features/catalog/SealedProductDetailPage').then((m) => ({
+    default: m.SealedProductDetailPage,
+  })),
 )
 const InvitationsPage = lazy(() =>
   import('./features/admin/InvitationsPage').then((m) => ({ default: m.InvitationsPage })),
@@ -97,8 +107,9 @@ function RouteFallback() {
  * Three route classes (docs/UX_FLOWS.md):
  *
  *   public     /login, /invite/$token, /forgot-password, /reset-password
- *   protected  /, /catalog, /catalog/$cardId, /catalog/sets/$setId, /portfolio,
- *              /portfolio/$holdingId, /portfolio/manual/new, /add, /profile
+ *   protected  /, /catalog, /catalog/$cardId, /catalog/sets/$setId,
+ *              /catalog/sealed/$sealedProductId, /portfolio, /portfolio/$holdingId,
+ *              /portfolio/manual/new, /portfolio/sealed/new, /add, /profile
  *   admin      /admin/invitations
  *
  * `/more` (M7) is gone as of M7.1 (owner decision: no More destination remains — its only real
@@ -200,6 +211,16 @@ const catalogSetRoute = createRoute({
   ),
 })
 
+const catalogSealedProductRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/catalog/sealed/$sealedProductId',
+  component: () => (
+    <RequireSession>
+      <SealedProductDetailPage />
+    </RequireSession>
+  ),
+})
+
 /** M7 Portfolio search params — sort/view/density/filters. Plain object validators, no schema
  *  library, following the same convention `/add`'s AddSearch already established. Undefined means
  *  "use the profile default" (density/view/sort) or "no filter" (everything else) — never a
@@ -222,6 +243,10 @@ export interface PortfolioSearch {
   tagId?: string
   lowValue?: boolean
   missingValue?: boolean
+  /** M11's type filter (All/Raw/Graded/Sealed) and the two sealed-only refinements it reveals. */
+  holdingKind?: HoldingKind
+  sealedProductType?: SealedProductType
+  sealedIntent?: SealedIntent
 }
 
 function str(value: unknown): string | undefined {
@@ -254,6 +279,9 @@ const portfolioRoute = createRoute({
     tagId: str(search.tagId),
     lowValue: bool(search.lowValue),
     missingValue: bool(search.missingValue),
+    holdingKind: str(search.holdingKind) as HoldingKind | undefined,
+    sealedProductType: str(search.sealedProductType) as SealedProductType | undefined,
+    sealedIntent: str(search.sealedIntent) as SealedIntent | undefined,
   }),
   component: () => (
     <RequireSession>
@@ -278,6 +306,23 @@ const manualCardRoute = createRoute({
   component: () => (
     <RequireSession>
       <ManualCardPage />
+    </RequireSession>
+  ),
+})
+
+interface AddSealedSearch {
+  sealedProductId?: string
+}
+
+const addSealedRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/portfolio/sealed/new',
+  validateSearch: (search: Record<string, unknown>): AddSealedSearch => ({
+    sealedProductId: str(search.sealedProductId),
+  }),
+  component: () => (
+    <RequireSession>
+      <AddSealedProductPage />
     </RequireSession>
   ),
 })
@@ -477,9 +522,11 @@ const routeTree = rootRoute.addChildren([
   catalogRoute,
   catalogCardRoute,
   catalogSetRoute,
+  catalogSealedProductRoute,
   portfolioRoute,
   portfolioHoldingRoute,
   manualCardRoute,
+  addSealedRoute,
   legacyCollectionRoute,
   legacyCollectionHoldingRoute,
   legacyManualCardRoute,

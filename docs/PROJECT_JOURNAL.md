@@ -1445,3 +1445,58 @@ writes need — which is fine right up until one of those columns is something a
 able to set directly, at which point INVOKER cannot express the requirement at all, no matter how
 careful the RPC's own validation is. Recognising that boundary before writing the grants (not after
 an authorization test found a hole) is what made this a design decision instead of a late patch.
+
+---
+
+## 2026-08-29 — A schema sketched three milestones early was wrong in exactly the way "audit first" exists to catch
+
+**Problem.** M11's prompt opened with an instruction that read, on first pass, like standard due
+diligence: audit the real sealed-inventory schema before building UI on top of it, and specifically
+test whether a holding-level `sealed_intent` column can represent a user who owns three identical
+booster boxes with different plans for each — two kept sealed, one queued to open. It could not, and
+the reason is worth recording because the schema in question had looked correct for three whole
+milestones.
+
+**Why it looked fine for so long.** `sealed_intent` was added to `holdings` back when `sealed_products`
+and the rest of the sealed catalog shape were first sketched (M3), pulled forward the same way
+`manual_valuations` and the `opening`/`trade_in` lot-origin values were (D-038) — infrastructure laid
+early because a later milestone would need it, not because anything exercised it yet. Nothing did:
+M6 through M10 never wrote to it, never read it, never built a single screen that depended on its
+cardinality being right. A column can sit in a schema for months looking finished simply because
+finished and untested are indistinguishable from the outside.
+
+**What the audit actually found.** `holdings_identity` — the unique index stopping the same physical
+state from fragmenting into duplicate holdings — correctly does *not* include `sealed_intent` in its
+key, because intent is meant to be organisational, the same category as `storage_location_id`. But
+that design choice has a direct consequence nobody had traced through: every acquisition lot for the
+same sealed product/condition/grading-state combination collapses into one holding row, and a
+holding-level `sealed_intent` column has exactly one slot for that entire position. `create_purchase`
+(M8) had already been defaulting every new sealed holding's intent to `'undecided'` at creation and
+silently leaving it there on every subsequent matching purchase — a real, reproducible bug, just one
+nothing had ever surfaced because nothing had ever asked the question "what if two acquisitions of
+the same product want different fates?"
+
+**The fix, and why it wasn't a bigger one.** `sealed_intent` moved to `acquisition_lots`
+(DECISIONS.md D-061) — the exact same relocation `storage_location_id` already went through in M6
+for the identical structural reason (D-036), which made this feel less like inventing a new pattern
+and more like finishing one the codebase had already established. The one genuinely new piece of
+machinery is `set_sealed_lot_intent`, which splits a lot when an intent change covers only part of
+its remaining quantity — a new sibling lot at the new intent, the original shrunk by the same
+amount, both keeping the original's `unit_cost_basis_minor` untouched so the split is provably a
+reorganisation and never a valuation event.
+
+**A second, smaller bug the same audit pass caught before it shipped.** `create_purchase`'s
+acquisition-lot INSERT had never set `sealed_intent` at all — it was written against the old,
+holdings-level design and never touched again. Left as-is, the very first sealed purchase line under
+the new not-null-when-sealed trigger check would have failed outright with no test having ever
+called it out, because no existing test exercised a sealed purchase line's resulting lot row closely
+enough to notice the missing column. Fixed in the same migration set, before any test was written
+against it — caught by re-reading the function against the new trigger constraint, not by a failing
+CI run.
+
+**The generalizable lesson:** "pulled forward early" and "already correct" are not the same claim,
+and a milestone that finally uses a three-milestone-old column owes it the same audit a brand-new
+column would get — arguably more, since nothing has ever pressed on it. The M11 prompt's insistence
+on testing the exact real-world scenario (three boxes, mixed intent) before writing a line of UI is
+what turned a plausible-looking column into a found, fixed, and tested defect instead of a shipped
+one.
