@@ -4,31 +4,28 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-**Last updated:** 2026-08-27 — M1–M9 remain complete in code, merged, and deployed. **M9.1
-(pricing closeout) is merged and deployed, with one real open item.** It closes every explicit M9
-acceptance gap the output_15 mentor review flagged: Search results now show batched real prices,
-Card Detail has an exact-variant-aware price/history, Market Movers is a real dedicated screen,
-display currency actually converts, `price_snapshots` capacity is measured (not estimated) and
-retention shortened accordingly (D-058), the 18-month retention test and the value pagination edge
-matrix now exist, and the real 10,000-lot Portfolio benchmark and the real storage-capacity
-benchmark both now run automatically in CI on every push. **That last benchmark is also what found
-a real, still-unresolved regression:** `list_portfolio`'s default unfiltered first-page query hit a
-genuine Postgres statement timeout at realistic scale on the first post-merge run against `main` —
-a real product risk, not a CI curiosity. A same-day follow-up (PR #28) made CI resilient to it and
-disproved one fix hypothesis, but did not fix the underlying cost. See "M9.1 — Pricing closeout"
-below for the full account and MENTOR ATTENTION in `claude_outputs/output_16.txt`.
+**Last updated:** 2026-08-22 — M1–M9.2 are complete in code and merged. **M9 + M9.1 + M9.2 are
+fully closed.** M9.2 resolved the one item M9.1 left open: `list_portfolio`'s 10,000-lot unfiltered
+first-page regression (4-7.6s, one real statement timeout) was root-caused with real `EXPLAIN
+(ANALYZE, BUFFERS, SETTINGS)` evidence — it was stale planner statistics from the CI benchmark's
+own bulk seed (every seeded table's `reltuples` was Postgres's "never analyzed" sentinel
+immediately after the insert), not an application defect. `portfolio_counts()` was equally
+catastrophic in that same cold state, which is what disproves the standing M9.1 theory that
+`list_portfolio`'s own CASE-based `ORDER BY`/cursor shape was the differentiator. **No SQL changed**
+— `list_portfolio`/`portfolio_counts` are byte-for-byte identical to M9.1. The benchmark now runs
+`ANALYZE` before timing (matching what production's continuous autovacuum already provides against
+real incremental usage) and fails CI outright on any call over 1.5s or an error. Full account:
+DECISIONS.md D-059, `claude_outputs/output_17.txt`. See "M9.2 — Portfolio query performance
+closeout" below.
 
 ---
 
 ## Status
 
-**Planning is FROZEN. M1–M9.1 are merged and deployed. One real item is not yet closed:**
-`list_portfolio`'s default-sort performance regression (below) — a future session must resolve this
-with real `EXPLAIN ANALYZE` evidence before M9's Portfolio-performance gate can be considered
-proven at production scale. Every other M9 gap from output_15's review is closed. The only other
-standing item is the same one every milestone since M7.1 has carried: a real owner-facing
-signed-in check, which needs the owner's own device/account — ask for it using the checklist in
-the M9.1 section below.
+**Planning is FROZEN. M1–M9.2 are merged. No open M9-family item remains.** The only standing item
+carried across every milestone since M7.1 is a real owner-facing signed-in check, which needs the
+owner's own device/account — ask for it using the checklist in the M9.1 section below. Next:
+**M10 — Sales and History.**
 
 ## M9 — Pricing and snapshots
 
@@ -346,16 +343,98 @@ remains a manual step.
 
 **Not done this session, disclosed rather than silently accepted:**
 
-1. **`list_portfolio`'s default (unfiltered, first-page) query path still has an unresolved,
-   sometimes-severe (statement-timeout-grade) performance problem at 10,000-lot scale.** This is
-   the most important open item — see above for the full account and MENTOR ATTENTION in
-   `claude_outputs/output_16.txt`. Do not treat M9's Portfolio-performance gate as closed until a
-   future session confirms a real fix with `EXPLAIN ANALYZE`.
+1. ~~`list_portfolio`'s default (unfiltered, first-page) query path still has an unresolved,
+   sometimes-severe (statement-timeout-grade) performance problem at 10,000-lot scale.~~ **Resolved
+   in M9.2** — see the section immediately below. Root cause was stale planner statistics from the
+   benchmark's own bulk seed, not `list_portfolio`'s SQL; no application code changed.
 2. No new automated test coverage exists for Edge Function HTTP-handler logic (only the pure
    mapping layer, `tests/data/tcgdex-pricing.test.ts`) — the fx_rates-numeric-serialization bug
    this session found and fixed would have been the first thing such coverage caught.
 3. A real owner-facing signed-in check has not happened — same standing boundary as every session
    since M7.1.
+
+## M9.2 — Portfolio query performance closeout
+
+Closes the one item M9.1 left open (above): `list_portfolio`'s 10,000-lot unfiltered first-page
+regression. Full account: `claude_outputs/output_17.txt`. Decision: DECISIONS.md D-059.
+
+**Root cause, confirmed with real `EXPLAIN (ANALYZE, BUFFERS, SETTINGS)` evidence from CI** (not
+guessed — a prior hypothesis, `list_portfolio`'s own CASE-based `ORDER BY`/cursor shape, had already
+been tested via `force_generic_plan` in PR #28 and disproved): immediately after the benchmark's own
+10,000-lot bulk seed, every seeded table's `pg_class.reltuples` was `-1` — Postgres's literal "never
+analyzed" sentinel, because a fresh ephemeral CI Postgres instance has had no autovacuum cycle in
+that short a window. The planner falls back to no-information defaults for any query touching those
+tables. **`portfolio_counts()` was equally catastrophic in that cold state — 7754ms, not the
+26-90ms M9.1 recorded** — which is what proves the earlier "list_portfolio's own shape is the
+differentiator" theory was itself a benchmark-timing artifact (whichever function got called first
+in a run measured cold; whichever got called after enough round-trips had passed measured warm,
+once autovacuum's autoanalyze had caught up in the background). `Buffers: shared hit` corroborates
+the mechanism: ~1.4 million shared buffer hits cold, collapsing to 649-3,367 after an explicit
+`ANALYZE`.
+
+**No SQL changed.** `list_portfolio`/`portfolio_counts` are byte-for-byte identical to M9.1 —
+TESTING.md §7's "ANALYZE alone explains it" outcome. The real fix is to
+`scripts/portfolio-perf-benchmark.mjs`'s own methodology: it now runs `ANALYZE` on the seeded tables
+before timing anything (the same effect production's continuous autovacuum already provides against
+real incremental usage — a single 10,000-row bulk insert in under 2 seconds is not a pattern real
+usage produces), closing the gap between "milliseconds after a synthetic bulk insert" and a
+representative state. `scripts/portfolio-perf-explain.sql` (new, `--explain`-gated, not run by
+default) captures the same evidence on demand for a future investigation.
+
+**A real policy change, made because the evidence now supports it:** this defect class recurred
+three times (M7's LATERAL regression, M9.1's timeout, this false lead) without CI ever failing on
+its own benchmark. With representative statistics now guaranteed before every timed call, a
+multi-second result is no longer measurement noise. The benchmark now fails the CI step (non-zero
+exit) if any of the 12 sorts, the filtered/keyset/scoped queries, or `portfolio_counts()` exceeds
+1.5s or errors — one generous, catastrophic-only threshold, not the tight per-sort budget
+TESTING.md §7 already rejected as "microbenchmark theatre."
+
+**Final real 10,000-lot/~3,500-variant numbers, CI's ephemeral stack, post-ANALYZE (3 runs per
+sort, first/median/max, ms):**
+
+| sort | first | median | max |
+|---|---|---|---|
+| value_desc | 72.8 | 82.8 | 198.5 |
+| value_asc | 64.5 | 74.9 | 75.9 |
+| name_asc | 61.7 | 62.5 | 63.5 |
+| name_desc | 66.0 | 68.9 | 69.0 |
+| set_asc | 69.2 | 70.4 | 71.1 |
+| quantity_desc | 58.9 | 63.9 | 64.4 |
+| acquired_newest | 59.1 | 60.0 | 68.0 |
+| acquired_oldest | 59.9 | 60.2 | 62.3 |
+| added_newest | 59.3 | 60.0 | 60.6 |
+| added_oldest | 59.8 | 60.4 | 60.9 |
+| number_asc | 130.5 | 146.3 | 195.8 |
+| number_desc | 133.0 | 137.8 | 149.0 |
+
+Filtered (condition=NM): 62.4ms. Keyset next page (name_asc): 68.8ms. Keyset value_desc first/next:
+60.6ms/109.3ms. Low-value filter: 52.5ms. Missing-value filter: 95.3ms. Custom collection scope:
+71.6ms. `portfolio_counts()`: 30.5ms (20.0ms scoped). Every result comfortably under TESTING.md
+§31's <1s target with real headroom; no statement timeout anywhere. Matches or beats M7's original
+130-570ms baseline.
+
+**A disclosed, out-of-scope-for-this-session residual risk, not a gap in this fix:** the failure
+mode this investigation found — a single large bulk insert immediately followed by a query, before
+autovacuum has a chance to run — is not a pattern current real usage produces (holdings accumulate
+one search-and-add or one purchase-import line at a time), so it is not a live production risk
+today. It *would* recur if a future milestone ever added a genuine bulk-import feature (e.g.
+restoring a large JSON backup, D-025) that inserts thousands of rows in one transaction and then
+immediately queries them in the same request — such a feature should run `ANALYZE` on the affected
+tables (or accept a brief post-import staleness window) as part of its own design, not assume this
+fix covers it. No such feature exists yet; noted for whichever future session builds one.
+
+**Verified, actually run:** `pnpm check` (typecheck/lint/format/domain tests, 108/108) green
+locally — no `src/`/`supabase/` application code touched, so this is unaffected by the fix. CI green
+on both jobs across two full runs (`build-and-test`; `db-tests`, including the now-passing
+performance-gate step) — PR #30/#31, merged. No migration exists for this change (nothing in
+`supabase/migrations/` — application SQL is unchanged), so there is nothing to deploy to
+`pokeportfolio-dev`: the real project's `list_portfolio`/`portfolio_counts` were never wrong, and
+remain exactly as M9.1 left them. `grant-audit.sql`/privilege baseline unaffected (no signature
+change, no new function). Real owner-facing check: not applicable — nothing user-visible changed.
+
+**Not done this session:** the two carried-forward M9.1 items (no Edge Function HTTP-handler test
+coverage; no real owner-facing signed-in check) remain open, same as before — this session's scope
+was narrowly the Portfolio performance gate.
 
 ## Deployed state (now M9 — PR #25 merged and deployed)
 

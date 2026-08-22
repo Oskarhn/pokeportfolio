@@ -1306,3 +1306,56 @@ business logic in this codebase yet (`tests/data/tcgdex-pricing.test.ts` covers 
 mapping layer, not the HTTP handler) — a real, disclosed gap, not silently accepted: a future
 session adding meaningful Edge Function test coverage should start with this exact boundary class,
 since it is now confirmed to bite in practice, not just in theory.
+
+## 2026-08-22 — The 10k-lot Portfolio "regression" was the benchmark measuring the wrong moment, not a defect in the query
+
+M9.1 left a real, disclosed gap: `list_portfolio`'s unfiltered first-page query hit 4-7.6s across
+three CI runs and one genuine statement timeout, while `portfolio_counts()` — calling the identical
+`resolve_variant_market_values` resolver with the identical variant array — stayed fast (26-90ms).
+That contrast was the whole basis for suspecting `list_portfolio`'s own ~12-branch CASE-based
+`ORDER BY`/cursor predicate as the differentiator. `force_generic_plan` (PR #28) tested that theory
+and partly disproved it (filtered queries got worse, the unfiltered path stayed just as slow), but
+the actual root cause stayed open into M9.2.
+
+**Getting real evidence instead of guessing again.** `scripts/portfolio-perf-explain.sql` (new)
+captures `EXPLAIN (ANALYZE, BUFFERS, SETTINGS)` against the benchmark's own seeded account,
+impersonating the synthetic user the same way Supabase's own stack does (`set role authenticated`
++ `set_config('request.jwt.claims', ...)`, session-scoped rather than transaction-scoped since
+psql autocommits each statement in a plain `-f` script — a real mistake caught while writing this
+script, not shipped: an earlier draft used `set local role`/`is_local=true`, which would have
+reverted before the very next statement in the file ever saw it). Run twice by
+`portfolio-perf-benchmark.mjs`: once immediately after the 10,000-lot bulk seed, once again after
+an explicit `ANALYZE`.
+
+**What CI's own real run showed (PR #30/#31).** Immediately post-seed, every one of the seven
+tables `list_portfolio` touches had `pg_class.reltuples = -1` — Postgres's literal "never analyzed"
+sentinel, because a fresh ephemeral instance's autovacuum worker had not run even once in the few
+seconds between seeding and querying. In that state, `list_portfolio` measured 7.4-7.9s across
+three repeated calls — matching the earlier finding — but **`portfolio_counts()` measured 7754ms in
+the exact same cold state**, not the 26-90ms M9.1 recorded. That single number rewrites the whole
+diagnosis: `portfolio_counts` was never architecturally immune to whatever this problem is; the
+earlier benchmark run just happened to call it after enough other RPC round-trips had passed for
+autovacuum to catch up, while `list_portfolio` (called first, and repeatedly, in that run's
+sequence) got measured cold. `Buffers: shared hit` corroborates the mechanism directly: ~1.4
+million shared buffer hits cold, collapsing to 649-3,367 after `ANALYZE` — the planner moving off
+whatever plan a total absence of row-count information produces once it has real numbers to work
+with. Post-`ANALYZE`, every one of the 12 supported sorts (3 repeated runs each) landed at
+62-202ms, `portfolio_counts()` at 32ms, every filtered/scoped/keyset path 30-70ms — beating M7's
+original 130-570ms baseline with real headroom.
+
+**Decision:** no change to `list_portfolio` or `portfolio_counts`'s SQL (docs/DECISIONS.md D-059,
+TESTING.md §45's "ANALYZE alone explains it" branch). The real fix is to the benchmark's own
+methodology — it was measuring "milliseconds after a synthetic bulk insert, before autovacuum's
+first cycle," not a state real production usage (incremental, one add or one purchase-import line
+at a time) actually produces. `portfolio-perf-benchmark.mjs` now runs `ANALYZE` on the seeded
+tables before timing anything, and — since this defect class has now recurred three times (M7's
+LATERAL regression, M9.1's timeout, and this false lead) without CI ever failing on its own
+benchmark, and representative statistics remove the reason it never did — now fails the CI step
+outright if any call exceeds 1.5s or errors.
+
+**The generalizable lesson:** a benchmark that bulk-seeds a large synthetic dataset and immediately
+queries it is not measuring the application under representative conditions unless it also accounts
+for planner statistics explicitly — autovacuum's eventual consistency is a fine assumption for real
+usage patterns and a dangerous one for a benchmark's own artificial one. The next session that
+writes a CI benchmark seeding more than a trivial number of rows into a table it is about to query
+should run `ANALYZE` first, on purpose, rather than rediscover this the same way this session did.

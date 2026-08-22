@@ -239,6 +239,21 @@ benchmark (now CI-integrated) all now exist. Full detail: `claude_outputs/output
 or, if genuinely out of this session's reach, disclosed again with the same honesty standard —
 never silently dropped.
 
+### M9.2 — Portfolio query performance closeout — **complete**
+
+Not a new milestone — closes the one M9.1 gap output_16.txt left open before M10 begins
+(docs/PLANNING_FREEZE.md still governs). Root-caused `list_portfolio`'s 10,000-lot unfiltered
+first-page regression with real `EXPLAIN (ANALYZE, BUFFERS, SETTINGS)` evidence: stale planner
+statistics from the benchmark's own bulk seed, not an application defect — `portfolio_counts()` was
+equally affected in the same cold state, disproving the standing theory that `list_portfolio`'s own
+query shape was the cause. No application SQL changed; the benchmark now runs `ANALYZE` before
+timing and fails CI on a genuine multi-second regression. Full detail: `claude_outputs/output_17.txt`,
+DECISIONS.md D-059.
+
+**Gate:** the real 10,000-lot benchmark, seeded with representative planner statistics, shows every
+supported sort/filter/keyset path interactive (comfortably under TESTING.md §31's targets) with no
+statement timeout — proven in `claude_outputs/output_17.txt`, not just asserted.
+
 ### M10 — Sales and History
 
 Sales with explicit lot selection and FIFO suggestion. Frozen `cost_basis_at_sale`. Realized
