@@ -931,6 +931,10 @@ describe('market price regression (prompt §98) — F4, a new price snapshot nev
     })
     const before = (await linesForSale(sale!.id))[0]!.realized_result_nok_minor
 
+    // A fixed date far from "today" — never a "freshness" fixture (M9's own tests key snapshots by
+    // age-relative-to-today, e.g. ageDays 0/4/31) — so this can never collide with another test
+    // file's row for the same (card_variant_id, provider, snapshot_date) unique key, regardless of
+    // which shared seed-catalog variant either side happens to use.
     await service.from('price_snapshots').upsert(
       {
         card_variant_id: seedCatalog.charizardVariantId,
@@ -938,7 +942,7 @@ describe('market price regression (prompt §98) — F4, a new price snapshot nev
         price_kind: 'cm_trend',
         source_currency: 'EUR',
         value_minor: 999999,
-        snapshot_date: today,
+        snapshot_date: '2019-06-15',
       },
       { onConflict: 'card_variant_id,provider,snapshot_date' },
     )

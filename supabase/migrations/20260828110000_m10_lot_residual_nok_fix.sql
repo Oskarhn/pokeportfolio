@@ -302,6 +302,16 @@ begin
         if v_holding_kind = 'graded_card' and (v_grader is null or v_grade is null) then
           raise exception 'line %: grader and grade are required for a graded card', v_idx;
         end if;
+        -- Real bug found by M10's own tests (a graded line carrying a redundant condition value,
+        -- exactly like the raw-card case the frontend already sends): holdings_condition_only_for_raw
+        -- requires condition IS NULL for anything but a raw_card holding, but v_condition was only
+        -- ever nulled for the 'sealed' branch below — never for a graded card line. A caller sending
+        -- condition alongside grading_state='graded' (the RPC's own JSON contract does not forbid
+        -- it) hit the CHECK constraint and the whole purchase failed to save. Mirrors the sealed
+        -- branch's existing v_condition := null exactly.
+        if v_holding_kind = 'graded_card' then
+          v_condition := null;
+        end if;
       else
         v_holding_kind := 'sealed';
         v_condition := null;
