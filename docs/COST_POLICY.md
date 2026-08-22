@@ -203,7 +203,7 @@ already lives in Supabase; adding Workers would introduce a second billable surf
 | Accidental-charge risk | **None** while no card is attached and no upgrade is performed |
 | Inactivity | Project pauses after ~7 days without database activity. Manual resume. Restorable within 90 days. |
 | Backups | **None on Free.** Manual `supabase db dump` is the documented recommendation. |
-| Expected usage | Price snapshots: watched (ever-acquired) variants only, up to one row per provider per variant per day (M9, D-053) — a *computed* estimate, not yet measured against a real Postgres: raw tuple + three-index overhead is roughly 200-300 bytes/row (higher than the pre-M9 ~48-byte sketch, which appears to have omitted index cost), so a full year's *unthinned* accumulation at ~3,500 watched variants x 2 providers x 365 days could approach or exceed 500 MB on its own before 12-month retention thinning has had a chance to apply — see DATA_MODEL.md §4.2 and `claude_outputs/output_15.txt`'s "STORAGE PROJECTION" for the full reasoning and the explicit recommendation to measure real bytes against the deployed project before the watched set grows large. Holdings and lots add ~2 MB per 10 000 lots. 1–10 users against 50 000 MAU. |
+| Expected usage | Price snapshots: watched (ever-acquired) variants only, up to one row per provider per variant per day (M9, D-053). **Measured, not estimated, as of M9.1** — see the capacity table below. Holdings and lots add ~2 MB per 10 000 lots. 1–10 users against 50 000 MAU. |
 | Headroom | Database is the binding constraint, not users |
 | Fallback | Plain PostgreSQL elsewhere — the schema is standard SQL in versioned migrations |
 | Reconsider when | Database exceeds ~350 MB, or free-plan terms change materially |
@@ -212,6 +212,48 @@ already lives in Supabase; adding Workers would introduce a second billable surf
 Legitimate daily price ingestion keeps the project active as a side effect of work the app
 genuinely needs. This is not a contrived heartbeat, and the app must still behave sanely against
 a paused project.
+
+#### `price_snapshots` capacity — measured (M9.1, D-058)
+
+Measured against a representative 365,000-row synthetic dataset (500 variants × 2 providers × 365
+days) seeded and dropped in CI's disposable ephemeral Postgres, never against a database holding
+real data (`scripts/price-snapshots-storage-benchmark.sql`, run automatically in `db-tests` on
+every push):
+
+| Metric | Measured value |
+|---|---|
+| Rows | 365,009 |
+| Table bytes | 36,921,344 (~35 MB) — 101.15 bytes/row |
+| Index bytes | 53,755,904 (~51 MB) — 147.27 bytes/row, **larger than the table itself** |
+| Total bytes | 90,726,400 (~87 MB) — **245.30 bytes/row** |
+
+Index breakdown: `price_snapshots_unique_per_day` (the `(card_variant_id, provider, snapshot_date)`
+uniqueness constraint) is the single largest index at ~23 MB; `price_snapshots_variant_date_idx`
+(latest-price resolution) ~17 MB; the primary key ~8 MB; `price_snapshots_date_idx` (retention
+scanning) ~3 MB.
+
+The pre-M9.1 ~200-300 byte/row estimate was directionally correct; the pre-M9 ~48-byte sketch that
+started this whole line of investigation had omitted index overhead almost entirely.
+
+**Projection at 250 bytes/row** (rounded up from 245.30 for margin), the current **60-day daily +
+weekly beyond** retention (D-058, down from M9's 12-month placeholder):
+
+| Watched variants | Providers | 1 year | 2 years | 3 years |
+|---|---|---|---|---|
+| 1,000 | 1 (average) | 32 MB | 45 MB | 58 MB |
+| 1,000 | 2 (worst case) | 65 MB | 91 MB | 117 MB |
+| 3,500 | 1 (average) | 113 MB | 158 MB | 204 MB |
+| 3,500 | 2 (worst case) | **226 MB** | **317 MB** | **408 MB** |
+| 5,000 | 1 (average) | 161 MB | 226 MB | 291 MB |
+| 5,000 | 2 (worst case) | 323 MB | 453 MB | 583 MB |
+
+At the *previous* 12-month-daily policy, 3,500 variants × 2 providers projected to **~609 MB**
+unthinned in year one alone — over budget on `price_snapshots` by itself. The 60-day window brings
+the same worst-case scenario to 226 MB at 1 year (45% of the 500 MB budget), leaving real headroom
+for the catalog (~44 MB currently, measured against `pokeportfolio-dev`, mostly fixed-size) and
+everything else (holdings, lots, purchases, sales, portfolio snapshots, indexes, auth/system
+growth). This is not a bounded-forever claim — the weekly tail grows slowly but indefinitely; the
+existing "reconsider at ~350 MB" trigger below is the honest long-run answer, not a hidden gap.
 
 ### Supabase Auth email — **the one real cost risk**
 
@@ -310,7 +352,7 @@ SMTP2GO's free tier at that point. It is not needed today and is not adopted spe
 | What if TCGdex disappears? | Our snapshots survive; internal UUID identity is canonical; manual valuation continues. Painful, not fatal. |
 | What if Supabase Free changes? | Schema is standard PostgreSQL in versioned migrations; `pg_dump` export exists. Days of migration work, not a rewrite. |
 | What if Cloudflare changes? | Static assets deploy anywhere. |
-| Are we storing too much price history? | Held (watched) variants only, one already-fallback-chosen row per provider per day (D-053), thinned after 12 months — but the *unthinned* first-year volume is a real, computed watch-item (not yet measured against real Postgres), see the Supabase row above |
+| Are we storing too much price history? | Held (watched) variants only, one already-fallback-chosen row per provider per day (D-053), thinned to weekly after 60 days (D-058) — measured against real Postgres, see the capacity table above |
 | Will images breach free storage? | No — catalog artwork is hotlinked from the provider, never copied. User photos are V1 and capped. |
 | Is a paid domain assumed anywhere? | **No.** Deployment uses the free `*.pages.dev` subdomain. This is why Resend was excluded. |
 | Will GitHub Actions cost anything? | No — 2 000 free minutes, $0 spending limit |

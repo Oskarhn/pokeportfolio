@@ -272,9 +272,13 @@ quickly, not with *cards owned*, which does not.
 
 Concretely: a 10 000-card collection realistically spans perhaps 3 000–4 000 distinct variants,
 because duplicates, energies and playsets collapse. At ~3 500 watched variants × up to 2 provider
-rows × 365 days, with rows older than 12 months thinned to weekly
-(`thin_price_snapshots()`) — measured row footprint and the resulting free-tier projection are
-recorded in COST_POLICY.md/`claude_outputs/output_15.txt`, not assumed from the pre-M9 estimate.
+rows × 365 days **unthinned**, this would be ~609 MB — over the entire free-tier budget on
+`price_snapshots` alone. **M9.1 measured the real footprint** (245.30 bytes/row, table + its two
+indexes — `scripts/price-snapshots-storage-benchmark.sql` against a representative 365,000-row
+synthetic dataset in CI's ephemeral Postgres, not the earlier ~200-300 byte/row estimate) and
+shortened retention to **60 days of daily history, thinned to weekly beyond that**
+(`thin_price_snapshots()`, D-058) — projecting to ~271 MB at 3,500 watched variants/2 providers/2
+years, ~180 MB at 1 year. Full projection table: COST_POLICY.md §6 (Supabase row).
 The holdings and lots themselves are small — roughly 200 bytes per lot, so even 10 000 lots is
 ~2 MB.
 

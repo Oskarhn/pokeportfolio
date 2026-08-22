@@ -1450,3 +1450,51 @@ rate at entry time, a different question with different freshness requirements.
 they all route through either `MoneyDisplay` or the same `fx_rates`-lookup pattern. No stored
 column changes as a result of a currency-preference change — verified by the M8/M8.1 financial
 regression suite staying green with this change present.
+
+---
+
+## D-058 — `price_snapshots` retention shortened from 12 months daily to 60 days daily, measured not estimated
+
+**2026-08-27 · Accepted**
+
+**Context.** M9's `thin_price_snapshots` kept 12 months of daily history before thinning to weekly
+— a placeholder pending real measurement (D-053's own note, and output_15.txt's disclosed gap).
+M9.1 measured it for real: a representative 365,000-row synthetic dataset (500 variants × 2
+providers × 365 days, `scripts/price-snapshots-storage-benchmark.sql`, run against CI's ephemeral
+Postgres — never against a database holding real data) found **245.30 bytes/row**, table plus its
+two indexes (`price_snapshots_unique_per_day` alone is the single largest index, larger than the
+table itself). At the documented realistic scale (~3,500 watched variants, DATA_MODEL.md §4.2), 2
+providers, 12 months of *unthinned* daily history — which is what actually accumulates before the
+weekly policy ever has anything to act on — projects to **~609 MB**, exceeding the entire Supabase
+Free 500 MB budget on `price_snapshots` alone, before the catalog, holdings, purchases, sales, or
+any other table's indexes.
+
+**Decision.** Shorten the daily-retention window to **60 days**, thinned to one observation per ISO
+week per (variant, provider) beyond that, with the single latest observation per (variant,
+provider) always retained regardless of age (unchanged from M9). Projected at 3,500 variants/2
+providers: ~180 MB at 1 year (36% of budget), ~271 MB at 2 years (54%), ~362 MB at 3 years (72% —
+close to COST_POLICY.md's pre-existing "reconsider at ~350 MB" trigger, which already anticipates a
+review checkpoint rather than a hard forever-bound). 60 days keeps full daily granularity for a "1
+month" chart entirely and mostly for "3 month" (the oldest ~30 days of a 90-day view shows weekly
+points instead — informative, not fabricated, D-008's same principle). "6 month/1 year/max" legitimately
+use weekly older observations, per the owner's own framing of what those windows need.
+
+**This is a disclosed trade-off, not a claim of a bounded-forever solution.** The weekly tail is not
+asymptotically bounded — it grows by one row per (variant, provider) per week, forever, just at
+1/7th daily's rate. COST_POLICY.md's existing revisit trigger is the honest answer to "what happens
+after several more years," not a new problem introduced here.
+
+**Alternatives.** Keep 12 months and accept the overage risk — rejected: a zero-cost-constrained
+project cannot ship a policy already projected to exceed its own budget at documented realistic
+scale. A single flat retention period with no weekly tier — rejected: throws away "6M/1Y/MAX chart"
+usefulness entirely once the flat cutoff passes, which the owner's period selector requires
+(prompt §27). A monthly (rather than weekly) tier for very old data — considered, rejected for this
+pass as unnecessary added complexity; the weekly tier alone already gets multi-year runway under the
+measured figures, and a third tier can be added later if the revisit trigger is ever actually hit.
+
+**Consequences.** `20260827130000_m91_retention_window.sql` changes `thin_price_snapshots`'s body
+only (`create or replace function`, no signature change, no privilege-baseline update needed).
+`tests/db/m91_retention.test.ts` proves the new threshold against an 18-month synthetic dataset.
+COST_POLICY.md §6 (Supabase row) and DATA_MODEL.md §4.2 restate the measured figures. Revisit if a
+future session's real measurement against `pokeportfolio-dev` diverges materially from this
+synthetic projection, or when the database approaches the existing ~350 MB trigger.

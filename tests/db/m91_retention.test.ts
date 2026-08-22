@@ -13,10 +13,12 @@ import {
  * M9.1 retention gate (prompt §30, mandatory — M9 shipped `thin_price_snapshots` without this
  * test). Seeds a synthetic dataset spanning >18 months across multiple variants, providers and
  * ISO weeks, runs the real retention function, and proves its actual behaviour: everything inside
- * the 12-month daily-retention window survives untouched; beyond it, exactly the latest observation
- * in each ISO week per (variant, provider) survives and the rest are deleted; a second run is a
- * true no-op; and `get_card_variant_price_history` still returns usable, real (never fabricated)
- * points afterward.
+ * the 60-day daily-retention window survives untouched (the window M9.1 chose after measuring
+ * real storage — see `20260827130000_m91_retention_window.sql` and COST_POLICY.md, not the M9
+ * placeholder of 12 months this test's fixture dates deliberately stay far clear of either way);
+ * beyond it, exactly the latest observation in each ISO week per (variant, provider) survives and
+ * the rest are deleted; a second run is a true no-op; and `get_card_variant_price_history` still
+ * returns usable, real (never fabricated) points afterward.
  *
  * Deterministic by construction: dates are computed from explicit Monday-aligned week anchors
  * rather than "N days ago" arithmetic, so the test's notion of "same ISO week" can never drift
@@ -47,10 +49,11 @@ function addDays(d: Date, n: number): Date {
 }
 
 const today = new Date()
-// A week comfortably beyond the 18-month mark the prompt asks for (560 days ~ 18.4 months), and
-// far enough from `today` that a 6-day spread within it never crosses into the 12-month window.
+// A week comfortably beyond both the 18-month mark the prompt asks for (560 days ~ 18.4 months)
+// and the 60-day retention window, and far enough from `today` that a 6-day spread within it never
+// crosses back into the daily window.
 const oldWeekMonday = mondayOf(addDays(today, -560))
-// A second, distinct old week (~14 months / 420 days ago) — inside "beyond 12 months" but
+// A second, distinct old week (~14 months / 420 days ago) — well beyond the 60-day window too, but
 // deliberately not the same week as oldWeekMonday, to prove week-scoping isn't coincidental.
 const secondOldWeekMonday = mondayOf(addDays(today, -420))
 
@@ -131,7 +134,7 @@ describe('thin_price_snapshots — 18-month synthetic retention matrix', () => {
     // Clean slate for the variants this file uses — other test files share the same seed catalog.
     await service.from('price_snapshots').delete().in('card_variant_id', [pikachu, charizard])
 
-    // 1. RECENT daily history (well inside the 12-month window) — pikachu/cardmarket, 6 days,
+    // 1. RECENT daily history (well inside the 60-day window) — pikachu/cardmarket, 6 days,
     //    must survive thinning byte-for-byte.
     for (let i = 0; i < 6; i++) {
       await snapshot({
