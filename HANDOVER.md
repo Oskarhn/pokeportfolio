@@ -5,24 +5,30 @@ Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) a
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
 **Last updated:** 2026-08-27 — M1–M9 remain complete in code, merged, and deployed. **M9.1
-(pricing closeout) is complete in code, merged, and deployed** — closes every explicit M9
+(pricing closeout) is merged and deployed, with one real open item.** It closes every explicit M9
 acceptance gap the output_15 mentor review flagged: Search results now show batched real prices,
 Card Detail has an exact-variant-aware price/history, Market Movers is a real dedicated screen,
 display currency actually converts, `price_snapshots` capacity is measured (not estimated) and
 retention shortened accordingly (D-058), the 18-month retention test and the value pagination edge
-matrix now exist, and — critically — the real 10,000-lot Portfolio benchmark and the real
-storage-capacity benchmark both now run **automatically in CI on every push**, closing the "not
-measured" disclosure M9 shipped with. See "M9.1 — Pricing closeout" below for the full account,
-`claude_outputs/output_16.txt` for the complete session record.
+matrix now exist, and the real 10,000-lot Portfolio benchmark and the real storage-capacity
+benchmark both now run automatically in CI on every push. **That last benchmark is also what found
+a real, still-unresolved regression:** `list_portfolio`'s default unfiltered first-page query hit a
+genuine Postgres statement timeout at realistic scale on the first post-merge run against `main` —
+a real product risk, not a CI curiosity. A same-day follow-up (PR #28) made CI resilient to it and
+disproved one fix hypothesis, but did not fix the underlying cost. See "M9.1 — Pricing closeout"
+below for the full account and MENTOR ATTENTION in `claude_outputs/output_16.txt`.
 
 ---
 
 ## Status
 
-**Planning is FROZEN. M1–M9.1 are complete in code, merged, and deployed.** No outstanding gaps
-from M9 remain undisclosed. The only standing item is the same one every milestone since M7.1 has
-carried: a real owner-facing signed-in check, which needs the owner's own device/account — ask for
-it using the checklist in the M9.1 section below.
+**Planning is FROZEN. M1–M9.1 are merged and deployed. One real item is not yet closed:**
+`list_portfolio`'s default-sort performance regression (below) — a future session must resolve this
+with real `EXPLAIN ANALYZE` evidence before M9's Portfolio-performance gate can be considered
+proven at production scale. Every other M9 gap from output_15's review is closed. The only other
+standing item is the same one every milestone since M7.1 has carried: a real owner-facing
+signed-in check, which needs the owner's own device/account — ask for it using the checklist in
+the M9.1 section below.
 
 ## M9 — Pricing and snapshots
 
@@ -260,22 +266,49 @@ bucket.
 the biggest disclosed M9 gap (no session between M9 and M9.1 had re-run either against real data —
 the prior blocker, "cannot fetch the Supabase secret key or sign in," turned out to have a safe
 answer all along: both scripts only need the ephemeral stack's own local well-known service-role
-key, already exported for `pnpm test:db`, never a production credential). **Real measured
-steady-state performance:** all sort modes, filters, keyset second pages and `portfolio_counts()`
-land at **33-90 ms** once past first-use plan compilation — at or better than M7's original
-130-570 ms baseline, meaning M9's resolver join introduced no steady-state regression. **A real,
-disclosed finding, not swept under the rug:** the very first invocation of each distinct sort-mode
-query shape measured 4-7.5 seconds in CI's environment; re-running the identical `value_desc`
-first-page query later in the same session measured 64.7 ms — strong circumstantial evidence this
-is a one-time PL/pgSQL plan-compilation cost paid once per (small, local, ephemeral-stack)
-connection-pool member, not a per-request execution cost, but this was not confirmed with
-`EXPLAIN ANALYZE` and should be re-verified against the real deployed project's connection
-behaviour by a future session before being treated as fully closed. The perf-benchmark script
+key, already exported for `pnpm test:db`, never a production credential). The perf-benchmark script
 itself needed two real fixes along the way: it previously assumed the existing catalog had enough
 `(variant, condition)` identity slots to avoid collisions, which CI's small ephemeral seed catalog
 broke immediately — it now seeds its own ~3,500-variant synthetic catalog (matching the documented
 production scale) and tracks every combo it has ever picked, never risking a duplicate insert
 regardless of catalog size.
+
+**A real, unresolved `list_portfolio` performance problem was found — disclosed plainly, not
+downplayed.** Filtered/scoped/keyset-cursor queries and `portfolio_counts()` are genuinely fast:
+26-90 ms across multiple runs, at or better than M7's 130-570 ms baseline. The DEFAULT, unfiltered
+first-page path (every sort mode, `p_limit=30`, no cursor — what a real Portfolio page loads on
+open) is not: measured at 4.0-7.6 seconds across three separate CI runs on the feature branch, and
+on the very first run against `main` after PR #27 merged, one such call hit a genuine Postgres
+`statement timeout` (57014) — an outright failure, not just slowness, at 10,000 lots / ~3,500
+distinct variants, squarely inside this app's stated target scale. This is the same failure class
+M7's original benchmark found and fixed once already (D-054's LATERAL regression) — a real,
+current-day product risk, not a benchmark curiosity.
+
+**One hypothesis was tested and disproven, honestly reported as such.** `portfolio_counts()` calls
+the identical `resolve_variant_market_values` resolver with the identical large variant array and
+stays fast, pointing at `list_portfolio`'s own ~12-branch CASE-based ORDER BY/cursor predicate
+(absent from `portfolio_counts`) as the likely differentiator. A follow-up PR
+(fix/m91-portfolio-query-timeout, #28) tried forcing PL/pgSQL onto a generic query plan
+(`ALTER FUNCTION ... SET plan_cache_mode = 'force_generic_plan'`), reasoning that expensive
+per-session custom-plan replanning of such a complex query might explain the pattern. **CI proved
+this wrong, not right:** it made previously-fast filtered queries slow too (low-value/missing-value
+filters: ~450 ms → ~2.6 s) while the already-slow unfiltered path stayed just as slow. Reverted —
+never applied to the real project, so no cleanup was needed there. The benchmark script itself was
+made resilient instead (`timeRpc`/`report()` now catch and report a real timeout inline rather than
+crashing the whole run and hiding every other measurement — matching the script's own stated design
+of reporting numbers, never asserting a threshold).
+
+**Root cause is not yet identified.** The most likely remaining explanation, not yet confirmed: the
+unfiltered path must materialize and sort the full `lot_agg` CTE (all ~7,500-8,000 holdings) plus
+evaluate two `LATERAL` price-derivation blocks for every one of them before `ORDER BY`/`LIMIT` can
+apply — genuinely substantial per-call work that a real, selective filter or cursor predicate lets
+the planner avoid, but this was not confirmed with `EXPLAIN ANALYZE` against a real large dataset.
+**A dedicated follow-up session must investigate this with real `EXPLAIN ANALYZE` tooling — ideally
+using the JWT-claim-impersonation technique (`set local role authenticated; select
+set_config('request.jwt.claims', ...)`) against a seeded large dataset in CI's ephemeral stack or a
+throwaway project — before M9's Portfolio performance gate can be called closed.** This is the
+single most important open item from this session; see MENTOR ATTENTION in
+`claude_outputs/output_16.txt`.
 
 **Real FX cron verified end-to-end.** `ingest-fx` had not yet reached its first scheduled 17:00 UTC
 run this session (checked: `cron.job`/`cron.job_run_details` against the real project, current
@@ -286,31 +319,38 @@ a genuine `price_sync_runs` row (`kind='fx'`, `succeeded`, 2 snapshots written),
 `fx_rates` rows (EUR/NOK, USD/NOK, `source='norges_bank'`, dated 2026-08-21 — Norges Bank's most
 recent business day). The scheduled daily tick will now also fire normally going forward.
 
-**Two real bugs found and fixed before merge, neither by CI's automated suites:** a stale
-`scripts/grant-audit.sql` entry for `get_market_movers`'s old two-argument signature (CI's
-privilege-convergence step caught this one correctly and immediately); and `search-prices`'
-NOK-conversion code reading `fx_rates.rate` as if it were already decimal text, when PostgREST
-actually serializes a plain `numeric` column `select` as a JSON number — would have made every
-`search-prices` call 500 in production, silently degrading every Search/Card Detail price to "—"
-(caught by code review against the project's own established "cast money to text" convention, not
-by any test — see PROJECT_JOURNAL.md 2026-08-27 for both, including the standing gap this second
-one exposes: no test coverage exists yet for Edge Function business logic, only for the pure
-mapping layer).
+**Real bugs found and fixed, none silently absorbed:** a stale `scripts/grant-audit.sql` entry for
+`get_market_movers`'s old two-argument signature (CI's privilege-convergence step caught this one
+correctly and immediately, before merge); `search-prices`' NOK-conversion code reading
+`fx_rates.rate` as if it were already decimal text, when PostgREST actually serializes a plain
+`numeric` column `select` as a JSON number — would have made every `search-prices` call 500 in
+production, silently degrading every Search/Card Detail price to "—" (caught by code review against
+the project's own established "cast money to text" convention, not by any test, before merge); and
+— found only *after* PR #27 merged, on the very first post-merge run against `main` — the real
+`list_portfolio` statement-timeout regression described above, still not fully resolved as of this
+handover (PR #28 makes CI resilient to it and reverts a disproven fix attempt, but does not fix the
+underlying query cost). See PROJECT_JOURNAL.md 2026-08-27 for the first two; the third is carried in
+this section and in `claude_outputs/output_16.txt`'s MENTOR ATTENTION, including the standing gap
+the second bug exposes: no test coverage exists yet for Edge Function business logic, only for the
+pure mapping layer.
 
 **Verified, actually run:** `pnpm check` (typecheck/lint/format/domain tests, **108/108**, up from
-100 — the new `tests/data/pricing.test.ts`) green locally. CI green on both jobs after several real
-iterations (`build-and-test`; `db-tests` — **370/370 database and authorization tests**, up from
-353 at M9, including the new M9.1 retention/pagination/market-movers suites, the storage benchmark,
-and the 10k-lot benchmark, all now permanent `db-tests` steps). PR #27 — see "Owner check" below
-for what remains a manual step.
+100 — the new `tests/data/pricing.test.ts`) green locally. CI green on both jobs on `main` after
+several real iterations (`build-and-test`; `db-tests` — **370/370 database and authorization
+tests**, up from 353 at M9, including the new M9.1 retention/pagination/market-movers suites, the
+storage benchmark, and the 10k-lot benchmark, all now permanent `db-tests` steps — green in the
+sense that the job completes and reports; the `list_portfolio` finding above is a disclosed,
+unresolved product-performance risk, not a passing check). PR #27 (the M9.1 feature set) and PR #28
+(the post-merge performance-regression response) both merged — see "Owner check" below for what
+remains a manual step.
 
 **Not done this session, disclosed rather than silently accepted:**
 
-1. The first-invocation query-plan-compilation timing (above) was not confirmed with
-   `EXPLAIN ANALYZE` or re-measured against the real hosted project's connection pooling
-   (Supavisor) behaviour — a future session should do this before treating list_portfolio's
-   performance as fully proven at production scale, though the steady-state numbers give no reason
-   for concern.
+1. **`list_portfolio`'s default (unfiltered, first-page) query path still has an unresolved,
+   sometimes-severe (statement-timeout-grade) performance problem at 10,000-lot scale.** This is
+   the most important open item — see above for the full account and MENTOR ATTENTION in
+   `claude_outputs/output_16.txt`. Do not treat M9's Portfolio-performance gate as closed until a
+   future session confirms a real fix with `EXPLAIN ANALYZE`.
 2. No new automated test coverage exists for Edge Function HTTP-handler logic (only the pure
    mapping layer, `tests/data/tcgdex-pricing.test.ts`) — the fx_rates-numeric-serialization bug
    this session found and fixed would have been the first thing such coverage caught.
