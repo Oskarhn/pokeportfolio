@@ -321,13 +321,35 @@ async function seedPricing(variantIds) {
   }
 }
 
+// M9.1: never throws. This benchmark's own stated design (TESTING.md §7) is to REPORT numbers,
+// never assert a pass/fail threshold — a real Postgres statement timeout on one query is itself a
+// number worth reporting, not a reason to crash the whole run and hide every other measurement.
+// A caller that needs the actual rows (for a cursor) still gets `data: null` on failure and must
+// handle that explicitly.
 async function timeRpc(client, name, args) {
   const t0 = performance.now()
   const { data, error, count } = await client.rpc(name, args)
   const ms = performance.now() - t0
-  if (error) throw error
+  if (error) return { ms, rows: 0, payloadBytes: 0, count: null, data: null, error: error.message }
   const payloadBytes = Buffer.byteLength(JSON.stringify(data ?? []))
-  return { ms, rows: Array.isArray(data) ? data.length : 1, payloadBytes, count }
+  return {
+    ms,
+    rows: Array.isArray(data) ? data.length : 1,
+    payloadBytes,
+    count,
+    data,
+    error: null,
+  }
+}
+
+function report(label, result) {
+  if (result.error) {
+    console.log(`  ${label.padEnd(16)} FAILED after ${result.ms.toFixed(1)} ms: ${result.error}`)
+  } else {
+    console.log(
+      `  ${label.padEnd(16)} ${result.ms.toFixed(1).padStart(7)} ms  ${String(result.rows).padStart(3)} rows  ${result.payloadBytes.toLocaleString()} bytes`,
+    )
+  }
 }
 
 async function main() {
@@ -368,34 +390,38 @@ async function main() {
       'added_newest',
     ]
     for (const sort of sorts) {
-      const result = await timeRpc(userClient, 'list_portfolio', {
-        p_sort: sort,
-        p_limit: 30,
-      })
-      console.log(
-        `  ${sort.padEnd(16)} ${result.ms.toFixed(1).padStart(7)} ms  ${String(result.rows).padStart(3)} rows  ${result.payloadBytes.toLocaleString()} bytes`,
-      )
+      const result = await timeRpc(userClient, 'list_portfolio', { p_sort: sort, p_limit: 30 })
+      report(sort, result)
     }
 
     console.log('\nBenchmark: list_portfolio filtered (condition=NM)')
-    const filtered = await timeRpc(userClient, 'list_portfolio', {
-      p_sort: 'name_asc',
-      p_limit: 30,
-      p_condition: 'NM',
-    })
-    console.log(`  ${filtered.ms.toFixed(1)} ms, ${filtered.rows} rows`)
+    report(
+      'filtered',
+      await timeRpc(userClient, 'list_portfolio', {
+        p_sort: 'name_asc',
+        p_limit: 30,
+        p_condition: 'NM',
+      }),
+    )
 
     console.log('\nBenchmark: keyset second page (name_asc)')
-    const first = await userClient.rpc('list_portfolio', { p_sort: 'name_asc', p_limit: 30 })
-    if (first.error) throw first.error
-    const lastRow = first.data.at(-1)
-    const second = await timeRpc(userClient, 'list_portfolio', {
-      p_sort: 'name_asc',
-      p_limit: 30,
-      p_cursor_holding_id: lastRow.holding_id,
-      p_cursor_name: lastRow.card_name ?? '',
-    })
-    console.log(`  ${second.ms.toFixed(1)} ms, ${second.rows} rows`)
+    const first = await timeRpc(userClient, 'list_portfolio', { p_sort: 'name_asc', p_limit: 30 })
+    const lastRow = first.data?.at(-1)
+    if (lastRow) {
+      report(
+        'next page',
+        await timeRpc(userClient, 'list_portfolio', {
+          p_sort: 'name_asc',
+          p_limit: 30,
+          p_cursor_holding_id: lastRow.holding_id,
+          p_cursor_name: lastRow.card_name ?? '',
+        }),
+      )
+    } else {
+      console.log(
+        `  first page FAILED (${first.error}) — cannot fetch a cursor to time the next page`,
+      )
+    }
 
     // M9.1 addition (TESTING.md §7 gate, prompt §84-86): value_desc's keyset page is the one M9
     // actually changed (resolver join, holding-total value cursor) — the M7 benchmark predates
@@ -405,56 +431,65 @@ async function main() {
       p_sort: 'value_desc',
       p_limit: 30,
     })
-    console.log(`  first page  ${firstValue.ms.toFixed(1)} ms, ${firstValue.rows} rows`)
-    const lastValueRow = (
-      await userClient.rpc('list_portfolio', { p_sort: 'value_desc', p_limit: 30 })
-    ).data.at(-1)
-    const secondValue = await timeRpc(userClient, 'list_portfolio', {
-      p_sort: 'value_desc',
-      p_limit: 30,
-      p_cursor_holding_id: lastValueRow.holding_id,
-      p_cursor_name: lastValueRow.card_name ?? lastValueRow.manual_name ?? '',
-      p_cursor_value_minor:
-        lastValueRow.holding_value_nok_minor === null
-          ? null
-          : Number(lastValueRow.holding_value_nok_minor),
-      p_cursor_has_value: lastValueRow.holding_value_nok_minor !== null,
-    })
-    console.log(`  next page   ${secondValue.ms.toFixed(1)} ms, ${secondValue.rows} rows`)
+    report('first page', firstValue)
+    const lastValueRow = firstValue.data?.at(-1)
+    if (lastValueRow) {
+      report(
+        'next page',
+        await timeRpc(userClient, 'list_portfolio', {
+          p_sort: 'value_desc',
+          p_limit: 30,
+          p_cursor_holding_id: lastValueRow.holding_id,
+          p_cursor_name: lastValueRow.card_name ?? lastValueRow.manual_name ?? '',
+          p_cursor_value_minor:
+            lastValueRow.holding_value_nok_minor === null
+              ? null
+              : Number(lastValueRow.holding_value_nok_minor),
+          p_cursor_has_value: lastValueRow.holding_value_nok_minor !== null,
+        }),
+      )
+    } else {
+      console.log('  next page SKIPPED — first page failed, no cursor available')
+    }
 
     console.log('\nBenchmark: list_portfolio low-value filter')
-    const lowValue = await timeRpc(userClient, 'list_portfolio', {
-      p_sort: 'value_asc',
-      p_limit: 30,
-      p_low_value: true,
-    })
-    console.log(`  ${lowValue.ms.toFixed(1)} ms, ${lowValue.rows} rows`)
+    report(
+      'low-value',
+      await timeRpc(userClient, 'list_portfolio', {
+        p_sort: 'value_asc',
+        p_limit: 30,
+        p_low_value: true,
+      }),
+    )
 
     console.log('\nBenchmark: list_portfolio missing-value filter')
-    const missingValue = await timeRpc(userClient, 'list_portfolio', {
-      p_sort: 'name_asc',
-      p_limit: 30,
-      p_missing_value: true,
-    })
-    console.log(`  ${missingValue.ms.toFixed(1)} ms, ${missingValue.rows} rows`)
+    report(
+      'missing-value',
+      await timeRpc(userClient, 'list_portfolio', {
+        p_sort: 'name_asc',
+        p_limit: 30,
+        p_missing_value: true,
+      }),
+    )
 
     console.log('\nBenchmark: list_portfolio custom collection scope')
-    const collectionScope = await timeRpc(userClient, 'list_portfolio', {
-      p_sort: 'value_desc',
-      p_limit: 30,
-      p_custom_collection_id: collectionId,
-    })
-    console.log(`  ${collectionScope.ms.toFixed(1)} ms, ${collectionScope.rows} rows`)
+    report(
+      'coll. scope',
+      await timeRpc(userClient, 'list_portfolio', {
+        p_sort: 'value_desc',
+        p_limit: 30,
+        p_custom_collection_id: collectionId,
+      }),
+    )
 
     console.log('\nBenchmark: portfolio_counts()')
-    const counts = await timeRpc(userClient, 'portfolio_counts', {})
-    console.log(`  ${counts.ms.toFixed(1)} ms`)
+    report('counts', await timeRpc(userClient, 'portfolio_counts', {}))
 
     console.log('\nBenchmark: portfolio_counts() custom collection scope')
-    const countsScope = await timeRpc(userClient, 'portfolio_counts', {
-      p_custom_collection_id: collectionId,
-    })
-    console.log(`  ${countsScope.ms.toFixed(1)} ms`)
+    report(
+      'counts scoped',
+      await timeRpc(userClient, 'portfolio_counts', { p_custom_collection_id: collectionId }),
+    )
 
     console.log(`\nSeeded holdings: ~${LOT_COUNT} lots (with ~30% identity reuse).`)
   } finally {
