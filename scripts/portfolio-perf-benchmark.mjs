@@ -4,10 +4,13 @@
  * §104). Seeds a synthetic user with a large, varied, synthetic collection — duplicates, multiple
  * conditions, raw and graded holdings, tags, storage locations, custom collection membership —
  * then times the real `list_portfolio`/`portfolio_counts` RPCs the Portfolio page calls, across
- * every sort mode and a couple of representative filters. Reports numbers; it does not assert a
- * pass/fail threshold, because a fixed millisecond budget on a shared CI runner is exactly the
- * "microbenchmark theatre" the prompt says not to build. The milestone gate this backs is
- * behavioural — a real browser stays interactive — verified separately (HANDOVER.md/output_11).
+ * every sort mode and a couple of representative filters. Reports numbers, and (M9.2, DECISIONS.md
+ * D-059) fails the step if any call exceeds one generous catastrophic threshold (1.5s) or errors
+ * outright — not a tight millisecond budget (still not "microbenchmark theatre"), but this defect
+ * class has now recurred three times without CI ever failing on its own benchmark, and an explicit
+ * ANALYZE before timing (below) removed the measurement noise that justified never gating on this.
+ * The milestone gate this backs is also behavioural — a real browser stays interactive — verified
+ * separately (HANDOVER.md/output_11).
  *
  * SAFETY. This inserts real rows — deliberately many of them — so it must run against either an
  * ephemeral/local Supabase stack or a throwaway synthetic account, never the owner's real account
@@ -27,6 +30,9 @@
 
 import { createClient } from '@supabase/supabase-js'
 import { createHash, randomUUID } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+import path from 'node:path'
 
 const url = process.env.SUPABASE_URL
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -40,6 +46,79 @@ const args = new Set(process.argv.slice(2))
 const lotArg = [...args].find((a) => a.startsWith('--lots='))
 const LOT_COUNT = lotArg ? Number(lotArg.split('=')[1]) : 10_000
 const KEEP = args.has('--keep')
+
+// M9.2 investigation tool (docs/TESTING.md §7, DECISIONS.md D-059): scripts/portfolio-perf-explain.sql
+// captures real EXPLAIN (ANALYZE, BUFFERS, SETTINGS) evidence, run twice — pre- and post-ANALYZE —
+// via psql when a direct Postgres connection string is available (CI's db-tests job exports DB_URL
+// after `supabase status`). This is what found the real M9.2 root cause: right after this script's
+// own bulk seed, every seeded table's pg_class.reltuples is -1 ("never analyzed" — a fresh CI
+// Postgres instance has no autovacuum worker cycle in that short a window), so the planner falls
+// back to its no-statistics defaults for holdings/acquisition_lots/card_variants/cards/card_sets/
+// price_snapshots alike — and BOTH list_portfolio and portfolio_counts() were equally catastrophic
+// (7.4-7.9s) before ANALYZE, not just list_portfolio. Not run by default (it adds ~40s per CI run
+// for evidence this investigation has already banked) — pass --explain to re-run it, e.g. to
+// re-verify after a future migration changes one of these tables' shape.
+const RUN_EXPLAIN = args.has('--explain')
+const DB_URL = process.env.DB_URL
+const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url))
+const EXPLAIN_SQL_PATH = path.join(SCRIPT_DIR, 'portfolio-perf-explain.sql')
+
+// Tables list_portfolio's plan actually depends on the row counts of (holdings/acquisition_lots via
+// lot_agg; card_variants/cards/card_sets via the catalog joins; manual_valuations via the mv join;
+// price_snapshots via resolve_variant_market_values). profiles/fx_rates are not bulk-inserted by
+// this benchmark and stay tiny, so ANALYZE-ing them would not change anything measured here —
+// deliberately not included (TESTING.md §27's "do not randomly ANALYZE/index everywhere" applies
+// equally to this diagnostic step).
+const ANALYZE_TABLES = [
+  'holdings',
+  'acquisition_lots',
+  'card_variants',
+  'cards',
+  'card_sets',
+  'manual_valuations',
+  'price_snapshots',
+]
+
+function runPsql(argsList) {
+  return execFileSync('psql', argsList, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+}
+
+function runExplainPhase(phase, userId) {
+  if (!DB_URL || !RUN_EXPLAIN) return
+  try {
+    console.log(`\n=== EXPLAIN capture: ${phase} ===`)
+    const output = runPsql([
+      DB_URL,
+      '-v',
+      'ON_ERROR_STOP=1',
+      '-v',
+      `user_id=${userId}`,
+      '-v',
+      `phase=${phase}`,
+      '-f',
+      EXPLAIN_SQL_PATH,
+    ])
+    console.log(output)
+  } catch (err) {
+    console.log(`  EXPLAIN capture (${phase}) failed, continuing without it: ${err.message}`)
+  }
+}
+
+function analyzeSeededTables() {
+  if (!DB_URL) {
+    console.log(
+      '\nDB_URL not set — skipping ANALYZE of seeded tables. Timed results below reflect ' +
+        'whatever planner statistics happen to exist (may understate real-world performance, ' +
+        'which normally benefits from autovacuum/autoanalyze running over time — see TESTING.md §7).',
+    )
+    return
+  }
+  console.log(`\nRunning ANALYZE on: ${ANALYZE_TABLES.join(', ')}...`)
+  const t0 = performance.now()
+  const sql = ANALYZE_TABLES.map((t) => `analyze public.${t};`).join(' ')
+  runPsql([DB_URL, '-v', 'ON_ERROR_STOP=1', '-c', sql])
+  console.log(`ANALYZE complete in ${((performance.now() - t0) / 1000).toFixed(1)}s`)
+}
 
 const service = createClient(url, serviceRoleKey, {
   auth: { autoRefreshToken: false, persistSession: false },
@@ -321,11 +400,11 @@ async function seedPricing(variantIds) {
   }
 }
 
-// M9.1: never throws. This benchmark's own stated design (TESTING.md §7) is to REPORT numbers,
-// never assert a pass/fail threshold — a real Postgres statement timeout on one query is itself a
-// number worth reporting, not a reason to crash the whole run and hide every other measurement.
-// A caller that needs the actual rows (for a cursor) still gets `data: null` on failure and must
-// handle that explicitly.
+// M9.1: never throws. A real Postgres statement timeout on one query is itself a number worth
+// reporting, not a reason to crash the whole run and hide every other measurement — callers below
+// decide what a failure means (M9.2: it now fails the step, see SLOW_MS below), this function just
+// reports. A caller that needs the actual rows (for a cursor) still gets `data: null` on failure and
+// must handle that explicitly.
 async function timeRpc(client, name, args) {
   const t0 = performance.now()
   const { data, error, count } = await client.rpc(name, args)
@@ -342,13 +421,92 @@ async function timeRpc(client, name, args) {
   }
 }
 
+// M9.2 (TESTING.md §7/§41, DECISIONS.md D-059): this defect class has now recurred three times
+// (M7's LATERAL regression, M9.1's statement timeout, both traced to real causes only after a
+// dedicated investigation) without CI ever failing on its own benchmark — TESTING.md §7's original
+// "never assert a threshold" reasoning was about a *tight* millisecond budget being unfair on a
+// shared runner, not about ignoring an outright multi-second regression or timeout forever. Now that
+// the benchmark seeds representative planner statistics before timing anything (analyzeSeededTables,
+// above — this is what made the M9.1 "one call 7.5s, another 64.7ms" ambiguity disappear), a result
+// past SLOW_MS is real, not noise, and the whole point of catching this earlier is a red CI job, not
+// a log line nobody reads. Every result below (repeated-sort rows and every single-shot call) is
+// checked against this one generous, catastrophic-only threshold; process.exitCode is set to 1 if
+// anything trips it, failing the `db-tests` job.
+const SLOW_MS = 1500
+let anyFailure = false
+
 function report(label, result) {
   if (result.error) {
     console.log(`  ${label.padEnd(16)} FAILED after ${result.ms.toFixed(1)} ms: ${result.error}`)
+    anyFailure = true
   } else {
+    const flag = result.ms > SLOW_MS ? '  SLOW' : ''
     console.log(
-      `  ${label.padEnd(16)} ${result.ms.toFixed(1).padStart(7)} ms  ${String(result.rows).padStart(3)} rows  ${result.payloadBytes.toLocaleString()} bytes`,
+      `  ${label.padEnd(16)} ${result.ms.toFixed(1).padStart(7)} ms  ${String(result.rows).padStart(3)} rows  ${result.payloadBytes.toLocaleString()} bytes${flag}`,
     )
+    if (result.ms > SLOW_MS) anyFailure = true
+  }
+}
+
+// A single timed call cannot distinguish "this sort is slow" from "this was the unlucky first call
+// before a plan/cache warmed up" (docs/PROJECT_JOURNAL.md, the same ambiguity the M9.1 investigation
+// left open). Every supported sort reports first/median/max over several repeated calls, feeding a
+// summary table so a reviewer sees the whole picture at a glance instead of scrolling logs. A real
+// Postgres statement timeout (57014) is reported as a row, never treated as a crash — this script's
+// own stated design (see timeRpc's comment) — and is exactly the kind of result this table exists to
+// make impossible to miss.
+const REPEATS_PER_SORT = 3
+
+const summaryRows = []
+
+async function timeSortRepeated(client, sort, extraArgs = {}) {
+  const timings = []
+  let sawError = null
+  let sampleRowCount = 0
+  for (let i = 0; i < REPEATS_PER_SORT; i += 1) {
+    const result = await timeRpc(client, 'list_portfolio', {
+      p_sort: sort,
+      p_limit: 30,
+      ...extraArgs,
+    })
+    if (result.error) {
+      sawError = result.error
+      timings.push(result.ms)
+    } else {
+      timings.push(result.ms)
+      sampleRowCount = result.rows
+    }
+  }
+  timings.sort((a, b) => a - b)
+  const first = timings[0]
+  const max = timings[timings.length - 1]
+  const median = timings[Math.floor(timings.length / 2)]
+  const status = sawError ? `FAILED: ${sawError}` : max > SLOW_MS ? 'SLOW' : 'ok'
+  if (sawError || max > SLOW_MS) anyFailure = true
+  summaryRows.push({ sort, first, median, max, rows: sampleRowCount, status })
+  console.log(
+    `  ${sort.padEnd(16)} first ${first.toFixed(1).padStart(7)} ms  median ${median.toFixed(1).padStart(7)} ms  max ${max.toFixed(1).padStart(7)} ms  ${status}`,
+  )
+}
+
+function printSummaryTable() {
+  console.log('\n=== Summary: sort | first | median | max | status (ms, p_limit=30) ===')
+  const header = `${'sort'.padEnd(18)} ${'first'.padStart(9)} ${'median'.padStart(9)} ${'max'.padStart(9)}  status`
+  console.log(header)
+  console.log('-'.repeat(header.length))
+  for (const row of summaryRows) {
+    console.log(
+      `${row.sort.padEnd(18)} ${row.first.toFixed(1).padStart(9)} ${row.median.toFixed(1).padStart(9)} ${row.max.toFixed(1).padStart(9)}  ${row.status}`,
+    )
+  }
+  const slow = summaryRows.filter((r) => r.status !== 'ok')
+  if (slow.length > 0) {
+    console.log(
+      `\n::error::${slow.length} Portfolio benchmark row(s) exceeded ${SLOW_MS} ms or failed outright: ` +
+        slow.map((r) => r.sort).join(', '),
+    )
+  } else {
+    console.log(`\nAll ${summaryRows.length} sorts stayed under ${SLOW_MS} ms on every run.`)
   }
 }
 
@@ -374,25 +532,41 @@ async function main() {
     await seedPricing(variantIds)
     const { collectionId } = await seed(user.id, variantIds)
 
+    // M9.2 investigation: capture the plan a real bulk-seed-then-query moment produces (before
+    // autovacuum/autoanalyze — or this script — has ever run ANALYZE on the freshly-inserted rows),
+    // then ANALYZE and capture again. See scripts/portfolio-perf-explain.sql's header.
+    runExplainPhase('cold-pre-analyze', user.id)
+    analyzeSeededTables()
+    runExplainPhase('post-analyze', user.id)
+
     const { error: signInError } = await userClient.auth.signInWithPassword({
       email: user.email,
       password: user.password,
     })
     if (signInError) throw signInError
 
-    console.log('\nBenchmark: list_portfolio (limit 30, first page) by sort mode')
+    console.log(
+      `\nBenchmark: list_portfolio (limit 30, first page) by sort mode — ${REPEATS_PER_SORT} runs each, post-ANALYZE`,
+    )
+    // Full public.portfolio_sort_order enum (TESTING.md §32) — every sort the UI actually offers.
     const sorts = [
       'value_desc',
+      'value_asc',
       'name_asc',
+      'name_desc',
       'set_asc',
       'quantity_desc',
       'acquired_newest',
+      'acquired_oldest',
       'added_newest',
+      'added_oldest',
+      'number_asc',
+      'number_desc',
     ]
     for (const sort of sorts) {
-      const result = await timeRpc(userClient, 'list_portfolio', { p_sort: sort, p_limit: 30 })
-      report(sort, result)
+      await timeSortRepeated(userClient, sort)
     }
+    printSummaryTable()
 
     console.log('\nBenchmark: list_portfolio filtered (condition=NM)')
     report(
@@ -492,6 +666,15 @@ async function main() {
     )
 
     console.log(`\nSeeded holdings: ~${LOT_COUNT} lots (with ~30% identity reuse).`)
+
+    if (anyFailure) {
+      console.log(
+        `\n::error::Portfolio benchmark: at least one call exceeded ${SLOW_MS} ms or failed — ` +
+          'failing this step (DECISIONS.md D-059 policy: this defect class has recurred before, ' +
+          'and planner statistics are now representative, so a catastrophic result here is real).',
+      )
+      process.exitCode = 1
+    }
   } finally {
     if (KEEP) {
       console.log(`\n--keep set: leaving synthetic account ${user.email} (${user.id}) in place.`)

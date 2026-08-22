@@ -1498,3 +1498,89 @@ only (`create or replace function`, no signature change, no privilege-baseline u
 COST_POLICY.md §6 (Supabase row) and DATA_MODEL.md §4.2 restate the measured figures. Revisit if a
 future session's real measurement against `pokeportfolio-dev` diverges materially from this
 synthetic projection, or when the database approaches the existing ~350 MB trigger.
+
+---
+
+## D-059 — `list_portfolio`'s 10k-lot regression was stale planner statistics from the benchmark's own bulk seed, not an application defect; `list_portfolio`/`portfolio_counts` are unchanged
+
+**2026-08-22 · Accepted**
+
+**Context.** M9.1 (D-054's carry-forward) left `list_portfolio`'s unfiltered first-page query an
+open, real risk: 4-7.6s across three CI runs, one genuine Postgres statement timeout (57014) on the
+first post-merge run against `main`. `portfolio_counts()` — calling the identical
+`resolve_variant_market_values` resolver with the identical variant array — stayed fast (26-90ms),
+pointing at `list_portfolio`'s own ~12-branch CASE-based `ORDER BY`/cursor predicate as the likely
+differentiator. `force_generic_plan` (PR #28) was tried against that theory and disproved it: the
+already-slow unfiltered path stayed just as slow, and previously-fast filtered queries got
+substantially worse (~450ms → ~2.6s). Root cause was left genuinely unknown, carried into M9.2.
+
+**Investigation.** `scripts/portfolio-perf-explain.sql` (new) captures real
+`EXPLAIN (ANALYZE, BUFFERS, SETTINGS)` against the benchmark's seeded 10,000-lot/~3,500-variant
+account, impersonating the synthetic user via the same JWT-claim technique Supabase's own stack uses
+(`set role authenticated; select set_config('request.jwt.claims', ..., false)`). Run twice by
+`portfolio-perf-benchmark.mjs`: immediately after the bulk seed, and again after an explicit
+`ANALYZE` of the tables `list_portfolio`'s plan depends on (`holdings`, `acquisition_lots`,
+`card_variants`, `cards`, `card_sets`, `manual_valuations`, `price_snapshots`).
+
+**Finding, from a real CI run (PR #30/#31):** immediately after the ~2.2s bulk seed, every one of
+those seven tables' `pg_class.reltuples` was **`-1`** — Postgres's "never analyzed" sentinel. A
+fresh ephemeral CI Postgres instance has no autovacuum worker cycle in that short a window (default
+`autovacuum_naptime` is 60s; this benchmark's entire seed-to-query sequence completes in low single
+digit seconds), so the planner had genuinely zero statistics for any of these tables and fell back
+to its no-information defaults. **Critically, `portfolio_counts()` was equally catastrophic in this
+state — 7754ms, not the 26-90ms M9.1 measured** — proving the earlier "portfolio_counts stays fast,
+so the differentiator must be list_portfolio's own ORDER BY/cursor shape" reasoning was itself an
+artifact of *when* in the benchmark run each function happened to be called, not a real
+architectural difference. `Buffers: shared hit` corroborates the mechanism: ~1.40 million shared
+buffer hits (both functions, cold) collapsing to 649-3,367 after `ANALYZE` — a ~400-2000x reduction,
+consistent with the planner switching away from whatever plan a no-statistics fallback produces
+(most likely nested-loop-shaped, matching the buffer count's rough proportionality to
+holdings-count × per-row lookup cost) to one an accurate row-count estimate actually supports. After
+`ANALYZE`: all 12 sorts × 3 repeated runs landed at 62-202ms (first/median/max), `portfolio_counts()`
+at 32ms, every filtered/scoped/keyset-cursor path 30-70ms — matching or beating M7's original
+130-570ms baseline, comfortably inside TESTING.md §31's <1s target with real headroom. This also
+explains the earlier "same query measured 7,472ms once and 64.7ms later in the same run" observation
+plainly: autovacuum's autoanalyze had simply caught up in the interim, not any plan-cache or
+custom/generic-plan effect (which is also why `force_generic_plan` never could have fixed this —
+missing `pg_statistic` rows produce a bad estimate for *any* plan, custom or generic alike).
+
+**Decision.** No change to `list_portfolio`'s or `portfolio_counts`'s SQL — TESTING.md §45's
+"ANALYZE alone explains it" branch. The real, permanent fix is to the benchmark's own methodology
+(`portfolio-perf-benchmark.mjs` now runs `ANALYZE` on the seeded tables before timing anything),
+because that is the actual defect: measuring "milliseconds after a 10,000-row synthetic bulk insert,
+before any autoanalyze has ever run" is not representative of production, where holdings accumulate
+incrementally (one search-and-add or one purchase-import line at a time) and autovacuum's
+autoanalyze keeps statistics continuously current — the all-tables-`reltuples=-1` state this
+investigation found essentially cannot occur under that access pattern. TESTING.md §7's benchmark
+description and this repository's mental model of "list_portfolio is architecturally fragile" both
+needed correcting, not the function.
+
+**A real, separate policy change, made because the evidence now supports it:** the benchmark
+previously never asserted a pass/fail threshold at all (TESTING.md §7's original "no microbenchmark
+theatre" reasoning). With representative statistics now guaranteed before every timed call, a
+genuine multi-second result or timeout is no longer measurement noise — it is real, and this defect
+class has now recurred three times (M7's LATERAL regression, M9.1's timeout, and the false lead this
+decision closes) without CI ever failing on its own benchmark. `portfolio-perf-benchmark.mjs` now
+sets a non-zero exit code — failing the `db-tests` job — if any call exceeds one generous,
+catastrophic-only threshold (1.5s) or errors outright. This is not the tight per-sort millisecond
+budget §7 already rejected; it is a single backstop wide enough that ordinary CI-runner variance
+cannot trip it, narrow enough that a real regression (this milestone's own history shows what one
+looks like) cannot slip through silently again.
+
+**Alternatives.** Rewrite `list_portfolio` into explicit per-sort branches / pre-limit-before-value /
+whitelisted dynamic `EXECUTE` (the M9.2 prompt's own suggested candidates) — rejected: the evidence
+does not support any of them; `portfolio_counts()`'s identical cold-state collapse proves the
+`ORDER BY`/cursor shape was never the actual cause, so rewriting it would have been a correct-looking
+fix for the wrong diagnosis, adding real complexity and (per D-054's own standing checklist) real
+regression risk for zero measured benefit. Leave the benchmark's pass/fail policy unchanged
+(report-only forever) — rejected given the recurrence count; TESTING.md §41 explicitly invited this
+re-evaluation once benchmark validity was fixed.
+
+**Consequences.** `scripts/portfolio-perf-explain.sql` (new, `--explain`-gated, not run by default)
+stays available for a future investigation if a migration ever changes the shape of one of these
+tables again. No migration, no privilege-baseline change, no deployment to `pokeportfolio-dev` —
+application SQL is byte-for-byte unchanged from M9.1. `docs/TESTING.md` §7/§41 restate the
+ANALYZE-before-timing methodology and the new threshold policy. HANDOVER.md's M9 Portfolio-
+performance gate is closed. If a future session's real benchmark result exceeds 1.5s after this
+fix, treat it as a genuine regression from that session's own change, not a repeat of this root
+cause — verify with `--explain` before assuming otherwise.
