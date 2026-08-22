@@ -225,7 +225,7 @@ describe('thin_price_snapshots — 18-month synthetic retention matrix', () => {
     expect(data?.deleted_count).toBe(5)
 
     // Recent daily history untouched, byte-for-byte.
-    expect(await countRows(pikachu, 'tcgdex_cardmarket')).toBe(4) // 6 recent + 1 old survivor
+    expect(await countRows(pikachu, 'tcgdex_cardmarket')).toBe(7) // 6 recent + 1 old survivor
     const pikachuCmDates = await dates(pikachu, 'tcgdex_cardmarket')
     for (let i = 0; i < 6; i++) {
       expect(pikachuCmDates).toContain(isoDate(addDays(today, -i)))

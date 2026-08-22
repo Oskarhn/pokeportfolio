@@ -139,6 +139,22 @@ beforeAll(async () => {
   user = await createSyntheticUser(service, 'm91-value-pagination')
   client = await signInAs(user)
 
+  // price_snapshots is shared market data, not scoped to this test's synthetic user — another
+  // test file (e.g. tests/db/m9_valuation_resolver.test.ts) may have left a MORE RECENT snapshot
+  // for one of these shared seedCatalog variants than the one this file is about to seed, which
+  // the resolver would then prefer (fresh always wins by date, not by which test wrote it). Start
+  // from a clean slate for every variant this file's fixed-value fixture depends on.
+  await service
+    .from('price_snapshots')
+    .delete()
+    .in('card_variant_id', [
+      seedCatalog.pikachuVariantId,
+      seedCatalog.charizardVariantId,
+      seedCatalog.japaneseVariantId,
+      seedCatalog.grassEnergyVariantId,
+      seedCatalog.charizardShadowlessFirstEditionVariantId,
+    ])
+
   await service.from('fx_rates').upsert(
     [
       {
