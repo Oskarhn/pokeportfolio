@@ -43,6 +43,14 @@ alter table public.holdings
 -- so this cannot be a plain CHECK constraint on this table; it is folded into the existing
 -- ownership trigger below, which already looks the parent holding up for every insert/update.
 
+-- IMPORTANT — read before ever replacing this function again: the version being extended here is
+-- NOT 20260817120070's original (that one predates storage_location_id existing on this table at
+-- all). It is 20260821120020_m6_holdings_and_lots_extensions.sql's version, which added the
+-- storage_location_id ownership check below. An earlier draft of this migration replaced the
+-- function from the M3 original and silently dropped that check — caught by CI re-running
+-- tests/db/m6_constraints.test.ts's "storage_location_id belonging to another user is rejected"
+-- against this branch, not by inspection. Every check already present must survive a future edit
+-- here; diff against the full current body, not against whichever version happens to be open.
 create or replace function public.acquisition_lots_check_owner()
 returns trigger
 language plpgsql
@@ -52,6 +60,7 @@ declare
   parent_user_id uuid;
   parent_holding_kind public.holding_kind;
   line_user_id uuid;
+  location_user_id uuid;
 begin
   select user_id, holding_kind into parent_user_id, parent_holding_kind
     from public.holdings where id = new.holding_id;
@@ -70,6 +79,15 @@ begin
     select user_id into line_user_id from public.purchase_lines where id = new.purchase_line_id;
     if line_user_id is null or line_user_id <> new.user_id then
       raise exception 'acquisition_lots.purchase_line_id must belong to the same owner';
+    end if;
+  end if;
+
+  if new.storage_location_id is not null then
+    select user_id into location_user_id
+      from public.storage_locations
+      where id = new.storage_location_id;
+    if location_user_id is null or location_user_id <> new.user_id then
+      raise exception 'acquisition_lots.storage_location_id must belong to the same owner';
     end if;
   end if;
 

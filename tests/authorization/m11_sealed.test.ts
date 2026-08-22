@@ -42,10 +42,10 @@ afterAll(async () => {
 
 const today = new Date().toISOString().slice(0, 10)
 
-async function createCustomProduct(client: TestClient, name: string) {
+async function createCustomProduct(client: TestClient, creatorId: string, name: string) {
   const { data, error } = await client
     .from('sealed_products')
-    .insert({ name, language: 'en', product_type: 'other' })
+    .insert({ name, language: 'en', product_type: 'other', created_by_user_id: creatorId })
     .select('id, created_by_user_id')
     .single()
   if (error) throw new Error(error.message)
@@ -54,7 +54,7 @@ async function createCustomProduct(client: TestClient, name: string) {
 
 describe("sealed_products: the M11-specific gaps beyond M3's own CRUD coverage", () => {
   it('a user cannot promote their own custom product to curated by nulling created_by_user_id after the fact', async () => {
-    const own = await createCustomProduct(clientA, `promote-attempt-${Date.now()}`)
+    const own = await createCustomProduct(clientA, userA.id, `promote-attempt-${Date.now()}`)
     const { error } = await clientA
       .from('sealed_products')
       .update({ created_by_user_id: null })
@@ -69,7 +69,7 @@ describe("sealed_products: the M11-specific gaps beyond M3's own CRUD coverage",
   })
 
   it("B cannot delete A's custom product", async () => {
-    const created = await createCustomProduct(clientA, `a-delete-${Date.now()}`)
+    const created = await createCustomProduct(clientA, userA.id, `a-delete-${Date.now()}`)
     await clientB.from('sealed_products').delete().eq('id', created.id)
     const check = await service
       .from('sealed_products')
@@ -80,7 +80,7 @@ describe("sealed_products: the M11-specific gaps beyond M3's own CRUD coverage",
   })
 
   it("B cannot reference A's private product in a purchase line (server-side, not just hidden in search)", async () => {
-    const created = await createCustomProduct(clientA, `a-purchase-ref-${Date.now()}`)
+    const created = await createCustomProduct(clientA, userA.id, `a-purchase-ref-${Date.now()}`)
     const { error } = await clientB.rpc('create_purchase', {
       p_purchased_on: today,
       p_currency: 'NOK',
@@ -100,7 +100,7 @@ describe("sealed_products: the M11-specific gaps beyond M3's own CRUD coverage",
   })
 
   it("B cannot reference A's private product via direct add (add_card_acquisition)", async () => {
-    const created = await createCustomProduct(clientA, `a-direct-add-ref-${Date.now()}`)
+    const created = await createCustomProduct(clientA, userA.id, `a-direct-add-ref-${Date.now()}`)
     const { error } = await clientB.rpc('add_card_acquisition', {
       p_sealed_product_id: created.id,
       p_grading_state: 'raw',
@@ -114,7 +114,7 @@ describe("sealed_products: the M11-specific gaps beyond M3's own CRUD coverage",
   })
 
   it('A can buy their own custom product, and it stays invisible to B end-to-end', async () => {
-    const created = await createCustomProduct(clientA, `a-own-purchase-${Date.now()}`)
+    const created = await createCustomProduct(clientA, userA.id, `a-own-purchase-${Date.now()}`)
     const { data: purchase, error } = await clientA
       .rpc('create_purchase', {
         p_purchased_on: today,

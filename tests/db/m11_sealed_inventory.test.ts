@@ -76,6 +76,27 @@ async function holdingById(id: string): Promise<HoldingRow> {
   return data
 }
 
+/** A fresh, test-scoped custom sealed product for userA. Several tests below assert an exact
+ *  quantity/lot count/unique-active-valuation on "the" sealed holding for a product — reusing the
+ *  single shared curated `seedCatalog.sealedProductId` across many `it` blocks in this same file
+ *  would merge them all into one holding (holdings_identity, by design) and make those counts
+ *  order-dependent on whatever earlier tests happened to touch it first. A fresh product per test
+ *  gives each its own isolated holding instead. */
+async function createIsolatedProduct(): Promise<string> {
+  const { data, error } = await service
+    .from('sealed_products')
+    .insert({
+      name: `m11-isolated-${crypto.randomUUID()}`,
+      language: 'en',
+      product_type: 'other',
+      created_by_user_id: userA.id,
+    })
+    .select('id')
+    .single()
+  if (error) throw new Error(error.message)
+  return data.id
+}
+
 describe('direct sealed acquisition (add_card_acquisition, prompt §23-27)', () => {
   it('purchased/known cost: creates a real purchase, holding and lot with the chosen intent', async () => {
     const { data, error } = await clientA
@@ -156,6 +177,7 @@ describe('direct sealed acquisition (add_card_acquisition, prompt §23-27)', () 
 
 describe('sealed intent cardinality — the mandatory real-world gate (prompt §17-19/§79)', () => {
   it('three identical boxes can end up 2 keep_sealed + 1 planned_to_open, truthfully, without touching cost basis', async () => {
+    const productId = await createIsolatedProduct()
     const { data: purchase, error: purchaseError } = await clientA
       .rpc('create_purchase', {
         p_purchased_on: today,
@@ -163,7 +185,7 @@ describe('sealed intent cardinality — the mandatory real-world gate (prompt §
         p_lines: [
           {
             line_type: 'sealed',
-            sealed_product_id: seedCatalog.sealedProductId,
+            sealed_product_id: productId,
             quantity: 3,
             unit_price_minor: 15000,
           },
@@ -310,9 +332,10 @@ describe('sealed intent cardinality — the mandatory real-world gate (prompt §
 
 describe('manual valuation for sealed holdings — quantity multiplication, missing != zero (prompt §31-36/§81)', () => {
   it('per-unit manual value multiplies by quantity, and clearing it never becomes zero', async () => {
+    const productId = await createIsolatedProduct()
     const { data: acquired, error } = await clientA
       .rpc('add_card_acquisition', {
-        p_sealed_product_id: seedCatalog.sealedProductId,
+        p_sealed_product_id: productId,
         p_grading_state: 'raw',
         p_origin: 'pre_tracking',
         p_cost_basis_state: 'unknown',
@@ -388,10 +411,12 @@ describe('Portfolio value segment — cards vs sealed never silently merged (pro
       .single<{ holding_id: string }>()
     expect(gradedError).toBeNull()
 
-    // A sealed product with a manual value — the "sealed" contributor.
+    // A sealed product with a manual value — the "sealed" contributor. Isolated product: this
+    // holding must start with no active manual valuation of its own.
+    const productId = await createIsolatedProduct()
     const { data: sealed, error: sealedError } = await clientA
       .rpc('add_card_acquisition', {
-        p_sealed_product_id: seedCatalog.sealedProductId,
+        p_sealed_product_id: productId,
         p_grading_state: 'raw',
         p_origin: 'pre_tracking',
         p_cost_basis_state: 'unknown',
