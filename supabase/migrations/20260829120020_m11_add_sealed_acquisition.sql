@@ -127,7 +127,7 @@ begin
       attributable_cost_minor, attributable_cost_nok_minor
     ) values (
       v_purchase_id, v_user_id,
-      case when p_sealed_product_id is not null then 'sealed' else 'card' end,
+      case when p_sealed_product_id is not null then 'sealed' else 'card' end::public.line_type,
       'collectible', v_description,
       p_card_variant_id, p_sealed_product_id, p_condition, p_quantity, p_unit_cost_basis_minor,
       v_total_minor, v_total_minor, v_total_minor
