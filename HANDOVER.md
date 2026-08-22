@@ -4,28 +4,31 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-**Last updated:** 2026-08-22 — M1–M9.2 are complete in code and merged. **M9 + M9.1 + M9.2 are
-fully closed.** M9.2 resolved the one item M9.1 left open: `list_portfolio`'s 10,000-lot unfiltered
-first-page regression (4-7.6s, one real statement timeout) was root-caused with real `EXPLAIN
-(ANALYZE, BUFFERS, SETTINGS)` evidence — it was stale planner statistics from the CI benchmark's
-own bulk seed (every seeded table's `reltuples` was Postgres's "never analyzed" sentinel
-immediately after the insert), not an application defect. `portfolio_counts()` was equally
-catastrophic in that same cold state, which is what disproves the standing M9.1 theory that
-`list_portfolio`'s own CASE-based `ORDER BY`/cursor shape was the differentiator. **No SQL changed**
-— `list_portfolio`/`portfolio_counts` are byte-for-byte identical to M9.1. The benchmark now runs
-`ANALYZE` before timing (matching what production's continuous autovacuum already provides against
-real incremental usage) and fails CI outright on any call over 1.5s or an error. Full account:
-DECISIONS.md D-059, `claude_outputs/output_17.txt`. See "M9.2 — Portfolio query performance
-closeout" below.
+**Last updated:** 2026-08-28 — M1–M10 are complete in code, merged and deployed. **M10 (Sales and
+History) is closed.** Real sales with explicit lot selection (FIFO is only a suggestion), frozen
+cost basis, and a functional History/Sold area. Two real prerequisite gaps closed as part of it:
+`acquisition_lots.residual_nok_minor` (a silent NOK-side rounding leak for foreign-currency
+multi-unit lots) and `lot_cost_adjustments` (documented since M3, never actually created).
+`create_sale`/`update_sale`/`void_sale` are SECURITY DEFINER — a deliberate, documented exception
+to this project's SECURITY INVOKER default, because frozen cost basis/allocated amounts/realized
+result must be unreachable by any direct write (prompt §107), not merely policed after the fact.
+CI's own first real run caught two genuine bugs (a pre-existing `create_purchase` defect for graded
+cards with a redundant condition value, and a cross-test-file `price_snapshots` fixture collision)
+— both fixed, CI green on the second push (398/398 database and authorization tests, up from 370).
+Migrations applied to `pokeportfolio-dev`, `grant-audit.sql` clean, `remote-security-check.mjs`
+17/17, deployed and verified (mostly — see "M10 — Sales and History" below for one disclosed
+verification workaround). Full account: DECISIONS.md D-060, `claude_outputs/output_18.txt`. See
+"M10 — Sales and History" below.
 
 ---
 
 ## Status
 
-**Planning is FROZEN. M1–M9.2 are merged. No open M9-family item remains.** The only standing item
-carried across every milestone since M7.1 is a real owner-facing signed-in check, which needs the
-owner's own device/account — ask for it using the checklist in the M9.1 section below. Next:
-**M10 — Sales and History.**
+**Planning is FROZEN. M1–M10 are merged. No open M9-family or M10 item remains.** The only standing
+item carried across every milestone since M7.1 is a real owner-facing signed-in check, which needs
+the owner's own device/account — ask for it using the checklist in the "M10 — Sales and History"
+section below (it now also covers the one temporary-sale/void walkthrough that section asks for).
+Next: **M11 — Sealed Inventory.**
 
 ## M9 — Pricing and snapshots
 
@@ -436,21 +439,175 @@ change, no new function). Real owner-facing check: not applicable — nothing us
 coverage; no real owner-facing signed-in check) remain open, same as before — this session's scope
 was narrowly the Portfolio performance gate.
 
-## Deployed state (now M9 — PR #25 merged and deployed)
+## M10 — Sales and History
 
-The application is deployed and reachable: **https://pokeportfolio-dev.pages.dev**, on the M9
-state (PRs #14, #15, #18, #19, #21, #22, #23 and #25 all merged; M9's #25 is the newest). The
-owner has a working administrator
-account on the development project, the shared catalog holds the real English and Japanese physical
-Pokémon TCG card set (M5), and the deployed build lets the owner search a card (with visible card
-artwork, a set-browsing carousel, and a favourite filter), add it to their Portfolio with real
-acquisition provenance and cost, browse it in `/portfolio` — grid/list/table views, sort (including
-a card-number sort), filters, custom collections, and select-mode bulk actions **including a real
-"Remove from Portfolio"** — record a real multi-line purchase (`/purchases`) with retailers,
-shipping/customs/discount allocation, foreign currency via Norges Bank or a manual rate, and safe
-edit/void, now **more discoverable** from the central + menu and Home. Primary navigation is still
-Home/Search/Portfolio/Profile plus a central quick-add — Purchases is reached through it and a Home
-shortcut, not a new nav tab. Theme (light/dark/system) actually applies.
+Real sales, with explicit lot selection every time — FIFO is only a pre-filled suggestion, never a
+silent default. Full account: `claude_outputs/output_18.txt`. Decision: DECISIONS.md D-060.
+
+**Schema** (`supabase/migrations/20260828110000` through `..._m10_privilege_baseline.sql`, 5
+files). `sales`/`sale_lines`/`lot_disposals` (DATA_MODEL.md §5.7/§5.11) and — a real prerequisite
+gap this milestone found and closed — `lot_cost_adjustments` (§5.6, documented since M3, never
+actually created; M10's cost-basis freeze is its first real reader) and
+`acquisition_lots.residual_nok_minor` (the NOK-side counterpart of M6's original-currency lot
+residual, silently missing since M8 for any foreign-currency multi-unit lot — backfilled from each
+lot's own `purchase_lines.attributable_cost_nok_minor`). D1 (`quantity_remaining = quantity − Σ
+non-voided disposals`) is enforced by an `AFTER` trigger on `lot_disposals`
+(`recompute_lot_quantity_remaining`, SECURITY DEFINER), not just RPC discipline.
+
+**`create_sale`/`update_sale`/`void_sale` are SECURITY DEFINER** — the one real architectural
+departure from every prior milestone's SECURITY INVOKER default, made because M10's prompt named a
+stronger requirement than M8 ever had to satisfy: frozen cost basis, allocated amounts and realized
+result must be genuinely unreachable by a direct write, not merely policed by a CHECK constraint.
+`authenticated` holds `SELECT` only on `sales`/`sale_lines`/`lot_disposals` — no `INSERT`/`UPDATE`
+grant at all. Full reasoning: DECISIONS.md D-060, `supabase/migrations/20260828120010`'s own
+header, PROJECT_JOURNAL.md 2026-08-28.
+
+**The residual-consumption rule** (D-060): a partial disposal of a known-basis lot freezes
+`(unit_cost_basis_nok_minor + adj_per_unit) × quantity`, plus the lot's residual and any
+adjustment-division residual **only on the disposal that reduces `quantity_remaining` to exactly
+zero** — proven to reconcile exactly across three separate sales of an awkwardly-divisible lot in
+`tests/db/m10_sales.test.ts`.
+
+**Cost basis freeze and allocation** (`create_sale`, FINANCIAL_MODEL.md §2.2/§4.5). Every sale line
+disposes from exactly one explicitly-chosen lot — the RPC never averages, never picks cheapest/
+FIFO/most-expensive on the caller's behalf (`src/domain/sales.ts#suggestFifoOrder` is a client-side
+*suggestion* only, pre-filling the oldest lot with a visible "Suggested: oldest acquired first"
+badge the user can override before saving). Fees/outbound-shipping/buyer-shipping are allocated
+across lines pro rata by gross, largest remainder (`allocate_largest_remainder`, reused unchanged
+from M8); the NOK conversion of net proceeds uses a new signed variant
+(`allocate_largest_remainder_signed`, and its TypeScript mirror `src/domain/allocation.ts#
+allocateSigned`) because a sale can genuinely net a loss (prompt §109) and the existing allocator
+rejects a negative total. Every referenced lot is locked (`SELECT ... FOR UPDATE`) in ascending
+`lot_id` order before any disposal is written — two concurrent attempts to sell a lot's last unit
+serialize correctly; proven directly with `Promise.all` in the test suite.
+
+**Idempotency** (`sales.idempotency_key`, unique per user): the sale builder generates one UUID per
+session (`crypto.randomUUID()`, kept in component state) and a retried `create_sale` call with the
+same key returns the original sale rather than creating a duplicate.
+
+**UI.** `/sales/new` (reached from the central + menu, Portfolio select mode's new "Sell" action,
+and a Holding Detail "Sell" button — all three pre-load the relevant holding(s)): search bounded to
+owned holdings only (`list_portfolio`, never the shared catalog), per-lot quantity steppers with
+the FIFO suggestion, one sale price per item, sale-level fees/shipping/buyer-shipping, live
+preview, NOK or a foreign currency via Norges Bank or a manual rate. `/sales/$saleId`: full audit
+trail — gross/fees/shipping/net, the known/unknown split shown separately ("Realized result on
+costed items" / "Proceeds from items without recorded cost", never a collapsed fake "Profit"),
+per-line cost basis and result, edit/void. `/sales/$saleId/edit`: the safe-correction path (price/
+fees/shipping only — lot and quantity cannot change here; the sale detail page's Void action plus a
+new sale is the documented alternative, matching `update_purchase`'s own precedent). `/history`:
+Sold is fully functional (list with newest/oldest/result-high-low/result-low-high/proceeds/
+marketplace sort, `NULLS LAST` in both directions so an unknown-basis sale never sorts as
++/-infinity); Traded/Other honestly say they have nothing to show yet (M18/none). Home gained a
+History shortcut (net sales proceeds) alongside the existing Purchases shortcut.
+
+**Verified, actually run, not just described:** `pnpm check` (typecheck/lint/format/domain tests,
+108/108, unchanged — M10 touched no existing `src/domain` test) green locally. `pnpm typecheck`/
+`pnpm lint` clean across every new file (two real ESLint findings from `tests/db/m10_sales.test.ts`
+fixed before commit: `.single<T>()`'s narrowed-`data`-type interaction with `no-unnecessary-
+condition`, and `any`-typed query results needing explicit casts in the untyped-client test
+directory — see `eslint.config.js`'s own note on why that directory is exempted from
+`no-unsafe-*`). `pnpm format:check` clean.
+
+CI green on both jobs (`build-and-test`; `db-tests` — **398/398 database and authorization tests**,
+up from 370 at M9.2 — including privilege-baseline convergence and hostile-grant-state convergence,
+and the 10,000-lot Portfolio benchmark unaffected, 67-93 ms across the three sampled sorts, no
+regression). This took two pushes: CI's own first real run against a real ephemeral Postgres caught
+two real bugs neither local review nor `pnpm check` could ever have found (money can't be typechecked
+into correctness) — see "Real bugs found and fixed" below. PR #31 merged (squash, branch deleted);
+`main` fast-forwarded clean.
+
+**Deployed and verified against the real `pokeportfolio-dev` project, this session:**
+
+- All 5 M10 migrations applied (`supabase db push --linked`) — `residual_nok_minor` backfill,
+  `lot_cost_adjustments`, the sale ledger, the SECURITY DEFINER RPCs, the privilege baseline.
+  `supabase db dump` (the pre-migration safety backup) could not run — same no-Docker constraint as
+  every session since M3, `supabase db dump --linked` still shells out to Docker even without a
+  local stack. Proceeded on the same basis every M4.1-M9.2 session already established for this
+  exact gap: every migration here is purely additive (new tables, one new nullable-safe column with
+  a read-only backfill `UPDATE`), already proven to apply cleanly and reproducibly from empty in
+  CI's own "reset and reapply from scratch" step.
+- `grant-audit.sql` clean against the real project (`supabase db query --linked`, zero rows).
+- `remote-security-check.mjs` 17/17 (phase 1 — no `INVITE_TOKEN` available this session, same as
+  every session since M7.1).
+- Cloudflare Pages rebuilt automatically on merge to `main` (Git-connected, no manual deploy step),
+  confirmed by a real hash change (`index-BohQ7x5q.js` → `index-DKHSX-dP.js`) polled directly against
+  the live site. `deployment-check.mjs` itself could not complete this session — Node's `Promise.all`
+  burst against ~28 concurrently-fetched Cloudflare edge chunks hit a local `ConnectTimeoutError`
+  (`UND_ERR_CONNECT_TIMEOUT`) on this machine every time, while plain sequential `curl` against the
+  same URLs succeeded instantly and repeatedly — reads as a local Node/undici concurrent-connection
+  limit on this machine, not a deployment defect (the identical sequential requests the script makes
+  one at a time all worked). The checks that actually matter were reproduced by hand instead, via
+  the service worker's own precache manifest (confirming `HistoryPage`/`SaleFormPage`/
+  `SaleDetailPage`/`SaleEditPage` chunks are genuinely present in the live build) and sequential
+  `curl`: the bundle's `supabase-client` chunk resolves to exactly `nopmkroeygmlvndzjjqs.supabase.co`
+  (the real defect class this check exists for — a transposed project ref shipped once, silently,
+  before this script existed), no `sb_secret_...` key or `service_role` JWT in the checked chunks, no
+  source map, all three sampled deep links (`/login`, `/invite/...`, `/admin/invitations`) resolve to
+  the app shell (client-side routing intact), and the CSP header correctly scopes `connect-src` to
+  the real project. A future session with a working `deployment-check.mjs` run should still do the
+  full automated pass — this was a disclosed workaround, not a replacement for the real script.
+
+**Real bugs found and fixed, none silently absorbed:** `create_purchase` never nulled `v_condition`
+for a graded *card* line — only for a sealed one — so `holdings_condition_only_for_raw` rejected the
+whole purchase whenever a caller's line JSON carried a redundant `condition` value alongside
+`grading_state='graded'`. Pre-existing since M8 (the frontend never triggers it — `PurchaseFormPage`
+already omits `condition` for a graded line — so nothing before M10's own test suite, which called
+the RPC directly, had reason to construct this input). Fixed by mirroring the sealed branch's
+existing `v_condition := null`, in the same migration the residual fix already touches. Separately,
+`tests/db/m10_sales.test.ts`'s own market-price-regression test inserted a `price_snapshots` row for
+a shared seed-catalog variant dated "today", colliding with `tests/db/m9_valuation_resolver.test.ts`'s
+own fresh-snapshot fixture in CI's shared ephemeral stack (same variant, same provider, same
+today-dated unique key) — moved to a fixed historical date no freshness-relative fixture would ever
+use. Both caught by CI's real ephemeral Postgres on the first push, neither by local review.
+
+**Known, disclosed simplifications (not gaps to silently close later):**
+
+- Lot selection is explicit but the sale builder asks for **one price per holding**, applied to
+  every lot-line from that holding — the schema supports a different `unit_gross_minor` per lot
+  (and `update_sale`/the RPC layer make no such assumption), but the common real case is selling
+  several physically identical copies together at one price. A future session wanting true
+  per-lot pricing in the builder UI can add it without any schema or RPC change.
+- `update_sale` cannot change which lot or how many units were sold (prompt §51's explicit
+  documented fallback) — void the incorrect sale and record a corrected one instead. A real
+  disposal-reversal edit path is a defensible follow-up, not a gap this milestone silently
+  accepted without disclosure.
+- `lot_cost_adjustments` has no write RPC yet — `authenticated` holds `SELECT` only. M17 owns the
+  real "record a grading submission" RPC that will validate a fee against a real grading
+  submission before writing here.
+- No live-browser end-to-end verification happened this session — same standing boundary as
+  every session since M7.1 (this session does not create or sign into any account, synthetic or
+  real). The DB/authorization suites are the correctness proof; see "Owner check" below for the
+  one manual step that remains.
+
+**Not done this session, and why:**
+
+1. Owner-facing signed-in check — same standing boundary as every milestone since M7.1. See "Owner
+   check" in `claude_outputs/output_18.txt` for the exact steps.
+2. No new Playwright `.spec.ts` file — matching the established pattern since M6 (E2E count has
+   stayed flat at 58 through every feature milestone; feature correctness is proven at the
+   DB/authorization layer and via live browser verification, which this session could not do
+   without an account). If a future session wants scripted E2E coverage for the sale flow, it can
+   be added without any application change.
+
+## Deployed state (now M10 — PR #31 merged and deployed)
+
+The application is deployed and reachable: **https://pokeportfolio-dev.pages.dev**, on the M10
+state (PRs #14 through #31 all merged; M10's #31 is the newest — #26/#29 were M9/M9.1 docs
+handovers, #27 was the M9.1 feature set, #28/#30 were the M9.1/M9.2 Portfolio-performance fixes,
+#31 is the first user-visible addition since #27). The owner has
+a working administrator account on the development project, the shared catalog holds the real
+English and Japanese physical Pokémon TCG card set (M5), and the deployed build lets the owner
+search a card (with visible card artwork, a set-browsing carousel, and a favourite filter), add it
+to their Portfolio with real acquisition provenance and cost, browse it in `/portfolio` — grid/
+list/table views, sort (including a card-number sort), filters, custom collections, and select-mode
+bulk actions **including a real "Remove from Portfolio" and a real "Sell"** — record a real
+multi-line purchase (`/purchases`) with retailers, shipping/customs/discount allocation, foreign
+currency via Norges Bank or a manual rate, and safe edit/void — and now record a real **sale**
+(`/sales/new`) with explicit lot selection, frozen cost basis, and browse **History** (`/history`)
+for what's actually been sold, all reached from the central + menu and Home, same discoverability
+pattern purchases already had. Primary navigation is still Home/Search/Portfolio/Profile plus a
+central quick-add — neither Purchases nor Sales/History are a new nav tab. Theme (light/dark/
+system) actually applies.
 
 **M6 also migrated the project's Supabase API keys** (D-039) — see "Security: key migration" below
 before touching anything credential-related. The legacy `anon`/`service_role` pair is now
