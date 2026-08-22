@@ -100,7 +100,11 @@ const SYNTHETIC_VARIANT_COUNT = 3500
 async function seedSyntheticCatalog(count) {
   const { data: series, error: seriesError } = await service
     .from('card_series')
-    .insert({ slug: `perf-bench-series-${Date.now()}`, name: 'Perf Benchmark Series', language: 'en' })
+    .insert({
+      slug: `perf-bench-series-${Date.now()}`,
+      name: 'Perf Benchmark Series',
+      language: 'en',
+    })
     .select('id')
     .single()
   if (seriesError) throw seriesError
@@ -246,7 +250,8 @@ async function seed(userId, variantIds) {
       knownHoldingIds.push(...newIds)
       // Promote this batch's now-committed combos so a later batch reuses by id directly.
       for (const [key, target] of usedCombos) {
-        if (target.kind === 'pending') usedCombos.set(key, { kind: 'known', id: newIds[target.index] })
+        if (target.kind === 'pending')
+          usedCombos.set(key, { kind: 'known', id: newIds[target.index] })
       }
     }
 
