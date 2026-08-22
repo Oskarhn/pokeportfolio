@@ -1388,3 +1388,65 @@ to be a mistake would be wrongly excluded by it too.
 **Consequences.** DATA_MODEL.md §4.2 is updated to state this explicitly. Revisit only if the actual
 watched-variant count in production materially exceeds the ~3,000-4,000 projection because of this
 choice — measured in output_15.txt/COST_POLICY.md.
+
+---
+
+## D-056 — Market Movers ranks by per-unit percentage change, never holding-total kroner
+
+**2026-08-27 · Accepted**
+
+**Context.** M9.1 gave Market Movers a real dedicated screen with sort modes (prompt §18-23). The
+owner's original request was about cards whose *price* moved most — but a holding's economic
+impact (unit change × quantity) is also a real, useful number, and the two can disagree sharply: a
+single rare card up 40% is a smaller kroner move than eighty commons each up 2%.
+
+**Decision.** Every sort mode (`highest_increase`/`largest_decrease`/`most_movement`/
+`least_movement`) ranks by the resolved per-unit `change_pct`. `holding_impact_nok_minor` (unit
+change × quantity) rides along as a secondary, purely informational figure — it never enters the
+`ORDER BY`. This matches the owner's stated framing exactly and keeps the ranking meaning stable
+regardless of how many copies a user happens to hold of any one printing.
+
+**Alternatives.** Rank by holding-total kroner impact — rejected: quantity would then dominate the
+list, and a user who bulk-owns cheap bulk energy would see it outrank a genuinely fast-moving rare,
+which is not "market movers" in any recognizable sense. Offer both as separate sort families —
+rejected as unnecessary scope for a first real screen; revisit only if the owner asks for it.
+
+**Consequences.** `get_market_movers` returns both figures; the UI shows `change_pct` as the
+headline and the kroner change as a secondary line. `tests/db/m91_market_movers.test.ts` proves
+quantity does not distort the ranking directly (two holdings of the same variant at 1x and 50x
+quantity tie exactly on `change_pct`).
+
+---
+
+## D-057 — Display-currency conversion is presentation-only, computed client-side from cached `fx_rates`
+
+**2026-08-27 · Accepted**
+
+**Context.** M7.1 stored a `display_currency` preference before any real conversion existed;
+`MoneyDisplay` showed a "shown once conversion exists" placeholder note. M9 shipped real FX
+ingest (`fx_rates`, EUR/NOK and USD/NOK, daily) but never wired display-currency conversion to it
+— M9.1 prompt §9-10/§42 asks for the preference to actually do something, coherently, everywhere a
+resolved NOK value is shown (Home, Portfolio, Search, Card Detail, Holding Detail, Market Movers).
+
+**Decision.** Canonical valuation stays NOK everywhere it is stored (`price_snapshots`, purchase
+FX, cost basis, manual valuations) — nothing about this decision touches persistence. `MoneyDisplay`
+reads the latest cached `fx_rates` row for the user's chosen display currency (a plain `select`,
+market data readable by any authenticated user) and converts the already-resolved NOK amount for
+*display only*, using the exact bigint reciprocal-rate machinery in `src/domain/fx.ts`
+(`invertRate`/`convertNokToDisplayCurrency`) — never a JS float. If no cached rate exists yet for
+that currency (e.g. before the first `ingest-fx` run), the amount shows in NOK with a plain "rate
+not available yet" note rather than fabricating a number. Search/Card Detail's on-demand
+`search-prices` path does its own equivalent NOK conversion server-side, at the observation's own
+date, using the same `fx_rates` table (D-052's FX-lookup pattern, reused rather than re-derived).
+
+**Alternatives.** Store a converted amount — rejected outright: it would violate F11 (frozen NOK
+conversions are never recomputed) if ever confused with a real transaction amount, and a
+presentation figure that goes stale the moment `fx_rates` updates is a correctness bug waiting to
+happen. Fetch a live rate from Norges Bank per render — rejected: unnecessary external calls for a
+value already cached daily; `fetch-fx-rate` (M8) stays reserved for freezing a real purchase's
+rate at entry time, a different question with different freshness requirements.
+
+**Consequences.** Every M9.1 pricing surface list in prompt §9 is coherent by construction, since
+they all route through either `MoneyDisplay` or the same `fx_rates`-lookup pattern. No stored
+column changes as a result of a currency-preference change — verified by the M8/M8.1 financial
+regression suite staying green with this change present.

@@ -1271,3 +1271,38 @@ and falls back to the card-level fields only when the ambiguity checks pass (exa
 the relevant finish exists); anything else resolves to no price. All five real payloads are locked
 in as regression fixtures (`tests/data/tcgdex-pricing.test.ts`) so a genuine upstream shape change
 would fail a specific, real assertion rather than only being noticed in production.
+
+---
+
+## 2026-08-27 — Two real bugs M9.1 introduced and caught before merge, neither of them by CI
+
+**Problem 1: a stale `grant-audit.sql` entry.** `get_market_movers` needed a new `p_sort` parameter
+(M9.1 prompt §21), which changes the function's identity — a signature-changing `DROP`+`CREATE`,
+the exact defect class D-054/TESTING.md §6a already exists to warn about. `scripts/grant-audit.sql`
+still listed the old two-argument overload. CI's `db-tests` job caught it immediately and correctly
+— `MISSING routine ... EXECUTE get_market_movers(integer, integer, market_mover_sort)` — exactly
+the reproducibility gate working as designed (TESTING.md §10's "CI is a reproducibility gate"
+principle). Fixed by updating the audit's expected-signature string to match.
+
+**Problem 2: `fx_rates.rate` silently is a JSON number, not a decimal string, over a plain
+PostgREST `select`.** `search-prices`'s new NOK-conversion code (prompt §10) read `fx_rates.rate`
+via `db.from('fx_rates').select('rate')` and passed the result straight into a decimal-string
+parser (`.replace('.', '')`, expecting text). This is *not* a hypothetical: every M9 SQL function
+that returns a money- or rate-shaped value explicitly casts it to `text` in its final `SELECT`,
+specifically because PostgREST serializes `numeric` columns as JSON numbers by default — the exact
+boundary rule DATA_MODEL.md §17 already documents for money columns returned from a function. A
+plain table `select()` (as opposed to an RPC call) has no such cast, so it hits the same boundary
+without the guard. Calling `.replace()` on a JS number throws at runtime — every `search-prices`
+invocation would have 500'd, silently degrading every Search and Card Detail price to "—" (the
+frontend already swallows pricing failures, DESIGN_SYSTEM.md's honesty rule doing its job as a
+safety net but masking the underlying bug completely). Not caught by CI: `db-tests` never invokes
+Edge Function business logic, only the database and authorization suites. Found by re-reading the
+diff against the established "cast money to text" convention rather than by any test.
+
+**Consequence.** Fixed with an explicit `.toString()` at the read boundary — the identical
+conversion `src/data/fx.ts`'s client-side equivalent already needed for the same reason (also found
+and fixed during this session, before it ever shipped). No regression test exists for Edge Function
+business logic in this codebase yet (`tests/data/tcgdex-pricing.test.ts` covers only the pure
+mapping layer, not the HTTP handler) — a real, disclosed gap, not silently accepted: a future
+session adding meaningful Edge Function test coverage should start with this exact boundary class,
+since it is now confirmed to bite in practice, not just in theory.

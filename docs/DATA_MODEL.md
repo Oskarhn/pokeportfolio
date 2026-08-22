@@ -1204,3 +1204,28 @@ are invoked by `pg_cron` via `pg_net`, with the bearer secret read from Supabase
 is scheduled directly as a SQL command (no HTTP round trip needed for a same-database function).
 Full architecture, batch sizing and cadence reasoning: ARCHITECTURE.md and
 `claude_outputs/output_15.txt`.
+
+## 18. M9.1 implementation notes
+
+**`get_market_movers` gained a third parameter** (`p_sort public.market_mover_sort`), which changes
+its identity — `20260827120000_m91_market_movers_sort.sql` `DROP`s and re`CREATE`s it, following
+the TESTING.md §6a checklist this migration's header also adds: the materialized-CTE body is a
+direct extension of the M9 version, not a rewrite, specifically to avoid D-054's regression class.
+Adds `quantity` and `holding_impact_nok_minor` (unit change × quantity, informational only — D-056)
+to the return shape.
+
+**`search-prices` now resolves an exact NOK reference server-side**, alongside the untouched
+source-currency provenance — the same `fx_rates` lookup-by-observation-date pattern
+`resolve_variant_market_values`/`get_market_movers` already use, one bounded query per distinct
+(currency, date) pair actually needed in the batch, never per card. `valueNokMinor` is `null` only
+when no cached rate exists yet for that pair (shown as "—" client-side, never a fabricated number).
+
+**Retention policy** (`thin_price_snapshots`): see COST_POLICY.md for the measured bytes/row and the
+resulting decision on whether the 12-month daily-retention window needed to change. If it did, the
+new window is documented there and in the migration that changed it, with DECISIONS.md recording
+the reasoning per PLANNING_FREEZE's rule that a semantic retention change needs a decision entry.
+
+**Display currency** (D-057): `MoneyDisplay` converts a resolved NOK amount for display only, using
+a plain `select` against `fx_rates` (already `authenticated`-readable market data) and the exact
+bigint reciprocal-rate helpers in `src/domain/fx.ts`. No schema change — this is a client-side
+presentation concern layered on data that already existed.
