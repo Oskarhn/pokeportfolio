@@ -27,6 +27,9 @@
 
 import { createClient } from '@supabase/supabase-js'
 import { createHash, randomUUID } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+import path from 'node:path'
 
 const url = process.env.SUPABASE_URL
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -40,6 +43,77 @@ const args = new Set(process.argv.slice(2))
 const lotArg = [...args].find((a) => a.startsWith('--lots='))
 const LOT_COUNT = lotArg ? Number(lotArg.split('=')[1]) : 10_000
 const KEEP = args.has('--keep')
+const SKIP_EXPLAIN = args.has('--skip-explain')
+
+// M9.2 (docs/TESTING.md §7, HANDOVER.md's M9.1 "root cause not yet identified"): when a direct
+// Postgres connection string is available (CI's db-tests job exports DB_URL after `supabase
+// status`, same env this benchmark already runs in — see .github/workflows/ci.yml), this script
+// also runs scripts/portfolio-perf-explain.sql via psql: once immediately after the bulk seed
+// (before any ANALYZE — the planner statistics a real bulk-insert-then-query leaves behind) and
+// once again after an explicit ANALYZE of the tables list_portfolio actually touches. This is the
+// real evidence the investigation needs, not a guess about which plan node is expensive. Silently
+// skipped (not failed) when DB_URL/psql are unavailable, since the timed RPC benchmark below is
+// still meaningful without it — this only adds diagnostic depth.
+const DB_URL = process.env.DB_URL
+const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url))
+const EXPLAIN_SQL_PATH = path.join(SCRIPT_DIR, 'portfolio-perf-explain.sql')
+
+// Tables list_portfolio's plan actually depends on the row counts of (holdings/acquisition_lots via
+// lot_agg; card_variants/cards/card_sets via the catalog joins; manual_valuations via the mv join;
+// price_snapshots via resolve_variant_market_values). profiles/fx_rates are not bulk-inserted by
+// this benchmark and stay tiny, so ANALYZE-ing them would not change anything measured here —
+// deliberately not included (TESTING.md §27's "do not randomly ANALYZE/index everywhere" applies
+// equally to this diagnostic step).
+const ANALYZE_TABLES = [
+  'holdings',
+  'acquisition_lots',
+  'card_variants',
+  'cards',
+  'card_sets',
+  'manual_valuations',
+  'price_snapshots',
+]
+
+function runPsql(argsList) {
+  return execFileSync('psql', argsList, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+}
+
+function runExplainPhase(phase, userId) {
+  if (!DB_URL || SKIP_EXPLAIN) return
+  try {
+    console.log(`\n=== EXPLAIN capture: ${phase} ===`)
+    const output = runPsql([
+      DB_URL,
+      '-v',
+      'ON_ERROR_STOP=1',
+      '-v',
+      `user_id=${userId}`,
+      '-v',
+      `phase=${phase}`,
+      '-f',
+      EXPLAIN_SQL_PATH,
+    ])
+    console.log(output)
+  } catch (err) {
+    console.log(`  EXPLAIN capture (${phase}) failed, continuing without it: ${err.message}`)
+  }
+}
+
+function analyzeSeededTables() {
+  if (!DB_URL) {
+    console.log(
+      '\nDB_URL not set — skipping ANALYZE of seeded tables. Timed results below reflect ' +
+        'whatever planner statistics happen to exist (may understate real-world performance, ' +
+        'which normally benefits from autovacuum/autoanalyze running over time — see TESTING.md §7).',
+    )
+    return
+  }
+  console.log(`\nRunning ANALYZE on: ${ANALYZE_TABLES.join(', ')}...`)
+  const t0 = performance.now()
+  const sql = ANALYZE_TABLES.map((t) => `analyze public.${t};`).join(' ')
+  runPsql([DB_URL, '-v', 'ON_ERROR_STOP=1', '-c', sql])
+  console.log(`ANALYZE complete in ${((performance.now() - t0) / 1000).toFixed(1)}s`)
+}
 
 const service = createClient(url, serviceRoleKey, {
   auth: { autoRefreshToken: false, persistSession: false },
@@ -352,6 +426,72 @@ function report(label, result) {
   }
 }
 
+// M9.2 (TESTING.md §7/§41): a single timed call cannot distinguish "this sort is slow" from "this
+// was the unlucky first call before a plan/cache warmed up" (docs/PROJECT_JOURNAL.md, the same
+// ambiguity the M9.1 investigation left open — one identical query measured both ~7.5s and 64.7ms
+// within the same run). Every supported sort now reports first/median/max over several repeated
+// calls, and results feed a summary table so a reviewer sees the whole picture at a glance instead
+// of scrolling logs. A real Postgres statement timeout (57014) is reported as a row, never treated
+// as a crash — this script's own stated design (see timeRpc's comment) — and is exactly the kind of
+// result this table is built to make impossible to miss.
+const REPEATS_PER_SORT = 3
+// Slower than this on ANY run and the row is flagged, matching TESTING.md §31's interactive-app
+// target (<1s preferred, ~1.5s outer bound) — reported, not enforced as a CI failure (§7's own
+// "no hardcoded millisecond budget" rule); see the summary table note printed at the end.
+const SLOW_MS = 1500
+
+const summaryRows = []
+
+async function timeSortRepeated(client, sort, extraArgs = {}) {
+  const timings = []
+  let sawError = null
+  let sampleRowCount = 0
+  for (let i = 0; i < REPEATS_PER_SORT; i += 1) {
+    const result = await timeRpc(client, 'list_portfolio', {
+      p_sort: sort,
+      p_limit: 30,
+      ...extraArgs,
+    })
+    if (result.error) {
+      sawError = result.error
+      timings.push(result.ms)
+    } else {
+      timings.push(result.ms)
+      sampleRowCount = result.rows
+    }
+  }
+  timings.sort((a, b) => a - b)
+  const first = timings[0]
+  const max = timings[timings.length - 1]
+  const median = timings[Math.floor(timings.length / 2)]
+  const status = sawError ? `FAILED: ${sawError}` : max > SLOW_MS ? 'SLOW' : 'ok'
+  summaryRows.push({ sort, first, median, max, rows: sampleRowCount, status })
+  console.log(
+    `  ${sort.padEnd(16)} first ${first.toFixed(1).padStart(7)} ms  median ${median.toFixed(1).padStart(7)} ms  max ${max.toFixed(1).padStart(7)} ms  ${status}`,
+  )
+}
+
+function printSummaryTable() {
+  console.log('\n=== Summary: sort | first | median | max | status (ms, p_limit=30) ===')
+  const header = `${'sort'.padEnd(18)} ${'first'.padStart(9)} ${'median'.padStart(9)} ${'max'.padStart(9)}  status`
+  console.log(header)
+  console.log('-'.repeat(header.length))
+  for (const row of summaryRows) {
+    console.log(
+      `${row.sort.padEnd(18)} ${row.first.toFixed(1).padStart(9)} ${row.median.toFixed(1).padStart(9)} ${row.max.toFixed(1).padStart(9)}  ${row.status}`,
+    )
+  }
+  const slow = summaryRows.filter((r) => r.status !== 'ok')
+  if (slow.length > 0) {
+    console.log(
+      `\n::warning::${slow.length} Portfolio benchmark row(s) exceeded ${SLOW_MS} ms or failed outright: ` +
+        slow.map((r) => r.sort).join(', '),
+    )
+  } else {
+    console.log(`\nAll ${summaryRows.length} sorts stayed under ${SLOW_MS} ms on every run.`)
+  }
+}
+
 async function main() {
   const user = await createSyntheticUser('portfolio-benchmark')
 
@@ -374,25 +514,41 @@ async function main() {
     await seedPricing(variantIds)
     const { collectionId } = await seed(user.id, variantIds)
 
+    // M9.2 investigation: capture the plan a real bulk-seed-then-query moment produces (before
+    // autovacuum/autoanalyze — or this script — has ever run ANALYZE on the freshly-inserted rows),
+    // then ANALYZE and capture again. See scripts/portfolio-perf-explain.sql's header.
+    runExplainPhase('cold-pre-analyze', user.id)
+    analyzeSeededTables()
+    runExplainPhase('post-analyze', user.id)
+
     const { error: signInError } = await userClient.auth.signInWithPassword({
       email: user.email,
       password: user.password,
     })
     if (signInError) throw signInError
 
-    console.log('\nBenchmark: list_portfolio (limit 30, first page) by sort mode')
+    console.log(
+      `\nBenchmark: list_portfolio (limit 30, first page) by sort mode — ${REPEATS_PER_SORT} runs each, post-ANALYZE`,
+    )
+    // Full public.portfolio_sort_order enum (TESTING.md §32) — every sort the UI actually offers.
     const sorts = [
       'value_desc',
+      'value_asc',
       'name_asc',
+      'name_desc',
       'set_asc',
       'quantity_desc',
       'acquired_newest',
+      'acquired_oldest',
       'added_newest',
+      'added_oldest',
+      'number_asc',
+      'number_desc',
     ]
     for (const sort of sorts) {
-      const result = await timeRpc(userClient, 'list_portfolio', { p_sort: sort, p_limit: 30 })
-      report(sort, result)
+      await timeSortRepeated(userClient, sort)
     }
+    printSummaryTable()
 
     console.log('\nBenchmark: list_portfolio filtered (condition=NM)')
     report(
