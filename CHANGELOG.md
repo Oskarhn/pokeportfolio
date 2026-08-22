@@ -10,6 +10,33 @@ they were**.
 
 ## [Unreleased]
 
+### Added — 2026-08-28 · M10 Sales and History
+
+Real sales, with explicit lot selection every time — FIFO is only a pre-filled suggestion, never a
+silent default. Recording a sale (`/sales/new`, reached from the central + menu, Portfolio's
+"Sell" bulk action, or a Holding Detail's Sell button) freezes each line's cost basis at the moment
+of sale, allocates fees/outbound shipping/buyer-paid shipping across lines exactly (largest
+remainder, `Σ allocated = total`), and supports NOK or a foreign currency (Norges Bank or manual
+rate). A gift or opening-pull sale shows real proceeds with a result of **—**, never a fabricated
+profit — the central rule this milestone exists to enforce. Sales can be safely corrected (price/
+fees/shipping) or voided (restoring the sold quantity); a lot's or quantity's choice cannot be
+edited in place, by design — void and re-record instead.
+
+`/history` is real for Sold (list, sale detail, result sorting that never ranks an unknown-basis
+sale as infinite profit); Traded and Other honestly say they have nothing to show yet.
+
+Three real, previously-unaddressed gaps closed as prerequisites: `acquisition_lots.residual_nok_minor`
+(the NOK-side counterpart of M6's original-currency lot residual, silently missing since M8 for any
+foreign-currency multi-unit lot), `lot_cost_adjustments` (documented since M3, never actually
+created), and the residual-consumption rule itself — which disposal of a lot sold across several
+separate sales gets the leftover øre (D-060).
+
+`create_sale`/`update_sale`/`void_sale` are `SECURITY DEFINER`, a deliberate, documented exception
+to this project's SECURITY INVOKER default: frozen cost basis, allocated amounts and realized
+result are unreachable by any direct write from the browser, not merely policed after the fact —
+`authenticated` holds no `INSERT`/`UPDATE` grant at all on `sales`/`sale_lines`/`lot_disposals`.
+Full account: `claude_outputs/output_18.txt`. Decisions: DECISIONS.md D-060.
+
 ### Added — 2026-08-27 · M9.1 Pricing closeout
 
 Closes the explicit M9 acceptance gaps found by review before M10 begins. Search result tiles show

@@ -537,7 +537,8 @@ The financial heart of the model.
 | `quantity int`, `quantity_remaining int` | `0 <= quantity_remaining <= quantity` |
 | `unit_cost_basis_minor bigint **nullable**` | Present only when `cost_basis_state = 'known'`. **Never 0 to mean "free".** |
 | `cost_basis_currency`, `unit_cost_basis_nok_minor nullable` | |
-| `residual_minor int default 0` | Largest-remainder residual so `quantity × unit + residual` = line cost exactly |
+| `residual_minor int default 0` | Largest-remainder residual so `quantity × unit + residual` = line cost exactly, in the lot's original currency |
+| `residual_nok_minor bigint default 0` | **Shipped in M10** (D-060) — the NOK-side counterpart. `create_purchase`/`update_purchase` originally floor-divided `unit_cost_basis_nok_minor` and silently dropped this remainder; invisible for NOK-currency purchases (`attributable = attributable_nok` exactly) but a real leak for foreign-currency multi-unit lots. Backfilled from `attributable_cost_nok_minor` for existing rows. |
 | `storage_location_id fk nullable` | Relocated here from `holdings` in M6 (D-036) — where a specific batch of copies physically sits, not a property of the holding as a whole |
 | `notes`, `created_at`, `voided_at nullable` | |
 
@@ -587,6 +588,11 @@ Plus a consistency constraint tying origin to the permitted states, shipped in M
 
 ### 5.6 `lot_cost_adjustments`
 
+**Shipped in M10** (`20260828115000_m10_lot_cost_adjustments.sql`, D-060) — this table was
+documented since M3 but never actually created; M10's `create_sale` is the first real reader
+(freezing EUCB into `sale_lines.cost_basis_at_sale_nok_minor`), which is what finally required it
+to exist.
+
 | Column | Notes |
 |---|---|
 | `id uuid pk`, `lot_id fk`, `user_id fk` | |
@@ -598,11 +604,34 @@ Plus a consistency constraint tying origin to the permitted states, shipped in M
 Keeping adjustments separate from `unit_cost_basis_minor` means the original acquisition price
 is always visible, and grading costs can be attributed, reversed or analysed independently.
 
+`authenticated` holds **SELECT only** — no INSERT yet. M17 owns the real "record a grading
+submission" write RPC, which will validate the fee against a `grading_submissions` row before
+writing here; a bare INSERT grant with no such validation would let a user inflate their own cost
+basis by citing any unrelated purchase line of theirs (D-060).
+
+**The residual-consumption rule (D-060).** When a lot's adjustments must be divided per unit for a
+*partial* disposal, the division uses the same exact, deterministic rule
+`acquisition_lots.residual_minor` already established, not a floating average:
+
+```
+adjustments_total_nok = Σ amount_nok_minor for the lot
+adj_per_unit           = adjustments_total_nok / lot.quantity          (floor)
+adj_residual            = adjustments_total_nok - adj_per_unit * lot.quantity
+```
+
+`adj_residual` is added to whichever disposal reduces the lot's `quantity_remaining` to exactly
+zero — see §5.7's residual rule, which this mirrors. Summed over every disposal a lot will ever
+have, the total reproduces `adjustments_total_nok` exactly.
+
 ### 5.7 `lot_disposals`
 
 Every reduction of `quantity_remaining` writes a row here. This is what makes
 `quantity_remaining_as_of(lot, D)` computable and therefore makes portfolio history
 reconstructable from canonical data.
+
+**Shipped in M10** (`20260828120000_m10_sales_schema.sql`). `opening_id`/`trade_line_id` do **not**
+exist yet — same "enum vocabulary ships ahead of the table that will produce the other values"
+pattern D-038 already established for `acquisition_lots.origin`; M10 only ever writes `kind='sale'`.
 
 | Column | Notes |
 |---|---|
@@ -610,12 +639,30 @@ reconstructable from canonical data.
 | `kind` | enum `sale`, `opened`, `traded_away`, `write_off`, `correction` |
 | `quantity int` | |
 | `disposed_on date` | |
-| `sale_line_id fk nullable`, `opening_id fk nullable`, `trade_line_id fk nullable` | |
-| `cost_basis_at_disposal_nok_minor nullable` | Frozen copy for non-sale disposals, so a trade's basis survives for whichever item-leg rule is later adopted |
+| `sale_line_id fk nullable` | Required (and unique) exactly when `kind = 'sale'`. `opening_id`/`trade_line_id` arrive with M16/M18. |
+| `cost_basis_at_disposal_nok_minor nullable` | Frozen copy for non-sale disposals — a sale disposal's frozen basis lives on `sale_lines.cost_basis_at_sale_nok_minor` instead (which `sale_line_id` already points at), so this stays `NULL` for `kind='sale'` rows |
 | `created_at`, `voided_at nullable` | |
 
 > **Invariant D1:** `lot.quantity_remaining = lot.quantity − Σ non-voided disposals`.
-> Enforced by trigger and asserted by a consistency test.
+> Enforced by an `AFTER INSERT OR UPDATE OF voided_at` trigger (`recompute_lot_quantity_remaining`,
+> SECURITY DEFINER — D-060) and asserted by a consistency test.
+
+**The residual-consumption rule (D-060).** A partial disposal of a lot with
+`cost_basis_state = 'known'` freezes its share of the lot's exact basis as:
+
+```
+exhausts = (lot.quantity_remaining_before_this_disposal − quantity) = 0
+basis     = (lot.unit_cost_basis_nok_minor + adj_per_unit) × quantity
+            + (lot.residual_nok_minor + adj_residual)      -- only if exhausts
+```
+
+(`adj_per_unit`/`adj_residual` are §5.6's adjustment-division terms — both zero when the lot has no
+adjustments.) A lot's `quantity_remaining` decreases monotonically and reaches zero at most once per
+"lifetime" — voiding the exhausting disposal restores it above zero, making a second zero-crossing a
+distinct later event, never a double credit — so summing `basis` over every disposal a lot will
+ever have reproduces its exact original cost basis: no minor unit lost, none duplicated,
+deterministic regardless of sale order. Full derivation:
+`supabase/migrations/20260828120010_m10_sales_rpc.sql`.
 
 ### 5.8 `openings`
 
@@ -709,18 +756,47 @@ profitability analysis ships in V1 — the number is unrecoverable afterwards.
 
 ### 5.11 `sales`, `sale_lines`
 
-**`sales`**: `id`, `user_id`, `sold_on date`, `marketplace text`, `currency`,
+**Shipped in M10** (`20260828120000_m10_sales_schema.sql`). One row per real sale/order/
+transaction, never one per physical card sold together — `sale_lines` is what carries per-lot
+granularity (§9 in the M10 prompt; a physically identical pair of cards sold together from two
+different lots is two lines).
+
+**`sales`**: `id`, `user_id`, `sold_on date`, `marketplace text nullable`, `currency`,
 `gross_minor`, `fees_minor`, `shipping_cost_minor`, `shipping_charged_minor`,
 `net_proceeds_minor`, `fx_rate_to_nok`, `fx_rate_date`, `fx_source`, `net_proceeds_nok_minor`,
-`notes`, `created_at`, `voided_at`.
+`realized_result_nok_minor nullable`, `proceeds_from_uncosted_nok_minor`, `notes`,
+`idempotency_key uuid`, `created_at`, `updated_at`, `voided_at`.
+
+`realized_result_nok_minor`/`proceeds_from_uncosted_nok_minor` are materialized sums over the
+sale's own lines (written by `create_sale`/`update_sale`/`void_sale`, never independently
+computed by a reader) — they exist so History's list view and the result-sort gate (never ranking
+an unknown-basis sale as +/-infinity) never need to fetch every `sale_lines` row per row shown.
+`realized_result_nok_minor` is `NULL` exactly when *no* line in the sale has a known cost basis.
+`idempotency_key` (unique per user) makes a retried `create_sale` call return the original sale
+rather than creating a duplicate.
 
 **`sale_lines`**: `id`, `sale_id`, `user_id`, `lot_id fk`, `quantity`, `unit_gross_minor`,
-`allocated_fees_minor`, `allocated_shipping_minor`, `net_proceeds_minor`,
-`net_proceeds_nok_minor`, **`cost_basis_at_sale_nok_minor nullable`**, `realized_result_nok_minor nullable`.
+`line_gross_minor`, `allocated_fees_minor`, `allocated_shipping_minor`,
+**`allocated_shipping_charged_minor`**, `net_proceeds_minor`, `net_proceeds_nok_minor`,
+**`cost_basis_at_sale_nok_minor nullable`**, `realized_result_nok_minor nullable`.
+
+`allocated_shipping_charged_minor` is a real correction to this table's original sketch (D-060) —
+buyer-paid shipping needs its own auditable per-line allocation, distinct from outbound shipping
+cost, exactly as FINANCIAL_MODEL.md §4.5 requires; folding it into `allocated_shipping_minor` would
+make the two indistinguishable on an audited line.
 
 `cost_basis_at_sale_nok_minor` is a deliberate frozen copy: realized history must not change
 when a lot is later edited. `NULL` propagates from a `NULL` lot cost basis and makes
-`realized_result` `NULL` too — the sale then contributes to `PUD`, not `RRC`.
+`realized_result` `NULL` too — the sale then contributes to `PUD`, not `RRC`. See §5.7 for the
+exact residual-consumption rule this freeze uses for a partial disposal (D-060).
+
+**Write surface.** `create_sale`/`update_sale`/`void_sale` are **SECURITY DEFINER** (D-060) —
+`authenticated` holds `SELECT` only on all three M10 tables, no `INSERT`/`UPDATE` grant at all.
+Every write happens inside those three functions, which derive the caller from `auth.uid()` and
+filter every statement by `user_id` explicitly, the same discipline every SECURITY INVOKER RPC in
+this project already has. This is what makes the frozen/derived columns genuinely unforgeable by a
+direct write, not merely policed by a CHECK constraint — see D-060 for the full reasoning and why
+this is a deliberate, documented exception to the SECURITY INVOKER default (SECURITY.md §5.9).
 
 ### 5.12 `manual_valuations`
 
@@ -1233,3 +1309,42 @@ the reasoning per PLANNING_FREEZE's rule that a semantic retention change needs 
 a plain `select` against `fx_rates` (already `authenticated`-readable market data) and the exact
 bigint reciprocal-rate helpers in `src/domain/fx.ts`. No schema change — this is a client-side
 presentation concern layered on data that already existed.
+
+## 19. M10 implementation notes
+
+**Migration order matters here**, more than most milestones: `20260828110000` (the
+`residual_nok_minor` fix) must run before `20260828115000` (`lot_cost_adjustments`) and
+`20260828120000`/`20260828120010` (the sale schema/RPC) — `create_sale` reads both new columns in
+its cost-basis freeze. `lot_cost_adjustments` is created before `sales`/`sale_lines` for a simpler
+reason: no ordering dependency, just alphabetising the file timestamps sensibly.
+
+**`sales`/`sale_lines`/`lot_disposals` creation order is itself constrained**: `sales` first,
+`sale_lines` second (references `sales`), `lot_disposals` third (references `sale_lines`) — the
+reverse of this document's own §5 reading order, not a reversal of its meaning.
+
+**Every write to the three new tables goes through SECURITY DEFINER RPCs** (D-060) —
+`authenticated` holds `SELECT` only. This is the one real architectural departure from every prior
+milestone's SECURITY INVOKER default, and `scripts/grant-audit.sql` reflects it exactly: no
+`expected_column_update` entries exist for `sales`/`sale_lines`/`lot_disposals` at all, because
+there is nothing to grant.
+
+**`recompute_lot_quantity_remaining`** (also SECURITY DEFINER, on `lot_disposals`) is the sole
+writer of `acquisition_lots.quantity_remaining` for the disposal path — it recomputes and
+overwrites the column from the live ledger every time a disposal is inserted or voided, which is
+what makes invariant D1 an enforced fact rather than an RPC-discipline convention. It does not
+replace `update_purchase`'s existing direct write to the same column for an *undisposed* lot's
+quantity correction (unchanged since M8) — the two paths never conflict because `update_purchase`
+is blocked from running once any disposal exists.
+
+**`lot_cost_adjustments` finally exists** (D-060) — documented since M3, never created. `create_sale`
+is its first real reader. No write RPC ships in M10; `authenticated` gets `SELECT` only.
+
+**Idempotency** (`sales.idempotency_key`, unique per user): the client generates one UUID per
+sale-builder session (`crypto.randomUUID()`, kept in component state so a retry reuses it) and
+`create_sale` returns the original sale unchanged on replay, checked before any other validation.
+
+**Result sorting never treats an unknown result as infinity** (prompt §100-101): achieved with
+`nullsFirst: false` set explicitly in both directions of the client's `.order('realized_result_
+nok_minor', ...)` call — Postgres's own default (`NULLS LAST` ascending, `NULLS FIRST` descending)
+would otherwise put an unknown-basis sale first when sorting high-to-low, exactly the failure mode
+the gate exists to prevent.

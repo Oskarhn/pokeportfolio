@@ -1584,3 +1584,77 @@ ANALYZE-before-timing methodology and the new threshold policy. HANDOVER.md's M9
 performance gate is closed. If a future session's real benchmark result exceeds 1.5s after this
 fix, treat it as a genuine regression from that session's own change, not a repeat of this root
 cause — verify with `--explain` before assuming otherwise.
+## D-060 — M10 sale ledger: the residual-consumption rule, `lot_cost_adjustments` finally created, and `create_sale`/`update_sale`/`void_sale` are SECURITY DEFINER
+
+**2026-08-28 · Accepted**
+
+**Context.** M10 (Sales and History) needed to freeze an exact `cost_basis_at_sale_nok_minor` for a
+partial disposal of a lot, and found three real, previously-undecided or unshipped things blocking
+that.
+
+**1. The residual-consumption rule.** `acquisition_lots.residual_minor` (M6) already keeps
+`quantity × unit_cost_basis + residual = attributable_cost` exact in the lot's original currency,
+but nothing stored the NOK-side counterpart — `create_purchase`/`update_purchase` computed
+`unit_cost_basis_nok_minor` with a plain floor division and silently dropped the remainder. Invisible
+before M10 (a NOK-currency purchase has `attributable = attributable_nok` exactly, so the
+existing `residual_minor` already covered it by coincidence), but a real, silent leak of up to
+`quantity - 1` øre per lot for any foreign-currency purchase of a `quantity > 1` lot. Fixed by adding
+`acquisition_lots.residual_nok_minor` (`20260828110000`), computed the same way, and backfilled from
+each lot's own `purchase_lines.attributable_cost_nok_minor`.
+
+That still leaves the question DATA_MODEL.md never answered: when a lot is disposed of across
+*multiple* sales over time, which disposal gets the residual? **Decision: whichever disposal reduces
+`quantity_remaining` to exactly zero** — i.e., the sale that empties the lot. A lot's
+`quantity_remaining` decreases monotonically and can reach zero at most once per "lifetime" (voiding
+the exhausting disposal restores it above zero; a second zero-crossing is therefore a distinct later
+event, not a double credit), so summing the frozen basis over every disposal a lot will ever have
+reproduces `quantity × unit_cost_basis_nok_minor + residual_nok_minor` exactly — no minor unit lost,
+none duplicated, deterministic regardless of sale order or how many partial sales happen. The same
+rule extends to `lot_cost_adjustments` (below): its own per-unit division residual attaches to the
+same exhausting disposal. Full derivation and the exact formula:
+`supabase/migrations/20260828120010_m10_sales_rpc.sql`'s header. Proven directly against a lot sold
+across three separate sales in `tests/db/m10_sales.test.ts`.
+
+**2. `lot_cost_adjustments` never actually shipped.** DATA_MODEL.md §5.6 has documented its shape
+since M3, and M3's own scope note explicitly deferred it alongside `lot_disposals`/`openings`/
+`trades`/`lot_transfers` — but unlike those, no milestone since (M6, M8, M9) revisited it, even
+though M6 wired grading fields onto `holdings` and FINANCIAL_MODEL.md's E6 has described the
+grading-fee-as-adjustment flow since M2. This was invisible because nothing computed EUCB from real
+stored rows before M10 (M9's `effectiveUnitCostBasis` domain function takes adjustments as a plain
+argument; it never reads the table). Created now (`20260828115000`), to the documented shape,
+**SELECT-only for `authenticated`** — no INSERT grant, because no validated write path exists yet
+(M17 owns the real "record a grading submission" RPC that will check the fee against a real
+`grading_submissions` row before writing here; granting a bare INSERT now would let a user inflate
+their own cost basis by citing any unrelated purchase line of theirs).
+
+**3. `create_sale`/`update_sale`/`void_sale` are SECURITY DEFINER, not SECURITY INVOKER.** GIT_WORKFLOW
+house style since M4.1 defaults every RPC to SECURITY INVOKER (prompt/CLAUDE.md precedent, restated
+explicitly for M10 in its own prompt §105) — but that same prompt (§107) named a stronger requirement
+for this specific ledger: `cost_basis_at_sale_nok_minor`, `realized_result_nok_minor`,
+`proceeds_from_uncosted_nok_minor` and every `allocated_*`/`net_proceeds_*` column must be
+**unreachable** by a direct write, not merely policed by a CHECK constraint after the fact — a
+materially stronger bar than what M8 accepted for `purchases.total_nok_minor` (still directly
+UPDATE-grantable there, because `update_purchase`'s SECURITY INVOKER body needs the grant to write
+it, and the only exposure is a user corrupting their own private ledger — not a cross-tenant issue).
+Reconciled by making the three write RPCs SECURITY DEFINER: `authenticated` holds no INSERT/UPDATE
+grant at all on `sales`/`sale_lines`/`lot_disposals` (verified directly in
+`tests/authorization/m10_sales.test.ts` — a same-owner direct INSERT/UPDATE attempt is rejected
+identically to a cross-tenant one), and the functions enforce ownership themselves via explicit
+`user_id = auth.uid()` filtering on every statement, exactly the discipline every INVOKER RPC in this
+project already had to have. "No `p_user_id` argument" and "derive the caller from `auth.uid()`" —
+the parts of the house rule that actually guard against impersonation — are unchanged; only the
+INVOKER/DEFINER choice moves, and only for the reason §105 itself names as sufficient. The
+pre-existing `recompute_lot_quantity_remaining` D1 trigger (also SECURITY DEFINER, for the same
+reason applied to `acquisition_lots.quantity_remaining`) is the precedent this follows.
+
+**4. `sale_lines.allocated_shipping_charged_minor`.** DATA_MODEL.md §5.11's original sketch listed
+only `allocated_shipping_minor`, with no separate column for the buyer-paid-shipping allocation
+FINANCIAL_MODEL.md §4.5 requires ("shipping charged to the buyer is allocated identically and adds
+back"). Folding it into the existing column would make outbound cost and buyer credit
+indistinguishable on an audited line — a straightforward schema correction, not a design change,
+following the same "fix the schema rather than hide the value" instruction this milestone's prompt
+gave explicitly (§39).
+
+**Consequence.** DATA_MODEL.md §5.6/§5.7/§5.11 and FINANCIAL_MODEL.md §4.3 are updated to match the
+shipped schema exactly — this decision is what they now cite for the residual/adjustment rule and
+the SECURITY DEFINER exception, rather than leaving either implicit in migration comments alone.

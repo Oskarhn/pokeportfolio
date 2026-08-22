@@ -231,6 +231,34 @@ mapping rules and proves an ambiguous card-level shape resolves to no price rath
 (prompt §15), including a real zero-price observation and a real missing-provider case captured
 live rather than synthesized.
 
+**M10 (`tests/db/m10_sales.test.ts`, `tests/authorization/m10_sales.test.ts`).** E2 and E7 are
+proven against real stored rows (not just the pure-TypeScript version in
+`tests/financial/worked-examples.test.ts`), with the explicit lot chosen exactly as the caller
+specified — no averaging. Also covered directly against real rows: a gift/unknown-basis sale
+(`cost_basis_at_sale`/`realized_result` both `NULL`, proceeds still counted, never a fabricated
+profit); a mixed known/unknown sale (line-level split, sale-level `realized_result_nok_minor`/
+`proceeds_from_uncosted_nok_minor` reconcile exactly to the frozen NOK total); partial-lot disposal
+across two separate sales; the residual-consumption rule (D-060) across three separate sales of an
+awkwardly-divisible lot, reconciling to the exact minor unit; `lot_cost_adjustments` division with
+its own residual; fee/outbound-shipping/buyer-shipping allocation exactness (`Σ allocated = total`,
+F6, for all three independently) including the zero-line-gross edge case; a genuine negative-NSP
+loss sale (prompt §109-110, not rejected or clamped); a foreign-currency (manual FX) sale with
+per-line NOK amounts reconciling exactly to the sale-level frozen total; void and double-void
+(the second a named error, quantity never double-restored); D1 after a mixed history of partial
+sale and void; concurrency (two simultaneous attempts to sell a lot's last unit — exactly one
+succeeds, verified via `Promise.all` against real row locking); idempotency (a retried `create_sale`
+call with the same key returns the original sale, never a duplicate); result-sort `NULLS LAST` in
+both directions (an unknown-basis sale never sorts as +/-infinity); and F5
+(`RRC + PUD = NSP − Σ known frozen cost_basis_at_sale`) aggregated over every non-voided line.
+
+The authorization file proves what M10's SECURITY DEFINER choice (D-060) is actually for: a direct
+`INSERT`/`UPDATE` against `sales`/`sale_lines`, even on one's own row, is rejected at the grant
+level — not a business-logic check, a genuine absence of privilege. Also: a foreign `lot_id` in
+`create_sale` fails with the same generic message as a nonexistent one (prompt §106, no existence
+oracle); a stranger cannot update or void another user's sale; read isolation on all three tables;
+and admin has no bypass (`sales_summary()` never mixes proceeds across users, matching the existing
+`purchase_spending_summary()` pattern in `tests/authorization/m8_purchases.test.ts`).
+
 **M9.1 (`tests/db/m91_retention.test.ts`, `tests/db/m91_value_pagination.test.ts`,
 `tests/db/m91_market_movers.test.ts`, `tests/data/pricing.test.ts`).** Closes gaps the M9 review
 found: `thin_price_snapshots` proven against an 18-month synthetic dataset (recent-vs-thinned
@@ -267,11 +295,14 @@ service-role client in the `tests/db/` file, matching the existing C1-style patt
 of the largest-remainder allocator, `allocate_largest_remainder`, is asserted byte-identical to
 `src/domain/allocation.ts`'s `allocate()` across a shared corpus in the same file). F1 (`GPO = CS +
 HS`) is asserted over `purchase_spending_summary()`, including after a void. `void_purchase`'s and
-`update_purchase`'s downstream-blocker checks are exercised by directly setting a lot's
-`quantity_remaining` below `quantity` under the service role — a proxy for the real thing, since no
-disposal-producing milestone (sales M10, openings M16, grading M17, trades M18) has shipped yet to
-create one for real; the guard logic itself does not know or care which milestone eventually writes
-that state. The `void_acquisition_lot` correction (D-047's neighbour, M8 prompt §62) is proven by
+`update_purchase`'s downstream-blocker checks were originally exercised only by directly setting a
+lot's `quantity_remaining` below `quantity` under the service role — a proxy for the real thing,
+since no disposal-producing milestone had shipped yet to create one for real. M10 is the first real
+one; a genuine `create_sale`-produced partial disposal now exercises the identical blocker path in
+practice (a source purchase becomes uneditable/unvoidable the moment any of its lots has a real
+sale against it) — proven as a regression test, not a re-write of the M8 fixture-based coverage,
+which stays exactly as useful for openings/grading/trades once those milestones ship too. The
+`void_acquisition_lot` correction (D-047's neighbour, M8 prompt §62) is proven by
 voiding one of a two-card-line purchase's two lots and confirming the parent purchase does not void
 prematurely, then voiding the second and confirming it now does. `tests/data/norges-bank.test.ts` is
 a deterministic, no-network regression against a real captured Norges Bank response (TESTING.md's

@@ -207,7 +207,17 @@ unit_cost_basis = attributable_cost_line / quantity_line
 ```
 rounded by the same largest-remainder method across the lot's units when `quantity > 1` and
 the division is inexact. A lot with `quantity = 3` and attributable cost `1000` stores a per-unit
-basis of `333` with a `+1` residual on the lot so `Σ = 1000`.
+basis of `333` with a `+1` residual on the lot so `Σ = 1000`. `residual_nok_minor` is the NOK-side
+counterpart of this same rule, corrected in M10 (DECISIONS.md D-060) after a real, silent leak was
+found in the original NOK-side division for foreign-currency multi-unit lots.
+
+**Which disposal gets the residual, when the lot is sold across more than one sale?** (D-060.)
+Whichever disposal reduces `quantity_remaining` to exactly zero — a lot's `quantity_remaining`
+decreases monotonically and reaches zero at most once per "lifetime" (voiding the exhausting
+disposal restores it above zero, making a second zero-crossing a distinct later event, never a
+double credit), so summing every disposal's frozen basis reproduces the lot's exact original cost
+exactly. The identical rule applies to a lot's `lot_cost_adjustments` division (§4.4) when a
+partial disposal must freeze its per-unit share. Full derivation: DATA_MODEL.md §5.7, D-060.
 
 ### 4.4 Grading costs
 
