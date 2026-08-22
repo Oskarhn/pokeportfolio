@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Link } from '@tanstack/react-router'
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
+import { useInfiniteQuery, useQueries, useQuery } from '@tanstack/react-query'
 import {
   searchCards,
   searchSets,
@@ -9,6 +9,8 @@ import {
   type CatalogSet,
 } from '../../data/catalog'
 import { getFavoritedCardIds } from '../../data/collection'
+import { searchPrices, summarizeCardPricing, SEARCH_PRICES_MAX_CARD_IDS } from '../../data/pricing'
+import { getMyProfile } from '../../data/profile'
 import { CardResultCard } from './CardResultCard'
 import { SetCarousel } from './SetCarousel'
 import { Sheet } from '../../ui/Sheet'
@@ -116,6 +118,33 @@ export function CatalogPage() {
     return copy
   }, [favoriteFiltered, sort])
   const hasMoreCards = cardSearch.hasNextPage
+
+  // Batched real prices on result tiles (M9.1 prompt §5-11): one bounded search-prices request per
+  // <=20-card page, never one per tile — chunked by the endpoint's own contract
+  // (SEARCH_PRICES_MAX_CARD_IDS) and cached by TanStack Query per exact chunk of ids, so paging
+  // forward never re-requests a batch already fetched. A pricing failure degrades to "—" per card
+  // (searchPrices already swallows its own errors) and never blocks the catalog grid itself.
+  const profile = useQuery({ queryKey: ['my-profile'], queryFn: getMyProfile })
+  const useEuPricing = profile.data?.useEuPricing ?? true
+  const cardIdChunks = useMemo(() => {
+    const ids = cardResults.map((c) => c.cardId)
+    const chunks: string[][] = []
+    for (let i = 0; i < ids.length; i += SEARCH_PRICES_MAX_CARD_IDS) {
+      chunks.push(ids.slice(i, i + SEARCH_PRICES_MAX_CARD_IDS))
+    }
+    return chunks
+  }, [cardResults])
+  const priceBatches = useQueries({
+    queries: cardIdChunks.map((chunk) => ({
+      queryKey: ['catalog-search-prices', chunk, useEuPricing],
+      queryFn: () => searchPrices(chunk, useEuPricing),
+      staleTime: 5 * 60 * 1000,
+    })),
+  })
+  const priceSummaryByCard = useMemo(() => {
+    const flat = priceBatches.flatMap((batch) => (batch.data ? [...batch.data.values()] : []))
+    return summarizeCardPricing(flat)
+  }, [priceBatches])
 
   return (
     <div className="mx-auto w-full max-w-2xl space-y-5 py-2">
@@ -306,7 +335,11 @@ export function CatalogPage() {
         <>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
             {cardResults.map((card) => (
-              <CardResultCard key={card.cardId} card={card} />
+              <CardResultCard
+                key={card.cardId}
+                card={card}
+                priceSummary={priceSummaryByCard.get(card.cardId)}
+              />
             ))}
           </div>
           {hasMoreCards ? (

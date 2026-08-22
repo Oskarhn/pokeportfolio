@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
+import { useNavigate } from '@tanstack/react-router'
 import { buildPortfolioCsv, downloadCsv } from '../../data/portfolioExport'
 import type { PortfolioFilters } from '../../data/portfolio'
 import { Sheet } from '../../ui/Sheet'
@@ -7,10 +8,12 @@ import { DownloadIcon, CheckIcon, ChartIcon, SwapIcon } from '../../ui/icons'
 
 /**
  * The four Portfolio shortcuts the owner described (M7.1 prompt §46-49): Export and Bulk Actions
- * are real today; Trade Analyzer (needs real trade-value semantics, M9/M18) and Market Movers
- * (needs price history, M9) are architected here but honestly unavailable — muted styling plus an
- * explicit message on tap, never a button that silently does nothing (M7.1 prompt §46's own
- * warning against letting the owner mistake them for working features).
+ * are real today; Market Movers is real as of M9.1 (its dependency, price history, shipped in M9)
+ * — it must not stay a muted placeholder now that the milestone it was waiting on has landed
+ * (M9.1 prompt §19). Trade Analyzer still needs real trade-value semantics (M18) and stays an
+ * honest "not available yet" — muted styling plus an explicit message on tap, never a button that
+ * silently does nothing (M7.1 prompt §46's own warning against letting the owner mistake it for a
+ * working feature).
  */
 export function PortfolioActionShortcuts({
   filters,
@@ -19,7 +22,8 @@ export function PortfolioActionShortcuts({
   filters: PortfolioFilters
   onEnterSelectMode: () => void
 }) {
-  const [futureNotice, setFutureNotice] = useState<'trade' | 'movers' | null>(null)
+  const navigate = useNavigate()
+  const [futureNotice, setFutureNotice] = useState<'trade' | null>(null)
   const exportMutation = useMutation({
     mutationFn: async () => {
       const csv = await buildPortfolioCsv(filters)
@@ -53,9 +57,8 @@ export function PortfolioActionShortcuts({
       <ShortcutTile
         icon={<ChartIcon className="size-5" />}
         label="Market movers"
-        muted
         onClick={() => {
-          setFutureNotice('movers')
+          void navigate({ to: '/market-movers' })
         }}
       />
 
@@ -64,12 +67,11 @@ export function PortfolioActionShortcuts({
         onClose={() => {
           setFutureNotice(null)
         }}
-        title={futureNotice === 'trade' ? 'Trade analyzer' : 'Market movers'}
+        title="Trade analyzer"
       >
         <p className="text-sm text-slate-300">
-          {futureNotice === 'trade'
-            ? 'Not available yet — trade analysis needs real card values, which arrive with market pricing.'
-            : 'Not available yet — ranking cards by price movement needs price history, which arrives with market pricing.'}
+          Not available yet — trade analysis needs real trade-value semantics, which arrive with
+          trades.
         </p>
       </Sheet>
     </div>

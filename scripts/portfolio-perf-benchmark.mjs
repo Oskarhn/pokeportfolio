@@ -209,6 +209,34 @@ async function seed(userId, variantIds) {
   }
 
   console.log(`Seed complete in ${((performance.now() - t0) / 1000).toFixed(1)}s`)
+  return { collectionId: collection.id }
+}
+
+// M9.1 addition (prompt §85): M7's original benchmark predates the resolver entirely, so every
+// holding resolved to `missing` — realistic for M7's plain-column value, but not for M9's
+// resolver-backed value_desc/low-value/missing-value paths, which need a genuine mix of priced and
+// unpriced variants to measure the shape they actually run in production. ~70% of the variant pool
+// gets one fresh Cardmarket snapshot; the rest stay unpriced on purpose.
+async function seedPricing(variantIds) {
+  console.log(`Seeding price_snapshots for ~${Math.round(variantIds.length * 0.7)} variants...`)
+  const today = new Date().toISOString().slice(0, 10)
+  const rows = variantIds
+    .filter(() => Math.random() < 0.7)
+    .map((id) => ({
+      card_variant_id: id,
+      provider: 'tcgdex_cardmarket',
+      price_kind: 'cm_trend',
+      source_currency: 'EUR',
+      value_minor: Math.floor(50 + Math.random() * 500_00),
+      snapshot_date: today,
+      provider_updated_at: new Date().toISOString(),
+    }))
+  for (let i = 0; i < rows.length; i += 500) {
+    const { error } = await service
+      .from('price_snapshots')
+      .upsert(rows.slice(i, i + 500), { onConflict: 'card_variant_id,provider,snapshot_date' })
+    if (error) throw error
+  }
 }
 
 async function timeRpc(client, name, args) {
@@ -239,7 +267,8 @@ async function main() {
 
   try {
     const variantIds = await fetchCatalogVariantIds(2000)
-    await seed(user.id, variantIds)
+    await seedPricing(variantIds)
+    const { collectionId } = await seed(user.id, variantIds)
 
     const { error: signInError } = await userClient.auth.signInWithPassword({
       email: user.email,
@@ -286,9 +315,64 @@ async function main() {
     })
     console.log(`  ${second.ms.toFixed(1)} ms, ${second.rows} rows`)
 
+    // M9.1 addition (TESTING.md §7 gate, prompt §84-86): value_desc's keyset page is the one M9
+    // actually changed (resolver join, holding-total value cursor) — the M7 benchmark predates
+    // resolve_variant_market_values entirely, so this is the specific path that needed re-timing.
+    console.log('\nBenchmark: keyset second page (value_desc)')
+    const firstValue = await timeRpc(userClient, 'list_portfolio', {
+      p_sort: 'value_desc',
+      p_limit: 30,
+    })
+    console.log(`  first page  ${firstValue.ms.toFixed(1)} ms, ${firstValue.rows} rows`)
+    const lastValueRow = (
+      await userClient.rpc('list_portfolio', { p_sort: 'value_desc', p_limit: 30 })
+    ).data.at(-1)
+    const secondValue = await timeRpc(userClient, 'list_portfolio', {
+      p_sort: 'value_desc',
+      p_limit: 30,
+      p_cursor_holding_id: lastValueRow.holding_id,
+      p_cursor_name: lastValueRow.card_name ?? lastValueRow.manual_name ?? '',
+      p_cursor_value_minor:
+        lastValueRow.holding_value_nok_minor === null
+          ? null
+          : Number(lastValueRow.holding_value_nok_minor),
+      p_cursor_has_value: lastValueRow.holding_value_nok_minor !== null,
+    })
+    console.log(`  next page   ${secondValue.ms.toFixed(1)} ms, ${secondValue.rows} rows`)
+
+    console.log('\nBenchmark: list_portfolio low-value filter')
+    const lowValue = await timeRpc(userClient, 'list_portfolio', {
+      p_sort: 'value_asc',
+      p_limit: 30,
+      p_low_value: true,
+    })
+    console.log(`  ${lowValue.ms.toFixed(1)} ms, ${lowValue.rows} rows`)
+
+    console.log('\nBenchmark: list_portfolio missing-value filter')
+    const missingValue = await timeRpc(userClient, 'list_portfolio', {
+      p_sort: 'name_asc',
+      p_limit: 30,
+      p_missing_value: true,
+    })
+    console.log(`  ${missingValue.ms.toFixed(1)} ms, ${missingValue.rows} rows`)
+
+    console.log('\nBenchmark: list_portfolio custom collection scope')
+    const collectionScope = await timeRpc(userClient, 'list_portfolio', {
+      p_sort: 'value_desc',
+      p_limit: 30,
+      p_custom_collection_id: collectionId,
+    })
+    console.log(`  ${collectionScope.ms.toFixed(1)} ms, ${collectionScope.rows} rows`)
+
     console.log('\nBenchmark: portfolio_counts()')
     const counts = await timeRpc(userClient, 'portfolio_counts', {})
     console.log(`  ${counts.ms.toFixed(1)} ms`)
+
+    console.log('\nBenchmark: portfolio_counts() custom collection scope')
+    const countsScope = await timeRpc(userClient, 'portfolio_counts', {
+      p_custom_collection_id: collectionId,
+    })
+    console.log(`  ${countsScope.ms.toFixed(1)} ms`)
 
     console.log(`\nSeeded holdings: ~${LOT_COUNT} lots (with ~30% identity reuse).`)
   } finally {

@@ -1,17 +1,19 @@
 import { supabase } from './supabase-client'
 import { parseMinorUnits } from './money'
+import { summarizeCardPricing as summarizeCardPricingPure } from '../domain/pricing-summary'
+export { type CardPriceSummary } from '../domain/pricing-summary'
 
 /**
- * On-demand catalog pricing (search-prices Edge Function, M9 prompt §48-50) and real snapshot
- * history (get_card_variant_price_history RPC, prompt §51-53). Neither persists anything — a
- * search does not become history (DATA_MODEL.md §4.2); only the scheduled ingest job writes
+ * On-demand catalog pricing (search-prices Edge Function, M9/M9.1 prompt §48-50/§8-11) and real
+ * snapshot history (get_card_variant_price_history RPC, prompt §51-53). Neither persists anything
+ * — a search does not become history (DATA_MODEL.md §4.2); only the scheduled ingest job writes
  * `price_snapshots`.
  *
- * Search/Card Detail current-price references are shown in their own source currency (EUR/USD),
- * not converted to NOK — unlike Portfolio/Holding Detail, whose values come from the real
- * `resolve_variant_market_values` resolver and are always NOK. Converting an on-demand reference
- * for display would need its own live FX lookup; showing the real source currency plainly is more
- * honest than a conversion this path does not yet perform.
+ * Search/Card Detail get an exact NOK reference alongside the real source-currency provenance
+ * (M9.1 prompt §10-11) — the Edge Function converts server-side using the same `fx_rates` market
+ * data `resolve_variant_market_values` reads, at the observation's own date. `valueNokMinor` is
+ * `null` only when no FX rate is cached yet for that (currency, date) — shown as "—", never a
+ * fabricated figure.
  */
 
 export interface SearchPriceResult {
@@ -21,6 +23,7 @@ export interface SearchPriceResult {
   provider: 'tcgdex_cardmarket' | 'tcgdex_tcgplayer' | null
   sourceCurrency: string | null
   sourceValueMinor: bigint | null
+  valueNokMinor: bigint | null
   providerUpdatedAt: string | null
 }
 
@@ -32,6 +35,7 @@ interface SearchPricesFunctionRow {
   priceKind: string | null
   sourceCurrency: string | null
   sourceValueMinor: number | null
+  valueNokMinor: string | null
   providerUpdatedAt: string | null
 }
 
@@ -41,7 +45,8 @@ interface SearchPricesFunctionBody {
   error?: string
 }
 
-const MAX_CARD_IDS = 20
+export const SEARCH_PRICES_MAX_CARD_IDS = 20
+const MAX_CARD_IDS = SEARCH_PRICES_MAX_CARD_IDS
 
 /** Bounded batch (<=20 cards) — never one request per visible card (prompt §48). Silently returns
  *  an empty map on failure: pricing is a secondary enhancement and must never break Search/Card
@@ -71,6 +76,7 @@ export async function searchPrices(
           sourceCurrency: r.sourceCurrency,
           sourceValueMinor:
             r.sourceValueMinor === null ? null : BigInt(Math.round(r.sourceValueMinor)),
+          valueNokMinor: r.valueNokMinor === null ? null : BigInt(r.valueNokMinor),
           providerUpdatedAt: r.providerUpdatedAt,
         },
       ]),
@@ -78,6 +84,15 @@ export async function searchPrices(
   } catch {
     return new Map()
   }
+}
+
+/** Thin re-export over the pure `src/domain/pricing-summary.ts` implementation — kept here so
+ *  existing `../../data/pricing` call sites don't change, tested directly against the domain
+ *  module (no Supabase env needed) in `tests/data/pricing.test.ts`. */
+export function summarizeCardPricing(
+  results: Iterable<SearchPriceResult>,
+): Map<string, import('../domain/pricing-summary').CardPriceSummary> {
+  return summarizeCardPricingPure(results)
 }
 
 export interface PriceHistoryPoint {
@@ -96,15 +111,22 @@ interface PriceHistoryRow {
 /** Real snapshots only — never a fabricated point, never an avg7/avg30 rolling statistic
  *  mistaken for history (D-008). Empty for a variant nobody has ever owned (watched_card_variants
  *  never covered it) or one owned for less than a day. */
+export type MarketMoverSort =
+  'most_movement' | 'least_movement' | 'highest_increase' | 'largest_decrease'
+
 export interface MarketMover {
   holdingId: string
   cardVariantId: string
   cardName: string | null
   cardImageBaseUrl: string | null
+  quantity: number
   currentValueMinor: bigint
   previousValueMinor: bigint
   changeMinor: bigint
   changePct: number | null
+  /** Secondary, informational only (M9.1 prompt §23) — unit change x quantity. Ranking is always
+   *  by the per-unit change_pct; this never drives sort order. */
+  holdingImpactMinor: bigint
 }
 
 interface MarketMoverRow {
@@ -112,18 +134,25 @@ interface MarketMoverRow {
   card_variant_id: string
   card_name: string | null
   card_image_base_url: string | null
+  quantity: number
   current_value_nok_minor: string
   previous_value_nok_minor: string
   change_nok_minor: string
   change_pct: number | null
+  holding_impact_nok_minor: string
 }
 
-/** Real price movement of currently-owned, currently-priced holdings only (prompt §54-55/§94) —
- *  never a global catalog ranking, never a realized-P/L figure. A holding with no historical
- *  observation in the window is simply absent, never shown as 0% movement. */
-export async function getMarketMovers(periodDays: number, limit = 10): Promise<MarketMover[]> {
+/** Real price movement of currently-owned, currently-priced holdings only (prompt §18-23) — never
+ *  a global catalog ranking, never a realized-P/L figure. A holding with no historical observation
+ *  in the window is simply absent, never shown as 0% movement. Ranks by per-unit change_pct
+ *  (`sort`), never by holding-total kroner — see the migration header for why. */
+export async function getMarketMovers(
+  periodDays: number,
+  limit = 10,
+  sort: MarketMoverSort = 'most_movement',
+): Promise<MarketMover[]> {
   const { data, error } = await supabase
-    .rpc('get_market_movers', { p_period_days: periodDays, p_limit: limit })
+    .rpc('get_market_movers', { p_period_days: periodDays, p_limit: limit, p_sort: sort })
     .overrideTypes<MarketMoverRow[], { merge: false }>()
   if (error) throw new Error(error.message)
   return data.map((row) => ({
@@ -131,10 +160,12 @@ export async function getMarketMovers(periodDays: number, limit = 10): Promise<M
     cardVariantId: row.card_variant_id,
     cardName: row.card_name,
     cardImageBaseUrl: row.card_image_base_url,
+    quantity: row.quantity,
     currentValueMinor: parseMinorUnits(row.current_value_nok_minor),
     previousValueMinor: parseMinorUnits(row.previous_value_nok_minor),
     changeMinor: parseMinorUnits(row.change_nok_minor),
     changePct: row.change_pct,
+    holdingImpactMinor: parseMinorUnits(row.holding_impact_nok_minor),
   }))
 }
 

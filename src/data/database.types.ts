@@ -1509,7 +1509,11 @@ export type Database = {
         }[]
       }
       get_market_movers: {
-        Args: { p_limit?: number; p_period_days?: number }
+        Args: {
+          p_limit?: number
+          p_period_days?: number
+          p_sort?: Database["public"]["Enums"]["market_mover_sort"]
+        }
         Returns: {
           card_image_base_url: string | null
           card_name: string | null
@@ -1518,7 +1522,9 @@ export type Database = {
           change_pct: number | null
           current_value_nok_minor: string
           holding_id: string
+          holding_impact_nok_minor: string
           previous_value_nok_minor: string
+          quantity: number
         }[]
       }
       grader_to_text: {
@@ -1801,6 +1807,11 @@ export type Database = {
         | "added_oldest"
         | "number_asc"
         | "number_desc"
+      market_mover_sort:
+        | "most_movement"
+        | "least_movement"
+        | "highest_increase"
+        | "largest_decrease"
       price_kind: "cm_trend" | "cm_avg30" | "cm_avg7" | "cm_avg" | "tp_market"
       price_provider: "tcgdex_cardmarket" | "tcgdex_tcgplayer"
       purchase_origin: "manual" | "provisional_opening"
@@ -1999,6 +2010,12 @@ export const Constants = {
         "added_oldest",
         "number_asc",
         "number_desc",
+      ],
+      market_mover_sort: [
+        "most_movement",
+        "least_movement",
+        "highest_increase",
+        "largest_decrease",
       ],
       price_kind: ["cm_trend", "cm_avg30", "cm_avg7", "cm_avg", "tp_market"],
       price_provider: ["tcgdex_cardmarket", "tcgdex_tcgplayer"],

@@ -1,5 +1,6 @@
 import { fromDecimalString, toDecimalString } from '../domain/money'
 import { InvalidMoneyInputError } from '../domain/errors'
+import type { CurrencyCode } from '../domain/currency'
 
 /**
  * The UI-layer half of the money input boundary (FINANCIAL_MODEL.md §1, DESIGN_SYSTEM.md §2).
@@ -27,4 +28,19 @@ export function formatNokMinor(minorUnits: bigint): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(Number(decimal))
+}
+
+const CURRENCY_SYMBOL: Partial<Record<CurrencyCode, string>> = { EUR: '€', USD: '$', GBP: '£' }
+
+/** M9.1's display-currency formatting for EUR/USD (MoneyDisplay's converted figure, Card Detail's
+ *  source-currency provenance) — no locale grouping games, just symbol + two decimals, since these
+ *  are presentation-only reference figures rather than the app's canonical NOK amounts. */
+export function formatCurrencyMinor(minorUnits: bigint, currency: CurrencyCode): string {
+  const decimal = toDecimalString({ minorUnits, currency })
+  const formatted = new Intl.NumberFormat('en-US', {
+    minimumFractionDigits: currency === 'JPY' ? 0 : 2,
+    maximumFractionDigits: currency === 'JPY' ? 0 : 2,
+  }).format(Number(decimal))
+  const symbol = CURRENCY_SYMBOL[currency]
+  return symbol ? `${symbol}${formatted}` : `${formatted} ${currency}`
 }
