@@ -10,6 +10,36 @@ they were**.
 
 ## [Unreleased]
 
+### Added — 2026-08-30 · M12 Dashboard (implementation candidate, awaiting review)
+
+Home is now the real investment-style portfolio dashboard. A derived `portfolio_snapshots` cache
+(one end-of-business-day state per user per date) is maintained by a database-side recompute
+engine: transactional invalidation triggers mark the earliest affected business date, and a
+bounded SKIP LOCKED worker rebuilds forward from there on a 15-minute cron cycle offset from the
+price ingest, plus a daily sweep that keeps "current" honest with zero activity. Historical
+snapshots replay the ownership timeline from canonical disposals (never projecting current
+quantity backward), resolve provider prices as-of each date with freshness measured from that
+date and FX observed on or before the observation, apply the manual-valuation interval model
+(D-062), and accumulate frozen-ledger spend/proceeds cumulatives. The central invariant — a full
+rebuild equals incremental recompute byte-for-byte over every semantic column — is a permanent
+test gate exercised over a richly corrected fixture.
+
+The headline Current Portfolio Value renders from the latest snapshot in one bounded request,
+with Total tracked economic position secondary (never labelled profit), period change across
+1D–MAX ranges (default 3M; zero bases render an undefined percentage), data-quality counts
+(priced/unpriced, automatic/manual, uncosted lots), a raw/graded/sealed value breakdown,
+monthly-spend bars reconciling GPO = CS + HS, sales figures split into realized-on-costed vs
+proceeds-from-uncosted, recent activity from canonical events only, and empty/no-history states
+that never fabricate. The chart is TradingView Lightweight Charts v5.2.1 (Apache-2.0), validated
+by spike and lazy-loaded at 62 KB gzip with its attribution implemented in full (D-066); the
+privacy eye masks the headline, change figures, chart axis/tooltips and the screen-reader
+summary together. Custom-collection scopes show correct current figures and say plainly that
+historical membership tracking does not exist (D-065).
+
+Security posture: snapshots are owner-read-only with no browser write grant of any kind; the
+recompute queue/run log are invisible to browsers; every engine routine refuses authenticated
+callers at the privilege level; admin gains no dashboard bypass.
+
 ### Added — 2026-08-29 · M11 Sealed Inventory
 
 Sealed products (booster packs/boxes, ETBs, bundles, tins, etc.) are first-class Portfolio

@@ -151,6 +151,25 @@ proving, not asserting.
 The last row is the one that catches cache drift, which is the failure mode that makes a
 dashboard quietly lie.
 
+**M12 (`tests/db/m12_dashboard_snapshots.test.ts`, `tests/db/m12_queue.test.ts`,
+`tests/authorization/m12_dashboard.test.ts`, `tests/data/dashboard.test.ts`).** The equality
+gate runs over a deliberately rich corrected fixture — backdated acquisitions, partial sale,
+sale void restoring history, manual set/update/clear plus a backdated correction landing inside
+cleared history, a price correction, a genuine zero observation, an unpriced variant, sealed and
+graded holdings on manual-only valuation — with every semantic column compared exactly
+(`computed_at` excluded). Around it: the ownership boundaries (acquire/sale day edges, same-day
+acquire+sell ending at zero), as-of freshness measured from D (a 60-day-old observation is real
+history at D−55; exact 30/31-day inclusion edge), no future prices, no pre-tracking fabrication,
+the D-062 interval model including deterministic resolution of a correction that backdates past
+an earlier-effective row, per-date CMV/ACMV/DCB/URC/CS/NSP/TTEP against hand-derived ledgers
+(F3/F5), the D-068 adjustment-share DCB rule at its occurred_on boundary, mixed data-quality
+counts (automatic/manual/priced/unpriced/uncosted), monthly-spend F1 reconciliation against
+`purchase_spending_summary`, the RRC/PUD split never collapsing into "profit", D-067 historical
+display-FX across a mid-history re-rate, zero-coverage gap flags, empty-account honesty, queue
+LEAST-coalescing/drain/idempotence/concurrent-drain/future-work retention, shared price/FX
+fan-out (sealed-only users excluded), and grant-level refusals for every engine routine plus
+cache-forgery, cross-user read, admin-no-bypass and anon-denial coverage.
+
 ---
 
 ## 4. Authorization suite — mandatory
@@ -452,6 +471,16 @@ Not micro-benchmarks. Two checks that map to real failure:
   measures real `pg_total_relation_size`/`pg_relation_size`/`pg_indexes_size` and the resulting
   bytes/row — the actual number COST_POLICY.md's capacity projection is built on, not the earlier
   computed estimate. Never run against a database holding real data.
+- **M12 snapshot-engine gate.** `scripts/portfolio-snapshots-benchmark.mjs`, also a permanent
+  `db-tests` step: seeds one synthetic account at realistic scale (~10k lots across ~400 days, a
+  ~3,500-variant catalog with daily observations over the trailing 120 days for ~70% of it,
+  disposals across time, manual valuations), ANALYZEs post-seed (D-059), then times full-cache
+  rebuilds over 30/90/365-day ranges, one production-shaped mutation→queue→drain incremental
+  cycle plus its idempotent repeat, and all four signed-in Home read RPCs; finally measures real
+  `portfolio_snapshots` storage via `pg_total_relation_size`. Same single-generous-threshold
+  policy as above: background rebuilds fail past 60s, Home reads past 1.5s, any outright error
+  fails — a multi-second Home read is a defect, a slow-but-bounded background rebuild is a
+  finding to investigate (prompt §99).
 
 ---
 

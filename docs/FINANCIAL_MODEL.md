@@ -397,6 +397,28 @@ Same rule as graded: manual valuation until a legitimate EUR source is confirmed
 holding may optionally display a secondary USD reference from a US source, clearly labelled
 as a different market, and never used in `CMV`.
 
+### 6.4 Historical resolution as of date D (M12, D-062/D-066-era snapshot semantics)
+
+Every rule above applies **as of the snapshot date**, not as of today:
+
+- Manual override: the active value on D is the economic-interval model of D-062 — rows ordered
+  by `(effective_from, created_at, id)`, each owning `[effective_from, next effective_from)`,
+  the terminal row ending at its clear's wall-clock date when cleared, an active row extending
+  indefinitely.
+- Provider freshness: a price's age on D is `D − snapshot_date`, never
+  `today − snapshot_date`. An observation that is stale or even expired *today* was fresh fact
+  on the day it resolved, and historical snapshots must say what was true then (tested at the
+  exact 30/31-day boundary).
+- FX: converted with the observation on or before the provider snapshot's own date — never
+  today's rate and never the frozen transaction rate (§7).
+- Missing stays missing; a genuine zero stays zero (F14). No pre-tracking history is ever
+  backfilled: before a variant's first real observation, it contributes nothing but an
+  unvalued count.
+
+Display-currency conversion of stored NOK history follows D-067: each point converts with the
+FX observed on or before its own date, so EUR/USD charts legitimately include FX movement;
+storage remains NOK and frozen transactional conversions are untouched (F11).
+
 ---
 
 ## 7. Foreign currency

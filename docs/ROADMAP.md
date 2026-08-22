@@ -289,6 +289,13 @@ PriceCharting sources this session (API_SOURCES.md/RESEARCH.md). Full account:
 to visx before building on it. Value over time, monthly spend, headline figures, data-quality
 counts.
 
+**Status: implementation candidate on `feat/m12-dashboard`, awaiting Claude review.** NOT
+merged, NOT migrated to any hosted project, NOT deployed. The spike validated and locked
+lightweight-charts v5.2.1 (D-066). The full-vs-incremental byte-equality gate, ownership
+timeline, valuation-as-of rules, security suite and the permanent snapshots benchmark are in
+place per TESTING §3/§7; hosted migration, cron activation and the initial backfill are
+explicitly post-review deployment steps.
+
 **Gate:** full rebuild equals incremental recompute, byte-identical; ownership timeline correct
 (TESTING §3); every figure reconciles against the ledger.
 

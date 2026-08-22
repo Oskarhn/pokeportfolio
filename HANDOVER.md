@@ -4,34 +4,90 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-**Last updated:** 2026-08-29 — M1–M11 are complete in code, merged and deployed. **M11 (Sealed
-Inventory) is closed.** Sealed products (booster packs/boxes, ETBs, bundles, tins) are first-class
-Portfolio inventory, reusing the existing card acquisition/purchase/valuation/sale machinery end to
-end. Curated catalog (a modest, individually-sourced seed of seven real products) plus user-created
-private products; manual-only valuation with a visible Cards/Sealed value segment that always sums
-to the total. A real cardinality defect (`sealed_intent` sketched on `holdings` since M3 — cannot
-represent mixed intent among identical physical units) was found and fixed before any UI depended
-on it: relocated to `acquisition_lots` (D-061), with a new `set_sealed_lot_intent` split RPC. CI's
-own runs caught four further real bugs before merge (an untyped CASE expression breaking every
-known-cost `add_card_acquisition` call; a dropped `storage_location_id` ownership check the M11
-trigger replacement silently removed; two test-fixture isolation bugs; and a real security gap —
-neither `create_purchase` nor `add_card_acquisition` verified a referenced sealed product was
-curated or the caller's own before writing against it) — all fixed, CI green
-(415/415 database and authorization tests, up from 398). `scripts/deployment-check.mjs` moved from
-one unbounded `Promise.all` to bounded concurrency, closing the harness gap M10 left open — the
-full automated gate ran again and passed 28/28 against the real deployment, the first complete run
-since M9. Migrations applied to `pokeportfolio-dev`, `grant-audit.sql` clean,
-`remote-security-check.mjs` 17/17. Full account: DECISIONS.md D-061, `claude_outputs/output_19.txt`.
-See "M11 — Sealed Inventory" below.
+**Last updated:** 2026-08-30 — **M1–M11 are complete in code, merged and deployed. M12
+(Dashboard) exists as an IMPLEMENTATION CANDIDATE on `feat/m12-dashboard` and is NOT merged,
+NOT migrated to `pokeportfolio-dev`, and NOT deployed anywhere. Claude review is required before
+anything in that branch touches a hosted project — merge, migration, cron activation and the
+initial backfill are all explicitly post-review steps.** See "M12 — Dashboard (implementation
+candidate)" below; everything beneath it describes the deployed M11 state.
+
+---
+
+## M12 — Dashboard (implementation candidate, AWAITING CLAUDE REVIEW)
+
+Branch `feat/m12-dashboard`, draft PR open against `main` titled "M12: Dashboard — OX Alpha
+candidate" marked DO NOT MERGE. Production state unchanged: no hosted migration was run, no Edge
+Function touched, no cron row created outside migrations, nothing merged.
+
+**What it is.** Home is now the real portfolio dashboard over a derived snapshot cache:
+
+- **Schema** (`20260830120000`): `portfolio_snapshots` — one end-of-business-day state per user
+  per date (CMV, ACMV, historical DCB, CS/NSP-to-date cumulatives, open/unvalued lot counts);
+  owner-SELECT-only RLS, zero browser write grants. `portfolio_recompute_queue`
+  (`user_id PK, dirty_from`) and `portfolio_recompute_runs` are service/internal-only
+  (RLS-on-no-policies-no-grants, the invitation_claims shape).
+- **Engine** (`20260830120010`): `rebuild_portfolio_snapshots(user, from, through)` derives every
+  field from canonical rows alone — disposal-timeline replay per date (never current-state
+  projection), provider observations as step functions with freshness age measured from D,
+  FX observed on/before each observation's own date, the manual-valuation interval model
+  (D-062), frozen-ledger cumulatives by business date, rows only from the user's first tracked
+  date. `drain_portfolio_recompute_queue` is the SKIP LOCKED worker with per-user failure
+  isolation (queue row deleted only after its rebuild commits).
+- **Invalidation** (`20260830120010/20`): triggers enqueue with explicit boundaries —
+  least(old,new) on date moves so March recomputes when a purchase moves to April; shared
+  price/FX/thinning facts fan out statement-level to affected owners; sealed intent, storage,
+  tags, favourites and collection membership deliberately dirty NOTHING.
+- **Cron** (`20260830120040`): every-15-min drain at :07/:22/:37/:52 (offset from M9 ingest)
+  plus a daily sweep. Migration-only until post-review deployment.
+- **Reads** (`20260830120030`): four SECURITY INVOKER RPCs — `get_dashboard_summary` (headline +
+  data quality + lifetime figures + honest `pending_recompute` in ONE request),
+  `get_portfolio_history` (stored NOK + D-067 historical display-FX + coverage flags),
+  `get_monthly_spend` (GPO = CS + HS by construction), `get_recent_activity`.
+- **UI**: Home rebuilt — headline from latest snapshot with an "Updating…" badge when queued,
+  period change (zero base → undefined %, never fake), 1D–MAX ranges defaulting 3M,
+  TradingView Lightweight Charts v5.2.1 in its own lazy chunk (62 KB gzip) with attribution
+  implemented in full (D-066: NOTICE in source, visible TradingView link, built-in logo),
+  privacy eye masking axis/tooltips/a11y summary together, raw/graded/sealed breakdown,
+  monthly-spend bars, empty/no-history honesty, custom-collection scope showing current-only
+  figures with explicit "membership not tracked" copy (D-065).
+
+**The central gate:** full rebuild == incremental recompute, byte-identical over every semantic
+column except `computed_at`, proven over a fixture containing backdating, partial sale, sale
+void, manual set/update/clear, a backdated correction into cleared history, a price correction,
+a genuine-zero observation, unpriced variants and sealed/graded manual-only holdings
+(`tests/db/m12_dashboard_snapshots.test.ts`).
+
+**Decisions this milestone adds:** D-062 through D-068 in DECISIONS.md — manual-history interval
+model, cache-shape/coverage flags, recompute architecture, custom-collection history policy,
+chart-library adoption with attribution, display-FX rule, DCB adjustment-share rule.
+
+**Verification actually run on this branch:** `pnpm typecheck` / `pnpm lint` / `pnpm
+format:check` clean; `pnpm test` 125/125 (17 new dashboard domain tests); `pnpm build` green
+with bundle measured (entry ~320→373 KB raw / ~98→113 KB gzip; chart lib 194 KB raw / 62 KB
+gzip in a lazy chunk loaded only once ≥2 covered points exist). CI state at handover time:
+see the draft PR's checks — db-tests must show all migrations applying from scratch, the new
+M12 suites green inside the privilege-convergence cycle, both permanent benchmarks passing, and
+the NEW snapshots benchmark measuring rebuild/incremental/Home-read/storage at ~10k-lot scale.
+`database.types.ts` was hand-updated (no local Docker, established precedent); replace with CI's
+generated artifact and re-apply the known `p_fx_rate_to_nok` string divergence before trusting
+it further.
+
+**Explicitly NOT done (PENDING POST-REVIEW DEPLOYMENT VERIFICATION):** hosted migration push;
+cron activation on the real project; initial backfill for existing users (design: bounded
+rebuild per user from their first tracked date — run via one drain cycle after migration);
+deployment-check/remote-security-check against a real deployment; any owner-facing signed-in
+check. A drain fault-injection test (forcing a rebuild failure mid-drain without DDL access)
+was not achievable from the test harness; the subtransaction retention contract is asserted
+structurally instead and flagged for review attention.
 
 ---
 
 ## Status
 
-**Planning is FROZEN. M1–M11 are merged. No open M9/M10/M11-family item remains.** The only standing
-item carried across every milestone since M7.1 is a real owner-facing signed-in check, which needs
-the owner's own device/account — ask for it using the checklist in the "M11 — Sealed Inventory"
-section below. Next: **M12 — Dashboard.**
+**M1–M11 merged/deployed. M12 = implementation candidate awaiting review (above). No open
+M9/M10/M11-family item remains.** The standing owner-device check item carried since M7.1 still
+applies to deployed surfaces. Do not begin M12a or M13 until M12 is approved, merged and
+verified against the hosted project.
 
 ## M9 — Pricing and snapshots
 
