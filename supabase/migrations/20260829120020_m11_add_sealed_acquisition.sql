@@ -84,6 +84,14 @@ begin
     if p_sealed_intent is null then
       raise exception 'p_sealed_intent is required for a sealed product';
     end if;
+    -- A sealed product may be referenced only if it is curated or the caller's own
+    -- (prompt §69) — this function is SECURITY INVOKER, so this SELECT runs under RLS as the
+    -- caller: sealed_products_read already hides another user's private row, so a cross-tenant
+    -- id reads as "not found", never confirming the row exists. Enforced here, not merely by
+    -- Search omitting it from results — a forged id must fail server-side.
+    if not exists (select 1 from public.sealed_products where id = p_sealed_product_id) then
+      raise exception 'sealed product % not found or not accessible', p_sealed_product_id;
+    end if;
   else
     v_holding_kind := case p_grading_state
       when 'graded' then 'graded_card'::public.holding_kind

@@ -167,6 +167,16 @@ begin
         if nullif(v_line ->> 'sealed_product_id', '') is null then
           raise exception 'line %: sealed_product_id is required for a sealed line', v_idx;
         end if;
+        -- A sealed product may be referenced only if it is curated or the caller's own
+        -- (prompt §69). create_purchase is SECURITY INVOKER, so this SELECT runs under RLS as
+        -- the caller: sealed_products_read already hides another user's private row, so a
+        -- forged id reads as "not found" here rather than confirming the row exists.
+        if not exists (
+          select 1 from public.sealed_products
+          where id = (v_line ->> 'sealed_product_id')::uuid
+        ) then
+          raise exception 'line %: sealed product not found or not accessible', v_idx;
+        end if;
       end if;
     else
       if nullif(trim(both from coalesce(v_line ->> 'description', '')), '') is null then
