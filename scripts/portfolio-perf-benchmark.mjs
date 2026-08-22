@@ -136,7 +136,15 @@ async function seed(userId, variantIds) {
   // than round-tripped through holdings_identity's own coalesce()-expression unique index, which
   // is not a plain column list and so cannot be an upsert onConflict target (the same limitation
   // add_card_acquisition's find-or-create works around with a caught unique_violation).
+  //
+  // usedCombos guards the OTHER direction: two "new" rows independently picking the same random
+  // (variant, condition) is a real, not hypothetical, collision once LOT_COUNT approaches the
+  // catalog's combo space (variantIds.length x CONDITIONS.length) — certain against CI's small
+  // ephemeral seed catalog (a few hundred variants), and the whole bulk INSERT rejects on any one
+  // row's unique_violation. Once a fresh combo can't be found within a bounded number of
+  // attempts, fall back to reuse instead — exactly the D-017 shape anyway (M9.1 fix).
   const knownHoldingIds = []
+  const usedCombos = new Set()
   const BATCH = 200
   let created = 0
 
@@ -146,19 +154,31 @@ async function seed(userId, variantIds) {
     const lotTargets = [] // resolved after new holdings are inserted, in the same order
 
     for (let i = 0; i < batchSize; i += 1) {
-      const reuse = knownHoldingIds.length > 0 && Math.random() < 0.3
-      if (reuse) {
-        lotTargets.push(knownHoldingIds[Math.floor(Math.random() * knownHoldingIds.length)])
-      } else {
-        newHoldingRows.push({
-          user_id: userId,
-          holding_kind: 'raw_card',
-          card_variant_id: variantIds[Math.floor(Math.random() * variantIds.length)],
-          condition: CONDITIONS[Math.floor(Math.random() * CONDITIONS.length)],
-          is_favorite: Math.random() < 0.05,
-        })
-        lotTargets.push(null) // filled in once the batch insert returns ids, below
+      const canReuse = knownHoldingIds.length > 0
+      let variantId, condition, comboKey
+      if (!(canReuse && Math.random() < 0.3)) {
+        let attempts = 0
+        do {
+          variantId = variantIds[Math.floor(Math.random() * variantIds.length)]
+          condition = CONDITIONS[Math.floor(Math.random() * CONDITIONS.length)]
+          comboKey = `${variantId}:${condition}`
+          attempts += 1
+        } while (usedCombos.has(comboKey) && attempts < 30)
       }
+
+      if (variantId === undefined || (usedCombos.has(comboKey) && canReuse)) {
+        lotTargets.push(knownHoldingIds[Math.floor(Math.random() * knownHoldingIds.length)])
+        continue
+      }
+      usedCombos.add(comboKey)
+      newHoldingRows.push({
+        user_id: userId,
+        holding_kind: 'raw_card',
+        card_variant_id: variantId,
+        condition,
+        is_favorite: Math.random() < 0.05,
+      })
+      lotTargets.push(null) // filled in once the batch insert returns ids, below
     }
 
     let newIds = []
