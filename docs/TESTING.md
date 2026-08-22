@@ -231,6 +231,21 @@ mapping rules and proves an ambiguous card-level shape resolves to no price rath
 (prompt §15), including a real zero-price observation and a real missing-provider case captured
 live rather than synthesized.
 
+**M9.1 (`tests/db/m91_retention.test.ts`, `tests/db/m91_value_pagination.test.ts`,
+`tests/db/m91_market_movers.test.ts`, `tests/data/pricing.test.ts`).** Closes gaps the M9 review
+found: `thin_price_snapshots` proven against an 18-month synthetic dataset (recent-vs-thinned
+boundary, per-week/per-provider/per-variant separation, idempotency, history still usable after
+thinning — TESTING.md §6a's own lesson about DROP+CREATE regressions is why this one is written as
+an explicit gate, not assumed from code review); `list_portfolio`'s value_desc/value_asc keyset
+pagination walked one row at a time against a seeded tie group (manual vs provider, fresh vs stale,
+same unit different quantity, different unit same total, real zero vs missing, custom-collection
+scope) to prove no duplicate or omitted row under a real tie; `get_market_movers`'s sort modes,
+quantity-non-distortion (D-056) and cross-user isolation; and `summarizeCardPricing`
+(`src/domain/pricing-summary.ts`) — the honest range/from-price logic Search result tiles render
+from — as a pure, no-network unit-test matrix (one priced variant, several, partial coverage, all
+missing, a genuine zero, an ambiguous/ignored candidate, one card's provider failure never
+affecting another card in the same batch).
+
 **M7 (`tests/authorization/m7_portfolio.test.ts`, `tests/db/m7_constraints.test.ts`).**
 `custom_collections` fits the generic owned-table attack matrix and is folded into it; what needs
 its own coverage is `custom_collection_members` (ownership depends on *two* parent rows, like
@@ -367,15 +382,54 @@ Not micro-benchmarks. Two checks that map to real failure:
   small prefetch margin.
 - Price-snapshot volume: one row per watched variant per price kind per day. A seeded collection
   with heavy duplication must not inflate it (D-019).
-- **M7's 10 000-lot Portfolio gate.** `scripts/portfolio-perf-benchmark.mjs` seeds an isolated
+- **The 10 000-lot Portfolio gate.** `scripts/portfolio-perf-benchmark.mjs` seeds an isolated
   synthetic account (never the owner's real one — M7 prompt §101) with 10 000+ lots — duplicates,
-  five conditions, tags, storage locations, custom-collection membership — and times
-  `list_portfolio` across every sort mode, one filtered query, a keyset second page and
-  `portfolio_counts()`, reporting milliseconds/rows/payload bytes rather than asserting a fixed
-  threshold (a hardcoded millisecond budget on a shared CI runner would be exactly the
-  "microbenchmark theatre" this section already warns against). The milestone gate itself is
-  behavioural — a real browser at this scale stays interactive, verified manually and recorded in
-  HANDOVER.md/PROJECT_JOURNAL.md, not by this script's numbers alone.
+  five conditions, tags, storage locations, custom-collection membership, and (M9.1) real
+  `price_snapshots` for ~70% of the variant pool so value_desc/low-value/missing-value exercise
+  the resolver realistically — and times `list_portfolio` across every sort mode, filtered/scoped
+  queries, both value_desc keyset pages and `portfolio_counts()`, reporting milliseconds/rows/
+  payload bytes rather than asserting a fixed threshold (a hardcoded millisecond budget on a shared
+  CI runner would be exactly the "microbenchmark theatre" this section already warns against).
+  **M9.1 wired this into CI itself** (`db-tests`, after the database/authorization suites): the
+  script only needs the ephemeral stack's own local well-known service-role key, already exported
+  for `pnpm test:db`, so the real 10k-lot timings are measured on every push rather than only when
+  a session happens to have production credentials — closing the gap M9's own handover disclosed
+  ("has not been re-run"). The milestone gate itself is still also behavioural — a real browser at
+  this scale stays interactive, verified manually and recorded in HANDOVER.md/PROJECT_JOURNAL.md,
+  not by this script's numbers alone.
+- **Price-snapshot storage capacity.** `scripts/price-snapshots-storage-benchmark.sql`, also run in
+  CI's `db-tests` job against the same disposable ephemeral database, seeds a representative
+  365,000-row synthetic `price_snapshots` dataset (500 variants × 2 providers × 365 days) and
+  measures real `pg_total_relation_size`/`pg_relation_size`/`pg_indexes_size` and the resulting
+  bytes/row — the actual number COST_POLICY.md's capacity projection is built on, not the earlier
+  computed estimate. Never run against a database holding real data.
+
+---
+
+## 6a. Standing checklist — DROP+CREATE-ing a nontrivial function
+
+D-054 (M9.1): M7.1's number-sort migration had to `DROP FUNCTION`+`CREATE FUNCTION` `list_portfolio`
+(a new parameter changes a function's identity, so `CREATE OR REPLACE` was not available) and, in
+retyping the body from scratch, silently reverted M7's real 10,000-lot performance fix back to a
+per-holding `LATERAL` aggregate. CI's ephemeral fixtures were far too small to expose the regression;
+it survived undetected until M9 needed to rewrite the same function anyway and a real benchmark
+caught it.
+
+Whenever a migration `DROP`s and re`CREATE`s a nontrivial function for a signature change:
+
+- [ ] Diff the old and new function body side by side, not just against a mental model of "what
+      changed" — a full retype makes it easy to silently lose an unrelated fix.
+- [ ] Inspect the aggregate/join architecture specifically: materialized CTE + `GROUP BY` shapes
+      are deliberate performance fixes in this codebase (`list_portfolio`, `portfolio_counts`,
+      `select_price_sync_batch`) — a `LATERAL` correlated subquery reappearing is the specific
+      regression class this checklist exists to catch.
+- [ ] Explicitly confirm every known performance and security fix that touched the old body
+      survived into the new one (grep DECISIONS.md/PROJECT_JOURNAL.md for the function's name).
+- [ ] Run the relevant regression test — for `list_portfolio`/`portfolio_counts`, that means the
+      real large-Portfolio benchmark (§7), not just CI's small fixtures.
+
+Do not rely on developer memory for this. A migration that touches one of these functions should
+treat this list as part of its own review, every time.
 
 ---
 

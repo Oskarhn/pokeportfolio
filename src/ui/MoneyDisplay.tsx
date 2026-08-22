@@ -1,20 +1,24 @@
-import { formatNokMinor } from './money-format'
+import { useQuery } from '@tanstack/react-query'
+import { getLatestFxRatesToNok } from '../data/fx'
+import { convertNokToDisplayCurrency } from '../domain/fx'
+import { formatCurrencyMinor, formatNokMinor } from './money-format'
 import { EyeIcon, EyeOffIcon } from './icons'
 
 /**
- * The value-display contract (M7.1 prompt §75): one component every future price surface (M9's
- * resolved raw-card value, M12's chart headline) wires a resolver into without a UI rewrite.
+ * The value-display contract (M7.1 prompt §75): one component every price surface (M9's resolved
+ * raw-card value, M12's chart headline) wires a resolver into without a UI rewrite.
  *
  * States, never conflated:
- * - `known`   a real NOK amount exists (currently: a graded holding's manual valuation, the only
- *             real "value" in the app pre-M9 — DECISIONS.md D-041).
+ * - `known`   a real NOK amount exists.
  * - `hidden`  a real amount exists but the value-privacy eye (Profile/Home) is on: "••••".
  * - `missing` no amount exists. Never zero (DESIGN_SYSTEM.md §7) — always "—".
  *
- * All money in this app is frozen to NOK until M9 (manual_valuations' currency check constraint).
- * The user's own display-currency preference is shown as a small suffix note, never as a
- * conversion — showing a converted number with no real FX behind it would be exactly the
- * fabrication DESIGN_SYSTEM.md §7 rules out.
+ * Canonical storage stays NOK everywhere (FINANCIAL_MODEL.md §7). M9.1 (prompt §9-10) makes the
+ * user's display-currency preference a real, presentation-only conversion: when a cached EUR/NOK
+ * or USD/NOK rate exists, the converted amount becomes the primary figure and NOK is the small
+ * secondary note — otherwise this falls back to NOK-only rather than fabricate a number, exactly
+ * DESIGN_SYSTEM.md §7's rule. The conversion never mutates anything; `price_snapshots`, purchase
+ * FX and cost basis are read once by their own callers and never touched here.
  */
 export function MoneyDisplay({
   state,
@@ -39,8 +43,19 @@ export function MoneyDisplay({
     sm: 'text-sm font-medium',
   }[size]
 
-  const showConversionNote =
-    displayCurrency !== undefined && displayCurrency !== 'NOK' && state === 'known' && !hidden
+  const targetCurrency: 'EUR' | 'USD' | undefined =
+    displayCurrency === 'EUR' || displayCurrency === 'USD' ? displayCurrency : undefined
+  const rates = useQuery({
+    queryKey: ['fx-rates-latest'],
+    queryFn: getLatestFxRatesToNok,
+    enabled: targetCurrency !== undefined && state === 'known' && !hidden,
+    staleTime: 60 * 60 * 1000, // FX updates at most daily (ingest-fx) — an hour of staleness is fine
+  })
+  const rateToNok = targetCurrency ? rates.data?.[targetCurrency] : undefined
+  const converted =
+    targetCurrency && rateToNok && minorUnits !== undefined
+      ? convertNokToDisplayCurrency(minorUnits, targetCurrency, rateToNok)
+      : null
 
   return (
     <span className="inline-flex items-baseline gap-1.5">
@@ -49,6 +64,8 @@ export function MoneyDisplay({
           <span className="text-slate-500">—</span>
         ) : hidden ? (
           <span aria-label="Value hidden">••••</span>
+        ) : converted ? (
+          formatCurrencyMinor(converted.minorUnits, converted.currency)
         ) : (
           <>
             <span className="mr-1 text-[0.6em] font-normal text-slate-500 align-baseline">kr</span>
@@ -56,9 +73,13 @@ export function MoneyDisplay({
           </>
         )}
       </span>
-      {showConversionNote ? (
+      {converted && !hidden ? (
         <span className="text-xs font-normal text-slate-500">
-          NOK — {displayCurrency} shown once conversion exists
+          kr {formatNokMinor(minorUnits ?? 0n)}
+        </span>
+      ) : targetCurrency && state === 'known' && !hidden ? (
+        <span className="text-xs font-normal text-slate-500">
+          NOK — {displayCurrency} rate not available yet
         </span>
       ) : null}
       {state === 'known' && stale && !hidden ? (

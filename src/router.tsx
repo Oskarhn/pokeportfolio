@@ -65,6 +65,9 @@ const PurchaseDetailPage = lazy(() =>
 const PurchaseEditPage = lazy(() =>
   import('./features/purchases/PurchaseEditPage').then((m) => ({ default: m.PurchaseEditPage })),
 )
+const MarketMoversPage = lazy(() =>
+  import('./features/portfolio/MarketMoversPage').then((m) => ({ default: m.MarketMoversPage })),
+)
 
 /** Matches the layout these pages render into (AppShell's `<main>`) closely enough that arriving
  *  content doesn't jump — a skeleton rather than a spinner-over-blank-region, per
@@ -163,6 +166,11 @@ const catalogRoute = createRoute({
 const catalogCardRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/catalog/$cardId',
+  // M9.1 (prompt §16-17): the selected variant for valuation/history lives in the URL, not a
+  // global store, so refresh/back-navigation/a shared link all land on the same variant.
+  validateSearch: (search: Record<string, unknown>): { variantId?: string } => ({
+    variantId: str(search.variantId),
+  }),
   component: () => (
     <RequireSession>
       <CardDetailPage />
@@ -359,6 +367,23 @@ const purchaseEditRoute = createRoute({
   ),
 })
 
+const marketMoversRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/market-movers',
+  // M9.1 (prompt §18-23): period/sort live in the URL, same pattern as Portfolio's filters.
+  validateSearch: (
+    search: Record<string, unknown>,
+  ): { period?: '1' | '7' | '30'; sort?: string } => ({
+    period: str(search.period) as '1' | '7' | '30' | undefined,
+    sort: str(search.sort),
+  }),
+  component: () => (
+    <RequireSession>
+      <MarketMoversPage />
+    </RequireSession>
+  ),
+})
+
 const legacyMoreRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/more',
@@ -395,6 +420,7 @@ const routeTree = rootRoute.addChildren([
   purchaseNewRoute,
   purchaseDetailRoute,
   purchaseEditRoute,
+  marketMoversRoute,
   profileRoute,
   legacyMoreRoute,
   adminInvitationsRoute,

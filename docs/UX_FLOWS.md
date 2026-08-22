@@ -529,24 +529,28 @@ Depends on M9 (a real card value to sum) and M18 (the trade workflow/schema alre
 DATA_MODEL.md §5.8.2). No fairness figure may ever be fabricated or estimated from acquisition
 cost — the same "never a value that isn't real" rule as every other figure in this document.
 
-## F16 — Market Movers — **foundation shipped M9** (owner spec recorded M7.1 prompt §49)
+## F16 — Market Movers — **complete as of M9.1** (owner spec recorded M7.1 prompt §49)
 
-Current shape, Home page, `get_market_movers(p_period_days, p_limit)`:
+`get_market_movers(p_period_days, p_limit, p_sort)`:
 
-→ Home → "Market movers · 7 days" → owned, currently-priced raw-card holdings ranked by
-  |change| over the last 7 days, top 5
+→ Portfolio → "Market movers" shortcut, or Home → "Market movers · 7 days" → "View all" →
+  `/market-movers` → owned, currently-priced raw-card holdings ranked by real period-over-period
+  price movement
+✓ Period: 1D / 7D / 30D, in the URL (`?period=`)
+✓ Sort: highest increase / largest decrease / most movement / least movement, in the URL
+  (`?sort=`) — every mode ranks by per-unit `change_pct` (D-056), never by holding-total kroner, so
+  quantity never distorts the ranking; the holding-total impact (unit change × quantity) is shown
+  as a secondary figure only
 ✓ Ranks only holdings with a real historical observation on/before the window start; a holding
-  with no such observation is excluded, never shown as 0% movement (F9/F14's same principle)
+  with no such observation is excluded, never shown as 0% movement (F9/F14's same principle) — an
+  early-days empty state says so honestly ("not enough price history yet"), never a fake 0%
 ✓ No cross-user ranking — always scoped to the caller's own Portfolio
 ✓ Price movement only, never a realized/sale figure (invariant F13's neighbour — see FINANCIAL_
   MODEL.md §10's explicit-non-claims list; a mover is not a disposal)
+✓ A real zero current value is a genuine mover (e.g. −100%), never conflated with "no data"
 
-**Not yet built, recorded as the remaining gap toward the owner's fuller spec:** a dedicated
-Market Movers screen/route (currently a compact Home section only), the sort-option toggle
-(highest increase / largest decrease / absolute movement / low movement — today always sorts by
-absolute movement), and a configurable period (today fixed at 7 days). Revisit once real usage
-shows which of these the owner actually wants next; the SQL function already accepts a period/limit
-parameter, so most of this is UI-only work.
+Home keeps its compact fixed-7-day/most-movement preview (`get_market_movers(7, 5)`, unchanged)
+as a dashboard glance; the dedicated screen is where period/sort actually apply.
 
 ---
 

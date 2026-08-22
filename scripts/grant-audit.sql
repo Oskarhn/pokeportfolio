@@ -353,7 +353,7 @@ begin
     ('routine', 'resolve_variant_market_values(uuid[])', 'authenticated', 'EXECUTE'),
     ('routine', 'get_holding_value_provenance(uuid)', 'authenticated', 'EXECUTE'),
     ('routine', 'get_card_variant_price_history(uuid, date)', 'authenticated', 'EXECUTE'),
-    ('routine', 'get_market_movers(integer, integer)', 'authenticated', 'EXECUTE')
+    ('routine', 'get_market_movers(integer, integer, market_mover_sort)', 'authenticated', 'EXECUTE')
   ),
 
   -- M7: the expected PUBLIC-EXECUTE surface for every routine in `public` is empty. No project

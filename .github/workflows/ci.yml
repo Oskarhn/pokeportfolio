@@ -177,6 +177,23 @@ jobs:
       - name: Database and authorization tests
         run: pnpm test:db
 
+      # M9.1 re-run of the M7 10,000-lot Portfolio gate (TESTING.md §7, D-054): list_portfolio grew
+      # a real resolver join in M9, and no session between M9 and M9.1 re-measured it against real
+      # data. Safe here because it needs only this ephemeral stack's local well-known service-role
+      # key (already exported above), never a production credential or a real account. Runs BEFORE
+      # the storage benchmark below deliberately: that step inserts 365,000 synthetic rows into
+      # price_snapshots, which resolve_variant_market_values also queries — running it first would
+      # measure list_portfolio's resolver join against a table ~1000x the realistic watched-set
+      # size and produce a misleading number (found the hard way — see PROJECT_JOURNAL.md).
+      - name: Portfolio 10k-lot performance benchmark
+        run: node scripts/portfolio-perf-benchmark.mjs
+
+      # M9.1 capacity gate (COST_POLICY.md, DATA_MODEL.md §4.2): measures real Postgres storage for
+      # price_snapshots against a representative synthetic dataset in this disposable ephemeral
+      # database — never against a database holding real data. See the script header for why.
+      - name: Price-snapshot storage benchmark
+        run: psql "$DB_URL" -v ON_ERROR_STOP=1 -f scripts/price-snapshots-storage-benchmark.sql
+
       - name: Generate TypeScript types from schema
         run: pnpm db:types
 

@@ -87,15 +87,64 @@ async function createSyntheticUser(label) {
   return { id: created.user.id, email, password }
 }
 
-async function fetchCatalogVariantIds(limit) {
-  const { data, error } = await service.from('card_variants').select('id').limit(limit)
-  if (error) throw error
-  if (data.length === 0) {
-    throw new Error(
-      'No card_variants found — run the catalog sync (or apply supabase/seed/) before this benchmark.',
-    )
+// M9.1: seeds its own synthetic catalog rather than depending on whatever card_variants happen to
+// already exist (CI's ephemeral seed catalog turned out to hold only a handful — nowhere near
+// enough combo space for 10,000 holdings across 5 conditions without exhausting real identity
+// slots almost immediately, which surfaced as unique_violation errors on holdings_identity, not
+// as a slow-but-correct result). COST_POLICY.md/DATA_MODEL.md §4.2's own real-scale estimate is
+// ~3,000-4,000 distinct variants for a 10,000-card collection — this matches that, rather than an
+// arbitrary round number, so the benchmark's duplication shape is representative, not an
+// artificial worst case.
+const SYNTHETIC_VARIANT_COUNT = 3500
+
+async function seedSyntheticCatalog(count) {
+  const { data: series, error: seriesError } = await service
+    .from('card_series')
+    .insert({
+      slug: `perf-bench-series-${Date.now()}`,
+      name: 'Perf Benchmark Series',
+      language: 'en',
+    })
+    .select('id')
+    .single()
+  if (seriesError) throw seriesError
+
+  const { data: set, error: setError } = await service
+    .from('card_sets')
+    .insert({
+      series_id: series.id,
+      slug: `perf-bench-set-${Date.now()}`,
+      name: 'Perf Benchmark Set',
+      language: 'en',
+    })
+    .select('id')
+    .single()
+  if (setError) throw setError
+
+  const cardIds = []
+  const CARD_BATCH = 500
+  for (let start = 0; start < count; start += CARD_BATCH) {
+    const batch = Array.from({ length: Math.min(CARD_BATCH, count - start) }, (_, i) => ({
+      set_id: set.id,
+      local_id: String(start + i + 1),
+      name: `Perf Bench Card ${String(start + i + 1)}`,
+      language: 'en',
+    }))
+    const { data: inserted, error } = await service.from('cards').insert(batch).select('id')
+    if (error) throw error
+    cardIds.push(...inserted.map((r) => r.id))
   }
-  return data.map((r) => r.id)
+
+  const variantIds = []
+  for (let start = 0; start < cardIds.length; start += CARD_BATCH) {
+    const batch = cardIds
+      .slice(start, start + CARD_BATCH)
+      .map((cardId) => ({ card_id: cardId, finish: 'normal', stamp: '', subtype: '' }))
+    const { data: inserted, error } = await service.from('card_variants').insert(batch).select('id')
+    if (error) throw error
+    variantIds.push(...inserted.map((r) => r.id))
+  }
+  return variantIds
 }
 
 const CONDITIONS = ['MT', 'NM', 'EX', 'GD', 'LP', 'PL', 'PO']
@@ -136,29 +185,58 @@ async function seed(userId, variantIds) {
   // than round-tripped through holdings_identity's own coalesce()-expression unique index, which
   // is not a plain column list and so cannot be an upsert onConflict target (the same limitation
   // add_card_acquisition's find-or-create works around with a caught unique_violation).
+  //
+  // usedCombos guards the OTHER direction: two "new" rows independently picking the same random
+  // (variant, condition) is a real, not hypothetical, collision once LOT_COUNT approaches the
+  // catalog's combo space (variantIds.length x CONDITIONS.length) — the whole bulk INSERT rejects
+  // on any one row's unique_violation. Every combo this run has ever picked is tracked exactly
+  // once (never just "seen recently"), mapped to the holding that owns it — already-committed
+  // (`known`) or still awaiting this batch's own insert (`pending`, resolved below) — so a
+  // colliding pick is routed to its real owner instead of attempted as a second, duplicate
+  // holdings row, regardless of how small the combo space is relative to a single batch (M9.1 fix
+  // — found via CI against an ephemeral seed catalog with only a handful of card_variants).
   const knownHoldingIds = []
+  const usedCombos = new Map() // comboKey -> { kind: 'known', id } | { kind: 'pending', index }
   const BATCH = 200
   let created = 0
 
   while (created < LOT_COUNT) {
     const batchSize = Math.min(BATCH, LOT_COUNT - created)
     const newHoldingRows = []
-    const lotTargets = [] // resolved after new holdings are inserted, in the same order
+    const lotTargets = [] // { kind: 'known', id } | { kind: 'pending', index }
 
     for (let i = 0; i < batchSize; i += 1) {
-      const reuse = knownHoldingIds.length > 0 && Math.random() < 0.3
-      if (reuse) {
-        lotTargets.push(knownHoldingIds[Math.floor(Math.random() * knownHoldingIds.length)])
-      } else {
-        newHoldingRows.push({
-          user_id: userId,
-          holding_kind: 'raw_card',
-          card_variant_id: variantIds[Math.floor(Math.random() * variantIds.length)],
-          condition: CONDITIONS[Math.floor(Math.random() * CONDITIONS.length)],
-          is_favorite: Math.random() < 0.05,
-        })
-        lotTargets.push(null) // filled in once the batch insert returns ids, below
+      const wantsReuse = knownHoldingIds.length > 0 && Math.random() < 0.3
+      if (wantsReuse) {
+        const id = knownHoldingIds[Math.floor(Math.random() * knownHoldingIds.length)]
+        lotTargets.push({ kind: 'known', id })
+        continue
       }
+
+      let variantId, condition, comboKey
+      let attempts = 0
+      do {
+        variantId = variantIds[Math.floor(Math.random() * variantIds.length)]
+        condition = CONDITIONS[Math.floor(Math.random() * CONDITIONS.length)]
+        comboKey = `${variantId}:${condition}`
+        attempts += 1
+      } while (usedCombos.has(comboKey) && attempts < 30)
+
+      const existingTarget = usedCombos.get(comboKey)
+      if (existingTarget) {
+        lotTargets.push(existingTarget)
+        continue
+      }
+      const target = { kind: 'pending', index: newHoldingRows.length }
+      usedCombos.set(comboKey, target)
+      newHoldingRows.push({
+        user_id: userId,
+        holding_kind: 'raw_card',
+        card_variant_id: variantId,
+        condition,
+        is_favorite: Math.random() < 0.05,
+      })
+      lotTargets.push(target)
     }
 
     let newIds = []
@@ -170,11 +248,15 @@ async function seed(userId, variantIds) {
       if (insertError) throw insertError
       newIds = inserted.map((r) => r.id)
       knownHoldingIds.push(...newIds)
+      // Promote this batch's now-committed combos so a later batch reuses by id directly.
+      for (const [key, target] of usedCombos) {
+        if (target.kind === 'pending')
+          usedCombos.set(key, { kind: 'known', id: newIds[target.index] })
+      }
     }
 
-    let nextNewIndex = 0
-    const lotRows = lotTargets.map((existingId) => {
-      const holdingId = existingId ?? newIds[nextNewIndex++]
+    const lotRows = lotTargets.map((target) => {
+      const holdingId = target.kind === 'known' ? target.id : newIds[target.index]
       return {
         holding_id: holdingId,
         user_id: userId,
@@ -209,6 +291,34 @@ async function seed(userId, variantIds) {
   }
 
   console.log(`Seed complete in ${((performance.now() - t0) / 1000).toFixed(1)}s`)
+  return { collectionId: collection.id }
+}
+
+// M9.1 addition (prompt §85): M7's original benchmark predates the resolver entirely, so every
+// holding resolved to `missing` — realistic for M7's plain-column value, but not for M9's
+// resolver-backed value_desc/low-value/missing-value paths, which need a genuine mix of priced and
+// unpriced variants to measure the shape they actually run in production. ~70% of the variant pool
+// gets one fresh Cardmarket snapshot; the rest stay unpriced on purpose.
+async function seedPricing(variantIds) {
+  console.log(`Seeding price_snapshots for ~${Math.round(variantIds.length * 0.7)} variants...`)
+  const today = new Date().toISOString().slice(0, 10)
+  const rows = variantIds
+    .filter(() => Math.random() < 0.7)
+    .map((id) => ({
+      card_variant_id: id,
+      provider: 'tcgdex_cardmarket',
+      price_kind: 'cm_trend',
+      source_currency: 'EUR',
+      value_minor: Math.floor(50 + Math.random() * 500_00),
+      snapshot_date: today,
+      provider_updated_at: new Date().toISOString(),
+    }))
+  for (let i = 0; i < rows.length; i += 500) {
+    const { error } = await service
+      .from('price_snapshots')
+      .upsert(rows.slice(i, i + 500), { onConflict: 'card_variant_id,provider,snapshot_date' })
+    if (error) throw error
+  }
 }
 
 async function timeRpc(client, name, args) {
@@ -238,8 +348,9 @@ async function main() {
   })
 
   try {
-    const variantIds = await fetchCatalogVariantIds(2000)
-    await seed(user.id, variantIds)
+    const variantIds = await seedSyntheticCatalog(SYNTHETIC_VARIANT_COUNT)
+    await seedPricing(variantIds)
+    const { collectionId } = await seed(user.id, variantIds)
 
     const { error: signInError } = await userClient.auth.signInWithPassword({
       email: user.email,
@@ -286,9 +397,64 @@ async function main() {
     })
     console.log(`  ${second.ms.toFixed(1)} ms, ${second.rows} rows`)
 
+    // M9.1 addition (TESTING.md §7 gate, prompt §84-86): value_desc's keyset page is the one M9
+    // actually changed (resolver join, holding-total value cursor) — the M7 benchmark predates
+    // resolve_variant_market_values entirely, so this is the specific path that needed re-timing.
+    console.log('\nBenchmark: keyset second page (value_desc)')
+    const firstValue = await timeRpc(userClient, 'list_portfolio', {
+      p_sort: 'value_desc',
+      p_limit: 30,
+    })
+    console.log(`  first page  ${firstValue.ms.toFixed(1)} ms, ${firstValue.rows} rows`)
+    const lastValueRow = (
+      await userClient.rpc('list_portfolio', { p_sort: 'value_desc', p_limit: 30 })
+    ).data.at(-1)
+    const secondValue = await timeRpc(userClient, 'list_portfolio', {
+      p_sort: 'value_desc',
+      p_limit: 30,
+      p_cursor_holding_id: lastValueRow.holding_id,
+      p_cursor_name: lastValueRow.card_name ?? lastValueRow.manual_name ?? '',
+      p_cursor_value_minor:
+        lastValueRow.holding_value_nok_minor === null
+          ? null
+          : Number(lastValueRow.holding_value_nok_minor),
+      p_cursor_has_value: lastValueRow.holding_value_nok_minor !== null,
+    })
+    console.log(`  next page   ${secondValue.ms.toFixed(1)} ms, ${secondValue.rows} rows`)
+
+    console.log('\nBenchmark: list_portfolio low-value filter')
+    const lowValue = await timeRpc(userClient, 'list_portfolio', {
+      p_sort: 'value_asc',
+      p_limit: 30,
+      p_low_value: true,
+    })
+    console.log(`  ${lowValue.ms.toFixed(1)} ms, ${lowValue.rows} rows`)
+
+    console.log('\nBenchmark: list_portfolio missing-value filter')
+    const missingValue = await timeRpc(userClient, 'list_portfolio', {
+      p_sort: 'name_asc',
+      p_limit: 30,
+      p_missing_value: true,
+    })
+    console.log(`  ${missingValue.ms.toFixed(1)} ms, ${missingValue.rows} rows`)
+
+    console.log('\nBenchmark: list_portfolio custom collection scope')
+    const collectionScope = await timeRpc(userClient, 'list_portfolio', {
+      p_sort: 'value_desc',
+      p_limit: 30,
+      p_custom_collection_id: collectionId,
+    })
+    console.log(`  ${collectionScope.ms.toFixed(1)} ms, ${collectionScope.rows} rows`)
+
     console.log('\nBenchmark: portfolio_counts()')
     const counts = await timeRpc(userClient, 'portfolio_counts', {})
     console.log(`  ${counts.ms.toFixed(1)} ms`)
+
+    console.log('\nBenchmark: portfolio_counts() custom collection scope')
+    const countsScope = await timeRpc(userClient, 'portfolio_counts', {
+      p_custom_collection_id: collectionId,
+    })
+    console.log(`  ${countsScope.ms.toFixed(1)} ms`)
 
     console.log(`\nSeeded holdings: ~${LOT_COUNT} lots (with ~30% identity reuse).`)
   } finally {

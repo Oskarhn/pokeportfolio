@@ -272,6 +272,15 @@ over 80% of the free tier for data nobody reads. Snapshotting only held variants
 **Consequence:** `watched_card_variants` view drives the ingest job; rows older than 12 months
 thin to weekly. Accepted limitation: a variant's history begins at acquisition.
 
+**Superseded 2026-08-27 (M9.1):** the ~48 byte/row estimate above omitted index overhead. A real
+measurement (500 variants x 2 providers x 365 days, `scripts/price-snapshots-storage-benchmark.sql`
+against CI's ephemeral Postgres) found 245.30 bytes/row including `price_snapshots`' two indexes —
+roughly 5x this entry's original figure. At the realistic 3,500-variant/2-provider scale, 12 months
+of *unthinned* daily history (the retention window this entry originally set) projects to ~609 MB
+on its own, exceeding the entire free-tier budget. The retention window was shortened to 60 days
+daily + weekly beyond — see COST_POLICY.md's capacity table and DECISIONS.md D-058 for the full
+reasoning and projections at other scales.
+
 ---
 
 ## R14 — Vite SPA beats a meta-framework for this application

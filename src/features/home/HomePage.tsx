@@ -212,7 +212,12 @@ export function HomePage() {
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-sm font-semibold text-slate-300">Market movers · 7 days</h2>
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-slate-300">Market movers · 7 days</h2>
+          <Link to="/market-movers" className="text-xs font-medium text-sky-400 hover:underline">
+            View all
+          </Link>
+        </div>
         {movers.isPending ? (
           <div className="h-14 animate-pulse rounded-xl bg-slate-800/60" />
         ) : movers.data && movers.data.length > 0 ? (

@@ -33,6 +33,28 @@ interface FxFunctionBody {
 const GENERIC_UNAVAILABLE_MESSAGE =
   'Could not resolve an exchange rate. Check the date, or enter one manually.'
 
+/** M9.1 (prompt §9-10): the latest cached EUR/NOK and USD/NOK rates, for presentation-only
+ *  display-currency conversion (MoneyDisplay) — a plain `select` against the market-data
+ *  `fx_rates` table (readable by any authenticated user, DATA_MODEL.md §1), not a live Norges Bank
+ *  call per render. Missing a currency (e.g. before the first `ingest-fx` run) is a real state:
+ *  the caller shows the amount in NOK rather than fabricating a rate. */
+export async function getLatestFxRatesToNok(): Promise<Partial<Record<'EUR' | 'USD', string>>> {
+  const { data, error } = await supabase
+    .from('fx_rates')
+    .select('base_currency, rate, rate_date')
+    .in('base_currency', ['EUR', 'USD'])
+    .eq('quote_currency', 'NOK')
+    .order('rate_date', { ascending: false })
+  if (error) throw new Error(error.message)
+
+  const result: Partial<Record<'EUR' | 'USD', string>> = {}
+  for (const row of data) {
+    const base = row.base_currency as 'EUR' | 'USD'
+    if (!(base in result)) result[base] = row.rate.toString()
+  }
+  return result
+}
+
 export async function fetchFxRate(
   baseCurrency: Exclude<CurrencyCode, 'NOK'>,
   date: string,

@@ -224,6 +224,21 @@ Vault. Valuation resolver (`resolve_variant_market_values`): manual → fresh �
 verified in `tests/db/m9_valuation_resolver.test.ts`; snapshot volume matches the projection
 (COST_POLICY.md).
 
+### M9.1 — Pricing closeout — **complete**
+
+Not a new milestone — closes M9 acceptance gaps the output_15 mentor review found before M10
+begins (docs/PLANNING_FREEZE.md still governs; nothing here reopens scope). Search result tiles
+show batched real prices; Card Detail has an exact selected-variant price/history; Market Movers is
+a real dedicated screen (period + sort modes, D-056); display-currency conversion is real and
+presentation-only everywhere a resolved value is shown (D-057); `price_snapshots` storage capacity
+is measured, not estimated, and retention adjusted if the measurement required it; the 18-month
+retention test, the value_desc/value_asc pagination edge matrix, and the real 10,000-lot Portfolio
+benchmark (now CI-integrated) all now exist. Full detail: `claude_outputs/output_16.txt`.
+
+**Gate:** every explicit gap `claude_outputs/output_15.txt` disclosed as "not done" is either closed
+or, if genuinely out of this session's reach, disclosed again with the same honesty standard —
+never silently dropped.
+
 ### M10 — Sales and History
 
 Sales with explicit lot selection and FIFO suggestion. Frozen `cost_basis_at_sale`. Realized

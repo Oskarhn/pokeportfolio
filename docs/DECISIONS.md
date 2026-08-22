@@ -1388,3 +1388,113 @@ to be a mistake would be wrongly excluded by it too.
 **Consequences.** DATA_MODEL.md §4.2 is updated to state this explicitly. Revisit only if the actual
 watched-variant count in production materially exceeds the ~3,000-4,000 projection because of this
 choice — measured in output_15.txt/COST_POLICY.md.
+
+---
+
+## D-056 — Market Movers ranks by per-unit percentage change, never holding-total kroner
+
+**2026-08-27 · Accepted**
+
+**Context.** M9.1 gave Market Movers a real dedicated screen with sort modes (prompt §18-23). The
+owner's original request was about cards whose *price* moved most — but a holding's economic
+impact (unit change × quantity) is also a real, useful number, and the two can disagree sharply: a
+single rare card up 40% is a smaller kroner move than eighty commons each up 2%.
+
+**Decision.** Every sort mode (`highest_increase`/`largest_decrease`/`most_movement`/
+`least_movement`) ranks by the resolved per-unit `change_pct`. `holding_impact_nok_minor` (unit
+change × quantity) rides along as a secondary, purely informational figure — it never enters the
+`ORDER BY`. This matches the owner's stated framing exactly and keeps the ranking meaning stable
+regardless of how many copies a user happens to hold of any one printing.
+
+**Alternatives.** Rank by holding-total kroner impact — rejected: quantity would then dominate the
+list, and a user who bulk-owns cheap bulk energy would see it outrank a genuinely fast-moving rare,
+which is not "market movers" in any recognizable sense. Offer both as separate sort families —
+rejected as unnecessary scope for a first real screen; revisit only if the owner asks for it.
+
+**Consequences.** `get_market_movers` returns both figures; the UI shows `change_pct` as the
+headline and the kroner change as a secondary line. `tests/db/m91_market_movers.test.ts` proves
+quantity does not distort the ranking directly (two holdings of the same variant at 1x and 50x
+quantity tie exactly on `change_pct`).
+
+---
+
+## D-057 — Display-currency conversion is presentation-only, computed client-side from cached `fx_rates`
+
+**2026-08-27 · Accepted**
+
+**Context.** M7.1 stored a `display_currency` preference before any real conversion existed;
+`MoneyDisplay` showed a "shown once conversion exists" placeholder note. M9 shipped real FX
+ingest (`fx_rates`, EUR/NOK and USD/NOK, daily) but never wired display-currency conversion to it
+— M9.1 prompt §9-10/§42 asks for the preference to actually do something, coherently, everywhere a
+resolved NOK value is shown (Home, Portfolio, Search, Card Detail, Holding Detail, Market Movers).
+
+**Decision.** Canonical valuation stays NOK everywhere it is stored (`price_snapshots`, purchase
+FX, cost basis, manual valuations) — nothing about this decision touches persistence. `MoneyDisplay`
+reads the latest cached `fx_rates` row for the user's chosen display currency (a plain `select`,
+market data readable by any authenticated user) and converts the already-resolved NOK amount for
+*display only*, using the exact bigint reciprocal-rate machinery in `src/domain/fx.ts`
+(`invertRate`/`convertNokToDisplayCurrency`) — never a JS float. If no cached rate exists yet for
+that currency (e.g. before the first `ingest-fx` run), the amount shows in NOK with a plain "rate
+not available yet" note rather than fabricating a number. Search/Card Detail's on-demand
+`search-prices` path does its own equivalent NOK conversion server-side, at the observation's own
+date, using the same `fx_rates` table (D-052's FX-lookup pattern, reused rather than re-derived).
+
+**Alternatives.** Store a converted amount — rejected outright: it would violate F11 (frozen NOK
+conversions are never recomputed) if ever confused with a real transaction amount, and a
+presentation figure that goes stale the moment `fx_rates` updates is a correctness bug waiting to
+happen. Fetch a live rate from Norges Bank per render — rejected: unnecessary external calls for a
+value already cached daily; `fetch-fx-rate` (M8) stays reserved for freezing a real purchase's
+rate at entry time, a different question with different freshness requirements.
+
+**Consequences.** Every M9.1 pricing surface list in prompt §9 is coherent by construction, since
+they all route through either `MoneyDisplay` or the same `fx_rates`-lookup pattern. No stored
+column changes as a result of a currency-preference change — verified by the M8/M8.1 financial
+regression suite staying green with this change present.
+
+---
+
+## D-058 — `price_snapshots` retention shortened from 12 months daily to 60 days daily, measured not estimated
+
+**2026-08-27 · Accepted**
+
+**Context.** M9's `thin_price_snapshots` kept 12 months of daily history before thinning to weekly
+— a placeholder pending real measurement (D-053's own note, and output_15.txt's disclosed gap).
+M9.1 measured it for real: a representative 365,000-row synthetic dataset (500 variants × 2
+providers × 365 days, `scripts/price-snapshots-storage-benchmark.sql`, run against CI's ephemeral
+Postgres — never against a database holding real data) found **245.30 bytes/row**, table plus its
+two indexes (`price_snapshots_unique_per_day` alone is the single largest index, larger than the
+table itself). At the documented realistic scale (~3,500 watched variants, DATA_MODEL.md §4.2), 2
+providers, 12 months of *unthinned* daily history — which is what actually accumulates before the
+weekly policy ever has anything to act on — projects to **~609 MB**, exceeding the entire Supabase
+Free 500 MB budget on `price_snapshots` alone, before the catalog, holdings, purchases, sales, or
+any other table's indexes.
+
+**Decision.** Shorten the daily-retention window to **60 days**, thinned to one observation per ISO
+week per (variant, provider) beyond that, with the single latest observation per (variant,
+provider) always retained regardless of age (unchanged from M9). Projected at 3,500 variants/2
+providers: ~180 MB at 1 year (36% of budget), ~271 MB at 2 years (54%), ~362 MB at 3 years (72% —
+close to COST_POLICY.md's pre-existing "reconsider at ~350 MB" trigger, which already anticipates a
+review checkpoint rather than a hard forever-bound). 60 days keeps full daily granularity for a "1
+month" chart entirely and mostly for "3 month" (the oldest ~30 days of a 90-day view shows weekly
+points instead — informative, not fabricated, D-008's same principle). "6 month/1 year/max" legitimately
+use weekly older observations, per the owner's own framing of what those windows need.
+
+**This is a disclosed trade-off, not a claim of a bounded-forever solution.** The weekly tail is not
+asymptotically bounded — it grows by one row per (variant, provider) per week, forever, just at
+1/7th daily's rate. COST_POLICY.md's existing revisit trigger is the honest answer to "what happens
+after several more years," not a new problem introduced here.
+
+**Alternatives.** Keep 12 months and accept the overage risk — rejected: a zero-cost-constrained
+project cannot ship a policy already projected to exceed its own budget at documented realistic
+scale. A single flat retention period with no weekly tier — rejected: throws away "6M/1Y/MAX chart"
+usefulness entirely once the flat cutoff passes, which the owner's period selector requires
+(prompt §27). A monthly (rather than weekly) tier for very old data — considered, rejected for this
+pass as unnecessary added complexity; the weekly tier alone already gets multi-year runway under the
+measured figures, and a third tier can be added later if the revisit trigger is ever actually hit.
+
+**Consequences.** `20260827130000_m91_retention_window.sql` changes `thin_price_snapshots`'s body
+only (`create or replace function`, no signature change, no privilege-baseline update needed).
+`tests/db/m91_retention.test.ts` proves the new threshold against an 18-month synthetic dataset.
+COST_POLICY.md §6 (Supabase row) and DATA_MODEL.md §4.2 restate the measured figures. Revisit if a
+future session's real measurement against `pokeportfolio-dev` diverges materially from this
+synthetic projection, or when the database approaches the existing ~350 MB trigger.

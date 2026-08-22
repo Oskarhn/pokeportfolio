@@ -155,29 +155,17 @@ Deno.serve(async (request: Request): Promise<Response> => {
     }
   }
 
-  const results: {
-    cardVariantId: string
-    cardId: string
-    priceState: 'available' | 'missing'
-    provider: string | null
-    priceKind: string | null
-    sourceCurrency: string | null
-    sourceValueMinor: number | null
+  interface Chosen {
+    provider: string
+    priceKind: string
+    sourceCurrency: string
+    valueMinor: bigint | number
     providerUpdatedAt: string | null
-  }[] = []
-
+  }
+  const perRowChosen = new Map<string, Chosen | null>()
   for (const row of rows) {
     if (!row.cards?.tcgdex_card_id) {
-      results.push({
-        cardVariantId: row.id,
-        cardId: row.card_id,
-        priceState: 'missing',
-        provider: null,
-        priceKind: null,
-        sourceCurrency: null,
-        sourceValueMinor: null,
-        providerUpdatedAt: null,
-      })
+      perRowChosen.set(row.id, null)
       continue
     }
     const key = cardKey(row.cards.language, row.cards.tcgdex_card_id)
@@ -193,8 +181,72 @@ Deno.serve(async (request: Request): Promise<Response> => {
     // fall back to the other only when the preferred one has no candidate.
     const primary = useEuPricing ? match?.cardmarket : match?.tcgplayer
     const secondary = useEuPricing ? match?.tcgplayer : match?.cardmarket
-    const chosen = primary ?? secondary ?? null
+    perRowChosen.set(row.id, primary ?? secondary ?? null)
+  }
 
+  // Search must show an honest NOK reference, not a raw EUR/USD figure the rest of the app never
+  // uses (prompt §10) — the same fx_rates market-data table resolve_variant_market_values/
+  // get_market_movers already read, most-recent rate on or before the observation date, one
+  // bounded query per distinct (currency, date) pair actually needed (never per row).
+  const fxNeeded = new Map<string, { currency: string; date: string }>()
+  for (const chosen of perRowChosen.values()) {
+    if (!chosen) continue
+    const date = (chosen.providerUpdatedAt ?? new Date().toISOString()).slice(0, 10)
+    fxNeeded.set(`${chosen.sourceCurrency}:${date}`, { currency: chosen.sourceCurrency, date })
+  }
+  const fxRateByKey = new Map<string, string>()
+  await Promise.all(
+    [...fxNeeded.entries()].map(async ([key, { currency, date }]) => {
+      const { data } = await db
+        .from('fx_rates')
+        .select('rate')
+        .eq('base_currency', currency)
+        .eq('quote_currency', 'NOK')
+        .eq('source', 'norges_bank')
+        .lte('rate_date', date)
+        .order('rate_date', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      // PostgREST serializes `numeric` as a JSON number, not a string (this table is read via a
+      // plain `select`, not one of the SQL functions that explicitly cast money/rate columns to
+      // `text` — see the money-column serialization note in DATA_MODEL.md §17) — `.toString()`
+      // here is exact for a rate in this magnitude (well within float64's integer precision times
+      // 10^8), the same conversion src/data/fx.ts's client-side equivalent does.
+      if (typeof data?.rate === 'number') fxRateByKey.set(key, data.rate.toString())
+    }),
+  )
+
+  function toNokMinor(sourceValueMinor: bigint, rateToNok: string): bigint {
+    // rateToNok is numeric(18,8) as text, e.g. "11.54000000" — exact bigint multiply, round half up.
+    const scaled = BigInt(rateToNok.replace('.', '').replace(/^0+(?=\d)/, '') || '0')
+    const fractionDigits = (rateToNok.split('.')[1] ?? '').length
+    const divisor = 10n ** BigInt(fractionDigits)
+    const numerator = sourceValueMinor * scaled
+    const quotient = numerator / divisor
+    const remainder = numerator % divisor
+    return remainder * 2n >= divisor ? quotient + 1n : quotient
+  }
+
+  const results: {
+    cardVariantId: string
+    cardId: string
+    priceState: 'available' | 'missing'
+    provider: string | null
+    priceKind: string | null
+    sourceCurrency: string | null
+    sourceValueMinor: number | null
+    valueNokMinor: string | null
+    providerUpdatedAt: string | null
+  }[] = []
+
+  for (const row of rows) {
+    const chosen = perRowChosen.get(row.id) ?? null
+    let valueNokMinor: bigint | null = null
+    if (chosen) {
+      const date = (chosen.providerUpdatedAt ?? new Date().toISOString()).slice(0, 10)
+      const rate = fxRateByKey.get(`${chosen.sourceCurrency}:${date}`)
+      if (rate) valueNokMinor = toNokMinor(BigInt(chosen.valueMinor), rate)
+    }
     results.push({
       cardVariantId: row.id,
       cardId: row.card_id,
@@ -203,6 +255,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
       priceKind: chosen?.priceKind ?? null,
       sourceCurrency: chosen?.sourceCurrency ?? null,
       sourceValueMinor: chosen ? Number(chosen.valueMinor) : null,
+      valueNokMinor: valueNokMinor !== null ? valueNokMinor.toString() : null,
       providerUpdatedAt: chosen?.providerUpdatedAt ?? null,
     })
   }
