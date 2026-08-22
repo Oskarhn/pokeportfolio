@@ -207,7 +207,12 @@ Deno.serve(async (request: Request): Promise<Response> => {
         .order('rate_date', { ascending: false })
         .limit(1)
         .maybeSingle()
-      if (data?.rate) fxRateByKey.set(key, data.rate)
+      // PostgREST serializes `numeric` as a JSON number, not a string (this table is read via a
+      // plain `select`, not one of the SQL functions that explicitly cast money/rate columns to
+      // `text` — see the money-column serialization note in DATA_MODEL.md §17) — `.toString()`
+      // here is exact for a rate in this magnitude (well within float64's integer precision times
+      // 10^8), the same conversion src/data/fx.ts's client-side equivalent does.
+      if (typeof data?.rate === 'number') fxRateByKey.set(key, data.rate.toString())
     }),
   )
 
