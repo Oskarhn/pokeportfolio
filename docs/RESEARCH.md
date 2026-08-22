@@ -88,6 +88,16 @@ newly public Product Catalogue may cover this but requires authentication to ins
 labelled and never used in collection value. European sealed prices diverge substantially from
 US ones, so silently substituting them would be misleading, not approximate.
 
+**Reverified 2026-08-29, before M11 (Sealed Inventory) wrote any sealed-pricing code.** Re-fetched
+TCGdex's REST reference directly rather than trusting this entry's age: the `/products` gap is
+still real — no sealed-product endpoint exists in current documentation, confirmed against
+`tcgdex.dev`'s reference and `/rest/other-fields` pages. R6's Cardmarket Product Catalogue question
+remains genuinely unresolved (still blocked on an authenticated inspection nobody has done) and is
+still correctly out of M11's scope — M11 ships manual-only sealed valuation exactly as this entry
+already concluded, not automatic pricing from any source. Nothing here changed; the conclusion is
+restated because the milestone that finally acts on it should show its work, not just cite a
+three-year-stale-feeling probe silently.
+
 ---
 
 ## R6 — Cardmarket Price Guide and Product Catalogue are now publicly downloadable

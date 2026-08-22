@@ -10,6 +10,40 @@ they were**.
 
 ## [Unreleased]
 
+### Added — 2026-08-29 · M11 Sealed Inventory
+
+Sealed products (booster packs/boxes, ETBs, bundles, tins, etc.) are first-class Portfolio
+inventory, reusing the existing card acquisition/purchase/valuation/sale machinery rather than a
+parallel system. A curated catalog (a deliberately modest, individually-sourced seed of seven real
+products — never a generated combination of every set × every product type) plus user-created
+private products fill real gaps ("Add custom sealed product"); a user-added row is visible only to
+its creator, enforced server-side, not merely hidden from Search. Sealed products can be added
+directly (`/portfolio/sealed/new`) or as a purchase line, with the same origin/cost-basis semantics
+cards already have — no fabricated cost for a gift or a pre-tracking item.
+
+Sealed valuation is manual-only, permanently — no automatic sealed pricing exists anywhere
+(reverified this session against current TCGdex/Cardmarket/TCGplayer/PriceCharting sources; the
+conclusion is unchanged from D-010). A sealed holding's manual value multiplies by quantity, is
+visibly marked "Manual" with the date it was set, and clearing it returns to **—**, never `0`.
+Portfolio's value header now shows Cards and Sealed as a distinct segment that always sums to the
+total — sealed value never silently disappears into an unexplained combined figure.
+
+A real cardinality defect was found and fixed before any UI was built on top of it: `sealed_intent`
+had been sketched on `holdings`, which cannot represent a user owning three identical boxes with two
+"keep sealed" and one "planned to open" — a holding-level column has exactly one value for the
+whole position. Relocated to `acquisition_lots` (D-061), where a per-lot intent aggregates correctly
+for display and a new `set_sealed_lot_intent` RPC splits a lot when only part of its remaining
+quantity changes intent — organisational only, never touching cost basis, spend or realized result.
+
+Portfolio/Search/Holding Detail all gained sealed support: a type filter (Raw/Graded/Sealed), a
+Sealed search tab, sealed product detail, and Holding Detail's lot list showing each lot's own
+intent. Selling a sealed lot uses M10's sale engine completely unmodified — proven directly, not
+assumed. `scripts/deployment-check.mjs`'s Cloudflare chunk fetch changed from one unbounded
+`Promise.all` to a bounded 5-way concurrency pool with an explicit per-request timeout, closing the
+harness gap M10 hit (a local Node/undici connection-limit timeout, not a deployment defect) so the
+full automated gate runs again. Full account: `claude_outputs/output_19.txt`. Decisions:
+DECISIONS.md D-061.
+
 ### Added — 2026-08-28 · M10 Sales and History
 
 Real sales, with explicit lot selection every time — FIFO is only a pre-filled suggestion, never a

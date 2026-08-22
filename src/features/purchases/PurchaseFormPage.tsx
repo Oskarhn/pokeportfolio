@@ -119,6 +119,7 @@ export function PurchaseFormPage() {
           label:
             line.cardDisplayName ||
             line.manualCardName ||
+            line.sealedProductDisplayName ||
             line.description ||
             LINE_TYPE_LABEL[line.lineType],
           lineTotal,
@@ -167,6 +168,7 @@ export function PurchaseFormPage() {
             draft.cardMode === 'catalog' ? (draft.cardVariantId ?? undefined) : undefined,
           manualCardId,
           sealedProductId: draft.sealedProductId ?? undefined,
+          sealedIntent: draft.lineType === 'sealed' ? draft.sealedIntent : undefined,
           condition:
             draft.lineType === 'card' && draft.gradingState === 'raw' ? draft.condition : undefined,
           gradingState: draft.lineType === 'card' ? draft.gradingState : undefined,

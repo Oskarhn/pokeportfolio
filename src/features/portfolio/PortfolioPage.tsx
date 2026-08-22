@@ -14,6 +14,7 @@ import { PortfolioListView, PortfolioTableView } from './ListAndTableViews'
 import { ScopeSelector } from '../../ui/ScopeSelector'
 import { CurrencySelector } from '../../ui/CurrencySelector'
 import { MoneyDisplay, ValuePrivacyToggle } from '../../ui/MoneyDisplay'
+import { formatNokMinor } from '../../ui/money-format'
 import { useDebouncedValue } from '../../ui/useDebouncedValue'
 import { SearchIcon, XIcon, StarIcon } from '../../ui/icons'
 
@@ -79,6 +80,9 @@ export function PortfolioPage() {
       tagId: search.tagId,
       lowValue: search.lowValue,
       missingValue: search.missingValue,
+      holdingKind: search.holdingKind,
+      sealedProductType: search.sealedProductType,
+      sealedIntent: search.sealedIntent,
     }),
     [search],
   )
@@ -221,7 +225,8 @@ export function PortfolioPage() {
         </div>
         <div className="flex items-end justify-between">
           <MoneyDisplay
-            state="missing"
+            state={counts.data && counts.data.pricedHoldingCount > 0 ? 'known' : 'missing'}
+            minorUnits={counts.data?.portfolioValueMinor}
             size="lg"
             hidden={hideValues}
             displayCurrency={profile.data?.displayCurrency}
@@ -233,9 +238,37 @@ export function PortfolioPage() {
             }}
           />
         </div>
-        <p className="text-xs text-slate-500">
-          Market value becomes available once pricing is enabled.
-        </p>
+        {counts.data ? (
+          <div className="space-y-0.5">
+            <p className="text-xs text-slate-500">
+              {counts.data.pricedHoldingCount} priced
+              {counts.data.unpricedHoldingCount > 0
+                ? ` · ${counts.data.unpricedHoldingCount} without a price`
+                : ''}
+            </p>
+            {counts.data.sealedHoldingCount > 0 ? (
+              <p className="text-xs text-slate-500">
+                {hideValues ? (
+                  <span aria-label="Value hidden">Cards •••• · Sealed ••••</span>
+                ) : (
+                  <>
+                    Cards {formatNokMinor(counts.data.cardsValueMinor)} NOK · Sealed{' '}
+                    {formatNokMinor(counts.data.sealedValueMinor)} NOK
+                  </>
+                )}
+              </p>
+            ) : null}
+            {counts.data.sealedUnitCount > 0 ? (
+              <p className="text-xs text-slate-500">
+                {counts.data.sealedUnitCount} sealed unit
+                {counts.data.sealedUnitCount === 1 ? '' : 's'}
+                {counts.data.sealedUnpricedHoldingCount > 0
+                  ? ` · ${counts.data.sealedUnpricedHoldingCount} without a valuation`
+                  : ''}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
       </section>
 
       <PortfolioActionShortcuts filters={filters} onEnterSelectMode={enterSelectMode} />
@@ -282,6 +315,9 @@ export function PortfolioPage() {
             tagId: next.tagId,
             lowValue: next.lowValue,
             missingValue: next.missingValue,
+            holdingKind: next.holdingKind,
+            sealedProductType: next.sealedProductType,
+            sealedIntent: next.sealedIntent,
           })
         }}
       />

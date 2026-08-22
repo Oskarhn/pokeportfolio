@@ -194,14 +194,31 @@ document.
 ## F4 — Buy sealed product
 
 → Same as F3, line type "Sealed"
-→ Product picker; if the product is missing, "Add product" creates a user-scoped catalog entry
-  inline (name, type, set, pack count)
+→ Product picker (real Search over the curated + own custom catalog, M11); if the product is
+  missing, "Add product" creates a user-scoped catalog entry inline (name, type, set, pack count —
+  no image field, see DATA_MODEL.md §3.3)
+→ Optional: intent (Keep sealed / Planned to open / Undecided, default Undecided) — organisational
+  only, never a financial choice
 → On save, a sealed holding and lot are created
 ✓ Appears under Sealed with cost basis and quantity
 ✓ Value shows "No valuation" until one is set — never a guess, never zero
 
 → Set a value: Sealed › item › Set value
 ✓ Marked "Manual", with the date, visible in the list as well as the detail view
+
+**M11 also ships a direct route to the same result, without a purchase**: the central + menu's
+"Add sealed product" → product picker (or arriving pre-filled from a product's detail page) →
+quantity, intent, origin (Purchased/Gifted/Existing collection/Other — the same acquisition
+semantics F3's card flow already uses, never a second origin vocabulary), acquired date, storage.
+Gifted/Existing collection never fabricate a cost (`not_paid`/`unknown`, no purchase row) — same
+rule as a card added the same way.
+
+**Mixed intent among identical copies** (three otherwise-identical boxes, two "keep sealed" and one
+"planned to open") is real and must read correctly: the product's one Portfolio tile shows a
+breakdown ("2 Keep sealed · 1 Planned to open"), never a single collapsed label, and Holding Detail
+lists each lot with its own intent and a lightweight "Change intent" action that can move part of a
+lot's quantity to a different intent without touching cost basis, spend, or market value
+(DATA_MODEL.md §5.5, DECISIONS.md D-061).
 
 ---
 

@@ -37,8 +37,27 @@ const record = (name, pass, detail) => {
 }
 
 async function get(path) {
-  const response = await fetch(`${site}${path}`)
+  const response = await fetch(`${site}${path}`, { signal: AbortSignal.timeout(15000) })
   return { status: response.status, headers: response.headers, text: await response.text() }
+}
+
+/** Bounded-concurrency map (M11 harness hardening). M10's session found that bursting every
+ *  precached JS chunk through one unbounded `Promise.all` (below) reliably hit a local Node/undici
+ *  concurrent-connection limit against Cloudflare's edge on this machine (`ConnectTimeoutError`),
+ *  even though the identical requests succeeded every time run sequentially with `curl`. A small
+ *  worker pool keeps the same full coverage and the same "fetch everything, then check" shape, just
+ *  never more than `limit` requests in flight at once — deterministic, no coverage reduction. */
+async function mapWithConcurrency(items, limit, fn) {
+  const results = new Array(items.length)
+  let next = 0
+  async function worker() {
+    while (next < items.length) {
+      const i = next++
+      results[i] = await fn(items[i], i)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+  return results
 }
 
 console.log(`\n— ${site} —\n`)
@@ -74,9 +93,10 @@ const precachedJsPaths = [
 ]
 if (bundlePath && !precachedJsPaths.includes(bundlePath)) precachedJsPaths.push(bundlePath)
 
-const allAssets = await Promise.all(
-  precachedJsPaths.map(async (path) => ({ path, text: (await get(`/${path}`)).text })),
-)
+const allAssets = await mapWithConcurrency(precachedJsPaths, 5, async (path) => ({
+  path,
+  text: (await get(`/${path}`)).text,
+}))
 const allJs = allAssets.map((a) => a.text).join('\n')
 record(
   'every shipped JS chunk was fetched for the checks below',

@@ -6,10 +6,14 @@ import {
   getHoldingLots,
   getHoldingSummary,
   getHoldingValueProvenance,
+  sealedIntentBreakdown,
   setManualValuation,
   toggleFavorite,
   voidAcquisitionLot,
+  SEALED_INTENT_LABEL,
+  type AcquisitionLot,
 } from '../../data/collection'
+import { SEALED_PRODUCT_TYPE_LABEL } from '../../data/sealedProducts'
 import { MoneyDisplay } from '../../ui/MoneyDisplay'
 import {
   addHoldingToCollection,
@@ -18,6 +22,8 @@ import {
   removeHoldingFromCollection,
 } from '../../data/customCollections'
 import { CardImage } from '../catalog/CardImage'
+import { SealedProductImage } from '../catalog/SealedProductImage'
+import { SealedIntentSheet } from './SealedIntentSheet'
 import { Button, FormMessage, TextField } from '../../ui/form'
 import { formatNokMinor, parseNokInput } from '../../ui/money-format'
 import {
@@ -51,6 +57,7 @@ export function HoldingDetailPage() {
   const [manualValueInput, setManualValueInput] = useState('')
   const [valueError, setValueError] = useState<string | null>(null)
   const [historyOpen, setHistoryOpen] = useState(false)
+  const [intentLot, setIntentLot] = useState<AcquisitionLot | null>(null)
 
   const holding = useQuery({
     queryKey: ['holding-summary', holdingId],
@@ -163,8 +170,11 @@ export function HoldingDetailPage() {
   }
 
   const h = holding.data
-  const displayName = h.cardName ?? h.manualName ?? 'Unknown card'
-  const setName = h.cardSetName ?? h.manualSetName
+  const isSealed = h.holdingKind === 'sealed'
+  const displayName = isSealed
+    ? (h.sealedProductName ?? 'Unknown sealed product')
+    : (h.cardName ?? h.manualName ?? 'Unknown card')
+  const setName = isSealed ? h.sealedSetName : (h.cardSetName ?? h.manualSetName)
   const number = h.cardLocalId ?? h.manualCollectorNumber
   const storage = storageSummary(lots.data ?? [])
   const liveLotCount = (lots.data ?? []).filter((l) => !l.voidedAt).length
@@ -176,15 +186,29 @@ export function HoldingDetailPage() {
       </Link>
 
       <div className="flex flex-col gap-4 sm:flex-row">
-        <CardImage
-          imageBaseUrl={h.cardImageBaseUrl}
-          alt={displayName}
-          quality="high"
-          className="h-64 w-48 self-center sm:self-start"
-        />
+        {isSealed ? (
+          <SealedProductImage
+            imageUrl={h.sealedImageUrl}
+            productType={h.sealedProductType ?? 'other'}
+            alt={displayName}
+            className="h-64 w-48 self-center sm:self-start"
+          />
+        ) : (
+          <CardImage
+            imageBaseUrl={h.cardImageBaseUrl}
+            alt={displayName}
+            quality="high"
+            className="h-64 w-48 self-center sm:self-start"
+          />
+        )}
         <div className="min-w-0 flex-1 space-y-1.5">
           <div className="flex items-center gap-2">
             <h1 className="text-2xl font-semibold tracking-tight text-slate-100">{displayName}</h1>
+            {isSealed && h.sealedIsCustom ? (
+              <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-medium text-slate-400">
+                Custom
+              </span>
+            ) : null}
             <button
               type="button"
               aria-pressed={h.isFavorite}
@@ -198,13 +222,35 @@ export function HoldingDetailPage() {
             </button>
           </div>
           <p className="text-sm text-slate-300">
-            {[setName, number ? `#${number}` : null].filter(Boolean).join(' · ')}
+            {isSealed
+              ? [
+                  SEALED_PRODUCT_TYPE_LABEL[h.sealedProductType ?? 'other'],
+                  setName,
+                  h.sealedProductLanguage,
+                ]
+                  .filter(Boolean)
+                  .join(' · ')
+              : [setName, number ? `#${number}` : null].filter(Boolean).join(' · ')}
           </p>
+          {isSealed && h.sealedIsCustom ? (
+            <p className="text-xs text-slate-500">Custom product — not in the shared catalog</p>
+          ) : null}
           {h.manualCardId ? (
             <p className="text-xs text-slate-500">Manual entry — not in the shared catalog</p>
           ) : null}
           <dl className="grid grid-cols-2 gap-x-4 gap-y-1 pt-2 text-sm">
-            {h.holdingKind === 'graded_card' ? (
+            {isSealed ? (
+              <>
+                {h.sealedPackCount ? (
+                  <>
+                    <dt className="text-slate-500">Pack count</dt>
+                    <dd className="text-slate-200">{h.sealedPackCount}</dd>
+                  </>
+                ) : null}
+                <dt className="text-slate-500">Intent</dt>
+                <dd className="text-slate-200">{sealedIntentBreakdown(h) || '—'}</dd>
+              </>
+            ) : h.holdingKind === 'graded_card' ? (
               <>
                 <dt className="text-slate-500">Grade</dt>
                 <dd className="text-slate-200">
@@ -302,6 +348,10 @@ export function HoldingDetailPage() {
               <p className="text-xs text-slate-500">
                 Graded cards need a manual value — raw market prices never value a graded copy.
               </p>
+            ) : isSealed ? (
+              <p className="text-xs text-slate-500">
+                Sealed products need a manual value — there is no automatic sealed pricing.
+              </p>
             ) : (
               <p className="text-xs text-slate-500">No market value available yet for this card.</p>
             )}
@@ -344,17 +394,27 @@ export function HoldingDetailPage() {
       <section className="space-y-2 rounded-lg border border-slate-800 p-3">
         <div className="flex items-center justify-between gap-3">
           <h2 className="text-sm font-semibold text-slate-300">Acquisition cost</h2>
-          <Link
-            to="/add"
-            search={
-              h.manualCardId
-                ? { manualCardId: h.manualCardId }
-                : { variantId: h.cardVariantId ?? undefined }
-            }
-            className="text-sm text-sky-400 underline-offset-4 hover:underline"
-          >
-            Add another copy
-          </Link>
+          {isSealed && h.sealedProductId ? (
+            <Link
+              to="/portfolio/sealed/new"
+              search={{ sealedProductId: h.sealedProductId }}
+              className="text-sm text-sky-400 underline-offset-4 hover:underline"
+            >
+              Add another copy
+            </Link>
+          ) : (
+            <Link
+              to="/add"
+              search={
+                h.manualCardId
+                  ? { manualCardId: h.manualCardId }
+                  : { variantId: h.cardVariantId ?? undefined }
+              }
+              className="text-sm text-sky-400 underline-offset-4 hover:underline"
+            >
+              Add another copy
+            </Link>
+          )}
         </div>
         <p className="text-sm text-slate-300">
           {lots.isPending ? '…' : (costSummary?.text ?? 'No lots recorded')}
@@ -424,6 +484,20 @@ export function HoldingDetailPage() {
                             : 'Cost unknown'}
                     {lot.storageLocationName ? ` · ${lot.storageLocationName}` : ''}
                   </p>
+                  {isSealed && lot.sealedIntent && !lot.voidedAt ? (
+                    <div className="flex items-center justify-between gap-2 text-xs text-slate-400">
+                      <span>{SEALED_INTENT_LABEL[lot.sealedIntent]}</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIntentLot(lot)
+                        }}
+                        className="text-sky-400 underline-offset-4 hover:underline"
+                      >
+                        Change intent
+                      </button>
+                    </div>
+                  ) : null}
                 </li>
               ))}
             </ul>
@@ -463,6 +537,17 @@ export function HoldingDetailPage() {
           </p>
         )}
       </section>
+
+      {intentLot ? (
+        <SealedIntentSheet
+          open
+          onClose={() => {
+            setIntentLot(null)
+          }}
+          holdingId={holdingId}
+          lot={intentLot}
+        />
+      ) : null}
     </div>
   )
 }

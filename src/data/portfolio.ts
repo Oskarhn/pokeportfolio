@@ -1,7 +1,9 @@
 import { supabase } from './supabase-client'
 import { parseMinorUnits } from './money'
 import type { Database } from './database.types'
-import type { CardCondition, GradingState, Grader, HoldingKind } from './collection'
+import type { CardCondition, GradingState, Grader, HoldingKind, SealedIntent } from './collection'
+
+export type SealedProductType = Database['public']['Enums']['sealed_product_type']
 
 /**
  * The Portfolio's sort/filter/keyset-paginated browsing surface (M7). Thin typed wrapper over the
@@ -73,8 +75,26 @@ export interface PortfolioTile {
   manualSetName: string | null
   manualCollectorNumber: string | null
   manualLanguage: string | null
+  sealedProductId: string | null
+  sealedProductType: SealedProductType | null
+  sealedProductName: string | null
+  sealedProductLanguage: string | null
+  sealedPackCount: number | null
+  sealedImageUrl: string | null
+  sealedSetId: string | null
+  sealedSetName: string | null
+  /** True for a user-created catalog entry (sealed_products.created_by_user_id is not null) —
+   *  never true for a curated row (prompt §12's "Custom" marker). */
+  sealedIsCustom: boolean
+  /** Per-lot intent breakdown among this holding's remaining quantity (prompt §17-19 — a holding
+   *  can genuinely have mixed intent across its lots; these three always sum to `quantity` for a
+   *  sealed holding, and are all 0 for anything else). */
+  qtyKeepSealed: number
+  qtyPlannedToOpen: number
+  qtyUndecided: number
   /** Resolved market value (FINANCIAL_MODEL.md §6): manual → fresh → stale → missing. NULL means
-   *  no resolvable value — never a fabricated figure, never the acquisition cost (M9). */
+   *  no resolvable value — never a fabricated figure, never the acquisition cost (M9). Sealed
+   *  holdings resolve manual-or-missing only (§6.3) — same rule as graded. */
   unitValueMinor: bigint | null
   /** unitValueMinor × open quantity — the Portfolio's sort key (D-052: a portfolio view answers
    *  "what's my biggest position", not "what's the priciest single card"). */
@@ -87,10 +107,16 @@ export interface PortfolioTile {
 }
 
 export function portfolioDisplayName(tile: PortfolioTile): string {
-  return tile.cardName ?? tile.manualName ?? 'Unknown card'
+  return tile.cardName ?? tile.manualName ?? tile.sealedProductName ?? 'Unknown item'
 }
 
 export function portfolioSubtitle(tile: PortfolioTile): string {
+  if (tile.holdingKind === 'sealed') {
+    const parts = [tile.sealedSetName, tile.sealedProductLanguage].filter((part): part is string =>
+      Boolean(part),
+    )
+    return parts.join(' · ')
+  }
   const setName = tile.cardSetName ?? tile.manualSetName
   const number = tile.cardLocalId ?? tile.manualCollectorNumber
   if (setName && number) return `${setName} · #${number}`
@@ -139,6 +165,10 @@ export interface PortfolioFilters {
   tagId?: string
   lowValue?: boolean
   missingValue?: boolean
+  /** Portfolio's type filter: All (undefined) / Raw / Graded / Sealed (prompt §45). */
+  holdingKind?: HoldingKind
+  sealedProductType?: SealedProductType
+  sealedIntent?: SealedIntent
 }
 
 export interface PortfolioPage {
@@ -174,6 +204,18 @@ interface ListPortfolioRow {
   manual_set_name: string | null
   manual_collector_number: string | null
   manual_language: string | null
+  sealed_product_id: string | null
+  sealed_product_type: SealedProductType | null
+  sealed_product_name: string | null
+  sealed_product_language: string | null
+  sealed_pack_count: number | null
+  sealed_image_url: string | null
+  sealed_set_id: string | null
+  sealed_set_name: string | null
+  sealed_is_custom: boolean | null
+  qty_keep_sealed: number
+  qty_planned_to_open: number
+  qty_undecided: number
   unit_value_nok_minor: string | null
   holding_value_nok_minor: string | null
   price_state: 'manual' | 'fresh' | 'stale' | 'missing' | null
@@ -212,6 +254,18 @@ function mapRow(row: ListPortfolioRow): PortfolioTile {
     manualSetName: row.manual_set_name,
     manualCollectorNumber: row.manual_collector_number,
     manualLanguage: row.manual_language,
+    sealedProductId: row.sealed_product_id,
+    sealedProductType: row.sealed_product_type,
+    sealedProductName: row.sealed_product_name,
+    sealedProductLanguage: row.sealed_product_language,
+    sealedPackCount: row.sealed_pack_count,
+    sealedImageUrl: row.sealed_image_url,
+    sealedSetId: row.sealed_set_id,
+    sealedSetName: row.sealed_set_name,
+    sealedIsCustom: row.sealed_is_custom ?? false,
+    qtyKeepSealed: row.qty_keep_sealed,
+    qtyPlannedToOpen: row.qty_planned_to_open,
+    qtyUndecided: row.qty_undecided,
     unitValueMinor:
       row.unit_value_nok_minor === null ? null : parseMinorUnits(row.unit_value_nok_minor),
     holdingValueMinor:
@@ -253,6 +307,9 @@ export async function listPortfolio(params: {
       p_tag_id: f.tagId,
       p_low_value: f.lowValue,
       p_missing_value: f.missingValue,
+      p_holding_kind: f.holdingKind,
+      p_sealed_product_type: f.sealedProductType,
+      p_sealed_intent: f.sealedIntent,
       p_cursor_holding_id: cursor?.holdingId,
       p_cursor_name: cursor?.name,
       p_cursor_set_name: cursor?.setName,
@@ -284,6 +341,18 @@ export interface PortfolioCounts {
   /** Current Portfolio Value (CMV) in NOK minor units — sum of resolved unit value × open
    *  quantity over every priced holding. */
   portfolioValueMinor: bigint
+  /** The same total, split into cards (raw + graded) and sealed — sealed value must never
+   *  disappear into an unexplained combined total (FINANCIAL_MODEL.md §6.3, prompt §37-39).
+   *  cardsValueMinor + sealedValueMinor === portfolioValueMinor exactly. */
+  cardsValueMinor: bigint
+  sealedValueMinor: bigint
+  /** Distinct sealed holdings (products), not physical units — see sealedUnitCount for that. */
+  sealedHoldingCount: number
+  sealedPricedHoldingCount: number
+  sealedUnpricedHoldingCount: number
+  /** Physical sealed units owned (Σ quantity across sealed holdings) — the number a "N sealed
+   *  items" label should use (prompt §40's "be explicit whether this counts units or products"). */
+  sealedUnitCount: number
 }
 
 interface PortfolioCountsRow {
@@ -294,6 +363,12 @@ interface PortfolioCountsRow {
   priced_holding_count: string
   unpriced_holding_count: string
   portfolio_value_nok_minor: string
+  cards_value_nok_minor: string
+  sealed_value_nok_minor: string
+  sealed_holding_count: string
+  sealed_priced_holding_count: string
+  sealed_unpriced_holding_count: string
+  sealed_unit_count: string
 }
 
 export async function getPortfolioCounts(customCollectionId?: string): Promise<PortfolioCounts> {
@@ -310,5 +385,11 @@ export async function getPortfolioCounts(customCollectionId?: string): Promise<P
     pricedHoldingCount: Number(data.priced_holding_count),
     unpricedHoldingCount: Number(data.unpriced_holding_count),
     portfolioValueMinor: parseMinorUnits(data.portfolio_value_nok_minor),
+    cardsValueMinor: parseMinorUnits(data.cards_value_nok_minor),
+    sealedValueMinor: parseMinorUnits(data.sealed_value_nok_minor),
+    sealedHoldingCount: Number(data.sealed_holding_count),
+    sealedPricedHoldingCount: Number(data.sealed_priced_holding_count),
+    sealedUnpricedHoldingCount: Number(data.sealed_unpriced_holding_count),
+    sealedUnitCount: Number(data.sealed_unit_count),
   }
 }

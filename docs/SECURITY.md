@@ -220,6 +220,44 @@ one column a user could otherwise "revive" to sell twice.
 grading submission" RPC), and a bare `INSERT` grant with no such validation would let a user inflate
 their own cost basis by citing any unrelated purchase line of theirs.
 
+**M11 preflight correction (documentation only, no behaviour change).** `acquisition_lots_check_owner`
+(M3), `sale_lines_check_owner` and `lot_disposals_check_owner` (both M10) were written, and
+commented, before this project had any SECURITY DEFINER RPC — each one's own inline comment says
+something like "runs with invoker rights, so RLS hides a foreign row entirely." That is accurate
+exactly when the INSERT/UPDATE that fires the trigger comes from a plain SECURITY INVOKER caller
+(`create_purchase`, `add_card_acquisition`, `void_acquisition_lot`, and now `set_sealed_lot_intent`
+— M11). It stops being the operative mechanism the moment the same trigger fires as a side effect of
+a SECURITY DEFINER caller: `create_sale`/`update_sale`/`void_sale` writing `sale_lines`/
+`lot_disposals`, or `recompute_lot_quantity_remaining` (itself DEFINER) writing
+`acquisition_lots.quantity_remaining`. Inside a DEFINER function's execution, the statement that
+fires the trigger runs as the function's *owning* role, not the original caller — a role RLS
+typically does not constrain the same way it constrains `authenticated` — so "RLS hides the row"
+is not actually available as a defence in that path.
+
+It was never load-bearing there, either way. The real guarantee in every one of these trigger
+functions is the explicit comparison written in its body —
+`if parent_user_id is null or new.user_id <> parent_user_id then raise exception` (and the
+equivalent for `sale_line_id`/`lot_id`) — which fires regardless of whether RLS was in effect for
+the row it just read. Nothing a SECURITY DEFINER cascade does ever forges `holding_id`/`sale_id`/
+`lot_id`/`user_id` on the row it writes (M10/M11's DEFINER functions each resolve and constrain
+those explicitly before the write, per §3.2.4 above), so the comparison always has a genuine value
+on both sides to check. The correct standing statement, replacing the older per-trigger comments
+for reasoning purposes (the migration files themselves are not edited — DECISIONS.md/PROJECT_JOURNAL
+convention is that applied migrations are historical record, not living documentation):
+
+- Caller identity comes from `auth.uid()`, resolved once, never a caller-supplied argument.
+- A SECURITY DEFINER function explicitly constrains the parent/lot ownership it writes against
+  before writing (§3.2.4) — it does not rely on the trigger to catch a mistake it could have made
+  itself.
+- Every owner-check trigger explicitly compares a denormalized `user_id` against the actual parent
+  owner it just read, independent of whether RLS filtered that read.
+- RLS remains the real boundary for the browser's own direct `SELECT`/`INSERT`/`UPDATE` traffic
+  (§3.1-3.2, unaffected) — it is just not the mechanism protecting a trigger invoked from inside an
+  already-elevated DEFINER transaction, and no comment should claim otherwise going forward.
+
+No test failed, no exploit exists today, and no SQL changed because of this — see
+`claude_outputs/output_19.txt`'s M10 SECURITY PREFLIGHT section for the full audit trail.
+
 ### 3.3 Attack surface the tests must cover
 
 - Direct read of another user's row by id

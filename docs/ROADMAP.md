@@ -266,13 +266,22 @@ D1, void/double-void, concurrency and idempotency; result-sort `NULLS LAST` prov
 Sold is fully functional; Traded honestly defers to M18; Other has nothing to show yet. Full
 account: `claude_outputs/output_18.txt`. Decisions: DECISIONS.md D-060.
 
-### M11 — Sealed inventory
+### M11 — Sealed inventory — **complete**
 
 Sealed products in the catalog. Sealed holdings with intent. Manual valuation with provenance.
 Sealed segment in collection value.
 
 **Gate:** sealed value is visibly manual; a sealed holding with no valuation is counted, not
-zeroed.
+zeroed. **Met** — sealed holdings/lots reuse the existing card acquisition, purchase, valuation and
+sale machinery unchanged; `sealed_intent` corrected to live per-lot (D-061) so mixed intent among
+identical physical units is truthfully representable (`tests/db/m11_sealed_inventory.test.ts`
+proves the exact 2-keep/1-planned scenario the prompt named); `portfolio_counts` exposes
+`cards_value_nok_minor`/`sealed_value_nok_minor` that always sum to the total, plus sealed-scoped
+priced/unpriced/unit counts. Curated seed is deliberately modest (seven individually-sourced
+products) with the "Add custom sealed product" fallback for real gaps. No automatic sealed pricing
+of any kind — confirmed still correct (D-010) and reverified against current TCGdex/Cardmarket/
+PriceCharting sources this session (API_SOURCES.md/RESEARCH.md). Full account:
+`claude_outputs/output_19.txt`. Decisions: DECISIONS.md D-061.
 
 ### M12 — Dashboard
 

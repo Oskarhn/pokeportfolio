@@ -1,7 +1,9 @@
 import { Link } from '@tanstack/react-router'
 import type { PortfolioTile } from '../../data/portfolio'
 import { portfolioDisplayName, portfolioSubtitle } from '../../data/portfolio'
+import { sealedIntentBreakdown } from '../../data/collection'
 import { CardImage } from '../catalog/CardImage'
+import { SealedProductImage } from '../catalog/SealedProductImage'
 import { CONDITION_LABEL } from '../collection/labels'
 import { formatNokMinor } from '../../ui/money-format'
 import { CheckIcon } from '../../ui/icons'
@@ -26,22 +28,34 @@ export function GridTile({
   onToggleSelect?: (holdingId: string) => void
 }) {
   const name = portfolioDisplayName(tile)
-  const conditionText =
-    tile.holdingKind === 'graded_card'
+  const isSealed = tile.holdingKind === 'sealed'
+  const conditionText = isSealed
+    ? null
+    : tile.holdingKind === 'graded_card'
       ? `${tile.grader?.toUpperCase() ?? ''} ${tile.grade ?? ''}`.trim()
       : tile.condition
         ? CONDITION_LABEL[tile.condition]
         : null
+  const intentText = isSealed ? sealedIntentBreakdown(tile) : ''
 
   const content = (
     <>
       <div className="relative">
-        <CardImage
-          imageBaseUrl={tile.cardImageBaseUrl}
-          alt={name}
-          quality="low"
-          className="aspect-[5/7] w-full"
-        />
+        {isSealed ? (
+          <SealedProductImage
+            imageUrl={tile.sealedImageUrl}
+            productType={tile.sealedProductType ?? 'other'}
+            alt={name}
+            className="aspect-[5/7] w-full"
+          />
+        ) : (
+          <CardImage
+            imageBaseUrl={tile.cardImageBaseUrl}
+            alt={name}
+            quality="low"
+            className="aspect-[5/7] w-full"
+          />
+        )}
         {selectMode ? (
           <span
             aria-hidden
@@ -72,13 +86,25 @@ export function GridTile({
             {conditionText}
           </span>
         ) : null}
+        {isSealed && tile.sealedIsCustom ? (
+          <span
+            className="absolute bottom-1 left-1 rounded bg-slate-950/80 px-1 py-0.5 text-[9px] font-medium text-slate-400"
+            title="A custom product you added — not part of the shared catalog"
+          >
+            Custom
+          </span>
+        ) : null}
       </div>
 
       {density <= 2 ? (
         <div className="min-w-0">
           <p className="truncate text-sm font-medium text-slate-100">{name}</p>
           <p className="truncate text-xs text-slate-400">{portfolioSubtitle(tile)}</p>
-          {density === 1 ? (
+          {isSealed ? (
+            intentText ? (
+              <p className="truncate text-xs text-slate-500">{intentText}</p>
+            ) : null
+          ) : density === 1 ? (
             <p className="truncate text-xs text-slate-500">
               {conditionText}
               {tile.manualCardId ? ' · Manual entry' : ''}

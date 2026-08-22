@@ -115,12 +115,26 @@ export function HomePage() {
           />
         </div>
         {counts.data ? (
-          <p className="text-xs text-slate-500">
-            {counts.data.pricedHoldingCount} priced
-            {counts.data.unpricedHoldingCount > 0
-              ? ` · ${counts.data.unpricedHoldingCount} without a price`
-              : ''}
-          </p>
+          <div className="space-y-0.5">
+            <p className="text-xs text-slate-500">
+              {counts.data.pricedHoldingCount} priced
+              {counts.data.unpricedHoldingCount > 0
+                ? ` · ${counts.data.unpricedHoldingCount} without a price`
+                : ''}
+            </p>
+            {counts.data.sealedHoldingCount > 0 ? (
+              <p className="text-xs text-slate-500">
+                {hideValues ? (
+                  <span aria-label="Value hidden">Cards •••• · Sealed ••••</span>
+                ) : (
+                  <>
+                    Cards {formatNokMinor(counts.data.cardsValueMinor)} NOK · Sealed{' '}
+                    {formatNokMinor(counts.data.sealedValueMinor)} NOK
+                  </>
+                )}
+              </p>
+            ) : null}
+          </div>
         ) : null}
 
         {/* Reserved for the real value-over-time chart (M12, lightweight-charts spike — D-015).

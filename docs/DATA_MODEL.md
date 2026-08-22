@@ -170,6 +170,20 @@ European market. MVP seeds this table from a curated list plus user-created entr
 `created_by_user_id nullable` distinguishes curated rows from user-added ones; user-added rows
 are visible only to their creator until promoted.
 
+**M11's actual curated seed** (`20260829120030_m11_curated_sealed_seed.sql`) is deliberately
+modest and individually sourced — seven real products (English and Japanese, spanning
+booster pack/box/ETB/bundle/tin, set-linked and one deliberately non-set-linked) verified against
+retailer/official listings at migration time, never a generated combination of every set × every
+product type. It is not, and does not claim to be, a complete catalog — the custom-product path
+below is how a real gap gets filled. `image_url` stays null for every curated row seeded this way
+(no artwork provenance was cleared for redistribution); the UI falls back to a generic per-type
+placeholder, same as a custom product.
+
+A user-added row never gets an `image_url` at creation (prompt §13): no field is offered for one,
+deliberately — an arbitrary external image URL would expand the CSP `img-src` allowance, carries
+no licensing/ownership guarantee, and risks a broken or tracking-laden remote reference. Real
+per-product artwork (curated or user-supplied) is the later Images milestone's problem, not M11's.
+
 ### 3.4 Provider mapping
 
 Provider identifiers are **nullable columns on the catalog tables**, not a polymorphic
@@ -460,13 +474,17 @@ money — those belong to lots.
 | `grading_state` | enum `raw`, `pending`, `graded`. `raw` for sealed holdings. |
 | `grader` | enum `psa`, `cgc`, `bgs`, `ace`, `sgc`, `tag`, `other`; null unless graded/pending |
 | `grade numeric(3,1) nullable`, `cert_number text nullable` | |
-| `sealed_intent` | enum `keep_sealed`, `planned_to_open`, `undecided`; null unless `holding_kind = 'sealed'` |
 | `is_favorite bool` | |
 | `notes`, `created_at`, `updated_at`, `deleted_at nullable` | |
 
-`sealed_intent` is organisational only. Changing it never alters purchase history, cost basis or
-any financial figure — it exists so "what is my sealed investment worth" can be separated from
-"what is queued to be opened", which are different questions about the same shelf.
+**`sealed_intent` lives on `acquisition_lots`, not here — moved there in M11 (D-061).** It was
+originally sketched as a holding-level column, matching `storage_location_id`'s pre-M6 mistake
+exactly (§5.4's own note below): `holdings_identity` merges every lot for the same product/
+condition/grading-state combination into one holding row, so a single holding-level intent column
+cannot represent a user who owns three identical booster boxes and wants two "keep sealed" and one
+"planned to open" — there is only one slot for the whole position, not one per physical unit. M11's
+audit (prompt §17) tested this scenario against the pre-M11 shape before any UI was built on top of
+it and found it could not be represented truthfully. See §5.5 for where it actually lives and why.
 
 **`storage_location_id` lives on `acquisition_lots`, not here** — moved there in M6 (D-036) after a
 concrete scenario proved the original "one per holding" cardinality wrong: two identical NM copies
@@ -540,7 +558,26 @@ The financial heart of the model.
 | `residual_minor int default 0` | Largest-remainder residual so `quantity × unit + residual` = line cost exactly, in the lot's original currency |
 | `residual_nok_minor bigint default 0` | **Shipped in M10** (D-060) — the NOK-side counterpart. `create_purchase`/`update_purchase` originally floor-divided `unit_cost_basis_nok_minor` and silently dropped this remainder; invisible for NOK-currency purchases (`attributable = attributable_nok` exactly) but a real leak for foreign-currency multi-unit lots. Backfilled from `attributable_cost_nok_minor` for existing rows. |
 | `storage_location_id fk nullable` | Relocated here from `holdings` in M6 (D-036) — where a specific batch of copies physically sits, not a property of the holding as a whole |
+| `sealed_intent` | enum `keep_sealed`, `planned_to_open`, `undecided`. **Relocated here from `holdings` in M11 (D-061)** — same reasoning as `storage_location_id`'s M6 move directly above: a batch-level property, not a holding-level one. Not null iff the parent holding's `holding_kind = 'sealed'`, enforced by `acquisition_lots_check_owner` (no `holding_kind` column exists on this table to write a plain CHECK against, so the trigger that already looks the parent up does the enforcement). |
 | `notes`, `created_at`, `voided_at nullable` | |
+
+`sealed_intent` is organisational only. Changing it never alters purchase history, cost basis or
+any financial figure — it exists so "what is my sealed investment worth" can be separated from
+"what is queued to be opened", which are different questions about the same shelf. Because it lives
+per-lot rather than per-holding, a holding with mixed intent across its lots (two boxes kept sealed,
+one planned to open) reads correctly: Holding Detail lists each lot with its own intent, and
+Portfolio/`list_portfolio` aggregate the remaining quantity per intent bucket
+(`qty_keep_sealed`/`qty_planned_to_open`/`qty_undecided`) for the tile summary. Changing intent for
+part of a lot's remaining quantity (`set_sealed_lot_intent`, M11) splits the lot into two — a new
+sibling lot at the new intent and the original shrunk by the same amount, both keeping the original
+lot's `unit_cost_basis_minor`/`unit_cost_basis_nok_minor` unchanged so nothing about cost basis is
+invented, lost or double-counted; the original's `residual_minor`/`residual_nok_minor` stays
+entirely on the shrunk lot rather than being divided, since both are already an integer-rounding
+leftover independent of how the remaining quantity is later subdivided. This is the smallest model
+that can represent differing intent among otherwise-identical physical units, chosen over the
+alternative of folding intent into `holdings_identity` (which would have turned a intent change into
+a second, separate Portfolio row for the same product — rejected per prompt §19's "remains
+understandable as one product tile" requirement).
 
 **`opening_id`/`trade_line_id` do not exist yet.** `origin` gained the `opening` and `trade_in`
 enum values in M6 (D-038, pulled forward from their originally-planned M16/M18 arrival) so a pulled

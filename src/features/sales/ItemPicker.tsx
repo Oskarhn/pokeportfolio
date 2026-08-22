@@ -7,6 +7,7 @@ import {
   type PortfolioTile,
 } from '../../data/portfolio'
 import { CardImage } from '../catalog/CardImage'
+import { SealedProductImage } from '../catalog/SealedProductImage'
 import { Sheet } from '../../ui/Sheet'
 
 /**
@@ -61,12 +62,21 @@ export function ItemPicker({
                   }}
                   className="flex min-h-14 w-full items-center gap-3 rounded-lg border border-slate-800 px-3 py-2 text-left hover:bg-slate-800/60"
                 >
-                  <CardImage
-                    imageBaseUrl={tile.cardImageBaseUrl}
-                    alt={portfolioDisplayName(tile)}
-                    quality="low"
-                    className="h-12 w-9 shrink-0"
-                  />
+                  {tile.holdingKind === 'sealed' ? (
+                    <SealedProductImage
+                      imageUrl={tile.sealedImageUrl}
+                      productType={tile.sealedProductType ?? 'other'}
+                      alt={portfolioDisplayName(tile)}
+                      className="h-12 w-9 shrink-0"
+                    />
+                  ) : (
+                    <CardImage
+                      imageBaseUrl={tile.cardImageBaseUrl}
+                      alt={portfolioDisplayName(tile)}
+                      quality="low"
+                      className="h-12 w-9 shrink-0"
+                    />
+                  )}
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium text-slate-100">
                       {portfolioDisplayName(tile)}

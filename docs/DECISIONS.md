@@ -1658,3 +1658,76 @@ gave explicitly (§39).
 **Consequence.** DATA_MODEL.md §5.6/§5.7/§5.11 and FINANCIAL_MODEL.md §4.3 are updated to match the
 shipped schema exactly — this decision is what they now cite for the residual/adjustment rule and
 the SECURITY DEFINER exception, rather than leaving either implicit in migration comments alone.
+
+## D-061 — M11 sealed inventory: `sealed_intent` moves to `acquisition_lots`; sealed reuses the card acquisition/valuation machinery unchanged
+
+M11 (Sealed Inventory) audited the pre-existing sealed schema (`sealed_products`, `holdings.
+sealed_intent`, `holdings.sealed_product_id`, `purchase_lines.sealed_product_id`) before building
+any UI on top of it, per the milestone prompt's explicit instruction not to assume a schema sketched
+years earlier in DATA_MODEL.md was still correct just because nothing had exercised it yet. Two real
+findings, one requiring a schema change and one confirming the existing design was already right.
+
+**1. The real defect: `sealed_intent` on `holdings` cannot represent mixed intent among identical
+physical units.** `holdings_identity` (the unique index preventing the same physical state from
+fragmenting into duplicate holdings, DATA_MODEL.md §5.4) does not — and should not — include
+`sealed_intent`: intent is explicitly organisational, like `storage_location_id`, not a distinguishing
+property of "what is this." But that means every acquisition lot for the same sealed product/
+condition/grading-state combination collapses into one holding row, and a holding-level
+`sealed_intent` column has exactly one value for the whole position. Tested directly against the
+concrete scenario the prompt named: a user owns three identical booster boxes and wants two "keep
+sealed" and one "planned to open." The pre-M11 shape cannot express this — `create_purchase`
+(M8) already defaulted every new sealed holding's intent to `'undecided'` at creation and never
+touched it again on a repeat acquisition matching the same identity, so a second or third purchase
+of the same product silently inherited whatever intent the first one happened to get.
+
+**Decision: relocate `sealed_intent` to `acquisition_lots`.** `acquisition_lots` already tracks
+quantity as discrete batches (one row per acquisition event) and already has a real precedent for
+"an organisational correction that must be explicit and auditable, not a silent edit" — voiding, and
+`storage_location_id`'s own M6 relocation off `holdings` for the identical reason (D-036). Moving
+`sealed_intent` there is the direct continuation of that same precedent, not a new pattern.
+`holdings` keeps its role as pure identity ("N units of Product X, in total"); a Portfolio tile
+aggregates its constituent lots' intents for display (`list_portfolio`/`holding_summaries` gained
+`qty_keep_sealed`/`qty_planned_to_open`/`qty_undecided`, one `FILTER`ed `SUM` each inside the
+existing materialized lot-aggregation CTE — no new join, no per-row correlated subquery, so the real
+10,000-lot Portfolio benchmark result (D-054/D-059) is unaffected by construction, re-run to
+confirm rather than assumed).
+
+Changing a lot's intent for less than its full remaining quantity requires splitting it — a new RPC,
+`set_sealed_lot_intent(p_lot_id, p_intent, p_quantity default null)`, SECURITY INVOKER (RLS already
+lets the owner write their own rows; the only reason this needs an RPC at all, rather than a plain
+column-level UPDATE grant, is that a partial split must insert a sibling lot and shrink the original
+atomically). Both resulting lots keep the original lot's `unit_cost_basis_minor`/
+`unit_cost_basis_nok_minor` unchanged, and the original's `residual_minor`/`residual_nok_minor` stays
+entirely on the shrunk lot rather than being divided — conserving total cost basis exactly, and
+never treating an organisational split as a valuation or cost-basis event (prompt §20/§80). The
+alternative considered and rejected: folding `sealed_intent` into `holdings_identity` so differing
+intent produces a genuinely separate holding. Rejected because it would turn "I want to open one of
+my three boxes" into a second, duplicate-looking Portfolio row for the same product — the prompt's
+own stated preference (§19) is that a mixed-intent product remains one understandable tile with a
+breakdown, which only the per-lot model supports without also duplicating Portfolio rows.
+
+A related, narrower correction found in the same pass: `create_purchase`'s acquisition-lot INSERT
+never set `sealed_intent` at all (it was written when the column still lived on `holdings`, defaulted
+there instead) — left unfixed, the very first sealed purchase line after this migration would have
+failed the new not-null-when-sealed trigger check outright. Fixed in the same migration set,
+alongside adding an optional per-line `sealed_intent` field to `create_purchase`'s own JSON contract
+(defaulting to `'undecided'`, the same default `add_card_acquisition`'s direct-add path uses) so a
+purchase can capture real intent at acquisition time instead of every sealed purchase landing on
+"undecided" until a separate action changes it.
+
+**2. Confirmed correct, unchanged: everything else pre-existing sealed schema already had right.**
+`sealed_products`' curated-vs-private RLS split (`created_by_user_id null` = curated, readable by
+all; non-null = owner-only), `manual_valuations`' generic `holding_id` keying (already usable for a
+sealed holding with zero schema change — it was pulled forward into M6 for graded cards, D-038, and
+turns out to have been built sealed-agnostic from the start), and `create_purchase`'s existing
+'sealed' line-type branch (already created a real holding + lot, not a financial-only record) all
+needed no correction. `add_card_acquisition` (M6) gained a genuinely new capability — a direct,
+outside-a-purchase sealed acquisition path (`p_sealed_product_id`/`p_sealed_intent`, appended
+parameters, DROP+CREATE per the added-parameter rule TESTING.md §6a already documents) — but this is
+an addition, not a fix to anything that was wrong.
+
+**Consequence.** DATA_MODEL.md §5.4/§5.5 are updated to show `sealed_intent` on `acquisition_lots`,
+with the cardinality reasoning above; §3.3 gains a short note on M11's actual (deliberately modest,
+individually-sourced) curated seed and the no-image-upload policy for a user-added product. No
+FINANCIAL_MODEL.md change was needed — §6.3's manual-only sealed valuation rule already anticipated
+this exactly, unaffected by which table `sealed_intent` lives on.
