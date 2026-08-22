@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { listPortfolio } from '../../data/portfolio'
+import { listPortfolio, getPortfolioCounts } from '../../data/portfolio'
 import { getCollectionMemberCount } from '../../data/customCollections'
 import { getMyProfile, updateMyProfile } from '../../data/profile'
 import {
@@ -429,10 +429,7 @@ export function HomePage() {
 function ScopeCurrentValue({ scopeId, hidden }: { scopeId: string; hidden: boolean }) {
   const counts = useQuery({
     queryKey: ['portfolio-counts', scopeId],
-    queryFn: async () => {
-      const { getPortfolioCounts } = await import('../../data/portfolio')
-      return getPortfolioCounts(scopeId)
-    },
+    queryFn: () => getPortfolioCounts(scopeId),
   })
   if (!counts.data) return null
   if (counts.data.portfolioValueMinor === 0n && counts.data.pricedHoldingCount === 0) return null
