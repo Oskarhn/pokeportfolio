@@ -4,6 +4,7 @@ import {
   createSyntheticUser,
   deleteSyntheticUser,
   seedCatalog,
+  signInAs,
   type SyntheticUser,
   type TestClient,
 } from './setup'
@@ -72,8 +73,10 @@ async function makeLot(userId: string, spec: HoldingSpec & { holdingId: string }
       holding_id: spec.holdingId,
       user_id: userId,
       origin: spec.costState === 'known' ? 'purchase' : 'gift',
-      cost_basis_state: spec.costState ?? 'not_paid',
-      unit_cost_basis_minor: spec.unitCostNok ?? null,
+      // A 'known' lot is promoted AFTER its backing purchase line exists (M2's CHECK demands the
+      // reference at insert time) — inserted here in its legal intermediate 'unknown' state.
+      cost_basis_state: spec.costState === 'known' ? 'unknown' : (spec.costState ?? 'not_paid'),
+      unit_cost_basis_minor: null,
       acquired_on: daysAgo(spec.acquiredDaysAgo ?? 100),
       quantity: spec.quantity ?? 1,
       quantity_remaining: spec.quantity ?? 1,
@@ -468,13 +471,17 @@ describe('M12 ownership timeline', () => {
 
       await rebuild(u.id, 95)
       let rows = await readSnapshots(u.id)
-      expectSnap(rows, 90, { open_lot_count: 1, market_value_nok_minor: 57500 }) // 5 × 115.00, obs 1 fresh
+      expectSnap(rows, 90, { open_lot_count: 1, market_value_nok_minor: 57500 }) // 5 × 115.00
       // Days −64…−56 sit BETWEEN the two observation windows: open lots with no resolvable
       // value — excluded from CMV and counted, never zeroed (F14). The engine must not bridge
       // the gap by inventing a price.
       expectSnap(rows, 60, { open_lot_count: 1, market_value_nok_minor: 0, unvalued_lot_count: 1 })
-      expectSnap(rows, 55, { open_lot_count: 1, market_value_nok_minor: 34500 }) // obs 2 fresh
-      expectSnap(rows, 51, { open_lot_count: 1, market_value_nok_minor: 34500 })
+      // −55 is still BEFORE the sale date (−50): five units under observation 2.
+      expectSnap(rows, 55, { open_lot_count: 1, market_value_nok_minor: 57500 })
+      expectSnap(rows, 51, { open_lot_count: 1, market_value_nok_minor: 57500 })
+      // From the sale day onward: three units.
+      expectSnap(rows, 50, { open_lot_count: 1, market_value_nok_minor: 34500 })
+      expectSnap(rows, 25, { open_lot_count: 1, market_value_nok_minor: 34500 })
 
       // Void the sale: corrected truth puts all five units back across the whole history.
       const { data: disposal } = await service
@@ -492,6 +499,7 @@ describe('M12 ownership timeline', () => {
       expectSnap(rows, 90, { open_lot_count: 1, market_value_nok_minor: 57500 })
       expectSnap(rows, 55, { open_lot_count: 1, market_value_nok_minor: 57500 })
       expectSnap(rows, 50, { open_lot_count: 1, market_value_nok_minor: 57500 })
+      expectSnap(rows, 45, { open_lot_count: 1, market_value_nok_minor: 57500 })
       expectSnap(rows, 10, { open_lot_count: 1, market_value_nok_minor: 57500 })
       expectSnap(rows, 10, { sales_proceeds_to_date_nok_minor: 0 }) // voided sale excluded everywhere
     })
@@ -1100,7 +1108,8 @@ describe('M12 dashboard aggregates', () => {
       await addPrice({ variantId: auto, valueMinor: 2000, daysAgo: 25 })
       await rebuild(u.id, 40)
 
-      const { data: summary, error } = await service.rpc('get_dashboard_summary').single<{
+      const readClient = await signInAs(u)
+      const { data: summary, error } = await readClient.rpc('get_dashboard_summary').single<{
         priced_holding_count: string
         unpriced_holding_count: string
         manual_valued_holding_count: string
@@ -1200,7 +1209,8 @@ describe('M12 dashboard aggregates', () => {
       await addPurchase(1, 20000, 0, 0)
       await addPurchase(0, 0, 5000, 0)
 
-      const { data: months, error } = await service.rpc('get_monthly_spend', { p_months: 12 })
+      const readClient = await signInAs(u)
+      const { data: months, error } = await readClient.rpc('get_monthly_spend', { p_months: 12 })
       if (error) throw new Error(error.message)
 
       let lifetimeCs = 0n
@@ -1266,7 +1276,8 @@ describe('M12 dashboard aggregates', () => {
         proceedsMinor: 7000,
       })
 
-      const { data: s, error } = await service.rpc('sales_summary').single<{
+      const readClient = await signInAs(u)
+      const { data: s, error } = await readClient.rpc('sales_summary').single<{
         nsp_nok_minor: string
         rrc_nok_minor: string
         pud_nok_minor: string
@@ -1307,14 +1318,15 @@ describe('M12 dashboard aggregates', () => {
 
       await rebuild(u.id, 320)
 
-      const { data: nok, error: nokError } = await service.rpc('get_portfolio_history', {
+      const readClient = await signInAs(u)
+      const { data: nok, error: nokError } = await readClient.rpc('get_portfolio_history', {
         p_display_currency: 'NOK',
         p_from: daysAgo(320),
         p_to: daysAgo(260),
       })
       if (nokError) throw new Error(nokError.message)
 
-      const { data: eur, error: eurError } = await service.rpc('get_portfolio_history', {
+      const { data: eur, error: eurError } = await readClient.rpc('get_portfolio_history', {
         p_display_currency: 'EUR',
         p_from: daysAgo(320),
         p_to: daysAgo(260),
@@ -1359,7 +1371,8 @@ describe('M12 dashboard aggregates', () => {
       const { holdingId } = await makeHolding(u.id, { variantId: variant, acquiredDaysAgo: 30 })
 
       await rebuild(u.id, 40)
-      let history = await service.rpc('get_portfolio_history', { p_display_currency: 'NOK' })
+      const readClient = await signInAs(u)
+      let history = await readClient.rpc('get_portfolio_history', { p_display_currency: 'NOK' })
       const rows = history.data as unknown as { snapshot_date: string; has_coverage: boolean }[]
       expect(rows.at(-1)?.has_coverage).toBe(false) // 100% unvalued → gap, never "worth 0"
 
@@ -1380,7 +1393,7 @@ describe('M12 dashboard aggregates', () => {
         .eq('collection_id', collection!.id as string)
 
       await rebuild(u.id, 40)
-      history = await service.rpc('get_portfolio_history', { p_display_currency: 'NOK' })
+      history = await readClient.rpc('get_portfolio_history', { p_display_currency: 'NOK' })
       const rowsAfter = history.data as unknown as {
         snapshot_date: string
         has_coverage: boolean
@@ -1405,7 +1418,8 @@ describe('M12 dashboard aggregates', () => {
       const rows = await readSnapshots(u.id)
       expect(rows).toEqual([])
 
-      const { data: summary } = await service.rpc('get_dashboard_summary').single<{
+      const readClient = await signInAs(u)
+      const { data: summary } = await readClient.rpc('get_dashboard_summary').single<{
         latest_snapshot_date: string | null
         first_tracked_date: string | null
         market_value_nok_minor: string | null
