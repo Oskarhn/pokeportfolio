@@ -173,14 +173,16 @@ describe('M12 central gate: full rebuild == incremental == oracle', () => {
     const rowsInc = await readSnapshots(inc)
     const rowsFull = await readSnapshots(full)
 
-    // Both users judged against the independent oracle across the whole range. The range starts
-    // at each user's first tracked date (DATA_MODEL section 6): the backdated manual valuation
-    // effective day(4) does not extend tracked history before the earliest ownership event.
+    // Both users judged against the independent oracle. Each user is judged across its OWN full
+    // cached range: the incremental user's drains legitimately extend through current_date,
+    // while the full-rebuild user's explicit rebuild was bounded at day(40).
     for (const [facts, rows, label] of [
       [factsInc, rowsInc, 'incremental'],
       [factsFull, rowsFull, 'full-rebuild'],
     ] as const) {
-      const expected = expectedSeriesBetween(facts, firstTrackedDate(facts), day(40))
+      const lastCached = rows[rows.length - 1]?.snapshot_date
+      if (!lastCached) throw new Error(`${label}: cache is empty`)
+      const expected = expectedSeriesBetween(facts, firstTrackedDate(facts), lastCached)
       for (const exp of expected) {
         const actual = rows.find((r) => r.snapshot_date === exp.snapshot_date)
         if (!actual) throw new Error(`${label}: missing snapshot ${exp.snapshot_date}`)
@@ -194,13 +196,17 @@ describe('M12 central gate: full rebuild == incremental == oracle', () => {
       }
     }
 
-    // The gate itself: identical date sets, identical values on every semantic column.
+    // The gate itself: the incremental cache must cover everything the explicit rebuild produced,
+    // and every shared date must be byte-identical on all seven semantic columns. (The raw key
+    // sets are NOT equal by construction: drains extend through current_date, the explicit
+    // rebuild was bounded at day(40).) A cache that depends on how it was computed cannot hold
+    // on any shared date without failing here.
     const mapInc = semanticMap(rowsInc)
     const mapFull = semanticMap(rowsFull)
-    expect([...mapFull.keys()].sort()).toEqual([...mapInc.keys()].sort())
-    for (const [date, incValues] of mapInc) {
-      const fullValues = mapFull.get(date)
-      if (!fullValues) throw new Error(`full-rebuild missing ${date}`)
+    expect(mapInc.size).toBeGreaterThanOrEqual(mapFull.size)
+    for (const [date, fullValues] of mapFull) {
+      const incValues = mapInc.get(date)
+      if (!incValues) throw new Error(`full-rebuild date ${date} missing from the incremental cache`)
       for (let i = 0; i < SNAPSHOT_COLUMNS.length; i++) {
         const column = SNAPSHOT_COLUMNS[i]
         if (incValues[i] !== fullValues[i]) {
