@@ -10,6 +10,57 @@ they were**.
 
 ## [Unreleased]
 
+### Fixed — 2026-08-30 — M12 review findings (implementation candidate, on `feat/m12-dashboard`)
+
+The independent adversarial review of the M12 candidate returned CHANGES_REQUIRED; every finding
+is closed. H1: a manual valuation ended by an explicit clear now STAYS cleared when an unrelated,
+later valuation arrives with a higher effective date — only an atomic set-over-set replacement
+keeps the replacement-date boundary (D-062's resolved corner), with regression tests in the DB
+suite, the independent oracle and the adversarial scenarios, including a provider-priced gap that
+proves real fallback and an unpriced gap that stays honestly missing. H2/M1: before a user's
+first snapshot exists, TTEP renders "—" instead of a fabricated "0 kr" and THP propagates NULL in
+the RPC instead of coalescing unavailable CMV to 0; a genuine zero still renders as 0.
+H3/D-070: portfolio_snapshots is explicitly recorded as a derived, rebuildable cache relative to
+CURRENTLY RETAINED canonical facts — M9.1's weekly compaction may adjust an older historical
+market-value point exactly once, frozen ledger fields never change, nothing is fabricated, the
+dashboard discloses it in one sentence, and a new cross-milestone DB test proves the whole loop
+(dense → real thinning → invalidation → drain → from-scratch-rebuild equality). Also: D-069
+records reversed-range rejection as ratified; D-071 documents MAX = up to four years of history;
+the drain worker's per-user savepoint semantics are stated precisely in comments/docs; the
+initial-backfill runbook specifies one-user-at-a-time draining; the stale privilege comment on
+`m12_recompute_pending_for_self` is corrected; D-068 gained a concrete multi-unit partial-disposal
+data proof.
+
+### Added — 2026-08-30 · M12 Dashboard (implementation candidate, awaiting review)
+
+Home is now the real investment-style portfolio dashboard. A derived `portfolio_snapshots` cache
+(one end-of-business-day state per user per date) is maintained by a database-side recompute
+engine: transactional invalidation triggers mark the earliest affected business date, and a
+bounded SKIP LOCKED worker rebuilds forward from there on a 15-minute cron cycle offset from the
+price ingest, plus a daily sweep that keeps "current" honest with zero activity. Historical
+snapshots replay the ownership timeline from canonical disposals (never projecting current
+quantity backward), resolve provider prices as-of each date with freshness measured from that
+date and FX observed on or before the observation, apply the manual-valuation interval model
+(D-062), and accumulate frozen-ledger spend/proceeds cumulatives. The central invariant — a full
+rebuild equals incremental recompute byte-for-byte over every semantic column — is a permanent
+test gate exercised over a richly corrected fixture.
+
+The headline Current Portfolio Value renders from the latest snapshot in one bounded request,
+with Total tracked economic position secondary (never labelled profit), period change across
+1D–MAX ranges (default 3M; zero bases render an undefined percentage), data-quality counts
+(priced/unpriced, automatic/manual, uncosted lots), a raw/graded/sealed value breakdown,
+monthly-spend bars reconciling GPO = CS + HS, sales figures split into realized-on-costed vs
+proceeds-from-uncosted, recent activity from canonical events only, and empty/no-history states
+that never fabricate. The chart is TradingView Lightweight Charts v5.2.1 (Apache-2.0), validated
+by spike and lazy-loaded at 62 KB gzip with its attribution implemented in full (D-066); the
+privacy eye masks the headline, change figures, chart axis/tooltips and the screen-reader
+summary together. Custom-collection scopes show correct current figures and say plainly that
+historical membership tracking does not exist (D-065).
+
+Security posture: snapshots are owner-read-only with no browser write grant of any kind; the
+recompute queue/run log are invisible to browsers; every engine routine refuses authenticated
+callers at the privilege level; admin gains no dashboard bypass.
+
 ### Added — 2026-08-29 · M11 Sealed Inventory
 
 Sealed products (booster packs/boxes, ETBs, bundles, tins, etc.) are first-class Portfolio
@@ -41,7 +92,7 @@ intent. Selling a sealed lot uses M10's sale engine completely unmodified — pr
 assumed. `scripts/deployment-check.mjs`'s Cloudflare chunk fetch changed from one unbounded
 `Promise.all` to a bounded 5-way concurrency pool with an explicit per-request timeout, closing the
 harness gap M10 hit (a local Node/undici connection-limit timeout, not a deployment defect) so the
-full automated gate runs again. Full account: `claude_outputs/output_19.txt`. Decisions:
+full automated gate runs again. Full account: `ai_outputs/Claude_outputs/output_19.txt`. Decisions:
 DECISIONS.md D-061.
 
 ### Added — 2026-08-28 · M10 Sales and History
@@ -69,7 +120,7 @@ separate sales gets the leftover øre (D-060).
 to this project's SECURITY INVOKER default: frozen cost basis, allocated amounts and realized
 result are unreachable by any direct write from the browser, not merely policed after the fact —
 `authenticated` holds no `INSERT`/`UPDATE` grant at all on `sales`/`sale_lines`/`lot_disposals`.
-Full account: `claude_outputs/output_18.txt`. Decisions: DECISIONS.md D-060.
+Full account: `ai_outputs/Claude_outputs/output_18.txt`. Decisions: DECISIONS.md D-060.
 
 ### Added — 2026-08-27 · M9.1 Pricing closeout
 
@@ -90,7 +141,7 @@ pagination edge matrix, and the real 10,000-lot Portfolio benchmark are now perm
 Two real bugs found and fixed before merge: a stale privilege-baseline/grant-audit entry for
 `get_market_movers`'s changed signature, and a `search-prices` bug where `fx_rates.rate` arrives as
 a JSON number (not decimal text) over a plain PostgREST `select` — would have made every
-`search-prices` call fail silently in production. Full account: `claude_outputs/output_16.txt`.
+`search-prices` call fail silently in production. Full account: `ai_outputs/Claude_outputs/output_16.txt`.
 
 ### Added — 2026-08-26 · M9 Pricing and snapshots
 
@@ -196,7 +247,7 @@ invariant C1, and account-deletion cascade for both new M7 tables — found miss
 filter correctness, keyset-pagination completeness; `portfolio_counts` correctness). Updated
 Playwright route-guard coverage for the renamed/new routes and the legacy-redirect behaviour.
 
-See DECISIONS.md D-040 through D-042, HANDOVER.md and `claude_outputs/output_11.txt` for full detail.
+See DECISIONS.md D-040 through D-042, HANDOVER.md and `ai_outputs/Claude_outputs/output_11.txt` for full detail.
 
 ### Fixed — 2026-08-22 · Content-Security-Policy blocked M7's card artwork in production
 
@@ -258,7 +309,7 @@ ownership triggers for the three new relationships), `tests/authorization/m6_col
 cross-tenant attacks against the RPC's caller-supplied arguments), `manual_card_definitions` folded
 into the generic owned-tables attack matrix, five new Playwright route-guard cases.
 
-See DECISIONS.md D-036 through D-039, HANDOVER.md and `claude_outputs/output_10.txt` for full detail.
+See DECISIONS.md D-036 through D-039, HANDOVER.md and `ai_outputs/Claude_outputs/output_10.txt` for full detail.
 
 ### Added — 2026-08-20 · M5 Pokémon catalog, TCGdex ingestion and search
 
@@ -369,7 +420,7 @@ no table privileges at all, and `scripts/remote-security-check.mjs` runs the sam
 against a real deployment with nothing but the publishable key. Final remote run: 33/33, with the
 escalation asserted on the stored value rather than the HTTP status.
 
-Cost: $0; no billing enabled anywhere. Detail: `claude_outputs/output_7.txt` (not committed).
+Cost: $0; no billing enabled anywhere. Detail: `ai_outputs/Claude_outputs/output_7.txt` (not committed).
 
 ### Added — 2026-08-17 · M3 database foundation, migrations and RLS
 
@@ -392,7 +443,7 @@ round-trip test, not assumed. CI gained a `db-tests` job that runs the full migr
 authorization suite against an ephemeral local Supabase stack on every push and PR — no remote
 credentials involved. Existing M1/M2 gates (64 domain tests, Playwright smoke tests, typecheck,
 lint, format, build) remain green throughout. Cost: $0; no billing enabled anywhere. Detail:
-`claude_outputs/output_6.txt` (not committed).
+`ai_outputs/Claude_outputs/output_6.txt` (not committed).
 
 ### Added — 2026-08-17 · M1 foundation and M2 financial domain core
 
@@ -404,7 +455,7 @@ float), currency metadata, a largest-remainder allocator, FX conversion, `CostBa
 FINANCIAL_MODEL.md. Worked examples E1, E3 and E7 reproduce exactly against the real domain
 functions; 64 tests pass, including property tests for the allocator (invariant F6) and
 randomised checks for F1, F3 and F5. No database, no auth, no external service yet — M1/M2 are
-deliberately infrastructure-independent. Detail: `claude_outputs/output_5.txt` (not committed).
+deliberately infrastructure-independent. Detail: `ai_outputs/Claude_outputs/output_5.txt` (not committed).
 
 ### Changed — 2026-08-17 · Cost policy: $50 USD lifetime discretionary ceiling
 

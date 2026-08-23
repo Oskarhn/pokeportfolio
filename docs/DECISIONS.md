@@ -1731,3 +1731,233 @@ with the cardinality reasoning above; §3.3 gains a short note on M11's actual (
 individually-sourced) curated seed and the no-image-upload policy for a user-added product. No
 FINANCIAL_MODEL.md change was needed — §6.3's manual-only sealed valuation rule already anticipated
 this exactly, unaffected by which table `sealed_intent` lives on.
+
+---
+
+## D-062 — M12 manual valuation history: the economic-interval reconstruction model
+
+**2026-08-30 · Accepted (implementation candidate, awaiting review)**
+
+**Context.** `manual_valuations` has been append-only since M6: `effective_from`, `created_at`,
+`superseded_at`. M12's historical snapshots need "which manual value was active on date D"
+answerable for *any* D from canonical rows alone — and the prompt flagged this schema as a
+high-risk audit item, warning not to assume `superseded_at` is the economic end date.
+
+**Audit result: the existing schema is sufficient; no migration needed.** The reconstructable
+model is:
+
+- Sort a holding's valuation rows by `(effective_from, created_at, id)` — a total, deterministic
+  order.
+- Each row economically owns `[effective_from, next row's effective_from)`.
+- The last row by that ordering owns `[effective_from, date(superseded_at))` when it has been
+  superseded **by a clear** (`clear_manual_valuation` supersedes without inserting a
+  replacement) — here `superseded_at`'s wall-clock date IS the economic end, because clearing is
+  exactly the user saying "stop valuing this manually as of now". A still-active row owns
+  `[effective_from, ∞)`.
+- Consequences: a backdated set rewrites history from its own `effective_from` forward
+  (corrections rewrite history — the same semantics voided sales have); two rows sharing an
+  `effective_from` collapse deterministically, the later-created winning from that date; and a
+  backdated correction landing before a later-effective row truncates that row's interval rather
+  than fighting it.
+
+**Alternatives rejected:** treating `superseded_at` as every row's end date (breaks under any
+backdating — the corrected value would never apply retroactively, defeating `effective_from`);
+a wall-clock event replay (cannot answer "what does the corrected timeline say", which is what
+full-rebuild-equals-incremental demands). Both fail the byte-equality gate or fabricate.
+
+**Consequences.** Implemented once, in `rebuild_portfolio_snapshots`
+(20260830120010_m12_rebuild_engine.sql); tested across set/update/clear/backdated/
+multi-correction sequences in tests/db/m12_dashboard_snapshots.test.ts. FINANCIAL_MODEL.md §6
+gains the matching historical-resolution wording.
+
+**Resolved after independent review — the clear-then-later-insertion corner.** The original
+statement above left one sequence undefined: a row cleared on day X, then — as a genuinely
+separate later transaction — a NEW valuation inserted with a higher `effective_from`. Reading
+"each row owns up to the next row's effective_from" there resurrects the explicitly cleared
+value across the gap days, silently undoing the user's clear. The schema already distinguishes
+the two ways a row can end, because `now()` is the transaction timestamp:
+
+- ATOMIC REPLACEMENT (`set_manual_valuation` supersedes and inserts in one transaction): the old
+  row's `superseded_at` equals some row's `created_at`. The replacement's `effective_from`
+  defines the economic boundary, exactly as originally documented.
+- INDEPENDENT CLEAR (`clear_manual_valuation`, or any supersession whose timestamp no created_at
+  shares): the row ends at its OWN clear date; the gap before the later insertion resolves
+  through the normal automatic/missing path.
+
+The engine implements this via a pairing test ("does ANY row share this supersession timestamp")
+rather than comparing against the sort-next row — a still-later backdated correction can sort
+between a row and its true successor, and misreading that as a clear would create overlapping
+(double-counted) intervals. Regression tests cover both readings' distinguishing sequences in
+tests/db/m12_dashboard_snapshots.test.ts, the independent oracle
+(test/m12-independent-adversarial), and scenario S/S2 of the adversarial semantics suite.
+
+## D-063 — M12 snapshot cache shape: the sketch survives audit; coverage flags added
+
+**2026-08-30 · Accepted (implementation candidate, awaiting review)**
+
+DATA_MODEL.md §6's original column sketch survived M8–M11 essentially intact — audited per the
+prompt's instruction to distrust old sketches, unlike M10/M11's finds. The sketch's columns are
+all present unchanged. The one deliberate semantic addition: readers get coverage honesty via
+`unvalued_lot_count` vs `open_lot_count` (exposed as `has_coverage` by `get_portfolio_history`).
+A day whose open lots are entirely unresolvable stores CMV = 0 — the true sum over an empty
+valued set — with both counts equal, and the UI renders that as a gap / "No price history yet",
+never as a chart point implying worthlessness (prompt §33). Absence of ROWS entirely (before the
+user's first tracked date) remains how "no history" is expressed. `NOT NULL DEFAULT 0` on these
+aggregate columns does not violate M1: they are sums over well-defined sets, not facts about
+single items; M1's NULL-means-unknown rule governs facts, and no fact column is involved.
+
+## D-064 — M12 recompute architecture: database-side engine, trigger invalidation with LEAST coalescing, SKIP LOCKED drain on a 15-minute cron offset from price ingest
+
+**2026-08-30 · Accepted (implementation candidate, awaiting review)**
+
+The engine lives in Postgres (`rebuild_portfolio_snapshots`, `drain_portfolio_recompute_queue`)
+because an external worker adds a moving part, a secret surface and a cost vector for zero
+benefit at ≤10 users. Invalidation is trigger-driven with explicit boundaries per business event
+(acquisitions/purchases/sales/disposals/manual valuations from their own or least(old,new)
+dates; shared price/FX/thinning facts fan out to affected owners statement-level via transition
+tables), coalescing through LEAST so repeated edits can never move a dirty boundary later and
+silently skip older history (prompt §15/§35). The worker is one pg_cron entry every 15 minutes
+at :07/:22/:37/:52 — deliberately offset from M9's */15 ingest ticks so fresh observations are
+consumed on the next tick rather than racing them — plus a daily sweep guaranteeing current-date
+snapshots even with zero activity and promoting stranded future-dated work once due. Per-user
+failure isolation uses PL/pgSQL subtransactions (savepoints inside ONE outer transaction, not
+per-user commits): a failing user's partial writes roll back to its savepoint, its queue row
+survives, siblings continue — while everything successful in the batch remains part of the outer
+transaction until the function returns (an outer failure rolls the whole batch back together;
+only recompute work is repeated next tick, no corruption either way). SECURITY DEFINER on the
+engine functions is the minimal departure from the INVOKER default that shared-market-data
+invalidation and the cron worker require; browsers hold zero EXECUTE on any of them (grant-audit
++ the authorization suite enforce both).
+
+## D-065 — M12 custom collections have no historical chart; scope shows current truth only
+
+**2026-08-30 · Accepted (implementation candidate, awaiting review)**
+
+`custom_collection_members` records current membership, never membership events. Projecting
+today's membership backwards under a "Portfolio history" label would fabricate data. Of the
+prompt's three options, A is chosen: Main Portfolio gets the canonical historical chart; a
+custom-collection scope shows correct CURRENT value/counts plus the explicit sentence
+"Historical collection membership is not tracked yet — this chart follows your Main Portfolio
+only." Option B (historical value of the current member set, labelled) was rejected because a
+label never survives contact with a screenshot; Option C (a membership event table) was rejected
+as unjustified scope ahead of any real product need. `get_portfolio_history` is deliberately
+unscoped-by-collection; revisiting C requires a product decision, not an implementation one.
+
+## D-066 — M12 chart library: TradingView Lightweight Charts v5.2.1 adopted; attribution implemented in full
+
+**2026-08-30 · Accepted (implementation candidate, awaiting review)**
+
+Reverified against current official sources before installing (npm registry, the v5.2 docs, the
+repository LICENSE/NOTICE): current release 5.2.1 (published 2026-08-12), Apache-2.0 (plus BSD-0
+tslib portions), client-side only, ES2020 target, TypeScript types included — and, contrary to
+the pre-prompt mentor note, the package declares NO `engines` constraint at this version, so the
+reported "Node >=22.3" requirement does not exist in what we ship against. Bundle measured from
+our real build: 194 KB raw / 62.3 KB gzip in its own lazy chunk, loaded only when the dashboard
+actually has ≥2 covered points to draw; the entry chunk grows only ~15 KB gzip for the dashboard
+code itself (~320→373 KB raw / ~98→113 KB gzip). The spike validated responsive resize,
+touch/crosshair behaviour, whitespace gap items (the honest-gap mechanism), theme switching
+without reload (applyOptions driven by a MutationObserver on `data-theme`), unmount cleanup, and
+route-level splitting via dynamic import().
+
+Attribution compliance per the license's own terms: the NOTICE text ("TradingView Lightweight
+Charts, Copyright (c) 2022 TradingView, Inc.") lives at the top of PortfolioValueChart.tsx; the
+required user-visible link to https://www.tradingview.com/ renders beneath the chart as muted
+10px text; and the library's built-in attribution logo (`layout.attributionLogo`, default-on)
+stays enabled — the official docs name it as independently satisfying the link requirement, so
+the requirement is met twice rather than hidden either way. Fallback visx was not needed and was
+not installed (never two chart solutions).
+
+**Re-verified against live official sources (2026-08-30, review follow-up):** the npm registry
+manifest for lightweight-charts@5.2.1 declares `license: "Apache-2.0"` and carries NO `engines`
+field (confirming again that no Node-version constraint ships at this version); the LICENSE file
+at the v5.2.1 tag is the Apache License 2.0 text ("Copyright 2023 TradingView, Inc." in its
+boilerplate appendix); the NOTICE file at the same tag now reads "TradingView Lightweight
+Charts™ Copyright (c) 2025 TradingView, Inc. https://www.tradingview.com/" — the year moved from
+2022 to 2025 upstream, and PortfolioValueChart.tsx's quoted attribution was updated to match the
+current published text. No licensing incompatibility exists; the library stays.
+
+## D-067 — M12 display-currency history converts each point with its own date's FX
+
+**2026-08-30 · Accepted (implementation candidate, awaiting review)**
+
+A NOK snapshot on date D shown in EUR/USD converts with the Norges Bank observation on or before
+D — the finance-consistent reading, which legitimately includes FX movement in display-currency
+history. Storage stays NOK-only (no snapshot duplication); frozen purchase/sale FX is untouched
+(F11); a missing rate renders NOK-with-a-note rather than a fabricated conversion.
+`get_portfolio_history` performs the exact numeric division server-side and returns display
+minor units alongside the unchanged NOK figure.
+
+## D-068 — M12 historical DCB: adjustments enter cost basis from their occurred_on, floor-allocated per unit
+
+**2026-08-30 · Accepted (implementation candidate, awaiting review)**
+
+Snapshot DCB(D) sums over open-at-D known lots:
+`qty_open(D) × unit_cost_basis_nok_minor + floor(adj_total(occurred_on ≤ D) × qty_open(D) /
+lot.quantity)`. Exact integers, monotone, and a grading adjustment can never inflate a past
+snapshot (prompt §58). The flooring may understate one lot's adjustment share by up to
+(quantity − 1) øre mid-life; the D-060 frozen-disposal machinery remains the exactness authority
+for realized results, which snapshots do not recompute. `lot_cost_adjustments` currently holds
+zero production rows (SELECT-only until M17), so the rule is test-covered rather than
+data-proven today.
+
+## D-069 — Reversed rebuild ranges are rejected, not silently reordered
+
+**2026-08-30 · Accepted (ratified by independent review)**
+
+`rebuild_portfolio_snapshots(user, p_from, p_through)` raises when `p_through < p_from` or either
+date is NULL, rather than normalizing (swapping or clamping) the arguments. Every legitimate
+caller passes a non-reversed range: the drain always passes `dirty_from <= current_date`, the
+daily sweep passes `current_date` for both bounds, and manual operational invocations are
+explicit acts. The only way to produce a reversed range is a genuine swapped-argument mistake at
+an operational console — and launching an unrequested, potentially expensive multi-year rebuild
+with no error signal is strictly worse than failing loudly. Pure input-validation tightening on
+a service-role-only surface; no working path can break. Covered directly in
+tests/db/m12_dashboard_snapshots.test.ts ("M12 input validation") and scenario P of the
+independent adversarial queue suite.
+
+## D-070 — portfolio_snapshots stays a derived, rebuildable cache; historical market value may adjust once where M9.1 compaction removes dense observations
+
+**2026-08-30 · Accepted**
+
+M9.1's retention policy (D-058) keeps daily provider observations for 60 days and thins older
+history to one observation per ISO week per (variant, provider). When those dense observations
+age past the boundary and are compacted, a historical day's market value may legitimately derive
+from a DIFFERENT retained observation than the one that was available when its snapshot row was
+first computed and shown — so an older historical CMV point MAY change once, permanently, as
+compaction reaches it. Accepted deliberately:
+
+1. `portfolio_snapshots` remains disposable and reconstructable from CURRENTLY RETAINED canonical
+   facts. "Rebuildable" therefore never means byte-equality against facts that have since been
+   compacted away — semantic equality after a rebuild is relative to the canonical source set
+   available at that time.
+2. Retained provider observations remain real market facts; nothing is fabricated, interpolated,
+   or invented. Older history simply uses the weekly-resolution observations D-058 already keeps.
+3. Financial ledger history remains FROZEN: purchases, sales, frozen FX, frozen cost basis,
+   spend and proceeds never change through compaction. Compaction touches only market-value
+   derivation from price observations.
+4. Older historical market valuation is an estimate derived from retained market observations —
+   not an accounting ledger — and is disclosed as such in the dashboard UI ("Older market-value
+   history uses weekly retained market observations").
+5. Freezing previously materialized snapshots would silently convert a declared cache into
+   irreplaceable canonical data, change backup semantics for M13, and contradict the cache-not-
+   ledger architecture (D-063/D-064). The alternative — exempting dates with existing snapshot
+   rows from thinning-triggered invalidation — was rejected for exactly that reason.
+
+The full loop is proven in the database by tests/db/m12_retention_rebuild.test.ts: dense history
+→ snapshot built → real `thin_price_snapshots()` runs → invalidation fires from the oldest
+deleted observation → drain recomputes → the adjusted value derives from the retained weekly
+facts with no fabricated zero/missing transition → every frozen ledger column is byte-identical
+before/after → deleting the cache and rebuilding from scratch reproduces the post-compaction
+series exactly.
+
+## D-071 — MAX means up to four years of tracked history
+
+**2026-08-30 · Accepted**
+
+The MAX chart range resolves to the last 1460 days (4 years) of stored snapshots, not
+mathematically unlimited lifetime (`resolveRangeWindow`, src/domain/dashboard.ts). For any user
+whose tracked history is shorter than 4 years — every real user for years to come — MAX shows
+ALL available history, so nothing visible changes until someone crosses the cap. Recorded as a
+decision because it currently lives only as an inline constant: "MAX" must not silently promise
+unbounded lifetime history, and revisiting the constant (e.g. raising it once snapshots' storage
+cost is re-measured) should be conscious, not accidental.

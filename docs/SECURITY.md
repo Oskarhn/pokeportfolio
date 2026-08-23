@@ -256,7 +256,42 @@ convention is that applied migrations are historical record, not living document
   already-elevated DEFINER transaction, and no comment should claim otherwise going forward.
 
 No test failed, no exploit exists today, and no SQL changed because of this — see
-`claude_outputs/output_19.txt`'s M10 SECURITY PREFLIGHT section for the full audit trail.
+`ai_outputs/Claude_outputs/output_19.txt`'s M10 SECURITY PREFLIGHT section for the full audit trail.
+
+### 3.3.1 M12 derived cache and engine (implementation candidate)
+
+The snapshot layer adds one new class of surface — a service-owned write path with no browser
+counterpart — and holds it to the same three-statement discipline (§5.9):
+
+- **`portfolio_snapshots` is owner-read-only.** RLS policy `portfolio_snapshots_select_own`
+  scopes rows to `auth.uid()`; there is no INSERT/UPDATE/DELETE policy and no browser write
+  grant at all. The sole writer is `rebuild_portfolio_snapshots` under `service_role`, so a
+  browser cannot forge, inflate or erase its own history — asserted at the privilege level,
+  not merely as an RLS row rejection (`tests/authorization/m12_dashboard.test.ts`).
+- **Queue and run log are invisible.** `portfolio_recompute_queue`/`portfolio_recompute_runs`
+  follow the `invitation_claims` shape: RLS enabled, zero policies, zero grants to
+  anon/authenticated. The dashboard's "Updating…" signal comes from
+  `m12_recompute_pending_for_self()`, a DEFINER function answering exactly one boolean about
+  exactly `auth.uid()`. It holds an explicit `authenticated` EXECUTE grant — required, because
+  `get_dashboard_summary` calls it as a nested function call and PostgreSQL checks EXECUTE on
+  such references — and is safe by construction: no user-id parameter, hardcoded `auth.uid()`,
+  one boolean about the caller's own queue row. It cannot be aimed at another user regardless of
+  who calls it (`tests/authorization/m12_dashboard.test.ts`).
+- **Engine routines are service/internal-only.** `rebuild_portfolio_snapshots`,
+  `drain_portfolio_recompute_queue`, `enqueue_portfolio_daily_maintenance` and
+  `enqueue_portfolio_recompute` are SECURITY DEFINER (the minimal departure that shared
+  market-data triggers and the pg_cron worker require), each with fixed empty `search_path`,
+  no dynamic SQL, and every statement scoped to an explicit target user. EXECUTE is revoked
+  from PUBLIC/anon/authenticated; only `service_role` holds it on the three worker-facing
+  functions. A browser calling any of them — including `rebuild_portfolio_snapshots` with
+  another user's id, the exact attack the design exists to forbid — fails at the grant level.
+- **Invalidation triggers never leak or mutate.** Shared-market-data triggers (price writes,
+  retention thinning, FX) fan out queue rows statement-level via transition tables, so a batch
+  enqueues once, not per row; they write only queue metadata — never purchases, sales or cost
+  basis (prompt §95). Trigger functions are revoked from named roles too; PostgreSQL does not
+  require EXECUTE for implicit trigger firing (the same production property that lets
+  `supabase_auth_admin` fire `handle_new_user`), so user-facing writes are unaffected while a
+  direct `selects.enqueue_portfolio_recompute(...)` from a session is impossible.
 
 ### 3.3 Attack surface the tests must cover
 
@@ -569,7 +604,7 @@ wrinkle: the *caller* is `pg_cron` via `pg_net`, running inside the database its
 script with its own shell environment.** A scheduled SQL command cannot read an Edge Function's
 environment variable, so the secret is additionally stored in Supabase Vault
 (`vault.create_secret`) and read back at call time via `vault.decrypted_secrets` — never as a
-literal in migration SQL, never logged, never printed into a Claude session or `claude_outputs/`.
+literal in migration SQL, never logged, never printed into a Claude session or `ai_outputs/`.
 Setting both copies (the Vault secret and the matching Edge Function secret) is a one-time,
 deliberate act against the real project, the same trust level as setting `CATALOG_SYNC_SECRET` —
 this session generated the value itself via `supabase secrets set`/`vault.create_secret` and never

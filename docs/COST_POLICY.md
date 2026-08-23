@@ -255,6 +255,17 @@ everything else (holdings, lots, purchases, sales, portfolio snapshots, indexes,
 growth). This is not a bounded-forever claim — the weekly tail grows slowly but indefinitely; the
 existing "reconsider at ~350 MB" trigger below is the honest long-run answer, not a hidden gap.
 
+#### `portfolio_snapshots` capacity (M12)
+
+One row per user per tracked day: at ≤10 users and daily resolution the table is small by
+construction — roughly a dozen columns of bigint/date/timestamptz plus one composite-PK index,
+so low hundreds of bytes/row and well under ~2 MB per user per year even before any retention.
+The M12 benchmark step (`scripts/portfolio-snapshots-benchmark.mjs`, permanent in `db-tests`)
+measures real bytes/row and projects 10 users × 365 days on every push instead of trusting that
+arithmetic; if a future change (e.g. per-collection snapshots) would multiply row counts, that
+measurement is what catches it. No new paid dependency was introduced by M12: TradingView
+Lightweight Charts is Apache-2.0 with no cost of any kind (D-066).
+
 ### Supabase Auth email — **the one real cost risk**
 
 | | |

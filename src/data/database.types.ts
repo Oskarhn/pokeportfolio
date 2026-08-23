@@ -920,6 +920,90 @@ export type Database = {
           },
         ]
       }
+      portfolio_recompute_queue: {
+        Row: {
+          dirty_from: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          dirty_from: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          dirty_from?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      portfolio_recompute_runs: {
+        Row: {
+          error: string | null
+          finished_at: string | null
+          id: number
+          snapshots_written: number
+          started_at: string
+          users_processed: number
+        }
+        Insert: {
+          error?: string | null
+          finished_at?: string | null
+          id?: number
+          snapshots_written?: number
+          started_at?: string
+          users_processed?: number
+        }
+        Update: {
+          error?: string | null
+          finished_at?: string | null
+          id?: number
+          snapshots_written?: number
+          started_at?: string
+          users_processed?: number
+        }
+        Relationships: []
+      }
+      portfolio_snapshots: {
+        Row: {
+          attributed_value_nok_minor: number
+          collectible_spend_to_date_nok_minor: number
+          computed_at: string
+          cost_basis_nok_minor: number
+          market_value_nok_minor: number
+          open_lot_count: number
+          sales_proceeds_to_date_nok_minor: number
+          snapshot_date: string
+          unvalued_lot_count: number
+          user_id: string
+        }
+        Insert: {
+          attributed_value_nok_minor?: number
+          collectible_spend_to_date_nok_minor?: number
+          computed_at?: string
+          cost_basis_nok_minor?: number
+          market_value_nok_minor?: number
+          open_lot_count?: number
+          sales_proceeds_to_date_nok_minor?: number
+          snapshot_date: string
+          unvalued_lot_count?: number
+          user_id: string
+        }
+        Update: {
+          attributed_value_nok_minor?: number
+          collectible_spend_to_date_nok_minor?: number
+          computed_at?: string
+          cost_basis_nok_minor?: number
+          market_value_nok_minor?: number
+          open_lot_count?: number
+          sales_proceeds_to_date_nok_minor?: number
+          snapshot_date?: string
+          unvalued_lot_count?: number
+          user_id?: string
+        }
+        Relationships: []
+      }
       price_snapshots: {
         Row: {
           card_variant_id: string
@@ -1810,6 +1894,46 @@ export type Database = {
           value_nok_minor: string
         }[]
       }
+      get_dashboard_summary: {
+        Args: never
+        Returns: {
+          attributed_value_nok_minor: string | null
+          auto_priced_holding_count: string
+          collectible_spend_to_date_nok_minor: string | null
+          cost_basis_nok_minor: string | null
+          first_tracked_date: string | null
+          graded_holding_count: string
+          graded_value_nok_minor: string
+          gpo_nok_minor: string
+          hs_nok_minor: string
+          latest_snapshot_date: string | null
+          manual_entry_count: string
+          manual_valued_holding_count: string
+          market_value_has_coverage: boolean | null
+          market_value_nok_minor: string | null
+          ncco_nok_minor: string
+          nsp_nok_minor: string
+          pending_recompute: boolean
+          physical_card_count: string
+          priced_holding_count: string
+          pud_nok_minor: string
+          raw_value_nok_minor: string
+          rrc_nok_minor: string
+          sealed_holding_count: string
+          sealed_unit_count: string
+          sealed_value_nok_minor: string
+          sales_proceeds_to_date_nok_minor: string | null
+          snapshot_open_lot_count: string | null
+          snapshot_unvalued_lot_count: string | null
+          thco_nok_minor: string
+          thp_nok_minor: string | null
+          ttep_nok_minor: string | null
+          unique_holding_count: string
+          uncosted_open_lot_count: string
+          unrealized_result_nok_minor: string | null
+          unpriced_holding_count: string
+        }[]
+      }
       get_holding_value_provenance: {
         Args: { p_holding_id: string }
         Returns: {
@@ -1843,6 +1967,36 @@ export type Database = {
           holding_impact_nok_minor: string
           previous_value_nok_minor: string
           quantity: number
+        }[]
+      }
+      get_monthly_spend: {
+        Args: { p_months?: number }
+        Returns: {
+          collectible_nok_minor: string
+          hobby_nok_minor: string
+          month: string
+          total_nok_minor: string
+        }[]
+      }
+      get_portfolio_history: {
+        Args: { p_display_currency?: string; p_from?: string; p_to?: string }
+        Returns: {
+          display_value_minor: string | null
+          has_coverage: boolean
+          market_value_nok_minor: string | null
+          open_lot_count: string | null
+          snapshot_date: string
+          unvalued_lot_count: string | null
+        }[]
+      }
+      get_recent_activity: {
+        Args: { p_limit?: number }
+        Returns: {
+          activity_type: string
+          amount_nok_minor: string | null
+          occurred_on: string | null
+          primary_id: string
+          secondary_id: string | null
         }[]
       }
       grader_to_text: {

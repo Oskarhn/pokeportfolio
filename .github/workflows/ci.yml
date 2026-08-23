@@ -177,6 +177,24 @@ jobs:
       - name: Database and authorization tests
         run: pnpm test:db
 
+      # The independently written M12 adversarial contract package (test/m12-independent-adversarial/,
+      # authored implementation-blind on test/m12-independent-adversarial) judged against this same
+      # ephemeral stack. Two steps, both mandatory: the standalone strict typecheck of the package,
+      # then every DB-gated suite for real — the differential oracle users, queue mechanics,
+      # security and honesty suites all execute here, never a compile-only gate.
+      - name: Independent M12 adversarial suite (typecheck)
+        run: pnpm exec tsc -p test/m12-independent-adversarial/tsconfig.json --noEmit
+
+      - name: Independent M12 adversarial suite (DB-gated execution)
+        run: pnpm test:m12-adversarial
+
+      # Separate validation step (audit, not microbenchmark theatre): catastrophic-only thresholds
+      # per TESTING.md/D-059 policy. Thresholds are never weakened to obtain green.
+      - name: Independent M12 adversarial scale audit
+        run: pnpm test:m12-adversarial perf
+        env:
+          M12_PERF_AUDIT: '1'
+
       # M9.1 re-run of the M7 10,000-lot Portfolio gate (TESTING.md §7, D-054): list_portfolio grew
       # a real resolver join in M9, and no session between M9 and M9.1 re-measured it against real
       # data. Safe here because it needs only this ephemeral stack's local well-known service-role
@@ -187,6 +205,15 @@ jobs:
       # size and produce a misleading number (found the hard way — see PROJECT_JOURNAL.md).
       - name: Portfolio 10k-lot performance benchmark
         run: node scripts/portfolio-perf-benchmark.mjs
+
+      # M12 snapshot-engine gate (TESTING.md §7, prompt §98-§102): rebuild timings at realistic
+      # scale (30/90/365-day ranges over ~10k lots with daily price history), one production-
+      # shaped daily incremental drain, the four signed-in Home read RPCs, and real on-disk
+      # storage of portfolio_snapshots — measured post-ANALYZE like the gate above, against this
+      # same disposable ephemeral database. Same single-generous-threshold policy (D-059):
+      # background rebuilds get a wide budget; Home reads fail past 1.5s.
+      - name: Portfolio snapshots performance & storage benchmark
+        run: node scripts/portfolio-snapshots-benchmark.mjs
 
       # M9.1 capacity gate (COST_POLICY.md, DATA_MODEL.md §4.2): measures real Postgres storage for
       # price_snapshots against a representative synthetic dataset in this disposable ephemeral

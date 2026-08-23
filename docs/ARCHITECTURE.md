@@ -223,6 +223,26 @@ Detail's "what does this cost right now" for catalog cards the user has not nece
 it never persists to `price_snapshots`; only the scheduled `ingest-prices` job produces history
 (DATA_MODEL.md §4.2).
 
+**M12 adds the snapshot-recompute pair** (`20260830120040_m12_cron.sql`, D-064), plain SQL
+commands against same-database functions — no HTTP, no secret:
+
+| Job | Schedule | Work |
+|---|---|---|
+| `m12-recompute-snapshots` | every 15 min at :07/:22/:37/:52 | `drain_portfolio_recompute_queue(20)` — bounded, SKIP LOCKED, per-user failure isolation |
+| `m12-daily-snapshot-sweep` | 05:11 UTC daily | `enqueue_portfolio_daily_maintenance()` — current-date snapshot guarantee for every user with data |
+
+The :07/:22/:37/:52 offsets deliberately trail M9's */15 ingest ticks: a freshly-ingested price
+batch lands in `price_snapshots`, its trigger enqueues affected owners from that observation's
+date, and the next recompute tick consumes it. The daily sweep is what keeps "current" honest on
+a quiet weekend when neither transactions nor prices move (prompt §50). Both entries are part of
+the M12 migration set and therefore reach a project only through `supabase db push` — never
+applied by anything automatic.
+
+The dashboard read path is four bounded SECURITY INVOKER RPCs
+(`20260830120030_m12_dashboard_reads.sql`) served from the cache plus small live aggregates;
+Home never recomputes portfolio history on page load (UX_FLOWS.md F10). The chart library is
+lazy-loaded in its own chunk and only mounts once history has ≥2 covered points (D-066).
+
 Legitimate daily activity keeps the Supabase project from idling. This is a side effect of work
 the app genuinely needs, not a heartbeat contrived to game the free tier, and the app must still
 behave sanely against a paused project during development.
@@ -317,8 +337,13 @@ charts. Category breakdowns and sparklines are plain SVG/CSS — no second chart
 
 Recharts was rejected: SVG-per-point performance degrades on multi-year daily series, and its
 visual defaults are the exact generic dashboard aesthetic to avoid. ECharts was rejected on
-bundle size for two chart types. A spike during the dashboard milestone validates
-`lightweight-charts` before it is locked; the fallback is `visx`.
+bundle size for two chart types. **The M12 spike validated `lightweight-charts` v5.2.1 and it is
+now locked in (D-066)**: Apache-2.0 with its attribution implemented (NOTICE + visible link +
+built-in logo), 62 KB gzip in a lazy chunk that loads only once history has ≥2 covered points,
+whitespace gap items for honest missing-coverage rendering, theme re-application without reload,
+and canvas performance comfortably above this product's scale. The `visx` fallback was never
+needed and remains uninstalled. Card Detail's small M9 SVG price chart stays as-is — a full
+chart library there would be weight without benefit.
 
 ---
 

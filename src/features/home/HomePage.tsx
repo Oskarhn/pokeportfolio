@@ -1,60 +1,74 @@
-import { useState } from 'react'
-import { Link } from '@tanstack/react-router'
+import { useMemo, useState } from 'react'
+import { Link, useNavigate } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import {
-  getPortfolioCounts,
-  listPortfolio,
-  portfolioDisplayName,
-  portfolioSubtitle,
-} from '../../data/portfolio'
+import { listPortfolio, getPortfolioCounts } from '../../data/portfolio'
 import { getCollectionMemberCount } from '../../data/customCollections'
 import { getMyProfile, updateMyProfile } from '../../data/profile'
-import { getSpendingSummary } from '../../data/purchases'
-import { getSalesSummary } from '../../data/sales'
-import { getMarketMovers } from '../../data/pricing'
+import {
+  getDashboardSummary,
+  getMonthlySpend,
+  getPortfolioHistory,
+  getRecentActivity,
+} from '../../data/dashboard'
 import { ScopeSelector } from '../../ui/ScopeSelector'
 import { CurrencySelector } from '../../ui/CurrencySelector'
 import { MoneyDisplay, ValuePrivacyToggle } from '../../ui/MoneyDisplay'
 import { formatNokMinor } from '../../ui/money-format'
-import { CardImage } from '../catalog/CardImage'
-import { ChartIcon, TagIcon } from '../../ui/icons'
-
-const PERIODS = ['1D', '1W', '1M', '3M', '6M', '1Y', 'MAX'] as const
+import {
+  DASHBOARD_RANGES,
+  accessibleHistorySummary,
+  computePeriodChange,
+  filterHistoryWindow,
+  resolveRangeWindow,
+  ttepDisplayState,
+  toChartSeries,
+  type ChartSeriesPoint,
+  type DashboardRange,
+  type HistoryPoint,
+  type PeriodChange,
+} from '../../domain/dashboard'
+import { PortfolioValueChart } from './PortfolioValueChart'
+import {
+  BreakdownRow,
+  DataQualityRow,
+  MarketMoversSection,
+  MonthlySpending,
+  MostValuableCards,
+  RecentActivity,
+  StatTile,
+  SummaryLine,
+} from './home-sections'
 
 /**
- * Home: the future investment-style portfolio dashboard (M7.1 prompt §15-20, owner feedback pass
- * — supersedes M7's plain stat-tile Home). Structure is built for the real thing (a scope
- * selector, a headline value with currency and privacy controls, a value-over-time chart, the
- * four most valuable owned cards) but every figure that depends on M9 (raw pricing) or M12
- * (portfolio snapshots/chart) is an honest, polished "not available yet" — never a sample chart,
- * never a fabricated total. No page-title heading: the active bottom-nav tab already says where
- * the user is (M7.1 prompt §13/§67).
+ * Home: the investment-style portfolio dashboard (M12). The primary number is Current
+ * Portfolio Value (D-023); Total tracked economic position (TTEP) sits nearby as the honest
+ * secondary figure — never labelled "profit" (FINANCIAL_MODEL.md §9/§10).
+ *
+ * Headline figures come from the LATEST SNAPSHOT via one bounded summary request (UX_FLOWS.md
+ * F10: no per-card computation on page load). While a recompute is queued after the user's own
+ * mutation, an explicit "Updating…" badge says so instead of presenting stale cache as live
+ * truth (prompt §67).
+ *
+ * Custom-collection scope shows correct current figures but no historical chart: membership
+ * history was never recorded, and projecting current membership backwards would fabricate
+ * history (DECISIONS.md D-065, prompt §45/§89).
  */
+
+function todayIso(): string {
+  return new Date().toISOString().slice(0, 10)
+}
+
 export function HomePage() {
-  const [scopeId, setScopeId] = useState<string | null>(null)
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
 
-  const profile = useQuery({ queryKey: ['my-profile'], queryFn: getMyProfile })
-  const counts = useQuery({
-    queryKey: ['portfolio-counts', scopeId],
-    queryFn: () => getPortfolioCounts(scopeId ?? undefined),
-  })
-  const scopeCount = useQuery({
-    queryKey: ['collection-member-count', scopeId],
-    queryFn: () => getCollectionMemberCount(scopeId as string),
-    enabled: scopeId !== null,
-  })
-  const topCards = useQuery({
-    queryKey: ['portfolio-top-value', scopeId],
-    queryFn: () =>
-      listPortfolio({
-        sort: 'value_desc',
-        limit: 4,
-        filters: scopeId ? { customCollectionId: scopeId } : undefined,
-      }),
-  })
+  const [range, setRangeState] = useState<DashboardRange>('3M') // default 3M (prompt §70)
+  const [scopeId, setScopeId] = useState<string | null>(null)
+  const scoped = scopeId !== null
 
+  const profile = useQuery({ queryKey: ['my-profile'], queryFn: getMyProfile })
   const hideValues = profile.data?.hideValues ?? false
+
   const toggleHideValues = useMutation({
     mutationFn: (next: boolean) => updateMyProfile({ hideValues: next }),
     onSuccess: async () => {
@@ -68,19 +82,83 @@ export function HomePage() {
     },
   })
 
-  const valuedTopCards = (topCards.data?.results ?? []).filter(
-    (tile) => tile.unitValueMinor !== null,
+  const summary = useQuery({ queryKey: ['dashboard-summary'], queryFn: getDashboardSummary })
+  const displayCurrency = profile.data?.displayCurrency ?? 'NOK'
+
+  // The full stored series once; range selection filters client-side in domain code, so
+  // flipping ranges never refetches.
+  const history = useQuery({
+    queryKey: ['portfolio-history', displayCurrency],
+    queryFn: () =>
+      getPortfolioHistory({
+        displayCurrency:
+          displayCurrency === 'EUR' || displayCurrency === 'USD' ? displayCurrency : 'NOK',
+      }),
+    enabled: !scoped,
+    staleTime: 30_000,
+  })
+
+  const monthly = useQuery({
+    queryKey: ['monthly-spend', 12],
+    queryFn: () => getMonthlySpend(12),
+    enabled: !scoped,
+  })
+  const activity = useQuery({
+    queryKey: ['recent-activity', 8],
+    queryFn: () => getRecentActivity(8),
+    enabled: !scoped,
+  })
+
+  const scopeCount = useQuery({
+    queryKey: ['collection-member-count', scopeId],
+    queryFn: () => getCollectionMemberCount(scopeId as string),
+    enabled: scoped,
+  })
+  const topCards = useQuery({
+    queryKey: ['portfolio-top-value', scopeId],
+    queryFn: () =>
+      listPortfolio({
+        sort: 'value_desc',
+        limit: 4,
+        filters: scoped ? { customCollectionId: scopeId } : undefined,
+      }),
+  })
+
+  const setRange = (next: DashboardRange) => {
+    setRangeState(next)
+    void navigate({ to: '/', search: { range: next }, replace: true })
+  }
+
+  const allPoints: HistoryPoint[] = useMemo(
+    () =>
+      (history.data ?? []).map((p) => ({
+        snapshotDate: p.snapshotDate,
+        marketValueMinor: p.marketValueMinor,
+        hasCoverage: p.hasCoverage,
+      })),
+    [history.data],
   )
 
-  const spending = useQuery({ queryKey: ['spending-summary'], queryFn: getSpendingSummary })
-  const salesSummary = useQuery({ queryKey: ['sales-summary'], queryFn: getSalesSummary })
+  const windowPoints = useMemo(() => {
+    if (allPoints.length === 0) return []
+    const firstTracked = summary.data?.firstTrackedDate ?? allPoints[0]?.snapshotDate ?? null
+    const win = resolveRangeWindow(range, firstTracked, todayIso())
+    return filterHistoryWindow(allPoints, win.from, win.to)
+  }, [allPoints, range, summary.data?.firstTrackedDate])
 
-  // Market Movers (prompt §54-55/§94): real price movement of owned, priced holdings over the
-  // last 7 days. Never a global catalog ranking, never a sale/realized-result figure.
-  const movers = useQuery({
-    queryKey: ['market-movers'],
-    queryFn: () => getMarketMovers(7, 5),
-  })
+  const coveredCount = windowPoints.filter(
+    (p) => p.hasCoverage && p.marketValueMinor !== null,
+  ).length
+  const chartReady = coveredCount >= 2
+  const series: ChartSeriesPoint[] = useMemo(() => toChartSeries(windowPoints), [windowPoints])
+  const change: PeriodChange = useMemo(
+    () => computePeriodChange(windowPoints, range),
+    [windowPoints, range],
+  )
+
+  const s = summary.data
+  const emptyAccount =
+    s !== undefined && s.uniqueHoldingCount === 0 && s.gpoMinor === 0n && s.pudMinor === 0n
 
   return (
     <div className="mx-auto w-full max-w-2xl space-y-6 py-2">
@@ -88,204 +166,263 @@ export function HomePage() {
         <span className="text-lg font-semibold tracking-tight text-slate-100">PokePortfolio</span>
       </div>
 
+      {/* ── Headline ─────────────────────────────────────────────────────────────────────── */}
       <section className="space-y-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
         <div className="flex items-center justify-between">
           <ScopeSelector value={scopeId} onChange={setScopeId} />
-          <CurrencySelector
-            value={profile.data?.displayCurrency ?? 'NOK'}
-            onChange={(currency) => {
-              setCurrency.mutate(currency)
-            }}
-          />
+          <div className="flex items-center gap-1">
+            <CurrencySelector
+              value={profile.data?.displayCurrency ?? 'NOK'}
+              onChange={(currency) => {
+                setCurrency.mutate(currency)
+              }}
+            />
+            <ValuePrivacyToggle
+              hidden={hideValues}
+              onToggle={() => {
+                toggleHideValues.mutate(!hideValues)
+              }}
+            />
+          </div>
         </div>
 
-        <div className="flex items-end justify-between">
-          <MoneyDisplay
-            state={counts.data && counts.data.pricedHoldingCount > 0 ? 'known' : 'missing'}
-            minorUnits={counts.data?.portfolioValueMinor}
-            size="lg"
-            hidden={hideValues}
-            displayCurrency={profile.data?.displayCurrency}
-          />
-          <ValuePrivacyToggle
-            hidden={hideValues}
-            onToggle={() => {
-              toggleHideValues.mutate(!hideValues)
-            }}
-          />
-        </div>
-        {counts.data ? (
-          <div className="space-y-0.5">
-            <p className="text-xs text-slate-500">
-              {counts.data.pricedHoldingCount} priced
-              {counts.data.unpricedHoldingCount > 0
-                ? ` · ${counts.data.unpricedHoldingCount} without a price`
-                : ''}
-            </p>
-            {counts.data.sealedHoldingCount > 0 ? (
-              <p className="text-xs text-slate-500">
-                {hideValues ? (
-                  <span aria-label="Value hidden">Cards •••• · Sealed ••••</span>
-                ) : (
-                  <>
-                    Cards {formatNokMinor(counts.data.cardsValueMinor)} NOK · Sealed{' '}
-                    {formatNokMinor(counts.data.sealedValueMinor)} NOK
-                  </>
-                )}
-              </p>
+        <div>
+          <div className="flex items-center gap-2">
+            <MoneyDisplay
+              state={
+                scoped || !s || s.marketValueMinor === null || !s.marketValueHasCoverage
+                  ? 'missing'
+                  : 'known'
+              }
+              minorUnits={s?.marketValueMinor ?? undefined}
+              size="lg"
+              hidden={hideValues}
+              displayCurrency={displayCurrency}
+            />
+            {!scoped && s?.pendingRecompute ? (
+              <span
+                className="rounded-full border border-sky-800/60 bg-sky-950/40 px-1.5 py-0.5 text-[10px] font-medium text-sky-300"
+                title="Your latest changes are being reflected — figures refresh automatically."
+              >
+                Updating…
+              </span>
             ) : null}
+          </div>
+          <p className="mt-0.5 text-xs text-slate-500">Current Portfolio Value</p>
+          {!scoped && s?.latestSnapshotDate && !s.pendingRecompute ? (
+            <p className="text-[11px] text-slate-600">as of {s.latestSnapshotDate}</p>
+          ) : null}
+          {scoped ? <ScopeCurrentValue scopeId={scopeId} hidden={hideValues} /> : null}
+        </div>
+
+        {!scoped ? (
+          <PeriodChangeLine change={change} coveredCount={coveredCount} hidden={hideValues} />
+        ) : null}
+
+        {/* ── Chart / honest placeholders ──────────────────────────────────────────────── */}
+        <div className="space-y-3 border-t border-slate-800 pt-4">
+          {scoped ? (
+            <p className="rounded-xl border border-dashed border-slate-800 p-4 text-sm text-slate-500">
+              Historical collection membership is not tracked yet — this chart follows your Main
+              Portfolio only. Current figures for this collection are shown above.
+            </p>
+          ) : chartReady ? (
+            <PortfolioValueChart points={series} hidden={hideValues} />
+          ) : s && s.firstTrackedDate ? (
+            <div className="flex h-48 flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-slate-800 px-4 text-center sm:h-56">
+              <span className="text-sm font-medium text-slate-200">No price history yet</span>
+              <span className="text-xs text-slate-500">
+                Your value tracking begins {s.firstTrackedDate}. A trend appears once a second
+                valued day exists.
+              </span>
+            </div>
+          ) : (
+            <div className="flex h-48 items-center justify-center rounded-xl border border-dashed border-slate-800 px-4 text-center text-xs text-slate-500 sm:h-56">
+              History starts with your first tracked card or purchase.
+            </div>
+          )}
+
+          {!scoped ? (
+            <div className="flex justify-between" role="group" aria-label="Chart period">
+              {DASHBOARD_RANGES.map((period) => (
+                <button
+                  key={period}
+                  type="button"
+                  onClick={() => {
+                    setRange(period)
+                  }}
+                  aria-pressed={range === period}
+                  className={`min-h-9 min-w-11 rounded-lg px-2 text-[11px] font-medium tabular-nums transition-colors ${
+                    range === period
+                      ? 'bg-sky-600/20 text-sky-400 ring-1 ring-inset ring-sky-800'
+                      : 'text-slate-600 hover:bg-slate-800 hover:text-slate-300'
+                  }`}
+                >
+                  {period}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {chartReady && !scoped ? (
+            <ul className="sr-only" aria-label="Portfolio value by date">
+              {accessibleHistorySummary(windowPoints, hideValues).map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
+          ) : null}
+          {chartReady && !scoped ? (
+            <p className="text-[11px] leading-snug text-slate-600">
+              Older market-value history uses weekly retained market observations.
+            </p>
+          ) : null}
+        </div>
+
+        {/* Total tracked economic position — secondary, honestly labelled (prompt §124).
+            ttepMinor is NULL until the first snapshot exists: render the missing state ("—"),
+            never a fabricated 0 kr (ttepDisplayState / DESIGN_SYSTEM.md §7). */}
+        {!scoped && s ? (
+          <div className="flex items-start justify-between gap-4 border-t border-slate-800 pt-3">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold tabular-nums text-slate-100">
+                {(() => {
+                  const ttep = ttepDisplayState(s.ttepMinor, hideValues)
+                  if (ttep.kind === 'missing') {
+                    return (
+                      <span aria-label="Not computed yet" className="text-slate-500">
+                        —
+                      </span>
+                    )
+                  }
+                  if (ttep.kind === 'hidden') {
+                    return <span aria-label="Value hidden">•••• kr</span>
+                  }
+                  return <>{formatNokMinor(ttep.minorUnits)} kr</>
+                })()}
+              </p>
+              <p className="text-xs text-slate-500">Total tracked economic position</p>
+            </div>
+            <p className="max-w-[60%] text-right text-[11px] leading-snug text-slate-600">
+              Market value plus net sales proceeds minus collectible spend — a position, not a
+              profit.
+            </p>
           </div>
         ) : null}
 
-        {/* Reserved for the real value-over-time chart (M12, lightweight-charts spike — D-015).
-            Period controls establish the layout only; they are not interactive yet. */}
-        <div className="space-y-2 border-t border-slate-800 pt-4">
-          <div className="flex h-24 items-center justify-center rounded-xl border border-dashed border-slate-800 text-xs text-slate-500">
-            Chart arrives once portfolio history is tracked
-          </div>
-          <div className="flex justify-between text-[11px] font-medium text-slate-600">
-            {PERIODS.map((period) => (
-              <span key={period}>{period}</span>
-            ))}
-          </div>
-        </div>
+        {/* Data quality directly beneath the headline (UX_FLOWS F10, prompt §80). */}
+        {!scoped && s ? (
+          <DataQualityRow
+            priced={s.pricedHoldingCount}
+            unpriced={s.unpricedHoldingCount}
+            manualValued={s.manualValuedHoldingCount}
+            autoPriced={s.autoPricedHoldingCount}
+            uncostedLots={s.uncostedOpenLotCount}
+          />
+        ) : null}
       </section>
 
-      <section className="grid grid-cols-2 gap-3">
-        {scopeId === null ? (
-          <>
-            <StatTile label="Physical cards" value={counts.data?.physicalCardCount} />
-            <StatTile label="Unique holdings" value={counts.data?.uniqueHoldingCount} />
-            <StatTile label="Graded" value={counts.data?.gradedCount} />
-            <StatTile label="Manual entries" value={counts.data?.manualCount} />
-          </>
-        ) : (
-          <StatTile label="Cards in this collection" value={scopeCount.data} wide />
-        )}
-      </section>
-
-      <Link
-        to="/purchases"
-        className="flex min-h-16 items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-900/60 px-4 py-3 hover:bg-slate-800/40"
-      >
-        <span className="flex items-center gap-3">
-          <ChartIcon className="size-5 text-slate-400" />
-          <span>
-            <span className="block text-sm font-medium text-slate-200">Purchases</span>
-            <span className="block text-xs text-slate-500">View your receipts →</span>
-          </span>
-        </span>
-        <span className="text-right">
-          <span className="block text-sm font-semibold text-slate-100">
-            {spending.data ? `${formatNokMinor(spending.data.gpoNokMinor)} kr` : '—'}
-          </span>
-          <span className="block text-xs text-slate-500">Total spent</span>
-        </span>
-      </Link>
-
-      <Link
-        to="/history"
-        search={{ tab: 'sold' }}
-        className="flex min-h-16 items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-900/60 px-4 py-3 hover:bg-slate-800/40"
-      >
-        <span className="flex items-center gap-3">
-          <TagIcon className="size-5 text-slate-400" />
-          <span>
-            <span className="block text-sm font-medium text-slate-200">History</span>
-            <span className="block text-xs text-slate-500">Sold, traded and more →</span>
-          </span>
-        </span>
-        <span className="text-right">
-          <span className="block text-sm font-semibold text-slate-100">
-            {salesSummary.data ? `${formatNokMinor(salesSummary.data.nspNokMinor)} kr` : '—'}
-          </span>
-          <span className="block text-xs text-slate-500">Net sales proceeds</span>
-        </span>
-      </Link>
-
-      <section className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-slate-300">Most valuable cards</h2>
+      {/* ── Empty account: one clear CTA, not six zeroed cards (prompt §130 / UX_FLOWS F10) ── */}
+      {emptyAccount ? (
+        <section className="space-y-3 rounded-2xl border border-dashed border-slate-700 p-6 text-center">
+          <h2 className="text-base font-semibold text-slate-100">Start your Portfolio</h2>
+          <p className="text-sm text-slate-400">
+            Add a card or record a purchase — spending, valuation and history build from there.
+          </p>
           <Link
-            to="/portfolio"
-            search={{ sort: 'value_desc' }}
-            className="text-xs font-medium text-sky-400 hover:underline"
+            to="/catalog"
+            className="inline-block min-h-11 rounded-xl bg-sky-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-sky-500"
           >
-            View all
+            Search cards
           </Link>
-        </div>
-        {topCards.isPending ? (
-          <div className="grid grid-cols-4 gap-2">
-            {Array.from({ length: 4 }).map((_, i) => (
-              <div key={i} className="aspect-[5/7] animate-pulse rounded-xl bg-slate-800/60" />
-            ))}
-          </div>
-        ) : valuedTopCards.length > 0 ? (
-          <div className="grid grid-cols-4 gap-2">
-            {valuedTopCards.map((tile) => (
-              <Link
-                key={tile.holdingId}
-                to="/portfolio/$holdingId"
-                params={{ holdingId: tile.holdingId }}
-                className="space-y-1"
-              >
-                <CardImage
-                  imageBaseUrl={tile.cardImageBaseUrl}
-                  alt={portfolioDisplayName(tile)}
-                  quality="low"
-                  className="aspect-[5/7] w-full"
-                />
-                <p className="truncate text-[11px] text-slate-400">{portfolioSubtitle(tile)}</p>
-              </Link>
-            ))}
-          </div>
-        ) : (
-          <p className="rounded-xl border border-dashed border-slate-800 p-4 text-sm text-slate-500">
-            No valued cards yet — set a value on a graded card, or check back once market pricing
-            arrives.
-          </p>
-        )}
-      </section>
+        </section>
+      ) : (
+        <>
+          <section className="grid grid-cols-2 gap-3">
+            {scoped ? (
+              <StatTile label="Cards in this collection" value={scopeCount.data} wide />
+            ) : s ? (
+              <>
+                <StatTile label="Physical cards" value={s.physicalCardCount} />
+                <StatTile label="Unique holdings" value={s.uniqueHoldingCount} />
+                <StatTile label="Graded" value={s.gradedHoldingCount} />
+                <StatTile label="Sealed units" value={s.sealedUnitCount} />
+              </>
+            ) : null}
+          </section>
 
-      <section className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-slate-300">Market movers · 7 days</h2>
-          <Link to="/market-movers" className="text-xs font-medium text-sky-400 hover:underline">
-            View all
-          </Link>
-        </div>
-        {movers.isPending ? (
-          <div className="h-14 animate-pulse rounded-xl bg-slate-800/60" />
-        ) : movers.data && movers.data.length > 0 ? (
-          <ul className="divide-y divide-slate-800 rounded-xl border border-slate-800">
-            {movers.data.map((m) => (
-              <li key={m.holdingId} className="flex items-center justify-between gap-3 p-3 text-sm">
-                <Link
-                  to="/portfolio/$holdingId"
-                  params={{ holdingId: m.holdingId }}
-                  className="min-w-0 truncate text-slate-200 hover:underline"
-                >
-                  {m.cardName ?? 'Unknown card'}
-                </Link>
-                <span
-                  className={`shrink-0 tabular-nums ${m.changeMinor >= 0n ? 'text-emerald-400' : 'text-rose-400'}`}
-                >
-                  {m.changeMinor >= 0n ? '+' : ''}
-                  {formatNokMinor(m.changeMinor)} NOK
-                  {m.changePct !== null
-                    ? ` (${m.changePct >= 0 ? '+' : ''}${m.changePct.toFixed(1)}%)`
-                    : ''}
-                </span>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="rounded-xl border border-dashed border-slate-800 p-4 text-sm text-slate-500">
-            Not enough price history yet to show movement — check back once your cards have been
-            tracked for a few days.
-          </p>
-        )}
-      </section>
+          {/* Value breakdown — raw + graded + sealed always sum to CMV (prompt §82/§127). */}
+          {!scoped &&
+          s &&
+          (s.rawValueMinor !== 0n || s.gradedValueMinor !== 0n || s.sealedValueMinor !== 0n) ? (
+            <section className="space-y-2 rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+              <h2 className="text-sm font-semibold text-slate-300">Value breakdown</h2>
+              <BreakdownRow label="Raw cards" minor={s.rawValueMinor} hidden={hideValues} />
+              <BreakdownRow label="Graded" minor={s.gradedValueMinor} hidden={hideValues} />
+              <BreakdownRow label="Sealed" minor={s.sealedValueMinor} hidden={hideValues} />
+            </section>
+          ) : null}
+
+          {!scoped && s ? (
+            <section className="space-y-1.5 rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+              <h2 className="pb-1 text-sm font-semibold text-slate-300">Spending &amp; results</h2>
+              <SummaryLine
+                label="Total spent"
+                minor={s.gpoMinor}
+                hidden={hideValues}
+                to={{ to: '/purchases' }}
+              />
+              <SummaryLine label="Collectible spend" minor={s.csMinor} hidden={hideValues} muted />
+              <SummaryLine
+                label="Net sales proceeds"
+                minor={s.nspMinor}
+                hidden={hideValues}
+                to={{ to: '/history', search: { tab: 'sold' } }}
+              />
+              <SummaryLine
+                label="Realized result on costed sales"
+                minor={s.rrcMinor}
+                hidden={hideValues}
+                muted
+              />
+              {s.pudMinor !== 0n ? (
+                <SummaryLine
+                  label="Proceeds, items without recorded cost"
+                  minor={s.pudMinor}
+                  hidden={hideValues}
+                  muted
+                />
+              ) : null}
+              <SummaryLine
+                label="Net invested in collectibles"
+                minor={s.nccoMinor}
+                hidden={hideValues}
+                muted
+              />
+              <SummaryLine
+                label="Net cost of the hobby"
+                minor={s.thcoMinor}
+                hidden={hideValues}
+                muted
+              />
+            </section>
+          ) : null}
+
+          {!scoped && monthly.data && monthly.data.length > 0 ? (
+            <MonthlySpending months={monthly.data} hidden={hideValues} />
+          ) : null}
+
+          {!scoped && activity.data && activity.data.length > 0 ? (
+            <RecentActivity items={activity.data} hidden={hideValues} />
+          ) : null}
+        </>
+      )}
+
+      <MostValuableCards
+        topCards={topCards.data?.results ?? []}
+        pending={topCards.isPending}
+        hideValues={hideValues}
+      />
+
+      <MarketMoversSection />
 
       <section className="flex gap-3">
         <Link
@@ -305,21 +442,57 @@ export function HomePage() {
   )
 }
 
-function StatTile({
-  label,
-  value,
-  wide = false,
-}: {
-  label: string
-  value: number | undefined
-  wide?: boolean
-}) {
+/** Scoped custom-collection view: correct CURRENT figures only — no invented history (D-065). */
+function ScopeCurrentValue({ scopeId, hidden }: { scopeId: string; hidden: boolean }) {
+  const counts = useQuery({
+    queryKey: ['portfolio-counts', scopeId],
+    queryFn: () => getPortfolioCounts(scopeId),
+  })
+  if (!counts.data) return null
+  if (counts.data.portfolioValueMinor === 0n && counts.data.pricedHoldingCount === 0) return null
   return (
-    <div className={`rounded-xl border border-slate-800 p-4 ${wide ? 'col-span-2' : ''}`}>
-      <p className="text-2xl font-semibold tabular-nums text-slate-100">
-        {value === undefined ? '—' : value.toLocaleString('nb-NO')}
-      </p>
-      <p className="text-xs text-slate-500">{label}</p>
-    </div>
+    <p className="text-xs text-slate-500">
+      {hidden ? (
+        <span aria-label="Value hidden">Current value ••••</span>
+      ) : (
+        <>Current value {formatNokMinor(counts.data.portfolioValueMinor)} kr</>
+      )}
+    </p>
+  )
+}
+
+function PeriodChangeLine({
+  change,
+  coveredCount,
+  hidden,
+}: {
+  change: PeriodChange
+  coveredCount: number
+  hidden: boolean
+}) {
+  if (coveredCount < 2 || change.amountMinor === null) {
+    return <p className="text-xs text-slate-500">— not enough history for a period comparison</p>
+  }
+  const amountText = `${change.amountMinor >= 0n ? '+' : ''}${formatNokMinor(change.amountMinor)} kr`
+  return (
+    <p className="text-sm font-medium">
+      {hidden ? (
+        <span aria-label="Change hidden" className="tabular-nums text-slate-500">
+          ••••
+        </span>
+      ) : (
+        <span
+          className={`tabular-nums ${
+            change.amountMinor >= 0n ? 'text-emerald-400' : 'text-rose-400'
+          }`}
+        >
+          {amountText}
+          {change.pct !== null
+            ? ` (${change.pct >= 0 ? '+' : ''}${change.pct.toFixed(1)}%)`
+            : ' (—%)'}
+          <span className="ml-2 text-xs font-normal text-slate-600">selected period</span>
+        </span>
+      )}
+    </p>
   )
 }

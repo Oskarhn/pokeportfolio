@@ -862,22 +862,62 @@ Manual valuations never overwrite `price_snapshots`. The resolver simply prefers
 
 ## 6. Derived cache
 
-### `portfolio_snapshots`
+### `portfolio_snapshots` — shipped in M12 (20260830120000, D-063)
 
 | Column | Notes |
 |---|---|
-| `user_id`, `snapshot_date` | Composite PK |
-| `market_value_nok_minor` | `CMV` on that date |
-| `attributed_value_nok_minor`, `cost_basis_nok_minor` | For `URC` over time |
-| `collectible_spend_to_date_nok_minor`, `sales_proceeds_to_date_nok_minor` | For `TTEP` over time |
-| `open_lot_count`, `unvalued_lot_count` | |
-| `computed_at` | |
+| `user_id`, `snapshot_date` | Composite PK. One end-of-business-day state per user per date. |
+| `market_value_nok_minor` | CMV on that date: Σ over open-as-of-date lots of `quantity_remaining_as_of × resolved as-of unit value`. Missing values excluded and counted, never zeroed (F14). |
+| `attributed_value_nok_minor` | ACMV — CMV restricted to `cost_basis_state = 'known'` lots. |
+| `cost_basis_nok_minor` | Historical DCB (§2.5 of FINANCIAL_MODEL.md); adjustments enter from their own `occurred_on`, floor-allocated per unit (D-068). |
+| `collectible_spend_to_date_nok_minor` | Frozen-ledger CS through the date; voided purchases excluded. |
+| `sales_proceeds_to_date_nok_minor` | Frozen NSP through the date; voided sales excluded. |
+| `open_lot_count`, `unvalued_lot_count` | The ownership-timeline lot count and its unresolvable subset (`UHC`). Equal counts ⇒ a zero-coverage day the UI renders as a gap, never "worth nothing". |
+| `computed_at` | Operational only — deliberately excluded from the full-vs-incremental equality comparison. |
 
-This is a **cache, not a ledger**. Canonical truth is always the transaction tables. A
-`portfolio_recompute_queue(user_id, dirty_from date)` row is written whenever a backdated
-transaction is inserted, edited or voided; the daily job recomputes forward from the earliest
-dirty date. A full rebuild from transactions must always produce identical output — that
-equality is a test.
+This is a **cache, not a ledger**. Canonical truth is always the transaction tables.
+`rebuild_portfolio_snapshots(user, from, through)` derives every field from canonical rows alone
+— replaying the disposal timeline per date (never projecting current `quantity_remaining`
+backward), resolving provider values as step functions with freshness measured from D, applying
+the manual-interval model (D-062), and accumulating frozen-ledger cumulatives by business date.
+The full-rebuild == incremental-recompute equality over every semantic column is a permanent
+test gate (`tests/db/m12_dashboard_snapshots.test.ts`, TESTING.md §3).
+
+**Rebuildability is relative to CURRENTLY RETAINED canonical facts (D-070).** M9.1 retention
+(D-058) compacts `price_snapshots` older than 60 days to one observation per ISO week. When
+that happens, the retained set underlying old history genuinely changes, the invalidation
+trigger dirties affected owners from the oldest deleted date, and the next drain recomputes —
+so an older historical CMV point may adjust ONCE to derive from the weekly facts that remain.
+This is accepted cache semantics, not drift: no value is fabricated, every frozen ledger column
+is untouched by compaction, and deleting the whole cache and rebuilding from scratch reproduces
+exactly the post-compaction series (`tests/db/m12_retention_rebuild.test.ts`). The dashboard
+discloses the resolution change in one sentence ("Older market-value history uses weekly
+retained market observations").
+
+RLS: owner-SELECT only (`portfolio_snapshots_select_own`). No INSERT/UPDATE/DELETE policy exists
+and no browser write grant exists — the service-role engine is the sole writer.
+
+**`portfolio_recompute_queue`** `(user_id PK, dirty_from, updated_at)`: written only by the M12
+invalidation triggers via `enqueue_portfolio_recompute` (LEAST-coalesced). Service/internal-only:
+RLS enabled, no policies, no grants to any browser role — a session can neither read another
+user's dirty state nor enqueue arbitrary users. The drain is ONE PL/pgSQL transaction: each
+user's failure rolls back to its own savepoint and keeps its queue row while siblings continue,
+and everything successful commits together when the outer transaction ends (D-064).
+
+**`portfolio_recompute_runs`**: one row per drain invocation (started/finished, users processed,
+snapshots written, error text). Service-only observability, the shape of `price_sync_runs`; no
+portfolio values, no per-user rows exposed.
+
+Invalidation boundary matrix lives in the trigger migration's header
+(`20260830120020_m12_invalidation_triggers.sql`): acquisitions/purchases/sales/disposals dirty
+from their own or least(old,new) business dates; manual valuations dirty from interval
+boundaries (D-062); price-snapshot writes and retention thinning dirty affected variant owners;
+FX writes dirty raw-card owners from the rate date. Sealed intent, storage location, tags,
+favourites and collection membership deliberately dirty NOTHING (D-061/C1, prompt §23/§44).
+
+Scheduled maintenance (D-064): `m12-recompute-snapshots` cron every 15 min at :07/:22/:37/:52,
+plus the daily `m12-daily-snapshot-sweep`. NOT yet applied to any hosted project in this pilot —
+see HANDOVER.md's deployment state.
 
 ---
 
@@ -1320,7 +1360,7 @@ are invoked by `pg_cron` via `pg_net`, with the bearer secret read from Supabase
 (`20260826120050_m9_cron_schedule.sql`) — never a literal in migration SQL. `thin_price_snapshots()`
 is scheduled directly as a SQL command (no HTTP round trip needed for a same-database function).
 Full architecture, batch sizing and cadence reasoning: ARCHITECTURE.md and
-`claude_outputs/output_15.txt`.
+`ai_outputs/Claude_outputs/output_15.txt`.
 
 ## 18. M9.1 implementation notes
 
@@ -1385,3 +1425,34 @@ sale-builder session (`crypto.randomUUID()`, kept in component state so a retry 
 nok_minor', ...)` call — Postgres's own default (`NULLS LAST` ascending, `NULLS FIRST` descending)
 would otherwise put an unknown-basis sale first when sorting high-to-low, exactly the failure mode
 the gate exists to prevent.
+
+## 20. M12 implementation notes
+
+**The engine, in one paragraph.** `rebuild_portfolio_snapshots(user, from, through)` deletes the
+range and reinserts it from one set-oriented statement chain: a `dates × lots` grid bounded by
+each lot's `acquired_on`; per-date cumulative disposal quantities (single-stream join + GROUP BY,
+the D-054 shape — never correlated laterals) giving `open_lot_count` with exact acquire/sell day
+boundaries; provider observations materialised as step functions `[obs_date, min(next_obs,
+obs_date + 31))` so freshness age is measured from each snapshot date; FX facts resolved once
+per distinct `(currency, obs_date)`; the manual-interval table (D-062); frozen-ledger CS/NSP
+cumulatives as opening balance + window running sum over the date spine. Rows are only produced
+from the user's first tracked date onward — no fabricated pre-history.
+
+**Dashboard reads.** Four SECURITY INVOKER RPCs replace any burst of Home requests:
+`get_dashboard_summary()` (latest-snapshot headline + current data-quality/breakdown counts +
+lifetime GPO/CS/HS/NSP/RRC/PUD/NCCO/THCO/THP + an honest `pending_recompute`, one request;
+TTEP and THP are NULL until a snapshot exists — §6.5 of FINANCIAL_MODEL.md — never 0-based),
+`get_portfolio_history(display_currency, from, to)` (stored snapshots, coverage flags,
+D-067 display conversion), `get_monthly_spend(months)` (calendar months from purchase lines;
+GPO = CS + HS per row by construction), `get_recent_activity(limit)` (bounded union over
+canonical purchases/sales/valuations/non-purchase acquisitions). All money leaves as text.
+
+**Custom-collection scope is deliberately absent from history APIs** (D-065): the chart follows
+Main Portfolio only; scoped CURRENT figures keep using `portfolio_counts(p_custom_collection_id)`.
+
+**Frontend boundary.** Exact bigint minor units persist through `src/data/dashboard.ts`; the
+only Number conversion happens in `src/domain/dashboard.ts#toChartSeries` via `safeMajorUnits`,
+which throws rather than silently losing øre above `Number.MAX_SAFE_INTEGER`. Uncovered days
+become whitespace items so the chart library breaks the line instead of interpolating across
+missing coverage.
+

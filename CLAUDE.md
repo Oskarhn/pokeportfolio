@@ -190,7 +190,7 @@ simply keep engineering documents focused on the engineering.
 ## Mentor handoff files
 
 After each major project phase, write a detailed phase summary to
-`claude_outputs/output_N.txt` — exactly that naming (`output_1.txt`, `output_2.txt`, …).
+`ai_outputs/<MODEL>_outputs/output_N.txt` — exactly that naming (`output_1.txt`, `output_2.txt`, …).
 
 **The phase number is given explicitly in the prompt. Never infer it.** Do not derive it from
 the number of files present, commit count, message count, timestamps, or apparent gaps. If a
@@ -209,5 +209,5 @@ session's context, so they carry substantially more detail than the chat respons
 research findings, architecture state, risks, open questions and verification results. They
 contain no secrets, tokens or credentials.
 
-`claude_outputs/` is gitignored and **must never be committed.** Verify with `git check-ignore`
+`ai_outputs/` is gitignored and **must never be committed.** Verify with `git check-ignore`
 before any commit that touches `.gitignore`.

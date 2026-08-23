@@ -1500,3 +1500,80 @@ column would get — arguably more, since nothing has ever pressed on it. The M1
 on testing the exact real-world scenario (three boxes, mixed intent) before writing a line of UI is
 what turned a plausible-looking column into a found, fixed, and tested defect instead of a shipped
 one.
+
+## 2026-08-30 - The manual-valuation history audit found its sharpest edge inside the test fixture itself
+
+M12's highest-risk audit item was whether `manual_valuations` (append-only since M6:
+`effective_from`, `created_at`, `superseded_at`) can reconstruct "which value was active on date
+D" for any historical D. The answer is yes — but only under a precise model (D-062): rows own
+`[effective_from, next effective_from)` ordered by `(effective_from, created_at, id)`, with
+`superseded_at` meaning an economic end **only for the terminal row, and only when it ended by a
+clear**. The trap the prompt warned about is real: treating `superseded_at` as every row's end
+date makes any backdated correction apply nowhere, silently defeating `effective_from`'s entire
+purpose.
+
+The model's sharpest edge surfaced while writing the tests, not the engine. The first fixture
+version inserted valuation rows directly without the RPC's supersede step — which both violates
+the active-row partial unique index and produces a state no real user could have: multiple live
+rows per holding. Fixing the helper to supersede-then-insert exposed the genuinely ambiguous
+case the engine must answer deterministically: a backdated correction whose `effective_from`
+lands *before* an earlier-inserted, later-effective, since-cleared row. Under D-062 the
+correction owns only up to that later row's `effective_from`; the cleared row still owns its own
+stretch up to its clear date; determinism comes from canonical data alone, full stop. That is a
+defensible reading of "corrections rewrite history" — and because full rebuild and incremental
+recompute run the *same* model, the byte-equality gate cannot drift even in this corner. The
+lesson generalizes: when a history-reconstruction rule has an ambiguous-looking case, the test
+fixture must exercise exactly that case through the real write path, not through a shortcut that
+quietly changes the semantics being tested.
+
+Two smaller finds from the same desk-check discipline that preceded CI (which remains the real
+executor on this machine-less-Docker setup): the first draft of the rebuild's final assembly used
+per-date correlated LATERALs to accumulate spend/proceeds — the exact shape D-054 exists to
+police — replaced by a window-function running sum over the date spine before it ever ran; and a
+near-miss where cumulative-spend deltas included purchases dated before the rebuild window,
+which would have double-counted them against the opening balance had the join not filtered them
+incidentally. Both were caught by re-reading the statement chain against its own invariants, not
+by a green run — CI catching plpgsql errors is the norm here, so anything caught earlier is
+found money.
+
+One infrastructure note for whoever touches these triggers next: PostgreSQL does not check
+EXECUTE on trigger functions at firing time — the same production-tested property that lets
+`supabase_auth_admin` fire `handle_new_user` ungranted. That is why the M12 invalidation
+triggers can be revoked from every named role (so no session can call them directly) while user
+mutations still fire them implicitly. It also means the grant-audit's PUBLIC sweep plus named
+revokes fully cover this class of function, unlike M6's finding about directly-called RPCs.
+
+---
+
+## 2026-08-30 - Three ways a correct-looking interval rule still had to be designed around overlap
+
+The review fix for the manual-valuation resurrection bug (D-062's clear-then-later-insertion
+corner) looked like a one-line change: when a row's `superseded_at` predates the next row's
+creation, end it at the clear date. Two naive formulations of exactly that rule are wrong, and
+the difference only shows up in sequences no existing fixture exercised.
+
+Comparing against `lead(created_at)` - the immediately-next row in `(effective_from,
+created_at, id)` order - misclassifies a WEDGED correction. Set A@D10, atomically replace with
+B@D30, then backdate C@D20 into the middle: C sorts between A and B, so A's lead() is now C, whose
+creation is strictly later than A's supersession. The comparison reads "cleared independently",
+ends A at its supersession wall-clock date, and that date is LATER than C's effective_from -
+producing two intervals covering the same days, which the engine's per-day join would have
+double-counted straight into CMV. The safe formulation pairs by transaction timestamp: a row was
+atomically replaced iff ANY row's `created_at` equals its `superseded_at` (the successor the
+superseding transaction inserted, wherever it now sorts); otherwise it was cleared. With that
+pairing, every branch satisfies valid_to <= next effective_from, so coverage stays single-valued
+by construction rather than by hope.
+
+The second trap was the least() guard itself. An independently cleared row ends at min(clear
+date, next effective_from), which handles the case where a later valuation is BACKDATED INTO the
+cleared span - corrections rewrite history; they must win from their own effective_from rather
+than extend what they correct.
+
+Third, the adversarial oracle already encoded "always min(next_eff, clear_date)", which diverges
+from the paired engine rule for one input class: future-dated atomic replacements (new
+effective_from AFTER the supersession wall-clock). Neither suite constructed one, but aligning
+both sides on the same explicit pairing - replaced means boundary = replacement's effective_from;
+cleared means own clear date - removed the divergence class instead of leaving it to fixture luck.
+The lesson generalizes: when an implementation and an independent oracle agree, check WHICH RULE
+each encodes before trusting the agreement; identical outputs over shared fixtures can come from
+different rules that part ways on the first unshared input.

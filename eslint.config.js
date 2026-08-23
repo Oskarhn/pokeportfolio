@@ -66,6 +66,30 @@ export default tseslint.config(
     },
   },
   {
+    // The independent M12 adversarial package (test/m12-independent-adversarial/README.md) talks
+    // to the same untyped Supabase client as tests/db, so it needs the same treatment. It is
+    // deliberately self-contained and not part of the standard test jobs.
+    files: ['test/m12-independent-adversarial/**/*.ts'],
+    languageOptions: {
+      globals: globals.node,
+    },
+    rules: {
+      '@typescript-eslint/no-non-null-assertion': 'off',
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+      '@typescript-eslint/no-unsafe-member-access': 'off',
+      '@typescript-eslint/no-unsafe-return': 'off',
+      '@typescript-eslint/no-unsafe-argument': 'off',
+      '@typescript-eslint/restrict-template-expressions': 'off',
+      // The untyped client makes half the suite's conditionals/assertions look redundant to the
+      // type system, and skip-gated tests legitimately contain no await.
+      '@typescript-eslint/no-unnecessary-condition': 'off',
+      '@typescript-eslint/no-unnecessary-type-assertion': 'off',
+      '@typescript-eslint/no-unnecessary-type-conversion': 'off',
+      '@typescript-eslint/no-base-to-string': 'off',
+      '@typescript-eslint/require-await': 'off',
+    },
+  },
+  {
     files: ['*.config.{js,ts}', 'eslint.config.js'],
     languageOptions: {
       globals: globals.node,

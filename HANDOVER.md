@@ -4,39 +4,147 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-**Last updated:** 2026-08-29 — M1–M11 are complete in code, merged and deployed. **M11 (Sealed
-Inventory) is closed.** Sealed products (booster packs/boxes, ETBs, bundles, tins) are first-class
-Portfolio inventory, reusing the existing card acquisition/purchase/valuation/sale machinery end to
-end. Curated catalog (a modest, individually-sourced seed of seven real products) plus user-created
-private products; manual-only valuation with a visible Cards/Sealed value segment that always sums
-to the total. A real cardinality defect (`sealed_intent` sketched on `holdings` since M3 — cannot
-represent mixed intent among identical physical units) was found and fixed before any UI depended
-on it: relocated to `acquisition_lots` (D-061), with a new `set_sealed_lot_intent` split RPC. CI's
-own runs caught four further real bugs before merge (an untyped CASE expression breaking every
-known-cost `add_card_acquisition` call; a dropped `storage_location_id` ownership check the M11
-trigger replacement silently removed; two test-fixture isolation bugs; and a real security gap —
-neither `create_purchase` nor `add_card_acquisition` verified a referenced sealed product was
-curated or the caller's own before writing against it) — all fixed, CI green
-(415/415 database and authorization tests, up from 398). `scripts/deployment-check.mjs` moved from
-one unbounded `Promise.all` to bounded concurrency, closing the harness gap M10 left open — the
-full automated gate ran again and passed 28/28 against the real deployment, the first complete run
-since M9. Migrations applied to `pokeportfolio-dev`, `grant-audit.sql` clean,
-`remote-security-check.mjs` 17/17. Full account: DECISIONS.md D-061, `claude_outputs/output_19.txt`.
-See "M11 — Sealed Inventory" below.
+**Last updated:** 2026-08-23 — **M1–M11 are complete in code, merged and deployed. M12
+(Dashboard) exists as an IMPLEMENTATION CANDIDATE on `feat/m12-dashboard` and is NOT merged,
+NOT migrated to `pokeportfolio-dev`, and NOT deployed anywhere. The independent adversarial test
+package has run against the candidate AND Claude's full adversarial review is complete
+(CHANGES_REQUIRED: 3 HIGH / 3 MEDIUM / 3 LOW); all findings are fixed on the branch and a
+targeted delta re-verification is the NEXT step before anything in that branch touches a hosted
+project — merge, migration, cron activation and the initial backfill are all explicitly
+post-verification steps.** See "M12 — Dashboard (implementation candidate)" below; everything
+beneath it describes the deployed M11 state.
+
+---
+
+## M12 — Dashboard (implementation candidate, AWAITING DELTA RE-VERIFICATION)
+
+Branch `feat/m12-dashboard`, draft PR open against `main` titled "M12: Dashboard — OX Alpha
+candidate" marked DO NOT MERGE. Production state unchanged: no hosted migration was run, no Edge
+Function touched, no cron row created outside migrations, nothing merged.
+
+**Independent adversarial validation (Prompt 21) has run.** The implementation-blind contract
+package from `test/m12-independent-adversarial` (draft PR #36, authored without inspecting this
+branch) was applied via validation PR #37 and executed for real against CI's ephemeral stack.
+First unmodified result: 33 passed / 6 failed / 2 skipped of 41; the independent oracle's
+full-range comparison (seven semantic columns × 90 days) passed immediately. All six first-run
+failures were defects in the package's own harness (PostgREST OpenAPI body-parameter discovery, a
+double-sold fixture lot, a head:true count read, a pre-first-tracked-date range, and two clusters
+of hand-arithmetic literals), fixed with documented corrections; one implementation hardening came
+out of it (`rebuild_portfolio_snapshots` now rejects a reversed date range instead of silently
+reordering it). Final state on `feat/m12-dashboard`: 39 passed / 2 skipped (deep drain
+fault-injection remains structurally asserted, not executed), scale audit green post-ANALYZE
+(rebuild 20 ms · incremental drain 250 ms · summary 11 ms · history 5 ms at ~480 lots), full
+normal regression green. Full account: `ai_outputs/Ox_Alpha_outputs/output_21.txt`.
+
+**Review findings fixed (fix/m12-claude-review-p23).** Claude's full adversarial review rated the
+implementation GOOD but required changes; every finding is now closed on this branch:
+H1 — a manual-valuation row ended by an INDEPENDENT clear stays cleared even when a later,
+separate valuation arrives with a higher effective_from; only an ATOMIC replacement keeps the
+next-effective-from boundary (D-062's resolved corner, pairing test in `mv_intervals`, DB tests
+with provider-fallback and unpriced gap variants plus scenario S/S2 and the aligned oracle).
+H2 — TTEP renders "—" instead of a fabricated "0 kr" before the first snapshot exists
+(`ttepDisplayState` domain helper; genuine zero still renders as 0; hide_values masks).
+M1 — THP propagates NULL under the same condition instead of coalescing CMV to 0
+(FINANCIAL_MODEL.md §6.5); types updated.
+H3 — mentor decision recorded as D-070: portfolio_snapshots remains a derived rebuildable cache;
+an older historical CMV point may adjust ONCE where M9.1 compaction removes dense observations;
+frozen ledger fields never change; proven end-to-end by
+`tests/db/m12_retention_rebuild.test.ts` (dense → real thinning → invalidation → drain →
+from-scratch-rebuild equality) and disclosed in one restrained dashboard sentence.
+D-069 records the ratified reversed-range rejection; D-071 documents the MAX = 4-years clamp;
+the drain's per-user savepoint semantics are stated precisely (never "per-user commits"); the
+initial-backfill runbook drains one user at a time; the stale privilege comment on
+`m12_recompute_pending_for_self` is corrected (authenticated DOES hold EXECUTE, by design); and
+D-068 gained a concrete multi-unit partial-disposal data proof.
+
+**What it is.** Home is now the real portfolio dashboard over a derived snapshot cache:
+
+- **Schema** (`20260830120000`): `portfolio_snapshots` — one end-of-business-day state per user
+  per date (CMV, ACMV, historical DCB, CS/NSP-to-date cumulatives, open/unvalued lot counts);
+  owner-SELECT-only RLS, zero browser write grants. `portfolio_recompute_queue`
+  (`user_id PK, dirty_from`) and `portfolio_recompute_runs` are service/internal-only
+  (RLS-on-no-policies-no-grants, the invitation_claims shape).
+- **Engine** (`20260830120010`): `rebuild_portfolio_snapshots(user, from, through)` derives every
+  field from canonical rows alone — disposal-timeline replay per date (never current-state
+  projection), provider observations as step functions with freshness age measured from D,
+  FX observed on/before each observation's own date, the manual-valuation interval model
+  (D-062, including its reviewed clear-vs-replacement corner), frozen-ledger cumulatives by
+  business date, rows only from the user's first tracked
+  date. `drain_portfolio_recompute_queue` is the SKIP LOCKED worker with per-user failure
+  isolation via PL/pgSQL savepoints inside one outer transaction (a failed user keeps its queue
+  row; siblings continue; the whole batch still commits or rolls back together).
+- **Invalidation** (`20260830120010/20`): triggers enqueue with explicit boundaries —
+  least(old,new) on date moves so March recomputes when a purchase moves to April; shared
+  price/FX/thinning facts fan out statement-level to affected owners; sealed intent, storage,
+  tags, favourites and collection membership deliberately dirty NOTHING.
+- **Cron** (`20260830120040`): every-15-min drain at :07/:22/:37/:52 (offset from M9 ingest)
+  plus a daily sweep. Migration-only until post-review deployment.
+- **Reads** (`20260830120030`): four SECURITY INVOKER RPCs — `get_dashboard_summary` (headline +
+  data quality + lifetime figures + honest `pending_recompute` in ONE request),
+  `get_portfolio_history` (stored NOK + D-067 historical display-FX + coverage flags),
+  `get_monthly_spend` (GPO = CS + HS by construction), `get_recent_activity`.
+- **UI**: Home rebuilt — headline from latest snapshot with an "Updating…" badge when queued,
+  period change (zero base → undefined %, never fake), 1D–MAX ranges defaulting 3M,
+  TradingView Lightweight Charts v5.2.1 in its own lazy chunk (62 KB gzip) with attribution
+  implemented in full (D-066: NOTICE in source, visible TradingView link, built-in logo),
+  privacy eye masking axis/tooltips/a11y summary together, raw/graded/sealed breakdown,
+  monthly-spend bars, empty/no-history honesty, custom-collection scope showing current-only
+  figures with explicit "membership not tracked" copy (D-065).
+
+**The central gate:** full rebuild == incremental recompute, byte-identical over every semantic
+column except `computed_at`, proven over a fixture containing backdating, partial sale, sale
+void, manual set/update/clear, a backdated correction into cleared history, a price correction,
+a genuine-zero observation, unpriced variants and sealed/graded manual-only holdings
+(`tests/db/m12_dashboard_snapshots.test.ts`). Equality is relative to CURRENTLY RETAINED
+canonical facts (D-070): after M9.1 compaction removes dense old observations, the rebuilt
+series equals the post-compaction derivation exactly, proven by
+`tests/db/m12_retention_rebuild.test.ts`.
+
+**Decisions this milestone adds:** D-062 through D-068 in DECISIONS.md — manual-history interval
+model, cache-shape/coverage flags, recompute architecture, custom-collection history policy,
+chart-library adoption with attribution, display-FX rule, DCB adjustment-share rule — plus
+D-069 (reversed ranges rejected), D-070 (cache stays rebuildable; one-time historical CMV
+adjustment at the compaction boundary) and D-071 (MAX = up to four years of history).
+
+**Verification actually run on this branch:** `pnpm typecheck` / `pnpm lint` / `pnpm
+format:check` clean; `pnpm test` 125/125 (17 new dashboard domain tests); `pnpm build` green
+with bundle measured (entry ~320→373 KB raw / ~98→113 KB gzip; chart lib 194 KB raw / 62 KB
+gzip in a lazy chunk loaded only once ≥2 covered points exist). CI state at handover time:
+see the draft PR's checks — db-tests must show all migrations applying from scratch, the new
+M12 suites green inside the privilege-convergence cycle, both permanent benchmarks passing, and
+the NEW snapshots benchmark measuring rebuild/incremental/Home-read/storage at ~10k-lot scale.
+`database.types.ts` was hand-updated (no local Docker, established precedent); replace with CI's
+generated artifact and re-apply the known `p_fx_rate_to_nok` string divergence before trusting
+it further.
+
+**Explicitly NOT done (PENDING POST-VERIFICATION DEPLOYMENT):** hosted migration push; cron
+activation on the real project; initial backfill for existing users; deployment-check/
+remote-security-check against a real deployment; any owner-facing signed-in check. A drain
+fault-injection test (forcing a rebuild failure mid-drain without DDL access) was not achievable
+from the test harness; the subtransaction retention contract is asserted structurally instead.
+
+**Initial backfill runbook (when deployment is finally approved — do NOT run yet).** The
+migrations enqueue nothing for pre-existing users by design. After migration + cron activation:
+`select enqueue_portfolio_daily_maintenance();` once, then drain REPEATEDLY until the queue is
+empty. For that one-time full-history backfill, use SMALL BATCHES at ≤10 users: pass
+`p_batch_users := 1` (one user per drain call), because each user's entire history rebuilds
+inside one outer transaction and a single oversized batch is the largest transaction this
+architecture will ever run. The steady-state 15-minute cron keeps its default batch of 20.
 
 ---
 
 ## Status
 
-**Planning is FROZEN. M1–M11 are merged. No open M9/M10/M11-family item remains.** The only standing
-item carried across every milestone since M7.1 is a real owner-facing signed-in check, which needs
-the owner's own device/account — ask for it using the checklist in the "M11 — Sealed Inventory"
-section below. Next: **M12 — Dashboard.**
+**M1-M11 merged/deployed. M12 = implementation candidate whose review findings are all fixed,
+awaiting targeted delta re-verification (above). No open
+M9/M10/M11-family item remains.** The standing owner-device check item carried since M7.1 still
+applies to deployed surfaces. Do not begin M12a or M13 until M12 is approved, merged and
+verified against the hosted project.
 
 ## M9 — Pricing and snapshots
 
 Real raw-card market values, wired from TCGdex-relayed Cardmarket/TCGplayer data through to
-Portfolio, Home, Holding Detail and Card Detail. Full account: `claude_outputs/output_15.txt`.
+Portfolio, Home, Holding Detail and Card Detail. Full account: `ai_outputs/Claude_outputs/output_15.txt`.
 Decisions: DECISIONS.md D-052 through D-055.
 
 **Research, done before writing any code.** Live TCGdex probes 2026-08-21/22 (today's date at
@@ -204,8 +312,8 @@ also green.
 ## M9.1 — Pricing closeout
 
 Not a new milestone (docs/PLANNING_FREEZE.md still governs) — closes the explicit M9 acceptance
-gaps `claude_outputs/output_15.txt`'s mentor review found, before M10 (Sales and History) begins.
-Full account: `claude_outputs/output_16.txt`. Decisions: DECISIONS.md D-056 through D-058.
+gaps `ai_outputs/Claude_outputs/output_15.txt`'s mentor review found, before M10 (Sales and History) begins.
+Full account: `ai_outputs/Claude_outputs/output_16.txt`. Decisions: DECISIONS.md D-056 through D-058.
 
 **Search pricing.** `CardResultCard`/`CatalogPage` now show batched real current prices — one
 bounded `search-prices` request per ≤20-card result page (`SEARCH_PRICES_MAX_CARD_IDS`), never
@@ -311,7 +419,7 @@ using the JWT-claim-impersonation technique (`set local role authenticated; sele
 set_config('request.jwt.claims', ...)`) against a seeded large dataset in CI's ephemeral stack or a
 throwaway project — before M9's Portfolio performance gate can be called closed.** This is the
 single most important open item from this session; see MENTOR ATTENTION in
-`claude_outputs/output_16.txt`.
+`ai_outputs/Claude_outputs/output_16.txt`.
 
 **Real FX cron verified end-to-end.** `ingest-fx` had not yet reached its first scheduled 17:00 UTC
 run this session (checked: `cron.job`/`cron.job_run_details` against the real project, current
@@ -333,7 +441,7 @@ the project's own established "cast money to text" convention, not by any test, 
 `list_portfolio` statement-timeout regression described above, still not fully resolved as of this
 handover (PR #28 makes CI resilient to it and reverts a disproven fix attempt, but does not fix the
 underlying query cost). See PROJECT_JOURNAL.md 2026-08-27 for the first two; the third is carried in
-this section and in `claude_outputs/output_16.txt`'s MENTOR ATTENTION, including the standing gap
+this section and in `ai_outputs/Claude_outputs/output_16.txt`'s MENTOR ATTENTION, including the standing gap
 the second bug exposes: no test coverage exists yet for Edge Function business logic, only for the
 pure mapping layer.
 
@@ -362,7 +470,7 @@ remains a manual step.
 ## M9.2 — Portfolio query performance closeout
 
 Closes the one item M9.1 left open (above): `list_portfolio`'s 10,000-lot unfiltered first-page
-regression. Full account: `claude_outputs/output_17.txt`. Decision: DECISIONS.md D-059.
+regression. Full account: `ai_outputs/Claude_outputs/output_17.txt`. Decision: DECISIONS.md D-059.
 
 **Root cause, confirmed with real `EXPLAIN (ANALYZE, BUFFERS, SETTINGS)` evidence from CI** (not
 guessed — a prior hypothesis, `list_portfolio`'s own CASE-based `ORDER BY`/cursor shape, had already
@@ -445,7 +553,7 @@ was narrowly the Portfolio performance gate.
 ## M10 — Sales and History
 
 Real sales, with explicit lot selection every time — FIFO is only a pre-filled suggestion, never a
-silent default. Full account: `claude_outputs/output_18.txt`. Decision: DECISIONS.md D-060.
+silent default. Full account: `ai_outputs/Claude_outputs/output_18.txt`. Decision: DECISIONS.md D-060.
 
 **Schema** (`supabase/migrations/20260828110000` through `..._m10_privilege_baseline.sql`, 5
 files). `sales`/`sale_lines`/`lot_disposals` (DATA_MODEL.md §5.7/§5.11) and — a real prerequisite
@@ -585,7 +693,7 @@ use. Both caught by CI's real ephemeral Postgres on the first push, neither by l
 **Not done this session, and why:**
 
 1. Owner-facing signed-in check — same standing boundary as every milestone since M7.1. See "Owner
-   check" in `claude_outputs/output_18.txt` for the exact steps.
+   check" in `ai_outputs/Claude_outputs/output_18.txt` for the exact steps.
 2. No new Playwright `.spec.ts` file — matching the established pattern since M6 (E2E count has
    stayed flat at 58 through every feature milestone; feature correctness is proven at the
    DB/authorization layer and via live browser verification, which this session could not do
@@ -596,7 +704,7 @@ use. Both caught by CI's real ephemeral Postgres on the first push, neither by l
 
 Sealed products (booster packs/boxes, ETBs, bundles, tins, collection boxes) are first-class
 Portfolio inventory, reusing the existing card acquisition/purchase/valuation/sale machinery rather
-than a parallel system. Full account: `claude_outputs/output_19.txt`. Decision: DECISIONS.md D-061.
+than a parallel system. Full account: `ai_outputs/Claude_outputs/output_19.txt`. Decision: DECISIONS.md D-061.
 
 **Audit first, before any UI.** Most of the sealed schema already existed from earlier milestones
 and had never been exercised: `sealed_products` (curated-vs-private RLS, M3), `holdings.
@@ -726,7 +834,7 @@ baseline. PR #33 merged (squash, branch deleted); post-merge CI on `main` green.
 **Not done this session, and why:**
 
 1. Owner-facing signed-in check — same standing boundary as every milestone since M7.1. See "Owner
-   check" in `claude_outputs/output_19.txt` for the exact steps.
+   check" in `ai_outputs/Claude_outputs/output_19.txt` for the exact steps.
 
 ## Deployed state (now M11 — PR #33 merged and deployed)
 
@@ -1046,7 +1154,7 @@ re-running `scripts/run-catalog-sync.mjs --only=<setId>` later is expected to pi
 72 sets have a non-zero `cardCount` but a genuinely empty `cards[]` array in TCGdex's own response
 (verified directly) — a provider data gap, not an ingest defect, accounting for ~5,451 of the
 ~5,480-card difference between summed provider counts and actual ingested cards. Full reconciliation
-detail and the 4 sets with small partial gaps: `claude_outputs/output_9.txt`. Per-set log:
+detail and the 4 sets with small partial gaps: `ai_outputs/Claude_outputs/output_9.txt`. Per-set log:
 `catalog_sync_runs`.
 
 **Known limitations, not bugs:** the name+number search split is a heuristic, not a parser — it
@@ -1199,7 +1307,7 @@ secrets. If you find drift, reconcile toward the repository.
 | Database password | The owner's password manager. Claude has never seen it. |
 | Supabase CLI access token | The CLI's own credential store, created by `supabase login`. |
 | Publishable key (`sb_publishable_…`, M6) | `.env.local` (gitignored) and Cloudflare Pages env var `VITE_SUPABASE_PUBLISHABLE_KEY`. Public by design — it is embedded in every browser bundle served, which is exactly how this session obtained it to run the remote checks below, rather than via any key-listing CLI command. |
-| Secret key (`sb_secret_…`, M6) | The Supabase platform only, injected into the Edge Function environment as `SUPABASE_SECRET_KEYS`. Never fetched into a session, never in the repo, never in `claude_outputs/`. |
+| Secret key (`sb_secret_…`, M6) | The Supabase platform only, injected into the Edge Function environment as `SUPABASE_SECRET_KEYS`. Never fetched into a session, never in the repo, never in `ai_outputs/`. |
 | Legacy `anon`/`service_role` | **Deactivated** on `pokeportfolio-dev` as of M6 (D-039). Reversible from the dashboard if ever needed; not deleted. |
 
 `.env.local` is filled in and points at the real project
@@ -1229,7 +1337,8 @@ of the deployed bundle (it is public by design) rather than from that command.
   [PR #23](https://github.com/Oskarhn/pokeportfolio/pull/23). All squash-merged, branches deleted.
 - PR #4 was the deliberate negative security test — both invite-only gates disabled to prove the
   suite fails. Closed unmerged, branch deleted. It is not a mistake in the history.
-- `claude_outputs/` is gitignored and must stay that way.
+- `ai_outputs/` is gitignored and must stay that way (per-model subfolders; global output
+  numbering across models).
 - `.claude/launch.json` and `.env.local` are gitignored and machine-local.
 
 ## Known issues and limitations
@@ -1295,7 +1404,7 @@ yes, ordinary cards with `category = "Energy"`, ordinary variants; see "M5 — C
 
 Owner UI requirements pass (Prompt 11), implemented directly rather than deferred — see
 "M7 verification state" above for what has and has not actually been run. Full detail:
-`claude_outputs/output_11.txt`.
+`ai_outputs/Claude_outputs/output_11.txt`.
 
 **Terminology (D-040).** The user-facing screen that browses owned cards is now **Portfolio**,
 not Collection — navigation, headings, copy. `/collection`, `/collection/$holdingId` and
@@ -1395,7 +1504,7 @@ the Supabase secret key, which this session never fetches — this run instead u
 Not a numbered product milestone — a focused correction pass after the owner reviewed the
 deployed M7 UI and gave substantial concrete feedback, applied before M8/M9/M12 build further
 screens on top of a structure the owner had already flagged (DECISIONS.md D-043–D-046,
-`claude_outputs/output_12.txt`).
+`ai_outputs/Claude_outputs/output_12.txt`).
 
 **Navigation.** Bottom/desktop nav rebuilt to four destinations — Home, Search, Portfolio,
 Profile — plus a central quick-add, symmetrical two either side of **+**, replacing M7's
@@ -1496,7 +1605,7 @@ is now folded into the single owner real-device ask below rather than a separate
 
 Turns M6's single-card fast-purchase path into a real multi-line ledger over the same
 `purchases`/`purchase_lines` tables (DATA_MODEL.md §16, FINANCIAL_MODEL.md §1-4/§7, DECISIONS.md
-D-047–D-050, PROJECT_JOURNAL.md 2026-08-24). Full detail: `claude_outputs/output_13.txt`.
+D-047–D-050, PROJECT_JOURNAL.md 2026-08-24). Full detail: `ai_outputs/Claude_outputs/output_13.txt`.
 
 **The write surface.** `create_purchase`/`update_purchase`/`void_purchase`/
 `purchase_spending_summary()`, all `SECURITY INVOKER`, same shape as `add_card_acquisition`.
@@ -1624,7 +1733,7 @@ project convention (same boundary M7.1's session already documented). Everything
 Not a numbered product milestone — a focused correction pass after the owner tested the deployed
 M8 build and reported two concrete usability gaps: no way to remove an accidentally-added card from
 Portfolio, and no clear way to find or create a Purchase despite M8 shipping the ledger. Full
-detail: `claude_outputs/output_14.txt`, DECISIONS.md D-051.
+detail: `ai_outputs/Claude_outputs/output_14.txt`, DECISIONS.md D-051.
 
 **The audit found a real bug before any UI was built.** The prompt required auditing
 `void_acquisition_lot`'s M8-era parent-purchase auto-void rule against a mixed receipt before
@@ -2051,7 +2160,7 @@ real rebuilt bundle.
 | 6 | Give feedback on the deployed M7.1/M8/M8.1/M9 UI (nav, Home, Search, Portfolio, Profile, Purchases, theme, real values) | Informs M10+ and the eventual M12a visual pass — not a blocker, but the owner explicitly wants to be asked here |
 | 7 | **A short signed-in M9 check** — see "M9 — Pricing and snapshots" → prompt §101's outline: open Portfolio and confirm an automatically-priced raw card shows a real value; open the card and check value/source/freshness; confirm the Portfolio total updates; toggle hide/show values; search a common card and confirm visible price references; check Market Movers (may honestly say insufficient history on day one) | Same boundary as items 4/5 |
 | 8 | ~~Real 10,000-lot Portfolio benchmark re-run~~ | **Resolved M9.2/M11** — the benchmark is now a permanent CI step (D-059), re-run again for M11's `list_portfolio` change with no regression (output_19.txt) |
-| 9 | **A short signed-in M11 check** — see "M11 — Sealed Inventory" → "Owner check" in `claude_outputs/output_19.txt` for the exact steps: Search → Sealed, add one product, set quantity/intent, set and clear a manual value, confirm the Cards/Sealed breakdown, create one custom sealed product | Same boundary as items 4/5/7 |
+| 9 | **A short signed-in M11 check** — see "M11 — Sealed Inventory" → "Owner check" in `ai_outputs/Claude_outputs/output_19.txt` for the exact steps: Search → Sealed, add one product, set quantity/intent, set and clear a manual value, confirm the Cards/Sealed breakdown, create one custom sealed product | Same boundary as items 4/5/7 |
 
 This session could not perform items 3/4/5/7/9 itself: creating or signing into even a throwaway
 synthetic account requires entering a password, which is outside what this session performs

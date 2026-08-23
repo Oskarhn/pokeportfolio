@@ -421,7 +421,25 @@ merge the lots into it
 
 ## F10 — Dashboard (Home)
 
-**M7.1 status.** M7.1 built the real structure of this eventual view (M7.1 prompt §15-20):
+**M12 status (implementation candidate on `feat/m12-dashboard`, awaiting review).** The
+structure below is now live: headline value from the latest snapshot via one bounded
+`get_dashboard_summary` request, a real Lightweight-Charts value-over-time chart with
+1D/1W/1M/3M/6M/1Y/MAX ranges (default 3M), period change amount+percentage (zero base renders
+"—%", never a fake number), Total tracked economic position as the secondary figure, data
+quality beneath the headline, raw/graded/sealed breakdown, monthly-spend bars, sales/net
+figures, recent activity, and honest empty/no-history states. Custom-collection scope shows
+correct current figures and says historical membership is not tracked (D-065). The eye masks
+headline, change, chart axis/tooltips and the accessible summary together.
+
+Missing-vs-zero honesty on this screen: before a user's first snapshot exists — new accounts,
+and every pre-existing account during initial deployment's backfill window — the headline and
+Total tracked economic position both render "—" ("not computed yet"), never "0 kr"
+(FINANCIAL_MODEL.md §6.5). A snapshot-derived genuine zero still renders as 0. Beneath the chart
+sits one restrained disclosure sentence: "Older market-value history uses weekly retained market
+observations" (D-070) — it qualifies MARKET-VALUE history only; purchases, sales and cost basis
+are exact frozen records and are never described as approximate.
+
+Original structure (M7.1) for reference:
 
 ```
 [brand, mobile only]
