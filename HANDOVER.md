@@ -4,23 +4,61 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-**Last updated:** 2026-08-23 — **M1–M11 are complete in code, merged and deployed. M12
-(Dashboard) exists as an IMPLEMENTATION CANDIDATE on `feat/m12-dashboard` and is NOT merged,
-NOT migrated to `pokeportfolio-dev`, and NOT deployed anywhere. The independent adversarial test
-package has run against the candidate AND Claude's full adversarial review is complete
-(CHANGES_REQUIRED: 3 HIGH / 3 MEDIUM / 3 LOW); all findings are fixed on the branch and a
-targeted delta re-verification is the NEXT step before anything in that branch touches a hosted
-project — merge, migration, cron activation and the initial backfill are all explicitly
-post-verification steps.** See "M12 — Dashboard (implementation candidate)" below; everything
-beneath it describes the deployed M11 state.
+**Last updated:** 2026-08-23 — **M1–M12 are complete in code, merged and deployed. M12
+(Dashboard) was merged through PR #35 (squash, `e79436841d72365141ae34ecf99d9de34be79448` on
+`main`) after Claude Prompt 24's APPROVED delta review, then taken through the controlled
+release phase: all six M12 migrations are applied to `pokeportfolio-dev`, cron is live and its
+real ticks are succeeding, the initial backfill has converged, hosted security checks are green,
+and Cloudflare serves the M12 build (`deployment-check.mjs` 28/28). The one open item is the
+owner-facing signed-in Dashboard check (PENDING_OWNER).** See "M12 — Dashboard (released)"
+below; everything beneath it describes earlier milestones.
 
 ---
 
-## M12 — Dashboard (implementation candidate, AWAITING DELTA RE-VERIFICATION)
+## M12 — Dashboard (released: merged, migrated, backfilled, deployed)
 
-Branch `feat/m12-dashboard`, draft PR open against `main` titled "M12: Dashboard — OX Alpha
-candidate" marked DO NOT MERGE. Production state unchanged: no hosted migration was run, no Edge
-Function touched, no cron row created outside migrations, nothing merged.
+Merged via PR #35 (squash commit `e79436841d72365141ae34ecf99d9de34be79448`; source branch
+deleted). Historical independent-test source PR #36 was closed rather than merged separately —
+its content shipped inside PR #35.
+
+**Release verification actually run against `pokeportfolio-dev` (2026-08-23):**
+
+- **Preflight.** Project identity confirmed via CLI API (`nopmkroeygmlvndzjjqs` =
+  pokeportfolio-dev); migration drift preflight clean (all M1–M11 applied, exactly the six M12
+  migrations pending); cluster `statement_timeout` = 120 s (inherited by `postgres`, which both
+  cron and the drain use — no change made or needed at p_batch_users=1).
+- **Generated types check.** Fresh `supabase gen types --linked` compared against the committed
+  hand-maintained `database.types.ts`: every difference is generator-version noise (newer CLI's
+  metadata blocks/identity-column representation/reordering/view-relationship inference), the
+  known intentional `p_fx_rate_to_nok` string divergence, expected entries for service-only
+  functions nothing in `src/` calls, or a newer-generator nullability policy across ALL RPC
+  results that is provably wrong against the SQL (THP/TTEP are genuinely nullable when no
+  snapshot exists — asserted by test). Committed file correct; approved SHA never changed.
+- **Migrations.** All six M12 migrations applied cleanly in order
+  (`20260830120000`…`20260830120050`). Hosted objects verified: three tables RLS-on;
+  nine functions with reviewed signatures; cron rows exactly as reviewed.
+- **Cron live.** `m12-recompute-snapshots` at :07/:22/:37/:52 and `m12-daily-snapshot-sweep`
+  at 05:11 UTC, active; M9 jobs untouched. The first real tick after activation (20:37 UTC)
+  already ran and succeeded against an empty queue.
+- **Security.** `grant-audit.sql` clean; snapshots SELECT-own-only with zero browser write
+  grants/policies; queue/runs carry no browser grants at all; engine/trigger routines
+  service_role-only EXECUTE; `remote-security-check.mjs` 17/17 (phase 1); a forged-identity
+  read returns an entirely empty summary (NULL dates/money, zero counts) — no cross-user data.
+- **Initial backfill.** `enqueue_portfolio_daily_maintenance()` enqueued the existing user base
+  (1 user); drained one user per call at `p_batch_users := 1` (~2 s wall clock including client
+  overhead, far inside the timeout); queue converged to 0 rows; run record shows
+  users_processed=1, snapshots_written=1, error=null — a single current-date snapshot row for a
+  user whose tracked history starts today, no fabricated history.
+- **Deployment.** Cloudflare rebuilt on merge; the live service-worker manifest references
+  exactly the entry chunk produced by building `main` locally (`index-B_M9bN28.js`).
+  `deployment-check.mjs` **28/28** (first fully automated complete pass since M11, including all
+  37 chunks, CSP, project-ref, secret and PWA checks).
+
+**Still pending (PENDING_OWNER):** the signed-in Dashboard check — no safe automated
+authentication exists this session (standing no-sign-in boundary since M7.1; INVITE_TOKEN
+unavailable). Owner checklist: log in → Home renders the dashboard and does not sit on
+"Updating…" forever → switch 1W/3M/MAX → toggle hide-values over chart and figures → check
+Raw/Graded/Sealed breakdown and spending sections load → confirm no error/blank screen.
 
 **Independent adversarial validation (Prompt 21) has run.** The implementation-blind contract
 package from `test/m12-independent-adversarial` (draft PR #36, authored without inspecting this
@@ -78,7 +116,8 @@ D-068 gained a concrete multi-unit partial-disposal data proof.
   price/FX/thinning facts fan out statement-level to affected owners; sealed intent, storage,
   tags, favourites and collection membership deliberately dirty NOTHING.
 - **Cron** (`20260830120040`): every-15-min drain at :07/:22/:37/:52 (offset from M9 ingest)
-  plus a daily sweep. Migration-only until post-review deployment.
+  plus a daily sweep. Applied to the hosted project and verified live (first real tick
+  succeeded).
 - **Reads** (`20260830120030`): four SECURITY INVOKER RPCs — `get_dashboard_summary` (headline +
   data quality + lifetime figures + honest `pending_recompute` in ONE request),
   `get_portfolio_history` (stored NOK + D-067 historical display-FX + coverage flags),
@@ -106,40 +145,23 @@ chart-library adoption with attribution, display-FX rule, DCB adjustment-share r
 D-069 (reversed ranges rejected), D-070 (cache stays rebuildable; one-time historical CMV
 adjustment at the compaction boundary) and D-071 (MAX = up to four years of history).
 
-**Verification actually run on this branch:** `pnpm typecheck` / `pnpm lint` / `pnpm
-format:check` clean; `pnpm test` 125/125 (17 new dashboard domain tests); `pnpm build` green
-with bundle measured (entry ~320→373 KB raw / ~98→113 KB gzip; chart lib 194 KB raw / 62 KB
-gzip in a lazy chunk loaded only once ≥2 covered points exist). CI state at handover time:
-see the draft PR's checks — db-tests must show all migrations applying from scratch, the new
-M12 suites green inside the privilege-convergence cycle, both permanent benchmarks passing, and
-the NEW snapshots benchmark measuring rebuild/incremental/Home-read/storage at ~10k-lot scale.
-`database.types.ts` was hand-updated (no local Docker, established precedent); replace with CI's
-generated artifact and re-apply the known `p_fx_rate_to_nok` string divergence before trusting
-it further.
-
-**Explicitly NOT done (PENDING POST-VERIFICATION DEPLOYMENT):** hosted migration push; cron
-activation on the real project; initial backfill for existing users; deployment-check/
-remote-security-check against a real deployment; any owner-facing signed-in check. A drain
-fault-injection test (forcing a rebuild failure mid-drain without DDL access) was not achievable
-from the test harness; the subtransaction retention contract is asserted structurally instead.
-
-**Initial backfill runbook (when deployment is finally approved — do NOT run yet).** The
-migrations enqueue nothing for pre-existing users by design. After migration + cron activation:
-`select enqueue_portfolio_daily_maintenance();` once, then drain REPEATEDLY until the queue is
-empty. For that one-time full-history backfill, use SMALL BATCHES at ≤10 users: pass
-`p_batch_users := 1` (one user per drain call), because each user's entire history rebuilds
-inside one outer transaction and a single oversized batch is the largest transaction this
-architecture will ever run. The steady-state 15-minute cron keeps its default batch of 20.
+**Verification actually run (final, at the merged SHA):** `pnpm typecheck` / `pnpm lint` /
+`pnpm format:check` clean; `pnpm test` 130/130; `pnpm build` green with bundle measured (entry
+374.00 KB raw / ~113 KB gzip; chart lib 194 KB raw / 62 KB gzip in a lazy chunk loaded only once
+≥2 covered points exist). CI green on both jobs at the released SHA (`build-and-test`; `db-tests`
+including all migrations from scratch, the M12 suites inside the privilege-convergence cycle,
+both permanent benchmarks and the new snapshots benchmark). The hand-maintained
+`database.types.ts` was compared against a fresh generated artifact in the release phase — see
+the preflight note above for why the committed file stands.
 
 ---
 
 ## Status
 
-**M1-M11 merged/deployed. M12 = implementation candidate whose review findings are all fixed,
-awaiting targeted delta re-verification (above). No open
-M9/M10/M11-family item remains.** The standing owner-device check item carried since M7.1 still
-applies to deployed surfaces. Do not begin M12a or M13 until M12 is approved, merged and
-verified against the hosted project.
+**M1-M12 merged/deployed. No open M9/M10/M11/M12-family engineering item remains; the one open
+item is the M12 owner signed-in Dashboard check (PENDING_OWNER above).** The standing
+owner-device check item carried since M7.1 still applies to deployed surfaces. Do not begin M12a
+or M13 before the owner confirms the Dashboard renders correctly in production.
 
 ## M9 — Pricing and snapshots
 
@@ -836,11 +858,14 @@ baseline. PR #33 merged (squash, branch deleted); post-merge CI on `main` green.
 1. Owner-facing signed-in check — same standing boundary as every milestone since M7.1. See "Owner
    check" in `ai_outputs/Claude_outputs/output_19.txt` for the exact steps.
 
-## Deployed state (now M11 — PR #33 merged and deployed)
+## Deployed state (now M12 — PR #35 merged and deployed)
 
-The application is deployed and reachable: **https://pokeportfolio-dev.pages.dev**, on the M11
-state (PRs #14 through #33 all merged; M11's #33 is the newest — #32 was the M10 docs handover).
-The owner has a working administrator account on the development project, the shared catalog holds
+The application is deployed and reachable: **https://pokeportfolio-dev.pages.dev**, on the M12
+state (PRs #14 through #35 all merged; M12's #35 is the newest — #34 was the M11 docs handover).
+Home is the real portfolio dashboard (headline, period chart with TradingView attribution,
+raw/graded/sealed breakdown, monthly spend, recent activity — all honest about missing data and
+pending recomputes). The owner has a working administrator account on the development project,
+the shared catalog holds
 the real English and Japanese physical Pokémon TCG card set (M5), and the deployed build lets the
 owner search a card (with visible card artwork, a set-browsing carousel, and a favourite filter) or
 a **sealed product** (curated + their own custom products), add either to their Portfolio with real

@@ -10,7 +10,7 @@ they were**.
 
 ## [Unreleased]
 
-### Fixed — 2026-08-30 — M12 review findings (implementation candidate, on `feat/m12-dashboard`)
+### Fixed — 2026-08-30 — M12 review findings (merged with M12)
 
 The independent adversarial review of the M12 candidate returned CHANGES_REQUIRED; every finding
 is closed. H1: a manual valuation ended by an explicit clear now STAYS cleared when an unrelated,
@@ -31,7 +31,7 @@ initial-backfill runbook specifies one-user-at-a-time draining; the stale privil
 `m12_recompute_pending_for_self` is corrected; D-068 gained a concrete multi-unit partial-disposal
 data proof.
 
-### Added — 2026-08-30 · M12 Dashboard (implementation candidate, awaiting review)
+### Added — 2026-08-30 · M12 Dashboard (released)
 
 Home is now the real investment-style portfolio dashboard. A derived `portfolio_snapshots` cache
 (one end-of-business-day state per user per date) is maintained by a database-side recompute
@@ -60,6 +60,12 @@ historical membership tracking does not exist (D-065).
 Security posture: snapshots are owner-read-only with no browser write grant of any kind; the
 recompute queue/run log are invisible to browsers; every engine routine refuses authenticated
 callers at the privilege level; admin gains no dashboard bypass.
+
+Released through PR #35 (squash `e794368`) after an APPROVED independent delta review, then
+deployed in a controlled release: all six M12 migrations applied to `pokeportfolio-dev`, cron
+live and tick-verified, initial backfill converged at one-user-per-drain batches, hosted grant
+audit and remote security checks green, Cloudflare deployment verified by the full automated
+`deployment-check.mjs` (28/28). The signed-in Dashboard check remains with the owner.
 
 ### Added — 2026-08-29 · M11 Sealed Inventory
 
