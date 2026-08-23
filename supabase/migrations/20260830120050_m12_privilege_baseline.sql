@@ -112,6 +112,17 @@ grant execute on function public.get_recent_activity(int) to authenticated;
 revoke all on all tables in schema public from anon, authenticated;
 revoke all on all sequences in schema public from anon, authenticated;
 
+-- Service role holds full data-plane access, explicitly. Every table in this schema is created
+-- by a migration running as postgres, and CI proved (M12, first db-tests run) that the stack's
+-- implicit service_role coverage does NOT reliably reach migration-created tables — the
+-- snapshot-cache suites failed with plain "permission denied" on SELECT under the service key
+-- while every pre-existing table worked. service_role is trusted infrastructure (it already
+-- bypasses RLS); stating its grant here makes the engine's access independent of whatever
+-- platform default privileges happen to exist. The browser-reachable surface above is unchanged:
+-- this grant names service_role only, and the audit checks anon/authenticated exclusively.
+grant all on all tables in schema public to service_role;
+grant all on all sequences in schema public to service_role;
+
 grant select on
   public.card_series,
   public.card_sets,

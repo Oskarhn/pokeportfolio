@@ -142,25 +142,31 @@ describe('M12 snapshot cache is owner-read-only', () => {
 
 describe('M12 queue and run log are service-internal (prompt §93)', () => {
   it('users can neither read nor write the recompute queue — own or anyone’s', async () => {
-    const { data: read } = await clientA.from('portfolio_recompute_queue').select('*')
-    expect(read).toEqual([]) // RLS: no policies at all
+    // No grant at all: PostgREST answers a SELECT with a privilege ERROR, not an empty list —
+    // the stronger boundary (the table does not exist as far as this session is concerned).
+    const { data: read, error: readError } = await clientA
+      .from('portfolio_recompute_queue')
+      .select('*')
+    expect(readError?.message.toLowerCase()).toContain('permission')
+    expect(read).toBeNull()
 
     const { error: insertError } = await clientA.from('portfolio_recompute_queue').insert({
       user_id: userB.id, // enqueue work for the victim
       dirty_from: daysAgo(100),
     })
-    expect(insertError).not.toBeNull()
+    expect(insertError?.message.toLowerCase()).toContain('permission')
 
     const { error: selfInsertError } = await clientA.from('portfolio_recompute_queue').insert({
       user_id: userA.id,
       dirty_from: daysAgo(1),
     })
-    expect(selfInsertError).not.toBeNull()
+    expect(selfInsertError?.message.toLowerCase()).toContain('permission')
   })
 
   it('the run log is equally unreachable', async () => {
-    const { data } = await clientA.from('portfolio_recompute_runs').select('*')
-    expect(data).toEqual([])
+    const { data, error } = await clientA.from('portfolio_recompute_runs').select('*')
+    expect(error?.message.toLowerCase()).toContain('permission')
+    expect(data).toBeNull()
   })
 
   it('the engine routines refuse authenticated callers at the privilege level', async () => {
@@ -196,8 +202,10 @@ describe('M12 queue and run log are service-internal (prompt §93)', () => {
     expect(monthly.error).not.toBeNull()
     const activity = await anon.rpc('get_recent_activity', { p_limit: 5 })
     expect(activity.error).not.toBeNull()
+    // anon holds NO grant on the cache: a privilege error, not an empty list.
     const snapshots = await anon.from('portfolio_snapshots').select('*')
-    expect(snapshots.data).toEqual([])
+    expect(snapshots.error?.message.toLowerCase()).toContain('permission')
+    expect(snapshots.data).toBeNull()
   })
 })
 
@@ -222,8 +230,9 @@ describe('M12 dashboard reads are scoped and admin gains no bypass (prompt §97)
   it('history and monthly spend return only the caller’s data', async () => {
     const history = await clientA.rpc('get_portfolio_history', { p_display_currency: 'NOK' })
     expect(history.error).toBeNull()
-    // A rebuilt 30 days of history; the row count proves the read answered for THIS user.
-    expect((history.data as unknown[]).length).toBe(31)
+    // The seeded lot's acquired_on (20 days ago) is the first tracked date, so the stored series
+    // covers exactly days −20…0 — the engine never fabricates rows before ownership began.
+    expect((history.data as unknown[]).length).toBe(21)
 
     const monthly = await clientA.rpc('get_monthly_spend', { p_months: 6 })
     expect(monthly.error).toBeNull()

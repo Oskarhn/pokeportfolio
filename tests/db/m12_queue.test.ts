@@ -326,13 +326,16 @@ describe('M12 shared market-data invalidation', () => {
     await service.from('portfolio_recompute_queue').delete().eq('user_id', user.id)
     await service.from('portfolio_recompute_queue').delete().eq('user_id', sealedOnlyUser.id)
 
+    // The DATE is what the assertion needs; the VALUE deliberately matches the rate every other
+    // suite converts against, so this row can never shift another suite's as-of arithmetic even
+    // though it is the most recent EUR observation on the shared stack.
     await service.from('fx_rates').upsert(
       [
         {
           base_currency: 'EUR',
           quote_currency: 'NOK',
           rate_date: daysAgo(1),
-          rate: '11.41000000',
+          rate: '11.50000000',
           source: 'norges_bank',
         },
       ],

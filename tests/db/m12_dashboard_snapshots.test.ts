@@ -286,9 +286,10 @@ beforeAll(async () => {
   user = await createSyntheticUser(service, 'm12-snap-a')
   otherUser = await createSyntheticUser(service, 'm12-snap-b')
 
-  // Deterministic FX facts: EUR/NOK 11.5 ancient (covers every old fixture), USD/NOK 10, and a
-  // LATER EUR re-rate (12.0, 30 days ago) so the historical display-FX rule can show real
-  // movement between two NOK-equal days.
+  // Deterministic FX facts — deliberately ANCIENT only. This suite shares the ephemeral stack's
+  // fx_rates with the pre-existing M9/M9.1 fixtures: any EUR rate dated inside their observation
+  // windows would silently win their as-of conversions (real cross-suite contamination CI
+  // caught). The display-FX re-rate lives in its own test, dated even older than these.
   await service.from('fx_rates').upsert(
     [
       {
@@ -303,13 +304,6 @@ beforeAll(async () => {
         quote_currency: 'NOK',
         rate_date: daysAgo(400),
         rate: '10.00000000',
-        source: 'norges_bank',
-      },
-      {
-        base_currency: 'EUR',
-        quote_currency: 'NOK',
-        rate_date: daysAgo(30),
-        rate: '12.00000000',
         source: 'norges_bank',
       },
     ],
@@ -1197,50 +1191,67 @@ describe('M12 dashboard aggregates', () => {
   it('display-currency conversion uses the historical rate of each point and never rewrites storage (D-067)', async () => {
     const u = await createSyntheticUser(service, 'm12-displayfx')
     try {
+      // Entirely ancient window so this test's own re-rate can never become the as-of winner
+      // for any OTHER suite's recent-dated observations (cross-suite contamination CI caught):
+      // base rate @320 = 11.5, re-rate @280 = 12.0, observation @305.
+      await service.from('fx_rates').upsert(
+        [
+          {
+            base_currency: 'EUR',
+            quote_currency: 'NOK',
+            rate_date: daysAgo(280),
+            rate: '12.00000000',
+            source: 'norges_bank',
+          },
+        ],
+        { onConflict: 'base_currency,quote_currency,rate_date,source' },
+      )
       const variant = await createTestVariant('dfx')
-      await makeHolding(u.id, { variantId: variant, acquiredDaysAgo: 40 })
-      await addPrice({ variantId: variant, valueMinor: 1000, daysAgo: 35 }) // 10 € → 115 øre… 11500
+      await makeHolding(u.id, { variantId: variant, acquiredDaysAgo: 310 })
+      await addPrice({ variantId: variant, valueMinor: 1000, daysAgo: 305 }) // 10.00 EUR → 115.00 NOK
 
-      await rebuild(u.id, 45)
+      await rebuild(u.id, 320)
 
       const { data: nok, error: nokError } = await service.rpc('get_portfolio_history', {
         p_display_currency: 'NOK',
-        p_from: daysAgo(45),
-        p_to: daysAgo(1),
+        p_from: daysAgo(320),
+        p_to: daysAgo(260),
       })
       if (nokError) throw new Error(nokError.message)
 
       const { data: eur, error: eurError } = await service.rpc('get_portfolio_history', {
         p_display_currency: 'EUR',
-        p_from: daysAgo(45),
-        p_to: daysAgo(1),
+        p_from: daysAgo(320),
+        p_to: daysAgo(260),
       })
       if (eurError) throw new Error(eurError.message)
 
-      const nokPoint = (
-        nok as unknown as { snapshot_date: string; market_value_nok_minor: string }[]
-      ).at(-1)!
-      const eurPoint = (
-        eur as unknown as {
-          snapshot_date: string
-          market_value_nok_minor: string
-          display_value_minor: string | null
-        }[]
-      ).at(-1)!
-      expect(BigInt(nokPoint.market_value_nok_minor)).toBe(11500n)
+      type Row = {
+        snapshot_date: string
+        market_value_nok_minor: string
+        display_value_minor: string | null
+      }
+      const rows = eur as unknown as Row[]
+      const at = (d: number) => rows.find((r) => r.snapshot_date === daysAgo(d))!
 
-      // Recent days resolve against the LATER rate (12.0, 30 days ago): 11500/12 = 958.33 → 95833.
-      expect(eurPoint.display_value_minor).not.toBeNull()
-      expect(BigInt(eurPoint.display_value_minor as string)).toBe(95833n)
-      // Storage untouched: the NOK column equals the stored snapshot regardless of display param.
-      expect(BigInt(eurPoint.market_value_nok_minor)).toBe(11500n)
+      // The covered window is exactly [observation date, observation date + 30]; storage is
+      // untouched by the display parameter.
+      expect(at(305).market_value_nok_minor).toBe('11500')
+      expect(at(276).market_value_nok_minor).toBe('11500')
+      expect(at(305).display_value_minor).not.toBeNull()
 
-      // A day inside the OLD rate window converts at 11.5: day 35 itself.
-      const day35 = (
-        eur as unknown as { snapshot_date: string; display_value_minor: string | null }[]
-      ).find((r) => r.snapshot_date === daysAgo(35))!
-      expect(day35.display_value_minor).not.toBeNull()
-      expect(BigInt(day35.display_value_minor as string)).toBe(1000n) // 11500 / 11.5 = 1000 øre exactly
+      // Day 305 resolves against the @320 rate: 11500 / 11.5 = exactly 1000 EUR minor units.
+      expect(BigInt(at(305).display_value_minor as string)).toBe(1000n)
+      expect(BigInt(at(290).display_value_minor as string)).toBe(1000n)
+
+      // From the re-rate's date onward the SAME stored NOK point converts differently:
+      // 11500 / 12 = 958.33… → 958 EUR minor. Display history legitimately includes FX movement.
+      expect(BigInt(at(280).display_value_minor as string)).toBe(958n)
+      expect(BigInt(at(276).display_value_minor as string)).toBe(958n)
+
+      // And the NOK series is identical between calls — conversion is presentation-only.
+      const nokRows = nok as unknown as { snapshot_date: string; market_value_nok_minor: string }[]
+      expect(nokRows.at(-1)?.market_value_nok_minor).toBe('11500')
     } finally {
       await deleteSyntheticUser(service, u.id)
     }
