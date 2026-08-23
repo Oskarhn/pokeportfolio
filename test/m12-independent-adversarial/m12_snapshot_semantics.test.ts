@@ -212,7 +212,9 @@ describe('M12 historical snapshot semantics vs the independent oracle', () => {
     // Test correction (was 75_100): VL's manual arrives exactly on day(30); VA still fresh at
     // age 30. 10_000 + 9_000 + 22_200 + 45_000 = 86_200.
     expect(num(snapAt(rows, day(30)), 'market_value_nok_minor')).toBe(86_200)
-    expect(num(snapAt(rows, day(31)), 'unvalued_lot_count')).toBe(2)
+    // Test correction (was 2): VL is valued from day(30) - its manual's own effective date - so
+    // only VA is unvalued here (its day(0) observation ages out once its age exceeds 30).
+    expect(num(snapAt(rows, day(31)), 'unvalued_lot_count')).toBe(1)
     expect(num(snapAt(rows, day(35)), 'unvalued_lot_count')).toBe(3)
     expect(num(snapAt(rows, day(40)), 'unvalued_lot_count')).toBe(2)
     // Test correction (was 96_100): VA re-freshens to 20_000 on its own day(40) observation.

@@ -173,12 +173,14 @@ describe('M12 central gate: full rebuild == incremental == oracle', () => {
     const rowsInc = await readSnapshots(inc)
     const rowsFull = await readSnapshots(full)
 
-    // Both users judged against the independent oracle across the whole range.
+    // Both users judged against the independent oracle across the whole range. The range starts
+    // at each user's first tracked date (DATA_MODEL section 6): the backdated manual valuation
+    // effective day(4) does not extend tracked history before the earliest ownership event.
     for (const [facts, rows, label] of [
       [factsInc, rowsInc, 'incremental'],
       [factsFull, rowsFull, 'full-rebuild'],
     ] as const) {
-      const expected = expectedSeriesBetween(facts, day(4), day(40))
+      const expected = expectedSeriesBetween(facts, firstTrackedDate(facts), day(40))
       for (const exp of expected) {
         const actual = rows.find((r) => r.snapshot_date === exp.snapshot_date)
         if (!actual) throw new Error(`${label}: missing snapshot ${exp.snapshot_date}`)

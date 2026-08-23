@@ -76,17 +76,16 @@ describe('M12 recompute queue mechanics', () => {
       Date.parse(day(70)),
     )
     await drainQueue(surface)
-    await sellLots(env, day(65), [{ lotId: acq.lotId, quantity: 1, unitGrossMinor: 7_000 }])
+    // The day(65) re-entry IS the moved sale; keep it live so scenario F can move it again.
+    const saleEarly = await sellLots(env, day(65), [
+      { lotId: acq.lotId, quantity: 1, unitGrossMinor: 7_000 },
+    ])
     await drainQueue(surface)
 
     // Scenario F: move it LATER (day 65 -> day 75) via the documented void+re-enter path
     // (update_sale cannot move a sale; a lot with zero remaining quantity cannot be sold again,
     // so the day(65) sale must be voided before the day(75) re-entry). Both boundaries coalesce:
     // the void dirties day(65), the re-entry proposes day(75), LEAST keeps day(65).
-    const saleEarly = await sellLots(env, day(65), [
-      { lotId: acq.lotId, quantity: 1, unitGrossMinor: 7_000 },
-    ])
-    await drainQueue(surface)
     await voidSale(env, saleEarly.saleId)
     await sellLots(env, day(75), [{ lotId: acq.lotId, quantity: 1, unitGrossMinor: 7_000 }])
     const rowF = await readQueueRow(env)
