@@ -97,9 +97,11 @@ attach notes to those tags. Until then: no tags, no releases.
 
 ## 9. What never gets committed
 
-- `claude_outputs/` — the mentor-handoff channel. Gitignored; verify with `git check-ignore` on
-  any commit that touches `.gitignore`.
-- `sequence_state.txt` — session-sequencing state, gitignored alongside `claude_outputs/`.
+- `ai_outputs/` — the per-model mentor-handoff channel (`ai_outputs/Claude_outputs/`,
+  `ai_outputs/Ox_Alpha_outputs/`). Gitignored; verify with `git check-ignore` on any commit that
+  touches `.gitignore`.
+- `ai_outputs/sequence_state.txt` — global cross-model session-sequencing state, gitignored
+  alongside the archive.
 - Any chat transcript, prompt text, or reference to the prompt cycle that produced a piece of
   work. The repository documents the project, not the conversation.
 - Secrets of any kind — see [SECURITY.md](SECURITY.md) §6 and [COST_POLICY.md](COST_POLICY.md).

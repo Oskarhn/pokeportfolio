@@ -177,6 +177,24 @@ jobs:
       - name: Database and authorization tests
         run: pnpm test:db
 
+      # The independently written M12 adversarial contract package (test/m12-independent-adversarial/,
+      # authored implementation-blind on test/m12-independent-adversarial) judged against this same
+      # ephemeral stack. Two steps, both mandatory: the standalone strict typecheck of the package,
+      # then every DB-gated suite for real — the differential oracle users, queue mechanics,
+      # security and honesty suites all execute here, never a compile-only gate.
+      - name: Independent M12 adversarial suite (typecheck)
+        run: pnpm exec tsc -p test/m12-independent-adversarial/tsconfig.json --noEmit
+
+      - name: Independent M12 adversarial suite (DB-gated execution)
+        run: pnpm test:m12-adversarial
+
+      # Separate validation step (audit, not microbenchmark theatre): catastrophic-only thresholds
+      # per TESTING.md/D-059 policy. Thresholds are never weakened to obtain green.
+      - name: Independent M12 adversarial scale audit
+        run: pnpm test:m12-adversarial perf
+        env:
+          M12_PERF_AUDIT: '1'
+
       # M9.1 re-run of the M7 10,000-lot Portfolio gate (TESTING.md §7, D-054): list_portfolio grew
       # a real resolver join in M9, and no session between M9 and M9.1 re-measured it against real
       # data. Safe here because it needs only this ephemeral stack's local well-known service-role

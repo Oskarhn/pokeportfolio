@@ -1348,7 +1348,7 @@ are invoked by `pg_cron` via `pg_net`, with the bearer secret read from Supabase
 (`20260826120050_m9_cron_schedule.sql`) — never a literal in migration SQL. `thin_price_snapshots()`
 is scheduled directly as a SQL command (no HTTP round trip needed for a same-database function).
 Full architecture, batch sizing and cadence reasoning: ARCHITECTURE.md and
-`claude_outputs/output_15.txt`.
+`ai_outputs/Claude_outputs/output_15.txt`.
 
 ## 18. M9.1 implementation notes
 

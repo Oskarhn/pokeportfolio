@@ -85,7 +85,12 @@ desktop.ini
 .claude/
 *.session.json
 transcripts/
-claude_outputs/
+
+# Per-model output archives (local-only; global numbering across models).
+# Permanent convention: ai_outputs/<MODEL>_outputs/output_N.txt
+/ai_outputs/
+# Legacy paths kept defensively; the directory was renamed to ai_outputs/ 2026-08-23.
+/claude_outputs/
 claude outputs/
 claude-outputs/
 output_*.txt
