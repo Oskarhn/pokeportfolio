@@ -7,6 +7,7 @@ import {
   monthlySpendBars,
   resolveRangeWindow,
   safeMajorUnits,
+  ttepDisplayState,
   toChartSeries,
   type HistoryPoint,
 } from '../../src/domain/dashboard'
@@ -201,5 +202,25 @@ describe('accessibleHistorySummary', () => {
       '2026-08-03: 250.00 kr',
     ])
     expect(accessibleHistorySummary(rows, true)).toEqual(['2026-08-01: ••••', '2026-08-03: ••••'])
+  })
+})
+
+describe('ttepDisplayState', () => {
+  it('NULL means unavailable — the missing state, never a fabricated 0 kr', () => {
+    // Every brand-new account before its first drain, and every pre-existing account during
+    // initial deployment's backfill window, lands here. "0 kr" would be a false statement.
+    expect(ttepDisplayState(null, false)).toEqual({ kind: 'missing' })
+    expect(ttepDisplayState(undefined, false)).toEqual({ kind: 'missing' })
+  })
+
+  it('a snapshot-sourced genuine zero is a real answer and stays visible as 0', () => {
+    expect(ttepDisplayState(0n, false)).toEqual({ kind: 'known', minorUnits: 0n })
+  })
+
+  it('hide_values masks any present value without turning it into missing (or zero)', () => {
+    expect(ttepDisplayState(125_000n, true)).toEqual({ kind: 'hidden' })
+    expect(ttepDisplayState(0n, true)).toEqual({ kind: 'hidden' })
+    // Missing stays missing even while hidden — there is nothing to conceal.
+    expect(ttepDisplayState(null, true)).toEqual({ kind: 'missing' })
   })
 })

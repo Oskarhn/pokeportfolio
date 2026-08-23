@@ -404,7 +404,12 @@ Every rule above applies **as of the snapshot date**, not as of today:
 - Manual override: the active value on D is the economic-interval model of D-062 — rows ordered
   by `(effective_from, created_at, id)`, each owning `[effective_from, next effective_from)`,
   the terminal row ending at its clear's wall-clock date when cleared, an active row extending
-  indefinitely.
+  indefinitely. One resolved refinement (D-062's reviewed corner): a row ended by an INDEPENDENT
+  clear stays cleared even when a later, separate valuation arrives with a higher
+  `effective_from` — the gap resolves through the automatic path below, never the resurrected
+  old value. Only an ATOMIC replacement (supersede + insert in one transaction, recognizable by
+  the old row's `superseded_at` equalling some row's `created_at`) keeps the plain
+  next-effective-from boundary.
 - Provider freshness: a price's age on D is `D − snapshot_date`, never
   `today − snapshot_date`. An observation that is stale or even expired *today* was fresh fact
   on the day it resolved, and historical snapshots must say what was true then (tested at the
@@ -418,6 +423,26 @@ Every rule above applies **as of the snapshot date**, not as of today:
 Display-currency conversion of stored NOK history follows D-067: each point converts with the
 FX observed on or before its own date, so EUR/USD charts legitimately include FX movement;
 storage remains NOK and frozen transactional conversions are untouched (F11).
+
+**Compaction and historical market value (D-070).** M9.1's retention policy (D-058: 60 days
+daily, weekly beyond) means the observation set underlying OLD history is itself
+maintained over time. When dense observations cross the boundary and are compacted to weekly
+survivors, an older historical CMV point may adjust ONCE to derive from the retained weekly
+facts. This is accepted explicitly (D-070): snapshots stay a rebuildable cache relative to
+CURRENTLY RETAINED canonical facts; no price or value is fabricated; frozen ledger amounts
+(purchases, sales, FX, cost basis — §2/§4/§7) are structurally untouched by compaction.
+
+### 6.5 TTEP and THP when no snapshot exists yet
+
+Until a user's first `portfolio_snapshots` row exists — every brand-new account between its
+first mutation and its first drain, and every pre-existing account during initial deployment's
+backfill window — CMV is unavailable, so:
+
+- `TTEP = CMV + NSP − CS` is **NULL**, rendered "—", never "0 kr".
+- `THP = CMV + NSP − GPO` is likewise **NULL**: with CMV unavailable the whole expression is
+  unavailable. Coalescing the missing CMV to 0 would fabricate a position out of nothing.
+- The lifetime ledger figures underneath (`GPO`, `CS`, `HS`, `NS`, `RRC`, `PUD`) remain fully
+  real during this window; only the snapshot-derived composite is honestly absent.
 
 ---
 

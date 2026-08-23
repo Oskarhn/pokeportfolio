@@ -1770,6 +1770,27 @@ full-rebuild-equals-incremental demands). Both fail the byte-equality gate or fa
 multi-correction sequences in tests/db/m12_dashboard_snapshots.test.ts. FINANCIAL_MODEL.md §6
 gains the matching historical-resolution wording.
 
+**Resolved after independent review — the clear-then-later-insertion corner.** The original
+statement above left one sequence undefined: a row cleared on day X, then — as a genuinely
+separate later transaction — a NEW valuation inserted with a higher `effective_from`. Reading
+"each row owns up to the next row's effective_from" there resurrects the explicitly cleared
+value across the gap days, silently undoing the user's clear. The schema already distinguishes
+the two ways a row can end, because `now()` is the transaction timestamp:
+
+- ATOMIC REPLACEMENT (`set_manual_valuation` supersedes and inserts in one transaction): the old
+  row's `superseded_at` equals some row's `created_at`. The replacement's `effective_from`
+  defines the economic boundary, exactly as originally documented.
+- INDEPENDENT CLEAR (`clear_manual_valuation`, or any supersession whose timestamp no created_at
+  shares): the row ends at its OWN clear date; the gap before the later insertion resolves
+  through the normal automatic/missing path.
+
+The engine implements this via a pairing test ("does ANY row share this supersession timestamp")
+rather than comparing against the sort-next row — a still-later backdated correction can sort
+between a row and its true successor, and misreading that as a clear would create overlapping
+(double-counted) intervals. Regression tests cover both readings' distinguishing sequences in
+tests/db/m12_dashboard_snapshots.test.ts, the independent oracle
+(test/m12-independent-adversarial), and scenario S/S2 of the adversarial semantics suite.
+
 ## D-063 — M12 snapshot cache shape: the sketch survives audit; coverage flags added
 
 **2026-08-30 · Accepted (implementation candidate, awaiting review)**
@@ -1799,10 +1820,14 @@ silently skip older history (prompt §15/§35). The worker is one pg_cron entry 
 at :07/:22/:37/:52 — deliberately offset from M9's */15 ingest ticks so fresh observations are
 consumed on the next tick rather than racing them — plus a daily sweep guaranteeing current-date
 snapshots even with zero activity and promoting stranded future-dated work once due. Per-user
-subtransactions isolate failures: a queue row is deleted only after its snapshots are written,
-in the same transaction. SECURITY DEFINER on the engine functions is the minimal departure from
-the INVOKER default that shared-market-data invalidation and the cron worker require; browsers
-hold zero EXECUTE on any of them (grant-audit + the authorization suite enforce both).
+failure isolation uses PL/pgSQL subtransactions (savepoints inside ONE outer transaction, not
+per-user commits): a failing user's partial writes roll back to its savepoint, its queue row
+survives, siblings continue — while everything successful in the batch remains part of the outer
+transaction until the function returns (an outer failure rolls the whole batch back together;
+only recompute work is repeated next tick, no corruption either way). SECURITY DEFINER on the
+engine functions is the minimal departure from the INVOKER default that shared-market-data
+invalidation and the cron worker require; browsers hold zero EXECUTE on any of them (grant-audit
++ the authorization suite enforce both).
 
 ## D-065 — M12 custom collections have no historical chart; scope shows current truth only
 
@@ -1842,6 +1867,15 @@ stays enabled — the official docs name it as independently satisfying the link
 the requirement is met twice rather than hidden either way. Fallback visx was not needed and was
 not installed (never two chart solutions).
 
+**Re-verified against live official sources (2026-08-30, review follow-up):** the npm registry
+manifest for lightweight-charts@5.2.1 declares `license: "Apache-2.0"` and carries NO `engines`
+field (confirming again that no Node-version constraint ships at this version); the LICENSE file
+at the v5.2.1 tag is the Apache License 2.0 text ("Copyright 2023 TradingView, Inc." in its
+boilerplate appendix); the NOTICE file at the same tag now reads "TradingView Lightweight
+Charts™ Copyright (c) 2025 TradingView, Inc. https://www.tradingview.com/" — the year moved from
+2022 to 2025 upstream, and PortfolioValueChart.tsx's quoted attribution was updated to match the
+current published text. No licensing incompatibility exists; the library stays.
+
 ## D-067 — M12 display-currency history converts each point with its own date's FX
 
 **2026-08-30 · Accepted (implementation candidate, awaiting review)**
@@ -1865,3 +1899,65 @@ snapshot (prompt §58). The flooring may understate one lot's adjustment share b
 for realized results, which snapshots do not recompute. `lot_cost_adjustments` currently holds
 zero production rows (SELECT-only until M17), so the rule is test-covered rather than
 data-proven today.
+
+## D-069 — Reversed rebuild ranges are rejected, not silently reordered
+
+**2026-08-30 · Accepted (ratified by independent review)**
+
+`rebuild_portfolio_snapshots(user, p_from, p_through)` raises when `p_through < p_from` or either
+date is NULL, rather than normalizing (swapping or clamping) the arguments. Every legitimate
+caller passes a non-reversed range: the drain always passes `dirty_from <= current_date`, the
+daily sweep passes `current_date` for both bounds, and manual operational invocations are
+explicit acts. The only way to produce a reversed range is a genuine swapped-argument mistake at
+an operational console — and launching an unrequested, potentially expensive multi-year rebuild
+with no error signal is strictly worse than failing loudly. Pure input-validation tightening on
+a service-role-only surface; no working path can break. Covered directly in
+tests/db/m12_dashboard_snapshots.test.ts ("M12 input validation") and scenario P of the
+independent adversarial queue suite.
+
+## D-070 — portfolio_snapshots stays a derived, rebuildable cache; historical market value may adjust once where M9.1 compaction removes dense observations
+
+**2026-08-30 · Accepted**
+
+M9.1's retention policy (D-058) keeps daily provider observations for 60 days and thins older
+history to one observation per ISO week per (variant, provider). When those dense observations
+age past the boundary and are compacted, a historical day's market value may legitimately derive
+from a DIFFERENT retained observation than the one that was available when its snapshot row was
+first computed and shown — so an older historical CMV point MAY change once, permanently, as
+compaction reaches it. Accepted deliberately:
+
+1. `portfolio_snapshots` remains disposable and reconstructable from CURRENTLY RETAINED canonical
+   facts. "Rebuildable" therefore never means byte-equality against facts that have since been
+   compacted away — semantic equality after a rebuild is relative to the canonical source set
+   available at that time.
+2. Retained provider observations remain real market facts; nothing is fabricated, interpolated,
+   or invented. Older history simply uses the weekly-resolution observations D-058 already keeps.
+3. Financial ledger history remains FROZEN: purchases, sales, frozen FX, frozen cost basis,
+   spend and proceeds never change through compaction. Compaction touches only market-value
+   derivation from price observations.
+4. Older historical market valuation is an estimate derived from retained market observations —
+   not an accounting ledger — and is disclosed as such in the dashboard UI ("Older market-value
+   history uses weekly retained market observations").
+5. Freezing previously materialized snapshots would silently convert a declared cache into
+   irreplaceable canonical data, change backup semantics for M13, and contradict the cache-not-
+   ledger architecture (D-063/D-064). The alternative — exempting dates with existing snapshot
+   rows from thinning-triggered invalidation — was rejected for exactly that reason.
+
+The full loop is proven in the database by tests/db/m12_retention_rebuild.test.ts: dense history
+→ snapshot built → real `thin_price_snapshots()` runs → invalidation fires from the oldest
+deleted observation → drain recomputes → the adjusted value derives from the retained weekly
+facts with no fabricated zero/missing transition → every frozen ledger column is byte-identical
+before/after → deleting the cache and rebuilding from scratch reproduces the post-compaction
+series exactly.
+
+## D-071 — MAX means up to four years of tracked history
+
+**2026-08-30 · Accepted**
+
+The MAX chart range resolves to the last 1460 days (4 years) of stored snapshots, not
+mathematically unlimited lifetime (`resolveRangeWindow`, src/domain/dashboard.ts). For any user
+whose tracked history is shorter than 4 years — every real user for years to come — MAX shows
+ALL available history, so nothing visible changes until someone crosses the cap. Recorded as a
+decision because it currently lives only as an inline constant: "MAX" must not silently promise
+unbounded lifetime history, and revisiting the constant (e.g. raising it once snapshots' storage
+cost is re-measured) should be conscious, not accidental.

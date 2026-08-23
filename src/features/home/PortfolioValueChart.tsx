@@ -4,8 +4,9 @@
  * CHART LIBRARY / ATTRIBUTION (DECISIONS.md D-066, prompt §7-§9).
  * This surface uses TradingView Lightweight Charts™ v5.2.1 (npm `lightweight-charts`),
  * Apache-2.0 with a NOTICE requirement. The license requires specifying TradingView as the
- * product creator: the NOTICE attribution ("TradingView Lightweight Charts, Copyright (c) 2022
- * TradingView, Inc. https://www.tradingview.com/") lives here in the source, and the required
+ * product creator: the NOTICE attribution ("TradingView Lightweight Charts™, Copyright (c)
+ * 2025 TradingView, Inc. https://www.tradingview.com/" — as published at the v5.2.1 tag)
+ * lives here in the source, and the required
  * user-visible link to https://www.tradingview.com/ is rendered by this component's footer —
  * alongside the chart's own built-in attribution logo (`layout.attributionLogo`, kept at its
  * default-enabled value), which the official docs name as a sufficient way to satisfy the link

@@ -200,3 +200,25 @@ export function monthlySpendBars(
     hasSpend: m.totalMinor > 0n,
   }))
 }
+
+export type TtepDisplayState =
+  { kind: 'missing' } | { kind: 'hidden' } | { kind: 'known'; minorUnits: bigint }
+
+/** Rendering state for Total tracked economic position (prompt §124): the summary RPC returns
+ *  ttep = NULL whenever no portfolio snapshot exists yet — every brand-new account, and every
+ *  pre-existing account during initial deployment's backfill window. NULL means UNAVAILABLE:
+ *  render "—", never a fabricated "0 kr" (DESIGN_SYSTEM.md §7 / CLAUDE.md honesty bar — the
+ *  same missing-vs-zero discipline MoneyDisplay enforces for the headline). A snapshot-sourced
+ *  genuine zero is a real answer and stays visible as 0; hide_values masks any PRESENT value. */
+export function ttepDisplayState(
+  ttepMinor: bigint | null | undefined,
+  hidden: boolean,
+): TtepDisplayState {
+  if (ttepMinor === null || ttepMinor === undefined) {
+    return { kind: 'missing' }
+  }
+  if (hidden) {
+    return { kind: 'hidden' }
+  }
+  return { kind: 'known', minorUnits: ttepMinor }
+}

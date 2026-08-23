@@ -1926,7 +1926,7 @@ export type Database = {
           snapshot_open_lot_count: string | null
           snapshot_unvalued_lot_count: string | null
           thco_nok_minor: string
-          thp_nok_minor: string
+          thp_nok_minor: string | null
           ttep_nok_minor: string | null
           unique_holding_count: string
           uncosted_open_lot_count: string

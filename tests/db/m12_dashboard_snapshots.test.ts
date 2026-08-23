@@ -751,6 +751,83 @@ describe('M12 manual valuation intervals', () => {
     expectSnap(rows, 20, { market_value_nok_minor: 7777 })
     expectSnap(rows, 1, { market_value_nok_minor: 7777 })
   })
+
+  // D-062's resolved corner (independent review finding H1): a CLEAR must stay cleared even
+  // when a LATER, independent valuation arrives with a higher effective_from. The cleared row
+  // ends at its own clear date — the gap resolves through the normal automatic/missing path,
+  // never the resurrected old figure. Distinct from an ATOMIC replacement (set over set, one
+  // transaction), where the replacement's effective_from defines the old row's boundary.
+  it('an explicit clear stays cleared when an independent later valuation follows it', async () => {
+    const variant = await createTestVariant('mv-clear-gap-priced')
+    const { holdingId } = await makeHolding(user.id, { variantId: variant, acquiredDaysAgo: 90 })
+    // Provider facts cover the gap so the test proves the resolver actually FALLS BACK to the
+    // automatic path there, rather than merely observing NULL everywhere.
+    await addPrice({ variantId: variant, valueMinor: 1000, daysAgo: 40 }) // 1000 × 11.5 = 11500
+
+    await setManualValue({
+      userId: user.id,
+      holdingId,
+      valueMinor: 10000,
+      effectiveFromDaysAgo: 30,
+    })
+    // The clear lands on business day −20 — mid-history by construction, not wall-clock now.
+    await clearManualValue(holdingId, 20)
+    // A genuinely SEPARATE transaction, days later in economic terms: nothing supersedes the
+    // already-cleared row; the new row simply arrives with a higher effective_from.
+    await setManualValue({
+      userId: user.id,
+      holdingId,
+      valueMinor: 20000,
+      effectiveFromDaysAgo: 10,
+    })
+
+    await rebuild(user.id, 95)
+    const rows = await readSnapshots(user.id)
+    expectSnap(rows, 31, { market_value_nok_minor: 11500, unvalued_lot_count: 0 }) // pre-manual
+    expectSnap(rows, 30, { market_value_nok_minor: 10000 }) // manual begins
+    expectSnap(rows, 21, { market_value_nok_minor: 10000 }) // last day of the first interval
+    // THE GAP (−20 .. −11): cleared stays cleared → automatic pricing, NEVER the old 10000.
+    expectSnap(rows, 20, { market_value_nok_minor: 11500, unvalued_lot_count: 0 })
+    expectSnap(rows, 15, { market_value_nok_minor: 11500, unvalued_lot_count: 0 })
+    expectSnap(rows, 11, { market_value_nok_minor: 11500, unvalued_lot_count: 0 })
+    expectSnap(rows, 10, { market_value_nok_minor: 20000 }) // the later valuation begins
+    expectSnap(rows, 1, { market_value_nok_minor: 20000 })
+  })
+
+  it('a cleared gap with no provider price at all renders as missing, not as the old value', async () => {
+    const variant = await createTestVariant('mv-clear-gap-unpriced')
+    const { holdingId } = await makeHolding(user.id, { variantId: variant, acquiredDaysAgo: 90 })
+
+    await setManualValue({ userId: user.id, holdingId, valueMinor: 7000, effectiveFromDaysAgo: 30 })
+    await clearManualValue(holdingId, 20)
+    await setManualValue({ userId: user.id, holdingId, valueMinor: 9000, effectiveFromDaysAgo: 10 })
+
+    await rebuild(user.id, 95)
+    const rows = await readSnapshots(user.id)
+    expectSnap(rows, 21, { market_value_nok_minor: 7000, unvalued_lot_count: 0 })
+    // The gap has neither manual nor provider truth: absent is absent — 0 value with the lot
+    // counted unvalued, never the cleared 7000 and never a fabricated number.
+    expectSnap(rows, 20, { market_value_nok_minor: 0, unvalued_lot_count: 1 })
+    expectSnap(rows, 12, { market_value_nok_minor: 0, unvalued_lot_count: 1 })
+    expectSnap(rows, 10, { market_value_nok_minor: 9000, unvalued_lot_count: 0 })
+  })
+
+  it('an atomic replacement keeps the D-062 boundary: old value ends where the new one begins', async () => {
+    const variant = await createTestVariant('mv-replace-boundary')
+    const { holdingId } = await makeHolding(user.id, { variantId: variant, acquiredDaysAgo: 60 })
+
+    await setManualValue({ userId: user.id, holdingId, valueMinor: 100, effectiveFromDaysAgo: 30 })
+    // Normal set-over-set replacement: the old interval's economic end is the NEW row's
+    // effective_from (−20), not the supersession wall-clock moment (~today). If a future change
+    // ever mistook every supersession for a clear, days −19 and −1 would drop to 0/unvalued.
+    await setManualValue({ userId: user.id, holdingId, valueMinor: 200, effectiveFromDaysAgo: 20 })
+
+    await rebuild(user.id, 95)
+    const rows = await readSnapshots(user.id)
+    expectSnap(rows, 21, { market_value_nok_minor: 100, unvalued_lot_count: 0 })
+    expectSnap(rows, 20, { market_value_nok_minor: 200, unvalued_lot_count: 0 })
+    expectSnap(rows, 1, { market_value_nok_minor: 200, unvalued_lot_count: 0 })
+  })
 })
 
 // ── Financial fields per date (prompt Part E, §112) ──────────────────────────────────────────
@@ -970,6 +1047,99 @@ describe('M12 snapshot financial fields', () => {
       await deleteSyntheticUser(service, u.id)
     }
   })
+
+  it('a multi-unit adjustment enters historical DCB by exact proportional share, before and after a partial disposal (D-068 data proof)', async () => {
+    const u = await createSyntheticUser(service, 'm12-adj-partial')
+    try {
+      const variant = await createTestVariant('adj-partial-lot')
+      const { lotId } = await makeHolding(u.id, {
+        variantId: variant,
+        acquiredDaysAgo: 60,
+        quantity: 3,
+        costState: 'known',
+        unitCostNok: 10000, // lot basis 30000
+      })
+
+      // Concrete adjustment fact: 1001 øre landing on day −40 (indivisible by the 3-unit lot
+      // and later by its 2 remaining units — the flooring rule has to show real remainders).
+      // F7: every adjustment traces to a real purchase line, so manufacture the canonical
+      // backing rows exactly as the sibling D-068 fixture does.
+      const { data: feePurchase, error: feePurchaseError } = await service
+        .from('purchases')
+        .insert({
+          user_id: u.id,
+          purchased_on: daysAgo(40),
+          currency: 'NOK',
+          subtotal_minor: 1001,
+          shipping_minor: 0,
+          customs_minor: 0,
+          discount_minor: 0,
+          total_minor: 1001,
+          fx_rate_to_nok: '1',
+          fx_rate_date: daysAgo(40),
+          fx_source: 'manual',
+          total_nok_minor: 1001,
+        })
+        .select('id')
+        .single()
+      if (feePurchaseError) throw new Error(feePurchaseError.message)
+      const { data: feeLine, error: feeLineError } = await service
+        .from('purchase_lines')
+        .insert({
+          purchase_id: feePurchase.id,
+          user_id: u.id,
+          line_type: 'grading_fee',
+          spend_class: 'collectible',
+          quantity: 1,
+          unit_price_minor: 1001,
+          line_total_minor: 1001,
+          attributable_cost_minor: 1001,
+          attributable_cost_nok_minor: 1001,
+        })
+        .select('id')
+        .single()
+      if (feeLineError) throw new Error(feeLineError.message)
+
+      const { error: adjError } = await service.from('lot_cost_adjustments').insert({
+        lot_id: lotId,
+        user_id: u.id,
+        kind: 'grading_fee',
+        purchase_line_id: feeLine.id,
+        amount_minor: 1001,
+        currency: 'NOK',
+        amount_nok_minor: 1001,
+        occurred_on: daysAgo(40),
+      })
+      if (adjError) throw new Error(adjError.message)
+
+      // Partial disposal of one unit on day −30.
+      await sellUnits({
+        userId: u.id,
+        lotId,
+        quantity: 1,
+        daysAgoSold: 30,
+        proceedsMinor: 15000,
+        costBasisAtSaleMinor: 10334,
+      })
+
+      await rebuild(u.id, 65)
+      const rows = await readSnapshots(u.id)
+      // Before the adjustment existed: plain 3 × 10000.
+      expectSnap(rows, 41, { cost_basis_nok_minor: 30000 })
+      // From occurred_on, all three units still held: floor(1001 × 3 / 3) = 1001 → 31001.
+      expectSnap(rows, 40, { cost_basis_nok_minor: 31001 })
+      expectSnap(rows, 31, { cost_basis_nok_minor: 31001 })
+      // After the partial disposal (2 units remain): floor(1001 × 2 / 3) = 667 → 20667 —
+      // the remaining DCB carries the correct PROPORTIONAL historical share, exactly in minor
+      // units, never rounded through a float anywhere along the way.
+      expectSnap(rows, 30, { cost_basis_nok_minor: 20667 })
+      expectSnap(rows, 1, { cost_basis_nok_minor: 20667 })
+      // One physical lot, still open after the partial sale.
+      expectSnap(rows, 30, { open_lot_count: 1 })
+    } finally {
+      await deleteSyntheticUser(service, u.id)
+    }
+  })
 })
 
 // ── FULL vs INCREMENTAL — the M12 gate (prompt §16/§111, TESTING.md §3) ──────────────────────
@@ -1090,9 +1260,80 @@ describe('M12 full rebuild equals incremental recompute exactly', () => {
   })
 })
 
+// ── Input validation (D-069): a reversed range is a malformed call, rejected loudly ─────────
+
+describe('M12 input validation', () => {
+  it('rejects p_through < p_from and NULL bounds instead of silently normalizing (D-069)', async () => {
+    const { error: reversed } = await service.rpc('rebuild_portfolio_snapshots', {
+      p_user_id: user.id,
+      p_from: daysAgo(1),
+      p_through: daysAgo(10),
+    })
+    expect(reversed).not.toBeNull()
+    expect(reversed?.message).toMatch(/reversed range rejected/)
+
+    const { error: nullFrom } = await service.rpc('rebuild_portfolio_snapshots', {
+      p_user_id: user.id,
+      p_from: null as unknown as string,
+      p_through: daysAgo(1),
+    })
+    expect(nullFrom).not.toBeNull()
+  })
+})
+
 // ── Data quality, monthly spend, sales figures, display currency ─────────────────────────────
 
 describe('M12 dashboard aggregates', () => {
+  it('no snapshot yet means TTEP and THP are NULL — never 0-based figures (§124)', async () => {
+    const u = await createSyntheticUser(service, 'm12-null-ttep-thp')
+    try {
+      // Real ledger spend exists, but no drain has ever produced a snapshot row.
+      await makeHolding(u.id, {
+        variantId: await createTestVariant('null-thp'),
+        acquiredDaysAgo: 5,
+        costState: 'known',
+        unitCostNok: 5000,
+      })
+
+      const beforeClient = await signInAs(u)
+      const before = await beforeClient.rpc('get_dashboard_summary').single<{
+        latest_snapshot_date: string | null
+        market_value_nok_minor: string | null
+        ttep_nok_minor: string | null
+        thp_nok_minor: string | null
+        gpo_nok_minor: string
+        cs_nok_minor: string
+      }>()
+      if (before.error) throw new Error(before.error.message)
+      expect(before.data.latest_snapshot_date).toBeNull()
+      expect(before.data.market_value_nok_minor).toBeNull()
+      // CMV is unavailable → TTEP unavailable → THP (CMV + NSP − GPO) unavailable. Both NULL;
+      // fabricating "0" would tell every pre-backfill user their collection is worthless.
+      expect(before.data.ttep_nok_minor).toBeNull()
+      expect(before.data.thp_nok_minor).toBeNull()
+      // …while the frozen ledger stays fully real underneath.
+      expect(BigInt(before.data.gpo_nok_minor)).toBe(5000n)
+      expect(BigInt(before.data.cs_nok_minor)).toBe(5000n)
+
+      // Once a snapshot exists, both formulas behave normally (genuine values incl. negatives).
+      await rebuild(u.id, 10)
+      const afterClient = await signInAs(u)
+      const after = await afterClient.rpc('get_dashboard_summary').single<{
+        latest_snapshot_date: string | null
+        ttep_nok_minor: string | null
+        thp_nok_minor: string | null
+      }>()
+      if (after.error) throw new Error(after.error.message)
+      expect(after.data.latest_snapshot_date).not.toBeNull()
+      // CMV 0 (unpriced variant, honestly counted unvalued) + NSP 0 − CS 5000 = −5000.
+      expect(BigInt(after.data.ttep_nok_minor as string)).toBe(-5000n)
+      // THP = CMV + NSP − GPO = 0 + 0 − 5000.
+      expect(BigInt(after.data.thp_nok_minor as string)).toBe(-5000n)
+    } finally {
+      await deleteSyntheticUser(service, u.id)
+    }
+  })
+
   it('surfaces mixed data quality exactly: automatic/manual/priced/unpriced/uncosted (§113)', async () => {
     const u = await createSyntheticUser(service, 'm12-quality')
     try {
