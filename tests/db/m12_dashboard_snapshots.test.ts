@@ -940,7 +940,6 @@ describe('M12 snapshot financial fields', () => {
           line_total_minor: 999,
           attributable_cost_minor: 999,
           attributable_cost_nok_minor: 999,
-          target_lot_id: lotId,
         })
         .select('id')
         .single()
@@ -1147,7 +1146,9 @@ describe('M12 dashboard aggregates', () => {
       // Uncosted = every lot whose cost_basis_state <> 'known' (FINANCIAL_MODEL ULC): three
       // not_paid lots plus one unknown — the known-cost lot is the only costed one.
       expect(Number(summary.uncosted_open_lot_count)).toBe(4)
-      expect(Number(summary.physical_card_count)).toBe(3) // three CARD units; sealed separate
+      // Same definition portfolio_counts ships: every tracked unit, with sealed broken out
+      // separately below rather than hidden inside an ambiguous total.
+      expect(Number(summary.physical_card_count)).toBe(4)
       expect(Number(summary.sealed_holding_count)).toBe(1)
       // Raw = automatic (2000 minor EUR × 11.5 = 23000 øre) + manual raw holding (12300 øre).
       expect(BigInt(summary.raw_value_nok_minor)).toBe(35300n)
@@ -1207,6 +1208,7 @@ describe('M12 dashboard aggregates', () => {
             quantity: 1,
             unit_price_minor: collectible,
             line_total_minor: collectible,
+            allocated_shipping_minor: shipCollectible,
             attributable_cost_minor: collectible + shipCollectible,
             attributable_cost_nok_minor: collectible + shipCollectible,
           })
@@ -1221,6 +1223,7 @@ describe('M12 dashboard aggregates', () => {
             quantity: 1,
             unit_price_minor: hobby,
             line_total_minor: hobby,
+            allocated_shipping_minor: shipHobby,
             attributable_cost_minor: hobby + shipHobby,
             attributable_cost_nok_minor: hobby + shipHobby,
           })
