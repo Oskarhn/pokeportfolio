@@ -107,7 +107,7 @@ value (`manual_valuations`, pulled forward from M11).
 and against the real deployed project); a gift/pull shows no cost field and no zero; energies
 (bulk quantity 12, real ingested catalog) and manual catalog-missing cards can be added; raw and
 graded never merge. `/collection`, `/collection/$holdingId`, `/add`, `/collection/manual/new`
-deployed and browser-verified. See HANDOVER.md and `claude_outputs/output_10.txt` for full detail,
+deployed and browser-verified. See HANDOVER.md and `ai_outputs/Claude_outputs/output_10.txt` for full detail,
 including the M5 key-exposure follow-up (D-039) closed out in the same milestone.
 
 ### M7 — Organisation and display · **complete**
@@ -142,7 +142,7 @@ artwork, PROJECT_JOURNAL.md 2026-08-22, PR #15). Only the owner's real-iPhone ch
 
 Not a numbered product milestone — a focused correction pass after the owner reviewed the
 deployed M7 UI and gave substantial concrete feedback, applied before M8/M9/M12 build further
-screens on top of a structure the owner had already flagged. Full detail: `claude_outputs/output_12.txt`,
+screens on top of a structure the owner had already flagged. Full detail: `ai_outputs/Claude_outputs/output_12.txt`,
 DECISIONS.md D-043–D-046.
 
 Primary navigation restructured to four destinations (Home/Search/Portfolio/Profile) plus a
@@ -189,7 +189,7 @@ hobby split. Void semantics and guard rules.
 
 **Gate:** E3 and E10 reproduce in the database; `GPO = CS + HS` holds on real data (F1); voiding
 a referenced purchase is blocked with an error naming the blocker. **Met** — see
-`claude_outputs/output_13.txt` and HANDOVER.md. Deployed and verified: CI green (85 domain/property
+`ai_outputs/Claude_outputs/output_13.txt` and HANDOVER.md. Deployed and verified: CI green (85 domain/property
 tests, 320 database/authorization tests including the hostile-grant convergence proof), migrations
 applied to `pokeportfolio-dev`, `grant-audit.sql` clean, `remote-security-check.mjs` 17/17 (phase
 1), `deployment-check.mjs` 28/28 against the real rebuilt bundle. Owner-side signed-in verification
@@ -200,7 +200,7 @@ still outstanding — this session cannot create or sign in with a synthetic acc
 Not a numbered product milestone — a focused correction pass after the owner tested the deployed
 M8 build and found Portfolio's select mode had no way to remove an accidentally-added card, and
 did not discover how to record a Purchase despite M8 shipping the ledger. Full detail:
-`claude_outputs/output_14.txt`, DECISIONS.md D-051.
+`ai_outputs/Claude_outputs/output_14.txt`, DECISIONS.md D-051.
 
 **Gate:** the audit required before building bulk removal found and fixed a real defect —
 `void_acquisition_lot`'s parent-purchase auto-void rule counted only other live lots, so a
@@ -218,7 +218,7 @@ Vault. Valuation resolver (`resolve_variant_market_values`): manual → fresh �
 `use_eu_pricing` provider preference (D-052). Wired into Portfolio (`list_portfolio`,
 `portfolio_counts`), Home, Holding Detail (full provenance + manual set/clear), Card Detail
 (on-demand current price + real snapshot history), and a real Market Movers foundation
-(`get_market_movers`). Full detail: `claude_outputs/output_15.txt`.
+(`get_market_movers`). Full detail: `ai_outputs/Claude_outputs/output_15.txt`.
 
 **Gate:** a simulated provider outage degrades gracefully and nothing reaches zero (F9, F14) —
 verified in `tests/db/m9_valuation_resolver.test.ts`; snapshot volume matches the projection
@@ -233,9 +233,9 @@ a real dedicated screen (period + sort modes, D-056); display-currency conversio
 presentation-only everywhere a resolved value is shown (D-057); `price_snapshots` storage capacity
 is measured, not estimated, and retention adjusted if the measurement required it; the 18-month
 retention test, the value_desc/value_asc pagination edge matrix, and the real 10,000-lot Portfolio
-benchmark (now CI-integrated) all now exist. Full detail: `claude_outputs/output_16.txt`.
+benchmark (now CI-integrated) all now exist. Full detail: `ai_outputs/Claude_outputs/output_16.txt`.
 
-**Gate:** every explicit gap `claude_outputs/output_15.txt` disclosed as "not done" is either closed
+**Gate:** every explicit gap `ai_outputs/Claude_outputs/output_15.txt` disclosed as "not done" is either closed
 or, if genuinely out of this session's reach, disclosed again with the same honesty standard —
 never silently dropped.
 
@@ -247,12 +247,12 @@ first-page regression with real `EXPLAIN (ANALYZE, BUFFERS, SETTINGS)` evidence:
 statistics from the benchmark's own bulk seed, not an application defect — `portfolio_counts()` was
 equally affected in the same cold state, disproving the standing theory that `list_portfolio`'s own
 query shape was the cause. No application SQL changed; the benchmark now runs `ANALYZE` before
-timing and fails CI on a genuine multi-second regression. Full detail: `claude_outputs/output_17.txt`,
+timing and fails CI on a genuine multi-second regression. Full detail: `ai_outputs/Claude_outputs/output_17.txt`,
 DECISIONS.md D-059.
 
 **Gate:** the real 10,000-lot benchmark, seeded with representative planner statistics, shows every
 supported sort/filter/keyset path interactive (comfortably under TESTING.md §31's targets) with no
-statement timeout — proven in `claude_outputs/output_17.txt`, not just asserted.
+statement timeout — proven in `ai_outputs/Claude_outputs/output_17.txt`, not just asserted.
 
 ### M10 — Sales and History — **complete**
 
@@ -264,7 +264,7 @@ result does not rank unknown-basis rows as infinite profit. **Met** — `tests/d
 proves E2/E7 exactly, the unknown-basis/mixed-basis paths, the residual-consumption rule, F5 and
 D1, void/double-void, concurrency and idempotency; result-sort `NULLS LAST` proven both directions.
 Sold is fully functional; Traded honestly defers to M18; Other has nothing to show yet. Full
-account: `claude_outputs/output_18.txt`. Decisions: DECISIONS.md D-060.
+account: `ai_outputs/Claude_outputs/output_18.txt`. Decisions: DECISIONS.md D-060.
 
 ### M11 — Sealed inventory — **complete**
 
@@ -281,7 +281,7 @@ priced/unpriced/unit counts. Curated seed is deliberately modest (seven individu
 products) with the "Add custom sealed product" fallback for real gaps. No automatic sealed pricing
 of any kind — confirmed still correct (D-010) and reverified against current TCGdex/Cardmarket/
 PriceCharting sources this session (API_SOURCES.md/RESEARCH.md). Full account:
-`claude_outputs/output_19.txt`. Decisions: DECISIONS.md D-061.
+`ai_outputs/Claude_outputs/output_19.txt`. Decisions: DECISIONS.md D-061.
 
 ### M12 — Dashboard
 

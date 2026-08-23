@@ -256,7 +256,7 @@ convention is that applied migrations are historical record, not living document
   already-elevated DEFINER transaction, and no comment should claim otherwise going forward.
 
 No test failed, no exploit exists today, and no SQL changed because of this — see
-`claude_outputs/output_19.txt`'s M10 SECURITY PREFLIGHT section for the full audit trail.
+`ai_outputs/Claude_outputs/output_19.txt`'s M10 SECURITY PREFLIGHT section for the full audit trail.
 
 ### 3.3.1 M12 derived cache and engine (implementation candidate)
 
@@ -601,7 +601,7 @@ wrinkle: the *caller* is `pg_cron` via `pg_net`, running inside the database its
 script with its own shell environment.** A scheduled SQL command cannot read an Edge Function's
 environment variable, so the secret is additionally stored in Supabase Vault
 (`vault.create_secret`) and read back at call time via `vault.decrypted_secrets` — never as a
-literal in migration SQL, never logged, never printed into a Claude session or `claude_outputs/`.
+literal in migration SQL, never logged, never printed into a Claude session or `ai_outputs/`.
 Setting both copies (the Vault secret and the matching Edge Function secret) is a one-time,
 deliberate act against the real project, the same trust level as setting `CATALOG_SYNC_SECRET` —
 this session generated the value itself via `supabase secrets set`/`vault.create_secret` and never

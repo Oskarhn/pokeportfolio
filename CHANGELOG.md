@@ -71,7 +71,7 @@ intent. Selling a sealed lot uses M10's sale engine completely unmodified — pr
 assumed. `scripts/deployment-check.mjs`'s Cloudflare chunk fetch changed from one unbounded
 `Promise.all` to a bounded 5-way concurrency pool with an explicit per-request timeout, closing the
 harness gap M10 hit (a local Node/undici connection-limit timeout, not a deployment defect) so the
-full automated gate runs again. Full account: `claude_outputs/output_19.txt`. Decisions:
+full automated gate runs again. Full account: `ai_outputs/Claude_outputs/output_19.txt`. Decisions:
 DECISIONS.md D-061.
 
 ### Added — 2026-08-28 · M10 Sales and History
@@ -99,7 +99,7 @@ separate sales gets the leftover øre (D-060).
 to this project's SECURITY INVOKER default: frozen cost basis, allocated amounts and realized
 result are unreachable by any direct write from the browser, not merely policed after the fact —
 `authenticated` holds no `INSERT`/`UPDATE` grant at all on `sales`/`sale_lines`/`lot_disposals`.
-Full account: `claude_outputs/output_18.txt`. Decisions: DECISIONS.md D-060.
+Full account: `ai_outputs/Claude_outputs/output_18.txt`. Decisions: DECISIONS.md D-060.
 
 ### Added — 2026-08-27 · M9.1 Pricing closeout
 
@@ -120,7 +120,7 @@ pagination edge matrix, and the real 10,000-lot Portfolio benchmark are now perm
 Two real bugs found and fixed before merge: a stale privilege-baseline/grant-audit entry for
 `get_market_movers`'s changed signature, and a `search-prices` bug where `fx_rates.rate` arrives as
 a JSON number (not decimal text) over a plain PostgREST `select` — would have made every
-`search-prices` call fail silently in production. Full account: `claude_outputs/output_16.txt`.
+`search-prices` call fail silently in production. Full account: `ai_outputs/Claude_outputs/output_16.txt`.
 
 ### Added — 2026-08-26 · M9 Pricing and snapshots
 
@@ -226,7 +226,7 @@ invariant C1, and account-deletion cascade for both new M7 tables — found miss
 filter correctness, keyset-pagination completeness; `portfolio_counts` correctness). Updated
 Playwright route-guard coverage for the renamed/new routes and the legacy-redirect behaviour.
 
-See DECISIONS.md D-040 through D-042, HANDOVER.md and `claude_outputs/output_11.txt` for full detail.
+See DECISIONS.md D-040 through D-042, HANDOVER.md and `ai_outputs/Claude_outputs/output_11.txt` for full detail.
 
 ### Fixed — 2026-08-22 · Content-Security-Policy blocked M7's card artwork in production
 
@@ -288,7 +288,7 @@ ownership triggers for the three new relationships), `tests/authorization/m6_col
 cross-tenant attacks against the RPC's caller-supplied arguments), `manual_card_definitions` folded
 into the generic owned-tables attack matrix, five new Playwright route-guard cases.
 
-See DECISIONS.md D-036 through D-039, HANDOVER.md and `claude_outputs/output_10.txt` for full detail.
+See DECISIONS.md D-036 through D-039, HANDOVER.md and `ai_outputs/Claude_outputs/output_10.txt` for full detail.
 
 ### Added — 2026-08-20 · M5 Pokémon catalog, TCGdex ingestion and search
 
@@ -399,7 +399,7 @@ no table privileges at all, and `scripts/remote-security-check.mjs` runs the sam
 against a real deployment with nothing but the publishable key. Final remote run: 33/33, with the
 escalation asserted on the stored value rather than the HTTP status.
 
-Cost: $0; no billing enabled anywhere. Detail: `claude_outputs/output_7.txt` (not committed).
+Cost: $0; no billing enabled anywhere. Detail: `ai_outputs/Claude_outputs/output_7.txt` (not committed).
 
 ### Added — 2026-08-17 · M3 database foundation, migrations and RLS
 
@@ -422,7 +422,7 @@ round-trip test, not assumed. CI gained a `db-tests` job that runs the full migr
 authorization suite against an ephemeral local Supabase stack on every push and PR — no remote
 credentials involved. Existing M1/M2 gates (64 domain tests, Playwright smoke tests, typecheck,
 lint, format, build) remain green throughout. Cost: $0; no billing enabled anywhere. Detail:
-`claude_outputs/output_6.txt` (not committed).
+`ai_outputs/Claude_outputs/output_6.txt` (not committed).
 
 ### Added — 2026-08-17 · M1 foundation and M2 financial domain core
 
@@ -434,7 +434,7 @@ float), currency metadata, a largest-remainder allocator, FX conversion, `CostBa
 FINANCIAL_MODEL.md. Worked examples E1, E3 and E7 reproduce exactly against the real domain
 functions; 64 tests pass, including property tests for the allocator (invariant F6) and
 randomised checks for F1, F3 and F5. No database, no auth, no external service yet — M1/M2 are
-deliberately infrastructure-independent. Detail: `claude_outputs/output_5.txt` (not committed).
+deliberately infrastructure-independent. Detail: `ai_outputs/Claude_outputs/output_5.txt` (not committed).
 
 ### Changed — 2026-08-17 · Cost policy: $50 USD lifetime discretionary ceiling
 
