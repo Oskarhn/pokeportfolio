@@ -85,7 +85,7 @@ comment on table public.portfolio_recompute_queue is
   'M12 internal dirty-marking for the snapshot cache. Written only by the invalidation '
   'triggers (20260830120020) via enqueue_portfolio_recompute(). Service/internal-only: RLS '
   'enabled, no policies, no grants to anon/authenticated — a browser can neither read another '
-  ''user''s dirty state nor enqueue arbitrary users (prompt §93).';
+  'user''s dirty state nor enqueue arbitrary users (prompt §93).';
 
 alter table public.portfolio_recompute_queue enable row level security;
 
