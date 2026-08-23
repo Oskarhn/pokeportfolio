@@ -25,9 +25,9 @@
 -- writes nothing but that user's own cache rows/queue/run metadata — no arbitrary SQL, fixed
 -- search_path, PUBLIC/anon/authenticated EXECUTE revoked (service/internal-only, prompt §94).
 -- It is SECURITY DEFINER because the pg_cron worker and the shared-market-data triggers
--- (price/FX/thinning invalidation across users) must write the queue and cache without a browser
--– caller context; every statement inside is scoped to p_user_id explicitly. It is granted to
--- service_role only; the cron job itself runs as the migration owner (postgres).
+-- (price/FX/thinning invalidation across users) must write the queue and cache without a
+-- browser caller context; every statement inside is scoped to p_user_id explicitly. It is
+-- granted to service_role only; the cron job itself runs as the migration owner (postgres).
 
 create or replace function public.rebuild_portfolio_snapshots(
   p_user_id uuid,
