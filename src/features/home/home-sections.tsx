@@ -5,6 +5,7 @@ import { CardImage } from '../catalog/CardImage'
 import { portfolioDisplayName, portfolioSubtitle } from '../../data/portfolio'
 import type { PortfolioTile } from '../../data/portfolio'
 import { getMarketMovers } from '../../data/pricing'
+import { monthlySpendBars } from '../../domain/dashboard'
 import type { MonthlySpendMonth, RecentActivityItem } from '../../data/dashboard'
 
 /**
@@ -146,7 +147,8 @@ export function MonthlySpending({
   months: MonthlySpendMonth[]
   hidden: boolean
 }) {
-  const max = months.reduce((acc, m) => (m.totalMinor > acc ? m.totalMinor : acc), 0n)
+  // Geometry precomputed in the domain layer — this component never computes from money.
+  const bars = monthlySpendBars(months)
   return (
     <section className="space-y-3 rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
       <div className="flex items-baseline justify-between">
@@ -158,23 +160,22 @@ export function MonthlySpending({
         role="img"
         aria-label={`Monthly spending, last ${months.length} months`}
       >
-        {months.map((m) => {
-          const totalPct = max === 0n ? 0 : Number((m.totalMinor * 100n) / max)
-          const collectiblePct =
-            m.totalMinor === 0n ? 0 : Number((m.collectibleMinor * 100n) / m.totalMinor)
+        {bars.map((bar, i) => {
+          const m = months[i]
+          if (!m) return null
           return (
             <div key={m.month} className="flex min-w-0 flex-1 flex-col items-center gap-1">
               <div
                 className="flex w-full flex-col justify-end overflow-hidden rounded-t bg-slate-800"
                 style={{
-                  height: `${Math.max(totalPct, m.totalMinor > 0n ? 3 : 1)}%`,
+                  height: `${Math.max(bar.totalPct, bar.hasSpend ? 3 : 1)}%`,
                   minHeight: 2,
                 }}
               >
-                {collectiblePct > 0 ? (
+                {bar.collectiblePct > 0 ? (
                   <div
                     className="w-full bg-sky-700"
-                    style={{ height: `${Math.min(collectiblePct, 100)}%` }}
+                    style={{ height: `${Math.min(bar.collectiblePct, 100)}%` }}
                   />
                 ) : null}
               </div>

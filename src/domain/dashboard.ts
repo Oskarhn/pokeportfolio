@@ -174,3 +174,29 @@ export function accessibleHistorySummary(windowPoints: HistoryPoint[], hidden: b
         : `${p.snapshotDate}: ${(Number(p.marketValueMinor ?? 0n) / 100).toFixed(2)} kr`,
     )
 }
+
+export interface SpendBarGeometry {
+  /** Bar height as a percentage of the tallest month, 0–100. */
+  totalPct: number
+  /** Collectible share of THIS month's bar, 0–100 (the hobby remainder stacks beneath). */
+  collectiblePct: number
+  /** True when the month has any spend at all (drives a minimal visible sliver). */
+  hasSpend: boolean
+}
+
+/** Bar geometry for the monthly-spend view. The only place monetary values become display
+ *  ratios — components render these numbers and never compute from money themselves
+ *  (AGENTS.md: no monetary arithmetic outside src/domain). */
+export function monthlySpendBars(
+  months: {
+    collectibleMinor: bigint
+    totalMinor: bigint
+  }[],
+): SpendBarGeometry[] {
+  const max = months.reduce((acc, m) => (m.totalMinor > acc ? m.totalMinor : acc), 0n)
+  return months.map((m) => ({
+    totalPct: max === 0n ? 0 : Number((m.totalMinor * 100n) / max),
+    collectiblePct: m.totalMinor === 0n ? 0 : Number((m.collectibleMinor * 100n) / m.totalMinor),
+    hasSpend: m.totalMinor > 0n,
+  }))
+}

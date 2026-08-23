@@ -4,6 +4,7 @@ import {
   computePeriodChange,
   filterHistoryWindow,
   isDashboardRange,
+  monthlySpendBars,
   resolveRangeWindow,
   safeMajorUnits,
   toChartSeries,
@@ -164,6 +165,27 @@ describe('toChartSeries', () => {
   it('refuses values beyond the exact-representation boundary instead of losing øre (§78)', () => {
     expect(() => safeMajorUnits(9007199254740993n)).toThrow(/safe integer/)
     expect(safeMajorUnits(9007199254740991n)).toBe(90071992547409.91)
+  })
+})
+
+describe('monthlySpendBars', () => {
+  it('scales each month against the tallest month and splits the collectible share', () => {
+    const bars = monthlySpendBars([
+      { collectibleMinor: 60_000n, totalMinor: 100_000n },
+      { collectibleMinor: 0n, totalMinor: 50_000n },
+      { collectibleMinor: 0n, totalMinor: 0n },
+    ])
+    expect(bars[0]).toEqual({ totalPct: 100, collectiblePct: 60, hasSpend: true })
+    expect(bars[1]).toEqual({ totalPct: 50, collectiblePct: 0, hasSpend: true })
+    expect(bars[2]).toEqual({ totalPct: 0, collectiblePct: 0, hasSpend: false })
+  })
+
+  it('never divides by zero on an all-empty series', () => {
+    const bars = monthlySpendBars([
+      { collectibleMinor: 0n, totalMinor: 0n },
+      { collectibleMinor: 0n, totalMinor: 0n },
+    ])
+    expect(bars.every((b) => b.totalPct === 0 && !b.hasSpend)).toBe(true)
   })
 })
 
