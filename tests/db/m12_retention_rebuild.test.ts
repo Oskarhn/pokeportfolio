@@ -342,10 +342,12 @@ describe('M9.1 thinning × M12 rebuild (D-070)', () => {
     expect(postSurvivor.market_value_nok_minor).toBe(13800)
     expect(postSurvivor.unvalued_lot_count).toBe(0)
 
-    // Frozen ledger semantics untouched by a storage-maintenance job: purchases/sales/cost-basis
-    // figures are byte-identical on every day, before and after compaction.
+    // Frozen ledger semantics untouched by a storage-maintenance job. The invariant set is the
+    // FROZEN-LEDGER columns only - spend/proceeds cumulatives, cost basis (lots + adjustments,
+    // never prices), and ownership structure. ACMV is deliberately excluded: it is CMV
+    // restricted to costed lots, i.e. MARKET-derived, and legitimately moves with compaction -
+    // pinned explicitly right below instead.
     const LEDGER_COLUMNS = [
-      'attributed_value_nok_minor',
       'cost_basis_nok_minor',
       'collectible_spend_to_date_nok_minor',
       'sales_proceeds_to_date_nok_minor',
@@ -357,6 +359,9 @@ describe('M9.1 thinning × M12 rebuild (D-070)', () => {
         expect(postRows[i]![col]).toBe(preRows[i]![col])
       }
     }
+    // The market-derived columns moved exactly where the covering observation changed:
+    expect(postStar.attributed_value_nok_minor).toBe(9200)
+    expect(postSurvivor.attributed_value_nok_minor).toBe(13800)
 
     // ── Cache == full rebuild from the CURRENT retained canonical set (D-070's equality rule) ──
     const strippedPost = postRows.map(({ computed_at: _c, ...rest }) => {
