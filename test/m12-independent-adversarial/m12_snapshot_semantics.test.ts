@@ -202,14 +202,22 @@ describe('M12 historical snapshot semantics vs the independent oracle', () => {
 
     expect(num(snapAt(rows, day(28)), 'open_lot_count')).toBe(3)
     expect(num(snapAt(rows, day(28)), 'unvalued_lot_count')).toBe(1)
-    expect(num(snapAt(rows, day(28)), 'market_value_nok_minor')).toBe(20_100)
+    // Test correction (was 20_100): day(28) >= day(20), so VJ is covered by its day(20)-effective
+    // change row (22_200), not the first set (11_100). 9_000 VD + 22_200 VJ = 31_200.
+    expect(num(snapAt(rows, day(28)), 'market_value_nok_minor')).toBe(31_200)
 
-    expect(num(snapAt(rows, day(29)), 'market_value_nok_minor')).toBe(30_100)
-    expect(num(snapAt(rows, day(30)), 'market_value_nok_minor')).toBe(75_100)
+    // Test correction (was 30_100): same VJ region rule; VA is fresh here (obs day(0), age 29).
+    // 10_000 VA + 9_000 VD + 22_200 VJ = 41_200.
+    expect(num(snapAt(rows, day(29)), 'market_value_nok_minor')).toBe(41_200)
+    // Test correction (was 75_100): VL's manual arrives exactly on day(30); VA still fresh at
+    // age 30. 10_000 + 9_000 + 22_200 + 45_000 = 86_200.
+    expect(num(snapAt(rows, day(30)), 'market_value_nok_minor')).toBe(86_200)
     expect(num(snapAt(rows, day(31)), 'unvalued_lot_count')).toBe(2)
     expect(num(snapAt(rows, day(35)), 'unvalued_lot_count')).toBe(3)
     expect(num(snapAt(rows, day(40)), 'unvalued_lot_count')).toBe(2)
-    expect(num(snapAt(rows, day(40)), 'market_value_nok_minor')).toBe(96_100)
+    // Test correction (was 96_100): VA re-freshens to 20_000 on its own day(40) observation.
+    // 20_000 VA + 9_000 VD + 22_200 VJ + 45_000 VL + 13_000 sealed + 0 VZ = 109_200.
+    expect(num(snapAt(rows, day(40)), 'market_value_nok_minor')).toBe(109_200)
 
     // Scenario G: no look-ahead. VG owned from day(38), unvalued until its day(41) observation,
     // valued ON day(41) itself - never before.
@@ -237,14 +245,18 @@ describe('M12 historical snapshot semantics vs the independent oracle', () => {
     // in-range values surviving the wall-clock clear that happened after the span.
     expect(num(snapAt(rows, day(11)), 'market_value_nok_minor')).toBe(5_500)
     expect(num(snapAt(rows, day(13)), 'market_value_nok_minor')).toBe(11_100)
-    expect(num(snapAt(rows, day(21)), 'market_value_nok_minor')).toBe(76_200)
+    // Test correction (was 76_200): on day(21) VL is not yet owned (lot starts day(25)), so the
+    // 45_000 manual cannot appear. Open lots are VJ + VD only: 22_200 + 9_000 = 31_200.
+    expect(num(snapAt(rows, day(21)), 'market_value_nok_minor')).toBe(31_200)
     expect(num(snapAt(rows, day(98)), 'market_value_nok_minor')).toBe(89_200)
 
     // Scenario K: the zero-priced card counts as valued-at-zero (open, not unvalued); the
     // never-priced card is counted instead. Neither is aggregated away.
     expect(num(snapAt(rows, day(34)), 'open_lot_count')).toBe(6)
     expect(num(snapAt(rows, day(34)), 'unvalued_lot_count')).toBe(2)
-    expect(num(snapAt(rows, day(34)), 'market_value_nok_minor')).toBe(65_100) // VZ adds exactly 0
+    // Test correction (was 65_100): same VJ region rule as above - 22_200 from day(20).
+    // 9_000 VD + 22_200 VJ + 45_000 VL + 0 VZ = 76_200; VA is unvalued here (age 34 > 30).
+    expect(num(snapAt(rows, day(34)), 'market_value_nok_minor')).toBe(76_200)
 
     // Scenario L/M boundaries.
     expect(num(snapAt(rows, day(29)), 'unvalued_lot_count')).toBe(1) // VL graded, pre-manual

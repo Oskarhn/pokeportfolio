@@ -93,12 +93,31 @@ export async function discoverRpc(
   if (!paths) return null
   const entry = paths[`/rpc/${name}`]
   if (!entry || typeof entry !== 'object') return null
-  const post = (entry as { post?: { parameters?: unknown } }).post
+  const post = (entry as { post?: { parameters?: unknown; requestBody?: unknown } }).post
   const rawParams = Array.isArray(post?.parameters) ? (post?.parameters as unknown[]) : []
-  const paramNames = rawParams
+  let paramNames = rawParams
     .map((p) => p as { name?: string })
     .map((p) => p.name)
     .filter((n): n is string => typeof n === 'string')
+
+  // PostgREST's OpenAPI v2 document describes an RPC request body as a SINGLE parameter named
+  // "args" whose schema.properties carry the actual argument names; some versions place the same
+  // map under requestBody.content["application/json"].schema.properties instead. Without this
+  // descent, every multi-argument function looks like it takes one argument called "args" and
+  // every bindParams call would raise a false signature-divergence contract violation.
+  if (paramNames.length === 0 || paramNames.includes('args')) {
+    const bodyParam = rawParams.find((p) => (p as { name?: string }).name === 'args') as
+      { schema?: { properties?: Record<string, unknown> } } | undefined
+    const bodyContent = post?.requestBody as
+      | { content?: { 'application/json'?: { schema?: { properties?: Record<string, unknown> } } } }
+      | undefined
+    const bodyProps =
+      bodyParam?.schema?.properties ??
+      bodyContent?.content?.['application/json']?.schema?.properties
+    if (bodyProps && Object.keys(bodyProps).length > 0) {
+      paramNames = Object.keys(bodyProps)
+    }
+  }
   return { name, paramNames }
 }
 

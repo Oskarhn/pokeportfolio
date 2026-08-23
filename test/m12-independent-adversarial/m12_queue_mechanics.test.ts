@@ -79,16 +79,21 @@ describe('M12 recompute queue mechanics', () => {
     await sellLots(env, day(65), [{ lotId: acq.lotId, quantity: 1, unitGrossMinor: 7_000 }])
     await drainQueue(surface)
 
-    // Scenario F: move it LATER (day 65 -> day 75). The OLD EARLIER date must be dirtied:
-    // ownership reappears there, so dirty_from has to reach back to day(65), not day(75).
-    const sale2 = await sellLots(env, day(75), [
+    // Scenario F: move it LATER (day 65 -> day 75) via the documented void+re-enter path
+    // (update_sale cannot move a sale; a lot with zero remaining quantity cannot be sold again,
+    // so the day(65) sale must be voided before the day(75) re-entry). Both boundaries coalesce:
+    // the void dirties day(65), the re-entry proposes day(75), LEAST keeps day(65).
+    const saleEarly = await sellLots(env, day(65), [
       { lotId: acq.lotId, quantity: 1, unitGrossMinor: 7_000 },
     ])
     await drainQueue(surface)
-    await voidSale(env, sale2.saleId)
+    await voidSale(env, saleEarly.saleId)
+    await sellLots(env, day(75), [{ lotId: acq.lotId, quantity: 1, unitGrossMinor: 7_000 }])
     const rowF = await readQueueRow(env)
     expect(rowF).not.toBeNull()
     expect(Date.parse(rowF!.dirty_from)).toBeLessThanOrEqual(Date.parse(day(65)))
+    // The moved-later sale is still live work; drain so later scenarios start from a clean queue.
+    await drainQueue(surface)
   })
 
   it('scenario O: an existing Jun-10 boundary coalesces with a new May-3 event into May-3', async (ctx) => {
@@ -165,12 +170,13 @@ describe('M12 recompute queue mechanics', () => {
 
     for (const env of users) {
       expect(await readQueueRow(env)).toBeNull()
-      const { data: snapshotCount, error } = await service
+      // head:true suppresses rows by design - the count arrives in `count`, never in `data`.
+      const { count, error } = await service
         .from('portfolio_snapshots')
         .select('snapshot_date', { count: 'exact', head: true })
         .eq('user_id', env.user.id)
       expect(error).toBeNull()
-      expect(snapshotCount).not.toBeNull()
+      expect(count ?? 0).toBeGreaterThan(0)
     }
 
     // A second sequential drain is a clean no-op.

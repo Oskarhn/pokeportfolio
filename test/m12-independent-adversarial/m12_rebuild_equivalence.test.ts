@@ -27,6 +27,7 @@ import {
 import {
   compareExpectedToRow,
   expectedSeriesBetween,
+  firstTrackedDate,
   loadFacts,
   type OracleFacts,
 } from './helpers/oracle'
@@ -288,7 +289,12 @@ describe('M12 central gate: full rebuild == incremental == oracle', () => {
       11_000,
     )
     const facts = await loadFacts(service, env.user.id)
-    const expected = expectedSeriesBetween(facts, day(2), day(20))
+    // Rows exist only from the user's first tracked date onward (DATA_MODEL §6: no fabricated
+    // pre-history). The backdated manual valuation's effective_from does NOT extend tracked
+    // history before the earliest ownership/ledger event - helpers/oracle.ts#firstTrackedDate
+    // encodes the same rule, so the comparison range starts there rather than at day(2).
+    const origin = firstTrackedDate(facts)
+    const expected = expectedSeriesBetween(facts, origin, day(20))
     for (const exp of expected) {
       const actual = after.find((r) => r.snapshot_date === exp.snapshot_date)
       if (!actual) throw new Error(`missing snapshot ${exp.snapshot_date} after queue repair`)
