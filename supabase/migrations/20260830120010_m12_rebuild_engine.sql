@@ -40,8 +40,12 @@ security definer
 set search_path = ''
 as $$
 declare
-  v_from date := least(p_from, p_through);
-  v_through date := least(greatest(p_from, p_through), current_date);
+  -- A reversed range is a malformed maintenance call and is rejected below rather than silently
+  -- reordered: every legitimate caller (the drain, the sweep, explicit service-role rebuilds)
+  -- passes from <= through, so normalization could only ever mask a swapped-argument mistake by
+  -- launching an unrequested rebuild with no error signal.
+  v_from date;
+  v_through date;
   v_use_eu boolean;
   v_first_tracked date;
   v_written integer := 0;
@@ -49,6 +53,16 @@ begin
   if p_user_id is null then
     raise exception 'p_user_id is required';
   end if;
+  if p_from is null or p_through is null then
+    raise exception 'p_from and p_through are required';
+  end if;
+  if p_through < p_from then
+    raise exception
+      'rebuild_portfolio_snapshots: p_through % precedes p_from % - reversed range rejected',
+      p_through, p_from;
+  end if;
+  v_from := p_from;
+  v_through := least(p_through, current_date);
 
   select coalesce(p.use_eu_pricing, true) into v_use_eu
     from public.profiles p where p.id = p_user_id;
