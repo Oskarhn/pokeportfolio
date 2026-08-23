@@ -883,14 +883,26 @@ the manual-interval model (D-062), and accumulating frozen-ledger cumulatives by
 The full-rebuild == incremental-recompute equality over every semantic column is a permanent
 test gate (`tests/db/m12_dashboard_snapshots.test.ts`, TESTING.md §3).
 
+**Rebuildability is relative to CURRENTLY RETAINED canonical facts (D-070).** M9.1 retention
+(D-058) compacts `price_snapshots` older than 60 days to one observation per ISO week. When
+that happens, the retained set underlying old history genuinely changes, the invalidation
+trigger dirties affected owners from the oldest deleted date, and the next drain recomputes —
+so an older historical CMV point may adjust ONCE to derive from the weekly facts that remain.
+This is accepted cache semantics, not drift: no value is fabricated, every frozen ledger column
+is untouched by compaction, and deleting the whole cache and rebuilding from scratch reproduces
+exactly the post-compaction series (`tests/db/m12_retention_rebuild.test.ts`). The dashboard
+discloses the resolution change in one sentence ("Older market-value history uses weekly
+retained market observations").
+
 RLS: owner-SELECT only (`portfolio_snapshots_select_own`). No INSERT/UPDATE/DELETE policy exists
 and no browser write grant exists — the service-role engine is the sole writer.
 
 **`portfolio_recompute_queue`** `(user_id PK, dirty_from, updated_at)`: written only by the M12
 invalidation triggers via `enqueue_portfolio_recompute` (LEAST-coalesced). Service/internal-only:
 RLS enabled, no policies, no grants to any browser role — a session can neither read another
-user's dirty state nor enqueue arbitrary users. Drainage deletes a row only after its rebuild
-commits.
+user's dirty state nor enqueue arbitrary users. The drain is ONE PL/pgSQL transaction: each
+user's failure rolls back to its own savepoint and keeps its queue row while siblings continue,
+and everything successful commits together when the outer transaction ends (D-064).
 
 **`portfolio_recompute_runs`**: one row per drain invocation (started/finished, users processed,
 snapshots written, error text). Service-only observability, the shape of `price_sync_runs`; no
@@ -1428,7 +1440,8 @@ from the user's first tracked date onward — no fabricated pre-history.
 
 **Dashboard reads.** Four SECURITY INVOKER RPCs replace any burst of Home requests:
 `get_dashboard_summary()` (latest-snapshot headline + current data-quality/breakdown counts +
-lifetime GPO/CS/HS/NSP/RRC/PUD/NCCO/THCO/THP + an honest `pending_recompute`, one request),
+lifetime GPO/CS/HS/NSP/RRC/PUD/NCCO/THCO/THP + an honest `pending_recompute`, one request;
+TTEP and THP are NULL until a snapshot exists — §6.5 of FINANCIAL_MODEL.md — never 0-based),
 `get_portfolio_history(display_currency, from, to)` (stored snapshots, coverage flags,
 D-067 display conversion), `get_monthly_spend(months)` (calendar months from purchase lines;
 GPO = CS + HS per row by construction), `get_recent_activity(limit)` (bounded union over

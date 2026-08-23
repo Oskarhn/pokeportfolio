@@ -431,6 +431,14 @@ figures, recent activity, and honest empty/no-history states. Custom-collection 
 correct current figures and says historical membership is not tracked (D-065). The eye masks
 headline, change, chart axis/tooltips and the accessible summary together.
 
+Missing-vs-zero honesty on this screen: before a user's first snapshot exists — new accounts,
+and every pre-existing account during initial deployment's backfill window — the headline and
+Total tracked economic position both render "—" ("not computed yet"), never "0 kr"
+(FINANCIAL_MODEL.md §6.5). A snapshot-derived genuine zero still renders as 0. Beneath the chart
+sits one restrained disclosure sentence: "Older market-value history uses weekly retained market
+observations" (D-070) — it qualifies MARKET-VALUE history only; purchases, sales and cost basis
+are exact frozen records and are never described as approximate.
+
 Original structure (M7.1) for reference:
 
 ```

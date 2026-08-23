@@ -1542,3 +1542,38 @@ EXECUTE on trigger functions at firing time — the same production-tested prope
 triggers can be revoked from every named role (so no session can call them directly) while user
 mutations still fire them implicitly. It also means the grant-audit's PUBLIC sweep plus named
 revokes fully cover this class of function, unlike M6's finding about directly-called RPCs.
+
+---
+
+## 2026-08-30 - Three ways a correct-looking interval rule still had to be designed around overlap
+
+The review fix for the manual-valuation resurrection bug (D-062's clear-then-later-insertion
+corner) looked like a one-line change: when a row's `superseded_at` predates the next row's
+creation, end it at the clear date. Two naive formulations of exactly that rule are wrong, and
+the difference only shows up in sequences no existing fixture exercised.
+
+Comparing against `lead(created_at)` - the immediately-next row in `(effective_from,
+created_at, id)` order - misclassifies a WEDGED correction. Set A@D10, atomically replace with
+B@D30, then backdate C@D20 into the middle: C sorts between A and B, so A's lead() is now C, whose
+creation is strictly later than A's supersession. The comparison reads "cleared independently",
+ends A at its supersession wall-clock date, and that date is LATER than C's effective_from -
+producing two intervals covering the same days, which the engine's per-day join would have
+double-counted straight into CMV. The safe formulation pairs by transaction timestamp: a row was
+atomically replaced iff ANY row's `created_at` equals its `superseded_at` (the successor the
+superseding transaction inserted, wherever it now sorts); otherwise it was cleared. With that
+pairing, every branch satisfies valid_to <= next effective_from, so coverage stays single-valued
+by construction rather than by hope.
+
+The second trap was the least() guard itself. An independently cleared row ends at min(clear
+date, next effective_from), which handles the case where a later valuation is BACKDATED INTO the
+cleared span - corrections rewrite history; they must win from their own effective_from rather
+than extend what they correct.
+
+Third, the adversarial oracle already encoded "always min(next_eff, clear_date)", which diverges
+from the paired engine rule for one input class: future-dated atomic replacements (new
+effective_from AFTER the supersession wall-clock). Neither suite constructed one, but aligning
+both sides on the same explicit pairing - replaced means boundary = replacement's effective_from;
+cleared means own clear date - removed the divergence class instead of leaving it to fixture luck.
+The lesson generalizes: when an implementation and an independent oracle agree, check WHICH RULE
+each encodes before trusting the agreement; identical outputs over shared fixtures can come from
+different rules that part ways on the first unshared input.

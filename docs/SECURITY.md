@@ -272,8 +272,11 @@ counterpart — and holds it to the same three-statement discipline (§5.9):
   follow the `invitation_claims` shape: RLS enabled, zero policies, zero grants to
   anon/authenticated. The dashboard's "Updating…" signal comes from
   `m12_recompute_pending_for_self()`, a DEFINER function answering exactly one boolean about
-  exactly `auth.uid()` and itself revoked from every browser role — reachable only through
-  `get_dashboard_summary`.
+  exactly `auth.uid()`. It holds an explicit `authenticated` EXECUTE grant — required, because
+  `get_dashboard_summary` calls it as a nested function call and PostgreSQL checks EXECUTE on
+  such references — and is safe by construction: no user-id parameter, hardcoded `auth.uid()`,
+  one boolean about the caller's own queue row. It cannot be aimed at another user regardless of
+  who calls it (`tests/authorization/m12_dashboard.test.ts`).
 - **Engine routines are service/internal-only.** `rebuild_portfolio_snapshots`,
   `drain_portfolio_recompute_queue`, `enqueue_portfolio_daily_maintenance` and
   `enqueue_portfolio_recompute` are SECURITY DEFINER (the minimal departure that shared

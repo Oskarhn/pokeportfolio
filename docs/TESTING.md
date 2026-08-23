@@ -152,23 +152,44 @@ The last row is the one that catches cache drift, which is the failure mode that
 dashboard quietly lie.
 
 **M12 (`tests/db/m12_dashboard_snapshots.test.ts`, `tests/db/m12_queue.test.ts`,
-`tests/authorization/m12_dashboard.test.ts`, `tests/data/dashboard.test.ts`).** The equality
-gate runs over a deliberately rich corrected fixture — backdated acquisitions, partial sale,
-sale void restoring history, manual set/update/clear plus a backdated correction landing inside
-cleared history, a price correction, a genuine zero observation, an unpriced variant, sealed and
-graded holdings on manual-only valuation — with every semantic column compared exactly
-(`computed_at` excluded). Around it: the ownership boundaries (acquire/sale day edges, same-day
-acquire+sell ending at zero), as-of freshness measured from D (a 60-day-old observation is real
-history at D−55; exact 30/31-day inclusion edge), no future prices, no pre-tracking fabrication,
-the D-062 interval model including deterministic resolution of a correction that backdates past
-an earlier-effective row, per-date CMV/ACMV/DCB/URC/CS/NSP/TTEP against hand-derived ledgers
-(F3/F5), the D-068 adjustment-share DCB rule at its occurred_on boundary, mixed data-quality
-counts (automatic/manual/priced/unpriced/uncosted), monthly-spend F1 reconciliation against
-`purchase_spending_summary`, the RRC/PUD split never collapsing into "profit", D-067 historical
-display-FX across a mid-history re-rate, zero-coverage gap flags, empty-account honesty, queue
-LEAST-coalescing/drain/idempotence/concurrent-drain/future-work retention, shared price/FX
-fan-out (sealed-only users excluded), and grant-level refusals for every engine routine plus
-cache-forgery, cross-user read, admin-no-bypass and anon-denial coverage.
+`tests/db/m12_retention_rebuild.test.ts`, `tests/authorization/m12_dashboard.test.ts`,
+`tests/data/dashboard.test.ts`).** The equality gate runs over a deliberately rich corrected
+fixture — backdated acquisitions, partial sale, sale void restoring history, manual set/update/
+clear plus a backdated correction landing inside cleared history, a price correction, a genuine
+zero observation, an unpriced variant, sealed and graded holdings on manual-only valuation —
+with every semantic column compared exactly (`computed_at` excluded). Around it: the ownership
+boundaries (acquire/sale day edges, same-day acquire+sell ending at zero), as-of freshness
+measured from D (a 60-day-old observation is real history at D−55; exact 30/31-day inclusion
+edge), no future prices, no pre-tracking fabrication, the D-062 interval model including
+deterministic resolution of a correction that backdates past an earlier-effective row AND the
+reviewed clear-then-later-insertion corner (an explicit clear stays cleared — with provider
+fallback proving the gap actually resolves automatically, and an unpriced gap staying honestly
+missing; the atomic-replacement boundary pinned separately), per-date
+CMV/ACMV/DCB/URC/CS/NSP/TTEP against hand-derived ledgers (F3/F5), the D-068 adjustment-share
+DCB rule at its occurred_on boundary including a multi-unit lot with a real partial disposal and
+indivisible flooring remainders (data proof, not just formula reading), NULL-not-zero honesty for
+TTEP and THP before a user's first snapshot exists, reversed-range rejection (D-069), mixed
+data-quality counts (automatic/manual/priced/unpriced/uncosted), monthly-spend F1 reconciliation
+against `purchase_spending_summary`, the RRC/PUD split never collapsing into "profit", D-067
+historical display-FX across a mid-history re-rate, zero-coverage gap flags, empty-account
+honesty, queue LEAST-coalescing/drain/idempotence/concurrent-drain/future-work retention, shared
+price/FX fan-out (sealed-only users excluded), and grant-level refusals for every engine routine
+plus cache-forgery, cross-user read, admin-no-bypass and anon-denial coverage.
+
+**M9.1 × M12 compaction (`tests/db/m12_retention_rebuild.test.ts`, D-070).** The cross-milestone
+gate: dense daily observations older than 60 days → snapshot built → the REAL
+`thin_price_snapshots()` runs → invalidation fires from the oldest deleted observation → drain
+recomputes → the affected historical CMV point adjusts exactly once to derive from the retained
+weekly facts (no fabricated zero/missing transition; a day whose covering fact survived stays
+byte-identical) → every frozen ledger column identical before/after → deleting the cache and
+rebuilding from scratch reproduces the post-compaction series exactly. Monday-aligned week
+anchors keep survivor identity deterministic regardless of the run date.
+
+The independent adversarial package (`test/m12-independent-adversarial`) mirrors the same
+semantics from its implementation-blind oracle: scenario S/S2 pin the clear-vs-replacement
+distinction end-to-end through the real RPCs, and the pure-domain suite asserts the resolved
+interval rule directly (cleared value never resurrected; atomic replacement keeps the
+replacement boundary; wedged backdated corrections never read as clears).
 
 ---
 

@@ -10,6 +10,27 @@ they were**.
 
 ## [Unreleased]
 
+### Fixed — 2026-08-30 — M12 review findings (implementation candidate, on `feat/m12-dashboard`)
+
+The independent adversarial review of the M12 candidate returned CHANGES_REQUIRED; every finding
+is closed. H1: a manual valuation ended by an explicit clear now STAYS cleared when an unrelated,
+later valuation arrives with a higher effective date — only an atomic set-over-set replacement
+keeps the replacement-date boundary (D-062's resolved corner), with regression tests in the DB
+suite, the independent oracle and the adversarial scenarios, including a provider-priced gap that
+proves real fallback and an unpriced gap that stays honestly missing. H2/M1: before a user's
+first snapshot exists, TTEP renders "—" instead of a fabricated "0 kr" and THP propagates NULL in
+the RPC instead of coalescing unavailable CMV to 0; a genuine zero still renders as 0.
+H3/D-070: portfolio_snapshots is explicitly recorded as a derived, rebuildable cache relative to
+CURRENTLY RETAINED canonical facts — M9.1's weekly compaction may adjust an older historical
+market-value point exactly once, frozen ledger fields never change, nothing is fabricated, the
+dashboard discloses it in one sentence, and a new cross-milestone DB test proves the whole loop
+(dense → real thinning → invalidation → drain → from-scratch-rebuild equality). Also: D-069
+records reversed-range rejection as ratified; D-071 documents MAX = up to four years of history;
+the drain worker's per-user savepoint semantics are stated precisely in comments/docs; the
+initial-backfill runbook specifies one-user-at-a-time draining; the stale privilege comment on
+`m12_recompute_pending_for_self` is corrected; D-068 gained a concrete multi-unit partial-disposal
+data proof.
+
 ### Added — 2026-08-30 · M12 Dashboard (implementation candidate, awaiting review)
 
 Home is now the real investment-style portfolio dashboard. A derived `portfolio_snapshots` cache

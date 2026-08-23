@@ -7,15 +7,16 @@ Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) a
 **Last updated:** 2026-08-23 — **M1–M11 are complete in code, merged and deployed. M12
 (Dashboard) exists as an IMPLEMENTATION CANDIDATE on `feat/m12-dashboard` and is NOT merged,
 NOT migrated to `pokeportfolio-dev`, and NOT deployed anywhere. The independent adversarial test
-package has been applied and has run against the candidate (see below); Claude's full review is
-the NEXT step and is required before anything in that branch touches a hosted project — merge,
-migration, cron activation and the initial backfill are all explicitly post-review steps.** See
-"M12 — Dashboard (implementation candidate)" below; everything beneath it describes the deployed
-M11 state.
+package has run against the candidate AND Claude's full adversarial review is complete
+(CHANGES_REQUIRED: 3 HIGH / 3 MEDIUM / 3 LOW); all findings are fixed on the branch and a
+targeted delta re-verification is the NEXT step before anything in that branch touches a hosted
+project — merge, migration, cron activation and the initial backfill are all explicitly
+post-verification steps.** See "M12 — Dashboard (implementation candidate)" below; everything
+beneath it describes the deployed M11 state.
 
 ---
 
-## M12 — Dashboard (implementation candidate, AWAITING CLAUDE REVIEW)
+## M12 — Dashboard (implementation candidate, AWAITING DELTA RE-VERIFICATION)
 
 Branch `feat/m12-dashboard`, draft PR open against `main` titled "M12: Dashboard — OX Alpha
 candidate" marked DO NOT MERGE. Production state unchanged: no hosted migration was run, no Edge
@@ -35,6 +36,27 @@ fault-injection remains structurally asserted, not executed), scale audit green 
 (rebuild 20 ms · incremental drain 250 ms · summary 11 ms · history 5 ms at ~480 lots), full
 normal regression green. Full account: `ai_outputs/Ox_Alpha_outputs/output_21.txt`.
 
+**Review findings fixed (fix/m12-claude-review-p23).** Claude's full adversarial review rated the
+implementation GOOD but required changes; every finding is now closed on this branch:
+H1 — a manual-valuation row ended by an INDEPENDENT clear stays cleared even when a later,
+separate valuation arrives with a higher effective_from; only an ATOMIC replacement keeps the
+next-effective-from boundary (D-062's resolved corner, pairing test in `mv_intervals`, DB tests
+with provider-fallback and unpriced gap variants plus scenario S/S2 and the aligned oracle).
+H2 — TTEP renders "—" instead of a fabricated "0 kr" before the first snapshot exists
+(`ttepDisplayState` domain helper; genuine zero still renders as 0; hide_values masks).
+M1 — THP propagates NULL under the same condition instead of coalescing CMV to 0
+(FINANCIAL_MODEL.md §6.5); types updated.
+H3 — mentor decision recorded as D-070: portfolio_snapshots remains a derived rebuildable cache;
+an older historical CMV point may adjust ONCE where M9.1 compaction removes dense observations;
+frozen ledger fields never change; proven end-to-end by
+`tests/db/m12_retention_rebuild.test.ts` (dense → real thinning → invalidation → drain →
+from-scratch-rebuild equality) and disclosed in one restrained dashboard sentence.
+D-069 records the ratified reversed-range rejection; D-071 documents the MAX = 4-years clamp;
+the drain's per-user savepoint semantics are stated precisely (never "per-user commits"); the
+initial-backfill runbook drains one user at a time; the stale privilege comment on
+`m12_recompute_pending_for_self` is corrected (authenticated DOES hold EXECUTE, by design); and
+D-068 gained a concrete multi-unit partial-disposal data proof.
+
 **What it is.** Home is now the real portfolio dashboard over a derived snapshot cache:
 
 - **Schema** (`20260830120000`): `portfolio_snapshots` — one end-of-business-day state per user
@@ -46,9 +68,11 @@ normal regression green. Full account: `ai_outputs/Ox_Alpha_outputs/output_21.tx
   field from canonical rows alone — disposal-timeline replay per date (never current-state
   projection), provider observations as step functions with freshness age measured from D,
   FX observed on/before each observation's own date, the manual-valuation interval model
-  (D-062), frozen-ledger cumulatives by business date, rows only from the user's first tracked
+  (D-062, including its reviewed clear-vs-replacement corner), frozen-ledger cumulatives by
+  business date, rows only from the user's first tracked
   date. `drain_portfolio_recompute_queue` is the SKIP LOCKED worker with per-user failure
-  isolation (queue row deleted only after its rebuild commits).
+  isolation via PL/pgSQL savepoints inside one outer transaction (a failed user keeps its queue
+  row; siblings continue; the whole batch still commits or rolls back together).
 - **Invalidation** (`20260830120010/20`): triggers enqueue with explicit boundaries —
   least(old,new) on date moves so March recomputes when a purchase moves to April; shared
   price/FX/thinning facts fan out statement-level to affected owners; sealed intent, storage,
@@ -71,11 +95,16 @@ normal regression green. Full account: `ai_outputs/Ox_Alpha_outputs/output_21.tx
 column except `computed_at`, proven over a fixture containing backdating, partial sale, sale
 void, manual set/update/clear, a backdated correction into cleared history, a price correction,
 a genuine-zero observation, unpriced variants and sealed/graded manual-only holdings
-(`tests/db/m12_dashboard_snapshots.test.ts`).
+(`tests/db/m12_dashboard_snapshots.test.ts`). Equality is relative to CURRENTLY RETAINED
+canonical facts (D-070): after M9.1 compaction removes dense old observations, the rebuilt
+series equals the post-compaction derivation exactly, proven by
+`tests/db/m12_retention_rebuild.test.ts`.
 
 **Decisions this milestone adds:** D-062 through D-068 in DECISIONS.md — manual-history interval
 model, cache-shape/coverage flags, recompute architecture, custom-collection history policy,
-chart-library adoption with attribution, display-FX rule, DCB adjustment-share rule.
+chart-library adoption with attribution, display-FX rule, DCB adjustment-share rule — plus
+D-069 (reversed ranges rejected), D-070 (cache stays rebuildable; one-time historical CMV
+adjustment at the compaction boundary) and D-071 (MAX = up to four years of history).
 
 **Verification actually run on this branch:** `pnpm typecheck` / `pnpm lint` / `pnpm
 format:check` clean; `pnpm test` 125/125 (17 new dashboard domain tests); `pnpm build` green
@@ -88,20 +117,26 @@ the NEW snapshots benchmark measuring rebuild/incremental/Home-read/storage at ~
 generated artifact and re-apply the known `p_fx_rate_to_nok` string divergence before trusting
 it further.
 
-**Explicitly NOT done (PENDING POST-REVIEW DEPLOYMENT VERIFICATION):** hosted migration push;
-cron activation on the real project; initial backfill for existing users (design: bounded
-rebuild per user from their first tracked date — run via one drain cycle after migration);
-deployment-check/remote-security-check against a real deployment; any owner-facing signed-in
-check. A drain fault-injection test (forcing a rebuild failure mid-drain without DDL access)
-was not achievable from the test harness; the subtransaction retention contract is asserted
-structurally instead and flagged for review attention.
+**Explicitly NOT done (PENDING POST-VERIFICATION DEPLOYMENT):** hosted migration push; cron
+activation on the real project; initial backfill for existing users; deployment-check/
+remote-security-check against a real deployment; any owner-facing signed-in check. A drain
+fault-injection test (forcing a rebuild failure mid-drain without DDL access) was not achievable
+from the test harness; the subtransaction retention contract is asserted structurally instead.
+
+**Initial backfill runbook (when deployment is finally approved — do NOT run yet).** The
+migrations enqueue nothing for pre-existing users by design. After migration + cron activation:
+`select enqueue_portfolio_daily_maintenance();` once, then drain REPEATEDLY until the queue is
+empty. For that one-time full-history backfill, use SMALL BATCHES at ≤10 users: pass
+`p_batch_users := 1` (one user per drain call), because each user's entire history rebuilds
+inside one outer transaction and a single oversized batch is the largest transaction this
+architecture will ever run. The steady-state 15-minute cron keeps its default batch of 20.
 
 ---
 
 ## Status
 
-**M1-M11 merged/deployed. M12 = implementation candidate awaiting review (above); the independent
-adversarial validation (Prompt 21) has run against it and is green. No open
+**M1-M11 merged/deployed. M12 = implementation candidate whose review findings are all fixed,
+awaiting targeted delta re-verification (above). No open
 M9/M10/M11-family item remains.** The standing owner-device check item carried since M7.1 still
 applies to deployed surfaces. Do not begin M12a or M13 until M12 is approved, merged and
 verified against the hosted project.
