@@ -317,9 +317,11 @@ create trigger portfolio_recompute_price_inserted
   referencing new table as new_rows
   for each statement execute function public.m12_price_snapshot_enq_insert();
 
+-- Postgres forbids combining a column list with transition tables (SQLSTATE 0A000), so these
+-- fire on ANY update of the shared market-data tables; each function filters to genuinely
+-- changed rows before enqueuing, so a no-op ingest upsert costs one cheap query and no queue row.
 create trigger portfolio_recompute_price_updated
-  after update of card_variant_id, source_currency, value_minor, snapshot_date
-  on public.price_snapshots
+  after update on public.price_snapshots
   referencing old table as old_rows new table as new_rows
   for each statement execute function public.m12_price_snapshot_enq_update();
 
@@ -380,8 +382,7 @@ create trigger portfolio_recompute_fx_inserted
   for each statement execute function public.m12_fx_rate_enq_insert();
 
 create trigger portfolio_recompute_fx_updated
-  after update of rate, rate_date
-  on public.fx_rates
+  after update on public.fx_rates
   referencing old table as old_rows new table as new_rows
   for each statement execute function public.m12_fx_rate_enq_update();
 
