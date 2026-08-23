@@ -468,8 +468,12 @@ describe('M12 ownership timeline', () => {
 
       await rebuild(u.id, 95)
       let rows = await readSnapshots(u.id)
-      expectSnap(rows, 90, { open_lot_count: 1, market_value_nok_minor: 57500 }) // 5 × 115.00
-      expectSnap(rows, 60, { open_lot_count: 1, market_value_nok_minor: 34500 }) // 3 × 115.00
+      expectSnap(rows, 90, { open_lot_count: 1, market_value_nok_minor: 57500 }) // 5 × 115.00, obs 1 fresh
+      // Days −64…−56 sit BETWEEN the two observation windows: open lots with no resolvable
+      // value — excluded from CMV and counted, never zeroed (F14). The engine must not bridge
+      // the gap by inventing a price.
+      expectSnap(rows, 60, { open_lot_count: 1, market_value_nok_minor: 0, unvalued_lot_count: 1 })
+      expectSnap(rows, 55, { open_lot_count: 1, market_value_nok_minor: 34500 }) // obs 2 fresh
       expectSnap(rows, 51, { open_lot_count: 1, market_value_nok_minor: 34500 })
 
       // Void the sale: corrected truth puts all five units back across the whole history.
@@ -481,12 +485,12 @@ describe('M12 ownership timeline', () => {
       await service
         .from('lot_disposals')
         .update({ voided_at: new Date().toISOString() })
-        .eq('id', disposal!.id as string)
+        .eq('id', disposal!.id)
 
       await rebuild(u.id, 95)
       rows = await readSnapshots(u.id)
       expectSnap(rows, 90, { open_lot_count: 1, market_value_nok_minor: 57500 })
-      expectSnap(rows, 60, { open_lot_count: 1, market_value_nok_minor: 57500 })
+      expectSnap(rows, 55, { open_lot_count: 1, market_value_nok_minor: 57500 })
       expectSnap(rows, 50, { open_lot_count: 1, market_value_nok_minor: 57500 })
       expectSnap(rows, 10, { open_lot_count: 1, market_value_nok_minor: 57500 })
       expectSnap(rows, 10, { sales_proceeds_to_date_nok_minor: 0 }) // voided sale excluded everywhere
@@ -1025,7 +1029,7 @@ describe('M12 full rebuild equals incremental recompute exactly', () => {
       await service
         .from('lot_disposals')
         .update({ voided_at: new Date().toISOString() })
-        .eq('id', disposal!.id as string)
+        .eq('id', disposal!.id)
       await incrementalDrain()
 
       // Manual value updated again, then cleared.

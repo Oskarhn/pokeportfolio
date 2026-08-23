@@ -120,6 +120,16 @@ describe('M12 invalidation boundaries', () => {
       quantity: 1,
       quantity_remaining: 1,
     })
+
+    // Self-diagnosing on failure: confirm the lot actually stored the intended business date
+    // before blaming the trigger for the queue state.
+    const { data: insertedLot } = await service
+      .from('acquisition_lots')
+      .select('id, acquired_on')
+      .eq('holding_id', holding!.id as string)
+      .single()
+    expect(insertedLot?.acquired_on).toBe(daysAgo(20))
+
     expect(await queueFor(user.id)).toBe(daysAgo(20))
 
     // An edit moving the date EARLIER pulls the boundary back through the trigger's own
