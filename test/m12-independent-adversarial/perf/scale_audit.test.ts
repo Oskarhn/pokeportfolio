@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { createServiceClient, deleteSyntheticUser, type TestClient } from '../../../tests/db/setup'
-import { hasSupabaseEnv, skipUnlessM12 } from '../helpers/contract'
+import { hasSupabaseEnv, skipUnlessM12, type M12Surface } from '../helpers/contract'
 import {
   acquireRaw,
   backdateAcquisition,
@@ -74,6 +74,43 @@ function analyzeSeededTables(): void {
   execFileSync('psql', [DB_URL, '-v', 'ON_ERROR_STOP=1', '-c', sql], { encoding: 'utf8' })
 }
 
+/**
+ * Heavy engine calls for the audit. When DB_URL is available (CI exports it) they run over the
+ * direct psql channel, the same one both permanent benchmarks already use for privileged work:
+ * a background engine's cost is what is under audit here, and routing it through PostgREST
+ * exposes the measurement to platform role/gateway statement caps that have nothing to do with
+ * engine cost (the audit passed at 250 ms on one run and died in a statement timeout on the
+ * next under runner variance). Falls back to the PostgREST path when DB_URL is absent.
+ */
+function psqlEngineCall(sql: string): void {
+  const DB_URL = process.env.DB_URL
+  if (!DB_URL) throw new Error('DB_URL required for the direct engine channel')
+  execFileSync('psql', [DB_URL, '-v', 'ON_ERROR_STOP=1', '-tAc', sql], { encoding: 'utf8' })
+}
+
+async function auditRebuild(
+  surface: M12Surface,
+  userId: string,
+  from: string,
+  through: string,
+): Promise<void> {
+  if (process.env.DB_URL) {
+    psqlEngineCall(
+      `select public.rebuild_portfolio_snapshots('${userId}', '${from}', '${through}');`,
+    )
+    return
+  }
+  await fullRebuild(surface, userId, from, through)
+}
+
+async function auditDrain(surface: M12Surface): Promise<void> {
+  if (process.env.DB_URL) {
+    psqlEngineCall('select public.drain_portfolio_recompute_queue();')
+    return
+  }
+  await drainQueue(surface)
+}
+
 describe('M12 performance audit', () => {
   it('rebuild / incremental / dashboard-read at moderate scale stay within catastrophic bounds', async (ctx) => {
     if (!PERF_ENABLED) ctx.skip('set M12_PERF_AUDIT=1 to run the scale audit')
@@ -126,7 +163,7 @@ describe('M12 performance audit', () => {
 
     // Full rebuild over the entire range.
     let start = t()
-    await fullRebuild(surface, env.user.id, day(-DAYS), day(0))
+    await auditRebuild(surface, env.user.id, day(-DAYS), day(0))
     const rebuildMs = Math.round(t() - start)
 
     // Single-event incremental: one backdated edit, then a queue drain.
@@ -138,7 +175,7 @@ describe('M12 performance audit', () => {
       acquisitions[0]!.price,
       day(-DAYS),
     )
-    await drainQueue(surface)
+    await auditDrain(surface)
     const incrementalMs = Math.round(t() - start)
 
     // The dashboard read must be a cache read: flat and fast regardless of the work above.
