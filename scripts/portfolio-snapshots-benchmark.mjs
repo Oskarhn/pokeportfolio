@@ -444,14 +444,14 @@ async function main() {
     )
     const snapCount = psqlScalar('select count(*) from public.portfolio_snapshots;')
     console.log(
-      `  portfolio_snapshots:       ${Number(snapsBytes ?? 0).toLocaleString()} bytes (${Number(snapCount ?? 0).toLocaleString()} rows for this user)`,
+      `  portfolio_snapshots:       ${Number(snapsBytes ?? 0).toLocaleString()} bytes (${Number(snapCount ?? 0).toLocaleString()} rows total)`,
     )
     console.log(`  portfolio_recompute_queue: ${Number(queueBytes ?? 0).toLocaleString()} bytes`)
-    if (snapsBytes !== null && Number(fullYear) > 0) {
+    if (snapsBytes !== null && snapCount !== null && Number(snapCount) > 0) {
       const perRow = Number(snapsBytes) / Number(snapCount)
       console.log(`  bytes/row (this dataset):  ${perRow.toFixed(1)}`)
       console.log(
-        `  projected 10 users × ${(365).toLocaleString()} rows ≈ ${((perRow * 3650) / 1024 / 1024).toFixed(2)} MB`,
+        `  projected 10 users x 365 rows ~= ${((perRow * 3650) / 1024 / 1024).toFixed(2)} MB/year`,
       )
     }
 
