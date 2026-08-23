@@ -118,7 +118,7 @@ async function makeLot(userId: string, spec: HoldingSpec & { holdingId: string }
     const { data: line, error: lineError } = await service
       .from('purchase_lines')
       .insert({
-        purchase_id: purchase!.id as string,
+        purchase_id: purchase.id,
         user_id: userId,
         line_type: 'bulk_lot',
         spend_class: 'collectible',
@@ -139,7 +139,7 @@ async function makeLot(userId: string, spec: HoldingSpec & { holdingId: string }
         unit_cost_basis_minor: spec.unitCostNok ?? 0,
         unit_cost_basis_nok_minor: spec.unitCostNok ?? 0,
         residual_nok_minor: 0,
-        purchase_line_id: line!.id as string,
+        purchase_line_id: line.id,
       })
       .eq('id', lotId)
     if (linkError) throw new Error(linkError.message)
