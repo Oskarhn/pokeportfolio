@@ -1,4 +1,4 @@
-﻿import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import {
   createServiceClient,
   createSyntheticUser,
@@ -27,7 +27,6 @@ import {
 
 let service: TestClient
 let user: SyntheticUser
-let otherUser: SyntheticUser
 
 const today = new Date()
 function daysAgo(n: number): string {
@@ -284,7 +283,6 @@ function expectSnap(
 beforeAll(async () => {
   service = createServiceClient()
   user = await createSyntheticUser(service, 'm12-snap-a')
-  otherUser = await createSyntheticUser(service, 'm12-snap-b')
 
   // Deterministic FX facts — deliberately ANCIENT only. This suite shares the ephemeral stack's
   // fx_rates with the pre-existing M9/M9.1 fixtures: any EUR rate dated inside their observation
@@ -311,139 +309,163 @@ beforeAll(async () => {
   )
 })
 
+// A pristine user per test: snapshot rows are portfolio-level totals, so any shared user would
+// make absolute assertions accumulate across tests (real contamination CI caught). The
+// withUser-wrapped ownership tests additionally isolate themselves; this hook covers the rest.
+beforeEach(async () => {
+  user = await createSyntheticUser(service, 'm12-snap-fresh')
+})
+
+afterEach(async () => {
+  await deleteSyntheticUser(service, user.id)
+})
+
 afterAll(async () => {
   await deleteSyntheticUser(service, user.id)
-  await deleteSyntheticUser(service, otherUser.id)
 })
 
 // ── Ownership timeline hard gates (prompt §17-§22, TESTING.md §3) ────────────────────────────
 
+async function withUser(label: string, fn: (u: SyntheticUser) => Promise<void>): Promise<void> {
+  const u = await createSyntheticUser(service, label)
+  try {
+    await fn(u)
+  } finally {
+    await deleteSyntheticUser(service, u.id)
+  }
+}
+
 describe('M12 ownership timeline', () => {
-  it('a lot acquired 30 days ago contributes nothing on days 1–29 of its life window', async () => {
-    const variant = await createTestVariant('own-acquire')
-    const { holdingId } = await makeHolding(user.id, {
-      variantId: variant,
-      acquiredDaysAgo: 30,
-      quantity: 2,
+  // Every test runs under its OWN synthetic user: snapshot rows are portfolio-level totals, so
+  // a shared user would make each test's absolute assertions accumulate every earlier test's
+  // holdings (a real cross-test contamination CI caught on the first engine run).
+  it('a lot acquired 30 days ago contributes nothing before its acquisition date', async () => {
+    await withUser('m12-own-acquire', async (u) => {
+      const variant = await createTestVariant('own-acquire')
+      await makeHolding(u.id, { variantId: variant, acquiredDaysAgo: 30, quantity: 2 })
+      await addPrice({ variantId: variant, valueMinor: 1150, daysAgo: 45 }) // priced before ownership
+
+      await rebuild(u.id, 40)
+      const rows = await readSnapshots(u.id)
+
+      // §91: no rows exist before the first tracked date — absence IS the no-history shape,
+      // never a zero-filled row.
+      expect(snapByDate(rows, 31)).toBeUndefined()
+      // 2 units × 11.50 € × 11.5 = 26450 øre from acquisition day onward.
+      expectSnap(rows, 30, { open_lot_count: 1, market_value_nok_minor: 26450 })
+      expectSnap(rows, 5, { open_lot_count: 1, market_value_nok_minor: 26450 })
     })
-    await addPrice({ variantId: variant, valueMinor: 1150, daysAgo: 45 }) // priced before ownership
-
-    await rebuild(user.id, 40)
-    const rows = await readSnapshots(user.id)
-
-    expectSnap(rows, 31, { open_lot_count: 0, market_value_nok_minor: 0 })
-    expectSnap(rows, 30, { open_lot_count: 1, market_value_nok_minor: 2300 }) // 2 × 11.50 EUR
-    expectSnap(rows, 5, { open_lot_count: 1, market_value_nok_minor: 2300 })
-    void holdingId
   })
 
   it('a sale on day S contributes nothing from day S onward, earlier days unchanged', async () => {
-    const variant = await createTestVariant('own-sell')
-    const { lotId } = await makeHolding(user.id, {
-      variantId: variant,
-      acquiredDaysAgo: 120,
-      quantity: 1,
-    })
-    await addPrice({ variantId: variant, valueMinor: 2300, daysAgo: 130 })
-    await sellUnits({
-      userId: user.id,
-      lotId,
-      quantity: 1,
-      daysAgoSold: 100,
-      proceedsMinor: 5000,
-    })
+    await withUser('m12-own-sell', async (u) => {
+      const variant = await createTestVariant('own-sell')
+      const { lotId } = await makeHolding(u.id, {
+        variantId: variant,
+        acquiredDaysAgo: 120,
+        quantity: 1,
+      })
+      await addPrice({ variantId: variant, valueMinor: 2300, daysAgo: 130 })
+      await sellUnits({ userId: u.id, lotId, quantity: 1, daysAgoSold: 100, proceedsMinor: 5000 })
 
-    await rebuild(user.id, 130)
-    const rows = await readSnapshots(user.id)
+      await rebuild(u.id, 130)
+      const rows = await readSnapshots(u.id)
 
-    expectSnap(rows, 110, { open_lot_count: 1, market_value_nok_minor: 2300 })
-    expectSnap(rows, 101, { open_lot_count: 1, market_value_nok_minor: 2300 })
-    // Sale day itself: end-of-business-day state — already gone.
-    expectSnap(rows, 100, { open_lot_count: 0, market_value_nok_minor: 0 })
-    expectSnap(rows, 99, { open_lot_count: 0 })
-    // Proceeds accumulate from the sale day onward.
-    expectSnap(rows, 101, { sales_proceeds_to_date_nok_minor: 0 })
-    expectSnap(rows, 100, { sales_proceeds_to_date_nok_minor: 5000 })
+      expectSnap(rows, 110, { open_lot_count: 1, market_value_nok_minor: 26450 })
+      expectSnap(rows, 101, { open_lot_count: 1, market_value_nok_minor: 26450 })
+      // Sale day itself: end-of-business-day state — already gone.
+      expectSnap(rows, 100, { open_lot_count: 0, market_value_nok_minor: 0 })
+      expectSnap(rows, 99, { open_lot_count: 0 })
+      // Proceeds accumulate from the sale day onward.
+      expectSnap(rows, 101, { sales_proceeds_to_date_nok_minor: 0 })
+      expectSnap(rows, 100, { sales_proceeds_to_date_nok_minor: 5000 })
+    })
   })
 
   it('a partial sale reduces quantity from the disposal date; voiding restores history', async () => {
-    const variant = await createTestVariant('own-partial')
-    const { lotId } = await makeHolding(user.id, {
-      variantId: variant,
-      acquiredDaysAgo: 90,
-      quantity: 5,
+    await withUser('m12-own-partial', async (u) => {
+      const variant = await createTestVariant('own-partial')
+      const { lotId } = await makeHolding(u.id, {
+        variantId: variant,
+        acquiredDaysAgo: 90,
+        quantity: 5,
+      })
+      await addPrice({ variantId: variant, valueMinor: 1000, daysAgo: 95 })
+      await sellUnits({
+        userId: u.id,
+        lotId,
+        quantity: 2,
+        daysAgoSold: 50,
+        proceedsMinor: 3000,
+      })
+
+      await rebuild(u.id, 95)
+      let rows = await readSnapshots(u.id)
+      expectSnap(rows, 51, { open_lot_count: 1, market_value_nok_minor: 57500 }) // 5 × 115.00
+      expectSnap(rows, 50, { open_lot_count: 1, market_value_nok_minor: 34500 }) // 3 × 115.00
+
+      // Void the sale: corrected truth puts all five units back across the whole history.
+      const { data: disposal } = await service
+        .from('lot_disposals')
+        .select('id')
+        .eq('lot_id', lotId)
+        .single()
+      await service
+        .from('lot_disposals')
+        .update({ voided_at: new Date().toISOString() })
+        .eq('id', disposal!.id as string)
+
+      await rebuild(u.id, 95)
+      rows = await readSnapshots(u.id)
+      expectSnap(rows, 51, { open_lot_count: 1, market_value_nok_minor: 57500 })
+      expectSnap(rows, 50, { open_lot_count: 1, market_value_nok_minor: 57500 })
+      expectSnap(rows, 10, { open_lot_count: 1, market_value_nok_minor: 57500 })
+      expectSnap(rows, 10, { sales_proceeds_to_date_nok_minor: 0 }) // voided sale excluded everywhere
     })
-    await addPrice({ variantId: variant, valueMinor: 1000, daysAgo: 95 })
-    await sellUnits({
-      userId: user.id,
-      lotId,
-      quantity: 2,
-      daysAgoSold: 50,
-      proceedsMinor: 3000,
-    })
-
-    await rebuild(user.id, 95)
-    let rows = await readSnapshots(user.id)
-    expectSnap(rows, 51, { open_lot_count: 1, market_value_nok_minor: 5000 }) // 5 × 10.00
-    expectSnap(rows, 50, { open_lot_count: 1, market_value_nok_minor: 3000 }) // 3 × 10.00
-
-    // Void the sale: corrected truth puts all five units back across the whole history.
-    const { data: disposal } = await service
-      .from('lot_disposals')
-      .select('id')
-      .eq('lot_id', lotId)
-      .single()
-    await service
-      .from('lot_disposals')
-      .update({ voided_at: new Date().toISOString() })
-      .eq('id', disposal!.id as string)
-
-    await rebuild(user.id, 95)
-    rows = await readSnapshots(user.id)
-    expectSnap(rows, 51, { open_lot_count: 1, market_value_nok_minor: 5000 })
-    expectSnap(rows, 50, { open_lot_count: 1, market_value_nok_minor: 5000 })
-    expectSnap(rows, 10, { open_lot_count: 1, market_value_nok_minor: 5000 })
-    expectSnap(rows, 10, { sales_proceeds_to_date_nok_minor: 0 }) // voided sale excluded everywhere
   })
 
   it('same-day acquire + full sell ends that business day at zero', async () => {
-    const variant = await createTestVariant('own-sameday')
-    const { lotId } = await makeHolding(user.id, {
-      variantId: variant,
-      acquiredDaysAgo: 10,
-      quantity: 1,
-    })
-    await addPrice({ variantId: variant, valueMinor: 1000, daysAgo: 12 })
-    await sellUnits({ userId: user.id, lotId, quantity: 1, daysAgoSold: 10, proceedsMinor: 900 })
+    await withUser('m12-own-sameday', async (u) => {
+      const variant = await createTestVariant('own-sameday')
+      const { lotId } = await makeHolding(u.id, {
+        variantId: variant,
+        acquiredDaysAgo: 10,
+        quantity: 1,
+      })
+      await addPrice({ variantId: variant, valueMinor: 1000, daysAgo: 12 })
+      await sellUnits({ userId: u.id, lotId, quantity: 1, daysAgoSold: 10, proceedsMinor: 900 })
 
-    await rebuild(user.id, 14)
-    const rows = await readSnapshots(user.id)
-    expectSnap(rows, 11, { open_lot_count: 0 })
-    expectSnap(rows, 10, { open_lot_count: 0, sales_proceeds_to_date_nok_minor: 900 })
+      await rebuild(u.id, 14)
+      const rows = await readSnapshots(u.id)
+      expectSnap(rows, 11, { open_lot_count: 0 })
+      expectSnap(rows, 10, { open_lot_count: 0, sales_proceeds_to_date_nok_minor: 900 })
+    })
   })
 
   it('backdating a lot rewrites history from the new acquired_on, not before', async () => {
-    const variant = await createTestVariant('own-backdate')
-    const { lotId } = await makeHolding(user.id, {
-      variantId: variant,
-      acquiredDaysAgo: 0,
-      quantity: 1,
+    await withUser('m12-own-backdate', async (u) => {
+      const variant = await createTestVariant('own-backdate')
+      const { lotId } = await makeHolding(u.id, {
+        variantId: variant,
+        acquiredDaysAgo: 0,
+        quantity: 1,
+      })
+      await addPrice({ variantId: variant, valueMinor: 1000, daysAgo: 25 })
+
+      await rebuild(u.id, 30)
+      expectSnap(await readSnapshots(u.id), 21, { open_lot_count: 0 })
+
+      const { error } = await service
+        .from('acquisition_lots')
+        .update({ acquired_on: daysAgo(20) })
+        .eq('id', lotId)
+      expect(error).toBeNull()
+
+      await rebuild(u.id, 30)
+      const rows = await readSnapshots(u.id)
+      expectSnap(rows, 21, { open_lot_count: 0 })
+      expectSnap(rows, 20, { open_lot_count: 1, market_value_nok_minor: 11500 })
     })
-    await addPrice({ variantId: variant, valueMinor: 1000, daysAgo: 25 })
-
-    await rebuild(user.id, 30)
-    expectSnap(await readSnapshots(user.id), 20, { open_lot_count: 0 })
-
-    const { error } = await service
-      .from('acquisition_lots')
-      .update({ acquired_on: daysAgo(20) })
-      .eq('id', lotId)
-    expect(error).toBeNull()
-
-    await rebuild(user.id, 30)
-    const rows = await readSnapshots(user.id)
-    expectSnap(rows, 21, { open_lot_count: 0 })
-    expectSnap(rows, 20, { open_lot_count: 1, market_value_nok_minor: 1000 })
   })
 })
 
@@ -469,9 +491,9 @@ describe('M12 historical valuation', () => {
 
     await rebuild(user.id, 75)
     const rows = await readSnapshots(user.id)
-    expectSnap(rows, 55, { market_value_nok_minor: 2000, unvalued_lot_count: 0 }) // age 5
+    expectSnap(rows, 55, { market_value_nok_minor: 23000, unvalued_lot_count: 0 }) // age 5; 20 € × 11.5
     // Exactly 30 days after the observation: still included (boundary, prompt §25).
-    expectSnap(rows, 30, { market_value_nok_minor: 2000, unvalued_lot_count: 0 })
+    expectSnap(rows, 30, { market_value_nok_minor: 23000, unvalued_lot_count: 0 })
     // 31 days after: expired — excluded and COUNTED, never zeroed (F14).
     expectSnap(rows, 29, { market_value_nok_minor: 0, unvalued_lot_count: 1 })
     expectSnap(rows, 1, { market_value_nok_minor: 0, unvalued_lot_count: 1 })
@@ -491,7 +513,7 @@ describe('M12 historical valuation', () => {
       market_value_nok_minor: 0,
       unvalued_lot_count: 1,
     })
-    expectSnap(await readSnapshots(user.id), 40, { market_value_nok_minor: 1000 })
+    expectSnap(await readSnapshots(user.id), 40, { market_value_nok_minor: 11500 })
 
     // Correct the day-40 observation. Day 39 must stay absent; day 40+ must move.
     const { error } = await service
@@ -505,8 +527,8 @@ describe('M12 historical valuation', () => {
     await rebuild(user.id, 55)
     const rows = await readSnapshots(user.id)
     expectSnap(rows, 41, { market_value_nok_minor: 0, unvalued_lot_count: 1 })
-    expectSnap(rows, 40, { market_value_nok_minor: 1500 })
-    expectSnap(rows, 39, { market_value_nok_minor: 1500 })
+    expectSnap(rows, 40, { market_value_nok_minor: 17250 })
+    expectSnap(rows, 39, { market_value_nok_minor: 17250 })
   })
 
   it('a genuine zero observation is a valued fact; absence stays missing (F14)', async () => {
@@ -537,7 +559,7 @@ describe('M12 historical valuation', () => {
       market_value_nok_minor: 0,
       unvalued_lot_count: 1,
     })
-    expectSnap(rows, 50, { market_value_nok_minor: 1000, unvalued_lot_count: 0 })
+    expectSnap(rows, 50, { market_value_nok_minor: 11500, unvalued_lot_count: 0 })
   })
 
   it('converts provider currencies with the FX observed on/before the observation date', async () => {
@@ -626,7 +648,7 @@ describe('M12 manual valuation intervals', () => {
 
     await rebuild(user.id, 45)
     const rows = await readSnapshots(user.id)
-    expectSnap(rows, 21, { market_value_nok_minor: 1000 })
+    expectSnap(rows, 21, { market_value_nok_minor: 11500 })
     expectSnap(rows, 20, { market_value_nok_minor: 7777 })
     expectSnap(rows, 1, { market_value_nok_minor: 7777 })
   })

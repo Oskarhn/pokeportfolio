@@ -220,8 +220,8 @@ describe('M12 dashboard reads are scoped and admin gains no bypass (prompt §97)
       physical_card_count: string
       gpo_nok_minor: string
     }>()
-    expect(a.data).not.toBeNull()
-    expect(b.data).not.toBeNull()
+    expect(a.error).toBeNull()
+    expect(b.error).toBeNull()
     expect(Number(a.data!.physical_card_count)).toBe(2) // A's two units
     expect(BigInt(a.data!.gpo_nok_minor)).toBe(0n) // A recorded no purchases
     expect(Number(b.data!.physical_card_count)).toBe(2)
@@ -254,7 +254,7 @@ describe('M12 dashboard reads are scoped and admin gains no bypass (prompt §97)
       unique_holding_count: string
     }>()
     // The admin owns nothing — an empty account, never A's or B's figures.
-    expect(summary.data).not.toBeNull()
+    expect(summary.error).toBeNull()
     expect(Number(summary.data!.unique_holding_count)).toBe(0)
     expect(Number(summary.data!.physical_card_count)).toBe(0)
 
