@@ -371,7 +371,7 @@ as $$
   select m.month,
          coalesce(s.cs, 0)::text,
          coalesce(s.hs, 0)::text,
-         coalesce(s.cs, 0) + coalesce(s.hs, 0)::text
+         (coalesce(s.cs, 0) + coalesce(s.hs, 0))::text
   from months m
   left join spend s on s.month = m.month
   order by m.month asc;
