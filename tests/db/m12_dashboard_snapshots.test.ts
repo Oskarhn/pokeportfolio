@@ -77,11 +77,72 @@ async function makeLot(userId: string, spec: HoldingSpec & { holdingId: string }
       acquired_on: daysAgo(spec.acquiredDaysAgo ?? 100),
       quantity: spec.quantity ?? 1,
       quantity_remaining: spec.quantity ?? 1,
+      // M11's trigger requires an explicit intent on every sealed lot.
+      sealed_intent: (spec.kind ?? 'raw_card') === 'sealed' ? 'undecided' : null,
     })
     .select('id')
     .single()
   if (error) throw new Error(error.message)
-  return data.id as string
+  const lotId = data.id as string
+
+  // M2/F7: a 'known' basis is only legal with a real purchase line behind it — manufacture the
+  // canonical backing rows so the lot satisfies
+  // acquisition_lots_cost_basis_state_consistency exactly as create_purchase would have written
+  // it. The purchase lands in CS by construction; tests asserting CS account for this.
+  if ((spec.costState ?? 'not_paid') === 'known') {
+    const acquiredOn = daysAgo(spec.acquiredDaysAgo ?? 100)
+    const qty = spec.quantity ?? 1
+    const total = (spec.unitCostNok ?? 0) * qty
+    const { data: purchase, error: purchaseError } = await service
+      .from('purchases')
+      .insert({
+        user_id: userId,
+        purchased_on: acquiredOn,
+        currency: 'NOK',
+        subtotal_minor: total,
+        shipping_minor: 0,
+        customs_minor: 0,
+        discount_minor: 0,
+        total_minor: total,
+        fx_rate_to_nok: '1',
+        fx_rate_date: acquiredOn,
+        fx_source: 'manual',
+        total_nok_minor: total,
+      })
+      .select('id')
+      .single()
+    if (purchaseError) throw new Error(purchaseError.message)
+    const { data: line, error: lineError } = await service
+      .from('purchase_lines')
+      .insert({
+        purchase_id: purchase!.id as string,
+        user_id: userId,
+        line_type: 'bulk_lot',
+        spend_class: 'collectible',
+        description: 'm12 fixture basis',
+        quantity: qty,
+        unit_price_minor: spec.unitCostNok ?? 0,
+        line_total_minor: total,
+        attributable_cost_minor: total,
+        attributable_cost_nok_minor: total,
+      })
+      .select('id')
+      .single()
+    if (lineError) throw new Error(lineError.message)
+    const { error: linkError } = await service
+      .from('acquisition_lots')
+      .update({
+        cost_basis_state: 'known',
+        unit_cost_basis_minor: spec.unitCostNok ?? 0,
+        unit_cost_basis_nok_minor: spec.unitCostNok ?? 0,
+        residual_nok_minor: 0,
+        purchase_line_id: line!.id as string,
+      })
+      .eq('id', lotId)
+    if (linkError) throw new Error(linkError.message)
+  }
+
+  return lotId
 }
 
 async function makeHolding(
@@ -351,9 +412,11 @@ describe('M12 ownership timeline', () => {
       // §91: no rows exist before the first tracked date — absence IS the no-history shape,
       // never a zero-filled row.
       expect(snapByDate(rows, 31)).toBeUndefined()
-      // 2 units × 11.50 € × 11.5 = 26450 øre from acquisition day onward.
+      // 2 units × 11.50 € × 11.5 = 26450 øre while the observation is within its 30-day window.
       expectSnap(rows, 30, { open_lot_count: 1, market_value_nok_minor: 26450 })
-      expectSnap(rows, 5, { open_lot_count: 1, market_value_nok_minor: 26450 })
+      expectSnap(rows, 15, { open_lot_count: 1, market_value_nok_minor: 26450 }) // age exactly 30
+      // Day 14: the observation is 31 days old as-of D — excluded and COUNTED, never zeroed.
+      expectSnap(rows, 14, { open_lot_count: 1, market_value_nok_minor: 0, unvalued_lot_count: 1 })
     })
   })
 
@@ -391,6 +454,10 @@ describe('M12 ownership timeline', () => {
         quantity: 5,
       })
       await addPrice({ variantId: variant, valueMinor: 1000, daysAgo: 95 })
+      // A second observation keeps the valuation window overlapping the sale date — otherwise
+      // the first observation's 30-day freshness expires before day 50 and the post-sale
+      // assertions would be about missing coverage instead of quantity.
+      await addPrice({ variantId: variant, valueMinor: 1000, daysAgo: 55 })
       await sellUnits({
         userId: u.id,
         lotId,
@@ -401,8 +468,9 @@ describe('M12 ownership timeline', () => {
 
       await rebuild(u.id, 95)
       let rows = await readSnapshots(u.id)
-      expectSnap(rows, 51, { open_lot_count: 1, market_value_nok_minor: 57500 }) // 5 × 115.00
-      expectSnap(rows, 50, { open_lot_count: 1, market_value_nok_minor: 34500 }) // 3 × 115.00
+      expectSnap(rows, 90, { open_lot_count: 1, market_value_nok_minor: 57500 }) // 5 × 115.00
+      expectSnap(rows, 60, { open_lot_count: 1, market_value_nok_minor: 34500 }) // 3 × 115.00
+      expectSnap(rows, 51, { open_lot_count: 1, market_value_nok_minor: 34500 })
 
       // Void the sale: corrected truth puts all five units back across the whole history.
       const { data: disposal } = await service
@@ -417,7 +485,8 @@ describe('M12 ownership timeline', () => {
 
       await rebuild(u.id, 95)
       rows = await readSnapshots(u.id)
-      expectSnap(rows, 51, { open_lot_count: 1, market_value_nok_minor: 57500 })
+      expectSnap(rows, 90, { open_lot_count: 1, market_value_nok_minor: 57500 })
+      expectSnap(rows, 60, { open_lot_count: 1, market_value_nok_minor: 57500 })
       expectSnap(rows, 50, { open_lot_count: 1, market_value_nok_minor: 57500 })
       expectSnap(rows, 10, { open_lot_count: 1, market_value_nok_minor: 57500 })
       expectSnap(rows, 10, { sales_proceeds_to_date_nok_minor: 0 }) // voided sale excluded everywhere
@@ -437,7 +506,8 @@ describe('M12 ownership timeline', () => {
 
       await rebuild(u.id, 14)
       const rows = await readSnapshots(u.id)
-      expectSnap(rows, 11, { open_lot_count: 0 })
+      // §91: nothing is tracked before acquisition day — absence, not a zero row.
+      expect(snapByDate(rows, 11)).toBeUndefined()
       expectSnap(rows, 10, { open_lot_count: 0, sales_proceeds_to_date_nok_minor: 900 })
     })
   })
@@ -453,7 +523,7 @@ describe('M12 ownership timeline', () => {
       await addPrice({ variantId: variant, valueMinor: 1000, daysAgo: 25 })
 
       await rebuild(u.id, 30)
-      expectSnap(await readSnapshots(u.id), 21, { open_lot_count: 0 })
+      expect(snapByDate(await readSnapshots(u.id), 21)).toBeUndefined()
 
       const { error } = await service
         .from('acquisition_lots')
@@ -736,23 +806,21 @@ describe('M12 snapshot financial fields', () => {
         market_value_nok_minor: 0,
         attributed_value_nok_minor: 0, // ACMV: valued ∩ known — none valued yet
         cost_basis_nok_minor: 50000, // DCB: 2 × 25000
-        collectible_spend_to_date_nok_minor: 0,
+        collectible_spend_to_date_nok_minor: 50000, // F7: the known basis traces to a real purchase
         sales_proceeds_to_date_nok_minor: 0,
       })
 
-      // Day 50: priced (2×34500=69000), accessory purchase lands (CS 0, HS 3000).
+      // Day 50: priced (2×34500=69000), accessory purchase lands (CS 50000 unchanged, HS 3000).
       expectSnap(rows, 50, {
         open_lot_count: 1,
         unvalued_lot_count: 0,
         market_value_nok_minor: 69000,
         attributed_value_nok_minor: 69000,
         cost_basis_nok_minor: 50000,
-        collectible_spend_to_date_nok_minor: 0,
+        collectible_spend_to_date_nok_minor: 50000,
       })
-      // CS/HS split lives in GPO = CS + HS (F1): GPO itself is derived by readers; here HS is
-      // visible through total spend staying collectible-only. Assert the accessory never leaks
-      // into CS:
-      expect(snapByDate(rows, 49)?.collectible_spend_to_date_nok_minor).toBe(0)
+      // The hobby accessory purchase must never leak into CS:
+      expect(snapByDate(rows, 49)?.collectible_spend_to_date_nok_minor).toBe(50000)
 
       // Day 40: gift lot arrives (UMV grows once priced at day 30).
       expectSnap(rows, 40, { open_lot_count: 2, unvalued_lot_count: 1 })
@@ -777,12 +845,12 @@ describe('M12 snapshot financial fields', () => {
       const d19 = snapByDate(rows, 19)!
       expect(d19.attributed_value_nok_minor - d19.cost_basis_nok_minor).toBe(9500)
 
-      // TTEP at day 19 = CMV + NSP − CS = 46000 + 40000 − 0 = 86000.
+      // TTEP at day 19 = CMV + NSP − CS = 46000 + 40000 − 50000 = 36000.
       expect(
         d19.market_value_nok_minor +
           d19.sales_proceeds_to_date_nok_minor -
           d19.collectible_spend_to_date_nok_minor,
-      ).toBe(86000)
+      ).toBe(36000)
 
       // F3 holds on every stored row: ACMV ≤ CMV with the remainder being UMV.
       for (const row of rows) {
@@ -868,7 +936,8 @@ describe('M12 snapshot financial fields', () => {
       // From occurred_on: DCB += floor(999 × 2 / 2) = 999 → 20999.
       expectSnap(rows, 30, { cost_basis_nok_minor: 20999 })
       expectSnap(rows, 1, { cost_basis_nok_minor: 20999 })
-      expectSnap(rows, 31, { collectible_spend_to_date_nok_minor: 999 })
+      // CS includes BOTH the lot-basis purchase (20000) and the grading-fee line (999):
+      expectSnap(rows, 31, { collectible_spend_to_date_nok_minor: 20999 })
     } finally {
       await deleteSyntheticUser(service, u.id)
     }

@@ -398,11 +398,12 @@ begin
     -- m12_recompute_pending_for_self) and every m12_* trigger function are service/internal-only
     -- and deliberately absent here, same reasoning as select_price_sync_batch.
     ('routine', 'get_dashboard_summary()', 'authenticated', 'EXECUTE'),
-    ('routine',
-     'get_portfolio_history(text, date, date)',
-     'authenticated', 'EXECUTE'),
+    ('routine', 'get_portfolio_history(text, date, date)', 'authenticated', 'EXECUTE'),
     ('routine', 'get_monthly_spend(integer)', 'authenticated', 'EXECUTE'),
-    ('routine', 'get_recent_activity(integer)', 'authenticated', 'EXECUTE')
+    ('routine', 'get_recent_activity(integer)', 'authenticated', 'EXECUTE'),
+    -- M12: summary's pending-recompute helper — answers one boolean about auth.uid()'s own queue
+    -- row; direct browser calls are harmless by construction (see baseline migration).
+    ('routine', 'm12_recompute_pending_for_self()', 'authenticated', 'EXECUTE')
   ),
 
   -- M7: the expected PUBLIC-EXECUTE surface for every routine in `public` is empty. No project

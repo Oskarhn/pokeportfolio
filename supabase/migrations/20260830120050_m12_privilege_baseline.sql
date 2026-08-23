@@ -93,11 +93,21 @@ grant execute on function public.update_sale(
 grant execute on function public.void_sale(uuid, text) to authenticated;
 grant execute on function public.sales_summary() to authenticated;
 
--- M12: the dashboard read surface (20260830120030_m12_dashboard_reads.sql).
-grant execute on function public.get_dashboard_summary() to authenticated;
-grant execute on function public.get_portfolio_history(text, date, date) to authenticated;
-grant execute on function public.get_monthly_spend(int) to authenticated;
-grant execute on function public.get_recent_activity(int) to authenticated;
+-- M12: the dashboard read surface (20260830120030_m12_dashboard_reads.sql). Granted to
+-- service_role as well: CI proved the suites exercise these reads under the service key, and
+-- search_cards already established that precedent for shared infra callers. Browser surface is
+-- the authenticated column only.
+grant execute on function public.get_dashboard_summary() to authenticated, service_role;
+grant execute on function public.get_portfolio_history(text, date, date) to authenticated, service_role;
+grant execute on function public.get_monthly_spend(int) to authenticated, service_role;
+grant execute on function public.get_recent_activity(int) to authenticated, service_role;
+
+-- M12: get_dashboard_summary resolves its honest pending_recompute flag through this DEFINER
+-- helper (the queue itself stays unreadable). PostgreSQL checks EXECUTE on functions referenced
+-- from another function's SQL body — unlike implicit trigger firing — so authenticated MUST hold
+-- it. Exposing it directly is harmless BY CONSTRUCTION: it answers exactly one boolean about
+-- exactly auth.uid()'s own queue row and cannot be aimed at another user.
+grant execute on function public.m12_recompute_pending_for_self() to authenticated;
 
 -- M12 service/internal-only functions get NO browser grant, matching their revokes at creation:
 --   rebuild_portfolio_snapshots(uuid, date, date)      → service_role only
