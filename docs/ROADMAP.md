@@ -289,13 +289,14 @@ PriceCharting sources this session (API_SOURCES.md/RESEARCH.md). Full account:
 to visx before building on it. Value over time, monthly spend, headline figures, data-quality
 counts.
 
-**Status: implementation candidate on `feat/m12-dashboard`; the independent review's
-CHANGES_REQUIRED findings are all fixed, awaiting targeted delta re-verification.** NOT
-merged, NOT migrated to any hosted project, NOT deployed. The spike validated and locked
+**Status: COMPLETE — merged (PR #35, squash `e794368`) and deployed.** Claude Prompt 22 review
+findings all fixed; Prompt 24 targeted delta verification APPROVED. Hosted: all six M12
+migrations applied to pokeportfolio-dev, cron live and tick-verified, initial backfill converged,
+hosted security green, Cloudflare deployment green (`deployment-check.mjs` 28/28). Owner
+signed-in Dashboard check pending. The spike validated and locked
 lightweight-charts v5.2.1 (D-066). The full-vs-incremental byte-equality gate, ownership
 timeline, valuation-as-of rules, security suite and the permanent snapshots benchmark are in
-place per TESTING §3/§7; hosted migration, cron activation and the initial backfill are
-explicitly post-verification deployment steps.
+place per TESTING �3/�7.
 
 **Gate:** full rebuild equals incremental recompute, byte-identical; ownership timeline correct
 (TESTING §3); every figure reconciles against the ledger.

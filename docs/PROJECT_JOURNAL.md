@@ -1577,3 +1577,52 @@ cleared means own clear date - removed the divergence class instead of leaving i
 The lesson generalizes: when an implementation and an independent oracle agree, check WHICH RULE
 each encodes before trusting the agreement; identical outputs over shared fixtures can come from
 different rules that part ways on the first unshared input.
+
+## 2026-08-30 - A fresh generated-types artifact disagreed with the hand-maintained one, and the artifact was wrong about nullability
+
+**Problem.** M12's `database.types.ts` had been hand-maintained (no local Docker, established
+precedent since M6), and the standing instruction was to replace it with CI's generated artifact
+before trusting it further. The release phase finally produced a real generated artifact — the
+hosted project had every migration applied, so `supabase gen types --linked` worked without
+Docker for the first time. The diff was large: 231 insertions, 122 deletions against the
+committed file.
+
+**Finding.** Categorising every hunk showed three classes: genuine generator-version noise
+(a new `__InternalSupabase` metadata block, a `graphql_public` schema section, identity columns
+retyped from `id?: number` to `id?: never`, alphabetical reordering, newly-inferred view
+relationships); the known intentional `p_fx_rate_to_nok` string divergence; and — the dangerous
+class — a wholesale nullability change across EVERY RPC result: `string | null` became `string`
+for all RETURNS TABLE columns of all functions, including ones untouched by M12 and long
+deployed. That uniformity is what proved it was a generator policy change, not schema
+information: the SQL genuinely returns NULL for THP/TTEP before a user's first snapshot exists,
+and the reviewed test asserts exactly that. Adopting the artifact would have deleted the
+TypeScript-level null checks guarding the project's absent-data-is-never-zero rule.
+
+**Resolution.** The committed file stands; nothing was regenerated. The lesson: a generated
+artifact proves its generator ran, not that its inferences are schema truth — for RPC results,
+nullability is a policy choice the generator makes, and a newer generator's "non-nullable"
+default can be strictly worse than a careful hand-maintained file. Diff categories, not just
+diff lines.
+
+## 2026-08-30 - Two hosted-release observations that looked like defects and were not
+
+**Problem.** During the controlled release, two hosted-state readings looked alarming.
+
+First, a forged-identity smoke check (JWT-claim impersonation with a nonexistent user id) saw
+`get_dashboard_summary()` return ONE row where history/activity/direct-table reads correctly
+returned zero — a naive leak test fails on it. Reading the returned row showed why: latest and
+first tracked dates NULL, market value NULL, snapshot open-lot count NULL, live-holding counts
+0. The summary is an aggregate shape; for an empty identity it legitimately returns one
+all-absent row rather than zero rows. That is the project's honesty rule applied at the type
+level — absent data renders as absent (NULL), never as a fabricated zero. The correct invariant
+is "no non-NULL data field", not "zero rows".
+
+Second, `portfolio_recompute_runs` recorded started_at identical to finished_at to the
+microsecond. This is Postgres's transaction-stable `now()`: the drain runs as one outer
+transaction by design, so both timestamps freeze at the same transaction start. Far from being
+a defect, identical timestamps corroborate that the documented single-transaction semantics are
+what actually runs.
+
+**Resolution.** Both documented here so the next session's verification scripts assert the
+right properties: content-based emptiness checks for aggregate RPCs, and no expectation of
+wall-clock duration inside single-transaction run records.

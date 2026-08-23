@@ -9,6 +9,7 @@ Work not currently scheduled. Themes, not microtasks. Scheduled work lives in
 
 | Item | Note |
 |---|---|
+| Holding-level quantity reduction and removal | Owner-requested after M12 (recorded 2026-08-30, not yet scheduled). From Portfolio → an individual card/holding detail: reduce quantity, or remove the holding entirely. quantity=1 offers "Remove from Portfolio"; quantity>1 offers "Adjust quantity" and "Remove all". A correction is NOT a Sale or Trade — no proceeds, no realized result. Must use acquisition-lot semantics (split/shrink real lots), never mutate a fake aggregate counter; multi-lot holdings must preserve per-lot provenance and cost basis. If a purchased-lot correction would break receipt/financial integrity, route through the existing purchase-correction lifecycle instead of silently rewriting finance. |
 | Scanner | M15, first post-MVP milestone. All-card tracking makes manual entry the dominant cost of using the app. |
 | Openings | M16. Fully modelled in the schema from MVP, so historical openings can be backdated once the workflow ships. |
 | Grading workflow and profitability | M17. `raw_value_at_submission` is captured from MVP so the analysis remains possible. |
