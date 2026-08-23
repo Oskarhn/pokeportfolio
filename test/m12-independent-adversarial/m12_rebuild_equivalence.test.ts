@@ -206,7 +206,8 @@ describe('M12 central gate: full rebuild == incremental == oracle', () => {
     expect(mapInc.size).toBeGreaterThanOrEqual(mapFull.size)
     for (const [date, fullValues] of mapFull) {
       const incValues = mapInc.get(date)
-      if (!incValues) throw new Error(`full-rebuild date ${date} missing from the incremental cache`)
+      if (!incValues)
+        throw new Error(`full-rebuild date ${date} missing from the incremental cache`)
       for (let i = 0; i < SNAPSHOT_COLUMNS.length; i++) {
         const column = SNAPSHOT_COLUMNS[i]
         if (incValues[i] !== fullValues[i]) {
