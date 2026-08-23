@@ -488,16 +488,27 @@ describe('M12 ownership timeline', () => {
       expectSnap(rows, 50, { open_lot_count: 1, market_value_nok_minor: 34500 })
       expectSnap(rows, 25, { open_lot_count: 1, market_value_nok_minor: 34500 })
 
-      // Void the sale: corrected truth puts all five units back across the whole history.
+      // Void the sale AND its disposal — the canonical corrected truth (a disposal-only edit is
+      // not a sale void; proceeds belong to the sale row). History returns to five units and the
+      // proceeds leave every cumulative.
       const { data: disposal } = await service
         .from('lot_disposals')
-        .select('id')
+        .select('id, sale_line_id')
         .eq('lot_id', lotId)
         .single()
       await service
         .from('lot_disposals')
         .update({ voided_at: new Date().toISOString() })
         .eq('id', disposal!.id)
+      const { data: saleLine } = await service
+        .from('sale_lines')
+        .select('sale_id')
+        .eq('id', disposal!.sale_line_id as string)
+        .single()
+      await service
+        .from('sales')
+        .update({ voided_at: new Date().toISOString() })
+        .eq('id', saleLine!.sale_id as string)
 
       await rebuild(u.id, 95)
       rows = await readSnapshots(u.id)
@@ -784,7 +795,7 @@ describe('M12 snapshot financial fields', () => {
         .single()
       if (purchaseError) throw new Error(purchaseError.message)
       const { error: lineError } = await service.from('purchase_lines').insert({
-        purchase_id: purchaseRow!.id,
+        purchase_id: purchaseRow.id,
         user_id: u.id,
         line_type: 'accessory',
         spend_class: 'hobby',
@@ -797,8 +808,10 @@ describe('M12 snapshot financial fields', () => {
       })
       if (lineError) throw new Error(lineError.message)
 
-      await addPrice({ variantId: v1, valueMinor: 3000, daysAgo: 55 }) // 30.00 € → 345 øre/unit... no:
-      // 3000 minor EUR × 11.5 = 34500 øre per unit.
+      await addPrice({ variantId: v1, valueMinor: 3000, daysAgo: 55 })
+      // 3000 minor EUR × 11.5 = 34500 øre per unit. A second observation keeps the known lot
+      // valued across the sale date (the first window ends at day 25).
+      await addPrice({ variantId: v1, valueMinor: 3000, daysAgo: 25 })
       await addPrice({ variantId: v2, valueMinor: 1000, daysAgo: 30 }) // 11.5 → 11500 øre
 
       // Sell ONE known unit 20 days ago for 40000, basis 25000 → RRC 15000.
@@ -915,10 +928,10 @@ describe('M12 snapshot financial fields', () => {
         .select('id')
         .single()
       if (gradingPurchaseError) throw new Error(gradingPurchaseError.message)
-      const { data: line } = await service
+      const { data: line, error: lineError } = await service
         .from('purchase_lines')
         .insert({
-          purchase_id: gradingPurchase!.id,
+          purchase_id: gradingPurchase.id,
           user_id: u.id,
           line_type: 'grading_fee',
           spend_class: 'collectible',
@@ -931,11 +944,12 @@ describe('M12 snapshot financial fields', () => {
         })
         .select('id')
         .single()
+      if (lineError) throw new Error(lineError.message)
       const { error: adjError } = await service.from('lot_cost_adjustments').insert({
         lot_id: lotId,
         user_id: u.id,
         kind: 'grading_fee',
-        purchase_line_id: line!.id as string,
+        purchase_line_id: line.id,
         amount_minor: 999,
         currency: 'NOK',
         amount_nok_minor: 999,
@@ -1130,7 +1144,9 @@ describe('M12 dashboard aggregates', () => {
       expect(Number(summary.unpriced_holding_count)).toBe(2) // unvalued sealed + unpriced unknown
       expect(Number(summary.manual_valued_holding_count)).toBe(1)
       expect(Number(summary.auto_priced_holding_count)).toBe(1)
-      expect(Number(summary.uncosted_open_lot_count)).toBe(1)
+      // Uncosted = every lot whose cost_basis_state <> 'known' (FINANCIAL_MODEL ULC): three
+      // not_paid lots plus one unknown — the known-cost lot is the only costed one.
+      expect(Number(summary.uncosted_open_lot_count)).toBe(4)
       expect(Number(summary.physical_card_count)).toBe(3) // three CARD units; sealed separate
       expect(Number(summary.sealed_holding_count)).toBe(1)
       // Raw = automatic (2000 minor EUR × 11.5 = 23000 øre) + manual raw holding (12300 øre).

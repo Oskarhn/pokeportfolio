@@ -140,8 +140,8 @@ describe('M12 invalidation boundaries', () => {
 
     expect(await queueFor(user.id)).toBe(daysAgo(20))
 
-    // An edit moving the date EARLIER pulls the boundary back through the trigger's own
-    // least(old, new)...
+    // ...and moving the date EARLIER (Aug 3 → Jul 14) makes the earlier date the affected one:
+    // least(old, new) = Jul 14 = daysAgo(40).
     const { data: lot } = await service
       .from('acquisition_lots')
       .select('id')
@@ -151,9 +151,9 @@ describe('M12 invalidation boundaries', () => {
       .from('acquisition_lots')
       .update({ acquired_on: daysAgo(40) })
       .eq('id', lot!.id as string)
-    expect(await queueFor(user.id)).toBe(daysAgo(20)) // least(day20, day40) — insert's 20 stands
+    expect(await queueFor(user.id)).toBe(daysAgo(40))
 
-    // ...and a genuinely earlier event pulls the boundary back (never skipped, prompt §15).
+    // ...and a genuinely earlier event pulls the boundary back further (never skipped, §15).
     await service
       .from('acquisition_lots')
       .update({ acquired_on: daysAgo(60) })
@@ -161,7 +161,7 @@ describe('M12 invalidation boundaries', () => {
     expect(await queueFor(user.id)).toBe(daysAgo(60))
 
     // A LATER date must NOT move the boundary forward over older pending work (prompt §35's
-    // exact trap): move Mar→Apr style — here day 60 → day 5 keeps dirty at day 60.
+    // exact trap): move Jun→Aug style — here day 60 → day 5 keeps dirty at day 60.
     await service
       .from('acquisition_lots')
       .update({ acquired_on: daysAgo(5) })
@@ -265,6 +265,11 @@ describe('M12 invalidation boundaries', () => {
       effective_from: daysAgo(12),
     })
     expect(await queueFor(user.id)).toBe(daysAgo(12))
+
+    // Drain so the row holds ONLY the clear's boundary — otherwise LEAST would legitimately keep
+    // the still-pending interval-start date from the set above, and the assertion below could not
+    // isolate what the clear itself contributed.
+    await service.rpc('drain_portfolio_recompute_queue')
 
     // Clearing ends coverage at the clear date — dirty from there.
     await service
