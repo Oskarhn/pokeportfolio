@@ -423,7 +423,7 @@ as $$
     from public.acquisition_lots l
     where l.user_id = auth.uid() and l.voided_at is null
       and l.origin <> 'purchase'
-  ) acts
+  ) as acts(activity_type, primary_id, secondary_id, occurred_on, amount_nok_minor)
   order by acts.occurred_on desc
   limit least(greatest(coalesce(p_limit, 8), 1), 20);
 $$;
