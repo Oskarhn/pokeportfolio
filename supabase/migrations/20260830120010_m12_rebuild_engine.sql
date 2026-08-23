@@ -153,18 +153,57 @@ begin
     from lot_qty_day q join lot_adj_day a on a.lot_id = q.lot_id and a.d = q.d
     where q.qty_open > 0
   ),
-  -- ── manual valuation intervals (D-062): economic validity [effective_from, next_effective_from)
-  -- sorted by (effective_from, created_at, id); a terminal clear ends the last interval at the
-  -- wall-clock clear date. A later-created backdated row therefore rewrites history from its own
-  -- effective_from forward — corrections rewrite history, deliberately.
+  -- ── manual valuation intervals (D-062): economic validity [effective_from, valid_to), rows
+  -- sorted by (effective_from, created_at, id). Two distinct ways a row can end, and the schema's
+  -- timestamps distinguish them because now() is the TRANSACTION timestamp:
+  --
+  --   ATOMIC REPLACEMENT  set_manual_valuation supersedes the old row and inserts the new one in
+  --   ONE transaction, so the old row's superseded_at equals the successor row's created_at.
+  --   D-062: the replacement's effective_from defines the economic boundary — the old value runs
+  --   to the day the new one begins.
+  --
+  --   INDEPENDENT CLEAR   clear_manual_valuation stamps superseded_at and inserts nothing. If a
+  --   NEW valuation only arrives later as a separate transaction, the old row was cleared and
+  --   STAYS CLEARED: it ends at its own clear date, and the gap before the later row's
+  --   effective_from resolves through the normal provider/missing path. A user's explicit clear
+  --   must never be silently resurrected by an unrelated later insertion.
+  --
+  -- The pairing test below is "does ANY later-created row share this row's supersession
+  -- timestamp", not "does the immediately-next row in sort order" — a still-later backdated
+  -- correction can sort BETWEEN a row and its actual successor in (effective_from, created_at)
+  -- order, and misreading that as a clear would produce overlapping intervals (double-counted
+  -- days). With the pairing test every interval satisfies valid_to <= next row's effective_from,
+  -- so per-day coverage stays single-valued by construction.
+  mv_supersede_pairs as materialized (
+    select distinct m.holding_id, m.superseded_at
+    from public.manual_valuations m
+    join public.manual_valuations n
+      on n.user_id = m.user_id
+     and n.holding_id = m.holding_id
+     and n.created_at = m.superseded_at
+    where m.user_id = p_user_id
+      and m.superseded_at is not null
+  ),
   mv_intervals as materialized (
     select mv.holding_id, mv.effective_from,
            lead(mv.effective_from) over w as next_eff,
-           case when lead(mv.effective_from) over w is not null
-                then lead(mv.effective_from) over w
-                else cast(mv.superseded_at as date) end as valid_to,
+           case
+             -- Terminal row: active → open-ended; cleared → ends at the clear date itself.
+             when lead(mv.effective_from) over w is null
+               then cast(mv.superseded_at as date)
+             -- Superseded by a transaction that also inserted a successor: replacement boundary.
+             when pair.superseded_at is not null
+               then lead(mv.effective_from) over w
+             -- Cleared independently, with independent later insert(s) following: the clear stays
+             -- cleared. least() covers the backdated-correction case where the later row's
+             -- effective_from lands before the clear date — corrections rewrite history; they do
+             -- not extend what they correct.
+             else least(cast(mv.superseded_at as date), lead(mv.effective_from) over w)
+           end as valid_to,
            mv.value_nok_minor
     from public.manual_valuations mv
+    left join mv_supersede_pairs pair
+      on pair.holding_id = mv.holding_id and pair.superseded_at = mv.superseded_at
     where mv.user_id = p_user_id
     window w as (partition by mv.holding_id order by mv.effective_from, mv.created_at, mv.id)
   ),
@@ -395,9 +434,19 @@ revoke execute on function public.enqueue_portfolio_recompute(uuid, date)
 
 -- ── drain_portfolio_recompute_queue ──────────────────────────────────────────────────────────
 -- The worker (pg_cron, prompt §51/§52). Bounded batch, SKIP LOCKED so overlapping invocations
--- never process the same user destructively (prompt §54), per-user subtransaction so one bad
--- user cannot lose anyone else's work or its own dirty marker (prompt §53 — the queue row is
--- deleted only AFTER its snapshots are successfully written in the same transaction).
+-- never process the same user destructively (prompt §54).
+--
+-- Transaction semantics, stated precisely: this is ONE PL/pgSQL function = one outer
+-- transaction. Each user's begin/exception block is a savepoint (subtransaction) INSIDE it —
+-- not an independent commit. A failing user rolls their own partial writes back to the
+-- savepoint and keeps their queue row; other loop iterations continue and their already-applied
+-- work survives the sibling's exception. But everything successful in this batch remains part
+-- of the outer transaction until the function returns: if the OUTER transaction itself fails
+-- (connection loss, uncaught FATAL error, statement timeout on the whole call), the entire
+-- batch rolls back together — safe (no corruption, no lost queue markers, only recompute work
+-- repeated next tick), but not per-user durability. Batch size therefore bounds how much work
+-- one transaction holds: keep it small for the initial full-history backfill (HANDOVER.md's
+-- deployment runbook: effectively one user at a time there).
 
 create or replace function public.drain_portfolio_recompute_queue(
   p_batch_users int default 20
@@ -433,7 +482,9 @@ begin
       v_processed := v_processed + 1;
       v_written := v_written + coalesce(v_user_written, 0);
     exception when others then
-      -- Roll back this user's partial work (inner block), keep their queue row, keep going.
+      -- Savepoint rollback: undo this user's partial work, keep their queue row, keep going.
+      -- Sibling users' already-applied work is untouched; the whole batch still commits (or
+      -- rolls back) together when the outer transaction ends — see the header above.
       v_errors := coalesce(v_errors, '') || format('user %s failed: %s; ', r.user_id, sqlerrm);
     end;
   end loop;

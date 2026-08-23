@@ -21,6 +21,7 @@ import {
   setFxRate,
   setManual,
   setProviderPrice,
+  stampSupersession,
   voidSale,
   type FixtureEnv,
   type SnapshotRow,
@@ -330,5 +331,80 @@ describe('M12 historical snapshot semantics vs the independent oracle', () => {
     )
     expect(num(snapAt(rows, day(64)), 'sales_proceeds_to_date_nok_minor')).toBe(6_000)
     expect(num(snapAt(rows, day(65)), 'sales_proceeds_to_date_nok_minor')).toBe(31_000)
+  })
+
+  // D-062's formerly-open corner, resolved after independent review: a CLEAR is not undone by a
+  // later, independent valuation with a higher effective_from. The cleared interval ends at its
+  // own clear date; the gap resolves through the automatic path (or missing), never the old
+  // figure. Distinct from an atomic set-over-set replacement, pinned by the next test.
+  it('scenario S: an explicit clear stays cleared when an independent later valuation follows', async (ctx) => {
+    if (!hasSupabaseEnv()) ctx.skip('No Supabase ephemeral stack configured.')
+    const surface0: M12Surface = await skipUnlessM12(ctx, createServiceClient())
+    const env: FixtureEnv = await makeEnv('m12-scenario-s')
+    cleanupUsers.push(env.user.id)
+    const surface = surface0
+
+    await setFxRate(env, 'EUR', day(-2), '10.00000000')
+
+    // Priced vehicle — the gap must FALL BACK to the automatic path, proving resolution rather
+    // than mere absence.
+    const vp = await makeVariant(env, 'vp')
+    await setProviderPrice(env, vp.variantId, 'tcgdex_cardmarket', 1000, day(0)) // unit 10 000
+    const acqP = await acquireRaw(env, vp.variantId, day(8), 5_000)
+    await setManual(env, acqP.holdingId, 11_000, day(10))
+    await clearManual(env, acqP.holdingId)
+    // The RPC stamps wall-clock now(); place the clear on business day 20 so the corner is
+    // mid-history within this suite's fixed calendar.
+    await stampSupersession(env, acqP.holdingId, `${day(20)}T12:00:00Z`)
+    // A genuinely SEPARATE transaction days later — nothing supersedes the cleared row.
+    await setManual(env, acqP.holdingId, 22_000, day(25))
+
+    // Unpriced vehicle — same shape with no automatic truth available in the gap.
+    const vu2 = await makeVariant(env, 'vu2')
+    const acqU = await acquireRaw(env, vu2.variantId, day(8), 1_000)
+    await setManual(env, acqU.holdingId, 3_000, day(10))
+    await clearManual(env, acqU.holdingId)
+    await stampSupersession(env, acqU.holdingId, `${day(20)}T12:00:00Z`)
+    await setManual(env, acqU.holdingId, 4_000, day(25))
+
+    await drainQueue(surface)
+    const facts = await loadFacts(service, env.user.id)
+    const rows = await readSnapshots(env)
+
+    compareFullRange(facts, rows, day(8), day(40))
+
+    expect(num(snapAt(rows, day(19)), 'market_value_nok_minor')).toBe(14_000) // 11_000 + 3_000
+    expect(num(snapAt(rows, day(19)), 'unvalued_lot_count')).toBe(0)
+    // THE GAP (days 20-24): cleared stays cleared — provider pricing for one vehicle, honest
+    // absence for the other, and NEVER either cleared value.
+    expect(num(snapAt(rows, day(22)), 'market_value_nok_minor')).toBe(10_000)
+    expect(num(snapAt(rows, day(22)), 'unvalued_lot_count')).toBe(1)
+    expect(num(snapAt(rows, day(24)), 'market_value_nok_minor')).toBe(10_000)
+    expect(num(snapAt(rows, day(26)), 'market_value_nok_minor')).toBe(26_000) // 22_000 + 4_000
+    expect(num(snapAt(rows, day(26)), 'unvalued_lot_count')).toBe(0)
+  })
+
+  it('scenario S2: an atomic set-over-set replacement keeps the replacement-date boundary', async (ctx) => {
+    if (!hasSupabaseEnv()) ctx.skip('No Supabase ephemeral stack configured.')
+    const surface0: M12Surface = await skipUnlessM12(ctx, createServiceClient())
+    const env: FixtureEnv = await makeEnv('m12-scenario-s2')
+    cleanupUsers.push(env.user.id)
+    const surface = surface0
+
+    const v = await makeVariant(env, 'vs2')
+    const acq = await acquireRaw(env, v.variantId, day(5), 2_000)
+    // Two real RPC calls: supersede+insert share ONE transaction timestamp, so this is an
+    // atomic replacement whose boundary is the NEW effective_from (day 18) — not a clear.
+    await setManual(env, acq.holdingId, 100, day(10))
+    await setManual(env, acq.holdingId, 200, day(18))
+
+    await drainQueue(surface)
+    const facts = await loadFacts(service, env.user.id)
+    const rows = await readSnapshots(env)
+
+    compareFullRange(facts, rows, day(5), day(30))
+    expect(num(snapAt(rows, day(17)), 'market_value_nok_minor')).toBe(100)
+    expect(num(snapAt(rows, day(18)), 'market_value_nok_minor')).toBe(200)
+    expect(num(snapAt(rows, day(29)), 'market_value_nok_minor')).toBe(200)
   })
 })

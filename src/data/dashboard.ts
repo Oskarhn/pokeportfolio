@@ -52,7 +52,8 @@ export interface DashboardSummary {
   pudMinor: bigint
   nccoMinor: bigint
   thcoMinor: bigint
-  thpMinor: bigint
+  /** NULL until a portfolio snapshot exists (CMV unavailable → THP unavailable, never 0-based). */
+  thpMinor: bigint | null
 }
 
 interface SummaryRow {
@@ -91,7 +92,7 @@ interface SummaryRow {
   pud_nok_minor: string
   ncco_nok_minor: string
   thco_nok_minor: string
-  thp_nok_minor: string
+  thp_nok_minor: string | null
 }
 
 export async function getDashboardSummary(): Promise<DashboardSummary> {
@@ -154,7 +155,7 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
     pudMinor: parseMinorUnits(data.pud_nok_minor),
     nccoMinor: parseMinorUnits(data.ncco_nok_minor),
     thcoMinor: parseMinorUnits(data.thco_nok_minor),
-    thpMinor: parseMinorUnits(data.thp_nok_minor),
+    thpMinor: data.thp_nok_minor === null ? null : parseMinorUnits(data.thp_nok_minor),
   }
 }
 

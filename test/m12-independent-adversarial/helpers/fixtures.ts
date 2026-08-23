@@ -261,6 +261,33 @@ export async function clearManual(env: FixtureEnv, holdingId: string): Promise<v
   if (error) throw new Error(`clear_manual_valuation failed: ${error.message}`)
 }
 
+/**
+ * Restamps the latest superseded manual-valuation row's superseded_at to an explicit timestamp.
+ * The RPC stamps wall-clock now(), which lands far outside this suite's fixed 2026-03 calendar;
+ * placing the clear on a specific business day is what makes "cleared mid-history, then an
+ * independent later valuation arrives" (D-062's resolved corner) constructible deterministically.
+ */
+export async function stampSupersession(
+  env: FixtureEnv,
+  holdingId: string,
+  stampedAtIso: string,
+): Promise<void> {
+  const { data, error } = await env.service
+    .from('manual_valuations')
+    .select('id')
+    .eq('holding_id', holdingId)
+    .not('superseded_at', 'is', null)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle<{ id: string }>()
+  if (error || !data) throw new Error(`no superseded row to restamp on ${holdingId}`)
+  const { error: updateError } = await env.service
+    .from('manual_valuations')
+    .update({ superseded_at: stampedAtIso })
+    .eq('id', data.id)
+  if (updateError) throw new Error(`restamping superseded_at failed: ${updateError.message}`)
+}
+
 export type Provider = 'tcgdex_cardmarket' | 'tcgdex_tcgplayer'
 
 export async function setProviderPrice(

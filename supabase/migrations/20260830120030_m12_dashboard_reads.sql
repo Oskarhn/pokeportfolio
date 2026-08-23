@@ -225,7 +225,10 @@ begin
     ld.pud::text,
     (ld.cs - ld.nsp)::text,
     (ld.gpo - ld.nsp)::text,
-    (coalesce(sn.market_value_nok_minor, 0) + ld.nsp - ld.gpo)::text
+    -- THP = CMV + NSP − GPO, and CMV comes from the snapshot: no snapshot row yet means CMV is
+    -- UNAVAILABLE, so THP is unavailable too — NULL, never a 0-based fabrication (the same
+    -- missing-data rule ttep_nok_minor follows two lines up).
+    (sn.market_value_nok_minor + ld.nsp - ld.gpo)::text
   from live lv
   cross join ledger ld
   left join snap sn on true

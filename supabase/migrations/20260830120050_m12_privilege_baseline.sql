@@ -109,12 +109,18 @@ grant execute on function public.get_recent_activity(int) to authenticated, serv
 -- exactly auth.uid()'s own queue row and cannot be aimed at another user.
 grant execute on function public.m12_recompute_pending_for_self() to authenticated;
 
--- M12 service/internal-only functions get NO browser grant, matching their revokes at creation:
+-- M12 service/internal-only functions get NO browser grant beyond exactly what is stated above:
 --   rebuild_portfolio_snapshots(uuid, date, date)      → service_role only
 --   drain_portfolio_recompute_queue(int)               → service_role only
 --   enqueue_portfolio_daily_maintenance()              → service_role only
 --   enqueue_portfolio_recompute(uuid, date)            → nobody but the owner (trigger-called)
---   m12_recompute_pending_for_self()                   → nobody (called via summary only)
+--   m12_recompute_pending_for_self()                   → authenticated ONLY (granted above —
+--                                                        get_dashboard_summary calls it as a
+--                                                        nested function call, which requires
+--                                                        EXECUTE; safe by construction: no
+--                                                        user-id parameter, hardcoded auth.uid(),
+--                                                        answers one boolean about the caller's
+--                                                        own queue row)
 --   m12_*_dirties_history / m12_price_snapshot_enq_* / m12_fx_rate_enq_* → nobody (triggers)
 
 -- ── 4. Tables: sweep, then grant back, with system-owned columns excluded ────────────────────

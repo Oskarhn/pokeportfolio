@@ -20,6 +20,7 @@ import {
   computePeriodChange,
   filterHistoryWindow,
   resolveRangeWindow,
+  ttepDisplayState,
   toChartSeries,
   type ChartSeriesPoint,
   type DashboardRange,
@@ -269,18 +270,34 @@ export function HomePage() {
               ))}
             </ul>
           ) : null}
+          {chartReady && !scoped ? (
+            <p className="text-[11px] leading-snug text-slate-600">
+              Older market-value history uses weekly retained market observations.
+            </p>
+          ) : null}
         </div>
 
-        {/* Total tracked economic position — secondary, honestly labelled (prompt §124). */}
+        {/* Total tracked economic position — secondary, honestly labelled (prompt §124).
+            ttepMinor is NULL until the first snapshot exists: render the missing state ("—"),
+            never a fabricated 0 kr (ttepDisplayState / DESIGN_SYSTEM.md §7). */}
         {!scoped && s ? (
           <div className="flex items-start justify-between gap-4 border-t border-slate-800 pt-3">
             <div className="min-w-0">
               <p className="text-sm font-semibold tabular-nums text-slate-100">
-                {hideValues ? (
-                  <span aria-label="Value hidden">•••• kr</span>
-                ) : (
-                  <>{formatNokMinor(s.ttepMinor ?? 0n)} kr</>
-                )}
+                {(() => {
+                  const ttep = ttepDisplayState(s.ttepMinor, hideValues)
+                  if (ttep.kind === 'missing') {
+                    return (
+                      <span aria-label="Not computed yet" className="text-slate-500">
+                        —
+                      </span>
+                    )
+                  }
+                  if (ttep.kind === 'hidden') {
+                    return <span aria-label="Value hidden">•••• kr</span>
+                  }
+                  return <>{formatNokMinor(ttep.minorUnits)} kr</>
+                })()}
               </p>
               <p className="text-xs text-slate-500">Total tracked economic position</p>
             </div>

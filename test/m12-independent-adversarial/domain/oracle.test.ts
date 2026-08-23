@@ -273,7 +273,7 @@ describe('F10 and sealed manual-only', () => {
   })
 })
 
-describe('manual valuation interval model (LOCK - reconcile against D-062 on divergence)', () => {
+describe('manual valuation interval model (D-062 corner resolved — clear vs atomic replacement)', () => {
   function intervalFacts() {
     const holdingId = 'h1'
     const facts = emptyFacts({
@@ -346,6 +346,79 @@ describe('manual valuation interval model (LOCK - reconcile against D-062 on div
     expect(manualValueAt(facts, holdingId, '2026-01-10')).toBe(111) // untouched
     expect(manualValueAt(facts, holdingId, '2026-02-01')).toBe(222) // untouched
     expect(manualValueAt(facts, holdingId, '2026-02-05')).toBeNull()
+  })
+
+  // The formerly-open LOCK-1 corner, now decided (independent review finding H1): a CLEAR stays
+  // cleared even when an independent later valuation arrives with a higher effective_from.
+  it('a cleared value is never resurrected by an independent later valuation', () => {
+    const { facts, holdingId } = intervalFacts()
+    facts.manualByHolding.set(holdingId, [
+      {
+        valueMinor: 100,
+        effectiveFrom: '2026-01-10',
+        // Cleared on business day 20 — and NOTHING was created in that transaction.
+        supersededAt: '2026-01-20T12:00:00Z',
+        createdAt: '2026-01-09T00:00:00Z',
+      },
+      {
+        valueMinor: 200,
+        effectiveFrom: '2026-01-25',
+        // A genuinely separate later transaction: created_at ≠ the old row's superseded_at.
+        supersededAt: null,
+        createdAt: '2026-02-01T00:00:00Z',
+      },
+    ])
+    expect(manualValueAt(facts, holdingId, '2026-01-19')).toBe(100)
+    // The gap days belong to NO manual interval — the automatic path decides them.
+    expect(manualValueAt(facts, holdingId, '2026-01-20')).toBeNull()
+    expect(manualValueAt(facts, holdingId, '2026-01-24')).toBeNull()
+    expect(manualValueAt(facts, holdingId, '2026-01-25')).toBe(200)
+  })
+
+  it('an atomic replacement keeps D-062: the old value runs to the replacement date', () => {
+    const { facts, holdingId } = intervalFacts()
+    facts.manualByHolding.set(holdingId, [
+      {
+        valueMinor: 100,
+        effectiveFrom: '2026-01-10',
+        // Superseded in the SAME transaction that inserted the successor: this row's
+        // supersededAt equals the successor's createdAt — the pairing signature.
+        supersededAt: '2026-01-15T09:00:00Z',
+        createdAt: '2026-01-09T00:00:00Z',
+      },
+      {
+        valueMinor: 200,
+        effectiveFrom: '2026-01-15',
+        supersededAt: null,
+        createdAt: '2026-01-15T09:00:00Z',
+      },
+    ])
+    expect(manualValueAt(facts, holdingId, '2026-01-14')).toBe(100)
+    expect(manualValueAt(facts, holdingId, '2026-01-15')).toBe(200)
+  })
+
+  it('a backdated correction sorting between a row and its true successor never reads as a clear', () => {
+    const { facts, holdingId } = intervalFacts()
+    facts.manualByHolding.set(holdingId, [
+      {
+        valueMinor: 100,
+        effectiveFrom: '2026-01-10',
+        // Replaced by the THIRD row's transaction, but a backdated correction sorts between
+        // them by effective_from — pairing by "any row sharing the timestamp" keeps this a
+        // replacement, so intervals never overlap.
+        supersededAt: '2026-02-01T09:00:00Z',
+        createdAt: '2026-01-09T00:00:00Z',
+      },
+      {
+        valueMinor: 150,
+        effectiveFrom: '2026-01-20',
+        supersededAt: null,
+        createdAt: '2026-02-01T09:00:00Z',
+      },
+    ])
+    expect(manualValueAt(facts, holdingId, '2026-01-19')).toBe(100)
+    expect(manualValueAt(facts, holdingId, '2026-01-20')).toBe(150)
+    expect(manualValueAt(facts, holdingId, '2026-03-01')).toBe(150)
   })
 })
 

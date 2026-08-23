@@ -210,13 +210,25 @@ export function convertMinorToNok(valueMinor: number, rateScaled: number): numbe
 }
 
 /**
- * LOCK (manual-valuation interval model, D-062 area): each manual valuation occupies the interval
- * [effective_from, nextBoundary) where nextBoundary is the earliest of (a) the next row's
- * effective_from and (b) the row's own clear date (superseded_at::date, present only when it was
- * ended by clear_manual_valuation). For a given day the winning row is the covering row with the
- * latest effective_from, ties broken by latest created_at. Cleared periods fall through to the
- * automatic path. This is the only reading under which the full history stays reconstructable
- * from the final table state while `clear` still changes today's resolution.
+ * Manual-valuation interval model (D-062, corner RESOLVED after independent review — formerly
+ * the LOCK-1 open question): each manual valuation occupies the interval [effective_from, end)
+ * where `end` depends on HOW the row ended, and the schema's timestamps distinguish the two ways
+ * because now() is the transaction timestamp:
+ *
+ * - ATOMIC REPLACEMENT: set_manual_valuation supersedes the old row and inserts the new one in
+ *   ONE transaction, so the old row's superseded_at equals the successor's created_at. The
+ *   replacement's effective_from defines the economic boundary.
+ * - INDEPENDENT CLEAR: clear_manual_valuation stamps superseded_at and inserts nothing. If a new
+ *   valuation only arrives LATER as a separate transaction, the cleared row STAYS CLEARED — it
+ *   ends at its own clear date and the gap before the later row resolves through the automatic
+ *   path. An explicit clear is never resurrected by an unrelated future insertion.
+ *
+ * Pairing is "does ANY row share this supersession timestamp", not "the immediately-next row in
+ * effective_from order": a still-later backdated correction can sort between a row and its true
+ * successor, and misreading that as a clear would produce overlapping intervals. A terminal row
+ * whose successor was backdated BELOW it ends at its own supersession date. This is the only
+ * reading under which full history stays reconstructable from final table state while `clear`
+ * still changes today's resolution.
  */
 export function manualValueAt(
   facts: OracleFacts,
@@ -228,13 +240,29 @@ export function manualValueAt(
       Date.parse(a.effectiveFrom) - Date.parse(b.effectiveFrom) ||
       Date.parse(a.createdAt) - Date.parse(b.createdAt),
   )
+  const replacedTimestamps = new Set(
+    rows
+      .filter((r) => r.supersededAt !== null)
+      .filter((r) => rows.some((o) => o.createdAt === r.supersededAt))
+      .map((r) => r.supersededAt as string),
+  )
   let winner: { valueMinor: number; effectiveFrom: string; createdAt: string } | null = null
   for (const r of rows) {
     if (r.effectiveFrom > dateIso) continue
     const nextEf = rows.find((o) => o.effectiveFrom > r.effectiveFrom)?.effectiveFrom
     const clearDate = r.supersededAt === null ? null : r.supersededAt.slice(0, 10)
-    const boundaries = [nextEf, clearDate].filter((b): b is string => typeof b === 'string')
-    const end = boundaries.length === 0 ? null : boundaries.reduce((min, b) => (b < min ? b : min))
+    const ends: string[] = []
+    if (nextEf !== undefined) ends.push(nextEf)
+    // Cleared independently (always), or superseded with no later-effective successor (the
+    // backdated-below case): the row's own supersession/clear date bounds it.
+    if (
+      r.supersededAt !== null &&
+      clearDate !== null &&
+      (!replacedTimestamps.has(r.supersededAt) || nextEf === undefined)
+    ) {
+      ends.push(clearDate)
+    }
+    const end = ends.length === 0 ? null : ends.reduce((min, b) => (b < min ? b : min))
     if (end !== null && dateIso >= end) continue
     if (
       winner === null ||
