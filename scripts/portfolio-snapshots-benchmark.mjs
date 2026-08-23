@@ -206,16 +206,21 @@ async function seed(userId, variantIds) {
       }
     }
 
-    const lotRows = targets.map((target) => ({
-      holding_id: typeof target === 'string' ? target : newIds[target],
-      user_id: userId,
-      origin: 'pre_tracking',
-      cost_basis_state: Math.random() < 0.6 ? 'unknown' : 'not_paid',
-      unit_cost_basis_minor: null,
-      acquired_on: isoDaysAgo(Math.floor(Math.random() * 400)),
-      quantity: 1,
-      quantity_remaining: 1,
-    }))
+    const lotRows = targets.map((target) => {
+      // Origin must match the consistency CHECK's permitted states (same mapping the test
+      // fixtures use): pre_tracking carries 'unknown' only; gifts are 'not_paid'.
+      const costState = Math.random() < 0.6 ? 'unknown' : 'not_paid'
+      return {
+        holding_id: typeof target === 'string' ? target : newIds[target],
+        user_id: userId,
+        origin: costState === 'unknown' ? 'pre_tracking' : 'gift',
+        cost_basis_state: costState,
+        unit_cost_basis_minor: null,
+        acquired_on: isoDaysAgo(Math.floor(Math.random() * 400)),
+        quantity: 1,
+        quantity_remaining: 1,
+      }
+    })
     const { error: lotError } = await service.from('acquisition_lots').insert(lotRows)
     if (lotError) throw lotError
 
