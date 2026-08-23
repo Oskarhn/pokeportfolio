@@ -1259,7 +1259,8 @@ describe('M12 dashboard aggregates', () => {
       //   month −2: CS 52500, HS 10500 · month −1: CS 20000 · this month: HS 5000
       expect(lifetimeGpo).toBe(88000n)
       expect(lifetimeCs).toBe(72500n)
-      const { data: spending, error: spendingError } = await service
+      // Signed-in: the summary is browser-surface (service_role holds no EXECUTE by design).
+      const { data: spending, error: spendingError } = await readClient
         .rpc('purchase_spending_summary')
         .single<{ gpo_nok_minor: string; cs_nok_minor: string; hs_nok_minor: string }>()
       if (spendingError) throw new Error(spendingError.message)
