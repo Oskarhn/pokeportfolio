@@ -369,7 +369,7 @@ language sql
 security definer
 set search_path = ''
 as $$
-  insert into public.portfolio_recompute_queue as q (user_id, dirty_from, updated_at)
+  insert into public.portfolio_recompute_queue as q (user_id, dirty_from)
   values (p_user_id, p_dirty_from)
   on conflict (user_id) do update
     set dirty_from = least(excluded.dirty_from, q.dirty_from),
