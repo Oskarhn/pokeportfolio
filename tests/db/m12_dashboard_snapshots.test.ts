@@ -784,7 +784,7 @@ describe('M12 snapshot financial fields', () => {
         .single()
       if (purchaseError) throw new Error(purchaseError.message)
       const { error: lineError } = await service.from('purchase_lines').insert({
-        purchase_id: purchaseRow!.id as string,
+        purchase_id: purchaseRow!.id,
         user_id: u.id,
         line_type: 'accessory',
         spend_class: 'hobby',
@@ -918,7 +918,7 @@ describe('M12 snapshot financial fields', () => {
       const { data: line } = await service
         .from('purchase_lines')
         .insert({
-          purchase_id: gradingPurchase!.id as string,
+          purchase_id: gradingPurchase!.id,
           user_id: u.id,
           line_type: 'grading_fee',
           spend_class: 'collectible',
