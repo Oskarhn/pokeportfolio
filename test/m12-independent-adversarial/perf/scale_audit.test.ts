@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import { createServiceClient, deleteSyntheticUser, type TestClient } from '../../../tests/db/setup'
 import { hasSupabaseEnv, skipUnlessM12 } from '../helpers/contract'
 import {
@@ -36,6 +37,42 @@ afterAll(async () => {
 })
 
 const PERF_ENABLED = process.env.M12_PERF_AUDIT === '1'
+
+/**
+ * ANALYZE after the bulk seed, before anything is timed - the same D-059 discipline both
+ * permanent benchmarks follow. A fresh ephemeral database has never been autovacuumed, so every
+ * seeded table's reltuples is still Postgres's "never analyzed" sentinel and the planner falls
+ * back to no-information defaults; the first CI run of this audit died in exactly that state
+ * (a drain statement cancelled by statement timeout on a plan no analyzed database would pick).
+ * Mirrors scripts/portfolio-snapshots-benchmark.mjs's analyzeSeededTables.
+ */
+function analyzeSeededTables(): void {
+  const DB_URL = process.env.DB_URL
+  if (!DB_URL) {
+    console.warn(
+      '[m12-adversarial] DB_URL not set - skipping ANALYZE; timings may reflect un-analyzed ' +
+        'bulk state (the M9.2 measurement trap).',
+    )
+    return
+  }
+  const sql = [
+    'holdings',
+    'acquisition_lots',
+    'card_variants',
+    'cards',
+    'card_sets',
+    'card_series',
+    'manual_valuations',
+    'price_snapshots',
+    'lot_disposals',
+    'purchases',
+    'purchase_lines',
+    'fx_rates',
+  ]
+    .map((t) => `analyze public.${t};`)
+    .join(' ')
+  execFileSync('psql', [DB_URL, '-v', 'ON_ERROR_STOP=1', '-c', sql], { encoding: 'utf8' })
+}
 
 describe('M12 performance audit', () => {
   it('rebuild / incremental / dashboard-read at moderate scale stay within catastrophic bounds', async (ctx) => {
@@ -82,6 +119,8 @@ describe('M12 performance audit', () => {
       }
     }
     expect(acquisitions.length).toBe(VARIANTS * PURCHASES_PER_VARIANT)
+
+    analyzeSeededTables()
 
     const t = (): number => performance.now()
 
