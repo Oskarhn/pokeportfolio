@@ -72,7 +72,12 @@ async function makeLot(userId: string, spec: HoldingSpec & { holdingId: string }
     .insert({
       holding_id: spec.holdingId,
       user_id: userId,
-      origin: spec.costState === 'known' ? 'purchase' : 'gift',
+      origin:
+        spec.costState === 'unknown'
+          ? 'pre_tracking'
+          : spec.costState === 'known'
+            ? 'purchase'
+            : 'gift',
       // A 'known' lot is promoted AFTER its backing purchase line exists (M2's CHECK demands the
       // reference at insert time) — inserted here in its legal intermediate 'unknown' state.
       cost_basis_state: spec.costState === 'known' ? 'unknown' : (spec.costState ?? 'not_paid'),
@@ -158,7 +163,7 @@ async function makeHolding(
     .insert({
       user_id: userId,
       holding_kind: kind,
-      card_variant_id: kind === 'raw_card' ? (spec.variantId ?? null) : null,
+      card_variant_id: spec.variantId ?? null,
       sealed_product_id: kind === 'sealed' ? (spec.sealedProductId ?? null) : null,
       condition: kind === 'raw_card' ? 'NM' : null,
       grading_state: kind === 'graded_card' ? 'graded' : 'raw',
@@ -500,7 +505,8 @@ describe('M12 ownership timeline', () => {
       expectSnap(rows, 55, { open_lot_count: 1, market_value_nok_minor: 57500 })
       expectSnap(rows, 50, { open_lot_count: 1, market_value_nok_minor: 57500 })
       expectSnap(rows, 45, { open_lot_count: 1, market_value_nok_minor: 57500 })
-      expectSnap(rows, 10, { open_lot_count: 1, market_value_nok_minor: 57500 })
+      // Day −10 is outside both observation windows: owned but unvalued — counted, never zeroed.
+      expectSnap(rows, 10, { open_lot_count: 1, market_value_nok_minor: 0, unvalued_lot_count: 1 })
       expectSnap(rows, 10, { sales_proceeds_to_date_nok_minor: 0 }) // voided sale excluded everywhere
     })
   })
@@ -545,7 +551,7 @@ describe('M12 ownership timeline', () => {
 
       await rebuild(u.id, 30)
       const rows = await readSnapshots(u.id)
-      expectSnap(rows, 21, { open_lot_count: 0 })
+      expect(snapByDate(rows, 21)).toBeUndefined() // still nothing before the new acquired_on
       expectSnap(rows, 20, { open_lot_count: 1, market_value_nok_minor: 11500 })
     })
   })
@@ -756,27 +762,27 @@ describe('M12 snapshot financial fields', () => {
       })
       // Uncosted gift lot worth real money.
       await makeHolding(u.id, { variantId: v2, acquiredDaysAgo: 40, costState: 'not_paid' })
-      // A hobby accessory spend (HS side of F1).
-      const { error: purchaseError } = await service.from('purchases').insert({
-        user_id: u.id,
-        purchased_on: daysAgo(50),
-        currency: 'NOK',
-        subtotal_minor: 3000,
-        shipping_minor: 0,
-        customs_minor: 0,
-        discount_minor: 0,
-        total_minor: 3000,
-        fx_rate_to_nok: '1',
-        fx_rate_date: daysAgo(50),
-        fx_source: 'manual',
-        total_nok_minor: 3000,
-      })
-      if (purchaseError) throw new Error(purchaseError.message)
-      const { data: purchaseRow } = await service
+      // A hobby accessory spend (HS side of F1). The id comes from INSERT-returning — the user
+      // already owns the known-basis lot's purchase, so a re-select .single() would be ambiguous.
+      const { data: purchaseRow, error: purchaseError } = await service
         .from('purchases')
+        .insert({
+          user_id: u.id,
+          purchased_on: daysAgo(50),
+          currency: 'NOK',
+          subtotal_minor: 3000,
+          shipping_minor: 0,
+          customs_minor: 0,
+          discount_minor: 0,
+          total_minor: 3000,
+          fx_rate_to_nok: '1',
+          fx_rate_date: daysAgo(50),
+          fx_source: 'manual',
+          total_nok_minor: 3000,
+        })
         .select('id')
-        .eq('user_id', u.id)
         .single()
+      if (purchaseError) throw new Error(purchaseError.message)
       const { error: lineError } = await service.from('purchase_lines').insert({
         purchase_id: purchaseRow!.id as string,
         user_id: u.id,
@@ -881,41 +887,38 @@ describe('M12 snapshot financial fields', () => {
     const u = await createSyntheticUser(service, 'm12-adj')
     try {
       const variant = await createTestVariant('adj-lot')
-      await makeHolding(u.id, {
+      const { lotId } = await makeHolding(u.id, {
         variantId: variant,
         acquiredDaysAgo: 60,
         quantity: 2,
         costState: 'known',
         unitCostNok: 10000,
       })
-      const { data: lot } = await service
-        .from('acquisition_lots')
+      // The grading purchase's id comes from INSERT-returning — the user also owns the known-
+      // basis purchase, so a re-select .single() would be ambiguous.
+      const { data: gradingPurchase, error: gradingPurchaseError } = await service
+        .from('purchases')
+        .insert({
+          user_id: u.id,
+          purchased_on: daysAgo(60),
+          currency: 'NOK',
+          subtotal_minor: 999,
+          shipping_minor: 0,
+          customs_minor: 0,
+          discount_minor: 0,
+          total_minor: 999,
+          fx_rate_to_nok: '1',
+          fx_rate_date: daysAgo(60),
+          fx_source: 'manual',
+          total_nok_minor: 999,
+        })
         .select('id')
-        .eq('user_id', u.id)
         .single()
+      if (gradingPurchaseError) throw new Error(gradingPurchaseError.message)
       const { data: line } = await service
         .from('purchase_lines')
         .insert({
-          purchase_id: (
-            await service
-              .from('purchases')
-              .insert({
-                user_id: u.id,
-                purchased_on: daysAgo(60),
-                currency: 'NOK',
-                subtotal_minor: 20000,
-                shipping_minor: 0,
-                customs_minor: 0,
-                discount_minor: 0,
-                total_minor: 20000,
-                fx_rate_to_nok: '1',
-                fx_rate_date: daysAgo(60),
-                fx_source: 'manual',
-                total_nok_minor: 20000,
-              })
-              .select('id')
-              .single()
-          ).data!.id as string,
+          purchase_id: gradingPurchase!.id as string,
           user_id: u.id,
           line_type: 'grading_fee',
           spend_class: 'collectible',
@@ -924,12 +927,12 @@ describe('M12 snapshot financial fields', () => {
           line_total_minor: 999,
           attributable_cost_minor: 999,
           attributable_cost_nok_minor: 999,
-          target_lot_id: lot!.id as string,
+          target_lot_id: lotId,
         })
         .select('id')
         .single()
       const { error: adjError } = await service.from('lot_cost_adjustments').insert({
-        lot_id: lot!.id as string,
+        lot_id: lotId,
         user_id: u.id,
         kind: 'grading_fee',
         purchase_line_id: line!.id as string,
@@ -1174,6 +1177,11 @@ describe('M12 dashboard aggregates', () => {
           .single()
         if (error) throw new Error(error.message)
         const lines = [] as Record<string, unknown>[]
+        // Allocate shipping pro rata by line total (FINANCIAL_MODEL §4.1) so each line's
+        // attributable cost carries its share — otherwise this fixture itself would violate F1.
+        const shipCollectible =
+          collectible + hobby > 0 ? Math.floor((shipping * collectible) / (collectible + hobby)) : 0
+        const shipHobby = shipping - shipCollectible
         if (collectible > 0) {
           lines.push({
             purchase_id: purchase.id as string,
@@ -1183,11 +1191,11 @@ describe('M12 dashboard aggregates', () => {
             quantity: 1,
             unit_price_minor: collectible,
             line_total_minor: collectible,
-            attributable_cost_minor: collectible,
-            attributable_cost_nok_minor: collectible,
+            attributable_cost_minor: collectible + shipCollectible,
+            attributable_cost_nok_minor: collectible + shipCollectible,
           })
         }
-        if (hobby > 0) {
+        if (hobby > 0 || shipHobby > 0) {
           lines.push({
             purchase_id: purchase.id as string,
             user_id: u.id,
@@ -1197,8 +1205,8 @@ describe('M12 dashboard aggregates', () => {
             quantity: 1,
             unit_price_minor: hobby,
             line_total_minor: hobby,
-            attributable_cost_minor: hobby,
-            attributable_cost_nok_minor: hobby,
+            attributable_cost_minor: hobby + shipHobby,
+            attributable_cost_nok_minor: hobby + shipHobby,
           })
         }
         const { error: lineError } = await service.from('purchase_lines').insert(lines)
@@ -1358,7 +1366,12 @@ describe('M12 dashboard aggregates', () => {
 
       // And the NOK series is identical between calls — conversion is presentation-only.
       const nokRows = nok as unknown as { snapshot_date: string; market_value_nok_minor: string }[]
-      expect(nokRows.at(-1)?.market_value_nok_minor).toBe('11500')
+      expect(nokRows.find((r) => r.snapshot_date === daysAgo(300))?.market_value_nok_minor).toBe(
+        '11500',
+      )
+      // Today's row exists too (the daily sweep's target) but sits outside the observation
+      // window: owned and honestly unvalued rather than frozen at the last known price.
+      expect(nokRows.at(-1)?.market_value_nok_minor).toBe('0')
     } finally {
       await deleteSyntheticUser(service, u.id)
     }
@@ -1401,10 +1414,12 @@ describe('M12 dashboard aggregates', () => {
       expect(rowsAfter.map((r) => r.snapshot_date)).toEqual(rows.map((r) => r.snapshot_date))
       expect(rowsAfter.map((r) => r.has_coverage)).toEqual(rows.map((r) => r.has_coverage))
 
-      // Scoped counts still answer correctly for the collection (current-state only).
-      const { data: scopedCounts } = await service.rpc('portfolio_counts', {
+      // Scoped counts still answer correctly for the collection (current-state only). Called
+      // signed-in: the RPC is part of the browser surface, not a service-internal one.
+      const { data: scopedCounts, error: scopedError } = await readClient.rpc('portfolio_counts', {
         p_custom_collection_id: null,
       })
+      expect(scopedError).toBeNull()
       expect(scopedCounts).not.toBeNull()
     } finally {
       await deleteSyntheticUser(service, u.id)

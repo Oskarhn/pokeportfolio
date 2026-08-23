@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeEach, beforeAll, describe, expect, it } from 'vitest'
 import {
   createServiceClient,
   createSyntheticUser,
@@ -92,6 +92,14 @@ beforeAll(async () => {
 afterAll(async () => {
   await deleteSyntheticUser(service, user.id)
   await deleteSyntheticUser(service, sealedOnlyUser.id)
+})
+
+// Queue rows persist across tests for the same user by design (LEAST coalescing), so every test
+// starts from a clean slate for ITS users — otherwise an earlier test's older dirty_from would
+// legitimately survive and break the next test's boundary assertion.
+beforeEach(async () => {
+  await service.from('portfolio_recompute_queue').delete().eq('user_id', user.id)
+  await service.from('portfolio_recompute_queue').delete().eq('user_id', sealedOnlyUser.id)
 })
 
 describe('M12 invalidation boundaries', () => {
