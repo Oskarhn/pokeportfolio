@@ -314,20 +314,20 @@ $$;
 
 create trigger portfolio_recompute_price_inserted
   after insert on public.price_snapshots
-  referencing new_table as new_rows
+  referencing new table as new_rows
   for each statement execute function public.m12_price_snapshot_enq_insert();
 
 create trigger portfolio_recompute_price_updated
   after update of card_variant_id, source_currency, value_minor, snapshot_date
   on public.price_snapshots
-  referencing old_table as old_rows new_table as new_rows
+  referencing old table as old_rows new table as new_rows
   for each statement execute function public.m12_price_snapshot_enq_update();
 
 -- Retention (thin_price_snapshots) deletes old observations; the surviving weekly facts are
 -- different canonical data, so cached history beyond 60 days must rebuild to stay truthful.
 create trigger portfolio_recompute_price_deleted
   after delete on public.price_snapshots
-  referencing old_table as deleted_rows
+  referencing old table as deleted_rows
   for each statement execute function public.m12_price_snapshot_enq_delete();
 
 -- ── shared market data: fx rates ─────────────────────────────────────────────────────────────
@@ -376,13 +376,13 @@ $$;
 
 create trigger portfolio_recompute_fx_inserted
   after insert on public.fx_rates
-  referencing new_table as new_rows
+  referencing new table as new_rows
   for each statement execute function public.m12_fx_rate_enq_insert();
 
 create trigger portfolio_recompute_fx_updated
   after update of rate, rate_date
   on public.fx_rates
-  referencing old_table as old_rows new_table as new_rows
+  referencing old table as old_rows new table as new_rows
   for each statement execute function public.m12_fx_rate_enq_update();
 
 -- ── privilege posture for the trigger functions ──────────────────────────────────────────────
