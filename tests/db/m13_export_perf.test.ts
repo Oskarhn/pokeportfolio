@@ -151,7 +151,6 @@ describe.skipIf(!RUN)('M13 export performance audit', () => {
         manual_card_id: cid,
         grading_state: 'raw',
         is_favorite: i % 7 === 0,
-        storage_location_id: locations[0],
         notes: i % 50 === 0 ? '＝full-width trigger' : null,
       })),
     )
