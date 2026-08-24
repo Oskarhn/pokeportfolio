@@ -287,6 +287,7 @@ export async function seedCompleteUserModel(
     user_id: userId,
     holding_id: manualHoldingId,
     value_minor: 50_000,
+    value_nok_minor: 50_000,
     effective_from: dateOnly(15),
     superseded_at: iso(10),
     note: `first guess ${label}`,
@@ -295,6 +296,7 @@ export async function seedCompleteUserModel(
     user_id: userId,
     holding_id: manualHoldingId,
     value_minor: 65_000,
+    value_nok_minor: 65_000,
     effective_from: dateOnly(10),
     note: `revised upward ${label}`,
   })
