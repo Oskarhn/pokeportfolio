@@ -68,6 +68,17 @@
 --   schema. Lesson recorded: a locking clause on a discarded-result PERFORM must never be assumed
 --   to have contended — concurrency claims need an overlapping-transaction test, which this file
 --   now carries.
+--
+-- THE SCHEMA FLOOR (Prompt 32, third CI iteration): the overlapping-transaction test then proved
+-- something the original race analysis had missed — acquisition_lots_quantity_positive
+-- (quantity > 0, 20260817120070) means NO live lot can ever be adjusted down to zero copies in
+-- ANY interleaving, so the literally-described "both lots end at zero" outcome was unreachable
+-- all along; what the unlocked draft actually risked was raw 23514 failures and dishonest reads,
+-- plus whatever timing-dependent behaviour the first two CI runs exhibited before real overlap
+-- was forced. The invariant "adjust never empties the holding" is therefore enforced in LAYERS:
+-- per-lot floor refusal (domain error, mirrors the schema check), sibling-lock serialization with
+-- the aggregate computed under the locks, the holding-total pre-invariant, the post-image final
+-- guard below, and the schema CHECK itself as the ultimate backstop.
 --   Ascending lot-id order matches create_sale's convention exactly (which locks its referenced
 --   lots the same way), so reduce vs create_sale on overlapping lots cannot deadlock either: both
 --   acquire in one global order. The legacy M8.1 remove/void path takes its write locks only at
@@ -229,6 +240,18 @@ begin
     if v_removes[v_idx] > v_lot.quantity_remaining then
       raise exception 'reduction %: remove_quantity exceeds the lot''s remaining quantity (%)',
         v_idx - 1, v_lot.quantity_remaining;
+    end if;
+    -- A live lot can never sit at zero copies — acquisition_lots_quantity_positive (quantity > 0)
+    -- forbids it schema-wide, so taking a lot's last unit was never a legal quantity edit. It is
+    -- the Void lot / Remove-from-Portfolio decision, which keeps history intact instead. Naming
+    -- that here turns what would otherwise surface as a raw 23514 check violation into the same
+    -- domain language every other refusal in this function uses. AdjustQuantitySheet's own
+    -- confirm-guard only clamps the HOLDING total, not each lot, so this is reachable from the
+    -- UI whenever one lot of a multi-lot holding is emptied while a sibling keeps units.
+    if v_removes[v_idx] = v_lot.quantity_remaining then
+      raise exception
+        'reduction %: lot % would be left with zero copies - void the lot or use Remove from Portfolio for that',
+        v_idx - 1, v_lot.id;
     end if;
 
     v_remove_total := v_remove_total + v_removes[v_idx];

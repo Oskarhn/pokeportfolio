@@ -678,19 +678,26 @@ describe('F/I/N — a partially-sold lot blocks correction and frozen sale histo
 
 // ─── Concurrency (Prompt 32 repair of Claude's PR #42 review) ────────────────────────────────
 //
-// Claude demonstrated a real race against the pre-repair function: v_owned_total was computed by
+// Claude demonstrated a race against the pre-repair function: v_owned_total was computed by
 // an UNLOCKED aggregate before any row lock existed, so two simultaneous adjustments targeting
-// DIFFERENT sibling lots of one holding (A=5, B=5) each read total=10, each passed 5 < 10, and
-// jointly committed the holding to zero — violating "adjust never removes the final owned unit".
-// The repaired SQL locks EVERY live sibling lot FOR UPDATE in ascending lot-id order (create_
-// sale's convention) before computing anything. These tests pin that behaviour with real
-// overlapping transactions, using the same Promise.all harness as m10_sales.test.ts's own
-// concurrency proof. The winner is nondeterministic by design — no test may assert which call wins.
+// different sibling lots of one holding would each validate against a stale total. The repaired
+// SQL locks EVERY live sibling lot FOR UPDATE in ascending lot-id order (create_sale's explicit
+// per-row mechanism) before computing anything, and CI evidence added a fact the original
+// analysis missed: acquisition_lots_quantity_positive means no live lot can ever be adjusted to
+// zero copies in ANY interleaving, so the holding-emptying outcome is unreachable schema-wide.
+// What these tests pin, with genuinely overlapping transactions (same Promise.all harness as
+// m10_sales.test.ts, plus a stagger so the second call launches mid-flight of the first):
+// every would-be-emptying attempt is refused with zero mutation; overlapping multi-lot payloads
+// serialize regardless of caller-supplied order and never deadlock; and a racing create_sale
+// either wins legally or refuses against the adjustment's committed state.
 
 describe('concurrency — two simultaneous adjustments of different sibling lots', () => {
-  it('serialize: exactly one succeeds, the holding keeps ≥1 owned unit, no financial or disposal row moves', async () => {
-    // PL, not GD: the duplicate-lot rejection test above already created a pikachu/GD identity
-    // for this same synthetic user, and holdings_identity would reject a second one.
+  it('attempts to strip each lot to zero are both refused under real overlap — nothing mutates and the holding total stands', async () => {
+    // CI evidence (Prompt 32): acquisition_lots_quantity_positive (quantity > 0) means no live
+    // lot can ever be adjusted to zero copies in any interleaving — the literal "both lots end
+    // at zero" race is unreachable. What this test pins is the reachable behaviour under forced
+    // overlap: every would-be-emptying call bounces off the lot-floor refusal with ZERO mutation,
+    // so the holding keeps its full owned total and no financial/disposal/queue row moves.
     const holdingId = await insertHolding({
       cardVariantId: seedCatalog.pikachuVariantId,
       condition: 'PL',
@@ -729,36 +736,28 @@ describe('concurrency — two simultaneous adjustments of different sibling lots
     ])
 
     const outcomes = [first, second]
-    const succeeded = outcomes.filter((o) => o.error === null)
-    const failed = outcomes.filter((o) => o.error !== null)
-    if (succeeded.length !== 1 || failed.length !== 1) {
-      const diagA = await lotById(lotA.id)
-      const diagB = await lotById(lotB.id)
-      throw new Error(
-        `expected exactly one success: succeeded=${JSON.stringify(
-          succeeded.map((o) => o.data),
-        )} failed=${JSON.stringify(failed.map((o) => o.error?.message))} ` +
-          `lotA=${JSON.stringify(diagA)} lotB=${JSON.stringify(diagB)}`,
-      )
+    expect(outcomes.filter((o) => o.error === null)).toHaveLength(0)
+    for (const o of outcomes) {
+      expect(o.error!.message).toMatch(/zero copies/i)
+      expect(o.error!.message.toLowerCase()).not.toContain('deadlock')
     }
-    expect(succeeded).toHaveLength(1)
-    expect(failed).toHaveLength(1)
 
-    // The loser must fail on the invariant itself — it observed the winner's committed total and
-    // refused to empty the holding (never a deadlock or transport error).
-    expect(failed[0]!.error!.message).toMatch(/remove every remaining copy/i)
-
+    // Nothing anywhere moved: both lots stand exactly as created, so the holding still owns 10.
     const afterA = await lotById(lotA.id)
     const afterB = await lotById(lotB.id)
-    // Exactly one lot was emptied; the other stands at its full 5 — total owned = 5 either way,
-    // never negative, and the winner's returned figure matches.
-    expect([afterA.quantity_remaining, afterB.quantity_remaining].sort()).toEqual([0, 5])
-    expect(afterA.quantity).toBeGreaterThanOrEqual(0)
-    expect(afterB.quantity).toBeGreaterThanOrEqual(0)
-    expect(succeeded[0]!.data![0]!.owned_quantity).toBe(5)
+    for (const [after, originalOrigin] of [
+      [afterA, 'gift'],
+      [afterB, 'pre_tracking'],
+    ] as const) {
+      expect(after.quantity).toBe(5)
+      expect(after.quantity_remaining).toBe(5)
+      expect(after.origin).toBe(originalOrigin)
+      expect(after.unit_cost_basis_minor).toBeNull()
+      expect(after.voided_at).toBeNull()
+    }
 
-    // No disposal was created and no financial row moved: these lots are cost-free by fixture,
-    // and the adjustment path must stay a correction, not a disguised sale.
+    // No disposal or sale line exists, no financial figure moved, and — because no UPDATE ever
+    // committed — the M12 recompute queue stays empty.
     for (const lotId of [lotA.id, lotB.id]) {
       const { count: disposalCount, error: disposalError } = await service
         .from('lot_disposals')
@@ -779,15 +778,12 @@ describe('concurrency — two simultaneous adjustments of different sibling lots
     expect(BigInt(spendAfter.cs_nok_minor)).toBe(BigInt(spendBefore.cs_nok_minor))
     expect(BigInt(spendAfter.hs_nok_minor)).toBe(BigInt(spendBefore.hs_nok_minor))
 
-    // M12 invalidation stays sane: exactly the winning UPDATE enqueued a recompute (the aborted
-    // transaction's enqueue rolled back with it).
     const { data: queued } = await service
       .from('portfolio_recompute_queue')
-      .select('user_id, dirty_from')
+      .select('user_id')
       .eq('user_id', userA.id)
-      .single<{ user_id: string; dirty_from: string }>()
-    expect(queued).not.toBeNull()
-    expect(queued!.dirty_from <= today).toBe(true)
+      .maybeSingle<{ user_id: string }>()
+    expect(queued).toBeNull()
   })
 })
 
