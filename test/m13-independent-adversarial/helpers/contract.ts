@@ -25,7 +25,7 @@ export type M13Capability = 'envelope-version' | 'csv-sanitizer' | 'csv-writer' 
 const EXPORT_NAME_PATTERNS: readonly { capability: M13Capability; pattern: RegExp }[] = [
   {
     capability: 'envelope-version',
-    // BACKUP_SCHEMA_VERSION added at integration (D-075): the real constant carries a
+    // BACKUP_SCHEMA_VERSION added at integration (D-076): the real constant carries a
     // BACKUP_ prefix; the semantic expectation — exactly one version constant, integer >= 1 —
     // is unchanged.
     pattern:
@@ -142,7 +142,7 @@ export function hasSupabaseEnv(): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Deliberate integration bindings (added at M13 integration, D-075/D-077 context)
+// Deliberate integration bindings (added at M13 integration, D-076/D-078 context)
 //
 // The package was written implementation-blind; the helpers below are the CONTRACTED
 // adaptations agreed when it first met the real P35/P36 code. Each records what the real

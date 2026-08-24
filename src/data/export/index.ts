@@ -20,7 +20,7 @@
  * - CSV texts carry their UTF-8 BOM already; do not prepend another.
  * - No restore exists in M13 — never imply otherwise in UI copy.
  * - There is deliberately no combined "everything" export: PRODUCT_SPEC §4.12's M13 surface is
- *   the CSV suite plus the JSON backup, each fetched on its own action (D-074). client-zip was
+ *   the CSV suite plus the JSON backup, each fetched on its own action (D-075). client-zip was
  *   evaluated and removed again at integration because no exposed flow needs a ZIP.
  */
 export {

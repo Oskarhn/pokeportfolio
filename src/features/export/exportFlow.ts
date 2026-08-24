@@ -1,5 +1,5 @@
 /**
- * The two-step export flow state machine (M13 integration, D-077) — pure, DOM-free, unit-tested.
+ * The two-step export flow state machine (M13 integration, D-078) — pure, DOM-free, unit-tested.
  *
  * WHY two steps: `navigator.share()` must run inside a transient user activation. Generating an
  * export takes many database round trips, so a single "create then share" tap can lose that
@@ -44,7 +44,7 @@ export type ExportFlowState =
 export type { ExportKind }
 
 /**
- * A generated artifact set. After D-074 there are exactly two shapes: one backup JSON file, or
+ * A generated artifact set. After D-075 there are exactly two shapes: one backup JSON file, or
  * the ten-file CSV suite. The kind drives copy and delivery labels.
  */
 export type ExportArtifactKind = ExportKind

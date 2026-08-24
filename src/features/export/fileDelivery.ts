@@ -18,7 +18,7 @@
  *
  * User cancellation (AbortError from the share sheet or the save dialog) is a normal outcome,
  * not an error. A NotAllowedError from `share()` is SURFACED as an error, never silently
- * converted into a download (D-078): after the two-step ready→deliver flow there is no long
+ * converted into a download (D-079): after the two-step ready→deliver flow there is no long
  * generation left to blame, so a refusal means Permissions Policy, an engine security rule or
  * a real activation problem — the user sees it and chooses "Download instead" explicitly.
  * Any other share failure also surfaces as an error so the UI can offer Retry.
@@ -141,11 +141,11 @@ async function downloadViaAnchors(files: readonly DeliverableFile[]): Promise<vo
 /**
  * Deliver generated artifacts to the user by the best path the current platform offers.
  * Call this from a fresh user-activation event handler (the Save/Share button) with
- * already-generated files — never across an awaited generation (D-077).
+ * already-generated files — never across an awaited generation (D-078).
  *
  * Throws `DeliveryError` when delivery genuinely failed — including the honest empty case
  * (zero files is a core defect, never "nothing to export") and including NotAllowedError,
- * which after D-077 can no longer be blamed on generation time and is surfaced for the user
+ * which after D-078 can no longer be blamed on generation time and is surfaced for the user
  * to answer with the explicit "Download instead" path (`downloadOnly`).
  */
 export async function deliverFiles(files: readonly DeliverableFile[]): Promise<DeliveryOutcome> {
@@ -162,7 +162,7 @@ export async function deliverFiles(files: readonly DeliverableFile[]): Promise<D
       if (isAbortError(error)) return { method: 'cancelled' }
       if (errorName(error) === 'NotAllowedError') {
         // Permissions Policy, engine security refusal or a real activation problem. Surfaced —
-        // the UI keeps the artifacts ready and offers "Download instead" explicitly (D-078).
+        // the UI keeps the artifacts ready and offers "Download instead" explicitly (D-079).
         throw new DeliveryError('Your browser refused to open sharing for these files.', {
           cause: error,
         })
@@ -193,7 +193,7 @@ export async function deliverFiles(files: readonly DeliverableFile[]): Promise<D
 /**
  * The explicit download fallback behind the UI's "Download instead" action. Same anchor
  * mechanics as the internal fallback; exists as a named export because choosing it is a user
- * decision, not a silent downgrade (D-078).
+ * decision, not a silent downgrade (D-079).
  */
 export async function downloadOnly(files: readonly DeliverableFile[]): Promise<DeliveryOutcome> {
   if (files.length === 0) {

@@ -15,14 +15,14 @@
  * (DATA_MODEL.md §10.1), never the giant-sorted-query class behind the M9.1/M9.2 saga. A hard
  * page ceiling turns a pathological loop into a thrown error rather than a hung tab.
  *
- * Pagination honesty (D-073): `.order(pk).range(from, to)` is OFFSET pagination with stable,
+ * Pagination honesty (D-074): `.order(pk).range(from, to)` is OFFSET pagination with stable,
  * deterministic ordering — it is NOT keyset pagination and must not be described as such.
  * Offset walking has silent truncation/gap/duplicate failure modes when the source changes
  * between pages, so every section walk additionally takes the table's exact COUNT up front,
  * detects duplicate primary keys across pages, and reconciles the final received count
  * (src/domain/export/pagination-integrity.ts). A count mismatch or duplicate FAILS the export
  * loudly instead of writing an incomplete backup. This is detection, not snapshot isolation —
- * the multi-query export is not one PostgreSQL transaction (D-076).
+ * the multi-query export is not one PostgreSQL transaction (D-077).
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { createSectionWalk } from '../../domain/export/pagination-integrity'
@@ -224,7 +224,7 @@ export const MONEY_FIELDS: { [K in ArraySection]: readonly MoneyKeys<BackupData[
 
 /**
  * Primary-key column(s) per section, in the same order the fetch sorts by. Used for cross-page
- * duplicate detection and for the COUNT query that anchors completeness (D-073).
+ * duplicate detection and for the COUNT query that anchors completeness (D-074).
  */
 const SECTION_IDENTITY_KEYS: Record<ArraySection, readonly string[]> = {
   profiles: ['id'],
@@ -316,7 +316,7 @@ async function drainPages<TRow>(
   )
 }
 
-/** Reads the section's exact row count once, before paging starts (D-073). */
+/** Reads the section's exact row count once, before paging starts (D-074). */
 async function fetchSectionTotal(
   client: SupabaseClient<Database>,
   section: ArraySection,

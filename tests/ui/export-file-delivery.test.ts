@@ -138,7 +138,7 @@ describe('deliverFiles', () => {
     expect(createObjectURL).not.toHaveBeenCalled()
   })
 
-  it('surfaces NotAllowedError as an error instead of silently downloading (D-078)', async () => {
+  it('surfaces NotAllowedError as an error instead of silently downloading (D-079)', async () => {
     // After the two-step ready→deliver flow there is no long generation left to blame, so a
     // refusal means policy/security/activation — the user must see it and choose the explicit
     // "Download instead" path themselves.

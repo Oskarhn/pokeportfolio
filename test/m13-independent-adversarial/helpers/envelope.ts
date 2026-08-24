@@ -11,7 +11,7 @@
  *  - any MUST_EXPORT section MISSING while its count is >0 → reject
  *  - any MUST_NOT_EXPORT table present as a data section → reject (derived-cache trap,
  *    privilege internals, market/system data)
- *  - unknown EXTRA sections → reject under the v1 policy adjudicated at integration (D-075):
+ *  - unknown EXTRA sections → reject under the v1 policy adjudicated at integration (D-076):
  *    version-1 readers refuse unknown versions AND unknown data keys; a future v2 writer
  *    produces v2 files that a future v2 reader owns. Within-v1 "tolerate what you don't know"
  *    was explicitly REJECTED because the v1 validator cannot distinguish a newer writer's key
@@ -141,7 +141,7 @@ export function validateBackupEnvelope(raw: unknown): readonly ValidationIssue[]
     issues.push({ severity: 'violation', message: 'counts object missing' })
   }
 
-  // Unknown sections: VIOLATION under the adjudicated v1 policy (D-075). The v1 reader
+  // Unknown sections: VIOLATION under the adjudicated v1 policy (D-076). The v1 reader
   // refuses unknown versions and unknown data keys alike; evolution goes through a
   // schema_version bump, not through silently tolerated extra sections.
   const known = new Set(EXPORT_INVENTORY.map((s) => s.table))
@@ -150,7 +150,7 @@ export function validateBackupEnvelope(raw: unknown): readonly ValidationIssue[]
       issues.push({
         severity: 'violation',
         message:
-          `unknown data section "${key}" — v1 readers refuse keys they do not know (D-075); ` +
+          `unknown data section "${key}" — v1 readers refuse keys they do not know (D-076); ` +
           'a new canonical section requires a schema_version bump',
       })
     }

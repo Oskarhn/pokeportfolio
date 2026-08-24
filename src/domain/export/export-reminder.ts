@@ -2,7 +2,7 @@
  * The periodic in-app export reminder (PRODUCT_SPEC.md §4.12: "MVP includes a periodic in-app
  * reminder to export"). Pure and storage-agnostic so it can be unit-tested without a browser.
  *
- * Cadence (D-079): the spec requires the reminder without fixing an interval; 30 days is the
+ * Cadence (D-080): the spec requires the reminder without fixing an interval; 30 days is the
  * recorded MVP default — long enough not to nag, short enough that a lost device costs at most
  * a month of ledger entries. One constant, deliberately easy to tune.
  *

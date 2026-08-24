@@ -19,7 +19,7 @@
  *   market data (price_snapshots, fx_rates), operator/security tables (invitations*, catalog
  *   sync runs, price sync runs) and auth internals. Privilege-relevant profile columns
  *   (`is_admin`, `disabled_at`) are excluded so restoring a backup can never elevate privilege.
- * - Compatibility policy (v1, D-075): `format` identifies the artifact kind; `schema_version`
+ * - Compatibility policy (v1, D-076): `format` identifies the artifact kind; `schema_version`
  *   bumps on ANY change to the canonical `data` shape below — a new required key, a changed
  *   key name, a changed row semantic or a new canonical section all bump it. Version-1 readers
  *   refuse unknown versions AND unknown data keys (the validator rejects both), so there is no
@@ -390,7 +390,7 @@ export interface BackupIdentityManifest {
 // ---------------------------------------------------------------------------
 
 export interface BackupData {
-  // Every section is named EXACTLY after its canonical table (D-075) and is an array —
+  // Every section is named EXACTLY after its canonical table (D-076) and is an array —
   // including profiles, which holds zero or one row (the owner's own).
   profiles: BackupProfileRow[]
   custom_collections: BackupCustomCollectionRow[]

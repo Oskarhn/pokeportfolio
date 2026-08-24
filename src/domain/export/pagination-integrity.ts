@@ -1,5 +1,5 @@
 /**
- * Export completeness detection (M13, D-073) — the pure half of the page walker.
+ * Export completeness detection (M13, D-074) — the pure half of the page walker.
  *
  * The export reads each section as a sequence of PostgREST range pages ordered by the table's
  * primary key. That is OFFSET pagination with stable deterministic ordering — NOT keyset
@@ -16,7 +16,7 @@
  *      the start of the walk (catches truncation, missing tails and gaps);
  *   3. the caller keeps its max-page loop guard and short-page stop.
  *
- * Honest scope (D-076): this is detection, not snapshot isolation. A multi-query client-side
+ * Honest scope (D-077): this is detection, not snapshot isolation. A multi-query client-side
  * export is not one PostgreSQL transaction; if rows mutate mid-export the count check or the
  * duplicate check will usually — not provably always — catch it, and the export FAILS LOUDLY
  * rather than writing a quietly incomplete backup. See backup-format.ts's header for what the

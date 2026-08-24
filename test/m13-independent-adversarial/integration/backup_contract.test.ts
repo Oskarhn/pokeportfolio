@@ -112,7 +112,7 @@ describe('M13 backup contract (implementation-gated)', () => {
     }
     expect(typeof found.value).toBe('function')
 
-    // BINDING (deliberate, D-075): the real writer is buildCsvText(header, rows); the adapter
+    // BINDING (deliberate, D-076): the real writer is buildCsvText(header, rows); the adapter
     // treats a single matrix's first row as the header � the writer's own convention. The
     // RFC 4180 round-trip expectation below is unchanged.
     const write = adaptCsvWriter(found.value as never)

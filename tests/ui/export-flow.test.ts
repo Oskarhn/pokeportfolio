@@ -8,7 +8,7 @@ import {
 } from '../../src/features/export/exportFlow'
 
 /**
- * The two-step export flow (D-077): generation completes FIRST, delivery happens under a fresh
+ * The two-step export flow (D-078): generation completes FIRST, delivery happens under a fresh
  * tap. These tests pin the state transitions, including that a failed delivery RETAINS the
  * artifacts (retry delivery / download instead must not regenerate), and that nothing ever
  * leaves memory-only state.
