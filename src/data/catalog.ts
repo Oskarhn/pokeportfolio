@@ -50,6 +50,24 @@ export interface CatalogCard {
   setName: string
 }
 
+/**
+ * Thrown by the auth-retry-wrapped catalog reads when PostgREST reports an error. Extends Error
+ * with the same `.message` callers have always seen, while preserving the structured PostgREST
+ * `code` that `throw new Error(error.message)` used to discard — the retry classifier in
+ * auth-retry.ts needs it to tell a rejected session token (PGRST301) apart from RLS denials,
+ * config failures and outages without re-parsing message text. Only the wrapped reads throw
+ * this; the unwrapped Card Detail reads keep plain Errors.
+ */
+export class CatalogQueryError extends Error {
+  readonly code: string | null
+
+  constructor(postgrestError: { message: string; code?: string | null }) {
+    super(postgrestError.message)
+    this.name = 'CatalogQueryError'
+    this.code = postgrestError.code ?? null
+  }
+}
+
 const PAGE_SIZE = 40
 
 export async function searchCards(params: {
@@ -65,7 +83,7 @@ export async function searchCards(params: {
       p_limit: params.limit ?? PAGE_SIZE,
       p_offset: params.offset ?? 0,
     })
-    if (error) throw new Error(error.message)
+    if (error) throw new CatalogQueryError(error)
     return data
   })
 
@@ -201,7 +219,7 @@ export async function searchSets(params: {
       .limit(params.limit ?? 40)
     if (params.language) query = query.eq('language', params.language)
     const { data, error } = await query
-    if (error) throw new Error(error.message)
+    if (error) throw new CatalogQueryError(error)
     return data
   })
 
@@ -236,7 +254,7 @@ export async function listRecentSets(params: {
       .limit(params.limit ?? 20)
     if (params.language) query = query.eq('language', params.language)
     const { data, error } = await query
-    if (error) throw new Error(error.message)
+    if (error) throw new CatalogQueryError(error)
     return data
   })
 
@@ -261,7 +279,7 @@ export async function getSet(setId: string): Promise<CatalogSet | null> {
       )
       .eq('id', setId)
       .maybeSingle()
-    if (error) throw new Error(error.message)
+    if (error) throw new CatalogQueryError(error)
     return data
   })
   if (!data) return null
@@ -288,7 +306,7 @@ export async function listCardsInSet(setId: string): Promise<CatalogSearchResult
       )
       .eq('set_id', setId)
       .order('local_id')
-    if (error) throw new Error(error.message)
+    if (error) throw new CatalogQueryError(error)
     return data
   })
 
@@ -326,11 +344,17 @@ const IMAGE_EXTENSION = /\.(png|webp|jpe?g|gif|avif)$/i
  * `cardImageUrl()` appends the quality segment itself.
  *
  * Appends `.webp` unless a URL already carries an image extension — same CDN behaviour the card
- * path has long relied on, and consistently the smallest variant served. Normalizing at this
- * data boundary rather than only at ingest time also repairs the already-synced catalog rows
- * without re-running the operator-only catalog sync.
+ * path has long relied on, and consistently the smallest variant served. The extension test runs
+ * on the path segment only: a query string or fragment stays after the appended suffix
+ * (`…/logo?v=2` → `…/logo.webp?v=2`, never `…/logo?v=2.webp`) and cannot defeat the check
+ * (`…/logo.png?v=2` stays verbatim). Normalizing at this data boundary rather than only at
+ * ingest time also repairs the already-synced catalog rows without re-running the operator-only
+ * catalog sync.
  */
 export function setImageUrl(url: string | null | undefined): string | null {
   if (!url) return null
-  return IMAGE_EXTENSION.test(url) ? url : `${url}.webp`
+  const markerIndex = /[?#]/.exec(url)?.index ?? url.length
+  const path = url.slice(0, markerIndex)
+  const suffix = url.slice(markerIndex)
+  return IMAGE_EXTENSION.test(path) ? url : `${path}.webp${suffix}`
 }

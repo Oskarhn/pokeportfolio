@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { setImageUrl, searchCards, searchSets, listRecentSets } from '../../src/data/catalog'
+import {
+  CatalogQueryError,
+  setImageUrl,
+  searchCards,
+  searchSets,
+  listRecentSets,
+} from '../../src/data/catalog'
 import { chooseSetVisual, initialsFor } from '../../src/features/catalog/set-visuals'
 import { isAuthFailure, withAuthRetry } from '../../src/data/auth-retry'
 
@@ -7,7 +13,8 @@ import { isAuthFailure, withAuthRetry } from '../../src/data/auth-retry'
  * Deterministic, no-network tests for the P27 Search owner-feedback fixes: set-image URL
  * normalization against the real TCGdex asset-CDN shapes (probed 2026-08-24 — bare paths 404,
  * `.png`/`.webp` 200), the showcase's English-only pinning at the query layer, and the one-shot
- * auth-failure retry behind the reported "errored once, worked on the second attempt" transient.
+ * defensive auth-retry behind the reported (never reproduced) "errored once, worked on the
+ * second attempt" transient.
  */
 
 const mocks = vi.hoisted(() => ({
@@ -71,6 +78,30 @@ describe('setImageUrl — TCGdex asset URL normalization', () => {
       'https://assets.tcgdex.net/en/sv/sv01/logo.png',
     )
     expect(setImageUrl('https://example.test/art.webp')).toBe('https://example.test/art.webp')
+  })
+
+  it('inserts .webp before a query string, never after it', () => {
+    expect(setImageUrl('https://assets.tcgdex.net/en/base/base1/logo?v=2')).toBe(
+      'https://assets.tcgdex.net/en/base/base1/logo.webp?v=2',
+    )
+  })
+
+  it('treats a query string as absent when testing for an existing extension', () => {
+    // The extension lives on the path; `?v=2` must not defeat the already-normalized check.
+    expect(setImageUrl('https://assets.tcgdex.net/en/sv/sv01/logo.png?v=2')).toBe(
+      'https://assets.tcgdex.net/en/sv/sv01/logo.png?v=2',
+    )
+  })
+
+  it('inserts .webp before a fragment', () => {
+    expect(setImageUrl('https://example.test/logo#spec')).toBe(
+      'https://example.test/logo.webp#spec',
+    )
+  })
+
+  it('normalizes relative paths the same way — absoluteness is not part of the contract', () => {
+    expect(setImageUrl('/en/base/base1/logo')).toBe('/en/base/base1/logo.webp')
+    expect(setImageUrl('/en/base/base1/logo?v=2#frag')).toBe('/en/base/base1/logo.webp?v=2#frag')
   })
 
   it('maps absent upstream values to null — never to a fabricated URL or empty src', () => {
@@ -197,10 +228,30 @@ describe('searchSets — same normalization on text-searched sets', () => {
 })
 
 describe('transient auth failure — recoverable Search state, exactly one replay', () => {
-  it('classifies JWT-class rejections and ignores everything else', () => {
+  it('classifies session-token rejections by their structured PostgREST code first', () => {
+    // PGRST301 is the only structured code that means "the token was rejected — a refresh may
+    // help"; every other code (RLS denial, missing grant, bad request) is never refreshable,
+    // whatever its message says.
+    expect(isAuthFailure(new CatalogQueryError({ message: 'JWT expired', code: 'PGRST301' }))).toBe(
+      true,
+    )
+    expect(isAuthFailure(new CatalogQueryError({ message: 'JWT expired', code: '42P01' }))).toBe(
+      false,
+    )
+    expect(
+      isAuthFailure(new CatalogQueryError({ message: 'permission denied', code: '42501' })),
+    ).toBe(false)
+    // No code preserved → nothing structural to decide on; treated like any other Error below.
+    expect(isAuthFailure(new CatalogQueryError({ message: 'JWT expired' }))).toBe(true)
+  })
+
+  it('keeps the narrow message fallback for errors without structured information, and never classifies configuration failures as refreshable', () => {
     expect(isAuthFailure(new Error('JWT expired'))).toBe(true)
     expect(isAuthFailure(new Error('JWS signature verification failed'))).toBe(true)
     expect(isAuthFailure(new Error('PGRST301'))).toBe(true)
+    // Configuration failure: refreshSession() cannot repair the client's configured API key,
+    // so this must propagate immediately (P30 review finding) instead of burning a round trip.
+    expect(isAuthFailure(new Error('Invalid API key'))).toBe(false)
     expect(isAuthFailure(new Error('permission denied for function search_cards'))).toBe(false)
     expect(isAuthFailure(new Error('fetch failed'))).toBe(false)
     expect(isAuthFailure('not an error object')).toBe(false)
@@ -238,7 +289,22 @@ describe('transient auth failure — recoverable Search state, exactly one repla
     expect(operation).toHaveBeenCalledTimes(1)
   })
 
-  it('recovers a real Search call end-to-end: first attempt errors, second returns results', async () => {
+  it('propagates the second failure after the single replay — never a retry storm', async () => {
+    const operation = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(
+        new CatalogQueryError({ message: 'JWT expired or is invalid', code: 'PGRST301' }),
+      )
+      .mockRejectedValueOnce(new Error('still failing after refresh'))
+    mocks.refreshSession.mockResolvedValue({ error: null })
+
+    await expect(withAuthRetry(operation)).rejects.toThrow('still failing after refresh')
+
+    expect(operation).toHaveBeenCalledTimes(2)
+    expect(mocks.refreshSession).toHaveBeenCalledTimes(1)
+  })
+
+  it('recovers a real Search call end-to-end when PostgREST reports PGRST301 as a structured code', async () => {
     const row = {
       card_id: 'card-uuid',
       name: 'Pikachu',
@@ -256,7 +322,12 @@ describe('transient auth failure — recoverable Search state, exactly one repla
     mocks.rpc
       .mockResolvedValueOnce({
         data: null,
-        error: { message: 'JWT expired', details: null, hint: null, code: 'PGRST301' },
+        error: {
+          message: 'JWT expired or is invalid',
+          details: null,
+          hint: null,
+          code: 'PGRST301',
+        },
       })
       .mockResolvedValueOnce({ data: [row], error: null })
     mocks.refreshSession.mockResolvedValue({ error: null })
@@ -268,5 +339,35 @@ describe('transient auth failure — recoverable Search state, exactly one repla
     expect(page.totalCount).toBe(1)
     expect(mocks.rpc).toHaveBeenCalledTimes(2)
     expect(mocks.refreshSession).toHaveBeenCalledTimes(1)
+  })
+
+  it('still recovers through the message fallback when no code survived upstream', async () => {
+    mocks.rpc
+      .mockResolvedValueOnce({
+        data: null,
+        // Non-JSON error bodies collapse to `{ message }` with no structured code.
+        error: { message: 'JWT expired', details: null, hint: null, code: null },
+      })
+      .mockResolvedValueOnce({ data: [], error: null })
+    mocks.refreshSession.mockResolvedValue({ error: null })
+
+    await searchCards({ query: 'pikachu', language: null })
+
+    expect(mocks.rpc).toHaveBeenCalledTimes(2)
+    expect(mocks.refreshSession).toHaveBeenCalledTimes(1)
+  })
+
+  it('never retries an invalid API key — configuration failure propagates untouched', async () => {
+    mocks.rpc.mockResolvedValue({
+      data: null,
+      error: { message: 'Invalid API key', details: null, hint: null, code: null },
+    })
+
+    await expect(searchCards({ query: 'pikachu', language: null })).rejects.toThrow(
+      'Invalid API key',
+    )
+
+    expect(mocks.rpc).toHaveBeenCalledTimes(1)
+    expect(mocks.refreshSession).not.toHaveBeenCalled()
   })
 })
