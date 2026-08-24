@@ -47,10 +47,33 @@ describe('export two-step flow', () => {
     expect(state.phase).toBe('success')
   })
 
-  it('a dismissed sheet is cancellation — quiet, not an error', () => {
-    let state: ExportFlowState = { phase: 'delivering', kind: 'backup', artifacts: [] }
+  it('a dismissed sheet is cancellation — quiet, not an error, artifacts RETAINED (F4)', () => {
+    const artifacts = [artifact('pokeportfolio-backup-2026-08-24.json')]
+    let state: ExportFlowState = { phase: 'delivering', kind: 'backup', artifacts }
     state = reduceExportFlow(state, { type: 'DELIVERED', outcome: { method: 'cancelled' } })
     expect(state.phase).toBe('cancelled')
+    if (state.phase === 'cancelled') {
+      expect(state.artifacts).toBe(artifacts)
+    }
+
+    // The user can simply tap Save/Share again — no regeneration.
+    state = reduceExportFlow(state, { type: 'DELIVER' })
+    expect(state.phase).toBe('delivering')
+    state = reduceExportFlow(state, {
+      type: 'DELIVERED',
+      outcome: { method: 'share', filenames: ['pokeportfolio-backup-2026-08-24.json'] },
+    })
+    expect(state.phase).toBe('success')
+  })
+
+  it('a cancelled delivery can go straight to download instead — still no regeneration', () => {
+    const artifacts = [artifact('holdings.csv'), artifact('sales.csv')]
+    let state: ExportFlowState = { phase: 'delivering', kind: 'csv', artifacts }
+    state = reduceExportFlow(state, { type: 'DELIVERED', outcome: { method: 'cancelled' } })
+    expect(state.phase).toBe('cancelled')
+    state = reduceExportFlow(state, { type: 'DELIVER' })
+    expect(state.phase).toBe('delivering')
+    if (state.phase === 'delivering') expect(state.artifacts).toBe(artifacts)
   })
 
   it('a failed delivery KEEPS the artifacts so retry/download need no regeneration', () => {

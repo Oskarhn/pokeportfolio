@@ -173,11 +173,26 @@ describe('empty dataset', () => {
       ;(empty as unknown as Record<string, unknown>)[key] = []
     }
     ;(
-      empty.identity_manifest as { card_variants: unknown[]; curated_sealed_products: unknown[] }
+      empty.identity_manifest as {
+        card_variants: unknown[]
+        curated_sealed_products: unknown[]
+        card_sets: unknown[]
+      }
     ).card_variants = []
     ;(
-      empty.identity_manifest as { card_variants: unknown[]; curated_sealed_products: unknown[] }
+      empty.identity_manifest as {
+        card_variants: unknown[]
+        curated_sealed_products: unknown[]
+        card_sets: unknown[]
+      }
     ).curated_sealed_products = []
+    ;(
+      empty.identity_manifest as {
+        card_variants: unknown[]
+        curated_sealed_products: unknown[]
+        card_sets: unknown[]
+      }
+    ).card_sets = []
     const files = buildCsvSuite(projectionInputFromSnapshot(empty))
     for (const file of files) {
       expect(parseCsvBody(file.text)).toHaveLength(1) // header only

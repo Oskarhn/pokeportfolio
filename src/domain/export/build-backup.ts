@@ -33,6 +33,7 @@ function countSections(data: ExportSnapshot): BackupCounts {
   counts[`${MANIFEST_COUNT_KEY_PREFIX}card_variants`] = data.identity_manifest.card_variants.length
   counts[`${MANIFEST_COUNT_KEY_PREFIX}curated_sealed_products`] =
     data.identity_manifest.curated_sealed_products.length
+  counts[`${MANIFEST_COUNT_KEY_PREFIX}card_sets`] = data.identity_manifest.card_sets.length
   return counts
 }
 
@@ -60,6 +61,7 @@ export function buildBackupEnvelope(
     identity_manifest: {
       card_variants: [...data.identity_manifest.card_variants],
       curated_sealed_products: [...data.identity_manifest.curated_sealed_products],
+      card_sets: [...data.identity_manifest.card_sets],
     },
   }
 }

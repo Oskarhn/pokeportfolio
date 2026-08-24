@@ -84,13 +84,13 @@ function isAbortError(error: unknown): boolean {
   return errorName(error) === 'AbortError'
 }
 
-function canShareAsFiles(files: readonly DeliverableFile[]): boolean {
+function canShareTheseFiles(asFiles: readonly File[]): boolean {
   const nav = navigator as ShareCapableNavigator
   if (typeof nav.share !== 'function' || typeof nav.canShare !== 'function') return false
   try {
     // Asked about the exact payload that would be shared — including the full array when there
     // are several files — because engines accept single-file shares they reject for arrays.
-    return nav.canShare({ files: toFiles(files) })
+    return nav.canShare({ files: [...asFiles] })
   } catch {
     return false
   }
@@ -98,14 +98,14 @@ function canShareAsFiles(files: readonly DeliverableFile[]): boolean {
 
 /** Whether this platform can open the Web Share sheet with these exact files. */
 export function canShareFiles(files: readonly DeliverableFile[]): boolean {
-  return canShareAsFiles(files)
+  return canShareTheseFiles(toFiles(files))
 }
 
-async function shareFiles(files: readonly DeliverableFile[]): Promise<void> {
+async function shareTheseFiles(asFiles: readonly File[]): Promise<void> {
   const nav = navigator as ShareCapableNavigator
-  // `share` is checked again defensively even though canShareAsFiles gates the call.
+  // `share` is checked again defensively even though canShareTheseFiles gates the call.
   if (typeof nav.share !== 'function') throw new DeliveryError('Sharing is not available.')
-  await nav.share({ files: toFiles(files) })
+  await nav.share({ files: [...asFiles] })
 }
 
 async function saveWithPicker(file: DeliverableFile): Promise<void> {
@@ -115,9 +115,16 @@ async function saveWithPicker(file: DeliverableFile): Promise<void> {
   const writable = await handle.createWritable()
   try {
     await writable.write(file.blob)
-  } finally {
-    await writable.close()
+  } catch (writeError) {
+    // A close() rejection here must not MASK the original write failure — surface the write.
+    try {
+      await writable.close()
+    } catch {
+      /* the stream is already failing; the original error is the diagnostic one */
+    }
+    throw writeError
   }
+  await writable.close()
 }
 
 async function downloadViaAnchors(files: readonly DeliverableFile[]): Promise<void> {
@@ -126,15 +133,22 @@ async function downloadViaAnchors(files: readonly DeliverableFile[]): Promise<vo
       await new Promise((resolve) => setTimeout(resolve, INTER_DOWNLOAD_DELAY_MS))
     }
     const url = URL.createObjectURL(file.blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = file.filename
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-    setTimeout(() => {
+    // The revocation timer is scheduled BEFORE the click so that even a throwing click path
+    // cannot strand an object URL until document death (P40 F5).
+    try {
+      setTimeout(() => {
+        URL.revokeObjectURL(url)
+      }, OBJECT_URL_KEEP_ALIVE_MS)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = file.filename
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+    } catch (error) {
       URL.revokeObjectURL(url)
-    }, OBJECT_URL_KEEP_ALIVE_MS)
+      throw error
+    }
   }
 }
 
@@ -153,10 +167,12 @@ export async function deliverFiles(files: readonly DeliverableFile[]): Promise<D
     throw new DeliveryError('No files came back from the export. Nothing was saved.')
   }
   const filenames = files.map((file) => file.filename)
+  // Built ONCE and reused by the capability probe and the share call (P40 F5).
+  const asFiles = toFiles(files)
 
-  if (canShareAsFiles(files)) {
+  if (canShareTheseFiles(asFiles)) {
     try {
-      await shareFiles(files)
+      await shareTheseFiles(asFiles)
       return { method: 'share', filenames }
     } catch (error) {
       if (isAbortError(error)) return { method: 'cancelled' }

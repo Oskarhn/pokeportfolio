@@ -5,10 +5,13 @@
  * backup round-trips; amounts parse; the version envelope is present"). It validates the FILE,
  * not an import — M13 ships no restore. Deeper semantic validation (row-level field types)
  * happens at build time in build-backup.ts; this guard requires objects for rows and REFUSES
- * unknown data keys outright — the strict v1 policy in backup-format.ts (D-075).
+ * unknown data keys outright — the strict v1 policy in backup-format.ts (D-076).
  */
 import { BACKUP_DATA_KEYS, BACKUP_FORMAT_ID, type BackupEnvelope } from './backup-format'
 import { MANIFEST_COUNT_KEY_PREFIX } from './backup-format'
+
+/** Identity-manifest section names, in canonical order. */
+const MANIFEST_SECTIONS = ['card_variants', 'curated_sealed_products', 'card_sets'] as const
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -41,9 +44,10 @@ function fail(path: string, problem: string): EnvelopeValidationResult {
  * - `schema_version` is exactly the version this module understands
  * - `exported_at` parses as an ISO instant ending in Z (UTC)
  * - `app.version` is a string
- * - `counts` holds non-negative integers for every expected section
+ * - `counts` holds non-negative integers for every expected section AND each equals the actual
+ *   length of the array it names (counts are integrity metadata, not decoration)
  * - every section, profiles included (0 or 1 rows), is an array of objects
- * - `identity_manifest` carries its two arrays of objects
+ * - `identity_manifest` carries its three arrays of objects and nothing else
  * - no unexpected top-level `data` keys (a v1 reader refuses what it cannot name)
  */
 export function validateBackupEnvelope(input: unknown): EnvelopeValidationResult {
@@ -92,22 +96,43 @@ export function validateBackupEnvelope(input: unknown): EnvelopeValidationResult
 
   const manifest = input['identity_manifest']
   if (!isPlainObject(manifest)) return fail('identity_manifest', 'must be an object')
-  if (!isRowArray(manifest['card_variants'])) {
-    return fail('identity_manifest.card_variants', 'must be an array of objects')
+  for (const key of Object.keys(manifest)) {
+    if (!(MANIFEST_SECTIONS as readonly string[]).includes(key)) {
+      return fail(`identity_manifest.${key}`, 'unknown manifest section for schema_version 1')
+    }
   }
-  if (!isRowArray(manifest['curated_sealed_products'])) {
-    return fail('identity_manifest.curated_sealed_products', 'must be an array of objects')
+  for (const key of MANIFEST_SECTIONS) {
+    if (!isRowArray(manifest[key])) {
+      return fail(`identity_manifest.${key}`, 'must be an array of objects')
+    }
   }
 
-  // Counts must account for every canonical section and both manifest sections.
+  // Counts must account for every canonical section and every manifest section.
   const expectedCountKeys = [
     ...BACKUP_DATA_KEYS.map((key) => key),
-    MANIFEST_COUNT_KEY_PREFIX + 'card_variants',
-    MANIFEST_COUNT_KEY_PREFIX + 'curated_sealed_products',
+    ...MANIFEST_SECTIONS.map((key) => MANIFEST_COUNT_KEY_PREFIX + key),
   ]
   for (const key of expectedCountKeys) {
     if (typeof counts[key] !== 'number') {
       return fail(`counts.${key}`, 'missing row count for a canonical section')
+    }
+  }
+  // Counts are integrity metadata: each must equal the actual length of the array it names.
+  // A corrupted or truncated envelope (counts.tags=100 over zero rows) can no longer validate.
+  for (const key of Object.keys(counts)) {
+    if (!expectedCountKeys.includes(key)) {
+      return fail(`counts.${key}`, 'count for a section this schema_version does not carry')
+    }
+  }
+  for (const key of BACKUP_DATA_KEYS) {
+    if (counts[key] !== (data[key] as unknown[]).length) {
+      return fail(`counts.${key}`, `does not match the ${key} array length`)
+    }
+  }
+  for (const key of MANIFEST_SECTIONS) {
+    const manifestKey = MANIFEST_COUNT_KEY_PREFIX + key
+    if (counts[manifestKey] !== (manifest[key] as unknown[]).length) {
+      return fail(`counts.${manifestKey}`, `does not match the ${key} array length`)
     }
   }
 

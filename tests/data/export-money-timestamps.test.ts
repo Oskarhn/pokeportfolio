@@ -53,7 +53,10 @@ describe('timestamp precision (§21)', () => {
     const data = { ...emptyBackupData(), tags: [tag] }
     const text = serializeBackupEnvelope(
       buildBackupEnvelope(
-        { ...data, identity_manifest: { card_variants: [], curated_sealed_products: [] } },
+        {
+          ...data,
+          identity_manifest: { card_variants: [], curated_sealed_products: [], card_sets: [] },
+        },
         {
           exportedAt: '2026-08-24T12:00:00.000Z',
           appVersion: 'test',

@@ -380,9 +380,27 @@ export interface ManifestCuratedSealedProductEntry {
   set_name: string | null
 }
 
+/**
+ * Stable set identity for the bare internal `set_id` UUIDs that user-created sealed products
+ * carry. Card-variant and curated-sealed entries already carry their set slug+name inline; a
+ * user-created product row does not, so without this map its set reference is an unresolvable
+ * internal id for any external consumer or cross-project restore. Only sets actually
+ * referenced by exported rows appear — never a catalog dump.
+ */
+export interface ManifestCardSetEntry {
+  /** The internal card_sets UUID the exported rows' set_id values name directly. */
+  id: string
+  /** Globally unique stable slug — the portable identity. */
+  slug: string
+  name: string
+  language: string
+  tcgdex_set_id: string | null
+}
+
 export interface BackupIdentityManifest {
   card_variants: ManifestCardVariantEntry[]
   curated_sealed_products: ManifestCuratedSealedProductEntry[]
+  card_sets: ManifestCardSetEntry[]
 }
 
 // ---------------------------------------------------------------------------

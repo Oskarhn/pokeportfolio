@@ -45,7 +45,7 @@ describe('versioned envelope (M13 gate: version envelope present)', () => {
       'card_sets',
       'cards',
       'card_variants',
-      // NB: sealed_products IS a canonical section since D-075 — it carries ONLY the
+      // NB: sealed_products IS a canonical section since D-076 — it carries ONLY the
       // owner-created subset; curated rows travel exclusively via the identity manifest.
       'watched_card_variants',
     ]
@@ -151,7 +151,7 @@ describe('envelope validator / type guard', () => {
     expect(result.failure?.path).toBe('schema_version')
   })
 
-  it('v1 policy (D-075): a v2 writer must bump the version — a same-version file with a new section is refused', () => {
+  it('v1 policy (D-076): a v2 writer must bump the version — a same-version file with a new section is refused', () => {
     // Distinguishing test for the adjudicated version policy: within-v1 forward tolerance was
     // REJECTED. A future canonical section is only legitimate alongside a schema_version bump,
     // which this reader then refuses wholesale; the future v2 reader owns reading such files.
@@ -203,5 +203,47 @@ describe('envelope validator / type guard', () => {
     expect(
       validateBackupEnvelope({ ...(e as object), identity_manifest: manifest }).failure?.path,
     ).toBe('identity_manifest.curated_sealed_products')
+  })
+
+  it('rejects an unknown manifest section (strict v1, same rule as data keys)', () => {
+    const e = envelope() as unknown as Record<string, unknown>
+    const manifest = {
+      ...(e['identity_manifest'] as Record<string, unknown>),
+      curated_cards: [],
+    }
+    const result = validateBackupEnvelope({ ...e, identity_manifest: manifest })
+    expect(result.valid).toBe(false)
+    expect(result.failure?.path).toBe('identity_manifest.curated_cards')
+  })
+
+  it('counts are integrity metadata: they must equal the arrays they name', () => {
+    // The P39 corruption probe: a declared count over an empty array must NOT validate.
+    const inflated = envelope() as unknown as Record<string, unknown>
+    const counts = { ...(inflated['counts'] as Record<string, number>), tags: 100 }
+    const data = { ...(inflated['data'] as Record<string, unknown>), tags: [] }
+    let result = validateBackupEnvelope({ ...inflated, counts, data })
+    expect(result.valid).toBe(false)
+    expect(result.failure?.path).toBe('counts.tags')
+
+    // Same rule for the manifest sections.
+    const manifestCounts = envelope()
+    const badManifestCounts = { ...manifestCounts.counts, 'identity_manifest.card_sets': 7 }
+    result = validateBackupEnvelope({
+      ...envelope(),
+      counts: badManifestCounts,
+    })
+    expect(result.valid).toBe(false)
+    expect(result.failure?.path).toBe('counts.identity_manifest.card_sets')
+  })
+
+  it('rejects counts for sections this schema_version does not carry', () => {
+    const e = envelope() as unknown as Record<string, unknown>
+    const counts = {
+      ...(e['counts'] as Record<string, number>),
+      future_table: 3,
+    }
+    const result = validateBackupEnvelope({ ...e, counts })
+    expect(result.valid).toBe(false)
+    expect(result.failure?.path).toBe('counts.future_table')
   })
 })

@@ -217,7 +217,9 @@ beforeAll(async () => {
     sealed_intent: 'keep_sealed',
   })
 
-  // A user-created sealed product — exported as owner data, never via the manifest.
+  // A user-created sealed product — exported as owner data, never via the manifest. It points
+  // at the Japanese set so the set-identity assertion below can also prove a set referenced
+  // ONLY by variants (Base Set) stays out of the card_sets manifest section.
   await service
     .from('sealed_products')
     .insert({
@@ -226,6 +228,7 @@ beforeAll(async () => {
       product_type: 'booster_box',
       language: 'no',
       pack_count: 36,
+      set_id: seedCatalog.japaneseSetId,
     })
     .select('id')
     .single()
@@ -343,6 +346,22 @@ describe('M13 export over real RLS', () => {
     expect(
       envelope.identity_manifest.curated_sealed_products.some((s) => s.name === 'My fixture box'),
     ).toBe(false)
+    // The user-created box's set_id travels with a stable identity (slug/name), so the bare
+    // internal UUID stays resolvable outside this database.
+    expect(envelope.identity_manifest.card_sets).toEqual([
+      {
+        id: seedCatalog.japaneseSetId,
+        slug: 'neo1',
+        name: 'Neo Genesis (JA)',
+        language: 'ja',
+        tcgdex_set_id: 'neo1',
+      },
+    ])
+    // Referenced sets ONLY: Base Set is referenced by variants (whose entries carry its
+    // slug+name inline) but by no user-created sealed product — it must not be dumped here.
+    expect(envelope.identity_manifest.card_sets.map((s) => s.id)).not.toContain(
+      seedCatalog.cardSetId,
+    )
   })
 
   it('is owner-scoped: user B gets none of user A’s data', async () => {
@@ -358,6 +377,7 @@ describe('M13 export over real RLS', () => {
     }
     expect(snapshot.identity_manifest.card_variants).toHaveLength(0)
     expect(snapshot.identity_manifest.curated_sealed_products).toHaveLength(0)
+    expect(snapshot.identity_manifest.card_sets).toHaveLength(0)
   })
 
   it('propagates cancellation between pages', async () => {

@@ -68,11 +68,16 @@ export function ExportPage({
   }
 
   function readyArtifacts(flow: ExportFlowState): readonly ExportArtifact[] | null {
-    return flow.phase === 'ready' || flow.phase === 'delivery-failed' ? flow.artifacts : null
+    return flow.phase === 'ready' || flow.phase === 'delivery-failed' || flow.phase === 'cancelled'
+      ? flow.artifacts
+      : null
   }
 
   const artifacts = readyArtifacts(flow)
-  const readyKind = flow.phase === 'ready' || flow.phase === 'delivery-failed' ? flow.kind : null
+  const readyKind =
+    flow.phase === 'ready' || flow.phase === 'delivery-failed' || flow.phase === 'cancelled'
+      ? flow.kind
+      : null
 
   const busy = flow.phase === 'preparing' || flow.phase === 'delivering'
 
@@ -121,7 +126,8 @@ export function ExportPage({
       <div>
         <h1 className="text-xl font-semibold tracking-tight text-slate-100">Export &amp; backup</h1>
         <p className="mt-1 text-sm text-slate-400">
-          Files are created on this device from your own account. Nothing is uploaded anywhere.
+          Your data is fetched from your account, then turned into these files on your device. The
+          files themselves are never uploaded.
         </p>
       </div>
 
@@ -154,9 +160,9 @@ export function ExportPage({
           <div className="min-w-0 space-y-1">
             <h2 className="text-sm font-semibold text-slate-200">Backup</h2>
             <p className="text-sm text-slate-400">
-              One versioned JSON file containing your full Portfolio data. Keep it somewhere safe —
-              restore isn&apos;t built yet, but a backup made now can be imported by that future
-              capability.
+              One versioned JSON file containing your full Portfolio data. Keep it somewhere safe.
+              Restore isn&apos;t built yet — backups carry a schema version so a future restore
+              feature has what it needs, but compatibility isn&apos;t guaranteed in advance.
             </p>
           </div>
         </div>
@@ -231,17 +237,30 @@ export function ExportPage({
         {flow.phase === 'cancelled' ? (
           <div className="space-y-2">
             <p role="status" className="text-sm text-slate-400">
-              Cancelled — nothing was saved or shared.
+              Cancelled — nothing was saved or shared. The files are still ready, so you can try
+              again without regenerating.
             </p>
-            <Button
-              type="button"
-              variant="quiet"
-              onClick={() => {
-                void deliverAsDownload()
-              }}
-            >
-              Download instead
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                onClick={() => {
+                  void deliver()
+                }}
+                disabled={busy}
+              >
+                Save / Share {describeReady(flow.kind)}
+              </Button>
+              <Button
+                type="button"
+                variant="quiet"
+                onClick={() => {
+                  void deliverAsDownload()
+                }}
+                disabled={busy}
+              >
+                Download instead
+              </Button>
+            </div>
           </div>
         ) : null}
 

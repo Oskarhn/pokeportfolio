@@ -13,6 +13,9 @@
  * Step 2 ("Save / Share …") is a fresh tap whose handler calls the delivery path immediately
  * with the already-built files — fresh transient activation, every time.
  *
+ * A dismissed share sheet or save dialog lands in `cancelled` WITH its artifacts intact, so
+ * the user can simply try again (or download instead) without regenerating.
+ *
  * Artifacts live in component state ONLY (never localStorage/IndexedDB), are replaced on a new
  * generation and dropped on discard/unmount.
  */
@@ -29,7 +32,8 @@ export type ExportFlowState =
   | { phase: 'ready'; kind: ExportArtifactKind; artifacts: readonly ExportArtifact[] }
   | { phase: 'delivering'; kind: ExportArtifactKind; artifacts: readonly ExportArtifact[] }
   | { phase: 'success'; kind: ExportArtifactKind; outcome: CompletedDelivery }
-  | { phase: 'cancelled'; kind: ExportArtifactKind }
+  /** Cancellation KEEPS the artifacts: dismissing a sheet must not force regeneration (F4). */
+  | { phase: 'cancelled'; kind: ExportArtifactKind; artifacts: readonly ExportArtifact[] }
   /** Generation failed — artifacts absent; retry regenerates. */
   | { phase: 'prepare-failed'; kind: ExportKind; message: string }
   /** Delivery failed — artifacts RETAINED so the user can retry delivery or download instead. */
@@ -89,9 +93,13 @@ export function reduceExportFlow(state: ExportFlowState, event: ExportFlowEvent)
       return state
     }
     case 'DELIVER': {
-      // Valid from ready AND from a failed delivery (the "Try sharing again" /
-      // "Download instead" actions reuse the retained artifacts).
-      if (state.phase === 'ready' || state.phase === 'delivery-failed') {
+      // Valid from ready, from a failed delivery AND from a cancellation (the "Try sharing
+      // again" / "Download instead" actions reuse the retained artifacts — never regenerate).
+      if (
+        state.phase === 'ready' ||
+        state.phase === 'delivery-failed' ||
+        state.phase === 'cancelled'
+      ) {
         return { phase: 'delivering', kind: state.kind, artifacts: state.artifacts }
       }
       return state
@@ -99,7 +107,7 @@ export function reduceExportFlow(state: ExportFlowState, event: ExportFlowEvent)
     case 'DELIVERED': {
       if (state.phase === 'delivering') {
         if (event.outcome.method === 'cancelled') {
-          return { phase: 'cancelled', kind: state.kind }
+          return { phase: 'cancelled', kind: state.kind, artifacts: state.artifacts }
         }
         return { phase: 'success', kind: state.kind, outcome: event.outcome }
       }

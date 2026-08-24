@@ -49,6 +49,7 @@ import {
   type BackupStorageLocationRow,
   type BackupTagRow,
   type BackupUserCreatedSealedProductRow,
+  type ManifestCardSetEntry,
   type ManifestCardVariantEntry,
   type ManifestCuratedSealedProductEntry,
   type MinorUnitsString,
@@ -97,6 +98,17 @@ export type WireRow<T> = { [K in keyof T]: WireValue<T[K]> }
 /** Names of the money fields on a given row type (compiler-derived). */
 type MoneyKeys<T> = keyof {
   [K in keyof T as Extract<NonNullable<T[K]>, MinorUnitsString> extends never ? never : K]: true
+}
+
+/** Names of the money fields whose canonical row type allows null (compiler-derived). */
+type NullableMoneyKeys<T> = keyof {
+  [
+    K in keyof T as null extends T[K]
+      ? Extract<NonNullable<T[K]>, MinorUnitsString> extends never
+        ? never
+        : K
+      : never
+  ]: true
 }
 
 export const EXPORT_SECTION_SELECTS = {
@@ -263,15 +275,81 @@ export type UnlistedMoneyFieldProbe = {
 export const NO_UNLISTED_MONEY_FIELDS: [UnlistedMoneyFieldProbe] extends [never] ? true : never =
   true
 
-/** Re-validates every listed money field of one wire row into the branded format type. */
-function brandRow<K extends ArraySection>(
+/**
+ * The subset of {@link MONEY_FIELDS} whose canonical row type allows null (a gift lot's unknown
+ * basis, an uncosted sale line's frozen pair, a voided disposal's basis). `brandRow` accepts
+ * null for exactly these fields and nothing else — compile-time probes below keep this list in
+ * lockstep with the format types.
+ */
+export const NULLABLE_MONEY_FIELDS: {
+  [K in ArraySection]: readonly NullableMoneyKeys<BackupData[K][number]>[]
+} = {
+  profiles: [],
+  custom_collections: [],
+  custom_collection_members: [],
+  tags: [],
+  holding_tags: [],
+  storage_locations: [],
+  retailers: [],
+  holdings: [],
+  acquisition_lots: ['unit_cost_basis_minor', 'unit_cost_basis_nok_minor'],
+  manual_card_definitions: [],
+  sealed_products: [],
+  manual_valuations: [],
+  lot_cost_adjustments: [],
+  purchases: [],
+  purchase_lines: [],
+  sales: ['realized_result_nok_minor'],
+  sale_lines: ['cost_basis_at_sale_nok_minor', 'realized_result_nok_minor'],
+  lot_disposals: ['cost_basis_at_disposal_nok_minor'],
+}
+
+/**
+ * Compile-time proof that {@link NULLABLE_MONEY_FIELDS} lists every nullable money property of
+ * every section — same mechanism as {@link NO_UNLISTED_MONEY_FIELDS}.
+ */
+export type UnlistedNullableMoneyFieldProbe = {
+  [K in ArraySection]: Exclude<
+    NullableMoneyKeys<BackupData[K][number]>,
+    (typeof NULLABLE_MONEY_FIELDS)[K][number]
+  > extends never
+    ? never
+    : `unlisted nullable money field in section ${K & string}`
+}[ArraySection]
+export const NO_UNLISTED_NULLABLE_MONEY_FIELDS: [UnlistedNullableMoneyFieldProbe] extends [never]
+  ? true
+  : never = true
+
+/**
+ * Re-validates every listed money field of one wire row into the branded format type.
+ *
+ * The guard is total, per D-074's exactness promise and the module header: a listed money
+ * field must arrive as a string (validated through minorUnits) or — only where the canonical
+ * row allows it — as null. A NUMBER on the wire means a ::text cast was lost somewhere; the
+ * value may already have been rounded past 2^53 at the JSON parse boundary, so it is never
+ * coerced or trusted: the export fails loudly instead. Any other unexpected shape (a missing
+ * column, an object) fails the same way.
+ */
+export function brandRow<K extends ArraySection>(
   row: WireRow<BackupData[K][number]>,
   section: K,
 ): BackupData[K][number] {
   const out: Record<string, unknown> = { ...row }
   for (const key of MONEY_FIELDS[section]) {
     const value = out[key]
-    if (typeof value === 'string') out[key] = minorUnits(value)
+    if (typeof value === 'string') {
+      out[key] = minorUnits(value)
+      continue
+    }
+    if (value === null && NULLABLE_MONEY_FIELDS[section].includes(key as never)) {
+      continue
+    }
+    throw new TypeError(
+      `Export integrity: ${section}.${String(key)} arrived as ${
+        value === null ? 'null where the canonical field forbids it' : typeof value
+      } — its ::text cast was lost or the column changed. Refusing to write a silently ` +
+        'corrupted backup.',
+    )
   }
   // The cast is earned: every listed money field was just validated by minorUnits().
   return out as unknown as BackupData[K][number]
@@ -733,6 +811,58 @@ async function fetchLotDisposals(
   )
 }
 
+/**
+ * Projects one fetched profile wire row onto the {@link BackupProfileRow} allowlist,
+ * field by field — never spread. Privilege exclusion must not depend solely on the
+ * hand-written select string: if a future select widens (an innocent `*`, a new column),
+ * anything not on THIS allowlist (`is_admin`, `disabled_at`, any future privilege-like
+ * field) still cannot reach the backup envelope.
+ */
+export function projectProfileRow(row: Record<string, unknown>): BackupProfileRow {
+  return {
+    id: expectString(row['id'], 'profiles.id'),
+    display_name: optionalString(row['display_name']),
+    theme: expectString(row['theme'], 'profiles.theme'),
+    display_currency: expectString(row['display_currency'], 'profiles.display_currency'),
+    locale: expectString(row['locale'], 'profiles.locale'),
+    hide_values: row['hide_values'] === true,
+    hide_low_value_by_default: row['hide_low_value_by_default'] === true,
+    // NOT NULL in the schema (default 1000) — a null here means the row shape changed.
+    low_value_threshold_minor: minorUnits(
+      expectString(row['low_value_threshold_minor'], 'profiles.low_value_threshold_minor'),
+    ),
+    use_eu_pricing: row['use_eu_pricing'] === true,
+    collection_grid_density: Number(row['collection_grid_density']),
+    collection_default_view: expectString(
+      row['collection_default_view'],
+      'profiles.collection_default_view',
+    ),
+    collection_default_sort: expectString(
+      row['collection_default_sort'],
+      'profiles.collection_default_sort',
+    ),
+    default_condition: optionalString(row['default_condition']),
+    default_language: optionalString(row['default_language']),
+    default_storage_location_id: optionalString(row['default_storage_location_id']),
+    created_at: expectString(row['created_at'], 'profiles.created_at'),
+    updated_at: expectString(row['updated_at'], 'profiles.updated_at'),
+  }
+}
+
+function expectString(value: unknown, field: string): string {
+  if (typeof value !== 'string') {
+    throw new TypeError(
+      `Export integrity: ${field} arrived as ${value === null ? 'null' : typeof value} — ` +
+        'refusing to build a profile row from an unexpected shape.',
+    )
+  }
+  return value
+}
+
+function optionalString(value: unknown): string | null {
+  return typeof value === 'string' ? value : null
+}
+
 async function fetchProfiles(
   client: SupabaseClient<Database>,
   userId: string,
@@ -754,7 +884,9 @@ async function fetchProfiles(
       const ready = options.signal === undefined ? base : base.abortSignal(options.signal)
       return ready.overrideTypes<WireRow<BackupProfileRow>[], { merge: false }>()
     },
-    (row) => brandRow(row, 'profiles'),
+    // Allowlisted projection (never a spread) so privilege exclusion survives even a widened
+    // future select — see projectProfileRow.
+    (row) => projectProfileRow(row as unknown as Record<string, unknown>),
   )
 }
 
@@ -789,6 +921,14 @@ interface CuratedSealedWireRow {
   cardmarket_product_id: string | null
   tcgplayer_product_id: string | null
   card_sets: { slug: string; name: string } | null
+}
+
+interface CardSetWireRow {
+  id: string
+  slug: string
+  name: string
+  language: string
+  tcgdex_set_id: string | null
 }
 
 /** PostgREST URL-length safety: resolve shared-catalog references in bounded id chunks. */
@@ -876,6 +1016,42 @@ async function fetchCuratedSealedManifest(
   return entries.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
 }
 
+/**
+ * Resolves stable set identities for the set_id values the exported user-created sealed
+ * products carry. Referenced sets only — a set no exported row points at never enters the
+ * manifest, and the shared catalog is never dumped.
+ */
+async function fetchReferencedCardSetManifest(
+  client: SupabaseClient<Database>,
+  setIds: readonly string[],
+  options: ExportFetchOptions,
+): Promise<ManifestCardSetEntry[]> {
+  const entries: ManifestCardSetEntry[] = []
+  for (let start = 0; start < setIds.length; start += MANIFEST_CHUNK_SIZE) {
+    abortIfRequested(options.signal)
+    const chunk = setIds.slice(start, start + MANIFEST_CHUNK_SIZE)
+    const { data, error } = await client
+      .from('card_sets')
+      .select('id, slug, name, language, tcgdex_set_id')
+      .in('id', [...chunk])
+      .order('id', { ascending: true })
+      .overrideTypes<CardSetWireRow[], { merge: false }>()
+    if (error !== null) {
+      throw new Error(`Export failed reading referenced card sets: ${error.message}`)
+    }
+    for (const row of data) {
+      entries.push({
+        id: row.id,
+        slug: row.slug,
+        name: row.name,
+        language: row.language,
+        tcgdex_set_id: row.tcgdex_set_id,
+      })
+    }
+  }
+  return entries.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+}
+
 function collectReferencedIds(
   snapshot: Pick<ExportSnapshot, 'holdings' | 'purchase_lines'>,
   pick: (row: {
@@ -953,17 +1129,25 @@ export async function fetchExportSnapshot(
     sales,
     sale_lines: saleLines,
     lot_disposals: lotDisposals,
-    identity_manifest: { card_variants: [], curated_sealed_products: [] },
+    identity_manifest: { card_variants: [], curated_sealed_products: [], card_sets: [] },
   }
 
   const variantIds = collectReferencedIds(snapshot, (row) => row.card_variant_id)
   const referencedSealedIds = collectReferencedIds(snapshot, (row) => row.sealed_product_id)
   const ownSealedIds = new Set(snapshot.sealed_products.map((p) => p.id))
   const curatedSealedIds = referencedSealedIds.filter((id) => !ownSealedIds.has(id))
+  // User-created sealed products reference sets by bare internal UUID; the manifest carries
+  // their stable identities so the reference survives outside this database (P39 review).
+  const userCreatedSetIds = [
+    ...new Set(
+      snapshot.sealed_products.map((p) => p.set_id).filter((id): id is string => id !== null),
+    ),
+  ].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
 
   const identity_manifest: BackupIdentityManifest = {
     card_variants: await fetchCardVariantManifest(client, variantIds, options),
     curated_sealed_products: await fetchCuratedSealedManifest(client, curatedSealedIds, options),
+    card_sets: await fetchReferencedCardSetManifest(client, userCreatedSetIds, options),
   }
 
   return { ...snapshot, identity_manifest }
