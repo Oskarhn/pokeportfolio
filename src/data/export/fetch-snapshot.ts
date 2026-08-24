@@ -14,8 +14,18 @@
  * Scale: bounded pages under stable primary-key ordering — never one unbounded query
  * (DATA_MODEL.md §10.1), never the giant-sorted-query class behind the M9.1/M9.2 saga. A hard
  * page ceiling turns a pathological loop into a thrown error rather than a hung tab.
+ *
+ * Pagination honesty (D-073): `.order(pk).range(from, to)` is OFFSET pagination with stable,
+ * deterministic ordering — it is NOT keyset pagination and must not be described as such.
+ * Offset walking has silent truncation/gap/duplicate failure modes when the source changes
+ * between pages, so every section walk additionally takes the table's exact COUNT up front,
+ * detects duplicate primary keys across pages, and reconciles the final received count
+ * (src/domain/export/pagination-integrity.ts). A count mismatch or duplicate FAILS the export
+ * loudly instead of writing an incomplete backup. This is detection, not snapshot isolation —
+ * the multi-query export is not one PostgreSQL transaction (D-076).
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { createSectionWalk } from '../../domain/export/pagination-integrity'
 import type { Database } from '../database.types'
 import {
   minorUnits,
@@ -206,6 +216,30 @@ const MONEY_FIELDS: { [K in ArraySection]: readonly MoneyKeys<BackupData[K][numb
 }
 
 /**
+ * Primary-key column(s) per section, in the same order the fetch sorts by. Used for cross-page
+ * duplicate detection and for the COUNT query that anchors completeness (D-073).
+ */
+const SECTION_IDENTITY_KEYS: Record<ArraySection, readonly string[]> = {
+  custom_collections: ['id'],
+  custom_collection_members: ['collection_id', 'holding_id'],
+  tags: ['id'],
+  holding_tags: ['holding_id', 'tag_id'],
+  storage_locations: ['id'],
+  retailers: ['id'],
+  holdings: ['id'],
+  acquisition_lots: ['id'],
+  manual_card_definitions: ['id'],
+  sealed_products: ['id'],
+  manual_valuations: ['id'],
+  lot_cost_adjustments: ['id'],
+  purchases: ['id'],
+  purchase_lines: ['id'],
+  sales: ['id'],
+  sale_lines: ['id'],
+  lot_disposals: ['id'],
+}
+
+/**
  * Compile-time proof that {@link MONEY_FIELDS} lists every money property of every section — if
  * a section ever gains an unlisted money field, this stops being `true` and the module fails to
  * compile. Exported solely so tooling treats it as live code rather than an unused binding.
@@ -267,7 +301,6 @@ async function drainPages<TRow>(
     // driver correct for any caller whose success shape stays nullable.
     const rows = data ?? []
     onPageLanded(rows)
-    options.onPage?.({ section, totalRows: page * pageSize + rows.length })
     if (rows.length < pageSize) return
   }
   throw new Error(
@@ -275,16 +308,41 @@ async function drainPages<TRow>(
   )
 }
 
+/** Reads the section's exact row count once, before paging starts (D-073). */
+async function fetchSectionTotal(
+  client: SupabaseClient<Database>,
+  section: ArraySection,
+  options: ExportFetchOptions,
+): Promise<number> {
+  const firstKey = SECTION_IDENTITY_KEYS[section][0]
+  if (firstKey === undefined) {
+    throw new Error(`Export failed counting ${section}: no identity key declared`)
+  }
+  const base = client.from(section).select(firstKey, { count: 'exact', head: true })
+  const ready = options.signal === undefined ? base : base.abortSignal(options.signal)
+  const { count, error } = await ready
+  if (error !== null || count === null) {
+    throw new Error(`Export failed counting ${section}: ${error?.message ?? 'no count returned'}`)
+  }
+  return count
+}
+
 async function collectRows<TWire, TRow>(
-  section: string,
+  client: SupabaseClient<Database>,
+  section: ArraySection,
   options: ExportFetchOptions,
   buildPage: (from: number, to: number) => PromiseLike<PageResult<TWire>>,
   brand: (row: TWire) => TRow,
 ): Promise<TRow[]> {
+  const expectedTotal = await fetchSectionTotal(client, section, options)
+  const walk = createSectionWalk(section, SECTION_IDENTITY_KEYS[section])
   const rows: TRow[] = []
   await drainPages<TWire>(section, buildPage, options, (pageRows) => {
+    walk.observe(pageRows)
     for (const row of pageRows) rows.push(brand(row))
+    options.onPage?.({ section, totalRows: walk.received })
   })
+  walk.finish(expectedTotal)
   return rows
 }
 
@@ -297,6 +355,7 @@ async function fetchCustomCollections(
   options: ExportFetchOptions,
 ): Promise<BackupData['custom_collections']> {
   return collectRows(
+    client,
     'custom_collections',
     options,
     (from, to) => {
@@ -317,6 +376,7 @@ async function fetchCustomCollectionMembers(
   options: ExportFetchOptions,
 ): Promise<BackupData['custom_collection_members']> {
   return collectRows(
+    client,
     'custom_collection_members',
     options,
     (from, to) => {
@@ -338,6 +398,7 @@ async function fetchTags(
   options: ExportFetchOptions,
 ): Promise<BackupData['tags']> {
   return collectRows(
+    client,
     'tags',
     options,
     (from, to) => {
@@ -358,6 +419,7 @@ async function fetchHoldingTags(
   options: ExportFetchOptions,
 ): Promise<BackupData['holding_tags']> {
   return collectRows(
+    client,
     'holding_tags',
     options,
     (from, to) => {
@@ -379,6 +441,7 @@ async function fetchStorageLocations(
   options: ExportFetchOptions,
 ): Promise<BackupData['storage_locations']> {
   return collectRows(
+    client,
     'storage_locations',
     options,
     (from, to) => {
@@ -399,6 +462,7 @@ async function fetchRetailers(
   options: ExportFetchOptions,
 ): Promise<BackupData['retailers']> {
   return collectRows(
+    client,
     'retailers',
     options,
     (from, to) => {
@@ -419,6 +483,7 @@ async function fetchHoldings(
   options: ExportFetchOptions,
 ): Promise<BackupData['holdings']> {
   return collectRows(
+    client,
     'holdings',
     options,
     (from, to) => {
@@ -439,6 +504,7 @@ async function fetchAcquisitionLots(
   options: ExportFetchOptions,
 ): Promise<BackupData['acquisition_lots']> {
   return collectRows(
+    client,
     'acquisition_lots',
     options,
     (from, to) => {
@@ -459,6 +525,7 @@ async function fetchManualCardDefinitions(
   options: ExportFetchOptions,
 ): Promise<BackupData['manual_card_definitions']> {
   return collectRows(
+    client,
     'manual_card_definitions',
     options,
     (from, to) => {
@@ -480,6 +547,7 @@ async function fetchUserCreatedSealedProducts(
   options: ExportFetchOptions,
 ): Promise<BackupData['sealed_products']> {
   return collectRows(
+    client,
     'sealed_products',
     options,
     (from, to) => {
@@ -502,6 +570,7 @@ async function fetchManualValuations(
   options: ExportFetchOptions,
 ): Promise<BackupData['manual_valuations']> {
   return collectRows(
+    client,
     'manual_valuations',
     options,
     (from, to) => {
@@ -522,6 +591,7 @@ async function fetchLotCostAdjustments(
   options: ExportFetchOptions,
 ): Promise<BackupData['lot_cost_adjustments']> {
   return collectRows(
+    client,
     'lot_cost_adjustments',
     options,
     (from, to) => {
@@ -542,6 +612,7 @@ async function fetchPurchases(
   options: ExportFetchOptions,
 ): Promise<BackupData['purchases']> {
   return collectRows(
+    client,
     'purchases',
     options,
     (from, to) => {
@@ -562,6 +633,7 @@ async function fetchPurchaseLines(
   options: ExportFetchOptions,
 ): Promise<BackupData['purchase_lines']> {
   return collectRows(
+    client,
     'purchase_lines',
     options,
     (from, to) => {
@@ -582,6 +654,7 @@ async function fetchSales(
   options: ExportFetchOptions,
 ): Promise<BackupData['sales']> {
   return collectRows(
+    client,
     'sales',
     options,
     (from, to) => {
@@ -602,6 +675,7 @@ async function fetchSaleLines(
   options: ExportFetchOptions,
 ): Promise<BackupData['sale_lines']> {
   return collectRows(
+    client,
     'sale_lines',
     options,
     (from, to) => {
@@ -622,6 +696,7 @@ async function fetchLotDisposals(
   options: ExportFetchOptions,
 ): Promise<BackupData['lot_disposals']> {
   return collectRows(
+    client,
     'lot_disposals',
     options,
     (from, to) => {
