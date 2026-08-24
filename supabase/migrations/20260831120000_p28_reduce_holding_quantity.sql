@@ -47,13 +47,27 @@
 --   Pass 1 parses/validates the whole payload BEFORE any database access, so malformed input still
 --   aborts with zero mutation and — newly — without acquiring a single lock.
 --   Pass 2 then locks EVERY live sibling lot of the holding (p_holding_id + auth.uid(), never
---   another user's rows) FOR UPDATE in ascending lot-id order — one statement, so two concurrent
+--   another user's rows) FOR UPDATE, in ascending lot-id order — one statement, so two concurrent
 --   adjustments of the same holding fully serialize regardless of which lots each names; a
 --   concurrent insert of a NEW lot needs no row lock and only ever RAISES the real owned total,
 --   so validating against the pre-insert total is conservative-safe for the invariant.
 --   Only after those locks are held is v_owned_total computed (an aggregate itself cannot take
 --   row locks that mean anything — lock the underlying rows first), and the per-lot guards then
---   run on already-held locks (plain SELECTs; no second, conflicting lock order).
+--   run on already-held locks (plain SELECTs; no second, conflicting lock order). A final guard
+--   recomputes the owned total after the updates and refuses to commit a zero-owned holding, so
+--   the invariant is enforced by the function's own post-image even if some future change were
+--   ever to weaken the locking.
+--   MECHANISM NOTE (Prompt 32, second CI iteration): the lock phase was first written as a single
+--   `perform 1 ... order by id for update` statement. CI's real concurrent test proved that form
+--   does not reliably block a second transaction here — two simultaneous single-lot adjustments
+--   both committed (the exact race this repair exists to close) while every sequential path and
+--   the guard-masked tests stayed green. It was replaced with create_sale's explicit mechanism:
+--   collect the sibling ids sorted ascending, then take each row lock with its own `select ...
+--   for update` in that deterministic order. That is the pattern Postgres's own deadlock-avoidance
+--   guidance describes and the only locking form whose effect is directly observable in this
+--   schema. Lesson recorded: a locking clause on a discarded-result PERFORM must never be assumed
+--   to have contended — concurrency claims need an overlapping-transaction test, which this file
+--   now carries.
 --   Ascending lot-id order matches create_sale's convention exactly (which locks its referenced
 --   lots the same way), so reduce vs create_sale on overlapping lots cannot deadlock either: both
 --   acquire in one global order. The legacy M8.1 remove/void path takes its write locks only at
@@ -84,10 +98,13 @@ as $$
 declare
   v_user_id uuid := auth.uid();
   v_owned_total int;
+  v_final_total int;
   v_remove_total int := 0;
   v_entry jsonb;
   v_idx int;
   v_lot_id uuid;
+  v_sibling_id uuid;
+  v_sibling_ids uuid[] := '{}';
   v_remove_text text;
   v_remove int;
   v_lot public.acquisition_lots;
@@ -143,19 +160,27 @@ begin
   end loop;
 
   -- Pass 2 — serialize quantity changes for this holding. Lock EVERY live sibling lot (not just
-  -- the requested subset) FOR UPDATE, in ascending lot-id order — create_sale's established
-  -- convention against concurrent multi-lot deadlocks. One statement means two simultaneous
-  -- adjustments of the same holding fully serialize no matter which lots each names: the second
-  -- waits here until the first commits, then re-reads and validates against the UPDATED state.
-  -- The user_id predicate guarantees a forged p_holding_id can never lock or even inspect another
-  -- user's rows.
-  perform 1
+  -- the requested subset), in ascending lot-id order — create_sale's established convention
+  -- against concurrent multi-lot deadlocks: collect the ids sorted first, then take each row
+  -- lock with its own SELECT ... FOR UPDATE in that order, the exact mechanism create_sale's
+  -- pass 2 uses, so both operations acquire overlapping locks through identical code paths and
+  -- cannot deadlock against each other. Two simultaneous adjustments of the same holding fully
+  -- serialize no matter which lots each names: the second waits here until the first commits,
+  -- then re-reads and validates against the UPDATED state. The user_id predicate guarantees a
+  -- forged p_holding_id can never lock or even inspect another user's rows.
+  select coalesce(array_agg(al.id order by al.id), '{}') into v_sibling_ids
     from public.acquisition_lots al
    where al.holding_id = p_holding_id
      and al.user_id = v_user_id
-     and al.voided_at is null
-   order by al.id
-   for update;
+     and al.voided_at is null;
+
+  foreach v_sibling_id in array v_sibling_ids loop
+    select * into v_lot
+      from public.acquisition_lots al
+     where al.id = v_sibling_id
+       and al.user_id = v_user_id
+       for update;
+  end loop;
 
   -- Pass 3 — only now compute the owned total, under the held locks. An aggregate cannot take
   -- meaningful row locks itself; locking the underlying rows first is what makes this figure
@@ -228,7 +253,22 @@ begin
        and user_id = v_user_id;
   end loop;
 
-  return query select v_owned_total - v_remove_total;
+  -- Final guard — the invariant is enforced on the post-image itself: recompute the holding's
+  -- owned total from the rows this transaction just wrote and refuse to return a zero. With the
+  -- sibling locks held this can only ever agree with v_owned_total - v_remove_total; if locking
+  -- were ever to regress silently, this converts the corruption back into a loud refusal (the
+  -- whole call aborts with zero mutations). It also makes the RETURNED figure the real one.
+  select coalesce(sum(al.quantity_remaining), 0)::int into v_final_total
+    from public.acquisition_lots al
+   where al.holding_id = p_holding_id
+     and al.user_id = v_user_id
+     and al.voided_at is null;
+  if v_final_total < 1 then
+    raise exception
+      'this adjustment would remove every remaining copy - use Remove from Portfolio for that';
+  end if;
+
+  return query select v_final_total;
 end;
 $$;
 
