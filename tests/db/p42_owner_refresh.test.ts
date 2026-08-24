@@ -161,11 +161,11 @@ describe('P42 scenario A: quick-add known-cost card, then Remove from Portfolio'
     lotId = added.lotId
 
     expect(await liveLotCount(holdingId)).toBe(1)
-    expect(await spendingOf(clientA)).toEqual({
-      gpo_nok_minor: '12345',
-      cs_nok_minor: '12345',
-      hs_nok_minor: '0',
-    })
+    // Field-wise, not whole-object: the summary row carries more columns than these three.
+    const afterAdd = await spendingOf(clientA)
+    expect(afterAdd.gpo_nok_minor).toBe('12345')
+    expect(afterAdd.cs_nok_minor).toBe('12345')
+    expect(afterAdd.hs_nok_minor).toBe('0')
 
     // Both invalidation triggers (lot INSERT + purchase INSERT) coalesce into one queue row,
     // dirtied from the acquisition date — the exact fact Home's "Updating…" badge renders.
@@ -251,11 +251,21 @@ describe('P42 scenario B: card + accessory purchase survives removing the card',
     expect(removal![0]).toMatchObject({ blocked: false })
 
     const after = await spendingOf(clientA)
-    // Only the CARD's share left the ledger; the accessory's real spend remains counted (HS).
-    expect(BigInt(after.gpo_nok_minor) - BigInt(before.gpo_nok_minor)).toBe(400n)
+    // The receipt stays LIVE (the accessory line permanently blocks auto-void), so BOTH lines'
+    // recorded spend legitimately remains counted — an inventory correction never rewrites money
+    // history. What the assertions pin is exactly that: nothing unrelated was erased, and the
+    // card's own share leaves only when the receipt itself is corrected in Purchases.
+    expect(BigInt(after.gpo_nok_minor) - BigInt(before.gpo_nok_minor)).toBe(2400n)
+    expect(BigInt(after.cs_nok_minor) - BigInt(before.cs_nok_minor)).toBe(2000n)
     expect(BigInt(after.hs_nok_minor) - BigInt(before.hs_nok_minor)).toBe(400n)
-    // The receipt itself stays live — an accessory line can never become "accounted for".
-    expect(await parentPurchaseVoided(lot!.id)).toBe(false)
+    // The corrected holding's lot is voided; the receipt itself remains.
+    expect(await liveLotCount(lot!.holding_id)).toBe(0)
+    const { data: receipt } = await service
+      .from('purchases')
+      .select('voided_at')
+      .eq('id', purchaseId)
+      .single<{ voided_at: string | null }>()
+    expect(receipt!.voided_at).toBeNull()
   })
 })
 
@@ -264,19 +274,36 @@ describe('P42 scenario B: card + accessory purchase survives removing the card',
 describe('P42 scenario C: partially-disposed inventory remains blocked', () => {
   it('a lot with quantity_remaining < quantity blocks removal and nothing is mutated', async () => {
     const before = await spendingOf(clientA)
-    const added = await addKnownCostCard(clientA, seedCatalog.grassEnergyVariantId, 55)
-    // Same partial-disposal simulation M8's own blocker tests use (no disposal path in this flow).
-    await service.from('acquisition_lots').update({ quantity_remaining: 1 }).eq('id', added.lotId)
-
-    const { data, error } = await clientA.rpc('remove_holdings_from_portfolio', {
-      p_holding_ids: [added.holdingId],
-    })
+    // Two copies, then simulate a partial disposal of one (same technique M8's own blocker
+    // tests use — no real disposal path participates in this correction flow). A 1-of-1 lot is
+    // fully intact by definition; the blocker needs a genuine mismatch.
+    const { data, error } = await clientA
+      .rpc('add_card_acquisition', {
+        p_card_variant_id: seedCatalog.grassEnergyVariantId,
+        p_grading_state: 'raw',
+        p_condition: 'NM',
+        p_origin: 'purchase',
+        p_cost_basis_state: 'known',
+        p_unit_cost_basis_minor: 55,
+        p_quantity: 2,
+        p_acquired_on: today,
+      })
+      .single<{ holding_id: string; lot_id: string }>()
     expect(error).toBeNull()
-    expect(data![0]).toMatchObject({ blocked: true, physical_count: 1 })
-    expect(data![0]!.blocked_reason).toMatch(/partially removed elsewhere/i)
+    const blockedHoldingId = data!.holding_id
+    const blockedLotId = data!.lot_id
+    await service.from('acquisition_lots').update({ quantity_remaining: 1 }).eq('id', blockedLotId)
 
-    expect(await liveLotCount(added.holdingId)).toBe(1)
-    expect(await parentPurchaseVoided(added.lotId)).toBe(false)
+    const { data: removal, error: removalError } = await clientA.rpc(
+      'remove_holdings_from_portfolio',
+      { p_holding_ids: [blockedHoldingId] },
+    )
+    expect(removalError).toBeNull()
+    expect(removal![0]).toMatchObject({ blocked: true, physical_count: 1 })
+    expect(removal![0]!.blocked_reason).toMatch(/partially removed elsewhere/i)
+
+    expect(await liveLotCount(blockedHoldingId)).toBe(1)
+    expect(await parentPurchaseVoided(blockedLotId)).toBe(false)
     expect(await spendingOf(clientA)).toEqual(before)
   })
 })
