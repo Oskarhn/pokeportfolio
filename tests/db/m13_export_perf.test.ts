@@ -255,7 +255,7 @@ describe.skipIf(!RUN)('M13 export performance audit', () => {
   }, 600_000)
 
   afterAll(async () => {
-    if (!service || !user) return
+    // service/user are always assigned here: skipIf gates the whole suite before beforeAll runs.
     await deleteSyntheticUser(service, user.id)
   }, 120_000)
 
