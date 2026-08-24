@@ -192,20 +192,8 @@ jobs:
       # adversarial/, authored implementation-blind on test/m13-independent-adversarial-p37)
       # judged against the integrated M13 candidate on this same ephemeral stack — the first
       # environment where its DB-backed cross-user suite AND its implementation-gated backup
-      # contract execute for real. Two mandatory steps, mirroring the M12 pattern.
-      - name: Independent M13 adversarial suite (typecheck)
-        run: pnpm exec tsc -p test/m13-independent-adversarial/tsconfig.json --noEmit
-
-      - name: Independent M13 adversarial suite (DB-gated execution)
-        run: pnpm test:m13-adversarial
-
-      # M13 export scale audit (prompt §24): seeds a ~10k-lot synthetic account and times the
-      # real client-side export pipeline end to end under the owner JWT. Opt-in env gate; the
-      # step reports real numbers and fails only past a catastrophic 60s budget (D-059 policy).
-      - name: M13 export scale audit
-        run: pnpm exec vitest run --config vitest.db.config.ts tests/db/m13_export_perf.test.ts
-        env:
-          M13_EXPORT_PERF: '1'
+      # contract execute for real — see the M13 steps further down for why they run after the
+      # benchmarks. Two mandatory steps, mirroring the M12 pattern.
 
       # Separate validation step (audit, not microbenchmark theatre): catastrophic-only thresholds
       # per TESTING.md/D-059 policy. Thresholds are never weakened to obtain green.
@@ -239,6 +227,29 @@ jobs:
       # database — never against a database holding real data. See the script header for why.
       - name: Price-snapshot storage benchmark
         run: psql "$DB_URL" -v ON_ERROR_STOP=1 -f scripts/price-snapshots-storage-benchmark.sql
+
+      # The independently written M13 adversarial contract package (test/m13-independent-
+      # adversarial/, authored implementation-blind on test/m13-independent-adversarial-p37)
+      # judged against the integrated M13 candidate on this same ephemeral stack — the first
+      # environment where its DB-backed cross-user suite AND its implementation-gated backup
+      # contract execute for real. Two mandatory steps, mirroring the M12 pattern. Positioned
+      # AFTER every timing-sensitive benchmark below on purpose: the adversarial fixture churns
+      # synthetic accounts, and the export scale audit seeds ~26k rows — neither may sit between
+      # a benchmark's seed and its timed calls (the M12 scale audit tripped its own 30s budget
+      # exactly once when these steps ran in front of it).
+      - name: Independent M13 adversarial suite (typecheck)
+        run: pnpm exec tsc -p test/m13-independent-adversarial/tsconfig.json --noEmit
+
+      - name: Independent M13 adversarial suite (DB-gated execution)
+        run: pnpm test:m13-adversarial
+
+      # M13 export scale audit (prompt §24): seeds a ~10k-lot synthetic account and times the
+      # real client-side export pipeline end to end under the owner JWT. Opt-in env gate; the
+      # step reports real numbers and fails only past a catastrophic 60s budget (D-059 policy).
+      - name: M13 export scale audit
+        run: pnpm exec vitest run --config vitest.db.config.ts tests/db/m13_export_perf.test.ts
+        env:
+          M13_EXPORT_PERF: '1'
 
       - name: Generate TypeScript types from schema
         run: pnpm db:types
