@@ -2002,3 +2002,129 @@ normalizes extension-less TCGdex set identifiers by appending `.webp` on the pat
 
 Cheap to reverse (a display-layer choice), recorded because it is product semantics an owner
 explicitly chose, so a future session does not "fix" it back to provider-default behaviour.
+
+## D-074 - Export pagination is offset-with-reconciliation, honestly named, and fails loudly on incompleteness
+
+**2026-08-24 - Accepted** (M13 integration)
+
+The export reads each section as PostgREST `.order(pk).range(from, to)` pages: OFFSET pagination
+under a stable deterministic ordering. It is NOT keyset pagination and must never be documented as
+such (the parallel export-core draft had mislabeled it). True keyset was considered and deferred:
+several sections have composite primary keys (`custom_collection_members`, `holding_tags`) where a
+universal keyset cursor adds real complexity for no benefit at MVP scale.
+
+What offset pagination does get is completeness enforcement: one exact COUNT per section before
+paging starts; cross-page duplicate detection over each section's full primary key (both columns for
+join tables), naming the offending row; exact received-vs-expected reconciliation after the walk; and
+the existing hard max-page ceiling. A violation raises ExportIntegrityError and FAILS the export - an
+incomplete backup is never written quietly. Implemented pure in src/domain/export/pagination-integrity.ts.
+
+## D-075 - No combined "everything" export; client-zip removed from the candidate
+
+**2026-08-24 - Accepted** (M13 integration)
+
+PRODUCT_SPEC 4.12 and ROADMAP M13 define the MVP surface as the CSV suite plus the versioned JSON
+backup. The parallel export-core draft additionally shipped exportEverything() (one fetch to JSON +
+CSVs + MANIFEST ZIP via client-zip), but no exposed product flow uses it: the export screen offers
+exactly two actions, and the integration brief forbids inventing a third button to justify an
+already-added dependency.
+
+Decision: the smaller product. exportEverything, the ZIP artifact type and the client-zip dependency
+are removed; M13 adds zero new runtime dependencies. If a real one-artifact delivery flow is ever
+wanted, reintroducing a store-only ZIP writer is a small isolated change behind an actual user-facing
+need. No shipped chunk ever referenced client-zip (it was lazy-loaded); removal guarantees that stays.
+
+## D-076 - Backup format v1 is strict: canonical section naming plus refuse-unknown-keys
+
+**2026-08-24 - Accepted** (M13 integration; resolves the P35/P37 divergence)
+
+Two contradictions between the parallel sources are resolved into ONE coherent v1 rule:
+
+1. Section names equal canonical table names. data.profiles (an array of 0/1 rows, not a singular
+   nullable object) and data.sealed_products (carrying ONLY the owner-created subset; curated rows
+   travel exclusively via the identity manifest) replace the draft's profile /
+   sealed_products_user_created keys. Uniform naming lets a restore iterate tables mechanically and
+   lets the independent inventory oracle bind to the artifact without per-section special cases.
+2. A v1 reader refuses unknown versions AND unknown data keys. Within-v1 forward tolerance ("old
+   reader ignores what a new writer added") was explicitly rejected: a v1 validator cannot distinguish
+   a newer writer's section from corruption of a known one, and schema_version exists precisely so
+   evolution goes through a bump. A future v2 writer emits v2 files; a future v2 reader owns reading
+   them. v1 claims no forward compatibility and its documentation now says so. Optional non-semantic
+   metadata has no separate channel in v1 - add it with a version bump or not at all.
+
+Distinguishing test: tests/data/export-backup-envelope.test.ts asserts a same-version file carrying a
+new section is refused. The independent oracle's validator was aligned deliberately (unknown sections
+are violations there too), not weakened. Integration bindings recorded in
+test/m13-independent-adversarial/helpers/contract.ts: the version constant binds as
+BACKUP_SCHEMA_VERSION; the CSV-writer probe adapts to buildCsvText(header, rows)'s two-argument
+signature by treating a single matrix's first row as the header; the generated-backup contract runs
+through a bound runner that creates one synthetic account via the real invitation flow, seeds the
+complete relational fixture, signs in with a real JWT and drives the real fetch/build/serialize
+pipeline. No oracle expectation was loosened.
+
+## D-077 - Multi-query exports are honest about concurrency: detection, not snapshot isolation
+
+**2026-08-24 - Accepted**
+
+A client-side export spans ~20 separate RLS-scoped reads; it is NOT one PostgreSQL transaction and
+must never be described as a transactionally atomic point-in-time snapshot. The meaningful concurrent
+mutation source is the owner's own writes (a second device mid-export). Rather than add SECURITY
+DEFINER/service-role/Edge infrastructure for this theoretical race: the format contract states plainly
+that serialization is lossless for what it read while multi-query export is not globally
+snapshot-isolated; cheap detection (D-074's count reconciliation + duplicate guard) makes most real
+mutations fail the export loudly instead of producing a silently incomplete backup; on a mismatch,
+re-run the export. No RPC, migration or service-role surface was added. Revisit only if a real
+corruption report ever shows detection missing in practice.
+
+## D-078 - Share/save is a two-step flow: generate fully, then deliver under fresh activation
+
+**2026-08-24 - Accepted**
+
+navigator.share() requires transient user activation at call time. A single "create then share" tap
+loses that activation across the many awaited database round trips of client-side generation - which
+is how installed iOS PWAs threw NotAllowedError after long prepares, and why the parallel UI draft's
+fallback silently degraded the share path to downloads.
+
+The export screen therefore splits explicitly. STEP 1 ("Create backup" / "Prepare CSV export")
+generates artifacts completely and renders a READY state listing filenames and count. STEP 2 is a
+fresh tap ("Save / Share ...") whose handler calls the delivery path immediately with the
+already-built files - navigator.share always executes under a fresh activation. Artifacts live in
+component state only (never localStorage or IndexedDB), are replaced on regeneration and dropped on
+discard/unmount. Retry-generation and retry-delivery are distinct paths; a failed delivery retains
+artifacts so neither retry nor download-instead regenerates. State machine:
+idle -> preparing -> ready -> delivering -> success | cancelled | delivery-failed.
+
+## D-079 - NotAllowedError is surfaced, with an explicit "Download instead" choice
+
+**2026-08-24 - Accepted** (supersedes the parallel UI draft's silent fallthrough)
+
+After D-078 there is no long generation left to blame for a share refusal, so NotAllowedError means
+Permissions Policy, an engine security refusal or a genuine activation problem - none of which should
+be hidden. The delivery layer throws a descriptive error; the screen keeps the artifacts ready and
+offers two explicit buttons: "Try sharing again" and "Download instead". Cancellation (AbortError)
+remains quiet and is not styled as an error.
+
+## D-080 - The periodic export reminder ships with a 30-day local-only cadence
+
+**2026-08-24 - Accepted**
+
+PRODUCT_SPEC 4.12 makes a periodic in-app reminder an MVP requirement but fixes no interval. Rather
+than defer a required behaviour for a missing parameter, the reminder implements with one named
+constant - EXPORT_REMINDER_INTERVAL_DAYS = 30 - chosen as the MVP default: long enough not to nag,
+short enough that a lost device costs at most a month of ledger entries, trivially tunable.
+Semantics: Profile shows a muted banner when due; the mark is satisfied by a completed export; the
+stored value is a bare ISO timestamp in localStorage - no collection or financial data ever touches
+storage. Pure logic in src/domain/export/export-reminder.ts, unit-tested including corrupted-store
+fallback (a corrupt value degrades to reminding, never to silently skipping).
+
+## D-081 - The M7.1 quick Portfolio CSV stays, as a distinct filtered-view report
+
+**2026-08-24 - Accepted**
+
+Portfolio's Export shortcut and the M13 Export & backup screen are different artifacts, and both
+stay. The quick CSV exports the CURRENT FILTERED Portfolio view including derived current values - a
+report for getting what is on screen into a spreadsheet immediately. The M13 suite exports canonical
+data (unfiltered, ten analysis files) plus the lossless JSON backup - the archival surface. Retiring
+the shortcut would delete a genuinely distinct capability without equivalent replacement; keeping it
+unlabeled would invite "which export is real?" confusion. It is relabelled "Quick CSV" with tooltip
+copy pointing full exports to Profile > Export & backup.

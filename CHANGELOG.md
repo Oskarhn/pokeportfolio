@@ -10,6 +10,31 @@ they were**.
 
 ## [Unreleased]
 
+### Added — 2026-08-24 — M13: Export and versioned backup (integrated candidate, PR #44+#45+#46 sources)
+
+Profile › Data › **Export & backup** (`/profile/export`): a ten-file CSV analysis suite and a
+lossless versioned JSON backup ("pokeportfolio-backup" v1), generated entirely client-side under the
+signed-in owner's JWT — RLS is the access boundary; no user-id parameter exists to forge. Money
+travels as exact integer minor-unit strings (proven past 2^53 end-to-end); canonical timestamps stay
+verbatim wire strings; null stays null. The backup carries an identity manifest for referenced
+shared-catalog rows instead of copying the ~47k-variant catalog; user-created sealed products are
+data, curated rows are identity reference only; `is_admin`/`disabled_at` never travel. Delivery is a
+two-step ready→share flow so `navigator.share()` always runs under fresh transient user activation
+(D-078) — the single-tap design threw NotAllowedError on installed iOS PWAs; NotAllowedError is now
+surfaced with explicit "Try sharing again"/"Download instead" choices (D-079). Export pagination is
+offset-with-reconciliation — honest name, one COUNT per section up front, cross-page duplicate
+detection over full primary keys, exact received-vs-expected reconciliation, loud failure on any
+mismatch (D-074). Multi-query export is documented as NOT snapshot-isolated (D-077). Strict v1:
+section names equal canonical table names (`profiles`, `sealed_products`); unknown data keys are
+refused; evolution goes through schema_version bumps only (D-076). A periodic local-only export
+reminder ships with a recorded 30-day default cadence (D-080); the M7.1 quick Portfolio CSV is
+retained and relabelled "Quick CSV" as a distinct filtered-view report (D-081). No combined
+everything-export: client-zip was evaluated by the export-core draft and removed again because no
+exposed flow needs it (D-075). The implementation-blind adversarial contract package (PR #45) is
+bound deliberately and its DB-backed cross-user suite plus generated-backup contract now execute in
+CI's db-tests job; an opt-in ~10k-lot export scale audit joins the performance steps. Restore/import
+does not exist yet (M19 per D-025/BACKLOG).
+
 ### Added — 2026-08-24 — Holding-level quantity correction and removal (P28, PR #42)
 
 From a holding's detail page, without Portfolio select mode: quantity 1 offers "Remove from

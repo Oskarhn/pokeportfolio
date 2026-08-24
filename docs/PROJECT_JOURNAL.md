@@ -8,6 +8,39 @@ here when there was a real problem with a non-obvious answer.
 
 ---
 
+## 2026-08-24 — Three implementation-blind sources met for real: what first contact actually found
+
+**Problem.** M13 ran as three parallel sessions: an export core, a UI/delivery layer and an
+independent adversarial contract package written without reading either. The integrator's job was to
+bind them — expecting `[M13 CONTRACT]` failures "for the right reasons" — without weakening any
+oracle merely to get green.
+
+**What first contact actually produced.** On a machine with no Docker the gated suite skipped
+entirely: its gate checks for a Supabase stack *before* it looks for an implementation, so even the
+pure capability bindings never executed locally. The binding work therefore happened against the
+real surfaces by reading, then activated in CI's ephemeral stack where both gates pass:
+
+1. The version constant `BACKUP_SCHEMA_VERSION` didn't match the oracle's name regexes; the CSV
+   writer's `(header, rows)` signature didn't match a single-matrix probe; there was no zero-arg
+   backup builder that could run unauthenticated. Each got a deliberate, documented binding —
+   including a bound runner that creates a real synthetic account via the invitation flow and drives
+   the real fetch/build/serialize pipeline under a real JWT.
+2. The core had named its sections `profile` and `sealed_products_user_created`; the oracle's
+   inventory is keyed by canonical table names. Rather than teach the oracle special cases, the
+   implementation was renamed (`profiles`, `sealed_products`) so section names equal table names —
+   which also made restore-side iteration mechanical.
+3. Two genuine policy contradictions surfaced exactly as the integration brief predicted: the draft
+   claimed "additive optional keys do not bump schema_version" while its validator refused unknown
+   keys (incoherent), and the oracle warned on unknown sections while v1 should refuse them. One
+   rule was chosen and both sides aligned: strict v1, evolution only through version bumps.
+
+**The lesson worth keeping.** Implementation-blind testing paid for itself — but only because the
+integration treated skip-reasons and naming divergences as findings rather than noise. The two
+silent-truncation failure modes the pagination oracle demonstrated became real code
+(`pagination-integrity.ts`: count reconciliation + duplicate detection) instead of a comment; the
+mislabelled "keyset" pagination was corrected to offset-with-reconciliation in docs before anything
+else touched them.
+
 ## 2026-08-16 — Every marketplace API is closed; the pricing architecture had to route around it
 
 **Problem.** The application needs European card prices in EUR. The two obvious sources are
@@ -1629,7 +1662,7 @@ wall-clock duration inside single-transaction run records.
 
 ## 2026-08-24 - A green PR failed CI on main with a byte-identical tree, and the tree was the whole argument
 
-**Problem.** Merging PR #40 (Home polish � five files, none of them SQL, scripts, or DB tests)
+**Problem.** Merging PR #40 (Home polish � five files, none of them SQL, scripts, or DB tests)
 turned `main`'s `db-tests` red: the permanent portfolio-snapshots benchmark died mid-seed with
 SQLSTATE 57014, a statement timeout, roughly thirty seconds into bulk-inserting ~297k synthetic
 price observations. The same commit content had passed the identical job on the PR's own check
@@ -1640,7 +1673,7 @@ based on an unchanged `main` produces a commit whose **tree is byte-identical to
 tree** (`git log --format=%T` on both commits proved it: one hash). The failing run and the
 passing run had therefore executed exactly the same code. A statement timeout during a large
 bulk seed on a shared runner is contention-shaped, not correctness-shaped. Re-running only the
-failed job on the same SHA was accordingly not "retrying until green" � it was resolving a
+failed job on the same SHA was accordingly not "retrying until green" � it was resolving a
 documented coin-flip in the runner's favour, with the prior pass as prior evidence. It passed;
 the release continued. The rule worth keeping: before re-running anything, prove the tree did
 not change; if the tree changed, a re-run proves nothing and the failure must be read as real.

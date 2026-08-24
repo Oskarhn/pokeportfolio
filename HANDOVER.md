@@ -4,8 +4,11 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-**Last updated:** 2026-08-24 — **M1–M12 plus the parallel Home/Search/quantity release are
-complete in code, merged and deployed.** M12 (Dashboard) was merged through PR #35 and released
+**Last updated:** 2026-08-24 — **M13 (Export and versioned backup) exists as an INTEGRATED
+CANDIDATE on `feat/m13-export-backup` (draft PR against main): NOT merged, NOT deployed.** See
+"M13 — Export and backup (integrated candidate)" below. Beneath that: M1–M12 plus the parallel
+Home/Search/quantity release are complete in code, merged and deployed. M12 (Dashboard) was merged
+through PR #35 and released
 against `pokeportfolio-dev` on 2026-08-23 (all six migrations applied, cron live, backfill
 converged, security green, `deployment-check.mjs` 28/28). On 2026-08-24 the three
 Claude-approved parallel branches were integrated in a controlled release: PR #40 (Home polish),
@@ -19,6 +22,51 @@ hosted security re-verified post-deploy (`grant-audit.sql` clean, `remote-securi
 checklist below), same standing no-sign-in boundary as every session since M7.1.** See "P26/P27/
 P28 — parallel release" below, then "M12 — Dashboard (released)"; everything beneath describes
 earlier milestones.
+
+---
+
+## M13 — Export and backup (integrated candidate: P35 + P36 + P37)
+
+Three parallel sources combined deliberately on this one branch — no source PR was merged to main:
+P35 export core (PR #46 @ `b906cc0`), P36 UI/platform delivery (PR #44 @ `befa4c2`), P37
+implementation-blind adversarial contract package (PR #45 @ `2c4ccb5`). All three remain OPEN/DRAFT
+historical source PRs. The candidate is a NEW draft PR against main carrying the banner
+"M13 INTEGRATED CANDIDATE / CLAUDE REVIEW REQUIRED / DO NOT MERGE".
+
+What exists (decisions D-074–D-081; UX_FLOWS F11; CHANGELOG):
+
+- **Export core** — lossless v1 JSON backup ("pokeportfolio-backup": strict unknown-key refusal,
+  money as exact minor-unit strings proven past 2^53 end-to-end, verbatim wire timestamps, identity
+  manifest instead of catalog copies, `is_admin`/`disabled_at` never travel) plus ten CSV analysis
+  files through ONE RFC 4180 writer with free-text-only injection sanitization. Client-side under
+  the owner JWT; identity session-derived (no user_id parameter anywhere); zero migrations, zero new
+  RPCs, zero Edge Functions.
+- **UI** — Profile › Data › Export & backup (`/profile/export`, lazy route behind RequireSession).
+  Two-step flow (D-078): prepare fully → READY lists files → a fresh "Save / Share" tap delivers
+  under new transient user activation. NotAllowedError is surfaced with explicit
+  "Try sharing again"/"Download instead" (D-079); artifacts are memory-only; retry-generation and
+  retry-delivery are distinct; an EMPTY account still produces a complete envelope and ten
+  header-only CSVs.
+- **Integration honesty fixes** — pagination renamed to what it is: offset-with-reconciliation with
+  per-section COUNT, cross-page duplicate detection and loud failure on mismatch (D-074); export
+  documented as NOT snapshot-isolated (D-077); sections renamed to canonical table names
+  (`profiles`, `sealed_products`) under one strict-v1 rule adjudicated into BOTH implementation and
+  oracle (D-076); client-zip/everything-export removed as unexposed surface (D-075); the §4.12
+  export reminder implemented with a recorded 30-day local cadence (D-080); the M7.1 quick Portfolio
+  CSV retained and relabelled "Quick CSV" (D-081); DATA_MODEL §7 `audit_events` corrected to
+  PLANNED — the table does not exist and was not created to make docs true.
+- **Tests/CI** — the P37 adversarial package is bound deliberately (recorded in its contract.ts)
+  and ACTIVE in CI's db-tests job: typecheck step + DB-gated execution step covering the cross-user
+  suite (two users, admin grants no widening, every MUST_EXPORT table owner-readable incl.
+  SELECT-only `lot_cost_adjustments`) and the generated-backup contract (envelope valid, exclusions,
+  privilege columns absent, counts reconcile, per-table completeness vs fixture, frozen FX and
+  allocations verbatim, determinism). An opt-in ~10k-lot export scale audit joins the CI performance
+  steps (reports duration/request-count/artifact bytes; catastrophic-only 60 s budget). Local gates
+  green at the candidate SHA: typecheck, lint (0 errors), format, unit suites, build, e2e.
+
+Still pending before M13 uses "released" language: Claude review of this integrated candidate, CI
+green on the integration PR itself, then merge/deploy strictly per GIT_WORKFLOW. Restore remains M19
+(D-025).
 
 ---
 
