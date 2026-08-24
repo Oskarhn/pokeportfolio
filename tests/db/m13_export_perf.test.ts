@@ -160,11 +160,11 @@ describe.skipIf(!RUN)('M13 export performance audit', () => {
     await insertBatches(
       service,
       'acquisition_lots',
-      holdingIds.map((hid, i) => ({
+      holdingIds.map((hid) => ({
         user_id: user.id,
         holding_id: hid,
         origin: 'gift',
-        cost_basis_state: i % 4 === 0 ? 'not_paid' : 'unallocated_opening',
+        cost_basis_state: 'not_paid',
         quantity: 1,
         residual_minor: 0,
         storage_location_id: locations[0],
