@@ -187,6 +187,8 @@ describe('the seeded portfolio (sanity before reset)', () => {
       acquired_on: today,
       quantity: 3,
       quantity_remaining: 3,
+      // M11: a lot on a sealed holding must carry an intent.
+      sealed_intent: 'keep_sealed',
     })
     if (sealedLot.error) throw new Error(sealedLot.error.message)
 
