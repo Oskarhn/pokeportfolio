@@ -152,16 +152,17 @@ beforeAll(async () => {
   await service.from('holding_tags').insert({ tag_id: tag?.id, holding_id: holdingId })
 
   // Gift lot with genuinely unknown cost — null basis, never zero.
-  const { data: giftHolding } = await service
+  const { data: giftHolding, error: giftError } = await service
     .from('holdings')
     .insert({
       user_id: uid,
       holding_kind: 'raw_card',
       card_variant_id: seedCatalog.grassEnergyVariantId,
-      condition: 'GOOD',
+      condition: 'GD',
     })
     .select('id')
     .single()
+  if (giftError) throw new Error(`gift holding insert failed: ${giftError.message}`)
   await service.from('acquisition_lots').insert({
     holding_id: giftHolding!.id,
     user_id: uid,
