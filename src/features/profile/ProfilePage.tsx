@@ -10,6 +10,10 @@ import {
   type CollectionView,
 } from '../../data/profile'
 import { getPortfolioCounts } from '../../data/portfolio'
+import {
+  readLastReminderMark,
+  shouldRemindExport,
+} from '../../domain/export/export-reminder'
 import { Button, FormMessage, TextField } from '../../ui/form'
 import { formatNokMinor, parseNokInput } from '../../ui/money-format'
 import { applyTheme } from '../../ui/theme'
@@ -58,6 +62,11 @@ export function ProfilePage() {
     queryKey: ['portfolio-counts'],
     queryFn: () => getPortfolioCounts(),
   })
+  // Periodic export reminder (PRODUCT_SPEC §4.12, D-079). Local-only timestamp; no collection
+  // or financial data is ever read or stored here. Evaluated once per mount.
+  const [remindExport] = useState(() =>
+    shouldRemindExport(readLastReminderMark(window.localStorage), new Date()),
+  )
 
   return (
     <div className="mx-auto w-full max-w-md space-y-6 py-2">
@@ -128,6 +137,12 @@ export function ProfilePage() {
 
       <section className="space-y-2 rounded-2xl border border-slate-800 p-4">
         <h2 className="text-sm font-semibold text-slate-300">Data</h2>
+        {remindExport ? (
+          <p role="status" className="rounded-lg border border-dashed border-amber-900/60 bg-amber-950/30 p-3 text-xs leading-relaxed text-amber-100/90">
+            It may be a while since your last export. A fresh backup keeps your ledger safe —
+            see <Link to="/profile/export" className="underline underline-offset-2">Export &amp; backup</Link>.
+          </p>
+        ) : null}
         <Link
           to="/profile/export"
           className="flex min-h-11 items-center justify-between gap-2 rounded-lg text-sm font-medium text-slate-200 hover:text-slate-100"

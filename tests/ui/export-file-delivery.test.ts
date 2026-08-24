@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   deliverFiles,
+  downloadOnly,
   DeliveryError,
   type DeliverableFile,
 } from '../../src/features/export/fileDelivery'
@@ -137,14 +138,27 @@ describe('deliverFiles', () => {
     expect(createObjectURL).not.toHaveBeenCalled()
   })
 
-  it('falls back to download when share cannot open (transient activation expired)', async () => {
+  it('surfaces NotAllowedError as an error instead of silently downloading (D-078)', async () => {
+    // After the two-step ready→deliver flow there is no long generation left to blame, so a
+    // refusal means policy/security/activation — the user must see it and choose the explicit
+    // "Download instead" path themselves.
     const share = vi.fn<ShareFn>().mockRejectedValue(new DOMException('denied', 'NotAllowedError'))
     stubNavigator({ share, canShare: () => true })
 
-    const pending = deliverFiles([file('backup.json')])
+    await expect(deliverFiles([file('backup.json')])).rejects.toThrow(DeliveryError)
+    await expect(deliverFiles([file('backup.json')])).rejects.toThrow(/refused to open sharing/)
+    expect(createObjectURL).not.toHaveBeenCalled()
+  })
+
+  it('the explicit downloadOnly fallback delivers without consulting the share sheet', async () => {
+    const share = vi.fn<ShareFn>()
+    stubNavigator({ share, canShare: () => true })
+
+    const pending = downloadOnly([file('backup.json')])
     await vi.runAllTimersAsync()
 
     expect(await pending).toEqual({ method: 'download', filenames: ['backup.json'] })
+    expect(share).not.toHaveBeenCalled()
   })
 
   it('surfaces a real share failure as an error instead of silently downloading', async () => {

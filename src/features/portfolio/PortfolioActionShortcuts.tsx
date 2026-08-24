@@ -14,6 +14,11 @@ import { DownloadIcon, CheckIcon, ChartIcon, SwapIcon } from '../../ui/icons'
  * honest "not available yet" — muted styling plus an explicit message on tap, never a button that
  * silently does nothing (M7.1 prompt §46's own warning against letting the owner mistake it for a
  * working feature).
+ *
+ * The Export tile is deliberately RETAINED alongside the full M13 "Export & backup" screen
+ * (D-080) because the two are different artifacts: this is the quick, filter-respecting CSV of
+ * the CURRENT Portfolio view including derived current values (a report), while
+ * Profile › Export & backup produces the canonical data suite and the versioned JSON backup.
  */
 export function PortfolioActionShortcuts({
   filters,
@@ -35,7 +40,8 @@ export function PortfolioActionShortcuts({
     <div className="grid grid-cols-4 gap-2">
       <ShortcutTile
         icon={<DownloadIcon className="size-5" />}
-        label={exportMutation.isPending ? 'Exporting…' : 'Export'}
+        label={exportMutation.isPending ? 'Exporting…' : 'Quick CSV'}
+        title="Quick CSV of your current filtered Portfolio view — full exports live under Profile › Export & backup"
         onClick={() => {
           exportMutation.mutate()
         }}
@@ -81,12 +87,14 @@ export function PortfolioActionShortcuts({
 function ShortcutTile({
   icon,
   label,
+  title,
   onClick,
   disabled,
   muted,
 }: {
   icon: React.ReactNode
   label: string
+  title?: string
   onClick: () => void
   disabled?: boolean
   muted?: boolean
@@ -96,6 +104,7 @@ function ShortcutTile({
       type="button"
       onClick={onClick}
       disabled={disabled}
+      title={title}
       className={`flex min-h-16 flex-col items-center justify-center gap-1 rounded-xl border p-2 text-center text-[11px] font-medium disabled:opacity-60 ${
         muted
           ? 'border-dashed border-slate-800 text-slate-500 hover:bg-slate-800/40'

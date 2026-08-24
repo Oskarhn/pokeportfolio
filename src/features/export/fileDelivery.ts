@@ -17,9 +17,11 @@
  *      outlives the click.
  *
  * User cancellation (AbortError from the share sheet or the save dialog) is a normal outcome,
- * not an error. A NotAllowedError from `share()` — transient user activation expired during a
- * long generation, or sharing refused by policy — falls through to the download path instead of
- * dead-ending; any other share failure surfaces as an error so the UI can offer Retry.
+ * not an error. A NotAllowedError from `share()` is SURFACED as an error, never silently
+ * converted into a download (D-078): after the two-step ready→deliver flow there is no long
+ * generation left to blame, so a refusal means Permissions Policy, an engine security rule or
+ * a real activation problem — the user sees it and chooses "Download instead" explicitly.
+ * Any other share failure also surfaces as an error so the UI can offer Retry.
  */
 
 export interface DeliverableFile {
@@ -94,6 +96,11 @@ function canShareAsFiles(files: readonly DeliverableFile[]): boolean {
   }
 }
 
+/** Whether this platform can open the Web Share sheet with these exact files. */
+export function canShareFiles(files: readonly DeliverableFile[]): boolean {
+  return canShareAsFiles(files)
+}
+
 async function shareFiles(files: readonly DeliverableFile[]): Promise<void> {
   const nav = navigator as ShareCapableNavigator
   // `share` is checked again defensively even though canShareAsFiles gates the call.
@@ -133,8 +140,13 @@ async function downloadViaAnchors(files: readonly DeliverableFile[]): Promise<vo
 
 /**
  * Deliver generated artifacts to the user by the best path the current platform offers.
- * Throws `DeliveryError` when nothing could be delivered (including the honest empty case:
- * an engine response with zero files is reported, never silently swallowed).
+ * Call this from a fresh user-activation event handler (the Save/Share button) with
+ * already-generated files — never across an awaited generation (D-077).
+ *
+ * Throws `DeliveryError` when delivery genuinely failed — including the honest empty case
+ * (zero files is a core defect, never "nothing to export") and including NotAllowedError,
+ * which after D-077 can no longer be blamed on generation time and is surfaced for the user
+ * to answer with the explicit "Download instead" path (`downloadOnly`).
  */
 export async function deliverFiles(files: readonly DeliverableFile[]): Promise<DeliveryOutcome> {
   if (files.length === 0) {
@@ -148,12 +160,14 @@ export async function deliverFiles(files: readonly DeliverableFile[]): Promise<D
       return { method: 'share', filenames }
     } catch (error) {
       if (isAbortError(error)) return { method: 'cancelled' }
-      // Transient activation expired while generation ran, or the platform refused to open the
-      // sheet at all — a plain download still gets the file to the user, so fall through rather
-      // than dead-ending. Every other share failure is real and surfaces below as an error.
-      if (errorName(error) !== 'NotAllowedError') {
-        throw new DeliveryError('Sharing did not complete.', { cause: error })
+      if (errorName(error) === 'NotAllowedError') {
+        // Permissions Policy, engine security refusal or a real activation problem. Surfaced —
+        // the UI keeps the artifacts ready and offers "Download instead" explicitly (D-078).
+        throw new DeliveryError('Your browser refused to open sharing for these files.', {
+          cause: error,
+        })
       }
+      throw new DeliveryError('Sharing did not complete.', { cause: error })
     }
   }
 
@@ -172,6 +186,20 @@ export async function deliverFiles(files: readonly DeliverableFile[]): Promise<D
     }
   }
 
+  await downloadViaAnchors(files)
+  return { method: 'download', filenames }
+}
+
+/**
+ * The explicit download fallback behind the UI's "Download instead" action. Same anchor
+ * mechanics as the internal fallback; exists as a named export because choosing it is a user
+ * decision, not a silent downgrade (D-078).
+ */
+export async function downloadOnly(files: readonly DeliverableFile[]): Promise<DeliveryOutcome> {
+  if (files.length === 0) {
+    throw new DeliveryError('No files came back from the export. Nothing was saved.')
+  }
+  const filenames = files.map((file) => file.filename)
   await downloadViaAnchors(files)
   return { method: 'download', filenames }
 }

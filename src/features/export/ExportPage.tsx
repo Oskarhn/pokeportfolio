@@ -1,36 +1,43 @@
-import { useRef, useState } from 'react'
+import { useEffect, useReducer, useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { Button, FormMessage } from '../../ui/form'
 import { ArchiveIcon, CheckIcon, DownloadIcon } from '../../ui/icons'
 import { getExportController } from './controller'
-import type { ExportController, ExportKind, ExportProgressPhase } from './contract'
-import { deliverFiles, type DeliveryOutcome } from './fileDelivery'
+import type { ExportArtifact, ExportController, ExportKind } from './contract'
+import {
+  reduceExportFlow,
+  describeReady,
+  type ExportFlowState,
+} from './exportFlow'
+import {
+  canShareFiles,
+  deliverFiles,
+  downloadOnly,
+  type DeliveryOutcome,
+} from './fileDelivery'
+import { markReminderSatisfied } from '../../domain/export/export-reminder'
 
 /**
  * Profile › Export & backup (M13; UX_FLOWS.md F11's Settings › Export home).
  *
- * Two actions, two different artifacts: CSV files for spreadsheets and analysis, and one
- * versioned JSON backup of the canonical data. Everything is generated on this device under the
- * signed-in account and delivered straight to the user — nothing is uploaded anywhere.
+ * TWO-STEP FLOW (D-077): step 1 generates the artifacts completely ("Create backup" /
+ * "Prepare CSV export"); the READY state then offers a fresh "Save / Share" button whose tap
+ * calls navigator.share() / the download path immediately under a new transient user
+ * activation. Sharing across an awaited generation is what threw NotAllowedError on installed
+ * iOS PWAs; this split removes that failure mode instead of catching it.
  *
- * The engine behind the actions arrives through `ExportController` (contract.ts); this screen has
- * no idea how rows are fetched or serialized. Restore/import does not exist yet and the copy says
- * so plainly.
+ * Generated artifacts live in component state only — never localStorage or IndexedDB — and are
+ * dropped on discard, replacement or unmount. Nothing about their contents is ever logged.
  */
 
-type RunState =
-  | { phase: 'idle' }
-  | { phase: 'running'; kind: ExportKind; label: string }
-  | { phase: 'done'; kind: ExportKind; outcome: Exclude<DeliveryOutcome, { method: 'cancelled' }> }
-  | { phase: 'cancelled'; kind: ExportKind }
-  | { phase: 'error'; kind: ExportKind; message: string }
-
-type DeliveredOutcome = Exclude<DeliveryOutcome, { method: 'cancelled' }>['method']
-
-const DONE_VERB: Record<DeliveredOutcome, string> = {
+const DONE_VERB: Record<Exclude<DeliveryOutcome['method'], 'cancelled'>, string> = {
   share: 'Shared',
   'save-picker': 'Saved',
   download: 'Downloaded',
+}
+
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback
 }
 
 export function ExportPage({
@@ -38,44 +45,90 @@ export function ExportPage({
 }: {
   controller?: ExportController
 }) {
-  const [run, setRun] = useState<RunState>({ phase: 'idle' })
+  const [flow, dispatch] = useReducer(reduceExportFlow, { phase: 'idle' } as ExportFlowState)
+  const [shareAvailable, setShareAvailable] = useState(true)
   const runningRef = useRef(false)
 
-  async function runExport(kind: ExportKind) {
-    if (runningRef.current) return // double-tap while running is one operation (prompt §12)
+  // Artifacts are memory-only for exactly as long as the flow needs them.
+  useEffect(() => {
+    return () => {
+      dispatch({ type: 'DISCARD' })
+    }
+  }, [])
+
+  async function prepare(kind: ExportKind) {
+    if (runningRef.current) return
     runningRef.current = true
-    setRun({ phase: 'running', kind, label: 'Preparing…' })
+    dispatch({ type: 'PREPARE', kind })
     try {
-      const onProgress = (phase: ExportProgressPhase) => {
-        if (phase === 'creating-files') {
-          setRun({ phase: 'running', kind, label: 'Creating files…' })
-        }
-      }
       const artifacts =
         kind === 'backup'
-          ? await controller.createBackup(onProgress)
-          : await controller.createCsvExport(onProgress)
-      const outcome = await deliverFiles(artifacts)
-      if (outcome.method === 'cancelled') {
-        setRun({ phase: 'cancelled', kind })
-      } else {
-        setRun({ phase: 'done', kind, outcome })
-      }
+          ? await controller.createBackup()
+          : await controller.createCsvExport()
+      dispatch({ type: 'PREPARED', kind, artifacts })
     } catch (error) {
-      setRun({
-        phase: 'error',
+      dispatch({
+        type: 'PREPARE_FAILED',
         kind,
-        message:
-          error instanceof Error && error.message
-            ? error.message
-            : 'Something went wrong while creating your export.',
+        message: errorMessage(error, 'Something went wrong while creating your export.'),
       })
     } finally {
       runningRef.current = false
     }
   }
 
-  const busy = run.phase === 'running'
+  function readyArtifacts(flow: ExportFlowState): readonly ExportArtifact[] | null {
+    return flow.phase === 'ready' || flow.phase === 'delivery-failed'
+      ? flow.artifacts
+      : null
+  }
+
+  const artifacts = readyArtifacts(flow)
+  const readyKind = flow.phase === 'ready' || flow.phase === 'delivery-failed' ? flow.kind : null
+
+  useEffect(() => {
+    if (artifacts === null) return
+    setShareAvailable(canShareFiles(artifacts))
+  }, [artifacts])
+
+  async function deliver() {
+    if (artifacts === null || readyKind === null || runningRef.current) return
+    runningRef.current = true
+    dispatch({ type: 'DELIVER' })
+    try {
+      const outcome = await deliverFiles(artifacts)
+      if (outcome.method !== 'cancelled') markReminderSatisfied(window.localStorage)
+      dispatch({ type: 'DELIVERED', outcome })
+    } catch (error) {
+      dispatch({
+        type: 'DELIVERY_FAILED',
+        message: errorMessage(error, 'Something went wrong while saving your export.'),
+      })
+    } finally {
+      runningRef.current = false
+    }
+  }
+
+  async function deliverAsDownload() {
+    if (artifacts === null || readyKind === null || runningRef.current) return
+    runningRef.current = true
+    dispatch({ type: 'DELIVER' })
+    try {
+      const outcome = await downloadOnly(artifacts)
+      markReminderSatisfied(window.localStorage)
+      dispatch({ type: 'DELIVERED', outcome })
+    } catch (error) {
+      dispatch({
+        type: 'DELIVERY_FAILED',
+        message: errorMessage(error, 'Something went wrong while saving your export.'),
+      })
+    } finally {
+      runningRef.current = false
+    }
+  }
+
+  const busy =
+    flow.phase === 'preparing' || flow.phase === 'delivering' || runningRef.current
 
   return (
     <div className="mx-auto w-full max-w-md space-y-5 py-2 pb-24">
@@ -104,12 +157,12 @@ export function ExportPage({
         <Button
           type="button"
           onClick={() => {
-            void runExport('csv')
+            void prepare('csv')
           }}
           disabled={busy}
-          aria-label="Export CSV files"
+          aria-label="Prepare CSV export"
         >
-          Export CSV
+          Prepare CSV export
         </Button>
       </section>
 
@@ -129,7 +182,7 @@ export function ExportPage({
           type="button"
           variant="quiet"
           onClick={() => {
-            void runExport('backup')
+            void prepare('backup')
           }}
           disabled={busy}
           aria-label="Create backup file"
@@ -143,52 +196,156 @@ export function ExportPage({
         trust.
       </p>
 
-      {/* One live region for every outcome so screen readers hear progress, success, cancellation
-          and failure alike — none of which rely on colour alone. */}
+      {/* One live region for every phase so screen readers hear progress, readiness, success,
+          cancellation and failure alike — none conveyed by colour alone. */}
       <div aria-live="polite" aria-busy={busy}>
-        {run.phase === 'running' ? (
+        {flow.phase === 'preparing' ? (
           <p role="status" className="text-sm text-slate-300">
-            {run.label}
+            Preparing…
           </p>
         ) : null}
-        {run.phase === 'done' ? (
+
+        {flow.phase === 'delivering' ? (
+          <p role="status" className="text-sm text-slate-300">
+            Saving…
+          </p>
+        ) : null}
+
+        {flow.phase === 'ready' ? (
+          <ReadyPanel
+            kind={describeReady(flow.kind)}
+            artifacts={flow.artifacts}
+            shareAvailable={shareAvailable}
+            busy={busy}
+            onDeliver={() => {
+              void deliver()
+            }}
+            onDiscard={() => {
+              dispatch({ type: 'DISCARD' })
+            }}
+          />
+        ) : null}
+
+        {flow.phase === 'success' ? (
           <div className="space-y-1 rounded-lg border border-emerald-900/60 bg-emerald-950/40 p-3 text-sm text-emerald-100">
             <p className="flex items-center gap-2 font-medium">
               <CheckIcon className="size-4 shrink-0" />
-              {DONE_VERB[run.outcome.method]}
-              {run.outcome.filenames.length > 1 ? ` ${run.outcome.filenames.length} files` : ''}
+              {DONE_VERB[flow.outcome.method]}
+              {flow.outcome.filenames.length > 1 ? ` ${flow.outcome.filenames.length} files` : ''}
             </p>
-            {run.outcome.filenames.map((filename) => (
+            {flow.outcome.filenames.map((filename) => (
               <p key={filename} className="break-all font-mono text-xs text-emerald-200/90">
                 {filename}
               </p>
             ))}
-            {run.outcome.method === 'share' ? (
+            {flow.outcome.method === 'share' ? (
               <p className="text-xs text-emerald-200/80">
                 Choose where to keep it — for example Save to Files.
               </p>
             ) : null}
           </div>
         ) : null}
-        {run.phase === 'cancelled' ? (
-          <p role="status" className="text-sm text-slate-400">
-            Cancelled — nothing was saved or shared.
-          </p>
-        ) : null}
-        {run.phase === 'error' ? (
+
+        {flow.phase === 'cancelled' ? (
           <div className="space-y-2">
-            <FormMessage tone="error">{run.message}</FormMessage>
+            <p role="status" className="text-sm text-slate-400">
+              Cancelled — nothing was saved or shared.
+            </p>
             <Button
               type="button"
               variant="quiet"
               onClick={() => {
-                void runExport(run.kind)
+                void deliverAsDownload()
+              }}
+            >
+              Download instead
+            </Button>
+          </div>
+        ) : null}
+
+        {flow.phase === 'prepare-failed' ? (
+          <div className="space-y-2">
+            <FormMessage tone="error">{flow.message}</FormMessage>
+            <Button
+              type="button"
+              variant="quiet"
+              onClick={() => {
+                void prepare(flow.kind)
               }}
             >
               Retry
             </Button>
           </div>
         ) : null}
+
+        {flow.phase === 'delivery-failed' ? (
+          <div className="space-y-2">
+            <FormMessage tone="error">{flow.message}</FormMessage>
+            <Button
+              type="button"
+              onClick={() => {
+                void deliver()
+              }}
+              disabled={busy}
+            >
+              Try sharing again
+            </Button>
+            <Button
+              type="button"
+              variant="quiet"
+              onClick={() => {
+                void deliverAsDownload()
+              }}
+              disabled={busy}
+            >
+              Download instead
+            </Button>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+function ReadyPanel({
+  kind,
+  artifacts,
+  shareAvailable,
+  busy,
+  onDeliver,
+  onDiscard,
+}: {
+  kind: string
+  artifacts: readonly ExportArtifact[]
+  shareAvailable: boolean
+  busy: boolean
+  onDeliver: () => void
+  onDiscard: () => void
+}) {
+  return (
+    <div className="space-y-3 rounded-lg border border-sky-900/60 bg-sky-950/30 p-3">
+      <p role="status" className="text-sm font-medium text-sky-100">
+        Ready — {kind}
+        {artifacts.length > 1 ? `, ${String(artifacts.length)} files` : ''}
+      </p>
+      {artifacts.map((artifact) => (
+        <p key={artifact.filename} className="break-all font-mono text-xs text-sky-200/90">
+          {artifact.filename}
+        </p>
+      ))}
+      {!shareAvailable && artifacts.length > 1 ? (
+        <p className="text-xs text-slate-400">
+          Your browser will download these one by one and may ask permission to download multiple
+          files.
+        </p>
+      ) : null}
+      <div className="flex flex-wrap gap-2">
+        <Button type="button" onClick={onDeliver} disabled={busy}>
+          Save / Share {kind}
+        </Button>
+        <Button type="button" variant="quiet" onClick={onDiscard} disabled={busy}>
+          Discard
+        </Button>
       </div>
     </div>
   )
