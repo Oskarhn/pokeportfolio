@@ -164,7 +164,7 @@ beforeAll(async () => {
     .single()
   if (giftError) throw new Error(`gift holding insert failed: ${giftError.message}`)
   await service.from('acquisition_lots').insert({
-    holding_id: giftHolding!.id,
+    holding_id: giftHolding.id,
     user_id: uid,
     origin: 'gift',
     cost_basis_state: 'not_paid',
