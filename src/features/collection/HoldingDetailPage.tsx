@@ -653,7 +653,11 @@ export function HoldingDetailPage() {
               removeAllMutation.mutate()
             }}
           >
-            {removeAllMutation.isPending ? 'Removing…' : 'Remove from Portfolio'}
+            {removeAllMutation.isPending
+              ? 'Removing…'
+              : h.quantity > 1
+                ? 'Remove all'
+                : 'Remove from Portfolio'}
           </Button>
         </div>
       </Sheet>
