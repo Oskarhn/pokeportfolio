@@ -201,6 +201,45 @@ export function monthlySpendBars(
   }))
 }
 
+/** The active chart range for a session (M12a owner feedback §5): the URL's own value when it
+ *  names one of the seven shipped ranges, otherwise the shipped default. The URL is the single
+ *  source of truth — no duplicate useState to drift from it — so a selected range survives a
+ *  reload or an arriving deep link instead of silently snapping back to 3M. */
+export function resolveActiveRange(value: unknown): DashboardRange {
+  return isDashboardRange(value) ? value : '3M'
+}
+
+export type HistoryPanelState = 'ready' | 'insufficient-history' | 'no-history'
+
+/** Which honest panel the chart area renders for the selected window: a trend needs at least two
+ *  covered days. One real point is a beginning, not a failure — and never stretched into a line
+ *  (D-008). Zero points is simply "not started yet". */
+export function historyPanelState(windowPoints: HistoryPoint[]): HistoryPanelState {
+  const covered = windowPoints.filter((p) => p.hasCoverage && p.marketValueMinor !== null).length
+  if (covered >= 2) return 'ready'
+  return covered === 1 ? 'insufficient-history' : 'no-history'
+}
+
+export type HoldingValueDisplayState =
+  { kind: 'missing' } | { kind: 'hidden' } | { kind: 'known'; minorUnits: bigint }
+
+/** Rendering state for a per-holding value (M12a owner feedback §D: Most Valuable cards must show
+ *  each card's resolved value). NULL means UNAVAILABLE — render "—", never a fabricated 0 kr; a
+ *  genuine zero is a real answer and stays visible as 0; hide_values masks any PRESENT value.
+ *  Same missing-vs-zero discipline as ttepDisplayState / MoneyDisplay. */
+export function holdingValueDisplayState(
+  holdingValueMinor: bigint | null | undefined,
+  hidden: boolean,
+): HoldingValueDisplayState {
+  if (holdingValueMinor === null || holdingValueMinor === undefined) {
+    return { kind: 'missing' }
+  }
+  if (hidden) {
+    return { kind: 'hidden' }
+  }
+  return { kind: 'known', minorUnits: holdingValueMinor }
+}
+
 export type TtepDisplayState =
   { kind: 'missing' } | { kind: 'hidden' } | { kind: 'known'; minorUnits: bigint }
 

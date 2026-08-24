@@ -3,8 +3,11 @@ import {
   accessibleHistorySummary,
   computePeriodChange,
   filterHistoryWindow,
+  historyPanelState,
+  holdingValueDisplayState,
   isDashboardRange,
   monthlySpendBars,
+  resolveActiveRange,
   resolveRangeWindow,
   safeMajorUnits,
   ttepDisplayState,
@@ -222,5 +225,75 @@ describe('ttepDisplayState', () => {
     expect(ttepDisplayState(0n, true)).toEqual({ kind: 'hidden' })
     // Missing stays missing even while hidden — there is nothing to conceal.
     expect(ttepDisplayState(null, true)).toEqual({ kind: 'missing' })
+  })
+})
+
+describe('resolveActiveRange (M12a §5 — the URL is the single source of truth)', () => {
+  it('accepts every shipped range straight from the validated search param', () => {
+    for (const range of ['1D', '1W', '1M', '3M', '6M', '1Y', 'MAX'] as const) {
+      expect(resolveActiveRange(range)).toBe(range)
+    }
+  })
+
+  it('falls back to the shipped default for absent or invalid values, never throws', () => {
+    expect(resolveActiveRange(undefined)).toBe('3M')
+    expect(resolveActiveRange(null)).toBe('3M')
+    expect(resolveActiveRange('')).toBe('3M')
+    expect(resolveActiveRange('2M')).toBe('3M')
+    expect(resolveActiveRange(42)).toBe('3M')
+    expect(resolveActiveRange({ malicious: 'object' })).toBe('3M')
+  })
+})
+
+describe('historyPanelState (M12a §3/§5 — honest insufficient-history handling)', () => {
+  it('two or more covered days render the real chart', () => {
+    const rows = [point('2026-08-22', 100_00n), point('2026-08-23', 101_00n)]
+    expect(historyPanelState(rows)).toBe('ready')
+  })
+
+  it('exactly one covered point is a beginning, never stretched into a trend line', () => {
+    expect(historyPanelState([point('2026-08-23', 100_00n)])).toBe('insufficient-history')
+    // The release backfill produced exactly this state: one tracked day, every range returning
+    // the same single point. No fabricated prior values may turn this into 'ready'.
+    expect(
+      historyPanelState([point('2026-08-23', 100_00n), point('2026-08-24', null, false)]),
+    ).toBe('insufficient-history')
+  })
+
+  it('uncovered days and NULL values never count toward readiness', () => {
+    expect(
+      historyPanelState([point('2026-08-23', null, false), point('2026-08-24', null, false)]),
+    ).toBe('no-history')
+    expect(historyPanelState([point('2026-08-23', null), point('2026-08-24', null)])).toBe(
+      'no-history',
+    )
+  })
+
+  it('no points at all is simply not-started-yet', () => {
+    expect(historyPanelState([])).toBe('no-history')
+  })
+})
+
+describe('holdingValueDisplayState (M12a §D — Most Valuable card values)', () => {
+  it('a resolved holding value shows as known with its exact minor units', () => {
+    expect(holdingValueDisplayState(123_456n, false)).toEqual({
+      kind: 'known',
+      minorUnits: 123_456n,
+    })
+  })
+
+  it('a missing price renders as missing — NEVER 0 (the project honesty bar)', () => {
+    expect(holdingValueDisplayState(null, false)).toEqual({ kind: 'missing' })
+    expect(holdingValueDisplayState(undefined, false)).toEqual({ kind: 'missing' })
+  })
+
+  it('a genuine zero value stays visible as zero, distinct from missing', () => {
+    expect(holdingValueDisplayState(0n, false)).toEqual({ kind: 'known', minorUnits: 0n })
+  })
+
+  it('hide_values masks any present value; missing stays missing even while hidden', () => {
+    expect(holdingValueDisplayState(123_456n, true)).toEqual({ kind: 'hidden' })
+    expect(holdingValueDisplayState(0n, true)).toEqual({ kind: 'hidden' })
+    expect(holdingValueDisplayState(null, true)).toEqual({ kind: 'missing' })
   })
 })
