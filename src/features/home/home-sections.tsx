@@ -1,11 +1,13 @@
 import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
-import { formatNokMinor } from '../../ui/money-format'
+import { formatCurrencyMinor, formatNokMinor } from '../../ui/money-format'
+import { getLatestFxRatesToNok } from '../../data/fx'
+import { convertNokToDisplayCurrency } from '../../domain/fx'
+import { holdingValueDisplayState, monthlySpendBars } from '../../domain/dashboard'
 import { CardImage } from '../catalog/CardImage'
 import { portfolioDisplayName, portfolioSubtitle } from '../../data/portfolio'
 import type { PortfolioTile } from '../../data/portfolio'
 import { getMarketMovers } from '../../data/pricing'
-import { monthlySpendBars } from '../../domain/dashboard'
 import type { MonthlySpendMonth, RecentActivityItem } from '../../data/dashboard'
 
 /**
@@ -290,13 +292,14 @@ export function MostValuableCards({
   topCards,
   pending,
   hideValues,
+  displayCurrency,
 }: {
   topCards: PortfolioTile[]
   pending: boolean
   hideValues: boolean
+  displayCurrency: string
 }) {
   const valued = topCards.filter((tile) => tile.unitValueMinor !== null)
-  void hideValues // tiles intentionally show artwork + subtitle only, no monetary text
   return (
     <section className="space-y-3">
       <div className="flex items-center justify-between">
@@ -322,7 +325,7 @@ export function MostValuableCards({
               key={tile.holdingId}
               to="/portfolio/$holdingId"
               params={{ holdingId: tile.holdingId }}
-              className="space-y-1"
+              className="min-w-0 space-y-1"
             >
               <CardImage
                 imageBaseUrl={tile.cardImageBaseUrl}
@@ -331,6 +334,14 @@ export function MostValuableCards({
                 className="aspect-[5/7] w-full"
               />
               <p className="truncate text-[11px] text-slate-400">{portfolioSubtitle(tile)}</p>
+              {/* M12a owner feedback §D: every displayed card carries its resolved holding value
+                  (unit × quantity, the same figure the value_desc sort ranks by). Missing stays
+                  "—", never 0; hide_values masks. */}
+              <TileValueLine
+                minor={tile.holdingValueMinor}
+                hidden={hideValues}
+                displayCurrency={displayCurrency}
+              />
             </Link>
           ))}
         </div>
@@ -341,6 +352,58 @@ export function MostValuableCards({
         </p>
       )}
     </section>
+  )
+}
+
+/** One tile's resolved value, in the user's display currency (the headline's own policy:
+ *  converted from NOK with the latest cached rate when one exists, plain NOK otherwise — never a
+ *  fabricated conversion). Deliberately compact: no secondary reference line, which would not fit
+ *  a quarter-width grid tile. The batched list_portfolio response already carried every figure —
+ *  no per-card request exists anywhere on this path. */
+function TileValueLine({
+  minor,
+  hidden,
+  displayCurrency,
+}: {
+  minor: bigint | null
+  hidden: boolean
+  displayCurrency: string
+}) {
+  const state = holdingValueDisplayState(minor, hidden)
+  const targetCurrency: 'EUR' | 'USD' | undefined =
+    displayCurrency === 'EUR' || displayCurrency === 'USD' ? displayCurrency : undefined
+  const rates = useQuery({
+    queryKey: ['fx-rates-latest'],
+    queryFn: getLatestFxRatesToNok,
+    enabled: targetCurrency !== undefined && state.kind === 'known',
+    staleTime: 60 * 60 * 1000, // FX updates at most daily (ingest-fx)
+  })
+  const rateToNok = targetCurrency ? rates.data?.[targetCurrency] : undefined
+
+  if (state.kind === 'missing') {
+    return (
+      <span aria-label="No value yet" className="text-xs tabular-nums text-slate-600">
+        —
+      </span>
+    )
+  }
+  if (state.kind === 'hidden') {
+    return (
+      <span aria-label="Value hidden" className="text-xs tabular-nums text-slate-500">
+        ••••
+      </span>
+    )
+  }
+  const converted =
+    targetCurrency && rateToNok
+      ? convertNokToDisplayCurrency(state.minorUnits, targetCurrency, rateToNok)
+      : null
+  return (
+    <span className="block text-xs font-medium tabular-nums text-slate-100">
+      {converted
+        ? formatCurrencyMinor(converted.minorUnits, converted.currency)
+        : `${formatNokMinor(state.minorUnits)} kr`}
+    </span>
   )
 }
 
@@ -382,9 +445,12 @@ export function MarketMoversSection() {
           ))}
         </ul>
       ) : (
+        // M12a §4: honest insufficient-history state — real movement needs at least one market
+        // observation older than the window, and tracking only just started. Nothing is broken;
+        // say when this fills in instead of leaving a bare empty box.
         <p className="rounded-xl border border-dashed border-slate-800 p-4 text-sm text-slate-500">
-          Not enough price history yet to show movement — check back once your cards have been
-          tracked for a few days.
+          Market movement appears once your cards have been tracked long enough to compare prices
+          across days — check back in a few days.
         </p>
       )}
     </section>

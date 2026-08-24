@@ -13,6 +13,7 @@ import { InvitePage } from './features/auth/InvitePage'
 import { ForgotPasswordPage } from './features/auth/ForgotPasswordPage'
 import { ResetPasswordPage } from './features/auth/ResetPasswordPage'
 import { HomePage } from './features/home/HomePage'
+import { isDashboardRange, type DashboardRange } from './domain/dashboard'
 import { ProfilePage } from './features/profile/ProfilePage'
 import type { CardCondition, Grader, HoldingKind, SealedIntent } from './data/collection'
 import type { PortfolioSortOrder, SealedProductType } from './data/portfolio'
@@ -139,6 +140,12 @@ const rootRoute = createRootRoute({
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
+  // M12a: the chart range lives in the URL like every other per-view control (the
+  // /market-movers precedent), so a selected range survives reload/back-navigation instead of
+  // silently snapping back to the default. Anything invalid means "use the default".
+  validateSearch: (search: Record<string, unknown>): { range?: DashboardRange } => ({
+    range: isDashboardRange(search.range) ? search.range : undefined,
+  }),
   component: () => (
     <RequireSession>
       <HomePage />

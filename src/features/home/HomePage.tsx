@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Link, useNavigate } from '@tanstack/react-router'
+import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { listPortfolio, getPortfolioCounts } from '../../data/portfolio'
 import { getCollectionMemberCount } from '../../data/customCollections'
@@ -19,6 +19,8 @@ import {
   accessibleHistorySummary,
   computePeriodChange,
   filterHistoryWindow,
+  historyPanelState,
+  resolveActiveRange,
   resolveRangeWindow,
   ttepDisplayState,
   toChartSeries,
@@ -62,7 +64,10 @@ export function HomePage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
-  const [range, setRangeState] = useState<DashboardRange>('3M') // default 3M (prompt §70)
+  // The URL is the single source of truth for the selected range (M12a §5) — no duplicate
+  // state to drift from it, and a picked range survives reload/back-navigation.
+  const search = useSearch({ from: '/' })
+  const range: DashboardRange = resolveActiveRange(search.range)
   const [scopeId, setScopeId] = useState<string | null>(null)
   const scoped = scopeId !== null
 
@@ -125,7 +130,6 @@ export function HomePage() {
   })
 
   const setRange = (next: DashboardRange) => {
-    setRangeState(next)
     void navigate({ to: '/', search: { range: next }, replace: true })
   }
 
@@ -149,7 +153,8 @@ export function HomePage() {
   const coveredCount = windowPoints.filter(
     (p) => p.hasCoverage && p.marketValueMinor !== null,
   ).length
-  const chartReady = coveredCount >= 2
+  const panelState = historyPanelState(windowPoints)
+  const chartReady = panelState === 'ready'
   const series: ChartSeriesPoint[] = useMemo(() => toChartSeries(windowPoints), [windowPoints])
   const change: PeriodChange = useMemo(
     () => computePeriodChange(windowPoints, range),
@@ -170,24 +175,19 @@ export function HomePage() {
       <section className="space-y-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
         <div className="flex items-center justify-between">
           <ScopeSelector value={scopeId} onChange={setScopeId} />
-          <div className="flex items-center gap-1">
-            <CurrencySelector
-              value={profile.data?.displayCurrency ?? 'NOK'}
-              onChange={(currency) => {
-                setCurrency.mutate(currency)
-              }}
-            />
-            <ValuePrivacyToggle
-              hidden={hideValues}
-              onToggle={() => {
-                toggleHideValues.mutate(!hideValues)
-              }}
-            />
-          </div>
+          <CurrencySelector
+            value={profile.data?.displayCurrency ?? 'NOK'}
+            onChange={(currency) => {
+              setCurrency.mutate(currency)
+            }}
+          />
         </div>
 
         <div>
-          <div className="flex items-center gap-2">
+          {/* The privacy eye sits DIRECTLY BESIDE the current value (M12a owner feedback §C) —
+              one intrinsic-width inline group, so it follows the amount's rendered width as the
+              number gains or loses digits, never a fixed far-right edge. */}
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <MoneyDisplay
               state={
                 scoped || !s || s.marketValueMinor === null || !s.marketValueHasCoverage
@@ -207,11 +207,15 @@ export function HomePage() {
                 Updating…
               </span>
             ) : null}
+            <ValuePrivacyToggle
+              hidden={hideValues}
+              onToggle={() => {
+                toggleHideValues.mutate(!hideValues)
+              }}
+              className="ml-0.5 shrink-0"
+            />
           </div>
           <p className="mt-0.5 text-xs text-slate-500">Current Portfolio Value</p>
-          {!scoped && s?.latestSnapshotDate && !s.pendingRecompute ? (
-            <p className="text-[11px] text-slate-600">as of {s.latestSnapshotDate}</p>
-          ) : null}
           {scoped ? <ScopeCurrentValue scopeId={scopeId} hidden={hideValues} /> : null}
         </div>
 
@@ -229,11 +233,15 @@ export function HomePage() {
           ) : chartReady ? (
             <PortfolioValueChart points={series} hidden={hideValues} />
           ) : s && s.firstTrackedDate ? (
+            // One covered point (or a not-yet-drained account): history exists as a fact but no
+            // trend can be drawn from it — say so plainly, without dates or snapshot jargon,
+            // and never fabricate a line (D-008). Ranges stay selectable; they will simply have
+            // something real to show once a second valued day exists.
             <div className="flex h-48 flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-slate-800 px-4 text-center sm:h-56">
-              <span className="text-sm font-medium text-slate-200">No price history yet</span>
+              <span className="text-sm font-medium text-slate-200">History is just beginning</span>
               <span className="text-xs text-slate-500">
-                Your value tracking begins {s.firstTrackedDate}. A trend appears once a second
-                valued day exists.
+                Your Portfolio builds its value history day by day — a trend appears here as
+                tracking continues.
               </span>
             </div>
           ) : (
@@ -252,10 +260,10 @@ export function HomePage() {
                     setRange(period)
                   }}
                   aria-pressed={range === period}
-                  className={`min-h-9 min-w-11 rounded-lg px-2 text-[11px] font-medium tabular-nums transition-colors ${
+                  className={`min-h-9 min-w-11 rounded-full border px-2 text-[11px] font-medium tabular-nums transition-colors ${
                     range === period
-                      ? 'bg-sky-600/20 text-sky-400 ring-1 ring-inset ring-sky-800'
-                      : 'text-slate-600 hover:bg-slate-800 hover:text-slate-300'
+                      ? 'border-sky-500/80 bg-sky-600/25 font-semibold text-sky-200'
+                      : 'border-transparent text-slate-400 hover:bg-slate-800 hover:text-slate-200'
                   }`}
                 >
                   {period}
@@ -279,32 +287,28 @@ export function HomePage() {
 
         {/* Total tracked economic position — secondary, honestly labelled (prompt §124).
             ttepMinor is NULL until the first snapshot exists: render the missing state ("—"),
-            never a fabricated 0 kr (ttepDisplayState / DESIGN_SYSTEM.md §7). */}
+            never a fabricated 0 kr (ttepDisplayState / DESIGN_SYSTEM.md §7). The formula
+            explanation was removed on owner feedback (M12a §B) — the figure and its honest label
+            stay; no financial semantic changed. */}
         {!scoped && s ? (
-          <div className="flex items-start justify-between gap-4 border-t border-slate-800 pt-3">
-            <div className="min-w-0">
-              <p className="text-sm font-semibold tabular-nums text-slate-100">
-                {(() => {
-                  const ttep = ttepDisplayState(s.ttepMinor, hideValues)
-                  if (ttep.kind === 'missing') {
-                    return (
-                      <span aria-label="Not computed yet" className="text-slate-500">
-                        —
-                      </span>
-                    )
-                  }
-                  if (ttep.kind === 'hidden') {
-                    return <span aria-label="Value hidden">•••• kr</span>
-                  }
-                  return <>{formatNokMinor(ttep.minorUnits)} kr</>
-                })()}
-              </p>
-              <p className="text-xs text-slate-500">Total tracked economic position</p>
-            </div>
-            <p className="max-w-[60%] text-right text-[11px] leading-snug text-slate-600">
-              Market value plus net sales proceeds minus collectible spend — a position, not a
-              profit.
+          <div className="border-t border-slate-800 pt-3">
+            <p className="text-sm font-semibold tabular-nums text-slate-100">
+              {(() => {
+                const ttep = ttepDisplayState(s.ttepMinor, hideValues)
+                if (ttep.kind === 'missing') {
+                  return (
+                    <span aria-label="Not computed yet" className="text-slate-500">
+                      —
+                    </span>
+                  )
+                }
+                if (ttep.kind === 'hidden') {
+                  return <span aria-label="Value hidden">•••• kr</span>
+                }
+                return <>{formatNokMinor(ttep.minorUnits)} kr</>
+              })()}
             </p>
+            <p className="text-xs text-slate-500">Total tracked economic position</p>
           </div>
         ) : null}
 
@@ -420,6 +424,7 @@ export function HomePage() {
         topCards={topCards.data?.results ?? []}
         pending={topCards.isPending}
         hideValues={hideValues}
+        displayCurrency={displayCurrency}
       />
 
       <MarketMoversSection />
