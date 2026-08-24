@@ -4,14 +4,66 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-**Last updated:** 2026-08-23 — **M1–M12 are complete in code, merged and deployed. M12
-(Dashboard) was merged through PR #35 (squash, `e79436841d72365141ae34ecf99d9de34be79448` on
-`main`) after Claude Prompt 24's APPROVED delta review, then taken through the controlled
-release phase: all six M12 migrations are applied to `pokeportfolio-dev`, cron is live and its
-real ticks are succeeding, the initial backfill has converged, hosted security checks are green,
-and Cloudflare serves the M12 build (`deployment-check.mjs` 28/28). The one open item is the
-owner-facing signed-in Dashboard check (PENDING_OWNER).** See "M12 — Dashboard (released)"
-below; everything beneath it describes earlier milestones.
+**Last updated:** 2026-08-24 — **M1–M12 plus the parallel Home/Search/quantity release are
+complete in code, merged and deployed.** M12 (Dashboard) was merged through PR #35 and released
+against `pokeportfolio-dev` on 2026-08-23 (all six migrations applied, cron live, backfill
+converged, security green, `deployment-check.mjs` 28/28). On 2026-08-24 the three
+Claude-approved parallel branches were integrated in a controlled release: PR #40 (Home polish),
+PR #41 (Search set showcase/images/resilience) and PR #42 (holding-level quantity
+correction/removal, including its two P28 migrations applied to the hosted project BEFORE the
+frontend merge). Final state: `main` at `6a4b1b258cdc04088167db75d06f5e545ee9f934`, main CI
+green (486+ db tests), Cloudflare serving the release build (`deployment-check.mjs` 28/28),
+hosted security re-verified post-deploy (`grant-audit.sql` clean, `remote-security-check.mjs`
+17/17 phase 1, anon RPC probe refused 401/42501). Open items: the owner-facing signed-in checks
+(Dashboard since M12; now also Home/Search/Holding-Detail behaviours from this release —
+checklist below), same standing no-sign-in boundary as every session since M7.1.** See "P26/P27/
+P28 — parallel release" below, then "M12 — Dashboard (released)"; everything beneath describes
+earlier milestones.
+
+---
+
+## P26/P27/P28 — parallel release (PRs #40/#41/#42, integrated 2026-08-24)
+
+Three parallel owner-feedback sessions, each independently reviewed (Prompt 30 full adversarial;
+Prompt 31/Prompt 32 repairs; Prompt 33 delta re-review: APPROVED for all three), then released in
+a locked order: #40 → #41 → hosted P28 migrations → #42. The migration-before-merge order is the
+safe expansion sequence: the new database function existed on `pokeportfolio-dev` before any
+frontend that calls it could deploy.
+
+- **PR #40 — Home polish** (`b2243e2`): removed the redundant "as of" date under Current
+  Portfolio Value and the TTEP explanation sentence (no financial semantic changed); privacy eye
+  sits beside the value it masks; Most Valuable Cards tiles show real resolved values ("—" when
+  missing); URL-owned selected-state range pills; honest "history is just beginning" /
+  market-movers empty states. Both one-point history and empty movers were diagnosed read-only
+  against the hosted project as EXPECTED_NOT_ENOUGH_HISTORY, not bugs.
+- **PR #41 — Search** (`035c3e0`): Sets showcase English-only by owner decision, vertical grid,
+  larger tiles (D-073); set-image URLs normalized via the TCGdex set-asset convention
+  (extension appended on the path segment only, query/fragment preserved); catalog reads retry
+  once on structured `PGRST301` only — a defensive backstop for an unreproduced cold-start
+  report, never a claimed-bug fix.
+- **P28 migrations**: `20260831120000_p28_reduce_holding_quantity.sql` +
+  `20260831120010_p28_privilege_baseline.sql` applied to `pokeportfolio-dev` via
+  `supabase db push --linked` after a clean drift preflight (78 prior migrations local==remote,
+  exactly these two pending). Post-apply verification: SECURITY INVOKER, `search_path=''`,
+  ACL exactly `postgres/service_role/authenticated = X` with NO PUBLIC entry, signature
+  `(p_holding_id uuid, p_lot_reductions jsonb)`; `grant-audit.sql` clean; live anon RPC probe
+  HTTP 401 / SQLSTATE 42501.
+- **PR #42 — Holding Detail quantity correction/removal** (`6a4b1b2`): quantity=1 → "Remove from
+  Portfolio"; quantity>1 → "Adjust quantity" + "Remove all". Removal reuses M8.1's void
+  lifecycle; reduction is the new `reduce_holding_quantity` RPC (semantics and guard chain:
+  DATA_MODEL.md §9/§21, DECISIONS.md D-072). Purchased lots route to receipt correction; the lot
+  floor routes to per-lot Void. Before merging, the combined main+#42 state was verified locally
+  (typecheck/lint/format clean, unit tests 168/168, build green, E2E 58/58) without pushing
+  anything.
+- **Release verification:** main CI green on every step (one transient failure after #40's merge
+  — a statement timeout inside the snapshots-benchmark SEED phase on a tree byte-identical to the
+  PR head that had just passed the same job; green on immediate re-run, recorded in
+  PROJECT_JOURNAL.md). Final `deployment-check.mjs` **28/28**;
+  `remote-security-check.mjs` **17/17** (phase 1) re-run post-deploy. Authenticated UI
+  verification remains PENDING_OWNER (no safe synthetic login this session): Home items above,
+  Search showcase/images/no-crash + "Try again", and the Holding-Detail matrix (qty=1 remove;
+  qty>1 adjust/remove-all; non-purchase shrink works; purchased lot routes to purchase
+  correction; removing all works; no stale quantity afterwards).
 
 ---
 

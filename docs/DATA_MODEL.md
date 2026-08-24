@@ -1009,8 +1009,14 @@ Three distinct operations, chosen per entity rather than improvised per page:
 | **Void** | Row retained, excluded from every calculation, `voided_at` set, `audit_event` written | Default for purchases, sales, openings, lots |
 | **Hard delete** | Row removed | Only when no non-voided downstream reference exists |
 | **Correct** | Row edited in place, `audit_event` records before/after | Identity, condition, storage, notes, non-financial metadata |
+| **Reduce** | A lot's `quantity` and `quantity_remaining` shrink together; no disposal row, no financial row (D-072) | Non-purchase, non-partially-disposed live lots of a holding with more than one unit left (`reduce_holding_quantity`, P28); purchased lots route to purchase correction instead |
 
 Guard rules:
+
+- `reduce_holding_quantity` validates every requested lot under sibling-lot row locks before the
+  first write and refuses: foreign or unknown lot ids (indistinguishably — no existence oracle),
+  purchased lots, partially-disposed lots, removals exceeding a lot's remaining quantity, and any
+  request that would leave a lot or the holding at zero copies (D-072).
 
 - A purchase cannot be voided while any lot from it has a non-voided disposal. The user must
   void the sale or opening first. The error names the blocking record.
@@ -1455,4 +1461,37 @@ only Number conversion happens in `src/domain/dashboard.ts#toChartSeries` via `s
 which throws rather than silently losing øre above `Number.MAX_SAFE_INTEGER`. Uncovered days
 become whitespace items so the chart library breaks the line instead of interpolating across
 missing coverage.
+
+## 21. P28 implementation notes — holding-level quantity correction and removal
+
+**`reduce_holding_quantity(p_holding_id uuid, p_lot_reductions jsonb) returns table (owned_quantity integer)`**
+(`20260831120000_p28_reduce_holding_quantity.sql`) — SECURITY INVOKER, `search_path = ''`,
+ownership from `auth.uid()` alone; no `user_id` parameter to forge. The payload is an array of
+`{lot_id, remove_quantity}`; malformed shapes, duplicate lot ids and non-integer counts are
+refused before any table access. Execution order: parse/validate → collect every live sibling
+lot of `(p_holding_id, auth.uid())` ascending → take explicit per-row `FOR UPDATE` locks
+(create_sale's exact convention) → validate per-lot guards on held locks → aggregate
+pre-invariant → updates only after all validation → recompute the post-image total and refuse a
+zero result → return. Any failure aborts with zero mutations.
+
+**Guard chain, in order:** every requested lot must belong to the caller AND the named holding
+(a forged holding id yields an empty sibling set, not another user's rows); purchased lots are
+refused (`purchase_line_id IS NOT NULL`) and route to purchase correction in the UI;
+partially-disposed lots are refused (`quantity_remaining <> quantity`); a removal may not exceed
+a lot's remaining quantity; the per-lot floor guard refuses any request that would leave a lot at
+zero copies (the pre-existing unconditional CHECK `acquisition_lots_quantity_positive` is the
+backstop). Given the floor guard, the aggregate pre-invariant and post-image guard are provably
+unreachable defense-in-depth — kept deliberately as a loud refusal if locking were ever to
+regress silently (D-072).
+
+**M12 interaction.** No manual queue writes: the existing `portfolio_recompute_lot_updated`
+trigger covers `UPDATE OF quantity, quantity_remaining`, so an applied correction enqueues
+recompute naturally with `dirty_from = acquired_on`; a refused correction enqueues nothing,
+because nothing changed.
+
+**Frontend data layer.** `src/data/collection.ts#reduceHoldingQuantity` passes the mapped array
+directly (PostgREST receives jsonb, not a JSON string scalar — pinned by
+`tests/data/collection-reduce-wire.test.ts`); `getHoldingLots` exposes each lot's purchase
+lineage so the sheet can route purchased lots to their receipt editor.
+
 

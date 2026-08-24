@@ -10,6 +10,40 @@ they were**.
 
 ## [Unreleased]
 
+### Added — 2026-08-24 — Holding-level quantity correction and removal (P28, PR #42)
+
+From a holding's detail page, without Portfolio select mode: quantity 1 offers "Remove from
+Portfolio"; quantity > 1 offers "Adjust quantity" and "Remove all". Removal reuses the M8.1 void
+lifecycle exactly. Reduction is a new `reduce_holding_quantity(uuid, jsonb)` RPC (SECURITY
+INVOKER, `search_path = ''`, ownership from `auth.uid()` alone): the owner explicitly picks the
+non-purchase lot(s) to shrink; `quantity` and `quantity_remaining` move together so D1 holds by
+construction; purchased lots are refused and route to purchase correction; partially-disposed
+lots are refused with frozen sale basis untouched; a request that would leave any lot or the
+holding at zero copies is refused in layers (per-lot floor guard → locked aggregate pre-invariant
+→ post-image refusal → schema CHECK backstop). All validation happens under sibling-lot row locks
+acquired ascending (create_sale's convention) before the first write — all-or-nothing. A
+correction here is NOT a sale: no proceeds row, no sale line, no realized result (D-072). The M12
+recompute queue updates from the existing trigger automatically. Two migrations
+(`20260831120000`/`20260831120010`) shipped to `pokeportfolio-dev`; hosted security verified
+(no PUBLIC grant, authenticated-only EXECUTE, grant audit clean).
+
+### Changed — 2026-08-24 — Home polish and Search set showcase (PRs #40/#41)
+
+Home (owner feedback after the first real signed-in dashboard session): removed the redundant
+"as of" date under Current Portfolio Value and the TTEP explanation sentence (no financial
+semantic changed); the privacy eye now sits directly beside the value it masks instead of at a
+fixed screen edge; Most Valuable Cards tiles show their real resolved holding value from the
+already-fetched response (missing renders "—", never 0); range buttons show an unambiguous
+selected state owned by the URL; the insufficient-history placeholder describes history as just
+beginning instead of showing snapshot dates, and Market Movers' empty state says tracking has
+not yet spanned its window rather than looking broken.
+
+Search: the Sets showcase is now English-only by owner decision, browses vertically downward in
+larger tiles (the horizontal carousel is gone, D-073), and set images load reliably via the TCGdex
+set-asset convention (extension appended on the path segment only). Catalog reads retry once on a
+transient auth failure (`PGRST301`) and never retry anything else — including "invalid api key" —
+a defensive backstop for an unreproduced cold-start report.
+
 ### Fixed — 2026-08-30 — M12 review findings (merged with M12)
 
 The independent adversarial review of the M12 candidate returned CHANGES_REQUIRED; every finding

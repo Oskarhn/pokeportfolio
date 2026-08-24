@@ -35,6 +35,7 @@ No API keys, tokens or credentials appear in this file, ever.
 | Bulk/database dump | None found. `github.com/tcgdex/cards-database` is per-card JSON files meant to be consumed via the API/SDKs, not a bulk export — REST per-set is the practical ingest path |
 | **Identifier collision across languages** | `/v2/en/sets` and `/v2/ja/sets` both contain a set id `neo1`; both series lists contain a series id `neo`. **Provider ids are not globally unique — they are unique only within a language.** Drove D-034. |
 | Image CDN | `https://assets.tcgdex.net/{lang}/{series}/{set}/{localId}/{quality}.{ext}`, `quality` ∈ `low` (245×337) / `high` (600×825), `ext` ∈ `webp` (recommended, transparent) / `png` / `jpg` (opaque, avoid). `image_base_url` stores the URL up to `{localId}`; the app appends `/{quality}.webp`. |
+| **Set assets** (probed 2026-08-24, P27) | Set endpoints return extension-less image identifiers (`.../sets/{id}/logo`, `.../symbol`). The CDN 404s on the bare path; the client must append an extension — `.webp`/`.png` work. Symbols for series-independent marks may live under `/univ/`. `src/data/catalog.ts#setImageUrl` normalizes this: it appends `.webp` to the path segment only, preserving any query string or fragment, and leaves URLs that already carry an extension verbatim. |
 
 ### `variants_detailed[]` — real, but not the whole story
 

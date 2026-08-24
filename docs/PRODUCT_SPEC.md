@@ -183,6 +183,13 @@ chose not to enter individually. It is a convenience, never a substitute.
 - Condition is recorded and used for filtering, sorting and export. It does **not** adjust
   market value in MVP, because the price source is not condition-specific, and the UI says so.
 - Two counts are shown and are different numbers: **physical cards owned** and **unique variants**.
+- **Quantity can be corrected or removed directly from a holding's detail page** (P28): quantity
+  1 offers "Remove from Portfolio"; quantity > 1 offers "Adjust quantity" and "Remove all".
+  Removal follows the void lifecycle; reduction shrinks the explicitly-chosen non-purchase lot(s)
+  and never touches money. A purchased lot's quantity belongs to its receipt — the UI routes to
+  purchase correction instead. A correction here is **not** a sale: no proceeds, no realized
+  result. An adjustment can never empty a holding; dropping one specific lot while siblings keep
+  units goes through that lot's own Void action (D-072).
 
 ### 4.3 Organising a large collection
 
