@@ -238,6 +238,17 @@ export async function seedCompleteUserModel(
     holding_kind: 'sealed',
     sealed_product_id: sealedProductId,
     grading_state: 'raw',
+  })
+  // Integration fix: sealed_intent lives on the ACQUISITION LOT since D-061/M11 (the
+  // implementation-blind fixture had assumed the pre-M11 holdings-level column), so the
+  // sealed holding gets its own intent-carrying lot.
+  await insertOne(service, 'acquisition_lots', {
+    holding_id: sealedHoldingId,
+    user_id: userId,
+    origin: 'pre_tracking',
+    cost_basis_state: 'unknown',
+    quantity: 1,
+    quantity_remaining: 1,
     sealed_intent: 'keep_sealed',
   })
 
@@ -393,7 +404,7 @@ export const FIXTURE_EXPECTED_COUNTS: Readonly<Record<string, number>> = {
   tags: 1,
   profiles: 1,
   holdings: 3,
-  acquisition_lots: 2,
+  acquisition_lots: 3,
   purchases: 2,
   purchase_lines: 2,
   lot_cost_adjustments: 1,
