@@ -149,7 +149,7 @@ describe('the seeded portfolio (sanity before reset)', () => {
       .single<{ id: string }>()
     if (graded.error) throw new Error(graded.error.message)
     gradedHoldingId = graded.data.id
-    await service.from('acquisition_lots').insert({
+    const gradedLot = await service.from('acquisition_lots').insert({
       holding_id: gradedHoldingId,
       user_id: userA.id,
       origin: 'gift',
@@ -158,6 +158,7 @@ describe('the seeded portfolio (sanity before reset)', () => {
       quantity: 1,
       quantity_remaining: 1,
     })
+    if (gradedLot.error) throw new Error(gradedLot.error.message)
     const valued = await clientA.rpc('set_manual_valuation', {
       p_holding_id: gradedHoldingId,
       p_value_minor: 123456,
@@ -178,7 +179,7 @@ describe('the seeded portfolio (sanity before reset)', () => {
       .single<{ id: string }>()
     if (sealed.error) throw new Error(sealed.error.message)
     sealedHoldingId = sealed.data.id
-    await service.from('acquisition_lots').insert({
+    const sealedLot = await service.from('acquisition_lots').insert({
       holding_id: sealedHoldingId,
       user_id: userA.id,
       origin: 'pre_tracking',
@@ -187,6 +188,7 @@ describe('the seeded portfolio (sanity before reset)', () => {
       quantity: 3,
       quantity_remaining: 3,
     })
+    if (sealedLot.error) throw new Error(sealedLot.error.message)
 
     // 5. Sale of one unit from the quick-add lot — creates sale + sale_line + disposal.
     const sale = await clientA.rpc('create_sale', {
@@ -381,7 +383,14 @@ describe('the seeded portfolio (sanity before reset)', () => {
       .eq('id', userA.id)
       .single<{ display_name: string | null; theme: string }>()
 
-    // THE RESET — one authenticated call, no arguments at all.
+    // THE RESET — one authenticated call, no arguments at all. The pre-reset counts are
+    // asserted explicitly so a returned count can only disagree with reality, never with
+    // this test's assumption about the fixture.
+    const lotsBeforeReset = await count('acquisition_lots', userA.id)
+    expect(lotsBeforeReset).toBe(5)
+    expect(await count('holdings', userA.id)).toBe(5)
+    expect(await count('purchase_lines', userA.id)).toBe(4)
+
     const { data, error } = await clientA.rpc('reset_my_portfolio_data')
     if (error) throw new Error(error.message)
     const counts = (data as ResetCounts[])[0]!
