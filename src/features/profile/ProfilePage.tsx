@@ -22,6 +22,8 @@ import {
   GridIcon,
   ListIcon,
   TableIcon,
+  DownloadIcon,
+  ChevronDownIcon,
 } from '../../ui/icons'
 
 const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
@@ -123,6 +125,23 @@ export function ProfilePage() {
         // typing.
         <ProfileSettings key={profile.data.id} profile={profile.data} isAdmin={isAdmin} />
       )}
+
+      <section className="space-y-2 rounded-2xl border border-slate-800 p-4">
+        <h2 className="text-sm font-semibold text-slate-300">Data</h2>
+        <Link
+          to="/profile/export"
+          className="flex min-h-11 items-center justify-between gap-2 rounded-lg text-sm font-medium text-slate-200 hover:text-slate-100"
+        >
+          <span className="flex items-center gap-2">
+            <DownloadIcon className="size-4" />
+            Export &amp; backup
+          </span>
+          <ChevronDownIcon className="size-4 -rotate-90 text-slate-500" />
+        </Link>
+        <p className="text-xs text-slate-500">
+          Download spreadsheet files or a full JSON backup of your Portfolio.
+        </p>
+      </section>
 
       <section className="space-y-2 rounded-2xl border border-slate-800 p-4">
         <h2 className="text-sm font-semibold text-slate-300">Account</h2>
