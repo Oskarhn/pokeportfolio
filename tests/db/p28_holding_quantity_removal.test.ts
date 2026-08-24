@@ -663,11 +663,15 @@ describe('F/I/N — a partially-sold lot blocks correction and frozen sale histo
       net_proceeds_nok_minor: saleLine!.net_proceeds_nok_minor,
     })
 
-    const { data: disposalCount } = await service
+    // head: true returns the tally in `count`, not `data` (which is null by design) — same
+    // pattern as m81_remove_from_portfolio's liveLotCount. First executed on the third CI run:
+    // both earlier runs stopped at the reduce-refusal message before reaching this line.
+    const { count: disposalCount, error: disposalError } = await service
       .from('lot_disposals')
       .select('id', { count: 'exact', head: true })
       .eq('lot_id', lot!.id)
       .is('voided_at', null)
+    if (disposalError !== null) throw new Error(disposalError.message)
     expect(disposalCount).toBe(1)
   })
 })
