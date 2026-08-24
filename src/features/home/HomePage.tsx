@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { listPortfolio, getPortfolioCounts } from '../../data/portfolio'
@@ -18,8 +18,10 @@ import {
   DASHBOARD_RANGES,
   accessibleHistorySummary,
   computePeriodChange,
+  dashboardSummaryRefetchInterval,
   filterHistoryWindow,
   historyPanelState,
+  recomputeJustSettled,
   resolveActiveRange,
   resolveRangeWindow,
   ttepDisplayState,
@@ -87,8 +89,33 @@ export function HomePage() {
     },
   })
 
-  const summary = useQuery({ queryKey: ['dashboard-summary'], queryFn: getDashboardSummary })
+  // P42 refresh design: the summary polls ONLY while a recompute is genuinely queued
+  // (dashboardSummaryRefetchInterval returns false otherwise — no idle polling). This is what
+  // lets "Updating…" disappear on its own and the headline settle after an ordinary owner
+  // mutation, without a reload or navigation, instead of sitting stale until some unrelated
+  // refetch happened to occur.
+  const summary = useQuery({
+    queryKey: ['dashboard-summary'],
+    queryFn: getDashboardSummary,
+    refetchInterval: (query) => dashboardSummaryRefetchInterval(query.state.data?.pendingRecompute),
+  })
   const displayCurrency = profile.data?.displayCurrency ?? 'NOK'
+
+  // When the pending flag flips queued→drained, the poll's final response already carries the
+  // fresh summary figures — but the CHART is a separate snapshot-derived query with its own
+  // staleTime, and would otherwise keep showing pre-recompute history under a vanished badge.
+  // Monthly spend and recent activity read canonical purchase/sale rows (never snapshots), so a
+  // recompute cannot change them and they are deliberately not invalidated.
+  const pendingRecompute = summary.data?.pendingRecompute === true
+  const previouslyPending = useRef(pendingRecompute)
+  useEffect(() => {
+    if (!recomputeJustSettled(previouslyPending.current, pendingRecompute)) {
+      previouslyPending.current = pendingRecompute
+      return
+    }
+    previouslyPending.current = false
+    void queryClient.invalidateQueries({ queryKey: ['portfolio-history'] })
+  }, [pendingRecompute, queryClient])
 
   // The full stored series once; range selection filters client-side in domain code, so
   // flipping ranges never refetches.

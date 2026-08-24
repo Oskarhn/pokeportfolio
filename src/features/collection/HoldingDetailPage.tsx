@@ -102,6 +102,9 @@ export function HoldingDetailPage() {
       await queryClient.invalidateQueries({ queryKey: ['portfolio'] })
       await queryClient.invalidateQueries({ queryKey: ['portfolio-counts'] })
       await queryClient.invalidateQueries({ queryKey: ['spending-summary'] })
+      // A void is a real financial correction: Home's headline/spend figures must refetch, not
+      // wait for the next incidental mount (P42 — same set the Remove flow already invalidates).
+      await queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] })
     },
     onError: (error: Error) => {
       setVoidError(error.message)

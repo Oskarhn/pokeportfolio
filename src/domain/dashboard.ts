@@ -240,6 +240,40 @@ export function holdingValueDisplayState(
   return { kind: 'known', minorUnits: holdingValueMinor }
 }
 
+export type RefreshPollDecision = number | false
+
+/**
+ * How often Home may refetch `dashboard-summary` while a recompute is queued (P42). Polling
+ * exists ONLY for the pending window: an ordinary owner mutation enqueues a snapshot recompute,
+ * the cron worker settles it, and until it settles every fetch honestly reports
+ * `pending_recompute = true`. Without a poll the badge and figures sit on whatever the last
+ * fetch returned — indefinitely, if the user just watches the screen (the exact owner-reported
+ * failure). Once pending is false the interval drops to false permanently — no idle polling.
+ *
+ * 3 s sits inside the reviewed 2-5 s band: fast enough that a settled recompute appears within
+ * one tick of the worker finishing (~1 min cadence), slow enough that the whole pending window
+ * costs a handful of bounded RPC calls, not a request loop.
+ */
+export const DASHBOARD_PENDING_POLL_MS = 3000
+
+/** Pure decision for TanStack Query's `refetchInterval` callback. */
+export function dashboardSummaryRefetchInterval(
+  pendingRecompute: boolean | undefined,
+): RefreshPollDecision {
+  return pendingRecompute ? DASHBOARD_PENDING_POLL_MS : false
+}
+
+/** True when the pending flag has just flipped from queued to drained across two observed
+ *  states. This transition is what must trigger the remaining snapshot-derived queries to
+ *  refresh — a disappearing badge above a still-stale chart is exactly the bug this guards
+ *  against. Undefined counts as "not pending" so first observations never fire it. */
+export function recomputeJustSettled(
+  previouslyPending: boolean | undefined,
+  currentlyPending: boolean | undefined,
+): boolean {
+  return previouslyPending === true && currentlyPending === false
+}
+
 export type TtepDisplayState =
   { kind: 'missing' } | { kind: 'hidden' } | { kind: 'known'; minorUnits: bigint }
 

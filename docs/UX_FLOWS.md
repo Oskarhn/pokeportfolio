@@ -471,6 +471,16 @@ sits one restrained disclosure sentence: "Older market-value history uses weekly
 observations" (D-070) — it qualifies MARKET-VALUE history only; purchases, sales and cost basis
 are exact frozen records and are never described as approximate.
 
+**Automatic settle after an owner mutation (P42, D-074).** A correction anywhere in the app
+(add/remove/adjust/void) enqueues a snapshot recompute; Home marks the state honestly with the
+"Updating…" badge and then settles BY ITSELF: the summary query polls only while
+`pending_recompute` is true (3 s cadence; no idle polling), the every-minute worker drains the
+queue within about a minute of the mutation, the badge disappears on its own when pending flips
+false, and that same transition refetches the value history so the chart can never sit stale
+under a vanished badge. No reload, no navigation, no fake progress bar. If a recompute ever
+takes unusually long, the badge's own tooltip already says what is happening; it does not imply
+an error at any point.
+
 Original structure (M7.1) for reference:
 
 ```

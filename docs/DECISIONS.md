@@ -1962,9 +1962,9 @@ decision because it currently lives only as an inline constant: "MAX" must not s
 unbounded lifetime history, and revisiting the constant (e.g. raising it once snapshots' storage
 cost is re-measured) should be conscious, not accidental.
 
-## D-072 — Holding-level quantity correction: correction is not a sale; purchased lots route to their receipt; a lot can never shrink to zero
+## D-072 ï¿½ Holding-level quantity correction: correction is not a sale; purchased lots route to their receipt; a lot can never shrink to zero
 
-**2026-08-24 — Accepted** (parallel session P28, released via PR #42)
+**2026-08-24 ï¿½ Accepted** (parallel session P28, released via PR #42)
 
 Holding Detail gains direct quantity correction (`Adjust quantity`) and removal
 (`Remove from Portfolio` / `Remove all`). Semantics, each mirroring an existing lifecycle rule:
@@ -1979,11 +1979,11 @@ Holding Detail gains direct quantity correction (`Adjust quantity`) and removal
 3. **Shrink-not-disposal for non-purchase lots.** `reduce_holding_quantity(uuid, jsonb)` moves
    `quantity` and `quantity_remaining` down together (D1 holds by construction), touches no
    provenance column, refuses partially-disposed lots (frozen sale basis is untouchable), and
-   validates everything under sibling lot locks before the first write — all-or-nothing,
+   validates everything under sibling lot locks before the first write ï¿½ all-or-nothing,
    SECURITY INVOKER, ownership from `auth.uid()` alone.
-4. **The last unit is not adjustable.** An adjustment can never empty a holding — that is the
+4. **The last unit is not adjustable.** An adjustment can never empty a holding ï¿½ that is the
    Remove flow. Enforced in layers: per-lot floor guard (a live lot can never be driven to zero
-   copies — the pre-existing unconditional schema CHECK says so), locked aggregate pre-invariant,
+   copies ï¿½ the pre-existing unconditional schema CHECK says so), locked aggregate pre-invariant,
    post-image refusal, with the CHECK itself as backstop. A single unwanted lot among siblings is
    retired through the existing per-lot Void control instead.
 
@@ -1991,11 +1991,11 @@ Alternatives rejected: routing every correction through sale rows with zero proc
 financial history); allowing aggregate-counter mutation (destroys lot provenance); server-side
 automatic lot selection (no deterministic rule exists; the owner picks lots explicitly).
 
-## D-073 — Search's set showcase is pinned to English and browses vertically
+## D-073 ï¿½ Search's set showcase is pinned to English and browses vertically
 
-**2026-08-24 — Accepted** (parallel session P27, owner feedback after M12; released via PR #41)
+**2026-08-24 ï¿½ Accepted** (parallel session P27, owner feedback after M12; released via PR #41)
 
-The Sets-mode showcase lists English sets only, newest first, in a vertical grid — replacing
+The Sets-mode showcase lists English sets only, newest first, in a vertical grid ï¿½ replacing
 M7.1's horizontal carousel, which mixed languages and made deep browsing awkward. The language
 chips continue to govern text search results only; they do not filter the showcase. Set imagery
 normalizes extension-less TCGdex set identifiers by appending `.webp` on the path segment only.
@@ -2128,3 +2128,50 @@ data (unfiltered, ten analysis files) plus the lossless JSON backup - the archiv
 the shortcut would delete a genuinely distinct capability without equivalent replacement; keeping it
 unlabeled would invite "which export is real?" confusion. It is relabelled "Quick CSV" with tooltip
 copy pointing full exports to Profile > Export & backup.
+
+## D-082 - Dashboard refresh settles automatically: every-minute recompute drain plus pending-only summary polling
+
+**2026-08-24 Â· Accepted** (owner-reported production bug after the parallel release; P42)
+
+Owner repro on the deployed app: quick-add a known-cost test card, remove it from Portfolio â€”
+Home then sat on "Updatingâ€¦" for many minutes and spend still showed the removed acquisition's
+amount. Hosted read-only diagnosis proved the ledger itself correct (every removed test lot's
+single-line parent purchase was already auto-voided; zero purchases with all lots voided; queue
+empty), so the defect was REFRESH latency, compounding two independent gaps:
+
+1. **Backend cadence.** D-064's :07/:22/:37/:52 schedule left up to 15 minutes of honest
+   staleness between a mutation and its snapshot recompute. Revised to an EVERY-MINUTE drain:
+   measured no-op ticks complete in ~0.0 s against the hosted project; the drain is bounded
+   (batch 20) and SKIP LOCKED, so overlapping ticks cannot process each other's rows; â‰¤10-user
+   scale makes per-tick cost negligible. A nightly `m12-run-log-prune` job bounds the resulting
+   run-log growth (~1 440 tiny rows/day) at 30 days of history. No new RPC, no grant change,
+   no browser-reachable drain path.
+2. **Frontend silence.** Home fetched `dashboard-summary` but polled nothing while
+   `pending_recompute` was true, so badge and figures froze at the last fetch until some
+   unrelated refetch happened. Home now polls ONLY while pending (3 s interval, inside the
+   reviewed 2-5 s band; false while idle â€” no permanent polling), and the queuedâ†’drained
+   transition invalidates the one other snapshot-derived query (portfolio history). Monthly
+   spend and recent activity read canonical purchase/sale rows directly and are deliberately
+   NOT invalidated by a recompute settling. Correction mutations that were missing the
+   dashboard-summary invalidation (Holding Detail's per-lot Void, Portfolio select-mode Remove)
+   gained it.
+
+A user-scoped self-recompute RPC was considered and rejected: with a ~1-minute worker and
+pending-only polling, worst-case settle time is already about a minute, and any such function
+would add a new browser-callable surface needing its own abuse analysis for zero UX gain.
+
+## D-083 - Ghost-spend classification: removal never leaves spend behind in the ledger; stale displays are a UI concern
+
+**2026-08-24 Â· Accepted** (P42 diagnosis record)
+
+The owner-visible "spend still showed the removed test acquisition" was classified
+STALE_UI_ONLY, not an accounting defect: `get_dashboard_summary`'s GPO/CS/HS figures are LIVE
+sums over canonical non-voided purchases computed inside the same request that reports
+`pending_recompute`, and `void_acquisition_lot` voids a quick-add lot's single-line parent
+purchase synchronously in the same transaction as the lot. Only CMV/TTEP derive from the
+snapshot cache and legitimately wait for the drain. The synthetic contract is pinned in
+`tests/db/p42_owner_refresh.test.ts`: quick-add known-cost â†’ remove â†’ GPO/CS return to baseline
+EXACTLY; multi-line purchases preserve unrelated lines (accessory spend survives card removal);
+partially-disposed inventory stays blocked. If a future report shows spend wrong after a
+settle+reload, the defect class to suspect is a live multi-line receipt (correct it through
+Purchases), not this correction path.

@@ -2,11 +2,14 @@ import { describe, expect, it } from 'vitest'
 import {
   accessibleHistorySummary,
   computePeriodChange,
+  DASHBOARD_PENDING_POLL_MS,
+  dashboardSummaryRefetchInterval,
   filterHistoryWindow,
   historyPanelState,
   holdingValueDisplayState,
   isDashboardRange,
   monthlySpendBars,
+  recomputeJustSettled,
   resolveActiveRange,
   resolveRangeWindow,
   safeMajorUnits,
@@ -295,5 +298,36 @@ describe('holdingValueDisplayState (M12a §D — Most Valuable card values)', ()
     expect(holdingValueDisplayState(123_456n, true)).toEqual({ kind: 'hidden' })
     expect(holdingValueDisplayState(0n, true)).toEqual({ kind: 'hidden' })
     expect(holdingValueDisplayState(null, true)).toEqual({ kind: 'missing' })
+  })
+})
+
+describe('dashboardSummaryRefetchInterval (P42 — poll only while a recompute is queued)', () => {
+  it('polls at the reviewed cadence while pending is true', () => {
+    expect(dashboardSummaryRefetchInterval(true)).toBe(DASHBOARD_PENDING_POLL_MS)
+    expect(DASHBOARD_PENDING_POLL_MS).toBeGreaterThanOrEqual(2000)
+    expect(DASHBOARD_PENDING_POLL_MS).toBeLessThanOrEqual(5000)
+  })
+
+  it('never polls while idle — pending false or not-yet-known both stop the interval', () => {
+    expect(dashboardSummaryRefetchInterval(false)).toBe(false)
+    expect(dashboardSummaryRefetchInterval(undefined)).toBe(false)
+  })
+})
+
+describe('recomputeJustSettled (P42 — the queued→drained transition refreshes history)', () => {
+  it('fires exactly on a true→false flip across two observations', () => {
+    expect(recomputeJustSettled(true, false)).toBe(true)
+  })
+
+  it('stays quiet while pending persists, once idle, or across idle-to-idle', () => {
+    expect(recomputeJustSettled(true, true)).toBe(false)
+    expect(recomputeJustSettled(false, false)).toBe(false)
+    expect(recomputeJustSettled(false, true)).toBe(false) // newly queued ≠ settled
+  })
+
+  it('first-ever observations never count as a settle (no spurious invalidation on mount)', () => {
+    expect(recomputeJustSettled(undefined, false)).toBe(false)
+    expect(recomputeJustSettled(undefined, true)).toBe(false)
+    expect(recomputeJustSettled(undefined, undefined)).toBe(false)
   })
 })

@@ -77,6 +77,9 @@ export function BulkActionsBar({
       setRemoveConfirmOpen(false)
       await invalidate()
       await queryClient.invalidateQueries({ queryKey: ['spending-summary'] })
+      // Same correction surface as Holding Detail's Remove — Home's summary must refetch too
+      // (P42: this path was the one remove entry point that never told the dashboard).
+      await queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] })
       onClear()
     },
     onError: (error: Error) => {
