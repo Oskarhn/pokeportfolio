@@ -294,6 +294,10 @@ describe('P42 scenario C: partially-disposed inventory remains blocked', () => {
     const blockedLotId = data!.lot_id
     await service.from('acquisition_lots').update({ quantity_remaining: 1 }).eq('id', blockedLotId)
 
+    // The property under test is that the REMOVAL call mutates nothing — snapshot the ledger
+    // AFTER this test's own setup adds its fixture, compare against that.
+    const beforeRemoval = await spendingOf(clientA)
+
     const { data: removal, error: removalError } = await clientA.rpc(
       'remove_holdings_from_portfolio',
       { p_holding_ids: [blockedHoldingId] },
@@ -304,7 +308,7 @@ describe('P42 scenario C: partially-disposed inventory remains blocked', () => {
 
     expect(await liveLotCount(blockedHoldingId)).toBe(1)
     expect(await parentPurchaseVoided(blockedLotId)).toBe(false)
-    expect(await spendingOf(clientA)).toEqual(before)
+    expect(await spendingOf(clientA)).toEqual(beforeRemoval)
   })
 })
 
