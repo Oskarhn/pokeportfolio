@@ -321,14 +321,23 @@ async function fetchSectionTotal(
   client: SupabaseClient<Database>,
   section: ArraySection,
   options: ExportFetchOptions,
+  scope?: { column: string; value: string },
 ): Promise<number> {
   const firstKey = SECTION_IDENTITY_KEYS[section][0]
   if (firstKey === undefined) {
     throw new Error(`Export failed counting ${section}: no identity key declared`)
   }
-  const base = client.from(section).select(firstKey, { count: 'exact', head: true })
-  const ready = options.signal === undefined ? base : base.abortSignal(options.signal)
+  abortIfRequested(options.signal)
+  // The COUNT must see exactly the rows the page reads: sections whose reader applies an
+  // explicit predicate beyond RLS (sealed_products' owner-created subset) must scope the count
+  // identically, or reconciliation would compare different row sets.
+  let query = client.from(section).select(firstKey, { count: 'exact', head: true })
+  if (scope !== undefined) query = query.eq(scope.column, scope.value)
+  const ready = options.signal === undefined ? query : query.abortSignal(options.signal)
   const { count, error } = await ready
+  if (options.signal?.aborted === true) {
+    throw new DOMException('Export cancelled', 'AbortError')
+  }
   if (error !== null || count === null) {
     throw new Error(`Export failed counting ${section}: ${error?.message ?? 'no count returned'}`)
   }
@@ -341,8 +350,9 @@ async function collectRows<TWire, TRow>(
   options: ExportFetchOptions,
   buildPage: (from: number, to: number) => PromiseLike<PageResult<TWire>>,
   brand: (row: TWire) => TRow,
+  scope?: { column: string; value: string },
 ): Promise<TRow[]> {
-  const expectedTotal = await fetchSectionTotal(client, section, options)
+  const expectedTotal = await fetchSectionTotal(client, section, options, scope)
   const walk = createSectionWalk(section, SECTION_IDENTITY_KEYS[section])
   const rows: TRow[] = []
   await drainPages<TWire>(section, buildPage, options, (pageRows) => {
@@ -570,6 +580,9 @@ async function fetchUserCreatedSealedProducts(
       return ready.overrideTypes<WireRow<BackupUserCreatedSealedProductRow>[], { merge: false }>()
     },
     (row) => row,
+    // The count must be scoped to the same owner-created subset the pages read — otherwise
+    // curated rows (visible under RLS by design) inflate the expected total (D-074).
+    { column: 'created_by_user_id', value: userId },
   )
 }
 
