@@ -107,7 +107,7 @@ const SELECTS = {
   manual_card_definitions:
     'id, user_id, name, set_name, collector_number, language, finish, stamp, subtype, size, ' +
     'notes, created_at, updated_at',
-  sealed_products_user_created:
+  sealed_products:
     'id, created_by_user_id, name, product_type, language, pack_count, set_id, image_url, ' +
     'cardmarket_product_id, tcgplayer_product_id, created_at, updated_at',
   manual_valuations:
@@ -161,7 +161,7 @@ const MONEY_FIELDS: { [K in ArraySection]: readonly MoneyKeys<BackupData[K][numb
     'residual_nok_minor',
   ],
   manual_card_definitions: [],
-  sealed_products_user_created: [],
+  sealed_products: [],
   manual_valuations: ['value_minor', 'value_nok_minor'],
   lot_cost_adjustments: ['amount_minor', 'amount_nok_minor'],
   purchases: [
@@ -478,14 +478,14 @@ async function fetchUserCreatedSealedProducts(
   client: SupabaseClient<Database>,
   userId: string,
   options: ExportFetchOptions,
-): Promise<BackupData['sealed_products_user_created']> {
+): Promise<BackupData['sealed_products']> {
   return collectRows(
-    'sealed_products_user_created',
+    'sealed_products',
     options,
     (from, to) => {
       const base = client
         .from('sealed_products')
-        .select(SELECTS.sealed_products_user_created)
+        .select(SELECTS.sealed_products)
         // Owner-created rows only; curated catalog products travel via the identity manifest.
         .eq('created_by_user_id', userId)
         .order('id', { ascending: true })
@@ -854,7 +854,7 @@ export async function fetchExportSnapshot(
     holdings,
     acquisition_lots: acquisitionLots,
     manual_card_definitions: manualCardDefinitions,
-    sealed_products_user_created: sealedProductsUserCreated,
+    sealed_products: sealedProductsUserCreated,
     manual_valuations: manualValuations,
     lot_cost_adjustments: lotCostAdjustments,
     purchases,
@@ -867,7 +867,7 @@ export async function fetchExportSnapshot(
 
   const variantIds = collectReferencedIds(snapshot, (row) => row.card_variant_id)
   const referencedSealedIds = collectReferencedIds(snapshot, (row) => row.sealed_product_id)
-  const ownSealedIds = new Set(snapshot.sealed_products_user_created.map((p) => p.id))
+  const ownSealedIds = new Set(snapshot.sealed_products.map((p) => p.id))
   const curatedSealedIds = referencedSealedIds.filter((id) => !ownSealedIds.has(id))
 
   const identity_manifest: BackupIdentityManifest = {

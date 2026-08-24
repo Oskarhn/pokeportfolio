@@ -19,9 +19,12 @@
  *   market data (price_snapshots, fx_rates), operator/security tables (invitations*, catalog
  *   sync runs, price sync runs) and auth internals. Privilege-relevant profile columns
  *   (`is_admin`, `disabled_at`) are excluded so restoring a backup can never elevate privilege.
- * - Compatibility policy: `format` identifies the artifact kind; `schema_version` bumps ONLY on
- *   a breaking change to any row shape or key below. Version 1 readers refuse unknown versions;
- *   additive optional keys do not bump the version. UI labels are never part of this contract.
+ * - Compatibility policy (v1, D-075): `format` identifies the artifact kind; `schema_version`
+ *   bumps on ANY change to the canonical `data` shape below — a new required key, a changed
+ *   key name, a changed row semantic or a new canonical section all bump it. Version-1 readers
+ *   refuse unknown versions AND unknown data keys (the validator rejects both), so there is no
+ *   within-v1 forward compatibility to claim: a future v2 writer produces v2 files and a
+ *   future v2 reader owns reading them. UI labels are never part of this contract.
  */
 
 /** Stable artifact identifier. Never localized, never renamed without a schema_version bump. */
@@ -397,7 +400,10 @@ export interface BackupData {
   holdings: BackupHoldingRow[]
   acquisition_lots: BackupAcquisitionLotRow[]
   manual_card_definitions: BackupManualCardDefinitionRow[]
-  sealed_products_user_created: BackupUserCreatedSealedProductRow[]
+  // Section name == canonical table name (D-075). The rows inside are the owner-created
+  // SUBSET of sealed_products (created_by_user_id = self); curated rows travel only in the
+  // identity manifest. The subset predicate is the documented export policy, not a rename.
+  sealed_products: BackupUserCreatedSealedProductRow[]
   manual_valuations: BackupManualValuationRow[]
   lot_cost_adjustments: BackupLotCostAdjustmentRow[]
   purchases: BackupPurchaseRow[]
@@ -419,7 +425,7 @@ export const BACKUP_DATA_KEYS = [
   'holdings',
   'acquisition_lots',
   'manual_card_definitions',
-  'sealed_products_user_created',
+  'sealed_products',
   'manual_valuations',
   'lot_cost_adjustments',
   'purchases',
@@ -460,7 +466,7 @@ export function emptyBackupData(): BackupData {
     holdings: [],
     acquisition_lots: [],
     manual_card_definitions: [],
-    sealed_products_user_created: [],
+    sealed_products: [],
     manual_valuations: [],
     lot_cost_adjustments: [],
     purchases: [],

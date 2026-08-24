@@ -284,7 +284,7 @@ describe('M13 export over real RLS', () => {
     expect(envelope.data.holdings.every((h) => h.user_id === userA.id)).toBe(true)
     expect(envelope.data.lot_cost_adjustments.length).toBe(1)
     expect(envelope.data.manual_valuations.length).toBeGreaterThanOrEqual(1)
-    expect(envelope.data.sealed_products_user_created.map((p) => p.name)).toContain(
+    expect(envelope.data.sealed_products.map((p) => p.name)).toContain(
       'My fixture box',
     )
   })

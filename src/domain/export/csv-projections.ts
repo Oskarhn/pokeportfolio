@@ -47,7 +47,7 @@ export interface CsvFileContent {
  */
 export function projectionInputFromSnapshot(snapshot: ExportSnapshot): CsvProjectionInput {
   const sealedProductNames = new Map<string, string>()
-  for (const product of snapshot.sealed_products_user_created) {
+  for (const product of snapshot.sealed_products) {
     sealedProductNames.set(product.id, product.name)
   }
   for (const curated of snapshot.identity_manifest.curated_sealed_products) {

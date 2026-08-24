@@ -294,7 +294,7 @@ export function fixtureSnapshot(): ExportSnapshot {
         updated_at: '2026-01-02T03:04:05+00:00',
       },
     ],
-    sealed_products_user_created: [
+    sealed_products: [
       {
         id: FIXTURE_IDS.sealedUserCreated,
         created_by_user_id: FIXTURE_IDS.profileUserId,
