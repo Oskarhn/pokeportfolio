@@ -263,7 +263,14 @@ export async function seedCompleteUserModel(
   })
   const memberInsert = await service
     .from('custom_collection_members')
-    .insert({ collection_id: customCollectionId, holding_id: holdingId, sort_order: 1 })
+    // user_id explicitly: the column's default auth.uid() evaluates to NULL under the
+    // service role this fixture inserts with.
+    .insert({
+      collection_id: customCollectionId,
+      holding_id: holdingId,
+      sort_order: 1,
+      user_id: userId,
+    })
     .select('collection_id')
     .single()
   if (memberInsert.error) throw new Error(`membership insert failed: ${memberInsert.error.message}`)
