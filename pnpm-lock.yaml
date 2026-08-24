@@ -23,6 +23,9 @@ importers:
       '@tanstack/react-virtual':
         specifier: ^3.14.10
         version: 3.14.10(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      client-zip:
+        specifier: ^2.5.0
+        version: 2.5.0
       lightweight-charts:
         specifier: 5.2.1
         version: 5.2.1
@@ -1443,6 +1446,9 @@ packages:
   chai@6.2.2:
     resolution: {integrity: sha512-NUPRluOfOiTKBKvWPtSD4PhFvWCqOi0BGStNWs57X9js7XGTprSmFoz5F0tWhR4WPjNeR9jXqdC7/UpSJTnlRg==}
     engines: {node: '>=18'}
+
+  client-zip@2.5.0:
+    resolution: {integrity: sha512-ydG4nDZesbFurnNq0VVCp/yyomIBh+X/1fZPI/P24zbnG4dtC4tQAfI5uQsomigsUMeiRO2wiTPizLWQh+IAyQ==}
 
   commander@2.20.3:
     resolution: {integrity: sha512-GpVkmM8vF2vQUkj2LvZmD35JxeJOLCwJ9cUkugyk2nuhbv3+mJvpLYYt+0+USMxE+oj+ey/lJEnhZw75x/OMcQ==}
@@ -4256,6 +4262,8 @@ snapshots:
   caniuse-lite@1.0.30001809: {}
 
   chai@6.2.2: {}
+
+  client-zip@2.5.0: {}
 
   commander@2.20.3: {}
 
