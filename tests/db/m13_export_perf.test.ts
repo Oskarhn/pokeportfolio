@@ -241,6 +241,7 @@ describe.skipIf(!RUN)('M13 export performance audit', () => {
         currency: 'NOK',
         value_nok_minor: 12_000,
         effective_from: '2026-03-01',
+        superseded_at: '2026-04-01T00:00:00Z',
         note: 'superseded',
       },
       {
