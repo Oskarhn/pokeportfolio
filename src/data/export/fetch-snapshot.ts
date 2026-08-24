@@ -98,7 +98,7 @@ type MoneyKeys<T> = keyof {
   [K in keyof T as Extract<NonNullable<T[K]>, MinorUnitsString> extends never ? never : K]: true
 }
 
-const SELECTS = {
+export const EXPORT_SECTION_SELECTS = {
   custom_collections: 'id, user_id, name, description, color, sort_order, created_at',
   custom_collection_members: 'user_id, collection_id, holding_id, sort_order, added_at',
   tags: 'id, user_id, name, created_at, updated_at',
@@ -156,7 +156,7 @@ const SELECTS = {
  * Names are compiler-checked against each row's money fields; the exported probe below proves
  * every money field is listed, so a new money column cannot ship without its cast-and-branding.
  */
-const MONEY_FIELDS: { [K in ArraySection]: readonly MoneyKeys<BackupData[K][number]>[] } = {
+export const MONEY_FIELDS: { [K in ArraySection]: readonly MoneyKeys<BackupData[K][number]>[] } = {
   custom_collections: [],
   custom_collection_members: [],
   tags: [],
@@ -361,7 +361,7 @@ async function fetchCustomCollections(
     (from, to) => {
       const base = client
         .from('custom_collections')
-        .select(SELECTS.custom_collections)
+        .select(EXPORT_SECTION_SELECTS.custom_collections)
         .order('id', { ascending: true })
         .range(from, to)
       const ready = options.signal === undefined ? base : base.abortSignal(options.signal)
@@ -382,7 +382,7 @@ async function fetchCustomCollectionMembers(
     (from, to) => {
       const base = client
         .from('custom_collection_members')
-        .select(SELECTS.custom_collection_members)
+        .select(EXPORT_SECTION_SELECTS.custom_collection_members)
         .order('collection_id', { ascending: true })
         .order('holding_id', { ascending: true })
         .range(from, to)
@@ -404,7 +404,7 @@ async function fetchTags(
     (from, to) => {
       const base = client
         .from('tags')
-        .select(SELECTS.tags)
+        .select(EXPORT_SECTION_SELECTS.tags)
         .order('id', { ascending: true })
         .range(from, to)
       const ready = options.signal === undefined ? base : base.abortSignal(options.signal)
@@ -425,7 +425,7 @@ async function fetchHoldingTags(
     (from, to) => {
       const base = client
         .from('holding_tags')
-        .select(SELECTS.holding_tags)
+        .select(EXPORT_SECTION_SELECTS.holding_tags)
         .order('holding_id', { ascending: true })
         .order('tag_id', { ascending: true })
         .range(from, to)
@@ -447,7 +447,7 @@ async function fetchStorageLocations(
     (from, to) => {
       const base = client
         .from('storage_locations')
-        .select(SELECTS.storage_locations)
+        .select(EXPORT_SECTION_SELECTS.storage_locations)
         .order('id', { ascending: true })
         .range(from, to)
       const ready = options.signal === undefined ? base : base.abortSignal(options.signal)
@@ -468,7 +468,7 @@ async function fetchRetailers(
     (from, to) => {
       const base = client
         .from('retailers')
-        .select(SELECTS.retailers)
+        .select(EXPORT_SECTION_SELECTS.retailers)
         .order('id', { ascending: true })
         .range(from, to)
       const ready = options.signal === undefined ? base : base.abortSignal(options.signal)
@@ -489,7 +489,7 @@ async function fetchHoldings(
     (from, to) => {
       const base = client
         .from('holdings')
-        .select(SELECTS.holdings)
+        .select(EXPORT_SECTION_SELECTS.holdings)
         .order('id', { ascending: true })
         .range(from, to)
       const ready = options.signal === undefined ? base : base.abortSignal(options.signal)
@@ -510,7 +510,7 @@ async function fetchAcquisitionLots(
     (from, to) => {
       const base = client
         .from('acquisition_lots')
-        .select(SELECTS.acquisition_lots)
+        .select(EXPORT_SECTION_SELECTS.acquisition_lots)
         .order('id', { ascending: true })
         .range(from, to)
       const ready = options.signal === undefined ? base : base.abortSignal(options.signal)
@@ -531,7 +531,7 @@ async function fetchManualCardDefinitions(
     (from, to) => {
       const base = client
         .from('manual_card_definitions')
-        .select(SELECTS.manual_card_definitions)
+        .select(EXPORT_SECTION_SELECTS.manual_card_definitions)
         .order('id', { ascending: true })
         .range(from, to)
       const ready = options.signal === undefined ? base : base.abortSignal(options.signal)
@@ -553,7 +553,7 @@ async function fetchUserCreatedSealedProducts(
     (from, to) => {
       const base = client
         .from('sealed_products')
-        .select(SELECTS.sealed_products)
+        .select(EXPORT_SECTION_SELECTS.sealed_products)
         // Owner-created rows only; curated catalog products travel via the identity manifest.
         .eq('created_by_user_id', userId)
         .order('id', { ascending: true })
@@ -576,7 +576,7 @@ async function fetchManualValuations(
     (from, to) => {
       const base = client
         .from('manual_valuations')
-        .select(SELECTS.manual_valuations)
+        .select(EXPORT_SECTION_SELECTS.manual_valuations)
         .order('id', { ascending: true })
         .range(from, to)
       const ready = options.signal === undefined ? base : base.abortSignal(options.signal)
@@ -597,7 +597,7 @@ async function fetchLotCostAdjustments(
     (from, to) => {
       const base = client
         .from('lot_cost_adjustments')
-        .select(SELECTS.lot_cost_adjustments)
+        .select(EXPORT_SECTION_SELECTS.lot_cost_adjustments)
         .order('id', { ascending: true })
         .range(from, to)
       const ready = options.signal === undefined ? base : base.abortSignal(options.signal)
@@ -618,7 +618,7 @@ async function fetchPurchases(
     (from, to) => {
       const base = client
         .from('purchases')
-        .select(SELECTS.purchases)
+        .select(EXPORT_SECTION_SELECTS.purchases)
         .order('id', { ascending: true })
         .range(from, to)
       const ready = options.signal === undefined ? base : base.abortSignal(options.signal)
@@ -639,7 +639,7 @@ async function fetchPurchaseLines(
     (from, to) => {
       const base = client
         .from('purchase_lines')
-        .select(SELECTS.purchase_lines)
+        .select(EXPORT_SECTION_SELECTS.purchase_lines)
         .order('id', { ascending: true })
         .range(from, to)
       const ready = options.signal === undefined ? base : base.abortSignal(options.signal)
@@ -660,7 +660,7 @@ async function fetchSales(
     (from, to) => {
       const base = client
         .from('sales')
-        .select(SELECTS.sales)
+        .select(EXPORT_SECTION_SELECTS.sales)
         .order('id', { ascending: true })
         .range(from, to)
       const ready = options.signal === undefined ? base : base.abortSignal(options.signal)
@@ -681,7 +681,7 @@ async function fetchSaleLines(
     (from, to) => {
       const base = client
         .from('sale_lines')
-        .select(SELECTS.sale_lines)
+        .select(EXPORT_SECTION_SELECTS.sale_lines)
         .order('id', { ascending: true })
         .range(from, to)
       const ready = options.signal === undefined ? base : base.abortSignal(options.signal)
@@ -702,7 +702,7 @@ async function fetchLotDisposals(
     (from, to) => {
       const base = client
         .from('lot_disposals')
-        .select(SELECTS.lot_disposals)
+        .select(EXPORT_SECTION_SELECTS.lot_disposals)
         .order('id', { ascending: true })
         .range(from, to)
       const ready = options.signal === undefined ? base : base.abortSignal(options.signal)
@@ -712,21 +712,20 @@ async function fetchLotDisposals(
   )
 }
 
+/** The single-row profile select — exported so the money-cast audit can cover it too. */
+export const EXPORT_PROFILE_SELECT =
+  'id, display_name, theme, display_currency, locale, hide_values, hide_low_value_by_default, ' +
+  'low_value_threshold_minor::text, use_eu_pricing, collection_grid_density, ' +
+  'collection_default_view, collection_default_sort, default_condition, default_language, ' +
+  'default_storage_location_id, created_at, updated_at'
+
 async function fetchProfile(
   client: SupabaseClient<Database>,
   userId: string,
   options: ExportFetchOptions,
 ): Promise<BackupProfileRow | null> {
   abortIfRequested(options.signal)
-  const base = client
-    .from('profiles')
-    .select(
-      'id, display_name, theme, display_currency, locale, hide_values, hide_low_value_by_default, ' +
-        'low_value_threshold_minor::text, use_eu_pricing, collection_grid_density, ' +
-        'collection_default_view, collection_default_sort, default_condition, default_language, ' +
-        'default_storage_location_id, created_at, updated_at',
-    )
-    .eq('id', userId)
+  const base = client.from('profiles').select(EXPORT_PROFILE_SELECT).eq('id', userId)
   const ready = options.signal === undefined ? base : base.abortSignal(options.signal)
   const { data, error } = await ready.maybeSingle().overrideTypes<
     | (Omit<BackupProfileRow, 'low_value_threshold_minor'> & {
