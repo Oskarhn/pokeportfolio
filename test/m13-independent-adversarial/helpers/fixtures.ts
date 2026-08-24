@@ -167,13 +167,14 @@ export async function seedCompleteUserModel(
   })
 
   // Core holding: raw card with TWO lots (purchased known-cost + gift not-paid).
+  // NOTE (integration fix): storage lives on the ACQUISITION LOT since D-036/M6 — the
+  // implementation-blind fixture had assumed a holdings-level column that does not exist.
   const holdingId = await insertOne(service, 'holdings', {
     user_id: userId,
     holding_kind: 'raw_card',
     card_variant_id: seedCatalog.charizardVariantId,
     condition: 'NM',
     grading_state: 'raw',
-    storage_location_id: storageLocationId,
     is_favorite: true,
     notes: `Core holding ${label}`,
   })
@@ -191,6 +192,7 @@ export async function seedCompleteUserModel(
     cost_basis_currency: 'EUR',
     unit_cost_basis_nok_minor: 46_094,
     residual_minor: 0,
+    storage_location_id: storageLocationId,
     notes: `Lot A ${label}`,
   })
 
