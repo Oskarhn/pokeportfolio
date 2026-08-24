@@ -9,7 +9,6 @@ Work not currently scheduled. Themes, not microtasks. Scheduled work lives in
 
 | Item | Note |
 |---|---|
-| Holding-level quantity reduction and removal | Owner-requested after M12 (recorded 2026-08-30, not yet scheduled). From Portfolio → an individual card/holding detail: reduce quantity, or remove the holding entirely. quantity=1 offers "Remove from Portfolio"; quantity>1 offers "Adjust quantity" and "Remove all". A correction is NOT a Sale or Trade — no proceeds, no realized result. Must use acquisition-lot semantics (split/shrink real lots), never mutate a fake aggregate counter; multi-lot holdings must preserve per-lot provenance and cost basis. If a purchased-lot correction would break receipt/financial integrity, route through the existing purchase-correction lifecycle instead of silently rewriting finance. |
 | Scanner | M15, first post-MVP milestone. All-card tracking makes manual entry the dominant cost of using the app. |
 | Openings | M16. Fully modelled in the schema from MVP, so historical openings can be backdated once the workflow ships. |
 | Grading workflow and profitability | M17. `raw_value_at_submission` is captured from MVP so the analysis remains possible. |
@@ -51,6 +50,17 @@ Work not currently scheduled. Themes, not microtasks. Scheduled work lives in
 | Multi-currency display | The model supports it; no user needs it. |
 | Social features | Explicit non-goal. |
 | Other trading card games | Explicit non-goal. |
+
+### Follow-ups from the parallel Home/Search/quantity release (Prompt 30/33 LOW/INFO findings — not release blockers)
+
+| Item | Why |
+|---|---|
+| M8.1 lock ordering | `remove_holdings_from_portfolio` (and the relevant void path) iterates multi-lot work in unordered plan order. Sorting by lot id removes the LOW deadlock class exposed by reduce_holding_quantity's sibling locking: Postgres always aborts one side safely, but one line of lock-order discipline closes it. |
+| AdjustQuantitySheet full-lot UX | The per-lot Remove input permits requesting a full-lot reduction the server correctly refuses (lot-floor guard). Polish: clamp max to remaining − 1, or surface an inline "Void this lot instead" affordance when input equals the lot's full remaining quantity. |
+| Concurrency test precision | The per-lot floor guard provably makes reduce_holding_quantity's aggregate pre-invariant and post-image guard unreachable defense-in-depth. A short comment correction in the migration/test should say so, so the test framing does not overstate what is demonstrated. |
+| Instrumented concurrency proof | Add pg_locks/pg_stat_activity-based instrumentation asserting the second racing transaction is genuinely blocked, instead of depending on a timing stagger as proof of overlap. |
+| 0ms anomaly investigation | Two simultaneous RPC calls once reported success with no persisted mutation in an intermediate, unshipped implementation of reduce_holding_quantity. That code path no longer exists in the shipped SQL and the scenario was re-verified clean under forced overlap in CI. Kept as a low-priority instrumentation/research item in case the mechanism could affect another RPC under the same harness conditions. Classified UNRESOLVED_BUT_NONBLOCKING (output_33). |
+| Home privacy-eye ultra-narrow wrap | Optional UI polish: on extremely narrow widths the privacy eye may wrap away from the price it masks. |
 
 ---
 

@@ -191,6 +191,20 @@ distinction end-to-end through the real RPCs, and the pure-domain suite asserts 
 interval rule directly (cleared value never resurrected; atomic replacement keeps the
 replacement boundary; wedged backdated corrections never read as clears).
 
+**P28 (`tests/db/p28_holding_quantity_removal.test.ts`,
+`tests/authorization/p28_quantity_reduction.test.ts`,
+`tests/data/collection-reduce-wire.test.ts`).** The quantity-correction RPC end to end against
+real rows: remove/adjust/remove-all lifecycle effects on `list_portfolio`, per-lot chosen
+provenance for multi-lot holdings, unknown-cost lots staying unknown (never 0), purchased-lot and
+partially-disposed refusals with money/disposals/sale lines byte-identical after the refused
+attempt, receipt-edit routing reconciling inventory and allocated money exactly, forged
+cross-user lot ids rejected indistinguishably from unknown ones, M12 queue enqueued only when a
+correction actually applied, hostile JSONB shapes with zero mutation each, and concurrency:
+simultaneous strip-to-zero attempts both refused, reversed multi-lot payload orders never
+deadlocking (one clean win, one refusal against the winner's committed state), and a racing
+`create_sale` vs adjust serializing on one lock order. The wire-format suite pins that the client
+passes the reduction array as jsonb, not a JSON string scalar.
+
 ---
 
 ## 4. Authorization suite — mandatory

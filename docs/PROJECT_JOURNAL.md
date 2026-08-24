@@ -1626,3 +1626,21 @@ what actually runs.
 **Resolution.** Both documented here so the next session's verification scripts assert the
 right properties: content-based emptiness checks for aggregate RPCs, and no expectation of
 wall-clock duration inside single-transaction run records.
+
+## 2026-08-24 - A green PR failed CI on main with a byte-identical tree, and the tree was the whole argument
+
+**Problem.** Merging PR #40 (Home polish — five files, none of them SQL, scripts, or DB tests)
+turned `main`'s `db-tests` red: the permanent portfolio-snapshots benchmark died mid-seed with
+SQLSTATE 57014, a statement timeout, roughly thirty seconds into bulk-inserting ~297k synthetic
+price observations. The same commit content had passed the identical job on the PR's own check
+run hours earlier. Nothing about the merge could have changed database behaviour.
+
+**Resolution.** The decisive fact was mechanical, not diagnostic: a squash merge of a branch
+based on an unchanged `main` produces a commit whose **tree is byte-identical to the PR head's
+tree** (`git log --format=%T` on both commits proved it: one hash). The failing run and the
+passing run had therefore executed exactly the same code. A statement timeout during a large
+bulk seed on a shared runner is contention-shaped, not correctness-shaped. Re-running only the
+failed job on the same SHA was accordingly not "retrying until green" — it was resolving a
+documented coin-flip in the runner's favour, with the prior pass as prior evidence. It passed;
+the release continued. The rule worth keeping: before re-running anything, prove the tree did
+not change; if the tree changed, a re-run proves nothing and the failure must be read as real.

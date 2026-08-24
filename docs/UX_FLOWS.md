@@ -15,7 +15,7 @@ action, never a fifth destination. Intentionally symmetrical: two either side of
 | Destination | Route | What it is |
 |---|---|---|
 | **Home** | `/` | The investment-style portfolio dashboard (F10). Scope selector, currency preference and value-privacy control; honestly-marked "not available yet" wherever a real value or chart would render once M9/M12 exist. |
-| **Search** | `/catalog` | Cards and Sets modes, a dominant top search field, a set-browsing carousel, per-result quick-add (F2 below), a camera affordance reserved for M15 (F11.1), reserved layout for a future value column (M9). |
+| **Search** | `/catalog` | Cards and Sets modes, a dominant top search field, a vertical English-only set showcase, per-result quick-add (F2 below), a camera affordance reserved for M15 (F11.1), reserved layout for a future value column (M9). |
 | **Portfolio** | `/portfolio` | The user's owned-card browser — a top search field scoped to owned cards, favourite filter, an action menu (sort/select), grid/list/table, density, quick + full filters, custom collections (F8.2/F8.3), select-mode bulk actions (F8.4). User-facing name for what the schema still calls a holding/collection (DECISIONS.md D-040). |
 | **Profile** | `/profile` | Account identity and settings hub — display name, theme (now functional, light/dark/system), Portfolio display defaults, low-value threshold, European-pricing preference, preferred card language, admin invitations (admins only), sign out, provider attribution and app version. |
 
@@ -139,7 +139,7 @@ be: search, tap, save. The scanner will reuse exactly these session defaults.
 ✓ No card value is shown yet (M9); the result row layout reserves the space so adding it later is
   a small change, not a redesign
 
-### F2.3 — Search top bar, set carousel and favourite filter (M7.1)
+### F2.3 — Search top bar, set showcase and favourite filter (M7.1; showcase reworked P27/PR #41)
 
 → A dominant top search field ("Search for cards") with a magnifying-glass icon and a clear ×,
   plus a camera affordance and a star beside it
@@ -148,13 +148,17 @@ be: search, tap, save. The scanner will reuse exactly these session defaults.
 → **Star**: filters results to catalog cards behind a holding the user has marked Favourite — a
   direct read of existing favourite state (`holdings.is_favorite`), never a second wishlist system
 → Below the search controls, quick filters (Cards/Sets, language) and, when browsing with no
-  query, a horizontally-scrollable strip of real sets — newest first, filtered by language, real
-  set logo/symbol art
+  query, a vertical downward grid of real sets — newest first, English sets only (owner decision,
+  D-073; language chips govern text search results only), larger tiles with real set logo/symbol
+  art loaded via the TCGdex set-asset convention (API_SOURCES.md). The original horizontal
+  carousel is gone.
 → A compact sort menu offers Product name A→Z/Z→A and Card number low→high/high→low (natural
   order — DECISIONS.md's number-sort reasoning, §41/§72 below applies the same way here) over the
   already-fetched result set. Price-based sort stays absent until M9.
 ✓ Card results are image-led units (artwork, name, set, rarity · number, language/variant count,
   independent +), not a generic list row
+✓ Catalog reads retry once on a transient auth failure (`PGRST301`) and never retry other errors —
+  a defensive backstop for an unreproduced cold-start report, not a confirmed-bug fix (P27)
 
 ---
 
@@ -416,6 +420,34 @@ has been sold, blocked with the sale named
 
 **Wrong condition** → edit → if it collides with an existing holding in that state, offer to
 merge the lots into it
+
+### F9.1 — Holding-level quantity correction and removal (P28, PR #42)
+
+From a holding's detail page, without going through Portfolio select mode:
+
+- **quantity = 1** → one action, **Remove from Portfolio**.
+- **quantity > 1** → **Adjust quantity** and **Remove all**.
+
+**Remove / Remove all** reuses M8.1's removal lifecycle exactly
+(`remove_holdings_from_portfolio` → `void_acquisition_lot`); the holding disappears from
+Portfolio and every current-state figure, and its void history remains in acquisition history.
+
+**Adjust quantity** opens a sheet that names each live lot with its provenance (origin label,
+date, remaining count, cost wording). The owner picks the lot(s) explicitly — there is no
+server-side selection rule. Routing:
+
+- **Purchased lot** → refused by the RPC; the sheet routes to `/purchases/$id/edit`, the
+  established purchase-correction lifecycle. A purchased AND partially-sold lot shows "Can't
+  adjust" (both paths refuse; correct it void-sale-first).
+- **Non-purchase lot, partial shrink** → `reduce_holding_quantity` shrinks the chosen lot(s);
+  no sale row, no proceeds, no realized result — a correction is not a sale (D-072). The M12
+  dashboard recomputes from the change automatically.
+- **Full-lot removal request** → refused with "would be left with zero copies"; the sheet points
+  at the per-lot **Void** control (Acquisition History) for dropping exactly one lot while
+  siblings keep their units, or Remove-all for the whole holding.
+
+Every refusal is all-or-nothing: validation happens under locks before any write, so a failed
+correction leaves quantities, money and disposals byte-identical.
 
 ---
 

@@ -1961,3 +1961,44 @@ ALL available history, so nothing visible changes until someone crosses the cap.
 decision because it currently lives only as an inline constant: "MAX" must not silently promise
 unbounded lifetime history, and revisiting the constant (e.g. raising it once snapshots' storage
 cost is re-measured) should be conscious, not accidental.
+
+## D-072 — Holding-level quantity correction: correction is not a sale; purchased lots route to their receipt; a lot can never shrink to zero
+
+**2026-08-24 — Accepted** (parallel session P28, released via PR #42)
+
+Holding Detail gains direct quantity correction (`Adjust quantity`) and removal
+(`Remove from Portfolio` / `Remove all`). Semantics, each mirroring an existing lifecycle rule:
+
+1. **A correction here is not a sale.** No proceeds row, no sale line, no realized result, no
+   fabricated zero-price disposition. Removal reuses M8.1's `remove_holdings_from_portfolio` ?
+   `void_acquisition_lot` void lifecycle exactly; reduction shrinks real lots.
+2. **Purchased lots never shrink through this path.** Their quantity belongs to their receipt;
+   silently rewriting it would desync inventory from CS/GPO and break the D-060 reconciliation.
+   The RPC refuses (`purchase_line_id IS NOT NULL`) and the UI routes to the established
+   purchase-correction lifecycle (`update_purchase`) instead.
+3. **Shrink-not-disposal for non-purchase lots.** `reduce_holding_quantity(uuid, jsonb)` moves
+   `quantity` and `quantity_remaining` down together (D1 holds by construction), touches no
+   provenance column, refuses partially-disposed lots (frozen sale basis is untouchable), and
+   validates everything under sibling lot locks before the first write — all-or-nothing,
+   SECURITY INVOKER, ownership from `auth.uid()` alone.
+4. **The last unit is not adjustable.** An adjustment can never empty a holding — that is the
+   Remove flow. Enforced in layers: per-lot floor guard (a live lot can never be driven to zero
+   copies — the pre-existing unconditional schema CHECK says so), locked aggregate pre-invariant,
+   post-image refusal, with the CHECK itself as backstop. A single unwanted lot among siblings is
+   retired through the existing per-lot Void control instead.
+
+Alternatives rejected: routing every correction through sale rows with zero proceeds (fabricates
+financial history); allowing aggregate-counter mutation (destroys lot provenance); server-side
+automatic lot selection (no deterministic rule exists; the owner picks lots explicitly).
+
+## D-073 — Search's set showcase is pinned to English and browses vertically
+
+**2026-08-24 — Accepted** (parallel session P27, owner feedback after M12; released via PR #41)
+
+The Sets-mode showcase lists English sets only, newest first, in a vertical grid — replacing
+M7.1's horizontal carousel, which mixed languages and made deep browsing awkward. The language
+chips continue to govern text search results only; they do not filter the showcase. Set imagery
+normalizes extension-less TCGdex set identifiers by appending `.webp` on the path segment only.
+
+Cheap to reverse (a display-layer choice), recorded because it is product semantics an owner
+explicitly chose, so a future session does not "fix" it back to provider-default behaviour.
