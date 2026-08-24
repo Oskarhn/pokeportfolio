@@ -38,6 +38,29 @@
 --   * A holding always keeps at least one owned unit through this path. Removing the last unit is
 --     the existing Remove from Portfolio flow (void semantics, history preserved).
 --
+-- CONCURRENCY (Prompt 32 repair of Claude's PR #42 review findings): the "never removes the last
+-- owned unit" invariant above must hold under CONCURRENT calls, not just sequential ones. The
+-- first draft computed v_owned_total with a plain unlocked aggregate before locking anything, so
+-- two simultaneous adjustments targeting different sibling lots of one holding (A=5, B=5) could
+-- each read total=10, each pass 5 < 10, and jointly commit the holding to zero. Fixed by making
+-- serialization explicit, in create_sale's established style (20260828120010 pass 2):
+--   Pass 1 parses/validates the whole payload BEFORE any database access, so malformed input still
+--   aborts with zero mutation and — newly — without acquiring a single lock.
+--   Pass 2 then locks EVERY live sibling lot of the holding (p_holding_id + auth.uid(), never
+--   another user's rows) FOR UPDATE in ascending lot-id order — one statement, so two concurrent
+--   adjustments of the same holding fully serialize regardless of which lots each names; a
+--   concurrent insert of a NEW lot needs no row lock and only ever RAISES the real owned total,
+--   so validating against the pre-insert total is conservative-safe for the invariant.
+--   Only after those locks are held is v_owned_total computed (an aggregate itself cannot take
+--   row locks that mean anything — lock the underlying rows first), and the per-lot guards then
+--   run on already-held locks (plain SELECTs; no second, conflicting lock order).
+--   Ascending lot-id order matches create_sale's convention exactly (which locks its referenced
+--   lots the same way), so reduce vs create_sale on overlapping lots cannot deadlock either: both
+--   acquire in one global order. The legacy M8.1 remove/void path takes its write locks only at
+--   UPDATE time in plan order; against that unordered order a theoretical 40P01 deadlock remains
+--   possible (pre-existing exposure class, not introduced here) — Postgres detects it, aborts one
+--   side with zero mutation, and a retry succeeds. See output_32's cross-operation analysis.
+--
 -- INPUT CONTRACT: p_lot_reductions must arrive as an actual JSON array (the browser wrapper passes
 -- a JavaScript array; PostgREST casts it to jsonb). A stringified payload ('[{"lot_id":...}]')
 -- arrives as a jsonb STRING scalar and is rejected by the array guard — deliberately strict, so a
@@ -68,7 +91,8 @@ declare
   v_remove_text text;
   v_remove int;
   v_lot public.acquisition_lots;
-  v_seen uuid[] := '{}';
+  v_lot_ids uuid[] := '{}';
+  v_removes int[] := '{}';
 begin
   if v_user_id is null then
     raise exception 'not authenticated';
@@ -86,26 +110,16 @@ begin
     raise exception 'p_lot_reductions must contain at least one reduction';
   end if;
 
-  select coalesce(sum(al.quantity_remaining), 0)::int into v_owned_total
-    from public.acquisition_lots al
-    join public.holdings h on h.id = al.holding_id
-   where al.holding_id = p_holding_id
-     and al.user_id = v_user_id
-     and h.user_id = v_user_id
-     and al.voided_at is null;
-
-  -- One pass over the caller's entries, locking each requested lot row first: validation and
-  -- accumulation happen under the lock, nothing is written until every entry has validated, and
-  -- any raise aborts the whole call with zero mutations. Same all-or-nothing posture as
-  -- remove_holdings_from_portfolio.
+  -- Pass 1 — parse and validate the whole payload BEFORE any database access. Strict integer
+  -- text, not a bare ::int cast: '1.5'::int silently ROUNDS to 2 in Postgres, which would quietly
+  -- adjust a different quantity than the caller sent. Digits only — a missing, fractional,
+  -- negative or non-numeric value all reject with the same message. Separate statements again:
+  -- Postgres does not guarantee OR evaluation order, and the cast must never run on text the
+  -- pattern check has not vetted. Nothing below can run until every entry has passed here, so
+  -- malformed input still aborts with zero mutation (and, newly, zero locks taken).
   for v_idx in 0 .. jsonb_array_length(p_lot_reductions) - 1 loop
     v_entry := p_lot_reductions -> v_idx;
     v_lot_id := nullif(v_entry ->> 'lot_id', '')::uuid;
-    -- Strict integer text, not a bare ::int cast: '1.5'::int silently ROUNDS to 2 in Postgres,
-    -- which would quietly adjust a different quantity than the caller sent. Digits only — a
-    -- missing, fractional, negative or non-numeric value all reject with the same message.
-    -- Separate statements again: Postgres does not guarantee OR evaluation order, and the cast
-    -- must never run on text the pattern check has not vetted.
     v_remove_text := v_entry ->> 'remove_quantity';
 
     if v_lot_id is null then
@@ -121,20 +135,52 @@ begin
     if v_remove <= 0 then
       raise exception 'reduction %: remove_quantity must be a positive integer', v_idx;
     end if;
-    if v_lot_id = any(v_seen) then
+    if v_lot_id = any(v_lot_ids) then
       raise exception 'lot % appears more than once', v_lot_id;
     end if;
-    v_seen := v_seen || v_lot_id;
+    v_lot_ids := v_lot_ids || v_lot_id;
+    v_removes := v_removes || v_remove;
+  end loop;
 
+  -- Pass 2 — serialize quantity changes for this holding. Lock EVERY live sibling lot (not just
+  -- the requested subset) FOR UPDATE, in ascending lot-id order — create_sale's established
+  -- convention against concurrent multi-lot deadlocks. One statement means two simultaneous
+  -- adjustments of the same holding fully serialize no matter which lots each names: the second
+  -- waits here until the first commits, then re-reads and validates against the UPDATED state.
+  -- The user_id predicate guarantees a forged p_holding_id can never lock or even inspect another
+  -- user's rows.
+  perform 1
+    from public.acquisition_lots al
+   where al.holding_id = p_holding_id
+     and al.user_id = v_user_id
+     and al.voided_at is null
+   order by al.id
+   for update;
+
+  -- Pass 3 — only now compute the owned total, under the held locks. An aggregate cannot take
+  -- meaningful row locks itself; locking the underlying rows first is what makes this figure
+  -- trustworthy against concurrent siblings.
+  select coalesce(sum(al.quantity_remaining), 0)::int into v_owned_total
+    from public.acquisition_lots al
+    join public.holdings h on h.id = al.holding_id
+   where al.holding_id = p_holding_id
+     and al.user_id = v_user_id
+     and h.user_id = v_user_id
+     and al.voided_at is null;
+
+  -- Pass 4 — per-lot validation on already-held locks (plain SELECTs: pass 2 holds every sibling
+  -- lock, so introducing FOR UPDATE here would only add a second, redundant acquisition path).
+  -- Same all-or-nothing posture as remove_holdings_from_portfolio: nothing is written until every
+  -- entry has validated; any raise aborts the whole call with zero mutations.
+  for v_idx in 1 .. array_length(v_lot_ids, 1) loop
     select * into v_lot
       from public.acquisition_lots al
-     where al.id = v_lot_id
+     where al.id = v_lot_ids[v_idx]
        and al.holding_id = p_holding_id
        and al.user_id = v_user_id
-       and al.voided_at is null
-       for update;
+       and al.voided_at is null;
     if v_lot.id is null then
-      raise exception 'acquisition lot % not found on holding %', v_lot_id, p_holding_id;
+      raise exception 'acquisition lot % not found on holding %', v_lot_ids[v_idx], p_holding_id;
     end if;
 
     -- Partial disposal first: it is the terminal obstruction. A purchased AND partially-sold lot
@@ -145,7 +191,7 @@ begin
     if v_lot.quantity_remaining <> v_lot.quantity then
       raise exception
         'acquisition lot % has already been partially disposed elsewhere (% of % remaining) and cannot be adjusted here',
-        v_lot_id, v_lot.quantity_remaining, v_lot.quantity;
+        v_lot.id, v_lot.quantity_remaining, v_lot.quantity;
     end if;
     -- Purchased copies are corrected through their receipt (update_purchase), which rewrites
     -- allocations and cost basis atomically with the quantity. Never silently desync a lot from
@@ -153,29 +199,32 @@ begin
     if v_lot.purchase_line_id is not null then
       raise exception
         'lot % came from a purchase - correct its quantity by editing that receipt in Purchases',
-        v_lot_id;
+        v_lot.id;
     end if;
-    if v_remove > v_lot.quantity_remaining then
+    if v_removes[v_idx] > v_lot.quantity_remaining then
       raise exception 'reduction %: remove_quantity exceeds the lot''s remaining quantity (%)',
-        v_idx, v_lot.quantity_remaining;
+        v_idx - 1, v_lot.quantity_remaining;
     end if;
 
-    v_remove_total := v_remove_total + v_remove;
+    v_remove_total := v_remove_total + v_removes[v_idx];
   end loop;
 
   -- The adjustment path always leaves the holding alive; removing the last unit belongs to the
-  -- Remove-from-Portfolio flow (void_acquisition_lot / remove_holdings_from_portfolio).
+  -- Remove-from-Portfolio flow (void_acquisition_lot / remove_holdings_from_portfolio). With
+  -- every sibling locked, this check is now race-free: a concurrent adjustment of ANY lot of
+  -- this holding committed before we got here and is already reflected in v_owned_total.
   if v_remove_total >= v_owned_total then
     raise exception
       'this adjustment would remove every remaining copy - use Remove from Portfolio for that';
   end if;
 
-  for v_idx in 0 .. jsonb_array_length(p_lot_reductions) - 1 loop
-    v_entry := p_lot_reductions -> v_idx;
+  -- Pass 5 — updates, only after all validation passed. Every target row is already locked by
+  -- this transaction, so iteration order cannot deadlock.
+  for v_idx in 1 .. array_length(v_lot_ids, 1) loop
     update public.acquisition_lots
-       set quantity = quantity - (v_entry ->> 'remove_quantity')::int,
-           quantity_remaining = quantity_remaining - (v_entry ->> 'remove_quantity')::int
-     where id = (v_entry ->> 'lot_id')::uuid
+       set quantity = quantity - v_removes[v_idx],
+           quantity_remaining = quantity_remaining - v_removes[v_idx]
+     where id = v_lot_ids[v_idx]
        and user_id = v_user_id;
   end loop;
 
@@ -184,7 +233,7 @@ end;
 $$;
 
 comment on function public.reduce_holding_quantity(uuid, jsonb) is
-  'Correction path for a non-purchase lot''s tracked quantity (gift/pre_tracking/found/opening/trade_in): shrinks quantity and quantity_remaining together per lot, atomically across the whole adjustment, preserving provenance and leaving every financial row untouched. Refuses purchased lots (correct via update_purchase), partially-disposed lots, and adjustments that would remove a holding''s last unit. See BACKLOG.md / DECISIONS.md and 20260829120000''s shrink precedent.';
+  'Correction path for a non-purchase lot''s tracked quantity (gift/pre_tracking/found/opening/trade_in): shrinks quantity and quantity_remaining together per lot, atomically across the whole adjustment, preserving provenance and leaving every financial row untouched. Serializes concurrent adjustments of one holding by locking all its live sibling lots in ascending lot-id order before computing the owned total, so no adjustment can remove a holding''s final owned unit even when two calls race on different lots. Refuses purchased lots (correct via update_purchase), partially-disposed lots, and adjustments that would remove a holding''s last unit. See BACKLOG.md / DECISIONS.md and 20260829120000''s shrink precedent.';
 
 -- PostgreSQL grants EXECUTE on a newly created function to PUBLIC by default — revoke explicitly
 -- at creation, same as every function-creating migration since M4. The restated privilege baseline

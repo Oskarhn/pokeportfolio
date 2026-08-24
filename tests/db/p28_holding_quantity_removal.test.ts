@@ -675,3 +675,219 @@ describe('F/I/N — a partially-sold lot blocks correction and frozen sale histo
     expect(disposalCount).toBe(1)
   })
 })
+
+// ─── Concurrency (Prompt 32 repair of Claude's PR #42 review) ────────────────────────────────
+//
+// Claude demonstrated a real race against the pre-repair function: v_owned_total was computed by
+// an UNLOCKED aggregate before any row lock existed, so two simultaneous adjustments targeting
+// DIFFERENT sibling lots of one holding (A=5, B=5) each read total=10, each passed 5 < 10, and
+// jointly committed the holding to zero — violating "adjust never removes the final owned unit".
+// The repaired SQL locks EVERY live sibling lot FOR UPDATE in ascending lot-id order (create_
+// sale's convention) before computing anything. These tests pin that behaviour with real
+// overlapping transactions, using the same Promise.all harness as m10_sales.test.ts's own
+// concurrency proof. The winner is nondeterministic by design — no test may assert which call wins.
+
+describe('concurrency — two simultaneous adjustments of different sibling lots', () => {
+  it('serialize: exactly one succeeds, the holding keeps ≥1 owned unit, no financial or disposal row moves', async () => {
+    const holdingId = await insertHolding({
+      cardVariantId: seedCatalog.pikachuVariantId,
+      condition: 'GD',
+    })
+    const lotA = await insertLot({
+      holdingId,
+      origin: 'gift',
+      costBasisState: 'not_paid',
+      quantity: 5,
+    })
+    const lotB = await insertLot({
+      holdingId,
+      origin: 'pre_tracking',
+      costBasisState: 'unknown',
+      quantity: 5,
+    })
+
+    const spendBefore = await spending()
+    await service.from('portfolio_recompute_queue').delete().eq('user_id', userA.id)
+
+    const attempt = (lotId: string) =>
+      reduce({
+        p_holding_id: holdingId,
+        p_lot_reductions: [{ lot_id: lotId, remove_quantity: 5 }],
+      })
+
+    const [first, second] = await Promise.all([attempt(lotA.id), attempt(lotB.id)])
+
+    const outcomes = [first, second]
+    const succeeded = outcomes.filter((o) => o.error === null)
+    const failed = outcomes.filter((o) => o.error !== null)
+    expect(succeeded).toHaveLength(1)
+    expect(failed).toHaveLength(1)
+
+    // The loser must fail on the invariant itself — it observed the winner's committed total and
+    // refused to empty the holding (never a deadlock or transport error).
+    expect(failed[0]!.error!.message).toMatch(/remove every remaining copy/i)
+
+    const afterA = await lotById(lotA.id)
+    const afterB = await lotById(lotB.id)
+    // Exactly one lot was emptied; the other stands at its full 5 — total owned = 5 either way,
+    // never negative, and the winner's returned figure matches.
+    expect([afterA.quantity_remaining, afterB.quantity_remaining].sort()).toEqual([0, 5])
+    expect(afterA.quantity).toBeGreaterThanOrEqual(0)
+    expect(afterB.quantity).toBeGreaterThanOrEqual(0)
+    expect(succeeded[0]!.data![0]!.owned_quantity).toBe(5)
+
+    // No disposal was created and no financial row moved: these lots are cost-free by fixture,
+    // and the adjustment path must stay a correction, not a disguised sale.
+    for (const lotId of [lotA.id, lotB.id]) {
+      const { count: disposalCount, error: disposalError } = await service
+        .from('lot_disposals')
+        .select('id', { count: 'exact', head: true })
+        .eq('lot_id', lotId)
+      if (disposalError !== null) throw new Error(disposalError.message)
+      expect(disposalCount).toBe(0)
+
+      const { count: saleLineCount, error: saleLineError } = await service
+        .from('sale_lines')
+        .select('id', { count: 'exact', head: true })
+        .eq('lot_id', lotId)
+      if (saleLineError !== null) throw new Error(saleLineError.message)
+      expect(saleLineCount).toBe(0)
+    }
+    const spendAfter = await spending()
+    expect(BigInt(spendAfter.gpo_nok_minor)).toBe(BigInt(spendBefore.gpo_nok_minor))
+    expect(BigInt(spendAfter.cs_nok_minor)).toBe(BigInt(spendBefore.cs_nok_minor))
+    expect(BigInt(spendAfter.hs_nok_minor)).toBe(BigInt(spendBefore.hs_nok_minor))
+
+    // M12 invalidation stays sane: exactly the winning UPDATE enqueued a recompute (the aborted
+    // transaction's enqueue rolled back with it).
+    const { data: queued } = await service
+      .from('portfolio_recompute_queue')
+      .select('user_id, dirty_from')
+      .eq('user_id', userA.id)
+      .single<{ user_id: string; dirty_from: string }>()
+    expect(queued).not.toBeNull()
+    expect(queued!.dirty_from <= today).toBe(true)
+  })
+})
+
+describe('concurrency — reversed multi-lot input orders cannot deadlock', () => {
+  it('overlapping payloads sent in opposite orders serialize cleanly — never 40P01', async () => {
+    const holdingId = await insertHolding({
+      cardVariantId: seedCatalog.grassEnergyVariantId,
+      condition: 'MT',
+    })
+    const lotA = await insertLot({
+      holdingId,
+      origin: 'gift',
+      costBasisState: 'not_paid',
+      quantity: 3,
+    })
+    const lotB = await insertLot({
+      holdingId,
+      origin: 'pre_tracking',
+      costBasisState: 'unknown',
+      quantity: 3,
+    })
+
+    // Each call alone is legal (4 < 6); jointly impossible (8 ≥ 6). Caller-supplied ordering
+    // must not matter: pass 2 locks all siblings ascending regardless of payload order.
+    const [first, second] = await Promise.all([
+      reduce({
+        p_holding_id: holdingId,
+        p_lot_reductions: [
+          { lot_id: lotA.id, remove_quantity: 2 },
+          { lot_id: lotB.id, remove_quantity: 2 },
+        ],
+      }),
+      reduce({
+        p_holding_id: holdingId,
+        p_lot_reductions: [
+          { lot_id: lotB.id, remove_quantity: 2 },
+          { lot_id: lotA.id, remove_quantity: 2 },
+        ],
+      }),
+    ])
+
+    const outcomes = [first, second]
+    const succeeded = outcomes.filter((o) => o.error === null)
+    const failed = outcomes.filter((o) => o.error !== null)
+    expect(succeeded).toHaveLength(1)
+    expect(failed).toHaveLength(1)
+    expect(failed[0]!.error!.message.toLowerCase()).not.toContain('deadlock')
+    expect(failed[0]!.error!.code).not.toBe('40P01')
+
+    // Total 6 − 4 = 2, whichever payload won.
+    const afterA = await lotById(lotA.id)
+    const afterB = await lotById(lotB.id)
+    expect(afterA.quantity_remaining + afterB.quantity_remaining).toBe(2)
+    expect(succeeded[0]!.data![0]!.owned_quantity).toBe(2)
+  })
+})
+
+describe('concurrency — adjustment vs sale of the same eligible gift lot', () => {
+  it('create_sale and reduce_holding_quantity serialize on one lock order — legal correction OR legal sale wins, the other refuses safely', async () => {
+    // create_sale disposes gift/pre_tracking lots too, so an adjust and a sale CAN target the
+    // same lot simultaneously. Both functions lock acquisition_lots in ascending lot-id order,
+    // so neither can deadlock against the other; the loser must refuse against the winner's
+    // committed state with zero partial mutation.
+    const holdingId = await insertHolding({
+      cardVariantId: seedCatalog.charizardShadowlessFirstEditionVariantId,
+      condition: 'EX',
+    })
+    const lot = await insertLot({
+      holdingId,
+      origin: 'gift',
+      costBasisState: 'not_paid',
+      quantity: 5,
+    })
+
+    const [adjust, sale] = await Promise.all([
+      reduce({
+        p_holding_id: holdingId,
+        p_lot_reductions: [{ lot_id: lot.id, remove_quantity: 3 }],
+      }),
+      clientA
+        .rpc('create_sale', {
+          p_idempotency_key: crypto.randomUUID(),
+          p_sold_on: today,
+          p_currency: 'NOK',
+          p_fees_minor: 0,
+          p_lines: [{ lot_id: lot.id, quantity: 5, unit_gross_minor: 5000 }],
+        })
+        .single<{ id: string }>(),
+    ])
+
+    const outcomes = [adjust.error, sale.error]
+    expect(outcomes.filter((e) => e === null)).toHaveLength(1)
+    for (const e of outcomes) {
+      if (e !== null) {
+        expect(e.message.toLowerCase()).not.toContain('deadlock')
+      }
+    }
+
+    const after = await lotById(lot.id)
+    if (sale.error === null) {
+      // Sale won: the whole lot was disposed; the adjuster must have refused on the frozen
+      // disposal history (or the exhausted remaining), and inventory reflects the sale only.
+      expect(after.quantity).toBe(5)
+      expect(after.quantity_remaining).toBe(0)
+      const { count: disposalCount, error: disposalError } = await service
+        .from('lot_disposals')
+        .select('id', { count: 'exact', head: true })
+        .eq('lot_id', lot.id)
+      if (disposalError !== null) throw new Error(disposalError.message)
+      expect(disposalCount).toBe(1)
+    } else {
+      // Adjust won: the shrink landed intact; the sale must have refused as insufficient stock.
+      expect(sale.error.message).toMatch(/available|remain/i)
+      expect(after.quantity).toBe(2)
+      expect(after.quantity_remaining).toBe(2)
+      const { count: disposalCount, error: disposalError } = await service
+        .from('lot_disposals')
+        .select('id', { count: 'exact', head: true })
+        .eq('lot_id', lot.id)
+      if (disposalError !== null) throw new Error(disposalError.message)
+      expect(disposalCount).toBe(0)
+    }
+  })
+})
