@@ -1,24 +1,55 @@
-import { unwiredExportController, type ExportController } from './contract'
+import {
+  exportCsvArtifacts,
+  exportJsonBackup,
+} from '../../data/export'
+import type { ExportArtifact, ExportController, ExportProgressListener } from './contract'
 
 /**
- * P35 INTEGRATION SEAM — the one place to connect M13's UI to M13's engine.
+ * The REAL P35↔P36 seam (M13 integration): the UI's ExportController contract satisfied by the
+ * export core in src/data/export. This is the only file that knows both halves.
  *
- * This branch (P36) owns the export/backup user experience and the platform file delivery, and
- * compiles independently of `src/domain/export/**` / `src/data/export/**` by design: it never
- * imports them. The parallel core branch (P35) owns data fetching and serialization.
+ * Progress mapping: the core reports {section,totalRows} per landed page; the UI contract wants
+ * coarse phases only — 'preparing' until the first rows land, 'creating-files' afterwards.
+ * No phase is fabricated before that point and no percentage is invented (prompt §12).
  *
- * To integrate, replace this function's body with construction of P35's controller, e.g.
- *
- *   import { createExportController } from '../../data/export'
- *   export function getExportController(): ExportController {
- *     return createExportController()
- *   }
- *
- * …or inject any object satisfying `ExportController` (see contract.ts). Nothing else in this
- * feature needs to change: ExportPage calls `getExportController()` once per mount and every
- * action flows through the interface. Until that edit happens, actions fail honestly with
- * "Export is not available yet." — never a fabricated success.
+ * Each action performs exactly one snapshot fetch of its own; the two actions are never
+ * combined into a hidden double-fetch. Empty accounts still produce their full artifacts (a
+ * valid envelope / header-only CSV files), so an empty result array here means a genuine core
+ * defect, not "nothing to export".
  */
+
+function toFeatureArtifacts(
+  files: readonly { filename: string; blob: Blob }[],
+): ExportArtifact[] {
+  return files.map(({ filename, blob }) => ({ filename, blob }))
+}
+
+function progressFor(onProgress?: ExportProgressListener) {
+  let sawRows = false
+  return () => {
+    if (!sawRows && onProgress) {
+      sawRows = true
+      onProgress('creating-files')
+    }
+  }
+}
+
+const wiredExportController: ExportController = {
+  async createBackup(onProgress?: ExportProgressListener): Promise<ExportArtifact[]> {
+    onProgress?.('preparing')
+    const onPage = progressFor(onProgress)
+    const artifact = await exportJsonBackup({ onPage })
+    return toFeatureArtifacts([artifact])
+  },
+
+  async createCsvExport(onProgress?: ExportProgressListener): Promise<ExportArtifact[]> {
+    onProgress?.('preparing')
+    const onPage = progressFor(onProgress)
+    const artifacts = await exportCsvArtifacts({ onPage })
+    return toFeatureArtifacts(artifacts)
+  },
+}
+
 export function getExportController(): ExportController {
-  return unwiredExportController
+  return wiredExportController
 }

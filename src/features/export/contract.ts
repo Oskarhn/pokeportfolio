@@ -34,21 +34,3 @@ export interface ExportController {
   /** CSV suite — one artifact, or several (the UI delivers either without assuming a ZIP). */
   createCsvExport(onProgress?: ExportProgressListener): Promise<ExportArtifact[]>
 }
-
-/** Thrown by the placeholder controller below until P35's engine is wired in. */
-export class ExportNotAvailableError extends Error {
-  constructor() {
-    super('Export is not available yet.')
-    this.name = 'ExportNotAvailableError'
-  }
-}
-
-/**
- * Placeholder used until the integration lands. It rejects honestly rather than pretending —
- * pressing an action shows the normal error state with a Retry button, exactly as any real
- * failure would.
- */
-export const unwiredExportController: ExportController = {
-  createBackup: () => Promise.reject(new ExportNotAvailableError()),
-  createCsvExport: () => Promise.reject(new ExportNotAvailableError()),
-}
