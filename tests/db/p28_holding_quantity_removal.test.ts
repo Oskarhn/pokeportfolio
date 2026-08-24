@@ -716,12 +716,31 @@ describe('concurrency — two simultaneous adjustments of different sibling lots
         p_holding_id: holdingId,
         p_lot_reductions: [{ lot_id: lotId, remove_quantity: 5 }],
       })
+    // Launch the second call while the first is guaranteed mid-flight, so the two RPC
+    // transactions genuinely interleave at the database instead of possibly missing each other.
+    const delayed = async <T>(ms: number, make: () => Promise<T>): Promise<T> => {
+      await new Promise<void>((resolve) => setTimeout(resolve, ms))
+      return make()
+    }
 
-    const [first, second] = await Promise.all([attempt(lotA.id), attempt(lotB.id)])
+    const [first, second] = await Promise.all([
+      attempt(lotA.id),
+      delayed(25, () => attempt(lotB.id)),
+    ])
 
     const outcomes = [first, second]
     const succeeded = outcomes.filter((o) => o.error === null)
     const failed = outcomes.filter((o) => o.error !== null)
+    if (succeeded.length !== 1 || failed.length !== 1) {
+      const diagA = await lotById(lotA.id)
+      const diagB = await lotById(lotB.id)
+      throw new Error(
+        `expected exactly one success: succeeded=${JSON.stringify(
+          succeeded.map((o) => o.data),
+        )} failed=${JSON.stringify(failed.map((o) => o.error?.message))} ` +
+          `lotA=${JSON.stringify(diagA)} lotB=${JSON.stringify(diagB)}`,
+      )
+    }
     expect(succeeded).toHaveLength(1)
     expect(failed).toHaveLength(1)
 
@@ -792,7 +811,12 @@ describe('concurrency — reversed multi-lot input orders cannot deadlock', () =
     })
 
     // Each call alone is legal (4 < 6); jointly impossible (8 ≥ 6). Caller-supplied ordering
-    // must not matter: pass 2 locks all siblings ascending regardless of payload order.
+    // must not matter: pass 2 locks all siblings ascending regardless of payload order. The
+    // second call launches mid-flight of the first so the transactions truly overlap.
+    const delayed = async <T>(ms: number, make: () => Promise<T>): Promise<T> => {
+      await new Promise<void>((resolve) => setTimeout(resolve, ms))
+      return make()
+    }
     const [first, second] = await Promise.all([
       reduce({
         p_holding_id: holdingId,
@@ -801,18 +825,30 @@ describe('concurrency — reversed multi-lot input orders cannot deadlock', () =
           { lot_id: lotB.id, remove_quantity: 2 },
         ],
       }),
-      reduce({
-        p_holding_id: holdingId,
-        p_lot_reductions: [
-          { lot_id: lotB.id, remove_quantity: 2 },
-          { lot_id: lotA.id, remove_quantity: 2 },
-        ],
-      }),
+      delayed(25, () =>
+        reduce({
+          p_holding_id: holdingId,
+          p_lot_reductions: [
+            { lot_id: lotB.id, remove_quantity: 2 },
+            { lot_id: lotA.id, remove_quantity: 2 },
+          ],
+        }),
+      ),
     ])
 
     const outcomes = [first, second]
     const succeeded = outcomes.filter((o) => o.error === null)
     const failed = outcomes.filter((o) => o.error !== null)
+    if (succeeded.length !== 1 || failed.length !== 1) {
+      const diagA = await lotById(lotA.id)
+      const diagB = await lotById(lotB.id)
+      throw new Error(
+        `expected exactly one success: succeeded=${JSON.stringify(
+          succeeded.map((o) => o.data),
+        )} failed=${JSON.stringify(failed.map((o) => o.error?.message))} ` +
+          `lotA=${JSON.stringify(diagA)} lotB=${JSON.stringify(diagB)}`,
+      )
+    }
     expect(succeeded).toHaveLength(1)
     expect(failed).toHaveLength(1)
     expect(failed[0]!.error!.message.toLowerCase()).not.toContain('deadlock')
