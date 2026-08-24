@@ -65,6 +65,52 @@ green on the integration PR itself, then merge/deploy strictly per GIT_WORKFLOW.
 
 ---
 
+## P43 — Portfolio reset + unified History (draft PR #49, rebased)
+
+- **Reset backend** (`20260901120010_p43_reset_and_history.sql`):
+  `reset_my_portfolio_data()` — SECURITY DEFINER out of necessity (browsers hold no DELETE
+  grants on the ledger; widening them forever so an INVOKER could work would undo D-060),
+  `auth.uid()`-scoped with no user-id parameter, fixed `search_path`, no dynamic SQL,
+  FK-deterministic deletion order with the M12 queue row locked FIRST so no concurrent drain can
+  resurrect stale state, PUBLIC/anon revoked + authenticated granted, per-table deleted counts
+  returned. Preserves account/profile/settings and reusable setup metadata (retailers, storage
+  locations, tags, collection definitions emptied of members, manual card definitions, own
+  sealed products). Nothing re-created afterward — genuinely empty.
+- **History read surface**: `list_history_events(p_kind, p_include_voided, p_limit,
+  p_before_at, p_before_id)` — one bounded SECURITY INVOKER keyset-paginated union over
+  purchases, sales, non-purchase acquisitions and active manual valuations; voided entries
+  hidden by default behind a presentation-only toggle; money as text; no N+1.
+- **UI**: Profile Danger zone ("Are you sure?" → "Yes, reset portfolio", both removal and
+  retention lists stated plainly, disabled-while-running, visible errors, invalidate-all +
+  navigate Home on success); History rebuilt as one feed with All/Purchases/Sales/Added/Values
+  chips, corrections toggle, Load-more pagination, every row linking to its existing correction
+  surface (purchase/sale detail, Holding Detail).
+- **Decisions**: D-084 (CORRECTION vs VOID vs DISPLAY FILTER vs FULL RESET — reset is the only
+  intentional hard delete), D-085 (History = bounded union over canonical sources; corrections
+  surface through status, not a second table).
+- **Tests**: `tests/db/p43_reset_and_history.test.ts` (full seed matrix → reset → emptiness +
+  preservation + B untouched + honest empty dashboard reads; history kinds/filters/toggle/
+  pagination; idempotent re-reset; §12 worked example end-to-end),
+  `tests/authorization/p43_reset_history.test.ts` (anon denial both functions, forged
+  `p_user_id` overload rejected in the schema cache, feed isolation A vs B, cross-user reset
+  impotence), new grant entries in `tests/authorization/function_grants.test.ts`,
+  `scripts/grant-audit.sql` and the restated baseline `20260901120020_p43_privilege_baseline.sql`.
+- **CI: GREEN** on the PR head (both jobs; 502/502 db+authorization tests across 39 files,
+  hostile-grant convergence re-applying the new baseline). Four red runs preceded green and
+  every failure was a genuine catch by CI's ephemeral Postgres: a wrong-case fixture enum
+  ('PSA' vs 'psa'), missing `.single()` on rpc results in test helpers, an accumulation-based
+  isolation assertion, **one real function bug — reset's returned counts were computed after
+  the deletes (always zero), now captured via GET DIAGNOSTICS ROW_COUNT per statement** — and
+  a fixture lot silently failing M11's sealed_intent rule. Local checks before each push:
+  typecheck/lint/format clean, domain tests 168/168, production build green. Atomicity is
+  structurally asserted (one PostgREST request = one transaction + exercised FK order); true
+  fault-injection needs DDL the harness lacks — disclosed in TESTING.md.
+- **Not done / for reviewers**: confirm the reset-vs-drain concurrency note in SECURITY.md
+  §3.2.5 matches their reading; decide whether History's Values chip label should read
+  "Valuations"; hosted deploy intentionally NOT performed in this session.
+
+---
+
 ## P26/P27/P28 — parallel release (PRs #40/#41/#42, integrated 2026-08-24)
 
 Three parallel owner-feedback sessions, each independently reviewed (Prompt 30 full adversarial;
