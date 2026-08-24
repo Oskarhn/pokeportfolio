@@ -100,19 +100,21 @@ describe('the seeded portfolio (sanity before reset)', () => {
 
   async function seedEverything() {
     // 1. Raw known-cost quick-add — creates purchase + line + lot atomically.
-    const added = await clientA.rpc('add_card_acquisition', {
-      p_card_variant_id: seedCatalog.charizardVariantId,
-      p_grading_state: 'raw',
-      p_condition: 'NM',
-      p_origin: 'purchase',
-      p_cost_basis_state: 'known',
-      p_unit_cost_basis_minor: 900,
-      p_quantity: 1,
-      p_acquired_on: today,
-    })
+    const added = await clientA
+      .rpc('add_card_acquisition', {
+        p_card_variant_id: seedCatalog.charizardVariantId,
+        p_grading_state: 'raw',
+        p_condition: 'NM',
+        p_origin: 'purchase',
+        p_cost_basis_state: 'known',
+        p_unit_cost_basis_minor: 900,
+        p_quantity: 1,
+        p_acquired_on: today,
+      })
+      .single<{ holding_id: string; lot_id: string }>()
     if (added.error) throw new Error(added.error.message)
-    quickAddHoldingId = (added.data as { holding_id: string }).holding_id
-    quickAddLotId = (added.data as { lot_id: string }).lot_id
+    quickAddHoldingId = added.data.holding_id
+    quickAddLotId = added.data.lot_id
 
     // 2. Multi-line purchase: two card lines + an accessory line + shipping.
     const purchase = await clientA.rpc('create_purchase', {
@@ -254,19 +256,21 @@ describe('the seeded portfolio (sanity before reset)', () => {
 
     // 9. One corrected mistake for the history toggle: a second quick-add whose lot was voided
     //    through the canonical correction lifecycle (auto-voiding its sole purchase).
-    const mistake = await clientA.rpc('add_card_acquisition', {
-      p_card_variant_id: seedCatalog.grassEnergyVariantId,
-      p_grading_state: 'raw',
-      p_condition: 'NM',
-      p_origin: 'purchase',
-      p_cost_basis_state: 'known',
-      p_unit_cost_basis_minor: 50,
-      p_quantity: 1,
-      p_acquired_on: today,
-    })
+    const mistake = await clientA
+      .rpc('add_card_acquisition', {
+        p_card_variant_id: seedCatalog.grassEnergyVariantId,
+        p_grading_state: 'raw',
+        p_condition: 'NM',
+        p_origin: 'purchase',
+        p_cost_basis_state: 'known',
+        p_unit_cost_basis_minor: 50,
+        p_quantity: 1,
+        p_acquired_on: today,
+      })
+      .single<{ holding_id: string; lot_id: string }>()
     if (mistake.error) throw new Error(mistake.error.message)
     await clientA.rpc('void_acquisition_lot', {
-      p_lot_id: (mistake.data as { lot_id: string }).lot_id,
+      p_lot_id: mistake.data.lot_id,
       p_reason: 'test mistake',
     })
   }
@@ -351,17 +355,19 @@ describe('the seeded portfolio (sanity before reset)', () => {
   it('reset clears owned data, keeps the account and preserved metadata, and leaves B untouched', async () => {
     // User B holds independent state that must survive byte-for-byte in shape.
     const bAdded = await signInAs(userB).then(async (clientB) => {
-      const result = await clientB.rpc('add_card_acquisition', {
-        p_card_variant_id: seedCatalog.pikachuVariantId,
-        p_grading_state: 'raw',
-        p_condition: 'NM',
-        p_origin: 'gift',
-        p_cost_basis_state: 'not_paid',
-        p_quantity: 1,
-        p_acquired_on: today,
-      })
+      const result = await clientB
+        .rpc('add_card_acquisition', {
+          p_card_variant_id: seedCatalog.pikachuVariantId,
+          p_grading_state: 'raw',
+          p_condition: 'NM',
+          p_origin: 'gift',
+          p_cost_basis_state: 'not_paid',
+          p_quantity: 1,
+          p_acquired_on: today,
+        })
+        .single<{ holding_id: string; lot_id: string }>()
       if (result.error) throw new Error(result.error.message)
-      return result.data as { holding_id: string }
+      return result.data
     })
     const beforeB = {
       holdings: await count('holdings', userB.id),
@@ -464,16 +470,18 @@ describe('the seeded portfolio (sanity before reset)', () => {
   })
 
   it('History after re-seeding reflects only fresh canonical data', async () => {
-    const added = await clientA.rpc('add_card_acquisition', {
-      p_card_variant_id: seedCatalog.charizardVariantId,
-      p_grading_state: 'raw',
-      p_condition: 'NM',
-      p_origin: 'purchase',
-      p_cost_basis_state: 'known',
-      p_unit_cost_basis_minor: 700,
-      p_quantity: 1,
-      p_acquired_on: today,
-    })
+    const added = await clientA
+      .rpc('add_card_acquisition', {
+        p_card_variant_id: seedCatalog.charizardVariantId,
+        p_grading_state: 'raw',
+        p_condition: 'NM',
+        p_origin: 'purchase',
+        p_cost_basis_state: 'known',
+        p_unit_cost_basis_minor: 700,
+        p_quantity: 1,
+        p_acquired_on: today,
+      })
+      .single<{ holding_id: string; lot_id: string }>()
     if (added.error) throw new Error(added.error.message)
 
     const events = await historyEvents({})
@@ -484,7 +492,7 @@ describe('the seeded portfolio (sanity before reset)', () => {
     // The prompt §12 worked example end-to-end: correct the accidental entry through the
     // canonical lifecycle — no hard deletion anywhere — and watch History stop showing it.
     await clientA.rpc('void_acquisition_lot', {
-      p_lot_id: (added.data as { lot_id: string }).lot_id,
+      p_lot_id: added.data.lot_id,
       p_reason: 'accidental quick-add',
     })
     const active = await historyEvents({})
