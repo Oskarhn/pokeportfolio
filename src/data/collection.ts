@@ -173,6 +173,13 @@ export interface AcquisitionLot {
   /** Null for anything but a sealed holding's lot (prompt §56 — same lot mechanics as cards, plus
    *  this one field). */
   sealedIntent: SealedIntent | null
+  /** Set exactly when the lot traces to a real purchase (cost_basis_state = 'known' — the schema
+   *  CHECK makes the two equivalent). P28: Holding Detail's correction UI routes these lots to
+   *  their receipt (update_purchase) instead of adjusting them in place. */
+  purchaseLineId: string | null
+  /** The receipt's id when purchaseLineId is set — lets the UI link straight to
+   *  /purchases/$purchaseId/edit. */
+  purchaseId: string | null
 }
 
 interface AcquisitionLotRow {
@@ -190,13 +197,15 @@ interface AcquisitionLotRow {
   created_at: string
   storage_locations: { name: string } | null
   sealed_intent: SealedIntent | null
+  purchase_line_id: string | null
+  purchase_lines: { purchase_id: string } | null
 }
 
 export async function getHoldingLots(holdingId: string): Promise<AcquisitionLot[]> {
   const { data, error } = await supabase
     .from('acquisition_lots')
     .select(
-      'id, origin, cost_basis_state, acquired_on, quantity, quantity_remaining, unit_cost_basis_minor::text, cost_basis_currency, storage_location_id, notes, voided_at, created_at, storage_locations(name), sealed_intent',
+      'id, origin, cost_basis_state, acquired_on, quantity, quantity_remaining, unit_cost_basis_minor::text, cost_basis_currency, storage_location_id, notes, voided_at, created_at, storage_locations(name), sealed_intent, purchase_line_id, purchase_lines(purchase_id)',
     )
     .eq('holding_id', holdingId)
     .order('acquired_on', { ascending: false })
@@ -219,6 +228,8 @@ export async function getHoldingLots(holdingId: string): Promise<AcquisitionLot[
     voidedAt: row.voided_at,
     createdAt: row.created_at,
     sealedIntent: row.sealed_intent,
+    purchaseLineId: row.purchase_line_id,
+    purchaseId: row.purchase_lines?.purchase_id ?? null,
   }))
 }
 
@@ -594,6 +605,32 @@ export async function removeHoldingsFromPortfolio(
     blockedReason: row.blocked_reason,
     physicalCount: row.physical_count,
   }))
+}
+
+export interface LotReduction {
+  lotId: string
+  removeQuantity: number
+}
+
+/** Holding Detail's "Adjust quantity" (P28) — a correction of tracked ownership, never a sale.
+ *  Atomic across every lot the adjustment touches; returns the holding's new owned quantity.
+ *  Purchased lots are refused server-side on purpose (their quantity is corrected through the
+ *  receipt itself, so money and inventory never disagree) — see reduce_holding_quantity
+ *  (20260831120000_p28_reduce_holding_quantity.sql). */
+export async function reduceHoldingQuantity(params: {
+  holdingId: string
+  reductions: LotReduction[]
+}): Promise<number> {
+  const { data, error } = await supabase.rpc('reduce_holding_quantity', {
+    p_holding_id: params.holdingId,
+    p_lot_reductions: JSON.stringify(
+      params.reductions.map((r) => ({ lot_id: r.lotId, remove_quantity: r.removeQuantity })),
+    ),
+  })
+  if (error) throw new Error(error.message)
+  const row = data.at(0)
+  if (!row) throw new Error('reduce_holding_quantity returned no result')
+  return row.owned_quantity
 }
 
 export interface AddCardAcquisitionInput {
