@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react'
-import { Link, useParams } from '@tanstack/react-router'
+import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   clearManualValuation,
   getHoldingLots,
   getHoldingSummary,
   getHoldingValueProvenance,
+  removeHoldingsFromPortfolio,
   sealedIntentBreakdown,
   setManualValuation,
   toggleFavorite,
@@ -23,7 +24,9 @@ import {
 } from '../../data/customCollections'
 import { CardImage } from '../catalog/CardImage'
 import { SealedProductImage } from '../catalog/SealedProductImage'
+import { AdjustQuantitySheet } from './AdjustQuantitySheet'
 import { SealedIntentSheet } from './SealedIntentSheet'
+import { Sheet } from '../../ui/Sheet'
 import { Button, FormMessage, TextField } from '../../ui/form'
 import { formatNokMinor, parseNokInput } from '../../ui/money-format'
 import {
@@ -53,11 +56,15 @@ function storageSummary(
 
 export function HoldingDetailPage() {
   const { holdingId } = useParams({ from: '/portfolio/$holdingId' })
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [manualValueInput, setManualValueInput] = useState('')
   const [valueError, setValueError] = useState<string | null>(null)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [intentLot, setIntentLot] = useState<AcquisitionLot | null>(null)
+  const [adjustOpen, setAdjustOpen] = useState(false)
+  const [removeConfirmOpen, setRemoveConfirmOpen] = useState(false)
+  const [removeError, setRemoveError] = useState<string | null>(null)
 
   const holding = useQuery({
     queryKey: ['holding-summary', holdingId],
@@ -98,6 +105,35 @@ export function HoldingDetailPage() {
     },
     onError: (error: Error) => {
       setVoidError(error.message)
+    },
+  })
+
+  // P28 — "Remove from Portfolio" / "Remove all" straight from Holding Detail (no Select mode
+  // needed). Reuses the M8.1 correction lifecycle unchanged: remove_holdings_from_portfolio voids
+  // every live lot via void_acquisition_lot itself, so the same parent-purchase and
+  // partially-disposed guards apply here as everywhere else.
+  const removeAllMutation = useMutation({
+    mutationFn: () => removeHoldingsFromPortfolio([holdingId]),
+    onSuccess: async (results) => {
+      const blocked = results.find((r) => r.blocked)
+      if (blocked) {
+        setRemoveError(blocked.blockedReason ?? 'This holding cannot be removed right now.')
+        return
+      }
+      setRemoveError(null)
+      await queryClient.invalidateQueries({ queryKey: ['holding-lots', holdingId] })
+      await queryClient.invalidateQueries({ queryKey: ['holding-summary', holdingId] })
+      await queryClient.invalidateQueries({ queryKey: ['holding-value-provenance', holdingId] })
+      await queryClient.invalidateQueries({ queryKey: ['portfolio'] })
+      await queryClient.invalidateQueries({ queryKey: ['portfolio-counts'] })
+      await queryClient.invalidateQueries({ queryKey: ['spending-summary'] })
+      await queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] })
+      setRemoveConfirmOpen(false)
+      // Nothing owned remains — a detail page claiming ownership would be stale. Back to Portfolio.
+      await navigate({ to: '/portfolio' })
+    },
+    onError: (error: Error) => {
+      setRemoveError(error.message)
     },
   })
 
@@ -283,13 +319,37 @@ export function HoldingDetailPage() {
             <dd className="text-slate-200">{storage ?? '—'}</dd>
           </dl>
           {h.quantity > 0 ? (
-            <Link
-              to="/sales/new"
-              search={{ holdingIds: holdingId }}
-              className="mt-2 flex min-h-10 w-fit items-center rounded-lg border border-slate-700 px-4 text-sm font-semibold text-slate-200 hover:bg-slate-800"
-            >
-              Sell
-            </Link>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <Link
+                to="/sales/new"
+                search={{ holdingIds: holdingId }}
+                className="flex min-h-10 w-fit items-center rounded-lg border border-slate-700 px-4 text-sm font-semibold text-slate-200 hover:bg-slate-800"
+              >
+                Sell
+              </Link>
+              {h.quantity > 1 ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRemoveError(null)
+                    setAdjustOpen(true)
+                  }}
+                  className="flex min-h-10 w-fit items-center rounded-lg border border-slate-700 px-4 text-sm font-semibold text-slate-200 hover:bg-slate-800"
+                >
+                  Adjust quantity
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => {
+                  setRemoveError(null)
+                  setRemoveConfirmOpen(true)
+                }}
+                className="flex min-h-10 w-fit items-center rounded-lg border border-rose-900/60 px-4 text-sm font-semibold text-rose-300 hover:bg-rose-950/40"
+              >
+                {h.quantity > 1 ? 'Remove all' : 'Remove from Portfolio'}
+              </button>
+            </div>
           ) : null}
         </div>
       </div>
@@ -548,6 +608,59 @@ export function HoldingDetailPage() {
           lot={intentLot}
         />
       ) : null}
+
+      {adjustOpen && h.quantity > 1 ? (
+        <AdjustQuantitySheet
+          open
+          onClose={() => {
+            setAdjustOpen(false)
+          }}
+          holdingId={holdingId}
+          holdingName={displayName}
+          currentQuantity={h.quantity}
+          lots={lots.data ?? []}
+        />
+      ) : null}
+
+      <Sheet
+        open={removeConfirmOpen}
+        onClose={() => {
+          setRemoveConfirmOpen(false)
+        }}
+        title={
+          h.quantity > 1
+            ? `Remove all ${h.quantity} copies from Portfolio?`
+            : 'Remove from Portfolio?'
+        }
+      >
+        <div className="space-y-3">
+          <p className="text-sm text-slate-300">
+            All {h.quantity} cop{h.quantity === 1 ? 'y' : 'ies'} of {displayName} will no longer be
+            tracked.
+          </p>
+          <p className="text-xs text-slate-500">
+            This corrects your collection. It is not recorded as a sale — no proceeds and no result
+            are created. Nothing is deleted: your acquisition history is kept, just excluded going
+            forward.
+          </p>
+          {removeError ? <FormMessage tone="error">{removeError}</FormMessage> : null}
+          <Button
+            variant="primary"
+            className="border border-rose-900/60 bg-rose-900/80 hover:bg-rose-800"
+            disabled={removeAllMutation.isPending}
+            onClick={() => {
+              setRemoveError(null)
+              removeAllMutation.mutate()
+            }}
+          >
+            {removeAllMutation.isPending
+              ? 'Removing…'
+              : h.quantity > 1
+                ? 'Remove all'
+                : 'Remove from Portfolio'}
+          </Button>
+        </div>
+      </Sheet>
     </div>
   )
 }
