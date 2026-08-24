@@ -1,7 +1,29 @@
+import { useState } from 'react'
 import { Link, useParams } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { getSet, listCardsInSet } from '../../data/catalog'
 import { CardResultCard } from './CardResultCard'
+
+/**
+ * The set header's logo (P27): URLs arrive already normalized by `getSet`, and an asset that
+ * still fails to load disappears quietly — the set name identifies the row, never a browser
+ * broken-image icon. The failed URL is never retried.
+ */
+function SetHeaderLogo({ src }: { src: string }) {
+  const [failed, setFailed] = useState(false)
+  if (failed) return null
+  return (
+    <img
+      src={src}
+      alt=""
+      className="h-12 max-w-40 object-contain"
+      loading="lazy"
+      onError={() => {
+        setFailed(true)
+      }}
+    />
+  )
+}
 
 /** Browsing a set's cards from Search (M7 prompt §14): real set metadata — name, language,
  *  symbol, release date, card count — then every card in it with the same quick-add + as card
@@ -45,9 +67,7 @@ export function SetDetailPage() {
       </Link>
 
       <div className="flex items-center gap-4">
-        {s.logoUrl ? (
-          <img src={s.logoUrl} alt="" className="h-12 max-w-40 object-contain" loading="lazy" />
-        ) : null}
+        {s.logoUrl ? <SetHeaderLogo src={s.logoUrl} /> : null}
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-slate-100">{s.name}</h1>
           <p className="text-sm text-slate-400">

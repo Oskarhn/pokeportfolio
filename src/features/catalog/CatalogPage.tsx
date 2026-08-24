@@ -20,7 +20,7 @@ import {
 } from '../../data/sealedProducts'
 import { CardResultCard } from './CardResultCard'
 import { SealedResultCard } from './SealedResultCard'
-import { SetCarousel } from './SetCarousel'
+import { SetGrid } from './SetGrid'
 import { Sheet } from '../../ui/Sheet'
 import { Button, ChoiceGroup, FormMessage, SelectField, TextField } from '../../ui/form'
 import { naturalCompare } from '../../ui/naturalSort'
@@ -177,7 +177,7 @@ export function CatalogPage() {
   }, [priceBatches])
 
   return (
-    <div className="mx-auto w-full max-w-2xl space-y-5 py-2">
+    <div className="mx-auto w-full max-w-2xl space-y-5 py-2 lg:max-w-4xl">
       <h1 className="sr-only">Search</h1>
 
       {/* Top search bar (M7.1 prompt §22-23): the field is the primary control, no page title
@@ -306,7 +306,9 @@ export function CatalogPage() {
       {trimmed.length === 0 && mode === 'cards' ? (
         <div className="space-y-2">
           <h2 className="text-sm font-semibold text-slate-300">Browse sets</h2>
-          <SetCarousel language={language} />
+          {/* English-only by product decision (P27 owner feedback) — the showcase ignores the
+              language chips above, which continue to govern text search. */}
+          <SetGrid />
         </div>
       ) : null}
 
@@ -322,12 +324,22 @@ export function CatalogPage() {
             ))}
           </ul>
         ) : setSearch.isError ? (
-          <p
+          <div
             role="alert"
             className="rounded-xl border border-rose-900/60 bg-rose-950/40 p-3 text-sm text-rose-200"
           >
-            Sets could not be searched. Try again.
-          </p>
+            <p>Sets could not be searched.</p>
+            <button
+              type="button"
+              onClick={() => {
+                void setSearch.refetch()
+              }}
+              disabled={setSearch.isFetching}
+              className="mt-2 min-h-9 rounded-lg border border-rose-800 px-3 font-medium hover:bg-rose-900/40 disabled:opacity-60"
+            >
+              {setSearch.isFetching ? 'Loading…' : 'Try again'}
+            </button>
+          </div>
         ) : setSearch.data.length > 0 ? (
           <ul className="divide-y divide-slate-800 rounded-xl border border-slate-800">
             {setSearch.data.map((set) => (
@@ -407,12 +419,25 @@ export function CatalogPage() {
           ))}
         </div>
       ) : cardSearch.isError ? (
-        <p
+        <div
           role="alert"
           className="rounded-xl border border-rose-900/60 bg-rose-950/40 p-3 text-sm text-rose-200"
         >
-          The catalog could not be searched. Try again.
-        </p>
+          <p>The catalog could not be searched.</p>
+          {/* A real retry control, not just an instruction (P27): a transient failure — e.g. the
+              cold-start token race — must be recoverable in place. TanStack Query's own automatic
+              retries have already run by the time this renders; this is the deliberate manual one. */}
+          <button
+            type="button"
+            onClick={() => {
+              void cardSearch.refetch()
+            }}
+            disabled={cardSearch.isFetching}
+            className="mt-2 min-h-9 rounded-lg border border-rose-800 px-3 font-medium hover:bg-rose-900/40 disabled:opacity-60"
+          >
+            {cardSearch.isFetching ? 'Loading…' : 'Try again'}
+          </button>
+        </div>
       ) : cardResults.length === 0 ? (
         <div className="space-y-2 py-8 text-center">
           <p className="text-sm text-slate-500">

@@ -1,4 +1,5 @@
 import { supabase } from './supabase-client'
+import { withAuthRetry } from './auth-retry'
 
 /**
  * Thin typed query layer over the shared catalog (ARCHITECTURE.md §2's `data/` layer). Components
@@ -57,13 +58,16 @@ export async function searchCards(params: {
   offset?: number
   limit?: number
 }): Promise<CatalogSearchPage> {
-  const { data, error } = await supabase.rpc('search_cards', {
-    p_query: params.query,
-    p_language: params.language ?? undefined,
-    p_limit: params.limit ?? PAGE_SIZE,
-    p_offset: params.offset ?? 0,
+  const data = await withAuthRetry(async () => {
+    const { data, error } = await supabase.rpc('search_cards', {
+      p_query: params.query,
+      p_language: params.language ?? undefined,
+      p_limit: params.limit ?? PAGE_SIZE,
+      p_offset: params.offset ?? 0,
+    })
+    if (error) throw new Error(error.message)
+    return data
   })
-  if (error) throw new Error(error.message)
 
   return {
     results: data.map((row) => ({
@@ -186,17 +190,20 @@ export async function searchSets(params: {
   language: CatalogLanguage | null
   limit?: number
 }): Promise<CatalogSet[]> {
-  let query = supabase
-    .from('card_sets')
-    .select(
-      'id, name, language, released_on, card_count_official, card_count_total, logo_url, symbol_url',
-    )
-    .ilike('name', `%${params.query}%`)
-    .order('released_on', { ascending: false, nullsFirst: false })
-    .limit(params.limit ?? 40)
-  if (params.language) query = query.eq('language', params.language)
-  const { data, error } = await query
-  if (error) throw new Error(error.message)
+  const data = await withAuthRetry(async () => {
+    let query = supabase
+      .from('card_sets')
+      .select(
+        'id, name, language, released_on, card_count_official, card_count_total, logo_url, symbol_url',
+      )
+      .ilike('name', `%${params.query}%`)
+      .order('released_on', { ascending: false, nullsFirst: false })
+      .limit(params.limit ?? 40)
+    if (params.language) query = query.eq('language', params.language)
+    const { data, error } = await query
+    if (error) throw new Error(error.message)
+    return data
+  })
 
   return data.map((row) => ({
     id: row.id,
@@ -205,28 +212,33 @@ export async function searchSets(params: {
     releasedOn: row.released_on,
     cardCountOfficial: row.card_count_official,
     cardCountTotal: row.card_count_total,
-    logoUrl: row.logo_url,
-    symbolUrl: row.symbol_url,
+    logoUrl: setImageUrl(row.logo_url),
+    symbolUrl: setImageUrl(row.symbol_url),
   }))
 }
 
-/** The Search set carousel (M7.1 prompt §28): newest physical sets first, filtered by language.
- *  Plain table read, same privilege shape as `searchSets` — Pokémon TCG Pocket is already excluded
- *  at ingest time (M5, `serie.id === 'tcgp'`), so nothing here needs to filter it again. */
+/** The Search set showcase (P27: vertical English-only grid, replacing M7.1's carousel): newest
+ *  sets first, filtered by language at the source — `card_sets.language` is structured catalog
+ *  identity written from the TCGdex endpoint's own language path, never title matching. Pokémon
+ *  TCG Pocket is already excluded at ingest time (M5, `serie.id === 'tcgp'`), so nothing here
+ *  needs to filter it again. */
 export async function listRecentSets(params: {
   language: CatalogLanguage | null
   limit?: number
 }): Promise<CatalogSet[]> {
-  let query = supabase
-    .from('card_sets')
-    .select(
-      'id, name, language, released_on, card_count_official, card_count_total, logo_url, symbol_url',
-    )
-    .order('released_on', { ascending: false, nullsFirst: false })
-    .limit(params.limit ?? 20)
-  if (params.language) query = query.eq('language', params.language)
-  const { data, error } = await query
-  if (error) throw new Error(error.message)
+  const data = await withAuthRetry(async () => {
+    let query = supabase
+      .from('card_sets')
+      .select(
+        'id, name, language, released_on, card_count_official, card_count_total, logo_url, symbol_url',
+      )
+      .order('released_on', { ascending: false, nullsFirst: false })
+      .limit(params.limit ?? 20)
+    if (params.language) query = query.eq('language', params.language)
+    const { data, error } = await query
+    if (error) throw new Error(error.message)
+    return data
+  })
 
   return data.map((row) => ({
     id: row.id,
@@ -235,20 +247,23 @@ export async function listRecentSets(params: {
     releasedOn: row.released_on,
     cardCountOfficial: row.card_count_official,
     cardCountTotal: row.card_count_total,
-    logoUrl: row.logo_url,
-    symbolUrl: row.symbol_url,
+    logoUrl: setImageUrl(row.logo_url),
+    symbolUrl: setImageUrl(row.symbol_url),
   }))
 }
 
 export async function getSet(setId: string): Promise<CatalogSet | null> {
-  const { data, error } = await supabase
-    .from('card_sets')
-    .select(
-      'id, name, language, released_on, card_count_official, card_count_total, logo_url, symbol_url',
-    )
-    .eq('id', setId)
-    .maybeSingle()
-  if (error) throw new Error(error.message)
+  const data = await withAuthRetry(async () => {
+    const { data, error } = await supabase
+      .from('card_sets')
+      .select(
+        'id, name, language, released_on, card_count_official, card_count_total, logo_url, symbol_url',
+      )
+      .eq('id', setId)
+      .maybeSingle()
+    if (error) throw new Error(error.message)
+    return data
+  })
   if (!data) return null
   return {
     id: data.id,
@@ -257,22 +272,25 @@ export async function getSet(setId: string): Promise<CatalogSet | null> {
     releasedOn: data.released_on,
     cardCountOfficial: data.card_count_official,
     cardCountTotal: data.card_count_total,
-    logoUrl: data.logo_url,
-    symbolUrl: data.symbol_url,
+    logoUrl: setImageUrl(data.logo_url),
+    symbolUrl: setImageUrl(data.symbol_url),
   }
 }
 
 /** Browsing a set's cards (M7 prompt §14: "selecting a set should allow browsing/searching cards
  *  from that set"). Plain table read over `cards`, same privilege shape as `getCard`. */
 export async function listCardsInSet(setId: string): Promise<CatalogSearchResult[]> {
-  const { data, error } = await supabase
-    .from('cards')
-    .select(
-      'id, name, local_id, rarity, category, illustrator, image_base_url, language, set_id, card_sets(name)',
-    )
-    .eq('set_id', setId)
-    .order('local_id')
-  if (error) throw new Error(error.message)
+  const data = await withAuthRetry(async () => {
+    const { data, error } = await supabase
+      .from('cards')
+      .select(
+        'id, name, local_id, rarity, category, illustrator, image_base_url, language, set_id, card_sets(name)',
+      )
+      .eq('set_id', setId)
+      .order('local_id')
+    if (error) throw new Error(error.message)
+    return data
+  })
 
   return data.map((row) => ({
     cardId: row.id,
@@ -295,4 +313,24 @@ export type ImageQuality = 'low' | 'high'
 export function cardImageUrl(imageBaseUrl: string | null, quality: ImageQuality): string | null {
   if (!imageBaseUrl) return null
   return `${imageBaseUrl}/${quality}.webp`
+}
+
+const IMAGE_EXTENSION = /\.(png|webp|jpe?g|gif|avif)$/i
+
+/**
+ * Set logo/symbol assets arrive from TCGdex as extension-less CDN paths (`…/logo`, `…/symbol`,
+ * symbols under `…/univ/…`), and the asset CDN answers a verbatim request with **404** — probed
+ * 2026-08-24: `https://assets.tcgdex.net/en/base/base1/logo` → 404, the same path plus `.png`
+ * or `.webp` → 200. That verbatim rendering is exactly why every set tile in the deployed app
+ * showed a broken-image frame (P27 owner report). Card images never hit this because
+ * `cardImageUrl()` appends the quality segment itself.
+ *
+ * Appends `.webp` unless a URL already carries an image extension — same CDN behaviour the card
+ * path has long relied on, and consistently the smallest variant served. Normalizing at this
+ * data boundary rather than only at ingest time also repairs the already-synced catalog rows
+ * without re-running the operator-only catalog sync.
+ */
+export function setImageUrl(url: string | null | undefined): string | null {
+  if (!url) return null
+  return IMAGE_EXTENSION.test(url) ? url : `${url}.webp`
 }
