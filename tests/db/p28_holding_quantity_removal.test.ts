@@ -104,7 +104,17 @@ async function lotById(lotId: string): Promise<LotRow> {
   return data
 }
 
-async function reduce(args: { p_holding_id: string; p_lot_reductions: string }) {
+/** The REAL wire shape: p_lot_reductions is a jsonb parameter and receives an actual JavaScript
+ *  array (PostgREST casts it to a jsonb array). A stringified payload arrives as a jsonb STRING
+ *  scalar and is rejected by the function's own array guard — exactly what CI's first P28 run
+ *  proved. Every call below exercises the same shape production's reduceHoldingQuantity sends.
+ *  tests/data/collection-reduce-wire.test.ts pins the wrapper itself to this same contract. */
+interface LotReductionWire {
+  lot_id: string
+  remove_quantity: number
+}
+
+async function reduce(args: { p_holding_id: string; p_lot_reductions: LotReductionWire[] }) {
   const { data, error } = await clientA.rpc('reduce_holding_quantity', args)
   return {
     data: data as { owned_quantity: number }[] | null,
@@ -140,7 +150,7 @@ describe('reduce_holding_quantity — non-purchase lots', () => {
 
     const { data, error } = await reduce({
       p_holding_id: holdingId,
-      p_lot_reductions: JSON.stringify([{ lot_id: lot.id, remove_quantity: 1 }]),
+      p_lot_reductions: [{ lot_id: lot.id, remove_quantity: 1 }],
     })
     expect(error).toBeNull()
     expect(data![0]!.owned_quantity).toBe(2)
@@ -168,7 +178,7 @@ describe('reduce_holding_quantity — non-purchase lots', () => {
 
     const { error } = await reduce({
       p_holding_id: holdingId,
-      p_lot_reductions: JSON.stringify([{ lot_id: lot.id, remove_quantity: 1 }]),
+      p_lot_reductions: [{ lot_id: lot.id, remove_quantity: 1 }],
     })
     expect(error).toBeNull()
 
@@ -197,7 +207,7 @@ describe('reduce_holding_quantity — non-purchase lots', () => {
 
     const { data, error } = await reduce({
       p_holding_id: holdingId,
-      p_lot_reductions: JSON.stringify([{ lot_id: giftLot.id, remove_quantity: 1 }]),
+      p_lot_reductions: [{ lot_id: giftLot.id, remove_quantity: 1 }],
     })
     expect(error).toBeNull()
     expect(data![0]!.owned_quantity).toBe(2)
@@ -224,7 +234,7 @@ describe('reduce_holding_quantity — non-purchase lots', () => {
 
     const { error } = await reduce({
       p_holding_id: holdingId,
-      p_lot_reductions: JSON.stringify([{ lot_id: lot.id, remove_quantity: 2 }]),
+      p_lot_reductions: [{ lot_id: lot.id, remove_quantity: 2 }],
     })
     expect(error).not.toBeNull()
     expect(error!.message).toMatch(/remove from portfolio/i)
@@ -257,27 +267,64 @@ describe('reduce_holding_quantity — non-purchase lots', () => {
 
     const dup = await reduce({
       p_holding_id: holdingId,
-      p_lot_reductions: JSON.stringify([
+      p_lot_reductions: [
         { lot_id: lot.id, remove_quantity: 1 },
         { lot_id: lot.id, remove_quantity: 1 },
-      ]),
+      ],
     })
     expect(dup.error).not.toBeNull()
 
     const zero = await reduce({
       p_holding_id: holdingId,
-      p_lot_reductions: JSON.stringify([{ lot_id: lot.id, remove_quantity: 0 }]),
+      p_lot_reductions: [{ lot_id: lot.id, remove_quantity: 0 }],
     })
     expect(zero.error).not.toBeNull()
 
     const foreign = await reduce({
       p_holding_id: holdingId,
-      p_lot_reductions: JSON.stringify([{ lot_id: otherLot.id, remove_quantity: 1 }]),
+      p_lot_reductions: [{ lot_id: otherLot.id, remove_quantity: 1 }],
     })
     expect(foreign.error).not.toBeNull()
 
     const after = await lotById(lot.id)
     expect(after.quantity_remaining).toBe(4)
+  })
+
+  it('rejects malformed JSON input shapes outright — zero mutation in every case', async () => {
+    const holdingId = await insertHolding({
+      cardVariantId: seedCatalog.charizardVariantId,
+      condition: 'LP',
+    })
+    const lot = await insertLot({
+      holdingId,
+      origin: 'gift',
+      costBasisState: 'not_paid',
+      quantity: 3,
+    })
+
+    // Deliberately untyped payloads — this test exists to prove hostile shapes are rejected.
+    const attempt = async (p_lot_reductions: unknown) => {
+      const { error } = await clientA.rpc('reduce_holding_quantity', {
+        p_holding_id: holdingId,
+        p_lot_reductions,
+      } as never)
+      return error
+    }
+
+    // Not an array: object payload, and an empty one.
+    expect(await attempt({ lot_id: lot.id, remove_quantity: 1 })).not.toBeNull()
+    expect(await attempt([])).not.toBeNull()
+    // Missing lot_id, and a lot_id that is not a UUID.
+    expect(await attempt([{ remove_quantity: 1 }])).not.toBeNull()
+    expect(await attempt([{ lot_id: 'not-a-uuid', remove_quantity: 1 }])).not.toBeNull()
+    // Missing, fractional and negative quantities — '1.5' must not silently round to 2.
+    expect(await attempt([{ lot_id: lot.id }])).not.toBeNull()
+    expect(await attempt([{ lot_id: lot.id, remove_quantity: 1.5 }])).not.toBeNull()
+    expect(await attempt([{ lot_id: lot.id, remove_quantity: -1 }])).not.toBeNull()
+
+    const after = await lotById(lot.id)
+    expect(after.quantity).toBe(3)
+    expect(after.quantity_remaining).toBe(3)
   })
 })
 
@@ -342,7 +389,7 @@ describe('J — M12 recompute invalidation happens naturally', () => {
 
     const { error } = await reduce({
       p_holding_id: holdingId,
-      p_lot_reductions: JSON.stringify([{ lot_id: lot.id, remove_quantity: 2 }]),
+      p_lot_reductions: [{ lot_id: lot.id, remove_quantity: 2 }],
     })
     expect(error).toBeNull()
 
@@ -423,7 +470,7 @@ describe('purchased lots route through the receipt (update_purchase), never a si
 
     const { error } = await reduce({
       p_holding_id: lot!.holding_id,
-      p_lot_reductions: JSON.stringify([{ lot_id: lot!.id, remove_quantity: 1 }]),
+      p_lot_reductions: [{ lot_id: lot!.id, remove_quantity: 1 }],
     })
     expect(error).not.toBeNull()
     expect(error!.message).toMatch(/purchase/i)
@@ -436,7 +483,6 @@ describe('purchased lots route through the receipt (update_purchase), never a si
   })
 
   it('K: correcting the receipt to a lower quantity moves inventory and money together, exactly', async () => {
-    const before = await spending()
     const purchase = await createPurchase([
       {
         line_type: 'card',
@@ -458,6 +504,12 @@ describe('purchased lots route through the receipt (update_purchase), never a si
         unit_cost_basis_nok_minor: number
       }>()
     expect(lot.data!.quantity_remaining).toBe(3)
+
+    // The delta under test is the CORRECTION step alone (3×700 → 2×700 = −700), so the baseline
+    // is taken after the purchase exists. (CI's first run measured from before creation — where
+    // the correct net figure is +1400: +2100 created, then −700 corrected. The implementation was
+    // right; the measurement window was not. Creation's own +2100 is asserted by L.)
+    const before = await spending()
 
     const updateError = await updatePurchase(
       purchase.id,
@@ -579,7 +631,7 @@ describe('F/I/N — a partially-sold lot blocks correction and frozen sale histo
     // this lot at all while its history carries a live disposal.
     const reduceAttempt = await reduce({
       p_holding_id: lot!.holding_id,
-      p_lot_reductions: JSON.stringify([{ lot_id: lot!.id, remove_quantity: 1 }]),
+      p_lot_reductions: [{ lot_id: lot!.id, remove_quantity: 1 }],
     })
     expect(reduceAttempt.error).not.toBeNull()
     expect(reduceAttempt.error!.message).toMatch(/partially disposed/i)

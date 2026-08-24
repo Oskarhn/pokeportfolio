@@ -616,16 +616,22 @@ export interface LotReduction {
  *  Atomic across every lot the adjustment touches; returns the holding's new owned quantity.
  *  Purchased lots are refused server-side on purpose (their quantity is corrected through the
  *  receipt itself, so money and inventory never disagree) — see reduce_holding_quantity
- *  (20260831120000_p28_reduce_holding_quantity.sql). */
+ *  (20260831120000_p28_reduce_holding_quantity.sql).
+ *
+ *  The jsonb parameter receives the reductions AS a JSON array — never JSON.stringify'd. A
+ *  stringified payload arrives at PostgREST as a jsonb *string* scalar and is rejected by the
+ *  function's own array guard (the same convention as p_lines on create_purchase/update_purchase,
+ *  which also pass arrays directly). */
 export async function reduceHoldingQuantity(params: {
   holdingId: string
   reductions: LotReduction[]
 }): Promise<number> {
   const { data, error } = await supabase.rpc('reduce_holding_quantity', {
     p_holding_id: params.holdingId,
-    p_lot_reductions: JSON.stringify(
-      params.reductions.map((r) => ({ lot_id: r.lotId, remove_quantity: r.removeQuantity })),
-    ),
+    p_lot_reductions: params.reductions.map((r) => ({
+      lot_id: r.lotId,
+      remove_quantity: r.removeQuantity,
+    })),
   })
   if (error) throw new Error(error.message)
   const row = data.at(0)

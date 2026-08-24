@@ -38,6 +38,13 @@
 --   * A holding always keeps at least one owned unit through this path. Removing the last unit is
 --     the existing Remove from Portfolio flow (void semantics, history preserved).
 --
+-- INPUT CONTRACT: p_lot_reductions must arrive as an actual JSON array (the browser wrapper passes
+-- a JavaScript array; PostgREST casts it to jsonb). A stringified payload ('[{"lot_id":...}]')
+-- arrives as a jsonb STRING scalar and is rejected by the array guard — deliberately strict, so a
+-- broken caller fails loudly instead of being silently reinterpreted. Entries are validated as
+-- {lot_id uuid, remove_quantity positive-integer-text}; anything else aborts the whole call with
+-- zero mutations.
+--
 -- SECURITY INVOKER: RLS already lets an owner touch their own acquisition_lots rows; like
 -- set_sealed_lot_intent, the RPC exists because several guarded writes plus a cross-lot total
 -- check must succeed or fail as ONE transaction, which separate REST calls cannot guarantee.
@@ -58,6 +65,7 @@ declare
   v_entry jsonb;
   v_idx int;
   v_lot_id uuid;
+  v_remove_text text;
   v_remove int;
   v_lot public.acquisition_lots;
   v_seen uuid[] := '{}';
@@ -93,12 +101,24 @@ begin
   for v_idx in 0 .. jsonb_array_length(p_lot_reductions) - 1 loop
     v_entry := p_lot_reductions -> v_idx;
     v_lot_id := nullif(v_entry ->> 'lot_id', '')::uuid;
-    v_remove := (v_entry ->> 'remove_quantity')::int;
+    -- Strict integer text, not a bare ::int cast: '1.5'::int silently ROUNDS to 2 in Postgres,
+    -- which would quietly adjust a different quantity than the caller sent. Digits only — a
+    -- missing, fractional, negative or non-numeric value all reject with the same message.
+    -- Separate statements again: Postgres does not guarantee OR evaluation order, and the cast
+    -- must never run on text the pattern check has not vetted.
+    v_remove_text := v_entry ->> 'remove_quantity';
 
     if v_lot_id is null then
       raise exception 'reduction %: lot_id is required', v_idx;
     end if;
-    if v_remove is null or v_remove <= 0 then
+    if v_remove_text is null then
+      raise exception 'reduction %: remove_quantity must be a positive integer', v_idx;
+    end if;
+    if v_remove_text !~ '^[0-9]+$' then
+      raise exception 'reduction %: remove_quantity must be a positive integer', v_idx;
+    end if;
+    v_remove := v_remove_text::int;
+    if v_remove <= 0 then
       raise exception 'reduction %: remove_quantity must be a positive integer', v_idx;
     end if;
     if v_lot_id = any(v_seen) then

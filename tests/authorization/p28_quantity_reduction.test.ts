@@ -36,21 +36,26 @@ afterAll(async () => {
 
 const today = new Date().toISOString().slice(0, 10)
 
-async function giftLotFor(userId: string, cardVariantId: string) {
-  const { data: holding } = await service
+/** Creates one gift lot of 2 for the given user. `condition` exists because holdings_identity is
+ *  unique per (user, variant, condition, ...): two calls for the SAME user MUST NOT reuse the same
+ *  identity or the second insert silently collides (CI's first P28 run hit exactly this in the
+ *  anon test — the helper ignored the insert error and dereferenced null). Errors are thrown. */
+async function giftLotFor(userId: string, cardVariantId: string, condition = 'NM') {
+  const { data: holding, error: holdingError } = await service
     .from('holdings')
     .insert({
       user_id: userId,
       holding_kind: 'raw_card',
       card_variant_id: cardVariantId,
-      condition: 'NM',
+      condition,
     })
     .select('id')
     .single<{ id: string }>()
-  const { data: lot } = await service
+  if (holdingError !== null) throw new Error(holdingError.message)
+  const { data: lot, error: lotError } = await service
     .from('acquisition_lots')
     .insert({
-      holding_id: holding!.id,
+      holding_id: holding.id,
       user_id: userId,
       origin: 'gift',
       cost_basis_state: 'not_paid',
@@ -60,7 +65,8 @@ async function giftLotFor(userId: string, cardVariantId: string) {
     })
     .select('id')
     .single<{ id: string }>()
-  return { holdingId: holding!.id, lotId: lot!.id }
+  if (lotError !== null) throw new Error(lotError.message)
+  return { holdingId: holding.id, lotId: lot.id }
 }
 
 describe('reduce_holding_quantity: cross-tenant isolation', () => {
@@ -71,14 +77,14 @@ describe('reduce_holding_quantity: cross-tenant isolation', () => {
     // Directly targeting the foreign lot.
     const direct = await clientB.rpc('reduce_holding_quantity', {
       p_holding_id: b.holdingId,
-      p_lot_reductions: JSON.stringify([{ lot_id: a.lotId, remove_quantity: 1 }]),
+      p_lot_reductions: [{ lot_id: a.lotId, remove_quantity: 1 }],
     })
     expect(direct.error).not.toBeNull()
 
     // And aiming the whole call at the foreign holding.
     const aimedAtForeignHolding = await clientB.rpc('reduce_holding_quantity', {
       p_holding_id: a.holdingId,
-      p_lot_reductions: JSON.stringify([{ lot_id: a.lotId, remove_quantity: 1 }]),
+      p_lot_reductions: [{ lot_id: a.lotId, remove_quantity: 1 }],
     })
     expect(aimedAtForeignHolding.error).not.toBeNull()
 
@@ -114,10 +120,10 @@ describe('reduce_holding_quantity: cross-tenant isolation', () => {
 
     const { error } = await clientB.rpc('reduce_holding_quantity', {
       p_holding_id: b1.holdingId,
-      p_lot_reductions: JSON.stringify([
+      p_lot_reductions: [
         { lot_id: b1.lotId, remove_quantity: 1 },
         { lot_id: a.lotId, remove_quantity: 1 },
-      ]),
+      ],
     })
     expect(error).not.toBeNull()
 
@@ -144,10 +150,12 @@ describe('reduce_holding_quantity: cross-tenant isolation', () => {
   })
 
   it('anon cannot call reduce_holding_quantity at all', async () => {
-    const a = await giftLotFor(userA.id, seedCatalog.charizardVariantId)
+    // EX, not NM: user A's charizard/NM identity already exists (first test in this file) and
+    // holdings_identity would reject a second one — the fixture collision behind CI's first run.
+    const a = await giftLotFor(userA.id, seedCatalog.charizardVariantId, 'EX')
     const { error } = await createAnonClient().rpc('reduce_holding_quantity', {
       p_holding_id: a.holdingId,
-      p_lot_reductions: JSON.stringify([{ lot_id: a.lotId, remove_quantity: 1 }]),
+      p_lot_reductions: [{ lot_id: a.lotId, remove_quantity: 1 }],
     })
     expect(error).not.toBeNull()
   })

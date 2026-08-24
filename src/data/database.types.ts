@@ -2123,7 +2123,10 @@ export type Database = {
         }[]
       }
       reduce_holding_quantity: {
-        Args: { p_holding_id: string; p_lot_reductions: string }
+        Args: {
+          p_holding_id: string
+          p_lot_reductions: { lot_id: string; remove_quantity: number }[]
+        }
         Returns: { owned_quantity: number }[]
       }
       release_invitation_claim: {
