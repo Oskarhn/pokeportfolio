@@ -137,6 +137,16 @@ begin
       raise exception 'acquisition lot % not found on holding %', v_lot_id, p_holding_id;
     end if;
 
+    -- Partial disposal first: it is the terminal obstruction. A purchased AND partially-sold lot
+    -- cannot be corrected through the receipt editor either (update_purchase refuses partially
+    -- disposed lots), so routing the caller to Purchases would be advice that fails — same
+    -- precedence AdjustQuantitySheet renders (purchased && !partiallyDisposed is the only case
+    -- that links to the receipt editor; any disposed lot reads "Can't adjust").
+    if v_lot.quantity_remaining <> v_lot.quantity then
+      raise exception
+        'acquisition lot % has already been partially disposed elsewhere (% of % remaining) and cannot be adjusted here',
+        v_lot_id, v_lot.quantity_remaining, v_lot.quantity;
+    end if;
     -- Purchased copies are corrected through their receipt (update_purchase), which rewrites
     -- allocations and cost basis atomically with the quantity. Never silently desync a lot from
     -- its purchase_line here.
@@ -144,11 +154,6 @@ begin
       raise exception
         'lot % came from a purchase - correct its quantity by editing that receipt in Purchases',
         v_lot_id;
-    end if;
-    if v_lot.quantity_remaining <> v_lot.quantity then
-      raise exception
-        'acquisition lot % has already been partially disposed elsewhere (% of % remaining) and cannot be adjusted here',
-        v_lot_id, v_lot.quantity_remaining, v_lot.quantity;
     end if;
     if v_remove > v_lot.quantity_remaining then
       raise exception 'reduction %: remove_quantity exceeds the lot''s remaining quantity (%)',
