@@ -165,6 +165,7 @@ describe.skipIf(!RUN)('M13 export performance audit', () => {
         holding_id: hid,
         origin: 'gift',
         cost_basis_state: 'not_paid',
+        acquired_on: '2026-01-20',
         quantity: 1,
         residual_minor: 0,
         storage_location_id: locations[0],
