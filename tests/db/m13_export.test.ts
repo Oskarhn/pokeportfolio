@@ -344,9 +344,8 @@ describe('M13 export over real RLS', () => {
   it('is owner-scoped: user B gets none of user A’s data', async () => {
     const clientB = await typedSignInAs(userB)
     const snapshot = await fetchExportSnapshot(clientB)
-    expect(snapshot.profile?.id).toBe(userB.id)
+    expect(snapshot.profiles[0]?.id).toBe(userB.id)
     for (const key of BACKUP_DATA_KEYS) {
-      if (key === 'profile') continue
       const section = snapshot[key] as readonly { user_id?: string; created_by_user_id?: string }[]
       for (const row of section) {
         const owner = row.user_id ?? row.created_by_user_id

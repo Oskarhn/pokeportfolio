@@ -390,7 +390,9 @@ export interface BackupIdentityManifest {
 // ---------------------------------------------------------------------------
 
 export interface BackupData {
-  profile: BackupProfileRow | null
+  // Every section is named EXACTLY after its canonical table (D-075) and is an array —
+  // including profiles, which holds zero or one row (the owner's own).
+  profiles: BackupProfileRow[]
   custom_collections: BackupCustomCollectionRow[]
   custom_collection_members: BackupCustomCollectionMemberRow[]
   tags: BackupTagRow[]
@@ -400,9 +402,6 @@ export interface BackupData {
   holdings: BackupHoldingRow[]
   acquisition_lots: BackupAcquisitionLotRow[]
   manual_card_definitions: BackupManualCardDefinitionRow[]
-  // Section name == canonical table name (D-075). The rows inside are the owner-created
-  // SUBSET of sealed_products (created_by_user_id = self); curated rows travel only in the
-  // identity manifest. The subset predicate is the documented export policy, not a rename.
   sealed_products: BackupUserCreatedSealedProductRow[]
   manual_valuations: BackupManualValuationRow[]
   lot_cost_adjustments: BackupLotCostAdjustmentRow[]
@@ -415,7 +414,7 @@ export interface BackupData {
 
 /** Top-level keys of `data`, in canonical (serialized) order. Single source of truth. */
 export const BACKUP_DATA_KEYS = [
-  'profile',
+  'profiles',
   'custom_collections',
   'custom_collection_members',
   'tags',
@@ -456,7 +455,7 @@ export interface BackupEnvelope {
 
 export function emptyBackupData(): BackupData {
   return {
-    profile: null,
+    profiles: [],
     custom_collections: [],
     custom_collection_members: [],
     tags: [],

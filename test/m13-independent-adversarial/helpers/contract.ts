@@ -25,13 +25,17 @@ export type M13Capability = 'envelope-version' | 'csv-sanitizer' | 'csv-writer' 
 const EXPORT_NAME_PATTERNS: readonly { capability: M13Capability; pattern: RegExp }[] = [
   {
     capability: 'envelope-version',
-    pattern: /^(schema_?version|backup_?format|format_?version|current_?schema_?version)$/i,
+    // BACKUP_SCHEMA_VERSION added at integration (D-075): the real constant carries a
+    // BACKUP_ prefix; the semantic expectation — exactly one version constant, integer >= 1 —
+    // is unchanged.
+    pattern:
+      /^(schema_?version|backup_?format|format_?version|current_?schema_?version|BACKUP_SCHEMA_VERSION)$/i,
   },
   { capability: 'csv-sanitizer', pattern: /sanitiz/i },
   { capability: 'csv-writer', pattern: /(to|write|build|emit)Csv|csvFrom/i },
   {
     capability: 'backup-builder',
-    pattern: /(build|create|generate)(Full)?Backup|exportEverything|collectBackup/i,
+    pattern: /(build|create|generate)(Full)?Backup|exportJsonBackup|exportEverything|collectBackup/i,
   },
 ]
 
@@ -134,6 +138,90 @@ async function discover(repoRoot: string): Promise<M13Surface> {
 
 export function hasSupabaseEnv(): boolean {
   return Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY)
+}
+
+// ---------------------------------------------------------------------------
+// Deliberate integration bindings (added at M13 integration, D-075/D-077 context)
+//
+// The package was written implementation-blind; the helpers below are the CONTRACTED
+// adaptations agreed when it first met the real P35/P36 code. Each records what the real
+// surface is and why the adaptation is sound. Semantic expectations are unchanged.
+// ---------------------------------------------------------------------------
+
+/**
+ * The real CSV writer is `buildCsvText(header, rows)` (src/domain/export/csv.ts) — header and
+ * data rows as separate arguments. The contract probe passes a single rows matrix, so the
+ * adapter treats the FIRST row as the header, exactly the writer's own convention. RFC 4180
+ * round-trip semantics are untouched.
+ */
+export function adaptCsvWriter(
+  buildCsvText: (header: readonly string[], rows: readonly (readonly string[])[]) => string,
+): (rows: readonly (readonly string[])[]) => string {
+  return (rows) => buildCsvText(rows[0] ?? [], rows.slice(1))
+}
+
+export interface BoundBackupBuilder {
+  /**
+   * Generates a REAL versioned backup envelope for a REAL synthetic account through the real
+   * production pipeline (RLS-scoped fetch under the owner's signed-in JWT → envelope build →
+   * serialization), returning the parsed JSON object. Zero arguments, per the contract.
+   */
+  run(): Promise<Record<string, unknown>>
+  /** Deletes the synthetic account. Idempotent. */
+  dispose(): Promise<void>
+}
+
+let boundBuilder: Promise<BoundBackupBuilder> | null = null
+
+/**
+ * Binds the generated-backup contract to the real implementation. The zero-arg callable the
+ * gated tests see is NOT a mock: on first call it creates one synthetic user via the real
+ * invitation flow, seeds the complete relational fixture from helpers/fixtures.ts, signs in as
+ * that user with a real JWT, and every run() afterwards drives P35's actual
+ * fetchExportSnapshot → buildBackupEnvelope → serializeBackupEnvelope path against the
+ * ephemeral stack.
+ *
+ * Why not the app's `exportJsonBackup` wrapper directly: that entry point reads its Supabase
+ * client from the app bundle's VITE_-prefixed env, which CI's ephemeral stack does not export;
+ * the composed pipeline below is the same production code with an explicitly injected session
+ * client. The Blob/filename wrapper itself is covered by the repo's own tests/db/m13_export
+ * suite in this same job.
+ */
+export function getBoundBackupBuilder(): Promise<BoundBackupBuilder> {
+  if (!hasSupabaseEnv()) {
+    return Promise.reject(new Error('getBoundBackupBuilder requires an ephemeral Supabase stack'))
+  }
+  if (boundBuilder === null) {
+    boundBuilder = (async () => {
+      const { createServiceClient, createSyntheticUser, deleteSyntheticUser, signInAs } =
+        await import('../../../tests/db/setup')
+      const { seedCompleteUserModel } = await import('./fixtures.ts')
+      const { fetchExportSnapshot } = await import('../../../src/data/export/fetch-snapshot')
+      const { buildBackupEnvelope, serializeBackupEnvelope } = await import(
+        '../../../src/domain/export/build-backup'
+      )
+
+      const service = createServiceClient()
+      const user = await createSyntheticUser(service, 'm13adv-bldr')
+      await seedCompleteUserModel(service, user.id, 'BLDR')
+      const sessionClient = await signInAs(user)
+
+      return {
+        async run(): Promise<Record<string, unknown>> {
+          const snapshot = await fetchExportSnapshot(sessionClient, {})
+          const envelope = buildBackupEnvelope(snapshot, {
+            exportedAt: new Date().toISOString(),
+            appVersion: 'm13-contract-test',
+          })
+          return JSON.parse(serializeBackupEnvelope(envelope)) as Record<string, unknown>
+        },
+        async dispose(): Promise<void> {
+          await deleteSyntheticUser(service, user.id)
+        },
+      }
+    })()
+  }
+  return boundBuilder
 }
 
 export interface SkipContext {

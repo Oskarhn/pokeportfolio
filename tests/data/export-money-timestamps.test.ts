@@ -5,7 +5,7 @@ import {
   type BackupTagRow,
 } from '../../src/domain/export/backup-format'
 import { buildBackupEnvelope, serializeBackupEnvelope } from '../../src/domain/export/build-backup'
-import { MONEY_FIELDS, EXPORT_SECTION_SELECTS, EXPORT_PROFILE_SELECT } from '../../src/data/export/fetch-snapshot'
+import { MONEY_FIELDS, EXPORT_SECTION_SELECTS } from '../../src/data/export/fetch-snapshot'
 
 /**
  * §19 money-cast audit: a compile-time probe proves every money FIELD is listed in
@@ -35,7 +35,7 @@ describe('money select casts (§19 audit)', () => {
   })
 
   it('the profile threshold is cast even though profile is not a paged array section', () => {
-    expect(EXPORT_PROFILE_SELECT).toContain('low_value_threshold_minor::text')
+    expect(EXPORT_SECTION_SELECTS.profiles).toContain('low_value_threshold_minor::text')
   })
 })
 

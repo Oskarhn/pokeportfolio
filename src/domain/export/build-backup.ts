@@ -27,10 +27,8 @@ export interface BackupBuildOptions {
 function countSections(data: ExportSnapshot): BackupCounts {
   const counts: Record<string, number> = {}
   for (const key of BACKUP_DATA_KEYS) {
-    // The union-index read is cast per branch: 'profile' holds a single nullable row, every
-    // other section a readonly array whose length IS the count.
-    counts[key] =
-      key === 'profile' ? (data.profile === null ? 0 : 1) : (data[key] as readonly unknown[]).length
+    // Every section is a uniform array whose length IS the row count.
+    counts[key] = (data[key] as readonly unknown[]).length
   }
   counts[`${MANIFEST_COUNT_KEY_PREFIX}card_variants`] = data.identity_manifest.card_variants.length
   counts[`${MANIFEST_COUNT_KEY_PREFIX}curated_sealed_products`] =

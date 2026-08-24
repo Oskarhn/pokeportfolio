@@ -78,7 +78,8 @@ export interface ExportFetchOptions {
 // Section wiring — select lists (with mandatory ::text casts) and stable ordering
 // ---------------------------------------------------------------------------
 
-type ArraySection = Exclude<keyof BackupData, 'profile'>
+/** Every section — profiles included (0 or 1 rows) — is now a uniform array. */
+type ArraySection = keyof BackupData
 
 /**
  * Wire shape of a row straight off PostgREST: identical to the backup-row contract except that
@@ -99,6 +100,11 @@ type MoneyKeys<T> = keyof {
 }
 
 export const EXPORT_SECTION_SELECTS = {
+  profiles:
+    'id, display_name, theme, display_currency, locale, hide_values, hide_low_value_by_default, ' +
+    'low_value_threshold_minor::text, use_eu_pricing, collection_grid_density, ' +
+    'collection_default_view, collection_default_sort, default_condition, default_language, ' +
+    'default_storage_location_id, created_at, updated_at',
   custom_collections: 'id, user_id, name, description, color, sort_order, created_at',
   custom_collection_members: 'user_id, collection_id, holding_id, sort_order, added_at',
   tags: 'id, user_id, name, created_at, updated_at',
@@ -157,6 +163,7 @@ export const EXPORT_SECTION_SELECTS = {
  * every money field is listed, so a new money column cannot ship without its cast-and-branding.
  */
 export const MONEY_FIELDS: { [K in ArraySection]: readonly MoneyKeys<BackupData[K][number]>[] } = {
+  profiles: ['low_value_threshold_minor'],
   custom_collections: [],
   custom_collection_members: [],
   tags: [],
@@ -220,6 +227,7 @@ export const MONEY_FIELDS: { [K in ArraySection]: readonly MoneyKeys<BackupData[
  * duplicate detection and for the COUNT query that anchors completeness (D-073).
  */
 const SECTION_IDENTITY_KEYS: Record<ArraySection, readonly string[]> = {
+  profiles: ['id'],
   custom_collections: ['id'],
   custom_collection_members: ['collection_id', 'holding_id'],
   tags: ['id'],
@@ -712,33 +720,32 @@ async function fetchLotDisposals(
   )
 }
 
-/** The single-row profile select — exported so the money-cast audit can cover it too. */
-export const EXPORT_PROFILE_SELECT =
-  'id, display_name, theme, display_currency, locale, hide_values, hide_low_value_by_default, ' +
-  'low_value_threshold_minor::text, use_eu_pricing, collection_grid_density, ' +
-  'collection_default_view, collection_default_sort, default_condition, default_language, ' +
-  'default_storage_location_id, created_at, updated_at'
-
-async function fetchProfile(
+async function fetchProfiles(
   client: SupabaseClient<Database>,
   userId: string,
   options: ExportFetchOptions,
-): Promise<BackupProfileRow | null> {
-  abortIfRequested(options.signal)
-  const base = client.from('profiles').select(EXPORT_PROFILE_SELECT).eq('id', userId)
-  const ready = options.signal === undefined ? base : base.abortSignal(options.signal)
-  const { data, error } = await ready.maybeSingle().overrideTypes<
-    | (Omit<BackupProfileRow, 'low_value_threshold_minor'> & {
-        low_value_threshold_minor: string
-      })
-    | null,
-    { merge: false }
-  >()
-  if (error !== null) {
-    throw new Error(`Export failed reading profile: ${error.message}`)
-  }
-  if (data === null) return null
-  return { ...data, low_value_threshold_minor: minorUnits(data.low_value_threshold_minor) }
+): Promise<BackupData['profiles']> {
+  // The owner's own profile row (0 or 1 rows) through the SAME bounded, reconciled walk as
+  // every other section — uniform completeness guarantees, no special case.
+  return collectRows(
+    client,
+    'profiles',
+    options,
+    (from, to) => {
+      const base = client
+        .from('profiles')
+        .select(EXPORT_SECTION_SELECTS.profiles)
+        .eq('id', userId)
+        .order('id', { ascending: true })
+        .range(from, to)
+      const ready = options.signal === undefined ? base : base.abortSignal(options.signal)
+      return ready.overrideTypes<
+        WireRow<BackupProfileRow>[], 
+        { merge: false }
+      >()
+    },
+    (row) => brandRow(row, 'profiles'),
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -898,7 +905,7 @@ export async function fetchExportSnapshot(
   }
   const userId: string = sessionUserId
 
-  const profile = await fetchProfile(client, userId, options)
+  const profiles = await fetchProfiles(client, userId, options)
   const customCollections = await fetchCustomCollections(client, options)
   const customCollectionMembers = await fetchCustomCollectionMembers(client, options)
   const tags = await fetchTags(client, options)
@@ -918,7 +925,7 @@ export async function fetchExportSnapshot(
   const lotDisposals = await fetchLotDisposals(client, options)
 
   const snapshot: ExportSnapshot = {
-    profile,
+    profiles,
     custom_collections: customCollections,
     custom_collection_members: customCollectionMembers,
     tags,

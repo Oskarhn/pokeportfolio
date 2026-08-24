@@ -45,7 +45,8 @@ describe('versioned envelope (M13 gate: version envelope present)', () => {
       'card_sets',
       'cards',
       'card_variants',
-      'sealed_products',
+      // NB: sealed_products IS a canonical section since D-075 — it carries ONLY the
+      // owner-created subset; curated rows travel exclusively via the identity manifest.
       'watched_card_variants',
     ]
     for (const key of excluded) {
@@ -56,7 +57,7 @@ describe('versioned envelope (M13 gate: version envelope present)', () => {
   it('counts reconcile with the sections they describe', () => {
     const e = envelope()
     expect(e.counts['holdings']).toBe(e.data.holdings.length)
-    expect(e.counts['profile']).toBe(1)
+    expect(e.counts['profiles']).toBe(1)
     expect(e.counts['identity_manifest.card_variants']).toBe(
       e.identity_manifest.card_variants.length,
     )
@@ -148,6 +149,18 @@ describe('envelope validator / type guard', () => {
     const result = validateBackupEnvelope(broken((e) => ({ ...e, schema_version: 2 })))
     expect(result.valid).toBe(false)
     expect(result.failure?.path).toBe('schema_version')
+  })
+
+  it('v1 policy (D-075): a v2 writer must bump the version — a same-version file with a new section is refused', () => {
+    // Distinguishing test for the adjudicated version policy: within-v1 forward tolerance was
+    // REJECTED. A future canonical section is only legitimate alongside a schema_version bump,
+    // which this reader then refuses wholesale; the future v2 reader owns reading such files.
+    const e = envelope() as unknown as Record<string, unknown>
+    const withNewSection = {
+      ...e,
+      data: { ...(e['data'] as Record<string, unknown>), openings: [] },
+    }
+    expect(validateBackupEnvelope(withNewSection).valid).toBe(false)
   })
 
   it('rejects a non-UTC export timestamp', () => {

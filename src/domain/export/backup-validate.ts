@@ -4,9 +4,8 @@
  * Scope: proves the ENVELOPE and the shape of every section (the ROADMAP M13 gate — "a JSON
  * backup round-trips; amounts parse; the version envelope is present"). It validates the FILE,
  * not an import — M13 ships no restore. Deeper semantic validation (row-level field types)
- * happens at build time in build-backup.ts; this guard is deliberately forgiving about row
- * payloads beyond requiring objects, so version-1 files remain readable if rows gain optional
- * additive keys (compatibility policy in backup-format.ts).
+ * happens at build time in build-backup.ts; this guard requires objects for rows and REFUSES
+ * unknown data keys outright — the strict v1 policy in backup-format.ts (D-075).
  */
 import { BACKUP_DATA_KEYS, BACKUP_FORMAT_ID, type BackupEnvelope } from './backup-format'
 import { MANIFEST_COUNT_KEY_PREFIX } from './backup-format'
@@ -43,7 +42,7 @@ function fail(path: string, problem: string): EnvelopeValidationResult {
  * - `exported_at` parses as an ISO instant ending in Z (UTC)
  * - `app.version` is a string
  * - `counts` holds non-negative integers for every expected section
- * - `data.profile` is null or an object; every other section is an array of objects
+ * - every section, profiles included (0 or 1 rows), is an array of objects
  * - `identity_manifest` carries its two arrays of objects
  * - no unexpected top-level `data` keys (a v1 reader refuses what it cannot name)
  */
@@ -86,11 +85,7 @@ export function validateBackupEnvelope(input: unknown): EnvelopeValidationResult
   }
   for (const key of BACKUP_DATA_KEYS) {
     const section = data[key]
-    if (key === 'profile') {
-      if (section !== null && !isPlainObject(section)) {
-        return fail('data.profile', 'must be null or an object')
-      }
-    } else if (!isRowArray(section)) {
+    if (!isRowArray(section)) {
       return fail(`data.${key}`, 'must be an array of objects')
     }
   }
