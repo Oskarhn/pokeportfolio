@@ -130,7 +130,9 @@ export default defineConfig({
     environment: 'node',
     // Infrastructure-free suites only. Database and authorization tests need a live Supabase
     // stack and run separately via `pnpm test:db` (vitest.db.config.ts) — see docs/TESTING.md §1.
-    include: ['tests/financial/**/*.test.ts', 'tests/data/**/*.test.ts'],
+    // tests/ui/ covers browser-platform logic that is pure enough to verify without a DOM
+    // renderer (M13's file-delivery dispatch), with platform globals stubbed.
+    include: ['tests/financial/**/*.test.ts', 'tests/data/**/*.test.ts', 'tests/ui/**/*.test.ts'],
     coverage: {
       provider: 'v8',
       include: ['src/domain/**/*.ts'],

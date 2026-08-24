@@ -1,0 +1,177 @@
+/**
+ * Platform file delivery for M13 export/backup — the "how does the file reach the user" layer,
+ * deliberately separate from what generates the bytes (P35's engine) and from the UI.
+ *
+ * Dispatch order, all capability-detected (M13 prompt §7-9; research dossier §MOBILE/PWA):
+ *
+ *   1. Web Share Level 2 — `navigator.canShare({files})` then `navigator.share({files})`.
+ *      The intended path inside an installed iOS PWA, where a blob-anchor download is
+ *      intercepted by QuickLook fullscreen with no way back (WebKit 236943). Never sniffed
+ *      from a UA string: if the platform can share these files, it shares them.
+ *   2. File System Access save picker (`showSaveFilePicker`) for a single file — desktop-Chromium
+ *      enhancement only, never a dependency; Safari/Firefox never see it and its failure falls
+ *      through to (3).
+ *   3. Blob + `<a download>` — the universal fallback (the same mechanism M7.1's Portfolio CSV
+ *      already uses). Multiple artifacts are downloaded sequentially with a short gap so browsers
+ *      register each one; every object URL is revoked after a bounded delay, and no hidden link
+ *      outlives the click.
+ *
+ * User cancellation (AbortError from the share sheet or the save dialog) is a normal outcome,
+ * not an error. A NotAllowedError from `share()` — transient user activation expired during a
+ * long generation, or sharing refused by policy — falls through to the download path instead of
+ * dead-ending; any other share failure surfaces as an error so the UI can offer Retry.
+ */
+
+export interface DeliverableFile {
+  filename: string
+  blob: Blob
+}
+
+export type DeliveryOutcome =
+  | { method: 'share'; filenames: string[] }
+  | { method: 'save-picker'; filenames: string[] }
+  /** One or more browser downloads were triggered via object URLs / anchors. */
+  | { method: 'download'; filenames: string[] }
+  /** The user dismissed the share sheet or save dialog. Nothing was saved or shared. */
+  | { method: 'cancelled' }
+
+/** Raised when delivery genuinely failed and the user should see it (with Retry in the UI). */
+export class DeliveryError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options)
+    this.name = 'DeliveryError'
+  }
+}
+
+/** How long a revoked-pending object URL is kept alive after its anchor click, milliseconds.
+ *  Revoking immediately after `click()` can race the download manager in some engines; a bounded
+ *  delay is the safe pattern (FileSaver.js keeps blobs far longer). */
+const OBJECT_URL_KEEP_ALIVE_MS = 10_000
+
+/** Pause between sequential fallback downloads so each registers as its own download. */
+const INTER_DOWNLOAD_DELAY_MS = 350
+
+interface ShareCapableNavigator {
+  share?: (data: { files?: File[]; title?: string; text?: string }) => Promise<void>
+  canShare?: (data: { files?: File[] }) => boolean
+}
+
+interface SavePickerHost {
+  showSaveFilePicker?: (options?: { suggestedName?: string }) => Promise<{
+    createWritable: () => Promise<{
+      write: (data: Blob) => Promise<void>
+      close: () => Promise<void>
+    }>
+  }>
+}
+
+function toFiles(files: readonly DeliverableFile[]): File[] {
+  return files.map(
+    ({ filename, blob }) =>
+      new File([blob], filename, { type: blob.type || 'application/octet-stream' }),
+  )
+}
+
+function errorName(error: unknown): string | undefined {
+  return typeof error === 'object' && error !== null && 'name' in error
+    ? String((error as { name?: unknown }).name)
+    : undefined
+}
+
+function isAbortError(error: unknown): boolean {
+  return errorName(error) === 'AbortError'
+}
+
+function canShareAsFiles(files: readonly DeliverableFile[]): boolean {
+  const nav = navigator as ShareCapableNavigator
+  if (typeof nav.share !== 'function' || typeof nav.canShare !== 'function') return false
+  try {
+    // Asked about the exact payload that would be shared — including the full array when there
+    // are several files — because engines accept single-file shares they reject for arrays.
+    return nav.canShare({ files: toFiles(files) })
+  } catch {
+    return false
+  }
+}
+
+async function shareFiles(files: readonly DeliverableFile[]): Promise<void> {
+  const nav = navigator as ShareCapableNavigator
+  // `share` is checked again defensively even though canShareAsFiles gates the call.
+  if (typeof nav.share !== 'function') throw new DeliveryError('Sharing is not available.')
+  await nav.share({ files: toFiles(files) })
+}
+
+async function saveWithPicker(file: DeliverableFile): Promise<void> {
+  const host = globalThis as SavePickerHost
+  const handle = await host.showSaveFilePicker?.({ suggestedName: file.filename })
+  if (!handle) throw new DeliveryError('Saving is not available.')
+  const writable = await handle.createWritable()
+  try {
+    await writable.write(file.blob)
+  } finally {
+    await writable.close()
+  }
+}
+
+async function downloadViaAnchors(files: readonly DeliverableFile[]): Promise<void> {
+  for (const [index, file] of files.entries()) {
+    if (index > 0) {
+      await new Promise((resolve) => setTimeout(resolve, INTER_DOWNLOAD_DELAY_MS))
+    }
+    const url = URL.createObjectURL(file.blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = file.filename
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    setTimeout(() => {
+      URL.revokeObjectURL(url)
+    }, OBJECT_URL_KEEP_ALIVE_MS)
+  }
+}
+
+/**
+ * Deliver generated artifacts to the user by the best path the current platform offers.
+ * Throws `DeliveryError` when nothing could be delivered (including the honest empty case:
+ * an engine response with zero files is reported, never silently swallowed).
+ */
+export async function deliverFiles(files: readonly DeliverableFile[]): Promise<DeliveryOutcome> {
+  if (files.length === 0) {
+    throw new DeliveryError('No files came back from the export. Nothing was saved.')
+  }
+  const filenames = files.map((file) => file.filename)
+
+  if (canShareAsFiles(files)) {
+    try {
+      await shareFiles(files)
+      return { method: 'share', filenames }
+    } catch (error) {
+      if (isAbortError(error)) return { method: 'cancelled' }
+      // Transient activation expired while generation ran, or the platform refused to open the
+      // sheet at all — a plain download still gets the file to the user, so fall through rather
+      // than dead-ending. Every other share failure is real and surfaces below as an error.
+      if (errorName(error) !== 'NotAllowedError') {
+        throw new DeliveryError('Sharing did not complete.', { cause: error })
+      }
+    }
+  }
+
+  const first = files[0]
+  if (files.length === 1 && first !== undefined) {
+    const host = globalThis as SavePickerHost
+    if (typeof host.showSaveFilePicker === 'function') {
+      try {
+        await saveWithPicker(first)
+        return { method: 'save-picker', filenames }
+      } catch (error) {
+        if (isAbortError(error)) return { method: 'cancelled' }
+        // The picker is an enhancement; if writing through it fails, the ordinary download
+        // still works, so fall through instead of failing the whole action.
+      }
+    }
+  }
+
+  await downloadViaAnchors(files)
+  return { method: 'download', filenames }
+}

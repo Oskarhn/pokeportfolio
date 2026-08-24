@@ -272,3 +272,15 @@ export function BoxIcon(props: SVGProps<SVGSVGElement>) {
     </Icon>
   )
 }
+
+/** An archive box — the backup-file glyph (M13 export/backup), distinct from DownloadIcon's
+ *  transfer arrow so "keep a copy somewhere safe" doesn't read as just another download. */
+export function ArchiveIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <rect x="3.5" y="4" width="17" height="4.5" rx="1" />
+      <path d="M5.5 8.5V19a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1V8.5" />
+      <path d="M10 13h4" />
+    </Icon>
+  )
+}
