@@ -273,7 +273,6 @@ describe('P42 scenario B: card + accessory purchase survives removing the card',
 
 describe('P42 scenario C: partially-disposed inventory remains blocked', () => {
   it('a lot with quantity_remaining < quantity blocks removal and nothing is mutated', async () => {
-    const before = await spendingOf(clientA)
     // Two copies, then simulate a partial disposal of one (same technique M8's own blocker
     // tests use — no real disposal path participates in this correction flow). A 1-of-1 lot is
     // fully intact by definition; the blocker needs a genuine mismatch.
