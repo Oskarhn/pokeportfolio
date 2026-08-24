@@ -1,9 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import {
-  emptyBackupData,
-  type BackupTagRow,
-} from '../../src/domain/export/backup-format'
+import { emptyBackupData, type BackupTagRow } from '../../src/domain/export/backup-format'
 import { buildBackupEnvelope, serializeBackupEnvelope } from '../../src/domain/export/build-backup'
 import { MONEY_FIELDS, EXPORT_SECTION_SELECTS } from '../../src/data/export/fetch-snapshot'
 
@@ -20,10 +17,9 @@ describe('money select casts (§19 audit)', () => {
       // Sections without money columns legitimately have empty lists.
       const select = EXPORT_SECTION_SELECTS[section as keyof typeof EXPORT_SECTION_SELECTS]
       for (const field of fields) {
-        expect(
-          select,
-          `${section}.${String(field)} must be selected as ${String(field)}::text`,
-        ).toContain(`${String(field)}::text`)
+        expect(select, `${section}.${field} must be selected as ${field}::text`).toContain(
+          `${field}::text`,
+        )
       }
     }
   })
@@ -56,10 +52,13 @@ describe('timestamp precision (§21)', () => {
     }
     const data = { ...emptyBackupData(), tags: [tag] }
     const text = serializeBackupEnvelope(
-      buildBackupEnvelope({ ...data, identity_manifest: { card_variants: [], curated_sealed_products: [] } }, {
-        exportedAt: '2026-08-24T12:00:00.000Z',
-        appVersion: 'test',
-      }),
+      buildBackupEnvelope(
+        { ...data, identity_manifest: { card_variants: [], curated_sealed_products: [] } },
+        {
+          exportedAt: '2026-08-24T12:00:00.000Z',
+          appVersion: 'test',
+        },
+      ),
     )
     expect(text).toContain('"created_at":"2026-05-01T10:20:30.123456+00:00"')
     expect(text).toContain('"updated_at":"2026-05-01T10:20:30.123456+00:00"')

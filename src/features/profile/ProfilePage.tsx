@@ -10,10 +10,7 @@ import {
   type CollectionView,
 } from '../../data/profile'
 import { getPortfolioCounts } from '../../data/portfolio'
-import {
-  readLastReminderMark,
-  shouldRemindExport,
-} from '../../domain/export/export-reminder'
+import { readLastReminderMark, shouldRemindExport } from '../../domain/export/export-reminder'
 import { Button, FormMessage, TextField } from '../../ui/form'
 import { formatNokMinor, parseNokInput } from '../../ui/money-format'
 import { applyTheme } from '../../ui/theme'
@@ -138,9 +135,15 @@ export function ProfilePage() {
       <section className="space-y-2 rounded-2xl border border-slate-800 p-4">
         <h2 className="text-sm font-semibold text-slate-300">Data</h2>
         {remindExport ? (
-          <p role="status" className="rounded-lg border border-dashed border-amber-900/60 bg-amber-950/30 p-3 text-xs leading-relaxed text-amber-100/90">
-            It may be a while since your last export. A fresh backup keeps your ledger safe —
-            see <Link to="/profile/export" className="underline underline-offset-2">Export &amp; backup</Link>.
+          <p
+            role="status"
+            className="rounded-lg border border-dashed border-amber-900/60 bg-amber-950/30 p-3 text-xs leading-relaxed text-amber-100/90"
+          >
+            It may be a while since your last export. A fresh backup keeps your ledger safe — see{' '}
+            <Link to="/profile/export" className="underline underline-offset-2">
+              Export &amp; backup
+            </Link>
+            .
           </p>
         ) : null}
         <Link

@@ -35,7 +35,8 @@ const EXPORT_NAME_PATTERNS: readonly { capability: M13Capability; pattern: RegEx
   { capability: 'csv-writer', pattern: /(to|write|build|emit)Csv|csvFrom/i },
   {
     capability: 'backup-builder',
-    pattern: /(build|create|generate)(Full)?Backup|exportJsonBackup|exportEverything|collectBackup/i,
+    pattern:
+      /(build|create|generate)(Full)?Backup|exportJsonBackup|exportEverything|collectBackup/i,
   },
 ]
 
@@ -197,9 +198,8 @@ export function getBoundBackupBuilder(): Promise<BoundBackupBuilder> {
         await import('../../../tests/db/setup')
       const { seedCompleteUserModel } = await import('./fixtures.ts')
       const { fetchExportSnapshot } = await import('../../../src/data/export/fetch-snapshot')
-      const { buildBackupEnvelope, serializeBackupEnvelope } = await import(
-        '../../../src/domain/export/build-backup'
-      )
+      const { buildBackupEnvelope, serializeBackupEnvelope } =
+        await import('../../../src/domain/export/build-backup')
 
       const service = createServiceClient()
       const user = await createSyntheticUser(service, 'm13adv-bldr')

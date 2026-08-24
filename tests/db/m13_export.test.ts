@@ -2,6 +2,12 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { serializeBackupEnvelope } from '../../src/domain/export/build-backup'
 import { BACKUP_DATA_KEYS, type BackupEnvelope } from '../../src/domain/export/backup-format'
+import { CSV_BOM } from '../../src/domain/export/csv'
+import {
+  buildCsvSuite,
+  EXPORT_CSV_FILENAMES,
+  projectionInputFromSnapshot,
+} from '../../src/domain/export/csv-projections'
 import { assertBackupEnvelope } from '../../src/domain/export/backup-validate'
 import {
   EXPORT_MAX_PAGES,
@@ -284,9 +290,7 @@ describe('M13 export over real RLS', () => {
     expect(envelope.data.holdings.every((h) => h.user_id === userA.id)).toBe(true)
     expect(envelope.data.lot_cost_adjustments.length).toBe(1)
     expect(envelope.data.manual_valuations.length).toBeGreaterThanOrEqual(1)
-    expect(envelope.data.sealed_products.map((p) => p.name)).toContain(
-      'My fixture box',
-    )
+    expect(envelope.data.sealed_products.map((p) => p.name)).toContain('My fixture box')
   })
 
   it('carries money exactly past 2^53 and keeps null ≠ zero', async () => {
@@ -371,4 +375,42 @@ describe('M13 export over real RLS', () => {
     const anonClient = createClient<Database>(url, anonKey, { auth: { persistSession: false } })
     await expect(fetchExportSnapshot(anonClient)).rejects.toThrow(/authenticated session/)
   })
+
+  it('an empty account still yields a complete envelope and full header-only CSV suite (§22)', async () => {
+    // An empty account is NOT an empty-artifact result: the JSON backup must be a valid v1
+    // envelope (profile present via signup, every other section an explicit empty array, zero
+    // manifest entries) and the CSV export must return all ten files with their headers. The
+    // delivery layer's "No files came back" error must therefore be unreachable for a healthy
+    // engine — it fires only when the controller literally returns zero artifacts.
+    const userEmpty = await createSyntheticUser(service, 'm13-export-empty')
+    try {
+      const clientEmpty = await typedSignInAs(userEmpty)
+      const snapshot = await fetchExportSnapshot(clientEmpty)
+      const { buildBackupEnvelope } = await import('../../src/domain/export/build-backup')
+      const envelope = buildBackupEnvelope(snapshot, {
+        exportedAt: '2026-08-24T10:00:00.000Z',
+        appVersion: 'db-test',
+      })
+      assertBackupEnvelope(JSON.parse(serializeBackupEnvelope(envelope)))
+      expect(envelope.data.profiles).toHaveLength(1)
+      for (const key of BACKUP_DATA_KEYS) {
+        if (key === 'profiles') continue
+        expect(envelope.data[key], `${key} explicitly empty`).toEqual([])
+      }
+      expect(envelope.identity_manifest.card_variants).toHaveLength(0)
+
+      const csvTexts = buildCsvSuite(projectionInputFromSnapshot(snapshot))
+      expect(csvTexts).toHaveLength(EXPORT_CSV_FILENAMES.length)
+      for (const file of csvTexts) {
+        expect(file.text.startsWith(CSV_BOM)).toBe(true)
+        const lines = file.text
+          .replace(/^\uFEFF/, '')
+          .trimEnd()
+          .split('\r\n')
+        expect(lines, `${file.filename} keeps its header row`).toHaveLength(1)
+      }
+    } finally {
+      await deleteSyntheticUser(service, userEmpty.id)
+    }
+  }, 30_000)
 })

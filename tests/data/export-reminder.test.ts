@@ -57,6 +57,8 @@ describe('export reminder cadence', () => {
       },
     }
     expect(readLastReminderMark(hostile)).toBeNull()
-    expect(() => markReminderSatisfied(hostile, NOW)).not.toThrow()
+    expect(() => {
+      markReminderSatisfied(hostile, NOW)
+    }).not.toThrow()
   })
 })

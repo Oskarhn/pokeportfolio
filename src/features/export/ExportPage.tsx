@@ -4,17 +4,8 @@ import { Button, FormMessage } from '../../ui/form'
 import { ArchiveIcon, CheckIcon, DownloadIcon } from '../../ui/icons'
 import { getExportController } from './controller'
 import type { ExportArtifact, ExportController, ExportKind } from './contract'
-import {
-  reduceExportFlow,
-  describeReady,
-  type ExportFlowState,
-} from './exportFlow'
-import {
-  canShareFiles,
-  deliverFiles,
-  downloadOnly,
-  type DeliveryOutcome,
-} from './fileDelivery'
+import { reduceExportFlow, describeReady, type ExportFlowState } from './exportFlow'
+import { canShareFiles, deliverFiles, downloadOnly, type DeliveryOutcome } from './fileDelivery'
 import { markReminderSatisfied } from '../../domain/export/export-reminder'
 
 /**
@@ -62,9 +53,8 @@ export function ExportPage({
     dispatch({ type: 'PREPARE', kind })
     try {
       const artifacts =
-        kind === 'backup'
-          ? await controller.createBackup()
-          : await controller.createCsvExport()
+        kind === 'backup' ? await controller.createBackup() : await controller.createCsvExport()
+      setShareAvailable(canShareFiles(artifacts))
       dispatch({ type: 'PREPARED', kind, artifacts })
     } catch (error) {
       dispatch({
@@ -78,18 +68,13 @@ export function ExportPage({
   }
 
   function readyArtifacts(flow: ExportFlowState): readonly ExportArtifact[] | null {
-    return flow.phase === 'ready' || flow.phase === 'delivery-failed'
-      ? flow.artifacts
-      : null
+    return flow.phase === 'ready' || flow.phase === 'delivery-failed' ? flow.artifacts : null
   }
 
   const artifacts = readyArtifacts(flow)
   const readyKind = flow.phase === 'ready' || flow.phase === 'delivery-failed' ? flow.kind : null
 
-  useEffect(() => {
-    if (artifacts === null) return
-    setShareAvailable(canShareFiles(artifacts))
-  }, [artifacts])
+  const busy = flow.phase === 'preparing' || flow.phase === 'delivering'
 
   async function deliver() {
     if (artifacts === null || readyKind === null || runningRef.current) return
@@ -126,9 +111,6 @@ export function ExportPage({
       runningRef.current = false
     }
   }
-
-  const busy =
-    flow.phase === 'preparing' || flow.phase === 'delivering' || runningRef.current
 
   return (
     <div className="mx-auto w-full max-w-md space-y-5 py-2 pb-24">

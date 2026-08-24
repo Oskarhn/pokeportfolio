@@ -113,12 +113,9 @@ describe('M13 backup contract (implementation-gated)', () => {
     expect(typeof found.value).toBe('function')
 
     // BINDING (deliberate, D-075): the real writer is buildCsvText(header, rows); the adapter
-    // treats a single matrix's first row as the header — the writer's own convention. The
+    // treats a single matrix's first row as the header � the writer's own convention. The
     // RFC 4180 round-trip expectation below is unchanged.
-    const write =
-      found.module.relPath.endsWith('contract.ts') === true
-        ? (found.value as (rows: readonly (readonly string[])[]) => string)
-        : adaptCsvWriter(found.value as never)
+    const write = adaptCsvWriter(found.value as never)
 
     const sentinelA = 'a,b'
     const sentinelB = 'say "hi"'
@@ -182,8 +179,8 @@ describe('M13 backup contract (implementation-gated)', () => {
       const raw = await builder.run()
       const issues = validateBackupEnvelope(raw)
       expect(issues.some((i) => i.severity === 'violation')).toBe(false)
-      const data = (raw as { counts?: Record<string, number>; data?: Record<string, unknown> })
-        .data ?? {}
+      const data =
+        (raw as { counts?: Record<string, number>; data?: Record<string, unknown> }).data ?? {}
 
       // Every MUST_EXPORT section carries EXACTLY the fixture's row count — truncation,
       // gaps or duplicates would each break this equality (the artifact-level completion
@@ -196,10 +193,7 @@ describe('M13 backup contract (implementation-gated)', () => {
           continue
         }
         expect(section, `${table} section present`).toBeInstanceOf(Array)
-        expect(
-          (section as unknown[]).length,
-          `${table} complete and duplicate-free`,
-        ).toBe(expected)
+        expect((section as unknown[]).length, `${table} complete and duplicate-free`).toBe(expected)
       }
 
       // Frozen facts travel verbatim through the real fetch+build pipeline: allocations are

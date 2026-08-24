@@ -1,7 +1,4 @@
-import {
-  exportCsvArtifacts,
-  exportJsonBackup,
-} from '../../data/export'
+import { exportCsvArtifacts, exportJsonBackup } from '../../data/export'
 import type { ExportArtifact, ExportController, ExportProgressListener } from './contract'
 
 /**
@@ -18,9 +15,7 @@ import type { ExportArtifact, ExportController, ExportProgressListener } from '.
  * defect, not "nothing to export".
  */
 
-function toFeatureArtifacts(
-  files: readonly { filename: string; blob: Blob }[],
-): ExportArtifact[] {
+function toFeatureArtifacts(files: readonly { filename: string; blob: Blob }[]): ExportArtifact[] {
   return files.map(({ filename, blob }) => ({ filename, blob }))
 }
 

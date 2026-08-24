@@ -739,10 +739,7 @@ async function fetchProfiles(
         .order('id', { ascending: true })
         .range(from, to)
       const ready = options.signal === undefined ? base : base.abortSignal(options.signal)
-      return ready.overrideTypes<
-        WireRow<BackupProfileRow>[], 
-        { merge: false }
-      >()
+      return ready.overrideTypes<WireRow<BackupProfileRow>[], { merge: false }>()
     },
     (row) => brandRow(row, 'profiles'),
   )
