@@ -148,6 +148,7 @@ describe.skipIf(!RUN)('M13 export performance audit', () => {
       'holdings',
       cardIds.map((cid, i) => ({
         user_id: user.id,
+        holding_kind: 'raw_card',
         manual_card_id: cid,
         grading_state: 'raw',
         is_favorite: i % 7 === 0,
