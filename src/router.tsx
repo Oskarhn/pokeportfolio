@@ -510,8 +510,13 @@ const saleEditRoute = createRoute({
 const historyRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/history',
-  validateSearch: (search: Record<string, unknown>): { tab?: 'sold' | 'traded' | 'other' } => ({
-    tab: str(search.tab) as 'sold' | 'traded' | 'other' | undefined,
+  // P43: the unified History feed. kind filters by event source, voided reveals
+  // corrected/voided entries (presentation only — never an accounting change).
+  validateSearch: (
+    search: Record<string, unknown>,
+  ): { kind?: 'purchase' | 'sale' | 'acquisition' | 'valuation'; voided?: boolean } => ({
+    kind: str(search.kind) as 'purchase' | 'sale' | 'acquisition' | 'valuation' | undefined,
+    voided: bool(search.voided),
   }),
   component: () => (
     <RequireSession>

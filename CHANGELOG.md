@@ -52,6 +52,28 @@ the dashboard summary like every other correction path already did. New suites:
 accessory spend preserved, partially-disposed stays blocked, cross-user untouched) and pure
 domain tests for the poll/settle decisions. Decisions D-082/D-083.
 
+### Added — 2026-08-24 — Portfolio reset and unified correction-aware History (P43)
+
+Profile gains a restrained **Danger zone** with one action — *Reset portfolio data* — behind an
+explicit "Are you sure?" confirmation stating what is removed and what is kept. The reset itself
+is one atomic server operation, `reset_my_portfolio_data()` (SECURITY DEFINER out of necessity —
+browsers hold no DELETE grants on the financial ledger at all; every statement filters
+`auth.uid()`, no user-id parameter exists): holdings, acquisition lots, purchases/purchase_lines,
+sales/sale_lines, lot_disposals, lot_cost_adjustments, manual_valuations, collection/tag
+memberships, portfolio snapshots and the recompute queue are deleted in FK-safe order with the
+queue row locked first; account, settings, retailers, storage locations, tags, collection
+definitions, manual card definitions and the user's own sealed products are preserved (D-084).
+An empty account is genuinely empty — no fabricated zero rows, no stale dashboard value.
+
+History is rebuilt from Sold/Traded/Other tabs into a single correction-aware feed over the
+canonical event sources that exist today: purchases, sales, non-purchase acquisitions ("Added")
+and active manual valuations (`list_history_events` — one bounded SECURITY INVOKER RPC, keyset
+pagination on (recorded_at, primary_id), money as text, voided entries hidden by default behind
+a "Show corrections / voided" toggle that never touches accounting). Every event navigates to its
+existing correction surface rather than offering deletion. Openings/Trades/Grading become event
+kinds when M16/M17/M18 land (D-085). Two migrations (`20260901120010`/`20260901120020`);
+**not yet deployed** (destructive owner-data operation).
+
 ### Added — 2026-08-24 — Holding-level quantity correction and removal (P28, PR #42)
 
 From a holding's detail page, without Portfolio select mode: quantity 1 offers "Remove from

@@ -4,32 +4,19 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-**Last updated:** 2026-08-24 — **M13 (Export and versioned backup) is MERGED and
+**Last updated:** 2026-08-25 — **M13 (Export and versioned backup) is MERGED and
 RELEASED: PR #47 squash-merged as `0fa3021b8f7415b4c3b427917845406d36d0d40f` on `main`,
 Cloudflare deployed and verified (`deployment-check.mjs` 28/28, `grant-audit.sql` clean,
-`remote-security-check.mjs` 17/17 phase 1; no migration exists for M13, so none was applied).**
-See "M13 — Export and backup" below. **P42 (owner recompute-refresh fix) follows as DRAFT
-PR #48 rebased onto that state: not merged, not deployed.** It targets refresh latency only:
-an additive cron migration (`20260901120000_p42_cron_cadence.sql`, every-minute drain +
-nightly run-log prune, D-082) and pending-only dashboard polling with a settle-triggered
-history refresh in Home (D-082), plus the two correction paths that were missing the
-`dashboard-summary` invalidation. Classification and the synthetic ledger contract are pinned
-by D-083 and `tests/db/p42_owner_refresh.test.ts`. Beneath that: M1–M12 plus the parallel
-Home/Search/quantity release are complete in code, merged and deployed. M12 (Dashboard) was
-merged through PR #35 and released
-against `pokeportfolio-dev` on 2026-08-23 (all six migrations applied, cron live, backfill
-converged, security green, `deployment-check.mjs` 28/28). On 2026-08-24 the three
-Claude-approved parallel branches were integrated in a controlled release: PR #40 (Home polish),
-PR #41 (Search set showcase/images/resilience) and PR #42 (holding-level quantity
-correction/removal, including its two P28 migrations applied to the hosted project BEFORE the
-frontend merge). Final state: `main` at `6a4b1b258cdc04088167db75d06f5e545ee9f934`, main CI
-green (486+ db tests), Cloudflare serving the release build (`deployment-check.mjs` 28/28),
-hosted security re-verified post-deploy (`grant-audit.sql` clean, `remote-security-check.mjs`
-17/17 phase 1, anon RPC probe refused 401/42501). Open items: the owner-facing signed-in checks
-(Dashboard since M12; now also Home/Search/Holding-Detail behaviours from this release —
-checklist below), same standing no-sign-in boundary as every session since M7.1.** See "P26/P27/
-P28 — parallel release" below, then "M12 — Dashboard (released)"; everything beneath describes
-earlier milestones.
+`remote-security-check.mjs` 17/17 phase 1; no migration exists for M13, so none was
+applied).** **P42 (owner recompute-refresh fix) is MERGED and RELEASED on top of it: PR #48
+squash-merged as `837942e6a50976323aaba558a1cfaacae9c17e5e`; its cron-cadence migration
+(`20260901120000_p42_cron_cadence.sql`) was applied to `pokeportfolio-dev` BEFORE the
+frontend merge — every-minute drain verified ticking naturally (~0.01 s no-op ticks),
+nightly run-log prune scheduled, deployment check 28/28.** **P43 (portfolio reset + unified
+correction-aware History) follows as DRAFT PR #49 rebased onto that state: not merged, not
+deployed.** See "P43 — Portfolio reset + unified History" below, then "M13 — Export
+and backup". Beneath that: M1–M12 plus the parallel Home/Search/quantity release are
+complete in code, merged and deployed. M12 (Dashboard) was merged through PR #35 and released
 
 ---
 

@@ -171,6 +171,20 @@ const FUNCTIONS: FunctionCase[] = [
     authenticated: CALLABLE,
     why: 'M8.1: bulk-safe Remove from Portfolio; the body itself refuses a holding the caller does not own',
   },
+  {
+    name: 'reset_my_portfolio_data',
+    args: {},
+    anon: REFUSED,
+    authenticated: CALLABLE,
+    why: 'P43: the atomic full reset; SECURITY DEFINER by necessity (browsers hold no DELETE grants on the ledger) but every statement filters auth.uid() — no argument to forge',
+  },
+  {
+    name: 'list_history_events',
+    args: {},
+    anon: REFUSED,
+    authenticated: CALLABLE,
+    why: 'P43: the unified History read surface; SECURITY INVOKER, every predicate derives from auth.uid()',
+  },
 ]
 
 let service: TestClient

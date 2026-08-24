@@ -275,23 +275,36 @@ normally would. Four distinct concepts, deliberately not merged:
 - Sold items leave current collection value from the sale date forward and do not retroactively
   vanish from history.
 
-### 4.8.1 History — what I no longer own
+### 4.8.1 History — everything that happened to the collection
 
 A dedicated area, separate from Portfolio. Portfolio answers *what do I own now*; History
-answers *what did I own, and what happened to it*. Disposed items never clutter the active
-Portfolio view by default.
+answers *what happened, and when*. **Reworked P43 (D-075):** one unified feed over canonical
+events — purchases, sales, additions acquired outside a purchase, and manual valuations —
+with kind chips (All / Purchases / Sales / Added / Values) and a "Show corrections / voided"
+toggle. Voided/corrected entries are hidden by default; showing them is presentation only and
+never changes a total (D-074). Openings, trades and grading events join the feed when those
+features exist — no placeholder sections pretend otherwise.
 
-Sections: **Sold**, **Traded**, **Other disposals** (write-offs, corrections).
+Every event row shows its kind, title, business date, amount where one honestly exists (**—**
+otherwise) and navigates to that record's own correction surface (purchase edit/void, sale
+edit/void, Holding Detail for acquisitions/valuations).
 
-A sold entry shows: card, quantity, sale date, marketplace, gross, fees, shipping, net proceeds,
-acquisition origin, cost basis if known, and realized result if defensible.
+The original sold-entry requirements stand unchanged: quantity, sale date, marketplace, gross,
+fees, shipping, net proceeds, acquisition origin, cost basis if known, and realized result if
+defensible — with unknown-basis rows never ranked as zero cost. Traded-away entries will show
+the trade, both sides' items, market values at trade date where recorded, and cash legs, with no
+fabricated profit figure.
 
-Sorting includes newest, highest proceeds, highest result, largest loss, item and marketplace.
-**Sorting by result must place unknown-basis rows in their own group** rather than treating them
-as zero cost — otherwise every sold gift ranks as the most profitable sale ever made.
+### 4.8.2 Reset portfolio data (P43)
 
-A traded-away entry shows the trade it belonged to, the items on both sides, market values at
-trade date where recorded, and the cash legs. No fabricated profit figure.
+Profile carries a restrained Danger zone with one action: reset portfolio data, behind an
+explicit "Are you sure?" confirmation stating what is removed (inventory, purchases/spending,
+sales/results, acquisition history, valuations, value history) and what is kept (account,
+settings, retailers, storage locations, tags, collections — emptied of members, manual card
+definitions, own sealed-product definitions). The reset is one atomic server operation; a failed
+reset changes nothing. This is the only place in the product where tracking data is permanently
+deleted (D-074); every other mistake is corrected through the void lifecycle and stays visible
+under History's corrections toggle.
 
 ### 4.9 Valuation
 

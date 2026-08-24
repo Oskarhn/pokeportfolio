@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link } from '@tanstack/react-router'
+import { Link, useNavigate } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../../auth/useAuth'
 import {
@@ -11,10 +11,12 @@ import {
 } from '../../data/profile'
 import { getPortfolioCounts } from '../../data/portfolio'
 import { readLastReminderMark, shouldRemindExport } from '../../domain/export/export-reminder'
+import { resetMyPortfolioData } from '../../data/reset'
 import { Button, FormMessage, TextField } from '../../ui/form'
 import { formatNokMinor, parseNokInput } from '../../ui/money-format'
 import { applyTheme } from '../../ui/theme'
 import { MoneyDisplay } from '../../ui/MoneyDisplay'
+import { Sheet } from '../../ui/Sheet'
 import {
   ProfileIcon,
   PencilIcon,
@@ -173,6 +175,8 @@ export function ProfilePage() {
           Sign out
         </Button>
       </section>
+
+      <DangerZone />
 
       <Footer />
     </div>
@@ -427,6 +431,115 @@ function ProfileSettings({ profile, isAdmin }: { profile: Profile; isAdmin: bool
         </section>
       ) : null}
     </>
+  )
+}
+
+/**
+ * Danger Zone (P43): the one deliberately destructive operation in the product. "Reset portfolio
+ * data" clears owned inventory, purchases/spend, sales, acquisition history, valuations and the
+ * portfolio-history cache in ONE atomic server call — while preserving the account, settings and
+ * reusable setup metadata (retailers, storage locations, tags, collection definitions, manual
+ * cards, own sealed products). DECISIONS.md D-074: this full reset is the only place permanent
+ * deletion of tracking data is intentional; everything else corrects through the void lifecycle.
+ *
+ * The confirmation states both sides plainly (what goes, what stays), disables while running and
+ * keeps any error visible. On success every user-data query is invalidated and Home shows the
+ * honest empty state.
+ */
+function DangerZone() {
+  const queryClient = useQueryClient()
+  const navigate = useNavigate()
+  const [confirmOpen, setConfirmOpen] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const resetMutation = useMutation({
+    mutationFn: resetMyPortfolioData,
+    onSuccess: async () => {
+      setConfirmOpen(false)
+      // Every user-data query is now stale by definition — invalidate all of them.
+      await queryClient.invalidateQueries()
+      await navigate({ to: '/' })
+    },
+    onError: (mutationError: Error) => {
+      setError(mutationError.message)
+    },
+  })
+
+  return (
+    <section className="space-y-2 rounded-2xl border border-rose-900/50 p-4">
+      <h2 className="text-sm font-semibold text-rose-300">Danger zone</h2>
+      <p className="text-xs text-slate-500">
+        Erase your tracked portfolio and start over. Your account is not affected.
+      </p>
+      <Button
+        type="button"
+        variant="quiet"
+        className="border border-rose-900/60 text-rose-300 hover:bg-rose-950/40"
+        onClick={() => {
+          setError(null)
+          setConfirmOpen(true)
+        }}
+      >
+        Reset portfolio data
+      </Button>
+
+      <Sheet
+        open={confirmOpen}
+        onClose={() => {
+          if (!resetMutation.isPending) setConfirmOpen(false)
+        }}
+        title="Reset your portfolio data?"
+      >
+        <div className="space-y-3">
+          <p className="text-sm text-slate-300">Are you sure? This cannot be undone.</p>
+          <div className="rounded-lg border border-rose-900/40 p-3 text-xs text-slate-400">
+            <p className="font-medium text-rose-300">This permanently removes:</p>
+            <ul className="mt-1 list-inside list-disc space-y-0.5">
+              <li>All tracked cards, graded cards and sealed products</li>
+              <li>All purchases and spending records</li>
+              <li>All sales and realized results</li>
+              <li>Acquisition history and manual valuations</li>
+              <li>Your portfolio value history</li>
+            </ul>
+          </div>
+          <div className="rounded-lg border border-slate-800 p-3 text-xs text-slate-400">
+            <p className="font-medium text-slate-300">This keeps:</p>
+            <ul className="mt-1 list-inside list-disc space-y-0.5">
+              <li>Your account, sign-in and settings</li>
+              <li>Admin access (administrators only)</li>
+              <li>Retailers, storage locations, tags and collections</li>
+              <li>Your manual card definitions and sealed product definitions</li>
+            </ul>
+            <p className="mt-1 text-slate-500">Collections are kept but become empty.</p>
+          </div>
+          {error ? <FormMessage tone="error">{error}</FormMessage> : null}
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              variant="quiet"
+              disabled={resetMutation.isPending}
+              onClick={() => {
+                setConfirmOpen(false)
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="primary"
+              className="border border-rose-900/60 bg-rose-900/80 hover:bg-rose-800"
+              disabled={resetMutation.isPending}
+              onClick={() => {
+                setError(null)
+                resetMutation.mutate()
+              }}
+            >
+              {resetMutation.isPending ? 'Resetting…' : 'Yes, reset portfolio'}
+            </Button>
+          </div>
+        </div>
+      </Sheet>
+    </section>
   )
 }
 

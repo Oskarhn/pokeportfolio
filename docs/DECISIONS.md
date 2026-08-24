@@ -2175,3 +2175,71 @@ EXACTLY; multi-line purchases preserve unrelated lines (accessory spend survives
 partially-disposed inventory stays blocked. If a future report shows spend wrong after a
 settle+reload, the defect class to suspect is a live multi-line receipt (correct it through
 Purchases), not this correction path.
+
+## D-084 — Correction, void, display filter and full reset are four different things; full reset is the one place hard deletion is intentional
+
+**2026-08-24 — Accepted** (P43)
+
+The owner asked for a portfolio "reset" and, separately, to be able to "ignore/delete" wrong
+test entries from History. These are four distinct mechanisms and conflating any two of them
+would either lie to the accounting or destroy data by accident:
+
+1. **CORRECTION** — an in-place fix through a lifecycle that recomputes what it affects
+   (`update_purchase` for amounts/fees/lines that have no lot; `reduce_holding_quantity` for
+   shape changes). Money stays true before and after.
+2. **VOID** — the canonical mistake correction (`void_purchase`, `void_sale`,
+   `void_acquisition_lot`, superseded manual valuations). Rows are never deleted; they are
+   marked voided, excluded from every live total, and remain visible under History's
+   show-corrections toggle. This is how an accidental quick-add is undone: spend reverts,
+   inventory reverts, nothing is fabricated.
+3. **DISPLAY FILTER** — presentation only. History hides voided/corrected entries by default
+   behind "Show corrections / voided". Hiding never alters GPO, CS, NSP, CMV, cost basis or
+   snapshots. There are no per-event hidden flags to accidentally make load-bearing.
+4. **FULL RESET** — `reset_my_portfolio_data()`, the deliberate exception. One atomic
+   server-side operation that permanently deletes the caller's owned tracking dataset:
+   holdings, acquisition lots, purchases/purchase_lines, sales/sale_lines, lot_disposals,
+   lot_cost_adjustments, manual_valuations, collection/tag *memberships*, portfolio_snapshots
+   and the recompute queue. It exists because the owner explicitly asked for a blank slate, it
+   requires its own confirmation ("Are you sure?" → "Yes, reset portfolio"), and it is the ONLY
+   path in the product where a financial row is hard-deleted.
+
+Reset preserves the account, profile/settings and reusable setup metadata: retailers, storage
+locations, tags, custom-collection definitions (emptied of members), manual card definitions and
+the user's own private sealed-product definitions. Rationale: those describe *how* the user
+models their collecting, not *what* they own or spent; re-entering twenty retailers after a test
+period would punish exactly the person reset exists to help. The confirmation copy states both
+lists plainly.
+
+Implementation constraints that carry the decision's weight: the reset is ONE function call =
+ONE PostgREST request = ONE transaction, so a partial reset is structurally impossible; there is
+no user_id parameter to forge; deletion order is FK-deterministic with the M12 queue row locked
+first so a concurrent snapshot drain cannot resurrect a stale value. SECURITY DEFINER is
+necessary, not expedient: browsers hold no DELETE grants on the ledger at all (void semantics,
+SECURITY.md §8), and widening those grants to let an INVOKER reset work would undo D-060's core
+guarantee. Every statement inside filters by auth.uid(); the full adversarial review lives in
+SECURITY.md §3.2.5.
+
+Alternatives rejected: client-side loops of DELETE requests (partial failure = half-destroyed
+ledger); voiding every row instead of deleting (an "empty" account would still hold thousands of
+voided rows and every total would be honest but the slate would not be blank); per-event hidden
+flags in History (a display state that silently becomes an accounting input).
+
+## D-085 — History is one bounded union over canonical event sources; corrections surface through status, not a second table
+
+**2026-08-24 — Accepted** (P43)
+
+History replaces M10's Sold/Traded/Other tabs with a single feed over the event sources that
+exist TODAY: purchases, sales, non-purchase acquisitions ("Added") and active manual valuations.
+No event-sourcing table is invented for a screen (the same rule get_recent_activity already
+follows); Openings (M16), Grading (M17) and Trades (M18) become additional event kinds when
+their tables exist, and until then no chip pretends otherwise.
+
+Ordering is keyset on (recorded_at DESC, primary_id DESC) — the recording timestamp orders
+deterministically while each row still displays its own business date — paginated in one RPC,
+`list_history_events`, with no N+1 and money cast to text. Voided/corrected entries are excluded
+by default and revealed by an explicit toggle; a superseded manual valuation never appears at
+all because a supersede IS that fact's correction lifecycle (D-062).
+
+Purchase events link to the purchase lifecycle (edit/void), sale events to theirs, acquisitions
+and valuations to Holding Detail — History navigates to the existing correction surfaces rather
+than becoming a generic delete console (D-084 item 2).

@@ -377,6 +377,11 @@ begin
     ('routine', 'remove_holdings_from_portfolio(uuid[])', 'authenticated', 'EXECUTE'),
     -- P28: the Holding Detail quantity-correction surface (20260831120000).
     ('routine', 'reduce_holding_quantity(uuid, jsonb)', 'authenticated', 'EXECUTE'),
+    -- P43: the atomic full reset (SECURITY DEFINER, auth.uid()-scoped only) and the unified
+    -- History read surface (SECURITY INVOKER, owner-only by construction). 20260901120000.
+    ('routine', 'reset_my_portfolio_data()', 'authenticated', 'EXECUTE'),
+    ('routine', 'list_history_events(text, boolean, integer, timestamp with time zone, uuid)',
+     'authenticated', 'EXECUTE'),
     -- M9: the valuation resolver surface. select_price_sync_batch/thin_price_snapshots are
     -- service-role-only and deliberately absent here, same reasoning as catalog_sync_runs.
     ('routine', 'clear_manual_valuation(uuid)', 'authenticated', 'EXECUTE'),
