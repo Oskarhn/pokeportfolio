@@ -69,6 +69,15 @@ set search_path = ''
 as $$
 declare
   v_user uuid := auth.uid();
+  v_purchases bigint;
+  v_purchase_lines bigint;
+  v_sales bigint;
+  v_sale_lines bigint;
+  v_disposals bigint;
+  v_lots bigint;
+  v_holdings bigint;
+  v_valuations bigint;
+  v_snapshots bigint;
 begin
   if v_user is null then
     raise exception 'not authenticated';
@@ -79,41 +88,51 @@ begin
 
   -- 1. Disposal ledger children (reference acquisition_lots + sale_lines without cascade).
   delete from public.lot_disposals ld where ld.user_id = v_user;
+  get diagnostics v_disposals = row_count;
   -- 2. Sale lines (reference sales + acquisition_lots without cascade).
   delete from public.sale_lines sl where sl.user_id = v_user;
+  get diagnostics v_sale_lines = row_count;
   -- 3. Sales.
   delete from public.sales s where s.user_id = v_user;
+  get diagnostics v_sales = row_count;
   -- 4. Cost adjustments (reference acquisition_lots + purchase_lines without cascade).
   delete from public.lot_cost_adjustments a where a.user_id = v_user;
   -- 5. Manual valuation history (references holdings without cascade).
   delete from public.manual_valuations mv where mv.user_id = v_user;
+  get diagnostics v_valuations = row_count;
   -- 6. Organisational membership join rows bound to inventory (collection/tag DEFINITIONS stay).
   delete from public.custom_collection_members m where m.user_id = v_user;
   delete from public.holding_tags ht where ht.user_id = v_user;
   -- 7. Acquisition lots (reference holdings + purchase_lines without cascade).
   delete from public.acquisition_lots l where l.user_id = v_user;
+  get diagnostics v_lots = row_count;
   -- 8. Purchase lines, then purchases.
   delete from public.purchase_lines pl where pl.user_id = v_user;
+  get diagnostics v_purchase_lines = row_count;
   delete from public.purchases p where p.user_id = v_user;
+  get diagnostics v_purchases = row_count;
   -- 9. Holdings last of the canonical rows (every child above is gone).
   delete from public.holdings h where h.user_id = v_user;
+  get diagnostics v_holdings = row_count;
   -- 10. Derived cache: stale snapshots must never survive the reset.
   delete from public.portfolio_snapshots s where s.user_id = v_user;
+  get diagnostics v_snapshots = row_count;
 
   -- Future milestones add their user-owned tables here, BEFORE holdings:
   --   grading submissions (M17), openings (M16), trade lines (M18).
 
+  -- Counts are captured per statement via GET DIAGNOSTICS: counting the tables AFTER the
+  -- deletes would always report zero. What the caller receives is what THIS call removed.
   return query
-    select
-      (select count(*) from public.purchases p where p.user_id = v_user)::integer,
-      (select count(*) from public.purchase_lines pl where pl.user_id = v_user)::integer,
-      (select count(*) from public.sales s where s.user_id = v_user)::integer,
-      (select count(*) from public.sale_lines sl where sl.user_id = v_user)::integer,
-      (select count(*) from public.lot_disposals ld where ld.user_id = v_user)::integer,
-      (select count(*) from public.acquisition_lots l where l.user_id = v_user)::integer,
-      (select count(*) from public.holdings h where h.user_id = v_user)::integer,
-      (select count(*) from public.manual_valuations mv where mv.user_id = v_user)::integer,
-      (select count(*) from public.portfolio_snapshots s where s.user_id = v_user)::integer;
+    select v_purchases::integer,
+           v_purchase_lines::integer,
+           v_sales::integer,
+           v_sale_lines::integer,
+           v_disposals::integer,
+           v_lots::integer,
+           v_holdings::integer,
+           v_valuations::integer,
+           v_snapshots::integer;
 end;
 $$;
 

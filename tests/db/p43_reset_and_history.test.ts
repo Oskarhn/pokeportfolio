@@ -499,10 +499,8 @@ describe('the seeded portfolio (sanity before reset)', () => {
     expect(active).toEqual([])
     const corrections = await historyEvents({ p_include_voided: true })
     expect(corrections.some((e) => e.event_kind === 'purchase' && e.status === 'voided')).toBe(true)
-    // void_acquisition_lot voids the lot itself AND its sole parent purchase, so both events
-    // surface under the toggle — the correction is visible, never hard-deleted.
-    expect(corrections.some((e) => e.event_kind === 'acquisition' && e.status === 'voided')).toBe(
-      true,
-    )
+    // The corrected lot is purchase-origin, so it never doubles up as an acquisition event —
+    // the voided receipt row above IS the correction record (anti-double-report rule).
+    expect(corrections.filter((e) => e.event_kind === 'acquisition')).toHaveLength(0)
   })
 })
