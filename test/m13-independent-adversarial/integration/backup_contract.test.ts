@@ -17,9 +17,15 @@
  * is that an integration session fails these tests for the RIGHT reasons, then updates
  * helpers/contract.ts deliberately rather than silently.
  */
-import { describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { hasSupabaseEnv, skipUnlessImplementation } from '../helpers/contract.ts'
+import {
+  adaptCsvWriter,
+  getBoundBackupBuilder,
+  hasSupabaseEnv,
+  skipUnlessImplementation,
+  type BoundBackupBuilder,
+} from '../helpers/contract.ts'
 import {
   hasViolations,
   REQUIRED_BACKUP_FORMAT,
@@ -27,6 +33,7 @@ import {
 } from '../helpers/envelope.ts'
 import { emitTextCell, parseCsv, sanitizeCsvTextCell, writeCsv } from '../helpers/csvOracle.ts'
 import { PRIVILEGE_INTERNAL_COLUMNS, mustNotExportTables } from '../helpers/inventory.ts'
+import { FIXTURE_EXPECTED_COUNTS } from '../helpers/fixtures.ts'
 import { serializeMinorUnits } from '../helpers/moneyOracle.ts'
 import { BEYOND_SAFE_INTEGER } from '../helpers/moneyOracle.ts'
 
@@ -105,13 +112,19 @@ describe('M13 backup contract (implementation-gated)', () => {
     }
     expect(typeof found.value).toBe('function')
 
-    // The writer may take rows-of-strings OR richer row objects; probe with the simplest legal
-    // input and demand RFC 4180-parseable output containing our sentinel fields.
+    // BINDING (deliberate, D-075): the real writer is buildCsvText(header, rows); the adapter
+    // treats a single matrix's first row as the header — the writer's own convention. The
+    // RFC 4180 round-trip expectation below is unchanged.
+    const write =
+      found.module.relPath.endsWith('contract.ts') === true
+        ? (found.value as (rows: readonly (readonly string[])[]) => string)
+        : adaptCsvWriter(found.value as never)
+
     const sentinelA = 'a,b'
     const sentinelB = 'say "hi"'
     let out: unknown
     try {
-      out = await (found.value as (rows: unknown) => unknown)([[sentinelA, sentinelB]])
+      out = await (write as (rows: unknown) => unknown)([[sentinelA, sentinelB]])
     } catch (err) {
       throw new Error(
         `[M13 CONTRACT] writer ${found.module.relPath}#${found.name} rejected a plain string-row ` +
@@ -127,31 +140,19 @@ describe('M13 backup contract (implementation-gated)', () => {
   })
 
   describe.skipIf(!hasSupabaseEnv())('generated-backup end-to-end contract', () => {
+    let builder: BoundBackupBuilder
+
+    beforeAll(async () => {
+      builder = await getBoundBackupBuilder()
+    }, 120_000)
+
+    afterAll(async () => {
+      if (builder) await builder.dispose()
+    }, 60_000)
+
     it('a generated backup validates, excludes derived/system data and reconciles counts', async (ctx) => {
       await skipUnlessImplementation(ctx, REPO_ROOT)
-      const loaded = await import('../helpers/contract.ts').then((m) => m.loadM13Surface(REPO_ROOT))
-      const found = loaded.find('backup-builder')
-      if (!found) {
-        throw new Error(
-          '[M13 CONTRACT] no backup builder export matched ' +
-            '/(build|create|generate)(Full)?Backup|exportEverything|collectBackup/i — update ' +
-            'helpers/contract.ts deliberately if the entry point is named differently.',
-        )
-      }
-
-      let artifact: unknown
-      try {
-        artifact = await (found.value as () => unknown)()
-      } catch (err) {
-        throw new Error(
-          `[M13 CONTRACT] backup builder ${found.module.relPath}#${found.name} could not be ` +
-            `invoked with no arguments (${String(err)}). Client-side generation under the ` +
-            'caller JWT should not need them; if it does, bind deliberately.',
-          { cause: err },
-        )
-      }
-
-      const raw = typeof artifact === 'string' ? (JSON.parse(artifact) as unknown) : artifact
+      const raw = await builder.run()
       const issues = validateBackupEnvelope(raw)
       const violations = issues.filter((i) => i.severity === 'violation')
       expect(
@@ -176,14 +177,49 @@ describe('M13 backup contract (implementation-gated)', () => {
       }
     })
 
+    it('owner export completeness: every seeded canonical row arrives exactly once', async (ctx) => {
+      await skipUnlessImplementation(ctx, REPO_ROOT)
+      const raw = await builder.run()
+      const issues = validateBackupEnvelope(raw)
+      expect(issues.some((i) => i.severity === 'violation')).toBe(false)
+      const data = (raw as { counts?: Record<string, number>; data?: Record<string, unknown> })
+        .data ?? {}
+
+      // Every MUST_EXPORT section carries EXACTLY the fixture's row count — truncation,
+      // gaps or duplicates would each break this equality (the artifact-level completion
+      // of the pagination walker's own reconciliation).
+      for (const [table, expected] of Object.entries(FIXTURE_EXPECTED_COUNTS)) {
+        const section = data[table]
+        if (table === 'sealed_products') {
+          // Subset predicate: owner-created rows only; curated seed visibility is by design.
+          expect(Array.isArray(section), `${table} present`).toBe(true)
+          continue
+        }
+        expect(section, `${table} section present`).toBeInstanceOf(Array)
+        expect(
+          (section as unknown[]).length,
+          `${table} complete and duplicate-free`,
+        ).toBe(expected)
+      }
+
+      // Frozen facts travel verbatim through the real fetch+build pipeline: allocations are
+      // never recomputed and the FX triple is byte-exact (F11).
+      const purchases = (data.purchases ?? []) as Record<string, unknown>[]
+      const eurPurchase = purchases.find((p) => p['currency'] === 'EUR')
+      expect(eurPurchase).toBeDefined()
+      expect(String(eurPurchase?.['fx_rate_to_nok'])).toBe('11.52345678')
+      expect(String(eurPurchase?.['total_nok_minor'])).toBe('155567')
+
+      const saleLines = (data.sale_lines ?? []) as Record<string, unknown>[]
+      const frozen = saleLines.find((l) => l['cost_basis_at_sale_nok_minor'] !== null)
+      expect(String(frozen?.['cost_basis_at_sale_nok_minor'])).toBe('46094')
+      expect(String(frozen?.['realized_result_nok_minor'])).toBe('68906')
+    })
+
     it('re-export is deterministic apart from exported_at (diffable backups)', async (ctx) => {
       await skipUnlessImplementation(ctx, REPO_ROOT)
-      const loaded = await import('../helpers/contract.ts').then((m) => m.loadM13Surface(REPO_ROOT))
-      const found = loaded.find('backup-builder')
-      if (!found) throw new Error('[M13 CONTRACT] backup builder missing for determinism check')
-
-      const first = await (found.value as () => Promise<string | object>)()
-      const second = await (found.value as () => Promise<string | object>)()
+      const first = await builder.run()
+      const second = await builder.run()
       const normalize = (x: string | object): Record<string, unknown> => {
         const parsed = typeof x === 'string' ? (JSON.parse(x) as object) : x
         const copy = structuredClone(parsed) as Record<string, unknown>
@@ -198,7 +234,7 @@ describe('M13 backup contract (implementation-gated)', () => {
     it('money values travel BigInt-exactly (beyond-safe-integer case)', async (ctx) => {
       await skipUnlessImplementation(ctx, REPO_ROOT)
       // Oracle-side statement of the required property; the artifact-level assertion lives in
-      // the seeded completeness suite (security/completeness) once builders are bound.
+      // the repo's m13_export DB suite (seeded 2^53+1 basis asserted end-to-end there).
       expect(serializeMinorUnits(BEYOND_SAFE_INTEGER)).toBe('9007199254740993')
       const parsed: unknown = JSON.parse(`{"v":"${serializeMinorUnits(BEYOND_SAFE_INTEGER)}"}`)
       expect((parsed as { v: string }).v).toBe('9007199254740993')
