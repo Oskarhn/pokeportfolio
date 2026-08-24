@@ -134,7 +134,9 @@ export async function seedCompleteUserModel(
   const purchaseLineSealedId = await insertOne(service, 'purchase_lines', {
     purchase_id: purchaseId,
     user_id: userId,
-    line_type: 'sealed_product',
+    // Enum value corrected at integration (oracle defect found on first real execution):
+    // public.line_type is 'sealed', not 'sealed_product'.
+    line_type: 'sealed',
     spend_class: 'collectible',
     description: 'Booster box',
     sealed_product_id: seedCatalog.sealedProductId,

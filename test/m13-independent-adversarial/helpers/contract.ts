@@ -77,6 +77,16 @@ function candidateDirectories(repoRoot: string): string[] {
   return [...new Set(found)]
 }
 
+/**
+ * Capability-name PREFERENCES for the deliberate integration bindings (D-076). Several real
+ * exports can match one broad regex (e.g. buildCsvSuite and buildCsvText both match
+ * /buildCsv/); when a preferred exact name exists anywhere on the surface it wins, so the
+ * contract binds to the canonical writer rather than whichever module sorted first.
+ */
+const CAPABILITY_NAME_PREFERENCES: readonly { capability: M13Capability; name: RegExp }[] = [
+  { capability: 'csv-writer', name: /^buildCsvText$/ },
+]
+
 let surfaceCache: M13Surface | null = null
 
 /** Cached async discovery (module graph does not change mid-run). */
@@ -123,6 +133,18 @@ async function discover(repoRoot: string): Promise<M13Surface> {
             index.set(capability, { module: mod, name, value })
             break
           }
+        }
+      }
+    }
+  }
+
+  // Preference pass: a preferred exact export name overrides a broad-regex first match.
+  for (const { capability, name } of CAPABILITY_NAME_PREFERENCES) {
+    for (const mod of modules) {
+      for (const [exportName, value] of mod.exports) {
+        if (name.test(exportName)) {
+          if (!mod.capabilities.includes(capability)) mod.capabilities.push(capability)
+          index.set(capability, { module: mod, name: exportName, value })
         }
       }
     }
