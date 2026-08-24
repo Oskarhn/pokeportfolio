@@ -140,12 +140,13 @@ describe('the seeded portfolio (sanity before reset)', () => {
         holding_kind: 'graded_card',
         card_variant_id: seedCatalog.charizardShadowlessFirstEditionVariantId,
         grading_state: 'graded',
-        grader: 'PSA',
+        grader: 'psa',
         grade: 10,
       })
       .select('id')
       .single<{ id: string }>()
-    gradedHoldingId = graded.data!.id
+    if (graded.error) throw new Error(graded.error.message)
+    gradedHoldingId = graded.data.id
     await service.from('acquisition_lots').insert({
       holding_id: gradedHoldingId,
       user_id: userA.id,
@@ -173,7 +174,8 @@ describe('the seeded portfolio (sanity before reset)', () => {
       })
       .select('id')
       .single<{ id: string }>()
-    sealedHoldingId = sealed.data!.id
+    if (sealed.error) throw new Error(sealed.error.message)
+    sealedHoldingId = sealed.data.id
     await service.from('acquisition_lots').insert({
       holding_id: sealedHoldingId,
       user_id: userA.id,
@@ -200,16 +202,18 @@ describe('the seeded portfolio (sanity before reset)', () => {
       .insert({ user_id: userA.id, name: 'p43-tag' })
       .select('id')
       .single<{ id: string }>()
+    if (tag.error) throw new Error(tag.error.message)
     const collection = await service
       .from('custom_collections')
       .insert({ user_id: userA.id, name: 'p43-collection' })
       .select('id')
       .single<{ id: string }>()
+    if (collection.error) throw new Error(collection.error.message)
     await service
       .from('holding_tags')
-      .insert({ holding_id: quickAddHoldingId, tag_id: tag.data!.id, user_id: userA.id })
+      .insert({ holding_id: quickAddHoldingId, tag_id: tag.data.id, user_id: userA.id })
     await service.from('custom_collection_members').insert({
-      collection_id: collection.data!.id,
+      collection_id: collection.data.id,
       holding_id: gradedHoldingId,
       user_id: userA.id,
     })

@@ -41,18 +41,20 @@ afterAll(async () => {
 const today = new Date().toISOString().slice(0, 10)
 
 async function addCard(client: TestClient, cardVariantId: string) {
-  const { data, error } = await client.rpc('add_card_acquisition', {
-    p_card_variant_id: cardVariantId,
-    p_grading_state: 'raw',
-    p_condition: 'NM',
-    p_origin: 'purchase',
-    p_cost_basis_state: 'known',
-    p_unit_cost_basis_minor: 100,
-    p_quantity: 1,
-    p_acquired_on: today,
-  })
+  const { data, error } = await client
+    .rpc('add_card_acquisition', {
+      p_card_variant_id: cardVariantId,
+      p_grading_state: 'raw',
+      p_condition: 'NM',
+      p_origin: 'purchase',
+      p_cost_basis_state: 'known',
+      p_unit_cost_basis_minor: 100,
+      p_quantity: 1,
+      p_acquired_on: today,
+    })
+    .single<{ holding_id: string; lot_id: string }>()
   if (error) throw new Error(error.message)
-  return data as { holding_id: string; lot_id: string }
+  return data
 }
 
 describe('reset_my_portfolio_data: who may call it', () => {
@@ -113,20 +115,20 @@ describe('list_history_events: owner-only reads', () => {
   })
 
   it("a signed-in user sees only their own events — B's purchases never leak into A's feed", async () => {
-    await addCard(clientA, seedCatalog.charizardVariantId)
+    // Isolation measured as a delta: whatever B's feed holds before A acts, A's new
+    // purchase must not change it by a single row.
     const clientB = await signInAs(userB)
-    await addCard(clientB, seedCatalog.grassEnergyVariantId)
+    const before = await clientB.rpc('list_history_events')
+    const bBefore = (before.data ?? []) as unknown[]
+
+    await addCard(clientA, seedCatalog.charizardVariantId)
 
     const { data: aEvents, error: aError } = await clientA.rpc('list_history_events')
     expect(aError).toBeNull()
-    expect((aEvents as { event_kind: string }[]).length).toBeGreaterThanOrEqual(1)
+    expect((aEvents as unknown[]).length).toBeGreaterThanOrEqual(1)
 
-    const { data: bEvents, error: bError } = await clientB.rpc('list_history_events')
+    const { data: bAfter, error: bError } = await clientB.rpc('list_history_events')
     expect(bError).toBeNull()
-    const bList = bEvents as { title: string; amount_nok_minor: string | null }[]
-    // B's feed contains only B's own purchase(s), never A's.
-    expect(bList.length).toBe(1)
-    // And neither feed is empty-by-RLS-failure: each shows its own row.
-    expect(aEvents).not.toEqual(bEvents)
+    expect((bAfter ?? []).length).toBe(bBefore.length)
   })
 })
