@@ -689,9 +689,11 @@ describe('F/I/N — a partially-sold lot blocks correction and frozen sale histo
 
 describe('concurrency — two simultaneous adjustments of different sibling lots', () => {
   it('serialize: exactly one succeeds, the holding keeps ≥1 owned unit, no financial or disposal row moves', async () => {
+    // PL, not GD: the duplicate-lot rejection test above already created a pikachu/GD identity
+    // for this same synthetic user, and holdings_identity would reject a second one.
     const holdingId = await insertHolding({
       cardVariantId: seedCatalog.pikachuVariantId,
-      condition: 'GD',
+      condition: 'PL',
     })
     const lotA = await insertLot({
       holdingId,
