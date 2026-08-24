@@ -141,10 +141,11 @@ async function discover(repoRoot: string): Promise<M13Surface> {
   // Preference pass: a preferred exact export name overrides a broad-regex first match.
   for (const { capability, name } of CAPABILITY_NAME_PREFERENCES) {
     for (const mod of modules) {
+      if (!mod.capabilities.includes(capability)) continue
       for (const [exportName, value] of mod.exports) {
         if (name.test(exportName)) {
-          if (!mod.capabilities.includes(capability)) mod.capabilities.push(capability)
           index.set(capability, { module: mod, name: exportName, value })
+          break
         }
       }
     }
