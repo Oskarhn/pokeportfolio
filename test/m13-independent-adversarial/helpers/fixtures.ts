@@ -247,6 +247,7 @@ export async function seedCompleteUserModel(
     user_id: userId,
     origin: 'pre_tracking',
     cost_basis_state: 'unknown',
+    acquired_on: dateOnly(15),
     quantity: 1,
     quantity_remaining: 1,
     sealed_intent: 'keep_sealed',
