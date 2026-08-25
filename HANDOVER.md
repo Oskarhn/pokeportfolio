@@ -13,20 +13,43 @@ squash-merged as `837942e6a50976323aaba558a1cfaacae9c17e5e`; its cron-cadence mi
 (`20260901120000_p42_cron_cadence.sql`) was applied to `pokeportfolio-dev` BEFORE the
 frontend merge — every-minute drain verified ticking naturally (~0.01 s no-op ticks),
 nightly run-log prune scheduled, deployment check 28/28.** **P43 (portfolio reset + unified
-correction-aware History) follows as DRAFT PR #49 rebased onto that state: not merged, not
-deployed.** See "P43 — Portfolio reset + unified History" below, then "M13 — Export
+correction-aware History) is MERGED and RELEASED on top of both: PR #49 squash-merged as
+`59401e480e5c9c57c6dc096f864ce85a5fe4c878`; its two migrations
+(`20260901120010_p43_reset_and_history.sql`, `20260901120020_p43_privilege_baseline.sql`) were
+applied to `pokeportfolio-dev` BEFORE the frontend merge; hosted function/security state verified
+(reset = SECURITY DEFINER, `search_path=''`, no-argument signature, EXECUTE to authenticated only;
+history = SECURITY INVOKER, owner-scoped), grant audit clean, deployment check 28/28.**
+**Open items are owner-facing manual checks only: the P42 refresh repro, History browsing, the
+reset flow and the M13 installed-iPhone export walkthrough — see "Owner manual checklist" below.**
+See "P43 — Portfolio reset + unified History" below, then "M13 — Export
 and backup". Beneath that: M1–M12 plus the parallel Home/Search/quantity release are
 complete in code, merged and deployed. M12 (Dashboard) was merged through PR #35 and released
 
+## Owner manual checklist (all three releases, signed-in as the administrator)
+
+No safe authenticated browser automation exists this session (standing no-sign-in boundary since
+M7.1), so these four checks remain for the owner:
+
+- **A. Original P42 bug**: quick-add a disposable test card, then remove/correct it → Home must
+  update without a reload; the "Updating…" badge must disappear by itself within roughly a minute
+  plus one 3-second poll tick.
+- **B. History**: `/history` loads; All / Purchases / Sales / Added / Values chips all work;
+  "Show corrections / voided" reveals voided entries; voided entries do not affect active totals.
+- **C. Reset** (only if genuinely wiping current test data): Profile → Reset portfolio data →
+  confirmation → "Yes, reset portfolio". Afterward: Portfolio empty, spend/sales/history empty,
+  Home shows its empty state, settings survive.
+- **D. M13 export**: Profile → Export & backup → prepare backup → Ready → Save/Share; CSV export.
+  On the installed iPhone PWA specifically: Save to Files + return to the app.
+
 ---
 
-## M13 — Export and backup (integrated candidate: P35 + P36 + P37)
+## M13 — Export and backup (released: PR #47, squash `0fa3021b`)
 
-Three parallel sources combined deliberately on this one branch — no source PR was merged to main:
+Three parallel sources combined deliberately on one integration branch — no source PR was merged to main:
 P35 export core (PR #46 @ `b906cc0`), P36 UI/platform delivery (PR #44 @ `befa4c2`), P37
-implementation-blind adversarial contract package (PR #45 @ `2c4ccb5`). All three remain OPEN/DRAFT
-historical source PRs. The candidate is a NEW draft PR against main carrying the banner
-"M13 INTEGRATED CANDIDATE / CLAUDE REVIEW REQUIRED / DO NOT MERGE".
+implementation-blind adversarial contract package (PR #45 @ `2c4ccb5`). The three remain OPEN/DRAFT
+historical source PRs; the integrated candidate shipped as PR #47 after Claude Prompt 45's APPROVED
+final adversarial review at head `a9681b3`.
 
 What exists (decisions D-074–D-081; UX_FLOWS F11; CHANGELOG):
 
@@ -56,16 +79,14 @@ What exists (decisions D-074–D-081; UX_FLOWS F11; CHANGELOG):
   SELECT-only `lot_cost_adjustments`) and the generated-backup contract (envelope valid, exclusions,
   privilege columns absent, counts reconcile, per-table completeness vs fixture, frozen FX and
   allocations verbatim, determinism). An opt-in ~10k-lot export scale audit joins the CI performance
-  steps (reports duration/request-count/artifact bytes; catastrophic-only 60 s budget). Local gates
-  green at the candidate SHA: typecheck, lint (0 errors), format, unit suites, build, e2e.
-
-Still pending before M13 uses "released" language: Claude review of this integrated candidate, CI
-green on the integration PR itself, then merge/deploy strictly per GIT_WORKFLOW. Restore remains M19
-(D-025).
+  steps (reports duration/request-count/artifact bytes; catastrophic-only 60 s budget). Released
+  after: Claude review APPROVED, full CI green on the integration PR, squash merge and Cloudflare
+  deploy verified (`deployment-check.mjs` 28/28; no migration exists, so none was applied).
+  Restore remains M19 (D-025).
 
 ---
 
-## P43 — Portfolio reset + unified History (draft PR #49, rebased)
+## P43 — Portfolio reset + unified History (released: PR #49, squash `59401e4`; rebased onto M13+P42)
 
 - **Reset backend** (`20260901120010_p43_reset_and_history.sql`):
   `reset_my_portfolio_data()` — SECURITY DEFINER out of necessity (browsers hold no DELETE
@@ -95,8 +116,12 @@ green on the integration PR itself, then merge/deploy strictly per GIT_WORKFLOW.
   `p_user_id` overload rejected in the schema cache, feed isolation A vs B, cross-user reset
   impotence), new grant entries in `tests/authorization/function_grants.test.ts`,
   `scripts/grant-audit.sql` and the restated baseline `20260901120020_p43_privilege_baseline.sql`.
-- **CI: GREEN** on the PR head (both jobs; 502/502 db+authorization tests across 39 files,
-  hostile-grant convergence re-applying the new baseline). Four red runs preceded green and
+- **CI: GREEN** on the pre-rebase PR head (both jobs; 502/502 db+authorization tests across 39
+  files) and again on the repaired/rebased head that actually merged (run 32822968054: db suite
+  520 passed / 1 skipped across 41 files — the combined chain including P42's suite; hostile-grant
+  convergence re-applying `20260901120020_p43_privilege_baseline.sql`; migrate-from-scratch green
+  over `20260901120000_p42` → `20260901120010_p43_reset_and_history` →
+  `20260901120020_p43_privilege_baseline`). Four red runs preceded green and
   every failure was a genuine catch by CI's ephemeral Postgres: a wrong-case fixture enum
   ('PSA' vs 'psa'), missing `.single()` on rpc results in test helpers, an accumulation-based
   isolation assertion, **one real function bug — reset's returned counts were computed after
@@ -105,9 +130,12 @@ green on the integration PR itself, then merge/deploy strictly per GIT_WORKFLOW.
   typecheck/lint/format clean, domain tests 168/168, production build green. Atomicity is
   structurally asserted (one PostgREST request = one transaction + exercised FK order); true
   fault-injection needs DDL the harness lacks — disclosed in TESTING.md.
-- **Not done / for reviewers**: confirm the reset-vs-drain concurrency note in SECURITY.md
-  §3.2.5 matches their reading; decide whether History's Values chip label should read
-  "Valuations"; hosted deploy intentionally NOT performed in this session.
+- **Reviewer items closed**: the reset-vs-drain concurrency argument was independently confirmed
+  (and extended) by the Prompt 46 cross-PR review; the Values chip label stays as shipped;
+  both migrations were applied to `pokeportfolio-dev` before the frontend merge, and the hosted
+  function/security state was verified directly (definer/invoker split, `search_path=''`,
+  no-argument reset signature, authenticated-only EXECUTE). The owner-facing reset walkthrough is
+  checklist item C above.
 
 ---
 
@@ -299,10 +327,10 @@ the preflight note above for why the committed file stands.
 
 ## Status
 
-**M1-M12 merged/deployed. No open M9/M10/M11/M12-family engineering item remains; the one open
-item is the M12 owner signed-in Dashboard check (PENDING_OWNER above).** The standing
-owner-device check item carried since M7.1 still applies to deployed surfaces. Do not begin M12a
-or M13 before the owner confirms the Dashboard renders correctly in production.
+**M1–M12, the parallel release, and M13/P42/P43 are all merged/deployed. No open engineering item
+remains in any released family; the open items are the owner manual checks above (P42 refresh
+repro, History browsing, reset flow, installed-iPhone export) and the standing owner-device check
+carried since M7.1. Do not begin M16 resequencing before the owner records final approval.**
 
 ## M9 — Pricing and snapshots
 
