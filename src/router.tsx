@@ -512,10 +512,15 @@ const historyRoute = createRoute({
   path: '/history',
   // P43: the unified History feed. kind filters by event source, voided reveals
   // corrected/voided entries (presentation only — never an accounting change).
+  // M16: 'opening' joins the kind union (20260902120020); P51 owns any richer presentation.
   validateSearch: (
     search: Record<string, unknown>,
-  ): { kind?: 'purchase' | 'sale' | 'acquisition' | 'valuation'; voided?: boolean } => ({
-    kind: str(search.kind) as 'purchase' | 'sale' | 'acquisition' | 'valuation' | undefined,
+  ): {
+    kind?: 'purchase' | 'sale' | 'opening' | 'acquisition' | 'valuation'
+    voided?: boolean
+  } => ({
+    kind: str(search.kind) as
+      'purchase' | 'sale' | 'opening' | 'acquisition' | 'valuation' | undefined,
     voided: bool(search.voided),
   }),
   component: () => (
