@@ -21,6 +21,8 @@ import {
 } from '../../db/setup'
 import {
   bindOpeningCreateArgs,
+  bindOpeningIdOnlyArgs,
+  findReadRpcs,
   hasSupabaseEnv,
   requireCreateOpeningRpc,
   resolvePullSurface,
@@ -263,6 +265,93 @@ describe.skipIf(!hasSupabaseEnv())('M16 economic oracle — opening does not cre
     const spendNow = await spendSummary(clientA)
     expect(spendNow.gpoNokMinor - seeded.spendBefore.gpoNokMinor).toBe(59_900n)
     expect(spendNow.csNokMinor - seeded.spendBefore.csNokMinor).toBe(59_900n)
+  })
+
+  it('P56 §16-C: coverage counts are RETAINED-only — a fully-sold pull leaves them but stays in sold provenance', async (ctx) => {
+    const surface = await skipUnlessM16(ctx, service)
+    // The Opening-Detail read: a read-shaped RPC keyed by an opening id.
+    const detailRpc = findReadRpcs(surface).find((r) =>
+      r.paramNames.some((p) => /opening_?id/i.test(p)),
+    )
+    if (!detailRpc) {
+      throw new Error(
+        '[M16 CONTRACT] no opening-detail read RPC discovered among (' +
+          surface.openingRpcs.map((r) => r.name).join(', ') +
+          ') — FINANCIAL_MODEL §5.3 requires one.',
+      )
+    }
+
+    const seeded = await seedTenPackPurchase()
+    // Two pulls: Charizard (valued manually, then FULLY sold) and the Japanese variant
+    // (no market observations exist for it on this stack — genuinely unpriced, retained).
+    const openingId = await openUnits(ctx, [{ lotId: seeded.lotId, quantity: 1 }], today, [
+      { cardVariantId: seedCatalog.charizardVariantId, quantity: 1, condition: 'NM' },
+      { cardVariantId: seedCatalog.japaneseVariantId, quantity: 1, condition: 'NM' },
+    ])
+    const pulls = await pullLotsForOpening(clientA, openingId)
+    expect(pulls).toHaveLength(2)
+    // Identify which pull lot is the Charizard one via its holding's variant.
+    const variantOfPull = new Map<string, string>()
+    for (const pull of pulls) {
+      const { data: holding, error: hError } = await service
+        .from('holdings')
+        .select('card_variant_id')
+        .eq('id', pull.holding_id)
+        .single<{ card_variant_id: string | null }>()
+      if (hError || !holding?.card_variant_id) {
+        throw new Error(`cannot resolve pull holding variant: ${hError?.message}`)
+      }
+      variantOfPull.set(pull.id, holding.card_variant_id)
+    }
+    const charizardPull = pulls.find(
+      (p) => variantOfPull.get(p.id) === seedCatalog.charizardVariantId,
+    )
+    if (!charizardPull) throw new Error('charizard pull missing')
+
+    // Manual valuation makes the Charizard pull PRICED deterministically before the sale.
+    const { error: mvError } = await clientA.rpc('set_manual_valuation', {
+      p_holding_id: charizardPull.holding_id,
+      p_value_minor: 10_000,
+      p_effective_from: today,
+    })
+    expect(mvError, `set_manual_valuation failed: ${mvError?.message}`).toBeNull()
+
+    const { error: saleError } = await clientA.rpc('create_sale', {
+      p_sold_on: today,
+      p_currency: 'NOK',
+      p_idempotency_key: crypto.randomUUID(),
+      p_lines: [{ lot_id: charizardPull.id, quantity: 1, unit_gross_minor: 12_000 }],
+    })
+    expect(saleError, `create_sale failed: ${saleError?.message}`).toBeNull()
+
+    const { data, error } = await clientA.rpc(detailRpc.name, {
+      ...bindOpeningIdOnlyArgs(detailRpc, openingId),
+    })
+    if (error || !data) throw new Error(`detail read failed: ${error?.message}`)
+    const row = (Array.isArray(data) ? data[0] : data) as RowLike
+
+    // Coverage keys are located BY NAME PATTERN, never assumed exact:
+    //   priced/unpriced counts must EXCLUDE the sold-out pull (retained frame);
+    //   the sold-provenance count must INCLUDE it.
+    const pricedKey = findKey(row, /^priced.*pull.*count$/i)
+    const unpricedKey = findKey(row, /^unpriced.*pull.*count$/i)
+    const soldKey = findKey(row, /^sold.*pull.*count$/i)
+    if (!pricedKey || !unpricedKey || !soldKey) {
+      throw new Error(
+        `[M16 CONTRACT] detail read "${detailRpc.name}" lacks priced/unpriced/sold pull-count ` +
+          `fields (row keys: ${Object.keys(row).join(', ')}).`,
+      )
+    }
+    expect(Number(row[unpricedKey as string])).toBe(1) // the retained, unpriced Japanese pull
+    expect(Number(row[pricedKey as string])).toBe(0) // sold-out Charizard EXCLUDED
+    expect(Number(row[soldKey as string])).toBe(1) // …but present as sold provenance
+
+    // Retained tracked value excludes the sold lot entirely; proceeds include its sale.
+    const retained = findMoney(row, [/retained/i])
+    if (retained !== null) expect(retained).toBe(0n)
+    const proceeds = findMoney(row, [/net.*proceeds|proceeds/i])
+    expect(proceeds, 'sold-pull proceeds must be reported').not.toBeNull()
+    expect(proceeds!).toBeGreaterThan(0n)
   })
 
   it('§20 unpriced bulk pulls: opening completes; absent price ≠ zero price', async (ctx) => {

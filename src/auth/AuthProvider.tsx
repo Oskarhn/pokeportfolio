@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from '../data/supabase-client'
+// P56 §9: ending authentication must deterministically drop every user's in-memory opening
+// draft — private financial intent never outlives the session that created it. (The store is
+// additionally keyed by user id, so account switches are isolated even without this.)
+import { draftStore } from '../features/openings/draft'
 import { AuthContext, type AuthState } from './auth-context'
 
 /**
@@ -77,6 +81,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signOut = useCallback(async () => {
     await supabase.auth.signOut()
+    draftStore.clearAll()
   }, [])
 
   const value = useMemo<AuthState>(

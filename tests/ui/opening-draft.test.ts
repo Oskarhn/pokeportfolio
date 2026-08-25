@@ -372,15 +372,109 @@ describe('create-opening input assembly', () => {
   })
 })
 
-describe('session-memory draft store (prompt §23)', () => {
-  it('survives an unload/remount cycle and clears on deliberate reset', () => {
-    draftStore.clear()
-    expect(draftStore.load()).toBeNull()
+describe('session-memory draft store — USER-SCOPED (prompt §23, P56 §9)', () => {
+  it("a user's draft survives an unload/remount cycle and clears on deliberate reset", () => {
+    draftStore.clearAll()
     const draft = draftWithSource(source(), { quantityInput: '7' })
-    draftStore.save(draft)
-    expect(draftStore.load()?.quantityInput).toBe('7')
-    draftStore.clear()
-    expect(draftStore.load()).toBeNull()
+    draftStore.save('user-a', draft)
+    expect(draftStore.load('user-a')?.quantityInput).toBe('7')
+    // Deliberate RESET drops only this user's stored draft.
+    draftStore.clear('user-a')
+    expect(draftStore.load('user-a')).toBeNull()
+  })
+
+  it('another account never inherits the previous account’s in-memory draft', () => {
+    draftStore.clearAll()
+    draftStore.save(
+      'user-a',
+      draftWithSource(source(), { quantityInput: '3', notes: 'private stash' }),
+    )
+    expect(draftStore.load('user-b')).toBeNull()
+    // B saving their own draft does not disturb A's.
+    draftStore.save('user-b', draftWithSource(source(), { quantityInput: '9' }))
+    expect(draftStore.load('user-a')?.quantityInput).toBe('3')
+    expect(draftStore.load('user-b')?.quantityInput).toBe('9')
+    draftStore.clearAll()
+  })
+
+  it('an anonymous owner loads and saves nothing', () => {
+    draftStore.clearAll()
+    draftStore.save('user-a', draftWithSource(source(), { quantityInput: '4' }))
+    expect(draftStore.load(null)).toBeNull()
+    // A save without an authenticated owner is refused outright.
+    draftStore.save(null, draftWithSource(source(), { quantityInput: '1' }))
+    expect(draftStore.load(null)).toBeNull()
+    draftStore.clearAll()
+  })
+
+  it('clearAll drops every account’s draft at once (sign-out path)', () => {
+    draftStore.save('user-a', draftWithSource(source(), { quantityInput: '2' }))
+    draftStore.save('user-b', draftWithSource(source(), { quantityInput: '5' }))
+    draftStore.clearAll()
+    expect(draftStore.load('user-a')).toBeNull()
+    expect(draftStore.load('user-b')).toBeNull()
+  })
+})
+
+describe('manual-card resolution persistence (P56 §10)', () => {
+  function manualPullDraft(): OpeningDraft {
+    return reduceDraft(initialDraft(), {
+      type: 'ADD_PULL',
+      pull: {
+        cardVariantId: null,
+        manualCardId: null,
+        manualIdentity: { name: 'Local energy' },
+        displayName: 'Local energy',
+        subtitle: null,
+        imageBaseUrl: null,
+        finishLabel: null,
+        condition: 'NM' as const,
+      },
+      quantity: 1,
+      makeKey: () => 'k1',
+    })
+  }
+
+  it('RESOLVE_MANUAL_CARDS writes the created id onto the pull line', () => {
+    const draft = manualPullDraft()
+    const resolved = reduceDraft(draft, {
+      type: 'RESOLVE_MANUAL_CARDS',
+      idsByKey: new Map([['k1', 'manual-42']]),
+    })
+    expect(resolved.pulls[0]?.manualCardId).toBe('manual-42')
+    // The identity stays too — display and merge logic keep working.
+    expect(resolved.pulls[0]?.manualIdentity?.name).toBe('Local energy')
+  })
+
+  it('a resolved id makes the assembled input reuse THAT definition — no second row on retry', () => {
+    const resolved = reduceDraft(manualPullDraft(), {
+      type: 'RESOLVE_MANUAL_CARDS',
+      idsByKey: new Map([['k1', 'manual-42']]),
+    })
+    const input = buildCreateOpeningInput(resolved, 'lot-1', 'key-retry', parseNokInput)
+    expect(input.pulls[0]?.manualCardId).toBe('manual-42')
+  })
+
+  it('resolution survives a submit failure untouched (failure retains every field)', () => {
+    let draft = reduceDraft(manualPullDraft(), {
+      type: 'RESOLVE_MANUAL_CARDS',
+      idsByKey: new Map([['k1', 'manual-42']]),
+    })
+    draft = reduceDraft(draft, { type: 'BEGIN_SUBMIT' })
+    draft = reduceDraft(draft, { type: 'SUBMIT_FAILED', message: 'opening RPC failed' })
+    expect(draft.phase).toBe('editing')
+    expect(draft.submitError).toBe('opening RPC failed')
+    expect(draft.pulls[0]?.manualCardId).toBe('manual-42')
+  })
+
+  it('unknown keys and empty maps change nothing', () => {
+    const draft = manualPullDraft()
+    expect(reduceDraft(draft, { type: 'RESOLVE_MANUAL_CARDS', idsByKey: new Map() })).toBe(draft)
+    const untouched = reduceDraft(draft, {
+      type: 'RESOLVE_MANUAL_CARDS',
+      idsByKey: new Map([['other-key', 'manual-7']]),
+    })
+    expect(untouched.pulls[0]?.manualCardId).toBeNull()
   })
 })
 

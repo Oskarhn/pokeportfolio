@@ -24,7 +24,10 @@
 --                                              economic fact (P53 §10 policy; correct it via
 --                                              the ordinary purchase-correction surface).
 --   reconcile_opening_cost(...)                links a provisionally-costed opening to the real
---                                              purchase's lot; voids the provisional purchase.
+--                                              purchase's lot; voids the provisional purchase AND
+--                                              the provisional source lot it created, so no phantom
+--                                              sealed inventory can outlive its own purchase
+--                                              (P54 finding H1, repaired P56 §3–§4).
 --                                              Provenance on the row (no audit_events — prompt §4B).
 --   get_opening(...)                           bounded Opening Detail read incl. the §5.3 result
 --                                              components, money as text.
@@ -52,7 +55,11 @@
 -- ── The exactness rule (verbatim M10 discipline) ──────────────────────────────────────────────
 -- Consuming q units from lot L freezes:
 --   adjustments_total_nok = Σ lot_cost_adjustments.amount_nok_minor for L
---   adj_per_unit          = adjustments_total_nok / L.quantity          (floor)
+--   adj_per_unit          = adjustments_total_nok / L.quantity   (integer division: plpgsql bigint
+--                           division TRUNCATES toward zero — identical to floor for the
+--                           nonnegative totals paid; differs by 1 øre only for negative
+--                           adjustment sums, where the residual term below absorbs the
+--                           difference exactly once, so conservation is unaffected)
 --   adj_residual           = adjustments_total_nok - adj_per_unit * L.quantity
 --   basis                  = (L.unit_cost_basis_nok_minor + adj_per_unit) * q
 --                            + (L.residual_nok_minor + adj_residual)    -- only if this disposal
@@ -358,13 +365,14 @@ comment on function public.create_opening(
 -- (GPO/CS/monthly spend/history) reads it with no special case; the opening gets
 -- cost_source='from_lot'; openings.provisional_purchase_id marks it for later reconciliation.
 --
--- Total-paid exactness (P53 §12 / D-090): unit := floor(total / quantity) is the integer
--- display/storage unit value; the remainder total − unit × quantity (< quantity by construction)
--- lands on the acquisition lot's existing residual columns. Consumption then reproduces the
--- entered total EXACTLY whichever way the owner splits openings: partial opens pay pure units,
--- the one exhausting open adds the residual once. qty 3 × total 29995 → unit 9998: open 2 =
--- 19996, final 1 = 9999, Σ = 29995 exactly. NOK only — a provisional entry invents no FX
--- precision.
+-- Total-paid exactness (P53 §12 / D-090): unit := total / quantity by integer division
+-- (PostgreSQL bigint division truncates toward zero — identical to floor for the nonnegative
+-- totals entered here) is the integer display/storage unit value; the remainder
+-- total − unit × quantity (< quantity by construction) lands on the acquisition lot's existing
+-- residual columns. Consumption then reproduces the entered total EXACTLY whichever way the
+-- owner splits openings: partial opens pay pure units, the one exhausting open adds the
+-- residual once. qty 3 × total 29995 → unit 9998: open 2 = 19996, final 1 = 9999,
+-- Σ = 29995 exactly. NOK only — a provisional entry invents no FX precision.
 create function public.create_opening_from_provisional(
   p_sealed_product_id uuid,
   p_quantity int,
@@ -451,7 +459,8 @@ begin
   end if;
 
   v_total_minor := p_total_paid_minor;
-  -- Largest-remainder split (D-090): integer floor unit; remainder < quantity by construction.
+  -- Largest-remainder split (D-090): integer unit value via truncating division (== floor for
+  -- the nonnegative total paid); remainder < quantity by construction.
   v_unit_minor := v_total_minor / p_quantity;
   v_residual_minor := v_total_minor - v_unit_minor * p_quantity;
 
@@ -503,7 +512,8 @@ begin
     end if;
   end;
 
-  -- The ordinary known-cost lot the opening consumes. Unit = floored display value; the
+  -- The ordinary known-cost lot the opening consumes. Unit = the integer (truncating-division)
+  -- display value of the entered total; the
   -- indivisible remainder sits on the lot's own residual columns so the exhaustion rule pays
   -- it back at most once (FINANCIAL_MODEL §4.3 discipline, unchanged).
   insert into public.acquisition_lots (
@@ -638,6 +648,12 @@ as $$
 declare
   v_user_id uuid := auth.uid();
   v_opening public.openings;
+  -- P56 §3 (P54 finding H1): captured BEFORE anything is repointed. This is the provisional
+  -- lot create_opening_from_provisional auto-created and consumed; once its consumption is
+  -- retired below, D1 would restore it to full availability while its purchase is being
+  -- voided — live sealed inventory citing money that just left the ledger. It is voided in
+  -- the same transaction instead.
+  v_provisional_source_lot_id uuid;
   v_lot record;
   v_adjustments_total_nok bigint;
   v_adj_per_unit bigint;
@@ -655,6 +671,7 @@ begin
   if v_opening.id is null then
     raise exception 'opening % not found', p_opening_id;
   end if;
+  v_provisional_source_lot_id := v_opening.source_lot_id;
   if v_opening.voided_at is not null then
     raise exception 'opening % is voided and cannot be reconciled', p_opening_id;
   end if;
@@ -665,7 +682,13 @@ begin
     raise exception 'opening % is already reconciled', p_opening_id;
   end if;
 
-  -- The real lot: owned, live, sealed, the SAME product, known basis, enough remaining units.
+  -- The real lot: owned, live, sealed, the SAME product, known basis, enough remaining units —
+  -- and it must belong to a LIVE purchase that is not itself a provisional_opening purchase
+  -- (P56 §6 / P55 finding F55-10). Reconciling provisional → provisional would just trade one
+  -- self-annihilating world for another and defeat the operation's purpose; reconciling onto a
+  -- voided purchase's lot would freeze basis from money outside the ledger. The join filters
+  -- make every such target indistinguishable from foreign/missing ('source lot is unavailable')
+  -- — no existence oracle.
   select l.id, l.cost_basis_state, l.unit_cost_basis_nok_minor, l.residual_nok_minor,
          l.quantity, l.quantity_remaining, l.voided_at,
          h.sealed_product_id, h.holding_kind,
@@ -674,6 +697,10 @@ begin
   from public.acquisition_lots l
   join public.holdings h on h.id = l.holding_id
   join public.purchase_lines pl on pl.id = l.purchase_line_id
+  join public.purchases p on p.id = pl.purchase_id
+   and p.user_id = v_user_id
+   and p.voided_at is null
+   and p.origin <> 'provisional_opening'
   where l.id = p_real_source_lot_id and l.user_id = v_user_id
   for update of l;
 
@@ -702,10 +729,24 @@ begin
   end if;
 
   -- Retire the provisional consumption FIRST (unique live-per-opening index + D1 restore),
-  -- then write the repointed consumption.
+  -- then retire the provisional lot itself, then write the repointed consumption.
   update public.lot_disposals
     set voided_at = now()
     where opening_id = v_opening.id and voided_at is null;
+
+  -- P56 §4 (P54 finding H1): D1 has just restored the provisional lot to full availability —
+  -- but its purchase is being voided in this same transaction, so letting it live would create
+  -- known-basis sealed inventory citing money that no longer counts. VOID it here. Historical
+  -- rows are retained (never hard-deleted): the voided purchase line, the voided lot and the
+  -- voided consumption remain exactly the audit trail the reconciliation columns point at.
+  -- This is deliberately DIFFERENT from void_opening's policy: reconciliation REPLACES the
+  -- provisional purchase with the real one, so the provisional world must annihilate as a
+  -- unit — purchase, lot and consumption together.
+  update public.acquisition_lots
+    set voided_at = now()
+    where id = v_provisional_source_lot_id
+      and user_id = v_user_id
+      and voided_at is null;
 
   insert into public.lot_disposals (
     lot_id, user_id, kind, quantity, disposed_on, opening_id, cost_basis_at_disposal_nok_minor
@@ -736,16 +777,19 @@ $$;
 
 comment on function public.reconcile_opening_cost(uuid, uuid) is
   'Links a provisionally-costed opening to the real purchase''s lot in one transaction: retires '
-  'the provisional consumption, freezes the real lot''s exact share, repoints the opening, voids '
-  'the provisional purchase. F12 holds throughout; provenance kept on the row (no audit_events).';
+  'the provisional consumption, VOIDS the provisional source lot together with its purchase (no '
+  'phantom sealed inventory may outlive the money that paid for it — P54 H1), freezes the real '
+  'lot''s exact share, repoints the opening. The target must belong to a LIVE non-provisional '
+  'purchase. F12 holds throughout; provenance kept on the row (no audit_events).';
 
 -- ── 5. get_opening — the bounded Opening Detail read ─────────────────────────────────────────
 -- SECURITY INVOKER: reads only rows ordinary RLS already shows the caller. Computes the §5.3
 -- result components ON READ (never stored, never summed with TTEP anywhere — F8): retained
--- tracked value over live pull lots (manual valuation wins, then the shared M9 resolver called
--- ONCE for all variants — never per row), net proceeds from sold pulls (live sales only; the lot
--- keeps its opening_id forever), plus the owner's bulk remainder estimate. NULL cost ⇒ NULL
--- return AND roi inputs — "—", never "0 kr result". Money as text at the boundary.
+-- tracked value over live pull lots STILL RETAINED (quantity_remaining > 0 — a fully-sold pull
+-- is sold provenance, not current coverage; manual valuation wins, then the shared M9 resolver
+-- called ONCE for all variants — never per row), net proceeds from sold pulls (live sales only;
+-- the lot keeps its opening_id forever), plus the owner's bulk remainder estimate. NULL cost ⇒
+-- NULL return AND roi inputs — "—", never "0 kr result". Money as text at the boundary.
 create function public.get_opening(p_opening_id uuid)
 returns table (
   id uuid,
@@ -782,8 +826,13 @@ as $$
     from public.openings o
     where o.id = p_opening_id and o.user_id = auth.uid()
   ),
-  -- Live pulls of this opening, each carrying its holding's active manual valuation if one
-  -- exists (the partial unique index guarantees at most one active row per holding).
+  -- RETAINED live pulls of this opening (quantity_remaining > 0), each carrying its holding's
+  -- active manual valuation if one exists (the partial unique index guarantees at most one
+  -- active row per holding). P56 §8 (P54 finding L1): priced/unpriced counts and retained value
+  -- are explicitly a CURRENT-INVENTORY frame — a pull lot fully sold out of this opening is NOT
+  -- coverage for cards still here and is excluded here entirely. Sold provenance is reported
+  -- separately by sold_pull_lot_count/net proceeds below, which keep counting every lot the
+  -- opening ever produced.
   pulls as materialized (
     select l.id as lot_id, h.card_variant_id, l.quantity_remaining,
            mv.value_nok_minor as manual_value
@@ -794,6 +843,7 @@ as $$
     where l.opening_id = (select o.id from opening o)
       and l.user_id = auth.uid()
       and l.voided_at is null
+      and l.quantity_remaining > 0
   ),
   variant_ids as (
     select coalesce(array_agg(distinct p.card_variant_id), '{}') as ids
@@ -852,18 +902,24 @@ $$;
 
 comment on function public.get_opening(uuid) is
   'Bounded Opening Detail read: canonical fields plus the FINANCIAL_MODEL §5.3 result computed on '
-  'read — retained tracked value (manual wins → resolver, F14-honest unpriced counts), sold-pull '
-  'proceeds, bulk estimate, minus the frozen opening cost. NULL cost renders NULL everywhere; '
-  'never summed with TTEP (F8).';
+  'read — retained tracked value (manual wins → resolver, F14-honest counts), sold-pull '
+  'proceeds, bulk estimate, minus the frozen opening cost. priced/unpriced_pull_lot_count are '
+  'CURRENT-RETAINED coverage (quantity_remaining > 0 only); sold_pull_lot_count and proceeds are '
+  'the separate historical provenance of everything the opening produced. NULL cost renders NULL '
+  'everywhere; never summed with TTEP (F8).';
 
 -- ── 5b. list_opening_sources — the bounded source-picker read (P53 §7/§8) ────────────────────
 -- SECURITY INVOKER over ordinary owner-readable rows: the caller's own live sealed lots with
 -- quantity_remaining > 0, each carrying its ALREADY-DERIVED preview components so no client —
 -- and no component — ever re-implements the consumption arithmetic:
 --
---   effective_unit_basis_nok_minor = unit_cost_basis_nok_minor + floor(Σ adjustments / quantity)
+--   effective_unit_basis_nok_minor = unit_cost_basis_nok_minor
+--                                    + (Σ adjustments / quantity)          (integer division:
+--                                    truncates toward zero — identical for nonnegative sums;
+--                                    negative adjustment sums differ from floor by 1 øre, which
+--                                    the residual component below absorbs exactly)
 --   exhaustion_residual_nok_minor  = residual_nok_minor
---                                    + (Σ adjustments − floor(Σ adjustments / quantity) × quantity)
+--                                    + (Σ adjustments − trunc(Σ adjustments / quantity) × quantity)
 --
 -- The preview for "open q of this lot" is then PURE domain arithmetic:
 --   q < quantity_available → effective_unit_basis × q

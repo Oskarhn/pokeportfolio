@@ -4,8 +4,10 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-**Last updated:** 2026-08-26 — **M16 (Openings, pulls, backup v2) EXISTS AS AN INTEGRATED
-CANDIDATE BRANCH `feat/m16-openings-integrated` — NOT MERGED, NOT DEPLOYED.** Three parallel
+**Last updated:** 2026-08-25 — **M16 (Openings, pulls, backup v2) EXISTS AS AN INTEGRATED
+CANDIDATE BRANCH `feat/m16-openings-integrated` — NOT MERGED, NOT DEPLOYED — now with a P56
+TARGETED REPAIR branch `fix/m16-integrated-review-p56` open as a DRAFT PR AGAINST THE
+INTEGRATION BRANCH.** Three parallel
 sources were combined deliberately on one branch: P50 opening financial/DB core (PR #55 @
 `7fe883d`), P51 opening UI (PR #54 @ `fc06c67`) and the P52 independent adversarial package
 (PR #53 @ `ebee9a1`), all verified OPEN/DRAFT/UNMERGED at their exact expected heads before
@@ -14,11 +16,17 @@ with total-paid exactness incl. the widened line-total CHECK (D-090), exact prev
 source picker RPC, the §10 void policy fix (void ≠ undo purchase), one Opening recent-activity
 row, backup schema_version 2 (D-091), openings.csv, docs fold-down (FINANCIAL_MODEL §5.5,
 DATA_MODEL §5.8, DECISIONS D-087–D-091, PRODUCT_SPEC, UX_FLOWS F5/F11.1, ROADMAP, TESTING,
-SECURITY §12.1, BACKLOG cascade entry). Local gates green (typecheck/lint/format, unit 388/388,
-build, e2e 62/62, m13-adversarial 49/12-skip, m16-independent 29/22-skip). **DB CI never ran:
+SECURITY §12.1, BACKLOG cascade entry). The P56 repair session then closed the integrated-review
+findings (D-092): reconciliation voids the provisional source lot together with its purchase
+(P54 H1 phantom-inventory blocker), reconcile targets must cite a live non-provisional purchase
+(P55 F55-10), get_opening coverage counts are retained-only (P54 L1), opening drafts are scoped
+by authenticated user id and cleared at sign-out (P55 draft finding), created manual-card ids
+persist into the user-scoped draft so remount retries never duplicate definitions, reset copy
+names openings, integer-division wording corrected. Local gates green; DB-backed suites remain
+gated. **DB CI still never ran:
 GitHub Actions was billing/startup-blocked repo-wide; ALL DB-backed verification is
-MANDATORY_PENDING_CI and release is blocked until one full green db-tests run.** Open draft PR
-against main carries the DO NOT MERGE banner; hosted Supabase untouched.
+MANDATORY_PENDING_CI and release is blocked until one full green db-tests run.** Open draft PRs
+carry DO NOT MERGE banners; hosted Supabase untouched.
 
 ---
 
@@ -52,6 +60,30 @@ What a future session must know:
 7. Owner-device walkthrough remains pending post-merge: wizard both modes, multi-lot choice,
    backdate, pull burst, retry-after-failure idempotency, blocked-void copy, openings.csv export
    on installed iPhone PWA.
+
+### P56 — integrated-candidate targeted repair (branch `fix/m16-integrated-review-p56`, DRAFT PR against the integration branch)
+
+Repairs the P54/P55 review findings ON TOP of integration head `1d98f6d` — never pushed to the
+integration branch directly; it merges through its own DRAFT PR (base
+`feat/m16-openings-integrated`) so the repair diff stays independently reviewable:
+
+- **H1 phantom lot closed:** `reconcile_opening_cost` captures `v_opening.source_lot_id` before
+  repointing and VOIDs that provisional lot in the same transaction as retiring its consumption
+  and voiding the provisional purchase. Post-reconcile canonical world pinned by a dedicated DB
+  test (purchase + lot + old disposal all `voided_at NOT NULL`; opening live at the real lot;
+  exactly one live opened disposal; GPO/CS = real purchase only; re-open/re-sell of the
+  provisional lot refused).
+- **F55-10 target guard:** reconcile's target lookup joins `purchases` explicitly and requires
+  `voided_at IS NULL AND origin <> 'provisional_opening'` (provisional → provisional and
+  voided-receipt targets refused; live ordinary purchase succeeds).
+- **L1 coverage semantics:** get_opening's pulls CTE filters `quantity_remaining > 0` — priced/
+  unpriced counts and retained value are current-retained only; sold provenance separate.
+- **Drafts user-scoped + manual-card ids persisted** (P55 findings): draftStore keyed by user id,
+  cleared at sign-out; RESOLVE_MANUAL_CARDS writes created definition ids into the draft so
+  remount retries reuse one row. Reset confirmation copy names openings. "floor" wording corrected
+  to truncating integer division in the unhosted M16 migrations/docs (M10's shipped migration left
+  untouched). D-092 records all of it. The four M16 migrations remain UNHOSTED and were edited in
+  place per the established pre-host repair discipline.
 
 ---
 

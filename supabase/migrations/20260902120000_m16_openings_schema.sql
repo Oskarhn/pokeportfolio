@@ -44,8 +44,9 @@
 --    i.e. line_total may exceed unit×qty by up to (quantity − 1) øre — never fall below it, never
 --    more than one øre per unit. Every row written before this migration has excess 0 and
 --    validates unchanged; update_purchase's own recomputation writes excess 0 rows; the only
---    writer that uses the slack is create_opening_from_provisional, which stores floor(total/qty)
---    as the unit value and hands the remainder to the acquisition lot's existing residual columns
+--    writer that uses the slack is create_opening_from_provisional, which stores the integer-
+--    division unit value (total/qty, truncating toward zero — identical to floor for the
+--    nonnegative totals entered here) and hands the remainder to the acquisition lot's existing residual columns
 --    so Σ attributable basis across openings reproduces the entered total EXACTLY (29995 = 9998×2
 --    +19996… see FINANCIAL_MODEL.md §5.5).
 --
@@ -158,8 +159,11 @@ alter table public.purchase_lines
 
 comment on constraint purchase_lines_line_total_matches_unit_price on public.purchase_lines is
   'Largest-remainder discipline (D-090): line_total may exceed unit_price × quantity by up to '
-  'quantity − 1 øre (floor-unit rounding of an entered receipt total), never less and never '
-  'more. The lot''s residual columns carry the difference so consumption reproduces the total.';
+  'quantity − 1 øre (integer-division rounding of an entered receipt total toward zero — for '
+  'the nonnegative totals this schema admits that is also the floor), never less and never '
+  'more. The lot''s residual columns carry the difference so consumption reproduces the total. '
+  'This is now a GLOBAL purchase-line invariant, not an Opening implementation detail: every '
+  'writer (create_purchase, update_purchase, the provisional path) is bound by it.';
 
 -- Ownership + identity defence in depth. Every browser write goes through the SECURITY DEFINER
 -- RPCs (authenticated holds SELECT only on this table); this trigger additionally pins direct

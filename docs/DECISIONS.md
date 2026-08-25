@@ -2358,3 +2358,33 @@ are NOT retroactively wrong — they were valid pre-Openings exports; restore re
 import exists yet. A generated post-M16 backup claiming v1, missing openings, or missing the
 linkage fields is a release blocker, policed by the M13 adversarial suite and the independent
 M16 backup oracle.
+
+## D-092 — Reconciliation annihilates the provisional world; coverage counts are retained-only; drafts are user-scoped
+
+**2026-08-25 — Accepted** (P56 repair, closing P54 H1/L1 and P55 F55-6/F55-9/F55-10/F55-12)
+
+1. **Reconciliation replaces the provisional purchase — so the provisional world annihilates as
+   a unit.** `reconcile_opening_cost` now voids the provisional source acquisition lot in the same
+   transaction as the provisional purchase (P54 finding H1: retiring only the consumption would
+   let D1 restore a live known-basis sealed lot citing money that just left the ledger — phantom
+   inventory). Rows are retained, never deleted. The void-opening policy of D-090 is UNCHANGED:
+   "the opening did not happen" keeps the source purchase active; it is reconciliation, not
+   voiding, that replaces the provisional purchase.
+2. **The reconciliation target must cite a LIVE non-provisional purchase**
+   (`p.voided_at IS NULL AND p.origin <> 'provisional_opening'`, joined explicitly in the target
+   lookup). Provisional → provisional chains and voided-receipt targets are refused
+   indistinguishably from foreign/missing lots.
+3. **`get_opening`'s priced/unpriced pull counts and retained value are CURRENT-RETAINED
+   semantics** (`quantity_remaining > 0`): a fully-sold pull is sold provenance, reported by
+   `sold_pull_lot_count`/proceeds, never as pricing coverage for cards still retained.
+4. **Opening drafts are scoped by authenticated user id** in session memory, cleared when
+   authentication ends; no account inherits another's draft and an anonymous visitor sees none.
+5. **Created manual-card definition ids persist into the user-scoped draft**, so retries after a
+   failed opening RPC reuse the same definition row across remounts without heuristic identity
+   merging.
+6. **Integer-division wording:** plpgsql bigint division truncates toward zero ("floor" prose
+   corrected wherever adjustments can be negative); executable arithmetic unchanged.
+
+The widened `purchase_lines_line_total_matches_unit_price` envelope stands UNCHANGED and is now
+documented as a GLOBAL purchase-line invariant (every writer excess-0 except the provisional
+path's legal 0..qty−1 residual), with direct constraint tests added.

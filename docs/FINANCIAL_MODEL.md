@@ -312,7 +312,9 @@ the opening (`openings.provisional_purchase_id`). It is an ordinary ledger entry
 
 **Total-paid exactness (D-090).** The owner states the RECEIPT TOTAL they paid — never a
 per-unit price. The backend splits it by integer largest-remainder: the purchase line stores
-`unit_price_minor = floor(total / quantity)` as a display/storage value while `line_total_minor`
+`unit_price_minor = total / quantity` by integer division — PostgreSQL bigint division
+truncates toward zero, identical to floor for the nonnegative totals this schema admits — as a
+display/storage value while `line_total_minor`
 carries the exact total, and the indivisible remainder lands on the acquisition lot's existing
 residual columns. Σ attributable basis therefore equals the entered total exactly: qty 3 × total
 29995 → unit basis 9998, residual +1 → opening all 3 costs **29995**, opening 2 costs **19996**.
@@ -334,6 +336,15 @@ In one transaction:
    `reconciled_at` + `reconciled_to_purchase_id` are stamped ON THE OPENING ROW ITSELF — there is
    NO `audit_events` table and none was created (see DATA_MODEL §7's status correction).
 3. The provisional purchase is **voided** — retained, excluded from every calculation.
+4. The provisional purchase's source lot is **voided** with it (D-092). Reconciliation REPLACES
+   the provisional purchase, so the provisional world annihilates as a unit: retiring the
+   provisional consumption would otherwise restore that lot to full live availability — known
+   basis, sealed units — while citing money that just left the ledger. Phantom inventory is
+   forbidden; historical rows are retained, never deleted.
+
+The reconciliation target must belong to a LIVE purchase whose origin is not
+`provisional_opening`: linking provisional → provisional would trade one self-annihilating
+world for another, and a voided receipt's lot freezes basis from money outside the ledger.
 
 Nothing is deleted, and the money is counted exactly once at every point in time. Reconciliation
 itself is safely repeat-refused (a second reconcile of an already-reconciled opening is a named
@@ -787,14 +798,15 @@ sealed line, 799, collectible.
 799 plus 79 shipping, total 878. Naively, `CS` is now 1 677 — the money counted twice.
 
 The user links the opening to the real purchase. In one transaction the opening repoints at the
-real lot and the provisional purchase is voided.
+real lot and the provisional purchase — together with the source lot it created — is voided.
 
 | Metric | After reconciliation |
 |---|---|
 | `GPO`, `CS` | **878** — counted once, and now more accurate than the manual figure |
 | Opening cost | 878 (the real attributable cost including shipping) |
 | Provisional purchase | retained, `voided_at` set, excluded everywhere |
-| Audit | `opening_cost_reconciled` with both purchase ids |
+| Provisional source lot | retained but `voided_at` set (D-092) — never live inventory citing a voided purchase |
+| Provenance | `reconciled_at` + both purchase ids ON THE OPENING ROW (no `audit_events` exists) |
 
 Opening return recomputes against 878. (F12)
 

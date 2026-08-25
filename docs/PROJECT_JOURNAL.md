@@ -1735,3 +1735,29 @@ could restore live sealed inventory whose purchase no longer counted, i.e. a fre
 ledger now enforces the difference. The tests that had encoded the old symmetry were rewritten,
 not weakened: they now pin that spend stays counted across open+void and that only the separate
 purchase-correction surface can remove it.
+
+## 2026-08-25 (M16/P56) - A restored lot is not a free lot: reconciliation had to annihilate what it replaced
+
+Reconciliation looked complete: retire the provisional consumption, freeze the real lot's exact
+share, repoint the opening, void the provisional purchase, stamp provenance on the row. Two
+independent reviews (P54, P55) and this repair session's own re-read converged on the same
+missed consequence: retiring the consumption disposal makes D1 RESTORE the provisional source lot
+to full live availability at the exact moment its purchase stops counting. The result of the
+flagship happy path was a phantom - live sealed inventory with known basis citing a voided
+receipt - reachable by every user who ever reconciled, invisible to tests that asserted only
+purchases and disposals and never the lot's own liveness.
+
+The fix is one UPDATE inside the same transaction, but placing it correctly required separating
+two policies that look like opposites and are not. Void-opening keeps the source purchase active
+("the opening did not happen" - the money was really spent). Reconciliation REPLACES the
+provisional purchase ("this was really that receipt") - so everything the provisional purchase
+brought into existence must leave together: purchase, lot, consumption. Same ledger discipline,
+opposite lifecycles; conflating them either resurrects the free-sealed-lot world or strands real
+spend.
+
+Two smaller lessons from the same pass. First, coverage counts inherit their frame from the
+query that computes them: a "priced pulls" count computed over all non-voided lots reads as
+"cards still here" once it sits beside retained value - the frame has to be stated in the WHERE
+clause (quantity_remaining > 0), not in prose. Second, a client-side cache that prevents
+duplicate writes only works while the cache lives; surviving a remount requires persisting the
+created identity into state that outlives the component - the user-scoped draft, not a ref.

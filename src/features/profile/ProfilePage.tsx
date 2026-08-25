@@ -436,11 +436,12 @@ function ProfileSettings({ profile, isAdmin }: { profile: Profile; isAdmin: bool
 
 /**
  * Danger Zone (P43): the one deliberately destructive operation in the product. "Reset portfolio
- * data" clears owned inventory, purchases/spend, sales, acquisition history, valuations and the
- * portfolio-history cache in ONE atomic server call — while preserving the account, settings and
- * reusable setup metadata (retailers, storage locations, tags, collection definitions, manual
- * cards, own sealed products). DECISIONS.md D-084: this full reset is the only place permanent
- * deletion of tracking data is intentional; everything else corrects through the void lifecycle.
+ * data" clears owned inventory, purchases/spend, sales, acquisition history, openings and their
+ * pulled-card records, valuations and the portfolio-history cache in ONE atomic server call —
+ * while preserving the account, settings and reusable setup metadata (retailers, storage
+ * locations, tags, collection definitions, manual cards, own sealed products). DECISIONS.md
+ * D-084: this full reset is the only place permanent deletion of tracking data is intentional;
+ * everything else corrects through the void lifecycle.
  *
  * The confirmation states both sides plainly (what goes, what stays), disables while running and
  * keeps any error visible. On success every user-data query is invalidated and Home shows the
@@ -496,6 +497,7 @@ function DangerZone() {
             <p className="font-medium text-rose-300">This permanently removes:</p>
             <ul className="mt-1 list-inside list-disc space-y-0.5">
               <li>All tracked cards, graded cards and sealed products</li>
+              <li>Openings and their pulled-card records</li>
               <li>All purchases and spending records</li>
               <li>All sales and realized results</li>
               <li>Acquisition history and manual valuations</li>

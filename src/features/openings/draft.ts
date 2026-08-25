@@ -14,8 +14,10 @@ import { openingCostPreview } from './copy'
  * double-submit prevention, failure-retains-draft) is pinned here by tests/ui/opening-draft.test.ts.
  *
  * The draft lives in session memory only (prompt §23): `draftStore` below holds it across
- * unmount/remount so mobile back navigation during the flow never loses work. Nothing is written
- * to localStorage — a financial draft is not persisted without an explicit project pattern for it.
+ * unmount/remount so mobile back navigation during the flow never loses work. The store is
+ * scoped by authenticated user id (P56 §9) so one account can never inherit another's draft.
+ * Nothing is written to localStorage — a financial draft is not persisted without an explicit
+ * project pattern for it.
  */
 
 export const STEPS = ['source', 'quantity', 'pulls', 'review'] as const
@@ -117,6 +119,13 @@ export type DraftAction =
   | { type: 'SET_BULK_ESTIMATE_INPUT'; value: string }
   | { type: 'SET_BULK_COUNT_INPUT'; value: string }
   | { type: 'SET_NOTES'; value: string }
+  /** Persists the manual-card definition ids created during a submission attempt back into the
+   *  draft (P56 §10). Once createManualCard has succeeded for an identity, the resolved id lives
+   *  in the stored draft, so ANY retry — same mount, route remount or browser-back return — reuses
+   *  that exact row instead of inserting another identical definition. No heuristic identity
+   *  merging: only ids this device actually created are persisted, keyed to the pull they were
+   *  created for. */
+  | { type: 'RESOLVE_MANUAL_CARDS'; idsByKey: ReadonlyMap<string, string> }
   | { type: 'BEGIN_SUBMIT' }
   | { type: 'SUBMIT_SUCCEEDED'; openingId: string }
   | { type: 'SUBMIT_FAILED'; message: string }
@@ -215,6 +224,16 @@ export function reduceDraft(state: OpeningDraft, action: DraftAction): OpeningDr
       return { ...state, bulkCountInput: action.value }
     case 'SET_NOTES':
       return { ...state, notes: action.value }
+    case 'RESOLVE_MANUAL_CARDS': {
+      if (action.idsByKey.size === 0) return state
+      return {
+        ...state,
+        pulls: state.pulls.map((pull) => {
+          const manualCardId = action.idsByKey.get(pull.key)
+          return manualCardId ? { ...pull, manualCardId } : pull
+        }),
+      }
+    }
     case 'BEGIN_SUBMIT':
       // The double-submit guard: a submission already in flight swallows further BEGINs, so a
       // double-tap on "Finish opening" cannot create two openings even before the backend's own
@@ -447,19 +466,34 @@ export function draftCostPreview(
 }
 
 /**
- * Session-memory draft holder. One draft at a time — the wizard is a single flow, and a stale
- * abandoned draft is cleared by RESET whenever the user finishes or cancels deliberately.
+ * Session-memory draft holder, SCOPED BY AUTHENTICATED USER (P56 §9 — P55 finding: the module-
+ * global draft let account B inherit account A's in-memory opening draft after a sign-out/
+ * switch). Drafts contain private financial intent — sealed product choice, pull list, manual
+ * card names, amounts — so:
+ *
+ *   - a signed-in user only ever loads/saves under their own id;
+ *   - a null/anonymous owner loads and saves nothing;
+ *   - `clearAll()` runs deterministically when authentication ends (AuthProvider.signOut), so no
+ *     private draft lingers in memory after sign-out.
+ *
+ * Still memory-only and per browser tab: the same user's draft survives wizard unmount/remount
+ * as intended; nothing is persisted to localStorage.
  */
-let sessionDraft: OpeningDraft | null = null
+const draftsByUser = new Map<string, OpeningDraft>()
 
 export const draftStore = {
-  load(): OpeningDraft | null {
-    return sessionDraft
+  load(userId: string | null): OpeningDraft | null {
+    return userId === null ? null : (draftsByUser.get(userId) ?? null)
   },
-  save(draft: OpeningDraft): void {
-    sessionDraft = draft
+  save(userId: string | null, draft: OpeningDraft): void {
+    if (userId === null) return
+    draftsByUser.set(userId, draft)
   },
-  clear(): void {
-    sessionDraft = null
+  clear(userId: string | null): void {
+    if (userId !== null) draftsByUser.delete(userId)
+  },
+  /** Drops EVERY user's in-memory draft — called when authentication ends. */
+  clearAll(): void {
+    draftsByUser.clear()
   },
 }

@@ -59,6 +59,33 @@ What exists:
   assertions; two first-contact mismatches classified ORACLE_BINDING_MISMATCH and adapted
   deliberately; everything DB-backed remains gated pending CI.
 
+### Fixed — 2026-08-25 — M16 integrated-candidate repair: reconciliation lifecycle and review findings (D-092; child PR against the integration branch, DO NOT MERGE until DB CI runs)
+
+Closes the P54/P55 integrated-review findings on `feat/m16-openings-integrated`:
+
+- **Phantom provisional lot after reconciliation (P54 H1)** — reconcile retired the provisional
+  consumption, which let D1 restore the provisional source lot to full live availability while
+  its purchase was being voided: known-basis sealed inventory citing money that had left the
+  ledger. `reconcile_opening_cost` now voids that lot in the same transaction — purchase, lot
+  and consumption annihilate as a unit; historical rows retained (D-092).
+- **Reconciliation target guard (P55 F55-10)** — the real target must belong to a LIVE purchase
+  whose origin is not `provisional_opening` (joined explicitly; refused like foreign/missing).
+- **Retained-only coverage counts (P54 L1)** — `get_opening`'s priced/unpriced pull counts and
+  retained value now count only pulls with `quantity_remaining > 0`; a fully-sold pull stays in
+  sold-provenance counts and proceeds, and in Opening Detail history.
+- **User-scoped opening drafts** — the session-memory draft store is keyed by authenticated user
+  id and cleared on sign-out: account B never inherits account A's draft, anonymous visitors see
+  none, the same user's draft still survives wizard remounts.
+- **Manual-card retry/remount dedupe** — created definition ids persist into the user-scoped
+  draft, so a retry after a failed opening RPC reuses the same definition row across wizard
+  remounts without any heuristic identity merging.
+- **Reset copy** names "Openings and their pulled-card records" among what reset permanently
+  removes.
+- **Integer-division wording** corrected where plpgsql bigint division truncates toward zero
+  ("floor" prose misled for negative adjustment sums); executable arithmetic unchanged. The
+  widened line-total CHECK stands unchanged, documented as a global purchase-line invariant with
+  direct constraint tests.
+
 ### Fixed — 2026-08-25 — Home's Current Portfolio Value updates immediately (P48, D-086; PR #51)
 
 Owner-reported: after adding a card, the value breakdown and spending figures were already

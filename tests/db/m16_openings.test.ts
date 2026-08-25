@@ -911,6 +911,499 @@ describe('provisional reconciliation WITHOUT audit_events (F12, prompt §18/§19
   })
 })
 
+describe('P56 §3–§5 — reconcile annihilates the provisional world (P54 finding H1)', () => {
+  it('post-reconcile canonical world: provisional purchase, source lot AND old disposal all voided; opening repointed; real purchase counted exactly once', async () => {
+    const before = await spendingOf(clientA)
+
+    // Provisional buy-and-open: 2 units, total paid 15000.
+    const { data: opening, error } = await clientA
+      .rpc('create_opening_from_provisional', {
+        p_sealed_product_id: seedCatalog.sealedProductId,
+        p_quantity: 2,
+        p_total_paid_minor: 15000,
+        p_purchased_on: today,
+        p_pulls: [{ card_variant_id: seedCatalog.pikachuVariantId, quantity: 1, condition: 'NM' }],
+      })
+      .single<OpeningRow>()
+    if (error) throw new Error(error.message)
+    const provisionalLotId = opening.source_lot_id
+
+    // BEFORE reconcile: the whole provisional world is live.
+    const { data: provPurchaseBefore } = await service
+      .from('purchases')
+      .select('voided_at')
+      .eq('id', opening.provisional_purchase_id!)
+      .single()
+    expect(provPurchaseBefore!.voided_at).toBeNull()
+    const provLotBefore = await lotById(provisionalLotId)
+    expect(provLotBefore.voided_at).toBeNull()
+    expect(provLotBefore.quantity_remaining).toBe(0)
+    const liveDisposalsBefore = (await disposalsOf(provisionalLotId)).filter(
+      (d) => d.voided_at === null,
+    )
+    expect(liveDisposalsBefore).toHaveLength(1)
+
+    // A separate REAL purchase of the same sealed product: 4 @ 7500, no shipping.
+    const { purchaseId: realPurchaseId, lotId: realLot } = await buySealed(clientA, {
+      quantity: 4,
+      unitPriceMinor: 7500,
+    })
+
+    const { data: reconciled, error: recError } = await clientA.rpc('reconcile_opening_cost', {
+      p_opening_id: opening.id,
+      p_real_source_lot_id: realLot,
+    })
+    if (recError) throw new Error(recError.message)
+    expect(reconciled!.source_lot_id).toBe(realLot)
+    expect(reconciled!.voided_at).toBeNull()
+
+    // ── The EXACT post-reconcile canonical world (prompt §5) ──
+
+    // OLD provisional purchase: voided.
+    const { data: provPurchase } = await service
+      .from('purchases')
+      .select('voided_at')
+      .eq('id', opening.provisional_purchase_id!)
+      .single()
+    expect(provPurchase!.voided_at).not.toBeNull()
+
+    // OLD provisional acquisition lot: VOIDED — never a phantom sealed lot citing a voided
+    // purchase. Historical row retained (not deleted).
+    const provLotAfter = await lotById(provisionalLotId)
+    expect(provLotAfter.voided_at).not.toBeNull()
+    expect(provLotAfter.quantity_remaining).toBe(2) // D1 restored it before retirement
+
+    // Every other lot of the provisional purchase is voided too — the P54 repair assertion.
+    const { data: provLines } = await service
+      .from('purchase_lines')
+      .select('id')
+      .eq('purchase_id', opening.provisional_purchase_id!)
+    for (const line of provLines ?? []) {
+      const { data: lotsOfLine } = await service
+        .from('acquisition_lots')
+        .select('voided_at')
+        .eq('purchase_line_id', line.id)
+      expect((lotsOfLine ?? []).length).toBeGreaterThan(0)
+      expect((lotsOfLine ?? []).every((l) => l.voided_at !== null)).toBe(true)
+    }
+
+    // OLD provisional opened disposal: voided.
+    const oldDisposal = (await disposalsOf(provisionalLotId)).find(
+      (d) => d.opening_id === opening.id,
+    )!
+    expect(oldDisposal.voided_at).not.toBeNull()
+
+    // Opening: LIVE, repointed at the real lot.
+    const { data: openingAfter } = await service
+      .from('openings')
+      .select('voided_at, source_lot_id')
+      .eq('id', opening.id)
+      .single()
+    expect(openingAfter!.voided_at).toBeNull()
+    expect(openingAfter!.source_lot_id).toBe(realLot)
+
+    // REAL purchase: live. REAL source lot: live, consumed by exactly the opening quantity.
+    const { data: realPurchase } = await service
+      .from('purchases')
+      .select('voided_at')
+      .eq('id', realPurchaseId)
+      .single()
+    expect(realPurchase!.voided_at).toBeNull()
+    const realLotAfter = await lotById(realLot)
+    expect(realLotAfter.voided_at).toBeNull()
+    expect(realLotAfter.quantity_remaining).toBe(2) // 4 bought − 2 consumed
+
+    // Exactly ONE live opened disposal for the opening, and it points at the real lot.
+    const allOpenDisposals = (await service
+      .from('lot_disposals')
+      .select('lot_id, voided_at')
+      .eq('opening_id', opening.id)) as unknown as { lot_id: string; voided_at: string | null }[]
+    const liveOnes = allOpenDisposals.filter((d) => d.voided_at === null)
+    expect(liveOnes).toHaveLength(1)
+    expect(liveOnes[0]!.lot_id).toBe(realLot)
+
+    // GPO/CS = the REAL purchase only: before + 30000, nothing from the voided provisional.
+    const after = await spendingOf(clientA)
+    expect(BigInt(after.gpo_nok_minor)).toBe(BigInt(before.gpo_nok_minor) + 30000n)
+    expect(BigInt(after.cs_nok_minor)).toBe(BigInt(before.cs_nok_minor) + 30000n)
+
+    // Pull lots created by the provisional opening are UNCHANGED/live — reconciliation retires
+    // the provisional money world (purchase + source lot + consumption), never the pulled cards.
+    const { data: pulls } = await service
+      .from('acquisition_lots')
+      .select('voided_at')
+      .eq('opening_id', opening.id)
+    expect((pulls ?? []).length).toBeGreaterThan(0)
+    expect((pulls ?? []).every((p) => p.voided_at === null)).toBe(true)
+
+    // The retired world is unreachable as inventory:
+    //   - create_opening on the provisional lot is refused;
+    const { error: reopenError } = await callCreateOpening(clientA, {
+      p_source_lot_id: provisionalLotId,
+      p_quantity: 1,
+    })
+    expect(reopenError).not.toBeNull()
+    expect(reopenError!.message).toContain('unavailable')
+    //   - create_sale on the provisional lot is refused.
+    const { error: resellError } = await clientA.rpc('create_sale', {
+      p_sold_on: today,
+      p_currency: 'NOK',
+      p_lines: [{ lot_id: provisionalLotId, quantity: 1, unit_gross_minor: 5000 }],
+      p_idempotency_key: crypto.randomUUID(),
+    })
+    expect(resellError).not.toBeNull()
+    expect(resellError!.message).toContain('unavailable')
+  })
+
+  it('reconciliation target from a PROVISIONAL purchase is REFUSED (P55 F55-10)', async () => {
+    // O1 stays unreconciled; O2 is created and then VOIDED — per the P53 void policy its
+    // provisional lot comes back LIVE under a still-live provisional_opening purchase, which
+    // without the origin guard would be a perfectly valid-looking target.
+    const { data: o1 } = await clientA
+      .rpc('create_opening_from_provisional', {
+        p_sealed_product_id: seedCatalog.sealedProductId,
+        p_quantity: 2,
+        p_total_paid_minor: 10000,
+        p_purchased_on: today,
+      })
+      .single<OpeningRow>()
+    if (o1?.provisional_purchase_id == null) throw new Error('expected provisional opening')
+
+    const { data: o2 } = await clientA
+      .rpc('create_opening_from_provisional', {
+        p_sealed_product_id: seedCatalog.sealedProductId,
+        p_quantity: 3,
+        p_total_paid_minor: 15000,
+        p_purchased_on: today,
+      })
+      .single<OpeningRow>()
+    if (!o2) throw new Error('second provisional opening failed')
+    const { error: voidError } = await clientA.rpc('void_opening', { p_opening_id: o2.id })
+    expect(voidError).toBeNull()
+    const restoredLot = await lotById(o2.source_lot_id)
+    expect(restoredLot.voided_at).toBeNull() // live again...
+    expect(restoredLot.quantity_remaining).toBe(3) // ...with enough units...
+
+    // ...but it belongs to a provisional_opening purchase: refused.
+    const { error: provisionalTarget } = await clientA.rpc('reconcile_opening_cost', {
+      p_opening_id: o1.id,
+      p_real_source_lot_id: o2.source_lot_id,
+    })
+    expect(provisionalTarget).not.toBeNull()
+    expect(provisionalTarget!.message).toContain('unavailable')
+  })
+
+  it('reconciliation target whose purchase is VOIDED is REFUSED', async () => {
+    const { data: o1 } = await clientA
+      .rpc('create_opening_from_provisional', {
+        p_sealed_product_id: seedCatalog.sealedProductId,
+        p_quantity: 2,
+        p_total_paid_minor: 10000,
+        p_purchased_on: today,
+      })
+      .single<OpeningRow>()
+    if (!o1) throw new Error('provisional opening failed')
+
+    // An ordinary purchase of the same product, then voided while untouched (fully voidable).
+    const { purchaseId, lotId } = await buySealed(clientA, { quantity: 3, unitPriceMinor: 7000 })
+    const { error: vpError } = await clientA.rpc('void_purchase', {
+      p_purchase_id: purchaseId,
+      p_reason: 'wrong receipt',
+    })
+    expect(vpError).toBeNull()
+    const voidedLot = await lotById(lotId)
+    expect(voidedLot.voided_at).not.toBeNull()
+
+    const { error: voidedTarget } = await clientA.rpc('reconcile_opening_cost', {
+      p_opening_id: o1.id,
+      p_real_source_lot_id: lotId,
+    })
+    expect(voidedTarget).not.toBeNull()
+    expect(voidedTarget!.message).toContain('unavailable')
+  })
+
+  it('a LIVE ordinary purchase of the same product reconciles successfully (control case)', async () => {
+    const before = await spendingOf(clientA)
+    const { data: o1 } = await clientA
+      .rpc('create_opening_from_provisional', {
+        p_sealed_product_id: seedCatalog.sealedProductId,
+        p_quantity: 2,
+        p_total_paid_minor: 10000,
+        p_purchased_on: today,
+      })
+      .single<OpeningRow>()
+    if (!o1) throw new Error('provisional opening failed')
+
+    const { lotId } = await buySealed(clientA, { quantity: 3, unitPriceMinor: 7000 })
+    const { error: recError } = await clientA.rpc('reconcile_opening_cost', {
+      p_opening_id: o1.id,
+      p_real_source_lot_id: lotId,
+    })
+    expect(recError).toBeNull()
+
+    const after = await spendingOf(clientA)
+    // Provisional money replaced by the real receipt: 21000 attributable counted once.
+    expect(BigInt(after.gpo_nok_minor)).toBe(BigInt(before.gpo_nok_minor) + 21000n)
+
+    const sourceLot = await lotById(lotId)
+    expect(sourceLot.quantity_remaining).toBe(1)
+  })
+})
+
+describe('P56 §8 — get_opening coverage counts are RETAINED-only; sold pulls stay in proceeds', () => {
+  interface GetOpeningRow {
+    priced_pull_lot_count: number
+    unpriced_pull_lot_count: number
+    sold_pull_lot_count: number
+    retained_tracked_value_nok_minor: string
+    net_proceeds_from_sold_pulls_nok_minor: string
+    opening_return_nok_minor: string | null
+  }
+
+  async function readOpening(openingId: string): Promise<GetOpeningRow> {
+    const { data, error } = await clientA.rpc('get_opening', { p_opening_id: openingId }).single()
+    if (error) throw new Error(error.message)
+    return data as GetOpeningRow
+  }
+
+  it('a fully-sold pull leaves retained value/coverage but stays in sold count and proceeds; a partial sale keeps contributing by remaining quantity', async () => {
+    const { lotId } = await buySealed(clientA, { quantity: 10, unitPriceMinor: 1000 })
+    const { data: opening } = await callCreateOpening(clientA, {
+      p_source_lot_id: lotId,
+      p_quantity: 4,
+      p_pulls: [
+        // Will be valued manually, then fully sold → OUT of retained coverage.
+        { card_variant_id: seedCatalog.charizardVariantId, quantity: 1, condition: 'NM' },
+        // Never valued → unpriced, retained.
+        { card_variant_id: seedCatalog.pikachuVariantId, quantity: 1, condition: 'NM' },
+        // Valued manually, partially sold (1 of 2) → contributes by remaining quantity.
+        { card_variant_id: seedCatalog.grassEnergyVariantId, quantity: 2, condition: 'NM' },
+      ] satisfies PullWire[],
+    })
+    if (!opening) throw new Error('opening failed')
+
+    const pulls = (await service
+      .from('acquisition_lots')
+      .select('id, holding_id')
+      .eq('opening_id', opening.id)) as unknown as { id: string; holding_id: string }[]
+    expect(pulls).toHaveLength(3)
+
+    const variantByHolding = new Map<string, string>()
+    for (const pull of pulls) {
+      const { data: holding } = await service
+        .from('holdings')
+        .select('card_variant_id')
+        .eq('id', pull.holding_id)
+        .single<{ card_variant_id: string | null }>()
+      variantByHolding.set(pull.id, holding!.card_variant_id!)
+    }
+    const charizardPull = pulls.find(
+      (p) => variantByHolding.get(p.id) === seedCatalog.charizardVariantId,
+    )!
+    const energyPull = pulls.find(
+      (p) => variantByHolding.get(p.id) === seedCatalog.grassEnergyVariantId,
+    )!
+
+    // Manual valuations make priced/unpriced deterministic without market snapshots.
+    const { error: mv1 } = await clientA.rpc('set_manual_valuation', {
+      p_holding_id: charizardPull.holding_id,
+      p_value_minor: 10000,
+      p_effective_from: today,
+    })
+    expect(mv1).toBeNull()
+    const { error: mv2 } = await clientA.rpc('set_manual_valuation', {
+      p_holding_id: energyPull.holding_id,
+      p_value_minor: 20000,
+      p_effective_from: today,
+    })
+    expect(mv2).toBeNull()
+
+    // Sell the Charizard pull fully and one Grass Energy partially.
+    const { data: sale, error: saleError } = await clientA
+      .rpc('create_sale', {
+        p_sold_on: today,
+        p_currency: 'NOK',
+        p_lines: [
+          { lot_id: charizardPull.id, quantity: 1, unit_gross_minor: 12000 },
+          { lot_id: energyPull.id, quantity: 1, unit_gross_minor: 25000 },
+        ],
+        p_idempotency_key: crypto.randomUUID(),
+      })
+      .single<{ id: string }>()
+    if (saleError) throw new Error(saleError.message)
+
+    const detail = await readOpening(opening.id)
+
+    // Coverage counts are CURRENT-RETAINED only: the sold-out Charizard is excluded even though
+    // it carries a manual valuation; the unpriced Pikachu and the still-retained Energy count.
+    expect(detail.priced_pull_lot_count).toBe(1)
+    expect(detail.unpriced_pull_lot_count).toBe(1)
+    // Sold provenance is separate: BOTH sold-to lots appear.
+    expect(detail.sold_pull_lot_count).toBe(2)
+
+    // Retained tracked value = Energy only, by REMAINING quantity (1 × 20000).
+    expect(BigInt(detail.retained_tracked_value_nok_minor)).toBe(20000n)
+
+    // Proceeds include BOTH sales (net figures come from the sale ledger itself).
+    const { data: lines } = await service
+      .from('sale_lines')
+      .select('net_proceeds_nok_minor')
+      .eq('sale_id', sale.id)
+    const expectedProceeds = (lines ?? []).reduce(
+      (sum, l) => sum + BigInt(l.net_proceeds_nok_minor),
+      0n,
+    )
+    expect(expectedProceeds).toBeGreaterThan(0n)
+    expect(BigInt(detail.net_proceeds_from_sold_pulls_nok_minor)).toBe(expectedProceeds)
+  })
+})
+
+describe('P56 §12 — widened purchase_lines CHECK: global envelope audit (D-090)', () => {
+  interface LineRow {
+    id: string
+    quantity: number
+    unit_price_minor: number
+    line_total_minor: number
+  }
+
+  async function firstLineOf(purchaseId: string): Promise<LineRow> {
+    const { data, error } = await service
+      .from('purchase_lines')
+      .select('id, quantity, unit_price_minor, line_total_minor')
+      .eq('purchase_id', purchaseId)
+      .single<LineRow>()
+    if (error) throw new Error(error.message)
+    return data
+  }
+
+  it('create_purchase writes excess-0 lines inside the envelope', async () => {
+    const { lotId, purchaseId } = await buySealed(clientA, {
+      quantity: 3,
+      unitPriceMinor: 9998,
+    })
+    const line = await firstLineOf(purchaseId)
+    expect(line.line_total_minor).toBe(line.unit_price_minor * line.quantity)
+    const lot = await lotById(lotId)
+    expect(lot.residual_nok_minor).toBe(0)
+  })
+
+  it('update_purchase still passes writing excess-0 rows', async () => {
+    const { purchaseId } = await buySealed(clientA, { quantity: 2, unitPriceMinor: 5000 })
+    const line = await firstLineOf(purchaseId)
+    const { error } = await clientA.rpc('update_purchase', {
+      p_purchase_id: purchaseId,
+      p_purchased_on: today,
+      p_currency: 'NOK',
+      p_shipping_minor: 0,
+      p_lines: [{ line_id: line.id, quantity: line.quantity, unit_price_minor: 5000 }],
+    })
+    expect(error).toBeNull()
+    const rewritten = await firstLineOf(purchaseId)
+    expect(rewritten.line_total_minor).toBe(rewritten.unit_price_minor * rewritten.quantity)
+  })
+
+  it('line_total below unit × quantity is rejected', async () => {
+    const { purchaseId } = await buySealed(clientA, { quantity: 3, unitPriceMinor: 5000 })
+    const line = await firstLineOf(purchaseId)
+    const { error } = await service
+      .from('purchase_lines')
+      .update({ line_total_minor: line.unit_price_minor * line.quantity - 1 })
+      .eq('id', line.id)
+    expect(error).not.toBeNull()
+    expect(JSON.stringify(error)).toMatch(/purchase_lines_line_total_matches_unit_price/)
+  })
+
+  it('line_total above unit × quantity + quantity − 1 is rejected', async () => {
+    const { purchaseId } = await buySealed(clientA, { quantity: 3, unitPriceMinor: 5000 })
+    const line = await firstLineOf(purchaseId)
+    const { error } = await service
+      .from('purchase_lines')
+      .update({ line_total_minor: line.unit_price_minor * line.quantity + line.quantity })
+      .eq('id', line.id)
+    expect(error).not.toBeNull()
+    expect(JSON.stringify(error)).toMatch(/purchase_lines_line_total_matches_unit_price/)
+  })
+
+  it('the full legal residual envelope accepts excess = quantity − 1 (and reverts cleanly)', async () => {
+    const { purchaseId } = await buySealed(clientA, { quantity: 3, unitPriceMinor: 9998 })
+    const line = await firstLineOf(purchaseId)
+    const legalMax = line.unit_price_minor * line.quantity + line.quantity - 1
+    const { error: up } = await service
+      .from('purchase_lines')
+      .update({ line_total_minor: legalMax })
+      .eq('id', line.id)
+    expect(up).toBeNull()
+    const { error: down } = await service
+      .from('purchase_lines')
+      .update({ line_total_minor: line.unit_price_minor * line.quantity })
+      .eq('id', line.id)
+    expect(down).toBeNull()
+  })
+
+  it('quantity must be positive and unit price cannot be negative (inherited guards hold alongside)', async () => {
+    const { purchaseId } = await buySealed(clientA, { quantity: 2, unitPriceMinor: 4000 })
+    const line = await firstLineOf(purchaseId)
+    const { error: zeroQty } = await service
+      .from('purchase_lines')
+      .update({ quantity: 0 })
+      .eq('id', line.id)
+    expect(zeroQty).not.toBeNull()
+    expect(JSON.stringify(zeroQty)).toMatch(/quantity_positive/)
+
+    const { error: negativeUnit } = await service
+      .from('purchase_lines')
+      .update({ unit_price_minor: -1, line_total_minor: -2 })
+      .eq('id', line.id)
+    expect(negativeUnit).not.toBeNull()
+    expect(JSON.stringify(negativeUnit)).toMatch(
+      /amounts_nonnegative|line_total_matches_unit_price/,
+    )
+  })
+
+  it('the provisional path may use the legal residual: 29995 over qty 3 → unit 9998, residual 1 (I10 shape)', async () => {
+    const before = await spendingOf(clientA)
+    const { data: opening, error } = await clientA
+      .rpc('create_opening_from_provisional', {
+        p_sealed_product_id: seedCatalog.sealedProductId,
+        p_quantity: 3,
+        p_total_paid_minor: 29995,
+        p_purchased_on: today,
+      })
+      .single<OpeningRow>()
+    if (error) throw new Error(error.message)
+    expect(opening.cost_nok_minor).toBe(29995)
+
+    const provLine = await lotById(opening.source_lot_id)
+    expect(provLine.residual_nok_minor).toBe(1)
+
+    // Attributable cost = line_total + allocations, exactly: allocations 0 ⇒ attributable 29995.
+    const { data: lines } = await service
+      .from('purchase_lines')
+      .select(
+        'line_total_minor, allocated_shipping_minor, allocated_customs_minor, allocated_discount_minor',
+      )
+      .eq('purchase_id', opening.provisional_purchase_id!)
+    expect((lines ?? []).length).toBe(1)
+    const l = (lines ?? [])[0] as unknown as {
+      line_total_minor: number
+      allocated_shipping_minor: number
+      allocated_customs_minor: number
+      allocated_discount_minor: number
+    }
+    expect(l.line_total_minor).toBe(29995)
+    expect(
+      l.line_total_minor +
+        l.allocated_shipping_minor +
+        l.allocated_customs_minor +
+        l.allocated_discount_minor,
+    ).toBe(29995)
+
+    // The entered total entered GPO/CS exactly once.
+    const after = await spendingOf(clientA)
+    expect(BigInt(after.gpo_nok_minor)).toBe(BigInt(before.gpo_nok_minor) + 29995n)
+  })
+})
+
 describe('E13 — backdated opening dirties M12 history from the correct date', () => {
   it('sealed owned until opened_on; pulls enter same day; dirty_from = earliest touched date', async () => {
     // Purchase AFTER the (older) opening date, so the opening is what moves the boundary.
@@ -1093,6 +1586,51 @@ describe('P53 — server-side idempotency (§5/§6)', () => {
     })
     expect(reuseError).not.toBeNull()
     expect(reuseError!.message).toContain('idempotency-key-reuse')
+  })
+
+  it('I2c (P56 §14): the key identifies the ORIGINAL operation — same key/lot/quantity/date with different pulls returns the original opening, unchanged', async () => {
+    const { lotId } = await buySealed(clientA, { quantity: 4, unitPriceMinor: 4000 })
+    const key = crypto.randomUUID()
+    const base = {
+      p_source_lot_id: lotId,
+      p_quantity: 2,
+      p_opened_on: today,
+      p_idempotency_key: key,
+    }
+    const { data: first, error: firstError } = await callCreateOpening(clientA, {
+      ...base,
+      p_pulls: [{ card_variant_id: seedCatalog.charizardVariantId, quantity: 1, condition: 'NM' }],
+    })
+    if (firstError) throw new Error(firstError.message)
+
+    // A retry whose auxiliary pull list differs is STILL a replay of the same operation: the
+    // material identity (lot, quantity, business date) matches, so the ORIGINAL committed
+    // opening comes back and nothing new is written — no second opening, no extra pull lots.
+    const { data: replayed, error: replayError } = await callCreateOpening(clientA, {
+      ...base,
+      p_pulls: [
+        { card_variant_id: seedCatalog.pikachuVariantId, quantity: 2, condition: 'NM' },
+        { card_variant_id: seedCatalog.grassEnergyVariantId, quantity: 1, condition: 'GD' },
+      ],
+    })
+    if (replayError) throw new Error(replayError.message)
+    expect(replayed.id).toBe(first.id)
+
+    const { count } = await service
+      .from('openings')
+      .select('id', { count: 'exact' })
+      .eq('user_id', userA.id)
+      .eq('idempotency_key', key)
+    expect(count).toBe(1)
+
+    // The committed pulls are exactly the FIRST request's — the retry mutated nothing.
+    const { data: pullLots } = await service
+      .from('acquisition_lots')
+      .select('id')
+      .eq('opening_id', first.id)
+    expect(pullLots ?? []).toHaveLength(1)
+    const lot = await lotById(lotId)
+    expect(lot.quantity_remaining).toBe(2)
   })
 
   it('I3: a retried PROVISIONAL request creates ONE purchase and ONE opening — replay checked BEFORE the purchase', async () => {

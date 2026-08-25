@@ -476,11 +476,24 @@ Constraints and triggers, exercised directly:
   single-event discipline + no pull double-reporting (E15, I11) plus ONE Opening recent-activity
   row (I12); audit_events absence (E16)
 - P53 integration cases layered onto the same suites: server-side idempotent create retry — one
-  opening (I2), material-mismatch key reuse refused (I2b), idempotent PROVISIONAL retry — one
+  opening (I2), material-mismatch key reuse refused (I2b), key identifies the ORIGINAL operation —
+  different pulls on the same key return the original opening unchanged (I2c), idempotent
+  PROVISIONAL retry — one
   purchase, one opening, replay checked before the ledger write (I3); bought-and-opened total-paid
   29995 = unit 9998 + residual 1 with line-level honesty (I10); known-zero ≠ unknown (I6);
   explicit separate purchase correction after an opening void (I9); composite-uniqueness
   cross-user same-UUID independence
+- P56 repair cases: post-reconcile canonical world — provisional purchase, source lot AND old
+  disposal all voided while the opening stays live at the real lot with exactly one live opened
+  disposal and GPO/CS equal to the real purchase only; re-open/re-sell of the retired provisional
+  lot refused (P54 H1); reconcile target from a PROVISIONAL purchase refused, from a VOIDED
+  purchase refused, from a live ordinary purchase succeeds (F55-10); retained-only coverage
+  counts — a fully-sold pull leaves priced/unpriced counts and retained value but stays in sold
+  count/proceeds, a partial sale contributes by remaining quantity (L1); direct constraint audit
+  of the widened line-total CHECK envelope (below-unit rejected, above unit×qty+qty−1 rejected,
+  legal residual accepted, quantity>0 and non-negative prices hold, create/update_purchase write
+  excess-0); user-scoped draft store isolation and RESOLVE_MANUAL_CARDS persistence
+  (tests/ui/opening-draft.test.ts)
 - Pure domain: §5.3 return formula vs the worked examples; exact preview rule reproducing the
   writer byte-for-byte incl. 19996→9999 (I4/I5); ROI rounding; completeness marker pairing;
   bought-and-opened draft gates and input assembly; copy pins (never-0, no per-pull ROI, void-does-

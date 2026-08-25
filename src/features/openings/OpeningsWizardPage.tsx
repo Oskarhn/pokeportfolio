@@ -9,6 +9,7 @@ import { Button, ChoiceGroup, FormMessage, TextField } from '../../ui/form'
 import { parseNokInput } from '../../ui/money-format'
 import { CONDITION_LABEL } from '../collection/labels'
 import { SEALED_PRODUCT_TYPE_LABEL } from '../../data/sealedProducts'
+import { useAuth } from '../../auth/useAuth'
 import { getOpeningController } from './controller'
 import {
   COMPLETENESS_OPTIONS,
@@ -74,6 +75,10 @@ export function OpeningsWizardPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const controller = getOpeningController()
+  // Drafts are scoped to the signed-in user (P56 §9): another account, or a signed-out visitor,
+  // never sees this user's in-memory opening draft.
+  const { session } = useAuth()
+  const userId = session?.user.id ?? null
 
   // One client-generated key per wizard visit: a retried submission cannot record the same
   // opening twice even if the backend answer was lost mid-flight.
@@ -84,7 +89,7 @@ export function OpeningsWizardPage() {
   const gateErrorRef = useRef<HTMLParagraphElement | null>(null)
 
   const [draft, setDraft] = useState<OpeningDraft>(() => {
-    const stored = draftStore.load()
+    const stored = draftStore.load(userId)
     const reusable =
       stored &&
       stored.phase !== 'submitted' &&
@@ -98,7 +103,7 @@ export function OpeningsWizardPage() {
   function dispatch(action: DraftAction) {
     setDraft((current) => {
       const next = reduceDraft(current, action)
-      draftStore.save(next)
+      draftStore.save(userId, next)
       return next
     })
   }
@@ -141,8 +146,10 @@ export function OpeningsWizardPage() {
     dispatch({ type: 'GO_TO_STEP', step })
   }
 
-  // Manual-card identities are resolved exactly once per unique identity and cached across
-  // retries, so a failed submission never duplicates catalog definitions when the user taps Retry.
+  // Manual-card identities are resolved exactly once per unique identity: the in-flight cache
+  // covers same-mount retries, and every id this device actually created is also persisted into
+  // the user-scoped draft (RESOLVE_MANUAL_CARDS below), so a route remount or browser-back retry
+  // reuses the SAME definition row instead of inserting an identical one (P56 §10).
   const resolvedManualCards = useRef(new Map<string, string>())
 
   const submitMutation = useMutation({
@@ -168,9 +175,13 @@ export function OpeningsWizardPage() {
               collectorNumber: identity.collectorNumber,
             })
           ).id
-        resolvedManualCards.current.set(key, manualCardId)
+        if (!cached) resolvedManualCards.current.set(key, manualCardId)
         idByKey.set(pull.key, manualCardId)
       }
+      // Persist successful resolutions into the stored draft BEFORE the opening RPC runs: if that
+      // RPC fails and the wizard remounts, the retry finds manualCardId already set and never
+      // creates a second identical definition.
+      if (idByKey.size > 0) dispatch({ type: 'RESOLVE_MANUAL_CARDS', idsByKey: idByKey })
 
       const resolvedDraft: OpeningDraft = {
         ...draft,
@@ -197,7 +208,7 @@ export function OpeningsWizardPage() {
     },
     onSuccess: async (created) => {
       dispatch({ type: 'SUBMIT_SUCCEEDED', openingId: created.openingId })
-      draftStore.clear()
+      draftStore.clear(userId)
       // Current Portfolio value updates immediately after refetch (D-086); history catches up
       // behind the ordinary recompute worker and Home's own status communicates that — no custom
       // polling here (prompt §21).
