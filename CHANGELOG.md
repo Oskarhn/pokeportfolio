@@ -10,7 +10,7 @@ they were**.
 
 ## [Unreleased]
 
-### Fixed — 2026-08-25 — Home's Current Portfolio Value updates immediately (P48, D-086)
+### Fixed — 2026-08-25 — Home's Current Portfolio Value updates immediately (P48, D-086; PR #51)
 
 Owner-reported: after adding a card, the value breakdown and spending figures were already
 correct but Home's primary "Current Portfolio Value" sat on the previous snapshot — under an
