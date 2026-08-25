@@ -29,6 +29,8 @@ export function SaleDetailPage() {
       await queryClient.invalidateQueries({ queryKey: ['sales-summary'] })
       await queryClient.invalidateQueries({ queryKey: ['portfolio'] })
       await queryClient.invalidateQueries({ queryKey: ['portfolio-counts'] })
+      // Voiding restores ownership and reverts proceeds — Home's live figures must refetch.
+      await queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] })
     },
     onError: (err: Error) => {
       setVoidError(err.message)

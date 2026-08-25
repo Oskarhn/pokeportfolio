@@ -479,23 +479,29 @@ figures, recent activity, and honest empty/no-history states. Custom-collection 
 correct current figures and says historical membership is not tracked (D-065). The eye masks
 headline, change, chart axis/tooltips and the accessible summary together.
 
-Missing-vs-zero honesty on this screen: before a user's first snapshot exists — new accounts,
-and every pre-existing account during initial deployment's backfill window — the headline and
-Total tracked economic position both render "—" ("not computed yet"), never "0 kr"
-(FINANCIAL_MODEL.md §6.5). A snapshot-derived genuine zero still renders as 0. Beneath the chart
-sits one restrained disclosure sentence: "Older market-value history uses weekly retained market
+Missing-vs-zero honesty on this screen (D-086): the headline and Total tracked economic position
+are CURRENT figures derived from live resolved state — raw + graded + sealed, and that CMV plus
+live NSP − CS — so they do not wait for a snapshot. Owned holdings with none priced render "—"
+("not computed yet"), never "0 kr" (FINANCIAL_MODEL.md §6.5); mixed coverage shows the partial
+known sum with the unpriced count still surfaced beneath the headline; an account that sold out
+of everything shows its real 0; a brand-new account keeps the empty-state contract. The chart,
+period change and accessibility summaries remain snapshot-backed history: before a user's first
+snapshot exists they say so honestly rather than extrapolate (D-008). Beneath the chart sits one
+restrained disclosure sentence: "Older market-value history uses weekly retained market
 observations" (D-070) — it qualifies MARKET-VALUE history only; purchases, sales and cost basis
 are exact frozen records and are never described as approximate.
 
-**Automatic settle after an owner mutation (P42, D-082).** A correction anywhere in the app
-(add/remove/adjust/void) enqueues a snapshot recompute; Home marks the state honestly with the
-"Updating…" badge and then settles BY ITSELF: the summary query polls only while
-`pending_recompute` is true (3 s cadence; no idle polling), the every-minute worker drains the
-queue within about a minute of the mutation, the badge disappears on its own when pending flips
-false, and that same transition refetches the value history so the chart can never sit stale
-under a vanished badge. No reload, no navigation, no fake progress bar. If a recompute ever
-takes unusually long, the badge's own tooltip already says what is happening; it does not imply
-an error at any point.
+**Automatic settle after an owner mutation (P42, D-082; status reworded P48, D-086).** A
+correction anywhere in the app (add/remove/adjust/void/valuation) enqueues a snapshot recompute.
+The mutation also invalidates the dashboard summary, so Home's CURRENT figures change as soon as
+that refetch returns — normal request latency, not the next worker tick. What may still lag is
+HISTORY: while `pending_recompute` is true, Home shows a small "Updating history…" status in the
+chart area whose wording says the value history is catching up — never that the current value is
+waiting — and no fake progress bar. The summary query polls only while pending (3 s cadence; no
+idle polling), the every-minute worker drains within about a minute, the status disappears on its
+own when pending flips false, and that same transition refetches the value history so the chart
+can never sit stale under a vanished status. No reload, no navigation. If a recompute ever takes
+unusually long, the status's own tooltip says what is happening; it does not imply an error.
 
 Original structure (M7.1) for reference:
 

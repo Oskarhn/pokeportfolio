@@ -164,6 +164,8 @@ function PurchaseEditForm({ purchaseId, detail }: { purchaseId: string; detail: 
       await queryClient.invalidateQueries({ queryKey: ['purchases'] })
       await queryClient.invalidateQueries({ queryKey: ['spending-summary'] })
       await queryClient.invalidateQueries({ queryKey: ['portfolio'] })
+      // A correction can change amounts/lines behind Home's live ledger and value figures.
+      await queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] })
       await navigate({ to: '/purchases/$purchaseId', params: { purchaseId } })
     },
     onError: (err: Error) => {

@@ -432,17 +432,35 @@ facts. This is accepted explicitly (D-070): snapshots stay a rebuildable cache r
 CURRENTLY RETAINED canonical facts; no price or value is fabricated; frozen ledger amounts
 (purchases, sales, FX, cost basis — §2/§4/§7) are structurally untouched by compaction.
 
-### 6.5 TTEP and THP when no snapshot exists yet
+### 6.5 Current vs snapshot-derived composites (D-086)
 
-Until a user's first `portfolio_snapshots` row exists — every brand-new account between its
-first mutation and its first drain, and every pre-existing account during initial deployment's
-backfill window — CMV is unavailable, so:
+Home separates two regimes deliberately:
 
-- `TTEP = CMV + NSP − CS` is **NULL**, rendered "—", never "0 kr".
-- `THP = CMV + NSP − GPO` is likewise **NULL**: with CMV unavailable the whole expression is
-  unavailable. Coalescing the missing CMV to 0 would fabricate a position out of nothing.
-- The lifetime ledger figures underneath (`GPO`, `CS`, `HS`, `NS`, `RRC`, `PUD`) remain fully
-  real during this window; only the snapshot-derived composite is honestly absent.
+**CURRENT state → live canonical/resolved state.** The current market value is the §6 resolution
+over the user's OPEN holdings right now — raw + graded + sealed as returned by one bounded
+`get_dashboard_summary()` request — never the latest snapshot's cached copy. Current
+`TTEP = CMV + NSP − CS` uses that live CMV with live NSP/CS, so neither figure waits for a
+snapshot worker. Missing-vs-zero rules:
+
+- Owned holdings with **no resolvable pricing at all**: current CMV is UNAVAILABLE — rendered
+  "—", never "0 kr". Current TTEP is unavailable for the same reason: coalescing the missing CMV
+  to 0 would fabricate a position out of nothing.
+- Mixed coverage: the sum of resolvable values displays; unpriced holdings stay counted in the
+  data-quality row and are never silently zeroed in.
+- An account that genuinely owns nothing anymore has a REAL zero.
+- A never-used account keeps its existing empty-state contract.
+
+**HISTORICAL state → `portfolio_snapshots`.** Chart points, period change and historical
+accessibility summaries come from the derived rebuildable cache (D-070). Before a user's first
+snapshot row exists — every brand-new account between its first mutation and its first drain,
+and every pre-existing account during initial deployment's backfill window — there is no
+historical series; the chart states so honestly rather than extrapolating (D-008).
+Snapshot-sourced composites keep the original NULL rule: no snapshot means the composite is
+unavailable ("—"), never 0-based. This applies to `THP = CMV + NSP − GPO`, which remains
+snapshot-derived: with no snapshot row it is NULL, never a 0-based fabrication.
+
+The lifetime ledger figures underneath (`GPO`, `CS`, `HS`, `NSP`, `RRC`, `PUD`) are canonical
+frozen records and are fully real in both regimes.
 
 ---
 

@@ -147,6 +147,8 @@ export function HoldingDetailPage() {
       await queryClient.invalidateQueries({ queryKey: ['holding-value-provenance', holdingId] })
       await queryClient.invalidateQueries({ queryKey: ['portfolio'] })
       await queryClient.invalidateQueries({ queryKey: ['portfolio-counts'] })
+      // A manual valuation feeds Home's live current-value figures directly.
+      await queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] })
     },
   })
 
@@ -156,6 +158,7 @@ export function HoldingDetailPage() {
       await queryClient.invalidateQueries({ queryKey: ['holding-value-provenance', holdingId] })
       await queryClient.invalidateQueries({ queryKey: ['portfolio'] })
       await queryClient.invalidateQueries({ queryKey: ['portfolio-counts'] })
+      await queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] })
     },
   })
 

@@ -270,6 +270,8 @@ export function SaleFormPage() {
       await queryClient.invalidateQueries({ queryKey: ['portfolio-counts'] })
       await queryClient.invalidateQueries({ queryKey: ['sales'] })
       await queryClient.invalidateQueries({ queryKey: ['sales-summary'] })
+      // A sale changes ownership and proceeds behind Home's live figures.
+      await queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] })
       await navigate({
         to: '/sales/$saleId',
         params: { saleId: sale.id },

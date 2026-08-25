@@ -6,9 +6,13 @@ import {
   dashboardSummaryRefetchInterval,
   filterHistoryWindow,
   historyPanelState,
+  historyStatusVisible,
   holdingValueDisplayState,
   isDashboardRange,
+  livePortfolioValue,
+  liveTtepDisplayState,
   monthlySpendBars,
+  PENDING_HISTORY_LABEL,
   recomputeJustSettled,
   resolveActiveRange,
   resolveRangeWindow,
@@ -329,5 +333,246 @@ describe('recomputeJustSettled (P42 — the queued→drained transition refreshe
     expect(recomputeJustSettled(undefined, false)).toBe(false)
     expect(recomputeJustSettled(undefined, true)).toBe(false)
     expect(recomputeJustSettled(undefined, undefined)).toBe(false)
+  })
+})
+
+/**
+ * P48 — CURRENT figures are live canonical/resolved state (D-086); HISTORICAL figures stay
+ * snapshot-backed. Every fixture below carries the stale snapshot fields too, to prove the
+ * derivation never reads them: the exact owner repro (headline stale while breakdown current)
+ * must be impossible within ONE summary response.
+ */
+interface SummaryFixture {
+  // Snapshot-sourced fields — present but deliberately ignored by the live derivation.
+  marketValueMinor: bigint | null
+  marketValueHasCoverage: boolean
+  pendingRecompute: boolean
+  // Live current-state fields (what get_dashboard_summary already returns).
+  uniqueHoldingCount: number
+  pricedHoldingCount: number
+  unpricedHoldingCount: number
+  gpoMinor: bigint
+  pudMinor: bigint
+  nspMinor: bigint
+  csMinor: bigint
+  rawValueMinor: bigint
+  gradedValueMinor: bigint
+  sealedValueMinor: bigint
+}
+
+function summaryFixture(overrides: Partial<SummaryFixture> = {}): SummaryFixture {
+  return {
+    marketValueMinor: null,
+    marketValueHasCoverage: true,
+    pendingRecompute: false,
+    uniqueHoldingCount: 0,
+    pricedHoldingCount: 0,
+    unpricedHoldingCount: 0,
+    gpoMinor: 0n,
+    pudMinor: 0n,
+    nspMinor: 0n,
+    csMinor: 0n,
+    rawValueMinor: 0n,
+    gradedValueMinor: 0n,
+    sealedValueMinor: 0n,
+    ...overrides,
+  }
+}
+
+function liveInput(s: SummaryFixture) {
+  return {
+    uniqueHoldingCount: s.uniqueHoldingCount,
+    pricedHoldingCount: s.pricedHoldingCount,
+    gpoMinor: s.gpoMinor,
+    pudMinor: s.pudMinor,
+    rawValueMinor: s.rawValueMinor,
+    gradedValueMinor: s.gradedValueMinor,
+    sealedValueMinor: s.sealedValueMinor,
+    nspMinor: s.nspMinor,
+    csMinor: s.csMinor,
+  }
+}
+
+describe('livePortfolioValue (P48 §4/§5 — the headline is LIVE state)', () => {
+  it('§A: shows the live sum while the snapshot CMV is stale and pending — 150, NOT 100', () => {
+    const s = summaryFixture({
+      marketValueMinor: 100_00n, // latest SNAPSHOT CMV — pre-drain, stale
+      marketValueHasCoverage: true,
+      pendingRecompute: true, // history worker has not caught up
+      uniqueHoldingCount: 1,
+      pricedHoldingCount: 1,
+      rawValueMinor: 150_00n, // LIVE resolved value
+      gradedValueMinor: 0n,
+      sealedValueMinor: 0n,
+    })
+    const result = livePortfolioValue(liveInput(s))
+    expect(result).toEqual({ kind: 'known', minorUnits: 150_00n })
+    expect(result.kind !== 'known' || result.minorUnits).not.toBe(100_00n)
+  })
+
+  it('§B invariant: with coverage the headline equals Raw + Graded + Sealed of the SAME response', () => {
+    const responses = [
+      summaryFixture({
+        uniqueHoldingCount: 3,
+        pricedHoldingCount: 3,
+        rawValueMinor: 120_55n,
+        gradedValueMinor: 2_000_00n,
+        sealedValueMinor: 349_99n,
+      }),
+      summaryFixture({
+        uniqueHoldingCount: 1,
+        pricedHoldingCount: 1,
+        rawValueMinor: 0n,
+        gradedValueMinor: 0n,
+        sealedValueMinor: 89_00n,
+      }),
+      summaryFixture({
+        uniqueHoldingCount: 2,
+        pricedHoldingCount: 2,
+        rawValueMinor: 7n, // genuine near-zero pricing is still real
+        gradedValueMinor: 3n,
+        sealedValueMinor: 0n,
+      }),
+    ]
+    for (const s of responses) {
+      const result = livePortfolioValue(liveInput(s))
+      expect(result).toEqual({
+        kind: 'known',
+        minorUnits: s.rawValueMinor + s.gradedValueMinor + s.sealedValueMinor,
+      })
+    }
+  })
+
+  it('§E: owned holdings with NONE priced are missing ("—"), NEVER a fabricated 0 kr', () => {
+    const s = summaryFixture({
+      uniqueHoldingCount: 3,
+      pricedHoldingCount: 0,
+      unpricedHoldingCount: 3,
+      rawValueMinor: 0n, // SQL excludes every unpriced holding from the sums
+      gradedValueMinor: 0n,
+      sealedValueMinor: 0n,
+    })
+    expect(livePortfolioValue(liveInput(s))).toEqual({ kind: 'missing' })
+  })
+
+  it('§F: mixed coverage shows the partial known sum; unpriced holdings are never zeroed in', () => {
+    const s = summaryFixture({
+      uniqueHoldingCount: 4,
+      pricedHoldingCount: 3,
+      unpricedHoldingCount: 1,
+      rawValueMinor: 120_00n, // only priced holdings contribute (SQL filter)
+      gradedValueMinor: 0n,
+      sealedValueMinor: 30_00n,
+    })
+    expect(livePortfolioValue(liveInput(s))).toEqual({ kind: 'known', minorUnits: 150_00n })
+    // The data-quality indication that one holding is unpriced stays available for the UI row.
+    expect(s.unpricedHoldingCount).toBe(1)
+  })
+
+  it('§G: a never-used account keeps the existing empty-state contract (no-data)', () => {
+    const s = summaryFixture({ uniqueHoldingCount: 0, gpoMinor: 0n, pudMinor: 0n })
+    expect(livePortfolioValue(liveInput(s))).toEqual({ kind: 'no-data' })
+  })
+
+  it('an account that sold out of everything has a REAL zero, distinct from missing', () => {
+    const s = summaryFixture({
+      uniqueHoldingCount: 0,
+      gpoMinor: 500_00n, // ledger history exists — this account was used
+      nspMinor: 500_00n,
+    })
+    expect(livePortfolioValue(liveInput(s))).toEqual({ kind: 'known', minorUnits: 0n })
+  })
+
+  it('never consults the snapshot fields for any answer', () => {
+    const withoutSnapshot = summaryFixture({
+      uniqueHoldingCount: 1,
+      pricedHoldingCount: 1,
+      rawValueMinor: 42_00n,
+    })
+    const withStaleSnapshot = summaryFixture({
+      ...liveInput(withoutSnapshot),
+      marketValueMinor: 999_999n,
+      marketValueHasCoverage: false,
+      pendingRecompute: true,
+    })
+    // Same live inputs + wildly different snapshot state → identical current value.
+    expect(livePortfolioValue(liveInput(withStaleSnapshot))).toEqual(
+      livePortfolioValue(liveInput(withoutSnapshot)),
+    )
+  })
+})
+
+describe('liveTtepDisplayState (P48 §8 — TTEP = live CMV + NSP − CS)', () => {
+  it('§H: computes the canonical formula from LIVE terms only', () => {
+    const s = summaryFixture({
+      uniqueHoldingCount: 3,
+      pricedHoldingCount: 3,
+      rawValueMinor: 500_00n,
+      gradedValueMinor: 200_00n,
+      sealedValueMinor: 0n,
+      nspMinor: 100_00n,
+      csMinor: 450_00n,
+    })
+    expect(liveTtepDisplayState(liveInput(s), false)).toEqual({
+      kind: 'known',
+      minorUnits: 350_00n, // 700 + 100 − 450
+    })
+  })
+
+  it('a negative position stays visible — TTEP is not clamped or hidden', () => {
+    const s = summaryFixture({
+      uniqueHoldingCount: 1,
+      pricedHoldingCount: 1,
+      rawValueMinor: 50_00n,
+      nspMinor: 20_00n,
+      csMinor: 500_00n,
+    })
+    expect(liveTtepDisplayState(liveInput(s), false)).toEqual({
+      kind: 'known',
+      minorUnits: -430_00n,
+    })
+  })
+
+  it('zero pricing coverage makes TTEP missing — coalescing CMV to 0 would fabricate a position', () => {
+    const s = summaryFixture({
+      uniqueHoldingCount: 2,
+      pricedHoldingCount: 0,
+      unpricedHoldingCount: 2,
+      nspMinor: 100_00n,
+      csMinor: 450_00n,
+    })
+    expect(liveTtepDisplayState(liveInput(s), false)).toEqual({ kind: 'missing' })
+    expect(liveTtepDisplayState(liveInput(s), true)).toEqual({ kind: 'missing' })
+  })
+
+  it('a no-data account has no TTEP either', () => {
+    expect(liveTtepDisplayState(liveInput(summaryFixture()), false)).toEqual({ kind: 'missing' })
+  })
+
+  it('§I: hide_values masks any PRESENT value; missing stays missing even while hidden', () => {
+    const s = summaryFixture({
+      uniqueHoldingCount: 1,
+      pricedHoldingCount: 1,
+      rawValueMinor: 123_456n,
+    })
+    expect(liveTtepDisplayState(liveInput(s), true)).toEqual({ kind: 'hidden' })
+    expect(liveTtepDisplayState(liveInput(s), false)).toEqual({
+      kind: 'known',
+      minorUnits: 123_456n,
+    })
+  })
+})
+
+describe('historyStatusVisible / PENDING_HISTORY_LABEL (P48 §7 — the status names HISTORY)', () => {
+  it('§D: the status exists only while a recompute is queued, then disappears by itself', () => {
+    expect(historyStatusVisible(true)).toBe(true)
+    expect(historyStatusVisible(false)).toBe(false)
+    expect(historyStatusVisible(undefined)).toBe(false)
+  })
+
+  it('the copy says history is updating — it must never imply the CURRENT value is waiting', () => {
+    expect(PENDING_HISTORY_LABEL).toBe('Updating history…')
+    expect(PENDING_HISTORY_LABEL.toLowerCase()).not.toContain('portfolio value')
+    expect(PENDING_HISTORY_LABEL.toLowerCase()).not.toContain('%')
   })
 })
