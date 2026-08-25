@@ -520,13 +520,29 @@ price history yet:** the chart says so rather than drawing a flat line.
 
 ## F11 — Export
 
-→ Settings › Export
-→ Choose: collection, lots, purchases, purchase lines, sales, or everything
-→ CSV downloads
-✓ Includes original currency, amount, FX rate and source, cost basis, origin, dates, disposals
-✓ Amounts are decimal strings with an explicit currency column — not raw minor units, and not
-  locale-formatted with ambiguous separators
-✓ Enough provenance that external tax analysis is possible later
+**Shipped in M13** as Profile › Data › **Export & backup** (`/profile/export`), plus the retained
+M7.1 quick Portfolio CSV (D-081). The M13 screen is a deliberate TWO-STEP flow (D-078) so
+`navigator.share()` always runs inside fresh transient user activation — sharing across awaited
+generation threw NotAllowedError on installed iOS PWAs:
+
+→ Step 1: choose **Prepare CSV export** (ten analysis files: holdings, acquisition lots, manual
+valuations, purchases, purchase lines, sales, sale lines, lot disposals, lot cost adjustments,
+custom collections) or **Create backup** (one versioned JSON envelope)
+→ status shows honest phases only ("Preparing…", then "Ready") — no fake percentage
+→ READY state lists every filename and the file count before anything is delivered
+→ Step 2: tap **Save / Share …** → Web Share Level 2 with all files when the platform accepts them
+(one invocation), else save picker (single file, desktop Chromium), else sequential downloads with
+every object URL revoked; a multi-file download fallback states the count beforehand and mentions
+that the browser may ask permission to download multiple files
+✓ CSV amounts are decimal strings with an explicit currency column — not raw minor units, not
+locale-formatted with ambiguous separators; empty means unknown (never 0)
+✓ JSON backup carries format id + schema_version + exported_at; money travels as exact integer
+minor-unit strings past 2^53; canonical timestamps stay verbatim wire strings
+✓ NotAllowedError is surfaced with explicit "Try sharing again" / "Download instead" choices
+(D-079); a dismissed sheet is quiet cancellation, never styled as an error
+✓ Generated artifacts live in memory only until delivered — nothing persisted, nothing uploaded
+Restore/import does NOT exist yet; copy says so. A periodic local-only export reminder nudge on
+Profile (D-080).
 
 ---
 

@@ -63,6 +63,12 @@ test.describe('routing and guards', () => {
     await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
   })
 
+  test('the export/backup route is not reachable without a session (M13)', async ({ page }) => {
+    await page.goto('/profile/export')
+    await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Export & backup' })).toHaveCount(0)
+  })
+
   test('the Purchases route is not reachable without a session', async ({ page }) => {
     await page.goto('/purchases')
     await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()

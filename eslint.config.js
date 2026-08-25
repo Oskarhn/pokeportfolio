@@ -95,5 +95,29 @@ export default tseslint.config(
       globals: globals.node,
     },
   },
+  {
+    // The independent M13 adversarial package (test/m13-independent-adversarial/README.md) has
+    // the same shape and the same self-contained status as its M12 predecessor above: untyped
+    // Supabase client access, skip-gated tests that legitimately contain no await.
+    files: ['test/m13-independent-adversarial/**/*.ts'],
+    languageOptions: {
+      globals: globals.node,
+    },
+    rules: {
+      '@typescript-eslint/no-non-null-assertion': 'off',
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+      '@typescript-eslint/no-unsafe-member-access': 'off',
+      '@typescript-eslint/no-unsafe-return': 'off',
+      '@typescript-eslint/no-unsafe-argument': 'off',
+      '@typescript-eslint/restrict-template-expressions': 'off',
+      '@typescript-eslint/no-unnecessary-condition': 'off',
+      '@typescript-eslint/no-unnecessary-type-assertion': 'off',
+      '@typescript-eslint/no-unnecessary-type-conversion': 'off',
+      '@typescript-eslint/no-base-to-string': 'off',
+      '@typescript-eslint/require-await': 'off',
+      // Discovery helpers legitimately probe unknown module shapes via `unknown` records.
+      '@typescript-eslint/no-explicit-any': 'error',
+    },
+  },
   eslintConfigPrettier,
 )

@@ -965,7 +965,15 @@ redemption impossible rather than merely unlikely.
 the Data API under every role a browser can hold. Only `service_role` and the SECURITY DEFINER
 functions touch it.
 
-### `audit_events`
+### `audit_events` — PLANNED, DOES NOT EXIST YET
+
+> **Status correction (M13 integration, 2026-08-24):** this table is *planned/future* design.
+> No migration creates it — verified by enumeration across every file in `supabase/migrations/`
+> during M13. The prose below is retained as the standing design intent for whichever milestone
+> introduces it; it must not be read as describing a live relation. The M13 independent
+> adversarial package carries a forward-compatibility tripwire
+> (`FORWARD_COMPAT_TABLES`, including `audit_events`) that forces an explicit inventory
+> decision if the table ever appears.
 
 Deliberately narrow. Written only for consequential actions, not every `UPDATE`.
 
@@ -1070,7 +1078,7 @@ lots per user**. Consequences already designed for:
 | Card images | Lazy-loaded, sized to the grid density, from the provider CDN. A 4-per-row grid must not issue thousands of image requests on mount. |
 | Portfolio aggregation | Read from `portfolio_snapshots`, not recomputed per page load — once that table exists (M12). Until then, `portfolio_counts()` is one cheap aggregate query, not a per-row client sum. |
 | Counts | `physical_card_count` = Σ `quantity_remaining`; `unique_holding_count` = distinct open holdings. Both are single aggregate queries (`portfolio_counts()`, M7) and both are displayed. |
-| Export | Streamed/chunked, not assembled in memory. |
+| Export | **Shipped in M13** (D-074): every section is fetched in bounded `.order(pk).range()` pages of 500 under stable ordering, with one exact COUNT per section up front, cross-page duplicate detection over each section's primary key and exact received-vs-expected reconciliation — offset-with-reconciliation (never labelled keyset), failing loudly rather than writing an incomplete backup. Implementation: `src/domain/export/` (pure) + `src/data/export/` (fetch). `lot_cost_adjustments` reaches exports via plain SELECT despite having no write RPC yet (its read authority is the point; the write path is M17's). |
 | Grouped display | The default list groups by holding, so 80 identical energies are one row with quantity 80 — a display concern, not a storage one. |
 
 ---
@@ -1104,7 +1112,7 @@ ahead of M16 openings in current ROADMAP order), `openings` (M16), `trades` and 
 `sales`/`sale_lines` (M10),
 `price_snapshots`/`sealed_price_snapshots`/`fx_rates`/`watched_card_variants` (M9),
 `portfolio_snapshots` (M12), `custom_collections`/`custom_collection_members` (**shipped M7**),
-`audit_events` (first milestone with a void/hard-delete path to audit).
+`audit_events` (still deferred — see §7's status correction: no milestone has needed it yet).
 `manual_card_definitions`, `holding_tags` and `manual_valuations` were **not** on this deferred
 list — see the M6 notes below for the two (`lot_origin`/`cost_basis_state` values, and
 `manual_valuations`) that shipped ahead of their originally-planned milestone.

@@ -91,6 +91,9 @@ const SaleEditPage = lazy(() =>
 const HistoryPage = lazy(() =>
   import('./features/history/HistoryPage').then((m) => ({ default: m.HistoryPage })),
 )
+const ExportPage = lazy(() =>
+  import('./features/export/ExportPage').then((m) => ({ default: m.ExportPage })),
+)
 
 /** Matches the layout these pages render into (AppShell's `<main>`) closely enough that arriving
  *  content doesn't jump — a skeleton rather than a spinner-over-blank-region, per
@@ -110,7 +113,7 @@ function RouteFallback() {
  *   public     /login, /invite/$token, /forgot-password, /reset-password
  *   protected  /, /catalog, /catalog/$cardId, /catalog/sets/$setId,
  *              /catalog/sealed/$sealedProductId, /portfolio, /portfolio/$holdingId,
- *              /portfolio/manual/new, /portfolio/sealed/new, /add, /profile
+ *              /portfolio/manual/new, /portfolio/sealed/new, /add, /profile, /profile/export
  *   admin      /admin/invitations
  *
  * `/more` (M7) is gone as of M7.1 (owner decision: no More destination remains — its only real
@@ -384,6 +387,19 @@ const profileRoute = createRoute({
   ),
 })
 
+// ── M13: export/backup, reached from Profile's Data section (UX_FLOWS.md F11 — Settings ›
+// Export), deliberately not a new primary-nav destination.
+
+const profileExportRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/profile/export',
+  component: () => (
+    <RequireSession>
+      <ExportPage />
+    </RequireSession>
+  ),
+})
+
 // ── M8: the purchase ledger. Not a primary-nav destination (reached via the central + menu and a
 // Home shortcut, UX_FLOWS.md F3/M8 prompt §15) — same "protected" route class as everything else
 // behind RequireSession.
@@ -548,6 +564,7 @@ const routeTree = rootRoute.addChildren([
   saleEditRoute,
   historyRoute,
   profileRoute,
+  profileExportRoute,
   legacyMoreRoute,
   adminInvitationsRoute,
 ])

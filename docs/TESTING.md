@@ -412,6 +412,36 @@ Constraints and triggers, exercised directly:
   shapes): the finish/stamp/subtype split, the `"generated"` sentinel, the boolean-flags fallback,
   Pocket-series detection
 
+**M13 export (`tests/db/m13_export.test.ts`, `tests/db/m13_export_perf.test.ts`,
+`tests/data/export-*.test.ts`, `tests/data/pagination-integrity.test.ts`,
+`tests/ui/export-*.test.ts`, `test/m13-independent-adversarial/`):**
+
+- DB/authorization (ephemeral stack, real JWTs through real RLS): full export as synthetic user B
+  returns B's profile and zero rows owned by A across all sections; >2^53 money arrives exact
+  end-to-end; null ≠ zero on a gift lot; forced pageSize=1 multi-page assembly with progress
+  callbacks; identity manifest = exactly the referenced variants/curated products; cancellation
+  propagation; unauthenticated refusal; production pagination constants pinned; an EMPTY account
+  still yields a complete envelope and ten header-only CSVs (§22 honesty — "no files came back"
+  fires only on literally zero artifacts)
+- Pure domain: envelope validation incl. the strict-v1 policy (unknown data keys refused;
+  same-version file with a new section refused — D-076); byte-identical determinism modulo
+  exported_at; money-cast audit proving every declared money field is selected `::text` in its own
+  section's select string plus frozen FX verbatim (§19); microsecond timestamp precision (§21);
+  RFC 4180 writer matrix + property round-trips + free-text-only injection sanitization with
+  legitimate numeric negatives untouched; pagination-integrity walker (truncation/gap/duplicate
+  detection); reminder cadence
+- UI: delivery dispatch matrix (share/picker/download, cancellation quiet, NotAllowedError surfaced
+  per D-079) and the two-step flow reducer (D-078), including retained-artifacts retry
+- Independent adversarial package (implementation-blind P37 source, PR #45): pure oracle suites run
+  everywhere via `pnpm test:m13-adversarial`; its DB-backed cross-user suite and implementation-gated
+  backup contract execute in CI's `db-tests` job against this same ephemeral stack (typecheck step +
+  execution step, mirroring the M12 pattern). First-contact [M13 CONTRACT] failures were classified
+  and bound deliberately (D-076); artifact-level owner-completeness asserts every seeded row arrives
+  exactly once with frozen FX/allocations verbatim
+- Export scale audit (D-059-style catastrophic-only gate): opt-in `M13_EXPORT_PERF=1` CI step seeds
+  ~10k lots / 2k sales / 4k valuations on a throwaway account and times the real pipeline under the
+  owner JWT, reporting duration, request count and artifact size
+
 ---
 
 ## 6. E2E
