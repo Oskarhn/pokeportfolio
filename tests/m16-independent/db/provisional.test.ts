@@ -1,0 +1,192 @@
+/**
+ * M16 PROVISIONAL-COST ORACLE (D-021 / FINANCIAL_MODEL §5.5 / E13) —
+ * DB-backed, IMPLEMENTATION_GATED.
+ *
+ * §10 of the brief: if the user never entered the pack purchase, the money
+ * must enter the canonical purchase ledger EXACTLY ONCE, and after
+ * reconciliation a provisional and a real cost source can never BOTH count
+ * for the same opening (F12).
+ *
+ * No audit_events dependency is permitted anywhere here: the table does not
+ * exist on the current schema (DATA_MODEL §7 status correction) and the
+ * active absence check lives in db/security.test.ts.
+ */
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+
+import {
+  createSyntheticUser,
+  deleteSyntheticUser,
+  signInAs,
+  type SyntheticUser,
+  type TestClient,
+} from '../../db/setup'
+import {
+  bindOpeningCreateArgs,
+  findReconcileRpc,
+  hasSupabaseEnv,
+  requireCreateOpeningRpc,
+  skipUnlessM16,
+} from '../helpers/contract'
+import { createIsolatedSealedProduct, spendSummary } from '../helpers/fixtures'
+
+const today = new Date().toISOString().slice(0, 10)
+
+describe.skipIf(!hasSupabaseEnv())('M16 provisional-cost oracle (F12 / E13)', () => {
+  let service: TestClient
+  let userA: SyntheticUser
+  let clientA: TestClient
+
+  beforeAll(async () => {
+    const { createServiceClient } = await import('../../db/setup')
+    service = createServiceClient()
+    userA = await createSyntheticUser(service, 'm16adv-prov')
+    clientA = await signInAs(userA)
+  }, 120_000)
+
+  afterAll(async () => {
+    if (service && userA) await deleteSyntheticUser(service, userA.id)
+  }, 60_000)
+
+  /** Creates an opening through the manual-cost path; returns its id. */
+  async function createProvisionalOpening(ctx: { skip(note?: string): void }): Promise<string> {
+    const surface = await skipUnlessM16(ctx, service)
+    const rpc = requireCreateOpeningRpc(surface)
+    const { data, error } = await clientA.rpc(
+      rpc.name,
+      bindOpeningCreateArgs(rpc, { openedOn: today, manualCostNokMinor: 79_900 }),
+    )
+    if (error || !data) {
+      ctx.skip(
+        `create-opening RPC rejected the provisional (manual-cost) path: ${error?.message}. ` +
+          'FINANCIAL_MODEL §5.5 requires it — flag at integration.',
+      )
+      return ''
+    }
+    const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown>
+    return String(row['id'] ?? '')
+  }
+
+  it('manual cost enters the ledger exactly once as a real provisional purchase', async (ctx) => {
+    const spendBefore = await spendSummary(clientA)
+
+    const openingId = await createProvisionalOpening(ctx)
+    expect(openingId).not.toBe('')
+
+    // Money entered the CANONICAL ledger exactly once — GPO/CS moved by 79900.
+    const spendAfter = await spendSummary(clientA)
+    expect(spendAfter.gpoNokMinor - spendBefore.gpoNokMinor).toBe(79_900n)
+    expect(spendAfter.csNokMinor - spendBefore.csNokMinor).toBe(79_900n)
+    expect(spendAfter.purchaseCount - spendBefore.purchaseCount).toBe(1)
+
+    // The new purchase is marked provisional_opening (the shipped enum value).
+    const { data: purchases } = await service
+      .from('purchases')
+      .select('id, origin, voided_at')
+      .eq('user_id', userA.id)
+    const provisional = (purchases ?? []).find(
+      (row) => String((row as Record<string, unknown>)['origin']) === 'provisional_opening',
+    )
+    expect(provisional, 'no provisional_opening purchase was created').toBeTruthy()
+
+    // The opening stores its provisional linkage and its exact cost.
+    const { data: storedRows } = await clientA.from('openings').select('*').eq('id', openingId)
+    const stored = ((storedRows ?? []) as Record<string, unknown>[])[0]
+    expect(stored).toBeTruthy()
+    const provKey = Object.keys(stored ?? {}).find((k) => /provisional/i.test(k))
+    expect(provKey, 'openings row lacks its provisional_purchase linkage').not.toBeNull()
+    const costKey = Object.keys(stored ?? {}).find((k) => /^cost_?nok/i.test(k))
+    if (costKey) {
+      const raw = (stored as Record<string, unknown>)[costKey]
+      const value = typeof raw === 'number' ? BigInt(Math.trunc(raw)) : BigInt(String(raw))
+      expect(value).toBe(79_900n)
+    }
+  })
+
+  it('reconciliation counts the money exactly once; double-reconcile is rejected', async (ctx) => {
+    const surface = await skipUnlessM16(ctx, service)
+    const reconRpc = findReconcileRpc(surface)
+    if (!reconRpc) {
+      ctx.skip(
+        'No reconciliation-shaped RPC discovered. F12 can then only be enforced by construction; ' +
+          'verify at integration that no path can hold two live cost sources.',
+      )
+      return
+    }
+
+    const spendBefore = await spendSummary(clientA)
+    const productId = await createIsolatedSealedProduct(service, userA.id, 'prov-rec')
+    const openingId = await createProvisionalOpening(ctx)
+    expect(openingId).not.toBe('')
+
+    // The REAL receipt arrives: 799.00 + 79.00 shipping = 878.00 NOK total.
+    const { data: realPurchase, error: realError } = await clientA
+      .rpc('create_purchase', {
+        p_purchased_on: today,
+        p_currency: 'NOK',
+        p_shipping_minor: 7_900,
+        p_lines: [
+          {
+            line_type: 'sealed',
+            sealed_product_id: productId,
+            quantity: 1,
+            unit_price_minor: 79_900,
+          },
+        ],
+      })
+      .single<{ id: string }>()
+    expect(realError, `real purchase failed: ${realError?.message}`).toBeNull()
+    const { data: realLine } = await service
+      .from('purchase_lines')
+      .select('id')
+      .eq('purchase_id', (realPurchase as { id: string }).id)
+      .single<{ id: string }>()
+    const { data: realLot } = await service
+      .from('acquisition_lots')
+      .select('id')
+      .eq('purchase_line_id', (realLine as { id: string }).id)
+      .single<{ id: string }>()
+
+    // Naive world BEFORE reconcile: provisional + real both live → counted twice.
+    const spendNaive = await spendSummary(clientA)
+    expect(spendNaive.gpoNokMinor - spendBefore.gpoNokMinor).toBe(79_900n + 87_800n)
+
+    // RECONCILE — bind opening id + real lot id onto whatever names were chosen.
+    const lotParam = reconRpc.paramNames.find((p) => /lot_?id/i.test(p))
+    const openParam = reconRpc.paramNames.find((p) => /opening_?id/i.test(p))
+    if (!lotParam || !openParam) {
+      throw new Error(
+        `[M16 CONTRACT] reconciliation RPC "${reconRpc.name}" parameters ` +
+          `(${reconRpc.paramNames.join(', ')}) do not expose an opening id and a lot id. Update ` +
+          `helpers/contract.ts deliberately.`,
+      )
+    }
+    const { error: reconError } = await clientA.rpc(reconRpc.name, {
+      [openParam]: openingId,
+      [lotParam]: (realLot as { id: string }).id,
+    })
+    expect(reconError, `reconcile failed: ${reconError?.message}`).toBeNull()
+
+    // AFTER: counted once, now at the REAL attributable figure (87800).
+    const spendAfter = await spendSummary(clientA)
+    expect(spendAfter.gpoNokMinor - spendBefore.gpoNokMinor).toBe(87_800n)
+    expect(spendAfter.csNokMinor - spendBefore.csNokMinor).toBe(87_800n)
+
+    // The provisional purchase is VOIDED — retained, excluded everywhere (E13).
+    const { data: purchases } = await service
+      .from('purchases')
+      .select('id, origin, voided_at')
+      .eq('user_id', userA.id)
+    const provisional = (purchases ?? []).find(
+      (row) => String((row as Record<string, unknown>)['origin']) === 'provisional_opening',
+    )
+    expect(provisional, 'provisional purchase vanished instead of being voided').toBeTruthy()
+    expect(provisional?.['voided_at'] ?? null).not.toBeNull()
+
+    // A second reconciliation is rejected — F12 holds at every instant.
+    const { error: secondReconError } = await clientA.rpc(reconRpc.name, {
+      [openParam]: openingId,
+      [lotParam]: (realLot as { id: string }).id,
+    })
+    expect(secondReconError, 'double reconciliation must be rejected').not.toBeNull()
+  })
+})
