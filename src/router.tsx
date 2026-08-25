@@ -94,6 +94,16 @@ const HistoryPage = lazy(() =>
 const ExportPage = lazy(() =>
   import('./features/export/ExportPage').then((m) => ({ default: m.ExportPage })),
 )
+const OpeningsWizardPage = lazy(() =>
+  import('./features/openings/OpeningsWizardPage').then((m) => ({
+    default: m.OpeningsWizardPage,
+  })),
+)
+const OpeningDetailPage = lazy(() =>
+  import('./features/openings/OpeningDetailPage').then((m) => ({
+    default: m.OpeningDetailPage,
+  })),
+)
 
 /** Matches the layout these pages render into (AppShell's `<main>`) closely enough that arriving
  *  content doesn't jump — a skeleton rather than a spinner-over-blank-region, per
@@ -512,7 +522,7 @@ const historyRoute = createRoute({
   path: '/history',
   // P43: the unified History feed. kind filters by event source, voided reveals
   // corrected/voided entries (presentation only — never an accounting change).
-  // M16: 'opening' joins the kind union (20260902120020); P51 owns any richer presentation.
+  // M16: 'opening' joins the kind union (20260902120020).
   validateSearch: (
     search: Record<string, unknown>,
   ): {
@@ -534,6 +544,43 @@ const legacyMoreRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/more',
   beforeLoad: () => redirect({ to: '/profile' }),
+})
+
+// ── M16 (openings): the wizard and its detail page. Not primary-nav destinations — reached via a
+// sealed Holding Detail's "Open" action, the central + menu's "Open sealed product", and History's
+// opening rows. `holdingId`/`lotId` preselect the source when arriving from Holding Detail
+// (prompt §7); the wizard still asks when several lots could be meant.
+
+interface OpeningsNewSearch {
+  holdingId?: string
+  lotId?: string
+}
+
+const openingsNewRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/openings/new',
+  validateSearch: (search: Record<string, unknown>): OpeningsNewSearch => ({
+    holdingId: str(search.holdingId),
+    lotId: str(search.lotId),
+  }),
+  component: () => (
+    <RequireSession>
+      <OpeningsWizardPage />
+    </RequireSession>
+  ),
+})
+
+const openingDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/openings/$openingId',
+  validateSearch: (search: Record<string, unknown>): { created?: boolean } => ({
+    created: bool(search.created),
+  }),
+  component: () => (
+    <RequireSession>
+      <OpeningDetailPage />
+    </RequireSession>
+  ),
 })
 
 const adminInvitationsRoute = createRoute({
@@ -573,6 +620,8 @@ const routeTree = rootRoute.addChildren([
   saleDetailRoute,
   saleEditRoute,
   historyRoute,
+  openingsNewRoute,
+  openingDetailRoute,
   profileRoute,
   profileExportRoute,
   legacyMoreRoute,

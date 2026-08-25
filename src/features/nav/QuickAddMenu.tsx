@@ -43,6 +43,19 @@ export function QuickAddMenu({ open, onClose }: { open: boolean; onClose: () => 
             </span>
           </Link>
           <Link
+            to="/openings/new"
+            onClick={onClose}
+            className="flex min-h-14 items-center gap-3 rounded-xl border border-slate-800 px-4 text-sm font-medium text-slate-100 hover:bg-slate-800/60"
+          >
+            <BoxIcon className="size-5 text-slate-400" />
+            <span>
+              Open sealed product
+              <span className="block text-xs font-normal text-slate-500">
+                Record packs you opened and the cards you pulled
+              </span>
+            </span>
+          </Link>
+          <Link
             to="/purchases/new"
             onClick={onClose}
             className="flex min-h-14 items-center gap-3 rounded-xl border border-slate-800 px-4 text-sm font-medium text-slate-100 hover:bg-slate-800/60"

@@ -11,6 +11,10 @@ import { supabase } from './supabase-client'
  * Voided/corrected entries are a display filter (p_includeVoided), never an accounting change:
  * hiding them alters no total anywhere (DECISIONS.md D-084's CORRECTION vs DISPLAY-FILTER
  * distinction).
+ *
+ * M16: the `opening` kind is a first-class backend arm of the union (20260902120020) — one event
+ * per opening, with opening-linked pull lots excluded from "Added" so a single conceptual action
+ * never reports twice.
  */
 
 export type HistoryEventKind = 'purchase' | 'sale' | 'opening' | 'acquisition' | 'valuation'

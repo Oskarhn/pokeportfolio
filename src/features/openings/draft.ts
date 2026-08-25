@@ -1,0 +1,365 @@
+import type { CardCondition } from '../../data/collection'
+import type { CreateOpeningInput, OpeningSource, TrackingCompleteness } from './contract'
+import { openingCostPreview } from './copy'
+
+/**
+ * The opening wizard's pure state machine (prompt §6/§24). No React, no routing, no network —
+ * the wizard page dispatches actions and renders the result, and every gate the prompt demands
+ * (quantity range, multi-lot choice, duplicate-pull merging, pairwise bulk estimate,
+ * double-submit prevention, failure-retains-draft) is pinned here by tests/ui/opening-draft.test.ts.
+ *
+ * The draft lives in session memory only (prompt §23): `draftStore` below holds it across
+ * unmount/remount so mobile back navigation during the flow never loses work. Nothing is written
+ * to localStorage — a financial draft is not persisted without an explicit project pattern for it.
+ */
+
+export const STEPS = ['source', 'quantity', 'pulls', 'review'] as const
+export type OpeningStep = (typeof STEPS)[number]
+
+export interface PullDraft {
+  key: string
+  cardVariantId: string | null
+  /** A real manual_card_definitions id once resolved at submission time; null while the pull is
+   *  still only a draft (see manualIdentity below). */
+  manualCardId: string | null
+  /** Catalog-missing fallback (M6/D-037): identity as stated by the user, turned into a real
+   *  manual-card definition by the wizard's submit step — never written earlier, so abandoning
+   *  the flow leaves nothing behind. */
+  manualIdentity: { name: string; setName?: string; collectorNumber?: string } | null
+  displayName: string
+  /** Set/set-number style subtitle for the review list; display only. */
+  subtitle: string | null
+  imageBaseUrl: string | null
+  finishLabel: string | null
+  condition: CardCondition
+  quantity: number
+}
+
+export interface OpeningDraft {
+  phase: 'editing' | 'submitting' | 'submitted'
+  step: OpeningStep
+  holdingId: string | null
+  lotId: string | null
+  /** Raw field input — parsed/clamped only on advance, so typing stays responsive. */
+  quantityInput: string
+  openedOn: string
+  pulls: PullDraft[]
+  completeness: TrackingCompleteness
+  bulkEstimateInput: string
+  bulkCountInput: string
+  notes: string
+  /** Set on SUBMIT_FAILED; every other field is retained verbatim (prompt §23). */
+  submitError: string | null
+  submittedOpeningId: string | null
+}
+
+function todayIso(): string {
+  return new Date().toISOString().slice(0, 10)
+}
+
+export function initialDraft(preselect?: { holdingId?: string; lotId?: string }): OpeningDraft {
+  return {
+    phase: 'editing',
+    step: 'source',
+    // Arriving from Sealed Holding Detail preselects that holding (prompt §7); the actual lot is
+    // still confirmed in step 1 unless exactly one eligible lot exists.
+    holdingId: preselect?.holdingId ?? null,
+    lotId: preselect?.lotId ?? null,
+    quantityInput: '1',
+    openedOn: todayIso(),
+    pulls: [],
+    completeness: 'all_cards',
+    bulkEstimateInput: '',
+    bulkCountInput: '',
+    notes: '',
+    submitError: null,
+    submittedOpeningId: null,
+  }
+}
+
+export type DraftAction =
+  | { type: 'SELECT_SOURCE'; source: OpeningSource }
+  | { type: 'SET_QUANTITY_INPUT'; value: string }
+  | { type: 'SET_OPENED_ON'; value: string }
+  | { type: 'GO_TO_STEP'; step: OpeningStep }
+  | {
+      type: 'ADD_PULL'
+      pull: Omit<PullDraft, 'key' | 'quantity'>
+      quantity: number
+      makeKey: () => string
+    }
+  | { type: 'SET_PULL_QUANTITY'; key: string; quantity: number }
+  | { type: 'REMOVE_PULL'; key: string }
+  | { type: 'SET_COMPLETENESS'; value: TrackingCompleteness }
+  | { type: 'SET_BULK_ESTIMATE_INPUT'; value: string }
+  | { type: 'SET_BULK_COUNT_INPUT'; value: string }
+  | { type: 'SET_NOTES'; value: string }
+  | { type: 'BEGIN_SUBMIT' }
+  | { type: 'SUBMIT_SUCCEEDED'; openingId: string }
+  | { type: 'SUBMIT_FAILED'; message: string }
+  | { type: 'RESET' }
+
+/** Two drafts are the same pull when they name the same physical printing in the same condition —
+ *  adding it again merges into the existing line instead of creating a confusing near-duplicate
+ *  (prompt §24's "duplicate card quantity behavior"). */
+function samePullIdentity(a: PullDraft, b: Omit<PullDraft, 'key' | 'quantity'>): boolean {
+  if (a.condition !== b.condition) return false
+  if (a.cardVariantId !== null && b.cardVariantId !== null) {
+    return a.cardVariantId === b.cardVariantId
+  }
+  if (a.manualIdentity !== null && b.manualIdentity !== null) {
+    const keyOf = (m: NonNullable<PullDraft['manualIdentity']>) =>
+      `${m.name}|${m.setName ?? ''}|${m.collectorNumber ?? ''}`
+    return keyOf(a.manualIdentity) === keyOf(b.manualIdentity)
+  }
+  if (a.manualCardId !== null && b.manualCardId !== null) {
+    return a.manualCardId === b.manualCardId
+  }
+  return false
+}
+
+export function reduceDraft(state: OpeningDraft, action: DraftAction): OpeningDraft {
+  switch (action.type) {
+    case 'RESET':
+      return initialDraft()
+    case 'SELECT_SOURCE':
+      return {
+        ...state,
+        holdingId: action.source.holdingId,
+        lotId: action.source.lotId,
+        // Keep any previously typed quantity inside the new lot's bounds rather than silently
+        // carrying an impossible number forward.
+        quantityInput: clampQuantityInput(state.quantityInput, action.source.quantityAvailable),
+        submitError: null,
+      }
+    case 'SET_QUANTITY_INPUT':
+      return { ...state, quantityInput: action.value }
+    case 'SET_OPENED_ON':
+      return { ...state, openedOn: action.value }
+    case 'GO_TO_STEP':
+      return { ...state, step: action.step, submitError: null }
+    case 'ADD_PULL': {
+      const incoming = { ...action.pull, key: '', quantity: action.quantity }
+      const existing = state.pulls.find((pull) => samePullIdentity(pull, incoming))
+      if (existing) {
+        return {
+          ...state,
+          pulls: state.pulls.map((pull) =>
+            pull.key === existing.key
+              ? { ...pull, quantity: pull.quantity + action.quantity }
+              : pull,
+          ),
+        }
+      }
+      return {
+        ...state,
+        pulls: [...state.pulls, { ...incoming, key: action.makeKey() }],
+      }
+    }
+    case 'SET_PULL_QUANTITY': {
+      const quantity = Math.max(1, Math.floor(action.quantity) || 1)
+      return {
+        ...state,
+        pulls: state.pulls.map((pull) => (pull.key === action.key ? { ...pull, quantity } : pull)),
+      }
+    }
+    case 'REMOVE_PULL':
+      return { ...state, pulls: state.pulls.filter((pull) => pull.key !== action.key) }
+    case 'SET_COMPLETENESS':
+      return { ...state, completeness: action.value }
+    case 'SET_BULK_ESTIMATE_INPUT':
+      return { ...state, bulkEstimateInput: action.value }
+    case 'SET_BULK_COUNT_INPUT':
+      return { ...state, bulkCountInput: action.value }
+    case 'SET_NOTES':
+      return { ...state, notes: action.value }
+    case 'BEGIN_SUBMIT':
+      // The double-submit guard: a submission already in flight swallows further BEGINs, so a
+      // double-tap on "Finish opening" cannot create two openings even before the backend's own
+      // idempotency key answers.
+      if (state.phase !== 'editing') return state
+      return { ...state, phase: 'submitting', submitError: null }
+    case 'SUBMIT_SUCCEEDED':
+      if (state.phase !== 'submitting') return state
+      return { ...state, phase: 'submitted', submittedOpeningId: action.openingId }
+    case 'SUBMIT_FAILED':
+      // Every drafted field survives untouched — retry needs nothing re-typed (prompt §23).
+      if (state.phase !== 'submitting') return state
+      return { ...state, phase: 'editing', submitError: action.message }
+    default:
+      return state
+  }
+}
+
+function clampQuantityInput(raw: string, max: number): string {
+  const parsed = Number.parseInt(raw, 10)
+  if (!Number.isFinite(parsed)) return '1'
+  return String(Math.min(Math.max(parsed, 1), max))
+}
+
+/**
+ * Step gates. Returns the blocking message or null. The backend stays authoritative — these are
+ * UX guards so obvious mistakes never become a round trip (prompt §8).
+ *
+ * `ctx.selectedLotId` is the EFFECTIVE selection (explicit pick or the single-lot auto-select);
+ * the wizard derives it, so these gates never re-derive financial meaning.
+ */
+export function stepError(
+  step: OpeningStep,
+  draft: OpeningDraft,
+  ctx: { availableSources: OpeningSource[]; selectedLotId: string | null },
+): string | null {
+  switch (step) {
+    case 'source': {
+      if (ctx.availableSources.length === 0) {
+        return 'You have no sealed products with unopened units to record.'
+      }
+      const source = ctx.availableSources.find((s) => s.lotId === ctx.selectedLotId)
+      if (!source) {
+        return 'Choose which acquisition lot you opened from.'
+      }
+      return null
+    }
+    case 'quantity': {
+      const source = ctx.availableSources.find((s) => s.lotId === ctx.selectedLotId)
+      if (!source) return 'Choose which acquisition lot you opened from.'
+      const parsed = Number.parseInt(draft.quantityInput, 10)
+      if (!Number.isFinite(parsed) || parsed < 1) {
+        return 'Open at least 1.'
+      }
+      if (parsed > source.quantityAvailable) {
+        return `Only ${source.quantityAvailable} available in this lot.`
+      }
+      if (!dateIsValidAndNotFuture(draft.openedOn)) {
+        return 'Enter the date you opened it — today or earlier.'
+      }
+      return null
+    }
+    case 'pulls':
+      // Pulls may be empty at this point only when the user will declare incomplete tracking on
+      // the review step; the review gate below enforces that pairing.
+      return null
+    case 'review':
+      return reviewError(draft)
+  }
+}
+
+/** Review-step validation: bulk estimate fields are optional but strictly paired (both or neither,
+ *  DATA_MODEL §5.8's shape), amounts must be plain NOK decimals, and a completely empty pull list
+ *  must be declared honestly as selected-pulls/not-sure rather than slipping through as
+ *  "all cards". */
+export function reviewError(draft: OpeningDraft): string | null {
+  const hasEstimate = draft.bulkEstimateInput.trim() !== ''
+  const hasCount = draft.bulkCountInput.trim() !== ''
+  if (hasEstimate !== hasCount) {
+    return 'Fill in both the estimated value and roughly how many cards, or leave both empty.'
+  }
+  if (hasEstimate) {
+    if (!/^\d+([.,]\d{1,2})?$/.test(draft.bulkEstimateInput.trim())) {
+      return 'Enter the estimated value as a NOK amount, e.g. 240 or 240,50.'
+    }
+    const count = Number.parseInt(draft.bulkCountInput, 10)
+    if (!Number.isFinite(count) || count < 1) {
+      return 'Enter roughly how many untracked cards there were.'
+    }
+  }
+  if (draft.pulls.length === 0 && draft.completeness === 'all_cards') {
+    return 'No pulls are recorded yet. Add them, or declare that you recorded only selected pulls.'
+  }
+  return null
+}
+
+/** Dates default to today and allow any past date (UX_FLOWS cross-cutting rules); a future
+ *  opening date would move inventory the user does not have yet, so it is refused. */
+export function dateIsValidAndNotFuture(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+  const parsed = new Date(`${value}T00:00:00`)
+  if (Number.isNaN(parsed.getTime())) return false
+  return value <= todayIso()
+}
+
+/** Assemble the controller call from the draft. `sourceLotId` comes from the wizard's EFFECTIVE
+ *  selection (explicit pick or single-lot auto-select). Manual-card identities must already be
+ *  resolved to real ids by the caller (the wizard creates them at submission time); an unresolved
+ *  one here is a programming error, not a user-facing state. Money strings are parsed at this
+ *  boundary, quantities are integers, and the optional estimate travels only when its pair is
+ *  present. */
+export function buildCreateOpeningInput(
+  draft: OpeningDraft,
+  sourceLotId: string,
+  idempotencyKey: string,
+  parseNokMinor: (raw: string) => bigint,
+): CreateOpeningInput {
+  const unresolved = draft.pulls.find(
+    (pull) => pull.cardVariantId === null && pull.manualCardId === null,
+  )
+  if (unresolved) {
+    throw new Error('A pulled card has no resolved identity yet.')
+  }
+  const hasEstimate = draft.bulkEstimateInput.trim() !== ''
+  const input: CreateOpeningInput = {
+    idempotencyKey,
+    sourceLotId,
+    quantity: Number.parseInt(draft.quantityInput, 10),
+    openedOn: draft.openedOn,
+    pulls: draft.pulls.map((pull) => ({
+      cardVariantId: pull.cardVariantId ?? undefined,
+      manualCardId: pull.manualCardId ?? undefined,
+      condition: pull.condition,
+      quantity: pull.quantity,
+    })),
+    trackingCompleteness: draft.completeness,
+  }
+  if (hasEstimate && draft.bulkCountInput.trim() !== '') {
+    input.bulkRemainderEstimateMinor = parseNokMinor(draft.bulkEstimateInput)
+    input.bulkRemainderCount = Number.parseInt(draft.bulkCountInput, 10)
+  }
+  if (draft.notes.trim() !== '') input.notes = draft.notes.trim()
+  return input
+}
+
+/** Which lots should step 1 offer for a given set of eligible sources: when arriving from a
+ *  holding with several lots, all of that holding's lots are listed and none is silently picked
+ *  (prompt §7 — different lots can be financially different). */
+export function sourcesForHolding(
+  sources: OpeningSource[],
+  holdingId: string | null,
+): OpeningSource[] {
+  if (holdingId === null) return sources
+  const scoped = sources.filter((source) => source.holdingId === holdingId)
+  return scoped.length > 0 ? scoped : []
+}
+
+/** True when step 1 can auto-confirm the lot without asking: exactly one candidate exists. A
+ *  single-lot preselect is not a financial guess — there is nothing else it could be. */
+export function singleSourceAutoSelect(sources: OpeningSource[]): OpeningSource | null {
+  return sources.length === 1 ? (sources[0] ?? null) : null
+}
+
+/** Convenience for the review screen: the cost preview given the effective source selection. */
+export function draftCostPreview(
+  draft: OpeningDraft,
+  selectedSource: OpeningSource | null,
+): ReturnType<typeof openingCostPreview> {
+  const quantity = Math.max(1, Number.parseInt(draft.quantityInput, 10) || 1)
+  if (!selectedSource) return { kind: 'unknown' }
+  return openingCostPreview(selectedSource, quantity)
+}
+
+/**
+ * Session-memory draft holder. One draft at a time — the wizard is a single flow, and a stale
+ * abandoned draft is cleared by RESET whenever the user finishes or cancels deliberately.
+ */
+let sessionDraft: OpeningDraft | null = null
+
+export const draftStore = {
+  load(): OpeningDraft | null {
+    return sessionDraft
+  },
+  save(draft: OpeningDraft): void {
+    sessionDraft = draft
+  },
+  clear(): void {
+    sessionDraft = null
+  },
+}

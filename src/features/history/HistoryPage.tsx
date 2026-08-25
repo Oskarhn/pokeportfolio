@@ -9,8 +9,8 @@ import { toDecimalString } from '../../domain/money'
  * sources — purchases, sales, openings, non-purchase additions and active manual valuations —
  * with a voided/corrections toggle that is presentation-only (hiding an entry never alters
  * accounting; corrections themselves go through each event's own edit/void lifecycle,
- * DECISIONS.md D-084/D-085). The opening chip is the P50 data-contract minimum; Opening Detail
- * navigation/presentation belongs to the M16 UI slice.
+ * DECISIONS.md D-084/D-085). Opening-linked pull lots never appear as individual "Added" rows —
+ * one conceptual action reports exactly once.
  */
 const KIND_FILTERS: { value: HistoryEventKind | 'all'; label: string }[] = [
   { value: 'all', label: 'All' },
@@ -164,10 +164,12 @@ function HistoryEventRow({ event }: { event: HistoryEvent }) {
       ? { to: '/purchases/$purchaseId', params: { purchaseId: event.primaryId } }
       : event.kind === 'sale'
         ? { to: '/sales/$saleId', params: { saleId: event.primaryId } }
-        : {
-            to: '/portfolio/$holdingId',
-            params: { holdingId: event.secondaryId ?? event.primaryId },
-          }
+        : event.kind === 'opening'
+          ? { to: '/openings/$openingId', params: { openingId: event.primaryId } }
+          : {
+              to: '/portfolio/$holdingId',
+              params: { holdingId: event.secondaryId ?? event.primaryId },
+            }
   return (
     <li>
       <Link
@@ -216,7 +218,7 @@ function EmptyState({ kind, showVoided }: { kind: HistoryEventKind | 'all'; show
     all: 'Purchases, sales, openings, added cards and valuations will appear here as they happen.',
     purchase: 'No purchases recorded yet.',
     sale: 'No sales recorded yet — selling a card preserves its cost basis and reduces your Portfolio.',
-    opening: 'No openings recorded yet.',
+    opening: 'No openings recorded yet — open a sealed product from its detail page or the + menu.',
     acquisition: 'No cards or sealed products added outside a purchase yet.',
     valuation: 'No manual valuations set yet.',
   }
