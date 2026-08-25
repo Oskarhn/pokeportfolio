@@ -119,5 +119,25 @@ export default tseslint.config(
       '@typescript-eslint/no-explicit-any': 'error',
     },
   },
+  {
+    // The independent M16 adversarial package (tests/m16-independent/README.md) lives under
+    // tests/ so the root typecheck covers it, but it talks to the same untyped Supabase client
+    // as tests/db and gates whole suites on runtime probes, so it needs the same relaxations.
+    files: ['tests/m16-independent/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-non-null-assertion': 'off',
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+      '@typescript-eslint/no-unsafe-member-access': 'off',
+      '@typescript-eslint/no-unsafe-return': 'off',
+      '@typescript-eslint/no-unsafe-argument': 'off',
+      '@typescript-eslint/restrict-template-expressions': 'off',
+      '@typescript-eslint/no-unnecessary-condition': 'off',
+      '@typescript-eslint/no-unnecessary-type-assertion': 'off',
+      '@typescript-eslint/no-base-to-string': 'off',
+      '@typescript-eslint/require-await': 'off',
+      // Discovery helpers legitimately probe unknown module shapes via `unknown` records.
+      '@typescript-eslint/no-explicit-any': 'error',
+    },
+  },
   eslintConfigPrettier,
 )
