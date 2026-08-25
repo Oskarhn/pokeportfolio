@@ -10,7 +10,7 @@ they were**.
 
 ## [Unreleased]
 
-### Added — 2026-08-24 — M13: Export and versioned backup (integrated candidate, PR #44+#45+#46 sources)
+### Added — 2026-08-24 — M13: Export and versioned backup (PR #47; sources PR #44+#45+#46)
 
 Profile › Data › **Export & backup** (`/profile/export`): a ten-file CSV analysis suite and a
 lossless versioned JSON backup ("pokeportfolio-backup" v1), generated entirely client-side under the
@@ -71,8 +71,9 @@ and active manual valuations (`list_history_events` — one bounded SECURITY INV
 pagination on (recorded_at, primary_id), money as text, voided entries hidden by default behind
 a "Show corrections / voided" toggle that never touches accounting). Every event navigates to its
 existing correction surface rather than offering deletion. Openings/Trades/Grading become event
-kinds when M16/M17/M18 land (D-085). Two migrations (`20260901120010`/`20260901120020`);
-**not yet deployed** (destructive owner-data operation).
+kinds when M16/M17/M18 land (D-085). Two migrations (`20260901120010`/`20260901120020`) applied
+to `pokeportfolio-dev` before the frontend merge (destructive owner-data operation; released as
+PR #49, squash `59401e4`).
 
 ### Added — 2026-08-24 — Holding-level quantity correction and removal (P28, PR #42)
 
