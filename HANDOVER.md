@@ -19,7 +19,13 @@ correction-aware History) is MERGED and RELEASED on top of both: PR #49 squash-m
 applied to `pokeportfolio-dev` BEFORE the frontend merge; hosted function/security state verified
 (reset = SECURITY DEFINER, `search_path=''`, no-argument signature, EXECUTE to authenticated only;
 history = SECURITY INVOKER, owner-scoped), grant audit clean, deployment check 28/28.**
-**Open items are owner-facing manual checks only: the P42 refresh repro, History browsing, the
+**P48 (Home live Current Portfolio Value) is MERGED and RELEASED on top of all three: PR #51
+squash-merged as `23b7ff5f5fdd80798355abe776bd98e405a6964b`; Home's CURRENT figures (headline,
+TTEP) now come from the live canonical/resolved state `get_dashboard_summary()` already returns
+(D-086: current = live state, history = portfolio_snapshots); no migration exists or was
+applied; Cloudflare deployed from this exact commit and verified (`deployment-check.mjs` 28/28;
+the live bundle carries the "Updating history…" label and no longer the old headline badge).**
+**Open items are owner-facing manual checks only: the Home live-value repro, History browsing, the
 reset flow and the M13 installed-iPhone export walkthrough — see "Owner manual checklist" below.**
 See "P43 — Portfolio reset + unified History" below, then "M13 — Export
 and backup". Beneath that: M1–M12 plus the parallel Home/Search/quantity release are
@@ -30,9 +36,12 @@ complete in code, merged and deployed. M12 (Dashboard) was merged through PR #35
 No safe authenticated browser automation exists this session (standing no-sign-in boundary since
 M7.1), so these four checks remain for the owner:
 
-- **A. Original P42 bug**: quick-add a disposable test card, then remove/correct it → Home must
-  update without a reload; the "Updating…" badge must disappear by itself within roughly a minute
-  plus one 3-second poll tick.
+- **A. Home live value (P48, successor of the P42 repro)**: quick-add a disposable test card →
+  Current Portfolio Value must change immediately (agreeing with the Value breakdown total),
+  WITHOUT waiting for history; while the worker catches up an "Updating history…" status sits
+  near the chart (never beside the headline) and disappears by itself within roughly a minute
+  plus one 3-second poll tick. Then remove/correct the same card → the headline updates
+  immediately again; history catches up separately.
 - **B. History**: `/history` loads; All / Purchases / Sales / Added / Values chips all work;
   "Show corrections / voided" reveals voided entries; voided entries do not affect active totals.
 - **C. Reset** (only if genuinely wiping current test data): Profile → Reset portfolio data →
@@ -327,8 +336,8 @@ the preflight note above for why the committed file stands.
 
 ## Status
 
-**M1–M12, the parallel release, and M13/P42/P43 are all merged/deployed. No open engineering item
-remains in any released family; the open items are the owner manual checks above (P42 refresh
+**M1–M12, the parallel release, and M13/P42/P43/P48 are all merged/deployed. No open engineering item
+remains in any released family; the open items are the owner manual checks above (Home live-value
 repro, History browsing, reset flow, installed-iPhone export) and the standing owner-device check
 carried since M7.1. Do not begin M16 resequencing before the owner records final approval.**
 
