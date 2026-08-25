@@ -1,4 +1,5 @@
 import type { OpeningDetail, OpeningSource, TrackingCompleteness } from './contract'
+import { computeOpeningCostPreview, openingRoiPercent } from '../../domain/opening'
 import { toDecimalString } from '../../domain/money'
 
 /**
@@ -25,24 +26,59 @@ export const THE_SEALED_NOTICE =
 export const VOID_TITLE = 'Void / correct this opening?'
 export const VOID_EXPLANATION =
   'The opened quantity returns to your sealed inventory. The pull records from this opening will be corrected along with it.'
+/** P53 §10 policy, stated plainly: voiding an opening never undoes its purchase — the money
+ *  was really spent whether or not the opening happened. Purchase corrections live elsewhere. */
+export const VOID_PURCHASE_NOTE =
+  'The purchase itself stays in your spending history — voiding an opening does not undo it.'
 export const OPENING_RECORDED_ANNOUNCEMENT = 'Opening recorded.'
 
 export type CostFigure = { kind: 'known'; minorUnits: bigint } | { kind: 'unknown' }
 
-/** The opening-cost figure a source lot implies for a given quantity: the lot's frozen unit basis
- *  times the units opened. Unknown stays unknown (M1) — never multiplied into a fake zero. */
+/**
+ * The opening-cost figure a source lot implies for a given quantity — the EXACT rule
+ * (P53 §7), delegated to the tested domain boundary `computeOpeningCostPreview`:
+ *
+ *   preview = effectiveUnitBasis × q + exhaustionResidual  (only when q exhausts the lot)
+ *
+ * This is byte-identical to what the backend will freeze: the 29995-øre lot previews 19996 for
+ * two of three units and 9999 for the final one. Unknown stays unknown (M1) — never multiplied
+ * into a fake zero.
+ */
 export function openingCostPreview(
-  source: Pick<OpeningSource, 'costKnown' | 'unitCostNokMinor'>,
+  source: Pick<
+    OpeningSource,
+    'costKnown' | 'quantityAvailable' | 'effectiveUnitBasisNokMinor' | 'exhaustionResidualNokMinor'
+  >,
   quantityOpened: number,
 ): CostFigure {
   if (
     !source.costKnown ||
-    source.unitCostNokMinor === null ||
-    source.unitCostNokMinor === undefined
+    source.effectiveUnitBasisNokMinor === null ||
+    source.effectiveUnitBasisNokMinor === undefined ||
+    source.exhaustionResidualNokMinor === null ||
+    source.exhaustionResidualNokMinor === undefined
   ) {
     return { kind: 'unknown' }
   }
-  return { kind: 'known', minorUnits: source.unitCostNokMinor * BigInt(quantityOpened) }
+  const minorUnits = computeOpeningCostPreview(
+    {
+      quantityAvailable: source.quantityAvailable,
+      effectiveUnitBasisNokMinor: source.effectiveUnitBasisNokMinor,
+      exhaustionResidualNokMinor: source.exhaustionResidualNokMinor,
+    },
+    quantityOpened,
+  )
+  return minorUnits === null ? { kind: 'unknown' } : { kind: 'known', minorUnits }
+}
+
+/**
+ * The read-only per-unit provenance line ("99.98 kr each, from the original purchase"): the
+ * derived unit basis as-is. The exhaustion residual is NOT smeared across units here — it is
+ * shown honestly through the total preview instead.
+ */
+export function unitCostCopy(source: OpeningSource): string | null {
+  if (!source.costKnown || !source.effectiveUnitBasisNokMinor) return null
+  return `${formatNok(source.effectiveUnitBasisNokMinor)} kr each`
 }
 
 export interface ResultCopy {
@@ -83,10 +119,15 @@ export function resultCopy(detail: OpeningDetail): ResultCopy | null {
       incompleteMarker: INCOMPLETE_TRACKING_MARKER,
     }
   }
-  const ratio = Number(detail.resultNokMinor) / Number(detail.costNokMinor ?? 1n)
+  // §5.3's percentage, computed by the tested exact-integer domain helper (P53 §16) — never a
+  // float ratio of two Numbers.
+  const roi = openingRoiPercent(
+    { minorUnits: detail.resultNokMinor, currency: 'NOK' },
+    detail.costNokMinor !== null ? { minorUnits: detail.costNokMinor, currency: 'NOK' } : null,
+  )
   return {
     headline: kroner,
-    percentage: `${ratio < 0 ? '−' : '+'}${(Math.abs(ratio) * 100).toFixed(1)} %`,
+    percentage: roi === null ? null : `${roi < 0 ? '−' : '+'}${Math.abs(roi).toFixed(1)} %`,
     incompleteMarker: null,
   }
 }

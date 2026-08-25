@@ -24,6 +24,31 @@
 --    defensible schema that preserves "which provisional purchase was replaced by which real
 --    one, when" without inventing an event-sourcing surface.
 --
+-- ── Integration additions (P53) ───────────────────────────────────────────────────────────────
+--
+-- 5. openings.idempotency_key — server-side idempotency (P53 §5). The UI already generates a
+--    client key per submission attempt; without server enforcement a lost response (timeout,
+--    offline flip) followed by a retry would record TWO openings — and on the provisional path
+--    TWO purchases. Every opening row therefore carries NOT NULL uuid key, unique per owner.
+--    Retries with the SAME key return the SAME committed opening from inside the writer RPCs;
+--    reuse of a key for a MATERIALLY different request is rejected explicitly (never silently
+--    treated as a replay).
+--
+-- 6. purchase_lines_line_total_matches_unit_price is REPLACED by a residual-tolerant form
+--    (P53 §12, D-090). Buy-and-open enters a receipt TOTAL ("3 packs, paid 299.95"): the exact
+--    total must survive end-to-end while unit_price stays an integer display/storage value.
+--    Under the old equality constraint (line_total = unit_price × quantity) the single sealed
+--    line could only carry 29994 and one øre of genuinely-paid money had nowhere honest to go.
+--    The replacement bounds the excess by the largest-remainder discipline exactly:
+--        unit_price_minor × quantity ≤ line_total_minor ≤ unit_price_minor × quantity + quantity − 1
+--    i.e. line_total may exceed unit×qty by up to (quantity − 1) øre — never fall below it, never
+--    more than one øre per unit. Every row written before this migration has excess 0 and
+--    validates unchanged; update_purchase's own recomputation writes excess 0 rows; the only
+--    writer that uses the slack is create_opening_from_provisional, which stores floor(total/qty)
+--    as the unit value and hands the remainder to the acquisition lot's existing residual columns
+--    so Σ attributable basis across openings reproduces the entered total EXACTLY (29995 = 9998×2
+--    +19996… see FINANCIAL_MODEL.md §5.5).
+--
 -- Everything else follows the shipped disposal architecture exactly: the consumption IS a
 -- lot_disposals row (kind='opened' — the enum value has existed since M10 awaiting exactly
 -- this writer), so invariant D1, the M12 history-invalidation triggers and the frozen
@@ -77,6 +102,11 @@ create table public.openings (
   notes text,
   created_at timestamptz not null default now(),
   voided_at timestamptz,
+  -- Server-side idempotency key (P53 §5): the client-generated submission identity. NOT NULL —
+  -- every writer RPC supplies one, generating internally when a caller omits it. Unique per
+  -- owner: two different users may collide freely; one user never gets two openings from one
+  -- lost-then-retried request.
+  idempotency_key uuid not null default gen_random_uuid(),
 
   constraint openings_quantity_positive check (quantity_opened > 0),
   constraint openings_cost_shape check (
@@ -97,6 +127,11 @@ create table public.openings (
   )
 );
 
+-- Idempotent replay discipline (P53 §5): one key, one owner, at most one opening. Composite —
+-- the same client-generated UUID from two accounts is two independent legitimate operations.
+create unique index openings_user_idempotency_key_idx
+  on public.openings (user_id, idempotency_key);
+
 comment on table public.openings is
   'M16: one opening = one act of consuming 1..N units of ONE sealed acquisition lot into pulled '
   'card lots. Creates no spend (CS/GPO unchanged); owns the consumed frozen cost; pulls carry '
@@ -106,6 +141,25 @@ create trigger openings_set_updated_at before update on public.openings
   for each row execute function public.set_updated_at();
 
 create index openings_user_opened_idx on public.openings (user_id, opened_on desc, id desc);
+
+-- ── 2b. purchase_lines line-total residual tolerance (P53 §12 / D-090) ────────────────────────
+-- Replaces M8's equality form so a receipt TOTAL entered by the owner ("3 packs, paid 299.95")
+-- survives exactly on the canonical line while unit_price stays an integer display/storage
+-- value. See the header note (§6) for the full rationale. Widening only: excess 0 rows (every
+-- pre-existing writer) validate unchanged.
+alter table public.purchase_lines
+  drop constraint purchase_lines_line_total_matches_unit_price;
+
+alter table public.purchase_lines
+  add constraint purchase_lines_line_total_matches_unit_price check (
+    line_total_minor >= unit_price_minor * quantity
+    and line_total_minor <= unit_price_minor * quantity + quantity - 1
+  );
+
+comment on constraint purchase_lines_line_total_matches_unit_price on public.purchase_lines is
+  'Largest-remainder discipline (D-090): line_total may exceed unit_price × quantity by up to '
+  'quantity − 1 øre (floor-unit rounding of an entered receipt total), never less and never '
+  'more. The lot''s residual columns carry the difference so consumption reproduces the total.';
 
 -- Ownership + identity defence in depth. Every browser write goes through the SECURITY DEFINER
 -- RPCs (authenticated holds SELECT only on this table); this trigger additionally pins direct

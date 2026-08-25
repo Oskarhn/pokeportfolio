@@ -21,10 +21,10 @@ import {
   type TestClient,
 } from '../../db/setup'
 import {
-  bindOpeningCreateArgs,
+  bindProvisionalOpeningArgs,
+  findProvisionalCreateRpc,
   findReconcileRpc,
   hasSupabaseEnv,
-  requireCreateOpeningRpc,
   skipUnlessM16,
 } from '../helpers/contract'
 import { createIsolatedSealedProduct, spendSummary } from '../helpers/fixtures'
@@ -47,23 +47,62 @@ describe.skipIf(!hasSupabaseEnv())('M16 provisional-cost oracle (F12 / E13)', ()
     if (service && userA) await deleteSyntheticUser(service, userA.id)
   }, 60_000)
 
-  /** Creates an opening through the manual-cost path; returns its id. */
-  async function createProvisionalOpening(ctx: { skip(note?: string): void }): Promise<string> {
+  /**
+   * Creates an opening through the PROVISIONAL path; returns its id.
+   * Execution-bound (P53 §4/§12): prefers the dedicated provisional-create RPC the shipped
+   * implementation exposes (`create_opening_from_provisional`, receipt TOTAL paid), and binds
+   * whatever parameter spellings were discovered — never guessing a call.
+   */
+  async function createProvisionalOpening(
+    ctx: { skip(note?: string): void },
+    overrides: {
+      sealedProductId?: string
+      quantity?: number
+      manualCostNokMinor?: number
+      purchasedOn?: string
+      openedOn?: string
+      idempotencyKey?: string
+    } = {},
+  ): Promise<string> {
     const surface = await skipUnlessM16(ctx, service)
-    const rpc = requireCreateOpeningRpc(surface)
-    const { data, error } = await clientA.rpc(
-      rpc.name,
-      bindOpeningCreateArgs(rpc, { openedOn: today, manualCostNokMinor: 79_900 }),
-    )
-    if (error || !data) {
-      ctx.skip(
-        `create-opening RPC rejected the provisional (manual-cost) path: ${error?.message}. ` +
-          'FINANCIAL_MODEL §5.5 requires it — flag at integration.',
-      )
-      return ''
+    const dedicated = findProvisionalCreateRpc(surface)
+    if (dedicated) {
+      const args = bindProvisionalOpeningArgs(dedicated, {
+        sealedProductId:
+          overrides.sealedProductId ??
+          (await createIsolatedSealedProduct(service, userA.id, 'prov')),
+        quantity: overrides.quantity ?? 1,
+        manualCostNokMinor: overrides.manualCostNokMinor ?? 79_900,
+        purchasedOn: overrides.purchasedOn ?? today,
+        openedOn: overrides.openedOn ?? today,
+      })
+      const idempotencyParam = dedicated.paramNames.find((p) => /idempotency/i.test(p))
+      if (overrides.idempotencyKey && idempotencyParam)
+        args[idempotencyParam] = overrides.idempotencyKey
+      else if (overrides.idempotencyKey) {
+        throw new Error(
+          `[M16 CONTRACT] provisional-create RPC "${dedicated.name}" exposes no idempotency-key ` +
+            `parameter among (${dedicated.paramNames.join(', ')}) — P53 §5 requires server-side ` +
+            `idempotency on the provisional path.`,
+        )
+      }
+      const { data, error } = await clientA.rpc(dedicated.name, args)
+      if (error || !data) {
+        ctx.skip(
+          `provisional-create RPC rejected the call: ${error?.message}. FINANCIAL_MODEL §5.5 ` +
+            'requires this path — flag at integration.',
+        )
+        return ''
+      }
+      const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown>
+      return String(row['id'] ?? '')
     }
-    const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown>
-    return String(row['id'] ?? '')
+    ctx.skip(
+      'No dedicated provisional-create RPC discovered and no manual-cost slot exists on the ' +
+        'generic create RPC. If the implementation folds the provisional money elsewhere, update ' +
+        'helpers/contract.ts deliberately.',
+    )
+    return ''
   }
 
   it('manual cost enters the ledger exactly once as a real provisional purchase', async (ctx) => {
@@ -99,6 +138,56 @@ describe.skipIf(!hasSupabaseEnv())('M16 provisional-cost oracle (F12 / E13)', ()
       const raw = (stored as Record<string, unknown>)[costKey]
       const value = typeof raw === 'number' ? BigInt(Math.trunc(raw)) : BigInt(String(raw))
       expect(value).toBe(79_900n)
+    }
+  })
+
+  it('total-paid exactness: qty 3 × paid 29995 → unit basis 9998, residual 1, opening cost 29995 (I10)', async (ctx) => {
+    const productId = await createIsolatedSealedProduct(service, userA.id, 'prov-total')
+    const spendBefore = await spendSummary(clientA)
+
+    // Buy-and-open all three at once: the opening exhausts its own fresh lot, so the frozen
+    // cost must equal the entered TOTAL exactly (9998 × 3 + residual 1).
+    const openingId = await createProvisionalOpening(ctx, {
+      sealedProductId: productId,
+      quantity: 3,
+      manualCostNokMinor: 29_995,
+    })
+    expect(openingId).not.toBe('')
+
+    // GPO/CS moved by EXACTLY the entered total — no invented or lost øre.
+    const spendAfter = await spendSummary(clientA)
+    expect(spendAfter.gpoNokMinor - spendBefore.gpoNokMinor).toBe(29_995n)
+    expect(spendAfter.csNokMinor - spendBefore.csNokMinor).toBe(29_995n)
+
+    // The lot carries the largest-remainder split verbatim.
+    const { data: storedRows } = await clientA.from('openings').select('*').eq('id', openingId)
+    const stored = ((storedRows ?? []) as Record<string, unknown>[])[0]
+    expect(stored).toBeTruthy()
+    const lotId = stored?.['source_lot_id']
+    expect(lotId).toBeTruthy()
+    const { data: lot } = await service
+      .from('acquisition_lots')
+      .select('*')
+      .eq('id', String(lotId))
+      .maybeSingle<Record<string, unknown>>()
+    expect(Number(lot?.['unit_cost_basis_nok_minor'])).toBe(9_998)
+    expect(Number(lot?.['residual_nok_minor'])).toBe(1)
+    expect(Number(lot?.['quantity_remaining'])).toBe(0)
+
+    // And the recorded opening cost equals the entered total to the øre.
+    const costKey = Object.keys(stored ?? {}).find((k) => /^cost_?nok/i.test(k))
+    const raw = (stored as Record<string, unknown>)[costKey ?? '']
+    const value = typeof raw === 'number' ? BigInt(Math.trunc(raw)) : BigInt(String(raw))
+    expect(value).toBe(29_995n)
+
+    // Idempotency parameter exists on the discovered provisional surface (P53 §5 contract).
+    const surface = await skipUnlessM16(ctx, service)
+    const dedicated = findProvisionalCreateRpc(surface)
+    if (!dedicated?.paramNames.some((p) => /idempotency/i.test(p))) {
+      throw new Error(
+        `[M16 CONTRACT] provisional-create RPC "${dedicated?.name}" exposes no idempotency-key ` +
+          'parameter — P53 §5 requires server-side idempotency BEFORE the purchase row exists.',
+      )
     }
   })
 

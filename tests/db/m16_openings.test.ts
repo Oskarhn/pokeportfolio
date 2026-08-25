@@ -8,6 +8,7 @@ import {
   type SyntheticUser,
   type TestClient,
 } from './setup'
+import { createGiftedSealedLot } from '../m16-independent/helpers/fixtures'
 
 /**
  * M16: Openings V1 — canonical DB core (FINANCIAL_MODEL.md §5, prompt scenarios E1–E8/E11–E16).
@@ -700,14 +701,14 @@ describe('E11/E12 — void lifecycle', () => {
     expect(again).not.toBeNull()
   })
 
-  it('void a PROVISIONAL opening: the provisional purchase leaves the ledger symmetrically', async () => {
+  it('void a PROVISIONAL opening: sealed inventory restored, purchase STAYS ACTIVE (P53 §10 policy)', async () => {
     const before = await spendingOf(clientA)
 
     const { data: opening, error } = await clientA
       .rpc('create_opening_from_provisional', {
         p_sealed_product_id: seedCatalog.sealedProductId,
         p_quantity: 2,
-        p_unit_price_minor: 29950,
+        p_total_paid_minor: 59900,
         p_purchased_on: today,
         p_opened_on: today,
         p_pulls: [{ card_variant_id: seedCatalog.pikachuVariantId, quantity: 2, condition: 'NM' }],
@@ -722,15 +723,26 @@ describe('E11/E12 — void lifecycle', () => {
     const { error: voidError } = await clientA.rpc('void_opening', { p_opening_id: opening.id })
     expect(voidError).toBeNull()
 
+    // "The opening did not happen" — but the PURCHASE is a separate economic fact that really
+    // happened. Voiding must NOT undo it: the money stays counted, and the sealed lot comes
+    // back live. (The old symmetric-void would have created a free sealed lot.)
     const afterVoid = await spendingOf(clientA)
-    expect(afterVoid.gpo_nok_minor).toBe(before.gpo_nok_minor)
+    expect(BigInt(afterVoid.gpo_nok_minor) - BigInt(before.gpo_nok_minor)).toBe(59900n)
     const { data: purchase } = await service
       .from('purchases')
       .select('voided_at, origin')
       .eq('id', opening.provisional_purchase_id!)
       .single()
-    expect(purchase!.voided_at).not.toBeNull()
+    expect(purchase!.voided_at).toBeNull()
     expect(purchase!.origin).toBe('provisional_opening')
+
+    // The sealed source lot is restored via D1.
+    const { data: lot } = await service
+      .from('acquisition_lots')
+      .select('quantity_remaining')
+      .eq('id', opening.source_lot_id)
+      .single()
+    expect(lot!.quantity_remaining).toBe(2)
   })
 
   it('void is REFUSED while a pull has been sold (E12) — never orphan a financial fact', async () => {
@@ -778,13 +790,15 @@ describe('provisional reconciliation WITHOUT audit_events (F12, prompt §18/§19
       .rpc('create_opening_from_provisional', {
         p_sealed_product_id: seedCatalog.sealedProductId,
         p_quantity: 3,
-        p_unit_price_minor: 19900,
+        p_total_paid_minor: 19900,
         p_purchased_on: today,
       })
       .single<OpeningRow>()
     if (error) throw new Error(error.message)
     expect(opening.cost_source).toBe('from_lot')
-    expect(opening.cost_nok_minor).toBe(59700)
+    // Total-paid exactness (D-090): the ENTERED TOTAL is the opening's cost — not quantity × a
+    // per-unit price. qty 3, paid 19900 in total → frozen cost exactly 19900.
+    expect(opening.cost_nok_minor).toBe(19900)
 
     // Step 2: the real receipt arrives — 3 boxes @ 19900 + 90 shipping = attributable 59790.
     const { lotId: realLot } = await buySealed(clientA, {
@@ -848,7 +862,7 @@ describe('provisional reconciliation WITHOUT audit_events (F12, prompt §18/§19
       .rpc('create_opening_from_provisional', {
         p_sealed_product_id: seedCatalog.sealedProductId,
         p_quantity: 2,
-        p_unit_price_minor: 10000,
+        p_total_paid_minor: 10000,
         p_purchased_on: today,
       })
       .single<OpeningRow>()
@@ -1002,7 +1016,7 @@ describe('E15 — History reports exactly ONE event per opening', () => {
     )
   })
 
-  it("Home's recent activity does not report opening pulls individually", async () => {
+  it("Home's recent activity: pulls not reported individually; exactly ONE Opening row instead (I12)", async () => {
     const { lotId } = await buySealed(clientA, { quantity: 2, unitPriceMinor: 2100 })
     const { data: opening, error: openError } = await callCreateOpening(clientA, {
       p_source_lot_id: lotId,
@@ -1021,6 +1035,232 @@ describe('E15 — History reports exactly ONE event per opening', () => {
     for (const row of activity) {
       expect(pullIds.has(row.primary_id)).toBe(false)
     }
+
+    // P53 §18: the exclusion is only half the contract — the opening itself gains exactly ONE
+    // activity row (activity_type='opening', occurred_on=opened_on, amount=cost or NULL).
+    const openingRows = activity.filter(
+      (row) => row.activity_type === 'opening' && row.primary_id === opening.id,
+    )
+    expect(openingRows).toHaveLength(1)
+    expect(openingRows[0]!.occurred_on).toBe(today)
+    expect(openingRows[0]!.amount_nok_minor).toBe('2100')
+  })
+})
+
+// ── P53 integration: server-side idempotency, total-paid exactness, void policy ─────────────
+
+describe('P53 — server-side idempotency (§5/§6)', () => {
+  it('I2: the same idempotency key returns the SAME committed opening — never a second one', async () => {
+    const { lotId } = await buySealed(clientA, { quantity: 4, unitPriceMinor: 5000 })
+    const key = crypto.randomUUID()
+    const args = {
+      p_source_lot_id: lotId,
+      p_quantity: 2,
+      p_opened_on: today,
+      p_idempotency_key: key,
+    }
+    const { data: first, error: firstError } = await callCreateOpening(clientA, args)
+    if (firstError) throw new Error(firstError.message)
+    const { data: second, error: secondError } = await callCreateOpening(clientA, args)
+    expect(secondError).toBeNull()
+    expect(second!.id).toBe(first.id)
+
+    // Exactly one opening exists for the key, and only one consumption happened.
+    const { count } = await service
+      .from('openings')
+      .select('id', { count: 'exact' })
+      .eq('user_id', userA.id)
+      .eq('idempotency_key', key)
+    expect(count).toBe(1)
+    expect((await lotById(lotId)).quantity_remaining).toBe(2)
+  })
+
+  it('I2b: the same key with MATERIALLY different arguments is refused as idempotency-key-reuse', async () => {
+    const { lotId } = await buySealed(clientA, { quantity: 3, unitPriceMinor: 4000 })
+    const key = crypto.randomUUID()
+    const { error: firstError } = await callCreateOpening(clientA, {
+      p_source_lot_id: lotId,
+      p_quantity: 1,
+      p_opened_on: today,
+      p_idempotency_key: key,
+    })
+    expect(firstError).toBeNull()
+    const { error: reuseError } = await callCreateOpening(clientA, {
+      p_source_lot_id: lotId,
+      p_quantity: 2,
+      p_opened_on: today,
+      p_idempotency_key: key,
+    })
+    expect(reuseError).not.toBeNull()
+    expect(reuseError!.message).toContain('idempotency-key-reuse')
+  })
+
+  it('I3: a retried PROVISIONAL request creates ONE purchase and ONE opening — replay checked BEFORE the purchase', async () => {
+    const before = await spendingOf(clientA)
+    const key = crypto.randomUUID()
+    const args = {
+      p_sealed_product_id: seedCatalog.sealedProductId,
+      p_quantity: 1,
+      p_total_paid_minor: 12300,
+      p_purchased_on: today,
+      p_idempotency_key: key,
+    }
+    const { data: first, error: firstError } = await clientA
+      .rpc('create_opening_from_provisional', args)
+      .single<OpeningRow>()
+    if (firstError) throw new Error(firstError.message)
+    const during = await spendingOf(clientA)
+    expect(BigInt(during.gpo_nok_minor) - BigInt(before.gpo_nok_minor)).toBe(12300n)
+
+    const { data: second, error: secondError } = await clientA
+      .rpc('create_opening_from_provisional', args)
+      .single<OpeningRow>()
+    expect(secondError).toBeNull()
+    expect(second!.id).toBe(first.id)
+
+    // One purchase, one opening, one sealed source lot; spend counted exactly once.
+    const after = await spendingOf(clientA)
+    expect(BigInt(after.gpo_nok_minor) - BigInt(before.gpo_nok_minor)).toBe(12300n)
+    const { count: purchaseCount } = await service
+      .from('purchases')
+      .select('id', { count: 'exact' })
+      .eq('user_id', userA.id)
+      .eq('origin', 'provisional_opening')
+      .eq('total_minor', 12300)
+    expect(purchaseCount).toBe(1)
+  })
+
+  it('cross-user same UUID is two independent legitimate keys (composite uniqueness)', async () => {
+    // User A opens under a chosen key.
+    const { lotId } = await buySealed(clientA, { quantity: 1, unitPriceMinor: 8000 })
+    const sharedKey = crypto.randomUUID()
+    const { error: aError } = await callCreateOpening(clientA, {
+      p_source_lot_id: lotId,
+      p_quantity: 1,
+      p_opened_on: today,
+      p_idempotency_key: sharedKey,
+    })
+    expect(aError).toBeNull()
+
+    // The SAME literal UUID from user B names a DIFFERENT operation and succeeds independently.
+    const userB = await createSyntheticUser(service, 'm16-idem-cross-b')
+    try {
+      const clientB = await signInAs(userB)
+      const bBuy = await buySealed(clientB, { quantity: 1, unitPriceMinor: 8000 })
+      const { error: bError } = await callCreateOpening(clientB, {
+        p_source_lot_id: bBuy.lotId,
+        p_quantity: 1,
+        p_opened_on: today,
+        p_idempotency_key: sharedKey,
+      })
+      expect(bError).toBeNull()
+    } finally {
+      await deleteSyntheticUser(service, userB.id)
+    }
+  })
+
+  it('I10: bought-and-opened total-paid 29995 over qty 3 splits 9998 + residual 1 exactly', async () => {
+    const before = await spendingOf(clientA)
+    const { data: opening, error } = await clientA
+      .rpc('create_opening_from_provisional', {
+        p_sealed_product_id: seedCatalog.sealedProductId,
+        p_quantity: 3,
+        p_total_paid_minor: 29995,
+        p_purchased_on: today,
+      })
+      .single<OpeningRow>()
+    if (error) throw new Error(error.message)
+
+    // GPO/CS increased by the TOTAL PAID exactly once (P53 §13).
+    const after = await spendingOf(clientA)
+    expect(BigInt(after.gpo_nok_minor) - BigInt(before.gpo_nok_minor)).toBe(29995n)
+    expect(after.gpo_nok_minor).toBe(after.cs_nok_minor)
+
+    // The lot carries floor-unit + residual; opening all 3 exhausts it at exactly 29995.
+    const lot = await lotById(opening.source_lot_id)
+    expect(lot.unit_cost_basis_nok_minor).toBe(9998)
+    expect(lot.residual_nok_minor).toBe(1)
+    expect(lot.quantity_remaining).toBe(0)
+    expect(opening.cost_nok_minor).toBe(29995)
+    expect(opening.cost_source).toBe('from_lot')
+
+    // Line-level honesty: unit_price is the derived display value, line_total is the EXACT total.
+    const { data: line } = await service
+      .from('purchase_lines')
+      .select('unit_price_minor, line_total_minor, attributable_cost_nok_minor')
+      .eq('purchase_id', opening.provisional_purchase_id!)
+      .single<{
+        unit_price_minor: number
+        line_total_minor: number
+        attributable_cost_nok_minor: number
+      }>()
+    expect(line!.unit_price_minor).toBe(9998)
+    expect(line!.line_total_minor).toBe(29995)
+    expect(line!.attributable_cost_nok_minor).toBe(29995)
+  })
+
+  it('I6: known-zero cost is representable; unknown stays NULL — they are different facts', async () => {
+    // A provisional entry of total 0 IS a legitimate known-zero basis (genuinely free).
+    const { data: zeroCost, error: zeroError } = await clientA
+      .rpc('create_opening_from_provisional', {
+        p_sealed_product_id: seedCatalog.sealedProductId,
+        p_quantity: 1,
+        p_total_paid_minor: 0,
+        p_purchased_on: today,
+      })
+      .single<OpeningRow>()
+    if (zeroError) throw new Error(zeroError.message)
+    expect(zeroCost.cost_source).toBe('from_lot')
+    expect(zeroCost.cost_nok_minor).toBe(0)
+
+    // An unknown-cost gift lot keeps cost NULL — never coalesced to the zero above.
+    const gifted = await createGiftedSealedLot(service, userA.id, seedCatalog.sealedProductId, 1)
+    const { data: unknownCost, error: unknownError } = await callCreateOpening(clientA, {
+      p_source_lot_id: gifted.lotId,
+      p_quantity: 1,
+      p_opened_on: today,
+    })
+    if (unknownError) throw new Error(unknownError.message)
+    expect(unknownCost.cost_source).toBe('unknown')
+    expect(unknownCost.cost_nok_minor).toBeNull()
+  })
+
+  it('I7/I8: void restores sealed inventory and NEVER touches the purchase — linked or provisional', async () => {
+    const before = await spendingOf(clientA)
+
+    // Provisional path: buy-and-open 1 of 2, then void the opening.
+    const { data: provOpening, error: provError } = await clientA
+      .rpc('create_opening_from_provisional', {
+        p_sealed_product_id: seedCatalog.sealedProductId,
+        p_quantity: 1,
+        p_total_paid_minor: 15000,
+        p_purchased_on: today,
+      })
+      .single<OpeningRow>()
+    if (provError) throw new Error(provError.message)
+    const { error: voidError } = await clientA.rpc('void_opening', {
+      p_opening_id: provOpening.id,
+    })
+    expect(voidError).toBeNull()
+
+    // Sealed restored; purchase still live and still counted (P53 §10 final policy).
+    const lot = await lotById(provOpening.source_lot_id)
+    expect(lot.quantity_remaining).toBe(1)
+    const { data: purchase } = await service
+      .from('purchases')
+      .select('voided_at')
+      .eq('id', provOpening.provisional_purchase_id!)
+      .single()
+    expect(purchase!.voided_at).toBeNull()
+
+    // I9: the PURCHASE correction surface removes incorrect spend separately, exactly once.
+    const { error: voidPurchaseError } = await clientA.rpc('void_purchase', {
+      p_purchase_id: provOpening.provisional_purchase_id!,
+      p_reason: 'recorded wrong amount',
+    })
+    expect(voidPurchaseError).toBeNull()
+    const afterCorrection = await spendingOf(clientA)
+    expect(BigInt(afterCorrection.gpo_nok_minor) - BigInt(before.gpo_nok_minor)).toBe(0n)
   })
 })
 
@@ -1052,7 +1292,7 @@ describe('E14 — full reset clears opening state and leaves other users untouch
     await clientA.rpc('create_opening_from_provisional', {
       p_sealed_product_id: seedCatalog.sealedProductId,
       p_quantity: 1,
-      p_unit_price_minor: 12345,
+      p_total_paid_minor: 12345,
       p_purchased_on: today,
     })
     const aLinked = await buySealed(clientA, { quantity: 4, unitPriceMinor: 800 })

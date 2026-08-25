@@ -26,6 +26,7 @@ import type {
   BackupLotCostAdjustmentRow,
   BackupLotDisposalRow,
   BackupManualValuationRow,
+  BackupOpeningRow,
   BackupPurchaseLineRow,
   BackupPurchaseRow,
   BackupSaleLineRow,
@@ -68,6 +69,7 @@ export function projectionInputFromSnapshot(snapshot: ExportSnapshot): CsvProjec
     holdings: snapshot.holdings,
     acquisition_lots: snapshot.acquisition_lots,
     manual_valuations: snapshot.manual_valuations,
+    openings: snapshot.openings,
     purchases: snapshot.purchases,
     purchase_lines: snapshot.purchase_lines,
     sales: snapshot.sales,
@@ -99,6 +101,7 @@ export const EXPORT_CSV_FILENAMES = [
   'sale_lines.csv',
   'lot_disposals.csv',
   'lot_cost_adjustments.csv',
+  'openings.csv',
   'custom_collections.csv',
 ] as const
 
@@ -112,6 +115,7 @@ export interface CsvProjectionInput {
   readonly holdings: readonly BackupHoldingRow[]
   readonly acquisition_lots: readonly BackupAcquisitionLotRow[]
   readonly manual_valuations: readonly BackupManualValuationRow[]
+  readonly openings: readonly BackupOpeningRow[]
   readonly purchases: readonly BackupPurchaseRow[]
   readonly purchase_lines: readonly BackupPurchaseLineRow[]
   readonly sales: readonly BackupSaleRow[]
@@ -721,6 +725,55 @@ export function buildLotCostAdjustmentsCsv(input: CsvProjectionInput): CsvFileCo
 }
 
 // ---------------------------------------------------------------------------
+// openings.csv — one row per opening (P53 §23). Analysis projection: no pull
+// cost basis exists to export (pulls deliberately carry none — the acquisition/
+// holdings files already render pulled cards as ordinary inventory), and no
+// internal privilege/security state of any kind.
+// ---------------------------------------------------------------------------
+
+export function buildOpeningsCsv(input: CsvProjectionInput): CsvFileContent {
+  const rows = input.openings.map((o) => [
+    o.id,
+    o.opened_on,
+    csvFreeText(input.sealedProductNames.get(o.sealed_product_id) ?? null),
+    String(o.quantity_opened),
+    // Unknown cost stays an empty cell — never a fabricated 0.00 (M1 at opening scope).
+    csvMoney(o.cost_nok_minor, 'NOK'),
+    o.cost_source,
+    o.tracking_completeness,
+    csvMoney(o.bulk_remainder_estimate_nok_minor, 'NOK'),
+    o.bulk_remainder_count === null ? '' : String(o.bulk_remainder_count),
+    o.provisional_purchase_id === null ? '' : 'provisional',
+    o.reconciled_at === null ? '' : 'reconciled',
+    o.voided_at ?? '',
+    csvFreeText(o.notes),
+    o.created_at,
+  ])
+  return {
+    filename: 'openings.csv',
+    text: buildCsvText(
+      [
+        'Opening ID',
+        'Date',
+        'Product',
+        'Quantity',
+        'Opening cost NOK',
+        'Cost source',
+        'Tracking completeness',
+        'Bulk remainder estimate NOK',
+        'Bulk remainder count',
+        'Purchase provenance',
+        'Reconciliation',
+        'Voided at',
+        'Notes',
+        'Created at',
+      ],
+      rows,
+    ),
+  }
+}
+
+// ---------------------------------------------------------------------------
 // custom_collections.csv
 // ---------------------------------------------------------------------------
 
@@ -769,6 +822,7 @@ export function buildCsvSuite(input: CsvProjectionInput): CsvFileContent[] {
     buildSaleLinesCsv(input),
     buildLotDisposalsCsv(input),
     buildLotCostAdjustmentsCsv(input),
+    buildOpeningsCsv(input),
     buildCustomCollectionsCsv(input),
   ]
 }

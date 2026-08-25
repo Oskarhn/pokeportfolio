@@ -204,6 +204,20 @@ function takeParam(rpc: DiscoveredOpeningRpc, patterns: readonly RegExp[]): stri
 // implementation's parameter spelling is its own. Each binder maps slots onto
 // discovered names and throws a loud contractViolation when the surface cannot
 // express the documented behaviour — never silently guesses a call.
+//
+// P53 INTEGRATION BINDING (deliberate, assertion-preserving):
+// The shipped implementation folds pull creation INTO the atomic
+// create-with-pulls design (`create_opening(p_source_lot_id, p_quantity, …,
+// p_pulls jsonb)`), and expresses the provisional path as a dedicated
+// `create_opening_from_provisional(… p_total_paid_minor …)` taking the receipt
+// TOTAL rather than a per-unit price. The binders below therefore accept BOTH
+// dialects where both are canonical-compatible:
+//   - consumption list as [{lot_id|source_lot_id, quantity}] OR the scalar
+//     (source_lot_id + quantity) pair of the single-source-lot model;
+//   - pull attachment via a dedicated pull-shaped RPC OR folded into creation;
+//   - the provisional money slot via manual-cost/total-paid/unit-price names.
+// Nothing here loosens an assertion: every divergence outside these dialects
+// still fails as [M16 CONTRACT].
 // ---------------------------------------------------------------------------
 
 export interface ConsumptionIntent {
@@ -212,20 +226,31 @@ export interface ConsumptionIntent {
   quantity: number
 }
 
+/** A pulled card riding creation (folded design) or a dedicated add-pull RPC. */
+export interface PullIntent {
+  cardVariantId?: string
+  manualCardId?: string
+  quantity: number
+  condition?: string
+}
+
 export interface OpeningCreateIntent {
   openedOn: string
   /** Linked-lot path: consumes owned sealed units. */
   consumptions?: readonly ConsumptionIntent[]
   /** D-021 provisional path: manual cost, no owned consumable lot. */
   manualCostNokMinor?: number
+  /** Pulled cards attached atomically at creation time (P53 §15 execution-bound). */
+  pulls?: readonly PullIntent[]
   notes?: string
 }
 
 /**
- * Binds create_opening. Two payload dialects are attempted for the consumption
- * list because both are canonical-compatible spellings of "consume q from lot":
+ * Binds create_opening. Three payload dialects are attempted for the consumption
+ * list because all are canonical-compatible spellings of "consume q from lot":
  *   [{ lot_id, quantity }]            (singular keys, output_44/DATA_MODEL shape)
  *   [{ source_lot_id, quantity }]     (the §5.8 sketch's source_lot_id vocabulary)
+ *   scalar p_source_lot_id + p_quantity (the shipped single-source-lot model)
  */
 export function bindOpeningCreateArgs(
   rpc: DiscoveredOpeningRpc,
@@ -236,8 +261,10 @@ export function bindOpeningCreateArgs(
     fail(rpc, ['opened_on date'])
   const args: Record<string, unknown> = { [dateParam]: intent.openedOn }
 
-  const lotsParam = takeParam(rpc, [/source_?lots?/i, /consum/i, /^p_?lots?$/i, /lot_?id/i])
-  const costParam = takeParam(rpc, [/manual_?cost/i, /cost_?minor/i, /^p_?cost/i])
+  const arrayLotsParam = takeParam(rpc, [/^p_?source_?lots$/i, /consum/i])
+  const scalarLotParam = takeParam(rpc, [/^p_?source_?lot_?id$/i, /^p_?lot_?id$/i])
+  const lotsParam = arrayLotsParam ?? scalarLotParam
+  const costParam = takeParam(rpc, [/manual_?cost/i, /total_?paid/i, /cost_?minor/i, /^p_?cost/i])
   const wantsProvisional = intent.manualCostNokMinor !== undefined
 
   if (wantsProvisional && intent.consumptions) {
@@ -248,6 +275,8 @@ export function bindOpeningCreateArgs(
   }
 
   if (intent.consumptions) {
+    const scalar =
+      scalarLotParam !== null && takeParam(rpc, [/^p_?quantity$/i]) !== null && !arrayLotsParam
     if (!lotsParam) {
       throw contractViolation(
         `create-opening RPC "${rpc.name}" exposes parameters (${rpc.paramNames.join(', ')}) that ` +
@@ -255,19 +284,58 @@ export function bindOpeningCreateArgs(
           `to another surface, update helpers/contract.ts deliberately.`,
       )
     }
-    args[lotsParam] = intent.consumptions.map((c) => ({
-      lot_id: c.lotId,
-      source_lot_id: c.lotId,
-      quantity: c.quantity,
-    }))
+    if (scalar) {
+      // Shipped single-source-lot model: one lot id + one quantity per call.
+      if (intent.consumptions.length !== 1) {
+        throw contractViolation(
+          `create-opening RPC "${rpc.name}" binds the single-source-lot dialect but the intent ` +
+            `names ${intent.consumptions.length} lots. One opening consumes ONE lot — split the intent.`,
+        )
+      }
+      const only = intent.consumptions[0]!
+      args[scalarLotParam!] = only.lotId
+      const qtyParam = takeParam(rpc, [/^p_?quantity$/i])
+      if (!qtyParam) {
+        throw contractViolation(
+          `create-opening RPC "${rpc.name}" has no quantity parameter alongside ${scalarLotParam}.`,
+        )
+      }
+      args[qtyParam] = only.quantity
+    } else {
+      args[lotsParam] = intent.consumptions.map((c) => ({
+        lot_id: c.lotId,
+        source_lot_id: c.lotId,
+        quantity: c.quantity,
+      }))
+    }
   } else if (wantsProvisional) {
     if (!costParam) {
       throw contractViolation(
         `create-opening RPC "${rpc.name}" exposes parameters (${rpc.paramNames.join(', ')}) that ` +
-          `cannot express the D-021 provisional manual cost. FINANCIAL_MODEL §5.5 requires it.`,
+          `cannot express the D-021 provisional manual cost. FINANCIAL_MODEL §5.5 requires it. ` +
+          `If the implementation ships a dedicated provisional-create RPC instead, bind it via ` +
+          `bindProvisionalOpeningArgs deliberately.`,
       )
     }
     args[costParam] = intent.manualCostNokMinor
+  }
+
+  // Folded pulls: attach at creation when the implementation exposes a pulls array.
+  if (intent.pulls && intent.pulls.length > 0) {
+    const pullsParam = takeParam(rpc, [/^p_?pulls$/i, /^p_?pull_?items$/i])
+    if (!pullsParam) {
+      throw contractViolation(
+        `create-opening RPC "${rpc.name}" exposes no pulls-array parameter among ` +
+          `(${rpc.paramNames.join(', ')}) — pulls cannot ride creation. Update ` +
+          `helpers/contract.ts deliberately if a separate pull surface exists.`,
+      )
+    }
+    args[pullsParam] = intent.pulls.map((pull) => ({
+      card_variant_id: pull.cardVariantId ?? null,
+      manual_card_id: pull.manualCardId ?? null,
+      quantity: pull.quantity,
+      condition: pull.condition ?? null,
+    }))
   }
   return args
 }
@@ -301,6 +369,74 @@ export function bindAddPullArgs(
   }
   if (intent.cardVariantId !== undefined && variantParam) args[variantParam] = intent.cardVariantId
   if (intent.condition !== undefined && conditionParam) args[conditionParam] = intent.condition
+  return args
+}
+
+// ---------------------------------------------------------------------------
+// Provisional-path binding (P53): prefers the dedicated provisional-create RPC
+// the shipped implementation exposes, falling back to a manual-cost slot on the
+// generic create RPC only when no dedicated surface exists.
+// ---------------------------------------------------------------------------
+
+export function findProvisionalCreateRpc(surface: M16Surface): DiscoveredOpeningRpc | null {
+  return (
+    findRpc(
+      surface.openingRpcs,
+      (r) =>
+        r.verbs.includes('create') && /provisional|from_?purchase|buy|total_?paid/i.test(r.name),
+    ) ?? null
+  )
+}
+
+export interface ProvisionalCreateIntent {
+  sealedProductId?: string
+  /** The receipt TOTAL paid (D-090) or a legacy per-unit figure — the binder is spelling-agnostic. */
+  manualCostNokMinor: number
+  purchasedOn?: string
+  openedOn?: string
+  quantity?: number
+  notes?: string
+}
+
+export function bindProvisionalOpeningArgs(
+  rpc: DiscoveredOpeningRpc,
+  intent: ProvisionalCreateIntent,
+): Record<string, unknown> {
+  const productParam = takeParam(rpc, [/sealed_?product_?id/i])
+  const totalParam = takeParam(rpc, [
+    /total_?paid/i,
+    /^p_?unit_?price/i,
+    /manual_?cost/i,
+    /cost_?minor/i,
+    /^p_?cost/i,
+  ])
+  const purchasedOnParam = takeParam(rpc, [/purchased_?on/i, /^p_?date$/i])
+  const openedOnParam = takeParam(rpc, [/opened_?on/i])
+
+  if (!productParam || !totalParam) {
+    throw contractViolation(
+      `provisional-create RPC "${rpc.name}" parameters (${rpc.paramNames.join(', ')}) cannot ` +
+        `express (sealed product, money). FINANCIAL_MODEL §5.5 requires both. Update ` +
+        `helpers/contract.ts deliberately — never by loosening an assertion.`,
+    )
+  }
+
+  const args: Record<string, unknown> = {
+    [productParam]: intent.sealedProductId,
+    [totalParam]: intent.manualCostNokMinor,
+  }
+  if (intent.quantity !== undefined) {
+    const qtyParam = takeParam(rpc, [/^p_?quantity$/i, /quantity/i])
+    if (qtyParam) args[qtyParam] = intent.quantity
+  }
+  if (intent.purchasedOn !== undefined && purchasedOnParam) {
+    args[purchasedOnParam] = intent.purchasedOn
+  }
+  if (intent.openedOn !== undefined && openedOnParam) args[openedOnParam] = intent.openedOn
+  if (intent.notes !== undefined) {
+    const notesParam = takeParam(rpc, [/^p_?notes$/i, /notes/i])
+    if (notesParam) args[notesParam] = intent.notes
+  }
   return args
 }
 
@@ -414,15 +550,23 @@ export function requireCreateOpeningRpc(surface: M16Surface): DiscoveredOpeningR
   return rpc
 }
 
-export function requirePullAddRpc(surface: M16Surface): DiscoveredOpeningRpc {
-  const rpc = findRpc(surface.openingRpcs, (r) => r.verbs.includes('pull'))
-  if (!rpc) {
-    throw contractViolation(
-      `M16 schema is present but no pull-addition RPC was discovered (expected a name matching ` +
-        `/pull/i among: ${surface.openingRpcs.map((r) => r.name).join(', ') || 'none'}).`,
-    )
-  }
-  return rpc
+/**
+ * Pull attachment surface (P53 §4/§15 binding decision). The shipped implementation folds
+ * pull creation INTO the atomic create-with-pulls call; a separate pull-shaped RPC is NOT
+ * required merely to satisfy heuristic discovery. This resolver names which dialect exists so
+ * the oracles attach pulls execution-bound instead of skipping:
+ *   - dedicated: a /pull/i-named RPC — attach post-hoc via bindAddPullArgs;
+ *   - folded:    pulls ride creation via bindOpeningCreateArgs({ pulls }).
+ * Neither mode weakens an assertion: pull lots must still exist, still carry NULL basis, and
+ * still be owner-scoped wherever an oracle looks.
+ */
+export type PullSurface =
+  { mode: 'dedicated'; rpc: DiscoveredOpeningRpc } | { mode: 'folded'; rpc: DiscoveredOpeningRpc }
+
+export function resolvePullSurface(surface: M16Surface): PullSurface {
+  const dedicated = findRpc(surface.openingRpcs, (r) => r.verbs.includes('pull'))
+  if (dedicated) return { mode: 'dedicated', rpc: dedicated }
+  return { mode: 'folded', rpc: requireCreateOpeningRpc(surface) }
 }
 
 export function requireVoidOpeningRpc(surface: M16Surface): DiscoveredOpeningRpc {

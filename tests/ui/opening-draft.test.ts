@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  buildBoughtAndOpenedInput,
   buildCreateOpeningInput,
   dateIsValidAndNotFuture,
   draftCostPreview,
@@ -15,6 +16,7 @@ import {
   type PullDraft,
 } from '../../src/features/openings/draft'
 import type { OpeningSource } from '../../src/features/openings/contract'
+import { parseNokInput } from '../../src/ui/money-format'
 
 /**
  * The opening wizard's behavioural gate (prompt §24), exercised against the pure state machine in
@@ -34,7 +36,8 @@ function source(overrides: Partial<OpeningSource> = {}): OpeningSource {
     quantityAvailable: 10,
     acquiredOn: '2026-07-01',
     costKnown: true,
-    unitCostNokMinor: 59900n,
+    effectiveUnitBasisNokMinor: 59900n,
+    exhaustionResidualNokMinor: 0n,
     ...overrides,
   }
 }
@@ -381,15 +384,110 @@ describe('session-memory draft store (prompt §23)', () => {
   })
 })
 
-describe('cost preview (prompt §14)', () => {
-  it('known lot multiplies frozen units by opened quantity', () => {
-    const preview = draftCostPreview(draftWithSource(source(), { quantityInput: '2' }), source())
-    expect(preview).toEqual({ kind: 'known', minorUnits: 119800n })
+describe('cost preview (prompt §14 / P53 §7 exact rule)', () => {
+  it('a partial opening previews pure units — no residual before exhaustion', () => {
+    // The canonical 29995-øre lot: unit basis 9998, residual +1, quantity 3.
+    const lot = source({
+      quantityAvailable: 3,
+      effectiveUnitBasisNokMinor: 9998n,
+      exhaustionResidualNokMinor: 1n,
+    })
+    const preview = draftCostPreview(draftWithSource(lot, { quantityInput: '2' }), lot)
+    expect(preview).toEqual({ kind: 'known', minorUnits: 19996n })
+    // Exhausting the lot adds the residual exactly once — preview == recorded cost (I5).
+    const final = draftCostPreview(draftWithSource(lot, { quantityInput: '3' }), lot)
+    expect(final).toEqual({ kind: 'known', minorUnits: 29995n })
   })
 
   it('an unknown-cost lot stays unknown — never multiplied into zero', () => {
-    const unknownLot = source({ costKnown: false, unitCostNokMinor: null })
+    const unknownLot = source({
+      costKnown: false,
+      effectiveUnitBasisNokMinor: null,
+      exhaustionResidualNokMinor: null,
+    })
     const preview = draftCostPreview(draftWithSource(unknownLot), unknownLot)
     expect(preview).toEqual({ kind: 'unknown' })
+  })
+})
+
+describe('bought-and-open mode (P53 §11)', () => {
+  it('defaults to the existing-lot mode', () => {
+    expect(initialDraft().mode).toBe('existing_lot')
+  })
+
+  it('switching modes clears the other mode’s selection but keeps entered pulls', () => {
+    let draft = reduceDraft(initialDraft(), {
+      type: 'SELECT_SOURCE',
+      source: source(),
+    })
+    draft = reduceDraft(draft, {
+      type: 'ADD_PULL',
+      pull: {
+        cardVariantId: 'variant-1',
+        manualCardId: null,
+        manualIdentity: null,
+        displayName: 'Charizard',
+        subtitle: null,
+        imageBaseUrl: null,
+        finishLabel: null,
+        condition: 'NM',
+      },
+      quantity: 1,
+      makeKey: () => 'k1',
+    })
+    draft = reduceDraft(draft, { type: 'SET_MODE', mode: 'bought_now' })
+    expect(draft.mode).toBe('bought_now')
+    expect(draft.lotId).toBeNull()
+    expect(draft.pulls).toHaveLength(1)
+    // And back again clears the product, not the pulls.
+    draft = reduceDraft(draft, {
+      type: 'SELECT_PRODUCT',
+      productId: 'product-9',
+      productName: 'Booster bundle',
+    })
+    draft = reduceDraft(draft, { type: 'SET_MODE', mode: 'existing_lot' })
+    expect(draft.productId).toBeNull()
+    expect(draft.pulls).toHaveLength(1)
+  })
+
+  it('the bought-now gates require product, total paid and valid dates', () => {
+    let draft = reduceDraft(initialDraft(), { type: 'SET_MODE', mode: 'bought_now' })
+    expect(stepError('source', draft, CTX_ONE_LOT())).toMatch(/Choose the sealed product/)
+    draft = reduceDraft(draft, {
+      type: 'SELECT_PRODUCT',
+      productId: 'product-9',
+      productName: 'Booster bundle',
+    })
+    expect(stepError('source', draft, { availableSources: [], selectedLotId: null })).toBeNull()
+    expect(stepError('quantity', draft, { availableSources: [], selectedLotId: null })).toMatch(
+      /total you paid/,
+    )
+    draft = reduceDraft(draft, { type: 'SET_TOTAL_PAID_INPUT', value: '299,95' })
+    expect(stepError('quantity', draft, { availableSources: [], selectedLotId: null })).toBeNull()
+  })
+
+  it('buildBoughtAndOpenedInput carries the exact entered total and idempotency key', () => {
+    let draft = reduceDraft(initialDraft(), { type: 'SET_MODE', mode: 'bought_now' })
+    draft = reduceDraft(draft, {
+      type: 'SELECT_PRODUCT',
+      productId: 'product-9',
+      productName: 'Booster bundle',
+    })
+    draft = reduceDraft(draft, { type: 'SET_QUANTITY_INPUT', value: '3' })
+    draft = reduceDraft(draft, { type: 'SET_TOTAL_PAID_INPUT', value: '299,95' })
+    draft = reduceDraft(draft, { type: 'SET_PURCHASED_ON', value: '2026-08-01' })
+    const input = buildBoughtAndOpenedInput(draft, 'key-1', parseNokInput)
+    expect(input.sealedProductId).toBe('product-9')
+    expect(input.quantity).toBe(3)
+    expect(input.totalPaidNokMinor).toBe(29995n)
+    expect(input.idempotencyKey).toBe('key-1')
+    expect(input.purchasedOn).toBe('2026-08-01')
+  })
+
+  it('building without a product is a programming error, never a silent submission', () => {
+    const draft = reduceDraft(initialDraft(), { type: 'SET_MODE', mode: 'bought_now' })
+    expect(() => buildBoughtAndOpenedInput(draft, 'key-2', parseNokInput)).toThrow(
+      /Choose the sealed product/,
+    )
   })
 })

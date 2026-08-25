@@ -15,8 +15,9 @@
  *     (FINANCIAL_MODEL.md §5.3: return/ROI are undefined when cost is unknown).
  */
 
-/** One sealed acquisition lot that can still be opened. Built from the lot's frozen facts only —
- *  the UI never recomputes a cost it was not given. */
+/** One sealed acquisition lot that can still be opened. Carries its ALREADY-DERIVED cost
+ *  components (server-derived by `list_opening_sources`, P53 §7) — the UI never recomputes a
+ *  cost it was not given, and never re-implements the consumption arithmetic. */
 export interface OpeningSource {
   lotId: string
   holdingId: string
@@ -28,10 +29,15 @@ export interface OpeningSource {
   /** Units still open on this lot (D1 invariant). The wizard clamps against this. */
   quantityAvailable: number
   acquiredOn: string
-  /** True exactly when the lot carries a known, frozen unit cost the opening can inherit. */
+  /** True exactly when the lot carries a known, frozen basis the opening can inherit.
+   *  False ⇒ both components below are null and the preview is "not recorded" — never 0. */
   costKnown: boolean
-  /** Per-unit NOK basis when costKnown; null/absent otherwise — never zero to mean free. */
-  unitCostNokMinor?: bigint | null
+  /** Derived per-unit basis: unit_cost_basis_nok + floor(Σ adjustments / original quantity).
+   *  Null together with exhaustionResidualNokMinor when costKnown is false. */
+  effectiveUnitBasisNokMinor?: bigint | null
+  /** Lot residual + adjustment remainder — added exactly once, by the opening that exhausts
+   *  the lot (FINANCIAL_MODEL §4.3). Preview arithmetic lives in src/domain/opening. */
+  exhaustionResidualNokMinor?: bigint | null
 }
 
 /** A card pulled from the opening, as captured by the wizard before anything is saved. */
@@ -62,6 +68,30 @@ export interface CreateOpeningInput {
 
 export interface CreatedOpening {
   openingId: string
+}
+
+/** Buy-and-open (P53 §11): "I bought these packs and opened them now." One wizard mode that
+ *  collects the sealed product, the RECEIPT TOTAL paid (never a per-unit price), the purchase
+ *  and opening dates, the pulls, the tracking completeness and the optional bulk estimate. The
+ *  backend creates exactly ONE real provisional purchase + ONE opening, atomically, with the
+ *  total preserved øre-exact (D-090). */
+export interface BoughtAndOpenedInput {
+  /** Client-generated submission identity — server-enforced idempotency (P53 §5). A retried
+   *  request can never create a second purchase. */
+  idempotencyKey: string
+  sealedProductId: string
+  quantity: number
+  /** The exact total paid, integer NOK minor units. */
+  totalPaidNokMinor: bigint
+  /** ISO date (yyyy-mm-dd) of the purchase; may be backdated. */
+  purchasedOn: string
+  /** ISO date of the opening; defaults server-side to the purchase date when omitted. */
+  openedOn?: string
+  pulls: OpeningPullInput[]
+  trackingCompleteness: TrackingCompleteness
+  bulkRemainderEstimateMinor?: bigint
+  bulkRemainderCount?: number
+  notes?: string
 }
 
 export interface OpeningPullLine {
@@ -120,10 +150,12 @@ export interface VoidOpeningOutcome {
  * tests inject mocks of this interface (no production DB dependency anywhere in the feature).
  */
 export interface OpeningController {
-  /** Sealed lots with remaining units, newest-provenance information included. When
+  /** Sealed lots with remaining units, derived preview components included. When
    *  `filter.holdingId` is given, only lots of that holding come back (Holding Detail entry). */
   getEligibleSealedSources(filter?: { holdingId?: string }): Promise<OpeningSource[]>
   createOpening(input: CreateOpeningInput): Promise<CreatedOpening>
+  /** Buy-and-open path (P53 §11): one purchase + one opening, atomically. */
+  createBoughtAndOpened(input: BoughtAndOpenedInput): Promise<CreatedOpening>
   getOpening(openingId: string): Promise<OpeningDetail>
   voidOpening(openingId: string, reason?: string): Promise<VoidOpeningOutcome>
 }

@@ -32,12 +32,26 @@ export interface CreateOpeningInput {
   bulkRemainderEstimateNokMinor?: bigint
   bulkRemainderCount?: number
   notes?: string
+  /**
+   * Client-generated submission identity (P53 §5). The SAME key with the SAME material request
+   * returns the already-committed opening instead of creating a second one; the same key with a
+   * materially different request is rejected server-side (`idempotency-key-reuse`). Required in
+   * practice — the UI always supplies one; the RPC generates internally when omitted.
+   */
+  idempotencyKey?: string
 }
 
-export interface CreateProvisionalOpeningInput extends CreateOpeningInput {
+/** Buy-and-open (P53 §11): the owner states the RECEIPT TOTAL they paid — never a per-unit price.
+ *  The backend splits it exactly (integer floor unit + lot residual, D-090). */
+export interface CreateProvisionalOpeningInput extends Omit<
+  CreateOpeningInput,
+  'sourceLotId' | 'openedOn'
+> {
   sealedProductId: string
-  unitPriceMinor: bigint
+  totalPaidNokMinor: bigint
   purchasedOn: string
+  /** Optional: the backend defaults the opening date to the purchase date when omitted. */
+  openedOn?: string
 }
 
 function toWirePulls(pulls: OpeningPullInput[] | undefined): Json[] | undefined {
@@ -134,6 +148,7 @@ export async function createOpening(input: CreateOpeningInput): Promise<Opening>
           : Number(input.bulkRemainderEstimateNokMinor),
       p_bulk_remainder_count: input.bulkRemainderCount,
       p_notes: input.notes,
+      p_idempotency_key: input.idempotencyKey,
     })
     .select(OPENING_COLUMNS)
     .single()
@@ -143,9 +158,11 @@ export async function createOpening(input: CreateOpeningInput): Promise<Opening>
 }
 
 /**
- * FINANCIAL_MODEL §5.5 provisional path in ONE server transaction: creates the real
- * purchase(origin='provisional_opening') plus its known-cost sealed lot, then consumes it
- * through create_opening. Money counted exactly once.
+ * FINANCIAL_MODEL §5.5 provisional path (buy-and-open) in ONE server transaction: creates the
+ * real purchase(origin='provisional_opening') plus its known-cost sealed lot from the ENTERED
+ * TOTAL PAID (exact largest-remainder split, D-090), then consumes it through create_opening.
+ * The idempotency key is enforced BEFORE the purchase row is written, so a retried submission
+ * can never double-spend (P53 §5). Money counted exactly once.
  */
 export async function createProvisionalOpening(
   input: CreateProvisionalOpeningInput,
@@ -154,7 +171,7 @@ export async function createProvisionalOpening(
     .rpc('create_opening_from_provisional', {
       p_sealed_product_id: input.sealedProductId,
       p_quantity: input.quantity,
-      p_unit_price_minor: Number(input.unitPriceMinor),
+      p_total_paid_minor: Number(input.totalPaidNokMinor),
       p_purchased_on: input.purchasedOn,
       p_opened_on: input.openedOn,
       p_tracking_completeness: input.trackingCompleteness ?? 'all_cards',
@@ -165,6 +182,7 @@ export async function createProvisionalOpening(
           : Number(input.bulkRemainderEstimateNokMinor),
       p_bulk_remainder_count: input.bulkRemainderCount,
       p_notes: input.notes,
+      p_idempotency_key: input.idempotencyKey,
     })
     .select(OPENING_COLUMNS)
     .single()
@@ -238,4 +256,140 @@ export async function getOpening(openingId: string): Promise<OpeningDetail | nul
     openingReturnNokMinor:
       row.opening_return_nok_minor === null ? null : parseMinorUnits(row.opening_return_nok_minor),
   }
+}
+
+// ---------------------------------------------------------------------------
+// Source picker + per-pull detail lines (P53 §7/§8/§16)
+// ---------------------------------------------------------------------------
+
+/**
+ * One openable sealed source lot, with its ALREADY-DERIVED preview components from
+ * `list_opening_sources` — the client never re-implements the consumption arithmetic. The two
+ * cost components are null together exactly when the lot's basis is unknown (never zero).
+ */
+export interface OpeningSourceLot {
+  lotId: string
+  holdingId: string
+  productId: string
+  productName: string
+  productType: string | null
+  imageUrl: string | null
+  acquiredOn: string
+  quantityAvailable: number
+  costKnown: boolean
+  /** unit_cost_basis_nok + floor(Σ adjustments / quantity) — null when unknown. */
+  effectiveUnitBasisNokMinor: bigint | null
+  /** lot residual + adjustment remainder — added once when the opening exhausts the lot. */
+  exhaustionResidualNokMinor: bigint | null
+}
+
+interface OpeningSourceRow {
+  lot_id: string
+  holding_id: string
+  sealed_product_id: string
+  product_name: string
+  product_type: string | null
+  image_url: string | null
+  acquired_on: string
+  quantity_available: number
+  cost_known: boolean
+  effective_unit_basis_nok_minor: string | null
+  exhaustion_residual_nok_minor: string | null
+}
+
+/** The bounded source-picker read (P53 §8): owner's live sealed lots with remaining units.
+ *  `holdingId` scopes to one holding for the Holding-Detail entry point. */
+export async function listOpeningSources(filter?: {
+  holdingId?: string
+}): Promise<OpeningSourceLot[]> {
+  const { data, error } = await supabase
+    .rpc('list_opening_sources', { p_holding_id: filter?.holdingId ?? null })
+    .overrideTypes<OpeningSourceRow[], { merge: false }>()
+  if (error) throw new Error(error.message)
+  return data.map((row) => ({
+    lotId: row.lot_id,
+    holdingId: row.holding_id,
+    productId: row.sealed_product_id,
+    productName: row.product_name,
+    productType: row.product_type,
+    imageUrl: row.image_url,
+    acquiredOn: row.acquired_on,
+    quantityAvailable: row.quantity_available,
+    costKnown: row.cost_known,
+    effectiveUnitBasisNokMinor:
+      row.effective_unit_basis_nok_minor === null
+        ? null
+        : parseMinorUnits(row.effective_unit_basis_nok_minor),
+    exhaustionResidualNokMinor:
+      row.exhaustion_residual_nok_minor === null
+        ? null
+        : parseMinorUnits(row.exhaustion_residual_nok_minor),
+  }))
+}
+
+/** One pulled-card line of an opening, for the Detail page's tracked-pulls list. */
+export interface OpeningPullLineRow {
+  lotId: string
+  displayName: string
+  subtitle: string | null
+  imageUrl: string | null
+  condition: string | null
+  quantity: number
+  quantityRemaining: number
+}
+
+interface OpeningPullWireRow {
+  id: string
+  quantity: number
+  quantity_remaining: number
+  acquired_on: string
+  holdings: {
+    condition: string | null
+    card_variants: {
+      cards: { name: string; local_id: string | null; card_sets: { name: string } | null } | null
+    } | null
+    manual_card_definitions: { name: string; set_name: string | null } | null
+    sealed_products: { name: string } | null
+  } | null
+}
+
+/**
+ * The tracked pulls of one opening (live lots only), identity-resolved through the same joins
+ * the rest of the app uses. No cost/value figures exist here by design: pulls carry no
+ * individual basis, and aggregate value/proceeds come from `get_opening`.
+ */
+export async function listOpeningPulls(openingId: string): Promise<OpeningPullLineRow[]> {
+  const { data, error } = await supabase
+    .from('acquisition_lots')
+    .select(
+      'id, quantity, quantity_remaining, acquired_on, ' +
+        'holdings!inner(condition, ' +
+        'card_variants(cards(name, local_id, card_sets(name))), ' +
+        'manual_card_definitions(name, set_name), ' +
+        'sealed_products(name))',
+    )
+    .eq('opening_id', openingId)
+    .is('voided_at', null)
+    .order('acquired_on', { ascending: true })
+    .order('id', { ascending: true })
+    .overrideTypes<OpeningPullWireRow[], { merge: false }>()
+  if (error) throw new Error(error.message)
+  return data.map((row) => {
+    const holding = row.holdings
+    const variantCard = holding?.card_variants?.cards ?? null
+    const manual = holding?.manual_card_definitions ?? null
+    const displayName =
+      variantCard?.name ?? manual?.name ?? holding?.sealed_products?.name ?? 'Pulled card'
+    const setName = variantCard?.card_sets?.name ?? manual?.set_name ?? null
+    const subtitle = [setName, variantCard?.local_id ?? null].filter(Boolean).join(' · ') || null
+    return {
+      lotId: row.id,
+      displayName,
+      subtitle,
+      imageUrl: null,
+      condition: holding?.condition ?? null,
+      quantity: row.quantity,
+      quantityRemaining: row.quantity_remaining,
+    }
+  })
 }

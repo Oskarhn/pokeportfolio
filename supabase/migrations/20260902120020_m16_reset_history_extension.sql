@@ -8,9 +8,13 @@
 --                                one row — the prompt's explicit rule). Legacy unlinked
 --                                origin='opening' lots (D-038) keep appearing as acquisitions,
 --                                because no opening event exists for them.
---   get_recent_activity(...)   — same exclusion, so Home does not report N per-pull rows beside
---                                the opening either. No new activity kind ships here; Home's
---                                presentation stays untouched (P51/P53 own any richer surface).
+--   get_recent_activity(...)   — opening-linked pull lots stop appearing individually AND each
+--                                opening gains exactly ONE activity row of its own
+--                                (activity_type='opening', primary_id = openings.id,
+--                                occurred_on = opened_on, amount = the frozen cost or NULL).
+--                                One act, one row — Home reports the opening, never N phantom
+--                                additions beside nothing (P53 §18). The amount is analytical
+--                                opening scope (F8): no Home total sums it.
 --
 -- No other Purchase/Sale/Added semantics change by one character.
 
@@ -302,9 +306,10 @@ grant execute on function public.list_history_events(text, boolean, int, timesta
   to authenticated;
 
 -- ── 3. get_recent_activity ───────────────────────────────────────────────────────────────────
--- Same signature and shape; only the acquisition arm changes: opening-linked pull lots stop
--- appearing as individual Home activity rows (they would double-report one opening act beside
--- nothing else — Home has no opening card yet, and inventing one here is P51/P53 UI scope).
+-- Same signature and shape; two changes: opening-linked pull lots stop appearing as individual
+-- Home activity rows, and every opening contributes exactly ONE row of its own
+-- (activity_type='opening'). The opening's amount is its frozen analytical cost or NULL for an
+-- unknown-cost opening — displayed by Home as the row figure only, never summed into any total.
 create or replace function public.get_recent_activity(p_limit int default 8)
 returns table (
   activity_type text,
@@ -341,6 +346,12 @@ as $$
     where l.user_id = auth.uid() and l.voided_at is null
       and l.origin <> 'purchase'
       and l.opening_id is null
+    union all
+    -- M16 (P53 §18): one Opening activity row per opening — never N per-pull rows.
+    select 'opening'::text, o.id, o.source_lot_id, o.opened_on, o.cost_nok_minor::text
+    from public.openings o
+    where o.user_id = auth.uid()
+      and o.voided_at is null
   ) as acts(activity_type, primary_id, secondary_id, occurred_on, amount_nok_minor)
   order by acts.occurred_on desc
   limit least(greatest(coalesce(p_limit, 8), 1), 20);
@@ -348,8 +359,8 @@ $$;
 
 comment on function public.get_recent_activity(int) is
   'M12 optional recent-activity feed: a bounded union over canonical purchases, sales, active '
-  'manual valuations and non-purchase acquisitions. M16: opening-linked pull lots no longer '
-  'appear individually (one opening act must not read as N additions).';
+  'manual valuations, non-purchase acquisitions and openings (one row per opening; '
+  'opening-linked pulls excluded — one act reports once).';
 
 grant execute on function public.get_recent_activity(int) to authenticated;
 revoke execute on function public.get_recent_activity(int) from public;

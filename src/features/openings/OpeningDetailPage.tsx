@@ -10,6 +10,7 @@ import {
   PURCHASE_COST_NOT_RECORDED,
   RESULT_UNAVAILABLE_COPY,
   VOID_EXPLANATION,
+  VOID_PURCHASE_NOTE,
   VOID_TITLE,
   formatNok,
   resultCopy,
@@ -230,6 +231,7 @@ export function OpeningDetailPage() {
       >
         <div className="space-y-3">
           <p className="text-sm text-slate-300">{VOID_EXPLANATION}</p>
+          <p className="text-xs text-slate-500">{VOID_PURCHASE_NOTE}</p>
           <p className="text-xs text-slate-500">
             This corrects your records. It is not a sale — no proceeds and no result are created,
             and nothing is deleted.

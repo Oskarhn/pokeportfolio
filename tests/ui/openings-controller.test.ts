@@ -1,121 +1,193 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import {
-  getOpeningController,
-  OpeningsNotIntegratedError,
-} from '../../src/features/openings/controller'
 import type {
+  BoughtAndOpenedInput,
   CreateOpeningInput,
   OpeningController,
-  OpeningDetail,
-  OpeningSource,
-  VoidOpeningOutcome,
 } from '../../src/features/openings/contract'
 
 /**
- * The P51↔P53 seam (prompt §5): the UI's controller boundary is replaceable, the shipped default
- * fails HONESTLY until integration, and a blocking void answer travels verbatim to the caller
- * with no client-side workaround logic anywhere.
+ * The integrated controller contract (I1, P53 §16/§28/§29). The real adapter in
+ * src/features/openings/controller.ts is exercised against a MOCKED `src/data/opening` module —
+ * proving the mapping layer (typed optionality, error mapping, blocked-void outcomes) without a
+ * live backend. The DB-gated suites (tests/db + tests/m16-independent) prove the backend itself.
  */
 
-const SOURCE: OpeningSource = {
-  lotId: 'lot-1',
-  holdingId: 'holding-1',
-  productId: 'product-1',
-  productName: 'Booster box',
-  quantityAvailable: 10,
-  acquiredOn: '2026-07-01',
-  costKnown: true,
-  unitCostNokMinor: 119900n,
+const createOpeningRecord = vi.fn<(...args: unknown[]) => Promise<unknown>>()
+const createProvisionalRecord = vi.fn<(...args: unknown[]) => Promise<unknown>>()
+const fetchOpening = vi.fn<(...args: unknown[]) => Promise<unknown>>()
+const listOpeningPulls = vi.fn<(...args: unknown[]) => Promise<unknown>>()
+const listOpeningSources = vi.fn<(...args: unknown[]) => Promise<unknown>>()
+const voidOpeningRecord = vi.fn<(...args: unknown[]) => Promise<void>>()
+
+vi.mock('../../src/data/opening', () => ({
+  createOpening: (...args: unknown[]) => createOpeningRecord(...args),
+  createProvisionalOpening: (...args: unknown[]) => createProvisionalRecord(...args),
+  getOpening: (...args: unknown[]) => fetchOpening(...args),
+  listOpeningPulls: (...args: unknown[]) => listOpeningPulls(...args),
+  listOpeningSources: (...args: unknown[]) => listOpeningSources(...args),
+  voidOpening: (...args: unknown[]) => voidOpeningRecord(...args),
+}))
+
+const { getOpeningController } = await import('../../src/features/openings/controller')
+
+function sourceRow() {
+  return {
+    lotId: 'lot-1',
+    holdingId: 'holding-1',
+    productId: 'product-1',
+    productName: 'Prismatic ETB',
+    productType: 'elite_trainer_box',
+    imageUrl: null,
+    acquiredOn: '2026-07-01',
+    quantityAvailable: 3,
+    costKnown: true,
+    // The canonical 29995-øre lot shape: unit basis 9998 + exhaustion residual 1.
+    effectiveUnitBasisNokMinor: 9998n,
+    exhaustionResidualNokMinor: 1n,
+  }
 }
 
-const INPUT: CreateOpeningInput = {
-  idempotencyKey: 'key',
-  sourceLotId: 'lot-1',
-  quantity: 2,
-  openedOn: '2026-08-01',
-  pulls: [],
-  trackingCompleteness: 'all_cards',
-}
-
-describe('shipped controller default', () => {
-  it('every action refuses honestly — no demo data, no fake success', async () => {
-    const controller = getOpeningController()
-    await expect(controller.getEligibleSealedSources()).rejects.toBeInstanceOf(
-      OpeningsNotIntegratedError,
-    )
-    await expect(controller.createOpening(INPUT)).rejects.toThrow(/not connected/)
-    await expect(controller.getOpening('opening-1')).rejects.toThrow(/not connected/)
-    await expect(controller.voidOpening('opening-1')).rejects.toThrow(/not connected/)
-  })
+afterEach(() => {
+  vi.clearAllMocks()
 })
 
-describe('the seam accepts an integration adapter (P53)', () => {
-  it('a backend-backed controller satisfies the contract, including blocked voids', async () => {
-    const DETAIL: OpeningDetail = {
-      openingId: 'opening-9',
-      productName: 'Booster box',
+describe('integrated opening controller (I1)', () => {
+  it('maps list_opening_sources rows into the feature OpeningSource shape verbatim', async () => {
+    listOpeningSources.mockResolvedValue([sourceRow()])
+    const controller: OpeningController = getOpeningController()
+    const sources = await controller.getEligibleSealedSources({ holdingId: 'holding-1' })
+    expect(listOpeningSources).toHaveBeenCalledWith({ holdingId: 'holding-1' })
+    expect(sources).toHaveLength(1)
+    expect(sources[0]?.lotId).toBe('lot-1')
+    expect(sources[0]?.costKnown).toBe(true)
+    expect(sources[0]?.effectiveUnitBasisNokMinor).toBe(9998n)
+    expect(sources[0]?.exhaustionResidualNokMinor).toBe(1n)
+  })
+
+  it('createOpening forwards the idempotency key and pull array to the data layer', async () => {
+    createOpeningRecord.mockResolvedValue({ id: 'opening-1' })
+    const controller = getOpeningController()
+    const input: CreateOpeningInput = {
+      idempotencyKey: 'key-1',
+      sourceLotId: 'lot-1',
+      quantity: 2,
       openedOn: '2026-08-01',
+      pulls: [{ cardVariantId: 'v-1', condition: 'NM', quantity: 1 }],
+      trackingCompleteness: 'all_cards',
+    }
+    await expect(controller.createOpening(input)).resolves.toEqual({ openingId: 'opening-1' })
+    expect(createOpeningRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ idempotencyKey: 'key-1', sourceLotId: 'lot-1', quantity: 2 }),
+    )
+  })
+
+  it('createBoughtAndOpened forwards the exact total paid', async () => {
+    createProvisionalRecord.mockResolvedValue({ id: 'opening-9' })
+    const controller = getOpeningController()
+    const input: BoughtAndOpenedInput = {
+      idempotencyKey: 'key-2',
+      sealedProductId: 'product-1',
+      quantity: 3,
+      totalPaidNokMinor: 29995n,
+      purchasedOn: '2026-08-01',
+      pulls: [],
+      trackingCompleteness: 'all_cards',
+    }
+    await expect(controller.createBoughtAndOpened(input)).resolves.toEqual({
+      openingId: 'opening-9',
+    })
+    expect(createProvisionalRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ totalPaidNokMinor: 29995n }),
+    )
+  })
+
+  it('getOpening composes the detail from get_opening plus its per-pull lines', async () => {
+    fetchOpening.mockResolvedValue({
+      id: 'opening-1',
+      openedOn: '2026-08-01',
+      sealedProductId: 'product-1',
+      sealedProductName: 'Prismatic ETB',
+      sourceLotId: 'lot-1',
       quantityOpened: 2,
-      costKnown: true,
-      costNokMinor: 239800n,
+      costSource: 'from_lot',
+      costNokMinor: 19996n,
       trackingCompleteness: 'selected_pulls',
-      bulkRemainderEstimateMinor: null,
+      bulkRemainderEstimateNokMinor: null,
       bulkRemainderCount: null,
-      pulls: [
-        {
-          lotId: 'pull-lot-1',
-          displayName: 'Charizard ex',
-          subtitle: null,
-          quantity: 1,
-          currentValueNokMinor: null,
-          soldProceedsNokMinor: undefined,
-        },
-      ],
-      retainedTrackedValueNokMinor: undefined,
-      soldPullProceedsNokMinor: undefined,
-      resultNokMinor: undefined,
+      provisionalPurchaseId: 'purchase-1',
+      reconciledAt: null,
+      reconciledToPurchaseId: null,
+      notes: null,
       voidedAt: null,
-    }
-    const BLOCKED: VoidOpeningOutcome = {
-      blocked: true,
-      blockedReason: 'A pull of this opening was sold on 12 Aug 2026 — void that sale first.',
-    }
-
-    // The exact shape the P53 integration will provide over Supabase RPCs.
-    const wiredController: OpeningController = {
-      getEligibleSealedSources() {
-        return Promise.resolve([SOURCE])
+      createdAt: '2026-08-01T10:00:00Z',
+      retainedTrackedValueNokMinor: 50000n,
+      pricedPullLotCount: 1,
+      unpricedPullLotCount: 0,
+      soldPullLotCount: 0,
+      netProceedsFromSoldPullsNokMinor: 0n,
+      openingReturnNokMinor: 30004n,
+    })
+    listOpeningPulls.mockResolvedValue([
+      {
+        lotId: 'pull-lot-1',
+        displayName: 'Charizard ex',
+        subtitle: 'Obsidian Flames · 125',
+        imageUrl: null,
+        condition: 'NM',
+        quantity: 1,
+        quantityRemaining: 1,
       },
-      createOpening(input) {
-        expect(input.idempotencyKey).toBe('key')
-        return Promise.resolve({ openingId: 'opening-9' })
-      },
-      getOpening() {
-        return Promise.resolve(DETAIL)
-      },
-      voidOpening() {
-        return Promise.resolve(BLOCKED)
-      },
-    }
+    ])
+    const controller = getOpeningController()
+    const detail = await controller.getOpening('opening-1')
+    // Provisional provenance surfaces as the typed marker; reconciled would suppress it.
+    expect(detail.costProvisional).toBe(true)
+    expect(detail.costKnown).toBe(true)
+    expect(detail.costNokMinor).toBe(19996n)
+    expect(detail.resultNokMinor).toBe(30004n)
+    expect(detail.pulls).toEqual([
+      expect.objectContaining({ lotId: 'pull-lot-1', displayName: 'Charizard ex' }),
+    ])
+    expect(listOpeningPulls).toHaveBeenCalledWith('opening-1')
+  })
 
-    await expect(
-      wiredController.getEligibleSealedSources({ holdingId: 'holding-1' }),
-    ).resolves.toHaveLength(1)
-    const created = await wiredController.createOpening(INPUT)
-    expect(created.openingId).toBe('opening-9')
-
-    const detail = await wiredController.getOpening(created.openingId)
-    // Typed optional states survive the seam: `undefined` (adapter lacks it) is distinct from
-    // `null` (genuinely unavailable) — prompt §16.
-    expect(detail.retainedTrackedValueNokMinor).toBeUndefined()
-    expect(detail.pulls[0]?.currentValueNokMinor).toBeNull()
-
-    // A blocked correction surfaces the backend's reason verbatim; the client adds nothing.
-    const outcome = await wiredController.voidOpening(created.openingId)
+  it('a refused void becomes { blocked: true } with the concise reason — not a thrown error', async () => {
+    voidOpeningRecord.mockRejectedValue(
+      new Error(
+        'opening x cannot be voided: a pulled card already has a downstream disposal (sale y) — void that transaction first',
+      ),
+    )
+    const controller = getOpeningController()
+    const outcome = await controller.voidOpening('opening-1')
     expect(outcome.blocked).toBe(true)
-    if (outcome.blocked) {
-      expect(outcome.blockedReason).toMatch(/void that sale first/)
-    }
+    expect(outcome.blockedReason).toMatch(/has been sold/)
+  })
+
+  it('already-voided is surfaced as a blocked outcome too', async () => {
+    voidOpeningRecord.mockRejectedValue(new Error('opening x is already voided'))
+    const controller = getOpeningController()
+    const outcome = await controller.voidOpening('opening-1')
+    expect(outcome).toEqual({
+      blocked: true,
+      blockedReason: 'This opening has already been corrected.',
+    })
+  })
+
+  it('over-opening maps to an honest availability message', async () => {
+    createOpeningRecord.mockRejectedValue(
+      new Error('only 1 of the selected lot remain available, but 2 were requested'),
+    )
+    const controller = getOpeningController()
+    await expect(
+      controller.createOpening({
+        idempotencyKey: 'k',
+        sourceLotId: 'lot-1',
+        quantity: 2,
+        openedOn: '2026-08-01',
+        pulls: [],
+        trackingCompleteness: 'all_cards',
+      }),
+    ).rejects.toThrow(/Not enough unopened units left/)
   })
 })

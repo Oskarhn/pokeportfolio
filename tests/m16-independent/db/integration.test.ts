@@ -24,12 +24,10 @@ import { beforeAll, describe, expect, it } from 'vitest'
 
 import { createSyntheticUser, deleteSyntheticUser, signInAs, type TestClient } from '../../db/setup'
 import {
-  bindAddPullArgs,
   bindOpeningCreateArgs,
   hasSupabaseEnv,
   probeM16Surface,
   requireCreateOpeningRpc,
-  requirePullAddRpc,
   skipUnlessM16,
 } from '../helpers/contract'
 import {
@@ -72,11 +70,13 @@ describe.skipIf(!hasSupabaseEnv())('M16 integration oracles (history / reset / b
       purchasedOn: today,
     })
     const rpc = requireCreateOpeningRpc(surface)
+    // Pulls ride creation (folded, execution-bound — P53 §4/§15).
     const { data, error } = await client.rpc(
       rpc.name,
       bindOpeningCreateArgs(rpc, {
         openedOn: today,
         consumptions: [{ lotId: purchase.lotId, quantity: 1 }],
+        pulls: [{ cardVariantId: seedCatalog.charizardVariantId, quantity: 3 }],
       }),
     )
     if (error || !data) throw new Error(`seed opening failed: ${error?.message}`)
@@ -84,16 +84,11 @@ describe.skipIf(!hasSupabaseEnv())('M16 integration oracles (history / reset / b
     const openingId = String(row?.['id'] ?? '')
     if (!openingId) throw new Error('[M16 CONTRACT] seed opening produced no id')
 
-    const pullRpc = requirePullAddRpc(surface)
-    const { error: pullError } = await client.rpc(
-      pullRpc.name,
-      bindAddPullArgs(pullRpc, {
-        openingId,
-        quantity: 3,
-        cardVariantId: seedCatalog.charizardVariantId,
-      }),
-    )
-    expect(pullError, `seed pull failed: ${pullError?.message}`).toBeNull()
+    const seededPulls = await pullLotsForOpening(client, openingId)
+    expect(
+      seededPulls.length,
+      'the folded pull surface must have produced pull lots at creation',
+    ).toBeGreaterThanOrEqual(1)
 
     return {
       userId: user.id,

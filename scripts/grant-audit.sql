@@ -418,17 +418,20 @@ begin
     ('routine', 'm12_recompute_pending_for_self()', 'authenticated', 'EXECUTE'),
     -- M16: the opening write/read surface (20260902120010). Writers are SECURITY DEFINER; the
     -- openings_check_owner trigger function and the extended acquisition/lot check-owner bodies
-    -- are trigger-only and deliberately absent here.
+    -- are trigger-only and deliberately absent here. Signatures carry P53's idempotency-key
+    -- parameter and the total-paid provisional contract (D-090); list_opening_sources is the
+    -- INVOKER source-picker read.
     ('routine',
-     'create_opening(uuid, integer, date, opening_tracking, jsonb, bigint, integer, text, uuid)',
+     'create_opening(uuid, integer, date, opening_tracking, jsonb, bigint, integer, text, uuid, uuid)',
      'authenticated', 'EXECUTE'),
     ('routine',
      'create_opening_from_provisional(uuid, integer, bigint, date, date, opening_tracking, ' ||
-     'jsonb, bigint, integer, text)',
+     'jsonb, bigint, integer, text, uuid)',
      'authenticated', 'EXECUTE'),
     ('routine', 'void_opening(uuid, text)', 'authenticated', 'EXECUTE'),
     ('routine', 'reconcile_opening_cost(uuid, uuid)', 'authenticated', 'EXECUTE'),
-    ('routine', 'get_opening(uuid)', 'authenticated', 'EXECUTE')
+    ('routine', 'get_opening(uuid)', 'authenticated', 'EXECUTE'),
+    ('routine', 'list_opening_sources(uuid)', 'authenticated', 'EXECUTE')
   ),
 
   -- M7: the expected PUBLIC-EXECUTE surface for every routine in `public` is empty. No project

@@ -24,12 +24,10 @@ import {
   type TestClient,
 } from '../../db/setup'
 import {
-  bindAddPullArgs,
   bindOpeningCreateArgs,
   drainRecomputeQueue,
   hasSupabaseEnv,
   requireCreateOpeningRpc,
-  requirePullAddRpc,
   requireVoidOpeningRpc,
   skipUnlessM16,
 } from '../helpers/contract'
@@ -88,10 +86,16 @@ describe.skipIf(!hasSupabaseEnv())('M16 lifecycle oracle', () => {
     ctx: { skip(note?: string): void },
     consumptions: readonly { lotId: string; quantity: number }[],
     openedOn = today,
+    pulls: readonly {
+      cardVariantId?: string
+      manualCardId?: string
+      quantity: number
+      condition?: string
+    }[] = [],
   ): Promise<{ ok: true; openingId: string } | { ok: false; error: string }> {
     const surface = await skipUnlessM16(ctx, service)
     const rpc = requireCreateOpeningRpc(surface)
-    const args = bindOpeningCreateArgs(rpc, { openedOn, consumptions })
+    const args = bindOpeningCreateArgs(rpc, { openedOn, consumptions, pulls })
     const { data, error } = await clientA.rpc(rpc.name, args)
     if (error) return { ok: false, error: error.message }
     const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | undefined
@@ -202,20 +206,11 @@ describe.skipIf(!hasSupabaseEnv())('M16 lifecycle oracle', () => {
   it('§12 clean void restores source quantity, voids pulls and disposals; ledger untouched', async (ctx) => {
     const surface = await skipUnlessM16(ctx, service)
     const seeded = await seedSealedLot('void-clean', 5, 2000)
-    const created = await callCreateOpening(ctx, [{ lotId: seeded.lotId, quantity: 2 }])
+    // Pulls ride creation (folded, execution-bound — P53 §4/§15).
+    const created = await callCreateOpening(ctx, [{ lotId: seeded.lotId, quantity: 2 }], today, [
+      { cardVariantId: seedCatalog.charizardVariantId, quantity: 1 },
+    ])
     if (!created.ok) throw new Error(created.error)
-    const pullRpc = surface.openingRpcs.find((r) => r.verbs.includes('pull'))
-    if (pullRpc) {
-      const { error: pullError } = await clientA.rpc(
-        pullRpc.name,
-        bindAddPullArgs(pullRpc, {
-          openingId: created.openingId,
-          quantity: 1,
-          cardVariantId: seedCatalog.charizardVariantId,
-        }),
-      )
-      expect(pullError, `add-pull failed: ${pullError?.message}`).toBeNull()
-    }
     const spendBeforeVoid = await spendSummary(clientA)
 
     const voidRpc = requireVoidOpeningRpc(surface)
@@ -250,19 +245,10 @@ describe.skipIf(!hasSupabaseEnv())('M16 lifecycle oracle', () => {
   it('§12 void with a sold pull fails safely: no orphan sale_line, no resurrection', async (ctx) => {
     const surface = await skipUnlessM16(ctx, service)
     const seeded = await seedSealedLot('void-sold', 3, 3000)
-    const created = await callCreateOpening(ctx, [{ lotId: seeded.lotId, quantity: 1 }])
+    const created = await callCreateOpening(ctx, [{ lotId: seeded.lotId, quantity: 1 }], today, [
+      { cardVariantId: seedCatalog.charizardVariantId, quantity: 1 },
+    ])
     if (!created.ok) throw new Error(created.error)
-    const pullRpc = requirePullAddRpc(surface)
-
-    const { error: pullError } = await clientA.rpc(
-      pullRpc.name,
-      bindAddPullArgs(pullRpc, {
-        openingId: created.openingId,
-        quantity: 1,
-        cardVariantId: seedCatalog.charizardVariantId,
-      }),
-    )
-    expect(pullError).toBeNull()
     const pulls = await pullLotsForOpening(clientA, created.openingId)
     const pullLot = pulls[0]
     if (!pullLot) throw new Error('pull lot missing')

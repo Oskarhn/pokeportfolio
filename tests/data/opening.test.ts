@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  computeOpeningCostPreview,
   computeOpeningReturn,
   isTrackingIncomplete,
   openingRoiPercent,
@@ -100,5 +101,61 @@ describe('isTrackingIncomplete — §5.3 completeness marker rule', () => {
     expect(isTrackingIncomplete('all_cards')).toBe(false)
     expect(isTrackingIncomplete('selected_pulls')).toBe(true)
     expect(isTrackingIncomplete('unknown')).toBe(true)
+  })
+})
+
+describe('computeOpeningCostPreview — the exact preview rule (P53 §7, I4/I5)', () => {
+  const awkwardLot = {
+    // The canonical §4.3 lot: attributable basis 29995 øre over 3 units → unit floor 9998,
+    // residual +1. The server derives these; the domain only composes the preview.
+    quantityAvailable: 3,
+    effectiveUnitBasisNokMinor: 9998n,
+    exhaustionResidualNokMinor: 1n,
+  }
+
+  it('opening 2 of 3 previews 19996 — pure units, no residual before exhaustion', () => {
+    expect(computeOpeningCostPreview(awkwardLot, 2)).toBe(19996n)
+  })
+
+  it('the inverse split (1 then 2) also reconciles: 9998 then 19997 — Σ exactly 29995', () => {
+    expect(computeOpeningCostPreview(awkwardLot, 1)).toBe(9998n)
+    // After the first opening, 2 units remain on the same lot; the now-exhausting opening of 2
+    // adds the residual once.
+    expect(computeOpeningCostPreview({ ...awkwardLot, quantityAvailable: 2 }, 2)).toBe(19997n)
+    expect(
+      (computeOpeningCostPreview(awkwardLot, 1) ?? 0n) +
+        (computeOpeningCostPreview({ ...awkwardLot, quantityAvailable: 2 }, 2) ?? 0n),
+    ).toBe(29995n)
+  })
+
+  it('preview == recorded cost: the exhausting preview reproduces the whole-lot total', () => {
+    expect(computeOpeningCostPreview(awkwardLot, 3)).toBe(29995n)
+  })
+
+  it('an unknown-cost source previews null — never a computed zero (I6 companion)', () => {
+    expect(
+      computeOpeningCostPreview(
+        {
+          quantityAvailable: 3,
+          effectiveUnitBasisNokMinor: null,
+          exhaustionResidualNokMinor: null,
+        },
+        2,
+      ),
+    ).toBeNull()
+  })
+
+  it('a genuine known-zero lot previews exactly 0 — zero is a legitimate known fact (P53 §9)', () => {
+    expect(
+      computeOpeningCostPreview(
+        { quantityAvailable: 2, effectiveUnitBasisNokMinor: 0n, exhaustionResidualNokMinor: 0n },
+        1,
+      ),
+    ).toBe(0n)
+  })
+
+  it('refuses non-positive or fractional quantities as programming errors', () => {
+    expect(() => computeOpeningCostPreview(awkwardLot, 0)).toThrow()
+    expect(() => computeOpeningCostPreview(awkwardLot, 1.5)).toThrow()
   })
 })

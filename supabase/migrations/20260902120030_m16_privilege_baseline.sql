@@ -1,12 +1,13 @@
 -- M16 restates the complete privilege baseline (SECURITY.md §5.9). This milestone adds ONE table
 -- (`openings`, SELECT-only for browsers — every write happens inside the SECURITY DEFINER RPCs,
--- the same posture as the M10 sale ledger) and FIVE browser-reachable functions:
---   create_opening(uuid, int, date, opening_tracking, jsonb, bigint, int, text, uuid)
+-- the same posture as the M10 sale ledger) and SIX browser-reachable functions:
+--   create_opening(uuid, int, date, opening_tracking, jsonb, bigint, int, text, uuid, uuid)
 --   create_opening_from_provisional(uuid, int, bigint, date, date, opening_tracking, jsonb,
---                                   bigint, int, text)
+--                                   bigint, int, text, uuid)
 --   void_opening(uuid, text)
 --   reconcile_opening_cost(uuid, uuid)
 --   get_opening(uuid)
+--   list_opening_sources(uuid)
 -- Everything else below is identical to `20260901120020_p43_privilege_baseline.sql`; only the
 -- M16 additions are noted inline.
 -- CI selects the lexicographically-latest `*_privilege_baseline.sql` automatically.
@@ -119,17 +120,20 @@ grant execute on function public.get_recent_activity(int) to authenticated, serv
 grant execute on function public.m12_recompute_pending_for_self() to authenticated;
 
 -- M16: the opening write/read surface (20260902120010). The three writers are SECURITY DEFINER
--- (frozen financial figures must be unreachable by direct writes — the D-060 standard); the read
--- is SECURITY INVOKER over ordinary owner-visible rows.
+-- (frozen financial figures must be unreachable by direct writes — the D-060 standard); the reads
+-- are SECURITY INVOKER over ordinary owner-visible rows. Signatures include P53's idempotency
+-- key parameter and the total-paid provisional contract (D-090); list_opening_sources is the
+-- bounded source-picker read (P53 §7).
 grant execute on function public.create_opening(
-  uuid, int, date, public.opening_tracking, jsonb, bigint, int, text, uuid
+  uuid, int, date, public.opening_tracking, jsonb, bigint, int, text, uuid, uuid
 ) to authenticated;
 grant execute on function public.create_opening_from_provisional(
-  uuid, int, bigint, date, date, public.opening_tracking, jsonb, bigint, int, text
+  uuid, int, bigint, date, date, public.opening_tracking, jsonb, bigint, int, text, uuid
 ) to authenticated;
 grant execute on function public.void_opening(uuid, text) to authenticated;
 grant execute on function public.reconcile_opening_cost(uuid, uuid) to authenticated;
 grant execute on function public.get_opening(uuid) to authenticated;
+grant execute on function public.list_opening_sources(uuid) to authenticated;
 
 -- M12 service/internal-only functions get NO browser grant beyond exactly what is stated above:
 --   rebuild_portfolio_snapshots / drain_portfolio_recompute_queue / enqueue_portfolio_daily_

@@ -946,6 +946,7 @@ export type Database = {
           cost_nok_minor: number | null
           cost_source: Database["public"]["Enums"]["opening_cost_source"]
           created_at: string
+          idempotency_key: string
           notes: string | null
           opened_on: string
           provisional_purchase_id: string | null
@@ -964,6 +965,7 @@ export type Database = {
           cost_nok_minor?: number | null
           cost_source: Database["public"]["Enums"]["opening_cost_source"]
           created_at?: string
+          idempotency_key?: string
           notes?: string | null
           opened_on: string
           provisional_purchase_id?: string | null
@@ -982,6 +984,7 @@ export type Database = {
           cost_nok_minor?: number | null
           cost_source?: Database["public"]["Enums"]["opening_cost_source"]
           created_at?: string
+          idempotency_key?: string
           notes?: string | null
           opened_on?: string
           provisional_purchase_id?: string | null
@@ -1910,6 +1913,7 @@ export type Database = {
         Args: {
           p_bulk_remainder_count?: number | null
           p_bulk_remainder_estimate_nok_minor?: number | null
+          p_idempotency_key?: string | null
           p_notes?: string | null
           p_opened_on?: string
           p_provisional_purchase_id?: string | null
@@ -1947,14 +1951,15 @@ export type Database = {
         Args: {
           p_bulk_remainder_count?: number | null
           p_bulk_remainder_estimate_nok_minor?: number | null
+          p_idempotency_key?: string | null
           p_notes?: string | null
           p_opened_on?: string | null
           p_pulls?: Json
           p_purchased_on: string
           p_quantity: number
           p_sealed_product_id: string
+          p_total_paid_minor: number
           p_tracking_completeness?: Database["public"]["Enums"]["opening_tracking"]
-          p_unit_price_minor: number
         }
         Returns: {
           bulk_remainder_count: number | null
@@ -2246,6 +2251,24 @@ export type Database = {
           status: string
           subtitle: string
           title: string
+        }[]
+      }
+      list_opening_sources: {
+        Args: {
+          p_holding_id?: string | null
+        }
+        Returns: {
+          acquired_on: string
+          cost_known: boolean
+          effective_unit_basis_nok_minor: string | null
+          exhaustion_residual_nok_minor: string | null
+          holding_id: string
+          image_url: string | null
+          lot_id: string
+          product_name: string
+          product_type: string | null
+          quantity_available: number
+          sealed_product_id: string
         }[]
       }
       list_portfolio: {

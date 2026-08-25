@@ -83,7 +83,7 @@ describe('E10 — anon is denied everything', () => {
     const { error: provError } = await anon.rpc('create_opening_from_provisional', {
       p_sealed_product_id: seedCatalog.sealedProductId,
       p_quantity: 1,
-      p_unit_price_minor: 100,
+      p_total_paid_minor: 100,
       p_purchased_on: today,
     })
     expect(provError).not.toBeNull()
@@ -172,7 +172,7 @@ describe('E9 — cross-user attacks fail without an existence oracle', () => {
     const { error: foreignProduct } = await clientA.rpc('create_opening_from_provisional', {
       p_sealed_product_id: privateProduct!.id,
       p_quantity: 1,
-      p_unit_price_minor: 100,
+      p_total_paid_minor: 100,
       p_purchased_on: today,
     })
     expect(foreignProduct).not.toBeNull()
@@ -181,7 +181,7 @@ describe('E9 — cross-user attacks fail without an existence oracle', () => {
     await clientA.rpc('create_opening_from_provisional', {
       p_sealed_product_id: seedCatalog.sealedProductId,
       p_quantity: 1,
-      p_unit_price_minor: 1000,
+      p_total_paid_minor: 1000,
       p_purchased_on: today,
     })
 

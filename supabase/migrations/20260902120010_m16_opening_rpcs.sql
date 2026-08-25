@@ -1,20 +1,38 @@
 -- M16: Openings V1 — the transactional write surface (FINANCIAL_MODEL.md §5, prompt §13/§18/§20).
 --
 --   create_opening(...)                        one atomic opening: opening row + 'opened' disposal
---                                              + pulled-card lots, in one transaction.
+--                                              + pulled-card lots, in one transaction. Server-side
+--                                              idempotent on (owner, p_idempotency_key): a retried
+--                                              request returns the SAME committed opening; reuse
+--                                              of a key for materially different arguments is a
+--                                              named error (P53 §5/§6).
 --   create_opening_from_provisional(...)       the §5.5 provisional path: creates a REAL purchase
 --                                              (origin='provisional_opening') + its sealed lot,
 --                                              then consumes it through create_opening in the
---                                              SAME transaction. No opening-local spend number
---                                              exists anywhere; GPO/CS count the money once.
+--                                              SAME transaction. Takes the receipt TOTAL PAID
+--                                              (largest-remainder split into integer unit value
+--                                              + lot residual — no floats, no lost øre, D-090).
+--                                              The idempotency key is checked BEFORE the purchase
+--                                              row is written, so a retry after a committed-but-
+--                                              unanswered call can never double-spend (P53 §5).
 --   void_opening(...)                          safe lifecycle: restores sealed quantity via D1,
---                                              voids pull lots, voids the provisional purchase;
---                                              refused while any pull has a downstream disposal.
+--                                              voids pull lots; refused while any pull has a
+--                                              downstream disposal. VOID OPENING MEANS "THE
+--                                              OPENING DID NOT HAPPEN": the source purchase —
+--                                              including a provisional_opening one — STAYS
+--                                              ACTIVE, because the purchase is a separate
+--                                              economic fact (P53 §10 policy; correct it via
+--                                              the ordinary purchase-correction surface).
 --   reconcile_opening_cost(...)                links a provisionally-costed opening to the real
 --                                              purchase's lot; voids the provisional purchase.
 --                                              Provenance on the row (no audit_events — prompt §4B).
 --   get_opening(...)                           bounded Opening Detail read incl. the §5.3 result
 --                                              components, money as text.
+--   list_opening_sources(...)                  bounded SECURITY INVOKER read of openable sealed
+--                                              lots with their ALREADY-DERIVED preview components
+--                                              (effective unit basis + exhaustion residual), so
+--                                              no client ever re-implements the consumption
+--                                              arithmetic (P53 §7).
 --
 -- ── Why SECURITY DEFINER ──────────────────────────────────────────────────────────────────────
 -- Same standard as create_sale/update_sale/void_sale (D-060): these functions author frozen
@@ -62,6 +80,9 @@ create function public.create_opening(
   p_bulk_remainder_estimate_nok_minor bigint default null,
   p_bulk_remainder_count int default null,
   p_notes text default null,
+  -- Client-generated submission identity (P53 §5). Same key + same material request ⇒ the SAME
+  -- committed opening comes back; same key + different material ⇒ named reuse error.
+  p_idempotency_key uuid default null,
   -- Set only by create_opening_from_provisional (validated there AND re-validated here):
   -- the just-created provisional purchase whose lot is exactly p_source_lot_id.
   p_provisional_purchase_id uuid default null
@@ -74,6 +95,7 @@ as $$
 declare
   v_user_id uuid := auth.uid();
   v_opening public.openings;
+  v_replay public.openings;
   v_lot record;
   v_adjustments_total_nok bigint;
   v_adj_per_unit bigint;
@@ -105,6 +127,26 @@ begin
   end if;
   if p_tracking_completeness is null then
     raise exception 'p_tracking_completeness is required';
+  end if;
+
+  -- ── Idempotent replay (P53 §5/§6) ──────────────────────────────────────────────────────────
+  -- A committed-but-unanswered request must return the SAME opening on retry, never a second
+  -- one. The key is only honored when the MATERIAL request matches (lot, quantity, business
+  -- date) — the fields a duplicate submission could not legitimately change. Anything else
+  -- reusing the key is refused loudly instead of silently returning an unrelated operation.
+  if p_idempotency_key is not null then
+    select * into v_replay from public.openings
+      where user_id = v_user_id and idempotency_key = p_idempotency_key;
+    if v_replay.id is not null then
+      if v_replay.source_lot_id <> p_source_lot_id
+         or v_replay.quantity_opened <> p_quantity
+         or v_replay.opened_on <> p_opened_on then
+        raise exception
+          'idempotency-key-reuse: key % already belongs to a different opening request',
+          p_idempotency_key;
+      end if;
+      return v_replay;
+    end if;
   end if;
 
   -- Bulk remainder is both-or-neither (the table CHECK is the backstop; this is the readable error).
@@ -172,19 +214,40 @@ begin
     v_basis := null;
   end if;
 
-  insert into public.openings (
-    user_id, opened_on, source_lot_id, sealed_product_id, quantity_opened,
-    cost_source, cost_nok_minor, tracking_completeness,
-    bulk_remainder_estimate_nok_minor, bulk_remainder_count,
-    provisional_purchase_id, notes
-  ) values (
-    v_user_id, p_opened_on, p_source_lot_id, v_lot.sealed_product_id, p_quantity,
-    case when v_basis is null then 'unknown' else 'from_lot' end::public.opening_cost_source,
-    v_basis, p_tracking_completeness,
-    p_bulk_remainder_estimate_nok_minor, p_bulk_remainder_count,
-    p_provisional_purchase_id, p_notes
-  )
-  returning * into v_opening;
+  -- Insert the opening. Two concurrent retries of one request can both pass the replay check
+  -- before either commits; the composite unique index (user_id, idempotency_key) is the
+  -- arbiter — the loser re-reads the winner's row and returns it (still verified against the
+  -- material request), so exactly one opening ever exists for a key.
+  begin
+    insert into public.openings (
+      user_id, opened_on, source_lot_id, sealed_product_id, quantity_opened,
+      cost_source, cost_nok_minor, tracking_completeness,
+      bulk_remainder_estimate_nok_minor, bulk_remainder_count,
+      provisional_purchase_id, notes, idempotency_key
+    ) values (
+      v_user_id, p_opened_on, p_source_lot_id, v_lot.sealed_product_id, p_quantity,
+      case when v_basis is null then 'unknown' else 'from_lot' end::public.opening_cost_source,
+      v_basis, p_tracking_completeness,
+      p_bulk_remainder_estimate_nok_minor, p_bulk_remainder_count,
+      p_provisional_purchase_id, p_notes,
+      coalesce(p_idempotency_key, gen_random_uuid())
+    )
+    returning * into v_opening;
+  exception when unique_violation then
+    -- Without a client key the index cannot be what fired (fresh random uuid) — re-raise.
+    if p_idempotency_key is null then
+      raise;
+    end if;
+    select * into v_replay from public.openings
+      where user_id = v_user_id and idempotency_key = p_idempotency_key;
+    if v_replay.id is null
+       or v_replay.source_lot_id <> p_source_lot_id
+       or v_replay.quantity_opened <> p_quantity
+       or v_replay.opened_on <> p_opened_on then
+      raise;
+    end if;
+    return v_replay;
+  end;
 
   -- The consumption IS a disposal row: D1 decrements quantity_remaining, the M12 invalidation
   -- triggers dirty history from disposed_on, and the frozen share lands on the existing column.
@@ -279,32 +342,41 @@ end;
 $$;
 
 comment on function public.create_opening(
-  uuid, int, date, public.opening_tracking, jsonb, bigint, int, text, uuid
+  uuid, int, date, public.opening_tracking, jsonb, bigint, int, text, uuid, uuid
 ) is
   'Atomic opening write: one opening row consuming 1..N units of ONE sealed lot (frozen exact '
   'basis, residual rule identical to sales), its kind=''opened'' lot_disposal, and the pulled-card '
-  'lots (NULL individual basis by construction). Creates no spend. See FINANCIAL_MODEL.md §5.';
+  'lots (NULL individual basis by construction). Creates no spend. Server-side idempotent on '
+  '(owner, p_idempotency_key) with material-mismatch refusal. See FINANCIAL_MODEL.md §5.';
 
 -- ── 2. create_opening_from_provisional — FINANCIAL_MODEL.md §5.5 / D-021 ─────────────────────
--- The owner opened something never entered as a purchase and states what they paid. The money is
--- REAL: it enters the ledger as an ordinary purchase (origin='provisional_opening', one sealed
--- line), producing an ordinary known-cost lot — which create_opening then consumes through the
--- normal path in the SAME transaction. Every aggregate (GPO/CS/monthly spend/history) reads it
--- with no special case; the opening gets cost_source='from_lot'; openings.provisional_purchase_id
--- marks it for later reconciliation. Unit price × quantity is exact by construction (the same
--- unit-price shape every other acquisition path uses); NOK only — a provisional entry invents no
--- FX precision.
+-- The owner opened something never entered as a purchase and states what they paid — the
+-- RECEIPT TOTAL, not a per-unit price (buy-and-open, P53 §11/§12: nobody computes 299.95/3 in
+-- their head). The money is REAL: it enters the ledger as an ordinary purchase
+-- (origin='provisional_opening', one sealed line), producing an ordinary known-cost lot — which
+-- create_opening then consumes through the normal path in the SAME transaction. Every aggregate
+-- (GPO/CS/monthly spend/history) reads it with no special case; the opening gets
+-- cost_source='from_lot'; openings.provisional_purchase_id marks it for later reconciliation.
+--
+-- Total-paid exactness (P53 §12 / D-090): unit := floor(total / quantity) is the integer
+-- display/storage unit value; the remainder total − unit × quantity (< quantity by construction)
+-- lands on the acquisition lot's existing residual columns. Consumption then reproduces the
+-- entered total EXACTLY whichever way the owner splits openings: partial opens pay pure units,
+-- the one exhausting open adds the residual once. qty 3 × total 29995 → unit 9998: open 2 =
+-- 19996, final 1 = 9999, Σ = 29995 exactly. NOK only — a provisional entry invents no FX
+-- precision.
 create function public.create_opening_from_provisional(
   p_sealed_product_id uuid,
   p_quantity int,
-  p_unit_price_minor bigint,
+  p_total_paid_minor bigint,
   p_purchased_on date,
   p_opened_on date default null,
   p_tracking_completeness public.opening_tracking default 'all_cards',
   p_pulls jsonb default null,
   p_bulk_remainder_estimate_nok_minor bigint default null,
   p_bulk_remainder_count int default null,
-  p_notes text default null
+  p_notes text default null,
+  p_idempotency_key uuid default null
 )
 returns public.openings
 language plpgsql
@@ -319,6 +391,8 @@ declare
   v_holding_id uuid;
   v_lot_id uuid;
   v_total_minor bigint;
+  v_unit_minor bigint;
+  v_residual_minor bigint;
   v_product_name text;
 begin
   if v_user_id is null then
@@ -330,11 +404,41 @@ begin
   if p_quantity is null or p_quantity <= 0 then
     raise exception 'p_quantity must be a positive integer';
   end if;
-  if p_unit_price_minor is null or p_unit_price_minor < 0 then
-    raise exception 'p_unit_price_minor must be a non-negative amount';
+  -- A genuine zero is legitimate (§9): known cost of exactly zero when the basis really was 0.
+  -- NULL never arrives here — absence of payment intent goes through the unknown-cost path.
+  if p_total_paid_minor is null or p_total_paid_minor < 0 then
+    raise exception 'p_total_paid_minor must be a non-negative amount';
   end if;
   if p_purchased_on is null then
     raise exception 'p_purchased_on is required';
+  end if;
+
+  -- ── Idempotent replay BEFORE any ledger write (P53 §5) ─────────────────────────────────────
+  -- Critical ordering: a retry after "purchase created + opening committed + response lost"
+  -- must NOT create a second purchase. The key is therefore resolved here, before the purchase
+  -- insert, and only material-matching replays are honored (same product, quantity, opening
+  -- date). create_opening re-checks downstream and would catch anything racing past this point.
+  if p_idempotency_key is not null then
+    declare
+      v_replay public.openings;
+    begin
+      select o.* into v_replay
+        from public.openings o
+        join public.acquisition_lots al on al.id = o.source_lot_id
+        join public.purchase_lines pl on pl.id = al.purchase_line_id
+       where o.user_id = v_user_id
+         and o.idempotency_key = p_idempotency_key;
+      if v_replay.id is not null then
+        if v_replay.sealed_product_id <> p_sealed_product_id
+           or v_replay.quantity_opened <> p_quantity
+           or v_replay.opened_on <> v_opened_on then
+          raise exception
+            'idempotency-key-reuse: key % already belongs to a different opening request',
+            p_idempotency_key;
+        end if;
+        return v_replay;
+      end if;
+    end;
   end if;
 
   -- Curated-or-own, enforced explicitly (this DEFINER body does not inherit RLS; the M11 bug-5
@@ -346,7 +450,10 @@ begin
     raise exception 'sealed product % not found or not accessible', p_sealed_product_id;
   end if;
 
-  v_total_minor := p_unit_price_minor * p_quantity;
+  v_total_minor := p_total_paid_minor;
+  -- Largest-remainder split (D-090): integer floor unit; remainder < quantity by construction.
+  v_unit_minor := v_total_minor / p_quantity;
+  v_residual_minor := v_total_minor - v_unit_minor * p_quantity;
 
   insert into public.purchases (
     user_id, origin, purchased_on, currency,
@@ -359,6 +466,9 @@ begin
   )
   returning id into v_purchase_id;
 
+  -- line_total carries the EXACT entered total (relaxed largest-remainder CHECK, D-090);
+  -- unit_price is the derived display/storage value; attributable = line_total with zero
+  -- allocations. Σ attributable = the receipt total, øre-exact.
   insert into public.purchase_lines (
     purchase_id, user_id, line_type, spend_class, description,
     sealed_product_id, quantity, unit_price_minor, line_total_minor,
@@ -366,7 +476,7 @@ begin
     attributable_cost_minor, attributable_cost_nok_minor
   ) values (
     v_purchase_id, v_user_id, 'sealed', 'collectible', v_product_name,
-    p_sealed_product_id, p_quantity, p_unit_price_minor, v_total_minor,
+    p_sealed_product_id, p_quantity, v_unit_minor, v_total_minor,
     0, 0, 0,
     v_total_minor, v_total_minor
   )
@@ -393,16 +503,17 @@ begin
     end if;
   end;
 
-  -- The ordinary known-cost lot the opening consumes. Exact: unit × quantity reconstructs the
-  -- attributable total with zero residual, by construction.
+  -- The ordinary known-cost lot the opening consumes. Unit = floored display value; the
+  -- indivisible remainder sits on the lot's own residual columns so the exhaustion rule pays
+  -- it back at most once (FINANCIAL_MODEL §4.3 discipline, unchanged).
   insert into public.acquisition_lots (
     holding_id, user_id, origin, cost_basis_state, purchase_line_id, acquired_on,
     quantity, quantity_remaining, unit_cost_basis_minor, cost_basis_currency,
-    unit_cost_basis_nok_minor, residual_nok_minor, sealed_intent
+    unit_cost_basis_nok_minor, residual_nok_minor, residual_minor, sealed_intent
   ) values (
     v_holding_id, v_user_id, 'purchase', 'known', v_line_id, p_purchased_on,
-    p_quantity, p_quantity, p_unit_price_minor, 'NOK',
-    p_unit_price_minor, 0, 'undecided'
+    p_quantity, p_quantity, v_unit_minor, 'NOK',
+    v_unit_minor, v_residual_minor, v_residual_minor, 'undecided'
   )
   returning id into v_lot_id;
 
@@ -415,24 +526,31 @@ begin
     p_bulk_remainder_estimate_nok_minor => p_bulk_remainder_estimate_nok_minor,
     p_bulk_remainder_count => p_bulk_remainder_count,
     p_notes => p_notes,
-    p_provisional_purchase_id => v_purchase_id
+    p_provisional_purchase_id => v_purchase_id,
+    p_idempotency_key => p_idempotency_key
   );
 end;
 $$;
 
 comment on function public.create_opening_from_provisional(
-  uuid, int, bigint, date, date, public.opening_tracking, jsonb, bigint, int, text
+  uuid, int, bigint, date, date, public.opening_tracking, jsonb, bigint, int, text, uuid
 ) is
   'FINANCIAL_MODEL §5.5 provisional path in one transaction: creates the real '
-  'purchase(origin=provisional_opening) + its known-cost sealed lot, then consumes it through the '
-  'normal create_opening path. Money counted exactly once; reconcilable later without faking spend.';
+  'purchase(origin=provisional_opening) + its known-cost sealed lot from the ENTERED TOTAL '
+  '(largest-remainder unit/residual split, D-090), then consumes it through the normal '
+  'create_opening path. Money counted exactly once; idempotency checked before the purchase '
+  'row exists.';
 
 -- ── 3. void_opening ──────────────────────────────────────────────────────────────────────────
--- Safe lifecycle (prompt §20). One transaction: void the opening, void its consumption disposal
--- (the D1 trigger restores the source lot's quantity_remaining), void every pull lot that is
--- still live, and — for an UNRECONCILED provisional opening — void the provisional purchase so
--- its money leaves the ledger symmetrically to how it entered. A RECONCILED opening's real
--- purchase stays: that money was genuinely spent regardless of the opening's fate.
+-- Safe lifecycle (prompt §20, P53 §10 policy). VOID OPENING MEANS: "THE OPENING DID NOT HAPPEN."
+-- One transaction: void the opening, void its consumption disposal (the D1 trigger restores the
+-- source lot's quantity_remaining), void every pull lot that is still live. The source purchase
+-- — including a provisional_opening one — STAYS ACTIVE in every case: the money that bought the
+-- product was really spent whether or not the opening happened, and restoring live sealed
+-- inventory while simultaneously removing its purchase would create a free sealed lot. If the
+-- PURCHASE itself was recorded wrongly, the owner corrects it through the ordinary
+-- purchase-correction surface (void_purchase / receipt correction) — a separate economic fact,
+-- separately corrected. A RECONCILED opening likewise keeps its real purchase.
 -- Refused outright while any pull lot carries a non-voided downstream disposal (a sale today;
 -- trades/write-offs later) — never orphan a financial fact.
 create function public.void_opening(p_opening_id uuid, p_reason text default null)
@@ -490,22 +608,18 @@ begin
     set voided_at = now()
     where opening_id = v_opening.id and voided_at is null;
 
-  -- Provisional money leaves only when this opening was still standing on it. After
-  -- reconciliation the real purchase owns the cost and is deliberately untouched.
-  if v_opening.provisional_purchase_id is not null and v_opening.reconciled_at is null then
-    update public.purchases
-      set voided_at = now()
-      where id = v_opening.provisional_purchase_id
-        and user_id = v_user_id
-        and voided_at is null;
-  end if;
+  -- P53 §10 policy (deliberate change from the P50 candidate): NO purchase is touched here.
+  -- The provisional purchase stays active so sealed inventory never outlives the money that
+  -- paid for it; reconciliation later repoints cost to the real receipt and voids the
+  -- provisional purchase as part of THAT operation.
 end;
 $$;
 
 comment on function public.void_opening(uuid, text) is
   'Voids an opening atomically: restores the sealed lot (D1), corrects the pull lots through the '
-  'void lifecycle, voids an unreconciled provisional purchase. Blocked while any pull has been '
-  'sold or otherwise disposed downstream. Already-voided is a named error.';
+  'void lifecycle. The source purchase — provisional or real — deliberately STAYS ACTIVE: '
+  '"the opening did not happen" does not mean "the purchase did not happen". Blocked while any '
+  'pull has been sold or otherwise disposed downstream. Already-voided is a named error.';
 
 -- ── 4. reconcile_opening_cost ────────────────────────────────────────────────────────────────
 -- FINANCIAL_MODEL.md §5.5 / prompt §18-19. Links a provisionally-costed opening to the real
@@ -742,23 +856,101 @@ comment on function public.get_opening(uuid) is
   'proceeds, bulk estimate, minus the frozen opening cost. NULL cost renders NULL everywhere; '
   'never summed with TTEP (F8).';
 
+-- ── 5b. list_opening_sources — the bounded source-picker read (P53 §7/§8) ────────────────────
+-- SECURITY INVOKER over ordinary owner-readable rows: the caller's own live sealed lots with
+-- quantity_remaining > 0, each carrying its ALREADY-DERIVED preview components so no client —
+-- and no component — ever re-implements the consumption arithmetic:
+--
+--   effective_unit_basis_nok_minor = unit_cost_basis_nok_minor + floor(Σ adjustments / quantity)
+--   exhaustion_residual_nok_minor  = residual_nok_minor
+--                                    + (Σ adjustments − floor(Σ adjustments / quantity) × quantity)
+--
+-- The preview for "open q of this lot" is then PURE domain arithmetic:
+--   q < quantity_available → effective_unit_basis × q
+--   q = quantity_available → effective_unit_basis × q + exhaustion_residual
+-- which is byte-identical to what create_opening will freeze. Unknown-basis lots expose both
+-- cost components as NULL (cost_known = false) — unknown stays unknown, never zero.
+-- One grouped aggregate over lot_cost_adjustments joined to the owner's own bounded lot set:
+-- no per-row subquery, no N+1. No cross-user existence oracle: another owner's holding id
+-- simply yields an empty result.
+create function public.list_opening_sources(p_holding_id uuid default null)
+returns table (
+  lot_id uuid,
+  holding_id uuid,
+  sealed_product_id uuid,
+  product_name text,
+  product_type text,
+  image_url text,
+  acquired_on date,
+  quantity_available int,
+  cost_known boolean,
+  effective_unit_basis_nok_minor text,
+  exhaustion_residual_nok_minor text
+)
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  with adjustments as materialized (
+    select a.lot_id, sum(a.amount_nok_minor) as total_nok
+    from public.lot_cost_adjustments a
+    group by a.lot_id
+  )
+  select l.id,
+         l.holding_id,
+         h.sealed_product_id,
+         sp.name,
+         sp.product_type::text,
+         sp.image_url,
+         l.acquired_on,
+         l.quantity_remaining,
+         (l.cost_basis_state = 'known'),
+         (case when l.cost_basis_state = 'known' then
+            l.unit_cost_basis_nok_minor + coalesce(adj.total_nok, 0) / l.quantity
+          end)::text,
+         (case when l.cost_basis_state = 'known' then
+            l.residual_nok_minor
+            + (coalesce(adj.total_nok, 0) - (coalesce(adj.total_nok, 0) / l.quantity) * l.quantity)
+          end)::text
+  from public.acquisition_lots l
+  join public.holdings h on h.id = l.holding_id
+  join public.sealed_products sp on sp.id = h.sealed_product_id
+  left join adjustments adj on adj.lot_id = l.id
+  where l.user_id = auth.uid()
+    and l.voided_at is null
+    and l.quantity_remaining > 0
+    and h.holding_kind = 'sealed'
+    and h.deleted_at is null
+    and (p_holding_id is null or l.holding_id = p_holding_id)
+  order by sp.name asc, l.acquired_on desc, l.id asc;
+$$;
+
+comment on function public.list_opening_sources(uuid) is
+  'Owner-scoped openable sealed lots with derived preview components (effective unit basis, '
+  'exhaustion residual) matching create_opening''s freezing rule exactly; unknown-cost lots '
+  'carry NULL components. Bounded INVOKER read; optional holding scope for the Holding-Detail '
+  'entry point.';
+
 -- ── 6. Grants ────────────────────────────────────────────────────────────────────────────────
 revoke execute on function public.create_opening(
-  uuid, int, date, public.opening_tracking, jsonb, bigint, int, text, uuid
+  uuid, int, date, public.opening_tracking, jsonb, bigint, int, text, uuid, uuid
 ) from public;
 revoke execute on function public.create_opening_from_provisional(
-  uuid, int, bigint, date, date, public.opening_tracking, jsonb, bigint, int, text
+  uuid, int, bigint, date, date, public.opening_tracking, jsonb, bigint, int, text, uuid
 ) from public;
 revoke execute on function public.void_opening(uuid, text) from public;
 revoke execute on function public.reconcile_opening_cost(uuid, uuid) from public;
 revoke execute on function public.get_opening(uuid) from public;
+revoke execute on function public.list_opening_sources(uuid) from public;
 
 grant execute on function public.create_opening(
-  uuid, int, date, public.opening_tracking, jsonb, bigint, int, text, uuid
+  uuid, int, date, public.opening_tracking, jsonb, bigint, int, text, uuid, uuid
 ) to authenticated;
 grant execute on function public.create_opening_from_provisional(
-  uuid, int, bigint, date, date, public.opening_tracking, jsonb, bigint, int, text
+  uuid, int, bigint, date, date, public.opening_tracking, jsonb, bigint, int, text, uuid
 ) to authenticated;
 grant execute on function public.void_opening(uuid, text) to authenticated;
 grant execute on function public.reconcile_opening_cost(uuid, uuid) to authenticated;
 grant execute on function public.get_opening(uuid) to authenticated;
+grant execute on function public.list_opening_sources(uuid) to authenticated;

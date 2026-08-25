@@ -67,3 +67,48 @@ export function openingRoiPercent(
 export function isTrackingIncomplete(tracking: OpeningTracking): boolean {
   return tracking !== 'all_cards'
 }
+
+/**
+ * The already-derived cost components of one openable sealed source lot (server-derived by
+ * `list_opening_sources`, P53 §7). The client NEVER re-derives these from raw lot columns —
+ * the SQL is the single place the consumption arithmetic lives outside the writer itself.
+ *
+ *   effectiveUnitBasis = unit_cost_basis_nok + floor(Σ adjustments / original quantity)
+ *   exhaustionResidual = residual_nok + adjustment remainder of that same division
+ *
+ * Unknown-cost lots carry null for both components (`costKnown` false) — an unknown must never
+ * become a computed zero (M1).
+ */
+export interface OpeningSourceCostShape {
+  readonly quantityAvailable: number
+  readonly effectiveUnitBasisNokMinor: bigint | null
+  readonly exhaustionResidualNokMinor: bigint | null
+}
+
+/**
+ * The exact preview of what opening `quantityOpened` units will freeze as the opening's cost —
+ * byte-identical to what create_opening records:
+ *
+ *   q < quantity_available → effective_unit_basis × q
+ *   q = quantity_available → effective_unit_basis × q + exhaustion_residual
+ *
+ * The residual lands ONLY on the opening that exhausts the lot, at most once in its lifetime
+ * (FINANCIAL_MODEL §4.3 / D-060) — which is why the 29995 øre lot previews 19996 for 2 of 3 and
+ * 9999 for the final unit, never 9998 followed by an inconsistent recorded figure.
+ * Null when the cost is unknown (never a fabricated zero).
+ */
+export function computeOpeningCostPreview(
+  source: OpeningSourceCostShape,
+  quantityOpened: number,
+): bigint | null {
+  if (source.effectiveUnitBasisNokMinor === null || source.exhaustionResidualNokMinor === null) {
+    return null
+  }
+  if (!Number.isInteger(quantityOpened) || quantityOpened < 1) {
+    throw new Error('Opening quantity must be a positive integer')
+  }
+  const base = source.effectiveUnitBasisNokMinor * BigInt(quantityOpened)
+  return quantityOpened >= source.quantityAvailable
+    ? base + source.exhaustionResidualNokMinor
+    : base
+}

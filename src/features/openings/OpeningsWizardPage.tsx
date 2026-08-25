@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createManualCard } from '../../data/collection'
+import { searchSealedProducts } from '../../data/sealedProducts'
 import { CardImage } from '../catalog/CardImage'
 import { SealedProductImage } from '../catalog/SealedProductImage'
 import { Button, ChoiceGroup, FormMessage, TextField } from '../../ui/form'
@@ -20,6 +21,7 @@ import {
 } from './copy'
 import {
   STEPS,
+  buildBoughtAndOpenedInput,
   buildCreateOpeningInput,
   draftCostPreview,
   draftStore,
@@ -31,6 +33,7 @@ import {
   stepError,
   type DraftAction,
   type OpeningDraft,
+  type OpeningMode,
   type OpeningStep,
 } from './draft'
 import type { OpeningSource, TrackingCompleteness } from './contract'
@@ -42,6 +45,19 @@ const STEP_LABELS: Record<OpeningStep, string> = {
   pulls: 'Pulls',
   review: 'Review',
 }
+
+const MODE_OPTIONS: readonly { value: OpeningMode; label: string; note: string }[] = [
+  {
+    value: 'existing_lot',
+    label: 'Open something I own',
+    note: 'Pick the sealed product already in your Portfolio and open units of it.',
+  },
+  {
+    value: 'bought_now',
+    label: 'Bought and opened now',
+    note: 'You just bought it and opened it right away. Records the purchase and the opening together.',
+  },
+]
 
 /**
  * The M16 opening wizard (prompt §6): four focused steps — product/lot, quantity & date, pulls,
@@ -162,6 +178,11 @@ export function OpeningsWizardPage() {
           idByKey.has(pull.key) ? { ...pull, manualCardId: idByKey.get(pull.key) ?? null } : pull,
         ),
       }
+      if (draft.mode === 'bought_now') {
+        return controller.createBoughtAndOpened(
+          buildBoughtAndOpenedInput(resolvedDraft, idempotencyKey, parseNokInput),
+        )
+      }
       if (!selectedSource) throw new Error('Choose which acquisition lot you opened from.')
       const input = buildCreateOpeningInput(
         resolvedDraft,
@@ -258,14 +279,40 @@ export function OpeningsWizardPage() {
         <SourceStep
           draft={draft}
           sources={availableSources}
+          onMode={(mode) => {
+            setGateError(null)
+            dispatch({ type: 'SET_MODE', mode })
+          }}
           onSelect={(source) => {
             setGateError(null)
             dispatch({ type: 'SELECT_SOURCE', source })
           }}
+          onSelectProduct={(productId, productName) => {
+            setGateError(null)
+            dispatch({ type: 'SELECT_PRODUCT', productId, productName })
+          }}
         />
       ) : null}
 
-      {draft.step === 'quantity' && selectedSource ? (
+      {draft.step === 'quantity' && draft.mode === 'bought_now' ? (
+        <BoughtNowQuantityDateStep
+          draft={draft}
+          onQuantity={(value) => {
+            dispatch({ type: 'SET_QUANTITY_INPUT', value })
+          }}
+          onTotalPaid={(value) => {
+            dispatch({ type: 'SET_TOTAL_PAID_INPUT', value })
+          }}
+          onPurchasedOn={(value) => {
+            dispatch({ type: 'SET_PURCHASED_ON', value })
+          }}
+          onOpenedOn={(value) => {
+            dispatch({ type: 'SET_OPENED_ON', value })
+          }}
+        />
+      ) : null}
+
+      {draft.step === 'quantity' && draft.mode === 'existing_lot' && selectedSource ? (
         <QuantityDateStep
           draft={draft}
           source={selectedSource}
@@ -293,7 +340,28 @@ export function OpeningsWizardPage() {
         />
       ) : null}
 
-      {draft.step === 'review' && selectedSource ? (
+      {draft.step === 'review' && draft.mode === 'bought_now' && draft.productName ? (
+        <ReviewStep
+          draft={draft}
+          productName={draft.productName}
+          productTypeName={null}
+          boughtNow
+          onCompleteness={(value) => {
+            dispatch({ type: 'SET_COMPLETENESS', value })
+          }}
+          onBulkEstimate={(value) => {
+            dispatch({ type: 'SET_BULK_ESTIMATE_INPUT', value })
+          }}
+          onBulkCount={(value) => {
+            dispatch({ type: 'SET_BULK_COUNT_INPUT', value })
+          }}
+          onNotes={(value) => {
+            dispatch({ type: 'SET_NOTES', value })
+          }}
+        />
+      ) : null}
+
+      {draft.step === 'review' && draft.mode === 'existing_lot' && selectedSource ? (
         <ReviewStep
           draft={draft}
           productName={selectedSource.productName}
@@ -352,7 +420,7 @@ export function OpeningsWizardPage() {
           <Button
             type="button"
             className="w-auto"
-            disabled={availableSources.length === 0}
+            disabled={draft.mode === 'existing_lot' && availableSources.length === 0}
             onClick={() => {
               goToStep(STEPS[activeStepIndex + 1] ?? 'review')
             }}
@@ -362,7 +430,12 @@ export function OpeningsWizardPage() {
         ) : (
           <Button
             type="button"
-            disabled={draft.phase !== 'editing' || !selectedSource || submitMutation.isPending}
+            disabled={
+              draft.phase !== 'editing' ||
+              submitMutation.isPending ||
+              (draft.mode === 'existing_lot' && !selectedSource) ||
+              (draft.mode === 'bought_now' && !draft.productId)
+            }
             onClick={() => {
               setGateError(null)
               submitMutation.mutate()
@@ -403,6 +476,145 @@ function sealedTypeLabel(typeName: string | null | undefined): string | null {
 function SourceStep({
   draft,
   sources,
+  onMode,
+  onSelect,
+  onSelectProduct,
+}: {
+  draft: OpeningDraft
+  sources: OpeningSource[]
+  onMode: (mode: OpeningMode) => void
+  onSelect: (source: OpeningSource) => void
+  onSelectProduct: (productId: string, productName: string) => void
+}) {
+  const activeMode = MODE_OPTIONS.find((option) => option.value === draft.mode)
+
+  return (
+    <div className="space-y-4">
+      <ChoiceGroup
+        label="What are you recording?"
+        value={draft.mode}
+        onChange={onMode}
+        options={MODE_OPTIONS.map((option) => [option.value, option.label] as const)}
+      />
+      {activeMode ? <p className="text-xs text-slate-500">{activeMode.note}</p> : null}
+
+      {draft.mode === 'bought_now' ? (
+        <BoughtNowProductPicker
+          selectedProductId={draft.productId}
+          onSelectProduct={onSelectProduct}
+        />
+      ) : (
+        <ExistingLotPicker draft={draft} sources={sources} onSelect={onSelect} />
+      )}
+    </div>
+  )
+}
+
+/** Bought-and-open step 1 (P53 §11): pick the sealed product from the same shared catalog the
+ *  Search page uses — curated rows plus the user's own custom entries. */
+function BoughtNowProductPicker({
+  selectedProductId,
+  onSelectProduct,
+}: {
+  selectedProductId: string | null
+  onSelectProduct: (productId: string, productName: string) => void
+}) {
+  const [queryInput, setQueryInput] = useState('')
+  const [query, setQuery] = useState('')
+  const productsQuery = useQuery({
+    queryKey: ['opening-sealed-products', query],
+    queryFn: () => searchSealedProducts({ query }),
+    retry: false,
+  })
+  const results = productsQuery.data ?? []
+
+  return (
+    <fieldset className="space-y-2">
+      <legend className="pb-1 text-sm font-medium text-slate-300">
+        Which sealed product did you buy and open?
+      </legend>
+      <form
+        className="flex gap-2"
+        onSubmit={(event) => {
+          event.preventDefault()
+          setQuery(queryInput.trim())
+        }}
+      >
+        <label className="sr-only" htmlFor="bought-now-product-search">
+          Search sealed products
+        </label>
+        <input
+          id="bought-now-product-search"
+          type="search"
+          value={queryInput}
+          onChange={(event) => {
+            setQueryInput(event.target.value)
+          }}
+          placeholder="e.g. Booster bundle"
+          className="min-h-11 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100 outline-none focus-visible:border-sky-500"
+        />
+        <Button type="submit" variant="quiet" className="w-auto">
+          Search
+        </Button>
+      </form>
+
+      {productsQuery.isPending ? (
+        <div className="h-20 animate-pulse rounded-lg bg-slate-800/60" />
+      ) : productsQuery.isError ? (
+        <p role="alert" className="text-sm text-rose-300">
+          Sealed products could not be loaded.
+        </p>
+      ) : results.length === 0 ? (
+        <p className="rounded-lg border border-dashed border-slate-800 p-4 text-sm text-slate-500">
+          No sealed products matched{query ? ` “${query}”` : ''}. You can add a custom one from the
+          + menu first.
+        </p>
+      ) : (
+        <div className="max-h-80 space-y-2 overflow-y-auto pr-1">
+          {results.slice(0, 20).map((product) => {
+            const selected = selectedProductId === product.id
+            return (
+              <button
+                key={product.id}
+                type="button"
+                aria-pressed={selected}
+                onClick={() => {
+                  onSelectProduct(product.id, product.name)
+                }}
+                className={`flex min-h-14 w-full items-center gap-3 rounded-xl border px-3 py-2 text-left ${
+                  selected
+                    ? 'border-sky-500 bg-sky-600/10'
+                    : 'border-slate-800 hover:bg-slate-800/40'
+                }`}
+              >
+                <SealedProductImage
+                  imageUrl={product.imageUrl}
+                  productType="other"
+                  alt={product.name}
+                  className="h-12 w-9 shrink-0"
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-medium text-slate-100">
+                    {product.name}
+                  </span>
+                  <span className="block truncate text-xs text-slate-500">
+                    {[sealedTypeLabel(product.productType), product.setName ?? null]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </span>
+                </span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </fieldset>
+  )
+}
+
+function ExistingLotPicker({
+  draft,
+  sources,
   onSelect,
 }: {
   draft: OpeningDraft
@@ -414,7 +626,8 @@ function SourceStep({
       <div className="space-y-3 rounded-lg border border-dashed border-slate-800 p-6 text-center">
         <p className="text-sm font-medium text-slate-200">Nothing to open yet</p>
         <p className="text-xs text-slate-500">
-          You have no sealed products with unopened units. Add one from Search or the + menu first.
+          You have no sealed products with unopened units. Add one from Search or the + menu — or
+          switch to “Bought and opened now” if you opened it right after buying.
         </p>
         <Link
           to="/catalog"
@@ -542,16 +755,87 @@ function CostPreviewLine({ draft, source }: { draft: OpeningDraft; source: Openi
   if (preview.kind === 'unknown') {
     return <p className="text-slate-400">{PURCHASE_COST_NOT_RECORDED}</p>
   }
+  const unitLine =
+    source.costKnown && source.effectiveUnitBasisNokMinor
+      ? ` · ${formatNok(source.effectiveUnitBasisNokMinor)} kr each, from the original purchase`
+      : ''
   return (
     <p className="tabular-nums text-slate-100">
       {formatNok(preview.minorUnits)} kr
-      {source.unitCostNokMinor !== null && source.unitCostNokMinor !== undefined ? (
-        <span className="text-xs text-slate-500">
-          {' '}
-          · {formatNok(source.unitCostNokMinor)} kr each, from the original purchase
-        </span>
-      ) : null}
+      {unitLine ? <span className="text-xs text-slate-500">{unitLine}</span> : null}
     </p>
+  )
+}
+
+/** Buy-and-open quantity/date/total step (P53 §11): the user states what they PAID IN TOTAL —
+ *  never a per-unit price (nobody computes 299.95 ÷ 3 in their head). The backend splits it
+ *  exactly (D-090). */
+function BoughtNowQuantityDateStep({
+  draft,
+  onQuantity,
+  onTotalPaid,
+  onPurchasedOn,
+  onOpenedOn,
+}: {
+  draft: OpeningDraft
+  onQuantity: (value: string) => void
+  onTotalPaid: (value: string) => void
+  onPurchasedOn: (value: string) => void
+  onOpenedOn: (value: string) => void
+}) {
+  const parsed = Number.parseInt(draft.quantityInput, 10)
+  const shown = Number.isFinite(parsed) && parsed >= 1 ? parsed : null
+  return (
+    <div className="space-y-5">
+      <TextField
+        label={`How many ${draft.productName ?? 'units'} did you open?`}
+        type="number"
+        inputMode="numeric"
+        min={1}
+        value={draft.quantityInput}
+        onChange={(event) => {
+          onQuantity(event.target.value)
+        }}
+        hint={shown ? `Opening ${shown}.` : 'At least 1.'}
+      />
+
+      <TextField
+        label="What did you pay in total? (NOK)"
+        inputMode="decimal"
+        placeholder="299,95"
+        value={draft.totalPaidInput}
+        onChange={(event) => {
+          onTotalPaid(event.target.value)
+        }}
+        hint="The receipt total for all of them — no need to work out a per-pack price."
+      />
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <TextField
+          label="When did you buy it?"
+          type="date"
+          value={draft.purchasedOn}
+          onChange={(event) => {
+            onPurchasedOn(event.target.value)
+          }}
+          hint="Defaults to today. This decides when the spending lands in your history."
+        />
+        <TextField
+          label="When did you open it?"
+          type="date"
+          value={draft.openedOn}
+          onChange={(event) => {
+            onOpenedOn(event.target.value)
+          }}
+          hint="Defaults to today too — backdating is fine."
+        />
+      </div>
+
+      <p className="rounded-lg border border-slate-800 p-3 text-sm text-slate-300">
+        {THE_SEALED_NOTICE} The whole total is recorded once as a purchase — opening it does not add
+        any extra cost.
+      </p>
+    </div>
   )
 }
 
@@ -635,6 +919,7 @@ function ReviewStep({
   draft,
   productName,
   productTypeName,
+  boughtNow = false,
   onCompleteness,
   onBulkEstimate,
   onBulkCount,
@@ -643,6 +928,7 @@ function ReviewStep({
   draft: OpeningDraft
   productName: string
   productTypeName: string | null | undefined
+  boughtNow?: boolean
   onCompleteness: (value: TrackingCompleteness) => void
   onBulkEstimate: (value: string) => void
   onBulkCount: (value: string) => void
@@ -660,12 +946,25 @@ function ReviewStep({
           {sealedTypeLabel(productTypeName) ? (
             <ReviewRow label="Type" value={sealedTypeLabel(productTypeName) ?? ''} />
           ) : null}
+          {boughtNow && draft.totalPaidInput.trim() !== '' ? (
+            <ReviewRow
+              label="Total paid"
+              value={`${formatNok(parseNokInput(draft.totalPaidInput))} kr`}
+            />
+          ) : null}
           <ReviewRow
             label="Quantity opened"
             value={String(Math.max(1, Number.parseInt(draft.quantityInput, 10) || 1))}
           />
+          {boughtNow ? <ReviewRow label="Purchased" value={draft.purchasedOn} /> : null}
           <ReviewRow label="Date" value={draft.openedOn} />
         </dl>
+        {boughtNow ? (
+          <p className="text-xs text-slate-500">
+            Records one purchase for the total above plus this opening — the money enters your
+            spending history exactly once.
+          </p>
+        ) : null}
       </section>
 
       <section className="space-y-3 rounded-2xl border border-slate-800 p-4">

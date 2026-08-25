@@ -7,6 +7,7 @@ import {
   PULL_COST_NOTE,
   PURCHASE_COST_NOT_RECORDED,
   THE_SEALED_NOTICE,
+  VOID_PURCHASE_NOTE,
   completenessNote,
   formatNok,
   openingCostPreview,
@@ -38,10 +39,31 @@ function detail(overrides: Partial<OpeningDetail> = {}): OpeningDetail {
   }
 }
 
-describe('opening cost copy (prompt §14)', () => {
-  it('a known lot derives the cost from the sealed purchase', () => {
-    const preview = openingCostPreview({ costKnown: true, unitCostNokMinor: 59900n }, 2)
-    expect(preview).toEqual({ kind: 'known', minorUnits: 119800n })
+describe('opening cost copy (prompt §14 / P53 §7)', () => {
+  it('a known lot derives the EXACT preview incl. the exhaustion residual', () => {
+    // The canonical 29995-øre lot (unit basis 9998 ×3 + residual 1): opening 2 of 3 must
+    // preview 19996 — pure units, no residual yet.
+    const partialPreview = openingCostPreview(
+      {
+        costKnown: true,
+        quantityAvailable: 3,
+        effectiveUnitBasisNokMinor: 9998n,
+        exhaustionResidualNokMinor: 1n,
+      },
+      2,
+    )
+    expect(partialPreview).toEqual({ kind: 'known', minorUnits: 19996n })
+    // …and the exhausting final unit previews 9999 — exactly what the backend will freeze.
+    const exhaustingPreview = openingCostPreview(
+      {
+        costKnown: true,
+        quantityAvailable: 3,
+        effectiveUnitBasisNokMinor: 9998n,
+        exhaustionResidualNokMinor: 1n,
+      },
+      3,
+    )
+    expect(exhaustingPreview).toEqual({ kind: 'known', minorUnits: 29995n })
     // nb-NO grouping uses a (narrow) non-breaking space — matched loosely on purpose.
     expect(`${OPENING_COST_LABEL}: ${formatNok(119800n)} kr`).toMatch(
       new RegExp('^Opening cost: 1[\\s\\u00a0\\u202f]198,00 kr$'),
@@ -49,7 +71,15 @@ describe('opening cost copy (prompt §14)', () => {
   })
 
   it('an unknown lot renders "not recorded" — NEVER 0', () => {
-    const preview = openingCostPreview({ costKnown: false, unitCostNokMinor: null }, 2)
+    const preview = openingCostPreview(
+      {
+        costKnown: false,
+        quantityAvailable: 2,
+        effectiveUnitBasisNokMinor: null,
+        exhaustionResidualNokMinor: null,
+      },
+      2,
+    )
     expect(preview).toEqual({ kind: 'unknown' })
     expect(PURCHASE_COST_NOT_RECORDED.toLowerCase()).toContain('not recorded')
     expect(PURCHASE_COST_NOT_RECORDED).not.toContain('0')
@@ -123,5 +153,14 @@ describe('sealed-inventory notice (UX_FLOWS F5)', () => {
     expect(THE_SEALED_NOTICE).toBe(
       'The purchase stays in your spending history. This product leaves sealed inventory.',
     )
+  })
+})
+
+describe('void copy (P53 §10 policy)', () => {
+  it('states that voiding an opening never undoes its purchase', () => {
+    expect(VOID_PURCHASE_NOTE).toBe(
+      'The purchase itself stays in your spending history — voiding an opening does not undo it.',
+    )
+    expect(VOID_PURCHASE_NOTE.toLowerCase()).toContain('does not undo')
   })
 })

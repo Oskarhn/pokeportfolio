@@ -20,11 +20,10 @@ import {
   type TestClient,
 } from '../../db/setup'
 import {
-  bindAddPullArgs,
   bindOpeningCreateArgs,
   hasSupabaseEnv,
   requireCreateOpeningRpc,
-  requirePullAddRpc,
+  resolvePullSurface,
   skipUnlessM16,
 } from '../helpers/contract'
 import {
@@ -98,18 +97,43 @@ describe.skipIf(!hasSupabaseEnv())('M16 economic oracle — opening does not cre
     ctx: { skip(note?: string): void },
     consumptions: readonly { lotId: string; quantity: number }[],
     openedOn = today,
+    pulls: readonly {
+      cardVariantId?: string
+      manualCardId?: string
+      quantity: number
+      condition?: string
+    }[] = [],
   ): Promise<string> {
     const surface = await skipUnlessM16(ctx, service)
     const createRpc = requireCreateOpeningRpc(surface)
     const { data, error } = await clientA.rpc(
       createRpc.name,
-      bindOpeningCreateArgs(createRpc, { openedOn, consumptions }),
+      bindOpeningCreateArgs(createRpc, { openedOn, consumptions, pulls }),
     )
     if (error || !data) throw new Error(`create_opening failed: ${error?.message}`)
     const row = (Array.isArray(data) ? data[0] : data) as RowLike | undefined
     const id = row ? row['id'] : undefined
     if (!id) throw new Error('[M16 CONTRACT] create_opening returned no id')
     return String(id)
+  }
+
+  /**
+   * Attaches a pull EXECUTION-BOUND to whichever dialect exists (P53 §4/§15): in the shipped
+   * folded world, pulls ride creation, so this helper creates the opening WITH its pulls.
+   * Dedicated add-pull surfaces (if a future branch ships one) are driven via bindAddPullArgs
+   * with an explicit opening id instead.
+   */
+  async function openWithPull(
+    ctx: { skip(note?: string): void },
+    lotId: string,
+    pull: { cardVariantId?: string; manualCardId?: string; quantity: number; condition?: string },
+  ): Promise<string> {
+    const surface = await skipUnlessM16(ctx, service)
+    const surfaceBinding = resolvePullSurface(surface)
+    if (surfaceBinding.mode === 'dedicated') {
+      throw new Error('dedicated pull surface must be driven with an explicit openingId')
+    }
+    return openUnits(ctx, [{ lotId, quantity: 1 }], today, [pull])
   }
 
   it('E1 master: open 2 of 10 → spend byte-identical, lot intact, one canonical disposal', async (ctx) => {
@@ -175,20 +199,10 @@ describe.skipIf(!hasSupabaseEnv())('M16 economic oracle — opening does not cre
 
   it('§6 pull basis: NULL never zero; provenance retained; acquired_on = opened_on', async (ctx) => {
     const seeded = await seedTenPackPurchase()
-    const openingId = await openUnits(ctx, [{ lotId: seeded.lotId, quantity: 1 }])
-
-    const surface = await skipUnlessM16(ctx, service)
-    const pullRpc = requirePullAddRpc(surface)
-    const { error } = await clientA.rpc(
-      pullRpc.name,
-      bindAddPullArgs(pullRpc, {
-        openingId,
-        quantity: 3,
-        cardVariantId: seedCatalog.charizardVariantId,
-        condition: 'NM',
-      }),
-    )
-    expect(error, `add-pull failed: ${error?.message}`).toBeNull()
+    // Pulls ride creation (folded, execution-bound — P53 §4/§15).
+    const openingId = await openUnits(ctx, [{ lotId: seeded.lotId, quantity: 1 }], today, [
+      { cardVariantId: seedCatalog.charizardVariantId, quantity: 3, condition: 'NM' },
+    ])
 
     const pulls = await pullLotsForOpening(clientA, openingId)
     expect(pulls.length).toBeGreaterThanOrEqual(1)
@@ -205,19 +219,12 @@ describe.skipIf(!hasSupabaseEnv())('M16 economic oracle — opening does not cre
   })
 
   it('§6 selling a pull later: proceeds real, basis stays unknown, attribution survives', async (ctx) => {
-    const surface = await skipUnlessM16(ctx, service)
     const seeded = await seedTenPackPurchase()
-    const openingId = await openUnits(ctx, [{ lotId: seeded.lotId, quantity: 1 }])
-    const pullRpc = requirePullAddRpc(surface)
-    const { error } = await clientA.rpc(
-      pullRpc.name,
-      bindAddPullArgs(pullRpc, {
-        openingId,
-        quantity: 1,
-        cardVariantId: seedCatalog.charizardVariantId,
-      }),
-    )
-    expect(error).toBeNull()
+    const openingId = await openWithPull(ctx, seeded.lotId, {
+      cardVariantId: seedCatalog.charizardVariantId,
+      quantity: 1,
+      condition: 'NM',
+    })
     const pulls = await pullLotsForOpening(clientA, openingId)
     const pullLot = pulls[0]
     if (!pullLot) throw new Error('pull lot missing')
@@ -259,23 +266,12 @@ describe.skipIf(!hasSupabaseEnv())('M16 economic oracle — opening does not cre
   })
 
   it('§20 unpriced bulk pulls: opening completes; absent price ≠ zero price', async (ctx) => {
-    const surface = await skipUnlessM16(ctx, service)
     const seeded = await seedTenPackPurchase()
-    const openingId = await openUnits(ctx, [{ lotId: seeded.lotId, quantity: 1 }])
-    const pullRpc = requirePullAddRpc(surface)
-
     // Japanese variant: no provider observations exist for it on an ephemeral
     // stack and none are seeded here — value ABSENT, never zero.
-    const { error } = await clientA.rpc(
-      pullRpc.name,
-      bindAddPullArgs(pullRpc, {
-        openingId,
-        quantity: 12,
-        cardVariantId: seedCatalog.japaneseVariantId,
-        condition: 'NM',
-      }),
-    )
-    expect(error, `unpriced bulk pull failed: ${error?.message}`).toBeNull()
+    const openingId = await openUnits(ctx, [{ lotId: seeded.lotId, quantity: 1 }], today, [
+      { cardVariantId: seedCatalog.japaneseVariantId, quantity: 12, condition: 'NM' },
+    ])
 
     const pulls = await pullLotsForOpening(clientA, openingId)
     const bulk = pulls.find((p) => p.quantity === 12)

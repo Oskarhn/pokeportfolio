@@ -1,5 +1,10 @@
 import type { CardCondition } from '../../data/collection'
-import type { CreateOpeningInput, OpeningSource, TrackingCompleteness } from './contract'
+import type {
+  BoughtAndOpenedInput,
+  CreateOpeningInput,
+  OpeningSource,
+  TrackingCompleteness,
+} from './contract'
 import { openingCostPreview } from './copy'
 
 /**
@@ -15,6 +20,9 @@ import { openingCostPreview } from './copy'
 
 export const STEPS = ['source', 'quantity', 'pulls', 'review'] as const
 export type OpeningStep = (typeof STEPS)[number]
+
+/** The two entry modes (P53 §11): open something already owned, or record a buy-and-open. */
+export type OpeningMode = 'existing_lot' | 'bought_now'
 
 export interface PullDraft {
   key: string
@@ -38,10 +46,16 @@ export interface PullDraft {
 export interface OpeningDraft {
   phase: 'editing' | 'submitting' | 'submitted'
   step: OpeningStep
+  mode: OpeningMode
   holdingId: string | null
   lotId: string | null
-  /** Raw field input — parsed/clamped only on advance, so typing stays responsive. */
+  /** Bought-and-open product identity (curated or own sealed_products row). */
+  productId: string | null
+  productName: string | null
+  /** Raw field inputs — parsed/clamped only on advance, so typing stays responsive. */
   quantityInput: string
+  totalPaidInput: string
+  purchasedOn: string
   openedOn: string
   pulls: PullDraft[]
   completeness: TrackingCompleteness
@@ -61,11 +75,16 @@ export function initialDraft(preselect?: { holdingId?: string; lotId?: string })
   return {
     phase: 'editing',
     step: 'source',
+    mode: 'existing_lot',
     // Arriving from Sealed Holding Detail preselects that holding (prompt §7); the actual lot is
     // still confirmed in step 1 unless exactly one eligible lot exists.
     holdingId: preselect?.holdingId ?? null,
     lotId: preselect?.lotId ?? null,
+    productId: null,
+    productName: null,
     quantityInput: '1',
+    totalPaidInput: '',
+    purchasedOn: todayIso(),
     openedOn: todayIso(),
     pulls: [],
     completeness: 'all_cards',
@@ -79,6 +98,10 @@ export function initialDraft(preselect?: { holdingId?: string; lotId?: string })
 
 export type DraftAction =
   | { type: 'SELECT_SOURCE'; source: OpeningSource }
+  | { type: 'SET_MODE'; mode: OpeningMode }
+  | { type: 'SELECT_PRODUCT'; productId: string; productName: string }
+  | { type: 'SET_TOTAL_PAID_INPUT'; value: string }
+  | { type: 'SET_PURCHASED_ON'; value: string }
   | { type: 'SET_QUANTITY_INPUT'; value: string }
   | { type: 'SET_OPENED_ON'; value: string }
   | { type: 'GO_TO_STEP'; step: OpeningStep }
@@ -132,6 +155,25 @@ export function reduceDraft(state: OpeningDraft, action: DraftAction): OpeningDr
         quantityInput: clampQuantityInput(state.quantityInput, action.source.quantityAvailable),
         submitError: null,
       }
+    case 'SET_MODE':
+      if (action.mode === state.mode) return state
+      return {
+        // Switching modes clears the other mode's selection so a stale lot can never ride along
+        // with a bought-and-open submission (or vice versa). Entered pulls survive — they are
+        // mode-independent facts about what was pulled.
+        ...state,
+        mode: action.mode,
+        lotId: null,
+        productId: null,
+        productName: null,
+        submitError: null,
+      }
+    case 'SELECT_PRODUCT':
+      return { ...state, productId: action.productId, productName: action.productName }
+    case 'SET_TOTAL_PAID_INPUT':
+      return { ...state, totalPaidInput: action.value }
+    case 'SET_PURCHASED_ON':
+      return { ...state, purchasedOn: action.value }
     case 'SET_QUANTITY_INPUT':
       return { ...state, quantityInput: action.value }
     case 'SET_OPENED_ON':
@@ -211,6 +253,9 @@ export function stepError(
 ): string | null {
   switch (step) {
     case 'source': {
+      if (draft.mode === 'bought_now') {
+        return draft.productId ? null : 'Choose the sealed product you bought and opened.'
+      }
       if (ctx.availableSources.length === 0) {
         return 'You have no sealed products with unopened units to record.'
       }
@@ -221,14 +266,27 @@ export function stepError(
       return null
     }
     case 'quantity': {
-      const source = ctx.availableSources.find((s) => s.lotId === ctx.selectedLotId)
-      if (!source) return 'Choose which acquisition lot you opened from.'
       const parsed = Number.parseInt(draft.quantityInput, 10)
       if (!Number.isFinite(parsed) || parsed < 1) {
         return 'Open at least 1.'
       }
-      if (parsed > source.quantityAvailable) {
-        return `Only ${source.quantityAvailable} available in this lot.`
+      if (draft.mode === 'bought_now') {
+        const total = draft.totalPaidInput.trim()
+        if (total === '') {
+          return 'Enter the total you paid — it is what makes this a real purchase record.'
+        }
+        if (!/^\d+([.,]\d{1,2})?$/.test(total)) {
+          return 'Enter the total paid as a NOK amount, e.g. 299 or 299,95.'
+        }
+        if (!dateIsValidAndNotFuture(draft.purchasedOn)) {
+          return 'Enter the purchase date — today or earlier.'
+        }
+      } else {
+        const source = ctx.availableSources.find((s) => s.lotId === ctx.selectedLotId)
+        if (!source) return 'Choose which acquisition lot you opened from.'
+        if (parsed > source.quantityAvailable) {
+          return `Only ${source.quantityAvailable} available in this lot.`
+        }
       }
       if (!dateIsValidAndNotFuture(draft.openedOn)) {
         return 'Enter the date you opened it — today or earlier.'
@@ -301,6 +359,48 @@ export function buildCreateOpeningInput(
     idempotencyKey,
     sourceLotId,
     quantity: Number.parseInt(draft.quantityInput, 10),
+    openedOn: draft.openedOn,
+    pulls: draft.pulls.map((pull) => ({
+      cardVariantId: pull.cardVariantId ?? undefined,
+      manualCardId: pull.manualCardId ?? undefined,
+      condition: pull.condition,
+      quantity: pull.quantity,
+    })),
+    trackingCompleteness: draft.completeness,
+  }
+  if (hasEstimate && draft.bulkCountInput.trim() !== '') {
+    input.bulkRemainderEstimateMinor = parseNokMinor(draft.bulkEstimateInput)
+    input.bulkRemainderCount = Number.parseInt(draft.bulkCountInput, 10)
+  }
+  if (draft.notes.trim() !== '') input.notes = draft.notes.trim()
+  return input
+}
+
+/** Buy-and-open assembly (P53 §11). The owner states the receipt TOTAL — it travels verbatim as
+ *  an exact integer amount; nobody divides it to enter it (P53 §12). The backend performs the
+ *  largest-remainder split. */
+export function buildBoughtAndOpenedInput(
+  draft: OpeningDraft,
+  idempotencyKey: string,
+  parseNokMinor: (raw: string) => bigint,
+): BoughtAndOpenedInput {
+  if (!draft.productId) {
+    throw new Error('Choose the sealed product you bought and opened.')
+  }
+  const unresolved = draft.pulls.find(
+    (pull) => pull.cardVariantId === null && pull.manualCardId === null,
+  )
+  if (unresolved) {
+    throw new Error('A pulled card has no resolved identity yet.')
+  }
+  const hasEstimate = draft.bulkEstimateInput.trim() !== ''
+  const input: BoughtAndOpenedInput = {
+    idempotencyKey,
+    sealedProductId: draft.productId,
+    quantity: Number.parseInt(draft.quantityInput, 10),
+    // The exact entered total, parsed by the same boundary as every other NOK input.
+    totalPaidNokMinor: parseNokMinor(draft.totalPaidInput),
+    purchasedOn: draft.purchasedOn,
     openedOn: draft.openedOn,
     pulls: draft.pulls.map((pull) => ({
       cardVariantId: pull.cardVariantId ?? undefined,

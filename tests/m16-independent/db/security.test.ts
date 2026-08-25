@@ -28,7 +28,7 @@ import {
   hasSupabaseEnv,
   probeM16Surface,
   requireCreateOpeningRpc,
-  requirePullAddRpc,
+  resolvePullSurface,
   skipUnlessM16,
 } from '../helpers/contract'
 import { createIsolatedSealedProduct, createSealedPurchase } from '../helpers/fixtures'
@@ -149,19 +149,32 @@ describe.skipIf(!hasSupabaseEnv())('M16 security oracle', () => {
       }
     })
 
-    it('B cannot attach a pull to A’s opening', async (ctx) => {
+    it("B cannot attach a pull to A's opening (folded surface: B cannot create-with-pulls on A's lot)", async (ctx) => {
       if (!(await ensureSeed(ctx))) return
       const surface = await skipUnlessM16(ctx, service)
-      const pullRpc = requirePullAddRpc(surface)
-      const { error } = await clientB.rpc(
-        pullRpc.name,
-        bindAddPullArgs(pullRpc, {
-          openingId: aOpeningId,
-          quantity: 1,
-          cardVariantId: seedCatalog.charizardVariantId,
-        }),
-      )
-      expect(error, "B attached a pull to A's opening").not.toBeNull()
+      const pullSurface = resolvePullSurface(surface)
+      if (pullSurface.mode === 'dedicated') {
+        const { error } = await clientB.rpc(
+          pullSurface.rpc.name,
+          bindAddPullArgs(pullSurface.rpc, {
+            openingId: aOpeningId,
+            quantity: 1,
+            cardVariantId: seedCatalog.charizardVariantId,
+          }),
+        )
+        expect(error, "B attached a pull to A's opening").not.toBeNull()
+        return
+      }
+      // Folded world: the only pull-attachment path is creation itself, so the attack is
+      // "B creates an opening consuming A's lot WITH pulls" — which must fail identically.
+      const rpc = requireCreateOpeningRpc(surface)
+      const args = bindOpeningCreateArgs(rpc, {
+        openedOn: today,
+        consumptions: [{ lotId: aSealedLotId, quantity: 1 }],
+        pulls: [{ cardVariantId: seedCatalog.charizardVariantId, quantity: 1 }],
+      })
+      const { error } = await clientB.rpc(rpc.name, args)
+      expect(error, "B created an opening with pulls from A's sealed lot").not.toBeNull()
     })
 
     it('B cannot void A’s opening', async (ctx) => {
