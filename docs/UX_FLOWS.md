@@ -471,7 +471,7 @@ sits one restrained disclosure sentence: "Older market-value history uses weekly
 observations" (D-070) — it qualifies MARKET-VALUE history only; purchases, sales and cost basis
 are exact frozen records and are never described as approximate.
 
-**Automatic settle after an owner mutation (P42, D-074).** A correction anywhere in the app
+**Automatic settle after an owner mutation (P42, D-082).** A correction anywhere in the app
 (add/remove/adjust/void) enqueues a snapshot recompute; Home marks the state honestly with the
 "Updating…" badge and then settles BY ITSELF: the summary query polls only while
 `pending_recompute` is true (3 s cadence; no idle polling), the every-minute worker drains the

@@ -228,13 +228,13 @@ commands against same-database functions — no HTTP, no secret:
 
 | Job | Schedule | Work |
 |---|---|---|
-| `m12-recompute-snapshots` | every minute (D-074) | `drain_portfolio_recompute_queue(20)` — bounded, SKIP LOCKED, per-user failure isolation |
+| `m12-recompute-snapshots` | every minute (D-082) | `drain_portfolio_recompute_queue(20)` — bounded, SKIP LOCKED, per-user failure isolation |
 | `m12-daily-snapshot-sweep` | 05:11 UTC daily | `enqueue_portfolio_daily_maintenance()` — current-date snapshot guarantee for every user with data |
-| `m12-run-log-prune` | 04:33 UTC daily (D-074) | deletes `portfolio_recompute_runs` older than 30 days — bounds the run log now that ticks are minutely |
+| `m12-run-log-prune` | 04:33 UTC daily (D-082) | deletes `portfolio_recompute_runs` older than 30 days — bounds the run log now that ticks are minutely |
 
 The original :07/:22/:37/:52 schedule deliberately trailed M9's */15 ingest ticks so a freshly
 ingested price batch was consumed on the NEXT tick. P42 replaced it with an every-minute drain
-(D-074): after an owner mutation, Home's "Updating…" state now settles within about a minute
+(D-082): after an owner mutation, Home's "Updating…" state now settles within about a minute
 plus one poll tick instead of up to fifteen. Measured cost basis: hosted no-op ticks complete in
 ~0.0 s; the drain is bounded and SKIP LOCKED, so a slow rebuild never collides destructively
 with the next tick. The nightly prune keeps the resulting run-log growth (~1 440 tiny rows/day)
