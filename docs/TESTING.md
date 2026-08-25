@@ -460,6 +460,52 @@ Constraints and triggers, exercised directly:
   ~10k lots / 2k sales / 4k valuations on a throwaway account and times the real pipeline under the
   owner JWT, reporting duration, request count and artifact size
 
+**M16 openings (`tests/db/m16_openings.test.ts`, `tests/authorization/m16_openings.test.ts`,
+`tests/data/opening.test.ts`, `tests/ui/opening-*.test.ts`, `tests/e2e/openings.spec.ts`,
+`tests/m16-independent/`):**
+
+- DB core (ephemeral stack): E1–E16 scenario map — spend invariance with the exact frozen share
+  (E1); the corrected 29995 residual proof in BOTH split orders (E2, D-060's once-only argument);
+  gift/not-paid unknown-cost honesty (E3); all-card tracking incl. basic energy as first-class
+  inventory and priced-path cross-checks against the resolver itself (E4); selected-pulls +
+  both-or-neither remainder (E5); sell-pull NULL-basis discipline and proceeds (E6); over-open
+  refusal (E7); concurrent 6+6 serialization (E8); anon denial ×6 surfaces + cross-user
+  attacks + service-role defence-in-depth trigger (E9/E10); void lifecycles with the P53 §10
+  purchase-stays policy (E11/I7/I8) and sold-pull void block naming the blocker (E12);
+  backdated dirty_from (E13); reset isolation incl. counts + B-survival (E14, I15); History
+  single-event discipline + no pull double-reporting (E15, I11) plus ONE Opening recent-activity
+  row (I12); audit_events absence (E16)
+- P53 integration cases layered onto the same suites: server-side idempotent create retry — one
+  opening (I2), material-mismatch key reuse refused (I2b), idempotent PROVISIONAL retry — one
+  purchase, one opening, replay checked before the ledger write (I3); bought-and-opened total-paid
+  29995 = unit 9998 + residual 1 with line-level honesty (I10); known-zero ≠ unknown (I6);
+  explicit separate purchase correction after an opening void (I9); composite-uniqueness
+  cross-user same-UUID independence
+- Pure domain: §5.3 return formula vs the worked examples; exact preview rule reproducing the
+  writer byte-for-byte incl. 19996→9999 (I4/I5); ROI rounding; completeness marker pairing;
+  bought-and-opened draft gates and input assembly; copy pins (never-0, no per-pull ROI, void-does-
+  not-undo-purchase wording); controller mapping matrix against a mocked data layer (I1) incl.
+  blocked-void outcomes and concise error mapping (§29)
+- Export: backup v2 envelope (schema_version 2 only; v1 refused post-M16; openings section,
+  counts, canonical ordering, `opening_id` linkage round-trip — I13); openings.csv projection
+  incl. unknown-cost empty cell and provenance markers (I14)
+- Independent adversarial package (implementation-blind P52 source, PR #53): pure oracles run
+  everywhere via the standalone config (`pnpm exec vitest run --config
+  tests/m16-independent/vitest.config.ts`); DB-gated economic/lifecycle/security/provisional/
+  integration oracles bind execution-bound to the shipped atomic create-with-pulls surface
+  (folded pulls, dedicated provisional RPC, total-paid slot — P53 §4 binding decisions recorded in
+  helpers/contract.ts). First-contact classification at integration: ORACLE_BINDING_MISMATCH ×2
+  adapted without loosening assertions (scalar lot dialect + folded pull attachment; provisional
+  total-paid binder); UNEXECUTED_DB_GATED for everything needing the ephemeral stack. Its backup
+  oracle arms the v2 BLOCKER: a generated post-M16 backup claiming v1 or missing
+  openings/linkage fails the release
+
+**M16 DB CI status:** all DB-backed M16 cases are MANDATORY_PENDING_CI — GitHub Actions was
+billing/startup-blocked repo-wide during the parallel cycle AND the integration session, so no
+fresh-migrate, grant-audit, hostile-grant convergence, db/authorization suite run, M12
+rebuild/incremental gate, M13 export adversarial execution or 10k benchmark has exercised this
+branch yet. Release remains blocked until one full green `db-tests` run covers exactly that list.
+
 ---
 
 ## 6. E2E

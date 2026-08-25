@@ -10,6 +10,55 @@ they were**.
 
 ## [Unreleased]
 
+### Added — 2026-08-26 — M16: Openings, pulls and backup v2 — integrated candidate (sources PR #55 + #54 + #53; integration branch, DO NOT MERGE until DB CI runs)
+
+Openings ship end to end as the single integrated M16 candidate on `feat/m16-openings-integrated`,
+combining three parallel sources deliberately — P50 canonical core (PR #55), P51 user experience
+(PR #54) and the independent implementation-blind adversarial contract package (PR #53). The
+integration branch is the ONLY candidate that can eventually merge to main; the source PRs stay
+open/draft and unmerged. **Release stays blocked until a full green DB CI run** (fresh migrate,
+grant audit + hostile-grant convergence, db/authorization suites incl. M16, M12 rebuild gate, M13
+adversarial execution, 10k benchmark) — GitHub Actions was billing/startup-blocked repo-wide
+throughout; recorded per TESTING.md.
+
+What exists:
+
+- **Canonical openings ledger** — `openings` table (one source sealed lot per opening, D-087);
+  consumption via the M10 `lot_disposals.kind='opened'` writer with the exact frozen share
+  (residual rule identical to sales); pulled-card lots structurally carry NO cost basis
+  (`unallocated_opening`, NULL columns — per-pull ROI is unrepresentable, not hidden); tracking
+  completeness owner-declared; bulk remainder both-or-neither. Opening creates NO spend; voiding
+  an opening restores sealed inventory but NEVER undoes its purchase (D-090).
+- **Buy-and-opened flow with total-paid exactness** (D-090) — the wizard's second entry mode takes
+  the RECEIPT TOTAL ("3 packs, paid 299,95"), never a per-unit price; one real provisional
+  purchase plus the opening in one transaction; largest-remainder split keeps every figure øre-
+  exact (unit 9998 ×2 = 19996, exhausting final unit 9999); the line-total equality CHECK gained
+  a widening largest-remainder tolerance to represent the exact total honestly.
+- **Server-side idempotency** (D-089) — `openings.idempotency_key` unique per owner; retries with
+  the same key return the same committed opening; on the provisional path the key is resolved
+  BEFORE the purchase row exists so a lost-response retry can never double-spend; materially
+  different reuse is refused by name.
+- **Exact cost preview** — `list_opening_sources()` returns already-derived preview components
+  (effective unit basis + exhaustion residual) matching the writer byte-for-byte; one tested
+  domain boundary (`computeOpeningCostPreview`) composes them; no client re-implements SQL
+  arithmetic.
+- **Provisional reconciliation without audit_events** — provenance on the opening row itself
+  (`provisional_purchase_id` / `reconciled_at` / `reconciled_to_purchase_id`); F12 holds at every
+  instant inside the single commit; repeat-refused.
+- **History & Home** — one Opening event per opening in History (Openings chip/badge/route);
+  opening-linked pulls never double-report as additions; exactly ONE Opening row per opening in
+  Home recent activity.
+- **Backup v2 (D-091)** — schema_version 2 adds the canonical `data.openings` section plus
+  `opening_id` linkage on acquisition lots/disposals; v1 files remain valid pre-Openings
+  artifacts; post-M16 writers emit v2 only; validator, counts, ordering and tests updated.
+- **CSV** — `openings.csv` joins the full human export suite.
+- **Reset extension** — reset clears openings, their pull lots and disposals in FK-deterministic
+  position with honest counts.
+- **Independent adversarial binding** — the P52 oracle package binds execution-bound to the shipped
+  surface (folded create-with-pulls, dedicated provisional RPC, total-paid slot) without loosening
+  assertions; two first-contact mismatches classified ORACLE_BINDING_MISMATCH and adapted
+  deliberately; everything DB-backed remains gated pending CI.
+
 ### Fixed — 2026-08-25 — Home's Current Portfolio Value updates immediately (P48, D-086; PR #51)
 
 Owner-reported: after adding a card, the value breakdown and spending figures were already

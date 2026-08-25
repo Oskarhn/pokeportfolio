@@ -358,13 +358,17 @@ bottleneck, and the scanner is what removes it.
 **Gate:** measurably faster than manual search against a real stack of cards, verified with a
 timed comparison.
 
-### M16 — Openings · V1 priority 2
+### M16 — Openings · V1 priority 2 — EXECUTED AHEAD OF THE SCANNER (owner resequencing)
 
-Full lifecycle. All-cards tracking by default, hits-only option, bulk remainder estimate.
-Opening return in kroner first. Provisional-cost reconciliation UI.
+Full lifecycle, shipped in code as the integrated M16 candidate (openings + pulls + backup v2).
+All-cards tracking by default; selected-pulls / not-sure modes. Bought-and-opened entry with
+receipt-TOTAL exactness (D-090). Opening return in kroner first. Provisional-cost reconciliation.
+Server-side idempotency on every creation (D-089). Voiding an opening never undoes its purchase
+(D-090).
 
 **Gate:** E4, E5 and E13 reproduce end to end. No pull shows a zero cost basis or a per-card ROI.
-Reconciliation cannot double-count (F12).
+Reconciliation cannot double-count (F12). DB CI (fresh migrate, grant/hostile-grant audit, all
+DB suites, benchmarks) must run GREEN before any release — pending at integration time.
 
 ### M17 — Grading workflow
 

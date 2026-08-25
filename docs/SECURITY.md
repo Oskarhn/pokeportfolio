@@ -783,6 +783,28 @@ The last three are not generic advice. They were written after the deployed proj
 disagreed — the second time about whether a signed-in user could set their own `is_admin` flag. See
 PROJECT_JOURNAL.md, 2026-08-20.
 
+### 12.1 M16 openings checklist (applied)
+
+- RLS: `openings` is owner-SELECT only — NO browser INSERT/UPDATE/DELETE grant or policy exists;
+  every write happens inside SECURITY DEFINER RPCs (the D-060 frozen-figure standard), so there is
+  no write policy to check by construction.
+- `openings_check_owner()` trigger re-asserts ownership of the source lot, the denormalized sealed
+  product identity and both referenced purchases on EVERY write path including privileged direct
+  writes; `lot_disposals_check_owner` / `acquisition_lots_check_owner` were extended full-body
+  with opening-linkage checks.
+- All four writers are SECURITY DEFINER with `search_path = ''`, no dynamic SQL, caller identity
+  from `auth.uid()` alone, explicit ownership verification of every caller-supplied id inside the
+  body (DEFINER bypasses RLS — verified explicitly, the M11 bug-5 rule). Reads (`get_opening`,
+  `list_opening_sources`) are SECURITY INVOKER over ordinary RLS rows.
+- Idempotency keys are scoped by composite `(user_id, idempotency_key)` uniqueness — one user's
+  key can never collide with, replay, or reveal another's operation; cross-user material mismatch
+  is refused identically to not-found (no existence oracle).
+- Authorization suite covers anon denial across all six functions, cross-user open/read/void/
+  reconcile/pull-attach attacks, admin-promotion granting nothing, forged provisional-link and
+  opening_id attachments, and direct-write grant refusals.
+- Error mapping in the UI layer never echoes raw PostgreSQL internals, UUIDs or financial
+  payloads to logs or screens beyond the concise mapped messages.
+
 ---
 
 ## 13. Deployment gate

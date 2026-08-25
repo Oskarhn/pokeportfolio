@@ -4,7 +4,62 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-**Last updated:** 2026-08-25 — **M13 (Export and versioned backup) is MERGED and
+**Last updated:** 2026-08-26 — **M16 (Openings, pulls, backup v2) EXISTS AS AN INTEGRATED
+CANDIDATE BRANCH `feat/m16-openings-integrated` — NOT MERGED, NOT DEPLOYED.** Three parallel
+sources were combined deliberately on one branch: P50 opening financial/DB core (PR #55 @
+`7fe883d`), P51 opening UI (PR #54 @ `fc06c67`) and the P52 independent adversarial package
+(PR #53 @ `ebee9a1`), all verified OPEN/DRAFT/UNMERGED at their exact expected heads before
+integration. The integration session (P53) added: server-side idempotency (D-089), buy-and-open
+with total-paid exactness incl. the widened line-total CHECK (D-090), exact preview components +
+source picker RPC, the §10 void policy fix (void ≠ undo purchase), one Opening recent-activity
+row, backup schema_version 2 (D-091), openings.csv, docs fold-down (FINANCIAL_MODEL §5.5,
+DATA_MODEL §5.8, DECISIONS D-087–D-091, PRODUCT_SPEC, UX_FLOWS F5/F11.1, ROADMAP, TESTING,
+SECURITY §12.1, BACKLOG cascade entry). Local gates green (typecheck/lint/format, unit 388/388,
+build, e2e 62/62, m13-adversarial 49/12-skip, m16-independent 29/22-skip). **DB CI never ran:
+GitHub Actions was billing/startup-blocked repo-wide; ALL DB-backed verification is
+MANDATORY_PENDING_CI and release is blocked until one full green db-tests run.** Open draft PR
+against main carries the DO NOT MERGE banner; hosted Supabase untouched.
+
+---
+
+## M16 — Openings, pulls and backup v2 (integrated candidate, awaiting DB CI)
+
+Branch `feat/m16-openings-integrated`, worktree `C:\Users\Oskar\Documents\Pokemonapp-worktrees\p53-m16-integration`,
+based exactly on origin/main `92b238c`. Source PRs #53/#54/#55 stay open as historical sources;
+the integration PR is the only merge candidate. Decisions D-087–D-091; UX_FLOWS F5 shipped shape;
+full scenario map in TESTING.md §5's M16 block.
+
+What a future session must know:
+
+1. **DB CI gate is THE blocker.** When Actions works again, run the full list in TESTING.md §5
+   ("M16 DB CI status"): fresh migrate from scratch, grant audit against
+   `20260902120030_m16_privilege_baseline.sql`, hostile-grant convergence re-applying it, both
+   permanent benchmark steps, `tests/db` + `tests/authorization` suites, the M13 adversarial
+   execution step, and `pnpm exec vitest run --config tests/m16-independent/vitest.config.ts`.
+   Expect first-contact plpgsql findings to be possible (history says they usually are).
+2. **The four M16 migrations are UNHOSTED** and were repaired freely during integration
+   (`20260902120000/10/20/30`). They have NEVER touched pokeportfolio-dev. Apply them via
+   `supabase db push --linked` BEFORE any frontend deploy that calls the new RPCs.
+3. **Void policy is D-090:** voiding an opening keeps its purchase active (provisional included).
+   P50's original symmetric-void tests were rewritten; if anything still assumes the old
+   behaviour, the document wins.
+4. **Provisional contract renamed:** `create_opening_from_provisional(p_total_paid_minor, …,
+   p_idempotency_key)` replaces `p_unit_price_minor`. `database.types.ts` hand-updated per
+   standing discipline; regenerate + diff when Docker/CI allows.
+5. **Backup writers are v2-only now** (D-091); restore remains M19.
+6. **Sales-family cascade gap is BACKLOGGED**, not fixed: every post-M4 user_id FK lacks ON
+   DELETE CASCADE (BACKLOG.md "Later"). Not required by reset or openings.
+7. Owner-device walkthrough remains pending post-merge: wizard both modes, multi-lot choice,
+   backdate, pull burst, retry-after-failure idempotency, blocked-void copy, openings.csv export
+   on installed iPhone PWA.
+
+---
+
+---
+
+## Released state below this line predates M16
+
+**M13 (Export and versioned backup) is MERGED and
 RELEASED: PR #47 squash-merged as `0fa3021b8f7415b4c3b427917845406d36d0d40f` on `main`,
 Cloudflare deployed and verified (`deployment-check.mjs` 28/28, `grant-audit.sql` clean,
 `remote-security-check.mjs` 17/17 phase 1; no migration exists for M13, so none was
@@ -336,10 +391,12 @@ the preflight note above for why the committed file stands.
 
 ## Status
 
-**M1–M12, the parallel release, and M13/P42/P43/P48 are all merged/deployed. No open engineering item
-remains in any released family; the open items are the owner manual checks above (Home live-value
-repro, History browsing, reset flow, installed-iPhone export) and the standing owner-device check
-carried since M7.1. Do not begin M16 resequencing before the owner records final approval.**
+**M1–M12, the parallel release, and M13/P42/P43/P48 are all merged/deployed. No open engineering
+item remains in any released family; the open items are the owner manual checks above (Home
+live-value repro, History browsing, reset flow, installed-iPhone export) and the standing
+owner-device check carried since M7.1. M16 (Openings, pulls, backup v2) now EXISTS as the
+integrated candidate branch `feat/m16-openings-integrated` — see the M16 section at the top of
+this file; it is NOT merged and release is blocked on a full green DB CI run.**
 
 ## M9 — Pricing and snapshots
 

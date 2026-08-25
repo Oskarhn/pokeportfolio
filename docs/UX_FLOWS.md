@@ -226,26 +226,48 @@ lot's quantity to a different intent without touching cost basis, spend, or mark
 
 ---
 
-## F5 — Open sealed product (V1)
+## F5 — Open sealed product (V1 — SHIPPED M16, integrated wizard shape)
 
-→ Sealed › item › Open
-→ Confirm quantity (default 1) and pack count (prefilled from the product)
+→ Sealed Holding Detail › **Open** (or + menu › Open product) → `/openings/new`
+
+The shipped wizard runs as four steps (Product → Quantity & date → Pulls → Review) driven by a
+pure state machine; the draft survives back-navigation in session memory. Where this original
+sketch and the shipped flow differ, the wizard's shape is canonical:
+
+→ Confirm the acquisition LOT: arriving from a holding with exactly one open lot auto-confirms;
+  several lots are all listed with their own dates and costs, and none is silently picked
+→ Quantity & date: "How many are you opening?" with an EXACT cost preview — unit basis × quantity,
+  plus the exhaustion residual only when the opening empties the lot (P53 §7)
 → **The dialog states plainly: "The purchase stays in your spending history. This product leaves
   sealed inventory."** — because this is exactly the behaviour users of other apps do not expect
-→ Choose tracking mode: *Every card* (default) or *Hits only*
-→ Add pulls: search, or scan once the scanner exists. Each pull is a lot with no cost.
-→ Optional: bulk remainder — count and estimated value
-→ Save
+→ Tracking completeness is asked on Review: *All cards* (default), *Selected pulls only*, *Not
+  sure* — subsumes the sketch's hits-only mode; non-all_cards forces the incompleteness marker on
+  every opening-return display
+→ Add pulls: search or manual fallback. Each pull is a lot with no individual cost.
+→ Optional: bulk remainder — count and estimated value (both or neither)
+→ Finish
+
 ✓ Sealed lot quantity drops; the lot itself remains with `quantity_remaining = 0`
 ✓ Collectible spend is **unchanged** — verifiable on the dashboard before and after
 ✓ Pull cards appear in the collection, each marked "From opening"
 ✓ Opening shows cost, tracked value, and return with an incompleteness marker when tracking is
   not `all_cards`
+✓ History shows ONE Opening event per opening; pulled cards never double-report as additions
+✓ Home's recent activity gains one Opening row per opening (never N per-pull rows)
 
-⚠ Opening without a recorded purchase → the manually entered cost **creates a real ledger entry**
-  so the money appears in lifetime spending. The opening is marked "Cost entered manually — not
-  linked to a purchase" with a **Link purchase** action.
+**Second entry mode — bought-and-opened (shipped M16, D-090).** "I bought these packs and opened
+them now": pick the sealed product from the catalog, enter how many and the RECEIPT TOTAL PAID,
+the purchase/opening dates, then pulls and tracking as above. One real provisional purchase plus
+the opening are created atomically; spend increases by the total exactly once. Server-side
+idempotency makes a retried submission harmless (D-089).
+
+⚠ Opening without a recorded purchase → the bought-and-opened flow above creates the real ledger
+  entry automatically; the opening is marked "Cost entered manually — not linked to a purchase"
+  with a **Link purchase** action.
 ⚠ Voiding an opening after a pull has been sold → blocked, naming the sale
+⚠ Voiding NEVER undoes the purchase (D-090): sealed inventory is restored while the purchase —
+  provisional included — stays in spending history; wrong purchases go through the
+  purchase-correction surface separately.
 
 **Linking a provisional opening to its real purchase**
 
@@ -590,18 +612,24 @@ day one (M7 prompt §12 was explicit that a menu of dead actions is worse than a
 | Search cards | Opens Search (`/catalog`) |
 | Add card manually | Opens the catalog-missing-card form (`/portfolio/manual/new`) |
 | Record purchase (M8) | Opens the multi-line purchase ledger form (`/purchases/new`) |
+| Add sealed product (M11) | Opens the custom-sealed-product form |
+| Record sale (M10) | Opens the multi-line sale form (`/sales/new`) |
+| Open product (M16) | Opens the opening wizard (`/openings/new`) |
 | Scan card (M7.1) | Establishes the scanner's future position in this menu; shows "Card scanner is not available yet" — no permission request, no capture code (D-006 still governs the real implementation) |
 
 | Arrives later | Action |
 |---|---|
-| M11 | Add sealed product |
 | M15 | The Scan card entry above becomes real |
-| After openings (M16) | Open product |
 | After trades (M18) | Record trade |
 
 **Record sale shipped in M10** — a fifth entry in this menu, plus Portfolio's select-mode "Sell"
 action and a Holding Detail "Sell" button, all opening `/sales/new` with the relevant holding(s)
 pre-loaded.
+
+**Open product shipped in M16** — the opening wizard's second entry point (the first is Sealed
+Holding Detail's "Open" action). The wizard offers two modes: open an already-owned lot
+(Holding Detail preselects its holding; multiple lots always require an explicit choice) and
+**bought-and-opened**, which collects the receipt total paid rather than a per-unit price.
 
 ---
 

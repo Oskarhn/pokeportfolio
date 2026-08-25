@@ -1702,3 +1702,36 @@ code. Had the auto-void actually regressed, polling would have hidden a real fin
 behind a smoother UX. The synthetic suites now pin both halves separately: the ledger contract
 (quick-add -> remove -> baseline restored EXACTLY) in `tests/db/p42_owner_refresh.test.ts`, and
 the poll/settle decisions as pure domain functions in `tests/data/dashboard.test.ts`.
+
+---
+
+## 2026-08-26 (M16/P53) - The receipt total is the contract: exactness shaped the schema, not the other way around
+
+Buy-and-open looked like pure UI orchestration until the 29995 case was written down. The owner
+states "3 packs, paid 299,95" - and the ledger had nowhere honest to put the last ore. M3's
+`purchase_lines_line_total_matches_unit_price` equality CHECK forced line_total = unit x qty =
+29994; the M8 allocation CHECK pinned attributable to line_total + allocations; GPO/CS read
+attributable. Every legal-looking workaround fabricated something: a 1-ore fake shipping fee, a
+fake discount, a header-only total that the spending summary would undercount by the residual.
+The honest representation required changing ONE intra-row invariant: replace the equality CHECK
+with the largest-remainder envelope (excess < quantity), store floor(total/qty) as the display
+unit value, and let the lot's existing residual columns carry the difference so consumption
+reproduces the entered total exactly through ANY split of openings. Lesson: when a prompt says
+"respect actual CHECK constraints", read it as "model them first, then decide which single one
+is wrong for the new fact" - widening only, with every pre-existing row validating unchanged.
+
+The second lesson of this session is about parallel-source integration. P52's oracle package was
+written implementation-blind, and its binders assumed dialects the shipped backend deliberately
+does not use (an array-of-lots create payload; a separate add-pull RPC). Both are reasonable
+spellings of the same contract, so both were bound rather than one side being declared wrong:
+scalar-lot + folded-pull attachment joined the binder vocabulary next to the originals, and the
+provisional path gained a dedicated binder that prefers its real RPC and FAILS LOUDLY if the
+idempotency parameter is missing. Adaptation without loosening is what keeps an independent
+oracle worth having after integration day.
+
+Third: void semantics. P50's symmetric provisional-void felt tidy until stated in words - it
+could restore live sealed inventory whose purchase no longer counted, i.e. a free sealed box.
+"The opening did not happen" is a different sentence from "the purchase did not happen", and the
+ledger now enforces the difference. The tests that had encoded the old symmetry were rewritten,
+not weakened: they now pin that spend stays counted across open+void and that only the separate
+purchase-correction surface can remove it.

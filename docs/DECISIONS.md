@@ -2275,3 +2275,86 @@ they are the raw material of history and are untouched. Alternatives rejected: c
 headline from a new live-CMV RPC (duplicate work per load), waiting for the drain with better
 copy only (leaves the owner-visible latency), and deriving coverage from snapshot counts
 (wrong regime — coverage must describe current state).
+
+---
+
+## D-087 — One source sealed acquisition lot per opening (Option A)
+
+**2026-08-26 — Accepted** (P50, confirmed at P53 integration)
+
+An opening consumes 1..N units of exactly ONE `acquisition_lots` row: `openings.source_lot_id` is
+NOT NULL and the consumption is one `lot_disposals(kind='opened')` row per opening (unique
+live-per-opening index). Opening units across two different acquisitions is two openings.
+
+Rationale: real usage opens from one purchase at a time; the per-lot residual rule
+(FINANCIAL_MODEL §4.3) is exact per lot regardless of how a lot's units are split; and the model
+stays widenable — multi-lot consumption later drops the single unique index without touching any
+stored row or financial figure. Rejected: disposal-level multi-lot linkage now (more state, no
+user story behind it).
+
+## D-088 — Opening current financial semantics; pulled cards carry NO individual basis
+
+**2026-08-26 — Accepted** (P50, confirmed at P53 integration)
+
+Opening creates NO spend anywhere (CS/GPO are byte-identical across an opening); the opening OWNS
+the frozen cost it consumed (`openings.cost_nok_minor`, `cost_source='from_lot'|'unknown'`);
+every pull lot is structurally uncosted (`origin='opening'`,
+`cost_basis_state='unallocated_opening'`, NULL basis columns) so per-card ROI for pulled cards is
+UNREPRESENTABLE, not merely hidden. Opening return (§5.3) is analytical scope over kroner the
+purchase ledger already counted once and is never additive with TTEP (F8). A known cost of
+exactly ZERO is legitimate data when the basis genuinely was zero; UNKNOWN stays NULL — never a
+fake zero (M1 at opening scope). Tracking completeness is owner-declared, never inferred;
+incomplete tracking suppresses any bare percentage.
+
+## D-089 — Server-side idempotency on opening creation; provisional replay checked BEFORE the purchase
+
+**2026-08-26 — Accepted** (P53)
+
+Every opening write carries a client-generated UUID idempotency key, stored NOT NULL on
+`openings.idempotency_key` and unique per `(user_id, idempotency_key)`. Same key + same material
+request (lot/product, quantity, business date) ⇒ the SAME committed opening is returned; same key
++ materially different arguments ⇒ named `idempotency-key-reuse` error (mismatched reuse is
+rejected because material fields make it cheaply verifiable — full request hashing would be
+disproportionate). On the provisional path the key is resolved BEFORE the purchase insert:
+a retry after "purchase created + opening committed + response lost" can never create a second
+purchase or double-count spend. Client double-click guards are UX only; this invariant lives in
+the writer.
+
+## D-090 — Buy-and-open ships with total-paid exactness; line-total CHECK gains largest-remainder tolerance
+
+**2026-08-26 — Accepted** (P53)
+
+The owner-requested "I bought these packs and opened them now" flow enters the RECEIPT TOTAL,
+never a per-unit price. The provisional backend contract takes `p_total_paid_minor` and splits it
+by integer largest remainder: unit = floor(total/qty) on the line/lot as display/storage value,
+residual = total − unit×qty on the acquisition lot's existing residual columns, so Σ attributable
+basis equals the entered total exactly through any opening split. To represent this honestly on
+the canonical line, M3's equality CHECK `line_total_minor = unit_price_minor × quantity` was
+REPLACED by `unit×qty ≤ line_total ≤ unit×qty + qty − 1` (widening only: all pre-existing rows
+and every other writer produce excess 0). Rejected alternatives: booking the remainder as fake
+shipping/discount allocations (fabricates a fact), two lines (creates a second lot, breaking the
+single-source-lot model), and header-total-only exactness (GPO reads line attributable cost and
+would undercount by the residual).
+
+Voiding an opening deliberately does NOT void its purchase — including a provisional_opening one.
+"VOID OPENING = the opening did not happen"; the purchase is a separate economic fact corrected
+through the ordinary purchase-correction surface. This replaces P50's symmetric provisional-void,
+which could restore live sealed inventory whose purchase no longer counted (a free sealed lot).
+
+Manual-card pull identities resolve to reusable `manual_card_definitions` rows at submission time,
+cached per identity so retries never duplicate definitions; an abandoned definition is safe
+reusable metadata containing no fabricated financial fact, while the opening/pulls transaction
+itself remains fully atomic.
+
+## D-091 — Backup schema_version 2: Openings-capable export
+
+**2026-08-26 — Accepted** (P53)
+
+M16 introduces canonical user data (`openings` plus the `opening_id` relationships), so the M13
+backup format cannot stay lossless at v1: writers emit v2 ONLY, adding the canonical
+`data.openings` section (all columns incl. `idempotency_key` and reconciliation provenance, money
+as exact text) and extending `acquisition_lots` / `lot_disposals` rows with `opening_id`. v1 files
+are NOT retroactively wrong — they were valid pre-Openings exports; restore remains M19 and no
+import exists yet. A generated post-M16 backup claiming v1, missing openings, or missing the
+linkage fields is a release blocker, policed by the M13 adversarial suite and the independent
+M16 backup oracle.

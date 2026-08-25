@@ -701,23 +701,61 @@ ever have reproduces its exact original cost basis: no minor unit lost, none dup
 deterministic regardless of sale order. Full derivation:
 `supabase/migrations/20260828120010_m10_sales_rpc.sql`.
 
-### 5.8 `openings`
+### 5.8 `openings` — implemented shape (M16, 20260902120000/10)
+
+The implemented schema deliberately deviates from the pre-implementation sketch below in four
+recorded ways (single source lot; `quantity_opened`; row-field reconciliation provenance instead
+of audit_events; RPC-only writers with named refusals). THIS table is canonical:
 
 | Column | Notes |
 |---|---|
-| `id uuid pk`, `user_id fk` | |
-| `opened_on date` | |
-| `sealed_product_id fk nullable`, `source_lot_id fk nullable` | Null for an unlinked opening |
-| `provisional_purchase_id fk nullable` | The auto-created ledger entry, if the cost was entered manually |
-| `pack_count int nullable` | |
-| `cost_minor nullable`, `cost_currency`, `cost_nok_minor nullable` | |
-| `cost_source` | enum `from_lot`, `unknown` |
-| `tracking_completeness` | enum `all_cards`, `selected_pulls`, `unknown` — defaults to `all_cards`; drives the incompleteness marker (F8 area) |
-| `bulk_remainder_estimate_minor nullable`, `bulk_remainder_count int nullable` | |
+| `id uuid pk`, `user_id uuid not null fk ON DELETE CASCADE` | |
+| `opened_on date not null` | business date; backdating supported |
+| `source_lot_id uuid NOT NULL fk acquisition_lots` | **ONE** source sealed acquisition lot per opening (D-087). Multi-lot consumption = two openings today; widening later drops one unique index without touching stored rows. |
+| `sealed_product_id uuid NOT NULL fk` | denormalized identity from the lot's holding; trigger-reasserted |
+| `quantity_opened int not null > 0` | replaces the sketch's informational `pack_count`: the consumed unit count is the load-bearing fact (disposal, cost share, History) |
+| `cost_source opening_cost_source` | enum `from_lot`, `unknown` |
+| `cost_nok_minor bigint NULL` | NULL iff `unknown`; a known cost of exactly ZERO is legitimate data — unknown must never become fake zero (CHECK `openings_cost_shape`) |
+| `tracking_completeness opening_tracking` | enum `all_cards` (default), `selected_pulls`, `unknown` — drives the incompleteness marker (F8); never inferred from pull count |
+| `bulk_remainder_estimate_nok_minor bigint NULL ≥ 0`, `bulk_remainder_count int NULL > 0` | both-or-neither (CHECK) |
+| `provisional_purchase_id uuid NULL fk purchases` | the auto-created buy-and-open purchase; retained after reconciliation as the historical pointer |
+| `reconciled_at timestamptz NULL`, `reconciled_to_purchase_id uuid NULL fk` | reconciliation provenance ON THE ROW — set together, once (CHECK `openings_reconciliation_shape`). **No audit_events exists and none was created.** |
+| `idempotency_key uuid NOT NULL default gen_random_uuid()` | server-enforced submission identity (D-089); unique per `(user_id, idempotency_key)` |
 | `notes`, `created_at`, `voided_at nullable` | |
+
+Linkage columns elsewhere:
+
+- `lot_disposals.opening_id` + CHECK `(kind='opened') = (opening_id IS NOT NULL)` +
+  unique live-per-opening partial index (`lot_disposals_one_live_per_opening`) — the consumption
+  record; reconcile retires and rewrites it inside one transaction.
+- `acquisition_lots.opening_id` + forward CHECK (`opening_id ⇒ origin='opening'`) — pulled-card
+  attribution; a sold pull keeps its opening forever.
+
+RLS: owner-SELECT only; every write goes through SECURITY DEFINER RPCs
+(`create_opening`, `create_opening_from_provisional`, `void_opening`,
+`reconcile_opening_cost`) whose bodies verify ownership of EVERY caller-supplied id explicitly.
+Reads: `get_opening(p_opening_id)` (INVOKER, bounded §5.3 result components, money as text) and
+`list_opening_sources(p_holding_id?)` (INVOKER, openable lots with ALREADY-DERIVED preview
+components — effective unit basis and exhaustion residual matching the writer's freezing rule
+exactly, so no client re-implements the arithmetic).
+
+**Lock order / concurrency (§24 review).** Writers lock exactly ONE acquisition lot
+(`SELECT … FOR UPDATE`) before re-checking `quantity_remaining` against the live row:
+`create_opening` (source lot), `reconcile_opening_cost` (real target lot, after the opening row's
+own FOR UPDATE lock), `void_opening`/`void_acquisition_lot`/`create_sale`/
+`reduce_holding_quantity`/`remove_holdings_from_portfolio` all follow the established
+ascending-lot discipline. Single-lot locking cannot participate in a cycle with an ascending
+multi-lot order (a cycle needs each party to hold what the other wants next; a single lock is
+acquired once and never interleaved), so no new deadlock class is introduced; genuine overlap
+serializes on the row lock and the loser fails its live re-check. Behavioural burst oracles
+cover this in tests; no pg_locks transcript is claimed.
 
 Pulls are not a separate table. A pull **is** an `acquisition_lot` with `origin = 'opening'`
 and `opening_id` set. This is why a sold pull remains attributable to its opening forever.
+Manual-card pulls are ordinary pulls over `manual_card_definitions` rows; the wizard resolves
+identities at submission time (cached per identity so retries never duplicate definitions), and
+an abandoned definition is safe reusable metadata containing NO fabricated financial fact —
+the opening/pulls transaction itself stays fully atomic (D-090 companion note).
 
 #### 5.8.1 Provisional purchase for an unlinked opening
 
@@ -727,24 +765,25 @@ cost concept that no other query knows about, the opening creates a **real purch
 
 ```
 purchase(origin='provisional_opening')
-  └── purchase_line(line_type='sealed', spend_class='collectible')
-        └── acquisition_lot          ← immediately consumed
+  └── purchase_line(line_type='sealed', spend_class='collectible',
+                    line_total = EXACT entered total; unit_price = floor(total/qty))
+        └── acquisition_lot(unit_cost_basis_nok=floor(total/qty),
+                            residual_nok=total − floor×qty)   ← immediately consumed
               └── lot_disposal(kind='opened') ──> opening
 ```
 
 It behaves as an ordinary purchase everywhere: `GPO`, `CS`, monthly spend, retailer statistics.
-The opening gets a normal `cost_source = 'from_lot'`. No aggregate needs a special case.
+The opening gets a normal `cost_source = 'from_lot'`. No aggregate needs a special case. The
+line-level largest-remainder tolerance is enforced by the REPLACED
+`purchase_lines_line_total_matches_unit_price` CHECK (excess < quantity, D-090); the lot residual
+carries the difference so consumption reproduces the entered total to the øre.
 
 **Reconciliation.** When the real receipt is entered, the user links it. In one transaction the
-opening's `source_lot_id` repoints at the real lot, the provisional purchase is voided, and an
-`audit_event` of action `opening_cost_reconciled` records both purchase ids.
-
-```sql
--- F12: at most one non-voided cost source per opening
-CREATE UNIQUE INDEX openings_one_live_cost
-  ON openings (id)
-  WHERE provisional_purchase_id IS NOT NULL AND source_lot_id IS NOT NULL;
-```
+provisional consumption is retired (restoring the provisional lot via D1), a new consumption
+freezes the real lot's exact share, the opening repoints at the real lot, provenance is stamped
+on the opening row itself (`reconciled_at`, `reconciled_to_purchase_id` — there is NO
+audit_events table), and the provisional purchase is voided. F12 holds at every instant inside
+the single commit; a second reconcile is refused by name.
 
 Reconciliation is explicit, never automatic. Fuzzy-matching an opening against a similar-looking
 purchase would silently corrupt the ledger in exactly the cases where the user cannot easily
