@@ -338,6 +338,59 @@ function psqlScalar(sqlText) {
   }
 }
 
+// Since P42's every-minute recompute drain is active wherever the M12 migrations are applied
+// (D-082), a cron tick can start a full-scale rebuild while this benchmark seeds or measures.
+// The rebuild competes for CPU/connections long enough to stall individual statements into
+// statement timeouts (observed once in CI during the price-history seed) and makes every
+// timing nondeterministic. This benchmark measures SQL cost, not cron coexistence, so the
+// minute-drain job is paused for the run and restored exactly afterwards.
+const RECOMPUTE_JOB = 'm12-recompute-snapshots'
+let pausedRecomputeJobCommand = null
+
+function pauseRecomputeDrain() {
+  const DB_URL = process.env.DB_URL
+  if (!DB_URL) return
+  try {
+    pausedRecomputeJobCommand = execFileSync(
+      'psql',
+      [DB_URL, '-tAc', `select command from cron.job where jobname = '${RECOMPUTE_JOB}'`],
+      { encoding: 'utf8' },
+    ).trim()
+    if (pausedRecomputeJobCommand) {
+      execFileSync('psql', [DB_URL, '-tAc', `select cron.unschedule('${RECOMPUTE_JOB}')`], {
+        encoding: 'utf8',
+      })
+      console.log('Paused the every-minute recompute drain for the duration of this benchmark.')
+    } else {
+      pausedRecomputeJobCommand = null
+    }
+  } catch (err) {
+    console.log(
+      `Could not pause the recompute drain (${String(err.message).split('\n')[0]}); continuing.`,
+    )
+    pausedRecomputeJobCommand = null
+  }
+}
+
+function resumeRecomputeDrain() {
+  const DB_URL = process.env.DB_URL
+  const command = pausedRecomputeJobCommand
+  pausedRecomputeJobCommand = null
+  if (!DB_URL || !command) return
+  try {
+    const literal = command.replaceAll("'", "''")
+    execFileSync(
+      'psql',
+      [DB_URL, '-tAc', `select cron.schedule('${RECOMPUTE_JOB}', '* * * * *', '${literal}')`],
+      { encoding: 'utf8' },
+    )
+    console.log('Restored the every-minute recompute drain.')
+  } catch (err) {
+    console.log(`ERROR: could not restore ${RECOMPUTE_JOB}: ${String(err.message).split('\n')[0]}`)
+    anyFailure = true
+  }
+}
+
 async function timeAsync(label, fn) {
   const t0 = performance.now()
   try {
@@ -356,6 +409,7 @@ async function timeAsync(label, fn) {
 }
 
 async function main() {
+  pauseRecomputeDrain()
   const user = await createSyntheticUser('snapshots-benchmark')
 
   const userClient = publishableKey
@@ -462,6 +516,7 @@ async function main() {
       process.exitCode = 1
     }
   } finally {
+    resumeRecomputeDrain()
     if (KEEP) {
       console.log(`\n--keep set: leaving synthetic account ${user.email} (${user.id}) in place.`)
     } else {

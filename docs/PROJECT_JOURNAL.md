@@ -1677,3 +1677,28 @@ failed job on the same SHA was accordingly not "retrying until green" � it was
 documented coin-flip in the runner's favour, with the prior pass as prior evidence. It passed;
 the release continued. The rule worth keeping: before re-running anything, prove the tree did
 not change; if the tree changed, a re-run proves nothing and the failure must be read as real.
+
+## 2026-08-24 (P42) - The dashboard was honest about being stale but had no way to become current
+
+An owner-reported production bug looked, from the repro, like a ghost-spend regression: remove a
+quick-add test card, watch Home sit on "Updating..." for minutes, and see the acquisition's spend
+still on screen. The hosted read-only diagnosis disproved the accounting theory in one query
+each: every removed test lot's single-line parent purchase had already been voided by the M8.1
+auto-void, a detector for "live purchases whose every line-lot is voided" returned zero rows, and
+the queue was empty. The ledger had been correct the whole time.
+
+The actual defect class is easy to build accidentally: `get_dashboard_summary` reports
+`pending_recompute` honestly, GPO/CS are computed live inside that same request, and CMV/TTEP
+come from the snapshot cache - but NOTHING ever re-fetched the summary while pending stayed
+true. React Query refetches on mount, focus and invalidation only. A user watching an
+already-mounted Home page could wait forever; a user returning later saw correct figures, which
+matches exactly what the hosted data showed after the fact. Two independent latency sources
+stacked: up to 15 minutes of cron cadence, then unbounded client-side silence on top.
+
+Two lessons worth keeping. First, an honesty signal without a refresh mechanism is only half a
+feature - the badge told the truth about staleness while the screen had no path out of it.
+Second, the diagnosis order mattered: prove the canonical state before touching any display
+code. Had the auto-void actually regressed, polling would have hidden a real financial defect
+behind a smoother UX. The synthetic suites now pin both halves separately: the ledger contract
+(quick-add -> remove -> baseline restored EXACTLY) in `tests/db/p42_owner_refresh.test.ts`, and
+the poll/settle decisions as pure domain functions in `tests/data/dashboard.test.ts`.

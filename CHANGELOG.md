@@ -35,6 +35,23 @@ bound deliberately and its DB-backed cross-user suite plus generated-backup cont
 CI's db-tests job; an opt-in ~10k-lot export scale audit joins the performance steps. Restore/import
 does not exist yet (M19 per D-025/BACKLOG).
 
+### Fixed — 2026-08-24 — Home settles automatically after a correction; recompute drain runs every minute (P42)
+
+Owner-reported: after removing a quick-add test card, Home sat on "Updating…" for many minutes
+and spend appeared not to return to its prior value. Hosted read-only diagnosis proved the
+ledger correct (the removed lot's parent purchase had been auto-voided synchronously — zero
+ghost purchases), so the fix targets refresh latency on both sides. Backend: one additive
+migration (`20260901120000_p42_cron_cadence.sql`) reschedules `m12-recompute-snapshots` from
+every 15 minutes to every minute (measured no-op ticks ~0.0 s; bounded batch; SKIP LOCKED) and
+adds a nightly `m12-run-log-prune` keeping 30 days of run history. Frontend: Home polls
+`dashboard-summary` only while `pending_recompute` is true (3 s; no idle polling); when pending
+flips false the value history refetches with it, so the "Updating…" badge can never vanish over
+a stale chart. Holding Detail's per-lot Void and Portfolio select-mode's Remove now invalidate
+the dashboard summary like every other correction path already did. New suites:
+`tests/db/p42_owner_refresh.test.ts` (quick-add→remove→baseline restored exactly, multi-line
+accessory spend preserved, partially-disposed stays blocked, cross-user untouched) and pure
+domain tests for the poll/settle decisions. Decisions D-082/D-083.
+
 ### Added — 2026-08-24 — Holding-level quantity correction and removal (P28, PR #42)
 
 From a holding's detail page, without Portfolio select mode: quantity 1 offers "Remove from

@@ -4,11 +4,19 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-**Last updated:** 2026-08-24 — **M13 (Export and versioned backup) exists as an INTEGRATED
-CANDIDATE on `feat/m13-export-backup` (draft PR against main): NOT merged, NOT deployed.** See
-"M13 — Export and backup (integrated candidate)" below. Beneath that: M1–M12 plus the parallel
-Home/Search/quantity release are complete in code, merged and deployed. M12 (Dashboard) was merged
-through PR #35 and released
+**Last updated:** 2026-08-24 — **M13 (Export and versioned backup) is MERGED and
+RELEASED: PR #47 squash-merged as `0fa3021b8f7415b4c3b427917845406d36d0d40f` on `main`,
+Cloudflare deployed and verified (`deployment-check.mjs` 28/28, `grant-audit.sql` clean,
+`remote-security-check.mjs` 17/17 phase 1; no migration exists for M13, so none was applied).**
+See "M13 — Export and backup" below. **P42 (owner recompute-refresh fix) follows as DRAFT
+PR #48 rebased onto that state: not merged, not deployed.** It targets refresh latency only:
+an additive cron migration (`20260901120000_p42_cron_cadence.sql`, every-minute drain +
+nightly run-log prune, D-082) and pending-only dashboard polling with a settle-triggered
+history refresh in Home (D-082), plus the two correction paths that were missing the
+`dashboard-summary` invalidation. Classification and the synthetic ledger contract are pinned
+by D-083 and `tests/db/p42_owner_refresh.test.ts`. Beneath that: M1–M12 plus the parallel
+Home/Search/quantity release are complete in code, merged and deployed. M12 (Dashboard) was
+merged through PR #35 and released
 against `pokeportfolio-dev` on 2026-08-23 (all six migrations applied, cron live, backfill
 converged, security green, `deployment-check.mjs` 28/28). On 2026-08-24 the three
 Claude-approved parallel branches were integrated in a controlled release: PR #40 (Home polish),

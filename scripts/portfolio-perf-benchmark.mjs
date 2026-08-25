@@ -83,6 +83,50 @@ function runPsql(argsList) {
   return execFileSync('psql', argsList, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
 }
 
+// Since P42's every-minute recompute drain is active wherever the M12 migrations are applied
+// (D-082), a cron tick can start a full-scale rebuild of this script's own seeded user while
+// it measures, contending for CPU/connections and making timings nondeterministic. This
+// benchmark measures SQL cost, not cron coexistence, so the minute-drain job is paused for
+// the run and restored exactly afterwards.
+const RECOMPUTE_JOB = 'm12-recompute-snapshots'
+let pausedRecomputeJobCommand = null
+
+function pauseRecomputeDrain() {
+  if (!DB_URL) return
+  try {
+    pausedRecomputeJobCommand = runPsql([
+      DB_URL,
+      '-tAc',
+      `select command from cron.job where jobname = '${RECOMPUTE_JOB}'`,
+    ]).trim()
+    if (pausedRecomputeJobCommand) {
+      runPsql([DB_URL, '-tAc', `select cron.unschedule('${RECOMPUTE_JOB}')`])
+      console.log('Paused the every-minute recompute drain for the duration of this benchmark.')
+    } else {
+      pausedRecomputeJobCommand = null
+    }
+  } catch (err) {
+    console.log(
+      `Could not pause the recompute drain (${String(err.message).split('\n')[0]}); continuing.`,
+    )
+    pausedRecomputeJobCommand = null
+  }
+}
+
+function resumeRecomputeDrain() {
+  const command = pausedRecomputeJobCommand
+  pausedRecomputeJobCommand = null
+  if (!DB_URL || !command) return
+  try {
+    const literal = command.replaceAll("'", "''")
+    runPsql([DB_URL, '-tAc', `select cron.schedule('${RECOMPUTE_JOB}', '* * * * *', '${literal}')`])
+    console.log('Restored the every-minute recompute drain.')
+  } catch (err) {
+    console.log(`ERROR: could not restore ${RECOMPUTE_JOB}: ${String(err.message).split('\n')[0]}`)
+    anyFailure = true
+  }
+}
+
 function runExplainPhase(phase, userId) {
   if (!DB_URL || !RUN_EXPLAIN) return
   try {
@@ -511,6 +555,7 @@ function printSummaryTable() {
 }
 
 async function main() {
+  pauseRecomputeDrain()
   const user = await createSyntheticUser('portfolio-benchmark')
 
   // list_portfolio/portfolio_counts are SECURITY INVOKER and read auth.uid() — calling them under
@@ -676,6 +721,7 @@ async function main() {
       process.exitCode = 1
     }
   } finally {
+    resumeRecomputeDrain()
     if (KEEP) {
       console.log(`\n--keep set: leaving synthetic account ${user.email} (${user.id}) in place.`)
     } else {

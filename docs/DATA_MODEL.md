@@ -915,9 +915,9 @@ boundaries (D-062); price-snapshot writes and retention thinning dirty affected 
 FX writes dirty raw-card owners from the rate date. Sealed intent, storage location, tags,
 favourites and collection membership deliberately dirty NOTHING (D-061/C1, prompt §23/§44).
 
-Scheduled maintenance (D-064): `m12-recompute-snapshots` cron every 15 min at :07/:22/:37/:52,
-plus the daily `m12-daily-snapshot-sweep`. NOT yet applied to any hosted project in this pilot —
-see HANDOVER.md's deployment state.
+Scheduled maintenance (D-064, cadence revised by D-082): `m12-recompute-snapshots` cron every
+minute, plus the daily `m12-daily-snapshot-sweep` and the nightly `m12-run-log-prune` (30-day
+recompute run-log retention). See HANDOVER.md's deployment state for what is live.
 
 ---
 
