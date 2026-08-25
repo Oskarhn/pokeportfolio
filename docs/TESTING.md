@@ -205,6 +205,24 @@ deadlocking (one clean win, one refusal against the winner's committed state), a
 `create_sale` vs adjust serializing on one lock order. The wire-format suite pins that the client
 passes the reduction array as jsonb, not a JSON string scalar.
 
+**P43 (`tests/db/p43_reset_and_history.test.ts`,
+`tests/authorization/p43_reset_history.test.ts`, plus entries in
+`tests/authorization/function_grants.test.ts`).** The full reset matrix: User A seeded with a
+raw known-cost quick-add, a graded holding + manual valuation, a sealed holding, a multi-line
+purchase with an accessory line, a sale + disposal, tags/collections/memberships, M12 snapshot +
+queue rows and every class of preserved setup metadata; reset asserts zero live holdings/lots/
+transactions/valuations/snapshots/queue, an intact profile, preserved metadata counts exactly,
+and B's canonical state untouched; idempotent second reset; the dashboard reading honestly empty
+(no snapshot, nothing pending, zero totals) afterward. History read surface: every event kind
+present, kind filters narrowing correctly, voided entries hidden by default and revealed by the
+toggle, keyset pagination covering all events exactly once across pages of 3, purchase-origin
+lots never double-reported as acquisitions. Authorization: anon denied both functions, no
+`p_user_id` overload exists for reset (forged-target attempt fails in the schema cache), A's
+feed never contains B's events, and A resetting never touches B. Atomicity is structurally
+asserted rather than fault-injected — PostgREST executes one request in one transaction and the
+FK-safe order is exercised by the full matrix; injecting a mid-function failure needs DDL the
+test harness cannot reach (same disclosure class as M12's deep drain fault-injection).
+
 ---
 
 ## 4. Authorization suite — mandatory

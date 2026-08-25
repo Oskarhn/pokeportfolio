@@ -406,7 +406,7 @@ export function HomePage() {
                 label="Net sales proceeds"
                 minor={s.nspMinor}
                 hidden={hideValues}
-                to={{ to: '/history', search: { tab: 'sold' } }}
+                to={{ to: '/history', search: { kind: 'sale' } }}
               />
               <SummaryLine
                 label="Realized result on costed sales"

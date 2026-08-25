@@ -258,6 +258,42 @@ convention is that applied migrations are historical record, not living document
 No test failed, no exploit exists today, and no SQL changed because of this — see
 `ai_outputs/Claude_outputs/output_19.txt`'s M10 SECURITY PREFLIGHT section for the full audit trail.
 
+### 3.2.5 P43: the full reset — the one deliberate SECURITY DEFINER destroyer (DECISIONS.md D-084)
+
+`reset_my_portfolio_data()` is destructive and security-sensitive by design: it permanently
+deletes every owned tracking row the caller has. The adversarial review it must satisfy:
+
+1. **Why DEFINER at all.** Browser roles hold no DELETE grant on `acquisition_lots`,
+   `purchases`/`purchase_lines`, `sales`/`sale_lines`/`lot_disposals`, `lot_cost_adjustments`,
+   `manual_valuations` or `portfolio_snapshots`, and no grant whatsoever on
+   `portfolio_recompute_queue` — that is D-060/§8's void-only ledger discipline. A SECURITY
+   INVOKER reset would require handing raw DELETE on all of them to `authenticated`, permanently.
+   DEFINER keeps every one of those grants exactly as narrow as before while adding EXECUTE on
+   ONE function. The alternative (widening table grants forever so an INVOKER could work) is
+   strictly worse.
+2. **What confines it to the caller.** There is no user-id parameter anywhere in the signature;
+   `v_user := auth.uid()` is resolved once and every DELETE filters `user_id = v_user`. No
+   dynamic SQL exists; the statement list is fixed text. A caller therefore cannot aim it at
+   another user even in principle — proven by a test asserting PostgREST finds NO overload
+   accepting `p_user_id`.
+3. **What it can never touch.** auth.users, profiles, invitations/claims/redemptions, shared
+   catalog, price_snapshots, fx_rates, cron rows, and any other user's rows are outside its
+   statement list entirely.
+4. **Atomicity.** One function call = one PostgREST request = one transaction; the fixed
+   child-before-parent FK order means any failure aborts with zero mutations. The queue row is
+   deleted FIRST so a concurrently-running snapshot drain either waits for this commit and then
+   finds nothing to do, or commits first and has its freshly written snapshots removed by this
+   transaction's final statement — no committed state ever shows stale values or a stuck
+   "Updating" flag.
+5. **Grants posture.** Revoked from PUBLIC/anon/authenticated at creation, granted back to
+   authenticated only; restated in the P43 privilege baseline; asserted in
+   `scripts/grant-audit.sql`; anon-denial and cross-user behaviour covered in
+   `tests/authorization/p43_reset_history.test.ts`.
+6. **Residual risk, disclosed.** A mid-reset concurrent write by the SAME user (impossible from
+   one browser session doing one click, but not from two sessions) would simply be deleted like
+   any other row — reset is documented as destroying everything the user owns, so that is the
+   contract working, not a leak.
+
 ### 3.3.1 M12 derived cache and engine (implementation candidate)
 
 The snapshot layer adds one new class of surface — a service-owned write path with no browser

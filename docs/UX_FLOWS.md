@@ -313,27 +313,43 @@ implementations produce wrong numbers.
 
 ---
 
-## F8.1 — Browse History · **implemented M10 (Sold only)**
+## F8.1 — Browse History · **reworked P43: unified correction-aware feed**
 
 → History (top-level destination, separate from Collection)
-→ Tabs: **Sold** · **Traded** · **Other**
+→ One feed over canonical events, with kind chips: **All · Purchases · Sales · Added · Values**
+→ Toggle: **Show corrections / voided** (off by default; presentation only — hiding an entry
+  never alters any total, D-084)
 
-A sold row shows card, quantity, date, marketplace, gross, fees, shipping, net proceeds,
-acquisition origin, cost basis if known, and result.
+An event row shows a kind badge, the item or receipt title, origin/item-count subtitle, business
+date, amount in NOK when one honestly exists (**—** otherwise), and a Voided badge under the
+toggle. Every row navigates to its existing correction surface — purchase → purchase detail
+(edit/void), sale → sale detail (edit/void), acquisition/valuation → Holding Detail — so History
+is never itself a delete console.
 
 ```
-Charizard ex · SV03 · NM              Sold 12 Jul 2026 · Finn.no
-Net proceeds  1 850 kr    Cost basis  1 200 kr    Result  +650 kr
-
-Pikachu VMAX · SWSH4 · NM             Sold 03 Aug 2026 · Finn.no
-Net proceeds    450 kr    Cost basis  unknown     Result  —
+[Purchase]  Finn.no · 3 item(s)                    12 Jul 2026    2 350 kr
+[Sale]      Finn.no · 1 item(s)                    03 Aug 2026    1 850 kr
+[Added]     Gift · ×1   Charizard                  10 Aug 2026    —
+[Value]     Manual value · Charizard               10 Aug 2026    12 345 kr
 ```
 
-✓ Sorting: newest, highest proceeds, highest result, largest loss, item, marketplace
-✓ **Sorting by result groups unknown-basis rows separately** rather than ranking them as the most
-  profitable sales ever made
-✓ Traded rows link to the trade, showing both sides, market values at trade date and cash legs
+✓ Only event kinds backed by real canonical data appear; Openings/Trades/Grading join when M16/
+  M17/M18 land (D-085) — no placeholder chips pretending they exist
+✓ Keyset pagination ("Load more") — stable order even across same-day events
+✓ Voided/corrected entries hidden by default, revealed by the toggle with status badges
 ✓ No fabricated profit anywhere in this view
+
+### F8.1a — Reset portfolio data (Profile → Danger zone) · **implemented P43**
+
+→ Profile → Danger zone → **Reset portfolio data**
+→ Confirmation sheet: "Are you sure? This cannot be undone." — states plainly what is removed
+  (cards/sealed inventory, purchases and spending, sales and results, acquisition history,
+  valuations, value history) and what is kept (account/settings, admin access, retailers,
+  storage locations, tags and collections — emptied of members, manual card definitions, own
+  sealed product definitions)
+→ Buttons: **Cancel** · **Yes, reset portfolio** (disabled while running; errors stay visible)
+→ ONE atomic server call (`reset_my_portfolio_data`, D-084); on success every cached query is
+  invalidated and Home renders the honest empty state
 
 ---
 

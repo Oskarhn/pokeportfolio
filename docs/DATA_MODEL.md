@@ -1040,6 +1040,18 @@ Guard rules:
 - Deleting a `custom_collection` removes membership rows only. No holding is affected (C1).
 - Deleting a user's account cascades all user-private data and leaves catalog and market data
   intact.
+- **Full reset** (`reset_my_portfolio_data()`, P43, D-084) is the one deliberate, owner-invoked
+  hard deletion of a user's entire tracking dataset: holdings, acquisition lots,
+  purchases/purchase_lines, sales/sale_lines, lot_disposals, lot_cost_adjustments,
+  manual_valuations, custom_collection_members and holding_tags (membership only — collection
+  and tag definitions survive), portfolio_snapshots and the recompute queue. One SECURITY
+  DEFINER call = one transaction; FK-deterministic child-first order with the queue row locked
+  first so no concurrent drain can resurrect stale derived state. Preserves the account,
+  profile/settings and reusable setup metadata (retailers, storage locations, tags, collection
+  definitions, manual card definitions, the user's own sealed products). Nothing is re-created
+  afterward: an empty account is genuinely empty — no fabricated zero-valued rows. Future
+  user-owned tables (grading submissions M17, openings M16, trade lines M18) extend the same
+  function in the same position of the deletion order.
 
 ---
 
@@ -1501,5 +1513,27 @@ because nothing changed.
 directly (PostgREST receives jsonb, not a JSON string scalar — pinned by
 `tests/data/collection-reduce-wire.test.ts`); `getHoldingLots` exposes each lot's purchase
 lineage so the sheet can route purchased lots to their receipt editor.
+
+## 22. P43 implementation notes — full reset and the unified History read surface
+
+**`reset_my_portfolio_data() returns table (..._deleted integer)`** — SECURITY DEFINER,
+`search_path = ''`, caller derived from `auth.uid()` alone, no `p_user_id` parameter to forge.
+Deletion order is FK-deterministic and locks the M12 queue row FIRST: queue → lot_disposals →
+sale_lines → sales → lot_cost_adjustments → manual_valuations → custom_collection_members →
+holding_tags → acquisition_lots → purchase_lines → purchases → holdings → portfolio_snapshots.
+The M12 invalidation triggers are INSERT/UPDATE-only, so these DELETEs enqueue nothing. Counts
+of deleted rows are returned per table for the UI's honest success feedback.
+
+**`list_history_events(p_kind text, p_include_voided boolean, p_limit int, p_before_at
+timestamptz, p_before_id uuid)`** — SECURITY INVOKER, one bounded keyset-paginated UNION over
+purchases, sales, non-purchase acquisitions (purchase-origin lots excluded — their receipt row is
+already the event) and active manual valuations (superseded rows excluded — supersede IS their
+correction lifecycle). Each event carries kind, primary id, holding id where applicable,
+business date (`occurred_on`) plus recording timestamp (`recorded_at`, also the pagination key),
+display title resolved through plain joins inside the same statement, an optional NOK minor-unit
+amount as text, an `active`/`voided` status and a navigation target. Voided entries are excluded
+unless `p_include_voided`; a kind filter narrows the feed without breaking cursor stability. No
+event-sourcing table exists; Openings (M16)/Grading (M17)/Trades (M18) extend the union when
+their canonical tables land.
 
 

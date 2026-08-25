@@ -4,32 +4,19 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-**Last updated:** 2026-08-24 — **M13 (Export and versioned backup) is MERGED and
+**Last updated:** 2026-08-25 — **M13 (Export and versioned backup) is MERGED and
 RELEASED: PR #47 squash-merged as `0fa3021b8f7415b4c3b427917845406d36d0d40f` on `main`,
 Cloudflare deployed and verified (`deployment-check.mjs` 28/28, `grant-audit.sql` clean,
-`remote-security-check.mjs` 17/17 phase 1; no migration exists for M13, so none was applied).**
-See "M13 — Export and backup" below. **P42 (owner recompute-refresh fix) follows as DRAFT
-PR #48 rebased onto that state: not merged, not deployed.** It targets refresh latency only:
-an additive cron migration (`20260901120000_p42_cron_cadence.sql`, every-minute drain +
-nightly run-log prune, D-082) and pending-only dashboard polling with a settle-triggered
-history refresh in Home (D-082), plus the two correction paths that were missing the
-`dashboard-summary` invalidation. Classification and the synthetic ledger contract are pinned
-by D-083 and `tests/db/p42_owner_refresh.test.ts`. Beneath that: M1–M12 plus the parallel
-Home/Search/quantity release are complete in code, merged and deployed. M12 (Dashboard) was
-merged through PR #35 and released
-against `pokeportfolio-dev` on 2026-08-23 (all six migrations applied, cron live, backfill
-converged, security green, `deployment-check.mjs` 28/28). On 2026-08-24 the three
-Claude-approved parallel branches were integrated in a controlled release: PR #40 (Home polish),
-PR #41 (Search set showcase/images/resilience) and PR #42 (holding-level quantity
-correction/removal, including its two P28 migrations applied to the hosted project BEFORE the
-frontend merge). Final state: `main` at `6a4b1b258cdc04088167db75d06f5e545ee9f934`, main CI
-green (486+ db tests), Cloudflare serving the release build (`deployment-check.mjs` 28/28),
-hosted security re-verified post-deploy (`grant-audit.sql` clean, `remote-security-check.mjs`
-17/17 phase 1, anon RPC probe refused 401/42501). Open items: the owner-facing signed-in checks
-(Dashboard since M12; now also Home/Search/Holding-Detail behaviours from this release —
-checklist below), same standing no-sign-in boundary as every session since M7.1.** See "P26/P27/
-P28 — parallel release" below, then "M12 — Dashboard (released)"; everything beneath describes
-earlier milestones.
+`remote-security-check.mjs` 17/17 phase 1; no migration exists for M13, so none was
+applied).** **P42 (owner recompute-refresh fix) is MERGED and RELEASED on top of it: PR #48
+squash-merged as `837942e6a50976323aaba558a1cfaacae9c17e5e`; its cron-cadence migration
+(`20260901120000_p42_cron_cadence.sql`) was applied to `pokeportfolio-dev` BEFORE the
+frontend merge — every-minute drain verified ticking naturally (~0.01 s no-op ticks),
+nightly run-log prune scheduled, deployment check 28/28.** **P43 (portfolio reset + unified
+correction-aware History) follows as DRAFT PR #49 rebased onto that state: not merged, not
+deployed.** See "P43 — Portfolio reset + unified History" below, then "M13 — Export
+and backup". Beneath that: M1–M12 plus the parallel Home/Search/quantity release are
+complete in code, merged and deployed. M12 (Dashboard) was merged through PR #35 and released
 
 ---
 
@@ -75,6 +62,52 @@ What exists (decisions D-074–D-081; UX_FLOWS F11; CHANGELOG):
 Still pending before M13 uses "released" language: Claude review of this integrated candidate, CI
 green on the integration PR itself, then merge/deploy strictly per GIT_WORKFLOW. Restore remains M19
 (D-025).
+
+---
+
+## P43 — Portfolio reset + unified History (draft PR #49, rebased)
+
+- **Reset backend** (`20260901120010_p43_reset_and_history.sql`):
+  `reset_my_portfolio_data()` — SECURITY DEFINER out of necessity (browsers hold no DELETE
+  grants on the ledger; widening them forever so an INVOKER could work would undo D-060),
+  `auth.uid()`-scoped with no user-id parameter, fixed `search_path`, no dynamic SQL,
+  FK-deterministic deletion order with the M12 queue row locked FIRST so no concurrent drain can
+  resurrect stale state, PUBLIC/anon revoked + authenticated granted, per-table deleted counts
+  returned. Preserves account/profile/settings and reusable setup metadata (retailers, storage
+  locations, tags, collection definitions emptied of members, manual card definitions, own
+  sealed products). Nothing re-created afterward — genuinely empty.
+- **History read surface**: `list_history_events(p_kind, p_include_voided, p_limit,
+  p_before_at, p_before_id)` — one bounded SECURITY INVOKER keyset-paginated union over
+  purchases, sales, non-purchase acquisitions and active manual valuations; voided entries
+  hidden by default behind a presentation-only toggle; money as text; no N+1.
+- **UI**: Profile Danger zone ("Are you sure?" → "Yes, reset portfolio", both removal and
+  retention lists stated plainly, disabled-while-running, visible errors, invalidate-all +
+  navigate Home on success); History rebuilt as one feed with All/Purchases/Sales/Added/Values
+  chips, corrections toggle, Load-more pagination, every row linking to its existing correction
+  surface (purchase/sale detail, Holding Detail).
+- **Decisions**: D-084 (CORRECTION vs VOID vs DISPLAY FILTER vs FULL RESET — reset is the only
+  intentional hard delete), D-085 (History = bounded union over canonical sources; corrections
+  surface through status, not a second table).
+- **Tests**: `tests/db/p43_reset_and_history.test.ts` (full seed matrix → reset → emptiness +
+  preservation + B untouched + honest empty dashboard reads; history kinds/filters/toggle/
+  pagination; idempotent re-reset; §12 worked example end-to-end),
+  `tests/authorization/p43_reset_history.test.ts` (anon denial both functions, forged
+  `p_user_id` overload rejected in the schema cache, feed isolation A vs B, cross-user reset
+  impotence), new grant entries in `tests/authorization/function_grants.test.ts`,
+  `scripts/grant-audit.sql` and the restated baseline `20260901120020_p43_privilege_baseline.sql`.
+- **CI: GREEN** on the PR head (both jobs; 502/502 db+authorization tests across 39 files,
+  hostile-grant convergence re-applying the new baseline). Four red runs preceded green and
+  every failure was a genuine catch by CI's ephemeral Postgres: a wrong-case fixture enum
+  ('PSA' vs 'psa'), missing `.single()` on rpc results in test helpers, an accumulation-based
+  isolation assertion, **one real function bug — reset's returned counts were computed after
+  the deletes (always zero), now captured via GET DIAGNOSTICS ROW_COUNT per statement** — and
+  a fixture lot silently failing M11's sealed_intent rule. Local checks before each push:
+  typecheck/lint/format clean, domain tests 168/168, production build green. Atomicity is
+  structurally asserted (one PostgREST request = one transaction + exercised FK order); true
+  fault-injection needs DDL the harness lacks — disclosed in TESTING.md.
+- **Not done / for reviewers**: confirm the reset-vs-drain concurrency note in SECURITY.md
+  §3.2.5 matches their reading; decide whether History's Values chip label should read
+  "Valuations"; hosted deploy intentionally NOT performed in this session.
 
 ---
 

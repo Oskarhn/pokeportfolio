@@ -2012,6 +2012,27 @@ export type Database = {
         }[]
       }
       is_admin: { Args: never; Returns: boolean }
+      list_history_events: {
+        Args: {
+          p_before_at?: string
+          p_before_id?: string
+          p_include_voided?: boolean
+          p_kind?: string
+          p_limit?: number
+        }
+        Returns: {
+          amount_nok_minor: string | null
+          event_kind: string
+          href: string
+          occurred_on: string
+          primary_id: string
+          recorded_at: string
+          secondary_id: string | null
+          status: string
+          subtitle: string
+          title: string
+        }[]
+      }
       list_portfolio: {
         Args: {
           p_condition?: Database["public"]["Enums"]["card_condition"]
@@ -2140,6 +2161,20 @@ export type Database = {
           blocked_reason: string | null
           holding_id: string
           physical_count: number
+        }[]
+      }
+      reset_my_portfolio_data: {
+        Args: never
+        Returns: {
+          acquisition_lots_deleted: number
+          holdings_deleted: number
+          lot_disposals_deleted: number
+          manual_valuations_deleted: number
+          purchase_lines_deleted: number
+          purchases_deleted: number
+          sale_lines_deleted: number
+          sales_deleted: number
+          snapshots_deleted: number
         }[]
       }
       resolve_variant_market_values: {
