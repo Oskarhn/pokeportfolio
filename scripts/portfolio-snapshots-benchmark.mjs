@@ -357,17 +357,17 @@ function pauseRecomputeDrain() {
       { encoding: 'utf8' },
     ).trim()
     if (pausedRecomputeJobCommand) {
-      execFileSync(
-        'psql',
-        [DB_URL, '-tAc', `select cron.unschedule('${RECOMPUTE_JOB}')`],
-        { encoding: 'utf8' },
-      )
+      execFileSync('psql', [DB_URL, '-tAc', `select cron.unschedule('${RECOMPUTE_JOB}')`], {
+        encoding: 'utf8',
+      })
       console.log('Paused the every-minute recompute drain for the duration of this benchmark.')
     } else {
       pausedRecomputeJobCommand = null
     }
   } catch (err) {
-    console.log(`Could not pause the recompute drain (${String(err.message).split('\n')[0]}); continuing.`)
+    console.log(
+      `Could not pause the recompute drain (${String(err.message).split('\n')[0]}); continuing.`,
+    )
     pausedRecomputeJobCommand = null
   }
 }

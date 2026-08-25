@@ -106,7 +106,9 @@ function pauseRecomputeDrain() {
       pausedRecomputeJobCommand = null
     }
   } catch (err) {
-    console.log(`Could not pause the recompute drain (${String(err.message).split('\n')[0]}); continuing.`)
+    console.log(
+      `Could not pause the recompute drain (${String(err.message).split('\n')[0]}); continuing.`,
+    )
     pausedRecomputeJobCommand = null
   }
 }
