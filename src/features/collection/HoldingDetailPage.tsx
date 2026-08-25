@@ -326,6 +326,15 @@ export function HoldingDetailPage() {
           </dl>
           {h.quantity > 0 ? (
             <div className="mt-2 flex flex-wrap items-center gap-2">
+              {isSealed ? (
+                <Link
+                  to="/openings/new"
+                  search={{ holdingId }}
+                  className="flex min-h-10 w-fit items-center rounded-lg border border-slate-700 px-4 text-sm font-semibold text-slate-200 hover:bg-slate-800"
+                >
+                  Open
+                </Link>
+              ) : null}
               <Link
                 to="/sales/new"
                 search={{ holdingIds: holdingId }}

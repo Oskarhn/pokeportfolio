@@ -8,8 +8,10 @@ import { toDecimalString } from '../../domain/money'
  * Unified History (P43). One feed over the canonical event sources that exist today — purchases,
  * sales, non-purchase additions and active manual valuations — with a voided/corrections toggle
  * that is presentation-only (hiding an entry never alters accounting; corrections themselves go
- * through each event's own edit/void lifecycle, DECISIONS.md D-084/D-085). Opening/Trade/Grading
- * become additional event kinds when M16/M17/M18 land — no placeholder chips until then.
+ * through each event's own edit/void lifecycle, DECISIONS.md D-084/D-085).
+ *
+ * M16 (P51): the Openings chip, badge and row target are declared now so an opening event has a
+ * home the moment its backend arm exists (P53); until then the chip reads an honest empty feed.
  */
 const KIND_FILTERS: { value: HistoryEventKind | 'all'; label: string }[] = [
   { value: 'all', label: 'All' },
@@ -17,6 +19,7 @@ const KIND_FILTERS: { value: HistoryEventKind | 'all'; label: string }[] = [
   { value: 'sale', label: 'Sales' },
   { value: 'acquisition', label: 'Added' },
   { value: 'valuation', label: 'Values' },
+  { value: 'opening', label: 'Openings' },
 ]
 
 const KIND_BADGE: Record<HistoryEventKind, string> = {
@@ -24,6 +27,7 @@ const KIND_BADGE: Record<HistoryEventKind, string> = {
   sale: 'Sale',
   acquisition: 'Added',
   valuation: 'Value',
+  opening: 'Opening',
 }
 
 const PAGE_SIZE = 50
@@ -161,10 +165,12 @@ function HistoryEventRow({ event }: { event: HistoryEvent }) {
       ? { to: '/purchases/$purchaseId', params: { purchaseId: event.primaryId } }
       : event.kind === 'sale'
         ? { to: '/sales/$saleId', params: { saleId: event.primaryId } }
-        : {
-            to: '/portfolio/$holdingId',
-            params: { holdingId: event.secondaryId ?? event.primaryId },
-          }
+        : event.kind === 'opening'
+          ? { to: '/openings/$openingId', params: { openingId: event.primaryId } }
+          : {
+              to: '/portfolio/$holdingId',
+              params: { holdingId: event.secondaryId ?? event.primaryId },
+            }
   return (
     <li>
       <Link
@@ -215,6 +221,7 @@ function EmptyState({ kind, showVoided }: { kind: HistoryEventKind | 'all'; show
     sale: 'No sales recorded yet — selling a card preserves its cost basis and reduces your Portfolio.',
     acquisition: 'No cards or sealed products added outside a purchase yet.',
     valuation: 'No manual valuations set yet.',
+    opening: 'No openings recorded yet — open a sealed product from its detail page or the + menu.',
   }
   return (
     <div className="space-y-3 rounded-lg border border-dashed border-slate-800 p-6 text-center">

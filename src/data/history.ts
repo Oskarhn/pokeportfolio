@@ -9,9 +9,14 @@ import { supabase } from './supabase-client'
  * Voided/corrected entries are a display filter (p_includeVoided), never an accounting change:
  * hiding them alters no total anywhere (DECISIONS.md D-084's CORRECTION vs DISPLAY-FILTER
  * distinction).
+ *
+ * M16 (P51): the `opening` kind is declared ahead of its backend union arm so the History UI
+ * (chip, badge, row target) is complete frontend-only. Until the integration wires the opening
+ * arm into `list_history_events`, selecting the chip simply yields an empty feed — honest absence,
+ * not a placeholder row. The backend owns when real rows appear.
  */
 
-export type HistoryEventKind = 'purchase' | 'sale' | 'acquisition' | 'valuation'
+export type HistoryEventKind = 'purchase' | 'sale' | 'acquisition' | 'valuation' | 'opening'
 
 export interface HistoryEvent {
   kind: HistoryEventKind
