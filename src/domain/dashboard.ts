@@ -277,12 +277,12 @@ export function recomputeJustSettled(
 export type TtepDisplayState =
   { kind: 'missing' } | { kind: 'hidden' } | { kind: 'known'; minorUnits: bigint }
 
-/** Rendering state for Total tracked economic position (prompt §124): the summary RPC returns
- *  ttep = NULL whenever no portfolio snapshot exists yet — every brand-new account, and every
- *  pre-existing account during initial deployment's backfill window. NULL means UNAVAILABLE:
- *  render "—", never a fabricated "0 kr" (DESIGN_SYSTEM.md §7 / CLAUDE.md honesty bar — the
- *  same missing-vs-zero discipline MoneyDisplay enforces for the headline). A snapshot-sourced
- *  genuine zero is a real answer and stays visible as 0; hide_values masks any PRESENT value. */
+/** Rendering state for a SNAPSHOT-sourced Total tracked economic position (prompt §124): the
+ *  summary RPC returns ttep = NULL whenever no portfolio snapshot exists yet. NULL means
+ *  UNAVAILABLE: render "—", never a fabricated "0 kr" (DESIGN_SYSTEM.md §7 / CLAUDE.md honesty
+ *  bar). A genuine zero is a real answer and stays visible as 0; hide_values masks any PRESENT
+ *  value. Historical/snapshot uses keep this mapping; Home's CURRENT figure now goes through
+ *  liveTtepDisplayState below (D-086). */
 export function ttepDisplayState(
   ttepMinor: bigint | null | undefined,
   hidden: boolean,
@@ -294,4 +294,89 @@ export function ttepDisplayState(
     return { kind: 'hidden' }
   }
   return { kind: 'known', minorUnits: ttepMinor }
+}
+
+/* ── P48: CURRENT figures are LIVE, HISTORICAL figures are snapshots (D-086) ──────────────── */
+
+/** The exact summary fields the live current-value derivation needs — all already returned by
+ *  one bounded `get_dashboard_summary()` call, so no second request, no per-card computation,
+ *  no N+1 resolver exists anywhere on this path. */
+export interface LivePortfolioValueInput {
+  /** Distinct holdings currently open (unique_holding_count). */
+  uniqueHoldingCount: number
+  /** Of those, how many carry at least one resolvable current value (priced_holding_count).
+   *  raw/graded/sealed sums already exclude unpriced holdings by construction. */
+  pricedHoldingCount: number
+  /** Lifetime ledger markers used only to distinguish a never-used account from an account
+   *  that legitimately owns nothing anymore (everything sold). */
+  gpoMinor: bigint
+  pudMinor: bigint
+  rawValueMinor: bigint
+  gradedValueMinor: bigint
+  sealedValueMinor: bigint
+}
+
+export type LivePortfolioValueState =
+  { kind: 'no-data' } | { kind: 'missing' } | { kind: 'known'; minorUnits: bigint }
+
+/**
+ * Current Portfolio Value from LIVE state (D-086): raw + graded + sealed as resolved for the
+ * user's open holdings right now — never the latest snapshot's cached CMV, which may lag until
+ * the history worker drains.
+ *
+ * Missing-vs-zero discipline (the project honesty bar):
+ * - A brand-new account (nothing owned, nothing ever spent or received) is `no-data` — the UI
+ *   keeps its existing empty-state contract, rendering "—" plus the start CTA.
+ * - Owned holdings with NONE priced are `missing` ("—"), NEVER 0 kr — absent pricing must not
+ *   masquerade as a valuation.
+ * - An account that genuinely owns nothing anymore (sold out of everything) has a REAL zero:
+ *   `known` with 0n.
+ * - Mixed coverage shows the sum of resolvable values; unpriced holdings stay surfaced through
+ *   the existing data-quality row, never silently converted to zero.
+ */
+export function livePortfolioValue(input: LivePortfolioValueInput): LivePortfolioValueState {
+  if (input.uniqueHoldingCount === 0 && input.gpoMinor === 0n && input.pudMinor === 0n) {
+    return { kind: 'no-data' }
+  }
+  if (input.pricedHoldingCount === 0) {
+    return input.uniqueHoldingCount === 0 ? { kind: 'known', minorUnits: 0n } : { kind: 'missing' }
+  }
+  return {
+    kind: 'known',
+    minorUnits: input.rawValueMinor + input.gradedValueMinor + input.sealedValueMinor,
+  }
+}
+
+export interface LiveTtepInput extends LivePortfolioValueInput {
+  /** Live net sales proceeds and collectible spend — canonical ledger sums, already current. */
+  nspMinor: bigint
+  csMinor: bigint
+}
+
+/**
+ * Current TTEP (D-086): CMV + NSP − CS with every term LIVE. The formula is unchanged
+ * (FINANCIAL_MODEL.md §2.6); what changed is that the CURRENT headline no longer waits for a
+ * snapshot row to exist. Where current CMV has zero pricing coverage the composite is honestly
+ * missing — coalescing it to 0 would fabricate a position out of nothing (§6.5's rule, applied
+ * to live coverage instead of snapshot existence). Snapshot-sourced historical TTEP semantics
+ * are untouched.
+ */
+export function liveTtepDisplayState(input: LiveTtepInput, hidden: boolean): TtepDisplayState {
+  const cmv = livePortfolioValue(input)
+  if (cmv.kind !== 'known') {
+    return ttepDisplayState(null, hidden)
+  }
+  return ttepDisplayState(cmv.minorUnits + input.nspMinor - input.csMinor, hidden)
+}
+
+/** Copy for the pending status shown while a snapshot recompute is queued (P48). It names what
+ *  is actually waiting — HISTORY — because the current value beside it is already live. It must
+ *  never imply that Current Portfolio Value itself is stale, and it never shows fake progress. */
+export const PENDING_HISTORY_LABEL = 'Updating history…'
+
+/** Whether Home shows the history-updating status (P48): only while a recompute is genuinely
+ *  queued. Undefined (summary not loaded yet) counts as not pending — no status before any
+ *  state is known. */
+export function historyStatusVisible(pendingRecompute: boolean | undefined): boolean {
+  return pendingRecompute === true
 }

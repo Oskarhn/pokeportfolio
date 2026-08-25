@@ -2243,3 +2243,35 @@ all because a supersede IS that fact's correction lifecycle (D-062).
 Purchase events link to the purchase lifecycle (edit/void), sale events to theirs, acquisitions
 and valuations to Holding Detail — History navigates to the existing correction surfaces rather
 than becoming a generic delete console (D-084 item 2).
+
+## D-086 — Home's CURRENT figures are live resolved state; snapshots are history only
+
+**2026-08-25 — Accepted** (P48, owner-reported after the P42 signed-in smoke test)
+
+After an ordinary add, Home's value breakdown and spending figures were already current (they
+read live state from `get_dashboard_summary`), but the primary "Current Portfolio Value" stayed
+on the previous snapshot — labelled "Updating…" as if it were the thing still being computed —
+until the background snapshot worker drained. The owner verdict: the headline must feel
+immediate.
+
+The adopted rule separates two regimes that had been conflated:
+
+- **CURRENT state is live canonical/resolved state.** Current Portfolio Value = raw + graded +
+  sealed as `get_dashboard_summary()` already resolves for open holdings; current TTEP = that
+  live CMV + live NSP − CS (formula unchanged). No second RPC, no per-card client computation,
+  no N+1: the values were already in the same bounded response.
+- **HISTORICAL state is `portfolio_snapshots`.** Chart points, period change and historical
+  accessibility summaries stay snapshot-backed. P42's every-minute worker remains exactly what
+  it now honestly is: a HISTORY freshness mechanism, not a prerequisite for a correct headline.
+
+Missing-vs-zero carries over unchanged in live terms: holdings with no resolvable pricing make
+the current figure "—", never 0; mixed coverage shows the partial sum with the unpriced count
+still surfaced; an account that sold everything has a real 0; a never-used account keeps its
+empty-state contract. The pending badge moved from beside the headline into the chart area and
+was reworded to "Updating history…", because the current value beside it is already current.
+
+Snapshot fields (`market_value_nok_minor`, `ttep_nok_minor`, …) remain in the summary response —
+they are the raw material of history and are untouched. Alternatives rejected: computing the
+headline from a new live-CMV RPC (duplicate work per load), waiting for the drain with better
+copy only (leaves the owner-visible latency), and deriving coverage from snapshot counts
+(wrong regime — coverage must describe current state).

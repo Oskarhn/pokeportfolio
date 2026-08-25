@@ -323,6 +323,12 @@ under History's corrections toggle.
 But spending is never buried: overall position sits immediately alongside it, large enough that
 the cost of the hobby is impossible to miss.
 
+**Current figures are live state; history is a snapshot cache (D-086).** Collection value and
+overall position reflect open holdings as resolved right now — after a correction they update as
+soon as the dashboard summary refetch returns, never on the next background worker tick. The
+value chart is historical (snapshot-backed); while background tracking catches up, an explicit
+"Updating history…" status says only that, never that the current value is stale.
+
 Six top-level figures, using the exact terms defined in
 [FINANCIAL_MODEL.md](FINANCIAL_MODEL.md) §9:
 

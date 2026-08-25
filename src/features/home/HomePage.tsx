@@ -21,10 +21,13 @@ import {
   dashboardSummaryRefetchInterval,
   filterHistoryWindow,
   historyPanelState,
+  historyStatusVisible,
   recomputeJustSettled,
   resolveActiveRange,
+  livePortfolioValue,
+  liveTtepDisplayState,
+  PENDING_HISTORY_LABEL,
   resolveRangeWindow,
-  ttepDisplayState,
   toChartSeries,
   type ChartSeriesPoint,
   type DashboardRange,
@@ -48,10 +51,14 @@ import {
  * Portfolio Value (D-023); Total tracked economic position (TTEP) sits nearby as the honest
  * secondary figure — never labelled "profit" (FINANCIAL_MODEL.md §9/§10).
  *
- * Headline figures come from the LATEST SNAPSHOT via one bounded summary request (UX_FLOWS.md
- * F10: no per-card computation on page load). While a recompute is queued after the user's own
- * mutation, an explicit "Updating…" badge says so instead of presenting stale cache as live
- * truth (prompt §67).
+ * CURRENT figures are LIVE (D-086): the headline is raw + graded + sealed as resolved for the
+ * user's open holdings right now, and TTEP is that live CMV + NSP − CS — all from the same
+ * bounded summary request (UX_FLOWS.md F10: no per-card computation on page load). A mutation
+ * therefore shows in these figures as soon as the invalidated summary refetch returns, not on
+ * the next snapshot-worker tick. HISTORICAL state (chart points, period change, accessibility
+ * summaries) stays snapshot-backed; while a recompute is queued an explicit "Updating
+ * history…" status says only that background tracking is catching up — it must never imply
+ * the current value itself is stale.
  *
  * Custom-collection scope shows correct current figures but no historical chart: membership
  * history was never recorded, and projecting current membership backwards would fabricate
@@ -192,6 +199,25 @@ export function HomePage() {
   const emptyAccount =
     s !== undefined && s.uniqueHoldingCount === 0 && s.gpoMinor === 0n && s.pudMinor === 0n
 
+  // D-086 — CURRENT figures are live canonical/resolved state, derived from the fields the same
+  // summary response already carries (one request; no second RPC, no per-card computation).
+  // LiveTtepInput extends LivePortfolioValueInput, so one object feeds both derivations.
+  const liveInput = s
+    ? {
+        uniqueHoldingCount: s.uniqueHoldingCount,
+        pricedHoldingCount: s.pricedHoldingCount,
+        gpoMinor: s.gpoMinor,
+        pudMinor: s.pudMinor,
+        rawValueMinor: s.rawValueMinor,
+        gradedValueMinor: s.gradedValueMinor,
+        sealedValueMinor: s.sealedValueMinor,
+        nspMinor: s.nspMinor,
+        csMinor: s.csMinor,
+      }
+    : null
+  const liveValue = liveInput ? livePortfolioValue(liveInput) : null
+  const liveTtep = liveInput ? liveTtepDisplayState(liveInput, hideValues) : null
+
   return (
     <div className="mx-auto w-full max-w-2xl space-y-6 py-2">
       <div className="md:hidden">
@@ -216,24 +242,12 @@ export function HomePage() {
               number gains or loses digits, never a fixed far-right edge. */}
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <MoneyDisplay
-              state={
-                scoped || !s || s.marketValueMinor === null || !s.marketValueHasCoverage
-                  ? 'missing'
-                  : 'known'
-              }
-              minorUnits={s?.marketValueMinor ?? undefined}
+              state={!scoped && liveValue?.kind === 'known' ? 'known' : 'missing'}
+              minorUnits={liveValue?.kind === 'known' ? liveValue.minorUnits : undefined}
               size="lg"
               hidden={hideValues}
               displayCurrency={displayCurrency}
             />
-            {!scoped && s?.pendingRecompute ? (
-              <span
-                className="rounded-full border border-sky-800/60 bg-sky-950/40 px-1.5 py-0.5 text-[10px] font-medium text-sky-300"
-                title="Your latest changes are being reflected — figures refresh automatically."
-              >
-                Updating…
-              </span>
-            ) : null}
             <ValuePrivacyToggle
               hidden={hideValues}
               onToggle={() => {
@@ -252,6 +266,20 @@ export function HomePage() {
 
         {/* ── Chart / honest placeholders ──────────────────────────────────────────────── */}
         <div className="space-y-3 border-t border-slate-800 pt-4">
+          {/* P48: the pending status lives with HISTORY, not beside the headline. The current
+              value above is already live; only the snapshot-backed chart/background tracking is
+              catching up. No fake progress percentage; disappears on its own when the P42 poll
+              observes pending_recompute flip false. */}
+          {!scoped && historyStatusVisible(s?.pendingRecompute) ? (
+            <p className="text-[11px] text-slate-500" role="status">
+              <span
+                className="rounded-full border border-sky-800/60 bg-sky-950/40 px-1.5 py-0.5 font-medium text-sky-300"
+                title="Your latest changes are already reflected in the figures above. The value history catches up automatically in about a minute."
+              >
+                {PENDING_HISTORY_LABEL}
+              </span>
+            </p>
+          ) : null}
           {scoped ? (
             <p className="rounded-xl border border-dashed border-slate-800 p-4 text-sm text-slate-500">
               Historical collection membership is not tracked yet — this chart follows your Main
@@ -313,26 +341,25 @@ export function HomePage() {
         </div>
 
         {/* Total tracked economic position — secondary, honestly labelled (prompt §124).
-            ttepMinor is NULL until the first snapshot exists: render the missing state ("—"),
-            never a fabricated 0 kr (ttepDisplayState / DESIGN_SYSTEM.md §7). The formula
-            explanation was removed on owner feedback (M12a §B) — the figure and its honest label
-            stay; no financial semantic changed. */}
+            D-086: the CURRENT figure uses live CMV + live NSP − live CS, so it no longer waits
+            for a snapshot; where current pricing has zero coverage it renders the missing state
+            ("—"), never a fabricated 0 kr. The formula explanation was removed on owner feedback
+            (M12a §B) — the figure and its honest label stay. */}
         {!scoped && s ? (
           <div className="border-t border-slate-800 pt-3">
             <p className="text-sm font-semibold tabular-nums text-slate-100">
               {(() => {
-                const ttep = ttepDisplayState(s.ttepMinor, hideValues)
-                if (ttep.kind === 'missing') {
+                if (!liveTtep || liveTtep.kind === 'missing') {
                   return (
                     <span aria-label="Not computed yet" className="text-slate-500">
                       —
                     </span>
                   )
                 }
-                if (ttep.kind === 'hidden') {
+                if (liveTtep.kind === 'hidden') {
                   return <span aria-label="Value hidden">•••• kr</span>
                 }
-                return <>{formatNokMinor(ttep.minorUnits)} kr</>
+                return <>{formatNokMinor(liveTtep.minorUnits)} kr</>
               })()}
             </p>
             <p className="text-xs text-slate-500">Total tracked economic position</p>

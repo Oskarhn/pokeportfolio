@@ -233,6 +233,8 @@ export function PurchaseFormPage() {
       await queryClient.invalidateQueries({ queryKey: ['purchases'] })
       await queryClient.invalidateQueries({ queryKey: ['spending-summary'] })
       await queryClient.invalidateQueries({ queryKey: ['portfolio'] })
+      // A purchase changes ownership and the ledger Home's live figures are derived from.
+      await queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] })
       await navigate({
         to: '/purchases/$purchaseId',
         params: { purchaseId: purchase.id },

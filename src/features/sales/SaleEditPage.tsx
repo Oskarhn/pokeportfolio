@@ -142,6 +142,8 @@ function SaleEditForm({ saleId, sale, lines }: { saleId: string; sale: Sale; lin
       await queryClient.invalidateQueries({ queryKey: ['sale', saleId] })
       await queryClient.invalidateQueries({ queryKey: ['sales'] })
       await queryClient.invalidateQueries({ queryKey: ['sales-summary'] })
+      // A price/fee correction changes NSP behind Home's live TTEP and spend figures.
+      await queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] })
       await navigate({ to: '/sales/$saleId', params: { saleId } })
     },
     onError: (err: Error) => {

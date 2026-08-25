@@ -10,6 +10,23 @@ they were**.
 
 ## [Unreleased]
 
+### Fixed — 2026-08-25 — Home's Current Portfolio Value updates immediately (P48, D-086)
+
+Owner-reported: after adding a card, the value breakdown and spending figures were already
+correct but Home's primary "Current Portfolio Value" sat on the previous snapshot — under an
+"Updating…" badge — until the background snapshot worker drained. The headline is now LIVE
+current state: raw + graded + sealed as `get_dashboard_summary()` already resolves for open
+holdings, and current TTEP is that live CMV + live NSP − CS. A mutation shows in both figures as
+soon as its invalidated summary refetch returns; no second request, no per-card computation. The
+chart/period-change history stays snapshot-backed by design: while a recompute is queued a small
+"Updating history…" status in the chart area says only that background tracking is catching up
+(never that the current value is stale), disappearing on its own when pending clears. Missing-vs-
+zero discipline holds in live terms: no priced holdings → "—", never 0; mixed coverage shows the
+partial sum with unpriced counts still surfaced; sold-out-of-everything shows its real 0.
+Every ownership/ledger mutation surface (add card/sealed acquisition, manual valuation set/
+clear, purchase create/edit/void, sale create/edit/void) now invalidates `dashboard-summary` —
+the surfaces P28/P43 built already did. No migration, no new RPC, no grant or cron change.
+
 ### Added — 2026-08-24 — M13: Export and versioned backup (PR #47; sources PR #44+#45+#46)
 
 Profile › Data › **Export & backup** (`/profile/export`): a ten-file CSV analysis suite and a

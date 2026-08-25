@@ -98,6 +98,8 @@ export function AddToCollectionPage() {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['portfolio'] })
       await queryClient.invalidateQueries({ queryKey: ['portfolio-counts'] })
+      // New ownership changes the live current-value figures Home derives from its summary.
+      await queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] })
       await navigate({ to: '/portfolio' })
     },
   })
