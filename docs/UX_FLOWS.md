@@ -318,7 +318,7 @@ implementations produce wrong numbers.
 → History (top-level destination, separate from Collection)
 → One feed over canonical events, with kind chips: **All · Purchases · Sales · Added · Values**
 → Toggle: **Show corrections / voided** (off by default; presentation only — hiding an entry
-  never alters any total, D-074)
+  never alters any total, D-084)
 
 An event row shows a kind badge, the item or receipt title, origin/item-count subtitle, business
 date, amount in NOK when one honestly exists (**—** otherwise), and a Voided badge under the
@@ -334,7 +334,7 @@ is never itself a delete console.
 ```
 
 ✓ Only event kinds backed by real canonical data appear; Openings/Trades/Grading join when M16/
-  M17/M18 land (D-075) — no placeholder chips pretending they exist
+  M17/M18 land (D-085) — no placeholder chips pretending they exist
 ✓ Keyset pagination ("Load more") — stable order even across same-day events
 ✓ Voided/corrected entries hidden by default, revealed by the toggle with status badges
 ✓ No fabricated profit anywhere in this view
@@ -348,7 +348,7 @@ is never itself a delete console.
   storage locations, tags and collections — emptied of members, manual card definitions, own
   sealed product definitions)
 → Buttons: **Cancel** · **Yes, reset portfolio** (disabled while running; errors stay visible)
-→ ONE atomic server call (`reset_my_portfolio_data`, D-074); on success every cached query is
+→ ONE atomic server call (`reset_my_portfolio_data`, D-084); on success every cached query is
   invalidated and Home renders the honest empty state
 
 ---

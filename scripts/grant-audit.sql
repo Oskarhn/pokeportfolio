@@ -378,7 +378,7 @@ begin
     -- P28: the Holding Detail quantity-correction surface (20260831120000).
     ('routine', 'reduce_holding_quantity(uuid, jsonb)', 'authenticated', 'EXECUTE'),
     -- P43: the atomic full reset (SECURITY DEFINER, auth.uid()-scoped only) and the unified
-    -- History read surface (SECURITY INVOKER, owner-only by construction). 20260901120000.
+    -- History read surface (SECURITY INVOKER, owner-only by construction). 20260901120010.
     ('routine', 'reset_my_portfolio_data()', 'authenticated', 'EXECUTE'),
     ('routine', 'list_history_events(text, boolean, integer, timestamp with time zone, uuid)',
      'authenticated', 'EXECUTE'),

@@ -1040,7 +1040,7 @@ Guard rules:
 - Deleting a `custom_collection` removes membership rows only. No holding is affected (C1).
 - Deleting a user's account cascades all user-private data and leaves catalog and market data
   intact.
-- **Full reset** (`reset_my_portfolio_data()`, P43, D-074) is the one deliberate, owner-invoked
+- **Full reset** (`reset_my_portfolio_data()`, P43, D-084) is the one deliberate, owner-invoked
   hard deletion of a user's entire tracking dataset: holdings, acquisition lots,
   purchases/purchase_lines, sales/sale_lines, lot_disposals, lot_cost_adjustments,
   manual_valuations, custom_collection_members and holding_tags (membership only — collection

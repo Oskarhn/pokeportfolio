@@ -11,10 +11,10 @@ import {
 
 /**
  * P43 — reset_my_portfolio_data() and list_history_events()
- * (20260901120000_p43_reset_and_history.sql).
+ * (20260901120010_p43_reset_and_history.sql).
  *
  * Reset is the ONE deliberate, destructive, atomic operation in the product (DECISIONS.md
- * D-074): this suite walks the full seed matrix from the prompt's reset test matrix — raw
+ * D-084): this suite walks the full seed matrix from the prompt's reset test matrix — raw
  * known-cost holding, graded holding with manual valuation, sealed holding, multi-line purchase
  * with an accessory line, sale + disposal, tags/collections/memberships, M12 snapshot + queue
  * rows, and every class of reusable setup metadata — resets User A only, and asserts A is

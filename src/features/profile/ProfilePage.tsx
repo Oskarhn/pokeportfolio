@@ -439,7 +439,7 @@ function ProfileSettings({ profile, isAdmin }: { profile: Profile; isAdmin: bool
  * data" clears owned inventory, purchases/spend, sales, acquisition history, valuations and the
  * portfolio-history cache in ONE atomic server call — while preserving the account, settings and
  * reusable setup metadata (retailers, storage locations, tags, collection definitions, manual
- * cards, own sealed products). DECISIONS.md D-074: this full reset is the only place permanent
+ * cards, own sealed products). DECISIONS.md D-084: this full reset is the only place permanent
  * deletion of tracking data is intentional; everything else corrects through the void lifecycle.
  *
  * The confirmation states both sides plainly (what goes, what stays), disables while running and

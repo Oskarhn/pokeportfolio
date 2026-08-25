@@ -1,6 +1,6 @@
 -- P43 restates the complete privilege baseline (SECURITY.md §5.9). This milestone adds no tables
 -- and exactly two browser-reachable functions: reset_my_portfolio_data(), the atomic
--- owner-scoped full reset (SECURITY DEFINER — see 20260901120000's header for why), and
+-- owner-scoped full reset (SECURITY DEFINER — see 20260901120010's header for why), and
 -- list_history_events(text, boolean, int, timestamptz, uuid), the unified History read surface.
 -- Everything else below is identical to `20260831120010_p28_privilege_baseline.sql`; only the
 -- P43 additions are noted inline.
@@ -79,7 +79,7 @@ grant execute on function public.remove_holdings_from_portfolio(uuid[]) to authe
 grant execute on function public.reduce_holding_quantity(uuid, jsonb) to authenticated;
 
 -- P43: the atomic full reset (SECURITY DEFINER; every statement filters by auth.uid() —
--- 20260901120000's header carries the full adversarial justification) and the unified History
+-- 20260901120010's header carries the full adversarial justification) and the unified History
 -- read surface (SECURITY INVOKER, owner-only by construction).
 grant execute on function public.reset_my_portfolio_data() to authenticated;
 grant execute on function public.list_history_events(text, boolean, int, timestamptz, uuid)

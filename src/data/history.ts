@@ -1,13 +1,13 @@
 import { supabase } from './supabase-client'
 
 /**
- * The unified History read surface (P43, 20260901120000_p43_reset_and_history.sql). One bounded,
+ * The unified History read surface (P43, 20260901120010_p43_reset_and_history.sql). One bounded,
  * keyset-paginated RPC over the canonical event sources that exist today — purchases, sales,
  * non-purchase acquisitions ("Added") and active manual valuations. Components call these, never
  * `supabase.rpc('list_history_events')` directly — same rule as every other src/data module.
  *
  * Voided/corrected entries are a display filter (p_includeVoided), never an accounting change:
- * hiding them alters no total anywhere (DECISIONS.md D-074's CORRECTION vs DISPLAY-FILTER
+ * hiding them alters no total anywhere (DECISIONS.md D-084's CORRECTION vs DISPLAY-FILTER
  * distinction).
  */
 

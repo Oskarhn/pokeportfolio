@@ -7,7 +7,7 @@
 --     state in one server-side transaction (prompt §2: no client-side loop of DELETEs; if any
 --     part fails, nothing resets). Preserves the account, profile/settings and reusable setup
 --     metadata (retailers, storage locations, tags, custom-collection definitions, manual card
---     definitions, the user's own private sealed-product definitions) — DECISIONS.md D-074.
+--     definitions, the user's own private sealed-product definitions) — DECISIONS.md D-084.
 --
 --   2. list_history_events(...)   — the unified History read surface: ONE bounded,
 --     keyset-paginated RPC over the canonical event sources that exist TODAY — purchases, sales,
@@ -25,7 +25,7 @@
 -- built to prevent (SECURITY.md §8, DATA_MODEL.md §9). SECURITY DEFINER keeps that surface
 -- unchanged: authenticated gains EXECUTE on exactly one function whose every statement filters
 -- by auth.uid() and nothing else. There is no p_user_id parameter to forge, no dynamic SQL, no
--- secrets. Full adversarial reasoning: docs/SECURITY.md and DECISIONS.md D-074.
+-- secrets. Full adversarial reasoning: docs/SECURITY.md and DECISIONS.md D-084.
 --
 -- ── Deletion order is FK-deterministic ────────────────────────────────────────────────────────
 -- Every parent here is referenced by at least one child WITHOUT ON DELETE CASCADE
@@ -141,7 +141,7 @@ comment on function public.reset_my_portfolio_data() is
   'lots, disposals, cost adjustments, manual valuations, collection/tag memberships, snapshot '
   'cache and recompute queue. Preserves account/profile settings and reusable setup metadata '
   '(retailers, storage locations, tags, collection definitions, manual cards, own sealed '
-  'products). The one intentional hard-delete in the product — full reset, D-074; everything '
+  'products). The one intentional hard-delete in the product — full reset, D-084; everything '
   'else corrects through the void lifecycle.';
 
 revoke execute on function public.reset_my_portfolio_data()
@@ -309,7 +309,7 @@ comment on function public.list_history_events(text, boolean, int, timestamptz, 
   'P43 unified History read surface: one bounded, keyset-paginated owner-only union over '
   'purchases, sales, non-purchase acquisitions and active manual valuations. Voided/corrected '
   'entries are hidden unless p_include_voided — a display filter that never touches accounting '
-  '(D-075). Future event kinds (openings M16, trades M18) extend the union when their tables '
+  '(D-085). Future event kinds (openings M16, trades M18) extend the union when their tables '
   'exist; no fake rows before then.';
 
 revoke execute on function public.list_history_events(text, boolean, int, timestamptz, uuid)

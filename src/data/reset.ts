@@ -1,9 +1,9 @@
 import { supabase } from './supabase-client'
 
 /**
- * The Profile Danger Zone's full reset (P43, 20260901120000_p43_reset_and_history.sql). ONE
+ * The Profile Danger Zone's full reset (P43, 20260901120010_p43_reset_and_history.sql). ONE
  * atomic server-side operation — never a client loop of DELETEs: the browser cannot delete from
- * the financial ledger at all, and a partial reset must be impossible (DECISIONS.md D-074).
+ * the financial ledger at all, and a partial reset must be impossible (DECISIONS.md D-084).
  *
  * Preserves the account, profile/settings and reusable setup metadata (retailers, storage
  * locations, tags, custom-collection definitions, manual card definitions, the user's own

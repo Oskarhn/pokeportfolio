@@ -258,7 +258,7 @@ convention is that applied migrations are historical record, not living document
 No test failed, no exploit exists today, and no SQL changed because of this — see
 `ai_outputs/Claude_outputs/output_19.txt`'s M10 SECURITY PREFLIGHT section for the full audit trail.
 
-### 3.2.5 P43: the full reset — the one deliberate SECURITY DEFINER destroyer (DECISIONS.md D-074)
+### 3.2.5 P43: the full reset — the one deliberate SECURITY DEFINER destroyer (DECISIONS.md D-084)
 
 `reset_my_portfolio_data()` is destructive and security-sensitive by design: it permanently
 deletes every owned tracking row the caller has. The adversarial review it must satisfy:

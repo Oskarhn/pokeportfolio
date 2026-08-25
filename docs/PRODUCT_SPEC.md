@@ -278,11 +278,11 @@ normally would. Four distinct concepts, deliberately not merged:
 ### 4.8.1 History — everything that happened to the collection
 
 A dedicated area, separate from Portfolio. Portfolio answers *what do I own now*; History
-answers *what happened, and when*. **Reworked P43 (D-075):** one unified feed over canonical
+answers *what happened, and when*. **Reworked P43 (D-085):** one unified feed over canonical
 events — purchases, sales, additions acquired outside a purchase, and manual valuations —
 with kind chips (All / Purchases / Sales / Added / Values) and a "Show corrections / voided"
 toggle. Voided/corrected entries are hidden by default; showing them is presentation only and
-never changes a total (D-074). Openings, trades and grading events join the feed when those
+never changes a total (D-084). Openings, trades and grading events join the feed when those
 features exist — no placeholder sections pretend otherwise.
 
 Every event row shows its kind, title, business date, amount where one honestly exists (**—**
@@ -303,7 +303,7 @@ sales/results, acquisition history, valuations, value history) and what is kept 
 settings, retailers, storage locations, tags, collections — emptied of members, manual card
 definitions, own sealed-product definitions). The reset is one atomic server operation; a failed
 reset changes nothing. This is the only place in the product where tracking data is permanently
-deleted (D-074); every other mistake is corrected through the void lifecycle and stays visible
+deleted (D-084); every other mistake is corrected through the void lifecycle and stays visible
 under History's corrections toggle.
 
 ### 4.9 Valuation

@@ -8,7 +8,7 @@ import { toDecimalString } from '../../domain/money'
  * Unified History (P43). One feed over the canonical event sources that exist today — purchases,
  * sales, non-purchase additions and active manual valuations — with a voided/corrections toggle
  * that is presentation-only (hiding an entry never alters accounting; corrections themselves go
- * through each event's own edit/void lifecycle, DECISIONS.md D-074/D-075). Opening/Trade/Grading
+ * through each event's own edit/void lifecycle, DECISIONS.md D-084/D-085). Opening/Trade/Grading
  * become additional event kinds when M16/M17/M18 land — no placeholder chips until then.
  */
 const KIND_FILTERS: { value: HistoryEventKind | 'all'; label: string }[] = [
