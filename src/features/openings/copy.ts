@@ -32,6 +32,33 @@ export const VOID_PURCHASE_NOTE =
   'The purchase itself stays in your spending history — voiding an opening does not undo it.'
 export const OPENING_RECORDED_ANNOUNCEMENT = 'Opening recorded.'
 
+/**
+ * Provisional-cost provenance (P59 / P58 F6) — stated honestly. A bought-and-open opening DOES
+ * cite a real, spend-counted purchase (FINANCIAL_MODEL §5.5): the cost came from the total the
+ * user entered, and it can be linked to the matching recorded receipt later.
+ */
+export const PROVISIONAL_COST_NOTE =
+  'Cost from the total you entered when you recorded this opening.'
+export const PROVISIONAL_LINK_HINT = 'You can link it to the matching recorded purchase later.'
+/** Post-reconciliation state label (§13). */
+export const RECONCILED_STATE_LABEL = 'Linked to recorded purchase'
+
+/** Reconciliation sheet (P59 §9–§11): link the opening to the actual recorded purchase. */
+export const RECONCILE_TITLE = 'Link to recorded purchase'
+export const RECONCILE_EXPLANATION =
+  'You originally entered this amount while opening the product. Pick the recorded purchase it actually came from.'
+export const RECONCILE_EMPTY_COPY = 'No matching recorded purchase is available yet.'
+export const RECONCILE_EMPTY_HINT =
+  'Record the purchase first (Quick add → Recorded purchase), then link it here.'
+export const RECONCILE_LINKED_ANNOUNCEMENT = 'Opening linked to its recorded purchase.'
+
+/** P58 F10: a failed manual-card creation is wrapped before any raw backend text can render. */
+export const MANUAL_CARD_CREATE_FAILED = "Couldn't create the manual card. Try again."
+
+/** Coverage honesty marker (P59 §16): shown beside retained value when some retained pulls have
+ *  no current price — the aggregate must not read as complete when it is partial. */
+export const UNPRICED_RETAINED_MARKER = 'Some retained pulls have no current price.'
+
 export type CostFigure = { kind: 'known'; minorUnits: bigint } | { kind: 'unknown' }
 
 /**
@@ -137,6 +164,24 @@ export function resultCopy(detail: OpeningDetail): ResultCopy | null {
 function signedKroner(minorUnits: bigint): string {
   const magnitude = minorUnits < 0n ? -minorUnits : minorUnits
   return `${minorUnits < 0n ? '−' : '+'}${formatNok(magnitude)} kr`
+}
+
+/**
+ * One pull row's held/sold state (P59 §15): a fully sold pull must never read like a card still
+ * held. Returns the concise state suffix, or null for an ordinary fully-held line:
+ *   remaining 0                → "Sold"
+ *   0 < remaining < quantity   → "1 of 2 remaining"
+ *   remaining = quantity       → null (ordinary held state)
+ * No per-card ROI, no per-line proceeds — those aggregates belong to the opening.
+ */
+export function pullRemainingCopy(
+  quantity: number,
+  quantityRemaining: number | null | undefined,
+): string | null {
+  if (quantityRemaining === null || quantityRemaining === undefined) return null
+  if (quantityRemaining <= 0) return 'Sold'
+  if (quantityRemaining < quantity) return `${quantityRemaining} of ${quantity} remaining`
+  return null
 }
 
 /** nb-NO formatting of an already-settled NOK minor-unit amount (no arithmetic) — the same

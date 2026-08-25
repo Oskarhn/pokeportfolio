@@ -38,6 +38,12 @@ export interface OpeningSource {
   /** Lot residual + adjustment remainder — added exactly once, by the opening that exhausts
    *  the lot (FINANCIAL_MODEL §4.3). Preview arithmetic lives in src/domain/opening. */
   exhaustionResidualNokMinor?: bigint | null
+  /** Owner-only parent-purchase provenance (P59): lets the reconciliation picker mirror the
+   *  server's own target rule client-side (parent live, origin ≠ 'provisional_opening'). Null
+   *  for lots with no purchase line. The server stays authoritative on legitimacy. */
+  purchaseId?: string | null
+  purchaseOrigin?: string | null
+  purchasedOn?: string | null
 }
 
 /** A card pulled from the opening, as captured by the wizard before anything is saved. */
@@ -110,6 +116,11 @@ export interface OpeningPullLine {
 
 export interface OpeningDetail {
   openingId: string
+  /** The sealed product this opening consumed — lets the reconciliation picker match targets of
+   *  exactly the same product (the server re-verifies everything it refuses). */
+  sealedProductId: string
+  /** The lot the opening currently consumes — excluded from its own reconciliation targets. */
+  sourceLotId: string
   productName: string
   openedOn: string
   quantityOpened: number
@@ -117,8 +128,8 @@ export interface OpeningDetail {
   costKnown: boolean
   /** Total opening cost in NOK minor units; null exactly when costKnown is false. */
   costNokMinor: bigint | null
-  /** D-021 provisional-cost marker ("entered manually — not linked to a purchase"), when the
-   *  adapter exposes provenance. */
+  /** True while the opening still cites its own provisional buy-and-open purchase and has not
+   *  been reconciled; undefined once reconciled or when there is nothing provisional. */
   costProvisional?: boolean | undefined
   trackingCompleteness: TrackingCompleteness
   bulkRemainderEstimateMinor: bigint | null
@@ -136,6 +147,14 @@ export interface OpeningDetail {
    */
   resultNokMinor?: bigint | null
   voidedAt?: string | null
+  /** Coverage counts from get_opening (P56 retained-only semantics, exposed P59):
+   *  priced/unpriced describe CURRENT RETAINED pull lots; sold is the separate historical
+   *  provenance. Undefined only if the adapter cannot provide them yet. */
+  pricedPullLotCount?: number
+  unpricedPullLotCount?: number
+  soldPullLotCount?: number
+  /** Reconciliation provenance: set together once by reconcile_opening_cost. */
+  reconciledAt?: string | null
 }
 
 /** Outcome of asking to void/correct an opening. Blocking logic lives entirely in the backend:
@@ -158,4 +177,8 @@ export interface OpeningController {
   createBoughtAndOpened(input: BoughtAndOpenedInput): Promise<CreatedOpening>
   getOpening(openingId: string): Promise<OpeningDetail>
   voidOpening(openingId: string, reason?: string): Promise<VoidOpeningOutcome>
+  /** Links a provisionally-costed opening to the real receipt's lot (FINANCIAL_MODEL §5.5).
+   *  The server owns every legitimacy rule; the picker that chooses `realSourceLotId` only
+   *  mirrors them for usability. */
+  reconcileOpeningCost(openingId: string, realSourceLotId: string): Promise<CreatedOpening>
 }

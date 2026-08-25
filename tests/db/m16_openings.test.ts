@@ -1668,6 +1668,80 @@ describe('P53 — server-side idempotency (§5/§6)', () => {
     expect(purchaseCount).toBe(1)
   })
 
+  it('P59 R4 (F-57-4): same key + same identity + DIFFERENT total paid is refused — the old financial fact never silently replays', async () => {
+    const before = await spendingOf(clientA)
+    const key = crypto.randomUUID()
+    const base = {
+      p_sealed_product_id: seedCatalog.sealedProductId,
+      p_quantity: 1,
+      p_purchased_on: today,
+      p_idempotency_key: key,
+    }
+    const { data: first, error: firstError } = await clientA
+      .rpc('create_opening_from_provisional', { ...base, p_total_paid_minor: 12300 })
+      .single<OpeningRow>()
+    if (firstError) throw new Error(firstError.message)
+
+    const { error: reuseError } = await clientA
+      .rpc('create_opening_from_provisional', { ...base, p_total_paid_minor: 12500 })
+      .single<OpeningRow>()
+    expect(reuseError).not.toBeNull()
+    expect(reuseError!.message).toContain('idempotency-key-reuse')
+
+    // The committed opening and its purchase are untouched; spend counted exactly once.
+    const after = await spendingOf(clientA)
+    expect(BigInt(after.gpo_nok_minor) - BigInt(before.gpo_nok_minor)).toBe(12300n)
+    const { count } = await service
+      .from('purchases')
+      .select('id', { count: 'exact' })
+      .eq('user_id', userA.id)
+      .eq('origin', 'provisional_opening')
+      .eq('total_minor', 12300)
+    expect(count).toBe(1)
+    expect(first.cost_nok_minor).toBe(12300)
+  })
+
+  it('P59 R5 (F-57-4): same key + same total + DIFFERENT purchased_on is refused — the business date is material', async () => {
+    const before = await spendingOf(clientA)
+    const key = crypto.randomUUID()
+    const base = {
+      p_sealed_product_id: seedCatalog.sealedProductId,
+      p_quantity: 1,
+      p_total_paid_minor: 9900,
+      p_purchased_on: today,
+      p_idempotency_key: key,
+    }
+    const { data: first, error: firstError } = await clientA
+      .rpc('create_opening_from_provisional', base)
+      .single<OpeningRow>()
+    if (firstError) throw new Error(firstError.message)
+
+    const yesterday = dateOffset(-1)
+    const { error: reuseError } = await clientA
+      .rpc('create_opening_from_provisional', { ...base, p_purchased_on: yesterday })
+      .single<OpeningRow>()
+    expect(reuseError).not.toBeNull()
+    expect(reuseError!.message).toContain('idempotency-key-reuse')
+
+    // The committed receipt keeps its original business date; no second purchase exists.
+    const after = await spendingOf(clientA)
+    expect(BigInt(after.gpo_nok_minor) - BigInt(before.gpo_nok_minor)).toBe(9900n)
+    const { data: purchases } = await service
+      .from('purchases')
+      .select('id, purchased_on')
+      .eq('user_id', userA.id)
+      .eq('origin', 'provisional_opening')
+      .eq('total_minor', 9900)
+    expect(purchases ?? []).toHaveLength(1)
+    expect(purchases![0]?.purchased_on).toBe(today)
+    // And a full replay with EVERYTHING matching still returns the original opening.
+    const { data: replayed, error: replayError } = await clientA
+      .rpc('create_opening_from_provisional', base)
+      .single<OpeningRow>()
+    if (replayError) throw new Error(replayError.message)
+    expect(replayed.id).toBe(first.id)
+  })
+
   it('cross-user same UUID is two independent legitimate keys (composite uniqueness)', async () => {
     // User A opens under a chosen key.
     const { lotId } = await buySealed(clientA, { quantity: 1, unitPriceMinor: 8000 })
@@ -1799,6 +1873,59 @@ describe('P53 — server-side idempotency (§5/§6)', () => {
     expect(voidPurchaseError).toBeNull()
     const afterCorrection = await spendingOf(clientA)
     expect(BigInt(afterCorrection.gpo_nok_minor) - BigInt(before.gpo_nok_minor)).toBe(0n)
+  })
+})
+
+// ── P59 §10: reconciliation-target discovery provenance ─────────────────────────────────────
+
+describe('P59 §10 — list_opening_sources carries owner-only purchase provenance for the picker', () => {
+  interface ProvenanceSourceRow {
+    lot_id: string
+    sealed_product_id: string
+    quantity_available: number
+    cost_known: boolean
+    purchase_id: string | null
+    purchase_origin: string | null
+    purchased_on: string | null
+  }
+
+  it('a provisional lot exposes its provisional parent; an ordinary receipt reads manual — the picker can mirror the server rule', async () => {
+    // The buy-and-open lot stays live with a provisional parent until reconciled.
+    const { data: provOpening, error: provError } = await clientA
+      .rpc('create_opening_from_provisional', {
+        p_sealed_product_id: seedCatalog.sealedProductId,
+        p_quantity: 2,
+        p_total_paid_minor: 15000,
+        p_purchased_on: today,
+      })
+      .single<OpeningRow>()
+    if (provError) throw new Error(provError.message)
+
+    const real = await buySealed(clientA, {
+      quantity: 4,
+      unitPriceMinor: 3000,
+      shippingMinor: 200,
+      purchasedOn: dateOffset(-3),
+    })
+
+    const { data, error } = await clientA.rpc('list_opening_sources')
+    if (error) throw new Error(error.message)
+    const rows = data as ProvenanceSourceRow[]
+
+    // The provisional-parent row is identifiable so the reconciliation picker can exclude it
+    // client-side (the server refuses it regardless).
+    const provRow = rows.find((row) => row.lot_id === provOpening.source_lot_id)
+    expect(provRow).toBeDefined()
+    expect(provRow!.purchase_origin).toBe('provisional_opening')
+    expect(provRow!.purchased_on).toBe(today)
+
+    // A legitimate reconciliation target carries its real provenance for display.
+    const realRow = rows.find((row) => row.lot_id === real.lotId)
+    expect(realRow).toBeDefined()
+    expect(realRow!.purchase_origin).toBe('manual')
+    expect(realRow!.purchased_on).toBe(dateOffset(-3))
+    expect(realRow!.quantity_available).toBe(4)
+    expect(realRow!.cost_known).toBe(true)
   })
 })
 

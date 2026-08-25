@@ -281,6 +281,12 @@ export interface OpeningSourceLot {
   effectiveUnitBasisNokMinor: bigint | null
   /** lot residual + adjustment remainder — added once when the opening exhausts the lot. */
   exhaustionResidualNokMinor: bigint | null
+  /** Owner-only parent-purchase provenance (P59): lets the reconciliation picker mirror the
+   *  server's own target rule client-side. Null when the lot has no purchase line. The RPC
+   *  `reconcile_opening_cost` stays the authority on what is a legitimate target. */
+  purchaseId: string | null
+  purchaseOrigin: string | null
+  purchasedOn: string | null
 }
 
 interface OpeningSourceRow {
@@ -295,6 +301,9 @@ interface OpeningSourceRow {
   cost_known: boolean
   effective_unit_basis_nok_minor: string | null
   exhaustion_residual_nok_minor: string | null
+  purchase_id: string | null
+  purchase_origin: string | null
+  purchased_on: string | null
 }
 
 /** The bounded source-picker read (P53 §8): owner's live sealed lots with remaining units.
@@ -324,6 +333,9 @@ export async function listOpeningSources(filter?: {
       row.exhaustion_residual_nok_minor === null
         ? null
         : parseMinorUnits(row.exhaustion_residual_nok_minor),
+    purchaseId: row.purchase_id,
+    purchaseOrigin: row.purchase_origin,
+    purchasedOn: row.purchased_on,
   }))
 }
 

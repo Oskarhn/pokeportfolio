@@ -59,6 +59,47 @@ What exists:
   assertions; two first-contact mismatches classified ORACLE_BINDING_MISMATCH and adapted
   deliberately; everything DB-backed remains gated pending CI.
 
+### Fixed — 2026-08-25 — M16 final integration cleanup: audit findings completed end-to-end (P59; same child PR as the P56 repair, DO NOT MERGE until DB CI runs)
+
+Closes the remaining P57/P58 integrated-audit findings on top of the P56 repair, in the same
+reviewable child branch:
+
+- **Home Recent Activity renders openings (P58 F1)** — the 'opening' activity type the M16
+  backend already emits is now understood client-side: a nonblank "Opened" label and a working
+  `/openings/$openingId` route. A bought-and-open legitimately shows one Purchase row AND one
+  Opening row; the opening's analytical amount still never enters any Home total.
+- **The idempotency key belongs to the logical draft (P58 F5)** — the key now lives inside the
+  user-scoped draft instead of per-wizard-mount state, so it survives route remounts and
+  browser-back returns: a committed-but-unanswered submission can no longer be duplicated by a
+  remount minting a fresh key. Rotated only when a new logical opening starts.
+- **Stale-'submitting' recovery (P58 F4)** — a draft saved mid-request whose wizard unmounted
+  before the failure landed used to stay 'submitting' forever, bricking the flow. It now loads
+  back as retryable editing with every field intact; the persisted idempotency key makes that
+  retry safe whether or not the interrupted request actually committed.
+- **Provisional replay compares money and business date (P57 F-57-4)** — same key + same identity
+  but a different total paid (or purchased_on) is refused as `idempotency-key-reuse` instead of
+  silently replaying the old financial fact; D-089's wording states exactly what is compared.
+- **Reconciliation UI shipped (P57 F-57-3 / P58 F7)** — Opening Detail offers **Link to purchase**
+  while an opening is active, provisionally costed and unreconciled. The picker reads new
+  owner-only provenance columns (`purchase_id/purchase_origin/purchased_on`) on
+  `list_opening_sources` and mirrors the server's own target rule; with no eligible purchase it
+  says so plainly. Success invalidates detail, sources, Portfolio, dashboard, spending, history
+  and recent-activity queries.
+- **Honest provisional/reconciled copy (P58 F6)** — the false "Cost entered manually — not linked
+  to a purchase" marker is replaced by where the figure actually came from ("Cost from the total
+  you entered…"), with "Linked to recorded purchase · date" after reconciliation.
+- **Coverage surfaced (P58 F9)** — priced/unpriced/sold pull counts and reconciledAt travel
+  through the detail contract; fully-sold pulls render "Sold", partials state what remains ("1 of
+  2 remaining"); an unpriced-retained honesty marker guards the retained-value aggregate ("—" when
+  nothing retained carries a price).
+- **Sweeps** — manual-card creation failures show a safe retry sentence instead of raw backend
+  text (P58 F10); the Review step repeats the exact Opening cost being frozen for existing-lot
+  mode (P58 F11); generic ↔ holding-specific wizard entries re-scope to the explicit route
+  without discarding entered pulls (P58 F12).
+
+database.types.ts hand-updated for the widened `list_opening_sources` return shape. Backup v2
+unchanged (no new canonical columns).
+
 ### Fixed — 2026-08-25 — M16 integrated-candidate repair: reconciliation lifecycle and review findings (D-092; child PR against the integration branch, DO NOT MERGE until DB CI runs)
 
 Closes the P54/P55 integrated-review findings on `feat/m16-openings-integrated`:

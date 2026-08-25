@@ -47,6 +47,16 @@ export interface PullDraft {
 
 export interface OpeningDraft {
   phase: 'editing' | 'submitting' | 'submitted'
+  /**
+   * The logical opening's submission identity (P59 / P58 F5): ONE key per logical opening draft,
+   * persisted with the draft itself. It survives same-mount retries, wizard unmount/remount and
+   * browser-back returns, so the server's idempotency arbiter always sees the SAME key for the
+   * SAME logical attempt — a committed-but-unanswered submission can never be duplicated by a
+   * remount minting a fresh key. It changes only when a new logical opening starts (RESET, or a
+   * fresh draft after success cleared the store). Still memory-only; never localStorage (D-089
+   * implementation detail, not a new decision).
+   */
+  idempotencyKey: string
   step: OpeningStep
   mode: OpeningMode
   holdingId: string | null
@@ -73,9 +83,13 @@ function todayIso(): string {
   return new Date().toISOString().slice(0, 10)
 }
 
-export function initialDraft(preselect?: { holdingId?: string; lotId?: string }): OpeningDraft {
+export function initialDraft(
+  preselect?: { holdingId?: string; lotId?: string },
+  makeIdempotencyKey: () => string = () => crypto.randomUUID(),
+): OpeningDraft {
   return {
     phase: 'editing',
+    idempotencyKey: makeIdempotencyKey(),
     step: 'source',
     mode: 'existing_lot',
     // Arriving from Sealed Holding Detail preselects that holding (prompt §7); the actual lot is
@@ -96,6 +110,54 @@ export function initialDraft(preselect?: { holdingId?: string; lotId?: string })
     submitError: null,
     submittedOpeningId: null,
   }
+}
+
+/** The restrained recovery message shown when a stored draft was caught mid-submission (P59 §7). */
+export const INTERRUPTED_SUBMISSION_COPY = 'Previous submission was interrupted. You can try again.'
+
+/**
+ * Stale-'submitting' recovery (P59 §7 / P58 F4). A draft saved while its request was in flight,
+ * whose component then unmounted before onError could run, must NOT brick the wizard forever:
+ * on load it is treated as a RECOVERABLE interrupted submission — phase back to editing, every
+ * field preserved (idempotency key, pulls, manual-card ids, dates, amounts), and the user may
+ * press Retry. Failure vs success is deliberately NOT assumed: if the interrupted request
+ * actually committed, the SAME persisted key replays the original opening; if it did not,
+ * normal creation happens. This is exactly why the key must survive the remount.
+ */
+export function recoverInterruptedSubmission(stored: OpeningDraft): OpeningDraft {
+  if (stored.phase !== 'submitting') return stored
+  return { ...stored, phase: 'editing', submitError: INTERRUPTED_SUBMISSION_COPY }
+}
+
+/**
+ * Route-scope reconciliation (P59 §19 / P58 F12). A draft may be started under one entry route's
+ * scope and reopened under another; the EXPLICIT route wins without discarding unrelated work:
+ *
+ *   - generic `/openings/new` after a holding-scoped start → the stale holding scope is cleared
+ *     (and the source selection re-resolved) so all eligible sources are visible instead of a
+ *     false "Nothing to open yet"; entered pulls survive;
+ *   - explicit `?holdingId=B` after a generic (or holding-A) start → the scope becomes B, with
+ *     the source selection re-resolved inside B; entered pulls survive;
+ *   - matching scope → unchanged; a submitted draft is never reusable.
+ */
+export function reconcileDraftScope(
+  stored: OpeningDraft,
+  requestedHoldingId: string | undefined,
+): OpeningDraft | null {
+  if (stored.phase === 'submitted') return null
+  const requested = requestedHoldingId ?? null
+  if (requested === stored.holdingId) return stored
+  if (requested === null) {
+    // Generic entry: drop the route-specific scope; bought-now drafts keep everything (their
+    // flow never depended on the holding), existing-lot drafts re-pick their source.
+    return stored.mode === 'bought_now'
+      ? { ...stored, holdingId: null }
+      : { ...stored, holdingId: null, lotId: null, step: 'source' }
+  }
+  // An explicit holding route wins over whatever scope the draft carried.
+  return stored.mode === 'bought_now'
+    ? { ...stored, holdingId: requested }
+    : { ...stored, holdingId: requested, lotId: null, step: 'source' }
 }
 
 export type DraftAction =

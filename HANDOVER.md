@@ -5,9 +5,9 @@ Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) a
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
 **Last updated:** 2026-08-25 — **M16 (Openings, pulls, backup v2) EXISTS AS AN INTEGRATED
-CANDIDATE BRANCH `feat/m16-openings-integrated` — NOT MERGED, NOT DEPLOYED — now with a P56
-TARGETED REPAIR branch `fix/m16-integrated-review-p56` open as a DRAFT PR AGAINST THE
-INTEGRATION BRANCH.** Three parallel
+CANDIDATE BRANCH `feat/m16-openings-integrated` — NOT MERGED, NOT DEPLOYED — with the P56+P59
+REPAIR branch `fix/m16-integrated-review-p56` open as a DRAFT PR AGAINST THE INTEGRATION
+BRANCH.** Three parallel
 sources were combined deliberately on one branch: P50 opening financial/DB core (PR #55 @
 `7fe883d`), P51 opening UI (PR #54 @ `fc06c67`) and the P52 independent adversarial package
 (PR #53 @ `ebee9a1`), all verified OPEN/DRAFT/UNMERGED at their exact expected heads before
@@ -22,8 +22,19 @@ findings (D-092): reconciliation voids the provisional source lot together with 
 (P55 F55-10), get_opening coverage counts are retained-only (P54 L1), opening drafts are scoped
 by authenticated user id and cleared at sign-out (P55 draft finding), created manual-card ids
 persist into the user-scoped draft so remount retries never duplicate definitions, reset copy
-names openings, integer-division wording corrected. Local gates green; DB-backed suites remain
-gated. **DB CI still never ran:
+names openings, integer-division wording corrected. The P59 final-integration-cleanup session
+then completed the P57/P58 audit findings end-to-end: Home's Recent Activity understands the
+'opening' type ("Opened" label + `/openings/$openingId` route); the idempotency key now lives
+INSIDE the in-memory draft (one key per logical opening across remounts — P58 F5); a stale
+'submitting' draft recovers as retryable instead of bricking the wizard (F4); the provisional
+replay contract additionally compares total paid AND purchased_on (F-57-4, D-089 wording states
+exactly what is compared); the reconciliation UI SHIPPED (Link-to-purchase sheet mirroring the
+server target rule via new owner-only provenance columns on `list_opening_sources`, honest
+provisional/reconciled copy replacing the false "not linked to a purchase"); coverage counts and
+reconciledAt exposed through the detail contract; fully-sold pulls read "Sold" / partials state
+what remains; unpriced-retained honesty marker; manual-card failures wrapped; Review repeats the
+exact opening cost. Local gates green (unit 428/428, e2e 62/62); DB-backed suites remain gated.
+**DB CI still never ran:
 GitHub Actions was billing/startup-blocked repo-wide; ALL DB-backed verification is
 MANDATORY_PENDING_CI and release is blocked until one full green db-tests run.** Open draft PRs
 carry DO NOT MERGE banners; hosted Supabase untouched.
@@ -84,6 +95,42 @@ integration branch directly; it merges through its own DRAFT PR (base
   to truncating integer division in the unhosted M16 migrations/docs (M10's shipped migration left
   untouched). D-092 records all of it. The four M16 migrations remain UNHOSTED and were edited in
   place per the established pre-host repair discipline.
+
+### P59 — final integration cleanup (same branch, same DRAFT PR #57)
+
+Closes the P57/P58 audit findings on top of the P56 head `a9f2257` (both audits reviewed the
+PRE-REPAIR integrated head, so every finding was re-verified against the repaired tree first):
+
+- **Home Recent Activity (P58 F1):** 'opening' added to `RecentActivityType`; pure label/route
+  helpers in `src/features/home/activity.ts`; an opening renders "Opened" →
+  `/openings/$openingId` via primary_id; a bought-and-open legitimately shows one Purchase row AND
+  one Opening row. The analytical opening cost never enters Home totals.
+- **Draft idempotency (F5):** `idempotencyKey` moved INTO `OpeningDraft` — one key per logical
+  opening surviving remounts/back-nav/retries; rotated only by RESET or post-success fresh draft.
+- **Stale-'submitting' recovery (F4):** loading a stored mid-submission draft returns it to
+  retryable editing with everything intact ("Previous submission was interrupted. You can try
+  again."); the persisted key makes that retry safe whichever way the interrupted request ended.
+- **Provisional replay material (P57 F-57-4):** `create_opening_from_provisional`'s pre-purchase
+  replay additionally compares committed line_total AND purchased_on (`IS DISTINCT FROM`, walked
+  through the canonical rows); cross-path reuse refused. DB tests R4/R5 pin both refusals plus
+  full-match replay. D-089 wording now states exactly what is compared.
+- **Reconciliation UI shipped (F-57-3/F7):** Opening Detail shows honest provisional copy + a
+  "Link to purchase" sheet over `list_opening_sources`, which gained owner-only provenance columns
+  (`purchase_id/purchase_origin/purchased_on`) so the picker mirrors the server target rule
+  (same product, live lot, known basis, enough units, live non-provisional parent, not the current
+  source). Success invalidates detail/sources/Portfolio/dashboard/spending/history/recent-activity.
+- **Detail contract coverage (F9) + pull states:** priced/unpriced/sold counts and reconciledAt
+  mapped from get_opening; fully-sold pulls render "Sold", partials "1 of 2 remaining";
+  unpriced-retained marker beside retained value ("—" when nothing retained is priced).
+- **Sweeps (F10/F11/F12):** manual-card creation failures wrapped ("Couldn't create the manual
+  card. Try again."); Review repeats the exact opening cost for existing-lot mode;
+  `reconcileDraftScope` makes generic ↔ holding-specific route switches honor the explicit route
+  without discarding entered pulls.
+
+database.types.ts hand-updated for the new list_opening_sources return shape (standing
+discipline — regenerate + diff when tooling allows). Backup v2 untouched (no new canonical
+columns). No new DECISION entry: the persisted in-memory key is D-089 implementation, the rest is
+completion of already-decided behaviour.
 
 ---
 

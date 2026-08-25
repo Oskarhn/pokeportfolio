@@ -18,6 +18,7 @@ const createProvisionalRecord = vi.fn<(...args: unknown[]) => Promise<unknown>>(
 const fetchOpening = vi.fn<(...args: unknown[]) => Promise<unknown>>()
 const listOpeningPulls = vi.fn<(...args: unknown[]) => Promise<unknown>>()
 const listOpeningSources = vi.fn<(...args: unknown[]) => Promise<unknown>>()
+const reconcileOpeningRecord = vi.fn<(...args: unknown[]) => Promise<unknown>>()
 const voidOpeningRecord = vi.fn<(...args: unknown[]) => Promise<void>>()
 
 vi.mock('../../src/data/opening', () => ({
@@ -26,6 +27,7 @@ vi.mock('../../src/data/opening', () => ({
   getOpening: (...args: unknown[]) => fetchOpening(...args),
   listOpeningPulls: (...args: unknown[]) => listOpeningPulls(...args),
   listOpeningSources: (...args: unknown[]) => listOpeningSources(...args),
+  reconcileOpeningCost: (...args: unknown[]) => reconcileOpeningRecord(...args),
   voidOpening: (...args: unknown[]) => voidOpeningRecord(...args),
 }))
 
@@ -45,6 +47,10 @@ function sourceRow() {
     // The canonical 29995-øre lot shape: unit basis 9998 + exhaustion residual 1.
     effectiveUnitBasisNokMinor: 9998n,
     exhaustionResidualNokMinor: 1n,
+    // P59 owner-only provenance from list_opening_sources.
+    purchaseId: 'purchase-1',
+    purchaseOrigin: 'manual',
+    purchasedOn: '2026-07-01',
   }
 }
 
@@ -146,10 +152,85 @@ describe('integrated opening controller (I1)', () => {
     expect(detail.costKnown).toBe(true)
     expect(detail.costNokMinor).toBe(19996n)
     expect(detail.resultNokMinor).toBe(30004n)
+    // P59 §14: the coverage counts and reconciliation state travel through the adapter.
+    expect(detail.sealedProductId).toBe('product-1')
+    expect(detail.sourceLotId).toBe('lot-1')
+    expect(detail.pricedPullLotCount).toBe(1)
+    expect(detail.unpricedPullLotCount).toBe(0)
+    expect(detail.soldPullLotCount).toBe(0)
+    expect(detail.reconciledAt).toBeNull()
     expect(detail.pulls).toEqual([
       expect.objectContaining({ lotId: 'pull-lot-1', displayName: 'Charizard ex' }),
     ])
     expect(listOpeningPulls).toHaveBeenCalledWith('opening-1')
+  })
+
+  it('a reconciled opening loses the provisional marker and carries its reconciledAt', async () => {
+    fetchOpening.mockResolvedValue({
+      id: 'opening-2',
+      openedOn: '2026-08-01',
+      sealedProductId: 'product-1',
+      sealedProductName: 'Prismatic ETB',
+      sourceLotId: 'real-lot-9',
+      quantityOpened: 2,
+      costSource: 'from_lot',
+      costNokMinor: 21000n,
+      trackingCompleteness: 'all_cards',
+      bulkRemainderEstimateNokMinor: null,
+      bulkRemainderCount: null,
+      provisionalPurchaseId: 'purchase-prov',
+      reconciledAt: '2026-08-20T12:00:00Z',
+      reconciledToPurchaseId: 'purchase-real',
+      notes: null,
+      voidedAt: null,
+      createdAt: '2026-08-01T10:00:00Z',
+      retainedTrackedValueNokMinor: 0n,
+      pricedPullLotCount: 0,
+      unpricedPullLotCount: 0,
+      soldPullLotCount: 0,
+      netProceedsFromSoldPullsNokMinor: 0n,
+      openingReturnNokMinor: null,
+    })
+    listOpeningPulls.mockResolvedValue([])
+    const controller = getOpeningController()
+    const detail = await controller.getOpening('opening-2')
+    expect(detail.costProvisional).toBeUndefined()
+    expect(detail.reconciledAt).toBe('2026-08-20T12:00:00Z')
+  })
+
+  it('reconcileOpeningCost delegates to the data layer and returns the opening id (P59 §12)', async () => {
+    reconcileOpeningRecord.mockResolvedValue({ id: 'opening-1' })
+    const controller = getOpeningController()
+    await expect(controller.reconcileOpeningCost('opening-1', 'lot-9')).resolves.toEqual({
+      openingId: 'opening-1',
+    })
+    expect(reconcileOpeningRecord).toHaveBeenCalledWith('opening-1', 'lot-9')
+  })
+
+  it('reconciliation refusals map to safe sentences — no raw SQL, ids or internals (P59 §12)', async () => {
+    const controller = getOpeningController()
+
+    reconcileOpeningRecord.mockRejectedValue(
+      new Error('only 1 of the target lot remain available, but 2 are needed'),
+    )
+    await expect(controller.reconcileOpeningCost('opening-1', 'lot-x')).rejects.toThrow(
+      /Not enough unopened units left/,
+    )
+
+    reconcileOpeningRecord.mockRejectedValue(new Error('opening x is already reconciled'))
+    await expect(controller.reconcileOpeningCost('opening-1', 'lot-x')).rejects.toThrow(
+      /already been linked/,
+    )
+
+    reconcileOpeningRecord.mockRejectedValue(new Error('source lot is unavailable'))
+    await expect(controller.reconcileOpeningCost('opening-1', 'lot-x')).rejects.toThrow(
+      /no longer available/,
+    )
+
+    reconcileOpeningRecord.mockRejectedValue(new Error('relation "openings" does not exist'))
+    await expect(controller.reconcileOpeningCost('opening-1', 'lot-x')).rejects.toThrow(
+      /Something went wrong/,
+    )
   })
 
   it('a refused void becomes { blocked: true } with the concise reason — not a thrown error', async () => {

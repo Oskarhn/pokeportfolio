@@ -9,6 +9,7 @@ import { portfolioDisplayName, portfolioSubtitle } from '../../data/portfolio'
 import type { PortfolioTile } from '../../data/portfolio'
 import { getMarketMovers } from '../../data/pricing'
 import type { MonthlySpendMonth, RecentActivityItem } from '../../data/dashboard'
+import { ACTIVITY_LABEL, recentActivityRoute } from './activity'
 
 /**
  * Home's lower dashboard sections (M12). Presentation only — every figure arrives already
@@ -212,13 +213,6 @@ export function MonthlySpending({
   )
 }
 
-const ACTIVITY_LABEL: Record<RecentActivityItem['type'], string> = {
-  purchase: 'Recorded purchase',
-  sale: 'Sold',
-  valuation: 'Set valuation',
-  acquisition: 'Acquired',
-}
-
 export function RecentActivity({
   items,
   hidden,
@@ -226,28 +220,12 @@ export function RecentActivity({
   items: RecentActivityItem[]
   hidden: boolean
 }) {
-  function routeFor(item: RecentActivityItem) {
-    switch (item.type) {
-      case 'purchase':
-        return { to: '/purchases/$purchaseId' as const, params: { purchaseId: item.primaryId } }
-      case 'sale':
-        return { to: '/sales/$saleId' as const, params: { saleId: item.primaryId } }
-      case 'valuation':
-      case 'acquisition':
-        return item.secondaryId
-          ? ({
-              to: '/portfolio/$holdingId',
-              params: { holdingId: item.secondaryId },
-            } as const)
-          : null
-    }
-  }
   return (
     <section className="space-y-2 rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
       <h2 className="text-sm font-semibold text-slate-300">Recent activity</h2>
       <ul className="divide-y divide-slate-800">
         {items.map((item) => {
-          const route = routeFor(item)
+          const route = recentActivityRoute(item)
           const content = (
             <>
               <span className="min-w-0 truncate text-sm text-slate-300">
@@ -272,7 +250,8 @@ export function RecentActivity({
             <li key={`${item.type}-${item.primaryId}`} className="py-2 first:pt-0 last:pb-0">
               {route ? (
                 <Link
-                  {...route}
+                  to={route.to}
+                  params={route.params}
                   className="flex items-center justify-between gap-3 hover:opacity-90"
                 >
                   {content}

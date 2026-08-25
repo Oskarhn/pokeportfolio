@@ -15,6 +15,9 @@
 --                                              The idempotency key is checked BEFORE the purchase
 --                                              row is written, so a retry after a committed-but-
 --                                              unanswered call can never double-spend (P53 §5).
+--                                              Material replay match = product + quantity +
+--                                              opened_on + TOTAL PAID + purchased_on, walked from
+--                                              the committed receipt rows (P59 / F-57-4).
 --   void_opening(...)                          safe lifecycle: restores sealed quantity via D1,
 --                                              voids pull lots; refused while any pull has a
 --                                              downstream disposal. VOID OPENING MEANS "THE
@@ -426,9 +429,17 @@ begin
   -- must NOT create a second purchase. The key is therefore resolved here, before the purchase
   -- insert, and only material-matching replays are honored (same product, quantity, opening
   -- date). create_opening re-checks downstream and would catch anything racing past this point.
+  --
+  -- P59 (F-57-4): the entered TOTAL PAID and the PURCHASE DATE are canonical financial facts of
+  -- the provisional receipt, so they are material too — walked from the committed opening through
+  -- its own provisional lot/line/purchase rows. Same key + same identity but a different total or
+  -- purchased_on must never silently replay the old financial fact; IS DISTINCT FROM also refuses
+  -- a key whose committed opening has no provisional receipt at all (cross-path reuse).
   if p_idempotency_key is not null then
     declare
       v_replay public.openings;
+      v_committed_total_paid bigint;
+      v_committed_purchased_on date;
     begin
       select o.* into v_replay
         from public.openings o
@@ -437,9 +448,17 @@ begin
        where o.user_id = v_user_id
          and o.idempotency_key = p_idempotency_key;
       if v_replay.id is not null then
+        select pl.line_total_minor, pu.purchased_on
+          into v_committed_total_paid, v_committed_purchased_on
+          from public.acquisition_lots al
+          join public.purchase_lines pl on pl.id = al.purchase_line_id
+          join public.purchases pu on pu.id = pl.purchase_id
+         where al.id = v_replay.source_lot_id;
         if v_replay.sealed_product_id <> p_sealed_product_id
            or v_replay.quantity_opened <> p_quantity
-           or v_replay.opened_on <> v_opened_on then
+           or v_replay.opened_on <> v_opened_on
+           or v_committed_total_paid is distinct from p_total_paid_minor
+           or v_committed_purchased_on is distinct from p_purchased_on then
           raise exception
             'idempotency-key-reuse: key % already belongs to a different opening request',
             p_idempotency_key;
@@ -929,6 +948,13 @@ comment on function public.get_opening(uuid) is
 -- One grouped aggregate over lot_cost_adjustments joined to the owner's own bounded lot set:
 -- no per-row subquery, no N+1. No cross-user existence oracle: another owner's holding id
 -- simply yields an empty result.
+--
+-- P59: the read also carries OWNER-ONLY purchase provenance for each lot (parent purchase id,
+-- its origin, and its purchased_on) so the reconciliation picker can mirror the server's own
+-- target rule client-side — same product, live lot, known basis, enough remaining quantity,
+-- parent purchase live and origin <> 'provisional_opening' — without exposing anything beyond
+-- what ordinary owner reads already return (reconcile_opening_cost remains the authority; these
+-- columns are usability, not security). Lots with no parent purchase line carry NULLs.
 create function public.list_opening_sources(p_holding_id uuid default null)
 returns table (
   lot_id uuid,
@@ -941,7 +967,10 @@ returns table (
   quantity_available int,
   cost_known boolean,
   effective_unit_basis_nok_minor text,
-  exhaustion_residual_nok_minor text
+  exhaustion_residual_nok_minor text,
+  purchase_id uuid,
+  purchase_origin text,
+  purchased_on date
 )
 language sql
 stable
@@ -968,10 +997,15 @@ as $$
          (case when l.cost_basis_state = 'known' then
             l.residual_nok_minor
             + (coalesce(adj.total_nok, 0) - (coalesce(adj.total_nok, 0) / l.quantity) * l.quantity)
-          end)::text
+          end)::text,
+         pu.id,
+         pu.origin::text,
+         pu.purchased_on
   from public.acquisition_lots l
   join public.holdings h on h.id = l.holding_id
   join public.sealed_products sp on sp.id = h.sealed_product_id
+  left join public.purchase_lines pl on pl.id = l.purchase_line_id
+  left join public.purchases pu on pu.id = pl.purchase_id
   left join adjustments adj on adj.lot_id = l.id
   where l.user_id = auth.uid()
     and l.voided_at is null
@@ -985,8 +1019,10 @@ $$;
 comment on function public.list_opening_sources(uuid) is
   'Owner-scoped openable sealed lots with derived preview components (effective unit basis, '
   'exhaustion residual) matching create_opening''s freezing rule exactly; unknown-cost lots '
-  'carry NULL components. Bounded INVOKER read; optional holding scope for the Holding-Detail '
-  'entry point.';
+  'carry NULL components. Also exposes each lot''s parent-purchase provenance (id, origin, '
+  'purchased_on — owner-only, INVOKER) so the reconciliation picker can pre-filter to legitimate '
+  'targets; the server-side target rule stays authoritative. Bounded INVOKER read; optional '
+  'holding scope for the Holding-Detail entry point.';
 
 -- ── 6. Grants ────────────────────────────────────────────────────────────────────────────────
 revoke execute on function public.create_opening(

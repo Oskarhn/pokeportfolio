@@ -260,9 +260,23 @@ normally would. Four distinct concepts, deliberately not merged:
   restores the sealed quantity but NEVER undoes its purchase — corrections to a wrong purchase go
   through the purchase-correction surface (D-090).
 - Creation is server-side idempotent: a retried submission can never record two openings or two
-  purchases (D-089).
+  purchases (D-089). The client keeps one idempotency key per logical opening across wizard
+  remounts, and an interrupted submission always recovers as retryable — the wizard can never be
+  bricked by a lost response.
 - The cost preview shown before finishing is EXACT — it reproduces what the backend will freeze,
-  including the exhaustion residual on the last openable units (P53 §7).
+  including the exhaustion residual on the last openable units (P53 §7) — and the Review step
+  repeats it (or "Purchase cost not recorded") as the figure being frozen.
+- **A provisionally-costed opening states its provenance honestly** ("Cost from the total you
+  entered when you recorded this opening") with a **Link to purchase** action while it is active
+  and unreconciled. The picker offers only same-product lots whose parent purchase is live and not
+  itself provisional, or says plainly that no matching purchase exists yet. After linking, the
+  opening shows "Linked to recorded purchase". See [FINANCIAL_MODEL.md](FINANCIAL_MODEL.md) §5.5.
+- A fully-sold pull reads "Sold"; a partially sold one states what remains ("1 of 2 remaining").
+  When retained pulls lack current prices, the retained-value figure says so instead of reading as
+  complete.
+- Home's Recent Activity renders each active opening as an "Opened" row linking to Opening Detail;
+  a bought-and-open legitimately shows both a Purchase row and an Opening row. The opening's
+  analytical cost never adds to lifetime spend or TTEP.
 - **Default tracking mode is every card**, consistent with all-card tracking. Selected-pulls and
   not-sure modes exist for users who do not want to enter 360 cards from a booster box.
 - The user declares whether tracking is complete. When it is not, every display of opening

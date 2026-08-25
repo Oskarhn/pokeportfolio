@@ -324,8 +324,15 @@ No floats, no invented or lost øre.
 by the writer RPCs against a composite unique index `(user_id, idempotency_key)`. A retried
 submission whose first attempt committed returns the SAME opening; on the provisional path the
 key is resolved BEFORE the purchase row is written, so a retry after "purchase created, opening
-committed, response lost" can never create a second purchase. Reuse of a key for materially
-different arguments is rejected explicitly (`idempotency-key-reuse`), never silently replayed.
+committed, response lost" can never create a second purchase. What counts as a replay is stated
+exactly (D-089): `create_opening` compares source lot, quantity and opened date;
+`create_opening_from_provisional` additionally compares the committed receipt's **total paid**
+and **purchased_on**, walked from its own canonical rows — same key with a different amount or
+purchase business date is rejected explicitly (`idempotency-key-reuse`), never silently
+replayed as the old financial fact. Auxiliary fields (pulls, notes, bulk estimate) are not
+material under D-089. No request hashing exists anywhere. On the client, the key lives inside
+the in-memory draft so it survives wizard remounts — one key per logical opening, rotated only
+when a new logical opening starts.
 
 **Reconciliation.** When the real receipt is recorded later, the user links it to the opening.
 In one transaction:
@@ -353,8 +360,14 @@ error).
 > **Invariant F12:** an opening has at most one non-voided cost source. A provisional purchase
 > and a linked real purchase can never both be active for the same opening.
 
-The UI marks a provisionally costed opening as *"Cost entered manually — not linked to a
-purchase"* and offers the link action. Reconciliation is a user action, not an automatic match:
+The UI states a provisionally costed opening's provenance honestly: *"Cost from the total you
+entered when you recorded this opening — you can link it to the matching recorded purchase
+later."* (It must NOT read as "not linked to a purchase": the provisional purchase is a real,
+spend-counted ledger row.) The **Link to purchase** action opens a picker over the owner's own
+same-product lots whose parent purchase is live and not itself provisional, showing each
+candidate's date, available quantity and the exact cost this opening would freeze; with no
+eligible target it says so plainly. After reconciliation the opening shows *"Linked to recorded
+purchase"* with the reconciled date. Reconciliation is a user action, not an automatic match:
 guessing which of three similar purchases corresponds to an opening would silently corrupt the
 ledger, and the user knows the answer in a single tap.
 

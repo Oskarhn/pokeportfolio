@@ -1761,3 +1761,24 @@ query that computes them: a "priced pulls" count computed over all non-voided lo
 clause (quantity_remaining > 0), not in prose. Second, a client-side cache that prevents
 duplicate writes only works while the cache lives; surviving a remount requires persisting the
 created identity into state that outlives the component - the user-scoped draft, not a ref.
+
+## 2026-08-25 (M16/P59) - An idempotency key that dies with the component protects nothing across a remount
+
+The server-side idempotency machinery (D-089) was correct under every interleaving the audits
+could construct, yet the client could still cause a double purchase: the key was minted in
+per-mount React state, so "server committed, response lost, user leaves, user returns" produced
+a NEW key on return and the replay lookup never had a chance. The lesson generalizes beyond this
+feature: an invariant enforced by pairing (client identity + server arbiter) requires the client
+half to live as long as the LOGICAL operation, not as long as one mount of its UI. Moving the
+key into the draft also made the stale-'submitting' recovery almost free - once the key survives
+the remount, treating an interrupted submission as retryable is safe in BOTH directions (committed
+replays; uncommitted creates), so recovery code never has to guess what happened.
+
+Two copy findings were really honesty findings. "Cost entered manually - not linked to a
+purchase" read plausible until set beside FINANCIAL_MODEL 5.5: the provisional path creates a
+REAL spend-counted purchase, so the marker denied a fact the rest of the UI asserted. And a fully
+sold pull rendered like a held card because the row had quantity data nobody displayed - the fix
+was presentation ("Sold" / "1 of 2 remaining"), not new queries. The reconciliation picker
+followed the same grain: rather than a privileged definer read or N+1 lookups, three owner-only
+provenance columns on an existing bounded invoker read let the client mirror the server's target
+rule while the RPC stays the only authority.

@@ -494,6 +494,23 @@ Constraints and triggers, exercised directly:
   legal residual accepted, quantity>0 and non-negative prices hold, create/update_purchase write
   excess-0); user-scoped draft store isolation and RESOLVE_MANUAL_CARDS persistence
   (tests/ui/opening-draft.test.ts)
+- P59 integration-cleanup cases: Home recent-activity contract — the 'opening' type renders a
+  nonblank "Opened" label and routes to `/openings/$openingId`, a bought-and-open coexists as one
+  Purchase row plus one Opening row both clickable, null amount does not break the row
+  (tests/ui/home-activity.test.ts); draft idempotency — ONE key per logical draft surviving every
+  editing action, remount and failure, rotated only by RESET/post-success (R2); stale-'submitting'
+  recovery loads back as retryable editing with all fields incl. resolved manual-card ids intact,
+  editing/submitted drafts pass through untouched (R3); full integrated manual-card remount
+  sequence reuses ONE definition identity across mounts (R16); route-scope reconciliation matrix —
+  holding-scoped draft → generic entry drops the scope keeping pulls (no false "Nothing to open"),
+  generic draft → explicit holding honors it, matching scope unchanged, submitted never reusable
+  (R14); copy pins for honest provisional/reconciled wording, reconciliation sheet, wrapped
+  manual-card failure, unpriced-retained marker and sold/partial pull states (R8/R9/R10/R11/R12);
+  controller coverage-count/reconciledAt exposure + reconcile delegation and safe refusal mapping
+  (R6-pure/R7); DB-gated: same key + different total paid refused with spend counted once (R4),
+  same key + different purchased_on refused while full-match replay still returns the original
+  (R5), list_opening_sources provenance columns distinguish provisional vs manual parents so the
+  picker can mirror the server rule (R6)
 - Pure domain: §5.3 return formula vs the worked examples; exact preview rule reproducing the
   writer byte-for-byte incl. 19996→9999 (I4/I5); ROI rounding; completeness marker pairing;
   bought-and-opened draft gates and input assembly; copy pins (never-0, no per-pull ROI, void-does-

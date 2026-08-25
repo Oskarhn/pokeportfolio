@@ -2267,6 +2267,9 @@ export type Database = {
           lot_id: string
           product_name: string
           product_type: string | null
+          purchase_id: string | null
+          purchase_origin: string | null
+          purchased_on: string | null
           quantity_available: number
           sealed_product_id: string
         }[]

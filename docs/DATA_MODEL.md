@@ -737,7 +737,19 @@ RLS: owner-SELECT only; every write goes through SECURITY DEFINER RPCs
 Reads: `get_opening(p_opening_id)` (INVOKER, bounded §5.3 result components, money as text) and
 `list_opening_sources(p_holding_id?)` (INVOKER, openable lots with ALREADY-DERIVED preview
 components — effective unit basis and exhaustion residual matching the writer's freezing rule
-exactly, so no client re-implements the arithmetic).
+exactly, so no client re-implements the arithmetic). Since P59 the source read also carries each
+lot's OWNER-ONLY parent-purchase provenance (`purchase_id`, `purchase_origin`, `purchased_on`,
+nullable for lots without a purchase line) so the reconciliation picker can mirror the server's
+own target rule client-side; nothing beyond ordinary owner-readable rows is exposed and
+`reconcile_opening_cost` stays the authority on legitimacy.
+
+**Client draft lifecycle (P59).** The in-memory user-scoped opening draft owns its idempotency
+key: one key per logical opening, surviving same-mount retries, route remounts and browser-back
+returns, rotated only when a new logical opening starts (RESET or post-success fresh draft).
+A stored draft caught in phase `'submitting'` (its component unmounted mid-request) recovers on
+load as retryable `'editing'` with every field intact — success is never assumed; the SAME key
+either replays the committed opening or allows normal creation. A draft opened under a different
+entry route re-scopes to that route without discarding entered pulls.
 
 **Lock order / concurrency (§24 review).** Writers lock exactly ONE acquisition lot
 (`SELECT … FOR UPDATE`) before re-checking `quantity_remaining` against the live row:

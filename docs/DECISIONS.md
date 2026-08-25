@@ -2308,17 +2308,25 @@ incomplete tracking suppresses any bare percentage.
 
 ## D-089 — Server-side idempotency on opening creation; provisional replay checked BEFORE the purchase
 
-**2026-08-26 — Accepted** (P53)
+**2026-08-26 — Accepted** (P53; material-comparison scope stated exactly 2026-08-25, P59)
 
 Every opening write carries a client-generated UUID idempotency key, stored NOT NULL on
 `openings.idempotency_key` and unique per `(user_id, idempotency_key)`. Same key + same material
-request (lot/product, quantity, business date) ⇒ the SAME committed opening is returned; same key
-+ materially different arguments ⇒ named `idempotency-key-reuse` error (mismatched reuse is
-rejected because material fields make it cheaply verifiable — full request hashing would be
-disproportionate). On the provisional path the key is resolved BEFORE the purchase insert:
-a retry after "purchase created + opening committed + response lost" can never create a second
-purchase or double-count spend. Client double-click guards are UX only; this invariant lives in
-the writer.
+request ⇒ the SAME committed opening is returned; same key + materially different arguments ⇒
+named `idempotency-key-reuse` error (mismatched reuse is rejected because material fields make it
+cheaply verifiable — full request hashing would be disproportionate). **What is compared,
+exactly:** `create_opening` compares `source_lot_id`, `quantity_opened` and `opened_on`;
+`create_opening_from_provisional` compares those (product id, quantity, coalesced opened_on) PLUS
+the committed receipt's `line_total_minor` (the entered total paid) and its purchase's
+`purchased_on`, both walked from the committed opening's own provisional lot/line/purchase rows
+(P59 / F-57-4) — money and the canonical business date are material; a different amount or date
+under an existing key can never silently replay the old financial fact. NOT compared (deliberate,
+non-material auxiliary input): pull list, notes, tracking completeness, bulk estimate. On the
+provisional path the key is resolved BEFORE the purchase insert: a retry after "purchase created +
+opening committed + response lost" can never create a second purchase or double-count spend.
+Client double-click guards are UX only; this invariant lives in the writer. The client keeps the
+key inside its in-memory draft so one logical opening carries ONE key across remounts and
+retries (memory-only — no localStorage).
 
 ## D-090 — Buy-and-open ships with total-paid exactness; line-total CHECK gains largest-remainder tolerance
 
