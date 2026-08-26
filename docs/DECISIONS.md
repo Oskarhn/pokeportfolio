@@ -2403,3 +2403,34 @@ M16 backup oracle.
 The widened `purchase_lines_line_total_matches_unit_price` envelope stands UNCHANGED and is now
 documented as a GLOBAL purchase-line invariant (every writer excess-0 except the provisional
 path's legal 0..qty−1 residual), with direct constraint tests added.
+
+## D-093 — The client clears its whole query and mutation cache on every authenticated identity transition
+
+**2026-08-26 — Accepted** (P63, closing F-61-2)
+
+TanStack Query's module-lifetime client is user-blind: no query key anywhere in `src/` carries a
+user id, so on a same-tab account switch (A signs out, B signs in, no reload) B rendered A's
+cached Home/Portfolio/History/recent-activity/opening values until refetches resolved. RLS blocked
+all continued server access; the stale in-memory render was the leak.
+
+The boundary lives in the auth layer (`src/auth/query-cache-boundary.ts`): AuthProvider tracks the
+last OBSERVED authenticated user id and, whenever one observed identity is replaced by a different
+one, synchronously — before the new session becomes renderable state — cancels queries,
+`queryClient.clear()`s BOTH the query and mutation caches, and clears opening drafts. Rules:
+
+1. **Any identity change clears** (A→signed-out, signed-out→B, direct A→B). In-flight queries are
+   cancelled first; late responses for destroyed queries are dropped by query-core and cannot
+   repopulate B's cache.
+2. **Same-user events retain everything** (TOKEN_REFRESHED / USER_UPDATED / duplicate SIGNED_IN
+   compare equal) — refresh churn never blanks app state.
+3. **Public/catalog cache is also cleared deliberately.** Blanket clear over userId-scoped keys:
+   keys are distributed across many features and unkeyed today, scale is tiny, and structural "no
+   A-data renders under B" beats a maintained keying convention. Cost: catalog refetches once per
+   sign-in. For a ≤10-user product privacy is preferred over cache preservation.
+4. **No localStorage enters the picture**; the boundary is memory-only and idempotent.
+5. Residual, disclosed: TanStack v5 mutations cannot be aborted; an in-flight A mutation completes
+   under A's own JWT (server-side owner-scoped write), and no `setQueryData` exists in `src/`, so
+   nothing of A's lands in B's cache.
+
+Regression coverage: `tests/ui/auth-query-cache.test.ts` (8 cases against real QueryClient
+instances, including the in-flight race and pending-mutation cases).

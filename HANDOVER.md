@@ -39,7 +39,11 @@ exposed — the two runtime SQL bugs in the unhosted M16 migrations, the F-61-1 
 and the stale/binding test classes — re-running the FULL local gate GREEN: db+authorization 578/0,
 m16-independent 53/53 with zero skips (authenticated-JWT discovery), m13-adversarial 62/62 on the
 v2 contract, grant audit + hostile-grant convergence clean, all performance gates within unchanged
-thresholds, and every normal gate green.** The hosted project remains untouched; GitHub Actions
+thresholds, and every normal gate green.** **P63 then closed the cross-account query-cache
+privacy finding (F-61-2, D-093) on its own stacked PR #58 — squash-merged INTO `fix/m16-integrated-review-p56`
+(squash commit `7aa3e4e`), never to main: AuthProvider now clears the whole query/mutation cache
+and opening drafts whenever one OBSERVED authenticated identity is replaced by a different one,
+same-user token refreshes retain everything (SECURITY.md §9.1).** The hosted project remains untouched; GitHub Actions
 itself is still billing-blocked, so the first HOSTED DB execution stays the pre-merge hosted gate.
 Open draft PRs carry DO NOT MERGE banners; hosted Supabase untouched.
 
@@ -191,6 +195,18 @@ Repairs everything P60 exposed, then re-runs the full gate green:
   thresholds; typecheck/lint(0 errors)/format/unit 428/build/e2e 62 green.
 
 The hosted project remains untouched; GitHub Actions remains the pre-merge hosted gate.
+
+### P63 — cross-account query-cache privacy boundary (PR #58, squash-merged into PR #57 as `7aa3e4e`)
+
+F-61-2 CLOSED. The module-lifetime TanStack QueryClient was user-blind (no query key carries a
+user id), so a same-tab switch A→sign-out→B rendered A's cached private data under B until
+refetches resolved. Fix: `src/auth/query-cache-boundary.ts` + AuthProvider wiring — on every
+session observation, an identity CHANGE synchronously cancels queries, clears query+mutation
+caches and clears opening drafts BEFORE the new session renders; same-user token refreshes retain
+everything; public/catalog cache is cleared deliberately (D-093, ≤10 users). No localStorage.
+Tests: `tests/ui/auth-query-cache.test.ts` 8/8 against real QueryClient instances (incl. the
+in-flight race and pending-mutation cases). Unit total rose 428 → 436; all other gates unchanged
+green at the combined head. Docs folded: SECURITY.md §9.1, DECISIONS.md D-093.
 
 ---
 
