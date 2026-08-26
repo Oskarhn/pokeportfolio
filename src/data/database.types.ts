@@ -12,6 +12,7 @@ export type Database = {
       acquisition_lots: {
         Row: {
           acquired_on: string
+          client_request_key: string | null
           cost_basis_currency: string | null
           cost_basis_state: Database["public"]["Enums"]["cost_basis_state"]
           created_at: string
@@ -34,6 +35,7 @@ export type Database = {
         }
         Insert: {
           acquired_on: string
+          client_request_key?: string | null
           cost_basis_currency?: string | null
           cost_basis_state: Database["public"]["Enums"]["cost_basis_state"]
           created_at?: string
@@ -56,6 +58,7 @@ export type Database = {
         }
         Update: {
           acquired_on?: string
+          client_request_key?: string | null
           cost_basis_currency?: string | null
           cost_basis_state?: Database["public"]["Enums"]["cost_basis_state"]
           created_at?: string

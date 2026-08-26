@@ -2476,38 +2476,44 @@ boundaries that came with it.
    committed key. The UI message was updated accordingly ("retry safely — the card will not be
    added twice"). Definite server refusals (evidence of a PostgREST answer: code/details/hint)
    remain non-retryable without editing the item.
-7. **Known CSP dependency (P69 pending):** WASM compilation under the deployed CSP requires
-   'wasm-unsafe-eval', and the service worker needs its scanner-asset caching policy. The P68
-   candidate is deliberately NOT production-deployable until that security PR lands. One minimal
-   workbox globIgnores line was added in P68 solely because staging >2 MB assets otherwise broke
-   the build; the caching POLICY remains P69's.
+7. **CSP and WASM security boundary (D-095):** P69 is now integrated. `script-src` adds ONLY
+   `'wasm-unsafe-eval'` — NOT `'unsafe-eval'` or `'unsafe-inline'`. `worker-src` is `'self'`.
+   `connect-src` is unchanged. OCR assets are same-origin only; scanner-assets are excluded from
+   install-time precache and served via narrow same-origin `CacheFirst` at `/scanner-assets/v7/`.
+   Captured user images never reach Cache Storage.
 
-## D-095 — Scanner P70 findings classification: what P68 already fixed vs what remains open
+## D-095 — Scanner WASM/CSP and static-asset security boundary
 
-**Status:** Accepted (M15, P71). **Date:** 2026-08-26.
+**Status:** Accepted (M15, P69 integrated, P74). **Date:** 2026-08-26.
 
-The P70 audit identified 10 findings against the PR #68 scanner candidate. This decision
-classifies each, establishing the baseline for P71's work.
+This decision documents the Content Security Policy and service-worker boundaries that enable
+on-device WASM OCR without weakening the application's security posture. P69's architecture
+is now integrated into PR #63.
 
-| ID | Severity | Classification | Rationale |
-|----|----------|---------------|-----------|
-| H1 | High | CLOSED_BY_P68 | Scanner origin guard moved to domain layer |
-| H2 | High | STILL_OPEN | add_card_acquisition had no idempotency — closed by D-096 |
-| H3 | High | CLOSED_BY_P68 | CSP/workbox integrated by P69 |
-| M1 | Medium | STILL_OPEN | Leading-zero collector number mismatch |
-| M2 | Medium | CLOSED_BY_P68 | Batch-before-write pattern already correct |
-| M3 | Medium | PARTIAL | P69 cherry-pick landed; remaining CSP work is P72 |
-| M4 | Medium | STILL_OPEN | No route/swipe-back protection on unsaved batch |
-| L1 | Low | STILL_OPEN | Camera track ended not detected |
-| L2 | Low | CLOSED_BY_P68 | Scanner defaults already use shared helper |
-| L3 | Low | STILL_OPEN | OCR signals passed to search uncapped |
-| L4 | Low | STILL_OPEN | Manual collector input restricted to numeric |
-
-P71 closes H2, M1, M4, L1, L3, and L4. M3 remains open (P72 scope).
+1. **`script-src` adds ONLY `'wasm-unsafe-eval'`.** This is CSP3's distinct grant for
+   `WebAssembly.compile`/`WebAssembly.instantiate`. It does NOT grant JavaScript `eval()`.
+   `'unsafe-eval'` and `'unsafe-inline'` remain absent.
+2. **`worker-src` is `'self'`.** Tesseract's worker is created from a same-origin URL
+   (`/scanner-assets/v7/worker.min.js`) with `workerBlobURL: false`, so no `blob:` source
+   is needed.
+3. **`connect-src` is unchanged.** All OCR asset fetches are same-origin, already covered by
+   `'self'`. No new external endpoint is introduced.
+4. **OCR assets are same-origin only.** `workerPath`, `corePath`, and `langPath` all point to
+   `/scanner-assets/v7/`. The Tesseract CDN defaults are overwritten and never reached.
+5. **Scanner assets excluded from install-time precache.** `scannerAssetGlobIgnores:
+   ['scanner-assets/**']` keeps multi-MB WASM/binary assets out of the workbox precache
+   manifest. They are served through the runtime `CacheFirst` rule instead.
+6. **Runtime cache is narrow and versioned.** `CacheFirst` handler matches exactly
+   `/scanner-assets/v7/` with `.js|.wasm|.gz` extensions, 90-day expiry, dedicated cache name
+   `scanner-assets-v7`. The pattern starts with `/` so it structurally cannot match
+   cross-origin URLs.
+7. **Captured user images never reach Cache Storage.** Blobs live only in component memory
+   (CaptureStore object URLs) and are disposed after OCR analysis. No `localStorage`,
+   `sessionStorage`, or `IndexedDB` is used.
 
 ## D-096 — Scanner per-item idempotency: client-request-key on add_card_acquisition
 
-**Status:** Accepted (M15, P71). **Date:** 2026-08-26.
+**Status:** Accepted (M15, P71, P74 repair). **Date:** 2026-08-26.
 
 Scanner batch items now carry a stable, client-generated UUID (`client_request_key`) that travels
 through to `add_card_acquisition`. The server stores it on `acquisition_lots` with a partial
@@ -2516,12 +2522,37 @@ unique index, so:
 1. **Same key on retry returns the original result.** A transport-interrupted commit can be
    safely retried — no duplicate holdings. The UI message was updated from "check Portfolio
    before retrying" to "retry safely — the card will not be added twice."
-2. **Concurrency race is caught.** If two identical requests race, the second hits a
-   `unique_violation` on the partial index and replays the original holding/lot pair.
+2. **Concurrency race is caught atomically.** All mutations (purchase, purchase_line, holding
+   attempt, lot insert, manual valuation) run inside one outer `BEGIN/EXCEPTION` block. When the
+   lot INSERT fires `unique_violation` (a concurrent call committed first with the same key),
+   the implicit savepoint rolls back ALL changes from the losing transaction — including any
+   purchase/purchase_line rows it inserted. The handler re-reads the winner's committed lot and
+   returns it. Zero orphan financial rows.
 3. **Existing callers are unaffected.** The parameter defaults to NULL; callers that omit it
-   (all non-scanner acquisition paths) behave exactly as before.
+   (all non-scanner acquisition paths) behave exactly as before. The partial unique index ignores
+   NULL values.
 4. **Key lifecycle.** Generated once per logical card at `CARD_CONFIRMED` time in the state
    reducer. Survives editing condition/quantity, partial save retry, and transport retry. Changes
    only if the user removes the item and scans a new one.
 5. **Design follows D-089.** The pattern mirrors openings' idempotency: replay check before
    holding creation, unique_violation catch on lot insert, same AtomicPostgres isolation semantics.
+6. **Material mismatch rejection.** Before replaying an existing live lot, the function verifies
+   that all material facts (identity, grading, quantity, origin, cost, date, storage) still
+   match the request using `IS DISTINCT FROM` / null-safe comparisons. If material facts differ
+   (e.g. a key was reused with a different card), the function raises `idempotency-key-reuse`.
+   Display metadata (`is_favorite`, `holding_notes`, `lot_notes`, `manual_value_minor`,
+   `sealed_intent`) is deliberately NOT compared — they are mutable under the current model.
+7. **Voided lot rejection.** If the keyed acquisition exists but `voided_at IS NOT NULL`, the
+   early replay check rejects the stale retry with `idempotency-key-reuse`. A stale network
+   retry must never resurrect or falsely report removed inventory. A new logical acquisition
+   requires a new request key.
+8. **Constraint source safety.** The outer `unique_violation` handler only treats the error as
+   idempotent replay when `p_client_request_key IS NOT NULL` AND a row for
+   `(user_id, client_request_key)` actually exists after rollback. Unrelated uniqueness failures
+   are re-raised.
+9. **Backup exclusion.** `client_request_key` is operational retry metadata, not user financial
+   data. It is excluded from M13 backup/export (the `fetch-snapshot.ts` SELECT does not include
+   it). No backup schema version bump required.
+10. **Reset naturally clears keys.** `reset_my_portfolio_data()` deletes `acquisition_lots` at
+    step 7. The key dies with the lot. A fresh acquisition with the same UUID key succeeds
+    normally (early check finds nothing).

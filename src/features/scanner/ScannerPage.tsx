@@ -8,7 +8,7 @@ import {
   type ReactNode,
   type SyntheticEvent,
 } from 'react'
-import { useNavigate } from '@tanstack/react-router'
+import { useBlocker, useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ScannerCandidate } from './contract'
 import { getScannerUiController } from './controller'
@@ -36,6 +36,12 @@ import {
   initialScannerDefaults,
   scannerSessionStore,
 } from './session-store'
+import {
+  GUIDE_ASPECT_WIDTH,
+  GUIDE_ASPECT_HEIGHT,
+  GUIDE_HEIGHT_FRACTION,
+  GUIDE_MAX_WIDTH_FRACTION,
+} from './guide-geometry'
 import { getMyProfile, type Profile } from '../../data/profile'
 import { listStorageLocations } from '../../data/collection'
 import { useAuth } from '../../auth/useAuth'
@@ -170,6 +176,25 @@ export function ScannerPage() {
       window.removeEventListener('beforeunload', onBeforeUnload)
     }
   }, [state.batch.length])
+
+  // SPA navigation blocker: intercepts TanStack Router back/swipe navigation when
+  // an unsaved batch exists. The same discard-confirmation sheet handles both the
+  // X-button exit and SPA navigation — one consistent UX for "leave with unsaved work".
+  const navigationBlocker = useBlocker({
+    shouldBlockFn: () => state.batch.length > 0 && !state.exitRequested,
+    withResolver: true,
+  })
+  // Store the blocker resolver in a ref so we can call proceed()/reset() from event
+  // handlers without triggering cascading renders from a setState-in-effect.
+  const blockedNavigationRef = useRef(navigationBlocker)
+  useEffect(() => {
+    blockedNavigationRef.current = navigationBlocker
+  }, [navigationBlocker])
+  useEffect(() => {
+    if (navigationBlocker.status === 'blocked' && !state.exitWarningOpen) {
+      dispatch({ type: 'EXIT_PRESSED' })
+    }
+  }, [navigationBlocker.status, state.exitWarningOpen])
 
   useEffect(() => {
     if (!state.exitRequested) return
@@ -396,14 +421,18 @@ export function ScannerPage() {
               {...CAMERA_VIDEO_PROPS}
               className="absolute inset-0 size-full object-cover"
             />
-            {/* Card-shaped guide: Pokémon cards are 63×88 mm ≈ 5:7. Its rendered geometry is
-                mirrored EXACTLY in guide-geometry.ts (GUIDE_HEIGHT_FRACTION/GUIDE_MAX_WIDTH_
-                FRACTION) — the single shared mapping that tells OCR where the physical card is
-                in the captured frame. The dimmed surround gives margin; caption/controls stay
-                below the frame so nothing covers the bottom-right collector number. */}
+            {/* Card-shaped guide: Pokémon cards are 63×88 mm ≈ 5:7. Geometry constants are imported
+                from guide-geometry.ts and applied via inline styles so there is exactly ONE source
+                of truth — the JS computation (computeGuideRect) and this visual overlay always
+                agree. Tailwind handles only pure visual utilities (rounded, border, shadow). */}
             <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
               <div
-                className="aspect-[5/7] h-[58%] max-w-[86%] rounded-xl border-2 border-white/85 shadow-[0_0_0_9999px_rgba(2,6,15,0.55)]"
+                className="rounded-xl border-2 border-white/85 shadow-[0_0_0_9999px_rgba(2,6,15,0.55)]"
+                style={{
+                  aspectRatio: `${GUIDE_ASPECT_WIDTH} / ${GUIDE_ASPECT_HEIGHT}`,
+                  height: `${GUIDE_HEIGHT_FRACTION * 100}%`,
+                  maxWidth: `${GUIDE_MAX_WIDTH_FRACTION * 100}%`,
+                }}
                 aria-hidden="true"
               />
               <p className="mt-4 rounded-full bg-slate-950/70 px-3 py-1.5 text-xs font-medium text-slate-200">
@@ -571,6 +600,10 @@ export function ScannerPage() {
       <Sheet
         open={state.exitWarningOpen}
         onClose={() => {
+          // Reset the SPA navigation blocker if the user dismisses the sheet.
+          if (blockedNavigationRef.current.status === 'blocked') {
+            blockedNavigationRef.current.reset()
+          }
           dispatch({ type: 'EXIT_CANCELLED' })
         }}
         title="Discard scanned cards?"
@@ -583,6 +616,10 @@ export function ScannerPage() {
             <Button
               type="button"
               onClick={() => {
+                // Keep scanning: cancel both the X-button exit and any SPA navigation blocker.
+                if (blockedNavigationRef.current.status === 'blocked') {
+                  blockedNavigationRef.current.reset()
+                }
                 dispatch({ type: 'EXIT_CANCELLED' })
               }}
             >
@@ -592,7 +629,14 @@ export function ScannerPage() {
               type="button"
               variant="quiet"
               onClick={() => {
+                // Discard: clear scanner state and proceed with the originally blocked navigation
+                // (if any), or the X-button's default exit to /portfolio.
+                captureStoreRef.current.clear()
+                stopActiveScannerCamera()
                 dispatch({ type: 'DISCARD_CONFIRMED' })
+                if (blockedNavigationRef.current.status === 'blocked') {
+                  blockedNavigationRef.current.proceed()
+                }
               }}
             >
               Discard and exit

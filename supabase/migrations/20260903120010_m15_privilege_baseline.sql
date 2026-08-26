@@ -1,8 +1,9 @@
--- M15 restates the complete privilege baseline (SECURITY.md §5.9). This milestone adds server-side
--- idempotency to add_card_acquisition (D-096): the function gains a 20th optional parameter
--- (p_client_request_key uuid) and the acquisition_lots table gains a partial unique index.
+-- M15 restates the complete privilege baseline (SECURITY.md §5.9). This milestone changes ONE
+-- function signature: add_card_acquisition gains a 20th parameter (p_client_request_key uuid
+-- DEFAULT NULL) for per-item idempotency (D-096). The old 19-param signature is replaced via
+-- DROP+CREATE; this baseline references the NEW 20-param signature exclusively.
 -- Everything else below is identical to `20260902120030_m16_privilege_baseline.sql`; only the
--- add_card_acquisition signature changed (DROP+CREATE, same parameter positions plus one at the end).
+-- M15 change is noted inline.
 -- CI selects the lexicographically-latest `*_privilege_baseline.sql` automatically.
 
 -- ── 1. Schema-level ──────────────────────────────────────────────────────────────────────────
@@ -24,9 +25,6 @@ alter default privileges for role postgres in schema public
 alter default privileges for role postgres in schema public
   revoke execute on functions from public;
 
--- supabase_admin's default privileges are deliberately left alone here too — see
--- 20260820140000_m41_privilege_baseline.sql §2 for the full reasoning, unchanged since.
-
 -- ── 3. Functions: sweep PUBLIC, then anon/authenticated, then grant back exactly the current set ─
 
 revoke execute on all routines in schema public from public;
@@ -41,9 +39,8 @@ grant execute on function public.card_condition_to_text(public.card_condition) t
 grant execute on function public.grader_to_text(public.grader) to authenticated;
 grant execute on function public.search_cards(text, text, int, int) to authenticated, service_role;
 
--- M6/M11/M15: the atomic collection-writing surface, sealed intent included, with optional
--- client-request-key idempotency (D-096). The new 20-parameter signature replaces the M11
--- 19-parameter one.
+-- M15: the atomic collection-writing surface with per-item idempotency (D-096).
+-- 20-parameter signature (p_client_request_key added with DEFAULT NULL).
 grant execute on function public.add_card_acquisition(
   uuid, uuid, public.grading_state, public.card_condition, public.grader, numeric,
   text, boolean, text, public.lot_origin, public.cost_basis_state, bigint, int, date, uuid, text,
@@ -114,7 +111,9 @@ grant execute on function public.get_recent_activity(int) to authenticated, serv
 -- hardcoded auth.uid(), answers one boolean about the caller's own queue row.
 grant execute on function public.m12_recompute_pending_for_self() to authenticated;
 
--- M16: the opening write/read surface (20260902120010).
+-- M16: the opening write/read surface (20260902120010). The three writers are SECURITY DEFINER
+-- (frozen financial figures must be unreachable by direct writes — the D-060 standard); the reads
+-- are SECURITY INVOKER over ordinary owner-visible rows.
 grant execute on function public.create_opening(
   uuid, int, date, public.opening_tracking, jsonb, bigint, int, text, uuid, uuid
 ) to authenticated;
@@ -131,6 +130,9 @@ grant execute on function public.list_opening_sources(uuid) to authenticated;
 revoke all on all tables in schema public from anon, authenticated;
 revoke all on all sequences in schema public from anon, authenticated;
 
+-- Service role holds full data-plane access, explicitly (M12 finding: platform defaults do NOT
+-- reliably reach migration-created tables). Browser-reachable surface is stated below and only
+-- below; the audit checks anon/authenticated exclusively.
 grant all on all tables in schema public to service_role;
 grant all on all sequences in schema public to service_role;
 
@@ -214,6 +216,10 @@ grant update (
   voided_at,
   storage_location_id,
   sealed_intent
+  -- M16: acquisition_lots.opening_id is deliberately ABSENT — a pull's provenance is written
+  -- only by create_opening (SECURITY DEFINER); a browser can never attach or repoint it.
+  -- M15: acquisition_lots.client_request_key is deliberately ABSENT — it is set only by the
+  -- add_card_acquisition RPC and is never updated by the browser.
 ) on public.acquisition_lots to authenticated;
 
 grant select, insert, delete on public.holdings to authenticated;
@@ -258,8 +264,12 @@ grant select on public.lot_disposals to authenticated;
 
 grant select on public.lot_cost_adjustments to authenticated;
 
+-- M16: openings are owner-readable ONLY (RLS openings_owner_select). No INSERT/UPDATE/DELETE
+-- grant for any browser role — create_opening / void_opening / reconcile_opening_cost are the
+-- sole writers, exactly like the sale ledger before them.
 grant select on public.openings to authenticated;
 
+-- M12: the snapshot cache is owner-readable ONLY; no write grant of any kind.
 grant select on public.portfolio_snapshots to authenticated;
 
 grant select on public.profiles to authenticated;
@@ -295,7 +305,9 @@ grant select (
 grant select on public.invitation_overview to authenticated;
 grant select on public.invitation_redemptions to authenticated;
 
+-- public.invitation_claims: no grant, to any browser-reachable role, ever.
+
 -- ── 5. anon holds nothing but one function ───────────────────────────────────────────────────
 
 -- The sweep above is the whole of anon's table privileges; invitation_status is the whole of its
--- function privileges — unchanged since M11/M12/P28/P43.
+-- function privileges — unchanged since M11/M12/P28/P43/M16.

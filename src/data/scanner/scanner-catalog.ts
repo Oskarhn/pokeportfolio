@@ -22,6 +22,10 @@ import {
 
 const MAX_RAW_CANDIDATES = 40
 
+/** Maximum characters for any scanner signal passed to the catalog. Bounded early enough that
+ *  OCR text, manual fallback inputs, and catalog query strings cannot grow unbounded. */
+export const MAX_SCANNER_SIGNAL_CHARS = 64
+
 /** Thrown when the catalog cannot be reached at all. Carries NO underlying provider detail. */
 export class ScannerCatalogUnavailableError extends Error {
   constructor() {
@@ -52,10 +56,9 @@ function composeQuery(name: string, numberText: string): string {
 }
 
 /** L3 (P70): Cap a query string to a safe maximum. OCR can produce arbitrarily long text;
- *  PostgREST and search_cards have no use for signals beyond 64 characters. */
+ *  PostgREST and search_cards have no use for signals beyond MAX_SCANNER_SIGNAL_CHARS. */
 function capQuery(query: string): string {
-  const MAX = 64
-  return query.length > MAX ? query.slice(0, MAX) : query
+  return query.length > MAX_SCANNER_SIGNAL_CHARS ? query.slice(0, MAX_SCANNER_SIGNAL_CHARS) : query
 }
 
 /**

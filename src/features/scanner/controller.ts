@@ -121,8 +121,7 @@ export function classifyAcquisitionFailure(index: number, error: unknown): Scann
   return {
     index,
     status: 'needs_verification',
-    message:
-      'Connection was interrupted. You can retry safely — the card will not be added twice.',
+    message: 'Connection was interrupted. You can retry safely — the card will not be added twice.',
   }
 }
 

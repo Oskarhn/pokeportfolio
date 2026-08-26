@@ -268,6 +268,7 @@ describe('commitBatch - existing acquisition path, honest outcomes (I12/I13/I14)
       variantId: `variant-${index}`,
       quantity: index + 1,
       condition: 'NM' as const,
+      requestKey: crypto.randomUUID(),
     }))
   }
 
