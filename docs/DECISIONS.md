@@ -2470,13 +2470,58 @@ boundaries that came with it.
    src/features/collection/origin-basis.ts. Standalone origin set excludes 'opening'
    structurally; default pre_tracking ("Existing collection"); no amounts collected means no
    zero fabricated.
-6. **Ambiguous transport failures are surfaced, not retried.** add_card_acquisition carries no
-   idempotency key, so a connection break after a possible commit is reported per item as
-   needs_verification ("may already have been added - check Portfolio before retrying");
-   definite server refusals (evidence of a PostgREST answer: code/details/hint) are retryable.
-   No migration was added for this.
+6. **Ambiguous transport failures are surfaced, not retried (updated by D-096).** Each scanner
+   batch item now carries a stable client-request-key (D-096), so a connection break after a
+   possible commit is safely retried — the server replays the original result for an already-
+   committed key. The UI message was updated accordingly ("retry safely — the card will not be
+   added twice"). Definite server refusals (evidence of a PostgREST answer: code/details/hint)
+   remain non-retryable without editing the item.
 7. **Known CSP dependency (P69 pending):** WASM compilation under the deployed CSP requires
    'wasm-unsafe-eval', and the service worker needs its scanner-asset caching policy. The P68
    candidate is deliberately NOT production-deployable until that security PR lands. One minimal
    workbox globIgnores line was added in P68 solely because staging >2 MB assets otherwise broke
    the build; the caching POLICY remains P69's.
+
+## D-095 — Scanner P70 findings classification: what P68 already fixed vs what remains open
+
+**Status:** Accepted (M15, P71). **Date:** 2026-08-26.
+
+The P70 audit identified 10 findings against the PR #68 scanner candidate. This decision
+classifies each, establishing the baseline for P71's work.
+
+| ID | Severity | Classification | Rationale |
+|----|----------|---------------|-----------|
+| H1 | High | CLOSED_BY_P68 | Scanner origin guard moved to domain layer |
+| H2 | High | STILL_OPEN | add_card_acquisition had no idempotency — closed by D-096 |
+| H3 | High | CLOSED_BY_P68 | CSP/workbox integrated by P69 |
+| M1 | Medium | STILL_OPEN | Leading-zero collector number mismatch |
+| M2 | Medium | CLOSED_BY_P68 | Batch-before-write pattern already correct |
+| M3 | Medium | PARTIAL | P69 cherry-pick landed; remaining CSP work is P72 |
+| M4 | Medium | STILL_OPEN | No route/swipe-back protection on unsaved batch |
+| L1 | Low | STILL_OPEN | Camera track ended not detected |
+| L2 | Low | CLOSED_BY_P68 | Scanner defaults already use shared helper |
+| L3 | Low | STILL_OPEN | OCR signals passed to search uncapped |
+| L4 | Low | STILL_OPEN | Manual collector input restricted to numeric |
+
+P71 closes H2, M1, M4, L1, L3, and L4. M3 remains open (P72 scope).
+
+## D-096 — Scanner per-item idempotency: client-request-key on add_card_acquisition
+
+**Status:** Accepted (M15, P71). **Date:** 2026-08-26.
+
+Scanner batch items now carry a stable, client-generated UUID (`client_request_key`) that travels
+through to `add_card_acquisition`. The server stores it on `acquisition_lots` with a partial
+unique index, so:
+
+1. **Same key on retry returns the original result.** A transport-interrupted commit can be
+   safely retried — no duplicate holdings. The UI message was updated from "check Portfolio
+   before retrying" to "retry safely — the card will not be added twice."
+2. **Concurrency race is caught.** If two identical requests race, the second hits a
+   `unique_violation` on the partial index and replays the original holding/lot pair.
+3. **Existing callers are unaffected.** The parameter defaults to NULL; callers that omit it
+   (all non-scanner acquisition paths) behave exactly as before.
+4. **Key lifecycle.** Generated once per logical card at `CARD_CONFIRMED` time in the state
+   reducer. Survives editing condition/quantity, partial save retry, and transport retry. Changes
+   only if the user removes the item and scans a new one.
+5. **Design follows D-089.** The pattern mirrors openings' idempotency: replay check before
+   holding creation, unique_violation catch on lot insert, same AtomicPostgres isolation semantics.

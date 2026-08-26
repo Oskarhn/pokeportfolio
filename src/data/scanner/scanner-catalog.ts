@@ -35,9 +35,27 @@ function queryNumberText(parsed: ParsedCollectorNumber): string {
   return `${parsed.prefix}${parsed.numericText}`
 }
 
+/**
+ * Returns the unpadded equivalent of a collector number for retrieval (M1, P70).
+ * "049" → "49", "001" → "1"; prefixed forms like "SV049" → "SV49".
+ * Returns null when the number has no leading zeros to strip (already unpadded).
+ */
+function unpaddedNumberText(parsed: ParsedCollectorNumber): string | null {
+  const stripped = parsed.numericText.replace(/^0+/, '')
+  if (stripped === parsed.numericText || stripped === '') return null
+  return `${parsed.prefix}${stripped}`
+}
+
 /** "Pikachu" + "4" → "Pikachu 4" — the shape `search_cards`' trailing-number token expects. */
 function composeQuery(name: string, numberText: string): string {
   return `${name} ${numberText}`
+}
+
+/** L3 (P70): Cap a query string to a safe maximum. OCR can produce arbitrarily long text;
+ *  PostgREST and search_cards have no use for signals beyond 64 characters. */
+function capQuery(query: string): string {
+  const MAX = 64
+  return query.length > MAX ? query.slice(0, MAX) : query
 }
 
 /**
@@ -59,11 +77,22 @@ export async function retrieveScannerCandidates(
       signals.normalizedName,
       queryNumberText(signals.collectorNumber),
     )
-    attempts.push({ query: numberQuery }, { query: signals.normalizedName })
+    attempts.push({ query: capQuery(numberQuery) }, { query: capQuery(signals.normalizedName) })
+    // M1 (P70): try unpadded collector number to handle leading-zero mismatches between OCR
+    // output ("049") and the catalog's stored form ("49"). The padded form is tried first;
+    // unpadded is a low-cost supplementary attempt that costs one extra RPC.
+    const unpadded = unpaddedNumberText(signals.collectorNumber)
+    if (unpadded !== null) {
+      attempts.push({ query: capQuery(composeQuery(signals.normalizedName, unpadded)) })
+    }
   } else if (signals.collectorNumber !== null) {
-    attempts.push({ query: queryNumberText(signals.collectorNumber) })
+    attempts.push({ query: capQuery(queryNumberText(signals.collectorNumber)) })
+    const unpadded = unpaddedNumberText(signals.collectorNumber)
+    if (unpadded !== null) {
+      attempts.push({ query: capQuery(unpadded) })
+    }
   } else if (signals.normalizedName !== null) {
-    attempts.push({ query: signals.normalizedName })
+    attempts.push({ query: capQuery(signals.normalizedName) })
   }
 
   const settled = await Promise.allSettled(

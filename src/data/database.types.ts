@@ -1855,6 +1855,7 @@ export type Database = {
           p_acquired_on?: string
           p_card_variant_id?: string
           p_cert_number?: string
+          p_client_request_key?: string
           p_condition?: Database["public"]["Enums"]["card_condition"]
           p_cost_basis_state?: Database["public"]["Enums"]["cost_basis_state"]
           p_grade?: number

@@ -33,10 +33,14 @@ export const CAMERA_VIDEO_PROPS = {
  * somehow already running it is stopped first — two live streams are never allowed to coexist.
  *
  * `acquire` is injectable so tests can drive real success/failure paths against fake tracks.
+ *
+ * L1 (P70): when any track ends unexpectedly (hardware disconnect, browser permission revoke),
+ * the session is stopped and `onEnded` is called so the UI can transition gracefully.
  */
 export async function openEnvironmentCamera(
   video: HTMLVideoElement,
   acquire: (constraints: MediaStreamConstraints) => Promise<MediaStream> = defaultAcquire,
+  onEnded?: () => void,
 ): Promise<ManagedCameraSession> {
   stopActiveScannerCamera()
   const stream = await acquire({
@@ -57,10 +61,21 @@ export async function openEnvironmentCamera(
     stop() {
       if (stopped) return
       stopped = true
-      for (const track of stream.getTracks()) track.stop()
+      for (const track of stream.getTracks()) {
+        track.removeEventListener('ended', onTrackEnded)
+        track.stop()
+      }
       if (video.srcObject === stream) video.srcObject = null
       if (activeScannerSession === session) activeScannerSession = null
     },
+  }
+  function onTrackEnded(): void {
+    if (stopped) return
+    session.stop()
+    onEnded?.()
+  }
+  for (const track of stream.getTracks()) {
+    track.addEventListener('ended', onTrackEnded)
   }
   activeScannerSession = session
   return session

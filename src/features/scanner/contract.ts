@@ -82,6 +82,10 @@ export interface ScannedBatchCard {
   variantLabel: string
   quantity: number
   condition: CardCondition
+  /** Stable per-item idempotency key (D-096). Generated ONCE when the logical card enters the
+   *  batch; survives editing condition/quantity, partial save retry, transport retry. Changes
+   *  only if the user removes the item and scans/adds a new one. */
+  requestKey: string
   /** Set when a previous commit attempt left this item's server outcome UNKNOWN (interrupted
    *  transport): shown prominently; never auto-retried (prompt §30). */
   needsVerification?: boolean
@@ -94,6 +98,8 @@ export interface ScannerCommitItem {
   variantId: string
   quantity: number
   condition: CardCondition
+  /** Client-generated idempotency key for server-side retry deduplication (D-096). */
+  requestKey: string
 }
 
 /** Outcome of ONE item's commit attempt (prompt §29/§30/§31). */

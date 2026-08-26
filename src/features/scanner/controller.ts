@@ -38,9 +38,9 @@ import type {
  *   - Nothing is written until commitBatch; every write is an add_card_acquisition call with
  *     session defaults applied (origin → basis via the SHARED helper); no scanner-only writer
  *     exists anywhere.
- *   - An interrupted transport after a possible server commit is reported as
- *     needs_verification and never auto-retried (prompt §30) — add_card_acquisition has no
- *     idempotency key, so a blind retry could duplicate holdings.
+ *   - Each batch item carries a stable client-request-key (D-096): an interrupted transport
+ *     can be safely retried without duplicating inventory — the server replays the original
+ *     result for an already-committed key.
  */
 
 /** The short useful shortlist shown in the UI (prompt §20): retrieval may examine bounded raw
@@ -97,13 +97,13 @@ export function variantChoiceLabel(variant: CatalogVariant): string {
 }
 
 /**
- * Classifies ONE failed acquisition attempt (prompt §30). A PostgREST answer — however negative
- * — is DEFINITE (the server saw and refused the row; nothing was added). A transport-level break
- * before any answer (fetch TypeError, abort, timeout) is AMBIGUOUS: the RPC may have committed
- * before the connection died, and because `add_card_acquisition` carries no idempotency key a
- * blind retry risks duplicate holdings. The classifier therefore keys on evidence of a server
- * response (code/details/hint), never on message text, which can name internals and must not
- * travel to the UI anyway.
+ * Classifies ONE failed acquisition attempt (prompt §30, D-096). A PostgREST answer — however
+ * negative — is DEFINITE (the server saw and refused the row; nothing was added). A transport-
+ * level break before any answer (fetch TypeError, abort, timeout) is AMBIGUOUS: the RPC may
+ * have committed before the connection died. With D-096's per-item idempotency key, a retry of
+ * an ambiguous item deterministically replays the original result if it committed — so the
+ * message can now safely say the retry is safe. The classifier still keys on evidence of a
+ * server response (code/details/hint), never on message text.
  */
 export function classifyAcquisitionFailure(index: number, error: unknown): ScannerCommitOutcome {
   const candidate = error as { code?: unknown; details?: unknown; hint?: unknown }
@@ -122,7 +122,7 @@ export function classifyAcquisitionFailure(index: number, error: unknown): Scann
     index,
     status: 'needs_verification',
     message:
-      'Connection was interrupted. This card may already have been added. Check Portfolio before retrying.',
+      'Connection was interrupted. You can retry safely — the card will not be added twice.',
   }
 }
 
@@ -223,6 +223,7 @@ export function createRealScannerController(
           quantity: item.quantity,
           acquiredOn,
           storageLocationId,
+          clientRequestKey: item.requestKey,
         })
         addedCount += 1
         outcomes.push({ index, status: 'added', message: null })

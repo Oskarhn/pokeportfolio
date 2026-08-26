@@ -266,7 +266,17 @@ export function scannerReducer(state: ScannerState, action: ScannerAction): Scan
         step: 'scanned',
         batch: [
           ...state.batch,
-          { candidate, variantId, variantLabel, quantity, condition: state.confirmCondition },
+          {
+            candidate,
+            variantId,
+            variantLabel,
+            quantity,
+            condition: state.confirmCondition,
+            // Stable per-item idempotency key (D-096): generated ONCE when the logical card
+            // enters the batch. Survives editing condition/quantity, partial save retry,
+            // transport retry. Changes only if the user removes the item and scans a new one.
+            requestKey: crypto.randomUUID(),
+          },
         ],
         selectedCandidate: null,
         analysis: null,

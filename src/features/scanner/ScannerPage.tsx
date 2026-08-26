@@ -107,7 +107,12 @@ export function ScannerPage() {
     if (video === null || sessionRef.current !== null) return
     const generation = ++cameraGenerationRef.current
     let cancelled = false
-    void openEnvironmentCamera(video)
+    void openEnvironmentCamera(video, undefined, () => {
+      // L1 (P70): track ended unexpectedly — clean up and return to start screen.
+      if (cancelled || generation !== cameraGenerationRef.current) return
+      sessionRef.current = null
+      dispatch({ type: 'CAMERA_EXITED' })
+    })
       .then((session) => {
         if (cancelled || generation !== cameraGenerationRef.current) {
           session.stop()
@@ -153,6 +158,18 @@ export function ScannerPage() {
       document.removeEventListener('visibilitychange', onVisibilityChange)
     }
   }, [state.step])
+
+  // M4 (P70): Warn before navigating away when unsaved batch items exist.
+  useEffect(() => {
+    if (state.batch.length === 0) return
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => {
+      window.removeEventListener('beforeunload', onBeforeUnload)
+    }
+  }, [state.batch.length])
 
   useEffect(() => {
     if (!state.exitRequested) return
@@ -286,6 +303,7 @@ export function ScannerPage() {
           variantId: item.variantId,
           quantity: item.quantity,
           condition: item.condition,
+          requestKey: item.requestKey,
         })),
       )
       .then((result) => {
@@ -1091,8 +1109,8 @@ function ManualSearchView({
           onChange={(event) => {
             onCollectorNumberChange(event.target.value)
           }}
-          placeholder="e.g. 025"
-          inputMode="numeric"
+          placeholder="e.g. 025 or SV049"
+          inputMode="text"
           autoComplete="off"
         />
         <Button type="submit" disabled={searchName.trim() === '' || pending}>
