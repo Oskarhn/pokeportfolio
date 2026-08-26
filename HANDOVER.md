@@ -24,6 +24,15 @@ synthetic fixture at confidence 93 (~106 ms warm, dev machine), local Docker DB 
 after fresh reset + grant-audit clean. **IPHONE_DEVICE_GATE=PENDING_OWNER.** Everything below
 this paragraph predates M15.
 
+**P74 state (2026-08-26):** All local gates pass (typecheck/lint/format/test), zero regressions
+vs committed HEAD. Committed and pushed as `ba22999`. Docker-dependent gates (db:reset, test:db,
+build) need local Docker with Supabase running. P74 completed: idempotency RPC repair with outer
+BEGIN/EXCEPTION, voided-lot rejection, material mismatch detection, SPA navigation blocker via
+useBlocker, geometry coupling fix, OCR text cap extraction, migration timestamp fix (20260826→
+20260903), 21-case idempotency DB test suite, DECISIONS.md updates (D-094/095/096), database
+types update, grant-audit 20-param signature. Next: run Docker gates locally, then §38–42
+hosted preflight, then §43 Cloudflare preview deploy.
+
 **Previous state:** M16 (Openings, pulls, backup v2) is MERGED and RELEASED: PR #56
 squash-merged as `a1e20cf1c8c1a47414273932f2c808cfd3cab7c8` on `main`; its FOUR migrations
 (`20260902120000_m16_openings_schema.sql`, `20260902120010_m16_opening_rpcs.sql`,
