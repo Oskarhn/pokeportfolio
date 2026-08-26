@@ -194,3 +194,103 @@ What integration changed against the research above:
 - **Build interaction:** staging >2 MB assets under public/ breaks Workbox's precache ceiling;
   P68 carries the minimal globIgnores exclusion so pnpm build works, while the scanner-asset
   caching POLICY (runtime CacheFirst) belongs to the pending P69 security PR.
+
+---
+
+## 7b. Visual recognition addendum (M15b, 2026-08-26 — P76, D-097)
+
+The real-device gate this note's §6 flagged as the open question (S1: "accuracy through sleeves,
+under glare, at angle") came due: the OCR-only path P68/P74/P75 shipped returned "Couldn't
+identify this card" on real physical cards. This section records what P76 found and built to fix
+it — read D-097 in DECISIONS.md for the decision itself; this is the underlying research.
+
+### Model candidates evaluated
+
+| Model | License | Verdict |
+|---|---|---|
+| MobileCLIP-S0/S2 (§3.1's existence proof) | Apple ML Research Model License — "Research Purposes" explicitly excludes "commercial exploitation, product development or use in any commercial product or service" (read directly from `apple/ml-mobileclip`'s `LICENSE_MODELS`) | **Disqualified.** Cannot ship converted weights. |
+| OpenAI CLIP variants (via Transformers.js) | MIT | Not pursued once DINOv2 answered the need — pairs a text encoder this app has no use for, and CLIP's embedding space is tuned for semantic/category similarity, not exact-instance retrieval. |
+| **DINOv2-small** (`Xenova/dinov2-small`, converted from `facebook/dinov2-small`) | **Apache-2.0**, unambiguous | **Selected.** Vision-only, 384-dim, self-supervised training objective suited to instance-level retrieval. |
+
+### Fresh research sources (2026-08-26, this session)
+
+- `apple/ml-mobileclip` GitHub repo: `LICENSE` (MIT, code only) points explicitly to
+  `LICENSE_MODELS` and `LICENSE_DATA` for "The ML-MobileCLIP model weights and data copyright and
+  license terms" — read `LICENSE_MODELS` directly (not inferred from a Hugging Face tag).
+- `facebook/dinov2-small` Hugging Face model card: `"license":"apache-2.0"`, `hidden_size: 384`.
+- `Xenova/dinov2-small` Hugging Face repo (revision `c2bb04a51fab207c420665f1946016107bffc701`):
+  ONNX file sizes measured directly via `resolve` URL `content-length` headers — fp32 88.5 MB,
+  fp16 44.4 MB, dynamic-INT8 (`model_quantized.onnx`) 24.5 MB, uint8 22.4 MB, q4 15.0 MB, bnb4
+  13.7 MB, q4f16 12.9 MB. `q8`/dynamic-INT8 chosen (matches Transformers.js's own WASM default
+  dtype).
+- `@huggingface/transformers` npm registry: stable `latest` dist-tag is **4.2.0** (not the older
+  3.x line an initial pass assumed) — verified via `npm view`, not memory.
+- `node_modules/@huggingface/transformers/dist/transformers.js` (the ACTUAL bundled runtime code,
+  read directly): confirms `env.backends.onnx.wasm.wasmPaths` defaults to
+  `https://cdn.jsdelivr.net/npm/onnxruntime-web@<version>/dist/...` unless already set, and that
+  the package does NOT re-export its internal `apis` (Safari/WebGPU detection) object at the
+  package root in this version — both facts drove real implementation decisions (explicit
+  same-origin `wasmPaths` override; a locally-reproduced Safari/WebGPU detector), not memory of
+  the library's older public API surface.
+- ORT-Web/iOS WASM: current, real caveats exist (`microsoft/onnxruntime#26827`: Safari/WebKit 26
+  WebGPU JSEP-mode CPU/memory blowup; historical iOS WASM-SIMD issues in `#15644`/`#22086`) —
+  reason WASM stays the REQUIRED baseline and WebGPU is opportunistic-only, verified by actually
+  requesting a `GPUAdapter`, never assumed from `navigator.gpu`'s mere presence.
+
+### Benchmark methodology (`scripts/scanner-visual-benchmark/`)
+
+Real, reproducible, run this session (not fabricated):
+
+- **Reference corpus:** 240 real card images from 6 live TCGdex sets (base1 Base Set, base2
+  Jungle, neo1 Neo Genesis, swsh1 Sword & Shield, swsh7 Evolving Skies, sv01 Scarlet & Violet) —
+  vintage and modern layouts, holo and non-holo, spanning three visually distinct card border
+  eras. A 7th set, `cel25cc` (Celebrations Classic Collection — deliberate vintage-artwork
+  reprints, e.g. `cel25cc-CC002` Charizard reprinting `base1-4`'s art), was added specifically to
+  stress "same/near-identical art, different printing" but TCGdex does not serve CDN images for
+  this set (`card.image` absent from both the set-list and single-card API responses) — a real,
+  disclosed gap, not silently dropped.
+- **Synthetic camera-capture augmentations** (`lib/augment.mjs`, `sharp`, seeded per-card so
+  re-runs are reproducible): clean-resize, perspective-rotate (±6°), brightness-contrast,
+  blur-jpeg (variable blur + JPEG quality 55), glare-overlay (radial-gradient screen blend),
+  shadow-color-shift (linear-gradient multiply blend + hue shift). 6 profiles × 240 references =
+  **1,440 augmented queries**.
+- **OCR-first baseline:** the REAL pinned `tesseract.js` 7.0.0 (same assets the browser build
+  stages), run headless in Node against each augmented image's full frame, parsed through the
+  SAME `splitFullFrameCardText`/`cleanSignal` production code the browser fallback path uses, and
+  scored by the REAL `src/domain/scanner/engine.ts` matcher — not a reimplementation.
+- **Perceptual baseline:** `computeDHash`/`hammingDistance` (`src/domain/scanner/perceptual-hash.ts`),
+  a 9×8 grayscale-grid difference hash, ranked by Hamming distance alone.
+- **Visual baseline:** DINOv2 cosine similarity (dot product of L2-normalized vectors) against the
+  240-card reference set, ranked directly.
+- **Hybrid:** visual top-30 shortlist → OCR text scored by the SAME domain matcher, now with the
+  visual-evidence channel wired in (`visualScores` parameter, D-097).
+
+### Results (n = 1,440 augmented queries; see `scripts/scanner-visual-benchmark/reports/benchmark-report.json`)
+
+| Method | TOP1 | TOP3 | TOP5 |
+|---|---|---|---|
+| OCR-first | 30.5% | 39.7% | 42.1% |
+| Perceptual (dHash) | 86.7% | 93.0% | 95.0% |
+| Visual (DINOv2) | 99.7% | 100% | 100% |
+| Hybrid | 95.8% | 99.9% | 100% |
+
+Per-set OCR TOP1 ranged from 11.3% (swsh1) to 65.0% (base1) — modern layouts with smaller/stylised
+text read far worse than vintage ones, another point of agreement with the real device failure
+(modern cards are exactly what a 2026 collector scans most). Visual TOP1 stayed 99.6–100% across
+every set including modern ones, which is the core evidence for why a visual channel — not a
+better OCR tuning — was the right fix.
+
+**Performance (DESKTOP, Node `onnxruntime-node` CPU execution provider — NOT a browser/WASM/iPhone
+measurement):** model cold load 225–3,371 ms across repeated runs (first-run HF cache miss vs.
+warm cache); average per-card embedding 40–46 ms; average pure index-search time over 240 rows
+1.1–1.2 ms; INT8-vs-FP32 top-1 agreement 100% across all 1,440 queries (quantization costs nothing
+measurable at this scale). Real iPhone WASM numbers remain the owner's device-test job.
+
+### Quantitative index-architecture decision
+
+384-dim × INT8 = 384 bytes/card. Full canonical catalog (~23,400 English cards) ≈ **8.6 MB**;
+this session's 240-card demonstration index is **89.6 KB**. Both comfortably clear the ≤20–25 MB
+local-index budget (§17 of the prompt) — LOCAL INDEX wins outright, no pgvector migration
+required. See D-097 for the full architecture writeup and the coverage caveat (this session's
+committed index is LOCAL-database-derived and does not resolve against the hosted catalog until
+the owner runs the generator once against hosted credentials).

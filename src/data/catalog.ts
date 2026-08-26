@@ -130,6 +130,36 @@ export async function getCard(cardId: string): Promise<CatalogCard | null> {
   }
 }
 
+/** Bounded bulk fetch of card metadata by id (P76, M15 visual scanner): the on-device visual
+ *  retrieval worker returns a shortlist of `cards.id`s that never went through `search_cards`'
+ *  text match, so the hybrid pipeline needs their identity/metadata in one round trip rather than
+ *  one `getCard` call per candidate. Same table, same RLS, no new RPC. Silently drops ids the
+ *  catalog no longer has (an existing scan candidate that has since been marked inactive) rather
+ *  than failing the whole shortlist. */
+export async function getCardsByIds(cardIds: readonly string[]): Promise<CatalogCard[]> {
+  if (cardIds.length === 0) return []
+  const { data, error } = await supabase
+    .from('cards')
+    .select(
+      'id, name, local_id, rarity, category, illustrator, image_base_url, language, set_id, card_sets(name)',
+    )
+    .in('id', cardIds)
+  if (error) throw new Error(error.message)
+
+  return data.map((row) => ({
+    id: row.id,
+    name: row.name,
+    localId: row.local_id,
+    rarity: row.rarity,
+    category: row.category,
+    illustrator: row.illustrator,
+    imageBaseUrl: row.image_base_url,
+    language: row.language as CatalogLanguage,
+    setId: row.set_id,
+    setName: row.card_sets.name,
+  }))
+}
+
 export async function getCardVariants(cardId: string): Promise<CatalogVariant[]> {
   const { data, error } = await supabase
     .from('card_variants')

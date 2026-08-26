@@ -35,6 +35,7 @@ import { parseCollectorNumber } from './collector-number'
 import { compareNames } from './name-similarity'
 import { normalizeCardText, parseLanguageHint } from './normalize'
 import { compareSetHint } from './set-hint'
+import { visualEvidencePoints, visualEvidenceTier } from './visual-evidence'
 import type {
   ParsedScannerSignals,
   RankedScannerCandidate,
@@ -44,6 +45,7 @@ import type {
   ScannerNoteCode,
   ScannerObservation,
   ScannerReasonCode,
+  VisualEvidenceByCard,
 } from './types'
 
 /**
@@ -105,14 +107,25 @@ export function parseScannerSignals(observation: ScannerObservation): ParsedScan
   }
 }
 
-/** A signal is usable when it could plausibly identify something (P67 §17 minimum thresholds). */
-export function hasUsableSignal(signals: ParsedScannerSignals): boolean {
-  return signals.collectorNumber !== null || signals.normalizedName !== null
+/** A signal is usable when it could plausibly identify something (P67 §17 minimum thresholds).
+ *  Text OR visual evidence is enough (P76 §33): OCR absence must not force NO_MATCH when the
+ *  on-device visual channel found something. */
+export function hasUsableSignal(
+  signals: ParsedScannerSignals,
+  visualScores?: VisualEvidenceByCard,
+): boolean {
+  if (signals.collectorNumber !== null || signals.normalizedName !== null) return true
+  if (!visualScores) return false
+  for (const similarity of visualScores.values()) {
+    if (visualEvidenceTier(similarity) !== 'none') return true
+  }
+  return false
 }
 
 function scoreCandidate(
   signals: ParsedScannerSignals,
   card: ScannerCandidateRecord,
+  visualScores?: VisualEvidenceByCard,
 ): RankedScannerCandidate {
   const reasons: ScannerReasonCode[] = []
   let score = 0
@@ -160,19 +173,33 @@ function scoreCandidate(
     }
   }
 
+  const visualSimilarity = visualScores?.get(card.cardId) ?? null
+  const visualTier = visualEvidenceTier(visualSimilarity)
+  const visualPoints = visualEvidencePoints(visualSimilarity)
+  if (visualPoints > 0) {
+    score += visualPoints
+    if (visualTier === 'strong') reasons.push('visual-strong')
+    else if (visualTier === 'moderate') reasons.push('visual-moderate')
+    else reasons.push('visual-weak')
+  }
+
   const clamped = Math.max(0, Math.min(100, score))
-  return { card, score: clamped, reasons }
+  return { card, score: clamped, reasons, visualSimilarity }
 }
 
 /**
- * Ranks candidates against parsed signals. Bounded output, deterministic order (score desc,
- * then cardId asc so equal scores never depend on input order), duplicates removed.
+ * Ranks candidates against parsed signals plus optional per-candidate visual evidence (P76,
+ * D-097). Bounded output, deterministic order (score desc, then cardId asc so equal scores never
+ * depend on input order), duplicates removed. `visualScores` candidates that never appeared in
+ * the text-search pool must already be merged into `candidates` by the data layer (P76 §16's
+ * hybrid retrieval) — this function only SCORES, never fetches or invents identity.
  */
 export function rankScannerCandidates(
   signals: ParsedScannerSignals,
   candidates: readonly ScannerCandidateRecord[],
+  visualScores?: VisualEvidenceByCard,
 ): ScannerMatch {
-  if (!hasUsableSignal(signals)) {
+  if (!hasUsableSignal(signals, visualScores)) {
     return {
       tier: 'none',
       candidates: [],
@@ -184,7 +211,7 @@ export function rankScannerCandidates(
   const deduped = new Map<string, RankedScannerCandidate>()
   for (const card of candidates) {
     if (!deduped.has(card.cardId)) {
-      deduped.set(card.cardId, scoreCandidate(signals, card))
+      deduped.set(card.cardId, scoreCandidate(signals, card, visualScores))
     }
   }
   const sorted = [...deduped.values()].sort((a, b) => {
@@ -222,6 +249,35 @@ export function rankScannerCandidates(
     }
   }
 
+  if (visualScores && visualScores.size > 0 && top) {
+    let textOnlyTopCardId: string | null = null
+    let textOnlyBestScore = -1
+    for (const card of candidates) {
+      const textOnly = scoreCandidate(signals, card)
+      if (textOnly.score > textOnlyBestScore) {
+        textOnlyBestScore = textOnly.score
+        textOnlyTopCardId = card.cardId
+      }
+    }
+    let visualOnlyTopCardId: string | null = null
+    let visualOnlyBestSimilarity = -Infinity
+    for (const [cardId, similarity] of visualScores.entries()) {
+      if (similarity > visualOnlyBestSimilarity) {
+        visualOnlyBestSimilarity = similarity
+        visualOnlyTopCardId = cardId
+      }
+    }
+    if (
+      textOnlyTopCardId !== null &&
+      visualOnlyTopCardId !== null &&
+      textOnlyTopCardId !== visualOnlyTopCardId &&
+      textOnlyBestScore > 0 &&
+      visualEvidenceTier(visualOnlyBestSimilarity) !== 'none'
+    ) {
+      notes.push('visual-text-disagreement')
+    }
+  }
+
   return { tier, candidates: bounded, signals, notes }
 }
 
@@ -229,6 +285,7 @@ export function rankScannerCandidates(
 export function matchScannerObservation(
   observation: ScannerObservation,
   candidates: readonly ScannerCandidateRecord[],
+  visualScores?: VisualEvidenceByCard,
 ): ScannerMatch {
-  return rankScannerCandidates(parseScannerSignals(observation), candidates)
+  return rankScannerCandidates(parseScannerSignals(observation), candidates, visualScores)
 }

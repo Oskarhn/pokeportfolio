@@ -103,6 +103,10 @@ export type ScannerReasonCode =
   | 'no-number-signal'
   | 'no-name-signal'
   | 'insufficient-signal'
+  /** On-device visual embedding evidence (P76, D-097) — a separate channel from OCR text. */
+  | 'visual-strong'
+  | 'visual-moderate'
+  | 'visual-weak'
 
 /** A ranked candidate: the canonical printing identity plus explainable evidence. */
 export interface RankedScannerCandidate {
@@ -110,7 +114,15 @@ export interface RankedScannerCandidate {
   /** Deterministic 0–100 explainable score. Not a probability; see engine.ts weight table. */
   readonly score: number
   readonly reasons: readonly ScannerReasonCode[]
+  /** Raw cosine-similarity evidence for this candidate, when the visual channel ran (P76).
+   *  Informational/diagnostic only — never re-derived into a fake percentage in the UI. */
+  readonly visualSimilarity?: number | null
 }
+
+/** Per-candidate visual-embedding evidence keyed by `cards.id` (P76, D-097). Produced by the
+ *  on-device retrieval worker; consumed only by the domain ranker, which decides how much it is
+ *  worth — the worker itself makes no identity decision. */
+export type VisualEvidenceByCard = ReadonlyMap<string, number>
 
 /** Confidence tier. HIGH means "safe to preselect" — NEVER "already added": nothing in this
  *  module mutates the Portfolio (P67 §16). Even at HIGH the user confirms in the review step
@@ -126,4 +138,11 @@ export interface ScannerMatch {
   readonly notes: readonly ScannerNoteCode[]
 }
 
-export type ScannerNoteCode = 'runner-up-margin-small' | 'single-candidate' | 'insufficient-signal'
+export type ScannerNoteCode =
+  | 'runner-up-margin-small'
+  | 'single-candidate'
+  | 'insufficient-signal'
+  /** The text-only top candidate and the visual-only top candidate disagreed (P76 §33/§35):
+   *  same/similar artwork across printings, or a genuine misread. Surfaced for diagnostics; the
+   *  score/margin logic is what actually demotes confidence, not this flag by itself. */
+  | 'visual-text-disagreement'

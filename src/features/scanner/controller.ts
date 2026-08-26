@@ -1,10 +1,16 @@
-import { searchCards, getCardVariants, type CatalogVariant } from '../../data/catalog'
+import {
+  searchCards,
+  getCardVariants,
+  getCardsByIds,
+  type CatalogVariant,
+} from '../../data/catalog'
 import { addCardAcquisition } from '../../data/collection'
 import {
   matchScannerObservation,
   type ScannerObservation,
   type ScannerCandidateRecord,
   type ScannerConfidenceTier,
+  type VisualEvidenceByCard,
 } from '../../domain/scanner'
 import {
   retrieveScannerCandidates,
@@ -13,6 +19,12 @@ import {
 import { runOcrAnalysis, releaseOcrCanvases } from './analyze'
 import { ScannerOcrEngine } from './ocr-engine'
 import { scannerCostBasisState, scannerSessionStore, type ScannerOrigin } from './session-store'
+import { VisualRecognitionClient } from './visual/visual-client'
+
+/** Bounded raw visual shortlist handed to the domain matcher (prompt §16/§31): retrieval may
+ *  examine this many raw candidates internally, but the UI never sees more than
+ *  SCANNER_UI_CANDIDATE_LIMIT of them after reranking. */
+const VISUAL_SHORTLIST_SIZE = 30
 import type {
   ScannerAnalysis,
   ScannerCandidate,
@@ -131,27 +143,97 @@ export interface RealScannerControllerOptions {
   userId: string | null
 }
 
+function toCandidateRecordFromCatalog(card: {
+  id: string
+  name: string
+  localId: string
+  rarity: string | null
+  category: string | null
+  illustrator: string | null
+  imageBaseUrl: string | null
+  language: ScannerCandidateRecord['language']
+  setId: string
+  setName: string
+}): ScannerCandidateRecord {
+  return {
+    cardId: card.id,
+    name: card.name,
+    localId: card.localId,
+    rarity: card.rarity,
+    category: card.category,
+    illustrator: card.illustrator,
+    imageBaseUrl: card.imageBaseUrl,
+    language: card.language,
+    setId: card.setId,
+    setName: card.setName,
+    variantCount: 1,
+  }
+}
+
 export function createRealScannerController(
   options: RealScannerControllerOptions,
 ): ScannerUiController {
   const engine = new ScannerOcrEngine()
+  // Lazy, session-lifetime visual client (prompt §27): created on first use, never per card.
+  const visualClient = new VisualRecognitionClient()
+
+  /** Never throws and never rejects: a browser/environment without `createImageBitmap` (or any
+   *  other visual-channel failure) degrades to "no visual evidence" exactly like a missing model
+   *  or index would (prompt §36) — OCR-only results, not a broken scan. */
+  async function analyzeVisualSafely(blob: Blob) {
+    if (typeof createImageBitmap !== 'function') return null
+    try {
+      const bitmap = await createImageBitmap(blob)
+      return await visualClient.analyze(bitmap, VISUAL_SHORTLIST_SIZE)
+    } catch {
+      return null
+    }
+  }
 
   async function analyzeCapture(capture: Parameters<ScannerUiController['analyzeCapture']>[0]) {
-    // On-device OCR first: bytes in, text out. Nothing here touches the network.
-    const ocrResult = await runOcrAnalysis(capture, engine)
-    // V1 recognises ENGLISH cards only (prompt §24): the language hint comes from the session
-    // defaults (always 'en' today), so English candidates gain their +5 evidence and Japanese
-    // catalog rows are honestly penalised instead of pretending Japanese OCR exists.
+    // On-device OCR and on-device visual embedding run in parallel — both stay entirely local
+    // (prompt §6/§41): no image bytes cross the network either way, only the RESULTING textual
+    // catalog queries (OCR) and card-id lookups (visual shortlist enrichment) do.
     const defaults = scannerSessionStore.load(options.userId)
+    const languageHint = defaults?.language ?? 'en'
+
+    const [ocrResult, visualResult] = await Promise.all([
+      runOcrAnalysis(capture, engine),
+      analyzeVisualSafely(capture.blob),
+    ])
+
     const observation: ScannerObservation = {
       rawNameText: ocrResult.rawNameText,
       rawCollectorNumberText: ocrResult.rawCollectorNumberText,
       rawSetText: null,
-      languageHint: defaults?.language ?? 'en',
+      languageHint,
     }
+
     // Textual signals meet the catalog through P67's adapter (existing search_cards surface).
-    const candidates = await retrieveScannerCandidates(observation)
-    const match = matchScannerObservation(observation, candidates)
+    const textCandidates = await retrieveScannerCandidates(observation)
+
+    let visualScores: VisualEvidenceByCard | undefined
+    let mergedCandidates = textCandidates
+    if (visualResult && visualResult.hits.length > 0) {
+      visualScores = new Map(visualResult.hits.map((hit) => [hit.cardId, hit.similarity]))
+      const knownIds = new Set(textCandidates.map((c) => c.cardId))
+      const unknownVisualIds = visualResult.hits
+        .map((hit) => hit.cardId)
+        .filter((id) => !knownIds.has(id))
+      if (unknownVisualIds.length > 0) {
+        // Visual shortlist candidates the text search never found (prompt §16's hybrid
+        // retrieval): fetch their identity/metadata in one bounded round trip. A card the
+        // catalog no longer has (e.g. deactivated since the index was built) is simply dropped —
+        // never fabricated.
+        const enriched = await getCardsByIds(unknownVisualIds).catch(() => [])
+        mergedCandidates = [
+          ...textCandidates,
+          ...enriched.map((card) => toCandidateRecordFromCatalog(card)),
+        ]
+      }
+    }
+
+    const match = matchScannerObservation(observation, mergedCandidates, visualScores)
     return {
       confidence: tierToConfidence(match.tier),
       candidates: match.candidates
@@ -236,6 +318,7 @@ export function createRealScannerController(
   function dispose(): void {
     engine.dispose()
     releaseOcrCanvases()
+    visualClient.dispose()
   }
 
   return { analyzeCapture, searchFallback, listVariantChoices, commitBatch, dispose }

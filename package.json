@@ -9,7 +9,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "prebuild": "node scripts/prepare-scanner-assets.mjs",
+    "prebuild": "node scripts/prepare-scanner-assets.mjs && node scripts/prepare-scanner-visual-assets.mjs && node scripts/scanner-visual-index/stage-index-assets.mjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
@@ -30,9 +30,13 @@
     "db:reset": "supabase db reset",
     "db:seed": "supabase db reset",
     "db:dump": "supabase db dump --linked -f supabase/dumps/pre-migration.sql",
-    "db:types": "supabase gen types typescript --local --schema public > src/data/database.types.ts"
+    "db:types": "supabase gen types typescript --local --schema public > src/data/database.types.ts",
+    "scanner:visual:benchmark": "tsx scripts/scanner-visual-benchmark/run-benchmark.ts",
+    "scanner:index:build": "tsx scripts/scanner-visual-index/build-index.ts",
+    "scanner:index:verify": "tsx scripts/scanner-visual-index/verify-index.ts"
   },
   "dependencies": {
+    "@huggingface/transformers": "4.2.0",
     "@supabase/supabase-js": "^2.112.3",
     "@tailwindcss/vite": "^4.3.3",
     "@tanstack/react-query": "^5.101.4",
@@ -60,12 +64,21 @@
     "fast-check": "^4.9.0",
     "globals": "^17.11.0",
     "prettier": "^3.9.6",
+    "sharp": "0.34.5",
     "supabase": "^2.114.0",
     "tesseract.js-core": "7.0.0",
+    "tsx": "4.23.12",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.67.0",
     "vite": "^8.2.1",
     "vite-plugin-pwa": "^1.3.0",
     "vitest": "^4.1.10"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "onnxruntime-node",
+      "sharp"
+    ]
   }
 }

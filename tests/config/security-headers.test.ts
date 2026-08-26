@@ -14,6 +14,7 @@ import {
   buildContentSecurityPolicy,
   scannerAssetGlobIgnores,
   scannerAssetRuntimeCache,
+  visualAssetRuntimeCache,
 } from '../../vite.config.ts'
 
 const DEV_SUPABASE_URL = 'https://exampleprojectref.supabase.co'
@@ -121,16 +122,70 @@ describe('scanner asset runtime-cache rule', () => {
   })
 })
 
+describe('visual recognition asset runtime-cache rule (P76, D-097)', () => {
+  const pattern = visualAssetRuntimeCache.urlPattern
+
+  it('is a CacheFirst rule over its OWN dedicated versioned cache (not v7)', () => {
+    expect(visualAssetRuntimeCache.handler).toBe('CacheFirst')
+    expect(visualAssetRuntimeCache.options.cacheName).toBe('scanner-assets-visual-v1')
+    expect(visualAssetRuntimeCache.options.cacheName).not.toBe(
+      scannerAssetRuntimeCache.options.cacheName,
+    )
+  })
+
+  it('matches the model/index file classes under /scanner-assets/visual-v1/', () => {
+    expect(pattern.test('/scanner-assets/visual-v1/model/onnx/model_quantized.onnx')).toBe(true)
+    expect(pattern.test('/scanner-assets/visual-v1/ort/ort-wasm-simd-threaded.wasm')).toBe(true)
+    expect(pattern.test('/scanner-assets/visual-v1/ort/ort-wasm-simd-threaded.mjs')).toBe(true)
+    expect(pattern.test('/scanner-assets/visual-v1/manifest.json')).toBe(true)
+    expect(pattern.test('/scanner-assets/visual-v1/embeddings.bin')).toBe(true)
+    expect(
+      pattern.test('https://pokeportfolio-dev.pages.dev/scanner-assets/visual-v1/embeddings.bin'),
+    ).toBe(true)
+    expect(pattern.test('/scanner-assets/visual-v1/embeddings.bin?v=1')).toBe(true)
+  })
+
+  it('rejects everything outside the exact visual-v1 prefix and file classes, including the OCR v7 tree', () => {
+    expect(pattern.test('/scanner-assets/v7/worker.min.js')).toBe(false)
+    expect(pattern.test('/scanner-assets/visual-v2/model/onnx/model_quantized.onnx')).toBe(false)
+    expect(pattern.test('/scanner-assets/visual-v1/index.html')).toBe(false)
+    expect(pattern.test('/assets/index-BQrbBiYz.js')).toBe(false)
+    expect(pattern.test('/rest/v1/cards')).toBe(false)
+  })
+
+  it('cannot serve cross-origin responses under Workbox RegExpRoute semantics', () => {
+    const foreignHref = 'https://malicious.example/scanner-assets/visual-v1/embeddings.bin'
+    const match = pattern.exec(foreignHref)
+    expect(match === null || match.index !== 0).toBe(true)
+  })
+
+  it('bounds cache growth and refuses non-200 responses', () => {
+    expect(visualAssetRuntimeCache.options.expiration.maxEntries).toBeGreaterThan(0)
+    expect(visualAssetRuntimeCache.options.expiration.maxAgeSeconds).toBeGreaterThan(0)
+    expect(visualAssetRuntimeCache.options.expiration.purgeOnQuotaError).toBe(true)
+    expect(visualAssetRuntimeCache.options.cacheableResponse.statuses).toEqual([200])
+  })
+})
+
 describe('scanner asset precache exclusion', () => {
   it('excludes the whole scanner-assets tree from install-time precache', () => {
     expect(scannerAssetGlobIgnores).toContain('scanner-assets/**')
   })
 
-  it('contains no ignore pattern broader than the scanner tree', () => {
-    // The exclusion must never grow into something that would drop ordinary shell assets from
-    // the precache manifest — every entry has to name scanner-assets explicitly.
+  it('excludes the visual-recognition worker chunk by name (P76, D-097)', () => {
+    // A real production build precached assets/visual-worker-<hash>.js (~500KB, bundles
+    // @huggingface/transformers) before this ignore existed — verified directly against
+    // dist/sw.js's __WB_MANIFEST. Pinned here so a future Vite/PWA-plugin change that stops
+    // respecting this glob fails a fast unit test, not a slow full-build discovery.
+    expect(scannerAssetGlobIgnores).toContain('assets/visual-worker-*.js')
+  })
+
+  it('contains no ignore pattern broader than intended (either the scanner tree or the named visual-worker chunk)', () => {
+    // The exclusion list must never grow into something that would drop ordinary shell assets
+    // from the precache manifest — every entry names either scanner-assets or the specific
+    // visual-worker chunk pattern, nothing broader.
     for (const ignore of scannerAssetGlobIgnores) {
-      expect(ignore).toContain('scanner-assets')
+      expect(ignore.includes('scanner-assets') || ignore === 'assets/visual-worker-*.js').toBe(true)
     }
   })
 })

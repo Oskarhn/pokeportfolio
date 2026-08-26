@@ -4,51 +4,57 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-**Last updated:** 2026-08-26 — **M15 scanner integrated candidate is DRAFT PR #63
-(`feat/m15-scanner-integrated-p68` @ `d10fc57`), backend applied to hosted, frontend NOT merged
-or deployed.** Branch deliberately combines source PR #60 (deterministic matcher), source PR #61
-(camera/batch UI) and source PR #62 (P69 CSP/WASM security boundary, now integrated) on top of
-main, plus the real recognition pipeline: pinned Tesseract.js 7 / core 7 / eng-data 1.0.0 (D-094),
-same-origin build-staged assets under `/scanner-assets/v7/` excluded from SW precache and served
-only via a dedicated `CacheFirst` runtime rule, one lazy OCR worker per scanner session, shared
-guide→pixels geometry (one source of truth for the CSS overlay and the OCR crop math), P67
-matcher wired to P66 UI, user-scoped session defaults, batch-before-write commits through
-`add_card_acquisition`'s new per-item idempotency key (D-096), SPA navigation blocker via
-`useBlocker` when the batch is non-empty.
+**Last updated:** 2026-08-26 — **M15b visual-recognition hybrid scanner is DRAFT PR #63
+(`feat/m15-scanner-integrated-p68`), NOT merged, NOT deployed.** P76 replaced the OCR-only
+recognition bottleneck (P75's real device test returned "Couldn't identify this card") with a
+hybrid architecture: DINOv2-small (Apache-2.0, `Xenova/dinov2-small` pinned revision
+`c2bb04a51fab207c420665f1946016107bffc701`) visual embedding, quantized INT8, a static
+same-origin index, and OCR text now feeding the SAME `src/domain/scanner/engine.ts` matcher as one
+more scored input alongside the visual channel. Benchmarked on a real 240-card/1,440-query corpus:
+OCR-first 30.5/39.7/42.1% (TOP1/3/5) — closely matching the real device failure — vs. hybrid
+95.8/99.9/100%, clearing both product-quality targets (TOP5≥90%, TOP3≥85%) by a wide margin. Full
+model-selection reasoning (MobileCLIP is licensing-disqualified — Apple's "Research Purposes"
+license explicitly bars product use), benchmark methodology and results: D-097 in
+[DECISIONS.md](docs/DECISIONS.md), [docs/SCANNER_RESEARCH.md](docs/SCANNER_RESEARCH.md) §7b.
 
-**P75 (2026-08-26) found and fixed a real production bug the first time the idempotency design
-ever ran against actual Postgres:** the early replay check tested `v_replay is not null` on a
-`record` with a mixed-null shape (`voided_at` NULL while `holding_id`/`lot_id` are not) — SQL's
-row-wise NULL test evaluates BOTH `IS NULL` and `IS NOT NULL` false for that shape, so the entire
-replay/material-check block silently never ran on any non-voided retry; execution fell through to
-plain inserts, relying entirely on the coarser outer `unique_violation` handler (no material or
-voided-lot check at all) to paper over it. The material-mismatch predicate itself also had two
-inverted null-safe comparisons (`IS DISTINCT FROM` where `IS NOT DISTINCT FROM` was needed) that
-would have rejected every legitimate replay had the surrounding block ever executed. Both fixed;
-full account in DECISIONS.md D-096 point 11 and `ai_outputs/Claude_outputs/output_75.txt`. Also
-fixed the 10 pre-existing unit failures (stale camera-track-ended mock, the intentional unpadded-
-collector-number retrieval and idempotency-safe retry-copy behaviors, the new `requestKey` batch
-field) and several fixture bugs in the new DB test suite itself.
+**Real, disclosed gap: the shipped index does not yet cover the hosted catalog.** This session
+had no legitimate way to read the hosted project's `cards` table (anon has zero grant on it or on
+`search_cards`; obtaining an authenticated session would mean creating an account or signing in,
+both outside this session's authority) — so the committed
+`scripts/scanner-visual-index/generated/visual-v1/` index was built against the LOCAL dev stack
+after locally syncing 240 real cards across 6 TCGdex sets. It proves the entire pipeline
+(generation → INT8 packing → same-origin staging → service-worker caching → browser
+decode/search) end-to-end, but its card ids are LOCAL `gen_random_uuid()` values that do not
+resolve against the hosted catalog. **One remaining manual step**, safe and credential-free for
+any assistant session: the owner runs, from their own shell (the key is never pasted anywhere),
 
-**Current state:** all local gates GREEN — typecheck/lint(0 errors)/format/unit 655/655; fresh
-90-migration reset clean; 21/21 M15 idempotency DB tests against real Postgres (I1–I21, including
-the concurrent-race and every material-mismatch case); db+authorization 599/600 (1 pre-existing
-opt-in skip); grant audit clean; hostile-grant convergence proven; M13 adversarial 62/62; M16
-independent adversarial 53/53 zero skips; M12 independent adversarial 44/46 (2 pre-existing
-opt-in skips); build green with CSP/scanner-asset caching verified against the actual `dist/`
-output; E2E 64/64; real Tesseract smoke read the synthetic fixture at confidence 93 with zero
-external network calls. **Hosted backend APPLIED**: the two M15 migrations are on
-`pokeportfolio-dev` (90/90, zero drift); `add_card_acquisition` verified as exactly one
-20-parameter `SECURITY INVOKER` overload, `search_path=''`, `authenticated`-only EXECUTE (anon
-probe returns `42501`); `remote-security-check.mjs` 17/17 phase 1. **GitHub Actions CI cannot run**
-— every job fails instantly with "recent account payments have failed or your spending limit
-needs to be increased" (owner's GitHub billing, unrelated to this branch's code; all of CI's
-checks were independently reproduced locally above). **Cloudflare preview NOT created** — this
-project's Pages settings have preview deployments explicitly off (`docs/DEVELOPMENT.md` §9,
-"preview deployments **off**") and this session holds no Cloudflare credentials to create one
-out-of-band; the owner needs to either enable preview deployments for the Pages project or supply
-a scoped deploy token. **IPHONE_DEVICE_GATE=PENDING_OWNER** (blocked on the preview above).
-Everything below this paragraph predates M15.
+```
+SUPABASE_URL=https://nopmkroeygmlvndzjjqs.supabase.co SUPABASE_SERVICE_ROLE_KEY=<hosted service role, from Supabase dashboard> pnpm scanner:index:build
+```
+
+commits the regenerated three index files, and pushes — the next preview build then ships a
+hosted-valid index. Until that runs, the visual channel degrades gracefully to OCR-only behavior
+on the owner's real physical cards (safe, no wrong match — just not yet the fix this milestone set
+out to prove).
+
+**Current state:** all local gates GREEN — typecheck/lint (0 errors, 27 pre-existing warnings)/
+format/unit 690/690 (up from 655; +35 new: visual-index decode/search, perceptual-hash, hybrid
+scoring, visual runtime-cache/precache-exclusion tests); fresh 90-migration reset clean (**no new
+migration** — the local-INT8-index architecture needs none); db+authorization 599/600 (1
+pre-existing opt-in skip); grant audit clean; hostile-grant convergence proven; M13 adversarial
+62/62; M16 independent adversarial 53/53 zero skips; build green — visual model (24.5 MB, INT8
+ONNX) + onnxruntime-web WASM + the committed index all stage same-origin under
+`/scanner-assets/visual-v1/`, confirmed absent from the service-worker precache (the ~500 KB
+visual-worker JS chunk was initially swept into precache by the default glob and is now
+explicitly excluded, same pattern as the OCR engine files); E2E 64/64; OCR smoke unchanged
+(confidence 93, zero external calls); a real production build was grepped for
+`huggingface.co`/`cdn.jsdelivr.net`/`unpkg.com` — both hits are dead (override-shadowed) strings
+inside the bundled libraries' own source, same class of finding as `tesseract.js`'s pre-existing
+CDN-fallback string. **Nothing merged to main, nothing deployed to Cloudflare Production.**
+**IPHONE_DEVICE_GATE=PENDING_OWNER_RETEST** — see `ai_outputs/Claude_outputs/output_76.txt` for
+the 10-card device protocol; interpret a "still fails" result in light of the index-coverage gap
+above before concluding the model itself is at fault.
+Everything below this paragraph predates M15b.
 
 **Previous state:** M16 (Openings, pulls, backup v2) is MERGED and RELEASED: PR #56
 squash-merged as `a1e20cf1c8c1a47414273932f2c808cfd3cab7c8` on `main`; its FOUR migrations

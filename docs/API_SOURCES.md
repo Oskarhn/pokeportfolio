@@ -363,3 +363,27 @@ recognition "provider", and the entry documents why NO new external runtime serv
 
 Deployment dependency: WASM compilation requires the 'wasm-unsafe-eval' CSP exception —
 pending P69 security PR.
+
+---
+
+## Hugging Face — BUILD-TIME model weight source only (NOT a runtime service)
+
+**Status: Selected** (M15b scanner, D-097) — recorded for the same reason as Tesseract.js above:
+Hugging Face is where the pinned model FILES are fetched from once, at build/prepare time, into
+this repository's own build output. The deployed application makes **zero runtime requests** to
+Hugging Face, or to any other model host — this is the entire point of D-097's same-origin
+staging design (verified directly against a real `dist/` build; see docs/SCANNER_RESEARCH.md §7b).
+
+| | |
+|---|---|
+| What | `Xenova/dinov2-small` (an ONNX conversion of `facebook/dinov2-small`), pinned to revision `c2bb04a51fab207c420665f1946016107bffc701` — never `main`/`latest` |
+| License | Apache-2.0 (`facebook/dinov2-small`'s Hugging Face model card: `"license":"apache-2.0"`) — permits commercial use, modification, redistribution |
+| Fetched by | `scripts/prepare-scanner-visual-assets.mjs`, part of `prebuild` — downloads the 3 pinned files (config, preprocessor config, quantized ONNX weights) once, verifies each against a recorded SHA-256, caches locally, and stages same-origin copies into `public/scanner-assets/visual-v1/model/` |
+| Runtime behaviour | **Zero runtime calls to Hugging Face.** The browser's visual-recognition worker sets `env.allowRemoteModels = false` and `env.localModelPath` to the same-origin staged directory before any model load |
+| Cost | $0 recurring; static bytes served free by Cloudflare Pages, same as every other scanner asset |
+| Verified | Hash pinned and staging tested on the development machine 2026-08-26; see D-097 and docs/SCANNER_RESEARCH.md §7b |
+
+`onnxruntime-web`'s own WASM runtime binaries are staged same-origin the same way (from the
+installed npm package, not a separate download) — its bundled default otherwise points at
+`cdn.jsdelivr.net`, confirmed by reading the actual library source, and is overridden explicitly
+before first use.

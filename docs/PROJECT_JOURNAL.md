@@ -8,6 +8,64 @@ here when there was a real problem with a non-obvious answer.
 
 ---
 
+## 2026-08-26 — M15b visual recognition: four findings from letting reality vote
+
+1. **The leading model candidate was licensing-disqualified, and only reading the actual license
+   file caught it.** MobileCLIP's Hugging Face mirror carries the non-committal tag `license:
+   other`. Reading `apple/ml-mobileclip`'s `LICENSE_MODELS` file directly (not the repo's
+   headline `LICENSE`, which is MIT and covers only the code) showed the pretrained weights are
+   under Apple's "Machine Learning Research Model License Agreement" — "Research Purposes does
+   not include any commercial exploitation, product development or use in any commercial product
+   or service." A portfolio/showcase app is product development regardless of whether it is
+   privately used. DINOv2-small (Apache-2.0, unambiguous) was the fallback and turned out
+   architecturally better-suited to the actual problem (instance retrieval, not semantic
+   classification) besides. Lesson: an HF license *tag* is not evidence; the actual license file
+   the model card points to is, and "other"/ambiguous tags are a hard stop until read.
+
+2. **A flat per-tier evidence bonus actively regressed accuracy versus the simpler baseline it
+   was meant to improve on.** The first hybrid-scoring attempt gave any "strong" visual match
+   (similarity ≥ 0.82) a flat +35 points. Benchmarked against 1,440 real augmented queries, this
+   measurably regressed TOP1 to 84.4% — BELOW the 99.7% the visual channel alone achieved —
+   because a single OCR misread that coincidentally produced an exact-collector-number match on
+   the WRONG card (worth 45 points alone) could outscore a genuinely-correct but only-just-strong
+   visual match. Switching to a continuous point function (scaling with the actual similarity
+   value, not a coarse bucket) recovered TOP1 to 95.8% without weakening the disagreement/
+   ambiguity behavior the coarse tiers were meant to express. The lesson generalizes: a discrete
+   confidence bucket discards exactly the information (how strong within the bucket) that
+   prevents this class of inversion, and finding it required a real benchmark, not code review —
+   the bug was invisible reading the scoring formula in isolation.
+
+3. **Vite silently bundles a heavy dependency's own asset reference even when application code
+   never touches it, and a plain lazy-import discipline does not exclude it from the
+   service-worker precache.** `@huggingface/transformers` constructs its onnxruntime-web WASM
+   path via `new URL('ort-wasm-simd-threaded.asyncify.wasm', import.meta.url)` internally; Vite's
+   static asset scanner bundles that reference into `dist/assets/` regardless of the fact that
+   this session's code overrides the resulting path before any load call. Separately, the
+   ~500 KB worker chunk that imports the library landed in the PWA plugin's default precache glob
+   (`**/*.js` matches ANY hashed chunk under `dist/assets/`, lazy-loaded or not) — meaning every
+   visitor's first load would have downloaded it whether or not they ever open the scanner. Found
+   only by inspecting the real built `dist/sw.js` precache manifest directly, not by reading
+   `vite.config.ts` and assuming the existing OCR-asset exclusion pattern automatically covered a
+   differently-shaped asset (a Vite worker chunk under `assets/`, not a staged file under
+   `scanner-assets/`). Fixed with an explicit `globIgnores` entry naming the chunk. Lesson: "lazy
+   `import()`" and "excluded from install-time precache" are two different, independently-checked
+   properties — verify both against the actual build output, not the source.
+
+4. **This session had no legitimate path to the data it needed to fully finish the job, and the
+   honest answer was to say so precisely rather than route around it.** Building a REAL,
+   hosted-valid reference index requires reading the hosted `cards` table; the hosted project's
+   `anon` role has zero grant on it or on `search_cards` (verified live, both return
+   `permission denied`), and the only way to get `authenticated`-level access is signing in or
+   creating an account — both explicitly outside this session's authority. Rather than skip the
+   requirement quietly or fabricate coverage, the session built the complete pipeline, proved it
+   end-to-end against the LOCAL stack (240 real cards, real embeddings, real service-worker
+   caching), and named the exact one-line, credential-free command the owner needs to run once to
+   close the gap. Lesson for future sessions hitting a similar wall: name the blocker precisely,
+   build everything that does NOT require the missing credential, and hand back a minimal,
+   copy-pasteable unblock — not a vague "owner should investigate."
+
+---
+
 ## 2026-08-26 — M15 integration: three findings from letting reality vote
 
 1. **npm reality overrode the researched core pin.** The M15 architecture research pinned

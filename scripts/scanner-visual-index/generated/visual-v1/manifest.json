@@ -1,0 +1,17 @@
+{
+  "version": "visual-v1",
+  "modelId": "Xenova/dinov2-small",
+  "modelRevision": "c2bb04a51fab207c420665f1946016107bffc701",
+  "modelSha256": "3afdc8bc63b50558d6e5770f5b799bb82455c2311183a2de43803f343a29d917",
+  "embeddingDim": 384,
+  "quantization": "int8",
+  "cardCount": 239,
+  "embeddingsSha256": "4cbe113a86628428d2e1df2ed83bedf309f490e1b87f69b054ccf3abe92d7ab4",
+  "generatedAt": "2026-08-26T20:33:58.539Z",
+  "coverage": {
+    "totalCanonicalCards": 278,
+    "cardsWithUsableImage": 239,
+    "cardsIndexed": 239,
+    "failures": 0
+  }
+}

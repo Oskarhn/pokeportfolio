@@ -638,7 +638,7 @@ Holding Detail's "Open" action). The wizard offers two modes: open an already-ow
 
 ---
 
-## F12 — Bulk scan — **built as the M15 integrated candidate (PR: P68), pending P69 CSP + iPhone gate**
+## F12 — Bulk scan — **built as the M15b hybrid-recognition candidate (PR: P76), iPhone retest owed**
 
 Specified now so the scanner is built against a defined target, not improvised.
 
@@ -652,19 +652,31 @@ Specified now so the scanner is built against a defined target, not improvised.
   Language shows English (V1 recognition is English-only; a Japanese-default profile sees an
   honest notice). Collection/tag fields are absent — the acquisition path behind commit takes none.
 → Point at a card → shutter → photo review → Use photo → OCR reads the name + collector-number
-  strips on-device ("Preparing scanner…" honestly on first use) → candidates from the app's own
-  catalog → tap to accept → choose printing (variants fetched ONLY after a candidate is chosen;
-  exactly one preselects itself) → quantity/condition → Add to batch → immediately ready for next
-→ LOW confidence or NO_MATCH → shortlist (≤5) / manual search without leaving the session
+  strips AND an on-device visual embedding searches the reference index (D-097) in parallel —
+  "Preparing scanner…" honestly on first use, larger than before now that a visual model is
+  involved → candidates from the app's own catalog, ranked by BOTH signals together → tap to
+  accept → choose printing (variants fetched ONLY after a candidate is chosen; exactly one
+  preselects itself) → quantity/condition → Add to batch → immediately ready for next
+→ LOW confidence or NO_MATCH → shortlist (≤5) / manual search without leaving the session —
+  unchanged even when OCR alone found nothing, since a strong visual match can carry the
+  shortlist on its own (D-097)
 → A running counter shows the batch; nothing is written at any point before review
 → End session → review the batch (per-item variant label, qty, condition, remove; interrupted-
   transport items flagged "may already have been added") → Add cards → sequential acquisition
   writes → honest result ("Added N cards." / "Added N. M need attention.")
-✓ No navigation and no URL change while the flow is live (D-006); OCR worker disposed on exit
-✓ Nothing is saved until the review step is confirmed (batch-before-write; D-094)
-✓ Card photos are processed on this device and aren't uploaded or saved (D-094)
-✓ Faster than manual search, measured against a real stack of cards — iPhone measurement still
-  owed by the owner-device gate
+✓ No navigation and no URL change while the flow is live (D-006); OCR worker AND the visual
+  worker are both disposed on exit
+✓ Nothing is saved until the review step is confirmed (batch-before-write; D-094/D-097)
+✓ Card photos are processed on this device and aren't uploaded or saved, for EITHER recognition
+  channel (D-094/D-097) — only the derived embedding and any resulting card-id lookups reach the
+  network, never the image
+✓ Recognition never silently upgrades to HIGH confidence and auto-adds — variant and condition
+  stay explicit manual choices even when the visual match is near-certain (D-097)
+✓ Faster and more reliably correct than manual search, measured against a real stack of cards —
+  benchmarked at 95.8/99.9/100% (TOP1/3/5) on a synthetic-distortion corpus (docs/
+  SCANNER_RESEARCH.md §7b); the real iPhone measurement is still owed by the owner-device gate,
+  and the currently-shipped reference index has a real coverage gap against the hosted catalog
+  (D-097) that the next retest should account for
 
 ---
 

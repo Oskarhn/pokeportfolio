@@ -1,5 +1,5 @@
-import { readFileSync, readdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { join, relative } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 /**
@@ -7,26 +7,40 @@ import { describe, expect, it } from 'vitest'
  * become arguments to Supabase queries, fetch, TCGdex calls or logging. Two complementary
  * proofs:
  *
- *   1. STATIC: every module under the scanner feature is enumerated and asserted to contain no
- *      direct network/storage surface at all — no supabase client import, no fetch/WebSocket/
- *      XMLHttpRequest/TCGdex reference, no console logging of any kind. The ONLY way scanner
- *      code reaches the network is through src/data adapters (catalog search + variants) and
- *      the acquisition RPC wrapper, whose textual-only inputs are pinned by the controller's
- *      runtime tests.
- *   2. The engine module is additionally asserted to perform no fetch itself (assets are loaded
- *      by the BROWSER via same-origin worker/core URLs, not by application code).
+ *   1. STATIC: every module under the scanner feature (RECURSIVELY, including the P76 visual/
+ *      subdirectory) is enumerated and asserted to contain no direct network/storage surface at
+ *      all — no supabase client import, no WebSocket/XMLHttpRequest/TCGdex reference, no console
+ *      logging of any kind. The ONLY way scanner code reaches the network is through src/data
+ *      adapters (catalog search + variants) and the acquisition RPC wrapper, whose textual-only
+ *      inputs are pinned by the controller's runtime tests — PLUS the visual worker's same-origin
+ *      `/scanner-assets/visual-v1/` model/index asset fetches (D-097), which get their own
+ *      narrower same-origin-literal check below rather than a blanket ban.
+ *   2. The OCR engine module is additionally asserted to perform no fetch itself (assets are
+ *      loaded by the BROWSER via same-origin worker/core URLs, not by application code).
  */
 
 const SCANNER_DIR = join(process.cwd(), 'src', 'features', 'scanner')
+/** The one module family allowed to call fetch() — and only for same-origin scanner assets. */
+const VISUAL_ASSET_FETCHERS = ['visual/visual-worker.ts']
 
 function scannerSources(): { file: string; text: string }[] {
-  const files = readdirSync(SCANNER_DIR).filter(
-    (name) => name.endsWith('.ts') || name.endsWith('.tsx'),
-  )
-  return files.map((file) => ({
-    file,
-    text: readFileSync(join(SCANNER_DIR, file), 'utf-8'),
-  }))
+  const out: { file: string; text: string }[] = []
+  function walk(dir: string): void {
+    for (const name of readdirSync(dir)) {
+      const full = join(dir, name)
+      if (statSync(full).isDirectory()) {
+        walk(full)
+        continue
+      }
+      if (!name.endsWith('.ts') && !name.endsWith('.tsx')) continue
+      out.push({
+        file: relative(SCANNER_DIR, full).replace(/\\/g, '/'),
+        text: readFileSync(full, 'utf-8'),
+      })
+    }
+  }
+  walk(SCANNER_DIR)
+  return out
 }
 
 const FORBIDDEN_PATTERNS: readonly { pattern: RegExp; why: string }[] = [
@@ -39,7 +53,6 @@ const FORBIDDEN_PATTERNS: readonly { pattern: RegExp; why: string }[] = [
     why: 'no direct Supabase queries from scanner code',
   },
   { pattern: /tcgdex/i, why: 'TCGdex is never called by scanner code' },
-  { pattern: /\bfetch\s*\(/, why: 'no direct fetch in scanner code' },
   { pattern: /XMLHttpRequest|WebSocket/, why: 'no raw transport use in scanner code' },
   { pattern: /localStorage|sessionStorage|indexedDB/i, why: 'batch/photos never persist anywhere' },
   { pattern: /console\./, why: 'no logging (OCR strings are private)' },
@@ -56,8 +69,27 @@ describe('I8 static network-privacy audit', () => {
       for (const { pattern, why } of FORBIDDEN_PATTERNS) {
         if (pattern.test(code)) violations.push(`${file}: ${why}`)
       }
+      if (!VISUAL_ASSET_FETCHERS.includes(file) && /\bfetch\s*\(/.test(code)) {
+        violations.push(`${file}: no direct fetch outside the visual asset fetcher`)
+      }
     }
     expect(violations).toEqual([])
+  })
+
+  it('the visual worker only fetches same-origin literal scanner-asset paths, never a variable URL or external host', () => {
+    for (const relativeFile of VISUAL_ASSET_FETCHERS) {
+      const text = readFileSync(join(SCANNER_DIR, relativeFile), 'utf-8')
+      const code = text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+      const fetchCalls = [...code.matchAll(/fetch\(\s*(`[^`]*`|'[^']*'|"[^"]*")/g)]
+      expect(fetchCalls.length).toBeGreaterThan(0)
+      for (const match of fetchCalls) {
+        const argument = match[1] ?? ''
+        expect(
+          argument.includes('/scanner-assets/visual-v1/') || argument.includes('${ASSET_BASE}'),
+        ).toBe(true)
+        expect(argument).not.toMatch(/https?:\/\/|jsdelivr|unpkg|huggingface|supabase/i)
+      }
+    }
   })
 
   it('tesseract.js is imported dynamically in exactly one engine module', () => {
@@ -79,5 +111,15 @@ describe('I8 static network-privacy audit', () => {
     const engine = readFileSync(join(SCANNER_DIR, 'ocr-engine.ts'), 'utf-8')
     expect(engine).toContain("SCANNER_ASSET_BASE = '/scanner-assets/v7'")
     expect(engine).not.toMatch(/jsdelivr|unpkg|cdn\./i)
+  })
+
+  it('the visual worker disables remote model loading and its asset base is SAME-ORIGIN — no CDN anywhere (D-097)', () => {
+    const worker = readFileSync(join(SCANNER_DIR, 'visual', 'visual-worker.ts'), 'utf-8')
+    expect(worker).toContain("ASSET_BASE = '/scanner-assets/visual-v1'")
+    expect(worker).toContain('env.allowRemoteModels = false')
+    // Strip comments first: the file's OWN doc comments explain (and thus mention) the CDN
+    // hosts this code deliberately avoids — only executable code may never reference them.
+    const code = worker.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(code).not.toMatch(/jsdelivr|unpkg|cdn\.|huggingface\.co/i)
   })
 })

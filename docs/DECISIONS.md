@@ -2577,3 +2577,166 @@ unique index, so:
     for any future `record`-typed "was a row found" check in this codebase: never test the whole
     record for NULL when its columns can be independently null — test one column declared
     NOT NULL in the schema.
+
+---
+
+## D-097 — Scanner visual recognition: DINOv2-small hybrid, local INT8 index
+
+**Motivated by:** the P75 preview's real device-gate result — physical-card scanning returned
+"Couldn't identify this card" on ordinary English cards. A synthetic OCR smoke test (P74/P75)
+was not sufficient release evidence; the OCR-first architecture itself needed a second, visual
+evidence channel (SCANNER_RESEARCH.md §3.2's "hybrid: embedding match, OCR to disambiguate" was
+the anticipated direction, never built before P76).
+
+### Model selection: MobileCLIP is licensing-disqualified; DINOv2-small chosen
+
+MobileCLIP (S0/S2, the SCANNER_RESEARCH.md §3.1 existence proof) was the leading candidate
+entering P76. Its pretrained weights are **not usable here**: `apple/ml-mobileclip`'s
+`LICENSE_MODELS` file (read directly, not inferred from a tag) is the "Apple Machine Learning
+Research Model License Agreement," which grants use "exclusively for Research Purposes" and
+explicitly states "Research Purposes does not include any commercial exploitation, product
+development or use in any commercial product or service." A portfolio/showcase application —
+even a private one, even non-commercial — is product development; committing converted MobileCLIP
+ONNX weights into this repository would violate that license outright. (The repo's separate code
+`LICENSE`, MIT, and a third, more permissive-looking `LICENSE_weights_data` file exist alongside
+it, but `LICENSE_MODELS` is the one that actually governs the pretrained checkpoint per the
+project's own `LICENSE` file, which says "The ML-MobileCLIP model weights and data copyright and
+license terms can be found in LICENSE_MODELS and LICENSE_DATA.")
+
+**Chosen instead: `Xenova/dinov2-small`** (an ONNX conversion, for Transformers.js, of
+`facebook/dinov2-small`), pinned to revision `c2bb04a51fab207c420665f1946016107bffc701`.
+
+- **License: Apache-2.0**, unambiguous, confirmed directly from `facebook/dinov2-small`'s Hugging
+  Face model card (`"license":"apache-2.0"`) — permits commercial use, modification and
+  redistribution, no ambiguity to disclose.
+- **Vision-only.** DINOv2 has no paired text encoder at all (unlike CLIP-family models), so there
+  is no dead-weight text tower to strip or accidentally ship.
+- **Embedding dimension 384** (ViT-S/14, `hidden_size: 384` per the model's `config.json`) — small
+  relative to a 512/768-dim CLIP embedding, which matters directly for index size (§below).
+  DINOv2 features are also architecturally suited to **instance-level** visual retrieval (the
+  self-supervised training objective and the model's established use in copy-detection/landmark
+  retrieval literature), which is a better match for "is this the exact printing" than a
+  CLIP-style embedding tuned for semantic/category zero-shot classification.
+- **Quantized (`q8`/dynamic INT8) ONNX file**, `onnx/model_quantized.onnx`, verified 24,451,943
+  bytes (23.3 MB), SHA-256 `3afdc8bc63b50558d6e5770f5b799bb82455c2311183a2de43803f343a29d917`.
+- **Smoke-tested against real images** before any benchmark: same-card-different-resolution
+  cosine similarity 0.94, different-card similarity 0.57–0.68 (base1 Charizard vs. Pikachu vs.
+  Blastoise, real TCGdex CDN images) — embedding dimension, normalization and same>different
+  separation all verified directly, not assumed (prompt §45).
+
+### Benchmark evidence (see docs/SCANNER_RESEARCH.md §7b for the full report)
+
+A real benchmark — 240 reference cards across 6 real TCGdex sets (base1, base2, neo1, swsh1,
+swsh7, sv01), 6 deterministic synthetic camera-distortion profiles each, 1,440 augmented queries
+— compared four methods using the REAL production domain matcher
+(`src/domain/scanner/engine.ts`), not a reimplementation:
+
+| Method | TOP1 | TOP3 | TOP5 |
+|---|---|---|---|
+| OCR-first (current production path) | 30.5% | 39.7% | 42.1% |
+| Perceptual hash (dHash) alone | 86.7% | 93.0% | 95.0% |
+| Visual embedding (DINOv2) alone | 99.7% | 100% | 100% |
+| **Hybrid (visual shortlist + domain matcher rerank)** | **95.8%** | **99.9%** | **100%** |
+
+The OCR-first number (30.5% TOP1) is close corroborating evidence for the actual device failure
+this milestone was created to fix — this benchmark's synthetic distortions independently
+reproduce the same order-of-magnitude weakness the owner saw on a real phone. The hybrid method
+clears both product-quality targets (§15 of the prompt: TOP5 ≥ 90%, TOP3 ≥ 85%) with wide margin.
+Perceptual hashing alone was evaluated and is **not** wired into production scoring: at this
+corpus scale it is measurably weaker than the embedding channel and adds no benefit once DINOv2
+is present (the pure functions remain in `src/domain/scanner/perceptual-hash.ts` for a future
+re-evaluation, per prompt §29, but nothing calls them from the scanner runtime).
+
+**Hybrid scoring calibration (`src/domain/scanner/visual-evidence.ts`):** visual similarity
+contributes a **continuous** point value (0 below a similarity floor of 0.55, scaling to a
+ceiling of 62 points at similarity 1.0), not a flat per-tier bonus. A flat-bonus first attempt
+(+35/+18/+6 for strong/moderate/weak) measurably regressed hybrid TOP1 to 84.4% (below
+visual-alone's 99.7%) because a single OCR misread that coincidentally produced an exact
+collector-number match on the WRONG card (worth 45 points alone) could outscore the
+visually-correct card's flat strong-tier bonus. Continuous scaling — so a near-perfect visual
+match earns close to the ceiling while a barely-strong one earns much less — recovered TOP1 to
+95.8% without weakening the ambiguity/disagreement behavior prompt §33/§35 require.
+
+### Architecture: LOCAL versioned index (Option A), not pgvector
+
+Decided quantitatively, not by preference (prompt §17):
+
+- 384-dim embeddings, INT8-quantized (each embedding is L2-normalized before storage, so every
+  component already lies in `[-1, 1]`, and INT8 uses a fixed symmetric scale — no per-vector
+  scale factor needed). Cost per card: 384 bytes.
+- At the FULL canonical catalog's ~23,400 English cards, the complete index would be
+  **~8.6 MB** — comfortably inside the ≤20–25 MB product budget with headroom for catalog growth.
+  This session's demonstration index (240 cards) is **89.6 KB**.
+- INT8 vs FP32 TOP1 agreement measured at **100%** across all 1,440 benchmark queries — the
+  quantization step costs nothing measurable at this embedding size.
+- A local index needs no new RPC surface, no new migration, no backfill mechanism, no additional
+  user-facing DB privilege — it is a static asset, exactly like the OCR engine files already
+  are. pgvector would have added all of that for a problem an 8.6 MB static file already solves.
+
+**Result: hosted migration count is unchanged at 90.** No `supabase/migrations/` file was added
+by this milestone.
+
+### Index coverage: a real, structural gap this session could not close
+
+The generation pipeline (`scripts/scanner-visual-index/build-index.ts`) is real and complete: it
+queries a Supabase project's `cards` table directly (via `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`
+env vars, exactly the credential posture `scripts/portfolio-perf-benchmark.mjs` already
+established — never `.env.local`, never committed), downloads each card's TCGdex image, embeds it
+with the pinned DINOv2 model, and writes the quantized index.
+
+This session has **no legitimate way to run it against the hosted `pokeportfolio-dev` project**:
+the hosted project's `anon` role has no grant on `cards` or `search_cards` (verified live —
+both return `permission denied`), and obtaining an `authenticated` session requires either the
+owner's real credentials or creating an account, both of which are outside this session's
+authority (CLAUDE.md prohibits creating accounts or signing in on the user's behalf). The
+committed index (`scripts/scanner-visual-index/generated/visual-v1/`) was therefore generated
+against the **LOCAL dev stack** after locally syncing the same 6 real TCGdex sets used for the
+benchmark (240 cards, real metadata, real embeddings) — proving the entire pipeline, format,
+staging, service-worker caching and browser search path end-to-end, but with **LOCAL
+`gen_random_uuid()` card ids that do not exist in the hosted catalog**.
+
+**Consequence, stated plainly:** in the current preview build (pointed at hosted Supabase), the
+visual worker's shortlisted card ids will not resolve via `getCardsByIds` against the hosted
+catalog, so the hybrid pipeline degrades gracefully to OCR-only behavior for the owner's real
+physical cards (safe — no wrong match, no crash — but not yet the improvement this milestone set
+out to prove on-device). **One remaining manual step** unblocks this permanently: the owner runs
+
+```
+SUPABASE_URL=https://nopmkroeygmlvndzjjqs.supabase.co SUPABASE_SERVICE_ROLE_KEY=<hosted service role key, own shell only> pnpm scanner:index:build
+```
+
+once, from their own machine (the key is never pasted to an assistant), commits the regenerated
+`scripts/scanner-visual-index/generated/visual-v1/{manifest.json,card-ids.json,embeddings.bin}`,
+and pushes — which then ships a hosted-valid index in the next preview build.
+
+### Privacy, supply chain, runtime policy
+
+- The captured card photo never leaves the device. Only the derived 384-float embedding (already
+  local-only, browser-to-worker via a transferred `ImageBitmap`) and, for shortlisted candidates
+  the text search didn't already find, a `cards.id` lookup cross the network — never the image.
+- Model weights are staged same-origin (`public/scanner-assets/visual-v1/model/`), fetched at
+  build time from a PINNED Hugging Face revision and verified by SHA-256 before staging
+  (`scripts/prepare-scanner-visual-assets.mjs`) — no runtime Hugging Face dependency.
+- `onnxruntime-web`'s WASM binaries are ALSO staged same-origin. Reading the installed package's
+  actual bundled source (`node_modules/@huggingface/transformers/dist/transformers.js`) showed it
+  defaults to `cdn.jsdelivr.net` for these files unless `env.backends.onnx.wasm.wasmPaths` is set
+  before the first model load — the visual worker sets this explicitly, first, to same-origin
+  paths. A dead (never-executed, override-shadowed) copy of that CDN-fallback string is still
+  present in the built JS bundle, exactly like `tesseract.js`'s own bundled CDN-fallback string
+  already was before this milestone (`ocr-engine.ts`'s `workerPath`/`corePath`/`langPath`
+  similarly shadow it) — verified present-but-unreachable in both cases via a real production
+  build grep, not assumed.
+- Runtime backend: WASM is the required baseline; WebGPU is used only when
+  `navigator.gpu.requestAdapter()` genuinely succeeds (not merely when `navigator.gpu` exists),
+  and Safari/non-Safari get different pinned `onnxruntime-web` WASM variants matching the
+  library's own internal Safari-detection logic (reproduced locally — this build's
+  `@huggingface/transformers` version does not re-export that helper).
+- No automatic add. Visual evidence is one more scored input to the SAME domain matcher; the
+  existing confirm-before-write batch flow, variant selection and condition entry are unchanged.
+
+### iPhone device gate: still owner-only
+
+Nothing in this milestone substitutes for a real device test. IPHONE_DEVICE_GATE remains
+`PENDING_OWNER_RETEST` — see output_76.txt for the 10-card protocol, and the coverage caveat
+above for why this round's retest may still show OCR-only behavior on the owner's physical cards
+until the hosted index is regenerated.

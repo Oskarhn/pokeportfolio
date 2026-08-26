@@ -105,7 +105,15 @@ function cloudflareHeaders(): Plugin {
  * precache and served through the runtime rule below instead. Ordinary shell globs are untouched;
  * asserted in tests/config/security-headers.test.ts.
  */
-export const scannerAssetGlobIgnores = ['scanner-assets/**']
+export const scannerAssetGlobIgnores = [
+  'scanner-assets/**',
+  // The visual-recognition worker (P76, D-097) bundles @huggingface/transformers into its OWN
+  // Vite-emitted chunk under assets/ (it is a `new Worker(new URL(...))` entry, not staged
+  // under /scanner-assets/ like the model/index binaries). At ~500KB it must stay lazy — a user
+  // who never opens the scanner must not download it at install time. Verified by inspecting a
+  // real production build's precache manifest before this ignore existed (it was present).
+  'assets/visual-worker-*.js',
+]
 
 export const scannerAssetsNavigateFallbackDenylist = [/^\/scanner-assets\//]
 
@@ -131,6 +139,28 @@ export const scannerAssetRuntimeCache = {
   handler: 'CacheFirst' as const,
   options: {
     cacheName: 'scanner-assets-v7',
+    expiration: {
+      maxEntries: 16,
+      maxAgeSeconds: 60 * 60 * 24 * 90,
+      purgeOnQuotaError: true,
+    },
+    cacheableResponse: { statuses: [200] },
+  },
+}
+
+/**
+ * Same CacheFirst/same-origin-only shape as scannerAssetRuntimeCache, for the M15b visual
+ * recognition model + reference index (D-097, prompt §38): a NEW explicit namespace
+ * (`visual-v1`, not reused v7) because it is a functionally distinct asset family (ONNX model,
+ * onnxruntime-web WASM, and the binary index), not another OCR engine version. `.onnx`/`.bin` are
+ * scoped to this one versioned path — never a generic `*.onnx`/`*.bin` rule anywhere else in the
+ * app, which could otherwise opaquely cache an unrelated future asset under the same extension.
+ */
+export const visualAssetRuntimeCache = {
+  urlPattern: /\/scanner-assets\/visual-v1\/.+\.(?:onnx|wasm|mjs|json|bin)(?:[?#].*)?$/,
+  handler: 'CacheFirst' as const,
+  options: {
+    cacheName: 'scanner-assets-visual-v1',
     expiration: {
       maxEntries: 16,
       maxAgeSeconds: 60 * 60 * 24 * 90,
@@ -180,7 +210,7 @@ export default defineConfig({
         globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2}'],
         globIgnores: scannerAssetGlobIgnores,
         navigateFallbackDenylist: [/^\/api\//, ...scannerAssetsNavigateFallbackDenylist],
-        runtimeCaching: [scannerAssetRuntimeCache],
+        runtimeCaching: [scannerAssetRuntimeCache, visualAssetRuntimeCache],
       },
     }),
   ],

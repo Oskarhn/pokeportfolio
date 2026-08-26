@@ -36,6 +36,29 @@ fixtures (non-copyrighted programmatic renders under `tests/fixtures/scanner/`; 
 sensitive for required CI. And signed-in scanner UI on real iPhone hardware remains the §8
 owner gate; Chromium E2E covers the session-guarded `/scan` route only.
 
+**M15b visual recognition (P76, D-097, in `pnpm test`).** `tests/data/visual-index.test.ts`
+(decode/search/quantization-bound/duplicate-id/corruption rejection — pure, no I/O),
+`tests/domain/scanner/perceptual-hash.test.ts` (dHash math), `tests/domain/scanner/
+visual-hybrid.test.ts` (OCR-absent-visual-present shortlisting, agreement/disagreement scoring,
+near-equal ambiguity, same-art surfacing, no-auto-add, backward compatibility with the pre-P76
+text-only call shape), and extensions to `tests/ui/scanner-network-audit.test.ts` (recursive over
+the new `visual/` subdirectory; the visual worker's `fetch()` calls are the one exception to the
+"no fetch in scanner code" rule, itself asserted same-origin-literal-only) and `tests/config/
+security-headers.test.ts` (the `visual-v1` runtime-cache rule, and the precache-exclusion glob
+for both the OCR tree and the visual-worker's own Vite-emitted chunk). A REAL model smoke (not
+mocked) ran this session against real TCGdex images before the full benchmark, per the same
+"real execution over reading the source" discipline as Tesseract's smoke test above — see D-097.
+
+**Visual benchmark harness (`scripts/scanner-visual-benchmark/`, NOT part of `pnpm test` or
+CI).** `pnpm scanner:visual:benchmark` — downloads a real, diverse TCGdex reference corpus,
+applies deterministic synthetic camera-distortion augmentations, and compares OCR-first/
+perceptual-hash/visual-embedding/hybrid recognition using the real production domain matcher.
+Excluded from CI deliberately: it needs live network access (TCGdex image downloads, a
+Hugging Face model fetch on first run) and takes minutes, not seconds — the same category as
+`remote-security-check.mjs`. `pnpm scanner:index:build` / `pnpm scanner:index:verify` are the
+offline index-generation/verification pair (D-097); `build` needs `SUPABASE_URL`/
+`SUPABASE_SERVICE_ROLE_KEY` (never `.env.local`, same posture as `portfolio-perf-benchmark.mjs`).
+
 **M15 scanner idempotency (`tests/db/m15_scanner_idempotency.test.ts`, in `pnpm test:db`).**
 21 cases (I1–I21) against real Postgres pin D-096's per-item idempotency key on
 `add_card_acquisition`: sequential and concurrent replay (including a forced-overlap race for

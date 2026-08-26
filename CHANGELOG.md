@@ -10,6 +10,37 @@ they were**.
 
 ## [Unreleased]
 
+### Added — 2026-08-26 — M15b scanner: hybrid visual recognition (P76, D-097, on PR #63, DRAFT — not merged, not deployed)
+
+Replaces the OCR-only recognition bottleneck P75's real device test exposed ("Couldn't identify
+this card") with a hybrid on-device pipeline: a DINOv2-small visual embedding channel now scores
+alongside OCR text in the same `src/domain/scanner/engine.ts` matcher.
+
+- **Model:** `Xenova/dinov2-small` (converted from `facebook/dinov2-small`), pinned revision
+  `c2bb04a51fab207c420665f1946016107bffc701`, Apache-2.0, quantized INT8 ONNX (24.5 MB), vision-only
+  (no text encoder). MobileCLIP was evaluated and **rejected on licensing** — Apple's Machine
+  Learning Research Model License explicitly excludes "commercial exploitation, product
+  development or use in any commercial product or service."
+- **Benchmark:** 240 real TCGdex reference cards across 6 sets, 6 synthetic camera-distortion
+  profiles, 1,440 augmented queries, all four methods scored by the REAL production matcher.
+  OCR-first 30.5/39.7/42.1% (TOP1/3/5) vs. hybrid 95.8/99.9/100% — clears both product targets
+  (TOP5≥90%, TOP3≥85%) with wide margin. Perceptual hashing (dHash) evaluated, not wired into
+  production (measurably weaker once the embedding channel exists).
+- **Architecture:** LOCAL versioned INT8 index (384 bytes/card; full catalog ≈8.6 MB), not
+  pgvector — no new migration, no new RPC, no new user-facing DB privilege. Hosted migration
+  count unchanged at 90.
+- **Privacy/supply chain:** captured photos never leave the device; model + onnxruntime-web WASM
+  binaries staged same-origin under `/scanner-assets/visual-v1/`, pinned by SHA-256, remote model
+  loading explicitly disabled; the visual-recognition worker (~500 KB) is excluded from the
+  service-worker install-time precache, same as the OCR engine assets.
+- **Known gap:** the committed reference index was generated against the LOCAL dev stack (no
+  hosted-catalog read access was available to this session) — hosted-scale, hosted-ID-matching
+  index generation is one remaining owner-run command (`pnpm scanner:index:build` with a hosted
+  service-role key, never shared with an assistant). Until that runs, real physical-card scans
+  degrade gracefully to OCR-only behavior.
+- Full reasoning: DECISIONS.md D-097; full benchmark methodology and results:
+  docs/SCANNER_RESEARCH.md §7b.
+
 ### Fixed — 2026-08-26 — M15 scanner: real-Postgres idempotency repair (P75, on PR #63, backend applied to hosted)
 
 The first end-to-end run of the M15 idempotency DB tests against actual Postgres (not just read
