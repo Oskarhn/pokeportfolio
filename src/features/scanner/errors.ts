@@ -73,7 +73,22 @@ export function describeCaptureError(error: unknown): ScannerErrorInfo {
   }
 }
 
-export function describeAnalysisError(): ScannerErrorInfo {
+/**
+ * Analysis failure mapping. Known scanner-typed errors carry PRE-SANITIZED user-ready messages
+ * (engine start failures, catalog unavailability); anything else — an unexpected engine crash,
+ * a decode problem — maps to the honest generic that invites retrying the same photo. Raw
+ * underlying detail never reaches the copy either way.
+ */
+export function describeAnalysisError(error?: unknown): ScannerErrorInfo {
+  if (
+    error instanceof Error &&
+    (error.name === 'ScannerEngineError' ||
+      error.name === 'ScannerEngineDisposedError' ||
+      error.name === 'ScannerCatalogUnavailableError') &&
+    error.message !== ''
+  ) {
+    return { title: 'Scan did not go through', message: error.message }
+  }
   return {
     title: 'Scan did not go through',
     message: 'The card could not be analysed just now. You can try the same photo again.',

@@ -35,7 +35,12 @@ afterEach(() => {
 })
 
 function frame(width: number, height: number) {
-  return { blob: new Blob(['synthetic'], { type: 'image/jpeg' }), width, height }
+  return {
+    blob: new Blob(['synthetic'], { type: 'image/jpeg' }),
+    width,
+    height,
+    cardRect: { left: 0, top: 0, width, height },
+  }
 }
 
 describe('bounded capture dimensions', () => {

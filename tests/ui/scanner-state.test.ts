@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import type { ScannerAnalysis, ScannerCandidate } from '../../src/features/scanner/contract'
+import type {
+  ScannerAnalysis,
+  ScannerCandidate,
+  ScannerCommitOutcome,
+  ScannerVariantChoice,
+} from '../../src/features/scanner/contract'
 import {
   SCANNER_DEFAULT_CONDITION,
   initialScannerState,
@@ -8,16 +13,19 @@ import {
 } from '../../src/features/scanner/state'
 
 /**
- * The scanner UI state machine (P66), verified in isolation. Every rule the prompt pins down is
- * a transition assertion here: permission only after an explicit action, HIGH still requires
- * confirmation, confirmation appends to an IN-MEMORY batch and never commits, exit warns when a
- * nonempty batch would be lost, and batch entries carry card identity only — never a captured
- * photo (the blob-disposal half of that rule lives in the CaptureStore tests next door).
+ * The scanner UI state machine (P66 + P68 integration), verified in isolation. Every rule the
+ * prompt pins down is a transition assertion here: permission only after an explicit action,
+ * HIGH still requires confirmation, printing choice loads only after a candidate is chosen and
+ * must be selected before anything joins the batch, confirmation appends to an IN-MEMORY batch
+ * and never commits, commit outcomes are honest per item, exit warns when a nonempty batch
+ * would be lost — and batch entries carry card identity only, never a captured photo.
  */
 
 function candidate(id: string): ScannerCandidate {
   return { candidateId: id, name: `Card ${id}`, setName: 'Base Set', collectorNumber: id }
 }
+
+const oneVariant: ScannerVariantChoice[] = [{ id: 'variant-1', label: 'Normal' }]
 
 function highAnalysis(candidates: ScannerCandidate[]): ScannerAnalysis {
   return { confidence: 'HIGH', candidates }
@@ -36,7 +44,7 @@ function atResult(analysis: ScannerAnalysis): ScannerState {
   return reduce(state, { type: 'ANALYSIS_COMPLETED', analysis })
 }
 
-/** Drives to the confirm step for candidate "a". */
+/** Drives to the confirm step for candidate "a" (printing choices still loading). */
 function atConfirm(): ScannerState {
   return reduce(atResult(highAnalysis([candidate('a')])), {
     type: 'CONFIRM_CARD_PRESSED',
@@ -44,9 +52,34 @@ function atConfirm(): ScannerState {
   })
 }
 
+/** Loads printing choices for the confirm step. */
+function variantsLoaded(
+  state: ScannerState,
+  variants: ScannerVariantChoice[] = oneVariant,
+): ScannerState {
+  return reduce(state, { type: 'CONFIRM_VARIANTS_LOADED', variants })
+}
+
 /** Drives through one confirmed card into the scanned summary. */
 function atScanned(): ScannerState {
-  return reduce(atConfirm(), { type: 'CARD_CONFIRMED' })
+  return reduce(variantsLoaded(atConfirm()), { type: 'CARD_CONFIRMED' })
+}
+
+/** Drives through TWO confirmed cards (candidates "a" and "b") into batch review. */
+function atReviewWithTwo(): ScannerState {
+  let state = atScanned()
+  state = reduce(state, { type: 'SCAN_NEXT_PRESSED' })
+  state = reduce(state, { type: 'CAMERA_STARTED' })
+  state = reduce(state, { type: 'CAPTURE_SUCCEEDED' })
+  state = reduce(state, { type: 'USE_PHOTO_PRESSED' })
+  state = reduce(state, {
+    type: 'ANALYSIS_COMPLETED',
+    analysis: highAnalysis([candidate('b')]),
+  })
+  state = reduce(state, { type: 'CONFIRM_CARD_PRESSED', candidate: candidate('b') })
+  state = variantsLoaded(state)
+  state = reduce(state, { type: 'CARD_CONFIRMED' })
+  return reduce(state, { type: 'REVIEW_BATCH_PRESSED' })
 }
 
 describe('scanner state machine — camera start discipline', () => {
@@ -175,8 +208,11 @@ describe('scanner state machine — the in-memory batch', () => {
     expect(rejected.step).toBe('confirm')
   })
 
-  it('confirming appends identity+quantity+condition to the batch and clears the working photo state', () => {
-    const edited = reduce(atConfirm(), { type: 'CONFIRM_QUANTITY_CHANGED', value: '2' })
+  it('confirming appends identity+variant+quantity+condition to the batch and clears the working photo state', () => {
+    const edited = reduce(variantsLoaded(atConfirm()), {
+      type: 'CONFIRM_QUANTITY_CHANGED',
+      value: '2',
+    })
     const conditioned = reduce(edited, {
       type: 'CONFIRM_CONDITION_CHANGED',
       condition: 'EX',
@@ -185,15 +221,50 @@ describe('scanner state machine — the in-memory batch', () => {
     expect(done.step).toBe('scanned')
     expect(done.batch).toHaveLength(1)
     expect(done.batch[0]?.candidate.candidateId).toBe('a')
+    expect(done.batch[0]?.variantId).toBe('variant-1')
     expect(done.batch[0]?.quantity).toBe(2)
     expect(done.batch[0]?.condition).toBe('EX')
     expect(done.analysis).toBeNull()
     expect(done.selectedCandidate).toBeNull()
   })
 
+  it('CARD_CONFIRMED is refused until a printing is chosen (prompt §22)', () => {
+    const rejected = reduce(atConfirm(), { type: 'CARD_CONFIRMED' })
+    expect(rejected.step).toBe('confirm')
+    expect(rejected.confirmValidationError).toBe('Choose which version of this card you have.')
+    expect(rejected.batch).toHaveLength(0)
+  })
+
+  it('exactly one printing preselects itself; several stay unchosen', () => {
+    const single = variantsLoaded(atConfirm())
+    expect(single.confirmVariantId).toBe('variant-1')
+    const several = variantsLoaded(atConfirm(), [
+      { id: 'v1', label: 'Normal' },
+      { id: 'v2', label: 'Holo' },
+    ])
+    expect(several.confirmVariantId).toBeNull()
+    const picked = reduce(several, { type: 'CONFIRM_VARIANT_CHANGED', variantId: 'v2' })
+    expect(picked.confirmVariantId).toBe('v2')
+  })
+
+  it('printing choices load only AFTER a candidate is chosen, never for result rows', () => {
+    const result = atResult(highAnalysis([candidate('a'), candidate('b')]))
+    // Sitting on the result list triggers no variant work at all.
+    expect(result.confirmVariants).toBeNull()
+    expect(result.confirmVariantsPending).toBe(false)
+    const confirm = atConfirm()
+    expect(confirm.confirmVariantsPending).toBe(true)
+  })
+
   it('batch entries carry IDENTITY ONLY — no blob or object-URL field can hide in them', () => {
     const done = atScanned()
-    expect(Object.keys(done.batch[0] ?? {}).sort()).toEqual(['candidate', 'condition', 'quantity'])
+    expect(Object.keys(done.batch[0] ?? {}).sort()).toEqual([
+      'candidate',
+      'condition',
+      'quantity',
+      'variantId',
+      'variantLabel',
+    ])
     const serialized = JSON.stringify(done.batch)
     expect(serialized).not.toMatch(/blob|objectUrl|previewUrl|photo/i)
   })
@@ -207,21 +278,6 @@ describe('scanner state machine — the in-memory batch', () => {
 })
 
 describe('scanner state machine — batch review editing', () => {
-  function atReviewWithTwo(): ScannerState {
-    let state = atScanned()
-    state = reduce(state, { type: 'SCAN_NEXT_PRESSED' })
-    state = reduce(state, { type: 'CAMERA_STARTED' })
-    state = reduce(state, { type: 'CAPTURE_SUCCEEDED' })
-    state = reduce(state, { type: 'USE_PHOTO_PRESSED' })
-    state = reduce(state, {
-      type: 'ANALYSIS_COMPLETED',
-      analysis: highAnalysis([candidate('b')]),
-    })
-    state = reduce(state, { type: 'CONFIRM_CARD_PRESSED', candidate: candidate('b') })
-    state = reduce(state, { type: 'CARD_CONFIRMED' })
-    return reduce(state, { type: 'REVIEW_BATCH_PRESSED' })
-  }
-
   it('Review batch opens the review over every confirmed card', () => {
     const state = atReviewWithTwo()
     expect(state.step).toBe('batch-review')
@@ -266,17 +322,65 @@ describe('scanner state machine — commit outcomes', () => {
     expect(failed.batch).toHaveLength(1)
   })
 
-  it('a commit SUCCESS clears the batch and reports the count', () => {
-    const committed = reduce(atCommitting(), { type: 'COMMIT_SUCCEEDED', addedCount: 3 })
+  it('a commit SUCCESS clears the batch and reports the count (all items added)', () => {
+    const committed = reduce(atCommitting(), {
+      type: 'COMMIT_SUCCEEDED',
+      addedCount: 3,
+      outcomes: [{ index: 0, status: 'added', message: null }],
+    })
     expect(committed.step).toBe('committed')
     expect(committed.addedCount).toBe(3)
     expect(committed.batch).toHaveLength(0)
   })
 
-  it('Done after success resets the machine and requests route exit', () => {
-    const done = reduce(reduce(atCommitting(), { type: 'COMMIT_SUCCEEDED', addedCount: 1 }), {
-      type: 'COMMITTED_DONE_PRESSED',
+  it('a PARTIAL commit keeps non-added items in the batch and reports honest counts', () => {
+    // Two confirmed cards; the first added, the second definitively rejected.
+    const two = atReviewWithTwo()
+    const committing = reduce(two, { type: 'ADD_CARDS_PRESSED' })
+    const outcomes: ScannerCommitOutcome[] = [
+      { index: 0, status: 'added', message: null },
+      { index: 1, status: 'failed', message: 'The server did not accept this card.' },
+    ]
+    const committed = reduce(committing, { type: 'COMMIT_SUCCEEDED', addedCount: 1, outcomes })
+    expect(committed.step).toBe('committed')
+    expect(committed.addedCount).toBe(1)
+    expect(committed.attentionCount).toBe(1)
+    expect(committed.batch.map((item) => item.candidate.candidateId)).toEqual(['b'])
+    expect(committed.batch[0]?.needsVerification).toBeUndefined()
+  })
+
+  it('an INTERRUPTED transport marks the survivor needs_verification instead of guessing', () => {
+    const committing = reduce(atReviewWithTwo(), { type: 'ADD_CARDS_PRESSED' })
+    const committed = reduce(committing, {
+      type: 'COMMIT_SUCCEEDED',
+      addedCount: 1,
+      outcomes: [
+        { index: 0, status: 'added', message: null },
+        {
+          index: 1,
+          status: 'needs_verification',
+          message: 'Connection was interrupted. This card may already have been added.',
+        },
+      ],
     })
+    expect(committed.batch).toHaveLength(1)
+    expect(committed.batch[0]?.needsVerification).toBe(true)
+    // Retrying after review must NOT resubmit the definite success.
+    const retry = reduce(committed, { type: 'REVIEW_BATCH_PRESSED' })
+    expect(retry.batch.map((item) => item.candidate.candidateId)).toEqual(['b'])
+  })
+
+  it('Done after success resets the machine and requests route exit', () => {
+    const done = reduce(
+      reduce(atCommitting(), {
+        type: 'COMMIT_SUCCEEDED',
+        addedCount: 1,
+        outcomes: [{ index: 0, status: 'added', message: null }],
+      }),
+      {
+        type: 'COMMITTED_DONE_PRESSED',
+      },
+    )
     expect(done.exitRequested).toBe(true)
     expect(done.batch).toHaveLength(0)
     expect(done.step).toBe('intro')

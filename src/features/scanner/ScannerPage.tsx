@@ -1,12 +1,15 @@
 import {
   useEffect,
+  useMemo,
   useReducer,
   useRef,
   useState,
   type ChangeEvent,
+  type ReactNode,
   type SyntheticEvent,
 } from 'react'
 import { useNavigate } from '@tanstack/react-router'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ScannerCandidate } from './contract'
 import { getScannerUiController } from './controller'
 import {
@@ -26,17 +29,28 @@ import {
   hasMediaDevicesSupport,
 } from './errors'
 import { initialScannerState, scannerReducer } from './state'
+import {
+  SCANNER_ORIGINS,
+  todayIso,
+  type ScannerSessionDefaults,
+  initialScannerDefaults,
+  scannerSessionStore,
+} from './session-store'
+import { getMyProfile, type Profile } from '../../data/profile'
+import { listStorageLocations } from '../../data/collection'
+import { useAuth } from '../../auth/useAuth'
 import { CardImage } from '../catalog/CardImage'
-import { CONDITION_LABEL } from '../collection/labels'
+import { CONDITION_LABEL, ORIGIN_LABEL } from '../collection/labels'
 import type { CardCondition } from '../../data/collection'
 import { Button, ChoiceGroup, FormMessage, TextField } from '../../ui/form'
 import { Sheet } from '../../ui/Sheet'
 import { CheckIcon, CameraIcon, SearchIcon, XIcon } from '../../ui/icons'
 
 /**
- * M15 scanner — camera capture and confirmation UX (P66). UI only: recognition runs through the
- * {@link ScannerUiController} seam (placeholder adapter until P68 wires the real engine), and no
- * Portfolio mutation happens anywhere in this file — commitBatch is the integration point.
+ * M15 scanner — camera capture and confirmation UX (P66) integrated with the REAL recognition
+ * pipeline (P68): on-device Tesseract OCR through the controller seam, P67's deterministic
+ * matcher, printing selection over the existing variants surface and batch commit through the
+ * existing acquisition path.
  *
  * Layout: a fixed full-viewport overlay (z-[45]) that covers the app shell including the bottom
  * navigation while scanning. D-006 governs the whole route — one MediaStream for the session,
@@ -47,20 +61,27 @@ import { CheckIcon, CameraIcon, SearchIcon, XIcon } from '../../ui/icons'
  * steps; it is stopped the moment a frame is captured. The captured still lives solely in a
  * CaptureStore which revokes its object URL on every replacement/clear; after analysis answers
  * — and certainly once a card is confirmed into the batch — the photo is disposed. Batch items
- * hold identity + quantity/condition, never image data.
+ * hold identity + variant/quantity/condition, never image data. Leaving the route disposes the
+ * OCR worker (controller.dispose) reliably (prompt §8).
  */
 
 const CONDITIONS = ['MT', 'NM', 'EX', 'GD', 'LP', 'PL', 'PO'] as const
 
 export function ScannerPage() {
   const navigate = useNavigate()
-  const controller = getScannerUiController()
+  const queryClient = useQueryClient()
+  const { session } = useAuth()
+  const userId = session?.user.id ?? null
+  const controller = useMemo(() => getScannerUiController(userId), [userId])
   const [state, dispatch] = useReducer(scannerReducer, initialScannerState)
   const [searchName, setSearchName] = useState('')
   const [searchCollectorNumber, setSearchCollectorNumber] = useState('')
   // Render-time mirror of the capture store's preview URL. The store itself is the memory
   // owner (revokes on every replacement/clear); this state only decides what to draw.
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  // Honest first-use copy (prompt §9): the FIRST analysis includes engine preparation, later
+  // ones do not. Derived from completed analyses, never fabricated progress percentages.
+  const [hasCompletedAnalysis, setHasCompletedAnalysis] = useState(false)
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -69,6 +90,8 @@ export function ScannerPage() {
   // Bumped whenever the desire to hold a live stream ends; an in-flight getUserMedia whose
   // generation went stale stops its stream on arrival instead of leaking it.
   const cameraGenerationRef = useRef(0)
+  // Guards double variant fetches for the same candidate across StrictMode-style re-runs.
+  const variantsInFlightRef = useRef<string | null>(null)
 
   const cameraWanted = state.step === 'starting-camera' || state.step === 'camera'
 
@@ -102,14 +125,16 @@ export function ScannerPage() {
     }
   }, [cameraWanted])
 
-  // Leaving the route releases everything: every track stopped, object URL revoked.
+  // Leaving the route releases EVERYTHING: every track stopped, object URL revoked, OCR worker
+  // terminated and canvases dropped (prompt §8/I16/I17).
   useEffect(
     () => () => {
       cameraGenerationRef.current += 1
       stopActiveScannerCamera()
       captureStoreRef.current.clear()
+      controller.dispose()
     },
-    [],
+    [controller],
   )
 
   // Tab hidden ⇒ release the hardware immediately. Returning lands on the start screen with the
@@ -136,6 +161,33 @@ export function ScannerPage() {
     void navigate({ to: '/portfolio' })
     // previewUrl state needs no manual reset here: navigating away unmounts the page.
   }, [state.exitRequested, navigate])
+
+  // Printing choices load ONLY now that the user chose a candidate (prompt §22/I6): the effect
+  // runs exclusively while the confirm step is live for a specific candidate.
+  useEffect(() => {
+    if (state.step !== 'confirm') return
+    if (!state.confirmVariantsPending) return
+    const candidateId = state.selectedCandidate?.candidateId
+    if (candidateId === undefined || variantsInFlightRef.current === candidateId) return
+    variantsInFlightRef.current = candidateId
+    void controller
+      .listVariantChoices(candidateId)
+      .then((variants) => {
+        dispatch({ type: 'CONFIRM_VARIANTS_LOADED', variants })
+      })
+      .catch(() => {
+        dispatch({
+          type: 'CONFIRM_VARIANTS_FAILED',
+          error: {
+            title: 'Versions could not load',
+            message: 'Check your connection and try again.',
+          },
+        })
+      })
+      .finally(() => {
+        if (variantsInFlightRef.current === candidateId) variantsInFlightRef.current = null
+      })
+  }, [state.step, state.confirmVariantsPending, state.selectedCandidate?.candidateId, controller])
 
   function handleShutter(): void {
     const video = videoRef.current
@@ -182,20 +234,26 @@ export function ScannerPage() {
   function handleUsePhoto(): void {
     const stored = captureStoreRef.current.get()
     if (stored === null) return
-    const payload = { blob: stored.blob, width: stored.width, height: stored.height }
+    const payload = {
+      blob: stored.blob,
+      width: stored.width,
+      height: stored.height,
+      cardRect: stored.cardRect,
+    }
     dispatch({ type: 'USE_PHOTO_PRESSED' })
     // One explicit capture leads to exactly one analysis request — never a continuous loop
     // while the user is framing (prompt §12).
     void controller
       .analyzeCapture(payload)
       .then((analysis) => {
+        setHasCompletedAnalysis(true)
         // The photo has served its purpose; candidates carry the identity from here.
         captureStoreRef.current.clear()
         setPreviewUrl(null)
         dispatch({ type: 'ANALYSIS_COMPLETED', analysis })
       })
-      .catch(() => {
-        dispatch({ type: 'ANALYSIS_FAILED', error: describeAnalysisError() })
+      .catch((error: unknown) => {
+        dispatch({ type: 'ANALYSIS_FAILED', error: describeAnalysisError(error) })
       })
   }
 
@@ -225,12 +283,24 @@ export function ScannerPage() {
       .commitBatch(
         state.batch.map((item) => ({
           candidateId: item.candidate.candidateId,
+          variantId: item.variantId,
           quantity: item.quantity,
           condition: item.condition,
         })),
       )
       .then((result) => {
-        dispatch({ type: 'COMMIT_SUCCEEDED', addedCount: result.addedCount })
+        // Same targeted invalidation family every other acquisition consumer uses (prompt §31):
+        // portfolio, counts, dashboard summary, history feed and Home's recent activity.
+        void queryClient.invalidateQueries({ queryKey: ['portfolio'] })
+        void queryClient.invalidateQueries({ queryKey: ['portfolio-counts'] })
+        void queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] })
+        void queryClient.invalidateQueries({ queryKey: ['history-events'] })
+        void queryClient.invalidateQueries({ queryKey: ['recent-activity'] })
+        dispatch({
+          type: 'COMMIT_SUCCEEDED',
+          addedCount: result.addedCount,
+          outcomes: result.outcomes,
+        })
       })
       .catch((error: unknown) => {
         dispatch({ type: 'COMMIT_FAILED', error: describeCommitError(error) })
@@ -283,15 +353,23 @@ export function ScannerPage() {
       </div>
 
       {state.step === 'intro' ? (
-        <IntroView
-          state={state}
-          onStartCamera={() => {
-            dispatch({ type: 'START_CAMERA_PRESSED' })
-          }}
-          onChoosePhoto={() => {
-            fileInputRef.current?.click()
-          }}
-        />
+        <SessionDefaultsGate userId={userId}>
+          {({ defaults, locations, onPatch, japaneseNotice }) => (
+            <IntroView
+              state={state}
+              defaults={defaults}
+              locations={locations}
+              japaneseNotice={japaneseNotice}
+              onStartCamera={() => {
+                dispatch({ type: 'START_CAMERA_PRESSED' })
+              }}
+              onChoosePhoto={() => {
+                fileInputRef.current?.click()
+              }}
+              onDefaultsPatch={onPatch}
+            />
+          )}
+        </SessionDefaultsGate>
       ) : state.step === 'starting-camera' || state.step === 'camera' ? (
         <>
           <div className="relative flex-1 overflow-hidden">
@@ -300,10 +378,11 @@ export function ScannerPage() {
               {...CAMERA_VIDEO_PROPS}
               className="absolute inset-0 size-full object-cover"
             />
-            {/* Card-shaped guide: Pokémon cards are 63×88 mm ≈ 5:7. The dimmed surround gives
-                margin for perspective correction later; the thin border never sits over the
-                card's bottom-right collector number because the caption and controls stay below
-                the frame, not on top of it. */}
+            {/* Card-shaped guide: Pokémon cards are 63×88 mm ≈ 5:7. Its rendered geometry is
+                mirrored EXACTLY in guide-geometry.ts (GUIDE_HEIGHT_FRACTION/GUIDE_MAX_WIDTH_
+                FRACTION) — the single shared mapping that tells OCR where the physical card is
+                in the captured frame. The dimmed surround gives margin; caption/controls stay
+                below the frame so nothing covers the bottom-right collector number. */}
             <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
               <div
                 className="aspect-[5/7] h-[58%] max-w-[86%] rounded-xl border-2 border-white/85 shadow-[0_0_0_9999px_rgba(2,6,15,0.55)]"
@@ -346,6 +425,7 @@ export function ScannerPage() {
         />
       ) : state.step === 'analyzing' ? (
         <AnalyzingView
+          firstUse={!hasCompletedAnalysis}
           onCancel={() => {
             dispatch({ type: 'ANALYSIS_CANCELLED' })
           }}
@@ -396,6 +476,10 @@ export function ScannerPage() {
       ) : state.step === 'confirm' && state.selectedCandidate !== null ? (
         <ConfirmView
           candidate={state.selectedCandidate}
+          variants={state.confirmVariants}
+          variantsPending={state.confirmVariantsPending}
+          variantsError={state.confirmVariantsError}
+          selectedVariantId={state.confirmVariantId}
           quantity={state.confirmQuantity}
           condition={state.confirmCondition}
           validationError={state.confirmValidationError}
@@ -405,6 +489,12 @@ export function ScannerPage() {
           onConditionChange={(condition) => {
             dispatch({ type: 'CONFIRM_CONDITION_CHANGED', condition })
           }}
+          onVariantSelect={(variantId) => {
+            dispatch({ type: 'CONFIRM_VARIANT_CHANGED', variantId })
+          }}
+          onRetryVariants={() => {
+            dispatch({ type: 'CONFIRM_VARIANTS_PENDING' })
+          }}
           onAddToBatch={() => {
             dispatch({ type: 'CARD_CONFIRMED' })
           }}
@@ -413,16 +503,23 @@ export function ScannerPage() {
           }}
         />
       ) : state.step === 'scanned' ? (
-        <ScannedSummaryView
-          batchLength={state.batch.length}
-          scannedCount={scannedCount}
-          onScanNext={() => {
-            dispatch({ type: 'SCAN_NEXT_PRESSED' })
-          }}
-          onReviewBatch={() => {
-            dispatch({ type: 'REVIEW_BATCH_PRESSED' })
-          }}
-        />
+        <SessionDefaultsGate userId={userId}>
+          {({ defaults, locations, onPatch }) => (
+            <ScannedSummaryView
+              batchLength={state.batch.length}
+              scannedCount={scannedCount}
+              defaults={defaults}
+              locations={locations}
+              onDefaultsPatch={onPatch}
+              onScanNext={() => {
+                dispatch({ type: 'SCAN_NEXT_PRESSED' })
+              }}
+              onReviewBatch={() => {
+                dispatch({ type: 'REVIEW_BATCH_PRESSED' })
+              }}
+            />
+          )}
+        </SessionDefaultsGate>
       ) : state.step === 'batch-review' || state.step === 'committing' ? (
         <BatchReviewView
           batch={state.batch}
@@ -442,8 +539,13 @@ export function ScannerPage() {
       ) : state.step === 'committed' ? (
         <CommittedView
           addedCount={state.addedCount ?? 0}
+          attentionCount={state.attentionCount}
+          remainingCount={state.batch.length}
           onDone={() => {
             dispatch({ type: 'COMMITTED_DONE_PRESSED' })
+          }}
+          onReviewRemaining={() => {
+            dispatch({ type: 'REVIEW_BATCH_PRESSED' })
           }}
         />
       ) : null}
@@ -484,25 +586,96 @@ export function ScannerPage() {
   )
 }
 
+/**
+ * Loads and scopes the session defaults (§25/§27) exactly once per user, then hands them to the
+ * wrapped view. Profile capture-defaults seed the INITIAL condition/storage; everything lives in
+ * scannerSessionStore memory afterwards. Render-prop keeps the data flow explicit and testable.
+ */
+function SessionDefaultsGate({
+  userId,
+  children,
+}: {
+  userId: string | null
+  children: (args: {
+    defaults: ScannerSessionDefaults
+    locations: { id: string; label: string }[]
+    onPatch: (patch: Partial<ScannerSessionDefaults>) => void
+    japaneseNotice: boolean
+  }) => ReactNode
+}) {
+  const profileQuery = useQuery({
+    queryKey: ['my-profile'],
+    queryFn: getMyProfile,
+    staleTime: Infinity,
+  })
+  const locationsQuery = useQuery({
+    queryKey: ['storage-locations'],
+    queryFn: listStorageLocations,
+    staleTime: Infinity,
+  })
+
+  useEffect(() => {
+    if (userId === null) return
+    if (scannerSessionStore.load(userId) !== null) return
+    const profile: Profile | undefined = profileQuery.data
+    scannerSessionStore.save(
+      userId,
+      initialScannerDefaults({
+        condition: profile?.defaultCondition ?? undefined,
+        storageLocationId: profile?.defaultStorageLocationId ?? undefined,
+      }),
+    )
+  }, [userId, profileQuery.data])
+
+  const stored = userId !== null ? scannerSessionStore.load(userId) : null
+  if (stored === null) {
+    // One render while the profile read lands; nothing below pretends defaults are chosen.
+    return <div className="flex-1" />
+  }
+
+  return children({
+    defaults: stored,
+    locations: (locationsQuery.data ?? []).map((location) => ({
+      id: location.id,
+      label: location.name,
+    })),
+    onPatch: (patch) => {
+      if (userId === null) return
+      const current = scannerSessionStore.load(userId)
+      if (current === null) return
+      scannerSessionStore.save(userId, { ...current, ...patch })
+    },
+    japaneseNotice: profileQuery.data?.defaultLanguage === 'ja',
+  })
+}
+
 function ErrorAlert({ title, message }: { title: string; message: string }) {
   return <FormMessage tone="error">{`${title}. ${message}`}</FormMessage>
 }
 
 function IntroView({
   state,
+  defaults,
+  locations,
+  japaneseNotice,
   onStartCamera,
   onChoosePhoto,
+  onDefaultsPatch,
 }: {
   state: { cameraError: { title: string; message: string } | null }
+  defaults: ScannerSessionDefaults
+  locations: { id: string; label: string }[]
+  japaneseNotice: boolean
   onStartCamera: () => void
   onChoosePhoto: () => void
+  onDefaultsPatch: (patch: Partial<ScannerSessionDefaults>) => void
 }) {
   const cameraSupported = hasMediaDevicesSupport(navigator)
   return (
     <div className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center gap-5 overflow-y-auto px-5 pb-8">
       <h1 className="text-2xl font-semibold tracking-tight">Scan cards</h1>
       <p className="text-sm text-slate-400">
-        Use your camera to identify cards, then confirm before adding them.
+        Use your camera or a photo to identify cards, then confirm before adding them.
       </p>
       {state.cameraError ? <ErrorAlert {...state.cameraError} /> : null}
       <div className="mt-2 flex flex-col gap-2">
@@ -522,10 +695,121 @@ function IntroView({
           </span>
         </Button>
       </div>
-      <p className="mt-4 text-xs leading-relaxed text-slate-500">
-        Photos are processed for this scan and aren't saved to your portfolio.
+      <SessionDefaultsBar defaults={defaults} locations={locations} onPatch={onDefaultsPatch} />
+      {japaneseNotice ? (
+        <p className="text-xs leading-relaxed text-slate-500">
+          Card reading currently recognises English cards. Japanese recognition is not supported yet
+          — you can still add Japanese cards through manual search.
+        </p>
+      ) : null}
+      <p className="text-xs leading-relaxed text-slate-500">
+        Card photos are processed on this device and aren't uploaded or saved.
       </p>
     </div>
+  )
+}
+
+/**
+ * The F12 session-defaults header (prompt §25): origin / condition / language / storage /
+ * acquired date, applied to every committed item. Deliberately minimal — no collection/tag
+ * field because the acquisition path behind commitBatch takes none, and NO opening origin
+ * anywhere (M16 owns pulled provenance; prompt §26).
+ */
+function SessionDefaultsBar({
+  defaults,
+  locations,
+  onPatch,
+}: {
+  defaults: ScannerSessionDefaults
+  locations: { id: string; label: string }[]
+  onPatch: (patch: Partial<ScannerSessionDefaults>) => void
+}) {
+  return (
+    <section
+      aria-label="Session settings applied to added cards"
+      className="rounded-xl border border-slate-800 p-3"
+    >
+      <h2 className="pb-2 text-xs font-medium uppercase tracking-wide text-slate-500">
+        Applied to added cards
+      </h2>
+      <div className="grid grid-cols-2 gap-2">
+        <label className="text-xs text-slate-400">
+          Origin
+          <select
+            value={defaults.origin}
+            onChange={(event) => {
+              onPatch({ origin: event.target.value as ScannerSessionDefaults['origin'] })
+            }}
+            className="mt-1 min-h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100 outline-none focus-visible:border-sky-500 focus-visible:ring-2 focus-visible:ring-sky-500/40"
+          >
+            {SCANNER_ORIGINS.map((origin) => (
+              <option key={origin} value={origin}>
+                {ORIGIN_LABEL[origin]}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="text-xs text-slate-400">
+          Condition
+          <select
+            value={defaults.condition}
+            onChange={(event) => {
+              onPatch({ condition: event.target.value as CardCondition })
+            }}
+            className="mt-1 min-h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100 outline-none focus-visible:border-sky-500 focus-visible:ring-2 focus-visible:ring-sky-500/40"
+          >
+            {CONDITIONS.map((value) => (
+              <option key={value} value={value}>
+                {CONDITION_LABEL[value]}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="text-xs text-slate-400">
+          Language
+          <input
+            value="English"
+            readOnly
+            aria-label="Recognition language: English"
+            className="mt-1 min-h-11 w-full cursor-not-allowed rounded-lg border border-slate-800 bg-slate-900/60 px-3 text-sm text-slate-500"
+          />
+        </label>
+        <label className="text-xs text-slate-400">
+          Storage
+          <select
+            value={defaults.storageLocationId ?? ''}
+            onChange={(event) => {
+              onPatch({ storageLocationId: event.target.value === '' ? null : event.target.value })
+            }}
+            className="mt-1 min-h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100 outline-none focus-visible:border-sky-500 focus-visible:ring-2 focus-visible:ring-sky-500/40"
+          >
+            <option value="">Not set</option>
+            {locations.map((location) => (
+              <option key={location.id} value={location.id}>
+                {location.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="col-span-2 text-xs text-slate-400">
+          Acquired date
+          <input
+            type="date"
+            value={defaults.acquiredOn}
+            max={todayIso()}
+            onChange={(event) => {
+              onPatch({ acquiredOn: event.target.value })
+            }}
+            className="mt-1 min-h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100 outline-none focus-visible:border-sky-500 focus-visible:ring-2 focus-visible:ring-sky-500/40"
+          />
+        </label>
+      </div>
+      {defaults.origin === 'purchase' ? (
+        <p className="pt-2 text-xs text-amber-300/90">
+          Cost isn't recorded here. Use Record purchase when you know the receipt price.
+        </p>
+      ) : null}
+    </section>
   )
 }
 
@@ -560,22 +844,27 @@ function ReviewView({
         </Button>
       </div>
       <p className="text-xs text-slate-500">
-        Photos are processed for this scan and aren't saved to your portfolio.
+        Card photos are processed on this device and aren't uploaded or saved.
       </p>
     </div>
   )
 }
 
-function AnalyzingView({ onCancel }: { onCancel: () => void }) {
+function AnalyzingView({ firstUse, onCancel }: { firstUse: boolean; onCancel: () => void }) {
   return (
     <div className="mx-auto flex w-full max-w-md flex-1 flex-col items-center justify-center gap-5 overflow-y-auto px-5 pb-8">
       <div
         aria-hidden="true"
         className="aspect-[5/7] w-44 animate-pulse rounded-xl bg-slate-800/60"
       />
-      <p role="status" className="text-sm text-slate-300">
-        Analyzing card…
-      </p>
+      <div className="space-y-1 text-center">
+        {/* Honest preparation copy (prompt §9): the first analysis may load several MB of local
+            OCR assets; Tesseract reports no meaningful percentage for this, so none is shown. */}
+        <p role="status" className="text-sm text-slate-300">
+          {firstUse ? 'Preparing scanner…' : 'Analyzing card…'}
+        </p>
+        {firstUse ? <p className="text-xs text-slate-500">First use may take a moment.</p> : null}
+      </div>
       <Button type="button" variant="quiet" className="w-auto px-6" onClick={onCancel}>
         Back
       </Button>
@@ -584,7 +873,11 @@ function AnalyzingView({ onCancel }: { onCancel: () => void }) {
 }
 
 function confidenceBadge(confidence: 'HIGH' | 'MEDIUM' | 'LOW'): string {
-  return confidence === 'HIGH' ? 'Strong match' : 'Possible match'
+  return confidence === 'HIGH'
+    ? 'Strong match'
+    : confidence === 'MEDIUM'
+      ? 'Possible match'
+      : 'Weak match'
 }
 
 function CandidateIdentity({ candidate }: { candidate: ScannerCandidate }) {
@@ -849,20 +1142,32 @@ function ManualSearchView({
 
 function ConfirmView({
   candidate,
+  variants,
+  variantsPending,
+  variantsError,
+  selectedVariantId,
   quantity,
   condition,
   validationError,
   onQuantityChange,
   onConditionChange,
+  onVariantSelect,
+  onRetryVariants,
   onAddToBatch,
   onCancel,
 }: {
   candidate: ScannerCandidate
+  variants: { id: string; label: string }[] | null
+  variantsPending: boolean
+  variantsError: { title: string; message: string } | null
+  selectedVariantId: string | null
   quantity: string
   condition: CardCondition
   validationError: string | null
   onQuantityChange: (value: string) => void
   onConditionChange: (condition: CardCondition) => void
+  onVariantSelect: (variantId: string) => void
+  onRetryVariants: () => void
   onAddToBatch: () => void
   onCancel: () => void
 }) {
@@ -888,11 +1193,39 @@ function ConfirmView({
               .filter(Boolean)
               .join(' · ') || '—'}
           </p>
-          <p className="truncate text-xs text-slate-500">
-            {[candidate.finishLabel, candidate.languageLabel].filter(Boolean).join(' · ') || '—'}
-          </p>
+          <p className="truncate text-xs text-slate-500">{candidate.languageLabel ?? '—'}</p>
         </div>
       </div>
+      {/* Printing choice (prompt §22): fetched only after this candidate was chosen, showing the
+          card's ACTUAL finish/stamp/subtype/size attributes. Never inferred from the photo. */}
+      {variantsPending ? (
+        <div className="space-y-2" aria-busy="true">
+          <p className="text-xs text-slate-500">Checking available versions…</p>
+          <div className="h-11 animate-pulse rounded-lg bg-slate-800/60" />
+        </div>
+      ) : variantsError !== null ? (
+        <div className="space-y-2">
+          <ErrorAlert {...variantsError} />
+          <Button type="button" variant="quiet" onClick={onRetryVariants}>
+            Try again
+          </Button>
+        </div>
+      ) : variants !== null && variants.length > 0 ? (
+        variants.length === 1 ? (
+          <p className="text-xs text-slate-400">Version: {variants[0]?.label}</p>
+        ) : (
+          <ChoiceGroup
+            label="Version"
+            value={selectedVariantId ?? ''}
+            onChange={(value: string) => {
+              onVariantSelect(value)
+            }}
+            options={variants.map((variant) => [variant.id, variant.label] as const)}
+          />
+        )
+      ) : (
+        <p className="text-xs text-slate-400">This card has no trackable version in the catalog.</p>
+      )}
       <TextField
         label="Quantity"
         type="number"
@@ -915,7 +1248,15 @@ function ConfirmView({
         </p>
       ) : null}
       <div className="mt-auto flex flex-col gap-2 pt-2">
-        <Button type="button" onClick={onAddToBatch}>
+        <Button
+          type="button"
+          disabled={
+            variantsPending ||
+            variantsError !== null ||
+            (variants !== null && variants.length === 0)
+          }
+          onClick={onAddToBatch}
+        >
           Add to batch
         </Button>
         <Button type="button" variant="quiet" onClick={onCancel}>
@@ -929,11 +1270,17 @@ function ConfirmView({
 function ScannedSummaryView({
   batchLength,
   scannedCount,
+  defaults,
+  locations,
+  onDefaultsPatch,
   onScanNext,
   onReviewBatch,
 }: {
   batchLength: number
   scannedCount: number
+  defaults: ScannerSessionDefaults
+  locations: { id: string; label: string }[]
+  onDefaultsPatch: (patch: Partial<ScannerSessionDefaults>) => void
   onScanNext: () => void
   onReviewBatch: () => void
 }) {
@@ -950,6 +1297,7 @@ function ScannedSummaryView({
       <p className="text-sm text-slate-400">
         Cards wait in this scanning session until you add them from the batch review.
       </p>
+      <SessionDefaultsBar defaults={defaults} locations={locations} onPatch={onDefaultsPatch} />
       <div className="mt-2 flex flex-col gap-2">
         <Button type="button" onClick={onScanNext}>
           Scan next
@@ -971,7 +1319,14 @@ function BatchReviewView({
   onRemove,
   onCommit,
 }: {
-  batch: { candidate: ScannerCandidate; quantity: number; condition: CardCondition }[]
+  batch: {
+    candidate: ScannerCandidate
+    variantId: string
+    variantLabel: string
+    quantity: number
+    condition: CardCondition
+    needsVerification?: boolean
+  }[]
   committing: boolean
   commitError: { title: string; message: string } | null
   onQuantityChange: (index: number, value: string) => void
@@ -989,7 +1344,10 @@ function BatchReviewView({
       ) : (
         <ul className="flex flex-col divide-y divide-slate-800 rounded-xl border border-slate-800">
           {batch.map((item, index) => (
-            <li key={`${item.candidate.candidateId}-${index}`} className="space-y-2 p-3">
+            <li
+              key={`${item.candidate.candidateId}-${item.variantId}-${index}`}
+              className="space-y-2 p-3"
+            >
               <div className="flex items-center gap-3">
                 <CardImage
                   imageBaseUrl={item.candidate.imageBaseUrl ?? null}
@@ -997,7 +1355,10 @@ function BatchReviewView({
                   quality="low"
                   className="h-14 w-10 shrink-0"
                 />
-                <CandidateIdentity candidate={item.candidate} />
+                <div className="min-w-0">
+                  <CandidateIdentity candidate={item.candidate} />
+                  <p className="truncate text-xs text-slate-500">{item.variantLabel}</p>
+                </div>
                 <button
                   type="button"
                   onClick={() => {
@@ -1009,6 +1370,15 @@ function BatchReviewView({
                   <XIcon className="size-4" />
                 </button>
               </div>
+              {item.needsVerification ? (
+                <p
+                  role="status"
+                  className="rounded-lg bg-amber-900/30 px-3 py-2 text-xs leading-relaxed text-amber-200"
+                >
+                  Connection was interrupted. This card may already have been added. Check Portfolio
+                  before retrying.
+                </p>
+              ) : null}
               <div className="flex items-end gap-2">
                 <label className="w-24 text-xs text-slate-400">
                   Qty
@@ -1057,16 +1427,45 @@ function BatchReviewView({
   )
 }
 
-function CommittedView({ addedCount, onDone }: { addedCount: number; onDone: () => void }) {
+function CommittedView({
+  addedCount,
+  attentionCount,
+  remainingCount,
+  onDone,
+  onReviewRemaining,
+}: {
+  addedCount: number
+  attentionCount: number | null
+  remainingCount: number
+  onDone: () => void
+  onReviewRemaining: () => void
+}) {
+  const partial = attentionCount !== null && attentionCount > 0
   return (
     <div className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center gap-5 overflow-y-auto px-5 pb-8">
       <p role="status" aria-live="polite" className="text-xl font-semibold tracking-tight">
         Added {addedCount} {addedCount === 1 ? 'card' : 'cards'}.
       </p>
-      <p className="text-sm text-slate-400">The scanned cards are now in your portfolio.</p>
-      <Button type="button" onClick={onDone}>
-        Done
-      </Button>
+      {partial ? (
+        <p className="text-sm text-amber-200">
+          Added {addedCount}. {attentionCount} {attentionCount === 1 ? 'needs' : 'need'} attention.
+        </p>
+      ) : null}
+      <p className="text-sm text-slate-400">
+        {partial
+          ? 'The affected cards are still listed in this scan session.'
+          : 'The scanned cards are now in your portfolio.'}
+      </p>
+      <div className="flex flex-col gap-2">
+        {partial && remainingCount > 0 ? (
+          <Button type="button" onClick={onReviewRemaining}>
+            Review remaining
+          </Button>
+        ) : null}
+        <Button type="button" variant={partial ? 'quiet' : 'primary'} onClick={onDone}>
+          Done
+        </Button>
+      </div>
     </div>
   )
 }

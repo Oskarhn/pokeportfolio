@@ -1,5 +1,11 @@
 import type { CardCondition } from '../../data/collection'
-import type { ScannerAnalysis, ScannerCandidate } from './contract'
+import type {
+  ScannerAnalysis,
+  ScannerCandidate,
+  ScannerCommitOutcome,
+  ScannerVariantChoice,
+  ScannedBatchCard,
+} from './contract'
 
 /**
  * The scanner's UI state machine (P66). Pure reducer — no platform access, no capture blobs, no
@@ -51,19 +57,21 @@ export interface ScannerState {
   confirmQuantity: string
   confirmCondition: CardCondition
   confirmValidationError: string | null
+  /** Printing choices for the selected candidate (prompt §22). Loaded only AFTER the user chose
+   *  the candidate — never for every result row. */
+  confirmVariants: ScannerVariantChoice[] | null
+  confirmVariantsPending: boolean
+  confirmVariantsError: { title: string; message: string } | null
+  confirmVariantId: string | null
   batch: ScannedBatchCard[]
   commitError: { title: string; message: string } | null
   addedCount: number | null
+  /** Items from the last commit needing attention (definite failures + interrupted transports). */
+  attentionCount: number | null
   exitWarningOpen: boolean
   /** Set when the machine has fully released its work and the page should leave the route.
    *  The reducer cannot navigate; it only records permission to. */
   exitRequested: boolean
-}
-
-export interface ScannedBatchCard {
-  candidate: ScannerCandidate
-  quantity: number
-  condition: CardCondition
 }
 
 /** The add-card flow's existing default condition ('NM' in AddToCollectionPage) — reused, not
@@ -85,9 +93,14 @@ export const initialScannerState: ScannerState = {
   confirmQuantity: '1',
   confirmCondition: SCANNER_DEFAULT_CONDITION,
   confirmValidationError: null,
+  confirmVariants: null,
+  confirmVariantsPending: false,
+  confirmVariantsError: null,
+  confirmVariantId: null,
   batch: [],
   commitError: null,
   addedCount: null,
+  attentionCount: null,
   exitWarningOpen: false,
   exitRequested: false,
 }
@@ -108,6 +121,11 @@ export type ScannerAction =
   | { type: 'CONFIRM_CARD_PRESSED'; candidate: ScannerCandidate }
   | { type: 'CONFIRM_QUANTITY_CHANGED'; value: string }
   | { type: 'CONFIRM_CONDITION_CHANGED'; condition: CardCondition }
+  /** Printing choices arrived for the selected candidate (prompt §22). */
+  | { type: 'CONFIRM_VARIANTS_PENDING' }
+  | { type: 'CONFIRM_VARIANTS_LOADED'; variants: ScannerVariantChoice[] }
+  | { type: 'CONFIRM_VARIANTS_FAILED'; error: { title: string; message: string } }
+  | { type: 'CONFIRM_VARIANT_CHANGED'; variantId: string }
   | { type: 'CARD_CONFIRMED' }
   | { type: 'CONFIRM_CANCELLED' }
   | { type: 'SCAN_NEXT_PRESSED' }
@@ -116,7 +134,11 @@ export type ScannerAction =
   | { type: 'BATCH_ITEM_CONDITION_CHANGED'; index: number; condition: CardCondition }
   | { type: 'BATCH_ITEM_REMOVED'; index: number }
   | { type: 'ADD_CARDS_PRESSED' }
-  | { type: 'COMMIT_SUCCEEDED'; addedCount: number }
+  | {
+      type: 'COMMIT_SUCCEEDED'
+      addedCount: number
+      outcomes: ScannerCommitOutcome[]
+    }
   | { type: 'COMMIT_FAILED'; error: { title: string; message: string } }
   | { type: 'COMMITTED_DONE_PRESSED' }
   | { type: 'SEARCH_OPENED'; from: Extract<ScannerStep, 'no-match' | 'result'> }
@@ -189,11 +211,37 @@ export function scannerReducer(state: ScannerState, action: ScannerAction): Scan
         confirmQuantity: '1',
         confirmCondition: SCANNER_DEFAULT_CONDITION,
         confirmValidationError: null,
+        // Printing choices load fresh for THIS candidate, only now that it was chosen (§22).
+        confirmVariants: null,
+        confirmVariantsPending: true,
+        confirmVariantsError: null,
+        confirmVariantId: null,
       }
     case 'CONFIRM_QUANTITY_CHANGED':
       return { ...state, confirmQuantity: action.value, confirmValidationError: null }
     case 'CONFIRM_CONDITION_CHANGED':
       return { ...state, confirmCondition: action.condition, confirmValidationError: null }
+    case 'CONFIRM_VARIANTS_PENDING':
+      return { ...state, confirmVariantsPending: true, confirmVariantsError: null }
+    case 'CONFIRM_VARIANTS_LOADED':
+      if (state.step !== 'confirm') return state
+      return {
+        ...state,
+        confirmVariantsPending: false,
+        confirmVariants: action.variants,
+        // Exactly one active printing may be preselected (prompt §22); several stay unchosen.
+        confirmVariantId:
+          action.variants.length === 1 ? (action.variants[0]?.id ?? null) : state.confirmVariantId,
+      }
+    case 'CONFIRM_VARIANTS_FAILED':
+      if (state.step !== 'confirm') return state
+      return {
+        ...state,
+        confirmVariantsPending: false,
+        confirmVariantsError: action.error,
+      }
+    case 'CONFIRM_VARIANT_CHANGED':
+      return { ...state, confirmVariantId: action.variantId, confirmValidationError: null }
     case 'CARD_CONFIRMED': {
       const trimmedQuantity = state.confirmQuantity.trim()
       const quantity = /^\d+$/.test(trimmedQuantity) ? Number.parseInt(trimmedQuantity, 10) : 0
@@ -202,15 +250,33 @@ export function scannerReducer(state: ScannerState, action: ScannerAction): Scan
       }
       const candidate = state.selectedCandidate
       if (candidate === null) return state
+      const variantId = state.confirmVariantId
+      const variants = state.confirmVariants ?? []
+      if (variantId === null) {
+        // A batch item MUST carry its canonical variant id before it can ever be saved (§22).
+        return {
+          ...state,
+          confirmValidationError: 'Choose which version of this card you have.',
+        }
+      }
+      const variantLabel =
+        variants.find((variant) => variant.id === variantId)?.label ?? 'Selected version'
       return {
         ...state,
         step: 'scanned',
-        batch: [...state.batch, { candidate, quantity, condition: state.confirmCondition }],
+        batch: [
+          ...state.batch,
+          { candidate, variantId, variantLabel, quantity, condition: state.confirmCondition },
+        ],
         selectedCandidate: null,
         analysis: null,
         confirmQuantity: '1',
         confirmCondition: SCANNER_DEFAULT_CONDITION,
         confirmValidationError: null,
+        confirmVariants: null,
+        confirmVariantsPending: false,
+        confirmVariantsError: null,
+        confirmVariantId: null,
       }
     }
     case 'CONFIRM_CANCELLED':
@@ -221,6 +287,10 @@ export function scannerReducer(state: ScannerState, action: ScannerAction): Scan
         step: state.analysis !== null && state.analysis.candidates.length > 0 ? 'result' : 'review',
         selectedCandidate: null,
         confirmValidationError: null,
+        confirmVariants: null,
+        confirmVariantsPending: false,
+        confirmVariantsError: null,
+        confirmVariantId: null,
       }
     case 'SCAN_NEXT_PRESSED':
       return { ...state, step: 'starting-camera', cameraRequested: true }
@@ -244,8 +314,29 @@ export function scannerReducer(state: ScannerState, action: ScannerAction): Scan
       return { ...state, batch: state.batch.filter((_, index) => index !== action.index) }
     case 'ADD_CARDS_PRESSED':
       return { ...state, step: 'committing', commitError: null }
-    case 'COMMIT_SUCCEEDED':
-      return { ...state, step: 'committed', addedCount: action.addedCount, batch: [] }
+    case 'COMMIT_SUCCEEDED': {
+      // Honest per-item accounting (prompt §29/§31): definite successes are counted and dropped
+      // from the batch (a retry must never resubmit them); definite failures stay retryable;
+      // interrupted transports stay flagged for manual verification — never silently retried.
+      const survivors: ScannedBatchCard[] = []
+      state.batch.forEach((item, index) => {
+        const outcome = action.outcomes.find((candidate) => candidate.index === index)
+        if (outcome !== undefined && outcome.status === 'added') return
+        survivors.push(
+          outcome !== undefined && outcome.status === 'needs_verification'
+            ? { ...item, needsVerification: true }
+            : item,
+        )
+      })
+      const attentionCount = action.outcomes.filter((outcome) => outcome.status !== 'added').length
+      return {
+        ...state,
+        step: 'committed',
+        addedCount: action.addedCount,
+        attentionCount: attentionCount > 0 ? attentionCount : null,
+        batch: survivors,
+      }
+    }
     case 'COMMIT_FAILED':
       // Batch stays intact so nothing is lost to a transient failure — retry, not re-entry.
       return { ...state, step: 'batch-review', commitError: action.error }
@@ -287,6 +378,10 @@ export function scannerReducer(state: ScannerState, action: ScannerAction): Scan
         confirmQuantity: '1',
         confirmCondition: SCANNER_DEFAULT_CONDITION,
         confirmValidationError: null,
+        confirmVariants: null,
+        confirmVariantsPending: true,
+        confirmVariantsError: null,
+        confirmVariantId: null,
       }
     case 'EXIT_PRESSED':
       if (state.batch.length > 0) {
