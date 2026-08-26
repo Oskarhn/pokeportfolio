@@ -39,6 +39,59 @@ here when there was a real problem with a non-obvious answer.
 
 ---
 
+## 2026-08-26 — P75: a PL/pgSQL record-null trap silently disabled an idempotency check that every review had approved
+
+**Problem.** D-096's per-item idempotency design for `add_card_acquisition` was written, reviewed
+across three prior sessions (P71/P74), and its 21-case DB test suite was written — but never
+actually executed against real Postgres until P75, because every earlier session lacked Docker.
+The very first run against a real ephemeral stack showed 12 of 21 tests failing, and reading the
+SQL in isolation gave no reason why: a standalone `SELECT exists(...)` reproducing the exact
+material-mismatch predicate against the exact rows returned the correct answer every time.
+
+**Root cause.** The early replay check opened with:
+```sql
+select al.holding_id, al.id as lot_id, al.voided_at, al.holding_id as r_holding_id
+  into v_replay from public.acquisition_lots al where ...;
+if v_replay is not null then ...
+```
+`v_replay` is declared `record`. SQL's row-wise NULL test is defined over the WHOLE row: `IS
+NULL` is true only if every column is null, `IS NOT NULL` is true only if every column is
+non-null. A non-voided lot produces a MIXED record — `voided_at` is NULL while `holding_id`/
+`lot_id` are not — so BOTH tests evaluate false. `if v_replay is not null then` silently skipped
+its entire body (the voided check, the material-mismatch check, the early return) on every
+non-voided replay, which is the overwhelming majority of real traffic. Execution fell through to
+the mutation block and inserted for real; the ONLY reason this didn't create visible duplicates
+is that the acquisition_lots partial unique index then fired `unique_violation`, caught by the
+coarser OUTER exception handler — which reads only `holding_id`/`lot_id` (both always non-null
+when found, so its own `is not null` test happened to work) and returns the winner with **no**
+material or voided check at all. The one test that accidentally passed anyway (I14, voided-lot
+rejection) did so because a voided row's selected columns are ALL non-null — a uniform record,
+not a mixed one, so its `is not null` test worked by coincidence and masked the defect on that
+one path.
+
+**Why review didn't catch it.** Nothing about the surrounding code is wrong PL/pgSQL — the
+`select ... into v_replay ... if v_replay is not null` pattern is common and correct when every
+selected column is declared NOT NULL. It becomes a trap specifically when one of the selected
+columns (here `voided_at`, deliberately included so its value could be inspected) is nullable in
+the common case. A close read of the predicate logic — which is what two prior sessions'
+reviews did — cannot find this: the bug is not in what the code checks, it's in whether the
+check ever runs at all, and that only shows up by tracing actual execution, which requires a
+live database. Two smaller bugs (inverted `IS DISTINCT FROM` on `unit_cost_basis_minor` and
+`storage_location_id` in the material predicate) were real but secondary — they would have
+rejected every legitimate replay had the outer `if` ever let them run, and were only found by
+reading the predicate text directly, not by execution.
+
+**Fix and general lesson.** Test the specific NOT NULL column (`v_replay.lot_id is not null`)
+instead of the whole record, in both places this pattern appeared. Recorded as a standing rule
+in DECISIONS.md D-096 point 11: never test a `record`-typed "was a row found" variable for NULL
+when its selected columns can be independently null; test one column the schema declares
+NOT NULL. This is the second time this project has learned that a design can survive multiple
+rounds of code review and only fail once it meets a real database (see 2026-08-24's M16 P60/P62
+entries below) — the DB-tests-require-Docker constraint that blocked P71/P74 from running this
+suite at all was not a formality.
+
+---
+
 ## 2026-08-24 — Three implementation-blind sources met for real: what first contact actually found
 
 **Problem.** M13 ran as three parallel sessions: an export core, a UI/delivery layer and an

@@ -10,13 +10,31 @@ they were**.
 
 ## [Unreleased]
 
-### Added — 2026-08-26 — M15 scanner: on-device recognition integrated candidate (P68, DRAFT PR — DO NOT MERGE until P69 lands; not deployed)
+### Fixed — 2026-08-26 — M15 scanner: real-Postgres idempotency repair (P75, on PR #63, backend applied to hosted)
 
-The M15 integrated candidate combines the two parallel source candidates deliberately (source
-PR #60 deterministic matcher + source PR #61 camera/batch UI) and adds the real recognition
-pipeline on top. DRAFT: production deployment additionally requires the pending P69 security PR
-(`'wasm-unsafe-eval'` CSP + scanner-asset service-worker policy) and the owner's real-iPhone
-check.
+The first end-to-end run of the M15 idempotency DB tests against actual Postgres (not just read
+against the source) exposed that the replay check in `add_card_acquisition` never fired for a
+non-voided lot: `v_replay is not null` is a row-wise NULL test that evaluates false for a
+`record` with a mixed-null shape, which every non-voided replay has. Execution silently fell
+through to a plain insert every time, relying on the coarser outer `unique_violation` handler —
+which has no material-mismatch or voided-lot check at all. Fixed by testing the NOT NULL
+`lot_id` column instead of the whole record. Two inverted null-safe comparisons in the
+material-mismatch predicate (`IS DISTINCT FROM` where `IS NOT DISTINCT FROM` was needed) were
+fixed in the same pass — they would have rejected every legitimate replay had the surrounding
+block ever run. All 21 idempotency DB tests (I1–I21) now pass against real Postgres, including
+both concurrent-race cases and every material-mismatch case. Full account: DECISIONS.md D-096
+point 11. The two M15 migrations are now applied to `pokeportfolio-dev` (backend-only; no
+frontend merged to main). Also fixed 10 pre-existing unit test failures (stale mocks and two
+intentional behavior changes the tests hadn't caught up with) and several fixture bugs in the
+new DB test suite.
+
+### Added — 2026-08-26 — M15 scanner: on-device recognition integrated candidate (P68, DRAFT PR #63 — backend applied, frontend not merged, no Cloudflare preview yet)
+
+The M15 integrated candidate combines three parallel source candidates deliberately (source
+PR #60 deterministic matcher + source PR #61 camera/batch UI + source PR #62 CSP/WASM security
+boundary) and adds the real recognition pipeline on top. DRAFT: still needs a Cloudflare preview
+(blocked on the project's Pages settings — preview deployments are off) and the owner's
+real-iPhone check before it can merge.
 
 - **On-device OCR (D-094)** — pinned `tesseract.js` 7.0.0 / `tesseract.js-core` 7.0.0 /
   `@tesseract.js-data/eng` 1.0.0, LSTM-only English; assets staged same-origin under

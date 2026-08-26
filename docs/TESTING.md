@@ -36,6 +36,19 @@ fixtures (non-copyrighted programmatic renders under `tests/fixtures/scanner/`; 
 sensitive for required CI. And signed-in scanner UI on real iPhone hardware remains the §8
 owner gate; Chromium E2E covers the session-guarded `/scan` route only.
 
+**M15 scanner idempotency (`tests/db/m15_scanner_idempotency.test.ts`, in `pnpm test:db`).**
+21 cases (I1–I21) against real Postgres pin D-096's per-item idempotency key on
+`add_card_acquisition`: sequential and concurrent replay (including a forced-overlap race for
+both known- and unknown-cost paths), response-loss late replay, cross-user key independence,
+different-key-same-holding, every material-mismatch dimension (identity, quantity, condition,
+origin, cost, date, storage) rejected as `idempotency-key-reuse`, a voided lot's key rejected
+rather than resurrecting inventory, NULL-key legacy behaviour unchanged, reset-then-reuse, and
+the manual-card/card-variant/sealed-product/manual-valuation paths. This suite exists
+specifically because the design had been reviewed multiple times on paper before it ever ran
+against a real database — see PROJECT_JOURNAL.md 2026-08-26 ("P75: a PL/pgSQL record-null trap
+silently disabled an idempotency check that every review had approved") for what that first real
+run actually found.
+
 ---
 
 ## 2. Financial suite — mandatory

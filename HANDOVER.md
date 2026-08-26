@@ -4,34 +4,51 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-**Last updated:** 2026-08-26 — **M15 scanner integrated candidate EXISTS as DRAFT PR (P68) and
-must NOT be merged or deployed yet.** Branch `feat/m15-scanner-integrated-p68` deliberately
-combines source PR #60 (deterministic matcher @ `12537e2`) + source PR #61 (camera/batch UI @
-`9ce2fcc`) on top of main `7efc200`, then adds the real recognition pipeline: pinned Tesseract.js
-7 / core 7 / eng-data 1.0.0 (D-094; the researched core 6.x pin was superseded by npm reality —
-v7 requires core ^7), same-origin build-staged assets under `/scanner-assets/v7/`, one lazy OCR
-worker per scanner session disposed on exit, shared guide→pixels geometry, P67 matcher wired to
-P66 UI with ≤5 shortlists, printing chosen from real active variants AFTER candidate choice,
-user-scoped session defaults (no standalone Opening origin; pre_tracking default; D-093 sweep
-extended), batch-before-write commits through existing `add_card_acquisition` with per-item
-outcomes where interrupted transports are flagged needs_verification and never auto-retried.
-Entry points live; privacy copy now literally true. **P69 security PR is REQUIRED before this
-can deploy** ('wasm-unsafe-eval' CSP + SW scanner-asset policy; P68 carries only the minimal
-workbox globIgnores line needed to keep `pnpm build` alive once >2 MB assets exist — flagged for
-conflict review). Verified at head: typecheck/lint(0 errors)/format clean, unit 637/637,
-build green (entry +0.26 KB gzip vs P66 baseline), E2E 64/64, real Tesseract smoke read the
-synthetic fixture at confidence 93 (~106 ms warm, dev machine), local Docker DB gate 578/0/1
-after fresh reset + grant-audit clean. **IPHONE_DEVICE_GATE=PENDING_OWNER.** Everything below
-this paragraph predates M15.
+**Last updated:** 2026-08-26 — **M15 scanner integrated candidate is DRAFT PR #63
+(`feat/m15-scanner-integrated-p68` @ `d10fc57`), backend applied to hosted, frontend NOT merged
+or deployed.** Branch deliberately combines source PR #60 (deterministic matcher), source PR #61
+(camera/batch UI) and source PR #62 (P69 CSP/WASM security boundary, now integrated) on top of
+main, plus the real recognition pipeline: pinned Tesseract.js 7 / core 7 / eng-data 1.0.0 (D-094),
+same-origin build-staged assets under `/scanner-assets/v7/` excluded from SW precache and served
+only via a dedicated `CacheFirst` runtime rule, one lazy OCR worker per scanner session, shared
+guide→pixels geometry (one source of truth for the CSS overlay and the OCR crop math), P67
+matcher wired to P66 UI, user-scoped session defaults, batch-before-write commits through
+`add_card_acquisition`'s new per-item idempotency key (D-096), SPA navigation blocker via
+`useBlocker` when the batch is non-empty.
 
-**P74 state (2026-08-26):** All local gates pass (typecheck/lint/format/test), zero regressions
-vs committed HEAD. Committed and pushed as `ba22999`. Docker-dependent gates (db:reset, test:db,
-build) need local Docker with Supabase running. P74 completed: idempotency RPC repair with outer
-BEGIN/EXCEPTION, voided-lot rejection, material mismatch detection, SPA navigation blocker via
-useBlocker, geometry coupling fix, OCR text cap extraction, migration timestamp fix (20260826→
-20260903), 21-case idempotency DB test suite, DECISIONS.md updates (D-094/095/096), database
-types update, grant-audit 20-param signature. Next: run Docker gates locally, then §38–42
-hosted preflight, then §43 Cloudflare preview deploy.
+**P75 (2026-08-26) found and fixed a real production bug the first time the idempotency design
+ever ran against actual Postgres:** the early replay check tested `v_replay is not null` on a
+`record` with a mixed-null shape (`voided_at` NULL while `holding_id`/`lot_id` are not) — SQL's
+row-wise NULL test evaluates BOTH `IS NULL` and `IS NOT NULL` false for that shape, so the entire
+replay/material-check block silently never ran on any non-voided retry; execution fell through to
+plain inserts, relying entirely on the coarser outer `unique_violation` handler (no material or
+voided-lot check at all) to paper over it. The material-mismatch predicate itself also had two
+inverted null-safe comparisons (`IS DISTINCT FROM` where `IS NOT DISTINCT FROM` was needed) that
+would have rejected every legitimate replay had the surrounding block ever executed. Both fixed;
+full account in DECISIONS.md D-096 point 11 and `ai_outputs/Claude_outputs/output_75.txt`. Also
+fixed the 10 pre-existing unit failures (stale camera-track-ended mock, the intentional unpadded-
+collector-number retrieval and idempotency-safe retry-copy behaviors, the new `requestKey` batch
+field) and several fixture bugs in the new DB test suite itself.
+
+**Current state:** all local gates GREEN — typecheck/lint(0 errors)/format/unit 655/655; fresh
+90-migration reset clean; 21/21 M15 idempotency DB tests against real Postgres (I1–I21, including
+the concurrent-race and every material-mismatch case); db+authorization 599/600 (1 pre-existing
+opt-in skip); grant audit clean; hostile-grant convergence proven; M13 adversarial 62/62; M16
+independent adversarial 53/53 zero skips; M12 independent adversarial 44/46 (2 pre-existing
+opt-in skips); build green with CSP/scanner-asset caching verified against the actual `dist/`
+output; E2E 64/64; real Tesseract smoke read the synthetic fixture at confidence 93 with zero
+external network calls. **Hosted backend APPLIED**: the two M15 migrations are on
+`pokeportfolio-dev` (90/90, zero drift); `add_card_acquisition` verified as exactly one
+20-parameter `SECURITY INVOKER` overload, `search_path=''`, `authenticated`-only EXECUTE (anon
+probe returns `42501`); `remote-security-check.mjs` 17/17 phase 1. **GitHub Actions CI cannot run**
+— every job fails instantly with "recent account payments have failed or your spending limit
+needs to be increased" (owner's GitHub billing, unrelated to this branch's code; all of CI's
+checks were independently reproduced locally above). **Cloudflare preview NOT created** — this
+project's Pages settings have preview deployments explicitly off (`docs/DEVELOPMENT.md` §9,
+"preview deployments **off**") and this session holds no Cloudflare credentials to create one
+out-of-band; the owner needs to either enable preview deployments for the Pages project or supply
+a scoped deploy token. **IPHONE_DEVICE_GATE=PENDING_OWNER** (blocked on the preview above).
+Everything below this paragraph predates M15.
 
 **Previous state:** M16 (Openings, pulls, backup v2) is MERGED and RELEASED: PR #56
 squash-merged as `a1e20cf1c8c1a47414273932f2c808cfd3cab7c8` on `main`; its FOUR migrations
