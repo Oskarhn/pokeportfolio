@@ -138,8 +138,12 @@ comment on table public.openings is
   'card lots. Creates no spend (CS/GPO unchanged); owns the consumed frozen cost; pulls carry '
   'NULL individual basis. See FINANCIAL_MODEL.md §5.';
 
-create trigger openings_set_updated_at before update on public.openings
-  for each row execute function public.set_updated_at();
+-- NO set_updated_at trigger here (P62 bug B): the generic helper assigns new.updated_at, and the
+-- canonical openings schema deliberately carries explicit lifecycle timestamps only — created_at,
+-- voided_at, reconciled_at (backup v2 mirrors exactly these). A mutable-fields updated_at would
+-- be a new canonical column with no reader; the lifecycle columns are the audit surface. Attaching
+-- the generic trigger anyway made every UPDATE fail at runtime ("record" "new" has no field
+-- "updated_at") — void_opening and reconcile_opening_cost included.
 
 create index openings_user_opened_idx on public.openings (user_id, opened_on desc, id desc);
 

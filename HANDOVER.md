@@ -4,7 +4,7 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-**Last updated:** 2026-08-25 — **M16 (Openings, pulls, backup v2) EXISTS AS AN INTEGRATED
+**Last updated:** 2026-08-26 — **M16 (Openings, pulls, backup v2) EXISTS AS AN INTEGRATED
 CANDIDATE BRANCH `feat/m16-openings-integrated` — NOT MERGED, NOT DEPLOYED — with the P56+P59
 REPAIR branch `fix/m16-integrated-review-p56` open as a DRAFT PR AGAINST THE INTEGRATION
 BRANCH.** Three parallel
@@ -33,11 +33,15 @@ server target rule via new owner-only provenance columns on `list_opening_source
 provisional/reconciled copy replacing the false "not linked to a purchase"); coverage counts and
 reconciledAt exposed through the detail contract; fully-sold pulls read "Sold" / partials state
 what remains; unpriced-retained honesty marker; manual-card failures wrapped; Review repeats the
-exact opening cost. Local gates green (unit 428/428, e2e 62/62); DB-backed suites remain gated.
-**DB CI still never ran:
-GitHub Actions was billing/startup-blocked repo-wide; ALL DB-backed verification is
-MANDATORY_PENDING_CI and release is blocked until one full green db-tests run.** Open draft PRs
-carry DO NOT MERGE banners; hosted Supabase untouched.
+exact opening cost. **P60 then executed the ENTIRE db-tests CI job for real on a local
+Docker/Supabase stack (first DB-backed execution of M16 ever) and P62 repaired everything it
+exposed — the two runtime SQL bugs in the unhosted M16 migrations, the F-61-1 late-replay seam,
+and the stale/binding test classes — re-running the FULL local gate GREEN: db+authorization 578/0,
+m16-independent 53/53 with zero skips (authenticated-JWT discovery), m13-adversarial 62/62 on the
+v2 contract, grant audit + hostile-grant convergence clean, all performance gates within unchanged
+thresholds, and every normal gate green.** The hosted project remains untouched; GitHub Actions
+itself is still billing-blocked, so the first HOSTED DB execution stays the pre-merge hosted gate.
+Open draft PRs carry DO NOT MERGE banners; hosted Supabase untouched.
 
 ---
 
@@ -50,12 +54,14 @@ full scenario map in TESTING.md §5's M16 block.
 
 What a future session must know:
 
-1. **DB CI gate is THE blocker.** When Actions works again, run the full list in TESTING.md §5
-   ("M16 DB CI status"): fresh migrate from scratch, grant audit against
+1. **DB CI gate status: EXECUTED LOCALLY, GREEN (P60 execution + P62 repair/re-run).** The full
+   TESTING.md §5 list — fresh migrate from scratch, grant audit against
    `20260902120030_m16_privilege_baseline.sql`, hostile-grant convergence re-applying it, both
    permanent benchmark steps, `tests/db` + `tests/authorization` suites, the M13 adversarial
-   execution step, and `pnpm exec vitest run --config tests/m16-independent/vitest.config.ts`.
-   Expect first-contact plpgsql findings to be possible (history says they usually are).
+   execution step, and `pnpm exec vitest run --config tests/m16-independent/vitest.config.ts` —
+   ran green on this machine against an ephemeral local Supabase/Postgres stack at the P62 head.
+   GitHub Actions itself remains billing-blocked, so the first HOSTED execution is still pending;
+   local tooling recipe lives in `%TEMP%\opencode\p60\` until deleted.
 2. **The four M16 migrations are UNHOSTED** and were repaired freely during integration
    (`20260902120000/10/20/30`). They have NEVER touched pokeportfolio-dev. Apply them via
    `supabase db push --linked` BEFORE any frontend deploy that calls the new RPCs.
@@ -131,6 +137,60 @@ database.types.ts hand-updated for the new list_opening_sources return shape (st
 discipline — regenerate + diff when tooling allows). Backup v2 untouched (no new canonical
 columns). No new DECISION entry: the persisted in-memory key is D-089 implementation, the rest is
 completion of already-decided behaviour.
+
+### P60 — first real PostgreSQL execution (local ephemeral stack; infrastructure/test-only, no PR)
+
+Docker Desktop was installed on this machine and the ENTIRE db-tests CI job was reproduced
+locally against the exact PR #57 head — the first time any DB-backed M16 case ever executed.
+Result: RED with precise root causes — two runtime SQL bugs in the unhosted M16 migrations
+(provisional path wrote nonexistent `holdings.sealed_intent`; `openings` carried a
+`set_updated_at` trigger without an `updated_at` column), get_recent_activity's opening arm
+suspect, plus stale/binding test classes (v1 backup oracles, CHECK-name expectations,
+shared-catalog/FX fixture pollution, service-role OpenAPI discovery in m16-independent).
+Performance baselines passed with margin. Scratch tooling preserved under `%TEMP%\opencode\p60\`.
+
+### P62 — M16 real-Postgres repair; LOCAL DB GATE GREEN (same branch, same DRAFT PR #57)
+
+Repairs everything P60 exposed, then re-runs the full gate green:
+
+- **Bug A:** `sealed_intent` removed from the holdings INSERT inside
+  `create_opening_from_provisional` (D-061/M11 own it on acquisition_lots); bought-and-open now
+  creates purchase/line/holding/lot/opening/disposal/pulls atomically — execution-proven.
+- **Bug B:** the `openings_set_updated_at` trigger dropped from the unhosted schema migration;
+  `void_opening` and `reconcile_opening_cost` execute for real. `updated_at` deliberately NOT
+  added: openings carry explicit lifecycle timestamps (created/voided/reconciled) and backup v2
+  mirrors exactly those.
+- **F-61-1:** provisional replay now recovers the ORIGINAL receipt facts through
+  `provisional_purchase_id → purchases → its line`, not the current `source_lot_id` (which
+  reconciliation repoints); late retry after reconciliation returns the SAME opening with zero new
+  rows; wrong total/date still refused; cross-path reuse still refused. D-089 wording corrected to
+  match. DB tests pin all three paths plus same-key concurrent provisional submissions committing
+  exactly one world.
+- **Reconciliation world (P60 §14) executed:** provisional purchase/lot/disposal voided, opening
+  live at the real lot with provenance set, real purchase counted once, phantom inventory refused.
+- **Bug C adjudicated TEST_BINDING:** `get_recent_activity`'s opening arm works (isolated user ⇒
+  exactly one row); the E15 failure was shared-user pollution truncating at LIMIT over same-day
+  ties. Both E15 cases now run dedicated throwaway users; the recent-activity case pins the full
+  contract (one row per act, purchase+opening coexistence, pulls silent, voided excluded, unknown
+  cost NULL).
+- **Test adjudications:** CHECK-constraint cases assert semantics (either firing constraint) with
+  attributable columns moved together when testing only the D-090 envelope; backup oracles
+  adjudicated to v2 (m13_export asserts the writer emits v2; the adversarial validator requires
+  ≥2, classifies `openings` MUST_EXPORT, counts reconcile — 62/62); M16 pricing fixture uses a
+  private synthetic card; m91_market_movers owns private variants, self-seeds an ancient fallback
+  FX rate and picks snapshot legs in a rate-gap window so results are order-independent;
+  createGiftedSealedLot find-or-creates.
+- **Type drift folded in:** `acquisition_lots.Update.opening_id` plus
+  `id`/`idempotency_key` on the three opening-writer RPC returns (generated-types evidence).
+- **m16-independent discovery fixed:** OpenAPI enumerated with a dedicated authenticated test
+  user's JWT (service-role correctly sees zero user RPCs under this grant model) — 53/53 pass,
+  ZERO skips, implementation-gated oracles actually execute.
+- **Final local gate (fresh blank reset):** db+authorization 578 passed / 0 failed / 1 opt-in
+  skip; grant audit clean; hostile-grant convergence via the M16 baseline; M12 scale audit,
+  10k-lot benchmark, snapshot performance/storage and price-snapshot storage all within unchanged
+  thresholds; typecheck/lint(0 errors)/format/unit 428/build/e2e 62 green.
+
+The hosted project remains untouched; GitHub Actions remains the pre-merge hosted gate.
 
 ---
 

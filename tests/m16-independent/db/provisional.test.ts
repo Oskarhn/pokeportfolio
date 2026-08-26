@@ -24,6 +24,7 @@ import {
   bindProvisionalOpeningArgs,
   findProvisionalCreateRpc,
   findReconcileRpc,
+  disposeM16DiscoverySession,
   hasSupabaseEnv,
   requireVoidOpeningRpc,
   skipUnlessM16,
@@ -46,6 +47,7 @@ describe.skipIf(!hasSupabaseEnv())('M16 provisional-cost oracle (F12 / E13)', ()
 
   afterAll(async () => {
     if (service && userA) await deleteSyntheticUser(service, userA.id)
+    await disposeM16DiscoverySession()
   }, 60_000)
 
   /**
@@ -204,8 +206,10 @@ describe.skipIf(!hasSupabaseEnv())('M16 provisional-cost oracle (F12 / E13)', ()
     }
 
     const spendBefore = await spendSummary(clientA)
+    // The REAL receipt must be the SAME sealed product as the provisional opening —
+    // reconciliation across products is refused by design (server rule, not a defect).
     const productId = await createIsolatedSealedProduct(service, userA.id, 'prov-rec')
-    const openingId = await createProvisionalOpening(ctx)
+    const openingId = await createProvisionalOpening(ctx, { sealedProductId: productId })
     expect(openingId).not.toBe('')
 
     // The REAL receipt arrives: 799.00 + 79.00 shipping = 878.00 NOK total.
@@ -261,16 +265,26 @@ describe.skipIf(!hasSupabaseEnv())('M16 provisional-cost oracle (F12 / E13)', ()
     expect(spendAfter.gpoNokMinor - spendBefore.gpoNokMinor).toBe(87_800n)
     expect(spendAfter.csNokMinor - spendBefore.csNokMinor).toBe(87_800n)
 
-    // The provisional purchase is VOIDED — retained, excluded everywhere (E13).
+    // The provisional purchase of THIS opening is VOIDED — retained, excluded everywhere (E13).
+    // Scoped through the opening's own provenance pointer: earlier cases in this file leave
+    // OTHER live provisional purchases behind, and the oracle must not depend on file order.
+    const { data: openingRows } = await service
+      .from('openings')
+      .select('provisional_purchase_id')
+      .eq('id', openingId)
+      .maybeSingle<Record<string, unknown>>()
+    const provPurchaseId = String(openingRows?.['provisional_purchase_id'] ?? '')
+    expect(provPurchaseId, 'opening lost its provisional_purchase_id provenance').not.toBe('')
     const { data: purchases } = await service
       .from('purchases')
       .select('id, origin, voided_at')
       .eq('user_id', userA.id)
     const provisional = (purchases ?? []).find(
-      (row) => String((row as Record<string, unknown>)['origin']) === 'provisional_opening',
+      (row) => String((row as Record<string, unknown>)['id']) === provPurchaseId,
     )
     expect(provisional, 'provisional purchase vanished instead of being voided').toBeTruthy()
-    expect(provisional?.['voided_at'] ?? null).not.toBeNull()
+    expect(String((provisional as Record<string, unknown>)['origin'])).toBe('provisional_opening')
+    expect((provisional as Record<string, unknown>)['voided_at'] ?? null).not.toBeNull()
 
     // P56 §16-A (P54 finding H1): EVERY lot of the voided provisional purchase is VOIDED too —
     // no phantom sealed inventory with known basis citing a purchase that no longer counts.

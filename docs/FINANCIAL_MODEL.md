@@ -326,13 +326,16 @@ submission whose first attempt committed returns the SAME opening; on the provis
 key is resolved BEFORE the purchase row is written, so a retry after "purchase created, opening
 committed, response lost" can never create a second purchase. What counts as a replay is stated
 exactly (D-089): `create_opening` compares source lot, quantity and opened date;
-`create_opening_from_provisional` additionally compares the committed receipt's **total paid**
-and **purchased_on**, walked from its own canonical rows — same key with a different amount or
-purchase business date is rejected explicitly (`idempotency-key-reuse`), never silently
-replayed as the old financial fact. Auxiliary fields (pulls, notes, bulk estimate) are not
-material under D-089. No request hashing exists anywhere. On the client, the key lives inside
-the in-memory draft so it survives wizard remounts — one key per logical opening, rotated only
-when a new logical opening starts.
+`create_opening_from_provisional` additionally compares the ORIGINAL provisional receipt's
+**total paid** and **purchased_on**, recovered through the opening's retained
+`provisional_purchase_id` → that purchase's own line (the rows survive reconciliation's void) —
+same key with a different amount or purchase business date is rejected explicitly
+(`idempotency-key-reuse`), never silently replayed as the old financial fact. Walking the current
+source lot instead would compare against whatever REAL receipt reconciliation later linked,
+refusing the user's own original request — corrected P62/F-61-1. Auxiliary fields (pulls, notes,
+bulk estimate) are not material under D-089. No request hashing exists anywhere. On the client,
+the key lives inside the in-memory draft so it survives wizard remounts — one key per logical
+opening, rotated only when a new logical opening starts.
 
 **Reconciliation.** When the real receipt is recorded later, the user links it to the opening.
 In one transaction:

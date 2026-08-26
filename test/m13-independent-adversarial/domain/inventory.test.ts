@@ -19,6 +19,7 @@ import {
   identityReferenceTables,
   mustExportTables,
   mustNotExportTables,
+  specOf,
 } from '../helpers/inventory.ts'
 
 describe('export inventory oracle: internal consistency', () => {
@@ -142,8 +143,15 @@ describe('export inventory oracle: schema cross-check', () => {
     // audit_events is named by DATA_MODEL section 7 prose but verified ABSENT from every
     // migration on main (grep). Its eventual creation MUST come with an entry here.
     expect(FORWARD_COMPAT_TABLES).toContain('audit_events')
-    expect(FORWARD_COMPAT_TABLES).toContain('openings')
     expect(FORWARD_COMPAT_TABLES).toContain('grading_submissions')
+  })
+
+  it('openings left FORWARD_COMPAT at M16 integration: classified MUST_EXPORT, not tolerated ad hoc', () => {
+    // The M16 classification decision is recorded in EXPORT_INVENTORY itself (P62 adjudication
+    // of the formerly forward-compat entry): openings are canonical user data.
+    expect(FORWARD_COMPAT_TABLES).not.toContain('openings')
+    const spec = specOf('openings')
+    expect(spec?.classification).toBe('MUST_EXPORT')
   })
 
   it('has no overlap between classes', () => {

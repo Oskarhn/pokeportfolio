@@ -528,13 +528,26 @@ Constraints and triggers, exercised directly:
   adapted without loosening assertions (scalar lot dialect + folded pull attachment; provisional
   total-paid binder); UNEXECUTED_DB_GATED for everything needing the ephemeral stack. Its backup
   oracle arms the v2 BLOCKER: a generated post-M16 backup claiming v1 or missing
-  openings/linkage fails the release
+  openings/linkage fails the release. P62: discovery now enumerates the PostgREST OpenAPI with a
+  dedicated AUTHENTICATED test user's JWT (a service-role fetch omits every user RPC under this
+  project's exact grant model), so all implementation-gated oracles actually execute — 53/53,
+  zero skips.
 
-**M16 DB CI status:** all DB-backed M16 cases are MANDATORY_PENDING_CI — GitHub Actions was
-billing/startup-blocked repo-wide during the parallel cycle AND the integration session, so no
-fresh-migrate, grant-audit, hostile-grant convergence, db/authorization suite run, M12
-rebuild/incremental gate, M13 export adversarial execution or 10k benchmark has exercised this
-branch yet. Release remains blocked until one full green `db-tests` run covers exactly that list.
+**M16 DB CI status:** EXECUTED FOR REAL AGAINST LOCAL POSTGRESQL (P60 execution + P62 repair and
+re-run). GitHub Actions remains billing/startup-blocked repo-wide, so P60 reproduced the entire
+db-tests CI job on this machine against an ephemeral local Supabase/Postgres stack (Docker
+Desktop; repo-pinned CLI), and P62 re-ran it green after repairing what that first real execution
+exposed: two runtime SQL bugs in the unhosted M16 migrations (provisional path wrote a
+nonexistent `holdings.sealed_intent`; `openings` carried a `set_updated_at` trigger without the
+column), the F-61-1 late-replay provenance seam, and the stale/binding test classes the run
+adjudicated (CHECK-name semantics, backup v2 oracle, shared-catalog/FX fixture isolation, E15
+recent-activity isolation). Final local gate state at the P62 head: fresh migrate from blank ✓;
+db+authorization suites 578 passed / 0 failed / 1 opt-in skip (M13_EXPORT_PERF, executed
+separately: ~10k lots exported in 2142 ms vs 60 s budget) ✓; grant audit clean ✓; hostile-grant
+convergence via the M16 baseline ✓; m16-independent 53/53 with zero skips ✓; M12 scale audit,
+10k-lot benchmark, snapshot performance/storage and price-snapshot storage all inside their
+unchanged thresholds ✓. The hosted project is untouched; the first HOSTED execution remains the
+pre-merge gate when CI or a manual hosted window exists.
 
 ---
 

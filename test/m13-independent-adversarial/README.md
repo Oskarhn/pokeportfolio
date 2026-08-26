@@ -38,12 +38,13 @@ deliberately instead of silently loosening assertions.
 
 Every relation in `public` classified exactly once:
 
-- **MUST_EXPORT** (18): profiles (minus `is_admin`/`disabled_at`), retailers,
+- **MUST_EXPORT** (19): profiles (minus `is_admin`/`disabled_at`), retailers,
   storage_locations, tags, holdings, acquisition_lots, manual_card_definitions,
   manual_valuations (full history), holding_tags, custom_collections(+members),
   purchases(+lines incl. voided + stored allocations verbatim), lot_cost_adjustments,
   sales(+sale_lines+lot_disposals incl. voided), sealed_products **restricted to**
-  `created_by_user_id = self`.
+  `created_by_user_id = self`, openings (M16 — classified at integration from
+  `FORWARD_COMPAT_TABLES`; the current contract is the openings-capable schema_version 2).
 - **IDENTITY_REFERENCE**: card_series/card_sets/cards/card_variants → identity manifest only.
 - **MUST_NOT_EXPORT**: portfolio_snapshots (+queue/runs — the derived-cache trap, D-070),
   fx_rates, price_snapshots, price/catalog sync runs, invitations/claims/redemptions.

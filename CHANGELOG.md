@@ -10,6 +10,45 @@ they were**.
 
 ## [Unreleased]
 
+### Fixed — 2026-08-26 — M16 real-PostgreSQL repair: first full local DB gate green (P62; same child PR, DO NOT MERGE until P63/P64 integration)
+
+P60 executed the repository's entire db-tests CI job for the first time on a local
+Docker/Supabase Postgres stack and found the candidate RED; this change repairs every root cause
+and re-runs the full local gate GREEN (db+authorization 578/0, m16-independent 53/53 with zero
+skips, m13-adversarial 62/62, grant audit + hostile-grant convergence clean, all performance and
+normal gates within thresholds):
+
+- **Provisional opening path repaired (SQL)** — `create_opening_from_provisional` wrote a
+  nonexistent `holdings.sealed_intent` column (D-061/M11 moved it to acquisition_lots); removed.
+  Bought-and-open now creates purchase, line, sealed holding, sealed acquisition lot, opening,
+  opened disposal and pulls atomically — execution-proven.
+- **Openings lifecycle repaired (SQL)** — dropped the `set_updated_at` trigger that made every
+  UPDATE of `openings` fail (`record "new" has no field "updated_at"`); `void_opening` and
+  `reconcile_opening_cost` execute for real. No `updated_at` column added: openings carry explicit
+  lifecycle timestamps and backup v2 mirrors exactly those.
+- **Late idempotency replay after reconciliation (F-61-1)** — the provisional replay now recovers
+  the ORIGINAL receipt's total paid / purchased_on through `provisional_purchase_id` instead of
+  the current `source_lot_id` (which reconciliation repoints), so a late retry of the user's own
+  original request replays correctly after linking; wrong facts still refused; cross-path reuse
+  still refused. D-089/FINANCIAL_MODEL wording corrected to describe the implementation.
+- **Reconciliation world execution-proven** — provisional purchase, source lot and old disposal
+  voided; opening live at the real lot with provenance set; real purchase counted exactly once;
+  re-open/re-sell of the retired lot refused.
+- **Recent Activity adjudicated** — the opening arm works; E15's failure was shared-user fixture
+  pollution truncating at LIMIT over same-day ties. Both History/Recent-activity cases now run
+  dedicated isolated users and pin the full per-row contract.
+- **Test adjudications without weakening** — CHECK-constraint cases assert refusal semantics
+  (either firing constraint) with attributable columns moved together under the D-090 envelope;
+  backup oracles adjudicated to schema_version 2 (`openings` classified MUST_EXPORT in the
+  independent validator; counts reconciliation executing); M16 pricing fixture moved to a private
+  synthetic card; market movers owns private variants + self-seeded ancient FX fallback +
+  rate-gap snapshot legs (order-independent); gifted-sealed helper find-or-creates.
+- **m16-independent discovery fixed** — OpenAPI enumerated with a dedicated authenticated test
+  user's JWT (a service-role fetch omits user RPCs under this grant model): implementation-gated
+  oracles actually run, 53/53, zero skips.
+- **Type drift folded in** — `acquisition_lots.Update.opening_id` and `id`/`idempotency_key` on
+  the three opening-writer RPC returns.
+
 ### Added — 2026-08-26 — M16: Openings, pulls and backup v2 — integrated candidate (sources PR #55 + #54 + #53; integration branch, DO NOT MERGE until DB CI runs)
 
 Openings ship end to end as the single integrated M16 candidate on `feat/m16-openings-integrated`,

@@ -436,12 +436,28 @@ describe('E4/E5 — pull tracking: commons, energy, manual fallback, completenes
   })
 
   it('a resolved market price feeds retained value (resolver called through the same rule)', async () => {
-    // Private fixture variant no other suite touches (avoids the shared-catalog snapshot
-    // collision class M10 documented).
+    // Private synthetic CARD + variant (M10 shared-catalog collision class): nothing here may
+    // attach fixtures to a SHARED seeded card — search_cards and catalog_constraints count
+    // variants per card globally, so an extra Charizard variant leaks into their assertions.
+    // The rows outlive the test deliberately: the pulled holding references the variant, and the
+    // owning user's deletion at file teardown cascades the inventory — catalog rows on a private
+    // card are inert to every other suite.
+    const { data: card, error: cardError } = await service
+      .from('cards')
+      .insert({
+        set_id: seedCatalog.cardSetId,
+        local_id: 'm16-pricing-fixture-card',
+        name: 'M16 Pricing Fixture (private test card)',
+        language: 'en',
+      })
+      .select('id')
+      .single<{ id: string }>()
+    if (cardError) throw new Error(cardError.message)
+
     const { data: variant, error: variantError } = await service
       .from('card_variants')
       .insert({
-        card_id: seedCatalog.charizardCardId,
+        card_id: card.id,
         finish: 'normal',
         stamp: '',
         subtype: 'm16-pricing-fixture',
@@ -451,7 +467,10 @@ describe('E4/E5 — pull tracking: commons, energy, manual fallback, completenes
       .single<{ id: string }>()
     if (variantError) throw new Error(variantError.message)
 
-    // Ensure SOME EUR→NOK observation exists on/before today (shared cache; insert only if absent).
+    // Ensure SOME EUR→NOK observation exists on/before today (shared cache; insert only if
+    // absent). P62: the inserted baseline sits 400 days back so it can never become the LATEST
+    // rate for another suite's modern-dated snapshots — expectations here come from the resolver
+    // itself, so any rate value is fine; the point is virgin-DB self-sufficiency.
     const { data: fx } = await service
       .from('fx_rates')
       .select('rate_date')
@@ -464,7 +483,7 @@ describe('E4/E5 — pull tracking: commons, energy, manual fallback, completenes
       const { error: fxFail } = await service.from('fx_rates').insert({
         base_currency: 'EUR',
         quote_currency: 'NOK',
-        rate_date: today,
+        rate_date: dateOffset(-400),
         source: 'norges_bank',
         rate: '11.00000000',
       })
@@ -867,7 +886,9 @@ describe('provisional reconciliation WITHOUT audit_events (F12, prompt §18/§19
       })
       .single<OpeningRow>()
 
-    // A different product (Japanese fixture set) is not a valid target.
+    // Fixture plumbing goes through the service role: authenticated holds no INSERT grant on
+    // holdings/lots by design (the D-060 posture) — the behavior under test is the RPC refusal,
+    // not fixture creation. (P62: previously masked by upstream setup failures.)
     const { data: jpProduct } = await service
       .from('sealed_products')
       .insert({
@@ -878,15 +899,22 @@ describe('provisional reconciliation WITHOUT audit_events (F12, prompt §18/§19
       })
       .select('id')
       .single<{ id: string }>()
-    const { data: wrongHolding } = await clientA
+    const { data: wrongHolding } = await service
       .from('holdings')
-      .insert({ holding_kind: 'sealed', sealed_product_id: jpProduct!.id, grading_state: 'raw' })
+      .insert({
+        user_id: userA.id,
+        holding_kind: 'sealed',
+        sealed_product_id: jpProduct!.id,
+        grading_state: 'raw',
+      })
       .select('id')
       .single<{ id: string }>()
-    const { data: wrongLot } = await clientA
+    if (!wrongHolding) throw new Error('wrong-product holding fixture failed')
+    const { data: wrongLot } = await service
       .from('acquisition_lots')
       .insert({
-        holding_id: wrongHolding!.id,
+        holding_id: wrongHolding.id,
+        user_id: userA.id,
         origin: 'pre_tracking',
         cost_basis_state: 'unknown',
         acquired_on: today,
@@ -895,10 +923,11 @@ describe('provisional reconciliation WITHOUT audit_events (F12, prompt §18/§19
       })
       .select('id')
       .single<{ id: string }>()
+    if (!wrongLot) throw new Error('wrong-product lot fixture failed')
 
     const { error: wrongProduct } = await clientA.rpc('reconcile_opening_cost', {
       p_opening_id: opening!.id,
-      p_real_source_lot_id: wrongLot!.id,
+      p_real_source_lot_id: wrongLot.id,
     })
     expect(wrongProduct).not.toBeNull()
   })
@@ -1014,11 +1043,14 @@ describe('P56 §3–§5 — reconcile annihilates the provisional world (P54 fin
     expect(realLotAfter.quantity_remaining).toBe(2) // 4 bought − 2 consumed
 
     // Exactly ONE live opened disposal for the opening, and it points at the real lot.
-    const allOpenDisposals = (await service
+    const { data: allOpenDisposals, error: disposalsError } = await service
       .from('lot_disposals')
       .select('lot_id, voided_at')
-      .eq('opening_id', opening.id)) as unknown as { lot_id: string; voided_at: string | null }[]
-    const liveOnes = allOpenDisposals.filter((d) => d.voided_at === null)
+      .eq('opening_id', opening.id)
+    if (disposalsError) throw new Error(disposalsError.message)
+    const liveOnes = (allOpenDisposals as { lot_id: string; voided_at: string | null }[]).filter(
+      (d) => d.voided_at === null,
+    )
     expect(liveOnes).toHaveLength(1)
     expect(liveOnes[0]!.lot_id).toBe(realLot)
 
@@ -1182,14 +1214,15 @@ describe('P56 §8 — get_opening coverage counts are RETAINED-only; sold pulls 
     })
     if (!opening) throw new Error('opening failed')
 
-    const pulls = (await service
+    const { data: pulls, error: pullsError } = await service
       .from('acquisition_lots')
       .select('id, holding_id')
-      .eq('opening_id', opening.id)) as unknown as { id: string; holding_id: string }[]
+      .eq('opening_id', opening.id)
+    if (pullsError) throw new Error(pullsError.message)
     expect(pulls).toHaveLength(3)
 
     const variantByHolding = new Map<string, string>()
-    for (const pull of pulls) {
+    for (const pull of pulls as { id: string; holding_id: string }[]) {
       const { data: holding } = await service
         .from('holdings')
         .select('card_variant_id')
@@ -1197,10 +1230,10 @@ describe('P56 §8 — get_opening coverage counts are RETAINED-only; sold pulls 
         .single<{ card_variant_id: string | null }>()
       variantByHolding.set(pull.id, holding!.card_variant_id!)
     }
-    const charizardPull = pulls.find(
+    const charizardPull = (pulls as { id: string; holding_id: string }[]).find(
       (p) => variantByHolding.get(p.id) === seedCatalog.charizardVariantId,
     )!
-    const energyPull = pulls.find(
+    const energyPull = (pulls as { id: string; holding_id: string }[]).find(
       (p) => variantByHolding.get(p.id) === seedCatalog.grassEnergyVariantId,
     )!
 
@@ -1305,37 +1338,84 @@ describe('P56 §12 — widened purchase_lines CHECK: global envelope audit (D-09
   it('line_total below unit × quantity is rejected', async () => {
     const { purchaseId } = await buySealed(clientA, { quantity: 3, unitPriceMinor: 5000 })
     const line = await firstLineOf(purchaseId)
+    const below = line.unit_price_minor * line.quantity - 1
+
+    // The mutation violates TWO invariants at once (envelope AND the attributable pairing).
+    // PostgreSQL reports whichever CHECK it evaluates first — the pinned semantics are
+    // "rejected by a CHECK", not a specific evaluation order (P60 cluster D adjudication).
     const { error } = await service
       .from('purchase_lines')
-      .update({ line_total_minor: line.unit_price_minor * line.quantity - 1 })
+      .update({ line_total_minor: below })
       .eq('id', line.id)
     expect(error).not.toBeNull()
-    expect(JSON.stringify(error)).toMatch(/purchase_lines_line_total_matches_unit_price/)
+    expect(JSON.stringify(error)).toMatch(
+      /purchase_lines_line_total_matches_unit_price|purchase_lines_attributable_cost_matches_allocation/,
+    )
+
+    // With the dependent attributable columns kept consistent, ONLY the D-090 envelope can fire.
+    const { error: pureEnvelope } = await service
+      .from('purchase_lines')
+      .update({
+        line_total_minor: below,
+        attributable_cost_minor: below,
+        attributable_cost_nok_minor: below,
+      })
+      .eq('id', line.id)
+    expect(pureEnvelope).not.toBeNull()
+    expect(JSON.stringify(pureEnvelope)).toMatch(/purchase_lines_line_total_matches_unit_price/)
   })
 
   it('line_total above unit × quantity + quantity − 1 is rejected', async () => {
     const { purchaseId } = await buySealed(clientA, { quantity: 3, unitPriceMinor: 5000 })
     const line = await firstLineOf(purchaseId)
+    const above = line.unit_price_minor * line.quantity + line.quantity
+
     const { error } = await service
       .from('purchase_lines')
-      .update({ line_total_minor: line.unit_price_minor * line.quantity + line.quantity })
+      .update({ line_total_minor: above })
       .eq('id', line.id)
     expect(error).not.toBeNull()
-    expect(JSON.stringify(error)).toMatch(/purchase_lines_line_total_matches_unit_price/)
+    expect(JSON.stringify(error)).toMatch(
+      /purchase_lines_line_total_matches_unit_price|purchase_lines_attributable_cost_matches_allocation/,
+    )
+
+    const { error: pureEnvelope } = await service
+      .from('purchase_lines')
+      .update({
+        line_total_minor: above,
+        attributable_cost_minor: above,
+        attributable_cost_nok_minor: above,
+      })
+      .eq('id', line.id)
+    expect(pureEnvelope).not.toBeNull()
+    expect(JSON.stringify(pureEnvelope)).toMatch(/purchase_lines_line_total_matches_unit_price/)
   })
 
   it('the full legal residual envelope accepts excess = quantity − 1 (and reverts cleanly)', async () => {
     const { purchaseId } = await buySealed(clientA, { quantity: 3, unitPriceMinor: 9998 })
     const line = await firstLineOf(purchaseId)
     const legalMax = line.unit_price_minor * line.quantity + line.quantity - 1
+
+    // The whole row moves together: line total and its dependent attributable pair stay
+    // internally consistent so ONLY the envelope is under test (P60 cluster D).
     const { error: up } = await service
       .from('purchase_lines')
-      .update({ line_total_minor: legalMax })
+      .update({
+        line_total_minor: legalMax,
+        attributable_cost_minor: legalMax,
+        attributable_cost_nok_minor: legalMax,
+      })
       .eq('id', line.id)
     expect(up).toBeNull()
+
+    const base = line.unit_price_minor * line.quantity
     const { error: down } = await service
       .from('purchase_lines')
-      .update({ line_total_minor: line.unit_price_minor * line.quantity })
+      .update({
+        line_total_minor: base,
+        attributable_cost_minor: base,
+        attributable_cost_nok_minor: base,
+      })
       .eq('id', line.id)
     expect(down).toBeNull()
   })
@@ -1348,7 +1428,8 @@ describe('P56 §12 — widened purchase_lines CHECK: global envelope audit (D-09
       .update({ quantity: 0 })
       .eq('id', line.id)
     expect(zeroQty).not.toBeNull()
-    expect(JSON.stringify(zeroQty)).toMatch(/quantity_positive/)
+    // qty 0 also breaks the envelope's upper bound — either violated CHECK is a correct refusal.
+    expect(JSON.stringify(zeroQty)).toMatch(/quantity_positive|line_total_matches_unit_price/)
 
     const { error: negativeUnit } = await service
       .from('purchase_lines')
@@ -1356,7 +1437,7 @@ describe('P56 §12 — widened purchase_lines CHECK: global envelope audit (D-09
       .eq('id', line.id)
     expect(negativeUnit).not.toBeNull()
     expect(JSON.stringify(negativeUnit)).toMatch(
-      /amounts_nonnegative|line_total_matches_unit_price/,
+      /amounts_nonnegative|line_total_matches_unit_price|attributable_cost_matches_allocation/,
     )
   })
 
@@ -1445,98 +1526,161 @@ describe('E13 — backdated opening dirties M12 history from the correct date', 
 })
 
 describe('E15 — History reports exactly ONE event per opening', () => {
+  // Both cases run on DEDICATED throwaway users (P60 adjudication): this file shares userA
+  // across dozens of opening-creating cases, and History / Recent Activity are whole-owner
+  // reads — exact-count assertions against that accumulator would test execution order, not
+  // the SQL. get_recent_activity additionally truncates same-day ties at its LIMIT, so a
+  // polluted owner can hide any individual row regardless of correctness.
   it('opening arm appears once; its pulls do not double-report as Added; voided filters', async () => {
-    const { lotId } = await buySealed(clientA, { quantity: 2, unitPriceMinor: 5500 })
-    const { data: opening, error: openError } = await callCreateOpening(clientA, {
-      p_source_lot_id: lotId,
-      p_quantity: 1,
-      p_pulls: [{ card_variant_id: seedCatalog.charizardVariantId, quantity: 1, condition: 'NM' }],
-    })
-    if (openError) throw new Error(openError.message)
-
-    const openingEvents = await historyEvents(clientA, { p_kind: 'opening' })
-    expect(openingEvents).toHaveLength(1)
-    expect(openingEvents[0]!.primary_id).toBe(opening.id)
-    expect(openingEvents[0]!.amount_nok_minor).toBe('5500')
-    expect(openingEvents[0]!.subtitle).toContain('×1')
-
-    // The pull lot must NOT appear again as an acquisition ("Added") event.
-    const acquisitionEvents = await historyEvents(clientA, {
-      p_kind: 'acquisition',
-      p_include_voided: true,
-    })
-    const { data: openingPullRows } = await service
-      .from('acquisition_lots')
-      .select('id')
-      .eq('opening_id', opening.id)
-    const pullIds = new Set(((openingPullRows ?? []) as { id: string }[]).map((r) => r.id))
-    for (const event of acquisitionEvents) {
-      expect(pullIds.has(event.primary_id)).toBe(false)
-    }
-
-    // Legacy unlinked origin='opening' lots (D-038) DO still appear as acquisitions.
-    const { data: legacy } = await clientA
-      .rpc('add_card_acquisition', {
-        p_card_variant_id: seedCatalog.pikachuVariantId,
-        p_grading_state: 'raw',
-        p_condition: 'NM',
-        p_origin: 'opening',
-        p_cost_basis_state: 'unallocated_opening',
+    const user = await createSyntheticUser(service, 'm16-history-e15')
+    try {
+      const client = await signInAs(user)
+      const { lotId } = await buySealed(client, { quantity: 2, unitPriceMinor: 5500 })
+      const { data: opening, error: openError } = await callCreateOpening(client, {
+        p_source_lot_id: lotId,
         p_quantity: 1,
-        p_acquired_on: today,
+        p_pulls: [
+          { card_variant_id: seedCatalog.charizardVariantId, quantity: 1, condition: 'NM' },
+        ],
       })
-      .single<{ holding_id: string; lot_id: string }>()
-    const legacyEvents = await historyEvents(clientA, {
-      p_kind: 'acquisition',
-      p_include_voided: true,
-    })
-    expect(legacyEvents.some((e) => e.primary_id === legacy!.lot_id)).toBe(true)
+      if (openError) throw new Error(openError.message)
 
-    // Voided openings hide by default and appear only through the explicit toggle.
-    const { data: voidable } = await callCreateOpening(clientA, {
-      p_source_lot_id: lotId,
-      p_quantity: 1,
-    })
-    await clientA.rpc('void_opening', { p_opening_id: voidable!.id })
-    const activeOnly = await historyEvents(clientA, { p_kind: 'opening' })
-    expect(activeOnly.every((e) => e.status === 'active')).toBe(true)
-    const withVoided = await historyEvents(clientA, {
-      p_kind: 'opening',
-      p_include_voided: true,
-    })
-    expect(withVoided.some((e) => e.primary_id === voidable!.id && e.status === 'voided')).toBe(
-      true,
-    )
+      const openingEvents = await historyEvents(client, { p_kind: 'opening' })
+      expect(openingEvents).toHaveLength(1)
+      expect(openingEvents[0]!.primary_id).toBe(opening.id)
+      expect(openingEvents[0]!.amount_nok_minor).toBe('5500')
+      expect(openingEvents[0]!.subtitle).toContain('×1')
+
+      // The pull lot must NOT appear again as an acquisition ("Added") event.
+      const acquisitionEvents = await historyEvents(client, {
+        p_kind: 'acquisition',
+        p_include_voided: true,
+      })
+      const { data: openingPullRows } = await service
+        .from('acquisition_lots')
+        .select('id')
+        .eq('opening_id', opening.id)
+      const pullIds = new Set(((openingPullRows ?? []) as { id: string }[]).map((r) => r.id))
+      for (const event of acquisitionEvents) {
+        expect(pullIds.has(event.primary_id)).toBe(false)
+      }
+
+      // Legacy unlinked origin='opening' lots (D-038) DO still appear as acquisitions.
+      const { data: legacy } = await client
+        .rpc('add_card_acquisition', {
+          p_card_variant_id: seedCatalog.pikachuVariantId,
+          p_grading_state: 'raw',
+          p_condition: 'NM',
+          p_origin: 'opening',
+          p_cost_basis_state: 'unallocated_opening',
+          p_quantity: 1,
+          p_acquired_on: today,
+        })
+        .single<{ holding_id: string; lot_id: string }>()
+      const legacyEvents = await historyEvents(client, {
+        p_kind: 'acquisition',
+        p_include_voided: true,
+      })
+      expect(legacyEvents.some((e) => e.primary_id === legacy!.lot_id)).toBe(true)
+
+      // Voided openings hide by default and appear only through the explicit toggle.
+      const { data: voidable } = await callCreateOpening(client, {
+        p_source_lot_id: lotId,
+        p_quantity: 1,
+      })
+      await client.rpc('void_opening', { p_opening_id: voidable!.id })
+      const activeOnly = await historyEvents(client, { p_kind: 'opening' })
+      expect(activeOnly.every((e) => e.status === 'active')).toBe(true)
+      const withVoided = await historyEvents(client, {
+        p_kind: 'opening',
+        p_include_voided: true,
+      })
+      expect(withVoided.some((e) => e.primary_id === voidable!.id && e.status === 'voided')).toBe(
+        true,
+      )
+    } finally {
+      await deleteSyntheticUser(service, user.id)
+    }
   })
 
-  it("Home's recent activity: pulls not reported individually; exactly ONE Opening row instead (I12)", async () => {
-    const { lotId } = await buySealed(clientA, { quantity: 2, unitPriceMinor: 2100 })
-    const { data: opening, error: openError } = await callCreateOpening(clientA, {
-      p_source_lot_id: lotId,
-      p_quantity: 1,
-      p_pulls: [
-        { card_variant_id: seedCatalog.grassEnergyVariantId, quantity: 5, condition: 'NM' },
-      ],
-    })
-    if (openError) throw new Error(openError.message)
-    const activity = await recentActivity(clientA, 20)
-    const { data: openingPullRows } = await service
-      .from('acquisition_lots')
-      .select('id')
-      .eq('opening_id', opening.id)
-    const pullIds = new Set(((openingPullRows ?? []) as { id: string }[]).map((r) => r.id))
-    for (const row of activity) {
-      expect(pullIds.has(row.primary_id)).toBe(false)
-    }
+  it("Home's recent activity: one row per opening act; purchase+opening coexist for bought-and-open; pulls silent; voided excluded; unknown cost NULL (I12)", async () => {
+    const user = await createSyntheticUser(service, 'm16-activity-e15')
+    try {
+      const client = await signInAs(user)
 
-    // P53 §18: the exclusion is only half the contract — the opening itself gains exactly ONE
-    // activity row (activity_type='opening', occurred_on=opened_on, amount=cost or NULL).
-    const openingRows = activity.filter(
-      (row) => row.activity_type === 'opening' && row.primary_id === opening.id,
-    )
-    expect(openingRows).toHaveLength(1)
-    expect(openingRows[0]!.occurred_on).toBe(today)
-    expect(openingRows[0]!.amount_nok_minor).toBe('2100')
+      // Existing-lot opening with pulls and a known cost.
+      const first = await buySealed(client, { quantity: 3, unitPriceMinor: 2100 })
+      const { data: o1, error: o1Error } = await callCreateOpening(client, {
+        p_source_lot_id: first.lotId,
+        p_quantity: 1,
+        p_pulls: [
+          { card_variant_id: seedCatalog.grassEnergyVariantId, quantity: 5, condition: 'NM' },
+        ],
+      })
+      if (o1Error) throw new Error(o1Error.message)
+
+      // Bought-and-open legitimately yields Purchase row + Opening row — two distinct facts.
+      const { data: o2, error: o2Error } = await client
+        .rpc('create_opening_from_provisional', {
+          p_sealed_product_id: seedCatalog.sealedProductId,
+          p_quantity: 1,
+          p_total_paid_minor: 5000,
+          p_purchased_on: today,
+        })
+        .single<OpeningRow>()
+      if (o2Error) throw new Error(o2Error.message)
+
+      // Unknown-cost gift opening: its row must exist with amount NULL — never 0, never absent.
+      const gifted = await createGiftedSealedLot(service, user.id, seedCatalog.sealedProductId, 1)
+      const { data: o4, error: o4Error } = await callCreateOpening(client, {
+        p_source_lot_id: gifted.lotId,
+        p_quantity: 1,
+        p_opened_on: today,
+      })
+      if (o4Error) throw new Error(o4Error.message)
+
+      // A voided opening did not happen: excluded from normal Recent Activity.
+      const { data: o3, error: o3Error } = await callCreateOpening(client, {
+        p_source_lot_id: first.lotId,
+        p_quantity: 2,
+        p_opened_on: today,
+      })
+      if (o3Error) throw new Error(o3Error.message)
+      const { error: voidError } = await client.rpc('void_opening', { p_opening_id: o3.id })
+      expect(voidError).toBeNull()
+
+      const activity = await recentActivity(client, 20)
+
+      // Opening-linked pulls are NEVER reported individually ("Added" spam contract).
+      const { data: openingPullRows } = await service
+        .from('acquisition_lots')
+        .select('id')
+        .in('opening_id', [o1.id, o2.id, o4.id])
+      const pullIds = new Set(((openingPullRows ?? []) as { id: string }[]).map((r) => r.id))
+      for (const row of activity) {
+        expect(pullIds.has(row.primary_id)).toBe(false)
+      }
+
+      // Exactly the three LIVE openings appear — each once, the voided one absent.
+      const openingRows = activity.filter((row) => row.activity_type === 'opening')
+      expect(openingRows.map((r) => r.primary_id).sort()).toEqual([o1.id, o2.id, o4.id].sort())
+
+      // Per-row honesty: occurred_on = opened_on; amount = frozen cost or NULL when unknown.
+      const byId = new Map(openingRows.map((r) => [r.primary_id, r]))
+      expect(byId.get(o1.id)?.occurred_on).toBe(today)
+      expect(byId.get(o1.id)?.amount_nok_minor).toBe('2100')
+      expect(byId.get(o2.id)?.amount_nok_minor).toBe('5000')
+      expect(byId.get(o4.id)?.occurred_on).toBe(today)
+      expect(byId.get(o4.id)?.amount_nok_minor).toBeNull()
+
+      // Bought-and-open's Purchase row coexists with its Opening row.
+      const purchaseRows = activity.filter((row) => row.activity_type === 'purchase')
+      expect(purchaseRows.map((r) => r.primary_id).sort()).toEqual(
+        [first.purchaseId, o2.provisional_purchase_id!].sort(),
+      )
+    } finally {
+      await deleteSyntheticUser(service, user.id)
+    }
   })
 })
 
@@ -1689,15 +1833,23 @@ describe('P53 — server-side idempotency (§5/§6)', () => {
     expect(reuseError!.message).toContain('idempotency-key-reuse')
 
     // The committed opening and its purchase are untouched; spend counted exactly once.
+    // Scoped through the opening's own provenance pointer: total-minor values are NOT unique
+    // across this file's accumulated history (P62 adjudication of the shared-user world).
     const after = await spendingOf(clientA)
     expect(BigInt(after.gpo_nok_minor) - BigInt(before.gpo_nok_minor)).toBe(12300n)
     const { count } = await service
       .from('purchases')
       .select('id', { count: 'exact' })
-      .eq('user_id', userA.id)
+      .eq('id', first.provisional_purchase_id!)
       .eq('origin', 'provisional_opening')
       .eq('total_minor', 12300)
     expect(count).toBe(1)
+    const { count: keyOpeningCount } = await service
+      .from('openings')
+      .select('id', { count: 'exact' })
+      .eq('user_id', userA.id)
+      .eq('idempotency_key', key)
+    expect(keyOpeningCount).toBe(1)
     expect(first.cost_nok_minor).toBe(12300)
   })
 
@@ -1724,12 +1876,13 @@ describe('P53 — server-side idempotency (§5/§6)', () => {
     expect(reuseError!.message).toContain('idempotency-key-reuse')
 
     // The committed receipt keeps its original business date; no second purchase exists.
+    // (Provenance-scoped — total values are not unique across the file's accumulated world.)
     const after = await spendingOf(clientA)
     expect(BigInt(after.gpo_nok_minor) - BigInt(before.gpo_nok_minor)).toBe(9900n)
     const { data: purchases } = await service
       .from('purchases')
       .select('id, purchased_on')
-      .eq('user_id', userA.id)
+      .eq('id', first.provisional_purchase_id!)
       .eq('origin', 'provisional_opening')
       .eq('total_minor', 9900)
     expect(purchases ?? []).toHaveLength(1)
@@ -1889,8 +2042,13 @@ describe('P59 §10 — list_opening_sources carries owner-only purchase provenan
     purchased_on: string | null
   }
 
-  it('a provisional lot exposes its provisional parent; an ordinary receipt reads manual — the picker can mirror the server rule', async () => {
-    // The buy-and-open lot stays live with a provisional parent until reconciled.
+  it('a restored provisional lot exposes its provisional parent; an ordinary receipt reads manual — the picker can mirror the server rule', async () => {
+    // Reachability note (P62 first-execution adjudication): a LIVE provisional opening has
+    // consumed its source lot to zero, and list_opening_sources only lists quantity_available>0
+    // rows. The scenario where a provisional-parent row is actually VISIBLE in the picker is the
+    // VOIDED opening: void_opening restores the sealed stock while its provisional purchase
+    // deliberately STAYS ACTIVE (P53 §10) — exactly the row a naive reconciliation picker must
+    // exclude client-side (the server refuses it regardless).
     const { data: provOpening, error: provError } = await clientA
       .rpc('create_opening_from_provisional', {
         p_sealed_product_id: seedCatalog.sealedProductId,
@@ -1900,6 +2058,10 @@ describe('P59 §10 — list_opening_sources carries owner-only purchase provenan
       })
       .single<OpeningRow>()
     if (provError) throw new Error(provError.message)
+    const { error: voidError } = await clientA.rpc('void_opening', {
+      p_opening_id: provOpening.id,
+    })
+    expect(voidError).toBeNull()
 
     const real = await buySealed(clientA, {
       quantity: 4,
@@ -1912,12 +2074,13 @@ describe('P59 §10 — list_opening_sources carries owner-only purchase provenan
     if (error) throw new Error(error.message)
     const rows = data as ProvenanceSourceRow[]
 
-    // The provisional-parent row is identifiable so the reconciliation picker can exclude it
-    // client-side (the server refuses it regardless).
+    // The restored provisional-parent row is identifiable so the reconciliation picker can
+    // exclude it client-side.
     const provRow = rows.find((row) => row.lot_id === provOpening.source_lot_id)
     expect(provRow).toBeDefined()
     expect(provRow!.purchase_origin).toBe('provisional_opening')
     expect(provRow!.purchased_on).toBe(today)
+    expect(provRow!.quantity_available).toBe(2)
 
     // A legitimate reconciliation target carries its real provenance for display.
     const realRow = rows.find((row) => row.lot_id === real.lotId)
@@ -1926,6 +2089,203 @@ describe('P59 §10 — list_opening_sources carries owner-only purchase provenan
     expect(realRow!.purchased_on).toBe(dateOffset(-3))
     expect(realRow!.quantity_available).toBe(4)
     expect(realRow!.cost_known).toBe(true)
+  })
+})
+
+// ── P62: F-61-1 — the replay source is the ORIGINAL provisional receipt, not the current lot ─
+
+describe('P62 F-61-1 — late idempotency retry after reconciliation', () => {
+  // Reconciliation repoints openings.source_lot_id at the REAL replacement lot while RETAINING
+  // provisional_purchase_id and voiding the provisional purchase (rows kept). A late retry of
+  // the ORIGINAL request must therefore compare its facts against the ORIGINAL provisional
+  // receipt (walked through provisional_purchase_id), never the replacement's.
+  async function worldCounts(userId: string) {
+    const tables = [
+      'purchases',
+      'purchase_lines',
+      'acquisition_lots',
+      'openings',
+      'lot_disposals',
+    ] as const
+    const results = await Promise.all(
+      tables.map((t) => service.from(t).select('id', { count: 'exact' }).eq('user_id', userId)),
+    )
+    const counts = {} as Record<(typeof tables)[number], number>
+    for (let i = 0; i < tables.length; i += 1) {
+      if (results[i]!.error) throw new Error(results[i]!.error!.message)
+      counts[tables[i]!] = results[i]!.count ?? 0
+    }
+    return counts
+  }
+
+  async function commitProvisionalOpening(args: Record<string, unknown>) {
+    const { data, error } = await clientA
+      .rpc('create_opening_from_provisional', args)
+      .single<OpeningRow>()
+    if (error) throw new Error(error.message)
+    return data
+  }
+
+  it('retrying the ORIGINAL request AFTER reconcile returns the SAME opening and writes nothing', async () => {
+    const before = await spendingOf(clientA)
+    const key = crypto.randomUUID()
+    const originalArgs = {
+      p_sealed_product_id: seedCatalog.sealedProductId,
+      p_quantity: 2,
+      p_total_paid_minor: 43210,
+      p_purchased_on: dateOffset(-10),
+      p_opened_on: dateOffset(-9),
+      p_idempotency_key: key,
+    }
+    const opening = await commitProvisionalOpening(originalArgs)
+    expect(opening.provisional_purchase_id).not.toBeNull()
+
+    // A DIFFERENT real receipt: different total, different business date.
+    const real = await buySealed(clientA, {
+      quantity: 2,
+      unitPriceMinor: 12000,
+      purchasedOn: dateOffset(-5),
+    })
+    const { error: reconcileError } = await clientA.rpc('reconcile_opening_cost', {
+      p_opening_id: opening.id,
+      p_real_source_lot_id: real.lotId,
+    })
+    expect(reconcileError).toBeNull()
+
+    const afterReconcile = await worldCounts(userA.id)
+    const spendAfterReconcile = await spendingOf(clientA)
+    expect(spendAfterReconcile.gpo_nok_minor).toBe(spendAfterReconcile.cs_nok_minor)
+
+    // THE seam under test: original total/date retried after reconciliation.
+    const { data: replayed, error: replayError } = await clientA
+      .rpc('create_opening_from_provisional', originalArgs)
+      .single<OpeningRow>()
+    if (replayError) throw new Error(replayError.message)
+    expect(replayed.id).toBe(opening.id)
+
+    // Zero new purchases / lines / lots / openings / disposals — the retry mutated nothing.
+    expect(await worldCounts(userA.id)).toEqual(afterReconcile)
+
+    // Spend stays real-purchase-only: provisional voided once at reconcile, real counted once.
+    const finalSpend = await spendingOf(clientA)
+    expect(finalSpend.gpo_nok_minor).toBe(spendAfterReconcile.gpo_nok_minor)
+    expect(BigInt(finalSpend.gpo_nok_minor) - BigInt(before.gpo_nok_minor)).toBe(24000n)
+  })
+
+  it('a late retry differing from the ORIGINAL receipt in total or purchased_on is still key-reuse', async () => {
+    const key = crypto.randomUUID()
+    const base = {
+      p_sealed_product_id: seedCatalog.sealedProductId,
+      p_quantity: 1,
+      p_total_paid_minor: 43211,
+      p_purchased_on: dateOffset(-10),
+      p_opened_on: dateOffset(-9),
+      p_idempotency_key: key,
+    }
+    const opening = await commitProvisionalOpening(base)
+    const real = await buySealed(clientA, { quantity: 1, unitPriceMinor: 9999 })
+    const { error: reconcileError } = await clientA.rpc('reconcile_opening_cost', {
+      p_opening_id: opening.id,
+      p_real_source_lot_id: real.lotId,
+    })
+    expect(reconcileError).toBeNull()
+
+    // Wrong TOTAL versus the original provisional receipt → refused by name.
+    const { error: totalReuse } = await clientA
+      .rpc('create_opening_from_provisional', { ...base, p_total_paid_minor: 43999 })
+      .single<OpeningRow>()
+    expect(totalReuse).not.toBeNull()
+    expect(totalReuse!.message).toContain('idempotency-key-reuse')
+
+    // Wrong PURCHASED_ON versus the original provisional receipt → refused by name.
+    const { error: dateReuse } = await clientA
+      .rpc('create_opening_from_provisional', { ...base, p_purchased_on: dateOffset(-12) })
+      .single<OpeningRow>()
+    expect(dateReuse).not.toBeNull()
+    expect(dateReuse!.message).toContain('idempotency-key-reuse')
+  })
+
+  it('cross-path reuse: a key committed by a PLAIN opening (no provisional receipt) is refused', async () => {
+    const { lotId } = await buySealed(clientA, { quantity: 2, unitPriceMinor: 3000 })
+    const key = crypto.randomUUID()
+    const { error: plainError } = await callCreateOpening(clientA, {
+      p_source_lot_id: lotId,
+      p_quantity: 1,
+      p_opened_on: today,
+      p_idempotency_key: key,
+    })
+    expect(plainError).toBeNull()
+
+    // The provisional path finds the key on an opening with provisional_purchase_id NULL —
+    // there are no original receipt facts to compare, so IS DISTINCT FROM refuses loudly.
+    const { error: provError } = await clientA
+      .rpc('create_opening_from_provisional', {
+        p_sealed_product_id: seedCatalog.sealedProductId,
+        p_quantity: 1,
+        p_total_paid_minor: 7777,
+        p_purchased_on: today,
+        p_idempotency_key: key,
+      })
+      .single<OpeningRow>()
+    expect(provError).not.toBeNull()
+    expect(provError!.message).toContain('idempotency-key-reuse')
+  })
+
+  it('same-key concurrent PROVISIONAL submissions commit exactly one purchase/opening/lot/disposal world', async () => {
+    const before = await spendingOf(clientA)
+    const key = crypto.randomUUID()
+    const args = {
+      p_sealed_product_id: seedCatalog.sealedProductId,
+      p_quantity: 2,
+      p_total_paid_minor: 43333,
+      p_purchased_on: today,
+      p_idempotency_key: key,
+    }
+
+    // Genuine overlap: both requests in flight together over HTTP.
+    const [first, second] = await Promise.all([
+      clientA.rpc('create_opening_from_provisional', args).single<OpeningRow>(),
+      clientA.rpc('create_opening_from_provisional', args).single<OpeningRow>(),
+    ])
+
+    // Every caller that succeeded saw the SAME opening; any loser was refused by name —
+    // its whole transaction (own provisional purchase included) rolled back atomically.
+    const winners = [first, second].filter((r) => r.error === null)
+    expect(winners.length).toBeGreaterThanOrEqual(1)
+    const winnerIds = new Set(winners.map((r) => r.data.id))
+    expect(winnerIds.size).toBe(1)
+    for (const loser of [first, second].filter((r) => r.error !== null)) {
+      expect(loser.error.message).toContain('idempotency-key-reuse')
+    }
+
+    // Committed world is EXACTLY ONE of everything — no orphan rows from the loser.
+    const { count: openingCount } = await service
+      .from('openings')
+      .select('id', { count: 'exact' })
+      .eq('user_id', userA.id)
+      .eq('idempotency_key', key)
+    expect(openingCount).toBe(1)
+
+    const { count: purchaseCount } = await service
+      .from('purchases')
+      .select('id', { count: 'exact' })
+      .eq('user_id', userA.id)
+      .eq('origin', 'provisional_opening')
+      .eq('total_minor', 43333)
+    expect(purchaseCount).toBe(1)
+
+    const { data: liveDisposal } = await service
+      .from('lot_disposals')
+      .select('id')
+      .eq('user_id', userA.id)
+      .eq('opening_id', winners[0]!.data.id)
+      .eq('kind', 'opened')
+      .is('voided_at', null)
+    expect(liveDisposal ?? []).toHaveLength(1)
+
+    // Spend counted exactly once.
+    const after = await spendingOf(clientA)
+    expect(BigInt(after.gpo_nok_minor) - BigInt(before.gpo_nok_minor)).toBe(43333n)
   })
 })
 

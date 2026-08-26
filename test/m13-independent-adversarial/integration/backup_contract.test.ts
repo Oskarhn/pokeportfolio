@@ -28,6 +28,7 @@ import {
 } from '../helpers/contract.ts'
 import {
   hasViolations,
+  MIN_SCHEMA_VERSION,
   REQUIRED_BACKUP_FORMAT,
   validateBackupEnvelope,
 } from '../helpers/envelope.ts'
@@ -60,7 +61,9 @@ describe('M13 backup contract (implementation-gated)', () => {
     ).toBe(true)
     const numeric = typeof value === 'number' ? value : Number(String(value).replace(/[^0-9]/g, ''))
     expect(Number.isFinite(numeric)).toBe(true)
-    expect(numeric).toBeGreaterThanOrEqual(1)
+    // Post-M16 the current contract is v2 (openings-capable); a writer still claiming v1 is a
+    // contract violation, not a legacy tolerance.
+    expect(numeric).toBeGreaterThanOrEqual(MIN_SCHEMA_VERSION)
   })
 
   it('CSV sanitizer matches the independent oracle across the hostile matrix', async (ctx) => {
@@ -150,6 +153,8 @@ describe('M13 backup contract (implementation-gated)', () => {
     it('a generated backup validates, excludes derived/system data and reconciles counts', async (ctx) => {
       await skipUnlessImplementation(ctx, REPO_ROOT)
       const raw = await builder.run()
+      // Post-M16 the writer MUST produce the openings-capable v2 (P60 execution evidence).
+      expect(raw['schema_version']).toBe(2)
       const issues = validateBackupEnvelope(raw)
       const violations = issues.filter((i) => i.severity === 'violation')
       expect(

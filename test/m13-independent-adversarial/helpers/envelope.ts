@@ -5,16 +5,17 @@
  * any implementation, and deliberately REJECTS more than a lazy reader would:
  *
  *  - unknown format string → reject (a renamed format silently breaks forward migration)
- *  - missing/non-integer/<1 schema_version → reject
+ *  - missing/non-integer/<2 schema_version → reject (v1 is the pre-M16 historical format;
+ *    the current contract is the openings-capable v2 — see MIN_SCHEMA_VERSION)
  *  - exported_at not RFC 3339 UTC (must carry Z or +00:00) → reject
  *  - counts absent or not reconciling with the data sections → reject
  *  - any MUST_EXPORT section MISSING while its count is >0 → reject
  *  - any MUST_NOT_EXPORT table present as a data section → reject (derived-cache trap,
  *    privilege internals, market/system data)
- *  - unknown EXTRA sections → reject under the v1 policy adjudicated at integration (D-076):
- *    version-1 readers refuse unknown versions AND unknown data keys; a future v2 writer
- *    produces v2 files that a future v2 reader owns. Within-v1 "tolerate what you don't know"
- *    was explicitly REJECTED because the v1 validator cannot distinguish a newer writer's key
+ *  - unknown EXTRA sections → reject under the strict within-version policy adjudicated at
+ *    integration (D-076): readers refuse unknown versions AND unknown data keys; a future v3
+ *    writer produces v3 files that a future v3 reader owns. Within-v2 "tolerate what you don't
+ *    know" was explicitly REJECTED because the validator cannot distinguish a newer writer's key
  *    from corruption of a known one.
  */
 
@@ -26,7 +27,14 @@ import {
 } from './inventory.ts'
 
 export const REQUIRED_BACKUP_FORMAT = 'pokeportfolio-backup'
-export const MIN_SCHEMA_VERSION = 1
+/**
+ * The CURRENT post-M16 import/validation contract is v2 (openings-capable). A v1 file is the
+ * valid PRE-M16 historical format — readable by old releases, but this reader refuses it rather
+ * than guessing whether an openings-less file predates the openings table or lost its rows.
+ * D-076 strictness is unchanged WITHIN a version: unknown data keys are still violations, and
+ * evolution still goes through a schema_version bump.
+ */
+export const MIN_SCHEMA_VERSION = 2
 
 const RFC3339_UTC = /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|\+00:00)$/
 
@@ -141,16 +149,16 @@ export function validateBackupEnvelope(raw: unknown): readonly ValidationIssue[]
     issues.push({ severity: 'violation', message: 'counts object missing' })
   }
 
-  // Unknown sections: VIOLATION under the adjudicated v1 policy (D-076). The v1 reader
-  // refuses unknown versions and unknown data keys alike; evolution goes through a
-  // schema_version bump, not through silently tolerated extra sections.
+  // Unknown sections: VIOLATION under the adjudicated strict policy (D-076). Readers refuse
+  // unknown versions and unknown data keys alike; evolution goes through a schema_version bump,
+  // not through silently tolerated extra sections.
   const known = new Set(EXPORT_INVENTORY.map((s) => s.table))
   for (const key of Object.keys(data)) {
     if (!known.has(key)) {
       issues.push({
         severity: 'violation',
         message:
-          `unknown data section "${key}" — v1 readers refuse keys they do not know (D-076); ` +
+          `unknown data section "${key}" — readers refuse keys they do not know (D-076); ` +
           'a new canonical section requires a schema_version bump',
       })
     }

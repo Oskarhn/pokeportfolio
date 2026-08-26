@@ -16,8 +16,11 @@
 --                                              row is written, so a retry after a committed-but-
 --                                              unanswered call can never double-spend (P53 §5).
 --                                              Material replay match = product + quantity +
---                                              opened_on + TOTAL PAID + purchased_on, walked from
---                                              the committed receipt rows (P59 / F-57-4).
+--                                              opened_on + TOTAL PAID + purchased_on, recovered
+--                                              from the ORIGINAL provisional receipt rows via
+--                                              openings.provisional_purchase_id — stable even
+--                                              after reconciliation repoints source_lot_id
+--                                              (P59/F-57-4, P62/F-61-1).
 --   void_opening(...)                          safe lifecycle: restores sealed quantity via D1,
 --                                              voids pull lots; refused while any pull has a
 --                                              downstream disposal. VOID OPENING MEANS "THE
@@ -431,10 +434,15 @@ begin
   -- date). create_opening re-checks downstream and would catch anything racing past this point.
   --
   -- P59 (F-57-4): the entered TOTAL PAID and the PURCHASE DATE are canonical financial facts of
-  -- the provisional receipt, so they are material too — walked from the committed opening through
-  -- its own provisional lot/line/purchase rows. Same key + same identity but a different total or
-  -- purchased_on must never silently replay the old financial fact; IS DISTINCT FROM also refuses
-  -- a key whose committed opening has no provisional receipt at all (cross-path reuse).
+  -- the provisional receipt, so they are material too. P62 (F-61-1): they are recovered through
+  -- openings.provisional_purchase_id → purchases → that purchase's own line — the ORIGINAL
+  -- provisional receipt rows, which reconciliation retains even though it VOIDS the provisional
+  -- purchase and REPOINTS source_lot_id at the real replacement lot. Walking the current
+  -- source_lot_id (the previous implementation) compared a late retry against the REPLACEMENT
+  -- receipt's facts and refused the user's own original request as key reuse.
+  -- IS DISTINCT FROM also refuses cross-path reuse — a key whose committed opening has no
+  -- provisional receipt at all (provisional_purchase_id NULL ⇒ both committed values NULL)
+  -- instead of a silent replay.
   if p_idempotency_key is not null then
     declare
       v_replay public.openings;
@@ -443,17 +451,14 @@ begin
     begin
       select o.* into v_replay
         from public.openings o
-        join public.acquisition_lots al on al.id = o.source_lot_id
-        join public.purchase_lines pl on pl.id = al.purchase_line_id
        where o.user_id = v_user_id
          and o.idempotency_key = p_idempotency_key;
       if v_replay.id is not null then
         select pl.line_total_minor, pu.purchased_on
           into v_committed_total_paid, v_committed_purchased_on
-          from public.acquisition_lots al
-          join public.purchase_lines pl on pl.id = al.purchase_line_id
-          join public.purchases pu on pu.id = pl.purchase_id
-         where al.id = v_replay.source_lot_id;
+          from public.purchases pu
+          join public.purchase_lines pl on pl.purchase_id = pu.id
+         where pu.id = v_replay.provisional_purchase_id;
         if v_replay.sealed_product_id <> p_sealed_product_id
            or v_replay.quantity_opened <> p_quantity
            or v_replay.opened_on <> v_opened_on
@@ -511,11 +516,14 @@ begin
   returning id into v_line_id;
 
   -- Find-or-create the sealed holding, race-safe via holdings_identity (M6/M8/M11 pattern).
+  -- No sealed_intent here: D-061/M11 moved that column to acquisition_lots — it belongs on the
+  -- LOT below (P62 bug A: the holdings INSERT previously cited the nonexistent column and every
+  -- provisional opening died with 42703 before any row was written).
   begin
     insert into public.holdings (
-      user_id, holding_kind, sealed_product_id, grading_state, sealed_intent, is_favorite
+      user_id, holding_kind, sealed_product_id, grading_state, is_favorite
     ) values (
-      v_user_id, 'sealed', p_sealed_product_id, 'raw', 'undecided', false
+      v_user_id, 'sealed', p_sealed_product_id, 'raw', false
     )
     returning id into v_holding_id;
   exception when unique_violation then

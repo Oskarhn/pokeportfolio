@@ -162,6 +162,19 @@ export const EXPORT_INVENTORY: readonly TableSpec[] = [
       'invariant and the whole ownership timeline are unrecoverable after restore.',
   },
 
+  // ── Openings (M16 — classified at integration, formerly FORWARD_COMPAT) ─────────────────────
+  {
+    table: 'openings',
+    classification: 'MUST_EXPORT',
+    reason:
+      'Canonical opening acts: which sealed lot was consumed, how much, when, the frozen cost ' +
+      '(or its deliberate NULL), tracking completeness, the idempotency key, and the ' +
+      'reconciliation provenance trio (provisional_purchase_id / reconciled_at / ' +
+      'reconciled_to_purchase_id) plus voided_at. Losing an opening loses the consumption ' +
+      "timeline and every pull lot's origin link (acquisition_lots.opening_id, " +
+      'lot_disposals.opening_id).',
+  },
+
   // ── Sealed products (straddles classes) ─────────────────────────────────────────────────────
   {
     table: 'sealed_products',
@@ -281,9 +294,9 @@ export const KNOWN_VIEWS: readonly string[] = [
 /**
  * Tables that do not exist on main today but whose future arrival MUST trigger an explicit
  * classification decision before they silently fall out of (or leak into) backups.
+ * `openings` was classified from here at M16 integration (MUST_EXPORT — see EXPORT_INVENTORY).
  */
 export const FORWARD_COMPAT_TABLES: readonly string[] = [
-  'openings', // M16
   'trades', // M18
   'lot_transfers', // M17
   'grading_submissions', // M17

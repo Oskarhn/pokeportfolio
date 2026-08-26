@@ -22,6 +22,7 @@ import {
 import {
   bindOpeningCreateArgs,
   bindOpeningIdOnlyArgs,
+  disposeM16DiscoverySession,
   findReadRpcs,
   hasSupabaseEnv,
   requireCreateOpeningRpc,
@@ -57,6 +58,7 @@ describe.skipIf(!hasSupabaseEnv())('M16 economic oracle — opening does not cre
 
   afterAll(async () => {
     if (service && userA) await deleteSyntheticUser(service, userA.id)
+    await disposeM16DiscoverySession()
   }, 60_000)
 
   /** Seeds product + 10-pack/59900 øre purchase; returns the ids the cases need. */
