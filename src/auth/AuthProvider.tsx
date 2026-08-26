@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from '../data/supabase-client'
 // P56 §9: ending authentication must deterministically drop every user's in-memory opening
 // draft — private financial intent never outlives the session that created it. (The store is
 // additionally keyed by user id, so account switches are isolated even without this.)
 import { draftStore } from '../features/openings/draft'
+import { applyAuthIdentityBoundary, type ObservedUserId } from './query-cache-boundary'
 import { AuthContext, type AuthState } from './auth-context'
 
 /**
@@ -26,17 +28,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // cleared on sign-out. Deriving both `isAdmin` and `profileLoading` from it means the effect
   // below never writes state synchronously, only from its own async result.
   const [adminFor, setAdminFor] = useState<{ userId: string; isAdmin: boolean } | null>(null)
+  const queryClient = useQueryClient()
+  // F-61-2: the module-lifetime QueryClient is user-blind (no key carries a user id), so a
+  // same-tab account switch must clear it between identities or B renders A's cached financial
+  // data until refetches land. This ref tracks the last identity observed from Supabase auth;
+  // every session observation — getSession AND all onAuthStateChange events (SIGNED_IN,
+  // SIGNED_OUT, TOKEN_REFRESHED, USER_UPDATED, INITIAL_SESSION) — passes through
+  // applyAuthIdentityBoundary, which clears queries+mutations+drafts exactly when one OBSERVED
+  // user id is replaced by a different one. Same-user refreshes compare equal and keep state.
+  const lastIdentityRef = useRef<ObservedUserId>(undefined)
+  const observeIdentity = useCallback(
+    (nextSession: Session | null) => {
+      // The boundary runs BEFORE the new identity becomes renderable state, so no protected UI
+      // can mount against a cache still holding the previous user's entries.
+      applyAuthIdentityBoundary(queryClient, lastIdentityRef.current, nextSession?.user.id ?? null)
+      lastIdentityRef.current = nextSession?.user.id ?? null
+    },
+    [queryClient],
+  )
 
   useEffect(() => {
     let active = true
 
     void supabase.auth.getSession().then(({ data }) => {
       if (!active) return
+      observeIdentity(data.session)
       setSession(data.session)
       setStatus(data.session ? 'signed-in' : 'signed-out')
     })
 
     const { data: subscription } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      observeIdentity(nextSession)
       setSession(nextSession)
       setStatus(nextSession ? 'signed-in' : 'signed-out')
     })
@@ -45,7 +67,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       active = false
       subscription.subscription.unsubscribe()
     }
-  }, [])
+  }, [observeIdentity])
 
   const userId = session?.user.id ?? null
 
