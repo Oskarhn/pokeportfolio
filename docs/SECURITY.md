@@ -730,6 +730,32 @@ administrative action and outliving its issuer is the point.
 - Logs never contain monetary amounts, collection contents, tokens or full email addresses.
   Edge Function errors log the provider, the operation and a variant id — never a user's data.
 
+### 9.1 Cross-account query-cache privacy boundary (D-093)
+
+The TanStack Query client lives for the whole tab lifetime and its keys carry no user id. On a
+same-tab account switch that would let user B render user A's cached Home/Portfolio/History/
+recent-activity/opening values until refetches resolved — RLS blocks continued server access, but
+the stale in-memory render itself is the leak.
+
+The boundary is enforced at the auth layer (`src/auth/query-cache-boundary.ts`), not per feature:
+AuthProvider observes the authenticated identity from BOTH the initial `getSession` result and
+every `onAuthStateChange` event, and whenever one observed identity is replaced by a different
+one it synchronously cancels queries, clears the whole QueryClient (query AND mutation caches)
+and clears opening drafts — before the new session becomes renderable state.
+
+| Transition | Cache behaviour |
+|---|---|
+| A → signed-out, signed-out → B, direct A → B | cancelQueries + full clear + drafts cleared |
+| Same-user refresh (TOKEN_REFRESHED / USER_UPDATED) | retained — no clear |
+| First identity observation of a tab lifetime | no clear (empty app cache; avoids churn) |
+
+Public/catalog cache entries are also cleared by the blanket clear — deliberately (D-093). The
+alternative (user-scoped key prefixes) is a maintained convention across every future query;
+structural isolation for a ≤10-user product is worth one catalog refetch per sign-in. No
+localStorage participates; in-flight queries cancelled at the boundary cannot repopulate the new
+identity's cache, and an in-flight mutation can only complete under its own user's JWT (disclosed
+residual, D-093 §5). Regression suite: `tests/ui/auth-query-cache.test.ts`.
+
 ---
 
 ## 10. Dependency and supply chain

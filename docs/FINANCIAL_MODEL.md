@@ -312,7 +312,9 @@ the opening (`openings.provisional_purchase_id`). It is an ordinary ledger entry
 
 **Total-paid exactness (D-090).** The owner states the RECEIPT TOTAL they paid — never a
 per-unit price. The backend splits it by integer largest-remainder: the purchase line stores
-`unit_price_minor = floor(total / quantity)` as a display/storage value while `line_total_minor`
+`unit_price_minor = total / quantity` by integer division — PostgreSQL bigint division
+truncates toward zero, identical to floor for the nonnegative totals this schema admits — as a
+display/storage value while `line_total_minor`
 carries the exact total, and the indivisible remainder lands on the acquisition lot's existing
 residual columns. Σ attributable basis therefore equals the entered total exactly: qty 3 × total
 29995 → unit basis 9998, residual +1 → opening all 3 costs **29995**, opening 2 costs **19996**.
@@ -322,8 +324,18 @@ No floats, no invented or lost øre.
 by the writer RPCs against a composite unique index `(user_id, idempotency_key)`. A retried
 submission whose first attempt committed returns the SAME opening; on the provisional path the
 key is resolved BEFORE the purchase row is written, so a retry after "purchase created, opening
-committed, response lost" can never create a second purchase. Reuse of a key for materially
-different arguments is rejected explicitly (`idempotency-key-reuse`), never silently replayed.
+committed, response lost" can never create a second purchase. What counts as a replay is stated
+exactly (D-089): `create_opening` compares source lot, quantity and opened date;
+`create_opening_from_provisional` additionally compares the ORIGINAL provisional receipt's
+**total paid** and **purchased_on**, recovered through the opening's retained
+`provisional_purchase_id` → that purchase's own line (the rows survive reconciliation's void) —
+same key with a different amount or purchase business date is rejected explicitly
+(`idempotency-key-reuse`), never silently replayed as the old financial fact. Walking the current
+source lot instead would compare against whatever REAL receipt reconciliation later linked,
+refusing the user's own original request — corrected P62/F-61-1. Auxiliary fields (pulls, notes,
+bulk estimate) are not material under D-089. No request hashing exists anywhere. On the client,
+the key lives inside the in-memory draft so it survives wizard remounts — one key per logical
+opening, rotated only when a new logical opening starts.
 
 **Reconciliation.** When the real receipt is recorded later, the user links it to the opening.
 In one transaction:
@@ -334,6 +346,15 @@ In one transaction:
    `reconciled_at` + `reconciled_to_purchase_id` are stamped ON THE OPENING ROW ITSELF — there is
    NO `audit_events` table and none was created (see DATA_MODEL §7's status correction).
 3. The provisional purchase is **voided** — retained, excluded from every calculation.
+4. The provisional purchase's source lot is **voided** with it (D-092). Reconciliation REPLACES
+   the provisional purchase, so the provisional world annihilates as a unit: retiring the
+   provisional consumption would otherwise restore that lot to full live availability — known
+   basis, sealed units — while citing money that just left the ledger. Phantom inventory is
+   forbidden; historical rows are retained, never deleted.
+
+The reconciliation target must belong to a LIVE purchase whose origin is not
+`provisional_opening`: linking provisional → provisional would trade one self-annihilating
+world for another, and a voided receipt's lot freezes basis from money outside the ledger.
 
 Nothing is deleted, and the money is counted exactly once at every point in time. Reconciliation
 itself is safely repeat-refused (a second reconcile of an already-reconciled opening is a named
@@ -342,8 +363,14 @@ error).
 > **Invariant F12:** an opening has at most one non-voided cost source. A provisional purchase
 > and a linked real purchase can never both be active for the same opening.
 
-The UI marks a provisionally costed opening as *"Cost entered manually — not linked to a
-purchase"* and offers the link action. Reconciliation is a user action, not an automatic match:
+The UI states a provisionally costed opening's provenance honestly: *"Cost from the total you
+entered when you recorded this opening — you can link it to the matching recorded purchase
+later."* (It must NOT read as "not linked to a purchase": the provisional purchase is a real,
+spend-counted ledger row.) The **Link to purchase** action opens a picker over the owner's own
+same-product lots whose parent purchase is live and not itself provisional, showing each
+candidate's date, available quantity and the exact cost this opening would freeze; with no
+eligible target it says so plainly. After reconciliation the opening shows *"Linked to recorded
+purchase"* with the reconciled date. Reconciliation is a user action, not an automatic match:
 guessing which of three similar purchases corresponds to an opening would silently corrupt the
 ledger, and the user knows the answer in a single tap.
 
@@ -787,14 +814,15 @@ sealed line, 799, collectible.
 799 plus 79 shipping, total 878. Naively, `CS` is now 1 677 — the money counted twice.
 
 The user links the opening to the real purchase. In one transaction the opening repoints at the
-real lot and the provisional purchase is voided.
+real lot and the provisional purchase — together with the source lot it created — is voided.
 
 | Metric | After reconciliation |
 |---|---|
 | `GPO`, `CS` | **878** — counted once, and now more accurate than the manual figure |
 | Opening cost | 878 (the real attributable cost including shipping) |
 | Provisional purchase | retained, `voided_at` set, excluded everywhere |
-| Audit | `opening_cost_reconciled` with both purchase ids |
+| Provisional source lot | retained but `voided_at` set (D-092) — never live inventory citing a voided purchase |
+| Provenance | `reconciled_at` + both purchase ids ON THE OPENING ROW (no `audit_events` exists) |
 
 Opening return recomputes against 878. (F12)
 

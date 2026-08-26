@@ -2308,17 +2308,32 @@ incomplete tracking suppresses any bare percentage.
 
 ## D-089 — Server-side idempotency on opening creation; provisional replay checked BEFORE the purchase
 
-**2026-08-26 — Accepted** (P53)
+**2026-08-26 — Accepted** (P53; material-comparison scope stated exactly 2026-08-25, P59; replay
+provenance corrected 2026-08-26, P62/F-61-1)
 
 Every opening write carries a client-generated UUID idempotency key, stored NOT NULL on
 `openings.idempotency_key` and unique per `(user_id, idempotency_key)`. Same key + same material
-request (lot/product, quantity, business date) ⇒ the SAME committed opening is returned; same key
-+ materially different arguments ⇒ named `idempotency-key-reuse` error (mismatched reuse is
-rejected because material fields make it cheaply verifiable — full request hashing would be
-disproportionate). On the provisional path the key is resolved BEFORE the purchase insert:
-a retry after "purchase created + opening committed + response lost" can never create a second
-purchase or double-count spend. Client double-click guards are UX only; this invariant lives in
-the writer.
+request ⇒ the SAME committed opening is returned; same key + materially different arguments ⇒
+named `idempotency-key-reuse` error (mismatched reuse is rejected because material fields make it
+cheaply verifiable — full request hashing would be disproportionate). **What is compared,
+exactly:** `create_opening` compares `source_lot_id`, `quantity_opened` and `opened_on`;
+`create_opening_from_provisional` compares those (product id, quantity, coalesced opened_on) PLUS
+the ORIGINAL provisional receipt's `line_total_minor` (the entered total paid) and its purchase's
+`purchased_on`. P62 correction (F-61-1): those two facts are recovered through the committed
+opening's retained `provisional_purchase_id` → purchases → that purchase's own line — NOT through
+the current `source_lot_id`, which reconciliation repoints at the real replacement lot. The
+original provisional rows survive reconciliation (the purchase is voided there, never deleted), so
+a LATE retry of the original request matches its own receipt even after linking; walking the
+replacement's facts instead would refuse the user's own original operation as key reuse. A key
+whose committed opening has no provisional receipt (`provisional_purchase_id IS NULL`) is still
+refused via `IS DISTINCT FROM` (cross-path reuse). Money and the canonical business date are
+material; a different amount or date under an existing key can never silently replay the old
+financial fact. NOT compared (deliberate, non-material auxiliary input): pull list, notes,
+tracking completeness, bulk estimate. On the provisional path the key is resolved BEFORE the
+purchase insert: a retry after "purchase created + opening committed + response lost" can never
+create a second purchase or double-count spend. Client double-click guards are UX only; this
+invariant lives in the writer. The client keeps the key inside its in-memory draft so one logical
+opening carries ONE key across remounts and retries (memory-only — no localStorage).
 
 ## D-090 — Buy-and-open ships with total-paid exactness; line-total CHECK gains largest-remainder tolerance
 
@@ -2358,3 +2373,64 @@ are NOT retroactively wrong — they were valid pre-Openings exports; restore re
 import exists yet. A generated post-M16 backup claiming v1, missing openings, or missing the
 linkage fields is a release blocker, policed by the M13 adversarial suite and the independent
 M16 backup oracle.
+
+## D-092 — Reconciliation annihilates the provisional world; coverage counts are retained-only; drafts are user-scoped
+
+**2026-08-25 — Accepted** (P56 repair, closing P54 H1/L1 and P55 F55-6/F55-9/F55-10/F55-12)
+
+1. **Reconciliation replaces the provisional purchase — so the provisional world annihilates as
+   a unit.** `reconcile_opening_cost` now voids the provisional source acquisition lot in the same
+   transaction as the provisional purchase (P54 finding H1: retiring only the consumption would
+   let D1 restore a live known-basis sealed lot citing money that just left the ledger — phantom
+   inventory). Rows are retained, never deleted. The void-opening policy of D-090 is UNCHANGED:
+   "the opening did not happen" keeps the source purchase active; it is reconciliation, not
+   voiding, that replaces the provisional purchase.
+2. **The reconciliation target must cite a LIVE non-provisional purchase**
+   (`p.voided_at IS NULL AND p.origin <> 'provisional_opening'`, joined explicitly in the target
+   lookup). Provisional → provisional chains and voided-receipt targets are refused
+   indistinguishably from foreign/missing lots.
+3. **`get_opening`'s priced/unpriced pull counts and retained value are CURRENT-RETAINED
+   semantics** (`quantity_remaining > 0`): a fully-sold pull is sold provenance, reported by
+   `sold_pull_lot_count`/proceeds, never as pricing coverage for cards still retained.
+4. **Opening drafts are scoped by authenticated user id** in session memory, cleared when
+   authentication ends; no account inherits another's draft and an anonymous visitor sees none.
+5. **Created manual-card definition ids persist into the user-scoped draft**, so retries after a
+   failed opening RPC reuse the same definition row across remounts without heuristic identity
+   merging.
+6. **Integer-division wording:** plpgsql bigint division truncates toward zero ("floor" prose
+   corrected wherever adjustments can be negative); executable arithmetic unchanged.
+
+The widened `purchase_lines_line_total_matches_unit_price` envelope stands UNCHANGED and is now
+documented as a GLOBAL purchase-line invariant (every writer excess-0 except the provisional
+path's legal 0..qty−1 residual), with direct constraint tests added.
+
+## D-093 — The client clears its whole query and mutation cache on every authenticated identity transition
+
+**2026-08-26 — Accepted** (P63, closing F-61-2)
+
+TanStack Query's module-lifetime client is user-blind: no query key anywhere in `src/` carries a
+user id, so on a same-tab account switch (A signs out, B signs in, no reload) B rendered A's
+cached Home/Portfolio/History/recent-activity/opening values until refetches resolved. RLS blocked
+all continued server access; the stale in-memory render was the leak.
+
+The boundary lives in the auth layer (`src/auth/query-cache-boundary.ts`): AuthProvider tracks the
+last OBSERVED authenticated user id and, whenever one observed identity is replaced by a different
+one, synchronously — before the new session becomes renderable state — cancels queries,
+`queryClient.clear()`s BOTH the query and mutation caches, and clears opening drafts. Rules:
+
+1. **Any identity change clears** (A→signed-out, signed-out→B, direct A→B). In-flight queries are
+   cancelled first; late responses for destroyed queries are dropped by query-core and cannot
+   repopulate B's cache.
+2. **Same-user events retain everything** (TOKEN_REFRESHED / USER_UPDATED / duplicate SIGNED_IN
+   compare equal) — refresh churn never blanks app state.
+3. **Public/catalog cache is also cleared deliberately.** Blanket clear over userId-scoped keys:
+   keys are distributed across many features and unkeyed today, scale is tiny, and structural "no
+   A-data renders under B" beats a maintained keying convention. Cost: catalog refetches once per
+   sign-in. For a ≤10-user product privacy is preferred over cache preservation.
+4. **No localStorage enters the picture**; the boundary is memory-only and idempotent.
+5. Residual, disclosed: TanStack v5 mutations cannot be aborted; an in-flight A mutation completes
+   under A's own JWT (server-side owner-scoped write), and no `setQueryData` exists in `src/`, so
+   nothing of A's lands in B's cache.
+
+Regression coverage: `tests/ui/auth-query-cache.test.ts` (8 cases against real QueryClient
+instances, including the in-flight race and pending-mutation cases).

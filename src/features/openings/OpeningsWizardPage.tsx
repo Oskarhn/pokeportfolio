@@ -9,10 +9,12 @@ import { Button, ChoiceGroup, FormMessage, TextField } from '../../ui/form'
 import { parseNokInput } from '../../ui/money-format'
 import { CONDITION_LABEL } from '../collection/labels'
 import { SEALED_PRODUCT_TYPE_LABEL } from '../../data/sealedProducts'
+import { useAuth } from '../../auth/useAuth'
 import { getOpeningController } from './controller'
 import {
   COMPLETENESS_OPTIONS,
   COMPLETENESS_QUESTION,
+  MANUAL_CARD_CREATE_FAILED,
   OPENING_COST_LABEL,
   PURCHASE_COST_NOT_RECORDED,
   THE_SEALED_NOTICE,
@@ -26,6 +28,8 @@ import {
   draftCostPreview,
   draftStore,
   initialDraft,
+  reconcileDraftScope,
+  recoverInterruptedSubmission,
   reduceDraft,
   reviewError,
   singleSourceAutoSelect,
@@ -74,31 +78,29 @@ export function OpeningsWizardPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const controller = getOpeningController()
+  // Drafts are scoped to the signed-in user (P56 §9): another account, or a signed-out visitor,
+  // never sees this user's in-memory opening draft.
+  const { session } = useAuth()
+  const userId = session?.user.id ?? null
 
-  // One client-generated key per wizard visit: a retried submission cannot record the same
-  // opening twice even if the backend answer was lost mid-flight.
-  const [idempotencyKey] = useState(() => crypto.randomUUID())
   const [pickerOpen, setPickerOpen] = useState(false)
   const [gateError, setGateError] = useState<string | null>(null)
   const [announcement, setAnnouncement] = useState('')
   const gateErrorRef = useRef<HTMLParagraphElement | null>(null)
 
   const [draft, setDraft] = useState<OpeningDraft>(() => {
-    const stored = draftStore.load()
-    const reusable =
-      stored &&
-      stored.phase !== 'submitted' &&
-      (stored.holdingId === null ||
-        search.holdingId === undefined ||
-        stored.holdingId === search.holdingId)
-    if (reusable) return stored
+    const stored = draftStore.load(userId)
+    // The explicit route wins over a stale scope (P59 §19), and a draft caught mid-submission by
+    // an unmount recovers as retryable instead of bricking the wizard (P59 §7).
+    const scopedStored = stored === null ? null : reconcileDraftScope(stored, search.holdingId)
+    if (scopedStored) return recoverInterruptedSubmission(scopedStored)
     return initialDraft({ holdingId: search.holdingId, lotId: search.lotId })
   })
 
   function dispatch(action: DraftAction) {
     setDraft((current) => {
       const next = reduceDraft(current, action)
-      draftStore.save(next)
+      draftStore.save(userId, next)
       return next
     })
   }
@@ -141,8 +143,10 @@ export function OpeningsWizardPage() {
     dispatch({ type: 'GO_TO_STEP', step })
   }
 
-  // Manual-card identities are resolved exactly once per unique identity and cached across
-  // retries, so a failed submission never duplicates catalog definitions when the user taps Retry.
+  // Manual-card identities are resolved exactly once per unique identity: the in-flight cache
+  // covers same-mount retries, and every id this device actually created is also persisted into
+  // the user-scoped draft (RESOLVE_MANUAL_CARDS below), so a route remount or browser-back retry
+  // reuses the SAME definition row instead of inserting an identical one (P56 §10).
   const resolvedManualCards = useRef(new Map<string, string>())
 
   const submitMutation = useMutation({
@@ -159,18 +163,32 @@ export function OpeningsWizardPage() {
         if (!identity) continue
         const key = `${identity.name}|${identity.setName ?? ''}|${identity.collectorNumber ?? ''}`
         const cached = resolvedManualCards.current.get(key)
-        const manualCardId =
-          cached ??
-          (
-            await createManualCard({
-              name: identity.name,
-              setName: identity.setName,
-              collectorNumber: identity.collectorNumber,
-            })
-          ).id
-        resolvedManualCards.current.set(key, manualCardId)
+        let manualCardId: string
+        if (cached) {
+          manualCardId = cached
+        } else {
+          // P58 F10: a manual-card failure is wrapped before it can render — no raw PostgREST,
+          // SQL, constraint or schema text reaches the screen, and the private payload is
+          // never logged.
+          try {
+            manualCardId = (
+              await createManualCard({
+                name: identity.name,
+                setName: identity.setName,
+                collectorNumber: identity.collectorNumber,
+              })
+            ).id
+          } catch {
+            throw new Error(MANUAL_CARD_CREATE_FAILED)
+          }
+        }
+        if (!cached) resolvedManualCards.current.set(key, manualCardId)
         idByKey.set(pull.key, manualCardId)
       }
+      // Persist successful resolutions into the stored draft BEFORE the opening RPC runs: if that
+      // RPC fails and the wizard remounts, the retry finds manualCardId already set and never
+      // creates a second identical definition.
+      if (idByKey.size > 0) dispatch({ type: 'RESOLVE_MANUAL_CARDS', idsByKey: idByKey })
 
       const resolvedDraft: OpeningDraft = {
         ...draft,
@@ -180,14 +198,14 @@ export function OpeningsWizardPage() {
       }
       if (draft.mode === 'bought_now') {
         return controller.createBoughtAndOpened(
-          buildBoughtAndOpenedInput(resolvedDraft, idempotencyKey, parseNokInput),
+          buildBoughtAndOpenedInput(resolvedDraft, draft.idempotencyKey, parseNokInput),
         )
       }
       if (!selectedSource) throw new Error('Choose which acquisition lot you opened from.')
       const input = buildCreateOpeningInput(
         resolvedDraft,
         selectedSource.lotId,
-        idempotencyKey,
+        draft.idempotencyKey,
         parseNokInput,
       )
       return controller.createOpening(input)
@@ -197,7 +215,7 @@ export function OpeningsWizardPage() {
     },
     onSuccess: async (created) => {
       dispatch({ type: 'SUBMIT_SUCCEEDED', openingId: created.openingId })
-      draftStore.clear()
+      draftStore.clear(userId)
       // Current Portfolio value updates immediately after refetch (D-086); history catches up
       // behind the ordinary recompute worker and Home's own status communicates that — no custom
       // polling here (prompt §21).
@@ -366,6 +384,7 @@ export function OpeningsWizardPage() {
           draft={draft}
           productName={selectedSource.productName}
           productTypeName={selectedSource.productTypeName}
+          source={selectedSource}
           onCompleteness={(value) => {
             dispatch({ type: 'SET_COMPLETENESS', value })
           }}
@@ -920,6 +939,7 @@ function ReviewStep({
   productName,
   productTypeName,
   boughtNow = false,
+  source = null,
   onCompleteness,
   onBulkEstimate,
   onBulkCount,
@@ -929,6 +949,9 @@ function ReviewStep({
   productName: string
   productTypeName: string | null | undefined
   boughtNow?: boolean
+  /** Existing-lot mode: the effective source, so the Review screen repeats the exact opening
+   *  cost being frozen on Finish (P59 §18) — same derived preview, no second calculation. */
+  source?: OpeningSource | null
   onCompleteness: (value: TrackingCompleteness) => void
   onBulkEstimate: (value: string) => void
   onBulkCount: (value: string) => void
@@ -936,6 +959,7 @@ function ReviewStep({
 }) {
   const totalRecorded = draft.pulls.reduce((sum, pull) => sum + pull.quantity, 0)
   const showEstimate = draft.completeness !== 'all_cards'
+  const costPreview = boughtNow || !source ? null : draftCostPreview(draft, source)
 
   return (
     <div className="space-y-5">
@@ -950,6 +974,16 @@ function ReviewStep({
             <ReviewRow
               label="Total paid"
               value={`${formatNok(parseNokInput(draft.totalPaidInput))} kr`}
+            />
+          ) : null}
+          {costPreview ? (
+            <ReviewRow
+              label={OPENING_COST_LABEL}
+              value={
+                costPreview.kind === 'known'
+                  ? `${formatNok(costPreview.minorUnits)} kr`
+                  : PURCHASE_COST_NOT_RECORDED
+              }
             />
           ) : null}
           <ReviewRow

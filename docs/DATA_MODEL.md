@@ -737,7 +737,19 @@ RLS: owner-SELECT only; every write goes through SECURITY DEFINER RPCs
 Reads: `get_opening(p_opening_id)` (INVOKER, bounded §5.3 result components, money as text) and
 `list_opening_sources(p_holding_id?)` (INVOKER, openable lots with ALREADY-DERIVED preview
 components — effective unit basis and exhaustion residual matching the writer's freezing rule
-exactly, so no client re-implements the arithmetic).
+exactly, so no client re-implements the arithmetic). Since P59 the source read also carries each
+lot's OWNER-ONLY parent-purchase provenance (`purchase_id`, `purchase_origin`, `purchased_on`,
+nullable for lots without a purchase line) so the reconciliation picker can mirror the server's
+own target rule client-side; nothing beyond ordinary owner-readable rows is exposed and
+`reconcile_opening_cost` stays the authority on legitimacy.
+
+**Client draft lifecycle (P59).** The in-memory user-scoped opening draft owns its idempotency
+key: one key per logical opening, surviving same-mount retries, route remounts and browser-back
+returns, rotated only when a new logical opening starts (RESET or post-success fresh draft).
+A stored draft caught in phase `'submitting'` (its component unmounted mid-request) recovers on
+load as retryable `'editing'` with every field intact — success is never assumed; the SAME key
+either replays the committed opening or allows normal creation. A draft opened under a different
+entry route re-scopes to that route without discarding entered pulls.
 
 **Lock order / concurrency (§24 review).** Writers lock exactly ONE acquisition lot
 (`SELECT … FOR UPDATE`) before re-checking `quantity_remaining` against the live row:
@@ -753,9 +765,12 @@ cover this in tests; no pg_locks transcript is claimed.
 Pulls are not a separate table. A pull **is** an `acquisition_lot` with `origin = 'opening'`
 and `opening_id` set. This is why a sold pull remains attributable to its opening forever.
 Manual-card pulls are ordinary pulls over `manual_card_definitions` rows; the wizard resolves
-identities at submission time (cached per identity so retries never duplicate definitions), and
-an abandoned definition is safe reusable metadata containing NO fabricated financial fact —
-the opening/pulls transaction itself stays fully atomic (D-090 companion note).
+identities at submission time and — since the P56 repair — persists each created definition id
+back INTO the user-scoped draft, so a retry after a failed opening RPC reuses that exact row
+across same-mount retries AND wizard remounts (no heuristic identity merging: only ids this
+device actually created are persisted, keyed to the pull they were created for). An abandoned
+definition is safe reusable metadata containing NO fabricated financial fact — the
+opening/pulls transaction itself stays fully atomic (D-090 companion note).
 
 #### 5.8.1 Provisional purchase for an unlinked opening
 
@@ -766,9 +781,11 @@ cost concept that no other query knows about, the opening creates a **real purch
 ```
 purchase(origin='provisional_opening')
   └── purchase_line(line_type='sealed', spend_class='collectible',
-                    line_total = EXACT entered total; unit_price = floor(total/qty))
-        └── acquisition_lot(unit_cost_basis_nok=floor(total/qty),
-                            residual_nok=total − floor×qty)   ← immediately consumed
+                    line_total = EXACT entered total;
+                    unit_price = total/qty by integer division — truncates toward zero,
+                    identical to floor for the nonnegative totals admitted here)
+        └── acquisition_lot(unit_cost_basis_nok_minor = that unit value,
+                            residual_nok = total − unit×qty)   ← immediately consumed
               └── lot_disposal(kind='opened') ──> opening
 ```
 
@@ -779,10 +796,14 @@ line-level largest-remainder tolerance is enforced by the REPLACED
 carries the difference so consumption reproduces the entered total to the øre.
 
 **Reconciliation.** When the real receipt is entered, the user links it. In one transaction the
-provisional consumption is retired (restoring the provisional lot via D1), a new consumption
+provisional consumption is retired (restoring the provisional lot via D1), the provisional source
+lot itself is VOIDED together with its purchase (D-092: reconciliation replaces the provisional
+purchase, so the provisional world — purchase, lot, consumption — annihilates as a unit and no
+phantom sealed inventory can cite a voided receipt), a new consumption
 freezes the real lot's exact share, the opening repoints at the real lot, provenance is stamped
 on the opening row itself (`reconciled_at`, `reconciled_to_purchase_id` — there is NO
-audit_events table), and the provisional purchase is voided. F12 holds at every instant inside
+audit_events table). The target lot must belong to a LIVE non-provisional purchase (refused
+otherwise, indistinguishable from foreign/missing). F12 holds at every instant inside
 the single commit; a second reconcile is refused by name.
 
 Reconciliation is explicit, never automatic. Fuzzy-matching an opening against a similar-looking

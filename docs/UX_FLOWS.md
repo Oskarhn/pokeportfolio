@@ -262,19 +262,24 @@ the opening are created atomically; spend increases by the total exactly once. S
 idempotency makes a retried submission harmless (D-089).
 
 ⚠ Opening without a recorded purchase → the bought-and-opened flow above creates the real ledger
-  entry automatically; the opening is marked "Cost entered manually — not linked to a purchase"
-  with a **Link purchase** action.
+  entry automatically; the opening states where its figure came from: "Cost from the total you
+  entered when you recorded this opening" with a **Link to purchase** action.
 ⚠ Voiding an opening after a pull has been sold → blocked, naming the sale
 ⚠ Voiding NEVER undoes the purchase (D-090): sealed inventory is restored while the purchase —
   provisional included — stays in spending history; wrong purchases go through the
   purchase-correction surface separately.
 
-**Linking a provisional opening to its real purchase**
+**Linking a provisional opening to its real purchase (shipped V1, P59)**
 
-→ Opening › Link purchase → pick from recent purchases → confirm
+→ Opening Detail › **Link to purchase** (shown only while active, provisionally costed and not yet
+  reconciled) → sheet lists the owner's own same-product lots whose parent purchase is live and
+  NOT itself provisional, each showing purchased/acquired date, available quantity and the exact
+  cost this opening would freeze → pick one → confirm
+✓ No eligible target → "No matching recorded purchase is available yet." with the route hint to
+  record the purchase first — no fake link-by-receipt feature
 ✓ Total spend does **not** change twice — the provisional entry is voided in the same transaction
 ✓ Opening cost updates to the real attributable cost, including that purchase's shipping share
-✓ The confirmation states plainly which figure replaces which, before committing
+✓ Afterward the opening shows "Linked to recorded purchase · <date>"; internal ids never render
 
 **A pulled card's detail view** shows: "From opening — Prismatic Evolutions ETB, 14 Mar 2026"
 with a link. It shows no cost basis field, no "0 NOK", and no ROI.

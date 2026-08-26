@@ -1735,3 +1735,50 @@ could restore live sealed inventory whose purchase no longer counted, i.e. a fre
 ledger now enforces the difference. The tests that had encoded the old symmetry were rewritten,
 not weakened: they now pin that spend stays counted across open+void and that only the separate
 purchase-correction surface can remove it.
+
+## 2026-08-25 (M16/P56) - A restored lot is not a free lot: reconciliation had to annihilate what it replaced
+
+Reconciliation looked complete: retire the provisional consumption, freeze the real lot's exact
+share, repoint the opening, void the provisional purchase, stamp provenance on the row. Two
+independent reviews (P54, P55) and this repair session's own re-read converged on the same
+missed consequence: retiring the consumption disposal makes D1 RESTORE the provisional source lot
+to full live availability at the exact moment its purchase stops counting. The result of the
+flagship happy path was a phantom - live sealed inventory with known basis citing a voided
+receipt - reachable by every user who ever reconciled, invisible to tests that asserted only
+purchases and disposals and never the lot's own liveness.
+
+The fix is one UPDATE inside the same transaction, but placing it correctly required separating
+two policies that look like opposites and are not. Void-opening keeps the source purchase active
+("the opening did not happen" - the money was really spent). Reconciliation REPLACES the
+provisional purchase ("this was really that receipt") - so everything the provisional purchase
+brought into existence must leave together: purchase, lot, consumption. Same ledger discipline,
+opposite lifecycles; conflating them either resurrects the free-sealed-lot world or strands real
+spend.
+
+Two smaller lessons from the same pass. First, coverage counts inherit their frame from the
+query that computes them: a "priced pulls" count computed over all non-voided lots reads as
+"cards still here" once it sits beside retained value - the frame has to be stated in the WHERE
+clause (quantity_remaining > 0), not in prose. Second, a client-side cache that prevents
+duplicate writes only works while the cache lives; surviving a remount requires persisting the
+created identity into state that outlives the component - the user-scoped draft, not a ref.
+
+## 2026-08-25 (M16/P59) - An idempotency key that dies with the component protects nothing across a remount
+
+The server-side idempotency machinery (D-089) was correct under every interleaving the audits
+could construct, yet the client could still cause a double purchase: the key was minted in
+per-mount React state, so "server committed, response lost, user leaves, user returns" produced
+a NEW key on return and the replay lookup never had a chance. The lesson generalizes beyond this
+feature: an invariant enforced by pairing (client identity + server arbiter) requires the client
+half to live as long as the LOGICAL operation, not as long as one mount of its UI. Moving the
+key into the draft also made the stale-'submitting' recovery almost free - once the key survives
+the remount, treating an interrupted submission as retryable is safe in BOTH directions (committed
+replays; uncommitted creates), so recovery code never has to guess what happened.
+
+Two copy findings were really honesty findings. "Cost entered manually - not linked to a
+purchase" read plausible until set beside FINANCIAL_MODEL 5.5: the provisional path creates a
+REAL spend-counted purchase, so the marker denied a fact the rest of the UI asserted. And a fully
+sold pull rendered like a held card because the row had quantity data nobody displayed - the fix
+was presentation ("Sold" / "1 of 2 remaining"), not new queries. The reconciliation picker
+followed the same grain: rather than a privileged definer read or N+1 lookups, three owner-only
+provenance columns on an existing bounded invoker read let the client mirror the server's target
+rule while the RPC stays the only authority.

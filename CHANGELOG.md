@@ -10,6 +10,45 @@ they were**.
 
 ## [Unreleased]
 
+### Fixed — 2026-08-26 — M16 real-PostgreSQL repair: first full local DB gate green (P62; same child PR, DO NOT MERGE until P63/P64 integration)
+
+P60 executed the repository's entire db-tests CI job for the first time on a local
+Docker/Supabase Postgres stack and found the candidate RED; this change repairs every root cause
+and re-runs the full local gate GREEN (db+authorization 578/0, m16-independent 53/53 with zero
+skips, m13-adversarial 62/62, grant audit + hostile-grant convergence clean, all performance and
+normal gates within thresholds):
+
+- **Provisional opening path repaired (SQL)** — `create_opening_from_provisional` wrote a
+  nonexistent `holdings.sealed_intent` column (D-061/M11 moved it to acquisition_lots); removed.
+  Bought-and-open now creates purchase, line, sealed holding, sealed acquisition lot, opening,
+  opened disposal and pulls atomically — execution-proven.
+- **Openings lifecycle repaired (SQL)** — dropped the `set_updated_at` trigger that made every
+  UPDATE of `openings` fail (`record "new" has no field "updated_at"`); `void_opening` and
+  `reconcile_opening_cost` execute for real. No `updated_at` column added: openings carry explicit
+  lifecycle timestamps and backup v2 mirrors exactly those.
+- **Late idempotency replay after reconciliation (F-61-1)** — the provisional replay now recovers
+  the ORIGINAL receipt's total paid / purchased_on through `provisional_purchase_id` instead of
+  the current `source_lot_id` (which reconciliation repoints), so a late retry of the user's own
+  original request replays correctly after linking; wrong facts still refused; cross-path reuse
+  still refused. D-089/FINANCIAL_MODEL wording corrected to describe the implementation.
+- **Reconciliation world execution-proven** — provisional purchase, source lot and old disposal
+  voided; opening live at the real lot with provenance set; real purchase counted exactly once;
+  re-open/re-sell of the retired lot refused.
+- **Recent Activity adjudicated** — the opening arm works; E15's failure was shared-user fixture
+  pollution truncating at LIMIT over same-day ties. Both History/Recent-activity cases now run
+  dedicated isolated users and pin the full per-row contract.
+- **Test adjudications without weakening** — CHECK-constraint cases assert refusal semantics
+  (either firing constraint) with attributable columns moved together under the D-090 envelope;
+  backup oracles adjudicated to schema_version 2 (`openings` classified MUST_EXPORT in the
+  independent validator; counts reconciliation executing); M16 pricing fixture moved to a private
+  synthetic card; market movers owns private variants + self-seeded ancient FX fallback +
+  rate-gap snapshot legs (order-independent); gifted-sealed helper find-or-creates.
+- **m16-independent discovery fixed** — OpenAPI enumerated with a dedicated authenticated test
+  user's JWT (a service-role fetch omits user RPCs under this grant model): implementation-gated
+  oracles actually run, 53/53, zero skips.
+- **Type drift folded in** — `acquisition_lots.Update.opening_id` and `id`/`idempotency_key` on
+  the three opening-writer RPC returns.
+
 ### Added — 2026-08-26 — M16: Openings, pulls and backup v2 — integrated candidate (sources PR #55 + #54 + #53; integration branch, DO NOT MERGE until DB CI runs)
 
 Openings ship end to end as the single integrated M16 candidate on `feat/m16-openings-integrated`,
@@ -58,6 +97,74 @@ What exists:
   surface (folded create-with-pulls, dedicated provisional RPC, total-paid slot) without loosening
   assertions; two first-contact mismatches classified ORACLE_BINDING_MISMATCH and adapted
   deliberately; everything DB-backed remains gated pending CI.
+
+### Fixed — 2026-08-25 — M16 final integration cleanup: audit findings completed end-to-end (P59; same child PR as the P56 repair, DO NOT MERGE until DB CI runs)
+
+Closes the remaining P57/P58 integrated-audit findings on top of the P56 repair, in the same
+reviewable child branch:
+
+- **Home Recent Activity renders openings (P58 F1)** — the 'opening' activity type the M16
+  backend already emits is now understood client-side: a nonblank "Opened" label and a working
+  `/openings/$openingId` route. A bought-and-open legitimately shows one Purchase row AND one
+  Opening row; the opening's analytical amount still never enters any Home total.
+- **The idempotency key belongs to the logical draft (P58 F5)** — the key now lives inside the
+  user-scoped draft instead of per-wizard-mount state, so it survives route remounts and
+  browser-back returns: a committed-but-unanswered submission can no longer be duplicated by a
+  remount minting a fresh key. Rotated only when a new logical opening starts.
+- **Stale-'submitting' recovery (P58 F4)** — a draft saved mid-request whose wizard unmounted
+  before the failure landed used to stay 'submitting' forever, bricking the flow. It now loads
+  back as retryable editing with every field intact; the persisted idempotency key makes that
+  retry safe whether or not the interrupted request actually committed.
+- **Provisional replay compares money and business date (P57 F-57-4)** — same key + same identity
+  but a different total paid (or purchased_on) is refused as `idempotency-key-reuse` instead of
+  silently replaying the old financial fact; D-089's wording states exactly what is compared.
+- **Reconciliation UI shipped (P57 F-57-3 / P58 F7)** — Opening Detail offers **Link to purchase**
+  while an opening is active, provisionally costed and unreconciled. The picker reads new
+  owner-only provenance columns (`purchase_id/purchase_origin/purchased_on`) on
+  `list_opening_sources` and mirrors the server's own target rule; with no eligible purchase it
+  says so plainly. Success invalidates detail, sources, Portfolio, dashboard, spending, history
+  and recent-activity queries.
+- **Honest provisional/reconciled copy (P58 F6)** — the false "Cost entered manually — not linked
+  to a purchase" marker is replaced by where the figure actually came from ("Cost from the total
+  you entered…"), with "Linked to recorded purchase · date" after reconciliation.
+- **Coverage surfaced (P58 F9)** — priced/unpriced/sold pull counts and reconciledAt travel
+  through the detail contract; fully-sold pulls render "Sold", partials state what remains ("1 of
+  2 remaining"); an unpriced-retained honesty marker guards the retained-value aggregate ("—" when
+  nothing retained carries a price).
+- **Sweeps** — manual-card creation failures show a safe retry sentence instead of raw backend
+  text (P58 F10); the Review step repeats the exact Opening cost being frozen for existing-lot
+  mode (P58 F11); generic ↔ holding-specific wizard entries re-scope to the explicit route
+  without discarding entered pulls (P58 F12).
+
+database.types.ts hand-updated for the widened `list_opening_sources` return shape. Backup v2
+unchanged (no new canonical columns).
+
+### Fixed — 2026-08-25 — M16 integrated-candidate repair: reconciliation lifecycle and review findings (D-092; child PR against the integration branch, DO NOT MERGE until DB CI runs)
+
+Closes the P54/P55 integrated-review findings on `feat/m16-openings-integrated`:
+
+- **Phantom provisional lot after reconciliation (P54 H1)** — reconcile retired the provisional
+  consumption, which let D1 restore the provisional source lot to full live availability while
+  its purchase was being voided: known-basis sealed inventory citing money that had left the
+  ledger. `reconcile_opening_cost` now voids that lot in the same transaction — purchase, lot
+  and consumption annihilate as a unit; historical rows retained (D-092).
+- **Reconciliation target guard (P55 F55-10)** — the real target must belong to a LIVE purchase
+  whose origin is not `provisional_opening` (joined explicitly; refused like foreign/missing).
+- **Retained-only coverage counts (P54 L1)** — `get_opening`'s priced/unpriced pull counts and
+  retained value now count only pulls with `quantity_remaining > 0`; a fully-sold pull stays in
+  sold-provenance counts and proceeds, and in Opening Detail history.
+- **User-scoped opening drafts** — the session-memory draft store is keyed by authenticated user
+  id and cleared on sign-out: account B never inherits account A's draft, anonymous visitors see
+  none, the same user's draft still survives wizard remounts.
+- **Manual-card retry/remount dedupe** — created definition ids persist into the user-scoped
+  draft, so a retry after a failed opening RPC reuses the same definition row across wizard
+  remounts without any heuristic identity merging.
+- **Reset copy** names "Openings and their pulled-card records" among what reset permanently
+  removes.
+- **Integer-division wording** corrected where plpgsql bigint division truncates toward zero
+  ("floor" prose misled for negative adjustment sums); executable arithmetic unchanged. The
+  widened line-total CHECK stands unchanged, documented as a global purchase-line invariant with
+  direct constraint tests.
 
 ### Fixed — 2026-08-25 — Home's Current Portfolio Value updates immediately (P48, D-086; PR #51)
 

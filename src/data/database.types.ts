@@ -62,6 +62,7 @@ export type Database = {
           holding_id?: string
           id?: string
           notes?: string | null
+          opening_id?: string | null
           origin?: Database["public"]["Enums"]["lot_origin"]
           purchase_line_id?: string | null
           quantity?: number
@@ -1928,6 +1929,8 @@ export type Database = {
           cost_nok_minor: number | null
           cost_source: Database["public"]["Enums"]["opening_cost_source"]
           created_at: string
+          id: string
+          idempotency_key: string
           notes: string | null
           opened_on: string
           provisional_purchase_id: string | null
@@ -1967,6 +1970,8 @@ export type Database = {
           cost_nok_minor: number | null
           cost_source: Database["public"]["Enums"]["opening_cost_source"]
           created_at: string
+          id: string
+          idempotency_key: string
           notes: string | null
           opened_on: string
           provisional_purchase_id: string | null
@@ -2267,6 +2272,9 @@ export type Database = {
           lot_id: string
           product_name: string
           product_type: string | null
+          purchase_id: string | null
+          purchase_origin: string | null
+          purchased_on: string | null
           quantity_available: number
           sealed_product_id: string
         }[]
@@ -2396,6 +2404,8 @@ export type Database = {
           cost_nok_minor: number | null
           cost_source: Database["public"]["Enums"]["opening_cost_source"]
           created_at: string
+          id: string
+          idempotency_key: string
           notes: string | null
           opened_on: string
           provisional_purchase_id: string | null

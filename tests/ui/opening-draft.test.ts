@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  INTERRUPTED_SUBMISSION_COPY,
   buildBoughtAndOpenedInput,
   buildCreateOpeningInput,
   dateIsValidAndNotFuture,
   draftCostPreview,
   draftStore,
   initialDraft,
+  reconcileDraftScope,
+  recoverInterruptedSubmission,
   reduceDraft,
   reviewError,
   singleSourceAutoSelect,
@@ -372,15 +375,109 @@ describe('create-opening input assembly', () => {
   })
 })
 
-describe('session-memory draft store (prompt §23)', () => {
-  it('survives an unload/remount cycle and clears on deliberate reset', () => {
-    draftStore.clear()
-    expect(draftStore.load()).toBeNull()
+describe('session-memory draft store — USER-SCOPED (prompt §23, P56 §9)', () => {
+  it("a user's draft survives an unload/remount cycle and clears on deliberate reset", () => {
+    draftStore.clearAll()
     const draft = draftWithSource(source(), { quantityInput: '7' })
-    draftStore.save(draft)
-    expect(draftStore.load()?.quantityInput).toBe('7')
-    draftStore.clear()
-    expect(draftStore.load()).toBeNull()
+    draftStore.save('user-a', draft)
+    expect(draftStore.load('user-a')?.quantityInput).toBe('7')
+    // Deliberate RESET drops only this user's stored draft.
+    draftStore.clear('user-a')
+    expect(draftStore.load('user-a')).toBeNull()
+  })
+
+  it('another account never inherits the previous account’s in-memory draft', () => {
+    draftStore.clearAll()
+    draftStore.save(
+      'user-a',
+      draftWithSource(source(), { quantityInput: '3', notes: 'private stash' }),
+    )
+    expect(draftStore.load('user-b')).toBeNull()
+    // B saving their own draft does not disturb A's.
+    draftStore.save('user-b', draftWithSource(source(), { quantityInput: '9' }))
+    expect(draftStore.load('user-a')?.quantityInput).toBe('3')
+    expect(draftStore.load('user-b')?.quantityInput).toBe('9')
+    draftStore.clearAll()
+  })
+
+  it('an anonymous owner loads and saves nothing', () => {
+    draftStore.clearAll()
+    draftStore.save('user-a', draftWithSource(source(), { quantityInput: '4' }))
+    expect(draftStore.load(null)).toBeNull()
+    // A save without an authenticated owner is refused outright.
+    draftStore.save(null, draftWithSource(source(), { quantityInput: '1' }))
+    expect(draftStore.load(null)).toBeNull()
+    draftStore.clearAll()
+  })
+
+  it('clearAll drops every account’s draft at once (sign-out path)', () => {
+    draftStore.save('user-a', draftWithSource(source(), { quantityInput: '2' }))
+    draftStore.save('user-b', draftWithSource(source(), { quantityInput: '5' }))
+    draftStore.clearAll()
+    expect(draftStore.load('user-a')).toBeNull()
+    expect(draftStore.load('user-b')).toBeNull()
+  })
+})
+
+describe('manual-card resolution persistence (P56 §10)', () => {
+  function manualPullDraft(): OpeningDraft {
+    return reduceDraft(initialDraft(), {
+      type: 'ADD_PULL',
+      pull: {
+        cardVariantId: null,
+        manualCardId: null,
+        manualIdentity: { name: 'Local energy' },
+        displayName: 'Local energy',
+        subtitle: null,
+        imageBaseUrl: null,
+        finishLabel: null,
+        condition: 'NM' as const,
+      },
+      quantity: 1,
+      makeKey: () => 'k1',
+    })
+  }
+
+  it('RESOLVE_MANUAL_CARDS writes the created id onto the pull line', () => {
+    const draft = manualPullDraft()
+    const resolved = reduceDraft(draft, {
+      type: 'RESOLVE_MANUAL_CARDS',
+      idsByKey: new Map([['k1', 'manual-42']]),
+    })
+    expect(resolved.pulls[0]?.manualCardId).toBe('manual-42')
+    // The identity stays too — display and merge logic keep working.
+    expect(resolved.pulls[0]?.manualIdentity?.name).toBe('Local energy')
+  })
+
+  it('a resolved id makes the assembled input reuse THAT definition — no second row on retry', () => {
+    const resolved = reduceDraft(manualPullDraft(), {
+      type: 'RESOLVE_MANUAL_CARDS',
+      idsByKey: new Map([['k1', 'manual-42']]),
+    })
+    const input = buildCreateOpeningInput(resolved, 'lot-1', 'key-retry', parseNokInput)
+    expect(input.pulls[0]?.manualCardId).toBe('manual-42')
+  })
+
+  it('resolution survives a submit failure untouched (failure retains every field)', () => {
+    let draft = reduceDraft(manualPullDraft(), {
+      type: 'RESOLVE_MANUAL_CARDS',
+      idsByKey: new Map([['k1', 'manual-42']]),
+    })
+    draft = reduceDraft(draft, { type: 'BEGIN_SUBMIT' })
+    draft = reduceDraft(draft, { type: 'SUBMIT_FAILED', message: 'opening RPC failed' })
+    expect(draft.phase).toBe('editing')
+    expect(draft.submitError).toBe('opening RPC failed')
+    expect(draft.pulls[0]?.manualCardId).toBe('manual-42')
+  })
+
+  it('unknown keys and empty maps change nothing', () => {
+    const draft = manualPullDraft()
+    expect(reduceDraft(draft, { type: 'RESOLVE_MANUAL_CARDS', idsByKey: new Map() })).toBe(draft)
+    const untouched = reduceDraft(draft, {
+      type: 'RESOLVE_MANUAL_CARDS',
+      idsByKey: new Map([['other-key', 'manual-7']]),
+    })
+    expect(untouched.pulls[0]?.manualCardId).toBeNull()
   })
 })
 
@@ -489,5 +586,254 @@ describe('bought-and-open mode (P53 §11)', () => {
     expect(() => buildBoughtAndOpenedInput(draft, 'key-2', parseNokInput)).toThrow(
       /Choose the sealed product/,
     )
+  })
+})
+
+describe('draft idempotency key — ONE per logical opening (P59 §6 / P58 F5)', () => {
+  function countingKeyGen(): { next: () => string; seen: () => string[] } {
+    const seen: string[] = []
+    return {
+      next: () => {
+        const key = `key-${seen.length + 1}`
+        seen.push(key)
+        return key
+      },
+      seen: () => seen,
+    }
+  }
+
+  it('every fresh draft carries a key, and it survives every editing action', () => {
+    const gen = countingKeyGen()
+    let draft = initialDraft({ holdingId: 'holding-1' }, gen.next)
+    expect(draft.idempotencyKey).toBe('key-1')
+    draft = reduceDraft(draft, { type: 'SELECT_SOURCE', source: source() })
+    draft = reduceDraft(draft, { type: 'SET_QUANTITY_INPUT', value: '2' })
+    draft = reduceDraft(draft, { type: 'GO_TO_STEP', step: 'review' })
+    // Route unmount → remount (the same stored object reloaded) keeps the SAME key.
+    draftStore.clearAll()
+    draftStore.save('user-a', draft)
+    const reloaded = draftStore.load('user-a')
+    expect(reloaded?.idempotencyKey).toBe('key-1')
+  })
+
+  it('a same-mount retry after a failure reuses the identical key — the server can replay it', () => {
+    let draft = initialDraft(undefined, countingKeyGen().next)
+    draft = reduceDraft(draft, { type: 'BEGIN_SUBMIT' })
+    draft = reduceDraft(draft, { type: 'SUBMIT_FAILED', message: 'response lost' })
+    const input = buildCreateOpeningInput(
+      draftWithSource(source(), { ...draft }),
+      source().lotId,
+      draft.idempotencyKey,
+      parseNokInput,
+    )
+    expect(input.idempotencyKey).toBe(draft.idempotencyKey)
+  })
+
+  it('a NEW logical opening mints a NEW key only via explicit RESET (or post-success fresh draft)', () => {
+    const gen = countingKeyGen()
+    const draft = initialDraft(undefined, gen.next)
+    const reset = reduceDraft(draft, { type: 'RESET' })
+    expect(reset.idempotencyKey).not.toBe(draft.idempotencyKey)
+    // Editing actions never rotate the key — only a new logical opening does.
+    const edited = reduceDraft(draft, { type: 'SET_NOTES', value: 'still the same attempt' })
+    expect(edited.idempotencyKey).toBe(draft.idempotencyKey)
+  })
+
+  it('bought-and-open assembly rides the persisted draft key too', () => {
+    const gen = countingKeyGen()
+    let draft = reduceDraft(initialDraft(undefined, gen.next), {
+      type: 'SET_MODE',
+      mode: 'bought_now',
+    })
+    draft = reduceDraft(draft, {
+      type: 'SELECT_PRODUCT',
+      productId: 'product-9',
+      productName: 'Booster bundle',
+    })
+    draft = reduceDraft(draft, { type: 'SET_TOTAL_PAID_INPUT', value: '299,95' })
+    const input = buildBoughtAndOpenedInput(draft, draft.idempotencyKey, parseNokInput)
+    expect(input.idempotencyKey).toBe(draft.idempotencyKey)
+    expect(input.totalPaidNokMinor).toBe(29995n)
+  })
+})
+
+describe('stale submitting recovery (P59 §7 / P58 F4)', () => {
+  it('a stored mid-submission draft loads back as RETRYABLE editing with everything intact', () => {
+    let submitted = draftWithSource(source(), {
+      quantityInput: '2',
+      openedOn: '2026-05-05',
+      notes: 'kept',
+      totalPaidInput: '',
+    })
+    submitted = reduceDraft(submitted, { type: 'BEGIN_SUBMIT' })
+    expect(submitted.phase).toBe('submitting')
+
+    const recovered = recoverInterruptedSubmission(submitted)
+    expect(recovered.phase).toBe('editing')
+    expect(recovered.submitError).toBe(INTERRUPTED_SUBMISSION_COPY)
+    // Nothing was assumed about success or failure: every field survives verbatim.
+    expect(recovered.idempotencyKey).toBe(submitted.idempotencyKey)
+    expect(recovered.quantityInput).toBe(submitted.quantityInput)
+    expect(recovered.openedOn).toBe(submitted.openedOn)
+    expect(recovered.notes).toBe(submitted.notes)
+    expect(recovered.pulls).toBe(submitted.pulls)
+  })
+
+  it('recovery preserves resolved manual-card ids so the retry never duplicates definitions', () => {
+    let draft = reduceDraft(initialDraft(), {
+      type: 'ADD_PULL',
+      pull: {
+        cardVariantId: null,
+        manualCardId: null,
+        manualIdentity: { name: 'Local energy' },
+        displayName: 'Local energy',
+        subtitle: null,
+        imageBaseUrl: null,
+        finishLabel: null,
+        condition: 'NM' as const,
+      },
+      quantity: 1,
+      makeKey: () => 'k1',
+    })
+    draft = reduceDraft(draft, {
+      type: 'RESOLVE_MANUAL_CARDS',
+      idsByKey: new Map([['k1', 'manual-42']]),
+    })
+    draft = reduceDraft(draft, { type: 'BEGIN_SUBMIT' })
+    const recovered = recoverInterruptedSubmission(draft)
+    expect(recovered.pulls[0]?.manualCardId).toBe('manual-42')
+    // The retry assembles with THAT id — createManualCard is not called again for the identity.
+    const input = buildCreateOpeningInput(
+      recovered,
+      source().lotId,
+      recovered.idempotencyKey,
+      parseNokInput,
+    )
+    expect(input.pulls[0]?.manualCardId).toBe('manual-42')
+  })
+
+  it('drafts in editing or submitted phase pass through untouched', () => {
+    const editing = initialDraft()
+    expect(recoverInterruptedSubmission(editing)).toBe(editing)
+    const done = reduceDraft(reduceDraft(initialDraft(), { type: 'BEGIN_SUBMIT' }), {
+      type: 'SUBMIT_SUCCEEDED',
+      openingId: 'o-9',
+    })
+    expect(recoverInterruptedSubmission(done)).toBe(done)
+  })
+
+  it('an interrupted bought-now submission recovers with its entered total and dates intact', () => {
+    let draft = reduceDraft(initialDraft(), { type: 'SET_MODE', mode: 'bought_now' })
+    draft = reduceDraft(draft, { type: 'SET_TOTAL_PAID_INPUT', value: '299,95' })
+    draft = reduceDraft(draft, { type: 'SET_PURCHASED_ON', value: '2026-08-01' })
+    draft = reduceDraft(draft, { type: 'BEGIN_SUBMIT' })
+    const recovered = recoverInterruptedSubmission(draft)
+    expect(recovered.phase).toBe('editing')
+    expect(recovered.totalPaidInput).toBe('299,95')
+    expect(recovered.purchasedOn).toBe('2026-08-01')
+    expect(recovered.idempotencyKey).toBe(draft.idempotencyKey)
+  })
+})
+
+describe('route-scope reconciliation (P59 §19 / P58 F12)', () => {
+  it('a holding-A scoped draft reopened generically drops the scope but keeps entered pulls', () => {
+    let stored = draftWithSource(source(), { quantityInput: '2' })
+    stored = reduceDraft(stored, { type: 'GO_TO_STEP', step: 'pulls' })
+    const next = reconcileDraftScope(stored, undefined)
+    expect(next).not.toBeNull()
+    expect(next?.holdingId).toBeNull()
+    expect(next?.lotId).toBeNull()
+    expect(next?.step).toBe('source')
+    expect(next?.pulls).toBe(stored.pulls)
+    // No false "Nothing to open yet": ALL eligible sources are visible again.
+    const otherHolding = source({ lotId: 'other-lot', holdingId: 'holding-2' })
+    expect(sourcesForHolding([source(), otherHolding], next?.holdingId ?? null)).toHaveLength(2)
+  })
+
+  it('a generic draft opened at an explicit holding-B route honors B and re-resolves selection', () => {
+    const stored = initialDraft()
+    const next = reconcileDraftScope(stored, 'holding-b')
+    expect(next).not.toBeNull()
+    expect(next?.holdingId).toBe('holding-b')
+    expect(next?.lotId).toBeNull()
+    // Only B's lots are offered.
+    const bLot = source({ lotId: 'b-lot', holdingId: 'holding-b' })
+    const scoped = sourcesForHolding([source(), bLot], next?.holdingId ?? null)
+    expect(scoped.map((s) => s.lotId)).toEqual(['b-lot'])
+  })
+
+  it('a matching scope passes through unchanged; a bought-now draft keeps its whole flow', () => {
+    const inHoldingA = draftWithSource(source())
+    expect(reconcileDraftScope(inHoldingA, 'holding-1')).toBe(inHoldingA)
+
+    let boughtNow = reduceDraft(initialDraft(), { type: 'SET_MODE', mode: 'bought_now' })
+    boughtNow = reduceDraft(boughtNow, {
+      type: 'SELECT_PRODUCT',
+      productId: 'p-1',
+      productName: 'Booster bundle',
+    })
+    boughtNow = reduceDraft(boughtNow, { type: 'GO_TO_STEP', step: 'quantity' })
+    const rescoped = reconcileDraftScope(boughtNow, 'holding-b')
+    expect(rescoped?.mode).toBe('bought_now')
+    expect(rescoped?.step).toBe('quantity')
+    expect(rescoped?.productId).toBe('p-1')
+  })
+
+  it('a submitted draft is never reusable under any route', () => {
+    const done = reduceDraft(reduceDraft(initialDraft(), { type: 'BEGIN_SUBMIT' }), {
+      type: 'SUBMIT_SUCCEEDED',
+      openingId: 'o-1',
+    })
+    expect(reconcileDraftScope(done, undefined)).toBeNull()
+    expect(reconcileDraftScope(done, 'holding-1')).toBeNull()
+  })
+})
+
+describe('P56 regression — manual-card remount reuse through the full integrated sequence (R16)', () => {
+  it('create succeeds → opening fails → remount → retry reuses the SAME definition identity', () => {
+    draftStore.clearAll()
+    // First mount: manual definition created, resolution persisted, opening RPC failed.
+    let firstMount = reduceDraft(
+      initialDraft(undefined, () => 'key-original'),
+      {
+        type: 'ADD_PULL',
+        pull: {
+          cardVariantId: null,
+          manualCardId: null,
+          manualIdentity: { name: 'Local energy' },
+          displayName: 'Local energy',
+          subtitle: null,
+          imageBaseUrl: null,
+          finishLabel: null,
+          condition: 'NM' as const,
+        },
+        quantity: 1,
+        makeKey: () => 'k1',
+      },
+    )
+    firstMount = reduceDraft(firstMount, {
+      type: 'RESOLVE_MANUAL_CARDS',
+      idsByKey: new Map([['k1', 'manual-42']]),
+    })
+    firstMount = reduceDraft(firstMount, { type: 'BEGIN_SUBMIT' })
+    firstMount = reduceDraft(firstMount, { type: 'SUBMIT_FAILED', message: 'network lost' })
+    draftStore.save('user-a', firstMount)
+
+    // Second mount: the stored draft reloads (same user) with the SAME id and key.
+    const secondMount = draftStore.load('user-a')
+    expect(secondMount?.phase).toBe('editing')
+    expect(secondMount?.idempotencyKey).toBe('key-original')
+    expect(secondMount?.pulls[0]?.manualCardId).toBe('manual-42')
+
+    // The retry's assembled input carries the already-created identity — exactly one
+    // createManualCard call ever happened for this pull, across both mounts.
+    const retryInput = buildCreateOpeningInput(
+      secondMount!,
+      source().lotId,
+      secondMount!.idempotencyKey,
+      parseNokInput,
+    )
+    expect(retryInput.idempotencyKey).toBe('key-original')
+    expect(retryInput.pulls[0]?.manualCardId).toBe('manual-42')
   })
 })

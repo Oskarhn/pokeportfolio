@@ -7,7 +7,9 @@
  *
  *  - table/column presence is probed through the Data API at runtime;
  *  - RPC existence and parameter NAMES are read from PostgREST's OpenAPI
- *    description (never invoked blind);
+ *    description fetched with a dedicated AUTHENTICATED test user's JWT — the
+ *    client-visible surface (a service-role fetch omits every user RPC under
+ *    this project's grant model; never invoked blind);
  *  - opening RPCs are discovered by scanning the whole spec for
  *    /rpc/<name> entries matching /open/i, then classified by verb — the
  *    implementation's naming is its own choice within that envelope.
@@ -91,63 +93,146 @@ interface RpcSignatureBase {
   paramNames: string[]
 }
 
-let openApiPaths: Record<string, unknown> | null | undefined
+// P60 root-cause repair: PostgREST lists an RPC in /rest/v1/'s OpenAPI only when
+// the CALLER may EXECUTE it, and this project deliberately grants user RPCs to
+// `authenticated` alone — a service-role scan therefore sees ZERO user RPCs and
+// every implementation-gated oracle silently skipped forever. The user-visible
+// surface is discovered with a dedicated synthetic test user's JWT; the
+// service-role view remains available ONLY for stable service-only names
+// (drain_portfolio_recompute_queue) no browser role may call. Discovery still
+// never invokes anything: a genuinely absent RPC capability keeps failing
+// loudly as [M16 CONTRACT].
 
-async function loadOpenApiPaths(): Promise<Record<string, unknown> | null> {
-  if (openApiPaths !== undefined) return openApiPaths
-  const url = process.env['SUPABASE_URL']
-  const key = process.env['SUPABASE_SERVICE_ROLE_KEY']
-  if (!url || !key) {
-    openApiPaths = null
-    return openApiPaths
+interface SpecViews {
+  /** Paths visible to an AUTHENTICATED client (the client-visible API surface). */
+  user: Record<string, unknown> | null
+  /** Paths visible to the service role (operator/service-only RPC surface). */
+  service: Record<string, unknown> | null
+}
+
+let specViews: SpecViews | undefined
+let discoveryJwtPromise: Promise<string | null> | undefined
+let discoveryUserId: string | null = null
+let discoveryService: TestClient | null = null
+
+/**
+ * One synthetic user per process whose ONLY job is owning the JWT the OpenAPI
+ * discovery fetch uses — proving exactly what a signed-in client can see.
+ * Created through the real invitation flow; disposed via
+ * disposeM16DiscoverySession().
+ */
+async function discoveryJwt(): Promise<string | null> {
+  if (discoveryJwtPromise !== undefined) return discoveryJwtPromise
+  discoveryJwtPromise = (async () => {
+    try {
+      if (
+        !process.env['SUPABASE_URL'] ||
+        !process.env['SUPABASE_ANON_KEY'] ||
+        !process.env['SUPABASE_SERVICE_ROLE_KEY']
+      ) {
+        return null
+      }
+      const { createServiceClient, createSyntheticUser, signInAs } = await import('../../db/setup')
+      const service = createServiceClient()
+      const user = await createSyntheticUser(service, 'm16-discovery')
+      const client = await signInAs(user)
+      const { data } = await client.auth.getSession()
+      const token = data.session?.access_token ?? null
+      if (!token) return null
+      discoveryUserId = user.id
+      discoveryService = service
+      return token
+    } catch {
+      return null
+    }
+  })()
+  return discoveryJwtPromise
+}
+
+/** Deletes the discovery fixture user. Idempotent; safe to call from any afterAll. */
+export async function disposeM16DiscoverySession(): Promise<void> {
+  if (discoveryUserId && discoveryService) {
+    const { deleteSyntheticUser } = await import('../../db/setup')
+    await deleteSyntheticUser(discoveryService, discoveryUserId)
   }
+  discoveryUserId = null
+  discoveryService = null
+}
+
+async function fetchPaths(url: string, apiKey: string, bearer?: string) {
+  const response = await fetch(`${url}/rest/v1/`, {
+    headers: { apikey: apiKey, Authorization: `Bearer ${bearer ?? apiKey}` },
+  })
+  if (!response.ok) return null
   try {
-    const response = await fetch(`${url}/rest/v1/`, {
-      headers: { apikey: key, Authorization: `Bearer ${key}` },
-    })
-    if (!response.ok) {
-      openApiPaths = null
-      return openApiPaths
-    }
     const spec = (await response.json()) as { paths?: Record<string, unknown> }
-    openApiPaths = spec.paths ?? null
+    return spec.paths ?? null
   } catch {
-    openApiPaths = null
+    return null
   }
-  return openApiPaths
 }
 
-async function rpcSignature(name: string): Promise<RpcSignatureBase | null> {
-  const paths = await loadOpenApiPaths()
-  if (!paths) return null
-  const entry = paths[`/rpc/${name}`]
-  if (!entry || typeof entry !== 'object') return null
-  const post = (entry as { post?: { parameters?: unknown; requestBody?: unknown } }).post
-  const rawParams = Array.isArray(post?.parameters) ? (post?.parameters as unknown[]) : []
-  let paramNames = rawParams
-    .map((p) => p as { name?: string })
-    .map((p) => p.name)
-    .filter((n): n is string => typeof n === 'string')
-
-  // PostgREST describes the body either as one "args" parameter carrying
-  // schema.properties, or under requestBody.content["application/json"].
-  if (paramNames.length === 0 || paramNames.includes('args')) {
-    const bodyParam = rawParams.find((p) => (p as { name?: string }).name === 'args') as
-      { schema?: { properties?: Record<string, unknown> } } | undefined
-    const bodyContent = post?.requestBody as
-      | { content?: { 'application/json'?: { schema?: { properties?: Record<string, unknown> } } } }
-      | undefined
-    const bodyProps =
-      bodyParam?.schema?.properties ??
-      bodyContent?.content?.['application/json']?.schema?.properties
-    if (bodyProps && Object.keys(bodyProps).length > 0) {
-      paramNames = Object.keys(bodyProps)
+async function loadSpecViews(): Promise<SpecViews> {
+  if (specViews === undefined) {
+    let user: Record<string, unknown> | null = null
+    let service: Record<string, unknown> | null = null
+    const url = process.env['SUPABASE_URL']
+    const serviceKey = process.env['SUPABASE_SERVICE_ROLE_KEY']
+    if (url && serviceKey) {
+      service = await fetchPaths(url, serviceKey)
+      const jwt = await discoveryJwt()
+      const anonKey = process.env['SUPABASE_ANON_KEY']
+      if (jwt && anonKey) {
+        user = await fetchPaths(url, anonKey, jwt)
+      }
     }
+    specViews = { user, service }
   }
-  return { name, paramNames }
+  return specViews
 }
 
-/** Every RPC in the spec whose name mentions openings/opened ("open" alone is too noisy). */
+/**
+ * Resolves one RPC's parameter shape. The authenticated view wins: behavioral
+ * calls execute as a signed-in user, so THAT surface's parameter names must
+ * bind. The service-role view is consulted only for functions no browser role
+ * may execute (service-only operators).
+ */
+async function rpcSignature(name: string): Promise<RpcSignatureBase | null> {
+  const views = await loadSpecViews()
+  for (const paths of [views.user, views.service]) {
+    if (!paths) continue
+    const entry = paths[`/rpc/${name}`]
+    if (!entry || typeof entry !== 'object') continue
+    const post = (entry as { post?: { parameters?: unknown; requestBody?: unknown } }).post
+    const rawParams = Array.isArray(post?.parameters) ? (post?.parameters as unknown[]) : []
+    let paramNames = rawParams
+      .map((p) => p as { name?: string })
+      .map((p) => p.name)
+      .filter((n): n is string => typeof n === 'string')
+
+    // PostgREST describes the body either as one "args" parameter carrying
+    // schema.properties, or under requestBody.content["application/json"].
+    if (paramNames.length === 0 || paramNames.includes('args')) {
+      const bodyParam = rawParams.find((p) => (p as { name?: string }).name === 'args') as
+        { schema?: { properties?: Record<string, unknown> } } | undefined
+      const bodyContent = post?.requestBody as
+        | {
+            content?: { 'application/json'?: { schema?: { properties?: Record<string, unknown> } } }
+          }
+        | undefined
+      const bodyProps =
+        bodyParam?.schema?.properties ??
+        bodyContent?.content?.['application/json']?.schema?.properties
+      if (bodyProps && Object.keys(bodyProps).length > 0) {
+        paramNames = Object.keys(bodyProps)
+      }
+    }
+    return { name, paramNames }
+  }
+  return null
+}
+
+/** Every CLIENT-VISIBLE RPC whose name mentions openings/opened ("open" alone is too noisy). */
 export interface DiscoveredOpeningRpc {
   name: string
   paramNames: string[]
@@ -164,7 +249,12 @@ const VERB_MATCHERS: readonly { verb: string; pattern: RegExp }[] = [
 ]
 
 export async function discoverOpeningRpcs(): Promise<DiscoveredOpeningRpc[]> {
-  const paths = await loadOpenApiPaths()
+  // USER VIEW ONLY: this enumerates the API surface an actual signed-in client
+  // can call. If the authenticated fetch failed the scan is empty and the gated
+  // suites keep their explicit skip reason rather than guessing from a
+  // privileged view the product's clients never hold.
+  const views = await loadSpecViews()
+  const paths = views.user
   if (!paths) return []
   const found: DiscoveredOpeningRpc[] = []
   for (const path of Object.keys(paths)) {

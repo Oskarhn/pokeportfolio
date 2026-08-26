@@ -24,7 +24,9 @@ import {
   bindProvisionalOpeningArgs,
   findProvisionalCreateRpc,
   findReconcileRpc,
+  disposeM16DiscoverySession,
   hasSupabaseEnv,
+  requireVoidOpeningRpc,
   skipUnlessM16,
 } from '../helpers/contract'
 import { createIsolatedSealedProduct, spendSummary } from '../helpers/fixtures'
@@ -45,6 +47,7 @@ describe.skipIf(!hasSupabaseEnv())('M16 provisional-cost oracle (F12 / E13)', ()
 
   afterAll(async () => {
     if (service && userA) await deleteSyntheticUser(service, userA.id)
+    await disposeM16DiscoverySession()
   }, 60_000)
 
   /**
@@ -203,8 +206,10 @@ describe.skipIf(!hasSupabaseEnv())('M16 provisional-cost oracle (F12 / E13)', ()
     }
 
     const spendBefore = await spendSummary(clientA)
+    // The REAL receipt must be the SAME sealed product as the provisional opening —
+    // reconciliation across products is refused by design (server rule, not a defect).
     const productId = await createIsolatedSealedProduct(service, userA.id, 'prov-rec')
-    const openingId = await createProvisionalOpening(ctx)
+    const openingId = await createProvisionalOpening(ctx, { sealedProductId: productId })
     expect(openingId).not.toBe('')
 
     // The REAL receipt arrives: 799.00 + 79.00 shipping = 878.00 NOK total.
@@ -260,16 +265,45 @@ describe.skipIf(!hasSupabaseEnv())('M16 provisional-cost oracle (F12 / E13)', ()
     expect(spendAfter.gpoNokMinor - spendBefore.gpoNokMinor).toBe(87_800n)
     expect(spendAfter.csNokMinor - spendBefore.csNokMinor).toBe(87_800n)
 
-    // The provisional purchase is VOIDED — retained, excluded everywhere (E13).
+    // The provisional purchase of THIS opening is VOIDED — retained, excluded everywhere (E13).
+    // Scoped through the opening's own provenance pointer: earlier cases in this file leave
+    // OTHER live provisional purchases behind, and the oracle must not depend on file order.
+    const { data: openingRows } = await service
+      .from('openings')
+      .select('provisional_purchase_id')
+      .eq('id', openingId)
+      .maybeSingle<Record<string, unknown>>()
+    const provPurchaseId = String(openingRows?.['provisional_purchase_id'] ?? '')
+    expect(provPurchaseId, 'opening lost its provisional_purchase_id provenance').not.toBe('')
     const { data: purchases } = await service
       .from('purchases')
       .select('id, origin, voided_at')
       .eq('user_id', userA.id)
     const provisional = (purchases ?? []).find(
-      (row) => String((row as Record<string, unknown>)['origin']) === 'provisional_opening',
+      (row) => String((row as Record<string, unknown>)['id']) === provPurchaseId,
     )
     expect(provisional, 'provisional purchase vanished instead of being voided').toBeTruthy()
-    expect(provisional?.['voided_at'] ?? null).not.toBeNull()
+    expect(String((provisional as Record<string, unknown>)['origin'])).toBe('provisional_opening')
+    expect((provisional as Record<string, unknown>)['voided_at'] ?? null).not.toBeNull()
+
+    // P56 §16-A (P54 finding H1): EVERY lot of the voided provisional purchase is VOIDED too —
+    // no phantom sealed inventory with known basis citing a purchase that no longer counts.
+    const { data: provLines } = await service
+      .from('purchase_lines')
+      .select('id')
+      .eq('purchase_id', String(provisional!['id']))
+    expect((provLines ?? []).length).toBeGreaterThan(0)
+    for (const line of provLines ?? []) {
+      const { data: lotsOfLine } = await service
+        .from('acquisition_lots')
+        .select('voided_at')
+        .eq('purchase_line_id', String(line['id']))
+      expect((lotsOfLine ?? []).length).toBeGreaterThan(0)
+      expect(
+        (lotsOfLine ?? []).every((l) => l['voided_at'] !== null),
+        'a lot of the voided provisional purchase stayed LIVE — phantom inventory',
+      ).toBe(true)
+    }
 
     // A second reconciliation is rejected — F12 holds at every instant.
     const { error: secondReconError } = await clientA.rpc(reconRpc.name, {
@@ -277,5 +311,59 @@ describe.skipIf(!hasSupabaseEnv())('M16 provisional-cost oracle (F12 / E13)', ()
       [lotParam]: (realLot as { id: string }).id,
     })
     expect(secondReconError, 'double reconciliation must be rejected').not.toBeNull()
+  })
+
+  it('P56 §16-B: reconciliation onto a PROVISIONAL purchase’s lot is refused (F55-10)', async (ctx) => {
+    const surface = await skipUnlessM16(ctx, service)
+    const reconRpc = findReconcileRpc(surface)
+    if (!reconRpc) {
+      ctx.skip('No reconciliation-shaped RPC discovered — see the F12 oracle above.')
+      return
+    }
+    const lotParam = reconRpc.paramNames.find((p) => /lot_?id/i.test(p))
+    const openParam = reconRpc.paramNames.find((p) => /opening_?id/i.test(p))
+    if (!lotParam || !openParam) throw new Error('[M16 CONTRACT] reconcile params undiscoverable')
+
+    const productId = await createIsolatedSealedProduct(service, userA.id, 'prov-target')
+    // O1 stays unreconciled. O2 is created and VOIDED: per the shipped void policy its
+    // provisional purchase STAYS ACTIVE and its source lot comes back live — which without a
+    // purchase-origin guard would be a valid-looking reconciliation target.
+    const o1 = await createProvisionalOpening(ctx, {
+      sealedProductId: productId,
+      quantity: 1,
+      manualCostNokMinor: 10_000,
+    })
+    expect(o1).not.toBe('')
+    const o2 = await createProvisionalOpening(ctx, {
+      sealedProductId: productId,
+      quantity: 1,
+      manualCostNokMinor: 11_000,
+    })
+    expect(o2).not.toBe('')
+
+    const voidRpc = requireVoidOpeningRpc(surface)
+    const voidParam = voidRpc.paramNames.find((p) => /opening_?id/i.test(p))
+    if (!voidParam) throw new Error('[M16 CONTRACT] void RPC lacks an opening id parameter')
+    const { error: voidError } = await clientA.rpc(voidRpc.name, { [voidParam]: o2 })
+    expect(voidError, `voiding O2 failed: ${voidError?.message}`).toBeNull()
+
+    // O2's provisional lot is live again with enough units — but cites a provisional purchase.
+    const { data: o2Rows } = await clientA.from('openings').select('*').eq('id', o2)
+    const o2Row = ((o2Rows ?? []) as Record<string, unknown>[])[0]
+    const o2LotId = String(o2Row?.['source_lot_id'] ?? '')
+    expect(o2LotId).toBeTruthy()
+    const { data: targetLot } = await service
+      .from('acquisition_lots')
+      .select('voided_at, quantity_remaining')
+      .eq('id', o2LotId)
+      .maybeSingle<Record<string, unknown>>()
+    expect(targetLot?.['voided_at'] ?? null).toBeNull()
+    expect(Number(targetLot?.['quantity_remaining'])).toBe(1)
+
+    const { error: reconError } = await clientA.rpc(reconRpc.name, {
+      [openParam]: o1,
+      [lotParam]: o2LotId,
+    })
+    expect(reconError, 'reconciling onto a provisional_purchase lot must be REFUSED').not.toBeNull()
   })
 })

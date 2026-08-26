@@ -169,25 +169,42 @@ export async function createGiftedSealedLot(
   productId: string,
   quantity: number,
 ): Promise<{ holdingId: string; lotId: string }> {
-  const { data: holding, error: holdingError } = await service
+  // Find-or-create (P62): the owner may already hold a sealed holding for this product created
+  // by an opening RPC in the same suite — holdings_identity makes them the same identity, so
+  // the gift lot attaches to the EXISTING holding instead of colliding.
+  const { data: existing } = await service
     .from('holdings')
-    .insert({
-      user_id: ownerId,
-      holding_kind: 'sealed',
-      sealed_product_id: productId,
-      grading_state: 'raw',
-    })
     .select('id')
-    .single<{ id: string }>()
-  if (holdingError || !holding) {
-    throw new Error(`failed to create gifted sealed holding: ${holdingError?.message}`)
+    .eq('user_id', ownerId)
+    .eq('holding_kind', 'sealed')
+    .eq('sealed_product_id', productId)
+    .eq('grading_state', 'raw')
+    .is('deleted_at', null)
+    .maybeSingle<{ id: string }>()
+
+  let holdingId = existing?.id ?? null
+  if (!holdingId) {
+    const { data: holding, error: holdingError } = await service
+      .from('holdings')
+      .insert({
+        user_id: ownerId,
+        holding_kind: 'sealed',
+        sealed_product_id: productId,
+        grading_state: 'raw',
+      })
+      .select('id')
+      .single<{ id: string }>()
+    if (holdingError || !holding) {
+      throw new Error(`failed to create gifted sealed holding: ${holdingError?.message}`)
+    }
+    holdingId = holding.id
   }
 
   const { data: lot, error: lotError } = await service
     .from('acquisition_lots')
     .insert({
       user_id: ownerId,
-      holding_id: holding.id,
+      holding_id: holdingId,
       origin: 'gift',
       cost_basis_state: 'not_paid',
       acquired_on: new Date().toISOString().slice(0, 10),
@@ -198,7 +215,7 @@ export async function createGiftedSealedLot(
     .single<{ id: string }>()
   if (lotError || !lot) throw new Error(`failed to create gifted sealed lot: ${lotError?.message}`)
 
-  return { holdingId: holding.id, lotId: lot.id }
+  return { holdingId, lotId: lot.id }
 }
 
 export interface DisposalRow {

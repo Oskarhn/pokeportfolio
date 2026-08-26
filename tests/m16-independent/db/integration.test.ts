@@ -20,11 +20,12 @@
  *   data + relationships. A v1 backup generated after M16 that silently omits
  *   openings is a BLOCKER.
  */
-import { beforeAll, describe, expect, it } from 'vitest'
+import { beforeAll, afterAll, describe, expect, it } from 'vitest'
 
 import { createSyntheticUser, deleteSyntheticUser, signInAs, type TestClient } from '../../db/setup'
 import {
   bindOpeningCreateArgs,
+  disposeM16DiscoverySession,
   hasSupabaseEnv,
   probeM16Surface,
   requireCreateOpeningRpc,
@@ -46,6 +47,10 @@ describe.skipIf(!hasSupabaseEnv())('M16 integration oracles (history / reset / b
   beforeAll(async () => {
     const { createServiceClient } = await import('../../db/setup')
     service = createServiceClient()
+  }, 60_000)
+
+  afterAll(async () => {
+    await disposeM16DiscoverySession()
   }, 60_000)
 
   /** Seeds one full opening world for a user; returns the ids assertions need. */
@@ -76,7 +81,7 @@ describe.skipIf(!hasSupabaseEnv())('M16 integration oracles (history / reset / b
       bindOpeningCreateArgs(rpc, {
         openedOn: today,
         consumptions: [{ lotId: purchase.lotId, quantity: 1 }],
-        pulls: [{ cardVariantId: seedCatalog.charizardVariantId, quantity: 3 }],
+        pulls: [{ cardVariantId: seedCatalog.charizardVariantId, quantity: 3, condition: 'NM' }],
       }),
     )
     if (error || !data) throw new Error(`seed opening failed: ${error?.message}`)

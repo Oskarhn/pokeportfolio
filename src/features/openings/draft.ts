@@ -14,8 +14,10 @@ import { openingCostPreview } from './copy'
  * double-submit prevention, failure-retains-draft) is pinned here by tests/ui/opening-draft.test.ts.
  *
  * The draft lives in session memory only (prompt §23): `draftStore` below holds it across
- * unmount/remount so mobile back navigation during the flow never loses work. Nothing is written
- * to localStorage — a financial draft is not persisted without an explicit project pattern for it.
+ * unmount/remount so mobile back navigation during the flow never loses work. The store is
+ * scoped by authenticated user id (P56 §9) so one account can never inherit another's draft.
+ * Nothing is written to localStorage — a financial draft is not persisted without an explicit
+ * project pattern for it.
  */
 
 export const STEPS = ['source', 'quantity', 'pulls', 'review'] as const
@@ -45,6 +47,16 @@ export interface PullDraft {
 
 export interface OpeningDraft {
   phase: 'editing' | 'submitting' | 'submitted'
+  /**
+   * The logical opening's submission identity (P59 / P58 F5): ONE key per logical opening draft,
+   * persisted with the draft itself. It survives same-mount retries, wizard unmount/remount and
+   * browser-back returns, so the server's idempotency arbiter always sees the SAME key for the
+   * SAME logical attempt — a committed-but-unanswered submission can never be duplicated by a
+   * remount minting a fresh key. It changes only when a new logical opening starts (RESET, or a
+   * fresh draft after success cleared the store). Still memory-only; never localStorage (D-089
+   * implementation detail, not a new decision).
+   */
+  idempotencyKey: string
   step: OpeningStep
   mode: OpeningMode
   holdingId: string | null
@@ -71,9 +83,13 @@ function todayIso(): string {
   return new Date().toISOString().slice(0, 10)
 }
 
-export function initialDraft(preselect?: { holdingId?: string; lotId?: string }): OpeningDraft {
+export function initialDraft(
+  preselect?: { holdingId?: string; lotId?: string },
+  makeIdempotencyKey: () => string = () => crypto.randomUUID(),
+): OpeningDraft {
   return {
     phase: 'editing',
+    idempotencyKey: makeIdempotencyKey(),
     step: 'source',
     mode: 'existing_lot',
     // Arriving from Sealed Holding Detail preselects that holding (prompt §7); the actual lot is
@@ -94,6 +110,54 @@ export function initialDraft(preselect?: { holdingId?: string; lotId?: string })
     submitError: null,
     submittedOpeningId: null,
   }
+}
+
+/** The restrained recovery message shown when a stored draft was caught mid-submission (P59 §7). */
+export const INTERRUPTED_SUBMISSION_COPY = 'Previous submission was interrupted. You can try again.'
+
+/**
+ * Stale-'submitting' recovery (P59 §7 / P58 F4). A draft saved while its request was in flight,
+ * whose component then unmounted before onError could run, must NOT brick the wizard forever:
+ * on load it is treated as a RECOVERABLE interrupted submission — phase back to editing, every
+ * field preserved (idempotency key, pulls, manual-card ids, dates, amounts), and the user may
+ * press Retry. Failure vs success is deliberately NOT assumed: if the interrupted request
+ * actually committed, the SAME persisted key replays the original opening; if it did not,
+ * normal creation happens. This is exactly why the key must survive the remount.
+ */
+export function recoverInterruptedSubmission(stored: OpeningDraft): OpeningDraft {
+  if (stored.phase !== 'submitting') return stored
+  return { ...stored, phase: 'editing', submitError: INTERRUPTED_SUBMISSION_COPY }
+}
+
+/**
+ * Route-scope reconciliation (P59 §19 / P58 F12). A draft may be started under one entry route's
+ * scope and reopened under another; the EXPLICIT route wins without discarding unrelated work:
+ *
+ *   - generic `/openings/new` after a holding-scoped start → the stale holding scope is cleared
+ *     (and the source selection re-resolved) so all eligible sources are visible instead of a
+ *     false "Nothing to open yet"; entered pulls survive;
+ *   - explicit `?holdingId=B` after a generic (or holding-A) start → the scope becomes B, with
+ *     the source selection re-resolved inside B; entered pulls survive;
+ *   - matching scope → unchanged; a submitted draft is never reusable.
+ */
+export function reconcileDraftScope(
+  stored: OpeningDraft,
+  requestedHoldingId: string | undefined,
+): OpeningDraft | null {
+  if (stored.phase === 'submitted') return null
+  const requested = requestedHoldingId ?? null
+  if (requested === stored.holdingId) return stored
+  if (requested === null) {
+    // Generic entry: drop the route-specific scope; bought-now drafts keep everything (their
+    // flow never depended on the holding), existing-lot drafts re-pick their source.
+    return stored.mode === 'bought_now'
+      ? { ...stored, holdingId: null }
+      : { ...stored, holdingId: null, lotId: null, step: 'source' }
+  }
+  // An explicit holding route wins over whatever scope the draft carried.
+  return stored.mode === 'bought_now'
+    ? { ...stored, holdingId: requested }
+    : { ...stored, holdingId: requested, lotId: null, step: 'source' }
 }
 
 export type DraftAction =
@@ -117,6 +181,13 @@ export type DraftAction =
   | { type: 'SET_BULK_ESTIMATE_INPUT'; value: string }
   | { type: 'SET_BULK_COUNT_INPUT'; value: string }
   | { type: 'SET_NOTES'; value: string }
+  /** Persists the manual-card definition ids created during a submission attempt back into the
+   *  draft (P56 §10). Once createManualCard has succeeded for an identity, the resolved id lives
+   *  in the stored draft, so ANY retry — same mount, route remount or browser-back return — reuses
+   *  that exact row instead of inserting another identical definition. No heuristic identity
+   *  merging: only ids this device actually created are persisted, keyed to the pull they were
+   *  created for. */
+  | { type: 'RESOLVE_MANUAL_CARDS'; idsByKey: ReadonlyMap<string, string> }
   | { type: 'BEGIN_SUBMIT' }
   | { type: 'SUBMIT_SUCCEEDED'; openingId: string }
   | { type: 'SUBMIT_FAILED'; message: string }
@@ -215,6 +286,16 @@ export function reduceDraft(state: OpeningDraft, action: DraftAction): OpeningDr
       return { ...state, bulkCountInput: action.value }
     case 'SET_NOTES':
       return { ...state, notes: action.value }
+    case 'RESOLVE_MANUAL_CARDS': {
+      if (action.idsByKey.size === 0) return state
+      return {
+        ...state,
+        pulls: state.pulls.map((pull) => {
+          const manualCardId = action.idsByKey.get(pull.key)
+          return manualCardId ? { ...pull, manualCardId } : pull
+        }),
+      }
+    }
     case 'BEGIN_SUBMIT':
       // The double-submit guard: a submission already in flight swallows further BEGINs, so a
       // double-tap on "Finish opening" cannot create two openings even before the backend's own
@@ -447,19 +528,34 @@ export function draftCostPreview(
 }
 
 /**
- * Session-memory draft holder. One draft at a time — the wizard is a single flow, and a stale
- * abandoned draft is cleared by RESET whenever the user finishes or cancels deliberately.
+ * Session-memory draft holder, SCOPED BY AUTHENTICATED USER (P56 §9 — P55 finding: the module-
+ * global draft let account B inherit account A's in-memory opening draft after a sign-out/
+ * switch). Drafts contain private financial intent — sealed product choice, pull list, manual
+ * card names, amounts — so:
+ *
+ *   - a signed-in user only ever loads/saves under their own id;
+ *   - a null/anonymous owner loads and saves nothing;
+ *   - `clearAll()` runs deterministically when authentication ends (AuthProvider.signOut), so no
+ *     private draft lingers in memory after sign-out.
+ *
+ * Still memory-only and per browser tab: the same user's draft survives wizard unmount/remount
+ * as intended; nothing is persisted to localStorage.
  */
-let sessionDraft: OpeningDraft | null = null
+const draftsByUser = new Map<string, OpeningDraft>()
 
 export const draftStore = {
-  load(): OpeningDraft | null {
-    return sessionDraft
+  load(userId: string | null): OpeningDraft | null {
+    return userId === null ? null : (draftsByUser.get(userId) ?? null)
   },
-  save(draft: OpeningDraft): void {
-    sessionDraft = draft
+  save(userId: string | null, draft: OpeningDraft): void {
+    if (userId === null) return
+    draftsByUser.set(userId, draft)
   },
-  clear(): void {
-    sessionDraft = null
+  clear(userId: string | null): void {
+    if (userId !== null) draftsByUser.delete(userId)
+  },
+  /** Drops EVERY user's in-memory draft — called when authentication ends. */
+  clearAll(): void {
+    draftsByUser.clear()
   },
 }

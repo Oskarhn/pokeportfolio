@@ -26,6 +26,7 @@ import {
 import {
   bindOpeningCreateArgs,
   drainRecomputeQueue,
+  disposeM16DiscoverySession,
   hasSupabaseEnv,
   requireCreateOpeningRpc,
   requireVoidOpeningRpc,
@@ -58,6 +59,7 @@ describe.skipIf(!hasSupabaseEnv())('M16 lifecycle oracle', () => {
 
   afterAll(async () => {
     if (service && userA) await deleteSyntheticUser(service, userA.id)
+    await disposeM16DiscoverySession()
   }, 60_000)
 
   async function seedSealedLot(
@@ -208,7 +210,7 @@ describe.skipIf(!hasSupabaseEnv())('M16 lifecycle oracle', () => {
     const seeded = await seedSealedLot('void-clean', 5, 2000)
     // Pulls ride creation (folded, execution-bound — P53 §4/§15).
     const created = await callCreateOpening(ctx, [{ lotId: seeded.lotId, quantity: 2 }], today, [
-      { cardVariantId: seedCatalog.charizardVariantId, quantity: 1 },
+      { cardVariantId: seedCatalog.charizardVariantId, quantity: 1, condition: 'NM' },
     ])
     if (!created.ok) throw new Error(created.error)
     const spendBeforeVoid = await spendSummary(clientA)
@@ -246,7 +248,7 @@ describe.skipIf(!hasSupabaseEnv())('M16 lifecycle oracle', () => {
     const surface = await skipUnlessM16(ctx, service)
     const seeded = await seedSealedLot('void-sold', 3, 3000)
     const created = await callCreateOpening(ctx, [{ lotId: seeded.lotId, quantity: 1 }], today, [
-      { cardVariantId: seedCatalog.charizardVariantId, quantity: 1 },
+      { cardVariantId: seedCatalog.charizardVariantId, quantity: 1, condition: 'NM' },
     ])
     if (!created.ok) throw new Error(created.error)
     const pulls = await pullLotsForOpening(clientA, created.openingId)

@@ -1,7 +1,11 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { serializeBackupEnvelope } from '../../src/domain/export/build-backup'
-import { BACKUP_DATA_KEYS, type BackupEnvelope } from '../../src/domain/export/backup-format'
+import {
+  BACKUP_DATA_KEYS,
+  BACKUP_SCHEMA_VERSION,
+  type BackupEnvelope,
+} from '../../src/domain/export/backup-format'
 import { CSV_BOM } from '../../src/domain/export/csv'
 import {
   buildCsvSuite,
@@ -279,11 +283,16 @@ afterAll(async () => {
 })
 
 describe('M13 export over real RLS', () => {
-  it('produces a structurally valid v1 envelope of exactly the canonical sections', async () => {
+  it('produces a structurally valid v2 envelope of exactly the canonical sections (M16 openings-capable writer)', async () => {
     const envelope = await exportAsA()
     expect(envelope.format).toBe('pokeportfolio-backup')
-    expect(envelope.schema_version).toBe(1)
+    // Post-M16 the writer is the Openings-capable V2 (P60 execution-proven); a v1 envelope is
+    // the PRE-M16 historical format and is rejected by the current validator by design.
+    expect(BACKUP_SCHEMA_VERSION).toBe(2)
+    expect(envelope.schema_version).toBe(2)
     expect(Object.keys(envelope.data).sort()).toEqual([...BACKUP_DATA_KEYS].sort())
+    // The M16 section is present and canonical: an empty array here, real rows once openings exist.
+    expect(Array.isArray(envelope.data.openings)).toBe(true)
   })
 
   it('seeds and exports every canonical row exactly once', async () => {

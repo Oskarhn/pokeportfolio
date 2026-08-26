@@ -25,6 +25,7 @@ import {
 import {
   bindAddPullArgs,
   bindOpeningCreateArgs,
+  disposeM16DiscoverySession,
   hasSupabaseEnv,
   probeM16Surface,
   requireCreateOpeningRpc,
@@ -86,6 +87,7 @@ describe.skipIf(!hasSupabaseEnv())('M16 security oracle', () => {
       if (!hasSupabaseEnv() || !service) return
       if (userA) await deleteSyntheticUser(service, userA.id)
       if (userB) await deleteSyntheticUser(service, userB.id)
+      await disposeM16DiscoverySession()
     }, 60_000)
 
     /** Seeds ONE opening of A's, shared by every attack case below. */
@@ -171,7 +173,7 @@ describe.skipIf(!hasSupabaseEnv())('M16 security oracle', () => {
       const args = bindOpeningCreateArgs(rpc, {
         openedOn: today,
         consumptions: [{ lotId: aSealedLotId, quantity: 1 }],
-        pulls: [{ cardVariantId: seedCatalog.charizardVariantId, quantity: 1 }],
+        pulls: [{ cardVariantId: seedCatalog.charizardVariantId, quantity: 1, condition: 'NM' }],
       })
       const { error } = await clientB.rpc(rpc.name, args)
       expect(error, "B created an opening with pulls from A's sealed lot").not.toBeNull()

@@ -4,6 +4,7 @@ import {
   getOpening as fetchOpening,
   listOpeningPulls,
   listOpeningSources,
+  reconcileOpeningCost as reconcileOpeningCostRecord,
   voidOpening as voidOpeningRecord,
 } from '../../data/opening'
 import type {
@@ -47,7 +48,9 @@ export function mapOpeningErrorMessage(rawMessage: string): string {
     return 'This opening was already recorded with different details. Check History before trying again.'
   }
   if (
-    /only \d+ of the selected lot remain|of the selected lot remain available/i.test(rawMessage)
+    /only \d+ of the (selected|target) lot remain|of the (selected|target) lot remain available/i.test(
+      rawMessage,
+    )
   ) {
     return 'Not enough unopened units left in that acquisition — another record may have used them first.'
   }
@@ -62,6 +65,12 @@ export function mapOpeningErrorMessage(rawMessage: string): string {
   }
   if (/provisional purchase does not match/.test(rawMessage)) {
     return 'The purchase link for this opening no longer matches — refresh and try again.'
+  }
+  if (/is already reconciled/i.test(rawMessage)) {
+    return 'This opening has already been linked to a recorded purchase.'
+  }
+  if (/has no provisional purchase to reconcile/i.test(rawMessage)) {
+    return 'This opening has no entered total to link — it already cites a recorded purchase.'
   }
   if (/not authenticated/i.test(rawMessage)) {
     return 'Your session has ended. Sign in and try again.'
@@ -87,6 +96,9 @@ function mapSource(row: Awaited<ReturnType<typeof listOpeningSources>>[number]):
     costKnown: row.costKnown,
     effectiveUnitBasisNokMinor: row.effectiveUnitBasisNokMinor,
     exhaustionResidualNokMinor: row.exhaustionResidualNokMinor,
+    purchaseId: row.purchaseId,
+    purchaseOrigin: row.purchaseOrigin,
+    purchasedOn: row.purchasedOn,
   }
 }
 
@@ -97,6 +109,8 @@ async function mapDetail(
   const pullLines = await listOpeningPulls(openingId)
   return {
     openingId: row.id,
+    sealedProductId: row.sealedProductId,
+    sourceLotId: row.sourceLotId,
     productName: row.sealedProductName,
     openedOn: row.openedOn,
     quantityOpened: row.quantityOpened,
@@ -121,6 +135,10 @@ async function mapDetail(
     soldPullProceedsNokMinor: row.netProceedsFromSoldPullsNokMinor,
     resultNokMinor: row.openingReturnNokMinor,
     voidedAt: row.voidedAt,
+    pricedPullLotCount: row.pricedPullLotCount,
+    unpricedPullLotCount: row.unpricedPullLotCount,
+    soldPullLotCount: row.soldPullLotCount,
+    reconciledAt: row.reconciledAt,
   }
 }
 
@@ -207,6 +225,15 @@ const integratedController: OpeningController = {
           return { blocked: true, blockedReason: blocked.message }
         }
       }
+      throw toFriendlyError(error)
+    }
+  },
+
+  async reconcileOpeningCost(openingId, realSourceLotId) {
+    try {
+      const reconciled = await reconcileOpeningCostRecord(openingId, realSourceLotId)
+      return { openingId: reconciled.id }
+    } catch (error) {
       throw toFriendlyError(error)
     }
   },

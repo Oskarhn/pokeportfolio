@@ -283,26 +283,56 @@ describe('the grant model holds: no direct browser writes to opening state', () 
   })
 
   it("authenticated cannot attach another user's opening_id to a pull lot (check-owner trigger)", async () => {
-    const { data: aOpening } = await service
-      .from('openings')
+    // Self-sufficient fixtures (P62): B needs a raw-card holding to attempt the attachment
+    // through, and A needs an opening whose id can be forged. Neither depends on leftovers
+    // from earlier cases.
+    const { data: bHolding } = await service
+      .from('holdings')
+      .insert({
+        user_id: userB.id,
+        holding_kind: 'raw_card',
+        card_variant_id: seedCatalog.pikachuVariantId,
+        condition: 'NM',
+        grading_state: 'raw',
+      })
       .select('id')
-      .eq('user_id', userA.id)
-      .limit(1)
-      .maybeSingle<{ id: string }>()
-    if (!aOpening) return // covered by the suites above regardless
+      .single<{ id: string }>()
+    if (!bHolding) throw new Error('user B holding fixture failed')
+
+    let aOpeningId = (
+      await service
+        .from('openings')
+        .select('id')
+        .eq('user_id', userA.id)
+        .limit(1)
+        .maybeSingle<{ id: string }>()
+    ).data?.id
+    if (!aOpeningId) {
+      const bought = await buySealedLot(clientA, userA.id)
+      const { data: created, error: createError } = await clientA
+        .rpc('create_opening', {
+          p_source_lot_id: bought,
+          p_quantity: 1,
+          p_opened_on: today,
+        })
+        .single<{ id: string }>()
+      if (createError) {
+        throw new Error(`opening fixture failed: ${createError.message}`)
+      }
+      aOpeningId = created.id
+    }
 
     const { error } = await clientB.from('acquisition_lots').insert({
-      holding_id: (
-        await service.from('holdings').select('id').eq('user_id', userB.id).limit(1).single()
-      ).data!.id,
+      holding_id: bHolding.id,
       origin: 'opening',
       cost_basis_state: 'unallocated_opening',
       acquired_on: today,
       quantity: 1,
       quantity_remaining: 1,
-      opening_id: aOpening.id,
+      opening_id: aOpeningId,
     })
     expect(error).not.toBeNull()
+    expect(JSON.stringify(error)).toMatch(/same owner|must belong/i)
   })
 
   it('defence in depth fires under the service role too: openings_check_owner rejects mismatches', async () => {
