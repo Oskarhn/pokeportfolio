@@ -104,6 +104,13 @@ const OpeningDetailPage = lazy(() =>
     default: m.OpeningDetailPage,
   })),
 )
+// M15 scanner UI (P66). Route exists behind feature wiring so the flow is exercisable and E2E-
+// guardable; NO navigation entry advertises it yet — recognition is still the placeholder
+// controller until P68 integrates the real engine. P68 owns flipping Quick Add/Search entries
+// and any final route move.
+const ScannerPage = lazy(() =>
+  import('./features/scanner/ScannerPage').then((m) => ({ default: m.ScannerPage })),
+)
 
 /** Matches the layout these pages render into (AppShell's `<main>`) closely enough that arriving
  *  content doesn't jump — a skeleton rather than a spinner-over-blank-region, per
@@ -593,6 +600,16 @@ const adminInvitationsRoute = createRoute({
   ),
 })
 
+const scannerRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/scan',
+  component: () => (
+    <RequireSession>
+      <ScannerPage />
+    </RequireSession>
+  ),
+})
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   loginRoute,
@@ -624,6 +641,7 @@ const routeTree = rootRoute.addChildren([
   openingDetailRoute,
   profileRoute,
   profileExportRoute,
+  scannerRoute,
   legacyMoreRoute,
   adminInvitationsRoute,
 ])
