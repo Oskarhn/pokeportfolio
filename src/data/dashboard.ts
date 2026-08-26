@@ -231,7 +231,8 @@ export async function getMonthlySpend(months = 12): Promise<MonthlySpendMonth[]>
   }))
 }
 
-export type RecentActivityType = 'purchase' | 'sale' | 'valuation' | 'acquisition'
+/** 'opening' arrived with M16's get_recent_activity arm (one row per active opening). */
+export type RecentActivityType = 'purchase' | 'sale' | 'valuation' | 'acquisition' | 'opening'
 
 export interface RecentActivityItem {
   type: RecentActivityType

@@ -2275,3 +2275,162 @@ they are the raw material of history and are untouched. Alternatives rejected: c
 headline from a new live-CMV RPC (duplicate work per load), waiting for the drain with better
 copy only (leaves the owner-visible latency), and deriving coverage from snapshot counts
 (wrong regime — coverage must describe current state).
+
+---
+
+## D-087 — One source sealed acquisition lot per opening (Option A)
+
+**2026-08-26 — Accepted** (P50, confirmed at P53 integration)
+
+An opening consumes 1..N units of exactly ONE `acquisition_lots` row: `openings.source_lot_id` is
+NOT NULL and the consumption is one `lot_disposals(kind='opened')` row per opening (unique
+live-per-opening index). Opening units across two different acquisitions is two openings.
+
+Rationale: real usage opens from one purchase at a time; the per-lot residual rule
+(FINANCIAL_MODEL §4.3) is exact per lot regardless of how a lot's units are split; and the model
+stays widenable — multi-lot consumption later drops the single unique index without touching any
+stored row or financial figure. Rejected: disposal-level multi-lot linkage now (more state, no
+user story behind it).
+
+## D-088 — Opening current financial semantics; pulled cards carry NO individual basis
+
+**2026-08-26 — Accepted** (P50, confirmed at P53 integration)
+
+Opening creates NO spend anywhere (CS/GPO are byte-identical across an opening); the opening OWNS
+the frozen cost it consumed (`openings.cost_nok_minor`, `cost_source='from_lot'|'unknown'`);
+every pull lot is structurally uncosted (`origin='opening'`,
+`cost_basis_state='unallocated_opening'`, NULL basis columns) so per-card ROI for pulled cards is
+UNREPRESENTABLE, not merely hidden. Opening return (§5.3) is analytical scope over kroner the
+purchase ledger already counted once and is never additive with TTEP (F8). A known cost of
+exactly ZERO is legitimate data when the basis genuinely was zero; UNKNOWN stays NULL — never a
+fake zero (M1 at opening scope). Tracking completeness is owner-declared, never inferred;
+incomplete tracking suppresses any bare percentage.
+
+## D-089 — Server-side idempotency on opening creation; provisional replay checked BEFORE the purchase
+
+**2026-08-26 — Accepted** (P53; material-comparison scope stated exactly 2026-08-25, P59; replay
+provenance corrected 2026-08-26, P62/F-61-1)
+
+Every opening write carries a client-generated UUID idempotency key, stored NOT NULL on
+`openings.idempotency_key` and unique per `(user_id, idempotency_key)`. Same key + same material
+request ⇒ the SAME committed opening is returned; same key + materially different arguments ⇒
+named `idempotency-key-reuse` error (mismatched reuse is rejected because material fields make it
+cheaply verifiable — full request hashing would be disproportionate). **What is compared,
+exactly:** `create_opening` compares `source_lot_id`, `quantity_opened` and `opened_on`;
+`create_opening_from_provisional` compares those (product id, quantity, coalesced opened_on) PLUS
+the ORIGINAL provisional receipt's `line_total_minor` (the entered total paid) and its purchase's
+`purchased_on`. P62 correction (F-61-1): those two facts are recovered through the committed
+opening's retained `provisional_purchase_id` → purchases → that purchase's own line — NOT through
+the current `source_lot_id`, which reconciliation repoints at the real replacement lot. The
+original provisional rows survive reconciliation (the purchase is voided there, never deleted), so
+a LATE retry of the original request matches its own receipt even after linking; walking the
+replacement's facts instead would refuse the user's own original operation as key reuse. A key
+whose committed opening has no provisional receipt (`provisional_purchase_id IS NULL`) is still
+refused via `IS DISTINCT FROM` (cross-path reuse). Money and the canonical business date are
+material; a different amount or date under an existing key can never silently replay the old
+financial fact. NOT compared (deliberate, non-material auxiliary input): pull list, notes,
+tracking completeness, bulk estimate. On the provisional path the key is resolved BEFORE the
+purchase insert: a retry after "purchase created + opening committed + response lost" can never
+create a second purchase or double-count spend. Client double-click guards are UX only; this
+invariant lives in the writer. The client keeps the key inside its in-memory draft so one logical
+opening carries ONE key across remounts and retries (memory-only — no localStorage).
+
+## D-090 — Buy-and-open ships with total-paid exactness; line-total CHECK gains largest-remainder tolerance
+
+**2026-08-26 — Accepted** (P53)
+
+The owner-requested "I bought these packs and opened them now" flow enters the RECEIPT TOTAL,
+never a per-unit price. The provisional backend contract takes `p_total_paid_minor` and splits it
+by integer largest remainder: unit = floor(total/qty) on the line/lot as display/storage value,
+residual = total − unit×qty on the acquisition lot's existing residual columns, so Σ attributable
+basis equals the entered total exactly through any opening split. To represent this honestly on
+the canonical line, M3's equality CHECK `line_total_minor = unit_price_minor × quantity` was
+REPLACED by `unit×qty ≤ line_total ≤ unit×qty + qty − 1` (widening only: all pre-existing rows
+and every other writer produce excess 0). Rejected alternatives: booking the remainder as fake
+shipping/discount allocations (fabricates a fact), two lines (creates a second lot, breaking the
+single-source-lot model), and header-total-only exactness (GPO reads line attributable cost and
+would undercount by the residual).
+
+Voiding an opening deliberately does NOT void its purchase — including a provisional_opening one.
+"VOID OPENING = the opening did not happen"; the purchase is a separate economic fact corrected
+through the ordinary purchase-correction surface. This replaces P50's symmetric provisional-void,
+which could restore live sealed inventory whose purchase no longer counted (a free sealed lot).
+
+Manual-card pull identities resolve to reusable `manual_card_definitions` rows at submission time,
+cached per identity so retries never duplicate definitions; an abandoned definition is safe
+reusable metadata containing no fabricated financial fact, while the opening/pulls transaction
+itself remains fully atomic.
+
+## D-091 — Backup schema_version 2: Openings-capable export
+
+**2026-08-26 — Accepted** (P53)
+
+M16 introduces canonical user data (`openings` plus the `opening_id` relationships), so the M13
+backup format cannot stay lossless at v1: writers emit v2 ONLY, adding the canonical
+`data.openings` section (all columns incl. `idempotency_key` and reconciliation provenance, money
+as exact text) and extending `acquisition_lots` / `lot_disposals` rows with `opening_id`. v1 files
+are NOT retroactively wrong — they were valid pre-Openings exports; restore remains M19 and no
+import exists yet. A generated post-M16 backup claiming v1, missing openings, or missing the
+linkage fields is a release blocker, policed by the M13 adversarial suite and the independent
+M16 backup oracle.
+
+## D-092 — Reconciliation annihilates the provisional world; coverage counts are retained-only; drafts are user-scoped
+
+**2026-08-25 — Accepted** (P56 repair, closing P54 H1/L1 and P55 F55-6/F55-9/F55-10/F55-12)
+
+1. **Reconciliation replaces the provisional purchase — so the provisional world annihilates as
+   a unit.** `reconcile_opening_cost` now voids the provisional source acquisition lot in the same
+   transaction as the provisional purchase (P54 finding H1: retiring only the consumption would
+   let D1 restore a live known-basis sealed lot citing money that just left the ledger — phantom
+   inventory). Rows are retained, never deleted. The void-opening policy of D-090 is UNCHANGED:
+   "the opening did not happen" keeps the source purchase active; it is reconciliation, not
+   voiding, that replaces the provisional purchase.
+2. **The reconciliation target must cite a LIVE non-provisional purchase**
+   (`p.voided_at IS NULL AND p.origin <> 'provisional_opening'`, joined explicitly in the target
+   lookup). Provisional → provisional chains and voided-receipt targets are refused
+   indistinguishably from foreign/missing lots.
+3. **`get_opening`'s priced/unpriced pull counts and retained value are CURRENT-RETAINED
+   semantics** (`quantity_remaining > 0`): a fully-sold pull is sold provenance, reported by
+   `sold_pull_lot_count`/proceeds, never as pricing coverage for cards still retained.
+4. **Opening drafts are scoped by authenticated user id** in session memory, cleared when
+   authentication ends; no account inherits another's draft and an anonymous visitor sees none.
+5. **Created manual-card definition ids persist into the user-scoped draft**, so retries after a
+   failed opening RPC reuse the same definition row across remounts without heuristic identity
+   merging.
+6. **Integer-division wording:** plpgsql bigint division truncates toward zero ("floor" prose
+   corrected wherever adjustments can be negative); executable arithmetic unchanged.
+
+The widened `purchase_lines_line_total_matches_unit_price` envelope stands UNCHANGED and is now
+documented as a GLOBAL purchase-line invariant (every writer excess-0 except the provisional
+path's legal 0..qty−1 residual), with direct constraint tests added.
+
+## D-093 — The client clears its whole query and mutation cache on every authenticated identity transition
+
+**2026-08-26 — Accepted** (P63, closing F-61-2)
+
+TanStack Query's module-lifetime client is user-blind: no query key anywhere in `src/` carries a
+user id, so on a same-tab account switch (A signs out, B signs in, no reload) B rendered A's
+cached Home/Portfolio/History/recent-activity/opening values until refetches resolved. RLS blocked
+all continued server access; the stale in-memory render was the leak.
+
+The boundary lives in the auth layer (`src/auth/query-cache-boundary.ts`): AuthProvider tracks the
+last OBSERVED authenticated user id and, whenever one observed identity is replaced by a different
+one, synchronously — before the new session becomes renderable state — cancels queries,
+`queryClient.clear()`s BOTH the query and mutation caches, and clears opening drafts. Rules:
+
+1. **Any identity change clears** (A→signed-out, signed-out→B, direct A→B). In-flight queries are
+   cancelled first; late responses for destroyed queries are dropped by query-core and cannot
+   repopulate B's cache.
+2. **Same-user events retain everything** (TOKEN_REFRESHED / USER_UPDATED / duplicate SIGNED_IN
+   compare equal) — refresh churn never blanks app state.
+3. **Public/catalog cache is also cleared deliberately.** Blanket clear over userId-scoped keys:
+   keys are distributed across many features and unkeyed today, scale is tiny, and structural "no
+   A-data renders under B" beats a maintained keying convention. Cost: catalog refetches once per
+   sign-in. For a ≤10-user product privacy is preferred over cache preservation.
+4. **No localStorage enters the picture**; the boundary is memory-only and idempotent.
+5. Residual, disclosed: TanStack v5 mutations cannot be aborted; an in-flight A mutation completes
+   under A's own JWT (server-side owner-scoped write), and no `setQueryData` exists in `src/`, so
+   nothing of A's lands in B's cache.
+
+Regression coverage: `tests/ui/auth-query-cache.test.ts` (8 cases against real QueryClient
+instances, including the in-flight race and pending-mutation cases).

@@ -1,17 +1,23 @@
 import { supabase } from './supabase-client'
 
 /**
- * The unified History read surface (P43, 20260901120010_p43_reset_and_history.sql). One bounded,
- * keyset-paginated RPC over the canonical event sources that exist today — purchases, sales,
- * non-purchase acquisitions ("Added") and active manual valuations. Components call these, never
- * `supabase.rpc('list_history_events')` directly — same rule as every other src/data module.
+ * The unified History read surface (P43, 20260901120010_p43_reset_and_history.sql; M16 adds the
+ * 'opening' kind via 20260902120020). One bounded, keyset-paginated RPC over the canonical event
+ * sources — purchases, sales, openings, non-purchase acquisitions ("Added") and active manual
+ * valuations. Opening-linked pull lots never appear as individual "Added" rows: they ride their
+ * opening's single event. Components call these, never `supabase.rpc('list_history_events')`
+ * directly — same rule as every other src/data module.
  *
  * Voided/corrected entries are a display filter (p_includeVoided), never an accounting change:
  * hiding them alters no total anywhere (DECISIONS.md D-084's CORRECTION vs DISPLAY-FILTER
  * distinction).
+ *
+ * M16: the `opening` kind is a first-class backend arm of the union (20260902120020) — one event
+ * per opening, with opening-linked pull lots excluded from "Added" so a single conceptual action
+ * never reports twice.
  */
 
-export type HistoryEventKind = 'purchase' | 'sale' | 'acquisition' | 'valuation'
+export type HistoryEventKind = 'purchase' | 'sale' | 'opening' | 'acquisition' | 'valuation'
 
 export interface HistoryEvent {
   kind: HistoryEventKind

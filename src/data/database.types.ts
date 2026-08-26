@@ -18,6 +18,7 @@ export type Database = {
           holding_id: string
           id: string
           notes: string | null
+          opening_id: string | null
           origin: Database["public"]["Enums"]["lot_origin"]
           purchase_line_id: string | null
           quantity: number
@@ -39,6 +40,7 @@ export type Database = {
           holding_id: string
           id?: string
           notes?: string | null
+          opening_id?: string | null
           origin: Database["public"]["Enums"]["lot_origin"]
           purchase_line_id?: string | null
           quantity: number
@@ -60,6 +62,7 @@ export type Database = {
           holding_id?: string
           id?: string
           notes?: string | null
+          opening_id?: string | null
           origin?: Database["public"]["Enums"]["lot_origin"]
           purchase_line_id?: string | null
           quantity?: number
@@ -86,6 +89,13 @@ export type Database = {
             columns: ["holding_id"]
             isOneToOne: false
             referencedRelation: "holdings"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "acquisition_lots_opening_id_fkey"
+            columns: ["opening_id"]
+            isOneToOne: false
+            referencedRelation: "openings"
             referencedColumns: ["id"]
           },
           {
@@ -772,6 +782,7 @@ export type Database = {
           id: string
           kind: Database["public"]["Enums"]["disposal_kind"]
           lot_id: string
+          opening_id: string | null
           quantity: number
           sale_line_id: string | null
           user_id: string
@@ -784,6 +795,7 @@ export type Database = {
           id?: string
           kind: Database["public"]["Enums"]["disposal_kind"]
           lot_id: string
+          opening_id?: string | null
           quantity: number
           sale_line_id?: string | null
           user_id: string
@@ -796,6 +808,7 @@ export type Database = {
           id?: string
           kind?: Database["public"]["Enums"]["disposal_kind"]
           lot_id?: string
+          opening_id?: string | null
           quantity?: number
           sale_line_id?: string | null
           user_id?: string
@@ -807,6 +820,13 @@ export type Database = {
             columns: ["lot_id"]
             isOneToOne: false
             referencedRelation: "acquisition_lots"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "lot_disposals_opening_id_fkey"
+            columns: ["opening_id"]
+            isOneToOne: false
+            referencedRelation: "openings"
             referencedColumns: ["id"]
           },
           {
@@ -916,6 +936,102 @@ export type Database = {
             columns: ["holding_id"]
             isOneToOne: false
             referencedRelation: "holdings"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      openings: {
+        Row: {
+          bulk_remainder_count: number | null
+          bulk_remainder_estimate_nok_minor: number | null
+          cost_nok_minor: number | null
+          cost_source: Database["public"]["Enums"]["opening_cost_source"]
+          created_at: string
+          idempotency_key: string
+          notes: string | null
+          opened_on: string
+          provisional_purchase_id: string | null
+          quantity_opened: number
+          reconciled_at: string | null
+          reconciled_to_purchase_id: string | null
+          sealed_product_id: string
+          source_lot_id: string
+          tracking_completeness: Database["public"]["Enums"]["opening_tracking"]
+          user_id: string
+          voided_at: string | null
+        }
+        Insert: {
+          bulk_remainder_count?: number | null
+          bulk_remainder_estimate_nok_minor?: number | null
+          cost_nok_minor?: number | null
+          cost_source: Database["public"]["Enums"]["opening_cost_source"]
+          created_at?: string
+          idempotency_key?: string
+          notes?: string | null
+          opened_on: string
+          provisional_purchase_id?: string | null
+          quantity_opened: number
+          reconciled_at?: string | null
+          reconciled_to_purchase_id?: string | null
+          sealed_product_id: string
+          source_lot_id: string
+          tracking_completeness?: Database["public"]["Enums"]["opening_tracking"]
+          user_id: string
+          voided_at?: string | null
+        }
+        Update: {
+          bulk_remainder_count?: number | null
+          bulk_remainder_estimate_nok_minor?: number | null
+          cost_nok_minor?: number | null
+          cost_source?: Database["public"]["Enums"]["opening_cost_source"]
+          created_at?: string
+          idempotency_key?: string
+          notes?: string | null
+          opened_on?: string
+          provisional_purchase_id?: string | null
+          quantity_opened?: number
+          reconciled_at?: string | null
+          reconciled_to_purchase_id?: string | null
+          sealed_product_id?: string
+          source_lot_id?: string
+          tracking_completeness?: Database["public"]["Enums"]["opening_tracking"]
+          user_id?: string
+          voided_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "openings_provisional_purchase_id_fkey"
+            columns: ["provisional_purchase_id"]
+            isOneToOne: false
+            referencedRelation: "purchases"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "openings_reconciled_to_purchase_id_fkey"
+            columns: ["reconciled_to_purchase_id"]
+            isOneToOne: false
+            referencedRelation: "purchases"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "openings_sealed_product_id_fkey"
+            columns: ["sealed_product_id"]
+            isOneToOne: false
+            referencedRelation: "sealed_products"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "openings_source_lot_id_fkey"
+            columns: ["source_lot_id"]
+            isOneToOne: false
+            referencedRelation: "acquisition_lots"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "openings_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "users"
             referencedColumns: ["id"]
           },
         ]
@@ -1794,6 +1910,87 @@ export type Database = {
           token: string
         }[]
       }
+      create_opening: {
+        Args: {
+          p_bulk_remainder_count?: number | null
+          p_bulk_remainder_estimate_nok_minor?: number | null
+          p_idempotency_key?: string | null
+          p_notes?: string | null
+          p_opened_on?: string
+          p_provisional_purchase_id?: string | null
+          p_pulls?: Json
+          p_quantity: number
+          p_source_lot_id: string
+          p_tracking_completeness?: Database["public"]["Enums"]["opening_tracking"]
+        }
+        Returns: {
+          bulk_remainder_count: number | null
+          bulk_remainder_estimate_nok_minor: number | null
+          cost_nok_minor: number | null
+          cost_source: Database["public"]["Enums"]["opening_cost_source"]
+          created_at: string
+          id: string
+          idempotency_key: string
+          notes: string | null
+          opened_on: string
+          provisional_purchase_id: string | null
+          quantity_opened: number
+          reconciled_at: string | null
+          reconciled_to_purchase_id: string | null
+          sealed_product_id: string
+          source_lot_id: string
+          tracking_completeness: Database["public"]["Enums"]["opening_tracking"]
+          user_id: string
+          voided_at: string | null
+        }
+        SetofOptions: {
+          from: "*"
+          to: "openings"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
+      create_opening_from_provisional: {
+        Args: {
+          p_bulk_remainder_count?: number | null
+          p_bulk_remainder_estimate_nok_minor?: number | null
+          p_idempotency_key?: string | null
+          p_notes?: string | null
+          p_opened_on?: string | null
+          p_pulls?: Json
+          p_purchased_on: string
+          p_quantity: number
+          p_sealed_product_id: string
+          p_total_paid_minor: number
+          p_tracking_completeness?: Database["public"]["Enums"]["opening_tracking"]
+        }
+        Returns: {
+          bulk_remainder_count: number | null
+          bulk_remainder_estimate_nok_minor: number | null
+          cost_nok_minor: number | null
+          cost_source: Database["public"]["Enums"]["opening_cost_source"]
+          created_at: string
+          id: string
+          idempotency_key: string
+          notes: string | null
+          opened_on: string
+          provisional_purchase_id: string | null
+          quantity_opened: number
+          reconciled_at: string | null
+          reconciled_to_purchase_id: string | null
+          sealed_product_id: string
+          source_lot_id: string
+          tracking_completeness: Database["public"]["Enums"]["opening_tracking"]
+          user_id: string
+          voided_at: string | null
+        }
+        SetofOptions: {
+          from: "*"
+          to: "openings"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
       create_purchase: {
         Args: {
           p_currency: string
@@ -1884,6 +2081,34 @@ export type Database = {
       finalize_invitation_redemption: {
         Args: { p_claim_id: string; p_user_id: string }
         Returns: undefined
+      }
+      get_opening: {
+        Args: { p_opening_id: string }
+        Returns: {
+          bulk_remainder_count: number | null
+          bulk_remainder_estimate_nok_minor: string | null
+          cost_nok_minor: string | null
+          cost_source: Database["public"]["Enums"]["opening_cost_source"]
+          created_at: string
+          id: string
+          net_proceeds_from_sold_pulls_nok_minor: string
+          notes: string | null
+          opened_on: string
+          opening_return_nok_minor: string | null
+          priced_pull_lot_count: number
+          provisional_purchase_id: string | null
+          quantity_opened: number
+          reconciled_at: string | null
+          reconciled_to_purchase_id: string | null
+          retained_tracked_value_nok_minor: string
+          sealed_product_id: string
+          sealed_product_name: string
+          sold_pull_lot_count: number
+          source_lot_id: string
+          tracking_completeness: Database["public"]["Enums"]["opening_tracking"]
+          unpriced_pull_lot_count: number
+          voided_at: string | null
+        }[]
       }
       get_card_variant_price_history: {
         Args: { p_card_variant_id: string; p_since?: string }
@@ -2033,6 +2258,27 @@ export type Database = {
           title: string
         }[]
       }
+      list_opening_sources: {
+        Args: {
+          p_holding_id?: string | null
+        }
+        Returns: {
+          acquired_on: string
+          cost_known: boolean
+          effective_unit_basis_nok_minor: string | null
+          exhaustion_residual_nok_minor: string | null
+          holding_id: string
+          image_url: string | null
+          lot_id: string
+          product_name: string
+          product_type: string | null
+          purchase_id: string | null
+          purchase_origin: string | null
+          purchased_on: string | null
+          quantity_available: number
+          sealed_product_id: string
+        }[]
+      }
       list_portfolio: {
         Args: {
           p_condition?: Database["public"]["Enums"]["card_condition"]
@@ -2150,6 +2396,35 @@ export type Database = {
         }
         Returns: { owned_quantity: number }[]
       }
+      reconcile_opening_cost: {
+        Args: { p_opening_id: string; p_real_source_lot_id: string }
+        Returns: {
+          bulk_remainder_count: number | null
+          bulk_remainder_estimate_nok_minor: number | null
+          cost_nok_minor: number | null
+          cost_source: Database["public"]["Enums"]["opening_cost_source"]
+          created_at: string
+          id: string
+          idempotency_key: string
+          notes: string | null
+          opened_on: string
+          provisional_purchase_id: string | null
+          quantity_opened: number
+          reconciled_at: string | null
+          reconciled_to_purchase_id: string | null
+          sealed_product_id: string
+          source_lot_id: string
+          tracking_completeness: Database["public"]["Enums"]["opening_tracking"]
+          user_id: string
+          voided_at: string | null
+        }
+        SetofOptions: {
+          from: "*"
+          to: "openings"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
       release_invitation_claim: {
         Args: { p_claim_id: string }
         Returns: undefined
@@ -2170,6 +2445,8 @@ export type Database = {
           holdings_deleted: number
           lot_disposals_deleted: number
           manual_valuations_deleted: number
+          opening_pull_lots_deleted: number
+          openings_deleted: number
           purchase_lines_deleted: number
           purchases_deleted: number
           sale_lines_deleted: number
@@ -2208,6 +2485,10 @@ export type Database = {
           rrc_nok_minor: string
           sale_count: number
         }[]
+      }
+      void_opening: {
+        Args: { p_opening_id: string; p_reason?: string | null }
+        Returns: undefined
       }
       search_cards: {
         Args: {
@@ -2427,6 +2708,8 @@ export type Database = {
         | "other"
         | "opening"
         | "trade_in"
+      opening_cost_source: "from_lot" | "unknown"
+      opening_tracking: "all_cards" | "selected_pulls" | "unknown"
       portfolio_sort_order:
         | "value_desc"
         | "value_asc"
@@ -2632,6 +2915,8 @@ export const Constants = {
         "opening",
         "trade_in",
       ],
+      opening_cost_source: ["from_lot", "unknown"],
+      opening_tracking: ["all_cards", "selected_pulls", "unknown"],
       portfolio_sort_order: [
         "value_desc",
         "value_asc",

@@ -40,6 +40,7 @@ import {
   type BackupLotDisposalRow,
   type BackupManualCardDefinitionRow,
   type BackupManualValuationRow,
+  type BackupOpeningRow,
   type BackupProfileRow,
   type BackupPurchaseLineRow,
   type BackupPurchaseRow,
@@ -131,7 +132,12 @@ export const EXPORT_SECTION_SELECTS = {
     'id, user_id, holding_id, purchase_line_id, origin, cost_basis_state, cost_basis_currency, ' +
     'unit_cost_basis_minor::text, unit_cost_basis_nok_minor::text, residual_minor::text, ' +
     'residual_nok_minor::text, quantity, quantity_remaining, sealed_intent, storage_location_id, ' +
-    'acquired_on, voided_at, notes, created_at',
+    'acquired_on, opening_id, voided_at, notes, created_at',
+  openings:
+    'id, user_id, opened_on, source_lot_id, sealed_product_id, quantity_opened, cost_source, ' +
+    'cost_nok_minor::text, tracking_completeness, bulk_remainder_estimate_nok_minor::text, ' +
+    'bulk_remainder_count, provisional_purchase_id, reconciled_at, reconciled_to_purchase_id, ' +
+    'idempotency_key, notes, created_at, voided_at',
   manual_card_definitions:
     'id, user_id, name, set_name, collector_number, language, finish, stamp, subtype, size, ' +
     'notes, created_at, updated_at',
@@ -165,7 +171,7 @@ export const EXPORT_SECTION_SELECTS = {
     'allocated_shipping_charged_minor::text, net_proceeds_minor::text, net_proceeds_nok_minor::text, ' +
     'cost_basis_at_sale_nok_minor::text, realized_result_nok_minor::text, created_at',
   lot_disposals:
-    'id, user_id, lot_id, sale_line_id, kind, disposed_on, quantity, ' +
+    'id, user_id, lot_id, sale_line_id, opening_id, kind, disposed_on, quantity, ' +
     'cost_basis_at_disposal_nok_minor::text, voided_at, created_at',
 } as const satisfies Record<ArraySection, string>
 
@@ -193,6 +199,7 @@ export const MONEY_FIELDS: { [K in ArraySection]: readonly MoneyKeys<BackupData[
   sealed_products: [],
   manual_valuations: ['value_minor', 'value_nok_minor'],
   lot_cost_adjustments: ['amount_minor', 'amount_nok_minor'],
+  openings: ['cost_nok_minor', 'bulk_remainder_estimate_nok_minor'],
   purchases: [
     'subtotal_minor',
     'shipping_minor',
@@ -252,6 +259,7 @@ const SECTION_IDENTITY_KEYS: Record<ArraySection, readonly string[]> = {
   sealed_products: ['id'],
   manual_valuations: ['id'],
   lot_cost_adjustments: ['id'],
+  openings: ['id'],
   purchases: ['id'],
   purchase_lines: ['id'],
   sales: ['id'],
@@ -297,6 +305,7 @@ export const NULLABLE_MONEY_FIELDS: {
   sealed_products: [],
   manual_valuations: [],
   lot_cost_adjustments: [],
+  openings: ['cost_nok_minor', 'bulk_remainder_estimate_nok_minor'],
   purchases: [],
   purchase_lines: [],
   sales: ['realized_result_nok_minor'],
@@ -811,6 +820,27 @@ async function fetchLotDisposals(
   )
 }
 
+async function fetchOpenings(
+  client: SupabaseClient<Database>,
+  options: ExportFetchOptions,
+): Promise<BackupData['openings']> {
+  return collectRows(
+    client,
+    'openings',
+    options,
+    (from, to) => {
+      const base = client
+        .from('openings')
+        .select(EXPORT_SECTION_SELECTS.openings)
+        .order('id', { ascending: true })
+        .range(from, to)
+      const ready = options.signal === undefined ? base : base.abortSignal(options.signal)
+      return ready.overrideTypes<WireRow<BackupOpeningRow>[], { merge: false }>()
+    },
+    (row) => brandRow(row, 'openings'),
+  )
+}
+
 /**
  * Projects one fetched profile wire row onto the {@link BackupProfileRow} allowlist,
  * field by field — never spread. Privilege exclusion must not depend solely on the
@@ -1109,6 +1139,7 @@ export async function fetchExportSnapshot(
   const sales = await fetchSales(client, options)
   const saleLines = await fetchSaleLines(client, options)
   const lotDisposals = await fetchLotDisposals(client, options)
+  const openings = await fetchOpenings(client, options)
 
   const snapshot: ExportSnapshot = {
     profiles,
@@ -1124,6 +1155,7 @@ export async function fetchExportSnapshot(
     sealed_products: sealedProductsUserCreated,
     manual_valuations: manualValuations,
     lot_cost_adjustments: lotCostAdjustments,
+    openings,
     purchases,
     purchase_lines: purchaseLines,
     sales,

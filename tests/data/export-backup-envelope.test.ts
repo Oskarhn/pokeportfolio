@@ -10,7 +10,7 @@ import {
   assertBackupEnvelope,
   validateBackupEnvelope,
 } from '../../src/domain/export/backup-validate'
-import { FIXED_EXPORTED_AT, fixtureSnapshot } from './export-fixtures'
+import { FIXED_EXPORTED_AT, FIXTURE_IDS, FIXTURE_IDS_M16, fixtureSnapshot } from './export-fixtures'
 
 const envelope = () =>
   buildBackupEnvelope(fixtureSnapshot(), { exportedAt: FIXED_EXPORTED_AT, appVersion: 'test' })
@@ -19,7 +19,7 @@ describe('versioned envelope (M13 gate: version envelope present)', () => {
   it('carries format identifier, schema version, export timestamp and app version', () => {
     const e = envelope()
     expect(e.format).toBe(BACKUP_FORMAT_ID)
-    expect(e.schema_version).toBe(1)
+    expect(e.schema_version).toBe(2)
     expect(e.exported_at).toBe(FIXED_EXPORTED_AT)
     expect(e.app.version).toBe('test')
     expect(e.exported_at.endsWith('Z')).toBe(true)
@@ -145,22 +145,90 @@ describe('envelope validator / type guard', () => {
     expect(result.failure?.path).toBe('format')
   })
 
-  it('rejects an unknown schema version (compatibility policy)', () => {
-    const result = validateBackupEnvelope(broken((e) => ({ ...e, schema_version: 2 })))
-    expect(result.valid).toBe(false)
-    expect(result.failure?.path).toBe('schema_version')
+  it('rejects an unknown schema version (compatibility policy) — v1 included, post-M16', () => {
+    // v2 is the only version this reader understands: v1 files are pre-Openings artifacts, and a
+    // generated backup claiming v1 while canonical openings exist is a release blocker (P53 §22).
+    for (const stale of [1, 3]) {
+      const result = validateBackupEnvelope(broken((e) => ({ ...e, schema_version: stale })))
+      expect(result.valid).toBe(false)
+      expect(result.failure?.path).toBe('schema_version')
+    }
   })
 
-  it('v1 policy (D-076): a v2 writer must bump the version — a same-version file with a new section is refused', () => {
-    // Distinguishing test for the adjudicated version policy: within-v1 forward tolerance was
-    // REJECTED. A future canonical section is only legitimate alongside a schema_version bump,
-    // which this reader then refuses wholesale; the future v2 reader owns reading such files.
+  it('v2 policy (D-076 as extended by M16): an unknown future section is refused at the current version', () => {
+    // Distinguishing test for the adjudicated version policy: within-version forward tolerance
+    // was REJECTED. A future canonical section is only legitimate alongside a schema_version
+    // bump, which the next reader then owns wholesale.
     const e = envelope() as unknown as Record<string, unknown>
     const withNewSection = {
       ...e,
-      data: { ...(e['data'] as Record<string, unknown>), openings: [] },
+      data: { ...(e['data'] as Record<string, unknown>), some_future_section: [] },
     }
     expect(validateBackupEnvelope(withNewSection).valid).toBe(false)
+  })
+
+  it('carries the canonical openings section with its relationship fields (P53 §20/§22)', () => {
+    const e = envelope()
+    expect(e.data.openings).toEqual([])
+    expect(BACKUP_DATA_KEYS.indexOf('openings')).toBeGreaterThan(-1)
+    // Every lot/disposal row exposes the opening linkage column — null when unrelated.
+    for (const lot of e.data.acquisition_lots) {
+      expect('opening_id' in lot).toBe(true)
+    }
+    for (const disposal of e.data.lot_disposals) {
+      expect('opening_id' in disposal).toBe(true)
+    }
+  })
+
+  it('a generated post-M16 backup with openings is v2, counts them, and preserves linkage + exact money (I13)', () => {
+    const opening = {
+      id: 'o1000000-0000-4000-8000-000000000001',
+      user_id: FIXTURE_IDS.profileUserId,
+      opened_on: '2026-08-01',
+      source_lot_id: FIXTURE_IDS_M16.lotSealed,
+      sealed_product_id: FIXTURE_IDS.sealedUserCreated,
+      quantity_opened: 3,
+      cost_source: 'from_lot',
+      cost_nok_minor: minorUnits('29995'),
+      tracking_completeness: 'all_cards',
+      bulk_remainder_estimate_nok_minor: null,
+      bulk_remainder_count: null,
+      provisional_purchase_id: FIXTURE_IDS_M16.purchaseProvisional,
+      reconciled_at: null,
+      reconciled_to_purchase_id: null,
+      idempotency_key: FIXTURE_IDS_M16.openingIdempotencyKey,
+      notes: null,
+      created_at: '2026-08-01T10:00:00+00:00',
+      voided_at: null,
+    }
+    const pullLot = {
+      ...fixtureSnapshot().acquisition_lots[0]!,
+      id: FIXTURE_IDS_M16.lotSealed,
+      origin: 'opening',
+      opening_id: opening.id,
+    }
+    const snapshot = {
+      ...fixtureSnapshot(),
+      openings: [opening],
+      acquisition_lots: [...fixtureSnapshot().acquisition_lots, pullLot],
+    }
+    const raw = serializeBackupEnvelope(
+      buildBackupEnvelope(snapshot, { exportedAt: FIXED_EXPORTED_AT, appVersion: 'test' }),
+    )
+    expect(raw).toContain('"schema_version":2')
+    const parsed = JSON.parse(raw) as {
+      counts: Record<string, number>
+      data: Record<string, Record<string, unknown>[]>
+    }
+    expect(parsed.counts['openings']).toBe(1)
+    const serializedOpenings = parsed.data['openings'] ?? []
+    expect(serializedOpenings[0]?.['cost_nok_minor']).toBe('29995') // exact text money
+    // The serialized pull lot carries its opening relationship.
+    const lots = parsed.data['acquisition_lots'] ?? []
+    const serializedPull = lots.find((l) => l['id'] === FIXTURE_IDS_M16.lotSealed)
+    expect(serializedPull?.['opening_id']).toBe(opening.id)
+    // Round-trips through the v2 validator.
+    expect(validateBackupEnvelope(parsed).valid).toBe(true)
   })
 
   it('rejects a non-UTC export timestamp', () => {

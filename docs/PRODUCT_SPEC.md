@@ -116,15 +116,16 @@ is worth, sell things, and get their data out.
 | Export | CSV exports **and** full versioned JSON backup. |
 | Shell | Installable PWA, responsive, dark/light/system, safe areas, offline shell. |
 
-**Deliberately excluded from MVP:** openings, scanner, full grading workflow, trade workflow,
-images and receipts, bulk desktop editing, CSV import.
+**Deliberately excluded from MVP:** scanner, full grading workflow, trade workflow,
+images and receipts, bulk desktop editing, CSV import. (Openings were MVP-excluded but were
+deliberately executed FIRST among the post-MVP areas — see the V1 table note.)
 
 ### V1 — in priority order
 
 | # | Area | Included |
 |---|---|---|
 | 1 | **Scanner** | Camera capture, on-device recognition, bulk session flow with session defaults. Highest post-MVP priority because manual entry is the bottleneck created by all-card tracking. |
-| 2 | **Openings** | Full lifecycle, all-cards tracking by default, hits-only option, bulk remainder estimate, opening return with completeness marking, provisional-cost reconciliation UI. |
+| 2 | **Openings** ✅ shipped (M16, executed ahead of the scanner by owner resequencing) | Full lifecycle incl. bought-and-opened entry, all-cards tracking by default, selected-pulls/not-sure modes, bulk remainder estimate, opening return with completeness marking, provisional-cost reconciliation UI. |
 | 3 | Grading workflow | Submission, pending, return, cost attribution, profitability analysis. |
 | 4 | Trades | Full workflow over the schema already in place; item-leg accounting rule decided first. |
 | 5 | Desktop bulk tooling | Multi-select, batch condition/location/tags/collections, bulk delete. |
@@ -245,18 +246,43 @@ normally would. Four distinct concepts, deliberately not merged:
   card value.
 - Manual valuations are visibly marked as manual, with the date they were set.
 
-### 4.7 Openings — V1
+### 4.7 Openings — shipped V1 (M16)
 
-- An opening links to a sealed lot the user owns, or stands alone with a manually stated cost.
-- **A manually stated cost creates a real ledger entry** so the money appears in lifetime
-  spending. Linking the real purchase later voids the provisional entry — the money is never
-  counted twice. See [FINANCIAL_MODEL.md](FINANCIAL_MODEL.md) §5.5.
-- Opening a linked product reduces the sealed lot and preserves the purchase.
-- **Default tracking mode is every card**, consistent with all-card tracking. A hits-only mode
-  exists for users who do not want to enter 360 cards from a booster box.
+- An opening links to a sealed lot the user owns (one lot per opening, D-087), or is recorded
+  through the **bought-and-opened** flow: the user states the sealed product and the RECEIPT
+  TOTAL they paid — never a per-unit price — and one real purchase plus the opening are created
+  atomically.
+- **A manually stated cost creates a real ledger entry** (`origin = 'provisional_opening'`) so
+  the money appears in lifetime spending exactly once. Linking the real purchase later
+  (reconciliation) voids the provisional entry. See [FINANCIAL_MODEL.md](FINANCIAL_MODEL.md)
+  §5.5.
+- Opening a linked product reduces the sealed lot and preserves the purchase. Voiding an opening
+  restores the sealed quantity but NEVER undoes its purchase — corrections to a wrong purchase go
+  through the purchase-correction surface (D-090).
+- Creation is server-side idempotent: a retried submission can never record two openings or two
+  purchases (D-089). The client keeps one idempotency key per logical opening across wizard
+  remounts, and an interrupted submission always recovers as retryable — the wizard can never be
+  bricked by a lost response.
+- The cost preview shown before finishing is EXACT — it reproduces what the backend will freeze,
+  including the exhaustion residual on the last openable units (P53 §7) — and the Review step
+  repeats it (or "Purchase cost not recorded") as the figure being frozen.
+- **A provisionally-costed opening states its provenance honestly** ("Cost from the total you
+  entered when you recorded this opening") with a **Link to purchase** action while it is active
+  and unreconciled. The picker offers only same-product lots whose parent purchase is live and not
+  itself provisional, or says plainly that no matching purchase exists yet. After linking, the
+  opening shows "Linked to recorded purchase". See [FINANCIAL_MODEL.md](FINANCIAL_MODEL.md) §5.5.
+- A fully-sold pull reads "Sold"; a partially sold one states what remains ("1 of 2 remaining").
+  When retained pulls lack current prices, the retained-value figure says so instead of reading as
+  complete.
+- Home's Recent Activity renders each active opening as an "Opened" row linking to Opening Detail;
+  a bought-and-open legitimately shows both a Purchase row and an Opening row. The opening's
+  analytical cost never adds to lifetime spend or TTEP.
+- **Default tracking mode is every card**, consistent with all-card tracking. Selected-pulls and
+  not-sure modes exist for users who do not want to enter 360 cards from a booster box.
 - The user declares whether tracking is complete. When it is not, every display of opening
   return carries an incompleteness marker.
-- Opening result is shown in kroner first, percentage second.
+- Opening result is shown in kroner first, percentage second; the percentage only appears when
+  tracking is complete AND cost is known.
 - An optional bulk remainder estimate covers cards not individually recorded.
 - Opening return compares cost against retained pull value plus proceeds from sold pulls plus
   the bulk estimate.
@@ -278,12 +304,13 @@ normally would. Four distinct concepts, deliberately not merged:
 ### 4.8.1 History — everything that happened to the collection
 
 A dedicated area, separate from Portfolio. Portfolio answers *what do I own now*; History
-answers *what happened, and when*. **Reworked P43 (D-085):** one unified feed over canonical
-events — purchases, sales, additions acquired outside a purchase, and manual valuations —
-with kind chips (All / Purchases / Sales / Added / Values) and a "Show corrections / voided"
-toggle. Voided/corrected entries are hidden by default; showing them is presentation only and
-never changes a total (D-084). Openings, trades and grading events join the feed when those
-features exist — no placeholder sections pretend otherwise.
+answers *what happened, and when*. **Reworked P43 (D-085); Openings joined in M16:** one unified
+feed over canonical events — purchases, sales, openings (one event per opening; opening-linked
+pulls never double-report as additions), additions acquired outside a purchase, and manual
+valuations — with kind chips (All / Purchases / Sales / Openings / Added / Values) and a "Show
+corrections / voided" toggle. Voided/corrected entries are hidden by default; showing them is
+presentation only and never changes a total (D-084). Trades and grading events join the feed when
+those features exist — no placeholder sections pretend otherwise.
 
 Every event row shows its kind, title, business date, amount where one honestly exists (**—**
 otherwise) and navigates to that record's own correction surface (purchase edit/void, sale

@@ -21,6 +21,9 @@ export interface ResetPortfolioResult {
   holdingsDeleted: number
   manualValuationsDeleted: number
   snapshotsDeleted: number
+  /** M16: openings and their pulled-card lots are cleared with everything else (D-084). */
+  openingsDeleted: number
+  openingPullLotsDeleted: number
 }
 
 interface ResetRow {
@@ -33,6 +36,8 @@ interface ResetRow {
   holdings_deleted: number
   manual_valuations_deleted: number
   snapshots_deleted: number
+  openings_deleted: number
+  opening_pull_lots_deleted: number
 }
 
 export async function resetMyPortfolioData(): Promise<ResetPortfolioResult> {
@@ -52,5 +57,7 @@ export async function resetMyPortfolioData(): Promise<ResetPortfolioResult> {
     holdingsDeleted: row.holdings_deleted,
     manualValuationsDeleted: row.manual_valuations_deleted,
     snapshotsDeleted: row.snapshots_deleted,
+    openingsDeleted: row.openings_deleted,
+    openingPullLotsDeleted: row.opening_pull_lots_deleted,
   }
 }

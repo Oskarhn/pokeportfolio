@@ -30,8 +30,17 @@
 /** Stable artifact identifier. Never localized, never renamed without a schema_version bump. */
 export const BACKUP_FORMAT_ID = 'pokeportfolio-backup'
 
-/** Current envelope schema version. Bump on ANY breaking change to the shapes below. */
-export const BACKUP_SCHEMA_VERSION = 1
+/**
+ * Current envelope schema version. Bump on ANY breaking change to the shapes below.
+ *
+ * v1 — pre-Openings format (M13 through P48). Valid for its time; files produced before M16
+ *      shipped remain faithful exports of the data that existed then.
+ * v2 — Openings-capable format (M16): adds the canonical `data.openings` section and the two
+ *      relationship columns (`acquisition_lots.opening_id`, `lot_disposals.opening_id`). A
+ *      post-M16 writer emits v2 ONLY — a generated backup claiming v1 while openings exist
+ *      would silently omit canonical data and is treated as a release blocker.
+ */
+export const BACKUP_SCHEMA_VERSION = 2
 
 /** Matches what the ::text casts produce for bigint/numeric minor-unit columns. */
 const MINOR_UNITS_PATTERN = /^-?\d+$/
@@ -173,6 +182,8 @@ export interface BackupAcquisitionLotRow {
   sealed_intent: string | null
   storage_location_id: string | null
   acquired_on: string
+  /** v2 (M16): set on pulled-card lots — the opening that produced them. */
+  opening_id: string | null
   voided_at: string | null
   notes: string | null
   created_at: string
@@ -332,12 +343,43 @@ export interface BackupLotDisposalRow {
   user_id: string
   lot_id: string
   sale_line_id: string | null
+  /** v2 (M16): the opening this disposal consumes for — NOT NULL exactly when kind='opened'. */
+  opening_id: string | null
   kind: string
   disposed_on: string
   quantity: number
   cost_basis_at_disposal_nok_minor: MinorUnitsString | null
   voided_at: string | null
   created_at: string
+}
+
+/**
+ * v2 (M16): one canonical opening row. Money as exact minor-unit strings; NULL cost means the
+ * unknown-cost source (never zero). `idempotency_key` is the server-enforced submission identity
+ * (P53 §5) — exported so a future restore can preserve replay semantics verbatim. Provenance
+ * fields (`provisional_purchase_id`, `reconciled_at`, `reconciled_to_purchase_id`) carry the
+ * reconciliation trail without any audit table.
+ */
+export interface BackupOpeningRow {
+  id: string
+  user_id: string
+  opened_on: string
+  source_lot_id: string
+  sealed_product_id: string
+  quantity_opened: number
+  cost_source: string
+  /** NULL iff cost_source = 'unknown' — never zero-filled (M1 at opening scope). */
+  cost_nok_minor: MinorUnitsString | null
+  tracking_completeness: string
+  bulk_remainder_estimate_nok_minor: MinorUnitsString | null
+  bulk_remainder_count: number | null
+  provisional_purchase_id: string | null
+  reconciled_at: string | null
+  reconciled_to_purchase_id: string | null
+  idempotency_key: string
+  notes: string | null
+  created_at: string
+  voided_at: string | null
 }
 
 // ---------------------------------------------------------------------------
@@ -423,6 +465,8 @@ export interface BackupData {
   sealed_products: BackupUserCreatedSealedProductRow[]
   manual_valuations: BackupManualValuationRow[]
   lot_cost_adjustments: BackupLotCostAdjustmentRow[]
+  /** v2 (M16): canonical openings. Restores must insert these BEFORE the pull lots that cite them. */
+  openings: BackupOpeningRow[]
   purchases: BackupPurchaseRow[]
   purchase_lines: BackupPurchaseLineRow[]
   sales: BackupSaleRow[]
@@ -445,6 +489,7 @@ export const BACKUP_DATA_KEYS = [
   'sealed_products',
   'manual_valuations',
   'lot_cost_adjustments',
+  'openings',
   'purchases',
   'purchase_lines',
   'sales',
@@ -486,6 +531,7 @@ export function emptyBackupData(): BackupData {
     sealed_products: [],
     manual_valuations: [],
     lot_cost_adjustments: [],
+    openings: [],
     purchases: [],
     purchase_lines: [],
     sales: [],

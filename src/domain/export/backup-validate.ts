@@ -7,7 +7,12 @@
  * happens at build time in build-backup.ts; this guard requires objects for rows and REFUSES
  * unknown data keys outright — the strict v1 policy in backup-format.ts (D-076).
  */
-import { BACKUP_DATA_KEYS, BACKUP_FORMAT_ID, type BackupEnvelope } from './backup-format'
+import {
+  BACKUP_DATA_KEYS,
+  BACKUP_FORMAT_ID,
+  BACKUP_SCHEMA_VERSION,
+  type BackupEnvelope,
+} from './backup-format'
 import { MANIFEST_COUNT_KEY_PREFIX } from './backup-format'
 
 /** Identity-manifest section names, in canonical order. */
@@ -53,8 +58,12 @@ function fail(path: string, problem: string): EnvelopeValidationResult {
 export function validateBackupEnvelope(input: unknown): EnvelopeValidationResult {
   if (!isPlainObject(input)) return fail('', 'envelope must be a JSON object')
   if (input['format'] !== BACKUP_FORMAT_ID) return fail('format', `must be "${BACKUP_FORMAT_ID}"`)
-  if (input['schema_version'] !== 1) {
-    return fail('schema_version', 'this reader understands schema_version 1 only')
+  if (input['schema_version'] !== BACKUP_SCHEMA_VERSION) {
+    return fail(
+      'schema_version',
+      `this reader understands schema_version ${BACKUP_SCHEMA_VERSION} only — a v1 file is a ` +
+        'pre-Openings artifact, and a post-M16 writer must never produce one',
+    )
   }
 
   const exportedAt = input['exported_at']
@@ -84,7 +93,7 @@ export function validateBackupEnvelope(input: unknown): EnvelopeValidationResult
   const presentKeys = Object.keys(data)
   for (const key of presentKeys) {
     if (!(BACKUP_DATA_KEYS as readonly string[]).includes(key)) {
-      return fail(`data.${key}`, 'unknown data key for schema_version 1')
+      return fail(`data.${key}`, `unknown data key for schema_version ${BACKUP_SCHEMA_VERSION}`)
     }
   }
   for (const key of BACKUP_DATA_KEYS) {
@@ -98,7 +107,10 @@ export function validateBackupEnvelope(input: unknown): EnvelopeValidationResult
   if (!isPlainObject(manifest)) return fail('identity_manifest', 'must be an object')
   for (const key of Object.keys(manifest)) {
     if (!(MANIFEST_SECTIONS as readonly string[]).includes(key)) {
-      return fail(`identity_manifest.${key}`, 'unknown manifest section for schema_version 1')
+      return fail(
+        `identity_manifest.${key}`,
+        `unknown manifest section for schema_version ${BACKUP_SCHEMA_VERSION}`,
+      )
     }
   }
   for (const key of MANIFEST_SECTIONS) {

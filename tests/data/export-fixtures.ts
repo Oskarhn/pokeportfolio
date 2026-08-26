@@ -46,6 +46,14 @@ export const FIXTURE_IDS = {
   disposalVoided: 'd2000000-0000-4000-8000-000000000002',
 } as const
 
+/** M16 fixture ids (P53): used by the openings.csv / backup-v2 blocks. */
+export const FIXTURE_IDS_M16 = {
+  openingPrimary: 'o1000000-0000-4000-8000-000000000001',
+  lotSealed: 'l1000000-0000-4000-8000-000000000004',
+  purchaseProvisional: 'p3000000-0000-4000-8000-000000000003',
+  openingIdempotencyKey: '9f1c3b2a-1111-4222-8333-444455556666',
+} as const
+
 /**
  * A deliberately awkward dataset: tombstones, superseded history, unknown-vs-zero money,
  * a >2^53 minor-unit amount, formula-trigger free text, unicode, and a voided sale.
@@ -233,6 +241,7 @@ export function fixtureSnapshot(): ExportSnapshot {
         sealed_intent: null,
         storage_location_id: FIXTURE_IDS.storageBinder,
         acquired_on: '2026-01-05',
+        opening_id: null,
         voided_at: null,
         notes: 'multi\nline note',
         created_at: '2026-01-02T03:04:05+00:00',
@@ -254,6 +263,7 @@ export function fixtureSnapshot(): ExportSnapshot {
         sealed_intent: null,
         storage_location_id: null,
         acquired_on: '2026-01-06',
+        opening_id: null,
         voided_at: null,
         notes: null,
         created_at: '2026-01-02T03:04:05+00:00',
@@ -275,6 +285,7 @@ export function fixtureSnapshot(): ExportSnapshot {
         sealed_intent: null,
         storage_location_id: null,
         acquired_on: '2026-01-07',
+        opening_id: null,
         voided_at: '2026-02-03T04:05:06+00:00',
         notes: null,
         created_at: '2026-01-02T03:04:05+00:00',
@@ -534,6 +545,7 @@ export function fixtureSnapshot(): ExportSnapshot {
         user_id: FIXTURE_IDS.profileUserId,
         lot_id: FIXTURE_IDS.lotKnown,
         sale_line_id: FIXTURE_IDS.saleLineCosted,
+        opening_id: null,
         kind: 'sale',
         disposed_on: '2026-04-01',
         quantity: 1,
@@ -546,6 +558,7 @@ export function fixtureSnapshot(): ExportSnapshot {
         user_id: FIXTURE_IDS.profileUserId,
         lot_id: FIXTURE_IDS.lotNotPaid,
         sale_line_id: FIXTURE_IDS.saleLineUncosted,
+        opening_id: null,
         kind: 'sale',
         disposed_on: '2026-04-02',
         quantity: 1,
@@ -554,6 +567,7 @@ export function fixtureSnapshot(): ExportSnapshot {
         created_at: '2026-04-02T12:00:00+00:00',
       },
     ],
+    openings: [],
     identity_manifest: {
       card_variants: [
         {

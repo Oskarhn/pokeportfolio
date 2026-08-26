@@ -460,6 +460,95 @@ Constraints and triggers, exercised directly:
   ~10k lots / 2k sales / 4k valuations on a throwaway account and times the real pipeline under the
   owner JWT, reporting duration, request count and artifact size
 
+**M16 openings (`tests/db/m16_openings.test.ts`, `tests/authorization/m16_openings.test.ts`,
+`tests/data/opening.test.ts`, `tests/ui/opening-*.test.ts`, `tests/e2e/openings.spec.ts`,
+`tests/m16-independent/`):**
+
+- DB core (ephemeral stack): E1–E16 scenario map — spend invariance with the exact frozen share
+  (E1); the corrected 29995 residual proof in BOTH split orders (E2, D-060's once-only argument);
+  gift/not-paid unknown-cost honesty (E3); all-card tracking incl. basic energy as first-class
+  inventory and priced-path cross-checks against the resolver itself (E4); selected-pulls +
+  both-or-neither remainder (E5); sell-pull NULL-basis discipline and proceeds (E6); over-open
+  refusal (E7); concurrent 6+6 serialization (E8); anon denial ×6 surfaces + cross-user
+  attacks + service-role defence-in-depth trigger (E9/E10); void lifecycles with the P53 §10
+  purchase-stays policy (E11/I7/I8) and sold-pull void block naming the blocker (E12);
+  backdated dirty_from (E13); reset isolation incl. counts + B-survival (E14, I15); History
+  single-event discipline + no pull double-reporting (E15, I11) plus ONE Opening recent-activity
+  row (I12); audit_events absence (E16)
+- P53 integration cases layered onto the same suites: server-side idempotent create retry — one
+  opening (I2), material-mismatch key reuse refused (I2b), key identifies the ORIGINAL operation —
+  different pulls on the same key return the original opening unchanged (I2c), idempotent
+  PROVISIONAL retry — one
+  purchase, one opening, replay checked before the ledger write (I3); bought-and-opened total-paid
+  29995 = unit 9998 + residual 1 with line-level honesty (I10); known-zero ≠ unknown (I6);
+  explicit separate purchase correction after an opening void (I9); composite-uniqueness
+  cross-user same-UUID independence
+- P56 repair cases: post-reconcile canonical world — provisional purchase, source lot AND old
+  disposal all voided while the opening stays live at the real lot with exactly one live opened
+  disposal and GPO/CS equal to the real purchase only; re-open/re-sell of the retired provisional
+  lot refused (P54 H1); reconcile target from a PROVISIONAL purchase refused, from a VOIDED
+  purchase refused, from a live ordinary purchase succeeds (F55-10); retained-only coverage
+  counts — a fully-sold pull leaves priced/unpriced counts and retained value but stays in sold
+  count/proceeds, a partial sale contributes by remaining quantity (L1); direct constraint audit
+  of the widened line-total CHECK envelope (below-unit rejected, above unit×qty+qty−1 rejected,
+  legal residual accepted, quantity>0 and non-negative prices hold, create/update_purchase write
+  excess-0); user-scoped draft store isolation and RESOLVE_MANUAL_CARDS persistence
+  (tests/ui/opening-draft.test.ts)
+- P59 integration-cleanup cases: Home recent-activity contract — the 'opening' type renders a
+  nonblank "Opened" label and routes to `/openings/$openingId`, a bought-and-open coexists as one
+  Purchase row plus one Opening row both clickable, null amount does not break the row
+  (tests/ui/home-activity.test.ts); draft idempotency — ONE key per logical draft surviving every
+  editing action, remount and failure, rotated only by RESET/post-success (R2); stale-'submitting'
+  recovery loads back as retryable editing with all fields incl. resolved manual-card ids intact,
+  editing/submitted drafts pass through untouched (R3); full integrated manual-card remount
+  sequence reuses ONE definition identity across mounts (R16); route-scope reconciliation matrix —
+  holding-scoped draft → generic entry drops the scope keeping pulls (no false "Nothing to open"),
+  generic draft → explicit holding honors it, matching scope unchanged, submitted never reusable
+  (R14); copy pins for honest provisional/reconciled wording, reconciliation sheet, wrapped
+  manual-card failure, unpriced-retained marker and sold/partial pull states (R8/R9/R10/R11/R12);
+  controller coverage-count/reconciledAt exposure + reconcile delegation and safe refusal mapping
+  (R6-pure/R7); DB-gated: same key + different total paid refused with spend counted once (R4),
+  same key + different purchased_on refused while full-match replay still returns the original
+  (R5), list_opening_sources provenance columns distinguish provisional vs manual parents so the
+  picker can mirror the server rule (R6)
+- Pure domain: §5.3 return formula vs the worked examples; exact preview rule reproducing the
+  writer byte-for-byte incl. 19996→9999 (I4/I5); ROI rounding; completeness marker pairing;
+  bought-and-opened draft gates and input assembly; copy pins (never-0, no per-pull ROI, void-does-
+  not-undo-purchase wording); controller mapping matrix against a mocked data layer (I1) incl.
+  blocked-void outcomes and concise error mapping (§29)
+- Export: backup v2 envelope (schema_version 2 only; v1 refused post-M16; openings section,
+  counts, canonical ordering, `opening_id` linkage round-trip — I13); openings.csv projection
+  incl. unknown-cost empty cell and provenance markers (I14)
+- Independent adversarial package (implementation-blind P52 source, PR #53): pure oracles run
+  everywhere via the standalone config (`pnpm exec vitest run --config
+  tests/m16-independent/vitest.config.ts`); DB-gated economic/lifecycle/security/provisional/
+  integration oracles bind execution-bound to the shipped atomic create-with-pulls surface
+  (folded pulls, dedicated provisional RPC, total-paid slot — P53 §4 binding decisions recorded in
+  helpers/contract.ts). First-contact classification at integration: ORACLE_BINDING_MISMATCH ×2
+  adapted without loosening assertions (scalar lot dialect + folded pull attachment; provisional
+  total-paid binder); UNEXECUTED_DB_GATED for everything needing the ephemeral stack. Its backup
+  oracle arms the v2 BLOCKER: a generated post-M16 backup claiming v1 or missing
+  openings/linkage fails the release. P62: discovery now enumerates the PostgREST OpenAPI with a
+  dedicated AUTHENTICATED test user's JWT (a service-role fetch omits every user RPC under this
+  project's exact grant model), so all implementation-gated oracles actually execute — 53/53,
+  zero skips.
+
+**M16 DB CI status:** EXECUTED FOR REAL AGAINST LOCAL POSTGRESQL (P60 execution + P62 repair and
+re-run). GitHub Actions remains billing/startup-blocked repo-wide, so P60 reproduced the entire
+db-tests CI job on this machine against an ephemeral local Supabase/Postgres stack (Docker
+Desktop; repo-pinned CLI), and P62 re-ran it green after repairing what that first real execution
+exposed: two runtime SQL bugs in the unhosted M16 migrations (provisional path wrote a
+nonexistent `holdings.sealed_intent`; `openings` carried a `set_updated_at` trigger without the
+column), the F-61-1 late-replay provenance seam, and the stale/binding test classes the run
+adjudicated (CHECK-name semantics, backup v2 oracle, shared-catalog/FX fixture isolation, E15
+recent-activity isolation). Final local gate state at the P62 head: fresh migrate from blank ✓;
+db+authorization suites 578 passed / 0 failed / 1 opt-in skip (M13_EXPORT_PERF, executed
+separately: ~10k lots exported in 2142 ms vs 60 s budget) ✓; grant audit clean ✓; hostile-grant
+convergence via the M16 baseline ✓; m16-independent 53/53 with zero skips ✓; M12 scale audit,
+10k-lot benchmark, snapshot performance/storage and price-snapshot storage all inside their
+unchanged thresholds ✓. The hosted project is untouched; the first HOSTED execution remains the
+pre-merge gate when CI or a manual hosted window exists.
+
 ---
 
 ## 6. E2E

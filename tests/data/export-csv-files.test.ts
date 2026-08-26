@@ -4,7 +4,8 @@ import {
   buildCsvSuite,
   projectionInputFromSnapshot,
 } from '../../src/domain/export/csv-projections'
-import { FIXTURE_IDS, fixtureSnapshot, parseCsvBody } from './export-fixtures'
+import { FIXTURE_IDS, FIXTURE_IDS_M16, fixtureSnapshot, parseCsvBody } from './export-fixtures'
+import { minorUnits } from '../../src/domain/export/backup-format'
 
 function suite(): Record<string, string> {
   const files = buildCsvSuite(projectionInputFromSnapshot(fixtureSnapshot()))
@@ -134,6 +135,81 @@ describe('sales.csv / sale_lines.csv / lot_disposals.csv', () => {
   it('omits idempotency keys from CSV (they remain in the JSON backup)', () => {
     const salesCsv = suite()['sales.csv']!
     expect(salesCsv).not.toContain('11111111-2222-4333-8444-555555555555')
+  })
+})
+
+describe('openings.csv (P53 §23 / I14)', () => {
+  // One canonical opening row, joined into the shared fixture snapshot only for this block.
+  const openingRow = {
+    id: FIXTURE_IDS_M16.openingPrimary,
+    user_id: FIXTURE_IDS.profileUserId,
+    opened_on: '2026-08-01',
+    source_lot_id: FIXTURE_IDS_M16.lotSealed,
+    sealed_product_id: FIXTURE_IDS.sealedUserCreated,
+    quantity_opened: 3,
+    cost_source: 'from_lot',
+    cost_nok_minor: minorUnits('29995'),
+    tracking_completeness: 'selected_pulls',
+    bulk_remainder_estimate_nok_minor: minorUnits('15000'),
+    bulk_remainder_count: 42,
+    provisional_purchase_id: FIXTURE_IDS_M16.purchaseProvisional,
+    reconciled_at: null,
+    reconciled_to_purchase_id: null,
+    idempotency_key: FIXTURE_IDS_M16.openingIdempotencyKey,
+    notes: 'bought & opened same day',
+    created_at: '2026-08-01T10:00:00+00:00',
+    voided_at: null,
+  }
+  function openingsSuite(): Record<string, string> {
+    const snapshot = { ...fixtureSnapshot(), openings: [openingRow] }
+    const files = buildCsvSuite(projectionInputFromSnapshot(snapshot))
+    return Object.fromEntries(files.map((f) => [f.filename, f.text]))
+  }
+
+  it('renders date, product, quantity, exact cost, completeness, estimate, provenance and void state', () => {
+    const data = rows(openingsSuite()['openings.csv']!)
+    expect(data).toHaveLength(1)
+    const row = data[0]!
+    expect(row[1]).toBe('2026-08-01') // date
+    expect(row[2]).toBe('My custom box') // product joined from the snapshot's own names
+    expect(row[3]).toBe('3') // quantity
+    expect(row[4]).toBe('299.95') // opening cost — exact minor units, never float-rounded
+    expect(row[5]).toBe('from_lot') // cost source
+    expect(row[6]).toBe('selected_pulls') // tracking completeness
+    expect(row[7]).toBe('150.00') // bulk remainder estimate
+    expect(row[8]).toBe('42')
+    expect(row[9]).toBe('provisional') // purchase provenance marker
+    expect(row[10]).toBe('') // not reconciled yet
+    expect(row[11]).toBe('') // voided_at absent → active
+    expect(row[13]).toBe('2026-08-01T10:00:00+00:00')
+  })
+
+  it('an unknown-cost opening leaves the money cell empty — NEVER 0.00', () => {
+    const snapshot = {
+      ...fixtureSnapshot(),
+      openings: [{ ...openingRow, cost_source: 'unknown', cost_nok_minor: null }],
+    }
+    const files = buildCsvSuite(projectionInputFromSnapshot(snapshot))
+    const text = files.find((f) => f.filename === 'openings.csv')!.text
+    const parsed = parseCsvBody(text)
+    expect(parsed[1]![4]).toBe('')
+    expect(parsed[1]![5]).toBe('unknown')
+  })
+
+  it('a voided opening carries its void timestamp', () => {
+    const snapshot = {
+      ...fixtureSnapshot(),
+      openings: [{ ...openingRow, voided_at: '2026-08-02T09:30:00+00:00' }],
+    }
+    const files = buildCsvSuite(projectionInputFromSnapshot(snapshot))
+    const parsed = parseCsvBody(files.find((f) => f.filename === 'openings.csv')!.text)
+    expect(parsed[1]![11]).toBe('2026-08-02T09:30:00+00:00')
+  })
+
+  it('no pull cost-basis column exists anywhere in the file (pulls deliberately have none)', () => {
+    const text = openingsSuite()['openings.csv']!
+    expect(text.toLowerCase()).not.toContain('cost basis at sale')
+    expect(text.toLowerCase()).not.toContain('pull cost')
   })
 })
 

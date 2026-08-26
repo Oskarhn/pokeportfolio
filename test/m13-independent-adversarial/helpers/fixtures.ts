@@ -427,4 +427,5 @@ export const FIXTURE_EXPECTED_COUNTS: Readonly<Record<string, number>> = {
   sale_lines: 1,
   lot_disposals: 1,
   sealed_products: 1,
+  openings: 0,
 }

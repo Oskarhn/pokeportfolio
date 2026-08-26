@@ -242,7 +242,12 @@ begin
     ('table', 'lot_cost_adjustments',       'authenticated', 'SELECT'),
     -- M12: the snapshot cache — owner-readable only (RLS scopes rows to auth.uid()), no write
     -- grant of any kind: rebuild_portfolio_snapshots under the service role is the sole writer.
-    ('table', 'portfolio_snapshots',        'authenticated', 'SELECT')
+    ('table', 'portfolio_snapshots',        'authenticated', 'SELECT'),
+    -- M16: the opening canonical table — owner-readable only. create_opening /
+    -- create_opening_from_provisional / void_opening / reconcile_opening_cost are SECURITY
+    -- DEFINER (the D-060 standard for frozen financial figures), so authenticated holds SELECT
+    -- and nothing else on this table.
+    ('table', 'openings',                   'authenticated', 'SELECT')
     -- portfolio_recompute_queue / portfolio_recompute_runs get NO grant at all, to anon or
     -- authenticated — service/internal-only, same shape as catalog_sync_runs/price_sync_runs.
     -- invitations: column-level SELECT only, below. invitation_claims: nothing, ever.
@@ -410,7 +415,23 @@ begin
     ('routine', 'get_recent_activity(integer)', 'authenticated', 'EXECUTE'),
     -- M12: summary's pending-recompute helper — answers one boolean about auth.uid()'s own queue
     -- row; direct browser calls are harmless by construction (see baseline migration).
-    ('routine', 'm12_recompute_pending_for_self()', 'authenticated', 'EXECUTE')
+    ('routine', 'm12_recompute_pending_for_self()', 'authenticated', 'EXECUTE'),
+    -- M16: the opening write/read surface (20260902120010). Writers are SECURITY DEFINER; the
+    -- openings_check_owner trigger function and the extended acquisition/lot check-owner bodies
+    -- are trigger-only and deliberately absent here. Signatures carry P53's idempotency-key
+    -- parameter and the total-paid provisional contract (D-090); list_opening_sources is the
+    -- INVOKER source-picker read.
+    ('routine',
+     'create_opening(uuid, integer, date, opening_tracking, jsonb, bigint, integer, text, uuid, uuid)',
+     'authenticated', 'EXECUTE'),
+    ('routine',
+     'create_opening_from_provisional(uuid, integer, bigint, date, date, opening_tracking, ' ||
+     'jsonb, bigint, integer, text, uuid)',
+     'authenticated', 'EXECUTE'),
+    ('routine', 'void_opening(uuid, text)', 'authenticated', 'EXECUTE'),
+    ('routine', 'reconcile_opening_cost(uuid, uuid)', 'authenticated', 'EXECUTE'),
+    ('routine', 'get_opening(uuid)', 'authenticated', 'EXECUTE'),
+    ('routine', 'list_opening_sources(uuid)', 'authenticated', 'EXECUTE')
   ),
 
   -- M7: the expected PUBLIC-EXECUTE surface for every routine in `public` is empty. No project

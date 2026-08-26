@@ -4,7 +4,217 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-**Last updated:** 2026-08-25 — **M13 (Export and versioned backup) is MERGED and
+**Last updated:** 2026-08-26 — **M16 (Openings, pulls, backup v2) EXISTS AS AN INTEGRATED
+CANDIDATE BRANCH `feat/m16-openings-integrated` — NOT MERGED, NOT DEPLOYED — with the P56+P59
+REPAIR branch `fix/m16-integrated-review-p56` open as a DRAFT PR AGAINST THE INTEGRATION
+BRANCH.** Three parallel
+sources were combined deliberately on one branch: P50 opening financial/DB core (PR #55 @
+`7fe883d`), P51 opening UI (PR #54 @ `fc06c67`) and the P52 independent adversarial package
+(PR #53 @ `ebee9a1`), all verified OPEN/DRAFT/UNMERGED at their exact expected heads before
+integration. The integration session (P53) added: server-side idempotency (D-089), buy-and-open
+with total-paid exactness incl. the widened line-total CHECK (D-090), exact preview components +
+source picker RPC, the §10 void policy fix (void ≠ undo purchase), one Opening recent-activity
+row, backup schema_version 2 (D-091), openings.csv, docs fold-down (FINANCIAL_MODEL §5.5,
+DATA_MODEL §5.8, DECISIONS D-087–D-091, PRODUCT_SPEC, UX_FLOWS F5/F11.1, ROADMAP, TESTING,
+SECURITY §12.1, BACKLOG cascade entry). The P56 repair session then closed the integrated-review
+findings (D-092): reconciliation voids the provisional source lot together with its purchase
+(P54 H1 phantom-inventory blocker), reconcile targets must cite a live non-provisional purchase
+(P55 F55-10), get_opening coverage counts are retained-only (P54 L1), opening drafts are scoped
+by authenticated user id and cleared at sign-out (P55 draft finding), created manual-card ids
+persist into the user-scoped draft so remount retries never duplicate definitions, reset copy
+names openings, integer-division wording corrected. The P59 final-integration-cleanup session
+then completed the P57/P58 audit findings end-to-end: Home's Recent Activity understands the
+'opening' type ("Opened" label + `/openings/$openingId` route); the idempotency key now lives
+INSIDE the in-memory draft (one key per logical opening across remounts — P58 F5); a stale
+'submitting' draft recovers as retryable instead of bricking the wizard (F4); the provisional
+replay contract additionally compares total paid AND purchased_on (F-57-4, D-089 wording states
+exactly what is compared); the reconciliation UI SHIPPED (Link-to-purchase sheet mirroring the
+server target rule via new owner-only provenance columns on `list_opening_sources`, honest
+provisional/reconciled copy replacing the false "not linked to a purchase"); coverage counts and
+reconciledAt exposed through the detail contract; fully-sold pulls read "Sold" / partials state
+what remains; unpriced-retained honesty marker; manual-card failures wrapped; Review repeats the
+exact opening cost. **P60 then executed the ENTIRE db-tests CI job for real on a local
+Docker/Supabase stack (first DB-backed execution of M16 ever) and P62 repaired everything it
+exposed — the two runtime SQL bugs in the unhosted M16 migrations, the F-61-1 late-replay seam,
+and the stale/binding test classes — re-running the FULL local gate GREEN: db+authorization 578/0,
+m16-independent 53/53 with zero skips (authenticated-JWT discovery), m13-adversarial 62/62 on the
+v2 contract, grant audit + hostile-grant convergence clean, all performance gates within unchanged
+thresholds, and every normal gate green.** **P63 then closed the cross-account query-cache
+privacy finding (F-61-2, D-093) on its own stacked PR #58 — squash-merged INTO `fix/m16-integrated-review-p56`
+(squash commit `7aa3e4e`), never to main: AuthProvider now clears the whole query/mutation cache
+and opening drafts whenever one OBSERVED authenticated identity is replaced by a different one,
+same-user token refreshes retain everything (SECURITY.md §9.1).** The hosted project remains untouched; GitHub Actions
+itself is still billing-blocked, so the first HOSTED DB execution stays the pre-merge hosted gate.
+Open draft PRs carry DO NOT MERGE banners; hosted Supabase untouched.
+
+---
+
+## M16 — Openings, pulls and backup v2 (integrated candidate, awaiting DB CI)
+
+Branch `feat/m16-openings-integrated`, worktree `C:\Users\Oskar\Documents\Pokemonapp-worktrees\p53-m16-integration`,
+based exactly on origin/main `92b238c`. Source PRs #53/#54/#55 stay open as historical sources;
+the integration PR is the only merge candidate. Decisions D-087–D-091; UX_FLOWS F5 shipped shape;
+full scenario map in TESTING.md §5's M16 block.
+
+What a future session must know:
+
+1. **DB CI gate status: EXECUTED LOCALLY, GREEN (P60 execution + P62 repair/re-run).** The full
+   TESTING.md §5 list — fresh migrate from scratch, grant audit against
+   `20260902120030_m16_privilege_baseline.sql`, hostile-grant convergence re-applying it, both
+   permanent benchmark steps, `tests/db` + `tests/authorization` suites, the M13 adversarial
+   execution step, and `pnpm exec vitest run --config tests/m16-independent/vitest.config.ts` —
+   ran green on this machine against an ephemeral local Supabase/Postgres stack at the P62 head.
+   GitHub Actions itself remains billing-blocked, so the first HOSTED execution is still pending;
+   local tooling recipe lives in `%TEMP%\opencode\p60\` until deleted.
+2. **The four M16 migrations are UNHOSTED** and were repaired freely during integration
+   (`20260902120000/10/20/30`). They have NEVER touched pokeportfolio-dev. Apply them via
+   `supabase db push --linked` BEFORE any frontend deploy that calls the new RPCs.
+3. **Void policy is D-090:** voiding an opening keeps its purchase active (provisional included).
+   P50's original symmetric-void tests were rewritten; if anything still assumes the old
+   behaviour, the document wins.
+4. **Provisional contract renamed:** `create_opening_from_provisional(p_total_paid_minor, …,
+   p_idempotency_key)` replaces `p_unit_price_minor`. `database.types.ts` hand-updated per
+   standing discipline; regenerate + diff when Docker/CI allows.
+5. **Backup writers are v2-only now** (D-091); restore remains M19.
+6. **Sales-family cascade gap is BACKLOGGED**, not fixed: every post-M4 user_id FK lacks ON
+   DELETE CASCADE (BACKLOG.md "Later"). Not required by reset or openings.
+7. Owner-device walkthrough remains pending post-merge: wizard both modes, multi-lot choice,
+   backdate, pull burst, retry-after-failure idempotency, blocked-void copy, openings.csv export
+   on installed iPhone PWA.
+
+### P56 — integrated-candidate targeted repair (branch `fix/m16-integrated-review-p56`, DRAFT PR against the integration branch)
+
+Repairs the P54/P55 review findings ON TOP of integration head `1d98f6d` — never pushed to the
+integration branch directly; it merges through its own DRAFT PR (base
+`feat/m16-openings-integrated`) so the repair diff stays independently reviewable:
+
+- **H1 phantom lot closed:** `reconcile_opening_cost` captures `v_opening.source_lot_id` before
+  repointing and VOIDs that provisional lot in the same transaction as retiring its consumption
+  and voiding the provisional purchase. Post-reconcile canonical world pinned by a dedicated DB
+  test (purchase + lot + old disposal all `voided_at NOT NULL`; opening live at the real lot;
+  exactly one live opened disposal; GPO/CS = real purchase only; re-open/re-sell of the
+  provisional lot refused).
+- **F55-10 target guard:** reconcile's target lookup joins `purchases` explicitly and requires
+  `voided_at IS NULL AND origin <> 'provisional_opening'` (provisional → provisional and
+  voided-receipt targets refused; live ordinary purchase succeeds).
+- **L1 coverage semantics:** get_opening's pulls CTE filters `quantity_remaining > 0` — priced/
+  unpriced counts and retained value are current-retained only; sold provenance separate.
+- **Drafts user-scoped + manual-card ids persisted** (P55 findings): draftStore keyed by user id,
+  cleared at sign-out; RESOLVE_MANUAL_CARDS writes created definition ids into the draft so
+  remount retries reuse one row. Reset confirmation copy names openings. "floor" wording corrected
+  to truncating integer division in the unhosted M16 migrations/docs (M10's shipped migration left
+  untouched). D-092 records all of it. The four M16 migrations remain UNHOSTED and were edited in
+  place per the established pre-host repair discipline.
+
+### P59 — final integration cleanup (same branch, same DRAFT PR #57)
+
+Closes the P57/P58 audit findings on top of the P56 head `a9f2257` (both audits reviewed the
+PRE-REPAIR integrated head, so every finding was re-verified against the repaired tree first):
+
+- **Home Recent Activity (P58 F1):** 'opening' added to `RecentActivityType`; pure label/route
+  helpers in `src/features/home/activity.ts`; an opening renders "Opened" →
+  `/openings/$openingId` via primary_id; a bought-and-open legitimately shows one Purchase row AND
+  one Opening row. The analytical opening cost never enters Home totals.
+- **Draft idempotency (F5):** `idempotencyKey` moved INTO `OpeningDraft` — one key per logical
+  opening surviving remounts/back-nav/retries; rotated only by RESET or post-success fresh draft.
+- **Stale-'submitting' recovery (F4):** loading a stored mid-submission draft returns it to
+  retryable editing with everything intact ("Previous submission was interrupted. You can try
+  again."); the persisted key makes that retry safe whichever way the interrupted request ended.
+- **Provisional replay material (P57 F-57-4):** `create_opening_from_provisional`'s pre-purchase
+  replay additionally compares committed line_total AND purchased_on (`IS DISTINCT FROM`, walked
+  through the canonical rows); cross-path reuse refused. DB tests R4/R5 pin both refusals plus
+  full-match replay. D-089 wording now states exactly what is compared.
+- **Reconciliation UI shipped (F-57-3/F7):** Opening Detail shows honest provisional copy + a
+  "Link to purchase" sheet over `list_opening_sources`, which gained owner-only provenance columns
+  (`purchase_id/purchase_origin/purchased_on`) so the picker mirrors the server target rule
+  (same product, live lot, known basis, enough units, live non-provisional parent, not the current
+  source). Success invalidates detail/sources/Portfolio/dashboard/spending/history/recent-activity.
+- **Detail contract coverage (F9) + pull states:** priced/unpriced/sold counts and reconciledAt
+  mapped from get_opening; fully-sold pulls render "Sold", partials "1 of 2 remaining";
+  unpriced-retained marker beside retained value ("—" when nothing retained is priced).
+- **Sweeps (F10/F11/F12):** manual-card creation failures wrapped ("Couldn't create the manual
+  card. Try again."); Review repeats the exact opening cost for existing-lot mode;
+  `reconcileDraftScope` makes generic ↔ holding-specific route switches honor the explicit route
+  without discarding entered pulls.
+
+database.types.ts hand-updated for the new list_opening_sources return shape (standing
+discipline — regenerate + diff when tooling allows). Backup v2 untouched (no new canonical
+columns). No new DECISION entry: the persisted in-memory key is D-089 implementation, the rest is
+completion of already-decided behaviour.
+
+### P60 — first real PostgreSQL execution (local ephemeral stack; infrastructure/test-only, no PR)
+
+Docker Desktop was installed on this machine and the ENTIRE db-tests CI job was reproduced
+locally against the exact PR #57 head — the first time any DB-backed M16 case ever executed.
+Result: RED with precise root causes — two runtime SQL bugs in the unhosted M16 migrations
+(provisional path wrote nonexistent `holdings.sealed_intent`; `openings` carried a
+`set_updated_at` trigger without an `updated_at` column), get_recent_activity's opening arm
+suspect, plus stale/binding test classes (v1 backup oracles, CHECK-name expectations,
+shared-catalog/FX fixture pollution, service-role OpenAPI discovery in m16-independent).
+Performance baselines passed with margin. Scratch tooling preserved under `%TEMP%\opencode\p60\`.
+
+### P62 — M16 real-Postgres repair; LOCAL DB GATE GREEN (same branch, same DRAFT PR #57)
+
+Repairs everything P60 exposed, then re-runs the full gate green:
+
+- **Bug A:** `sealed_intent` removed from the holdings INSERT inside
+  `create_opening_from_provisional` (D-061/M11 own it on acquisition_lots); bought-and-open now
+  creates purchase/line/holding/lot/opening/disposal/pulls atomically — execution-proven.
+- **Bug B:** the `openings_set_updated_at` trigger dropped from the unhosted schema migration;
+  `void_opening` and `reconcile_opening_cost` execute for real. `updated_at` deliberately NOT
+  added: openings carry explicit lifecycle timestamps (created/voided/reconciled) and backup v2
+  mirrors exactly those.
+- **F-61-1:** provisional replay now recovers the ORIGINAL receipt facts through
+  `provisional_purchase_id → purchases → its line`, not the current `source_lot_id` (which
+  reconciliation repoints); late retry after reconciliation returns the SAME opening with zero new
+  rows; wrong total/date still refused; cross-path reuse still refused. D-089 wording corrected to
+  match. DB tests pin all three paths plus same-key concurrent provisional submissions committing
+  exactly one world.
+- **Reconciliation world (P60 §14) executed:** provisional purchase/lot/disposal voided, opening
+  live at the real lot with provenance set, real purchase counted once, phantom inventory refused.
+- **Bug C adjudicated TEST_BINDING:** `get_recent_activity`'s opening arm works (isolated user ⇒
+  exactly one row); the E15 failure was shared-user pollution truncating at LIMIT over same-day
+  ties. Both E15 cases now run dedicated throwaway users; the recent-activity case pins the full
+  contract (one row per act, purchase+opening coexistence, pulls silent, voided excluded, unknown
+  cost NULL).
+- **Test adjudications:** CHECK-constraint cases assert semantics (either firing constraint) with
+  attributable columns moved together when testing only the D-090 envelope; backup oracles
+  adjudicated to v2 (m13_export asserts the writer emits v2; the adversarial validator requires
+  ≥2, classifies `openings` MUST_EXPORT, counts reconcile — 62/62); M16 pricing fixture uses a
+  private synthetic card; m91_market_movers owns private variants, self-seeds an ancient fallback
+  FX rate and picks snapshot legs in a rate-gap window so results are order-independent;
+  createGiftedSealedLot find-or-creates.
+- **Type drift folded in:** `acquisition_lots.Update.opening_id` plus
+  `id`/`idempotency_key` on the three opening-writer RPC returns (generated-types evidence).
+- **m16-independent discovery fixed:** OpenAPI enumerated with a dedicated authenticated test
+  user's JWT (service-role correctly sees zero user RPCs under this grant model) — 53/53 pass,
+  ZERO skips, implementation-gated oracles actually execute.
+- **Final local gate (fresh blank reset):** db+authorization 578 passed / 0 failed / 1 opt-in
+  skip; grant audit clean; hostile-grant convergence via the M16 baseline; M12 scale audit,
+  10k-lot benchmark, snapshot performance/storage and price-snapshot storage all within unchanged
+  thresholds; typecheck/lint(0 errors)/format/unit 428/build/e2e 62 green.
+
+The hosted project remains untouched; GitHub Actions remains the pre-merge hosted gate.
+
+### P63 — cross-account query-cache privacy boundary (PR #58, squash-merged into PR #57 as `7aa3e4e`)
+
+F-61-2 CLOSED. The module-lifetime TanStack QueryClient was user-blind (no query key carries a
+user id), so a same-tab switch A→sign-out→B rendered A's cached private data under B until
+refetches resolved. Fix: `src/auth/query-cache-boundary.ts` + AuthProvider wiring — on every
+session observation, an identity CHANGE synchronously cancels queries, clears query+mutation
+caches and clears opening drafts BEFORE the new session renders; same-user token refreshes retain
+everything; public/catalog cache is cleared deliberately (D-093, ≤10 users). No localStorage.
+Tests: `tests/ui/auth-query-cache.test.ts` 8/8 against real QueryClient instances (incl. the
+in-flight race and pending-mutation cases). Unit total rose 428 → 436; all other gates unchanged
+green at the combined head. Docs folded: SECURITY.md §9.1, DECISIONS.md D-093.
+
+---
+
+---
+
+## Released state below this line predates M16
+
+**M13 (Export and versioned backup) is MERGED and
 RELEASED: PR #47 squash-merged as `0fa3021b8f7415b4c3b427917845406d36d0d40f` on `main`,
 Cloudflare deployed and verified (`deployment-check.mjs` 28/28, `grant-audit.sql` clean,
 `remote-security-check.mjs` 17/17 phase 1; no migration exists for M13, so none was
@@ -336,10 +546,12 @@ the preflight note above for why the committed file stands.
 
 ## Status
 
-**M1–M12, the parallel release, and M13/P42/P43/P48 are all merged/deployed. No open engineering item
-remains in any released family; the open items are the owner manual checks above (Home live-value
-repro, History browsing, reset flow, installed-iPhone export) and the standing owner-device check
-carried since M7.1. Do not begin M16 resequencing before the owner records final approval.**
+**M1–M12, the parallel release, and M13/P42/P43/P48 are all merged/deployed. No open engineering
+item remains in any released family; the open items are the owner manual checks above (Home
+live-value repro, History browsing, reset flow, installed-iPhone export) and the standing
+owner-device check carried since M7.1. M16 (Openings, pulls, backup v2) now EXISTS as the
+integrated candidate branch `feat/m16-openings-integrated` — see the M16 section at the top of
+this file; it is NOT merged and release is blocked on a full green DB CI run.**
 
 ## M9 — Pricing and snapshots
 

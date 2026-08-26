@@ -5,16 +5,18 @@ import { listHistoryEvents, type HistoryEvent, type HistoryEventKind } from '../
 import { toDecimalString } from '../../domain/money'
 
 /**
- * Unified History (P43). One feed over the canonical event sources that exist today — purchases,
- * sales, non-purchase additions and active manual valuations — with a voided/corrections toggle
- * that is presentation-only (hiding an entry never alters accounting; corrections themselves go
- * through each event's own edit/void lifecycle, DECISIONS.md D-084/D-085). Opening/Trade/Grading
- * become additional event kinds when M16/M17/M18 land — no placeholder chips until then.
+ * Unified History (P43; M16 adds the opening event kind). One feed over the canonical event
+ * sources — purchases, sales, openings, non-purchase additions and active manual valuations —
+ * with a voided/corrections toggle that is presentation-only (hiding an entry never alters
+ * accounting; corrections themselves go through each event's own edit/void lifecycle,
+ * DECISIONS.md D-084/D-085). Opening-linked pull lots never appear as individual "Added" rows —
+ * one conceptual action reports exactly once.
  */
 const KIND_FILTERS: { value: HistoryEventKind | 'all'; label: string }[] = [
   { value: 'all', label: 'All' },
   { value: 'purchase', label: 'Purchases' },
   { value: 'sale', label: 'Sales' },
+  { value: 'opening', label: 'Openings' },
   { value: 'acquisition', label: 'Added' },
   { value: 'valuation', label: 'Values' },
 ]
@@ -22,6 +24,7 @@ const KIND_FILTERS: { value: HistoryEventKind | 'all'; label: string }[] = [
 const KIND_BADGE: Record<HistoryEventKind, string> = {
   purchase: 'Purchase',
   sale: 'Sale',
+  opening: 'Opening',
   acquisition: 'Added',
   valuation: 'Value',
 }
@@ -161,10 +164,12 @@ function HistoryEventRow({ event }: { event: HistoryEvent }) {
       ? { to: '/purchases/$purchaseId', params: { purchaseId: event.primaryId } }
       : event.kind === 'sale'
         ? { to: '/sales/$saleId', params: { saleId: event.primaryId } }
-        : {
-            to: '/portfolio/$holdingId',
-            params: { holdingId: event.secondaryId ?? event.primaryId },
-          }
+        : event.kind === 'opening'
+          ? { to: '/openings/$openingId', params: { openingId: event.primaryId } }
+          : {
+              to: '/portfolio/$holdingId',
+              params: { holdingId: event.secondaryId ?? event.primaryId },
+            }
   return (
     <li>
       <Link
@@ -210,9 +215,10 @@ function EmptyState({ kind, showVoided }: { kind: HistoryEventKind | 'all'; show
     )
   }
   const copy: Record<HistoryEventKind | 'all', string> = {
-    all: 'Purchases, sales, added cards and valuations will appear here as they happen.',
+    all: 'Purchases, sales, openings, added cards and valuations will appear here as they happen.',
     purchase: 'No purchases recorded yet.',
     sale: 'No sales recorded yet — selling a card preserves its cost basis and reduces your Portfolio.',
+    opening: 'No openings recorded yet — open a sealed product from its detail page or the + menu.',
     acquisition: 'No cards or sealed products added outside a purchase yet.',
     valuation: 'No manual valuations set yet.',
   }
