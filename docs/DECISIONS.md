@@ -2513,7 +2513,7 @@ is now integrated into PR #63.
 
 ## D-096 — Scanner per-item idempotency: client-request-key on add_card_acquisition
 
-**Status:** Accepted (M15, P71, P74 repair). **Date:** 2026-08-26.
+**Status:** Accepted (M15, P71, P74 repair, P75 repair). **Date:** 2026-08-26.
 
 Scanner batch items now carry a stable, client-generated UUID (`client_request_key`) that travels
 through to `add_card_acquisition`. The server stores it on `acquisition_lots` with a partial
@@ -2556,3 +2556,24 @@ unique index, so:
 10. **Reset naturally clears keys.** `reset_my_portfolio_data()` deletes `acquisition_lots` at
     step 7. The key dies with the lot. A fresh acquisition with the same UUID key succeeds
     normally (early check finds nothing).
+11. **P75 repair — the early replay check never fired against real Postgres.** The first
+    end-to-end run of the 21 idempotency DB tests (this milestone's first real-Postgres
+    execution) exposed that `if v_replay is not null then ...` was silently skipped on every
+    non-voided replay, because `v_replay` is a `record` with a MIXED-null shape (`voided_at` is
+    NULL while `holding_id`/`lot_id` are not) — SQL's row-wise NULL test evaluates BOTH
+    `IS NULL` and `IS NOT NULL` false for a composite value with some-but-not-all-null fields.
+    Execution fell through to the mutation block every time, relying entirely on the coarser
+    outer `unique_violation` handler (item 8 above) to return the original lot — which has no
+    material-mismatch or voided-lot check at all. Point 7's voided-lot rejection only appeared to
+    work because a voided row happens to have every selected field non-null (a uniform record,
+    not a mixed one) — masking the defect in that one path. Fixed by testing the NOT NULL
+    `lot_id` column instead of the whole record (`if v_replay.lot_id is not null then`, in both
+    the early check and the outer handler). Point 6's material-mismatch predicate itself also had
+    two inverted null-safe comparisons (`IS DISTINCT FROM` used where `IS NOT DISTINCT FROM` was
+    needed, on `unit_cost_basis_minor` and `storage_location_id`), which would have rejected
+    every legitimate replay had the surrounding block ever executed. Both fixed in the same pass.
+    All 21 DB tests (I1–I21) pass against real Postgres after the fix, including the concurrent
+    known/unknown-cost races (I2/I3) and every material-mismatch case (I7–I13). General lesson
+    for any future `record`-typed "was a row found" check in this codebase: never test the whole
+    record for NULL when its columns can be independently null — test one column declared
+    NOT NULL in the schema.

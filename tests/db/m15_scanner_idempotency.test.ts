@@ -45,6 +45,8 @@ async function addCard(
     sealedProductId?: string
     condition?: string
     gradingState?: string
+    grader?: string
+    grade?: number
     origin?: string
     costBasisState?: string
     unitCostBasisMinor?: number | null
@@ -54,17 +56,27 @@ async function addCard(
     clientRequestKey?: string | null
   } = {},
 ): Promise<AcqResult> {
+  const usesAlternateIdentity =
+    opts.manualCardId !== undefined || opts.sealedProductId !== undefined
+  const costBasisState = opts.costBasisState ?? 'unknown'
   const { data, error } = await client
     .rpc('add_card_acquisition', {
-      p_card_variant_id: opts.cardVariantId ?? seedCatalog.pikachuVariantId,
+      p_card_variant_id: usesAlternateIdentity
+        ? undefined
+        : (opts.cardVariantId ?? seedCatalog.pikachuVariantId),
       p_grading_state: opts.gradingState ?? 'raw',
-      p_condition: opts.condition ?? 'NM',
+      // A graded holding's condition column must stay NULL (holdings_condition_only_for_raw) —
+      // only default to 'NM' for the raw-card path.
+      p_condition: opts.condition ?? ((opts.gradingState ?? 'raw') === 'graded' ? undefined : 'NM'),
       p_origin: opts.origin ?? 'pre_tracking',
-      p_cost_basis_state: opts.costBasisState ?? 'unknown',
+      p_cost_basis_state: costBasisState,
+      p_unit_cost_basis_minor: costBasisState === 'known' ? opts.unitCostBasisMinor : undefined,
       p_quantity: opts.quantity ?? 1,
       p_acquired_on: opts.acquiredOn ?? today,
       p_storage_location_id: opts.storageLocationId ?? undefined,
       p_client_request_key: opts.clientRequestKey ?? undefined,
+      ...(opts.grader !== undefined ? { p_grader: opts.grader } : {}),
+      ...(opts.grade !== undefined ? { p_grade: opts.grade } : {}),
       ...(opts.manualCardId ? { p_manual_card_id: opts.manualCardId } : {}),
       ...(opts.sealedProductId
         ? { p_sealed_product_id: opts.sealedProductId, p_sealed_intent: 'planned_to_open' }
@@ -162,6 +174,7 @@ describe('I4 response-loss late replay', () => {
     const key = crypto.randomUUID()
     const first = await addCard(clientA, {
       clientRequestKey: key,
+      origin: 'purchase',
       costBasisState: 'known',
       unitCostBasisMinor: 2000,
       quantity: 1,
@@ -178,6 +191,7 @@ describe('I4 response-loss late replay', () => {
 
     const replay = await addCard(clientA, {
       clientRequestKey: key,
+      origin: 'purchase',
       costBasisState: 'known',
       unitCostBasisMinor: 2000,
       quantity: 1,
@@ -303,6 +317,7 @@ describe('I11 same key different cost rejected', () => {
     const key = crypto.randomUUID()
     await addCard(clientA, {
       clientRequestKey: key,
+      origin: 'purchase',
       costBasisState: 'known',
       unitCostBasisMinor: 1000,
     })
@@ -310,6 +325,7 @@ describe('I11 same key different cost rejected', () => {
     try {
       await addCard(clientA, {
         clientRequestKey: key,
+        origin: 'purchase',
         costBasisState: 'known',
         unitCostBasisMinor: 2000,
       })
@@ -496,7 +512,8 @@ describe('I21 manual valuation not duplicated on replay', () => {
     const first = await addCard(clientA, {
       clientRequestKey: key,
       gradingState: 'graded',
-      condition: 'NM',
+      grader: 'psa',
+      grade: 9,
     })
 
     const { data: holding } = await service
@@ -521,7 +538,8 @@ describe('I21 manual valuation not duplicated on replay', () => {
     const replay = await addCard(clientA, {
       clientRequestKey: key,
       gradingState: 'graded',
-      condition: 'NM',
+      grader: 'psa',
+      grade: 9,
     })
 
     expect(replay.lot_id).toBe(first.lot_id)

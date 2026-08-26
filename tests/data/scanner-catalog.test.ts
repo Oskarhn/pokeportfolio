@@ -74,11 +74,27 @@ describe('retrieveScannerCandidates — query strategy and bounds', () => {
     expect(mocks.searchCards.mock.calls[0]?.[0]?.query).toContain('farfetchd')
   })
 
-  it('a number-only scan queries just the reconstructed id, prefix included', async () => {
+  it('a number-only scan with no leading zero queries just the reconstructed id, prefix included', async () => {
+    mocks.searchCards.mockResolvedValue(page([]))
+    await retrieveScannerCandidates({ rawCollectorNumberText: 'TG1' })
+    expect(mocks.searchCards).toHaveBeenCalledTimes(1)
+    expect(mocks.searchCards.mock.calls[0]?.[0]?.query).toBe('TG1')
+  })
+
+  it('a number-only scan with a leading zero also tries the unpadded form (M1/P70)', async () => {
     mocks.searchCards.mockResolvedValue(page([]))
     await retrieveScannerCandidates({ rawCollectorNumberText: 'TG01' })
+    expect(mocks.searchCards).toHaveBeenCalledTimes(2)
+    const queries = mocks.searchCards.mock.calls.map((call) => call[0].query)
+    expect(queries).toContain('TG01')
+    expect(queries).toContain('TG1')
+  })
+
+  it('a number-only scan whose form is already unpadded issues no redundant retry', async () => {
+    mocks.searchCards.mockResolvedValue(page([]))
+    await retrieveScannerCandidates({ rawCollectorNumberText: '49' })
     expect(mocks.searchCards).toHaveBeenCalledTimes(1)
-    expect(mocks.searchCards.mock.calls[0]?.[0]?.query).toBe('TG01')
+    expect(mocks.searchCards.mock.calls[0]?.[0]?.query).toBe('49')
   })
 
   it('a name-only scan issues exactly one query — no duplicate work', async () => {

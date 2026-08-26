@@ -158,7 +158,11 @@ begin
      where al.user_id = v_user_id
        and al.client_request_key = p_client_request_key
      limit 1;
-    if v_replay is not null then
+    -- NOTE: `v_replay is not null` is a row-wise NULL test — for a mixed record (voided_at NULL
+    -- while the other columns are non-null, the common case) BOTH "is null" and "is not null"
+    -- evaluate false, silently skipping this whole block. Test the NOT NULL lot_id column
+    -- instead — a reliable "was a row found" check.
+    if v_replay.lot_id is not null then
       -- Check voided: stale retry after void must be rejected.
       if v_replay.voided_at is not null then
         raise exception 'idempotency-key-reuse: the original acquisition was already processed '
@@ -182,11 +186,11 @@ begin
            and coalesce(h.grade, -1) = coalesce(p_grade, -1)
            and al2.origin = p_origin
            and al2.cost_basis_state = p_cost_basis_state
-           and (al2.unit_cost_basis_minor is distinct from
+           and (al2.unit_cost_basis_minor is not distinct from
                 case when p_cost_basis_state = 'known' then p_unit_cost_basis_minor end)
            and al2.quantity = p_quantity
            and al2.acquired_on = p_acquired_on
-           and (al2.storage_location_id is distinct from p_storage_location_id)
+           and (al2.storage_location_id is not distinct from p_storage_location_id)
       ) then
         raise exception 'idempotency-key-reuse: key % already belongs to a different '
           'acquisition request', p_client_request_key;
@@ -325,7 +329,7 @@ begin
         from public.acquisition_lots al
        where al.user_id = v_user_id
          and al.client_request_key = p_client_request_key;
-      if v_replay is not null then
+      if v_replay.lot_id is not null then
         -- Idempotent replay detected at INSERT time.
         -- The implicit savepoint has rolled back ALL changes inside the outer BEGIN block:
         --   - This transaction's purchase/purchase_line rows: GONE

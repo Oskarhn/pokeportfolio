@@ -349,7 +349,10 @@ describe('commitBatch - existing acquisition path, honest outcomes (I12/I13/I14)
     expect(mockedAddCardAcquisition).toHaveBeenCalledTimes(1)
     expect(result.addedCount).toBe(0)
     expect(result.outcomes[0]?.status).toBe('needs_verification')
-    expect(result.outcomes[0]?.message).toMatch(/may already have been added/)
+    // D-096: with the per-item idempotency key, an ambiguous transport break is safe to retry —
+    // the copy says so instead of the old "may already have been added" uncertainty.
+    expect(result.outcomes[0]?.message).toMatch(/retry safely/)
+    expect(result.outcomes[0]?.message).not.toMatch(/may already have been added/)
   })
 
   it('classifyAcquisitionFailure keys on evidence of a server ANSWER, not message text', () => {

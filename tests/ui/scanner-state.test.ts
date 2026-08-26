@@ -262,6 +262,7 @@ describe('scanner state machine — the in-memory batch', () => {
       'candidate',
       'condition',
       'quantity',
+      'requestKey',
       'variantId',
       'variantLabel',
     ])

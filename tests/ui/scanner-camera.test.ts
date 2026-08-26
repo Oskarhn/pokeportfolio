@@ -25,13 +25,34 @@ function fakeVideoElement(): { video: HTMLVideoElement; play: StopFn } {
   return { video, play }
 }
 
-function fakeStream(trackCount = 1): { stream: MediaStream; stops: StopFn[] } {
+interface FakeTrack {
+  kind: string
+  stop: StopFn
+  addEventListener: StopFn
+  removeEventListener: StopFn
+  /** Test helper: simulates the browser firing 'ended' on this track (hardware disconnect,
+   *  permission revoke). No-op once the listener has been removed. */
+  fireEnded: () => void
+}
+
+function fakeStream(trackCount = 1): { stream: MediaStream; stops: StopFn[]; tracks: FakeTrack[] } {
   const stops = Array.from({ length: trackCount }, () => vi.fn())
-  const tracks = stops.map((stop, index) => ({
-    kind: index === 0 ? 'video' : 'audio',
-    stop,
-  }))
-  return { stream: { getTracks: () => tracks } as unknown as MediaStream, stops }
+  const tracks: FakeTrack[] = stops.map((stop, index) => {
+    let endedHandler: (() => void) | undefined
+    const track: FakeTrack = {
+      kind: index === 0 ? 'video' : 'audio',
+      stop,
+      addEventListener: vi.fn((event: string, handler: () => void) => {
+        if (event === 'ended') endedHandler = handler
+      }),
+      removeEventListener: vi.fn((event: string) => {
+        if (event === 'ended') endedHandler = undefined
+      }),
+      fireEnded: () => endedHandler?.(),
+    }
+    return track
+  })
+  return { stream: { getTracks: () => tracks } as unknown as MediaStream, stops, tracks }
 }
 
 afterEach(() => {
@@ -133,6 +154,41 @@ describe('camera teardown guarantees', () => {
     stopActiveScannerCamera()
     expect(stops[0]).toHaveBeenCalledTimes(1)
     expect(video.srcObject).toBeNull()
+  })
+})
+
+describe('unexpected track-ended handling (P70, prompt §13)', () => {
+  it('an unexpected ended event stops the session and calls onEnded', async () => {
+    const { stream, stops, tracks } = fakeStream(1)
+    const { video } = fakeVideoElement()
+    const onEnded = vi.fn()
+    await openEnvironmentCamera(video, () => Promise.resolve(stream), onEnded)
+    tracks[0]?.fireEnded()
+    expect(stops[0]).toHaveBeenCalledTimes(1)
+    expect(video.srcObject).toBeNull()
+    expect(onEnded).toHaveBeenCalledTimes(1)
+  })
+
+  it('an intentional stop() removes the ended listener first — no false onEnded call', async () => {
+    const { stream, tracks } = fakeStream(1)
+    const { video } = fakeVideoElement()
+    const onEnded = vi.fn()
+    const session = await openEnvironmentCamera(video, () => Promise.resolve(stream), onEnded)
+    session.stop()
+    // Simulate a browser that still fires 'ended' after stop() — the handler must already be gone.
+    tracks[0]?.fireEnded()
+    expect(onEnded).not.toHaveBeenCalled()
+  })
+
+  it('a repeated ended event on an already-stopped session is a no-op', async () => {
+    const { stream, stops, tracks } = fakeStream(1)
+    const { video } = fakeVideoElement()
+    const onEnded = vi.fn()
+    await openEnvironmentCamera(video, () => Promise.resolve(stream), onEnded)
+    tracks[0]?.fireEnded()
+    tracks[0]?.fireEnded()
+    expect(stops[0]).toHaveBeenCalledTimes(1)
+    expect(onEnded).toHaveBeenCalledTimes(1)
   })
 })
 
