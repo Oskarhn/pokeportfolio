@@ -122,6 +122,12 @@ export default defineConfig({
         // Precache the app shell only. Financial and auth data must never be
         // cached by the service worker — see docs/ARCHITECTURE.md §6.
         globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2}'],
+        // M15 (P68 MINIMAL addition — OWNED BY P69): the staged OCR assets under
+        // public/scanner-assets/ exceed Workbox's 2 MB precache ceiling and break the build
+        // outright, so they must be excluded here. Only the EXCLUSION lives in this branch;
+        // the real caching POLICY (runtime CacheFirst route) remains P69's deliverable.
+        // Recorded for P71 conflict review.
+        globIgnores: ['**/scanner-assets/**'],
         navigateFallbackDenylist: [/^\/api\//],
       },
     }),

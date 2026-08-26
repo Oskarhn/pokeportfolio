@@ -67,6 +67,8 @@ card-images/
 *.tflite
 embeddings.bin
 scanner-index*/
+# Generated OCR runtime assets (scripts/prepare-scanner-assets.mjs) — never committed.
+/public/scanner-assets/
 
 # ── Editor and OS ──────────────────────────────────────────────────────────
 .vscode/*
