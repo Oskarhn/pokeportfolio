@@ -4,7 +4,27 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-**Last updated:** 2026-08-26 — **M16 (Openings, pulls, backup v2) is MERGED and RELEASED: PR #56
+**Last updated:** 2026-08-26 — **M15 scanner integrated candidate EXISTS as DRAFT PR (P68) and
+must NOT be merged or deployed yet.** Branch `feat/m15-scanner-integrated-p68` deliberately
+combines source PR #60 (deterministic matcher @ `12537e2`) + source PR #61 (camera/batch UI @
+`9ce2fcc`) on top of main `7efc200`, then adds the real recognition pipeline: pinned Tesseract.js
+7 / core 7 / eng-data 1.0.0 (D-094; the researched core 6.x pin was superseded by npm reality —
+v7 requires core ^7), same-origin build-staged assets under `/scanner-assets/v7/`, one lazy OCR
+worker per scanner session disposed on exit, shared guide→pixels geometry, P67 matcher wired to
+P66 UI with ≤5 shortlists, printing chosen from real active variants AFTER candidate choice,
+user-scoped session defaults (no standalone Opening origin; pre_tracking default; D-093 sweep
+extended), batch-before-write commits through existing `add_card_acquisition` with per-item
+outcomes where interrupted transports are flagged needs_verification and never auto-retried.
+Entry points live; privacy copy now literally true. **P69 security PR is REQUIRED before this
+can deploy** ('wasm-unsafe-eval' CSP + SW scanner-asset policy; P68 carries only the minimal
+workbox globIgnores line needed to keep `pnpm build` alive once >2 MB assets exist — flagged for
+conflict review). Verified at head: typecheck/lint(0 errors)/format clean, unit 637/637,
+build green (entry +0.26 KB gzip vs P66 baseline), E2E 64/64, real Tesseract smoke read the
+synthetic fixture at confidence 93 (~106 ms warm, dev machine), local Docker DB gate 578/0/1
+after fresh reset + grant-audit clean. **IPHONE_DEVICE_GATE=PENDING_OWNER.** Everything below
+this paragraph predates M15.
+
+**Previous state:** M16 (Openings, pulls, backup v2) is MERGED and RELEASED: PR #56
 squash-merged as `a1e20cf1c8c1a47414273932f2c808cfd3cab7c8` on `main`; its FOUR migrations
 (`20260902120000_m16_openings_schema.sql`, `20260902120010_m16_opening_rpcs.sql`,
 `20260902120020_m16_reset_history_extension.sql`, `20260902120030_m16_privilege_baseline.sql`)

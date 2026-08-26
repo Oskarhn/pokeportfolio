@@ -170,3 +170,27 @@ S7 matters more than it looks: all-card tracking means energies are exactly the 
 wants to bulk-scan, and they may be the hardest to identify. If image recognition cannot separate
 them, the fallback is a fast manual "add N of this printing" path rather than a scanner that
 guesses.
+
+---
+
+## 7. Integration addendum (M15, 2026-08-26 — P68)
+
+What integration changed against the research above:
+
+- **Engine versions as shipped (D-094):** tesseract.js 7.0.0 + tesseract.js-core **7.0.0** +
+  @tesseract.js-data/eng 1.0.0. The researched core pin (6.1.2) was wrong in one respect: npm
+  reality shows tesseract.js v7 declares 	esseract.js-core: ^7.0.0 and its worker selects a
+  relaxed-SIMD LSTM core that only exists in core 7. Pinned exact; assets copied from the npm
+  tarballs at build time by scripts/prepare-scanner-assets.mjs into public/scanner-assets/v7/
+  (worker.min.js, three LSTM cores with their .wasm files, eng.traineddata.gz best_int).
+- **Real smoke, this machine:** the pinned engine read the synthetic fixture
+  ("TESTASAURUS" / "049/102") at confidence 93, full-image recognize ≈106 ms warm after a
+  ~393 ms worker start, traineddata loaded from the staged copy. Not an iPhone claim.
+- **Unknowns status:** S2 resolved by shipping choice (WASM SIMD family; plain-LSTM fallback
+  included). S6 remains the standing owner-device gate (one prompt per cold start on installed
+  PWA is now documented WebKit behaviour, not a blocker). S7 dissolved for OCR purposes: energies
+  carry ordinary name+number strips, so they are first-class text-recognition targets; artwork
+  similarity stays M15c-conditional and the visualSimilarity seam remains unused.
+- **Build interaction:** staging >2 MB assets under public/ breaks Workbox's precache ceiling;
+  P68 carries the minimal globIgnores exclusion so pnpm build works, while the scanner-asset
+  caching POLICY (runtime CacheFirst) belongs to the pending P69 security PR.

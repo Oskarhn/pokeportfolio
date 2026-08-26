@@ -2434,3 +2434,49 @@ one, synchronously — before the new session becomes renderable state — cance
 
 Regression coverage: `tests/ui/auth-query-cache.test.ts` (8 cases against real QueryClient
 instances, including the in-flight race and pending-mutation cases).
+
+---
+
+## D-094 - Scanner V1: local Tesseract.js OCR over the existing catalog; images never leave the device
+
+**Status:** Accepted (M15, P68 integration). **Date:** 2026-08-26.
+
+M15's scanner identifies physical cards by reading two printed text strips on-device and
+resolving them against the app's OWN catalog. This decision records the engine choice and the
+boundaries that came with it.
+
+1. **Engine:** Tesseract.js, pinned exact (	esseract.js 7.0.0 / 	esseract.js-core 7.0.0 /
+   @tesseract.js-data/eng 1.0.0), LSTM-only OEM, English only in V1. The researched core pin
+   (6.1.2) was superseded by npm reality: tesseract.js 7.0.0 declares its own core dependency as
+   ^7.0.0 (relaxed-SIMD core selection), so 7.0.0 is the compatible exact version. All three are
+   Apache-2.0/MIT respectively; no new external runtime service exists (API_SOURCES unchanged).
+2. **Assets are same-origin and build-generated.** scripts/prepare-scanner-assets.mjs copies the
+   worker, the three LSTM cores (relaxedsimd/simd/plain) and eng.traineddata.gz from the pinned
+   npm packages into public/scanner-assets/v7/ during every build (prebuild). No CDN is ever
+   contacted at runtime; nothing binary is committed.
+3. **Images never leave the device.** OCR runs locally in a per-session Web Worker created from
+   a same-origin script URL; captured blobs exist only in component memory (CaptureStore) and
+   are disposed after analysis. Only TEXTUAL catalog queries (existing search_cards via
+   src/data/scanner/scanner-catalog.ts), printing-variant reads and ordinary thumbnail GETs
+   cross the network. A static audit test pins that no scanner module imports Supabase/fetch/
+   TCGdex or logs anything (tests/ui/scanner-network-audit.test.ts).
+4. **Identity vs financial variant.** Recognition resolves cards.id only; the committed identity
+   is always a card_variants.id chosen by the user from getCardVariants' ACTIVE variants with
+   real finish/stamp/subtype/size labels. Nothing visual is ever inferred about holo/reverse/
+   stamps/condition.
+5. **Batch before write, existing money semantics.** Nothing writes until the review step's
+   explicit save; every write is the existing add_card_acquisition with origin-derived cost
+   basis through the SHARED fixedCostBasisState helper extracted to
+   src/features/collection/origin-basis.ts. Standalone origin set excludes 'opening'
+   structurally; default pre_tracking ("Existing collection"); no amounts collected means no
+   zero fabricated.
+6. **Ambiguous transport failures are surfaced, not retried.** add_card_acquisition carries no
+   idempotency key, so a connection break after a possible commit is reported per item as
+   needs_verification ("may already have been added - check Portfolio before retrying");
+   definite server refusals (evidence of a PostgREST answer: code/details/hint) are retryable.
+   No migration was added for this.
+7. **Known CSP dependency (P69 pending):** WASM compilation under the deployed CSP requires
+   'wasm-unsafe-eval', and the service worker needs its scanner-asset caching policy. The P68
+   candidate is deliberately NOT production-deployable until that security PR lands. One minimal
+   workbox globIgnores line was added in P68 solely because staging >2 MB assets otherwise broke
+   the build; the caching POLICY remains P69's.

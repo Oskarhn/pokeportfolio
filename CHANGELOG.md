@@ -10,6 +10,45 @@ they were**.
 
 ## [Unreleased]
 
+### Added — 2026-08-26 — M15 scanner: on-device recognition integrated candidate (P68, DRAFT PR — DO NOT MERGE until P69 lands; not deployed)
+
+The M15 integrated candidate combines the two parallel source candidates deliberately (source
+PR #60 deterministic matcher + source PR #61 camera/batch UI) and adds the real recognition
+pipeline on top. DRAFT: production deployment additionally requires the pending P69 security PR
+(`'wasm-unsafe-eval'` CSP + scanner-asset service-worker policy) and the owner's real-iPhone
+check.
+
+- **On-device OCR (D-094)** — pinned `tesseract.js` 7.0.0 / `tesseract.js-core` 7.0.0 /
+  `@tesseract.js-data/eng` 1.0.0, LSTM-only English; assets staged same-origin under
+  `/scanner-assets/v7/` by a reproducible prebuild script (no CDN at runtime, nothing binary
+  committed); one worker per scanner session created lazily on first analysis and terminated on
+  exit; tesseract.js stays out of the main bundle entirely (entry delta +0.26 KB gzip).
+- **Shared guide geometry** — one pure model maps the rendered 5:7 framing guide through
+  object-fit: cover into captured pixels; every capture carries a trustworthy card rectangle;
+  picked files follow a deterministic full-image-or-centred-crop policy shown honestly in the
+  review step.
+- **Matcher integration** — OCR text becomes P67 observations, retrieval rides the existing
+  `search_cards` surface, confidence is P67's deterministic tier mapped to HIGH/MEDIUM/LOW/
+  NO_MATCH (≤5 shortlist; HIGH only ever preselects).
+- **Printing before batch** — active variants are fetched only after a candidate is chosen;
+  multi-printing cards require an explicit choice labelled from real finish/stamp/subtype/size.
+- **Session defaults** — user-scoped in-memory origin/condition/language/storage/date applied at
+  commit; standalone origins exclude Opening (M16 owns pulls), default pre_tracking "Existing
+  collection"; basis derived via the shared extracted origin-basis helper; cleared by both auth
+  exit paths (D-093 sweep extension).
+- **Honest batch commit** — sequential `add_card_acquisition` per confirmed item with per-item
+  outcomes: successes are never resubmitted on retry, definite server refusals stay editable,
+  and interrupted transports are flagged "may already have been added — check Portfolio" with
+  no automatic retry (no idempotency migration added).
+- **Entry points live** — Quick Add "Scan card" and Search's camera affordance open `/scan`
+  (the "not available yet" placeholders are gone). Privacy copy now states the literal truth:
+  photos are processed on this device and aren't uploaded or saved.
+- **Verification** — typecheck/lint/format clean; unit 637/637 (131 new integration tests incl.
+  I1–I20 mapping and a static network-privacy audit); build green with same-origin assets
+  deployed into dist and excluded from SW precache; E2E 64/64; real Tesseract smoke read the
+  synthetic fixture at confidence 93 (~106 ms warm, dev machine); local Docker DB gate green
+  (578/0/1 after fresh reset) plus grant-audit clean.
+
 ### Fixed — 2026-08-26 — M16 real-PostgreSQL repair: first full local DB gate green (P62; same child PR, DO NOT MERGE until P63/P64 integration)
 
 P60 executed the repository's entire db-tests CI job for the first time on a local

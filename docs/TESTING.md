@@ -21,6 +21,21 @@ that touches money or ownership is not complete until both pass.
 **Compilation is not evidence.** A feature is complete when its behaviour has been exercised,
 not when TypeScript accepts it.
 
+**M15 scanner suites (in `pnpm test`).** The scanner adds infrastructure-free Vitest coverage
+alongside the existing domain/data/ui splits: pure geometry/ROI/preprocessing math
+(`tests/ui/scanner-guide-geometry.test.ts`, `scanner-roi.test.ts`), the OCR pipeline against a
+fake engine + canvas pool (`scanner-analyze.test.ts`), controller-level matcher/acquisition
+integration with mocked data boundaries (`scanner-controller.test.ts`), session-defaults
+scoping and identity-boundary clearing (`scanner-session.test.ts`), and a static network-
+privacy audit over every scanner module (`scanner-network-audit.test.ts` — no Supabase/fetch/
+TCGdex/logging surface, tesseract.js dynamically imported in exactly one engine file). Two
+deliberate boundaries: REAL Tesseract execution is a manual smoke, not CI —
+`node scripts/scanner-ocr-smoke.mjs` runs the pinned engine against the committed synthetic
+fixtures (non-copyrighted programmatic renders under `tests/fixtures/scanner/`; regenerate via
+`scripts/generate-scanner-fixture.mjs`) — because deterministic OCR output is too environment-
+sensitive for required CI. And signed-in scanner UI on real iPhone hardware remains the §8
+owner gate; Chromium E2E covers the session-guarded `/scan` route only.
+
 ---
 
 ## 2. Financial suite — mandatory
@@ -727,6 +742,10 @@ Emulation is not Safari. A manual checklist, recorded with dates in
 - [ ] Sign in with the saved credential, without leaving the installed app
 - [ ] Password recovery email arrives and the link opens the reset screen
 - [ ] Camera permission persists through a scanner session (the R9 risk, when the scanner exists)
+- [ ] M15 scanner on installed iPhone PWA: one permission prompt per cold start; zero prompts
+      across a 20+ card in-route session; guide framing comfortable at arm's length; OCR reads
+      real cards end-to-end; no upward memory drift across a long session (the standing P68
+      IPHONE_DEVICE_GATE — Chromium cannot certify any of this)
 - [ ] Charts respond to touch; pinch and pan behave
 - [ ] Android: install, launch, core flows
 

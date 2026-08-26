@@ -345,3 +345,21 @@ To be honoured in the application footer and README once the UI exists:
 - Exchange rates: Norges Bank.
 - The application is unofficial and unaffiliated with The Pokémon Company, Nintendo, Creatures
   or GAME FREAK. No official logos or brand assets are used as application branding.
+
+---
+
+## Tesseract.js — on-device OCR library (NOT an external service)
+
+**Status: Selected** (M15 scanner, D-094) — recorded here because it is the scanner's entire
+recognition "provider", and the entry documents why NO new external runtime service exists.
+
+| | |
+|---|---|
+| What | Apache-2.0 WASM port of Tesseract (LSTM-only OEM), pinned 	esseract.js 7.0.0 / 	esseract.js-core 7.0.0 / @tesseract.js-data/eng 1.0.0 (MIT for the data package wrapper; upstream traineddata per tessdata licensing) |
+| Runs where | In the user's browser, inside a same-origin Web Worker; assets staged from the pinned npm packages into /scanner-assets/v7/ at build time |
+| Network behaviour | **Zero runtime calls to any third party.** No CDN, no API host, no keys. The only scanner network traffic is same-origin asset GETs, textual Supabase catalog queries and ordinary catalog thumbnail GETs |
+| Cost |  recurring; static bytes served free by Cloudflare Pages |
+| Verification | Real smoke executed on the development machine 2026-08-26 (synthetic card fixture read at confidence 93); see docs/SCANNER_RESEARCH.md §7 |
+
+Deployment dependency: WASM compilation requires the 'wasm-unsafe-eval' CSP exception —
+pending P69 security PR.

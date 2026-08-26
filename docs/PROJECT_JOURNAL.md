@@ -8,6 +8,37 @@ here when there was a real problem with a non-obvious answer.
 
 ---
 
+## 2026-08-26 — M15 integration: three findings from letting reality vote
+
+1. **npm reality overrode the researched core pin.** The M15 architecture research pinned
+   `tesseract.js-core` 6.1.2 alongside tesseract.js 7.0.0. Installing revealed v7 declares its
+   own core dependency as `^7.0.0` and its worker feature-detects a relaxed-SIMD LSTM core that
+   only exists in core 7 — pairing the v7 worker with 6.x assets would have been a silent
+   version mismatch resolved only by runtime failure on device. Pinned 7.0.0 exactly and
+   recorded the supersession in D-094 and SCANNER_RESEARCH §7. Lesson restated: "pin exact
+   versions" must include verifying the dependency GRAPH the pin produces, not just that each
+   package exists at that version.
+
+2. **Staging >2 MB static assets under `public/` hard-fails `vite build`.** Workbox's default
+   precache ceiling (2 MiB per file) turns every ~3.9 MB OCR core into a fatal "won't be
+   precached" build error, so the branch could not even run its gates until an explicit
+   `globIgnores` exclusion existed. The exclusion is one line but it lives squarely in P69's
+   service-worker-policy territory; it is marked as such in vite.config.ts and flagged for P71
+   conflict review rather than silently absorbed. Practical rule: any future feature that
+   vendors large static files must plan its service-worker interaction at the same time as the
+   vendoring script.
+
+3. **The local DB suite is single-shot against a persistent stack.** Running `pnpm test:db` a
+   second time without an intervening reset produced 35 fixture collisions
+   (`cards_set_id_local_id_key`): several suites insert fixed-local_id catalog rows under the
+   shared seed set and never delete them, which is fine for CI's fresh ephemeral stack and for
+   ONE local run after a clean reset, but not for back-to-back runs. A clean
+   `supabase db reset` plus a single run reproduced the recorded 578/0/1 green gate exactly.
+   Not a product bug; recorded so the next session does not chase phantom regressions the way
+   this one briefly did.
+
+---
+
 ## 2026-08-24 — Three implementation-blind sources met for real: what first contact actually found
 
 **Problem.** M13 ran as three parallel sessions: an export core, a UI/delivery layer and an

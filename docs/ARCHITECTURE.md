@@ -319,7 +319,22 @@ it is not retrofitted later:
 - Filter and session state during scanning is component state, not URL state.
 - The stream is acquired once on entry and released once on exit.
 
-The scanner is not built in this phase, but the routing shape that allows it is fixed now.
+The scanner is now BUILT to this shape (M15 integrated candidate): `/scan` holds one MediaStream
+per session, all confirmation is in-route overlay, and the OCR engine follows the same
+lifetime discipline — ONE Tesseract worker per scanner session, created lazily on the first
+analysis (the tesseract.js module is dynamically imported only there; it never enters the main
+bundle), reused across scans, and terminated on route exit together with the bounded OCR
+canvases (`controller.dispose()`).
+
+**Scanner data layer (M15).** Recognition is local-only: `src/features/scanner/ocr-engine.ts`
+wraps pinned Tesseract.js 7 assets staged same-origin under `/scanner-assets/v7/` by
+`scripts/prepare-scanner-assets.mjs` at build time (D-094). Candidate retrieval rides the
+EXISTING `search_cards` surface through `src/data/scanner/scanner-catalog.ts`; ranking is pure
+domain code in `src/domain/scanner/`; commits go through the existing `add_card_acquisition`
+RPC. No scanner SQL, RPC or migration exists. Captured image bytes never cross the network
+(static audit test enforces the boundary). Deployment note: production WASM compilation needs
+the `'wasm-unsafe-eval'` CSP exception plus the service-worker scanner-asset caching policy —
+owned by the pending P69 security PR; the P68 candidate is knowingly not deployable without it.
 
 ---
 

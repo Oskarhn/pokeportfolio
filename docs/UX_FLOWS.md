@@ -638,29 +638,33 @@ Holding Detail's "Open" action). The wizard offers two modes: open an already-ow
 
 ---
 
-## F12 — Bulk scan (V1, first post-MVP milestone)
+## F12 — Bulk scan — **built as the M15 integrated candidate (PR: P68), pending P69 CSP + iPhone gate**
 
 Specified now so the scanner is built against a defined target, not improvised.
 
-→ Collection › Scan
-→ Camera starts. **One permission prompt for the whole session.**
-→ Session defaults set once and shown as a persistent header:
-
-```
-Origin      Pulled
-Opening     Surging Sparks Booster Box
-Condition   NM
-Language    English
-Collection  Binder 3
-```
-→ Point at a card → identity proposed in an overlay → tap to accept → immediately ready for the
-  next card
-→ Low confidence → up to three candidates → tap one, or search manually without leaving the session
-→ A running counter shows the batch
-→ End session → review the batch as a list → adjust anything → save all
-✓ No navigation and no URL change at any point while the camera is live (D-006)
-✓ Faster than manual search, measured against a real stack of cards
-✓ Nothing is saved until the review step is confirmed
+→ Quick Add › Scan card, or Search's camera affordance → `/scan` (one dedicated route, D-006)
+→ Camera starts only after an explicit "Start camera" press; one permission prompt per session
+→ Session defaults set once in an "Applied to added cards" header (origin / condition / language
+  / storage / acquired date). **Standalone shipped shape deliberately diverges from the original
+  sketch below:** default origin is **pre_tracking "Existing collection"**, offered origins are
+  pre_tracking/gift/trade_in/other/purchase(cost-unknown with explicit copy) — **no Opening /
+  Pulled option exists standalone** because M16 owns pulled provenance inside its own workflow.
+  Language shows English (V1 recognition is English-only; a Japanese-default profile sees an
+  honest notice). Collection/tag fields are absent — the acquisition path behind commit takes none.
+→ Point at a card → shutter → photo review → Use photo → OCR reads the name + collector-number
+  strips on-device ("Preparing scanner…" honestly on first use) → candidates from the app's own
+  catalog → tap to accept → choose printing (variants fetched ONLY after a candidate is chosen;
+  exactly one preselects itself) → quantity/condition → Add to batch → immediately ready for next
+→ LOW confidence or NO_MATCH → shortlist (≤5) / manual search without leaving the session
+→ A running counter shows the batch; nothing is written at any point before review
+→ End session → review the batch (per-item variant label, qty, condition, remove; interrupted-
+  transport items flagged "may already have been added") → Add cards → sequential acquisition
+  writes → honest result ("Added N cards." / "Added N. M need attention.")
+✓ No navigation and no URL change while the flow is live (D-006); OCR worker disposed on exit
+✓ Nothing is saved until the review step is confirmed (batch-before-write; D-094)
+✓ Card photos are processed on this device and aren't uploaded or saved (D-094)
+✓ Faster than manual search, measured against a real stack of cards — iPhone measurement still
+  owed by the owner-device gate
 
 ---
 
