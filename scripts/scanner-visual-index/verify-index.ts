@@ -1,14 +1,17 @@
 /**
  * Verifies the generated visual index (prompt §43): manifest/model/dimension/count agreement,
- * checksum, no duplicate ids, finite values, expected quantization range. Run automatically as
- * part of `pnpm scanner:index:verify` and, cheaply, is what stage-index-assets.mjs relies on
- * before copying anything into public/ at build time — a build must fail loudly on a corrupt or
+ * checksum, no duplicate ids, finite values, expected quantization range, and (P77, prompt §8)
+ * coverage invariants — the existing verifier accepted a manifest claiming 1224/1000 (122.4%)
+ * coverage because it never checked coverage arithmetic at all. Run automatically as part of
+ * `pnpm scanner:index:verify` and, cheaply, is what stage-index-assets.mjs relies on before
+ * copying anything into public/ at build time — a build must fail loudly on a corrupt or
  * contract-mismatched index, never ship one silently (§43/§67).
  */
 import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { assertValidCoverage } from '../../src/domain/scanner/index-coverage'
 import { decodeVisualIndex, type VisualIndexManifest } from '../../src/data/scanner/visual-index'
 import { VISUAL_MODEL_REPO, VISUAL_MODEL_REVISION, VISUAL_EMBEDDING_DIM } from './lib/model-pin.mjs'
 
@@ -53,6 +56,21 @@ async function main() {
   // decodeVisualIndex already asserts: quantization contract, card count vs. buffer length
   // agreement, no duplicate ids, every value finite.
   const decoded = decodeVisualIndex(manifest, cardIds, embeddingsBytes)
+
+  // Coverage invariants (P77 prompt §8): cardsIndexed can never exceed totalCanonicalCards or
+  // cardsWithUsableImage, and the id-list/manifest/coverage counts must all agree with each
+  // other — the SAME shared check the generator runs before writing (index-coverage.ts), so a
+  // committed index can never silently drift out of the rule the generator itself enforces.
+  assertValidCoverage(manifest.coverage, cardIds.length, manifest.cardCount)
+  if (manifest.sourceProjectRef !== undefined) {
+    console.log(
+      `[verify] source project: ${manifest.sourceProjectRef} (${String(manifest.sourceEnglishActiveCount ?? '?')} active English cards there at build time).`,
+    )
+  } else {
+    console.warn(
+      '[verify] manifest predates source-identity tracking (P77) — cannot confirm which project this index was built against.',
+    )
+  }
 
   let outOfRange = 0
   for (const value of decoded.embeddings) {

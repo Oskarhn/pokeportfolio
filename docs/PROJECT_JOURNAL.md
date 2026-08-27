@@ -8,6 +8,46 @@ here when there was a real problem with a non-obvious answer.
 
 ---
 
+## 2026-08-27 — M15b real-device repair: an "exactly 1000" log line was the whole clue
+
+The owner's first hosted index rebuild logged `1000 active English cards, 985 have
+image_base_url`, then both real-device test cards (a Shieldon, a Mega Chandelure ex) failed to be
+recognized. Three findings:
+
+1. **A suspiciously round number in a log line was the entire root-cause signal, and it was
+   almost missed as "the catalog just happens to be that size."** `build-index.ts`'s original
+   query had no `.range()` at all. PostgREST/Supabase's hosted API silently truncates an
+   unpaginated query at its configured row cap — never an error, never a warning, just a shorter
+   result set that looks like a legitimate count if you don't already know to suspect it. The
+   fix (`src/domain/scanner/index-pagination.ts`) reuses the exact completeness primitive M13's
+   export already proved out months earlier (`createSectionWalk`: exact count up front, ordered
+   range pages, cross-page duplicate detection, final reconciliation) — the pattern existed in the
+   codebase the whole time and simply hadn't been applied to this newer pipeline. Lesson: a round
+   number in a diagnostic log is itself evidence, worth treating with the same suspicion as an
+   error message.
+
+2. **The exact same contamination bug (checkpoint reuse across a project boundary) can recur even
+   after being fixed once operationally, if the fix was "delete the file" rather than "make the
+   file self-describing."** P76's session fixed a 1224/1000 checkpoint-mixing incident by having
+   the owner manually delete the cache file. That fix does not prevent a recurrence — it just
+   requires remembering to repeat the manual step. `checkpoint-identity.ts` closes it structurally
+   instead: the checkpoint carries its own source/model/revision/dimension identity, and a
+   mismatch causes automatic (loud) invalidation rather than depending on an operator noticing.
+   Lesson: an incident fixed by "the human did the right manual thing" is not yet fixed; it is
+   fixed once the system cannot silently accept the wrong thing.
+
+3. **A cropping bug in the actual capture pipeline was invisible to the P76 benchmark by
+   construction, because the benchmark's queries and references were both derived from the same
+   canonical images.** The benchmark applied synthetic distortions (rotation, blur, glare) to
+   canonical TCGdex card images to simulate a phone photo — but never tested "the query includes
+   background outside the card," because there was no code path yet that would do that on
+   purpose. The actual controller code, unrelated to the benchmark, embedded the whole captured
+   camera frame instead of cropping to the card rectangle OCR already used. No amount of
+   benchmark tuning would have caught this: the bug was in a code path the benchmark harness never
+   exercised at all, only in the real `analyzeVisualSafely` wiring. Lesson: a benchmark that
+   re-derives its own inputs synthetically can validate a model's discriminative power perfectly
+   while missing a wiring bug in the pipeline that actually calls it.
+
 ## 2026-08-26 — M15b visual recognition: four findings from letting reality vote
 
 1. **The leading model candidate was licensing-disqualified, and only reading the actual license

@@ -40,6 +40,14 @@ export interface VisualIndexManifest {
     readonly cardsIndexed: number
     readonly failures: number
   }
+  /**
+   * Non-secret source identity (P77 prompt §20/§56): which project this index was actually built
+   * against, so a local demo index can never be mistaken at a glance for a hosted-valid one, and
+   * so the runtime diagnostics panel can show it directly. Optional only because manifests
+   * committed before P77 predate these fields — never a service-role key or connection secret.
+   */
+  readonly sourceProjectRef?: string
+  readonly sourceEnglishActiveCount?: number
 }
 
 export class VisualIndexError extends Error {

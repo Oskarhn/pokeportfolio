@@ -12,10 +12,12 @@
  */
 /// <reference lib="webworker" />
 import { AutoModel, AutoProcessor, RawImage, env } from '@huggingface/transformers'
+import { assertValidCoverage, CoverageInvariantError } from '../../../domain/scanner/index-coverage'
 import {
   decodeVisualIndex,
   searchVisualIndex,
   l2Normalize,
+  VisualIndexError,
   type DecodedVisualIndex,
   type VisualIndexManifest,
 } from '../../../data/scanner/visual-index'
@@ -23,6 +25,11 @@ import {
 const ASSET_BASE = '/scanner-assets/visual-v1'
 const MODEL_ID = 'model' // local alias — see localModelPath below; not a Hugging Face repo id
 const EMBEDDING_DIM = 384
+// Mirrors scripts/scanner-visual-index/lib/model-pin.mjs's VISUAL_MODEL_REVISION (D-097) — kept
+// as its own literal rather than a cross-import because that pin file lives outside src/ and this
+// constant only needs to be compared, never re-derived (same duplication precedent as
+// scripts/scanner-visual-benchmark/lib/embed.mjs). ANY change is a deliberate model bump.
+const EXPECTED_MODEL_REVISION = 'c2bb04a51fab207c420665f1946016107bffc701'
 
 export type VisualBackend = 'webgpu' | 'wasm'
 
@@ -43,6 +50,12 @@ interface ReadyResponse {
   indexAvailable: boolean
   cardCount: number
   modelColdLoadMs: number
+  /** Diagnostics-only (prompt §40) — never used for match logic, only surfaced in the debug
+   *  panel and never persisted. */
+  indexVersion: string | null
+  indexSourceProjectRef: string | null
+  indexLoadMs: number | null
+  indexUnavailableReason: string | null
 }
 interface UnavailableResponse {
   type: 'unavailable'
@@ -54,6 +67,9 @@ interface ResultResponse {
   hits: { cardId: string; similarity: number }[]
   embedMs: number
   searchMs: number
+  /** L2 norm of the raw (pre-normalization) embedding — diagnostics-only sanity signal (prompt
+   *  §40 EMBEDDING_NORM); the searched vector itself is always unit-normalized regardless. */
+  embeddingNorm: number
 }
 interface ErrorResponse {
   type: 'error'
@@ -101,18 +117,59 @@ function post(message: OutgoingMessage, transfer: Transferable[] = []): void {
   ;(self as unknown as Worker).postMessage(message, transfer)
 }
 
+/**
+ * Runtime manifest gate (P77 prompt §21): a manifest this browser's pin does not recognize, or
+ * whose coverage numbers are internally impossible, must never be trusted — the visual channel
+ * simply becomes unavailable and the scanner falls back to OCR + manual search (prompt §36),
+ * never a crash. `lastIndexUnavailableReason` lets `init()` report WHY for the diagnostics panel
+ * (prompt §40) without changing this function's null-on-failure contract.
+ */
+let lastIndexUnavailableReason: string | null = null
+
 async function loadIndex(): Promise<DecodedVisualIndex | null> {
+  lastIndexUnavailableReason = null
   const manifestResponse = await fetch(`${ASSET_BASE}/manifest.json`)
-  if (!manifestResponse.ok) return null
+  if (!manifestResponse.ok) {
+    lastIndexUnavailableReason = `manifest.json fetch failed (HTTP ${String(manifestResponse.status)})`
+    return null
+  }
   const manifest = (await manifestResponse.json()) as VisualIndexManifest
+  if (manifest.embeddingDim !== EMBEDDING_DIM) {
+    lastIndexUnavailableReason = `manifest embeddingDim ${String(manifest.embeddingDim)} != expected ${String(EMBEDDING_DIM)}`
+    return null
+  }
+  if (manifest.modelRevision !== EXPECTED_MODEL_REVISION) {
+    lastIndexUnavailableReason = `manifest modelRevision "${manifest.modelRevision}" != expected "${EXPECTED_MODEL_REVISION}"`
+    return null
+  }
+  if (manifest.cardCount <= 0) {
+    lastIndexUnavailableReason = 'manifest cardCount is not positive'
+    return null
+  }
   const [cardIdsResponse, embeddingsResponse] = await Promise.all([
     fetch(`${ASSET_BASE}/card-ids.json`),
     fetch(`${ASSET_BASE}/embeddings.bin`),
   ])
-  if (!cardIdsResponse.ok || !embeddingsResponse.ok) return null
+  if (!cardIdsResponse.ok || !embeddingsResponse.ok) {
+    lastIndexUnavailableReason = 'card-ids.json or embeddings.bin fetch failed'
+    return null
+  }
   const cardIds = (await cardIdsResponse.json()) as string[]
   const embeddingsBuffer = new Int8Array(await embeddingsResponse.arrayBuffer())
-  return decodeVisualIndex(manifest, cardIds, embeddingsBuffer)
+  try {
+    // Coverage sanity is defense-in-depth here (already asserted at generation time): a manifest
+    // claiming cardsIndexed > totalCanonicalCards/cardsWithUsableImage (the 1224/1000 shape) or
+    // whose id-list/manifest counts disagree must never be trusted, however it reached this asset
+    // path.
+    assertValidCoverage(manifest.coverage, cardIds.length, manifest.cardCount)
+    return decodeVisualIndex(manifest, cardIds, embeddingsBuffer)
+  } catch (error) {
+    lastIndexUnavailableReason =
+      error instanceof CoverageInvariantError || error instanceof VisualIndexError
+        ? error.message
+        : `index decode failed: ${(error as Error).message}`
+    return null
+  }
 }
 
 async function init(): Promise<void> {
@@ -151,7 +208,12 @@ async function init(): Promise<void> {
     return
   }
 
-  index = await loadIndex().catch(() => null)
+  const indexLoadStart = performance.now()
+  index = await loadIndex().catch((error: unknown) => {
+    lastIndexUnavailableReason = `index load threw: ${(error as Error).message}`
+    return null
+  })
+  const indexLoadMs = Math.round(performance.now() - indexLoadStart)
 
   post({
     type: 'ready',
@@ -159,6 +221,10 @@ async function init(): Promise<void> {
     indexAvailable: index !== null,
     cardCount: index?.cardIds.length ?? 0,
     modelColdLoadMs: Math.round(performance.now() - startedAt),
+    indexVersion: index?.manifest.version ?? null,
+    indexSourceProjectRef: index?.manifest.sourceProjectRef ?? null,
+    indexLoadMs: index !== null ? indexLoadMs : null,
+    indexUnavailableReason: index === null ? lastIndexUnavailableReason : null,
   })
 }
 
@@ -178,11 +244,23 @@ async function embedAndSearch(message: EmbedAndSearchMessage): Promise<void> {
     const inputs = (await processor(image)) as Record<string, unknown>
     const output = (await model(inputs)) as { last_hidden_state: { data: ArrayLike<number> } }
     const raw = Float32Array.from(output.last_hidden_state.data).slice(0, EMBEDDING_DIM)
+    // Norm of the RAW embedding, captured before l2Normalize mutates it in place — diagnostics
+    // sanity signal only (prompt §40 EMBEDDING_NORM), never used in the actual search.
+    let normSquared = 0
+    for (let i = 0; i < raw.length; i += 1) normSquared += (raw[i] ?? 0) ** 2
+    const embeddingNorm = Math.sqrt(normSquared)
     const queryVector = l2Normalize(raw)
     const embedMs = performance.now() - embedStart
 
     if (!index) {
-      post({ type: 'result', requestId: message.requestId, hits: [], embedMs, searchMs: 0 })
+      post({
+        type: 'result',
+        requestId: message.requestId,
+        hits: [],
+        embedMs,
+        searchMs: 0,
+        embeddingNorm,
+      })
       return
     }
     const searchStart = performance.now()
@@ -194,6 +272,7 @@ async function embedAndSearch(message: EmbedAndSearchMessage): Promise<void> {
       hits: hits.map((h) => ({ cardId: h.cardId, similarity: h.similarity })),
       embedMs,
       searchMs,
+      embeddingNorm,
     })
   } catch (error) {
     post({ type: 'error', requestId: message.requestId, message: (error as Error).message })

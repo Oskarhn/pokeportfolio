@@ -17,6 +17,8 @@ export interface VisualAnalysisResult {
   readonly backend: 'webgpu' | 'wasm'
   readonly embedMs: number
   readonly searchMs: number
+  /** Diagnostics-only (prompt §40) — never affects matching. */
+  readonly embeddingNorm: number
 }
 
 export interface VisualReadyInfo {
@@ -24,6 +26,11 @@ export interface VisualReadyInfo {
   readonly indexAvailable: boolean
   readonly cardCount: number
   readonly modelColdLoadMs: number
+  /** Diagnostics-only (prompt §40/§56) fields describing the reference index itself. */
+  readonly indexVersion: string | null
+  readonly indexSourceProjectRef: string | null
+  readonly indexLoadMs: number | null
+  readonly indexUnavailableReason: string | null
 }
 
 type WorkerMessage =
@@ -33,9 +40,20 @@ type WorkerMessage =
       indexAvailable: boolean
       cardCount: number
       modelColdLoadMs: number
+      indexVersion: string | null
+      indexSourceProjectRef: string | null
+      indexLoadMs: number | null
+      indexUnavailableReason: string | null
     }
   | { type: 'unavailable'; reason: string }
-  | { type: 'result'; requestId: number; hits: VisualHit[]; embedMs: number; searchMs: number }
+  | {
+      type: 'result'
+      requestId: number
+      hits: VisualHit[]
+      embedMs: number
+      searchMs: number
+      embeddingNorm: number
+    }
   | { type: 'error'; requestId: number; message: string }
 
 export class VisualRecognitionClient {
@@ -88,6 +106,10 @@ export class VisualRecognitionClient {
         indexAvailable: message.indexAvailable,
         cardCount: message.cardCount,
         modelColdLoadMs: message.modelColdLoadMs,
+        indexVersion: message.indexVersion,
+        indexSourceProjectRef: message.indexSourceProjectRef,
+        indexLoadMs: message.indexLoadMs,
+        indexUnavailableReason: message.indexUnavailableReason,
       }
       resolveReady(this.readyInfo)
       return
@@ -106,6 +128,7 @@ export class VisualRecognitionClient {
         backend: this.readyInfo?.backend ?? 'wasm',
         embedMs: message.embedMs,
         searchMs: message.searchMs,
+        embeddingNorm: message.embeddingNorm,
       })
       return
     }
@@ -135,6 +158,24 @@ export class VisualRecognitionClient {
     } catch {
       return null
     }
+  }
+
+  /** Diagnostics-only snapshot (prompt §40) — never affects matching, safe to read at any time
+   *  including before `ensureReady()` has ever been called. */
+  getDiagnosticsSnapshot(): {
+    modelState: 'not-loaded' | 'loading' | 'ready' | 'failed'
+    unavailableReason: string | null
+    readyInfo: VisualReadyInfo | null
+  } {
+    const modelState: 'not-loaded' | 'loading' | 'ready' | 'failed' =
+      this.readyInfo !== null
+        ? 'ready'
+        : this.unavailableReason !== null
+          ? 'failed'
+          : this.readyPromise !== null
+            ? 'loading'
+            : 'not-loaded'
+    return { modelState, unavailableReason: this.unavailableReason, readyInfo: this.readyInfo }
   }
 
   dispose(): void {

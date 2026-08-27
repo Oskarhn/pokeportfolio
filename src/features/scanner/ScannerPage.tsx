@@ -10,8 +10,9 @@ import {
 } from 'react'
 import { useBlocker, useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import type { ScannerCandidate } from './contract'
+import type { ScannerCandidate, ScannerDiagnostics } from './contract'
 import { getScannerUiController } from './controller'
+import { formatScannerDiagnostics } from './diagnostics-format'
 import {
   CAMERA_VIDEO_PROPS,
   openEnvironmentCamera,
@@ -88,6 +89,15 @@ export function ScannerPage() {
   // Honest first-use copy (prompt §9): the FIRST analysis includes engine preparation, later
   // ones do not. Derived from completed analyses, never fabricated progress percentages.
   const [hasCompletedAnalysis, setHasCompletedAnalysis] = useState(false)
+  // Debug-only surface (P77 prompt §13): explicit, preview-only, user-invoked via a query
+  // param — never shown by default, never gated behind anything a real user could stumble into.
+  const debugEnabled = useMemo(
+    () =>
+      typeof window !== 'undefined' &&
+      new URLSearchParams(window.location.search).get('scannerDebug') === '1',
+    [],
+  )
+  const [diagnostics, setDiagnostics] = useState<ScannerDiagnostics | null>(null)
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -289,6 +299,7 @@ export function ScannerPage() {
       .analyzeCapture(payload)
       .then((analysis) => {
         setHasCompletedAnalysis(true)
+        if (debugEnabled) setDiagnostics(controller.getLastDiagnostics?.() ?? null)
         // The photo has served its purpose; candidates carry the identity from here.
         captureStoreRef.current.clear()
         setPreviewUrl(null)
@@ -597,6 +608,8 @@ export function ScannerPage() {
         />
       ) : null}
 
+      {debugEnabled ? <ScannerDebugPanel diagnostics={diagnostics} /> : null}
+
       <Sheet
         open={state.exitWarningOpen}
         onClose={() => {
@@ -713,6 +726,73 @@ function SessionDefaultsGate({
 
 function ErrorAlert({ title, message }: { title: string; message: string }) {
   return <FormMessage tone="error">{`${title}. ${message}`}</FormMessage>
+}
+
+/**
+ * Debug-only recognition diagnostics panel (P77 prompt §13/§14) — reachable ONLY via an explicit
+ * `?scannerDebug=1` query param, never shown by default. Shows the most recent scan's pipeline
+ * state so a real-device failure is diagnosable instead of opaque. Every value here is already
+ * on {@link ScannerDiagnostics}: no photo, no secrets, no auth identifiers, no persistence beyond
+ * this component's own render lifetime.
+ */
+function ScannerDebugPanel({ diagnostics }: { diagnostics: ScannerDiagnostics | null }) {
+  const [open, setOpen] = useState(true)
+  const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'failed'>('idle')
+
+  async function handleCopy(): Promise<void> {
+    if (diagnostics === null) return
+    try {
+      await navigator.clipboard.writeText(formatScannerDiagnostics(diagnostics))
+      setCopyStatus('copied')
+    } catch {
+      setCopyStatus('failed')
+    }
+    setTimeout(() => {
+      setCopyStatus('idle')
+    }, 2000)
+  }
+
+  return (
+    <div className="fixed inset-x-0 bottom-0 z-[60] max-h-[45svh] overflow-y-auto border-t border-amber-700/60 bg-slate-950/95 px-3 py-2 text-[11px] text-amber-100">
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-semibold uppercase tracking-wide text-amber-300">Scanner debug</span>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            disabled={diagnostics === null}
+            onClick={() => {
+              void handleCopy()
+            }}
+            className="rounded border border-amber-700/60 px-2 py-1 text-[11px] text-amber-200 hover:bg-amber-900/40 disabled:opacity-40"
+          >
+            {copyStatus === 'copied'
+              ? 'Copied'
+              : copyStatus === 'failed'
+                ? 'Copy failed'
+                : 'Copy diagnostics'}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setOpen((v) => !v)
+            }}
+            className="rounded border border-amber-700/60 px-2 py-1 text-[11px] text-amber-200 hover:bg-amber-900/40"
+          >
+            {open ? 'Hide' : 'Show'}
+          </button>
+        </div>
+      </div>
+      {open ? (
+        diagnostics === null ? (
+          <p className="pt-2 text-amber-300/70">No scan analyzed yet this session.</p>
+        ) : (
+          <pre className="whitespace-pre-wrap break-words pt-2 font-mono leading-relaxed">
+            {formatScannerDiagnostics(diagnostics)}
+          </pre>
+        )
+      ) : null}
+    </div>
+  )
 }
 
 function IntroView({

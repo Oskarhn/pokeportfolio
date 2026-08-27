@@ -1,0 +1,61 @@
+/**
+ * Plain-text rendering of one scan's {@link ScannerDiagnostics} (P77 prompt §13/§14) — the exact
+ * shape the debug panel's "Copy diagnostics" button copies to the clipboard, so the owner can
+ * paste one failed real-device scan straight into a review session. Pure and deterministic so it
+ * is unit-testable without a DOM; the panel itself only renders these lines.
+ *
+ * Deliberately excludes anything the prompt marks unsafe to copy: no photo, no tokens, no
+ * Supabase key, no email, no user id, no full auth state — every field here already lives on
+ * {@link ScannerDiagnostics}, which itself never carries any of those.
+ */
+import type { ScannerDiagnostics } from './contract'
+
+const EMPTY = '—'
+
+function num(value: number | null): string {
+  return value === null ? EMPTY : String(value)
+}
+
+export function formatScannerDiagnostics(d: ScannerDiagnostics): string {
+  const lines: string[] = [
+    `VISUAL_MODEL_STATE=${d.visualModelState}`,
+    `VISUAL_BACKEND=${d.visualBackend}`,
+    `MODEL_LOAD_MS=${num(d.modelLoadMs)}`,
+    `CAPTURE_CROP_DIMENSIONS=${d.captureCropWidth ?? EMPTY}x${d.captureCropHeight ?? EMPTY}`,
+    `VISUAL_EMBEDDING_CREATED=${d.visualEmbeddingCreated ? 'yes' : 'no'}`,
+    `EMBEDDING_NORM=${d.embeddingNorm === null ? EMPTY : d.embeddingNorm.toFixed(4)}`,
+    `INDEX_VERSION=${d.indexVersion ?? EMPTY}`,
+    `INDEX_CARD_COUNT=${num(d.indexCardCount)}`,
+    `INDEX_SOURCE_PROJECT_REF=${d.indexSourceProjectRef ?? EMPTY}`,
+    `INDEX_LOAD_MS=${num(d.indexLoadMs)}`,
+    `INDEX_SEARCH_MS=${num(d.indexSearchMs)}`,
+    'TOP_VISUAL_CANDIDATES:',
+  ]
+  if (d.topVisualCandidates.length === 0) {
+    lines.push(`  ${EMPTY}`)
+  } else {
+    d.topVisualCandidates.forEach((c, i) => {
+      lines.push(
+        `  ${String(i + 1)}. ${c.cardId} similarity=${c.similarity.toFixed(4)} name=${c.name ?? EMPTY}`,
+      )
+    })
+  }
+  lines.push(
+    `OCR_NAME_SIGNAL=${d.ocrNameSignal ?? EMPTY}`,
+    `OCR_COLLECTOR_SIGNAL=${d.ocrCollectorSignal ?? EMPTY}`,
+    'FINAL_RERANKED_CANDIDATES:',
+  )
+  if (d.finalRerankedCandidates.length === 0) {
+    lines.push(`  ${EMPTY}`)
+  } else {
+    d.finalRerankedCandidates.forEach((c, i) => {
+      lines.push(
+        `  ${String(i + 1)}. ${c.cardId} "${c.name}" tier=${c.confidenceTier} reasons=${
+          c.reasons.length > 0 ? c.reasons.join(',') : EMPTY
+        }`,
+      )
+    })
+  }
+  lines.push(`VISUAL_ERROR=${d.visualError ?? EMPTY}`)
+  return lines.join('\n')
+}

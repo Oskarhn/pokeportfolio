@@ -47,6 +47,38 @@ export interface ScannerAnalysis {
   candidates: ScannerCandidate[]
 }
 
+/**
+ * Diagnostics for the MOST RECENT scan only (P77 prompt §13/§40) — a debug-only surface
+ * (`/scan?scannerDebug=1`) for making a real-device recognition failure observable instead of
+ * opaque. Every field here is informational: nothing on this type feeds back into matching, and
+ * nothing on it is persisted — it lives in memory for exactly one scan and is overwritten (or
+ * cleared) by the next. No raw image bytes, no auth identifiers, no secrets.
+ */
+export interface ScannerDiagnostics {
+  visualModelState: 'not-loaded' | 'loading' | 'ready' | 'failed'
+  visualBackend: 'wasm' | 'webgpu' | 'unknown'
+  modelLoadMs: number | null
+  captureCropWidth: number | null
+  captureCropHeight: number | null
+  visualEmbeddingCreated: boolean
+  embeddingNorm: number | null
+  indexVersion: string | null
+  indexCardCount: number | null
+  indexSourceProjectRef: string | null
+  indexLoadMs: number | null
+  indexSearchMs: number | null
+  topVisualCandidates: { cardId: string; similarity: number; name: string | null }[]
+  ocrNameSignal: string | null
+  ocrCollectorSignal: string | null
+  finalRerankedCandidates: {
+    cardId: string
+    name: string
+    confidenceTier: ScannerConfidence
+    reasons: readonly string[]
+  }[]
+  visualError: string | null
+}
+
 /** The bounded still frame handed to the engine — an in-memory JPEG blob plus pixel dimensions
  *  and the pixel rectangle of the physical card inside the frame (prompt §10). Nothing here is
  *  persisted anywhere; ownership passes to the callee for the duration of the call only, and the
@@ -140,4 +172,7 @@ export interface ScannerUiController {
   /** Releases the session's OCR worker and any retained engine resources. Called reliably on
    *  route exit/unmount (prompt §8/I16). Idempotent. */
   dispose(): void
+  /** Diagnostics for the most recent {@link analyzeCapture} call, or null before any scan has
+   *  run (P77 prompt §13/§40). Optional so existing/mock controllers stay valid without it. */
+  getLastDiagnostics?(): ScannerDiagnostics | null
 }

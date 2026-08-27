@@ -2740,3 +2740,92 @@ Nothing in this milestone substitutes for a real device test. IPHONE_DEVICE_GATE
 `PENDING_OWNER_RETEST` — see output_76.txt for the 10-card protocol, and the coverage caveat
 above for why this round's retest may still show OCR-only behavior on the owner's physical cards
 until the hosted index is regenerated.
+
+### P77 addendum — real-device failure repair (Shieldon / Mega Chandelure ex both unrecognized)
+
+The owner's P76 hosted rebuild (`pnpm scanner:index:build` against `pokeportfolio-dev`) logged
+`1000 active English cards, 985 have image_base_url` — an exactly-round 1000 that is the
+signature of Supabase's default hosted API "Max Rows" setting silently truncating an unpaginated
+PostgREST query, not the real size of the catalog. Both real-device test cards (a basic Shieldon,
+a Mega Chandelure ex) failed to be recognized. Root-caused to **two independent bugs**, both
+fixed this session; a third real preprocessing bug was also found and fixed while investigating:
+
+1. **Unpaginated query truncation (primary).** `build-index.ts`'s original
+   `.from('cards').select(...).eq(...).eq(...)` had no `.range()`/count reconciliation at all —
+   PostgREST silently returns at most its configured row cap. Fixed by
+   `src/domain/scanner/index-pagination.ts`'s `drainAllCardPages`: an exact `count:'exact'` HEAD
+   query taken first, then `.order('id').range(...)` pages at 500 rows, reusing the SAME
+   completeness primitive M13's export pipeline already proved out
+   (`src/domain/export/pagination-integrity.ts`'s `createSectionWalk` — cross-page duplicate-id
+   detection plus a final received-vs-expected-count reconciliation that throws rather than ships
+   a silently truncated index). Proven against REAL local PostgREST, not just a mock: 1,203
+   synthetic English-active rows were seeded into the local dev stack (no images, so no embedding
+   cost) and the fixed generator correctly fetched all 1,203 across 3 pages
+   (`page 1: 500 rows … page 2: 500 rows … page 3: 203 rows, running total 1203`), while a
+   reproduction of the OLD unpaginated query against the SAME local data returned all 1,203 too —
+   confirming the local dev stack's own PostgREST does not itself enforce a 1000-row default (that
+   cap is a per-project Supabase Cloud API setting, not a PostgREST built-in), so the exact
+   truncation could not be reproduced locally byte-for-byte, but the pagination mechanics
+   themselves are proven correct against a real multi-page PostgREST round trip regardless of
+   which cap value a given project enforces. The seeded rows and their series/set were deleted
+   afterward; the owner's real cached hosted checkpoint and the committed index were backed up
+   before this proof and restored byte-identical afterward (verified by SHA-256).
+
+2. **Checkpoint contamination across project/model boundaries.** The resumable checkpoint
+   (`.visual-index-cache/build-checkpoint.json`, gitignored) carried no identity of what it was
+   built against — P76's own hosted regeneration already hit exactly this class of bug once
+   (1224/1000 "coverage" from mixed local+hosted embeddings). `src/domain/scanner/
+   checkpoint-identity.ts` binds every checkpoint to `{schemaVersion, sourceProjectIdentity
+   (derived from SUPABASE_URL's host only — never a key), modelId, modelRevision, embeddingDim,
+   quantization}`; a mismatched or pre-P77 checkpoint is discarded LOUDLY (logged, never silent)
+   and rebuilt from scratch rather than reused. Packing is additionally constrained
+   (`packCurrentCardIds`) to intersect the checkpoint's embeddings with the CURRENT run's fetched
+   canonical id set, in that set's own deterministic order — defense-in-depth even if identity
+   validation were ever bypassed, and what makes 1224/1000 structurally impossible to reproduce
+   again regardless of checkpoint state.
+
+3. **Coverage invariants now enforced, not just logged.** `src/domain/scanner/index-coverage.ts`'s
+   `assertValidCoverage` is a single shared check — `cardsIndexed` can never exceed
+   `totalCanonicalCards` or `cardsWithUsableImage`; the id-list length, `manifest.cardCount` and
+   `coverage.cardsIndexed` must all agree — run by the GENERATOR before it will write any output
+   file, by `verify-index.ts` after reading a committed index back, AND by the browser worker at
+   runtime before trusting a fetched manifest (defense-in-depth at all three points a corrupt
+   index could otherwise slip through). The previous verifier accepted 1224/1000 (122.4%)
+   because it checked checksum/model/dimension agreement only — never coverage arithmetic.
+
+4. **A real, independent crop bug in the visual pipeline.** Investigating whether the crop DINOv2
+   embeds actually contains the card (prompt §16) found that `controller.ts`'s visual channel
+   embedded the ENTIRE captured camera frame (`createImageBitmap(capture.blob)`), while OCR
+   already correctly crops to `capture.cardRect` before reading anything
+   (`analyze.ts`'s `runOcrAnalysis`). The reference index is built from tight, card-only TCGdex
+   images; feeding DINOv2 an uncropped photo (background, table, hands, whatever surrounds the
+   guide overlay) is a genuine preprocessing-parity mismatch from the reference distribution — a
+   plausible independent contributor to a real-device miss even against a complete, correctly
+   hosted index, and one the P76 benchmark could not have caught (it embeds canonical reference
+   images on both sides of every comparison). Fixed: `analyzeVisualSafely` now crops via
+   `createImageBitmap`'s own `(sx, sy, sw, sh)` overload to `capture.cardRect`, matching what OCR
+   already does, at no extra canvas-draw cost.
+
+5. **Manifest source identity.** `manifest.json` now carries `sourceProjectRef` (the same
+   non-secret host string the checkpoint binds to) and `sourceEnglishActiveCount` — so the owner,
+   or the new debug panel, can see at a glance which project an index was actually built against
+   without opening a file.
+
+6. **Diagnostic mode implemented** (`/scan?scannerDebug=1` — an explicit, preview-only,
+   user-invoked query param, never shown by default): a bottom panel showing the most recent
+   scan's `VISUAL_MODEL_STATE`/`VISUAL_BACKEND`/`MODEL_LOAD_MS`, the actual crop dimensions fed to
+   DINOv2, whether an embedding was created and its norm, the loaded index's version/card
+   count/source project/load time, top-5 raw visual candidates with similarity, the OCR text
+   signals, the final reranked candidates with reason codes, and any visual-channel error — plus a
+   "Copy diagnostics" button (`src/features/scanner/diagnostics-format.ts`) that copies exactly
+   those fields as plain text and nothing else (no photo, no tokens, no Supabase key, no email, no
+   user id). This was explicitly deferred in P76 and is the mechanism for making the NEXT
+   real-device failure, if any, diagnosable from one pasted block instead of opaque.
+
+**Not changed:** the model (still DINOv2-small, unmodified selection reasoning above), the
+architecture (still LOCAL_INDEX, no pgvector), any migration (still 90, unchanged), any financial
+semantic. `SHIELDON`/`MEGA_CHANDELURE_EX` were NOT special-cased anywhere — the fix is entirely
+architectural (full-catalog pagination, checkpoint binding, coverage invariants, correct crop).
+Whether those two specific cards exist in the hosted catalog and are covered by the (still
+unregenerated, since this session has no hosted credential) committed index remains unverified —
+see output_77.txt.

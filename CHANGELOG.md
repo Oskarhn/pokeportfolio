@@ -10,6 +10,34 @@ they were**.
 
 ## [Unreleased]
 
+### Fixed — 2026-08-27 — M15b scanner: full-catalog index pagination, checkpoint contamination, crop mismatch (P77, D-097 addendum, on PR #63, DRAFT — not merged, not deployed)
+
+Repairs the real-device failure ("Couldn't identify this card" on both a Shieldon and a Mega
+Chandelure ex) the P76 preview hit. Two independent bugs plus one preprocessing mismatch, all
+fixed:
+
+- **Full-catalog pagination:** `build-index.ts`'s unpaginated query was silently truncated at
+  1000 rows by Supabase's hosted API cap (the owner's rebuild logged exactly "1000 active English
+  cards"). Fixed with an exact-count-then-paginate walk (`src/domain/scanner/
+  index-pagination.ts`) reusing M13 export's proven completeness primitive; proven against real
+  local PostgREST with 1,203 seeded rows.
+- **Checkpoint contamination:** the resumable build checkpoint is now bound to
+  `{schemaVersion, sourceProjectIdentity, modelId, modelRevision, embeddingDim, quantization}`
+  (`src/domain/scanner/checkpoint-identity.ts`); a mismatched/pre-P77 checkpoint is discarded
+  loudly instead of silently mixed in (the exact class of bug behind P76's own 1224/1000 fix).
+  Packing is separately constrained to the current fetched canonical id set.
+- **Coverage invariants enforced,** not just logged: `src/domain/scanner/index-coverage.ts` is
+  asserted by the generator before writing, by `verify-index.ts` after reading, and by the browser
+  worker at runtime — cardsIndexed can never exceed totalCanonicalCards or cardsWithUsableImage.
+- **Crop mismatch fixed:** the visual channel was embedding the ENTIRE captured camera frame
+  instead of the card-only crop OCR already used (`capture.cardRect`) — a real preprocessing-parity
+  gap from the reference index's tight card-only images. `controller.ts`'s `analyzeVisualSafely`
+  now crops via `createImageBitmap`'s `(sx, sy, sw, sh)` overload.
+- **Diagnostic mode implemented:** `/scan?scannerDebug=1` — a debug-only panel with a "Copy
+  diagnostics" button, deferred in P76.
+
+Model, architecture and migration count unchanged. No card was special-cased.
+
 ### Added — 2026-08-26 — M15b scanner: hybrid visual recognition (P76, D-097, on PR #63, DRAFT — not merged, not deployed)
 
 Replaces the OCR-only recognition bottleneck P75's real device test exposed ("Couldn't identify

@@ -17,6 +17,7 @@ import {
   ScannerCatalogUnavailableError,
 } from '../../data/scanner/scanner-catalog'
 import { runOcrAnalysis, releaseOcrCanvases } from './analyze'
+import type { PixelRect } from './guide-geometry'
 import { ScannerOcrEngine } from './ocr-engine'
 import { scannerCostBasisState, scannerSessionStore, type ScannerOrigin } from './session-store'
 import { VisualRecognitionClient } from './visual/visual-client'
@@ -32,6 +33,7 @@ import type {
   ScannerCommitOutcome,
   ScannerCommitResult,
   ScannerConfidence,
+  ScannerDiagnostics,
   ScannerSearchQuery,
   ScannerUiController,
   ScannerVariantChoice,
@@ -179,13 +181,38 @@ export function createRealScannerController(
 
   /** Never throws and never rejects: a browser/environment without `createImageBitmap` (or any
    *  other visual-channel failure) degrades to "no visual evidence" exactly like a missing model
-   *  or index would (prompt §36) — OCR-only results, not a broken scan. */
-  async function analyzeVisualSafely(blob: Blob) {
-    if (typeof createImageBitmap !== 'function') return null
+   *  or index would (prompt §36) — OCR-only results, not a broken scan.
+   *
+   *  CROPPED TO THE CARD RECT (P77 prompt §16/§17): a camera capture's `blob` is the WHOLE frame
+   *  the shutter grabbed — OCR already crops to `capture.cardRect` before it reads anything
+   *  (analyze.ts's `runOcrAnalysis`), but until this fix the visual channel embedded the entire
+   *  uncropped photo. The reference index is built from tight, card-only TCGdex images; embedding
+   *  an uncropped frame (background, table, hands, whatever surrounds the guide) is a real
+   *  preprocessing-parity mismatch from the reference distribution — a plausible independent
+   *  contributor to a real-device miss even against a complete, correctly hosted index. Cropping
+   *  via `createImageBitmap`'s own (sx, sy, sw, sh) overload needs no extra canvas draw. */
+  // Diagnostics for the MOST RECENT scan only (P77 prompt §13/§40) — never fed back into
+  // matching, never persisted, overwritten by the next analyzeCapture call.
+  let lastDiagnostics: ScannerDiagnostics | null = null
+  let lastVisualErrorMessage: string | null = null
+
+  async function analyzeVisualSafely(capture: { blob: Blob; cardRect: PixelRect }) {
+    if (typeof createImageBitmap !== 'function') {
+      lastVisualErrorMessage = 'createImageBitmap is unavailable in this browser.'
+      return null
+    }
     try {
-      const bitmap = await createImageBitmap(blob)
+      const { blob, cardRect } = capture
+      const bitmap = await createImageBitmap(
+        blob,
+        cardRect.left,
+        cardRect.top,
+        cardRect.width,
+        cardRect.height,
+      )
       return await visualClient.analyze(bitmap, VISUAL_SHORTLIST_SIZE)
-    } catch {
+    } catch (error) {
+      lastVisualErrorMessage = (error as Error).message
       return null
     }
   }
@@ -196,10 +223,11 @@ export function createRealScannerController(
     // catalog queries (OCR) and card-id lookups (visual shortlist enrichment) do.
     const defaults = scannerSessionStore.load(options.userId)
     const languageHint = defaults?.language ?? 'en'
+    lastVisualErrorMessage = null
 
     const [ocrResult, visualResult] = await Promise.all([
       runOcrAnalysis(capture, engine),
-      analyzeVisualSafely(capture.blob),
+      analyzeVisualSafely(capture),
     ])
 
     const observation: ScannerObservation = {
@@ -234,12 +262,52 @@ export function createRealScannerController(
     }
 
     const match = matchScannerObservation(observation, mergedCandidates, visualScores)
+
+    // Assemble this scan's diagnostics snapshot (P77 prompt §13/§40) — purely observational,
+    // computed from data the pipeline above already produced; nothing here influences `match`.
+    const visualSnapshot = visualClient.getDiagnosticsSnapshot()
+    const nameById = new Map(mergedCandidates.map((c) => [c.cardId, c.name]))
+    lastDiagnostics = {
+      visualModelState: visualSnapshot.modelState,
+      visualBackend: visualResult?.backend ?? visualSnapshot.readyInfo?.backend ?? 'unknown',
+      modelLoadMs: visualSnapshot.readyInfo?.modelColdLoadMs ?? null,
+      captureCropWidth: capture.cardRect.width,
+      captureCropHeight: capture.cardRect.height,
+      visualEmbeddingCreated: visualResult !== null,
+      embeddingNorm: visualResult?.embeddingNorm ?? null,
+      indexVersion: visualSnapshot.readyInfo?.indexVersion ?? null,
+      indexCardCount: visualSnapshot.readyInfo?.cardCount ?? null,
+      indexSourceProjectRef: visualSnapshot.readyInfo?.indexSourceProjectRef ?? null,
+      indexLoadMs: visualSnapshot.readyInfo?.indexLoadMs ?? null,
+      indexSearchMs: visualResult?.searchMs ?? null,
+      topVisualCandidates: (visualResult?.hits ?? []).slice(0, 5).map((hit) => ({
+        cardId: hit.cardId,
+        similarity: hit.similarity,
+        name: nameById.get(hit.cardId) ?? null,
+      })),
+      ocrNameSignal: ocrResult.rawNameText,
+      ocrCollectorSignal: ocrResult.rawCollectorNumberText,
+      finalRerankedCandidates: match.candidates
+        .slice(0, SCANNER_UI_CANDIDATE_LIMIT)
+        .map((ranked) => ({
+          cardId: ranked.card.cardId,
+          name: ranked.card.name,
+          confidenceTier: tierToConfidence(match.tier),
+          reasons: ranked.reasons,
+        })),
+      visualError: visualResult === null ? lastVisualErrorMessage : null,
+    }
+
     return {
       confidence: tierToConfidence(match.tier),
       candidates: match.candidates
         .slice(0, SCANNER_UI_CANDIDATE_LIMIT)
         .map((ranked) => toUiCandidate(ranked.card)),
     } satisfies ScannerAnalysis
+  }
+
+  function getLastDiagnostics(): ScannerDiagnostics | null {
+    return lastDiagnostics
   }
 
   async function searchFallback(query: ScannerSearchQuery) {
@@ -321,7 +389,14 @@ export function createRealScannerController(
     visualClient.dispose()
   }
 
-  return { analyzeCapture, searchFallback, listVariantChoices, commitBatch, dispose }
+  return {
+    analyzeCapture,
+    searchFallback,
+    listVariantChoices,
+    commitBatch,
+    dispose,
+    getLastDiagnostics,
+  }
 }
 
 /**

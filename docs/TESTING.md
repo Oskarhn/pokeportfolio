@@ -49,6 +49,19 @@ for both the OCR tree and the visual-worker's own Vite-emitted chunk). A REAL mo
 mocked) ran this session against real TCGdex images before the full benchmark, per the same
 "real execution over reading the source" discipline as Tesseract's smoke test above — see D-097.
 
+**M15b index-generation repair (P77, D-097 addendum, in `pnpm test`).**
+`tests/domain/scanner/index-pagination.test.ts` (PAG1–PAG8: full-catalog multi-page fetch beyond
+the 1000-row PostgREST cap, exact-boundary termination, deterministic ordering, cross-page
+duplicate rejection, page-level query error propagation, exact-count mismatch rejection, a
+pathological-loop guard), `tests/domain/scanner/checkpoint-identity.test.ts` (CP1–CP7: local vs.
+hosted / hosted-A vs. hosted-B / model-revision / embedding-dimension identity mismatches all
+invalidate a checkpoint, packing drops a stale id not in the current canonical fetch, a same-config
+restart resumes, the 1224/1000 historical shape is structurally rejected by packing alone),
+`tests/domain/scanner/index-coverage.test.ts` (the shared coverage-invariant assertion the
+generator/verifier/runtime worker all now share), and `tests/ui/scanner-diagnostics-format.test.ts`
+(the `/scan?scannerDebug=1` panel's plain-text "Copy diagnostics" output — every field present,
+honest placeholders for null/empty values, never anything resembling a secret field name).
+
 **Visual benchmark harness (`scripts/scanner-visual-benchmark/`, NOT part of `pnpm test` or
 CI).** `pnpm scanner:visual:benchmark` — downloads a real, diverse TCGdex reference corpus,
 applies deterministic synthetic camera-distortion augmentations, and compares OCR-first/
