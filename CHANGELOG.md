@@ -10,6 +10,38 @@ they were**.
 
 ## [Unreleased]
 
+### Fixed — 2026-08-27 — M15b scanner: visual model never initialized on real iPhone (P78, D-097 addendum, on PR #63, DRAFT — not merged, not deployed)
+
+Repairs a real-device `VISUAL_MODEL_STATE=failed` report against the FULL hosted index (P77's
+pagination/checkpoint/crop fixes and the owner's real 19,501/20,946 hosted rebuild were both
+already in place). Two independent, confirmed root causes — both reproduced directly against the
+real production build in a real browser, not inferred:
+
+- **`env.allowLocalModels` was never set.** `@huggingface/transformers` defaults it to `false`
+  inside a Web Worker; combined with the (correct) `allowRemoteModels = false`, every model load
+  attempt threw before touching the ONNX runtime at all — on every browser, reproduced identically
+  on desktop Chromium with no COOP/COEP change. Fixed in `visual-worker.ts`.
+- **CSP `script-src` was missing `blob:`,** which onnxruntime-web's WASM factory needs for its own
+  dynamic-import glue-module loading — without it, model loading failed for both the `webgpu` and
+  `wasm` device paths. Fixed in `vite.config.ts`; verified end to end (real model load, real
+  embedding, real 19,501-card index search) with `crossOriginIsolated=false` throughout —
+  cross-origin isolation was never the blocker.
+- **WebGPU→WASM fallback added:** the worker used to pick exactly one backend up front and never
+  retried WASM if that choice failed. Now a pure, unit-tested module
+  (`src/domain/scanner/visual-backend-selection.ts`) tries WebGPU first under `auto` and falls
+  back to WASM on any failure/absence; an explicit `?visualBackend=wasm`/`webgpu` diagnostic
+  override skips backend guesswork entirely.
+- **Diagnostics used to drop the real failure reason** (`VISUAL_ERROR=—` even when the worker had
+  recorded one) — fixed in `controller.ts`, plus new phased
+  `PROCESSOR_LOAD`/`MODEL_LOAD`/`INDEX_LOAD` and per-backend attempt fields in the debug panel.
+- **Index failure-counter bug fixed:** `coverage.failures` used to accumulate across resumed
+  builds without deduplicating by card id (the owner's build logged "404: 6" while the shipped
+  manifest read "7 failures"); now derived fresh as `cardsWithUsableImage - cardsIndexed` at pack
+  time — no re-embedding required.
+
+Model, architecture and migration count unchanged. The committed hosted index (19,501/20,946) is
+untouched. No card was special-cased.
+
 ### Fixed — 2026-08-27 — M15b scanner: full-catalog index pagination, checkpoint contamination, crop mismatch (P77, D-097 addendum, on PR #63, DRAFT — not merged, not deployed)
 
 Repairs the real-device failure ("Couldn't identify this card" on both a Shieldon and a Mega

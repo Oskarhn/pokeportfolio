@@ -20,7 +20,7 @@ import { runOcrAnalysis, releaseOcrCanvases } from './analyze'
 import type { PixelRect } from './guide-geometry'
 import { ScannerOcrEngine } from './ocr-engine'
 import { scannerCostBasisState, scannerSessionStore, type ScannerOrigin } from './session-store'
-import { VisualRecognitionClient } from './visual/visual-client'
+import { VisualRecognitionClient, type VisualAnalysisResult } from './visual/visual-client'
 
 /** Bounded raw visual shortlist handed to the domain matcher (prompt §16/§31): retrieval may
  *  examine this many raw candidates internally, but the UI never sees more than
@@ -194,12 +194,18 @@ export function createRealScannerController(
   // Diagnostics for the MOST RECENT scan only (P77 prompt §13/§40) — never fed back into
   // matching, never persisted, overwritten by the next analyzeCapture call.
   let lastDiagnostics: ScannerDiagnostics | null = null
-  let lastVisualErrorMessage: string | null = null
 
-  async function analyzeVisualSafely(capture: { blob: Blob; cardRect: PixelRect }) {
+  /** Returns its own error message rather than mutating shared state (P78): a closure-captured
+   *  `let` reassigned inside an awaited call is invisible to TypeScript's control-flow narrowing
+   *  at the read site (confirmed — `@typescript-eslint/no-unnecessary-condition` flags the read as
+   *  provably null even though it demonstrably isn't at runtime), so the safer AND more correct
+   *  shape is to hand the error back through the return value instead. */
+  async function analyzeVisualSafely(capture: {
+    blob: Blob
+    cardRect: PixelRect
+  }): Promise<{ result: VisualAnalysisResult | null; errorMessage: string | null }> {
     if (typeof createImageBitmap !== 'function') {
-      lastVisualErrorMessage = 'createImageBitmap is unavailable in this browser.'
-      return null
+      return { result: null, errorMessage: 'createImageBitmap is unavailable in this browser.' }
     }
     try {
       const { blob, cardRect } = capture
@@ -210,10 +216,10 @@ export function createRealScannerController(
         cardRect.width,
         cardRect.height,
       )
-      return await visualClient.analyze(bitmap, VISUAL_SHORTLIST_SIZE)
+      const result = await visualClient.analyze(bitmap, VISUAL_SHORTLIST_SIZE)
+      return { result, errorMessage: null }
     } catch (error) {
-      lastVisualErrorMessage = (error as Error).message
-      return null
+      return { result: null, errorMessage: (error as Error).message }
     }
   }
 
@@ -223,12 +229,9 @@ export function createRealScannerController(
     // catalog queries (OCR) and card-id lookups (visual shortlist enrichment) do.
     const defaults = scannerSessionStore.load(options.userId)
     const languageHint = defaults?.language ?? 'en'
-    lastVisualErrorMessage = null
 
-    const [ocrResult, visualResult] = await Promise.all([
-      runOcrAnalysis(capture, engine),
-      analyzeVisualSafely(capture),
-    ])
+    const [ocrResult, { result: visualResult, errorMessage: visualErrorMessage }] =
+      await Promise.all([runOcrAnalysis(capture, engine), analyzeVisualSafely(capture)])
 
     const observation: ScannerObservation = {
       rawNameText: ocrResult.rawNameText,
@@ -295,7 +298,24 @@ export function createRealScannerController(
           confidenceTier: tierToConfidence(match.tier),
           reasons: ranked.reasons,
         })),
-      visualError: visualResult === null ? lastVisualErrorMessage : null,
+      // P78 fix: `visualErrorMessage` only ever covers exceptions thrown INSIDE
+      // analyzeVisualSafely (createImageBitmap/client.analyze throwing) — a model/backend
+      // initialization failure never throws there (VisualRecognitionClient.analyze() resolves
+      // null gracefully per prompt §36), so it stays null and this line used to unconditionally
+      // show VISUAL_ERROR=— even when the worker had recorded a perfectly good reason. Falling
+      // back to the snapshot's own unavailableReason surfaces it.
+      visualError:
+        visualResult === null ? (visualErrorMessage ?? visualSnapshot.unavailableReason) : null,
+      visualBackendRequested: visualSnapshot.backendDiagnostics?.backendRequested ?? 'auto',
+      visualBackendAttempts: visualSnapshot.backendDiagnostics?.backendAttempts ?? {
+        webgpu: 'not-attempted',
+        wasm: 'not-attempted',
+      },
+      webgpuError: visualSnapshot.backendDiagnostics?.webgpuError ?? null,
+      wasmError: visualSnapshot.backendDiagnostics?.wasmError ?? null,
+      processorLoad: visualSnapshot.backendDiagnostics?.processorLoad ?? null,
+      modelLoad: visualSnapshot.backendDiagnostics?.modelLoad ?? null,
+      indexLoadStatus: visualSnapshot.backendDiagnostics?.indexLoad ?? null,
     }
 
     return {

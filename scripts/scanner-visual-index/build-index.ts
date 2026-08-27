@@ -207,7 +207,11 @@ async function main() {
       const normalized = l2Normalize(new Float32Array(raw))
       checkpoint.embeddings[card.id] = Array.from(normalized)
     } catch (err) {
-      checkpoint.failures += 1
+      // No persisted failure counter here (P78, §18): a card that keeps failing across resumed
+      // runs used to increment a checkpoint-carried total every attempt, double-counting the SAME
+      // card each time the build was resumed. `coverage.failures` below is derived fresh from
+      // cardsWithUsableImage - cardsIndexed at pack time instead — current-build-based, never
+      // cumulative.
       console.warn(`[index] failed ${card.id} (${card.name}): ${(err as Error).message}`)
     }
     processed += 1
@@ -255,7 +259,11 @@ async function main() {
     totalCanonicalCards,
     cardsWithUsableImage: withImage.length,
     cardsIndexed: cardIds.length,
-    failures: checkpoint.failures,
+    // Derived, not accumulated (P78, §18) — every current-run card with a usable image that
+    // didn't make it into the packed index, whatever the reason (fetch/decode failure this run,
+    // or a still-unresolved failure from an earlier resumption). Counts each card at most once,
+    // however many times its embedding attempt has been retried across resumptions.
+    failures: withImage.length - cardIds.length,
   }
   // Hard-fail BEFORE writing manifest.json (prompt §8): a corrupt/impossible-coverage index must
   // never ship, whether or not verify-index.ts is run afterward as a separate manual step.

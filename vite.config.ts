@@ -29,8 +29,20 @@ export function buildContentSecurityPolicy(supabaseUrl: string): string {
     // worth having. 'wasm-unsafe-eval' is the CSP3 source expression that permits WebAssembly
     // *compilation* — required by the M15 scanner's on-device OCR engine — while JavaScript
     // eval() remains refused; the two are distinct grants under CSP3 and only the former is
-    // given. Token-level assertions live in tests/config/security-headers.test.ts.
-    "script-src 'self' 'wasm-unsafe-eval'",
+    // given.
+    //
+    // `blob:` (P78, D-097 addendum): onnxruntime-web 1.26.0-dev's WASM factory
+    // (`web/lib/wasm/wasm-utils-import.ts`, confirmed by reading the installed package source)
+    // dynamically `import()`s its own glue module, and its `preload()` path fetches that module
+    // and re-imports it from a `blob:` object URL rather than the original same-origin URL. CSP3
+    // governs dynamic-`import()` targets through script-src, so without `blob:` here that import
+    // is refused — this was reproduced directly (real Chromium, both the `webgpu` and `wasm`
+    // device paths, `crossOriginIsolated=false` throughout) as the actual cause of the real-iPhone
+    // "VISUAL_MODEL_STATE=failed" report: identical on desktop with no COOP/COEP change, so it is
+    // not a threading/cross-origin-isolation issue. Confirmed the SAME build succeeds once `blob:`
+    // is granted here, nowhere else. This does not weaken the policy for anything else already
+    // running: no inline script, no remote script host, and JavaScript `eval()` is still refused.
+    "script-src 'self' 'wasm-unsafe-eval' blob:",
     // 'unsafe-inline' is here for style *attributes*: AppShell sets safe-area padding with
     // `style={{ paddingTop: 'max(…, env(safe-area-inset-top))' }}`, which cannot be expressed
     // in a stylesheet. `style-src-attr` would express that precisely, but Safari support for it

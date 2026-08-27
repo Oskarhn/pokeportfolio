@@ -7,6 +7,8 @@
  * recognition isn't available right now" — it resolves to `null`, and the caller (controller.ts)
  * simply proceeds with OCR-only results, exactly as it did before this channel existed.
  */
+import type { BackendAttemptStatus, VisualBackendOverride } from './visual-worker'
+
 export interface VisualHit {
   readonly cardId: string
   readonly similarity: number
@@ -21,7 +23,22 @@ export interface VisualAnalysisResult {
   readonly embeddingNorm: number
 }
 
-export interface VisualReadyInfo {
+/** Backend-attempt diagnostics (P78 prompt §4/§11/§12) — present on BOTH a successful ready and
+ *  an unavailable outcome, so the debug panel can always show what was actually tried. */
+export interface VisualBackendDiagnostics {
+  readonly backendRequested: VisualBackendOverride
+  readonly backendAttempts: {
+    readonly webgpu: BackendAttemptStatus
+    readonly wasm: BackendAttemptStatus
+  }
+  readonly webgpuError: string | null
+  readonly wasmError: string | null
+  readonly processorLoad: 'success' | 'failed'
+  readonly modelLoad: 'success' | 'failed'
+  readonly indexLoad: 'success' | 'failed' | 'not-reached'
+}
+
+export interface VisualReadyInfo extends VisualBackendDiagnostics {
   readonly backend: 'webgpu' | 'wasm'
   readonly indexAvailable: boolean
   readonly cardCount: number
@@ -34,18 +51,8 @@ export interface VisualReadyInfo {
 }
 
 type WorkerMessage =
-  | {
-      type: 'ready'
-      backend: 'webgpu' | 'wasm'
-      indexAvailable: boolean
-      cardCount: number
-      modelColdLoadMs: number
-      indexVersion: string | null
-      indexSourceProjectRef: string | null
-      indexLoadMs: number | null
-      indexUnavailableReason: string | null
-    }
-  | { type: 'unavailable'; reason: string }
+  | ({ type: 'ready' } & VisualReadyInfo)
+  | ({ type: 'unavailable'; reason: string } & VisualBackendDiagnostics)
   | {
       type: 'result'
       requestId: number
@@ -56,10 +63,22 @@ type WorkerMessage =
     }
   | { type: 'error'; requestId: number; message: string }
 
+/** Reads the diagnostic-only `?visualBackend=` override (prompt §5) exactly once per client
+ *  instance — the value the worker actually used for THIS session, not re-read per scan. Absent
+ *  or invalid always means `auto`; this never affects matching, persistence or authentication. */
+function readBackendOverrideFromLocation(): VisualBackendOverride {
+  if (typeof window === 'undefined') return 'auto'
+  const raw = new URLSearchParams(window.location.search).get('visualBackend')
+  return raw === 'wasm' || raw === 'webgpu' ? raw : 'auto'
+}
+
 export class VisualRecognitionClient {
   private worker: Worker | null = null
   private readyInfo: VisualReadyInfo | null = null
   private unavailableReason: string | null = null
+  /** Backend-attempt diagnostics from whichever message (ready OR unavailable) arrived last —
+   *  kept separately from `readyInfo` so a failed init still exposes what was actually tried. */
+  private backendDiagnostics: VisualBackendDiagnostics | null = null
   private readyPromise: Promise<VisualReadyInfo | null> | null = null
   private nextRequestId = 1
   private pending = new Map<
@@ -83,11 +102,18 @@ export class VisualRecognitionClient {
         worker.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
           this.handleMessage(event.data, resolve)
         })
-        worker.addEventListener('error', () => {
-          this.unavailableReason = 'Visual recognition worker failed to start.'
+        // Only Worker-API-exposed fields (prompt §12): message/filename/lineno/colno. Never a
+        // stack trace or anything from the event's error object, which can carry data this
+        // worker never intentionally posted.
+        worker.addEventListener('error', (event: ErrorEvent) => {
+          const location =
+            event.filename !== ''
+              ? ` at ${event.filename}:${String(event.lineno)}:${String(event.colno)}`
+              : ''
+          this.unavailableReason = `Visual recognition worker crashed: ${event.message || 'unknown error'}${location}`
           resolve(null)
         })
-        worker.postMessage({ type: 'init' })
+        worker.postMessage({ type: 'init', backendOverride: readBackendOverrideFromLocation() })
       } catch {
         this.unavailableReason = 'Web Workers are unavailable in this browser.'
         resolve(null)
@@ -101,21 +127,14 @@ export class VisualRecognitionClient {
     resolveReady: (r: VisualReadyInfo | null) => void,
   ): void {
     if (message.type === 'ready') {
-      this.readyInfo = {
-        backend: message.backend,
-        indexAvailable: message.indexAvailable,
-        cardCount: message.cardCount,
-        modelColdLoadMs: message.modelColdLoadMs,
-        indexVersion: message.indexVersion,
-        indexSourceProjectRef: message.indexSourceProjectRef,
-        indexLoadMs: message.indexLoadMs,
-        indexUnavailableReason: message.indexUnavailableReason,
-      }
+      this.readyInfo = message
+      this.backendDiagnostics = message
       resolveReady(this.readyInfo)
       return
     }
     if (message.type === 'unavailable') {
       this.unavailableReason = message.reason
+      this.backendDiagnostics = message
       resolveReady(null)
       return
     }
@@ -166,6 +185,7 @@ export class VisualRecognitionClient {
     modelState: 'not-loaded' | 'loading' | 'ready' | 'failed'
     unavailableReason: string | null
     readyInfo: VisualReadyInfo | null
+    backendDiagnostics: VisualBackendDiagnostics | null
   } {
     const modelState: 'not-loaded' | 'loading' | 'ready' | 'failed' =
       this.readyInfo !== null
@@ -175,7 +195,12 @@ export class VisualRecognitionClient {
           : this.readyPromise !== null
             ? 'loading'
             : 'not-loaded'
-    return { modelState, unavailableReason: this.unavailableReason, readyInfo: this.readyInfo }
+    return {
+      modelState,
+      unavailableReason: this.unavailableReason,
+      readyInfo: this.readyInfo,
+      backendDiagnostics: this.backendDiagnostics,
+    }
   }
 
   dispose(): void {

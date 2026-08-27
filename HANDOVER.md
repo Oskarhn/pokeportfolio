@@ -5,67 +5,56 @@ Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) a
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
 **Last updated:** 2026-08-27 — **M15b visual-recognition hybrid scanner is still DRAFT PR #63
-(`feat/m15-scanner-integrated-p68`), NOT merged, NOT deployed.** P76's preview FAILED the owner's
-real-device retest (a Shieldon and a Mega Chandelure ex both went unrecognized). P77 root-caused
-and fixed three real bugs in the generation/runtime pipeline (model and architecture unchanged):
+(`feat/m15-scanner-integrated-p68`), NOT merged, NOT deployed.** The owner deployed P77's code
+fix AND a real full hosted index rebuild (20,946 active English cards, 19,501 embedded, 93.1%
+coverage — full-index verifier passed) and retested on a real iPhone at `/scan?scannerDebug=1`.
+Result: `VISUAL_MODEL_STATE=failed`, `VISUAL_EMBEDDING_CREATED=no`, every downstream field
+empty — the model never even loaded. P78 root-caused and fixed the ACTUAL cause (two independent
+bugs, both reproduced directly against the real production build in a real browser — not
+inferred, not assumed):
 
-1. **`build-index.ts`'s query was never paginated** — Supabase's hosted API silently truncates an
-   unpaginated query at its configured row cap; the owner's first hosted rebuild logged exactly
-   "1000 active English cards" (a truncation, not the real catalog size). Fixed with an
-   exact-count-then-paginate walk (`src/domain/scanner/index-pagination.ts`), proven against real
-   local PostgREST (1,203 seeded rows, fetched across 3 pages).
-2. **The resumable build checkpoint carried no source/model identity** — the exact class of bug
-   P76 already hit once (1224/1000 "coverage" from mixed local+hosted embeddings). Now bound to
-   `{schemaVersion, sourceProjectIdentity, modelId, modelRevision, embeddingDim, quantization}`
-   (`src/domain/scanner/checkpoint-identity.ts`); a mismatch is discarded loudly, never silently
-   reused. Packing is separately constrained to the current fetch's canonical id set.
-3. **The visual channel embedded the ENTIRE captured camera frame, never cropped to the card** —
-   OCR already crops to `capture.cardRect`; the visual channel did not. A real preprocessing-parity
-   gap from the reference index's tight card-only images, invisible to the P76 benchmark (which
-   compares canonical images against each other, never against an uncropped photo). Fixed in
-   `controller.ts`'s `analyzeVisualSafely`.
+1. **`env.allowLocalModels` was never set (the primary cause, 100% of the failure).**
+   `@huggingface/transformers` 4.2.0 defaults it to `false` inside a Web Worker; combined with the
+   (correct) `allowRemoteModels = false`, EVERY model load attempt threw "both local and remote
+   models are disabled" — on every browser, reproduced identically on desktop Chromium with no
+   COOP/COEP change. This was never a Safari/iOS-specific or threading issue. One-line fix in
+   `visual-worker.ts`.
+2. **CSP `script-src` was missing `blob:`.** onnxruntime-web's WASM factory dynamically imports
+   its own glue module from a `blob:` object URL; without that grant, model loading failed for
+   BOTH the `webgpu` and `wasm` device paths with "Failed to fetch dynamically imported module:
+   blob:...". Fixed in `vite.config.ts`; verified end to end against the real `dist/` build with
+   the real generated `_headers` — model load, real image embedding and a real 19,501-card index
+   search all succeeded, `crossOriginIsolated=false` throughout (COOP/COEP was never the answer).
 
-Coverage invariants (`cardsIndexed` can never exceed `totalCanonicalCards`/`cardsWithUsableImage`)
-are now enforced by the generator, `verify-index.ts`, AND the browser worker at runtime
-(`src/domain/scanner/index-coverage.ts`) — the previous verifier accepted a manifest claiming
-122.4% coverage because it never checked coverage arithmetic at all. A debug-only diagnostic panel
-(`/scan?scannerDebug=1`, deferred in P76) is now implemented with a "Copy diagnostics" button, so
-the NEXT real-device failure — if any — is diagnosable from one pasted block. Full account,
-including the honest "cannot verify Shieldon/Mega Chandelure ex in the hosted catalog without
-credentials" disclosure: D-097's P77 addendum in [DECISIONS.md](docs/DECISIONS.md),
-`ai_outputs/Claude_outputs/output_77.txt`.
+Investigating those two surfaced a third, real structural gap and fixed it too: the worker picked
+exactly one backend up front and never fell back to WASM if that choice failed — now a pure,
+independently unit-tested module (`src/domain/scanner/visual-backend-selection.ts`) tries WebGPU
+first under `auto` and falls back to WASM on any failure or absence, while an explicit
+`?visualBackend=wasm`/`webgpu` diagnostic override (new) skips the guesswork entirely. Diagnostics
+also used to drop the real failure reason (`VISUAL_ERROR=—` even when the worker had recorded a
+good one) — fixed, plus new phased `PROCESSOR_LOAD`/`MODEL_LOAD`/`INDEX_LOAD` and per-backend
+attempt fields in the debug panel. A separate, disclosed metadata bug (the owner's build log
+showing "404: 6" while the shipped manifest read "7 failures") was root-caused to a
+resumption-cumulative, non-deduplicated failure counter and fixed by deriving the count fresh at
+pack time — no re-embedding needed. Full account: D-097's P78 addendum in
+[DECISIONS.md](docs/DECISIONS.md), `ai_outputs/Claude_outputs/output_78.txt`.
 
-**The index-coverage gap is UNCHANGED and still real:** this session again had no legitimate way
-to read the hosted `cards` table (same standing constraint as P76 — anon has zero grant, and
-obtaining an authenticated session is outside this session's authority). The owner's PREVIOUS
-hosted rebuild (`022e20f`, 985/1000 cards) is left untouched on this branch — it is now KNOWN
-INCOMPLETE (built by the pre-fix script, capped at 1000 of however many active English cards the
-hosted catalog actually has) but was not overwritten with a local index. **One remaining manual
-step**, safe and credential-free for any assistant session: the owner re-runs, from their own
-shell (the key is never pasted anywhere),
+**The committed hosted index is UNCHANGED and CORRECT** — the owner's own 19,501/20,946 rebuild
+from before this session, preserved untouched; this session's fixes are entirely in the runtime
+init/CSP/diagnostics code, not the index or its generation.
 
-```
-SUPABASE_URL=https://nopmkroeygmlvndzjjqs.supabase.co SUPABASE_SERVICE_ROLE_KEY=<hosted service role, from Supabase dashboard> pnpm scanner:index:build
-```
-
-**Because this build carries checkpoint identity binding for the first time, the owner's existing
-local checkpoint predates it and will be discarded automatically (logged, not silent) — the
-re-run re-embeds all ~985 already-cached cards from scratch, not just the ones beyond row 1000.**
-Then `pnpm scanner:index:verify`, commit the three regenerated index files, and push — the next
-preview build ships a genuinely complete, hosted-valid index for the first time.
-
-**Current state:** all local gates GREEN on this repair — typecheck/lint (0 errors, 27
-pre-existing warnings, unchanged)/format/unit 722/722 (up from 691; +31 new: pagination PAG1–8,
-checkpoint identity CP1–7, coverage invariants, debug-panel formatting); fresh 90-migration reset
-clean (**no new migration**); db+authorization 599/600 clean on isolated re-runs (one
-order-dependent, pre-existing, UNRELATED flake in `tests/db/m16_openings.test.ts` — fails on a
-different case each full-file run, passes every time in isolation; P77's diff touches zero
-DB/migration/RPC code, flagged as a separate follow-up task, not attributable to this repair);
-grant audit clean; M13 adversarial 62/62; M16 independent adversarial 53/53 zero skips; build
-green; E2E 64/64. **Nothing merged to main, nothing deployed to Cloudflare Production.**
-**IPHONE_DEVICE_GATE=PENDING_OWNER_RETEST** — see `ai_outputs/Claude_outputs/output_77.txt` for
-the next steps; a repeat failure on Shieldon/Mega Chandelure ex specifically after the owner's
-rebuild should now be diagnosed with `?scannerDebug=1`, not assumed to be the same root cause.
+**Current state:** all local gates GREEN — typecheck/lint (0 errors, 27 pre-existing warnings,
+unchanged)/format clean; unit 747/748 (one pre-existing, UNRELATED wall-clock perf-timing flake in
+`tests/domain/scanner/engine.test.ts`, untouched by this session's diff, passes cleanly in
+isolation — CPU-contention sensitive, not a correctness bug); fresh 90-migration reset clean (**no
+new migration**); db+authorization 598/600 clean on isolated re-runs (the SAME pre-existing,
+order-dependent flake in `tests/db/m16_openings.test.ts` P77 already disclosed and flagged as a
+separate follow-up — this session touches zero DB/migration/RPC/M16 code); grant audit clean; M13
+adversarial 62/62; M16 independent adversarial 53/53 zero skips; build green, platform verifier
+11/11; E2E 64/64. **Nothing merged to main, nothing deployed to Cloudflare Production.**
+**IPHONE_DEVICE_GATE=PENDING_OWNER_RETEST** — the owner's next test is
+`/scan?scannerDebug=1&visualBackend=wasm` FIRST (bypasses WebGPU ambiguity entirely), then a
+physical card, then `?visualBackend=auto`. See `ai_outputs/Claude_outputs/output_78.txt`.
 Everything below this paragraph predates M15b.
 
 **Previous state:** M16 (Openings, pulls, backup v2) is MERGED and RELEASED: PR #56

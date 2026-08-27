@@ -43,11 +43,20 @@ describe('generated Content-Security-Policy (M15 WASM OCR)', () => {
     expect(scriptSrc).not.toContain("'unsafe-eval'")
   })
 
-  it('keeps script-src same-origin with no inline/blob/data allowances', () => {
+  it('keeps script-src same-origin with no inline/eval/data allowances', () => {
     expect(scriptSrc).toContain("'self'")
-    for (const forbidden of ["'unsafe-inline'", "'unsafe-eval'", 'blob:', 'data:']) {
+    for (const forbidden of ["'unsafe-inline'", "'unsafe-eval'", 'data:']) {
       expect(scriptSrc).not.toContain(forbidden)
     }
+  })
+
+  it("grants 'blob:' for onnxruntime-web's dynamic-import WASM loader (P78)", () => {
+    // Confirmed by direct reproduction (P78, D-097 addendum): onnxruntime-web 1.26.0-dev's WASM
+    // factory dynamically imports its own glue module from a blob: object URL. Without this
+    // token the visual model fails to load on EVERY browser (reproduced on desktop Chromium with
+    // no COOP/COEP change) — not a threading or cross-origin-isolation issue. Still no inline
+    // script and no remote script host granted.
+    expect(scriptSrc).toContain('blob:')
   })
 
   it("keeps worker-src exactly 'self'", () => {

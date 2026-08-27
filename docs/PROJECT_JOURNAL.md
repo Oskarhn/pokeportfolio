@@ -8,6 +8,61 @@ here when there was a real problem with a non-obvious answer.
 
 ---
 
+## 2026-08-27 — M15b visual runtime never initialized: two library-default gotchas, not a threading problem
+
+The owner deployed P77's pagination/checkpoint/crop fixes AND a real full hosted index rebuild
+(19,501/20,946 cards, verifier passed) and retested on a real iPhone. `VISUAL_MODEL_STATE=failed`,
+zero embedding created — before the model even loaded. Two findings, plus a lesson about not
+trusting a plausible-sounding theory over a real reproduction:
+
+1. **A library's own default value, set differently per execution environment, silently disabled
+   the feature entirely — and the code never noticed because it only set the flag it meant to
+   change, not the one that mattered.** `visual-worker.ts` set `env.allowRemoteModels = false`
+   (correct, deliberate) but never touched `env.allowLocalModels`, assuming its default was
+   permissive. `@huggingface/transformers`'s own source sets that default to `false` specifically
+   inside a Web Worker (`IS_WEBWORKER_ENV`) — a context-dependent default the code had no way to
+   notice was wrong without either reading the library source directly or reproducing the failure
+   and reading the real thrown message. Both flags false meant every load attempt failed before
+   touching the ONNX runtime, on every browser, not just iPhone — a fact only visible once the
+   real error message was actually surfaced (see finding 3). Lesson: a boolean you deliberately
+   set correctly can still combine badly with one you never set at all; check both sides of an
+   "allow X or Y" pair, especially when a library's docs describe the flag you touched but not the
+   one you didn't.
+
+2. **The plausible, well-precedented theory (cross-origin isolation) was wrong, and only a real
+   browser reproduction could tell.** onnxruntime-web's shipped WASM binary does unconditionally
+   allocate a `shared: true` `WebAssembly.Memory` at module init — a fact directly confirmed by
+   reading the compiled glue code — which is the textbook signature of a `crossOriginIsolated`
+   requirement (COOP+COEP), a well-known constraint with plenty of prior art to reach for. Chasing
+   that theory would have meant adding COEP `require-corp` (Safari doesn't support the friendlier
+   `credentialless` value), which would have broken every cross-origin TCGdex card image across
+   the whole app unless every `<img>` tag were individually reworked — a large, risky, cross-cutting
+   change for what turned out to be the wrong diagnosis. Building a minimal real-browser harness
+   (a fake static server reproducing the exact production `_headers`, driving the actual compiled
+   worker chunk) took a few minutes and definitively proved the model loads fine with
+   `crossOriginIsolated=false` — the actual blocker was a CSP `script-src` grant for a `blob:`
+   dynamic import, one directive, zero blast radius on anything else. Lesson: when a serious,
+   cross-cutting fix is about to be reached for on the strength of a mechanism that *looks*
+   textbook-correct, a 20-minute real reproduction is cheap insurance against solving the wrong
+   problem expensively.
+
+3. **The bug that made both of the above nearly invisible: the diagnostics panel built specifically
+   to make real-device failures diagnosable was itself dropping the one field that would have
+   named the actual error.** `controller.ts`'s `VISUAL_ERROR` field only ever read a value set
+   inside `analyzeVisualSafely`'s own `catch` block — but a model-init failure never throws there
+   by design (`VisualRecognitionClient.analyze()` resolves `null` gracefully, exactly the "no
+   crash, just unavailable" contract the debug panel exists to make legible). The result: the
+   owner's copied diagnostics showed `VISUAL_ERROR=—` on the exact failure this session needed
+   that field to explain. Investigating the fix surfaced a second, unrelated lesson: the pattern
+   being replaced (a closure-captured `let` reassigned inside an `await`ed call) also defeated
+   TypeScript's own control-flow narrowing — `@typescript-eslint/no-unnecessary-condition` flagged
+   the read as "provably null" even though a real reproduction proved it wasn't. Returning the
+   error through the function's own return value fixed both problems at once and is simply better
+   code. Lesson: a diagnostic surface is only as trustworthy as its narrowest code path — test the
+   failure case that never throws, not just the one that does.
+
+---
+
 ## 2026-08-27 — M15b real-device repair: an "exactly 1000" log line was the whole clue
 
 The owner's first hosted index rebuild logged `1000 active English cards, 985 have

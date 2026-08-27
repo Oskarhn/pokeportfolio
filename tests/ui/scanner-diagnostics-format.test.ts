@@ -23,6 +23,13 @@ function diagnostics(overrides: Partial<ScannerDiagnostics> = {}): ScannerDiagno
       { cardId: 'card-a', name: 'Shieldon', confidenceTier: 'HIGH', reasons: ['visual-strong'] },
     ],
     visualError: null,
+    visualBackendRequested: 'auto',
+    visualBackendAttempts: { webgpu: 'not-available', wasm: 'success' },
+    webgpuError: null,
+    wasmError: null,
+    processorLoad: 'success',
+    modelLoad: 'success',
+    indexLoadStatus: 'success',
     ...overrides,
   }
 }
@@ -31,7 +38,15 @@ describe('formatScannerDiagnostics', () => {
   it('renders every field as a labeled line', () => {
     const text = formatScannerDiagnostics(diagnostics())
     expect(text).toContain('VISUAL_MODEL_STATE=ready')
+    expect(text).toContain('VISUAL_BACKEND_REQUESTED=auto')
+    expect(text).toContain('webgpu: not-available')
+    expect(text).toContain('wasm: success')
     expect(text).toContain('VISUAL_BACKEND=wasm')
+    expect(text).toContain('WEBGPU_ERROR=—')
+    expect(text).toContain('WASM_ERROR=—')
+    expect(text).toContain('PROCESSOR_LOAD=success')
+    expect(text).toContain('MODEL_LOAD=success')
+    expect(text).toContain('INDEX_LOAD=success')
     expect(text).toContain('MODEL_LOAD_MS=812')
     expect(text).toContain('CAPTURE_CROP_DIMENSIONS=640x896')
     expect(text).toContain('VISUAL_EMBEDDING_CREATED=yes')
@@ -72,5 +87,27 @@ describe('formatScannerDiagnostics', () => {
   it('never contains anything resembling a secret/token field name', () => {
     const text = formatScannerDiagnostics(diagnostics())
     expect(text.toLowerCase()).not.toMatch(/service_role|token|password|auth|email|user_id/)
+  })
+
+  it('renders both backend errors when webgpu and wasm both failed (R6)', () => {
+    const text = formatScannerDiagnostics(
+      diagnostics({
+        visualModelState: 'failed',
+        visualBackend: 'unknown',
+        visualBackendAttempts: { webgpu: 'failed', wasm: 'failed' },
+        webgpuError: 'no available backend found',
+        wasmError: 'out of memory',
+        modelLoad: 'failed',
+        indexLoadStatus: 'not-reached',
+        visualError: 'model load failed: webgpu: no available backend found; wasm: out of memory',
+      }),
+    )
+    expect(text).toContain('WEBGPU_ERROR=no available backend found')
+    expect(text).toContain('WASM_ERROR=out of memory')
+    expect(text).toContain('MODEL_LOAD=failed')
+    expect(text).toContain('INDEX_LOAD=not-reached')
+    expect(text).toContain(
+      'VISUAL_ERROR=model load failed: webgpu: no available backend found; wasm: out of memory',
+    )
   })
 })

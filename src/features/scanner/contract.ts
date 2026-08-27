@@ -77,6 +77,18 @@ export interface ScannerDiagnostics {
     reasons: readonly string[]
   }[]
   visualError: string | null
+  /** Backend-attempt diagnostics (P78 prompt §4/§11/§12) — what was actually tried, present
+   *  whether the visual channel ended up ready or unavailable. */
+  visualBackendRequested: 'auto' | 'wasm' | 'webgpu'
+  visualBackendAttempts: {
+    webgpu: 'success' | 'failed' | 'not-available' | 'not-attempted'
+    wasm: 'success' | 'failed' | 'not-available' | 'not-attempted'
+  }
+  webgpuError: string | null
+  wasmError: string | null
+  processorLoad: 'success' | 'failed' | null
+  modelLoad: 'success' | 'failed' | null
+  indexLoadStatus: 'success' | 'failed' | 'not-reached' | null
 }
 
 /** The bounded still frame handed to the engine — an in-memory JPEG blob plus pixel dimensions

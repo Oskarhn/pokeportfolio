@@ -2829,3 +2829,91 @@ architectural (full-catalog pagination, checkpoint binding, coverage invariants,
 Whether those two specific cards exist in the hosted catalog and are covered by the (still
 unregenerated, since this session has no hosted credential) committed index remains unverified —
 see output_77.txt.
+
+### P78 addendum — runtime initialization repair (the model never even loaded on the real iPhone)
+
+The owner deployed the P77-repaired code AND a real full hosted rebuild (20,946 active English
+cards, 19,501 embedded, 93.1% coverage — the committed index this session preserved untouched) and
+retested on a real iPhone. `?scannerDebug=1` showed `VISUAL_MODEL_STATE=failed`,
+`VISUAL_EMBEDDING_CREATED=no`, every downstream field empty: the model failed BEFORE embedding,
+before index load — a runtime-initialization failure, not a recognition-quality question. Two
+independent, confirmed root causes, both reproduced directly (not inferred) via a real browser
+smoke harness serving the actual production `dist/` build with the actual generated `_headers`:
+
+1. **`env.allowLocalModels` was never set (primary, 100% of the failure).**
+   `@huggingface/transformers` 4.2.0's own `env.ts` defaults `allowLocalModels` to
+   `!(IS_BROWSER_ENV || IS_WEBWORKER_ENV || IS_DENO_WEB_RUNTIME)` — `false` inside a Web Worker
+   (confirmed by reading the installed package source, not assumed). `visual-worker.ts` set
+   `env.allowRemoteModels = false` (correct — no CDN, ever) but never set `env.allowLocalModels =
+   true`, so with BOTH flags false, `AutoModel.from_pretrained`/`AutoProcessor.from_pretrained`
+   threw "Invalid configuration detected: both local and remote models are disabled" on every
+   single load attempt, on every browser — reproduced identically on desktop Chromium, with no
+   COOP/COEP change, proving this was never a Safari/iOS-specific or threading/
+   cross-origin-isolation issue at all. One-line fix: `env.allowLocalModels = true` alongside the
+   existing `allowRemoteModels = false`.
+
+2. **CSP `script-src` was missing `blob:` (second, independently fatal bug found investigating
+   the same failure).** Once (1) was fixed, model loading still failed — `no available backend
+   found. ERR: [webgpu] TypeError: Failed to fetch dynamically imported module: blob:...` and the
+   identical error for `[wasm]`. onnxruntime-web 1.26.0-dev's WASM factory
+   (`web/lib/wasm/wasm-utils-import.ts`, read directly) dynamically `import()`s its own glue
+   module and, on its `preload()` path, re-imports it from a `blob:` object URL rather than the
+   original same-origin URL — a CSP3 `script-src` grant is required for that dynamic import to
+   succeed, and the existing policy (`'self' 'wasm-unsafe-eval'`) never granted `blob:`. Fixed:
+   `vite.config.ts`'s `buildContentSecurityPolicy` now grants `script-src 'self' 'wasm-unsafe-eval'
+   blob:'` — still no inline script, no remote script host, JavaScript `eval()` still refused.
+   Verified directly: a real Chromium page serving the actual `dist/` build with the actual
+   generated `_headers` (COOP `same-origin`, no COEP, `crossOriginIsolated=false` throughout)
+   loaded the model, embedded a real image and searched the real 19,501-card index successfully —
+   for BOTH the `wasm` and `webgpu` device paths — once `blob:` was granted and nowhere else.
+   `crossOriginIsolated`/threaded-WASM-memory was investigated as a candidate root cause first (a
+   `new WebAssembly.Memory({shared:true})` call does exist, unconditionally, in the shipped ORT
+   glue) but is NOT the blocker here — the real repro never required COOP/COEP.
+
+3. **A real, independent structural gap found investigating both bugs: no WebGPU→WASM fallback.**
+   `visual-worker.ts` picked exactly one backend up front
+   (`backend = useWebgpu ? 'webgpu' : 'wasm'`) and never retried on WASM if that one choice failed
+   to initialize for ANY reason (the blob: CSP bug above manifested identically on both paths,
+   proving this gap was real and not hypothetical). WASM is the required baseline (prior D-097
+   text); WebGPU is optional acceleration that must never take the whole channel down with it.
+   Fixed: the selection logic is now a pure, independently unit-tested module
+   (`src/domain/scanner/visual-backend-selection.ts`) — `auto` tries WebGPU first when an adapter
+   is genuinely available, releases any partial model reference and falls back to WASM on failure
+   or absence; an explicit `force wasm` never even probes for an adapter; an explicit `force
+   webgpu` failing stays a clean, attributable failure and never silently substitutes WASM. Both
+   attempted backends' error reasons are retained on failure, never just whichever ran last.
+
+4. **Diagnostics used to drop the real reason.** `controller.ts`'s `visualError` field was sourced
+   only from exceptions thrown inside `analyzeVisualSafely` (`createImageBitmap`/`client.analyze`
+   throwing) — a model-init failure never throws there (`VisualRecognitionClient.analyze()`
+   resolves `null` gracefully, by design), so `VISUAL_ERROR` showed `—` even when the worker had
+   recorded a perfectly good reason. Fixed to fall back to the diagnostics snapshot's own
+   `unavailableReason`. The closure-mutated-`let`-across-an-`await` pattern this replaced also
+   turned out to defeat TypeScript's own control-flow narrowing (confirmed via a minimal repro —
+   `@typescript-eslint/no-unnecessary-condition` flagged the read as provably `null` even though it
+   demonstrably wasn't at runtime); `analyzeVisualSafely` now returns its error through its return
+   value instead of a captured variable, which is both correct and analyzable.
+
+5. **Backend-attempt diagnostics and a debug backend override added.** The debug panel
+   (`?scannerDebug=1`) now shows `VISUAL_BACKEND_REQUESTED`, per-backend `VISUAL_BACKEND_ATTEMPTS`
+   (`success`/`failed`/`not-available`/`not-attempted`), `WEBGPU_ERROR`/`WASM_ERROR`, and phased
+   `PROCESSOR_LOAD`/`MODEL_LOAD`/`INDEX_LOAD` status — a real-device failure is now attributable to
+   one stage instead of one opaque message. A diagnostic-only `?scannerDebug=1&visualBackend=wasm`
+   (or `webgpu`) query param forces that backend; absent or invalid always means `auto`; the
+   override affects visual-inference backend selection ONLY — never matching, persistence, or
+   authentication.
+
+6. **The `checkpoint.failures` counter was cumulative across resumptions, not current-build-based**
+   (investigated per the owner's build report: console logged "404: 6" while the shipped
+   manifest's `coverage.failures` read 7). `Checkpoint.failures` was incremented every time a
+   card's image fetch/decode failed and persisted across a resumed run with no deduplication by
+   card id — a card that fails on every attempt (a permanently-404 image) inflated the count once
+   per resumption. Fixed: the field is gone; `build-index.ts` now derives `coverage.failures` as
+   `cardsWithUsableImage - cardsIndexed` at pack time — inherently current-build/current-card
+   based, counts each card at most once regardless of how many times its embedding attempt has
+   been retried across resumptions. Did not require re-embedding the 19,501 already-valid
+   embeddings to fix — a metadata-derivation change only.
+
+**Not changed:** the model, the architecture, any migration (still 90), any financial semantic,
+the committed hosted index (still the owner's own 19,501/20,946 rebuild, untouched by this
+session). No card was special-cased anywhere.

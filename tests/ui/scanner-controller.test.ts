@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   createRealScannerController,
   classifyAcquisitionFailure,
@@ -27,10 +27,28 @@ vi.mock('../../src/features/scanner/analyze', () => ({
 vi.mock('../../src/data/catalog', () => ({
   searchCards: vi.fn(),
   getCardVariants: vi.fn(),
+  getCardsByIds: vi.fn().mockResolvedValue([]),
 }))
 
 vi.mock('../../src/data/collection', () => ({
   addCardAcquisition: vi.fn(),
+}))
+
+// P78: a controllable stand-in for the visual channel so diagnostics-assembly logic (R1) can be
+// tested in isolation from the real Worker/transformers.js pipeline, which
+// scanner-visual-client.test.ts and visual-backend-selection.test.ts already cover directly.
+const visualMocks = vi.hoisted(() => ({
+  analyze: vi.fn(),
+  getDiagnosticsSnapshot: vi.fn(),
+  dispose: vi.fn(),
+}))
+
+vi.mock('../../src/features/scanner/visual/visual-client', () => ({
+  VisualRecognitionClient: class {
+    analyze = visualMocks.analyze
+    getDiagnosticsSnapshot = visualMocks.getDiagnosticsSnapshot
+    dispose = visualMocks.dispose
+  },
 }))
 
 import { runOcrAnalysis } from '../../src/features/scanner/analyze'
@@ -41,6 +59,17 @@ const mockedRunOcrAnalysis = vi.mocked(runOcrAnalysis)
 const mockedSearchCards = vi.mocked(searchCards)
 const mockedGetCardVariants = vi.mocked(getCardVariants)
 const mockedAddCardAcquisition = vi.mocked(addCardAcquisition)
+
+/** Default: visual channel unavailable, matching how it naturally behaves in this Node test
+ *  environment (no real Worker) — existing tests above assume OCR-only results. */
+function defaultVisualDiagnostics() {
+  return {
+    modelState: 'not-loaded' as const,
+    unavailableReason: null,
+    readyInfo: null,
+    backendDiagnostics: null,
+  }
+}
 
 function capture() {
   return {
@@ -79,6 +108,8 @@ function catalogRow(
 beforeEach(() => {
   vi.clearAllMocks()
   scannerSessionStore.clearAll()
+  visualMocks.analyze.mockResolvedValue(null)
+  visualMocks.getDiagnosticsSnapshot.mockReturnValue(defaultVisualDiagnostics())
 })
 
 describe('analyzeCapture - observation, retrieval, ranking (I2/I3/I4)', () => {
@@ -386,5 +417,137 @@ describe('commitBatch - existing acquisition path, honest outcomes (I12/I13/I14)
     expect(() => {
       controller.dispose()
     }).not.toThrow()
+  })
+})
+
+describe('getLastDiagnostics - visual channel failure reporting (P78 R1)', () => {
+  const originalCreateImageBitmap = globalThis.createImageBitmap
+
+  beforeEach(() => {
+    // Bypasses analyzeVisualSafely's "createImageBitmap is unavailable in this browser" early
+    // exit (real in this Node test environment) so the mocked VisualRecognitionClient.analyze()
+    // is actually reached — otherwise every test would report that message regardless of what
+    // the worker itself said, masking the bug this suite exists to catch.
+    globalThis.createImageBitmap = vi.fn().mockResolvedValue({ close: vi.fn() })
+  })
+
+  afterEach(() => {
+    globalThis.createImageBitmap = originalCreateImageBitmap
+  })
+
+  it('R1: surfaces the worker unavailableReason in VISUAL_ERROR when init failed (modelState=failed, visualResult=null)', async () => {
+    mockedRunOcrAnalysis.mockResolvedValue({
+      rawNameText: 'Pikachu',
+      rawCollectorNumberText: '58',
+      usedFullFrameFallback: false,
+    })
+    mockedSearchCards.mockResolvedValue({ results: [], totalCount: 0 })
+    visualMocks.analyze.mockResolvedValue(null)
+    visualMocks.getDiagnosticsSnapshot.mockReturnValue({
+      modelState: 'failed',
+      unavailableReason: 'processor load failed: 404 on preprocessor_config.json',
+      readyInfo: null,
+      backendDiagnostics: {
+        backendRequested: 'auto',
+        backendAttempts: { webgpu: 'not-attempted', wasm: 'not-attempted' },
+        webgpuError: null,
+        wasmError: null,
+        processorLoad: 'failed',
+        modelLoad: 'failed',
+        indexLoad: 'not-reached',
+      },
+    })
+
+    const controller = createRealScannerController({ userId: 'user-a' })
+    await controller.analyzeCapture(capture())
+    const diagnostics = controller.getLastDiagnostics?.()
+
+    expect(diagnostics?.visualModelState).toBe('failed')
+    expect(diagnostics?.visualEmbeddingCreated).toBe(false)
+    // The actual bug: this used to be unconditionally "—" (EMPTY) whenever analyze() resolved
+    // null WITHOUT throwing — which is exactly how a model-init failure behaves (prompt §36:
+    // analyze() never throws for "unavailable", it resolves null).
+    expect(diagnostics?.visualError).toBe('processor load failed: 404 on preprocessor_config.json')
+    expect(diagnostics?.processorLoad).toBe('failed')
+    expect(diagnostics?.modelLoad).toBe('failed')
+    expect(diagnostics?.indexLoadStatus).toBe('not-reached')
+  })
+
+  it('still prefers a real analyzeVisualSafely exception over the snapshot reason when both exist', async () => {
+    mockedRunOcrAnalysis.mockResolvedValue({
+      rawNameText: 'Pikachu',
+      rawCollectorNumberText: '58',
+      usedFullFrameFallback: false,
+    })
+    mockedSearchCards.mockResolvedValue({ results: [], totalCount: 0 })
+    globalThis.createImageBitmap = vi
+      .fn()
+      .mockRejectedValue(new Error('createImageBitmap decode failure'))
+    visualMocks.getDiagnosticsSnapshot.mockReturnValue({
+      modelState: 'ready',
+      unavailableReason: null,
+      readyInfo: null,
+      backendDiagnostics: null,
+    })
+
+    const controller = createRealScannerController({ userId: 'user-a' })
+    await controller.analyzeCapture(capture())
+    const diagnostics = controller.getLastDiagnostics?.()
+    expect(diagnostics?.visualError).toBe('createImageBitmap decode failure')
+  })
+
+  it('reports a successful visual match with real backend/index fields (no init failure)', async () => {
+    mockedRunOcrAnalysis.mockResolvedValue({
+      rawNameText: 'Pikachu',
+      rawCollectorNumberText: '58',
+      usedFullFrameFallback: false,
+    })
+    mockedSearchCards.mockResolvedValue({ results: [], totalCount: 0 })
+    visualMocks.analyze.mockResolvedValue({
+      hits: [{ cardId: 'card-a', similarity: 0.91 }],
+      backend: 'webgpu',
+      embedMs: 12,
+      searchMs: 3,
+      embeddingNorm: 5.5,
+    })
+    visualMocks.getDiagnosticsSnapshot.mockReturnValue({
+      modelState: 'ready',
+      unavailableReason: null,
+      readyInfo: {
+        backend: 'webgpu',
+        indexAvailable: true,
+        cardCount: 19501,
+        modelColdLoadMs: 1337,
+        indexVersion: 'visual-v1',
+        indexSourceProjectRef: 'nopmkroeygmlvndzjjqs.supabase.co',
+        indexLoadMs: 73,
+        indexUnavailableReason: null,
+        backendRequested: 'auto',
+        backendAttempts: { webgpu: 'success', wasm: 'not-attempted' },
+        webgpuError: null,
+        wasmError: null,
+        processorLoad: 'success',
+        modelLoad: 'success',
+        indexLoad: 'success',
+      },
+      backendDiagnostics: {
+        backendRequested: 'auto',
+        backendAttempts: { webgpu: 'success', wasm: 'not-attempted' },
+        webgpuError: null,
+        wasmError: null,
+        processorLoad: 'success',
+        modelLoad: 'success',
+        indexLoad: 'success',
+      },
+    })
+
+    const controller = createRealScannerController({ userId: 'user-a' })
+    await controller.analyzeCapture(capture())
+    const diagnostics = controller.getLastDiagnostics?.()
+    expect(diagnostics?.visualModelState).toBe('ready')
+    expect(diagnostics?.visualBackend).toBe('webgpu')
+    expect(diagnostics?.indexCardCount).toBe(19501)
+    expect(diagnostics?.visualError).toBeNull()
+    expect(diagnostics?.visualEmbeddingCreated).toBe(true)
   })
 })

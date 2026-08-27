@@ -19,7 +19,16 @@ function num(value: number | null): string {
 export function formatScannerDiagnostics(d: ScannerDiagnostics): string {
   const lines: string[] = [
     `VISUAL_MODEL_STATE=${d.visualModelState}`,
+    `VISUAL_BACKEND_REQUESTED=${d.visualBackendRequested}`,
+    'VISUAL_BACKEND_ATTEMPTS:',
+    `  webgpu: ${d.visualBackendAttempts.webgpu}`,
+    `  wasm: ${d.visualBackendAttempts.wasm}`,
     `VISUAL_BACKEND=${d.visualBackend}`,
+    `WEBGPU_ERROR=${d.webgpuError ?? EMPTY}`,
+    `WASM_ERROR=${d.wasmError ?? EMPTY}`,
+    `PROCESSOR_LOAD=${d.processorLoad ?? EMPTY}`,
+    `MODEL_LOAD=${d.modelLoad ?? EMPTY}`,
+    `INDEX_LOAD=${d.indexLoadStatus ?? EMPTY}`,
     `MODEL_LOAD_MS=${num(d.modelLoadMs)}`,
     `CAPTURE_CROP_DIMENSIONS=${d.captureCropWidth ?? EMPTY}x${d.captureCropHeight ?? EMPTY}`,
     `VISUAL_EMBEDDING_CREATED=${d.visualEmbeddingCreated ? 'yes' : 'no'}`,

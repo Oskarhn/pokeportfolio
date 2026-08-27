@@ -9,10 +9,23 @@
  * any inference call — left unset, transformers.js defaults to fetching onnxruntime-web's WASM
  * binary from `cdn.jsdelivr.net` (confirmed by reading its bundled source), which would silently
  * violate the same boundary OCR already holds.
+ *
+ * P78 runtime-initialization repair: WASM is the required baseline, WebGPU is optional
+ * acceleration only (prompt §3/§10) — a WebGPU init failure falls back to WASM instead of making
+ * the whole channel unavailable. Init is phased (processor / model / index) so a real-device
+ * failure is attributable to one stage instead of one opaque message (prompt §11/§12).
  */
 /// <reference lib="webworker" />
 import { AutoModel, AutoProcessor, RawImage, env } from '@huggingface/transformers'
 import { assertValidCoverage, CoverageInvariantError } from '../../../domain/scanner/index-coverage'
+import {
+  selectVisualBackend,
+  composeUnavailableReason,
+  normalizeBackendOverride,
+  type VisualBackend,
+  type VisualBackendOverride,
+  type BackendAttempts,
+} from '../../../domain/scanner/visual-backend-selection'
 import {
   decodeVisualIndex,
   searchVisualIndex,
@@ -21,6 +34,12 @@ import {
   type DecodedVisualIndex,
   type VisualIndexManifest,
 } from '../../../data/scanner/visual-index'
+
+export type {
+  VisualBackend,
+  VisualBackendOverride,
+  BackendAttemptStatus,
+} from '../../../domain/scanner/visual-backend-selection'
 
 const ASSET_BASE = '/scanner-assets/visual-v1'
 const MODEL_ID = 'model' // local alias — see localModelPath below; not a Hugging Face repo id
@@ -31,10 +50,9 @@ const EMBEDDING_DIM = 384
 // scripts/scanner-visual-benchmark/lib/embed.mjs). ANY change is a deliberate model bump.
 const EXPECTED_MODEL_REVISION = 'c2bb04a51fab207c420665f1946016107bffc701'
 
-export type VisualBackend = 'webgpu' | 'wasm'
-
 interface InitMessage {
   type: 'init'
+  backendOverride?: VisualBackendOverride
 }
 interface EmbedAndSearchMessage {
   type: 'embed-and-search'
@@ -44,7 +62,19 @@ interface EmbedAndSearchMessage {
 }
 type IncomingMessage = InitMessage | EmbedAndSearchMessage
 
-interface ReadyResponse {
+/** Shared by ready/unavailable so the debug panel can always show what was actually attempted,
+ *  win or lose (prompt §4/§11/§12). */
+interface BackendDiagnostics {
+  backendRequested: VisualBackendOverride
+  backendAttempts: BackendAttempts
+  webgpuError: string | null
+  wasmError: string | null
+  processorLoad: 'success' | 'failed'
+  modelLoad: 'success' | 'failed'
+  indexLoad: 'success' | 'failed' | 'not-reached'
+}
+
+interface ReadyResponse extends BackendDiagnostics {
   type: 'ready'
   backend: VisualBackend
   indexAvailable: boolean
@@ -57,7 +87,7 @@ interface ReadyResponse {
   indexLoadMs: number | null
   indexUnavailableReason: string | null
 }
-interface UnavailableResponse {
+interface UnavailableResponse extends BackendDiagnostics {
   type: 'unavailable'
   reason: string
 }
@@ -77,25 +107,6 @@ interface ErrorResponse {
   message: string
 }
 type OutgoingMessage = ReadyResponse | UnavailableResponse | ResultResponse | ErrorResponse
-
-/**
- * `@huggingface/transformers` v4.2.0 does not re-export its internal `apis` feature-detection
- * object from the package root (confirmed by inspecting the actual runtime module — only `env`
- * is exported), so this replicates its exact Safari check (same source) rather than depending on
- * an unavailable import. WebGPU is verified by actually requesting an adapter, not just checking
- * `navigator.gpu` exists (prompt §10: do not claim support from presence alone).
- */
-function detectIsSafari(): boolean {
-  if (typeof navigator === 'undefined') return false
-  const userAgent = navigator.userAgent
-  const vendor = navigator.vendor || ''
-  const isAppleVendor = vendor.indexOf('Apple') > -1
-  const notOtherBrowser =
-    !userAgent.match(/CriOS|FxiOS|EdgiOS|OPiOS|mercury|brave/i) &&
-    !userAgent.includes('Chrome') &&
-    !userAgent.includes('Android')
-  return isAppleVendor && notOtherBrowser
-}
 
 async function detectWebgpuAvailable(): Promise<boolean> {
   const gpu = (navigator as unknown as { gpu?: { requestAdapter(): Promise<unknown> } }).gpu
@@ -172,14 +183,53 @@ async function loadIndex(): Promise<DecodedVisualIndex | null> {
   }
 }
 
-async function init(): Promise<void> {
+async function loadProcessor(): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    processor = await AutoProcessor.from_pretrained(MODEL_ID)
+    return { ok: true }
+  } catch (error) {
+    processor = null
+    return { ok: false, error: (error as Error).message }
+  }
+}
+
+/** One backend attempt. Never leaves a partial model reference behind on failure (prompt §16
+ *  memory policy): a failed load always resets `model` to null before the caller can retry on a
+ *  different backend, so a WebGPU failure can never hold a half-initialized session in memory
+ *  while the WASM retry's own (much larger) buffers load. */
+async function loadModelOnBackend(
+  device: VisualBackend,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    model = await AutoModel.from_pretrained(MODEL_ID, { dtype: 'q8', device })
+    return { ok: true }
+  } catch (error) {
+    model = null
+    return { ok: false, error: (error as Error).message }
+  }
+}
+
+async function init(message: InitMessage): Promise<void> {
   const startedAt = performance.now()
+  const backendRequested = normalizeBackendOverride(message.backendOverride)
 
   // No remote model loading, ever (prompt §24): everything resolves under same-origin
-  // /scanner-assets/visual-v1/.
+  // /scanner-assets/visual-v1/. `allowLocalModels` defaults to FALSE in a Web Worker context
+  // (transformers.js's own env.ts: `allowLocalModels: !(IS_BROWSER_ENV || IS_WEBWORKER_ENV || ...)`
+  // — confirmed by reading the installed 4.2.0 source directly, prompt §6) — left unset, both
+  // flags end up false and `from_pretrained` throws "both local and remote models are disabled"
+  // before ever touching the ONNX runtime or WASM/WebGPU backend selection below. This was the
+  // FIRST of two real, confirmed root causes of the real-device VISUAL_MODEL_STATE=failed report
+  // (P78): reproduced on desktop Chromium with no COOP/COEP change, so it was never a
+  // crossOriginIsolated/threading issue.
+  env.allowLocalModels = true
   env.allowRemoteModels = false
   env.localModelPath = `${ASSET_BASE}/`
-  const isSafari = detectIsSafari()
+  // Both Safari and non-Safari asset pairs load fine on every tested engine (Chromium desktop,
+  // both `webgpu` and `wasm` device paths) once script-src grants `blob:` (vite.config.ts,
+  // P78's SECOND root cause — onnxruntime-web's WASM factory dynamically imports its own glue
+  // module from a blob: URL) — this pairing itself is unchanged from P76/P77.
+  const isSafari = detectIsSafariUserAgent()
   if (env.backends.onnx.wasm) {
     env.backends.onnx.wasm.wasmPaths = isSafari
       ? {
@@ -192,21 +242,51 @@ async function init(): Promise<void> {
         }
   }
 
-  // WebGPU is an OPTIONAL acceleration path (prompt §10): WASM is the required baseline and the
-  // scanner must work without it. Verified by actually requesting an adapter, never claimed from
-  // `navigator.gpu`'s mere presence (a real gap on pre-26 Safari, per this session's research).
-  const useWebgpu = await detectWebgpuAvailable()
-  backend = useWebgpu ? 'webgpu' : 'wasm'
-
-  try {
-    ;[model, processor] = await Promise.all([
-      AutoModel.from_pretrained(MODEL_ID, { dtype: 'q8', device: backend }),
-      AutoProcessor.from_pretrained(MODEL_ID),
-    ])
-  } catch (error) {
-    post({ type: 'unavailable', reason: `model load failed: ${(error as Error).message}` })
+  const processorResult = await loadProcessor()
+  if (!processorResult.ok) {
+    post({
+      type: 'unavailable',
+      reason: `processor load failed: ${processorResult.error}`,
+      backendRequested,
+      backendAttempts: { webgpu: 'not-attempted', wasm: 'not-attempted' },
+      webgpuError: null,
+      wasmError: null,
+      processorLoad: 'failed',
+      modelLoad: 'failed',
+      indexLoad: 'not-reached',
+    })
     return
   }
+
+  // Backend selection itself is pure orchestration, delegated to
+  // domain/scanner/visual-backend-selection.ts (prompt §3/§10, R2-R9) — see its own docs for the
+  // fallback rules; this worker supplies the only two non-pure dependencies (real adapter
+  // detection, real model load).
+  const selection = await selectVisualBackend(backendRequested, {
+    detectWebgpuAvailable,
+    loadModel: loadModelOnBackend,
+  })
+  const { chosen, attempts, webgpuError, wasmError } = selection
+
+  const backendDiagnostics: BackendDiagnostics = {
+    backendRequested,
+    backendAttempts: attempts,
+    webgpuError,
+    wasmError,
+    processorLoad: 'success',
+    modelLoad: chosen !== null ? 'success' : 'failed',
+    indexLoad: 'not-reached',
+  }
+
+  if (chosen === null) {
+    post({
+      type: 'unavailable',
+      reason: composeUnavailableReason(attempts, webgpuError, wasmError),
+      ...backendDiagnostics,
+    })
+    return
+  }
+  backend = chosen
 
   const indexLoadStart = performance.now()
   index = await loadIndex().catch((error: unknown) => {
@@ -217,6 +297,8 @@ async function init(): Promise<void> {
 
   post({
     type: 'ready',
+    ...backendDiagnostics,
+    indexLoad: index !== null ? 'success' : 'failed',
     backend,
     indexAvailable: index !== null,
     cardCount: index?.cardIds.length ?? 0,
@@ -226,6 +308,24 @@ async function init(): Promise<void> {
     indexLoadMs: index !== null ? indexLoadMs : null,
     indexUnavailableReason: index === null ? lastIndexUnavailableReason : null,
   })
+}
+
+/**
+ * `@huggingface/transformers` v4.2.0 does not re-export its internal `apis` feature-detection
+ * object from the package root (confirmed by inspecting the actual runtime module — only `env`
+ * is exported), so this replicates its exact Safari check (same source) rather than depending on
+ * an unavailable import.
+ */
+function detectIsSafariUserAgent(): boolean {
+  if (typeof navigator === 'undefined') return false
+  const userAgent = navigator.userAgent
+  const vendor = navigator.vendor || ''
+  const isAppleVendor = vendor.indexOf('Apple') > -1
+  const notOtherBrowser =
+    !userAgent.match(/CriOS|FxiOS|EdgiOS|OPiOS|mercury|brave/i) &&
+    !userAgent.includes('Chrome') &&
+    !userAgent.includes('Android')
+  return isAppleVendor && notOtherBrowser
 }
 
 async function embedAndSearch(message: EmbedAndSearchMessage): Promise<void> {
@@ -292,7 +392,7 @@ function bitmapToRgba(bitmap: ImageBitmap): ArrayBuffer {
 self.addEventListener('message', (event: MessageEvent<IncomingMessage>) => {
   const message = event.data
   if (message.type === 'init') {
-    void init()
+    void init(message)
     return
   }
   void embedAndSearch(message)

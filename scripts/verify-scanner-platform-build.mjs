@@ -66,8 +66,17 @@ function cspDirectives(csp) {
     scriptSrc.join(' ') || '(none)',
   )
   record(
-    'and never grants JavaScript eval, inline script, blob: or data: in script-src',
-    !scriptSrc.some((t) => ["'unsafe-eval'", "'unsafe-inline'", 'blob:', 'data:'].includes(t)),
+    'and never grants JavaScript eval, inline script or data: in script-src',
+    !scriptSrc.some((t) => ["'unsafe-eval'", "'unsafe-inline'", 'data:'].includes(t)),
+    scriptSrc.join(' ') || '(none)',
+  )
+  record(
+    // P78, D-097 addendum: onnxruntime-web's WASM factory dynamically imports its own glue
+    // module from a blob: object URL — without this token the visual model fails to load on
+    // every browser, confirmed by direct reproduction (not a threading/cross-origin-isolation
+    // issue).
+    "grants 'blob:' for onnxruntime-web's dynamic-import WASM loader",
+    scriptSrc.includes('blob:'),
     scriptSrc.join(' ') || '(none)',
   )
   record(

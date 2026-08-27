@@ -69,4 +69,33 @@ describe('assertValidCoverage', () => {
       )
     }).not.toThrow()
   })
+
+  it("R14 (P78): accepts the owner's real full-catalog hosted rebuild (19501/20946, 93.1%)", () => {
+    expect(() => {
+      assertValidCoverage(
+        coverage({
+          totalCanonicalCards: 20946,
+          cardsWithUsableImage: 19501,
+          cardsIndexed: 19501,
+          failures: 6,
+        }),
+        19501,
+        19501,
+      )
+    }).not.toThrow()
+  })
+
+  it('R15 (P78): still rejects an impossible-coverage manifest at the same real-world scale', () => {
+    expect(() => {
+      assertValidCoverage(
+        coverage({
+          totalCanonicalCards: 20946,
+          cardsWithUsableImage: 19501,
+          cardsIndexed: 20946, // claims every canonical card indexed despite fewer usable images
+        }),
+        20946,
+        20946,
+      )
+    }).toThrow(/exceeds cardsWithUsableImage/)
+  })
 })

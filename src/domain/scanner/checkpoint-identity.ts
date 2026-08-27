@@ -12,6 +12,16 @@
  *
  * The identity NEVER contains the service-role key or any other secret — only a project host
  * string derived from the (non-secret) `SUPABASE_URL`.
+ *
+ * P78 addendum: `Checkpoint` used to carry a persisted `failures` counter, incremented every time
+ * a card's image fetch/decode failed and never reset or deduplicated across a resumed run — a
+ * card that fails on every attempt (e.g. a permanently-404 image) inflated this count once per
+ * resumption, which is exactly why the owner's build (§18) logged "404: 6" for the run it just
+ * watched while the shipped manifest's `coverage.failures` read 7 (one earlier resumption's
+ * repeat of the same failing card, carried over). The field is gone; `build-index.ts` now derives
+ * `coverage.failures` as `cardsWithUsableImage - cardsIndexed` at pack time — inherently
+ * current-build/current-card based, self-correcting or self-consistent across a resume, never
+ * cumulative across historical attempts.
  */
 
 export const CHECKPOINT_SCHEMA_VERSION = 2
@@ -29,8 +39,6 @@ export interface CheckpointIdentity {
 export interface Checkpoint {
   totalCanonicalCards: number
   cardsWithUsableImage: number
-  /** Mutated in place by the generator's embed loop as fetch/decode failures accrue. */
-  failures: number
   readonly embeddings: Record<string, number[]>
 }
 
@@ -70,7 +78,6 @@ export function freshCheckpoint(identity: CheckpointIdentity): Checkpoint & Chec
     ...identity,
     totalCanonicalCards: 0,
     cardsWithUsableImage: 0,
-    failures: 0,
     embeddings: {},
   }
 }

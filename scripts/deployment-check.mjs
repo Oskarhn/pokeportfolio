@@ -220,8 +220,8 @@ const scannerCapable =
 
   // Regressions that are wrong on EVERY deployment, scanner or not.
   record(
-    'script-src grants no JavaScript eval, inline script, blob: or data: source',
-    !scriptSrc.some((t) => ["'unsafe-eval'", "'unsafe-inline'", 'blob:', 'data:'].includes(t)),
+    'script-src grants no JavaScript eval, inline script or data: source',
+    !scriptSrc.some((t) => ["'unsafe-eval'", "'unsafe-inline'", 'data:'].includes(t)),
     scriptSrc.join(' ') || '(none)',
   )
 
@@ -229,6 +229,14 @@ const scannerCapable =
     record(
       "script-src grants 'wasm-unsafe-eval' so the deployed OCR engine can compile",
       scriptSrc.includes("'wasm-unsafe-eval'"),
+      scriptSrc.join(' ') || '(none)',
+    )
+    record(
+      // P78, D-097 addendum: onnxruntime-web's WASM factory dynamically imports its own glue
+      // module from a blob: object URL — without this the visual model fails to load on every
+      // browser (confirmed by direct reproduction, not a threading/cross-origin-isolation issue).
+      "script-src grants 'blob:' for onnxruntime-web's dynamic-import WASM loader",
+      scriptSrc.includes('blob:'),
       scriptSrc.join(' ') || '(none)',
     )
   } else {

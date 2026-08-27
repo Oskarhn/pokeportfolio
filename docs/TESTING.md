@@ -62,6 +62,34 @@ generator/verifier/runtime worker all now share), and `tests/ui/scanner-diagnost
 (the `/scan?scannerDebug=1` panel's plain-text "Copy diagnostics" output — every field present,
 honest placeholders for null/empty values, never anything resembling a secret field name).
 
+**M15b visual-runtime initialization repair (P78, D-097 addendum, in `pnpm test`).**
+`tests/domain/scanner/visual-backend-selection.test.ts` (R2–R9: auto tries WebGPU first and uses
+it on success; a successful WebGPU load never also triggers WASM; WebGPU unavailable falls
+straight to WASM; a WebGPU init failure retries on WASM and can still succeed; a WASM failure
+after WebGPU absence is a final attributable failure; both backends failing retains BOTH error
+reasons, never just the last one; `force wasm` never even probes for a WebGPU adapter; `force
+webgpu` failing — either by init error or no adapter — never silently substitutes WASM; an
+invalid `?visualBackend=` value normalizes to `auto`), `tests/ui/scanner-visual-client.test.ts`
+(R10–R13 against a fake `Worker` global: a processor-load failure is distinguishable from a
+model-load failure; an index-load failure is distinguishable from a model-load failure with the
+model still reporting ready; a full success reports the actual backend/card count, not a
+placeholder; a worker crash's `error` event surfaces a safe message/filename/lineno reason, never
+a secret), and an extension to `tests/ui/scanner-controller.test.ts` (R1: the worker's
+`unavailableReason` now survives into `VISUAL_ERROR` when `analyzeVisualSafely` never throws —
+exactly how a model-init failure behaves — reproducing the actual real-device bug this session
+found; a real `analyzeVisualSafely` exception still takes precedence when both exist). Two new
+real-world-scale cases in `tests/domain/scanner/index-coverage.test.ts` (R14/R15: the owner's real
+19,501/20,946 hosted rebuild is accepted; an impossible-coverage manifest at the same scale is
+still rejected). `tests/config/security-headers.test.ts` and
+`scripts/verify-scanner-platform-build.mjs`/`scripts/deployment-check.mjs` now assert `blob:` IS
+present in `script-src` (previously asserted absent) with the reasoning inline.
+
+A real-browser smoke (not part of automated CI — Chromium via the Browser pane, against the
+actual production `dist/` build with the actual generated `_headers`) proved model
+load→embed→search end to end for all three backend modes (`auto`, forced `wasm`, forced
+`webgpu`), each returning real candidates from the real 19,501-card hosted index, with
+`crossOriginIsolated=false` throughout — see D-097's P78 addendum for the exact reproduction.
+
 **Visual benchmark harness (`scripts/scanner-visual-benchmark/`, NOT part of `pnpm test` or
 CI).** `pnpm scanner:visual:benchmark` — downloads a real, diverse TCGdex reference corpus,
 applies deterministic synthetic camera-distortion augmentations, and compares OCR-first/
