@@ -9,6 +9,9 @@ function diagnostics(overrides: Partial<ScannerDiagnostics> = {}): ScannerDiagno
     modelLoadMs: 812,
     captureCropWidth: 640,
     captureCropHeight: 896,
+    captureFrameWidth: 1350,
+    captureFrameHeight: 1800,
+    rectificationUsed: true,
     visualEmbeddingCreated: true,
     embeddingNorm: 12.3456,
     indexVersion: 'visual-v1',
@@ -17,6 +20,10 @@ function diagnostics(overrides: Partial<ScannerDiagnostics> = {}): ScannerDiagno
     indexLoadMs: 15,
     indexSearchMs: 2,
     topVisualCandidates: [{ cardId: 'card-a', similarity: 0.91, name: 'Shieldon' }],
+    topVisualCandidatesExtended: [
+      { cardId: 'card-a', similarity: 0.91, name: 'Shieldon', imageBaseUrl: null },
+      { cardId: 'card-b', similarity: 0.77, name: 'Duskull', imageBaseUrl: null },
+    ],
     ocrNameSignal: 'Shieldon',
     ocrCollectorSignal: '049/102',
     finalRerankedCandidates: [
@@ -48,7 +55,11 @@ describe('formatScannerDiagnostics', () => {
     expect(text).toContain('MODEL_LOAD=success')
     expect(text).toContain('INDEX_LOAD=success')
     expect(text).toContain('MODEL_LOAD_MS=812')
+    expect(text).toContain('CAPTURE_FRAME_DIMENSIONS=1350x1800')
     expect(text).toContain('CAPTURE_CROP_DIMENSIONS=640x896')
+    expect(text).toContain('RECTIFICATION_USED=yes')
+    expect(text).toContain('TOP_20_VISUAL_CANDIDATES:')
+    expect(text).toContain('2. card-b similarity=0.7700 name=Duskull')
     expect(text).toContain('VISUAL_EMBEDDING_CREATED=yes')
     expect(text).toContain('EMBEDDING_NORM=12.3456')
     expect(text).toContain('INDEX_VERSION=visual-v1')
@@ -67,21 +78,29 @@ describe('formatScannerDiagnostics', () => {
         modelLoadMs: null,
         captureCropWidth: null,
         captureCropHeight: null,
+        captureFrameWidth: null,
+        captureFrameHeight: null,
+        rectificationUsed: false,
         embeddingNorm: null,
         indexVersion: null,
         indexCardCount: null,
         topVisualCandidates: [],
+        topVisualCandidatesExtended: [],
         finalRerankedCandidates: [],
         visualError: 'model load failed: out of memory',
       }),
     )
     expect(text).toContain('MODEL_LOAD_MS=—')
+    expect(text).toContain('CAPTURE_FRAME_DIMENSIONS=—x—')
     expect(text).toContain('CAPTURE_CROP_DIMENSIONS=—x—')
+    expect(text).toContain('RECTIFICATION_USED=no')
     expect(text).toContain('EMBEDDING_NORM=—')
     expect(text).toContain('VISUAL_ERROR=model load failed: out of memory')
-    // Never crashes or omits the section header on an empty list.
+    // Never crashes or omits the section header on an empty list; an empty EXTENDED list simply
+    // omits that optional section rather than printing an empty header.
     expect(text).toContain('TOP_VISUAL_CANDIDATES:')
     expect(text).toContain('FINAL_RERANKED_CANDIDATES:')
+    expect(text).not.toContain('TOP_20_VISUAL_CANDIDATES:')
   })
 
   it('never contains anything resembling a secret/token field name', () => {

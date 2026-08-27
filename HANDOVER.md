@@ -5,7 +5,43 @@ Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) a
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
 **Last updated:** 2026-08-27 — **M15b visual-recognition hybrid scanner is still DRAFT PR #63
-(`feat/m15-scanner-integrated-p68`), NOT merged, NOT deployed.** The owner deployed P77's code
+(`feat/m15-scanner-integrated-p68`), NOT merged, NOT deployed.** P78's runtime fix let the owner
+run the first real end-to-end iPhone scan: model ready, real embedding created, the full
+19,501-card index searched, real candidates returned — every one wrong, all LOW tier, similarities
+0.73–0.77. **P79 repaired the actual RECOGNITION-QUALITY causes** rather than tuning around them:
+
+1. **`camera-session.ts` never requested a camera resolution at all** — `getUserMedia`'s
+   `video` constraints carried only `facingMode`, no `width`/`height` hint. The diagnostic's
+   `CAPTURE_CROP_DIMENSIONS=252x352` reproduces almost exactly by hand against the existing,
+   unchanged guide-geometry math and a plausible unconstrained-default ~480×640 video track — the
+   card region the model actually saw was tiny. Fixed: `{ width: { ideal: 1920 }, height: { ideal:
+   1920 } }` added (never `exact`, so a capped device still opens). Likely the single highest-
+   leverage fix in this session.
+2. **No card rectification existed anywhere** — a captured frame's crop was the plain guide
+   rectangle, unable to correct background bleed from imperfect alignment or mild hand-held tilt.
+   New pure domain module `src/domain/scanner/rectify.ts` (Sobel edge detection + line-fit corner
+   search + bilinear quadrilateral warp — a deliberate, documented simplification of a full
+   projective homography) plus its canvas glue `rectify-capture.ts`, wired into `controller.ts` as
+   ONE new step feeding both OCR and the visual channel the same canonical card image through
+   their existing, unchanged code paths. Falls back to the plain crop (pixel-identical to today)
+   whenever detection finds nothing plausible — never a crash, never a guess.
+3. **A harder local benchmark** (`run-hard-benchmark.ts`, composing an actual off-center/tilted
+   synthetic phone photo, not just resize/rotate/blur-in-place like P76's) shows rectification
+   lifts TOP3/TOP5 meaningfully on the geometry-only distortion case (95.4%→98.3% / 96.7%→98.8%)
+   without regressing TOP1, but also shows combined glare+shadow+blur collapses EVERY method to
+   near-chance — a photometric-normalization problem outside this session's scope, disclosed
+   honestly rather than hidden.
+4. **Debug tooling** (`?scannerDebug=1`) gained real memory-only image previews (raw crop,
+   rectified image, both OCR ROI strips) and a debug-only widened 50-candidate visual shortlist
+   (up to 20 shown with thumbnails) — production matching/shortlist size is unchanged.
+
+Full account: `ai_outputs/Claude_outputs/output_79.txt`, D-097's P79 addendum in
+[DECISIONS.md](docs/DECISIONS.md). **IPHONE_DEVICE_GATE=PENDING_OWNER_RETEST** — next test is
+`/scan?scannerDebug=1&visualBackend=wasm` on Shieldon and Mega Chandelure ex, then 8 more cards.
+
+Below is P78's own account, preserved for context (superseded by the above where they overlap):
+
+The owner deployed P77's code
 fix AND a real full hosted index rebuild (20,946 active English cards, 19,501 embedded, 93.1%
 coverage — full-index verifier passed) and retested on a real iPhone at `/scan?scannerDebug=1`.
 Result: `VISUAL_MODEL_STATE=failed`, `VISUAL_EMBEDDING_CREATED=no`, every downstream field
@@ -43,18 +79,27 @@ pack time — no re-embedding needed. Full account: D-097's P78 addendum in
 from before this session, preserved untouched; this session's fixes are entirely in the runtime
 init/CSP/diagnostics code, not the index or its generation.
 
-**Current state:** all local gates GREEN — typecheck/lint (0 errors, 27 pre-existing warnings,
-unchanged)/format clean; unit 747/748 (one pre-existing, UNRELATED wall-clock perf-timing flake in
-`tests/domain/scanner/engine.test.ts`, untouched by this session's diff, passes cleanly in
-isolation — CPU-contention sensitive, not a correctness bug); fresh 90-migration reset clean (**no
-new migration**); db+authorization 598/600 clean on isolated re-runs (the SAME pre-existing,
-order-dependent flake in `tests/db/m16_openings.test.ts` P77 already disclosed and flagged as a
-separate follow-up — this session touches zero DB/migration/RPC/M16 code); grant audit clean; M13
-adversarial 62/62; M16 independent adversarial 53/53 zero skips; build green, platform verifier
-11/11; E2E 64/64. **Nothing merged to main, nothing deployed to Cloudflare Production.**
-**IPHONE_DEVICE_GATE=PENDING_OWNER_RETEST** — the owner's next test is
-`/scan?scannerDebug=1&visualBackend=wasm` FIRST (bypasses WebGPU ambiguity entirely), then a
-physical card, then `?visualBackend=auto`. See `ai_outputs/Claude_outputs/output_78.txt`.
+**P78's own current-state snapshot at the time (superseded by P79 below):** typecheck/lint/format
+clean; unit 747/748 (one pre-existing, unrelated timing flake); fresh 90-migration reset clean; E2E
+64/64; platform verifier 11/11.
+
+**P79 current state (this session, the live one):** typecheck/lint (0 errors, 27 pre-existing
+warnings, unchanged)/format clean; unit **777/777** (up from 747/748 — the P78 timing flake did not
+reproduce this run, +29 net new tests: rectify.ts's own suite, rectify-capture's pure-geometry
+suite, the debug-mode controller suite, camera resolution-constraint pins, diagnostics-format
+extensions); build green (bundle impact confined to the scanner-lazy chunks —
+`controller-*.js`/`ScannerPage-*.js` — main entry chunk unchanged in size); platform verifier
+11/11; E2E 64/64. **DB gates NOT RUN this session** — no Docker/Supabase CLI available on this
+machine this session (disclosed honestly, not silently skipped); this session's diff touches ZERO
+database/migration/RPC files (confirmed via `git status`), the same "verified via diff, not
+re-run" posture prior sessions have used for out-of-scope gates. New standalone harness (not part
+of `pnpm test`/CI, same category as the P76 benchmark): `pnpm scanner:visual:benchmark:hard` — see
+D-097's P79 addendum and `ai_outputs/Claude_outputs/output_79.txt` for full results. **Nothing
+merged to main, nothing deployed to Cloudflare Production.** **IPHONE_DEVICE_GATE=
+PENDING_OWNER_RETEST** — the owner's next test is `/scan?scannerDebug=1&visualBackend=wasm` on
+Shieldon and Mega Chandelure ex first, then 8 more diverse cards; copy diagnostics if any are
+still wrong.
+
 Everything below this paragraph predates M15b.
 
 **Previous state:** M16 (Openings, pulls, backup v2) is MERGED and RELEASED: PR #56

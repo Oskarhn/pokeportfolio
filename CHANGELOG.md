@@ -10,6 +10,36 @@ they were**.
 
 ## [Unreleased]
 
+### Fixed — 2026-08-27 — M15b scanner: real-device recognition quality repair (P79, D-097 addendum, on PR #63, DRAFT — not merged, not deployed)
+
+The first real iPhone scan with a working runtime (P78) returned real candidates — all wrong, all
+LOW tier. Repairs the actual recognition-quality causes:
+
+- **Camera resolution was never requested.** `getUserMedia`'s `video` constraints carried only
+  `facingMode`; the diagnostic's `CAPTURE_CROP_DIMENSIONS=252x352` reproduces almost exactly by
+  hand against the unchanged guide-geometry math and a plausible unconstrained-default ~480×640
+  video track. Fixed: `{ width: { ideal: 1920 }, height: { ideal: 1920 } }` added to the same
+  constraints (never `exact`, so a capped device still opens exactly as before).
+- **Card rectification added.** New pure domain module `src/domain/scanner/rectify.ts` (Sobel
+  edge detection + outlier-rejected line fit + corner intersection + bilinear quadrilateral warp)
+  plus canvas glue `src/features/scanner/rectify-capture.ts`, wired into `controller.ts` as one
+  new step feeding OCR and the visual channel the same canonical, rectified card image. Falls
+  back to a plain crop (pixel-identical to before) whenever detection finds nothing plausible —
+  never a crash.
+- **Debug tooling gained real image previews** (raw crop, rectified image, both OCR ROI strips —
+  memory-only, never persisted) and a debug-only widened 50-candidate visual shortlist (up to 20
+  shown with thumbnails); production matching is unchanged. New `CAPTURE_FRAME_DIMENSIONS` /
+  `RECTIFICATION_USED` fields in the plain-text diagnostics.
+- **New harder local benchmark** (`pnpm scanner:visual:benchmark:hard`) composes an actual
+  off-center/tilted synthetic phone photo instead of P76's resize-in-place profiles. Results:
+  rectification lifts TOP3/TOP5 on the geometry-only distortion case without regressing TOP1;
+  combined glare+shadow+blur collapses every method to near-chance — a photometric-normalization
+  problem disclosed as out of this session's scope, not hidden.
+
+Full account: `ai_outputs/Claude_outputs/output_79.txt`. Unit 777/777 (+29 new); typecheck/lint/
+format clean; build/platform-verifier/E2E green. DB gates not run this session (no local
+Docker/Supabase available); zero DB/migration/RPC files touched.
+
 ### Fixed — 2026-08-27 — M15b scanner: visual model never initialized on real iPhone (P78, D-097 addendum, on PR #63, DRAFT — not merged, not deployed)
 
 Repairs a real-device `VISUAL_MODEL_STATE=failed` report against the FULL hosted index (P77's

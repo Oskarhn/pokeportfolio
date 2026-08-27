@@ -63,6 +63,68 @@ trusting a plausible-sounding theory over a real reproduction:
 
 ---
 
+## 2026-08-27 — M15b recognition quality: a mundane missing constraint, and two bugs the tests caught before either shipped
+
+With the runtime finally working (previous entry), the owner's next real iPhone diagnostic showed
+a full pipeline running correctly and still returning wrong candidates. Three things worth
+recording:
+
+1. **The highest-leverage bug was the least exotic one: nobody had ever asked the camera for a
+   resolution.** `camera-session.ts`'s `getUserMedia` call has looked the same since M15 existed —
+   `{ video: { facingMode: { ideal: 'environment' } } }`, no `width`/`height` at all. Nothing about
+   this is a bug in the sense of "wrong code that does something unintended" — it is simply an
+   omission that never mattered until a real device's default fallback resolution turned out to be
+   low. The diagnostic's `CAPTURE_CROP_DIMENSIONS=252x352` was the tell: hand-computing the
+   EXISTING, unchanged `cardRectFromVideo`/`computeGuideRect` cover-transform arithmetic against a
+   plausible unconstrained-default video track size (~480×640, a well-documented browser fallback)
+   reproduces that number almost exactly. No amount of downstream preprocessing cleverness — crop
+   tightening, rectification, OCR ROI tuning — can recover detail a 252×352 source frame never
+   captured in the first place. Lesson: when a real-device number looks suspiciously small, check
+   the INPUT constraint before reaching for output-side fixes; a missing `ideal` resolution hint is
+   an easy thing to never notice because it fails silently (the browser just picks *something*, and
+   that something usually works fine for a general-purpose webcam use case).
+
+2. **A coordinate-axis swap that the corner-intersection math couldn't have caught on its own.**
+   The new edge-detection function (`rectify.ts`'s `findEdgeOffset`) has two scan modes — "walk
+   candidate ROWS while jittering the column" (top/bottom sides) and "walk candidate COLUMNS while
+   jittering the row" (left/right sides) — and the first implementation had the `x`/`y` assignment
+   for BOTH modes transposed (assigning the jitter variable to the axis that should have held the
+   candidate-offset variable, and vice versa, in both branches at once). The bug was invisible by
+   inspection: the code still type-checked, still ran, still returned SOME quadrilateral for every
+   input — it just searched the wrong direction for three of the four sides' worth of signal,
+   producing a plausible-looking but wrong detected boundary (measured directly against a
+   synthetic fixture with a known true boundary: one corner landed 12px away from the truth, which
+   is exactly the kind of "close enough to not obviously be broken, wrong enough to matter" error
+   that survives casual review). The dedicated test suite's known-fixture assertions (draw a
+   quadrilateral at KNOWN coordinates, assert detection recovers coordinates close to those known
+   values) caught it on the very first run, before any browser integration. Lesson: for any
+   geometry code with more than one coordinate-axis convention active in the same function, a
+   fixture with a KNOWN, hand-verifiable answer is worth more than a dozen "does it run without
+   throwing" tests — the bug here would have shipped clean through type-checking, linting and
+   even a smoke test that only checked "a quadrilateral came back."
+
+3. **The edge detector's "no signal found" case initially had no floor, so a featureless region
+   silently reported "found an edge" at whatever position happened to be checked first.** The
+   original `findEdgeOffset` picked the position with the highest score via a strict `>` — over a
+   perfectly uniform test image (Sobel magnitude zero everywhere), every candidate position tied at
+   zero, and the FIRST one checked "won" by never being beaten, producing a fully plausible-looking
+   rectangle out of an image with no card in it at all. A dedicated test for exactly this case
+   (`detectCardQuadrilateral` over a uniform image must return null) caught it immediately. Fixed
+   by requiring a genuine peak — the winning score must beat the search band's own average by a
+   real multiple AND clear an absolute floor — before a position counts as a detected edge at all.
+   Lesson: "pick the best of N candidates" needs a companion "and is it actually good, not just
+   the best of a bad lot" check, or a tie-breaking rule silently becomes a false-positive generator
+   the moment every candidate is equally bad.
+
+Combined, these three findings shaped the fix priority: the camera-resolution change is cheap,
+low-risk, and addresses the input side directly; the rectification module addresses crop/alignment
+quality on the output side but — proven by this session's own harder benchmark — cannot compensate
+for genuinely severe photometric defects (glare/shadow/blur combined), which remains a real,
+disclosed, unsolved problem for a future session, not something crop geometry alone was ever going
+to fix.
+
+---
+
 ## 2026-08-27 — M15b real-device repair: an "exactly 1000" log line was the whole clue
 
 The owner's first hosted index rebuild logged `1000 active English cards, 985 have

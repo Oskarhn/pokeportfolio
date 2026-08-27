@@ -60,6 +60,14 @@ export interface ScannerDiagnostics {
   modelLoadMs: number | null
   captureCropWidth: number | null
   captureCropHeight: number | null
+  /** The FULL captured frame's own pixel dimensions (P79 §6), before any card-rect crop — lets a
+   *  real-device retest distinguish "the camera stream itself is low-resolution" from "the crop
+   *  math shrank a perfectly good frame." Null for a picked file (no live camera stream). */
+  captureFrameWidth: number | null
+  captureFrameHeight: number | null
+  /** Whether the P79 rectification step found a real card boundary (true) or fell back to the
+   *  plain guide rectangle unchanged (false) — never a crash either way. */
+  rectificationUsed: boolean
   visualEmbeddingCreated: boolean
   embeddingNorm: number | null
   indexVersion: string | null
@@ -68,6 +76,17 @@ export interface ScannerDiagnostics {
   indexLoadMs: number | null
   indexSearchMs: number | null
   topVisualCandidates: { cardId: string; similarity: number; name: string | null }[]
+  /** Up to 20 raw visual neighbours (P79 §10 shortlist inspection) — populated only in debug
+   *  sessions (the search itself only widens past the production top-30 shortlist when
+   *  `?scannerDebug=1` is set); empty outside debug mode, never used for matching either way.
+   *  Carries `imageBaseUrl` (ordinary catalog thumbnail data, never a captured photo) so the
+   *  debug panel can render real thumbnails instead of a name-only list. */
+  topVisualCandidatesExtended: {
+    cardId: string
+    similarity: number
+    name: string | null
+    imageBaseUrl: string | null
+  }[]
   ocrNameSignal: string | null
   ocrCollectorSignal: string | null
   finalRerankedCandidates: {
@@ -89,6 +108,22 @@ export interface ScannerDiagnostics {
   processorLoad: 'success' | 'failed' | null
   modelLoad: 'success' | 'failed' | null
   indexLoadStatus: 'success' | 'failed' | 'not-reached' | null
+}
+
+/**
+ * Debug-only, memory-only image previews of the MOST RECENT scan (P79 §4): object URLs, never
+ * uploaded, never persisted beyond this component's render lifetime, revoked the moment the next
+ * scan replaces them or the controller disposes. A null field means that stage never ran (e.g.
+ * the full-frame OCR fallback path never produced ROI crops) — never a fabricated placeholder.
+ */
+export interface ScannerDebugImages {
+  /** The plain crop-to-guide-rect image, BEFORE rectification — the "what the guide alone saw"
+   *  comparison baseline. */
+  rawCropUrl: string | null
+  /** The canonical image actually handed to OCR and the visual channel. */
+  rectifiedUrl: string | null
+  nameRoiUrl: string | null
+  numberRoiUrl: string | null
 }
 
 /** The bounded still frame handed to the engine — an in-memory JPEG blob plus pixel dimensions
@@ -187,4 +222,7 @@ export interface ScannerUiController {
   /** Diagnostics for the most recent {@link analyzeCapture} call, or null before any scan has
    *  run (P77 prompt §13/§40). Optional so existing/mock controllers stay valid without it. */
   getLastDiagnostics?(): ScannerDiagnostics | null
+  /** Debug-only image previews for the most recent {@link analyzeCapture} call (P79 §4), or null
+   *  before any scan has run / outside debug mode. Optional for the same reason as above. */
+  getLastDebugImages?(): ScannerDebugImages | null
 }

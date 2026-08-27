@@ -75,6 +75,10 @@ scanner-index*/
 scripts/scanner-visual-index/.visual-index-cache/
 scripts/scanner-visual-benchmark/.benchmark-cache/
 scripts/scanner-visual-benchmark/reports/
+# tesseract.js (Node worker, scripts/scanner-visual-benchmark/lib/ocr.mjs) decompresses its
+# traineddata cache into whatever the current working directory happens to be when a benchmark
+# script runs from the repo root — a reproducible runtime artifact, never committed (P79).
+/eng.traineddata
 # EXCEPTION (D-097): the generated reference index IS committed — small, binary,
 # derived numeric data with no card images, versioned like any other build input.
 # The blanket `embeddings.bin`/`*.onnx` rules above are for ad-hoc local files,

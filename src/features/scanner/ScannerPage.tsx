@@ -10,8 +10,9 @@ import {
 } from 'react'
 import { useBlocker, useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import type { ScannerCandidate, ScannerDiagnostics } from './contract'
+import type { ScannerCandidate, ScannerDebugImages, ScannerDiagnostics } from './contract'
 import { getScannerUiController } from './controller'
+import { isScannerDebugEnabled } from './debug-flag'
 import { formatScannerDiagnostics } from './diagnostics-format'
 import {
   CAMERA_VIDEO_PROPS,
@@ -91,13 +92,12 @@ export function ScannerPage() {
   const [hasCompletedAnalysis, setHasCompletedAnalysis] = useState(false)
   // Debug-only surface (P77 prompt §13): explicit, preview-only, user-invoked via a query
   // param — never shown by default, never gated behind anything a real user could stumble into.
-  const debugEnabled = useMemo(
-    () =>
-      typeof window !== 'undefined' &&
-      new URLSearchParams(window.location.search).get('scannerDebug') === '1',
-    [],
-  )
+  const debugEnabled = useMemo(() => isScannerDebugEnabled(), [])
   const [diagnostics, setDiagnostics] = useState<ScannerDiagnostics | null>(null)
+  // P79 §4: memory-only image previews of the most recent scan — object URLs the CONTROLLER
+  // owns and revokes (DebugImageUrlStore); this state is only a render-time mirror, same
+  // discipline as `previewUrl` mirroring CaptureStore above.
+  const [debugImages, setDebugImages] = useState<ScannerDebugImages | null>(null)
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -299,7 +299,10 @@ export function ScannerPage() {
       .analyzeCapture(payload)
       .then((analysis) => {
         setHasCompletedAnalysis(true)
-        if (debugEnabled) setDiagnostics(controller.getLastDiagnostics?.() ?? null)
+        if (debugEnabled) {
+          setDiagnostics(controller.getLastDiagnostics?.() ?? null)
+          setDebugImages(controller.getLastDebugImages?.() ?? null)
+        }
         // The photo has served its purpose; candidates carry the identity from here.
         captureStoreRef.current.clear()
         setPreviewUrl(null)
@@ -608,7 +611,9 @@ export function ScannerPage() {
         />
       ) : null}
 
-      {debugEnabled ? <ScannerDebugPanel diagnostics={diagnostics} /> : null}
+      {debugEnabled ? (
+        <ScannerDebugPanel diagnostics={diagnostics} debugImages={debugImages} />
+      ) : null}
 
       <Sheet
         open={state.exitWarningOpen}
@@ -735,7 +740,13 @@ function ErrorAlert({ title, message }: { title: string; message: string }) {
  * on {@link ScannerDiagnostics}: no photo, no secrets, no auth identifiers, no persistence beyond
  * this component's own render lifetime.
  */
-function ScannerDebugPanel({ diagnostics }: { diagnostics: ScannerDiagnostics | null }) {
+function ScannerDebugPanel({
+  diagnostics,
+  debugImages,
+}: {
+  diagnostics: ScannerDiagnostics | null
+  debugImages: ScannerDebugImages | null
+}) {
   const [open, setOpen] = useState(true)
   const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'failed'>('idle')
 
@@ -786,11 +797,99 @@ function ScannerDebugPanel({ diagnostics }: { diagnostics: ScannerDiagnostics | 
         diagnostics === null ? (
           <p className="pt-2 text-amber-300/70">No scan analyzed yet this session.</p>
         ) : (
-          <pre className="whitespace-pre-wrap break-words pt-2 font-mono leading-relaxed">
-            {formatScannerDiagnostics(diagnostics)}
-          </pre>
+          <>
+            <ScannerDebugImagePreviews debugImages={debugImages} />
+            {diagnostics.topVisualCandidatesExtended.length > 0 ? (
+              <ScannerDebugRawCandidates candidates={diagnostics.topVisualCandidatesExtended} />
+            ) : null}
+            <pre className="whitespace-pre-wrap break-words pt-2 font-mono leading-relaxed">
+              {formatScannerDiagnostics(diagnostics)}
+            </pre>
+          </>
         )
       ) : null}
+    </div>
+  )
+}
+
+/**
+ * "Is the model seeing the actual card cleanly?" (P79 §4): the raw crop-to-guide-rect image
+ * BEFORE rectification, the canonical image actually handed to OCR/DINO afterward, and the two
+ * OCR ROI strips — all memory-only object URLs the controller owns (never re-fetched, never
+ * uploaded). Any null slot simply renders nothing for that stage rather than a broken image.
+ */
+function ScannerDebugImagePreviews({ debugImages }: { debugImages: ScannerDebugImages | null }) {
+  if (debugImages === null) return null
+  const tiles: { label: string; url: string | null }[] = [
+    { label: 'Raw crop (pre-rectify)', url: debugImages.rawCropUrl },
+    { label: 'Rectified (fed to OCR/DINO)', url: debugImages.rectifiedUrl },
+    { label: 'Name ROI', url: debugImages.nameRoiUrl },
+    { label: 'Number ROI', url: debugImages.numberRoiUrl },
+  ]
+  if (tiles.every((tile) => tile.url === null)) return null
+  return (
+    <div className="grid grid-cols-4 gap-2 pt-2">
+      {tiles.map((tile) => (
+        <div key={tile.label} className="flex flex-col gap-1">
+          <span className="truncate text-[9px] uppercase tracking-wide text-amber-300/70">
+            {tile.label}
+          </span>
+          {tile.url !== null ? (
+            <img
+              src={tile.url}
+              alt={tile.label}
+              className="h-20 w-full rounded border border-amber-800/50 object-contain bg-slate-900"
+            />
+          ) : (
+            <div className="flex h-20 items-center justify-center rounded border border-amber-900/40 text-[9px] text-amber-300/50">
+              —
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * Top-20 raw visual neighbours (P79 §10): lets the owner see whether the correct card exists
+ * deeper in the shortlist than the final top-5 the app ever shows. Thumbnails reuse the existing
+ * CardImage component (ordinary TCGdex thumbnail GETs, same as every other catalog image in this
+ * app) — debug-only inspection, never part of matching.
+ */
+function ScannerDebugRawCandidates({
+  candidates,
+}: {
+  candidates: {
+    cardId: string
+    similarity: number
+    name: string | null
+    imageBaseUrl: string | null
+  }[]
+}) {
+  return (
+    <div className="pt-2">
+      <p className="text-[10px] uppercase tracking-wide text-amber-300/70">
+        Top {candidates.length} raw visual candidates
+      </p>
+      <ul className="mt-1 flex gap-2 overflow-x-auto pb-1">
+        {candidates.map((candidate, index) => (
+          <li key={candidate.cardId} className="flex w-16 shrink-0 flex-col items-center gap-1">
+            <CardImage
+              imageBaseUrl={candidate.imageBaseUrl}
+              alt={candidate.name ?? candidate.cardId}
+              quality="low"
+              className="h-12 w-9"
+            />
+            <span className="text-[9px] tabular-nums text-amber-300/70">
+              #{index + 1} {candidate.similarity.toFixed(2)}
+            </span>
+            <span className="w-full truncate text-center text-[9px] text-amber-100">
+              {candidate.name ?? candidate.cardId.slice(0, 8)}
+            </span>
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }

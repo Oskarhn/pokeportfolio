@@ -37,6 +37,20 @@ export const CAMERA_VIDEO_PROPS = {
  * L1 (P70): when any track ends unexpectedly (hardware disconnect, browser permission revoke),
  * the session is stopped and `onEnded` is called so the UI can transition gracefully.
  */
+/**
+ * Resolution hints (P79): no width/height constraint was ever requested here, so the browser
+ * was free to hand back whatever "default" video track resolution it likes rather than the
+ * camera's real capability — a real-device diagnostic (`CAPTURE_CROP_DIMENSIONS=252x352`) traced
+ * back to exactly this: the guide-geometry math checks out exactly against a small source
+ * resolution (see docs/PROJECT_JOURNAL.md's 2026-08-27 P79 entry for the reconstructed numbers).
+ * `ideal` (not `exact` or `min`) keeps every existing fallback intact — a desktop webcam or a
+ * rear lens capped below this still opens successfully at whatever it actually supports; this
+ * only raises the ceiling a capable phone camera was never being asked to reach. Width AND height
+ * are both hinted (not just the long edge) so the constraint helps regardless of device/viewport
+ * orientation.
+ */
+const CAMERA_IDEAL_RESOLUTION_PX = 1920
+
 export async function openEnvironmentCamera(
   video: HTMLVideoElement,
   acquire: (constraints: MediaStreamConstraints) => Promise<MediaStream> = defaultAcquire,
@@ -44,7 +58,11 @@ export async function openEnvironmentCamera(
 ): Promise<ManagedCameraSession> {
   stopActiveScannerCamera()
   const stream = await acquire({
-    video: { facingMode: { ideal: 'environment' } },
+    video: {
+      facingMode: { ideal: 'environment' },
+      width: { ideal: CAMERA_IDEAL_RESOLUTION_PX },
+      height: { ideal: CAMERA_IDEAL_RESOLUTION_PX },
+    },
     audio: false,
   })
   video.srcObject = stream

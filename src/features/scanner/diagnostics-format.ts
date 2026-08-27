@@ -30,7 +30,9 @@ export function formatScannerDiagnostics(d: ScannerDiagnostics): string {
     `MODEL_LOAD=${d.modelLoad ?? EMPTY}`,
     `INDEX_LOAD=${d.indexLoadStatus ?? EMPTY}`,
     `MODEL_LOAD_MS=${num(d.modelLoadMs)}`,
+    `CAPTURE_FRAME_DIMENSIONS=${d.captureFrameWidth ?? EMPTY}x${d.captureFrameHeight ?? EMPTY}`,
     `CAPTURE_CROP_DIMENSIONS=${d.captureCropWidth ?? EMPTY}x${d.captureCropHeight ?? EMPTY}`,
+    `RECTIFICATION_USED=${d.rectificationUsed ? 'yes' : 'no'}`,
     `VISUAL_EMBEDDING_CREATED=${d.visualEmbeddingCreated ? 'yes' : 'no'}`,
     `EMBEDDING_NORM=${d.embeddingNorm === null ? EMPTY : d.embeddingNorm.toFixed(4)}`,
     `INDEX_VERSION=${d.indexVersion ?? EMPTY}`,
@@ -44,6 +46,14 @@ export function formatScannerDiagnostics(d: ScannerDiagnostics): string {
     lines.push(`  ${EMPTY}`)
   } else {
     d.topVisualCandidates.forEach((c, i) => {
+      lines.push(
+        `  ${String(i + 1)}. ${c.cardId} similarity=${c.similarity.toFixed(4)} name=${c.name ?? EMPTY}`,
+      )
+    })
+  }
+  if (d.topVisualCandidatesExtended.length > 0) {
+    lines.push('TOP_20_VISUAL_CANDIDATES:')
+    d.topVisualCandidatesExtended.forEach((c, i) => {
       lines.push(
         `  ${String(i + 1)}. ${c.cardId} similarity=${c.similarity.toFixed(4)} name=${c.name ?? EMPTY}`,
       )

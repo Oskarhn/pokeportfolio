@@ -1,9 +1,12 @@
 /**
  * ROI extraction + deterministic preprocessing (prompt §14/§15). Regions are fractions of the
  * CARD RECT — never of the whole camera frame — and the named constants here are the single
- * definition the tests pin. Preprocessing is deliberately small browser-native canvas work
- * (grayscale, contrast normalisation, bounded upscale): no OpenCV, no perspective warp, no
- * rotation heuristics in V1.
+ * definition the tests pin. Preprocessing here is deliberately small browser-native canvas work
+ * (grayscale, contrast normalisation, bounded upscale): no OpenCV, no rotation heuristics. Actual
+ * perspective correction (P79) now runs earlier in the pipeline — `rectify-capture.ts` hands both
+ * OCR and the visual channel an already-rectified card image before either of them sees a frame,
+ * so the card rect these fractions apply to is normally already axis-aligned by the time it gets
+ * here; a homegrown warp does not belong duplicated inside ROI extraction too.
  */
 
 import type { PixelRect } from './guide-geometry'

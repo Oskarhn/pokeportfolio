@@ -23,6 +23,12 @@ import {
   ROI_UPSCALE_MIN_HEIGHT_PX,
   type GrayImage,
 } from './roi'
+import {
+  canvasToBlob,
+  createCompatCanvas,
+  type ScanCanvas,
+  type ScanContext,
+} from './canvas-compat'
 import type { PixelRect } from './guide-geometry'
 
 /** Long edge of the temporary OCR working bitmap (prompt §12). The stored review image is never
@@ -35,6 +41,10 @@ export interface RawOcrObservation {
   rawCollectorNumberText: string | null
   /** True when both ROIs failed and the single bounded full-card pass ran instead. */
   usedFullFrameFallback: boolean
+  /** Present only when the caller asked for debug images (P79 §4/§12) — the exact ROI bitmaps
+   *  OCR actually read, for the debug panel's "is the model seeing the card cleanly?" preview.
+   *  Null values mean that particular ROI never ran (e.g. the full-frame fallback path). */
+  debugImages?: { nameRoiBlob: Blob | null; numberRoiBlob: Blob | null }
 }
 
 export interface OcrEnginePort {
@@ -50,30 +60,12 @@ export interface OcrEnginePort {
 export const MIN_NAME_TEXT_LENGTH = 3
 export const MIN_NUMBER_TEXT_LENGTH = 2
 
-type ScanCanvas = HTMLCanvasElement | OffscreenCanvas
-type ScanContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D
-
 interface BoundedCanvas {
   element: ScanCanvas
   context: ScanContext
 }
 
-function createBoundedCanvas(width: number, height: number): BoundedCanvas {
-  if (typeof OffscreenCanvas === 'function') {
-    const element = new OffscreenCanvas(
-      Math.max(1, Math.round(width)),
-      Math.max(1, Math.round(height)),
-    )
-    const context = element.getContext('2d')
-    if (context !== null) return { element, context }
-  }
-  const element = document.createElement('canvas')
-  element.width = Math.max(1, Math.round(width))
-  element.height = Math.max(1, Math.round(height))
-  const context = element.getContext('2d')
-  if (context === null) throw new Error('Canvas 2D is unavailable in this browser.')
-  return { element, context }
-}
+const createBoundedCanvas = createCompatCanvas
 
 /**
  * Tiny reusable bounded-canvas pool (prompt §12): at most three canvases alive for a session
@@ -207,6 +199,7 @@ export async function runOcrAnalysis(
   capture: ScannerCapture,
   engine: OcrEnginePort,
   pool: CanvasPool = sharedPool,
+  debug = false,
 ): Promise<RawOcrObservation> {
   await engine.prepare()
   if (typeof createImageBitmap !== 'function') {
@@ -239,6 +232,11 @@ export async function runOcrAnalysis(
     const nameRect = roiPixelRect(cardOnWorking, NAME_ROI_FRACTIONS)
     const numberRect = roiPixelRect(cardOnWorking, NUMBER_ROI_FRACTIONS)
 
+    const debugRoiBlobs: { nameRoiBlob: Blob | null; numberRoiBlob: Blob | null } = {
+      nameRoiBlob: null,
+      numberRoiBlob: null,
+    }
+
     async function readRoi(rect: PixelRect, slot: 'nameRoi' | 'numberRoi'): Promise<string> {
       if (rect.width < 8 || rect.height < 8) return ''
       const upscale = rect.height < ROI_UPSCALE_MIN_HEIGHT_PX ? ROI_UPSCALE_FACTOR : 1
@@ -253,6 +251,13 @@ export async function runOcrAnalysis(
         upscale,
       )
       const result = await engine.recognize(roi.element, 'single-line')
+      // Captured BEFORE the next scan can reuse/resize this pooled canvas (prompt §4/§12
+      // debug-only image preview) — never persisted, never sent anywhere but this call's return.
+      if (debug) {
+        const blob = await canvasToBlob(roi.element).catch(() => null)
+        if (slot === 'nameRoi') debugRoiBlobs.nameRoiBlob = blob
+        else debugRoiBlobs.numberRoiBlob = blob
+      }
       return cleanSignal(result.text, 1) ?? ''
     }
 
@@ -267,6 +272,7 @@ export async function runOcrAnalysis(
         rawNameText: usableName,
         rawCollectorNumberText: usableNumber,
         usedFullFrameFallback: false,
+        ...(debug ? { debugImages: debugRoiBlobs } : {}),
       }
     }
 
@@ -277,6 +283,7 @@ export async function runOcrAnalysis(
       rawNameText: split.name,
       rawCollectorNumberText: split.number,
       usedFullFrameFallback: true,
+      ...(debug ? { debugImages: debugRoiBlobs } : {}),
     }
   } finally {
     bitmap.close()

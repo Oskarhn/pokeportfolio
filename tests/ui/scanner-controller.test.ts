@@ -551,3 +551,130 @@ describe('getLastDiagnostics - visual channel failure reporting (P78 R1)', () =>
     expect(diagnostics?.visualEmbeddingCreated).toBe(true)
   })
 })
+
+describe('debug mode — widened shortlist, extended candidates, image previews (P79 §4/§10)', () => {
+  const originalCreateImageBitmap = globalThis.createImageBitmap
+  let createObjectURL: ReturnType<typeof vi.fn<() => string>>
+  let revokeObjectURL: ReturnType<typeof vi.fn<(url: string) => void>>
+
+  beforeEach(() => {
+    vi.stubGlobal('window', { location: { search: '?scannerDebug=1' } })
+    // A real function (so analyzeVisualSafely/rectifyCapture proceed far enough to reach the
+    // mocked visual client / this environment's real canvas ceiling) that resolves to a minimal
+    // fake bitmap — rectifyCapture still falls back gracefully once it hits canvas creation
+    // (no jsdom/document in this Node test environment), which is exactly what this suite wants
+    // to exercise: the CONTROLLER's own debug wiring, not the canvas glue itself.
+    globalThis.createImageBitmap = vi.fn().mockResolvedValue({ close: vi.fn() })
+    let counter = 0
+    createObjectURL = vi.fn(() => `blob:debug-${++counter}`)
+    revokeObjectURL = vi.fn()
+    Object.defineProperty(URL, 'createObjectURL', { value: createObjectURL, configurable: true })
+    Object.defineProperty(URL, 'revokeObjectURL', { value: revokeObjectURL, configurable: true })
+    mockedRunOcrAnalysis.mockResolvedValue({
+      rawNameText: 'Pikachu',
+      rawCollectorNumberText: '58',
+      usedFullFrameFallback: false,
+    })
+    mockedSearchCards.mockResolvedValue({ results: [], totalCount: 0 })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    globalThis.createImageBitmap = originalCreateImageBitmap
+    const hadCreate = Object.getOwnPropertyDescriptor(URL, 'createObjectURL')
+    if (hadCreate?.configurable) delete (URL as unknown as Record<string, unknown>).createObjectURL
+    const hadRevoke = Object.getOwnPropertyDescriptor(URL, 'revokeObjectURL')
+    if (hadRevoke?.configurable) delete (URL as unknown as Record<string, unknown>).revokeObjectURL
+  })
+
+  it('requests the widened debug shortlist size, not the production one (Q5)', async () => {
+    visualMocks.analyze.mockResolvedValue(null)
+    visualMocks.getDiagnosticsSnapshot.mockReturnValue(defaultVisualDiagnostics())
+    const controller = createRealScannerController({ userId: 'user-a' })
+    await controller.analyzeCapture(capture())
+    expect(visualMocks.analyze).toHaveBeenCalledWith(expect.anything(), 50)
+  })
+
+  it('populates topVisualCandidatesExtended up to 20 only in debug mode (Q5/Q7)', async () => {
+    const hits = Array.from({ length: 25 }, (_, i) => ({
+      cardId: `card-${i}`,
+      similarity: 0.9 - i * 0.01,
+    }))
+    visualMocks.analyze.mockResolvedValue({
+      hits,
+      backend: 'wasm',
+      embedMs: 5,
+      searchMs: 1,
+      embeddingNorm: 4.2,
+    })
+    visualMocks.getDiagnosticsSnapshot.mockReturnValue({
+      modelState: 'ready',
+      unavailableReason: null,
+      readyInfo: {
+        backend: 'wasm',
+        indexAvailable: true,
+        cardCount: 100,
+        modelColdLoadMs: 500,
+        indexVersion: 'visual-v1',
+        indexSourceProjectRef: 'ref',
+        indexLoadMs: 10,
+        indexUnavailableReason: null,
+        backendRequested: 'auto',
+        backendAttempts: { webgpu: 'not-available', wasm: 'success' },
+        webgpuError: null,
+        wasmError: null,
+        processorLoad: 'success',
+        modelLoad: 'success',
+        indexLoad: 'success',
+      },
+      backendDiagnostics: null,
+    })
+    const controller = createRealScannerController({ userId: 'user-a' })
+    await controller.analyzeCapture(capture())
+    const diagnostics = controller.getLastDiagnostics?.()
+    expect(diagnostics?.topVisualCandidatesExtended).toHaveLength(20)
+    expect(diagnostics?.topVisualCandidatesExtended[0]?.cardId).toBe('card-0')
+    // The production top-5 field is unaffected by the widened debug list.
+    expect(diagnostics?.topVisualCandidates).toHaveLength(5)
+  })
+
+  it('exposes debug image previews via getLastDebugImages and revokes the previous set on the next scan (Q4/Q8)', async () => {
+    visualMocks.analyze.mockResolvedValue(null)
+    visualMocks.getDiagnosticsSnapshot.mockReturnValue(defaultVisualDiagnostics())
+    const controller = createRealScannerController({ userId: 'user-a' })
+    await controller.analyzeCapture(capture())
+    const first = controller.getLastDebugImages?.()
+    // rectifyCapture falls back (no createImageBitmap) — the ORIGINAL capture's own blob still
+    // becomes the "rectified" preview URL (rectification never claims to have improved it), and
+    // no raw-crop blob exists since that stage never ran.
+    expect(first?.rectifiedUrl).not.toBeNull()
+    expect(first?.rawCropUrl).toBeNull()
+    expect(createObjectURL).toHaveBeenCalledTimes(1)
+
+    await controller.analyzeCapture(capture())
+    expect(revokeObjectURL).toHaveBeenCalledWith(first?.rectifiedUrl)
+    expect(createObjectURL).toHaveBeenCalledTimes(2)
+  })
+
+  it('never collects debug images or the extended list outside debug mode (privacy/perf floor)', async () => {
+    vi.stubGlobal('window', { location: { search: '' } })
+    visualMocks.analyze.mockResolvedValue(null)
+    visualMocks.getDiagnosticsSnapshot.mockReturnValue(defaultVisualDiagnostics())
+    const controller = createRealScannerController({ userId: 'user-a' })
+    await controller.analyzeCapture(capture())
+    expect(controller.getLastDebugImages?.()).toBeNull()
+    expect(controller.getLastDiagnostics?.()?.topVisualCandidatesExtended).toEqual([])
+    expect(createObjectURL).not.toHaveBeenCalled()
+    expect(visualMocks.analyze).toHaveBeenCalledWith(expect.anything(), 30)
+  })
+
+  it('dispose() revokes any live debug image URLs (no leak beyond the session, Q8)', async () => {
+    visualMocks.analyze.mockResolvedValue(null)
+    visualMocks.getDiagnosticsSnapshot.mockReturnValue(defaultVisualDiagnostics())
+    const controller = createRealScannerController({ userId: 'user-a' })
+    await controller.analyzeCapture(capture())
+    const images = controller.getLastDebugImages?.()
+    controller.dispose()
+    expect(revokeObjectURL).toHaveBeenCalledWith(images?.rectifiedUrl)
+  })
+})

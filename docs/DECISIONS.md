@@ -2917,3 +2917,103 @@ smoke harness serving the actual production `dist/` build with the actual genera
 **Not changed:** the model, the architecture, any migration (still 90), any financial semantic,
 the committed hosted index (still the owner's own 19,501/20,946 rebuild, untouched by this
 session). No card was special-cased anywhere.
+
+### P79 addendum — recognition quality repair (the runtime works; the crop it fed the model didn't)
+
+The owner's next real-iPhone diagnostic (`/scan?scannerDebug=1&visualBackend=wasm`) proved the
+whole pipeline runs for real: model ready, a real embedding created, the full 19,501-card index
+searched, real candidates returned. Every candidate was still wrong, all tier LOW, similarities
+0.73–0.77 (above `weakMin`, below `moderateMin`). This is the FIRST session where the gate is
+genuinely recognition quality, not runtime. Investigated per the prompt's explicit hypothesis
+list rather than guessed at:
+
+1. **Camera resolution was never requested (the primary, highest-confidence finding).**
+   `camera-session.ts`'s `getUserMedia` call carried `{ video: { facingMode: { ideal: 'environment'
+   } } }` — no `width`/`height` constraint at all, ever, since M15 existed. The diagnostic's
+   `CAPTURE_CROP_DIMENSIONS=252x352` is reproduced almost exactly by hand from the existing,
+   UNCHANGED guide-geometry math against a plausible unconstrained-default video track resolution
+   (~480×640, a well-known browser fallback when no resolution hint is given) — not a guess: the
+   arithmetic (`cardRectFromVideo`'s cover-transform, the guide's 58%-height/86%-width-cap
+   fractions) lands within a few pixels of 252×352 for that exact source size. Fixed:
+   `{ width: { ideal: 1920 }, height: { ideal: 1920 } }` added to the SAME constraints object —
+   `ideal`, never `exact`/`min`, so a webcam or a lens genuinely capped below that ceiling still
+   opens exactly as before; this only raises the ceiling a capable phone camera was never being
+   asked to reach. This is the single highest-leverage, lowest-risk fix in this session: it does
+   not change any code path downstream, only the raw pixels every downstream stage receives.
+
+2. **No rectification existed at all — crop quality, background and mild tilt were fully
+   unaddressed (hypotheses B/C/D compounding).** `roi.ts`'s own header comment had explicitly
+   deferred this ("no OpenCV, no perspective warp, no rotation heuristics in V1") — now
+   superseded. New pure domain module `src/domain/scanner/rectify.ts` (platform-neutral: plain
+   RGBA/greyscale typed arrays, no DOM, so the exact same code runs in the browser AND the Node
+   benchmark, the same shared-implementation discipline the embedding pipeline itself already
+   holds):
+   - `detectCardQuadrilateral` — Sobel gradient magnitude, per-side edge-offset search within a
+     bounded margin around the guide's own nominal rectangle (16 sample lines per side, outlier-
+     rejected least-squares line fit, adjacent-line intersection into four corners), validated by
+     convexity/angle/size/aspect sanity checks. Returns null (never a guess) when nothing
+     plausible is found — a peak must beat the search band's own average score by 4x AND an
+     absolute floor before it counts as a real edge (an earlier draft of this function had a real
+     bug here: over a uniform image with zero contrast, "first position checked" was silently
+     returned as if it were a detected edge — caught by this session's own test suite before
+     landing, see TESTING.md).
+   - `warpPerspective` — resamples the detected quadrilateral onto a canonical 5:7 rectangle via
+     BILINEAR QUADRILATERAL INTERPOLATION, a deliberate simplification over a full 4-point DLT
+     projective homography (the REJECTED alternative): a true homography needs an 8x8 linear
+     system solved per capture and is meaningfully harder to get right and verify than direct
+     bilinear interpolation, which needs no matrix solve at all — the destination grid's own
+     normalized (u, v) position already IS the interpolation parameter. For the moderate
+     hand-held tilt this project's guide-overlay capture UX actually produces (not a document
+     scanner photographing a page from an arbitrary angle), the two approaches coincide closely;
+     documented as a self-contained future upgrade if evidence ever shows otherwise.
+   - `rectifyCard` composes both — on detection failure it warps the plain nominal rectangle
+     instead, which is PIXEL-EQUIVALENT to a crop+resize (bilinear-interpolating an axis-aligned
+     rectangle's own corners), so "rectification failed" and "rectification never attempted"
+     produce identical output through the exact same code path, never a second special case.
+   - `src/features/scanner/rectify-capture.ts` is the thin canvas glue: expands the guide's
+     cardRect by 18% on every side (clamped to the captured frame's own bounds, never upscaled
+     past the source resolution) so the detector has real background-adjacent pixels to search,
+     then always emits a fixed 700×980 canonical card image regardless of whether detection
+     succeeded. `controller.ts` now runs this ONCE per scan, before either OCR or the visual
+     channel sees a frame — both consume the SAME rectified image through their existing,
+     UNCHANGED code paths (the integration point is exactly one call site). Never throws: any
+     failure anywhere in the chain (decode, canvas, detection) resolves to the original,
+     unrectified capture — the scanner keeps working exactly as it did before this module
+     existed.
+
+3. **Debug tooling gained real image previews and a wider shortlist (prompt §4/§10), not just more
+   text.** `?scannerDebug=1` now shows, memory-only, never persisted, never uploaded: the raw
+   crop-to-guide-rect image BEFORE rectification, the canonical image actually fed to OCR/DINO,
+   both OCR ROI strips, and (debug-only) up to 20 raw visual neighbours with real thumbnails —
+   letting the owner see directly whether the correct card exists deeper in the shortlist than the
+   production top-5 ever surfaces (a debug session widens the visual search itself to 50
+   candidates; production stays at 30, unchanged). `CAPTURE_FRAME_DIMENSIONS` (the full captured
+   frame, before any crop) and `RECTIFICATION_USED` were added to the plain-text "Copy
+   diagnostics" output. `DebugImageUrlStore` mirrors `CaptureStore`'s own single-owner discipline
+   exactly — one set of object URLs alive at a time, revoked on every replacement and on
+   `dispose()`.
+
+4. **A harder, more honest local benchmark (prompt §7).** The P76 benchmark's queries are
+   resize/rotate/blur-in-place transforms of an ALREADY tight, card-only reference image — it
+   structurally cannot exercise "a captured frame with real background around an imperfectly
+   aligned, mildly tilted card," which is exactly the gap the real-device diagnostic exposed.
+   `scripts/scanner-visual-benchmark/run-hard-benchmark.ts` (new; the P76 harness and its report
+   are UNCHANGED, still exercised by its own `pnpm scanner:visual:benchmark`) instead COMPOSES a
+   synthetic phone-photo: the clean reference card tilted (±9°), sheared and placed off-center on
+   a 1.6x-larger background canvas, then compares four methods against the SAME real production
+   code: simple crop (the pre-P79 behavior), a crude 10%-inset tightened crop, the REAL
+   `rectify.ts` detect+warp pipeline, and rectified+OCR+rerank through the real domain matcher.
+   Full results and their honest interpretation — including a genuinely useful finding (geometry-
+   only distortion: rectification lifts TOP3/TOP5 meaningfully, 95.4%→98.3%/96.7%→98.8%, without
+   regressing TOP1) and a sobering one (combined glare+shadow+blur on an off-center, smaller-in-
+   frame card collapses EVERY method, including simple crop, to near-chance — a photometric-
+   normalization problem this session's crop/rectification work cannot and does not claim to
+   fix) — are in `ai_outputs/Claude_outputs/output_79.txt`, §"BENCHMARK RESULTS" and
+   §"METHOD COMPARISON".
+
+**Not changed:** the model (still DINOv2-small — nothing in this session's evidence points at
+model quality as the limiting factor for the geometry-only distortion case; the catastrophic
+glare/shadow result is a photometric problem no crop/rectification change could plausibly fix, not
+new evidence against the embedding model itself), the architecture (still LOCAL_INDEX, no
+pgvector), any migration (still 90), any financial semantic. No card was special-cased anywhere.
+Neither Shieldon nor Mega Chandelure ex was referenced in any changed source file.

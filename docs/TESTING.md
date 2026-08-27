@@ -90,6 +90,42 @@ load→embed→search end to end for all three backend modes (`auto`, forced `wa
 `webgpu`), each returning real candidates from the real 19,501-card hosted index, with
 `crossOriginIsolated=false` throughout — see D-097's P78 addendum for the exact reproduction.
 
+**M15b recognition-quality repair (P79, D-097 addendum, in `pnpm test`).** A confirmed real-iPhone
+diagnostic (model loaded, embedding created, index searched — every candidate LOW-tier and wrong)
+shifted the gate from "does the runtime work" to "is the crop/preprocessing good enough."
+`tests/domain/scanner/rectify.ts`'s own suite (`tests/domain/scanner/rectify.test.ts`) pins the new
+pure card-rectification math directly: greyscale conversion agrees with roi.ts's own weighting;
+bilinear quadrilateral warping is exact at the corners and uniform across a solid-color region for
+both axis-aligned and genuinely skewed quads; edge detection finds a card boundary sitting inside
+an over-generous nominal rect and a genuinely tilted one, returns null over a uniform image with no
+real edge (never a first-position-wins guess) and rejects a nonsense sliver rect; composed
+`rectifyCard` falls back to a plain crop+resize (pixel-equivalent, same code path) on detection
+failure and never throws on a degenerate input. `tests/ui/scanner-rectify-capture.test.ts` pins the
+canvas-glue's pure geometry decisions (expansion-with-clamping, never-upscale working scale,
+cardRect-to-working-space mapping, the detection-margin floor for zero-expansion inputs like file
+uploads) and the graceful-fallback contract when `createImageBitmap` is unavailable. Extended
+`tests/ui/scanner-camera.test.ts` pins the new resolution hint on `getUserMedia` (`{ideal: 1920}`
+on both width and height, never `exact`/`min` — a capped device must still open) — traced from the
+real diagnostic's `CAPTURE_CROP_DIMENSIONS=252x352`, which the guide-geometry math reproduces
+almost exactly against a plausible ~480×640 unconstrained-default video track. A new debug-mode
+suite in `tests/ui/scanner-controller.test.ts` pins the widened debug-only visual shortlist (50 vs
+production's 30), the up-to-20 `topVisualCandidatesExtended` list populated ONLY in debug mode, the
+memory-only debug image object URLs (`getLastDebugImages`) being revoked on the next scan and on
+`dispose()`, and that NONE of this debug collection happens outside `?scannerDebug=1` (privacy and
+performance floor in one assertion). `tests/ui/scanner-diagnostics-format.test.ts` gained the new
+`CAPTURE_FRAME_DIMENSIONS`/`RECTIFICATION_USED`/`TOP_20_VISUAL_CANDIDATES` lines.
+
+**Harder visual benchmark (`scripts/scanner-visual-benchmark/run-hard-benchmark.ts`, P79 §7, NOT
+part of `pnpm test` or CI — same exclusion reasoning as the P76 harness below).**
+`pnpm scanner:visual:benchmark:hard` composes a genuinely harder query than the P76 benchmark's
+resize/rotate/blur-in-place profiles: the clean reference card is tilted, sheared and placed
+OFF-CENTER on a larger background canvas (`lib/hard-augment.mjs`), so a query actually needs
+cropping/rectification before it resembles the tight reference images the index was built from —
+the exact gap the real-device diagnostic exposed and the P76 corpus structurally could not
+exercise. Compares simple-crop / tightened-crop / the REAL `rectify.ts` detect+warp pipeline /
+rectified+OCR+rerank (the same real domain matcher) against the same real production embedding
+code. Report and full interpretation: `ai_outputs/Claude_outputs/output_79.txt`.
+
 **Visual benchmark harness (`scripts/scanner-visual-benchmark/`, NOT part of `pnpm test` or
 CI).** `pnpm scanner:visual:benchmark` — downloads a real, diverse TCGdex reference corpus,
 applies deterministic synthetic camera-distortion augmentations, and compares OCR-first/

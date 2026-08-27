@@ -72,9 +72,28 @@ describe('camera start semantics', () => {
     const { video } = fakeVideoElement()
     await openEnvironmentCamera(video, acquire)
     expect(acquire).toHaveBeenCalledWith({
-      video: { facingMode: { ideal: 'environment' } },
+      video: {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: 1920 },
+        height: { ideal: 1920 },
+      },
       audio: false,
     })
+  })
+
+  it('requests a resolution ideal, never exact — a device below it must still open (P79)', async () => {
+    const acquire = vi.fn<(constraints: MediaStreamConstraints) => Promise<MediaStream>>(() =>
+      Promise.resolve(fakeStream().stream),
+    )
+    const { video } = fakeVideoElement()
+    await openEnvironmentCamera(video, acquire)
+    const constraints = acquire.mock.calls[0]?.[0]
+    if (constraints === undefined) throw new Error('acquire was never called')
+    const videoConstraints = constraints.video as MediaTrackConstraints
+    expect(videoConstraints.width).toEqual({ ideal: 1920 })
+    expect(videoConstraints.height).toEqual({ ideal: 1920 })
+    expect(videoConstraints.width).not.toHaveProperty('exact')
+    expect(videoConstraints.width).not.toHaveProperty('min')
   })
 
   it('attaches the live stream to the video element and awaits play', async () => {
@@ -113,7 +132,11 @@ describe('camera start semantics', () => {
       const { video } = fakeVideoElement()
       const session = await openEnvironmentCamera(video)
       expect(getUserMedia).toHaveBeenCalledWith({
-        video: { facingMode: { ideal: 'environment' } },
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1920 },
+          height: { ideal: 1920 },
+        },
         audio: false,
       })
       session.stop()

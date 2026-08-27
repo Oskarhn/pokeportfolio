@@ -17,8 +17,10 @@ import {
   ScannerCatalogUnavailableError,
 } from '../../data/scanner/scanner-catalog'
 import { runOcrAnalysis, releaseOcrCanvases } from './analyze'
+import { isScannerDebugEnabled } from './debug-flag'
 import type { PixelRect } from './guide-geometry'
 import { ScannerOcrEngine } from './ocr-engine'
+import { rectifyCapture } from './rectify-capture'
 import { scannerCostBasisState, scannerSessionStore, type ScannerOrigin } from './session-store'
 import { VisualRecognitionClient, type VisualAnalysisResult } from './visual/visual-client'
 
@@ -26,6 +28,13 @@ import { VisualRecognitionClient, type VisualAnalysisResult } from './visual/vis
  *  examine this many raw candidates internally, but the UI never sees more than
  *  SCANNER_UI_CANDIDATE_LIMIT of them after reranking. */
 const VISUAL_SHORTLIST_SIZE = 30
+/** Debug-only widened shortlist (P79 §10): lets a debug session see whether the correct card
+ *  exists deeper in the raw visual neighbours than production ever surfaces. Never used for
+ *  actual matching/reranking — `matchScannerObservation` still only ever sees the SAME merged
+ *  candidate pool either way; this only changes how many raw hits the debug panel can show. */
+const VISUAL_DEBUG_SHORTLIST_SIZE = 50
+/** How many raw visual neighbours the debug panel's extended list shows (P79 §10). */
+const DEBUG_EXTENDED_CANDIDATE_LIMIT = 20
 import type {
   ScannerAnalysis,
   ScannerCandidate,
@@ -33,6 +42,7 @@ import type {
   ScannerCommitOutcome,
   ScannerCommitResult,
   ScannerConfidence,
+  ScannerDebugImages,
   ScannerDiagnostics,
   ScannerSearchQuery,
   ScannerUiController,
@@ -139,6 +149,51 @@ export function classifyAcquisitionFailure(index: number, error: unknown): Scann
   }
 }
 
+/**
+ * Single owner of the current scan's debug-only image object URLs (P79 §4) — mirrors
+ * CaptureStore's own discipline exactly: at most one set of URLs alive at a time, every
+ * replacement or clear revokes the previous set, so a debug session cannot leak blob URLs across
+ * scans. A null blob (a stage that never ran) simply stays null — never a fabricated placeholder.
+ */
+class DebugImageUrlStore {
+  private current: ScannerDebugImages | null = null
+
+  set(blobs: {
+    rawCropBlob: Blob | null
+    rectifiedBlob: Blob | null
+    nameRoiBlob: Blob | null
+    numberRoiBlob: Blob | null
+  }): ScannerDebugImages {
+    this.clear()
+    const toUrl = (blob: Blob | null) => (blob === null ? null : URL.createObjectURL(blob))
+    this.current = {
+      rawCropUrl: toUrl(blobs.rawCropBlob),
+      rectifiedUrl: toUrl(blobs.rectifiedBlob),
+      nameRoiUrl: toUrl(blobs.nameRoiBlob),
+      numberRoiUrl: toUrl(blobs.numberRoiBlob),
+    }
+    return this.current
+  }
+
+  get(): ScannerDebugImages | null {
+    return this.current
+  }
+
+  clear(): void {
+    if (this.current === null) return
+    const urls: (string | null)[] = [
+      this.current.rawCropUrl,
+      this.current.rectifiedUrl,
+      this.current.nameRoiUrl,
+      this.current.numberRoiUrl,
+    ]
+    for (const url of urls) {
+      if (url !== null) URL.revokeObjectURL(url)
+    }
+    this.current = null
+  }
+}
+
 export interface RealScannerControllerOptions {
   /** Authenticated owner id for session-default scoping (§27). /scan sits behind RequireSession,
    *  so this is non-null in real use; null simply disables session persistence. */
@@ -194,16 +249,17 @@ export function createRealScannerController(
   // Diagnostics for the MOST RECENT scan only (P77 prompt §13/§40) — never fed back into
   // matching, never persisted, overwritten by the next analyzeCapture call.
   let lastDiagnostics: ScannerDiagnostics | null = null
+  const debugImages = new DebugImageUrlStore()
 
   /** Returns its own error message rather than mutating shared state (P78): a closure-captured
    *  `let` reassigned inside an awaited call is invisible to TypeScript's control-flow narrowing
    *  at the read site (confirmed — `@typescript-eslint/no-unnecessary-condition` flags the read as
    *  provably null even though it demonstrably isn't at runtime), so the safer AND more correct
    *  shape is to hand the error back through the return value instead. */
-  async function analyzeVisualSafely(capture: {
-    blob: Blob
-    cardRect: PixelRect
-  }): Promise<{ result: VisualAnalysisResult | null; errorMessage: string | null }> {
+  async function analyzeVisualSafely(
+    capture: { blob: Blob; cardRect: PixelRect },
+    topK: number,
+  ): Promise<{ result: VisualAnalysisResult | null; errorMessage: string | null }> {
     if (typeof createImageBitmap !== 'function') {
       return { result: null, errorMessage: 'createImageBitmap is unavailable in this browser.' }
     }
@@ -216,7 +272,7 @@ export function createRealScannerController(
         cardRect.width,
         cardRect.height,
       )
-      const result = await visualClient.analyze(bitmap, VISUAL_SHORTLIST_SIZE)
+      const result = await visualClient.analyze(bitmap, topK)
       return { result, errorMessage: null }
     } catch (error) {
       return { result: null, errorMessage: (error as Error).message }
@@ -224,6 +280,16 @@ export function createRealScannerController(
   }
 
   async function analyzeCapture(capture: Parameters<ScannerUiController['analyzeCapture']>[0]) {
+    const debug = isScannerDebugEnabled()
+
+    // P79: rectify BEFORE either channel sees a frame — detects the card's real boundary within
+    // a margin around the guide rect (correcting mild tilt / imperfect alignment / stray
+    // background) and hands both OCR and the visual channel the SAME canonical card image through
+    // their existing, unchanged code paths. Never throws: a detection failure or any canvas error
+    // resolves to the original, unrectified capture (see rectify-capture.ts).
+    const rectified = await rectifyCapture(capture, { debug })
+    const workingCapture = rectified.frame
+
     // On-device OCR and on-device visual embedding run in parallel — both stay entirely local
     // (prompt §6/§41): no image bytes cross the network either way, only the RESULTING textual
     // catalog queries (OCR) and card-id lookups (visual shortlist enrichment) do.
@@ -231,7 +297,13 @@ export function createRealScannerController(
     const languageHint = defaults?.language ?? 'en'
 
     const [ocrResult, { result: visualResult, errorMessage: visualErrorMessage }] =
-      await Promise.all([runOcrAnalysis(capture, engine), analyzeVisualSafely(capture)])
+      await Promise.all([
+        runOcrAnalysis(workingCapture, engine, undefined, debug),
+        analyzeVisualSafely(
+          workingCapture,
+          debug ? VISUAL_DEBUG_SHORTLIST_SIZE : VISUAL_SHORTLIST_SIZE,
+        ),
+      ])
 
     const observation: ScannerObservation = {
       rawNameText: ocrResult.rawNameText,
@@ -270,12 +342,20 @@ export function createRealScannerController(
     // computed from data the pipeline above already produced; nothing here influences `match`.
     const visualSnapshot = visualClient.getDiagnosticsSnapshot()
     const nameById = new Map(mergedCandidates.map((c) => [c.cardId, c.name]))
+    const imageBaseUrlById = new Map(mergedCandidates.map((c) => [c.cardId, c.imageBaseUrl]))
     lastDiagnostics = {
       visualModelState: visualSnapshot.modelState,
       visualBackend: visualResult?.backend ?? visualSnapshot.readyInfo?.backend ?? 'unknown',
       modelLoadMs: visualSnapshot.readyInfo?.modelColdLoadMs ?? null,
+      // The ORIGINAL, un-rectified capture's own numbers (P79 §6): the frame's full pixel
+      // dimensions and the card-rect crop the guide geometry produced from it — proves what
+      // image space the pipeline actually started from, independent of the fixed-size canonical
+      // output rectification always emits afterward.
+      captureFrameWidth: capture.width,
+      captureFrameHeight: capture.height,
       captureCropWidth: capture.cardRect.width,
       captureCropHeight: capture.cardRect.height,
+      rectificationUsed: !rectified.usedFallback,
       visualEmbeddingCreated: visualResult !== null,
       embeddingNorm: visualResult?.embeddingNorm ?? null,
       indexVersion: visualSnapshot.readyInfo?.indexVersion ?? null,
@@ -288,6 +368,17 @@ export function createRealScannerController(
         similarity: hit.similarity,
         name: nameById.get(hit.cardId) ?? null,
       })),
+      // Debug-only widened shortlist (P79 §10): empty outside a debug session (the search itself
+      // never widens past VISUAL_SHORTLIST_SIZE for a real user, so there is nothing extra to
+      // show even if this were populated unconditionally).
+      topVisualCandidatesExtended: debug
+        ? (visualResult?.hits ?? []).slice(0, DEBUG_EXTENDED_CANDIDATE_LIMIT).map((hit) => ({
+            cardId: hit.cardId,
+            similarity: hit.similarity,
+            name: nameById.get(hit.cardId) ?? null,
+            imageBaseUrl: imageBaseUrlById.get(hit.cardId) ?? null,
+          }))
+        : [],
       ocrNameSignal: ocrResult.rawNameText,
       ocrCollectorSignal: ocrResult.rawCollectorNumberText,
       finalRerankedCandidates: match.candidates
@@ -318,6 +409,21 @@ export function createRealScannerController(
       indexLoadStatus: visualSnapshot.backendDiagnostics?.indexLoad ?? null,
     }
 
+    // Debug-only image previews (P79 §4) — memory-only object URLs, never persisted, revoked the
+    // moment the next scan replaces them or the controller disposes (DebugImageUrlStore mirrors
+    // CaptureStore's own single-owner discipline). Outside a debug session this is a plain clear:
+    // nothing was collected above, so there is nothing to hold onto between scans either way.
+    if (debug) {
+      debugImages.set({
+        rawCropBlob: rectified.debugRawCropBlob,
+        rectifiedBlob: workingCapture.blob,
+        nameRoiBlob: ocrResult.debugImages?.nameRoiBlob ?? null,
+        numberRoiBlob: ocrResult.debugImages?.numberRoiBlob ?? null,
+      })
+    } else {
+      debugImages.clear()
+    }
+
     return {
       confidence: tierToConfidence(match.tier),
       candidates: match.candidates
@@ -328,6 +434,10 @@ export function createRealScannerController(
 
   function getLastDiagnostics(): ScannerDiagnostics | null {
     return lastDiagnostics
+  }
+
+  function getLastDebugImages(): ScannerDebugImages | null {
+    return debugImages.get()
   }
 
   async function searchFallback(query: ScannerSearchQuery) {
@@ -407,6 +517,7 @@ export function createRealScannerController(
     engine.dispose()
     releaseOcrCanvases()
     visualClient.dispose()
+    debugImages.clear()
   }
 
   return {
@@ -416,6 +527,7 @@ export function createRealScannerController(
     commitBatch,
     dispose,
     getLastDiagnostics,
+    getLastDebugImages,
   }
 }
 
