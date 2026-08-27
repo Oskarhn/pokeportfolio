@@ -5,13 +5,13 @@
   "modelSha256": "3afdc8bc63b50558d6e5770f5b799bb82455c2311183a2de43803f343a29d917",
   "embeddingDim": 384,
   "quantization": "int8",
-  "cardCount": 239,
-  "embeddingsSha256": "4cbe113a86628428d2e1df2ed83bedf309f490e1b87f69b054ccf3abe92d7ab4",
-  "generatedAt": "2026-08-26T20:33:58.539Z",
+  "cardCount": 985,
+  "embeddingsSha256": "e3bb69d9670b7f2eb23a76228e9547803efc55ba517cbd535f8a9813a9ff0457",
+  "generatedAt": "2026-08-27T06:00:08.726Z",
   "coverage": {
-    "totalCanonicalCards": 278,
-    "cardsWithUsableImage": 239,
-    "cardsIndexed": 239,
+    "totalCanonicalCards": 1000,
+    "cardsWithUsableImage": 985,
+    "cardsIndexed": 985,
     "failures": 0
   }
 }
