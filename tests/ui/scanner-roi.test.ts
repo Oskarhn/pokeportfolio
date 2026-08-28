@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
   NAME_ROI_FRACTIONS,
+  NAME_ROI_CANDIDATES,
   NUMBER_ROI_FRACTIONS,
+  NUMBER_ROI_CANDIDATES,
   normalizeContrast,
   roiPixelRect,
   toGrayscale,
@@ -35,6 +37,35 @@ describe('ROI fraction constants', () => {
     expect(NUMBER_ROI_FRACTIONS.width).toBeCloseTo(0.55)
     expect(NUMBER_ROI_FRACTIONS.left + NUMBER_ROI_FRACTIONS.width).toBeLessThanOrEqual(1)
     expect(NUMBER_ROI_FRACTIONS.top + NUMBER_ROI_FRACTIONS.height).toBeLessThanOrEqual(1)
+  })
+})
+
+describe('P80 adaptive ROI candidates', () => {
+  it('name candidates: unique ids, every fraction rect stays inside the card, and the vintage strip is first-registered', () => {
+    expect(NAME_ROI_CANDIDATES.length).toBeGreaterThanOrEqual(2)
+    const ids = NAME_ROI_CANDIDATES.map((c) => c.id)
+    expect(new Set(ids).size).toBe(ids.length)
+    expect(NAME_ROI_CANDIDATES[0]?.fractions).toEqual(NAME_ROI_FRACTIONS)
+    for (const candidate of NAME_ROI_CANDIDATES) {
+      expect(candidate.fractions.left).toBeGreaterThanOrEqual(0)
+      expect(candidate.fractions.top).toBeGreaterThanOrEqual(0)
+      expect(candidate.fractions.left + candidate.fractions.width).toBeLessThanOrEqual(1)
+      expect(candidate.fractions.top + candidate.fractions.height).toBeLessThanOrEqual(1)
+    }
+  })
+
+  it('number candidates: unique ids, every fraction rect stays inside the card, and include both a bottom-left (modern) and bottom-right (vintage) layout', () => {
+    expect(NUMBER_ROI_CANDIDATES.length).toBeGreaterThanOrEqual(2)
+    const ids = NUMBER_ROI_CANDIDATES.map((c) => c.id)
+    expect(new Set(ids).size).toBe(ids.length)
+    expect(NUMBER_ROI_CANDIDATES.some((c) => c.fractions.left < 0.4)).toBe(true)
+    expect(NUMBER_ROI_CANDIDATES.some((c) => c.id === 'classic-bottom-right')).toBe(true)
+    for (const candidate of NUMBER_ROI_CANDIDATES) {
+      expect(candidate.fractions.left).toBeGreaterThanOrEqual(0)
+      expect(candidate.fractions.top).toBeGreaterThanOrEqual(0)
+      expect(candidate.fractions.left + candidate.fractions.width).toBeLessThanOrEqual(1)
+      expect(candidate.fractions.top + candidate.fractions.height).toBeLessThanOrEqual(1)
+    }
   })
 })
 

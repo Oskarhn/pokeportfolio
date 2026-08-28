@@ -3,6 +3,11 @@ import {
   OCR_WORKING_LONG_EDGE,
   runOcrAnalysis,
   splitFullFrameCardText,
+  scoreNameRoiCandidate,
+  scoreNumberRoiCandidate,
+  isNameRoiConfident,
+  isNumberRoiConfident,
+  looksLikeCollectorNumberText,
   type OcrEnginePort,
 } from '../../src/features/scanner/analyze'
 import type { ScannerCapture } from '../../src/features/scanner/contract'
@@ -101,10 +106,12 @@ beforeEach(() => {
 })
 
 describe('runOcrAnalysis — capture → observation', () => {
-  it('reads both ROIs in single-line mode and returns the raw texts (clean case)', async () => {
+  it('reads both fields in single-line mode and returns the raw texts (clean case, P80 early exit)', async () => {
+    // Both fields' FIRST candidate is already confident, so P80's adaptive trial stops after one
+    // recognition call per field — the same total cost the original single-ROI pipeline had.
     const engine = makeEngine([
-      { text: 'TESTASAURUS', confidence: 91 },
-      { text: '58/102', confidence: 88 },
+      { text: 'TESTASAURUS', confidence: 91 }, // name candidate 1: classic-top-left
+      { text: '58/102', confidence: 88 }, // number candidate 1: modern-bottom-left
     ])
     const pool = makePool()
     const observation = await runOcrAnalysis(makeCapture(), engine, pool as never)
@@ -115,7 +122,41 @@ describe('runOcrAnalysis — capture → observation', () => {
       rawNameText: 'TESTASAURUS',
       rawCollectorNumberText: '58/102',
       usedFullFrameFallback: false,
+      nameRoiId: 'classic-top-left',
+      numberRoiId: 'modern-bottom-left',
     })
+  })
+
+  it('P80 R1: falls through to the modern name candidate and picks it by SCORE when the vintage strip reads worse', async () => {
+    // Name candidates run FIRST; neither crosses the "confident" early-exit bar (score < 70+16),
+    // so both are tried and the higher-scoring one wins — the modern layout's name plate, not
+    // list order. The number field's first candidate is made trivially confident so it stops
+    // after one call, keeping this test's mock sequence focused on the name-selection behavior.
+    const engine = makeEngine([
+      { text: '58/102', confidence: 60 }, // name candidate 1 (classic-top-left): digit-heavy noise
+      { text: 'MEGA CHANDELURE EX', confidence: 55 }, // name candidate 2 (modern-full-width)
+      { text: '58/102', confidence: 90 }, // number candidate 1 (modern-bottom-left): parses, stops early
+    ])
+    const pool = makePool()
+    const observation = await runOcrAnalysis(makeCapture(), engine, pool as never)
+    expect(engine.recognize).toHaveBeenCalledTimes(3)
+    expect(observation.rawNameText).toBe('MEGA CHANDELURE EX')
+    expect(observation.nameRoiId).toBe('modern-full-width')
+  })
+
+  it('P80 R2: falls through to the vintage number candidate and picks it by PARSEABILITY over raw confidence', async () => {
+    // The name field's first candidate is made trivially confident so it stops after one call,
+    // keeping this test's mock sequence focused on the number-selection behavior that follows.
+    const engine = makeEngine([
+      { text: 'CHANDELURE', confidence: 90 }, // name candidate 1 (classic-top-left): confident, stops early
+      { text: 'Illus. Ken S', confidence: 70 }, // number candidate 1 (modern-bottom-left): credit text, higher raw confidence, does not parse
+      { text: '4/102', confidence: 50 }, // number candidate 2 (classic-bottom-right): parses as a real id
+    ])
+    const pool = makePool()
+    const observation = await runOcrAnalysis(makeCapture(), engine, pool as never)
+    expect(engine.recognize).toHaveBeenCalledTimes(3)
+    expect(observation.rawCollectorNumberText).toBe('4/102')
+    expect(observation.numberRoiId).toBe('classic-bottom-right')
   })
 
   it('crops to the CARD rect at working resolution — never the whole frame', async () => {
@@ -140,23 +181,31 @@ describe('runOcrAnalysis — capture → observation', () => {
     expect(draw?.[4]).toBe(1400)
   })
 
-  it('runs EXACTLY ONE full-card fallback when both ROIs are unusable, splitting text', async () => {
+  it('P80 R3: runs EXACTLY ONE full-card fallback when EVERY candidate for BOTH fields is unusable', async () => {
+    // 2 name candidates + 2 number candidates, all empty/whitespace-only, then the fallback text.
     const engine = makeEngine([
-      { text: '', confidence: 0 },
-      { text: ' ', confidence: 0 },
-      { text: 'TESTASAURUS 58/102 junk', confidence: 40 },
+      { text: '', confidence: 0 }, // name candidate 1
+      { text: ' ', confidence: 0 }, // name candidate 2
+      { text: '', confidence: 0 }, // number candidate 1
+      { text: ' ', confidence: 0 }, // number candidate 2
+      { text: 'TESTASAURUS 58/102 junk', confidence: 40 }, // full-card fallback
     ])
     const pool = makePool()
     const observation = await runOcrAnalysis(makeCapture(), engine, pool as never)
-    expect(engine.recognize).toHaveBeenCalledTimes(3)
-    expect(engine.recognize.mock.calls[2]?.[1]).toBe('auto')
+    expect(engine.recognize).toHaveBeenCalledTimes(5)
+    expect(engine.recognize.mock.calls[4]?.[1]).toBe('auto')
     expect(observation.usedFullFrameFallback).toBe(true)
     expect(observation.rawNameText).toBe('TESTASAURUS')
     expect(observation.rawCollectorNumberText).toBe('58/102')
+    // Fails gracefully: no candidate ever won either field.
+    expect(observation.nameRoiId).toBeNull()
+    expect(observation.numberRoiId).toBeNull()
   })
 
   it('returns honest NULLS when nothing at all was read — never fabricated signals', async () => {
     const engine = makeEngine([
+      { text: '', confidence: 0 },
+      { text: '', confidence: 0 },
       { text: '', confidence: 0 },
       { text: '', confidence: 0 },
       { text: '', confidence: 0 },
@@ -165,6 +214,8 @@ describe('runOcrAnalysis — capture → observation', () => {
     expect(observation.rawNameText).toBeNull()
     expect(observation.rawCollectorNumberText).toBeNull()
     expect(observation.usedFullFrameFallback).toBe(true)
+    expect(observation.nameRoiId).toBeNull()
+    expect(observation.numberRoiId).toBeNull()
   })
 
   it('closes the decoded bitmap even when recognition throws', async () => {
@@ -201,5 +252,40 @@ describe('splitFullFrameCardText', () => {
       name: 'JUST SOME WORDS HERE',
       number: null,
     })
+  })
+})
+
+describe('P80 adaptive-ROI scoring (pure)', () => {
+  it('scoreNameRoiCandidate rewards high confidence AND a high letter ratio', () => {
+    const cleanName = scoreNameRoiCandidate('CHANDELURE', 80)
+    const noisyDigits = scoreNameRoiCandidate('58/102 x2', 80)
+    expect(cleanName).toBeGreaterThan(noisyDigits)
+    expect(scoreNameRoiCandidate('CHANDELURE', 80)).toBe(80 + 20) // pure letters -> ratio 1
+  })
+
+  it('scoreNumberRoiCandidate rewards a text that actually parses as a printed id over one that merely has higher raw confidence', () => {
+    const parseable = scoreNumberRoiCandidate('049/197', 40)
+    const unparsedButConfident = scoreNumberRoiCandidate('Illus. Ken S', 95)
+    expect(parseable).toBeGreaterThan(unparsedButConfident)
+  })
+
+  it('looksLikeCollectorNumberText rejects a long OCR string even when a digit run inside it happens to parse structurally', () => {
+    // parseCollectorNumber alone WOULD accept this (documented false-positive tolerance for short
+    // OCR noise) — the length guard is what keeps a paragraph of rules text from ever winning the
+    // number field just because it contains a slash-separated digit pair somewhere.
+    expect(looksLikeCollectorNumberText('TESTASAURUS 58/102 junk')).toBe(false)
+    expect(looksLikeCollectorNumberText('049/197')).toBe(true)
+    expect(looksLikeCollectorNumberText('TG01/TG30')).toBe(true)
+  })
+
+  it('isNameRoiConfident requires BOTH a high confidence and a mostly-letters signal', () => {
+    expect(isNameRoiConfident('CHANDELURE', 91)).toBe(true)
+    expect(isNameRoiConfident('CHANDELURE', 50)).toBe(false) // confidence too low
+    expect(isNameRoiConfident('58/102', 95)).toBe(false) // high confidence, but not letters
+  })
+
+  it('isNumberRoiConfident is exactly looksLikeCollectorNumberText (parseability is the whole signal)', () => {
+    expect(isNumberRoiConfident('049/197')).toBe(true)
+    expect(isNumberRoiConfident('Illus. Ken S')).toBe(false)
   })
 })

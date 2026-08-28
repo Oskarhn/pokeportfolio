@@ -119,6 +119,8 @@ describe('analyzeCapture - observation, retrieval, ranking (I2/I3/I4)', () => {
       rawNameText: 'Pikachu',
       rawCollectorNumberText: '58/102',
       usedFullFrameFallback: false,
+      nameRoiId: null,
+      numberRoiId: null,
     })
     mockedSearchCards.mockResolvedValue({
       results: Array.from({ length: 9 }, (_, index) =>
@@ -133,8 +135,10 @@ describe('analyzeCapture - observation, retrieval, ranking (I2/I3/I4)', () => {
     expect(mockedSearchCards).toHaveBeenCalledWith(
       expect.objectContaining({ query: 'pikachu 58', language: 'en' }),
     )
-    // UI shortlist bound (prompt section 20): nine ranked rows in, FIVE candidates out.
-    expect(analysis.candidates.length).toBeLessThanOrEqual(5)
+    // UI shortlist bound (prompt section 20, widened per P80 §6): none of these nine rows carries
+    // the printed id "58/102", so all nine score identically on name alone — a flat ranking, which
+    // P80's candidate-expansion rule widens toward 8 rather than hiding four of them outright.
+    expect(analysis.candidates.length).toBeLessThanOrEqual(8)
     expect(analysis.candidates[0]).toMatchObject({
       candidateId: 'card-0',
       name: 'Pikachu',
@@ -147,6 +151,8 @@ describe('analyzeCapture - observation, retrieval, ranking (I2/I3/I4)', () => {
       rawNameText: null,
       rawCollectorNumberText: null,
       usedFullFrameFallback: true,
+      nameRoiId: null,
+      numberRoiId: null,
     })
     const controller = createRealScannerController({ userId: 'user-a' })
     const analysis = await controller.analyzeCapture(capture())
@@ -160,6 +166,8 @@ describe('analyzeCapture - observation, retrieval, ranking (I2/I3/I4)', () => {
       rawNameText: 'Bill',
       rawCollectorNumberText: null,
       usedFullFrameFallback: false,
+      nameRoiId: null,
+      numberRoiId: null,
     })
     // Name-only evidence tops out at LOW per P67's weight table.
     mockedSearchCards.mockResolvedValue({
@@ -175,6 +183,8 @@ describe('analyzeCapture - observation, retrieval, ranking (I2/I3/I4)', () => {
       rawNameText: 'Pikachu',
       rawCollectorNumberText: '58/102',
       usedFullFrameFallback: false,
+      nameRoiId: null,
+      numberRoiId: null,
     })
     mockedSearchCards.mockResolvedValue({
       results: [
@@ -193,6 +203,8 @@ describe('analyzeCapture - observation, retrieval, ranking (I2/I3/I4)', () => {
       rawNameText: 'Pikachu',
       rawCollectorNumberText: '58',
       usedFullFrameFallback: false,
+      nameRoiId: null,
+      numberRoiId: null,
     })
     mockedSearchCards.mockResolvedValue({ results: [], totalCount: 0 })
     const controller = createRealScannerController({ userId: 'user-a' })
@@ -211,12 +223,72 @@ describe('analyzeCapture - observation, retrieval, ranking (I2/I3/I4)', () => {
       rawNameText: 'Pikachu',
       rawCollectorNumberText: '58',
       usedFullFrameFallback: false,
+      nameRoiId: null,
+      numberRoiId: null,
     })
     mockedSearchCards.mockRejectedValue(new Error('raw PostgREST internals must not leak'))
     const controller = createRealScannerController({ userId: 'user-a' })
     await expect(controller.analyzeCapture(capture())).rejects.toMatchObject({
       message: 'Card catalog lookup failed. Check your connection and try again.',
     })
+  })
+})
+
+describe('P80 R4/R5: low-confidence candidate expansion (Shieldon rank-6 real-device case)', () => {
+  it('widens past the normal 5 when the ranking near the cutoff is flat, WITHOUT touching a clearly-settled HIGH match', async () => {
+    // Nine candidates that ALL share the same name — no printed id distinguishes them, so every
+    // one scores identically (name-exact + language-match). A flat LOW-tier ranking exactly like
+    // this is the scenario the real Shieldon miss represents: the true card can sit past rank 5
+    // for no reason other than tie-break ordering.
+    mockedRunOcrAnalysis.mockResolvedValue({
+      rawNameText: 'Pikachu',
+      rawCollectorNumberText: null,
+      usedFullFrameFallback: false,
+      nameRoiId: null,
+      numberRoiId: null,
+    })
+    mockedSearchCards.mockResolvedValue({
+      results: Array.from({ length: 9 }, (_, index) =>
+        catalogRow({ cardId: `card-${index}`, localId: String(index), name: 'Pikachu' }),
+      ),
+      totalCount: 9,
+    })
+    const controller = createRealScannerController({ userId: 'user-a' })
+    const analysis = await controller.analyzeCapture(capture())
+    expect(analysis.confidence).toBe('LOW')
+    // Widened to the expanded limit (8), not the engine's full 9-row retention, and not the
+    // normal 5 — a 6th-ranked card (which the old fixed cap of 5 would have hidden entirely) is
+    // now selectable.
+    expect(analysis.candidates.length).toBe(8)
+    expect(analysis.candidates.map((c) => c.candidateId)).toContain('card-5')
+    const diagnostics = controller.getLastDiagnostics?.()
+    expect(diagnostics?.candidateExpansionTriggered).toBe(true)
+  })
+
+  it('does NOT expand a HIGH-tier match even with many extra low-scoring candidates in the pool', async () => {
+    mockedRunOcrAnalysis.mockResolvedValue({
+      rawNameText: 'Pikachu',
+      rawCollectorNumberText: '58/102',
+      usedFullFrameFallback: false,
+      nameRoiId: null,
+      numberRoiId: null,
+    })
+    mockedSearchCards.mockResolvedValue({
+      results: [
+        // Convergent evidence -> HIGH, well clear of every runner-up below.
+        catalogRow({ cardId: 'true-match', localId: '58', name: 'Pikachu' }),
+        ...Array.from({ length: 8 }, (_, index) =>
+          catalogRow({ cardId: `noise-${index}`, localId: String(100 + index), name: 'Pikachu' }),
+        ),
+      ],
+      totalCount: 9,
+    })
+    const controller = createRealScannerController({ userId: 'user-a' })
+    const analysis = await controller.analyzeCapture(capture())
+    expect(analysis.confidence).toBe('HIGH')
+    expect(analysis.candidates.length).toBe(5)
+    const diagnostics = controller.getLastDiagnostics?.()
+    expect(diagnostics?.candidateExpansionTriggered).toBe(false)
   })
 })
 
@@ -308,6 +380,8 @@ describe('commitBatch - existing acquisition path, honest outcomes (I12/I13/I14)
       rawNameText: 'Pikachu',
       rawCollectorNumberText: '58',
       usedFullFrameFallback: false,
+      nameRoiId: null,
+      numberRoiId: null,
     })
     mockedSearchCards.mockResolvedValue({ results: [], totalCount: 0 })
     const controller = createRealScannerController({ userId: 'user-a' })
@@ -440,6 +514,8 @@ describe('getLastDiagnostics - visual channel failure reporting (P78 R1)', () =>
       rawNameText: 'Pikachu',
       rawCollectorNumberText: '58',
       usedFullFrameFallback: false,
+      nameRoiId: null,
+      numberRoiId: null,
     })
     mockedSearchCards.mockResolvedValue({ results: [], totalCount: 0 })
     visualMocks.analyze.mockResolvedValue(null)
@@ -478,6 +554,8 @@ describe('getLastDiagnostics - visual channel failure reporting (P78 R1)', () =>
       rawNameText: 'Pikachu',
       rawCollectorNumberText: '58',
       usedFullFrameFallback: false,
+      nameRoiId: null,
+      numberRoiId: null,
     })
     mockedSearchCards.mockResolvedValue({ results: [], totalCount: 0 })
     globalThis.createImageBitmap = vi
@@ -501,6 +579,8 @@ describe('getLastDiagnostics - visual channel failure reporting (P78 R1)', () =>
       rawNameText: 'Pikachu',
       rawCollectorNumberText: '58',
       usedFullFrameFallback: false,
+      nameRoiId: null,
+      numberRoiId: null,
     })
     mockedSearchCards.mockResolvedValue({ results: [], totalCount: 0 })
     visualMocks.analyze.mockResolvedValue({
@@ -574,6 +654,8 @@ describe('debug mode — widened shortlist, extended candidates, image previews 
       rawNameText: 'Pikachu',
       rawCollectorNumberText: '58',
       usedFullFrameFallback: false,
+      nameRoiId: null,
+      numberRoiId: null,
     })
     mockedSearchCards.mockResolvedValue({ results: [], totalCount: 0 })
   })

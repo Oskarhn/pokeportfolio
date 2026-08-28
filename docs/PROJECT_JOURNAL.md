@@ -8,6 +8,60 @@ here when there was a real problem with a non-obvious answer.
 
 ---
 
+## 2026-08-28 — M15b exact-card matching: a benchmark can prove robustness without proving discriminative power
+
+Two real-device misses remained after P79's rectification/resolution fixes: Mega Chandelure ex
+(absent from the top 20 visual candidates) and Shieldon (present at raw rank 6, never shown — the
+UI capped at 5). The owner's debug image preview additionally showed both OCR ROIs landing on the
+wrong region of a modern card.
+
+**The ROI fractions were not a bug in the original research — they were the WRONG layout family.**
+`NAME_ROI_FRACTIONS`/`NUMBER_ROI_FRACTIONS` correctly encode vintage WOTC/e-series cards (name
+top-left, number bottom-right — Base Set's "4/102"). Modern SM/SWSH/SV-era cards print the name
+across the top edge and moved the number bottom-left beside the set symbol. Nothing about the P67
+research was wrong; the assumption that one layout covers "a Pokémon card" was. Fix: try both
+layout families per field, score by OCR confidence plus field-specific parseability, keep the
+winner — with an early-exit once a candidate is already confident, so the common (already-correct)
+case costs the same one recognition call the fixed-ROI pipeline always did.
+
+**A real permissiveness bug surfaced while building the number-field scorer.** P67's
+`parseCollectorNumber` deliberately folds short OCR noise (its whole point is tolerating "SV0 01" →
+"SV001"), but that same tolerance means a LONG string containing a stray digit run can still
+structurally match `prefix+digits+suffix` — "TESTASAURUS 58/102 junk" parses as
+prefix="TESTASAURUS", numeric="58", total=102. This was invisible in isolation (the parser's own
+existing tests never fed it long prose containing a real-looking number), but became directly
+observable the moment "does this text parse?" became a scoring SIGNAL rather than just a
+downstream match filter: a test built to exercise "both ROI fields end up unusable, fall through to
+the full-card OCR pass" instead ended up with the fallback text winning the number field outright,
+because it happened to contain "58/102". The fix (`looksLikeCollectorNumberText`: require both a
+length bound AND a successful parse) is a two-line guard, but finding it required treating the
+parser's existing permissiveness as a fact to design AROUND, not a bug to "fix" — collector-number
+matching downstream genuinely needs that tolerance for real short OCR noise; a scoring signal built
+on top of it needs a narrower bar.
+
+**The bigger finding is methodological, not a code bug.** P79's hard benchmark reported
+rectification lifting TOP1 to 93.3% on the geometry-only distortion profile — genuinely true, and
+genuinely reassuring evidence that geometry/crop quality was fixed. But that number answers "does a
+distorted photo of card X still resemble the SAME card X's own clean reference more than 239 OTHER,
+mostly-dissimilar reference cards" — robustness to capture noise. It does not and structurally
+cannot answer "does card X get confused with a DIFFERENT but visually similar card (another
+rainbow-foil full-art EX, say) among the 19,501 cards the real hosted index actually holds" —
+discriminative power at scale. Those are different questions, and a benchmark answering the first
+one well provides zero evidence about the second. The Chandelure miss is much more naturally
+explained by the second question, and this session could not build a corpus to test it: the cached
+240-card benchmark corpus is keyed by TCGdex-style ids ("base1-1"), the real hosted index by
+Supabase UUIDs, and there is no session-available mapping between them. A photometric-normalization
+experiment run against the same 240-card corpus (contrast stretch + a bounded desaturation nudge,
+meant to reduce a foil card's color/rainbow-pattern dominance in the embedding) came back a wash —
+93.3%→94.6% TOP1, differences inside single-flip noise at n=240 — which is exactly what a
+non-regression check on the WRONG axis should look like: it neither confirms nor refutes the actual
+hypothesis, because the corpus was never able to contain the specific confusion being tested for.
+Recorded honestly (SCANNER_RESEARCH.md §7c) as "built, evaluated, evidence inconclusive for the
+question that matters" rather than either shipping it on a false positive or discarding the working,
+tested code because a benchmark run didn't show a dramatic win it was never positioned to show.
+
+---
+
 ## 2026-08-27 — M15b visual runtime never initialized: two library-default gotchas, not a threading problem
 
 The owner deployed P77's pagination/checkpoint/crop fixes AND a real full hosted index rebuild

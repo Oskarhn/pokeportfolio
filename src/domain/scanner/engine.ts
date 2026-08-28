@@ -84,8 +84,12 @@ export const SCORING_TIERS = {
   /** HIGH requires this much gap above the runner-up — near-equals stay ambiguous. */
   highMinMargin: 15,
   mediumMinMargin: 8,
-  /** Upper bound on returned candidates (UX_FLOWS F12 shows at most three; headroom for UI). */
-  maxReturnedCandidates: 5,
+  /** Upper bound on candidates the engine RETAINS after ranking (P80: raised from 5 so a correct
+   *  card sitting a few ranks below the normal UI cutoff — the Shieldon real-device case, rank 6
+   *  — survives into the returned array at all). This is retention depth, not display count: the
+   *  UI's own visible-candidate limit lives in controller.ts and is normally still 5; it only
+   *  widens toward this ceiling when the ranking near the cutoff is genuinely flat/ambiguous. */
+  maxReturnedCandidates: 10,
   /** Normalized-name characters required before a name counts as a usable signal (P67 §17). */
   minNameLengthForSignal: 3,
 } as const

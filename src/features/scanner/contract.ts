@@ -89,6 +89,14 @@ export interface ScannerDiagnostics {
   }[]
   ocrNameSignal: string | null
   ocrCollectorSignal: string | null
+  /** Which adaptive-ROI layout candidate (roi.ts's `id`, e.g. "modern-full-width") won the name
+   *  field this scan (P80 §7) — null when no candidate produced anything usable. */
+  ocrNameRoiId: string | null
+  /** Same as `ocrNameRoiId` for the collector-number field. */
+  ocrNumberRoiId: string | null
+  /** True when the visible candidate shortlist widened past the normal 5 because the ranking near
+   *  the cutoff was flat/ambiguous (P80 §6 — the Shieldon rank-6 real-device case). */
+  candidateExpansionTriggered: boolean
   finalRerankedCandidates: {
     cardId: string
     name: string

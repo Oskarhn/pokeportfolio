@@ -61,7 +61,10 @@ export function formatScannerDiagnostics(d: ScannerDiagnostics): string {
   }
   lines.push(
     `OCR_NAME_SIGNAL=${d.ocrNameSignal ?? EMPTY}`,
+    `OCR_NAME_ROI=${d.ocrNameRoiId ?? EMPTY}`,
     `OCR_COLLECTOR_SIGNAL=${d.ocrCollectorSignal ?? EMPTY}`,
+    `OCR_NUMBER_ROI=${d.ocrNumberRoiId ?? EMPTY}`,
+    `CANDIDATE_EXPANSION_TRIGGERED=${d.candidateExpansionTriggered ? 'yes' : 'no'}`,
     'FINAL_RERANKED_CANDIDATES:',
   )
   if (d.finalRerankedCandidates.length === 0) {

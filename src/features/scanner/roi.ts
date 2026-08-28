@@ -7,13 +7,28 @@
  * OCR and the visual channel an already-rectified card image before either of them sees a frame,
  * so the card rect these fractions apply to is normally already axis-aligned by the time it gets
  * here; a homegrown warp does not belong duplicated inside ROI extraction too.
+ *
+ * P80 ADAPTIVE ROI: a single fixed fraction per field was proven wrong on real captures — the
+ * owner's `?scannerDebug=1` image preview showed the name ROI landing on artwork and the number
+ * ROI landing on rules/credit text for a modern card (Mega Chandelure ex). Root cause: the
+ * original single fractions encode ONE Pokémon-card layout family (vintage WOTC/e-series —
+ * name in a narrow top-left band, collector number bottom-RIGHT e.g. "4/102") but modern
+ * SM/SWSH/SV-era English cards print the name across most of the top edge and moved the
+ * collector number bottom-LEFT beside the set symbol (e.g. "049/197") — a different layout,
+ * not a defect in the original research. `analyze.ts` now tries every candidate below per field
+ * and scores the OCR result of each (confidence + parseability), picking a winner per scan —
+ * never a hard-coded "this photo is modern/vintage" guess.
  */
 
 import type { PixelRect } from './guide-geometry'
 
-/** Name strip: top ~20% of the card height, left ~62% of its width (name sits top-left). */
+/** Name strip: top ~20% of the card height, left ~62% of its width (name sits top-left) — the
+ *  VINTAGE layout. Kept as its own constant (tests pin it) and as the first entry of
+ *  {@link NAME_ROI_CANDIDATES}. */
 export const NAME_ROI_FRACTIONS = { left: 0, top: 0, width: 0.62, height: 0.2 } as const
-/** Collector-number strip: bottom ~13% of the card height, right ~55% of its width. */
+/** Collector-number strip: bottom ~13% of the card height, right ~55% of its width — the VINTAGE
+ *  layout. Kept as its own constant (tests pin it) and as one entry of
+ *  {@link NUMBER_ROI_CANDIDATES}. */
 export const NUMBER_ROI_FRACTIONS = {
   left: 0.45,
   top: 0.87,
@@ -27,6 +42,44 @@ export interface RoiFractions {
   readonly width: number
   readonly height: number
 }
+
+/** One named ROI layout hypothesis — `id` is diagnostics-only (P80 debug panel: "which ROI won"). */
+export interface NamedRoiCandidate {
+  readonly id: string
+  readonly fractions: RoiFractions
+}
+
+/** Modern (SM/SWSH/SV-era) name plate: spans nearly the full width, starting a little in from
+ *  the top-left corner (rounded card corner / holo header art otherwise contaminates the very
+ *  first row). Both this and the vintage strip above are always tried; see the module doc. */
+const MODERN_NAME_ROI_FRACTIONS: RoiFractions = {
+  left: 0.03,
+  top: 0.02,
+  width: 0.88,
+  height: 0.15,
+}
+
+/** Modern (SM/SWSH/SV-era) collector-number strip: small text bottom-LEFT beside the set symbol
+ *  (e.g. "049/197"), not bottom-right. */
+const MODERN_NUMBER_ROI_FRACTIONS: RoiFractions = {
+  left: 0.03,
+  top: 0.9,
+  width: 0.32,
+  height: 0.08,
+}
+
+/** Every name-strip layout hypothesis `analyze.ts` tries, in no particular priority order — the
+ *  winner is chosen by OCR score, not by list position (P80). */
+export const NAME_ROI_CANDIDATES: readonly NamedRoiCandidate[] = [
+  { id: 'classic-top-left', fractions: NAME_ROI_FRACTIONS },
+  { id: 'modern-full-width', fractions: MODERN_NAME_ROI_FRACTIONS },
+]
+
+/** Every collector-number layout hypothesis `analyze.ts` tries (P80). */
+export const NUMBER_ROI_CANDIDATES: readonly NamedRoiCandidate[] = [
+  { id: 'modern-bottom-left', fractions: MODERN_NUMBER_ROI_FRACTIONS },
+  { id: 'classic-bottom-right', fractions: NUMBER_ROI_FRACTIONS },
+]
 
 /** A card-relative fraction rect mapped to integer pixels inside a concrete card rect. Pure;
  *  always fully inside the card bounds; at least 1 px tall/wide when the card itself is. */

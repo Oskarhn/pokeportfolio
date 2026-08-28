@@ -25,7 +25,10 @@ function diagnostics(overrides: Partial<ScannerDiagnostics> = {}): ScannerDiagno
       { cardId: 'card-b', similarity: 0.77, name: 'Duskull', imageBaseUrl: null },
     ],
     ocrNameSignal: 'Shieldon',
+    ocrNameRoiId: 'classic-top-left',
     ocrCollectorSignal: '049/102',
+    ocrNumberRoiId: 'modern-bottom-left',
+    candidateExpansionTriggered: false,
     finalRerankedCandidates: [
       { cardId: 'card-a', name: 'Shieldon', confidenceTier: 'HIGH', reasons: ['visual-strong'] },
     ],
@@ -67,9 +70,21 @@ describe('formatScannerDiagnostics', () => {
     expect(text).toContain('INDEX_SOURCE_PROJECT_REF=nopmkroeygmlvndzjjqs.supabase.co')
     expect(text).toContain('1. card-a similarity=0.9100 name=Shieldon')
     expect(text).toContain('OCR_NAME_SIGNAL=Shieldon')
+    expect(text).toContain('OCR_NAME_ROI=classic-top-left')
     expect(text).toContain('OCR_COLLECTOR_SIGNAL=049/102')
+    expect(text).toContain('OCR_NUMBER_ROI=modern-bottom-left')
+    expect(text).toContain('CANDIDATE_EXPANSION_TRIGGERED=no')
     expect(text).toContain('1. card-a "Shieldon" tier=HIGH reasons=visual-strong')
     expect(text).toContain('VISUAL_ERROR=—')
+  })
+
+  it('renders honest placeholders for the P80 adaptive-ROI fields when nothing won', () => {
+    const text = formatScannerDiagnostics(
+      diagnostics({ ocrNameRoiId: null, ocrNumberRoiId: null, candidateExpansionTriggered: true }),
+    )
+    expect(text).toContain('OCR_NAME_ROI=—')
+    expect(text).toContain('OCR_NUMBER_ROI=—')
+    expect(text).toContain('CANDIDATE_EXPANSION_TRIGGERED=yes')
   })
 
   it('renders honest placeholders instead of fabricated values when fields are null/empty', () => {

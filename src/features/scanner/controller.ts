@@ -7,6 +7,8 @@ import {
 import { addCardAcquisition } from '../../data/collection'
 import {
   matchScannerObservation,
+  SCORING_TIERS,
+  type RankedScannerCandidate,
   type ScannerObservation,
   type ScannerCandidateRecord,
   type ScannerConfidenceTier,
@@ -68,8 +70,44 @@ import type {
  */
 
 /** The short useful shortlist shown in the UI (prompt §20): retrieval may examine bounded raw
- *  rows internally, but the user sees at most these top-ranked candidates. */
+ *  rows internally, but the user sees at most these top-ranked candidates in the NORMAL
+ *  (confidently-differentiated) case. */
 export const SCANNER_UI_CANDIDATE_LIMIT = 5
+/** Widened shortlist shown ONLY when the ranking near the cutoff is flat/ambiguous (P80 §6/§13,
+ *  the Shieldon real-device case: the correct card sat at raw rank 6 and was never selectable
+ *  because the UI never showed a 6th option). Still short enough to stay a clean list, never the
+ *  engine's full 10-candidate retention depth. */
+export const SCANNER_UI_EXPANDED_CANDIDATE_LIMIT = 8
+/** How much the score at the normal cutoff rank may trail the top score before the ranking still
+ *  counts as "clearly settled" (P80). Reuses the domain's OWN ambiguity margin
+ *  (`SCORING_TIERS.highMinMargin`) rather than inventing a second threshold — the same gap the
+ *  engine already uses to decide whether HIGH confidence should hold. */
+const CANDIDATE_EXPANSION_SCORE_GAP = SCORING_TIERS.highMinMargin
+
+/**
+ * How many candidates to actually show for one match (P80): the normal 5 whenever the top of the
+ * list has clearly separated from the pack by the 5th rank, or when there simply aren't more than
+ * 5 candidates to show anyway. HIGH-tier matches never expand — by construction (engine.ts) a HIGH
+ * tier already has a ≥15-point margin over its runner-up, so the ranking is never flat at rank 2,
+ * let alone rank 5. Widens toward {@link SCANNER_UI_EXPANDED_CANDIDATE_LIMIT} only when the score
+ * at the normal cutoff is still close to the top score — a genuinely undifferentiated tail, not
+ * merely "confidence is LOW" (a single strong LOW candidate with a clear runner-up gap does not
+ * need more options; a flat spread of near-equal candidates does).
+ */
+export function resolveVisibleCandidateCount(
+  tier: ScannerConfidenceTier,
+  ranked: readonly RankedScannerCandidate[],
+): number {
+  if (ranked.length <= SCANNER_UI_CANDIDATE_LIMIT) return ranked.length
+  if (tier === 'high') return SCANNER_UI_CANDIDATE_LIMIT
+  const top = ranked[0]
+  const atCutoff = ranked[SCANNER_UI_CANDIDATE_LIMIT - 1]
+  if (top === undefined || atCutoff === undefined) return SCANNER_UI_CANDIDATE_LIMIT
+  const gap = top.score - atCutoff.score
+  return gap <= CANDIDATE_EXPANSION_SCORE_GAP
+    ? SCANNER_UI_EXPANDED_CANDIDATE_LIMIT
+    : SCANNER_UI_CANDIDATE_LIMIT
+}
 
 /** Deterministic tier → coarse UI band. Pure mapping; no second scoring pass exists. */
 function tierToConfidence(tier: ScannerConfidenceTier): ScannerConfidence {
@@ -337,6 +375,10 @@ export function createRealScannerController(
     }
 
     const match = matchScannerObservation(observation, mergedCandidates, visualScores)
+    // P80 §6/§13: how many of match.candidates the user actually sees this scan — normally 5,
+    // widened toward SCANNER_UI_EXPANDED_CANDIDATE_LIMIT only when the ranking near the cutoff is
+    // genuinely flat (the Shieldon rank-6 real-device case).
+    const visibleCandidateCount = resolveVisibleCandidateCount(match.tier, match.candidates)
 
     // Assemble this scan's diagnostics snapshot (P77 prompt §13/§40) — purely observational,
     // computed from data the pipeline above already produced; nothing here influences `match`.
@@ -381,14 +423,19 @@ export function createRealScannerController(
         : [],
       ocrNameSignal: ocrResult.rawNameText,
       ocrCollectorSignal: ocrResult.rawCollectorNumberText,
-      finalRerankedCandidates: match.candidates
-        .slice(0, SCANNER_UI_CANDIDATE_LIMIT)
-        .map((ranked) => ({
-          cardId: ranked.card.cardId,
-          name: ranked.card.name,
-          confidenceTier: tierToConfidence(match.tier),
-          reasons: ranked.reasons,
-        })),
+      // P80 §7: which adaptive-ROI layout candidate actually won each field this scan (roi.ts's
+      // `id`) — null means no candidate produced anything usable for that field.
+      ocrNameRoiId: ocrResult.nameRoiId,
+      ocrNumberRoiId: ocrResult.numberRoiId,
+      // P80 §6: true exactly when the visible shortlist widened past the normal 5 — lets the
+      // debug panel/owner confirm expansion actually fired for a flat ranking like Shieldon's.
+      candidateExpansionTriggered: visibleCandidateCount > SCANNER_UI_CANDIDATE_LIMIT,
+      finalRerankedCandidates: match.candidates.slice(0, visibleCandidateCount).map((ranked) => ({
+        cardId: ranked.card.cardId,
+        name: ranked.card.name,
+        confidenceTier: tierToConfidence(match.tier),
+        reasons: ranked.reasons,
+      })),
       // P78 fix: `visualErrorMessage` only ever covers exceptions thrown INSIDE
       // analyzeVisualSafely (createImageBitmap/client.analyze throwing) — a model/backend
       // initialization failure never throws there (VisualRecognitionClient.analyze() resolves
@@ -427,7 +474,7 @@ export function createRealScannerController(
     return {
       confidence: tierToConfidence(match.tier),
       candidates: match.candidates
-        .slice(0, SCANNER_UI_CANDIDATE_LIMIT)
+        .slice(0, visibleCandidateCount)
         .map((ranked) => toUiCandidate(ranked.card)),
     } satisfies ScannerAnalysis
   }

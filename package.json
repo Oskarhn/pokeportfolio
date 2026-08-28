@@ -33,6 +33,7 @@
     "db:types": "supabase gen types typescript --local --schema public > src/data/database.types.ts",
     "scanner:visual:benchmark": "tsx scripts/scanner-visual-benchmark/run-benchmark.ts",
     "scanner:visual:benchmark:hard": "tsx scripts/scanner-visual-benchmark/run-hard-benchmark.ts",
+    "scanner:visual:benchmark:photometric": "tsx scripts/scanner-visual-benchmark/run-photometric-experiment.ts",
     "scanner:index:build": "tsx scripts/scanner-visual-index/build-index.ts",
     "scanner:index:verify": "tsx scripts/scanner-visual-index/verify-index.ts"
   },

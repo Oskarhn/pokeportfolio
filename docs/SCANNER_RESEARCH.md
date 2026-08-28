@@ -294,3 +294,112 @@ local-index budget (§17 of the prompt) — LOCAL INDEX wins outright, no pgvect
 required. See D-097 for the full architecture writeup and the coverage caveat (this session's
 committed index is LOCAL-database-derived and does not resolve against the hosted catalog until
 the owner runs the generator once against hosted credentials).
+
+## 7c. Exact-card matching, adaptive OCR ROI and photometric normalization (M15, 2026-08-28 — P80)
+
+Runtime/crop/rectification were ruled IN as working by P78/P79 (real-iPhone diagnostics: model
+ready, real embedding, full 19,501-card index searched, real candidates returned). Two concrete
+real-device misses remained: Mega Chandelure ex (correct card absent from the top-20 visual
+candidates entirely) and Shieldon (correct card present at raw visual rank 6, never shown because
+the UI capped at 5). The owner's debug image preview additionally showed the fixed OCR ROIs
+landing on the wrong region of a modern card.
+
+### Why the fixed ROI fractions were wrong (not a defect in the P67 research — a different layout)
+
+`NAME_ROI_FRACTIONS`/`NUMBER_ROI_FRACTIONS` (`roi.ts`) encode ONE real, still-valid Pokémon card
+layout: vintage WOTC/e-series English cards print the name in a narrow top-left band and the
+collector number bottom-RIGHT (e.g. Base Set's "4/102"). Modern SM/SWSH/SV-era English cards —
+exactly what a 2026 collector scans most, and exactly what Mega Chandelure ex is — print the name
+across most of the top edge and moved the collector number bottom-LEFT beside the set symbol (e.g.
+"049/197"). The old single-ROI pipeline had no way to notice it was reading the wrong region; on a
+modern card the name ROI's top-left-only band lands partly on artwork/holo header, and the number
+ROI's bottom-right band lands on the illustrator credit / copyright line instead of the id — which
+matches the owner's screenshot description exactly.
+
+**Fix:** `analyze.ts` now tries a small, bounded set of named layout candidates per field
+(`NAME_ROI_CANDIDATES`/`NUMBER_ROI_CANDIDATES`), scoring each OCR result (name: confidence +
+letter-ratio; collector number: confidence + whether the text actually PARSES as a short printed
+id — the strongest possible signal) and keeping the winner. An early-exit predicate
+(`isNameRoiConfident`/`isNumberRoiConfident`) stops trying further candidates once one is already
+confident, so the common, already-correctly-laid-out scan costs the SAME one-recognition-call
+total the original pipeline had; a weak or wrong-layout first read falls through to the next
+candidate instead of silently failing. Real bug found while building the parseability scorer:
+P67's `parseCollectorNumber` is deliberately permissive (folds short OCR noise), and a long garbage
+string containing a stray digit run can still structurally match its `prefix+digits+suffix`
+pattern (e.g. "TESTASAURUS 58/102 junk" parses as prefix="TESTASAURUS", numeric="58") — a length
+guard (`looksLikeCollectorNumberText`, ≤12 chars) keeps this from ever winning the number field.
+
+### Candidate rescue: retrieval depth vs. display depth are now decoupled
+
+`SCORING_TIERS.maxReturnedCandidates` (engine.ts) was 5 — the SAME number the UI displayed, so a
+correct card at raw rank 6 (Shieldon) was invisible by construction: the engine itself discarded it
+before the UI ever got a chance to show it. Raised to 10 (retention depth only — `top`/`runnerUp`
+for tier/margin math are always the true best two regardless of this bound). The UI's own display
+limit (`SCANNER_UI_CANDIDATE_LIMIT`, controller.ts) stays 5 in the normal case; a new
+`resolveVisibleCandidateCount` widens it to `SCANNER_UI_EXPANDED_CANDIDATE_LIMIT` (8) only when the
+score at the normal cutoff rank is still within the engine's OWN ambiguity margin
+(`SCORING_TIERS.highMinMargin`) of the top score — i.e. only when the ranking near the cutoff is
+genuinely flat/undifferentiated, never merely because confidence is LOW. A HIGH-tier match never
+expands: by construction it already has a ≥15-point margin over its runner-up, so the ranking is
+never flat at rank 5.
+
+### Photometric normalization — implemented, tested, evidence gathered, NOT wired into the default pipeline
+
+`src/domain/scanner/photometric.ts` (`normalizePhotometricRgba`): a luma-driven contrast stretch
+(same percentile method as `roi.ts`'s OCR normalization, applied identically to R/G/B so hue is
+preserved) plus a small, bounded (15%) blend of each pixel toward its own greyscale value —
+investigated because the Chandelure miss's symptom (top neighbours were unrelated foil/full-art
+cards) is consistent with DINOv2 weighting a card's overall color/foil texture more than its
+structural identity for highly reflective modern printings.
+
+**A real, bounded experiment was run** (`pnpm scanner:visual:benchmark:photometric`, new script,
+reuses the SAME cached 240-card corpus, the SAME real `rectify.ts`/`embed.mjs` pipeline the P79
+hard benchmark uses), comparing rectified-plain vs. rectified-then-photometric-normalized on the
+`tilted-offcenter` profile (geometry-only distortion, already near-ceiling — the correct bar here
+is "does not regress," not "improves"):
+
+| Method | TOP1 | TOP3 | TOP5 | n |
+|---|---|---|---|---|
+| Rectified (plain) | 93.3% | 98.3% | 98.8% | 240 |
+| Rectified + photometric-normalized | 94.6% | 97.5% | 98.3% | 240 |
+
+Result: a wash — +1.3pp TOP1, −0.8pp TOP3, −0.5pp TOP5, all well inside single-flip noise at
+n=240 (each point ≈0.4%). Non-regression is confirmed; no meaningful uplift signal exists on this
+corpus.
+
+**This experiment cannot test the actual hypothesis it was built to investigate**, and that
+limitation matters more than the numbers above: the P79/P80 benchmark corpus is keyed by
+TCGdex-style ids ("base1-1"), not the real catalog's Supabase UUIDs the hosted 19,501-card index
+uses, so there is no ground truth to measure whether photometric normalization reduces confusion
+among many visually-similar foil/full-art cards AT REAL INDEX SCALE — the actual failure mode the
+Chandelure miss represents. A 240-card corpus spanning six eras essentially cannot reproduce
+"which of several hundred rainbow-foil EX cards is this," because it does not contain several
+hundred rainbow-foil EX cards. **Decision: the tested, non-regressive utility function ships on
+this branch as available tooling; it is NOT wired into `visual-worker.ts`'s default embedding path
+without evidence that actually targets the failure mode.** A future session with Supabase catalog
+read access could build a real id-mapped diagnostic (map a handful of cached corpus TCGdex ids to
+their real catalog UUIDs, then search a real captured/augmented query against the REAL committed
+19,501-embedding index and inspect true rank) — this is the concrete follow-up, not a repeat of
+this session's geometry-only non-regression check.
+
+### Auxiliary visual signal (second/inner-art embedding) — REJECTED, same conclusion as P79 for a corrected reason
+
+P79 already declined to build a second embedding signal, reasoning from the geometry-only hard
+benchmark (93–99% across methods) that single-embedding brittleness was not evidenced. That
+reasoning was RIGHT about geometry robustness but measures the wrong axis for the Chandelure
+question: TOP1/TOP3/TOP5 against a 240-card pool tests whether a distorted query still resembles
+ITS OWN clean reference more than 239 others (robustness to capture noise), not whether it gets
+confused with a DIFFERENT, visually-similar card among thousands (discriminative power at scale) —
+the failure class an inner-art auxiliary signal exists to address. This session could not build a
+scale-appropriate corpus to test that axis either (same id-mapping gap as the photometric
+experiment above), so the auxiliary-signal question remains genuinely untested, not disproven.
+
+Given that, the decision to NOT build it this session rests on cost/risk, not on evidence it
+wouldn't help: a second visual signal requires re-embedding all 19,501 catalog cards against a
+DIFFERENT crop (a multi-hour, irreversible regeneration of committed index assets), doubling the
+worker's per-scan inference cost, and a new merge/rerank contract in `engine.ts` — all before any
+evidence exists that it fixes the actual problem. Building it now, ungated by evidence, is exactly
+the "blindly ship a complicated ensemble" the prompt warns against. The concrete prerequisite for
+revisiting this is the same real-index diagnostic described above — if it shows discriminative
+power degrading meaningfully as pool size grows toward 19,501 for foil/full-art cards specifically,
+an auxiliary signal becomes an evidence-justified next step, not before.

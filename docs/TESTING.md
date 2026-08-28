@@ -115,6 +115,37 @@ memory-only debug image object URLs (`getLastDebugImages`) being revoked on the 
 performance floor in one assertion). `tests/ui/scanner-diagnostics-format.test.ts` gained the new
 `CAPTURE_FRAME_DIMENSIONS`/`RECTIFICATION_USED`/`TOP_20_VISUAL_CANDIDATES` lines.
 
+**M15b exact-card matching (P80, D-097 addendum, in `pnpm test`).** Real-device misses on Mega
+Chandelure ex (absent from the top-20 visual candidates) and Shieldon (present at raw rank 6, never
+shown) shifted the gate to exact-card matching. `tests/ui/scanner-roi.test.ts` gained a describe
+block pinning `NAME_ROI_CANDIDATES`/`NUMBER_ROI_CANDIDATES` (unique ids, every fraction rect stays
+inside the card, both a modern bottom-left and a vintage bottom-right number layout are present).
+`tests/ui/scanner-analyze.test.ts` gained: the P80 "falls through to the modern/vintage candidate
+by score/parseability" pair (R1/R2), the full-frame-fallback test rewritten for the new
+2-candidates-per-field call topology (R3 — every candidate for both fields exhausted before the
+fallback runs), and a pure-function describe block for `scoreNameRoiCandidate`/
+`scoreNumberRoiCandidate`/`isNameRoiConfident`/`isNumberRoiConfident`/`looksLikeCollectorNumberText`
+— including the specific regression case that caught a real bug while building this (a long OCR
+string with a stray digit run structurally parsing as a printed id; the length guard closes it).
+`tests/ui/scanner-controller.test.ts` gained a new describe block (R4/R5) proving candidate
+expansion actually fires for a flat/tied ranking (9 identically-scored candidates → 8 shown, a
+6th-ranked card becomes selectable) and does NOT fire for a clearly-settled HIGH-tier match even
+with many extra low-scoring candidates in the pool. `tests/domain/scanner/photometric.test.ts`
+(new file) pins the photometric-normalization utility directly: deterministic, a flat image is
+returned unchanged, a narrow luma histogram stretches toward the full range, alpha is preserved
+exactly, and the bounded desaturation term actually reduces channel spread (full desaturation
+collapses R=G=B; zero desaturation keeps the spread).
+
+**Photometric-normalization experiment (`scripts/scanner-visual-benchmark/
+run-photometric-experiment.ts`, P80 §5, NOT part of `pnpm test` or CI — same exclusion reasoning as
+the other visual benchmarks).** `pnpm scanner:visual:benchmark:photometric` reuses the SAME cached
+240-card corpus and real `rectify.ts`/`embed.mjs` pipeline as the P79 hard benchmark, comparing
+plain-rectified vs. rectified-then-photometric-normalized embeddings on the geometry-only
+`tilted-offcenter` profile (a non-regression check, since that profile is already near-ceiling).
+Result and its honest limitation (the corpus cannot ground-truth-test the real foil/style-confusion
+hypothesis at full 19,501-card index scale): SCANNER_RESEARCH.md §7c,
+`ai_outputs/Claude_outputs/output_80.txt`.
+
 **Harder visual benchmark (`scripts/scanner-visual-benchmark/run-hard-benchmark.ts`, P79 §7, NOT
 part of `pnpm test` or CI — same exclusion reasoning as the P76 harness below).**
 `pnpm scanner:visual:benchmark:hard` composes a genuinely harder query than the P76 benchmark's

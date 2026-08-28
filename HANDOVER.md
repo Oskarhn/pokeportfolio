@@ -4,8 +4,48 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-**Last updated:** 2026-08-27 — **M15b visual-recognition hybrid scanner is still DRAFT PR #63
-(`feat/m15-scanner-integrated-p68`), NOT merged, NOT deployed.** P78's runtime fix let the owner
+**Last updated:** 2026-08-28 — **M15b visual-recognition hybrid scanner is still DRAFT PR #63
+(`feat/m15-scanner-integrated-p68`), NOT merged, NOT deployed.** P79 fixed camera resolution and
+added rectification; the owner's next real-iPhone retest still missed two concrete cards — Mega
+Chandelure ex (absent from the top-20 visual candidates entirely) and Shieldon (present at raw
+visual rank 6, never shown because the UI capped at 5) — with the debug image preview showing both
+OCR ROIs landing on the wrong region of a modern card. **P80 fixed the EXACT-CARD MATCHING causes**:
+
+1. **Adaptive OCR ROI.** The fixed name/number ROI fractions encoded the VINTAGE card layout (name
+   top-left, number bottom-right) — correct research for that layout, wrong layout for a modern
+   SM/SWSH/SV-era card (name spans the top edge, number sits bottom-LEFT). `analyze.ts` now tries a
+   bounded set of named layout candidates per field, scores each OCR result (name: confidence +
+   letter ratio; number: confidence + whether the text actually PARSES as a short id — the
+   strongest signal), and keeps the winner, with an early-exit once a candidate is confident so the
+   common case costs the same one-call-per-field the original pipeline had. A real permissiveness
+   bug in P67's `parseCollectorNumber` was found and closed with a length guard while building the
+   number scorer (a long garbage string with a stray digit run could otherwise structurally parse).
+2. **Candidate rescue.** The engine's own retained-candidate bound was 5 — the SAME number the UI
+   displayed — so Shieldon's true rank-6 card was discarded before the UI had any chance to show
+   it. Raised to 10 (retention only). The UI's 5-candidate display limit now widens to 8 ONLY when
+   the score at the normal cutoff is still within the engine's own ambiguity margin of the top
+   score (a genuinely flat ranking), never merely because confidence is low; a HIGH-tier match
+   never expands.
+3. **Photometric normalization** (`domain/scanner/photometric.ts`, contrast stretch + bounded
+   desaturation) was built, tested, and evaluated via a new bounded benchmark
+   (`pnpm scanner:visual:benchmark:photometric`) — result: a wash on the available corpus (93.3%→
+   94.6% TOP1, essentially noise at n=240), and the corpus structurally cannot test the real
+   hypothesis (foil/style confusion at the REAL 19,501-card index scale — the benchmark corpus uses
+   different ids than the hosted catalog). Shipped as tested, available tooling; NOT wired into the
+   default embedding pipeline without scale-appropriate evidence.
+4. **Auxiliary visual signal (second/inner-art embedding) — still REJECTED**, but for a corrected
+   reason: P79's geometry-only benchmark measures robustness to capture noise, not discriminative
+   power among many similar cards at real index scale — the actual axis this question needs. Genuinely
+   untested (same corpus limitation as point 3), not disproven; rejected this session on cost/risk
+   (re-embedding all 19,501 cards is multi-hour and irreversible) pending that real evidence.
+
+Full account: `ai_outputs/Claude_outputs/output_80.txt`, SCANNER_RESEARCH.md §7c, D-097's P80
+addendum in [DECISIONS.md](docs/DECISIONS.md). **IPHONE_DEVICE_GATE=PENDING_OWNER_RETEST** — next
+test is `/scan?scannerDebug=1&visualBackend=wasm` on Shieldon and Mega Chandelure ex again.
+
+Below is P79's own account, preserved for context (superseded by the above where they overlap):
+
+P78's runtime fix let the owner
 run the first real end-to-end iPhone scan: model ready, real embedding created, the full
 19,501-card index searched, real candidates returned — every one wrong, all LOW tier, similarities
 0.73–0.77. **P79 repaired the actual RECOGNITION-QUALITY causes** rather than tuning around them:

@@ -3017,3 +3017,70 @@ glare/shadow result is a photometric problem no crop/rectification change could 
 new evidence against the embedding model itself), the architecture (still LOCAL_INDEX, no
 pgvector), any migration (still 90), any financial semantic. No card was special-cased anywhere.
 Neither Shieldon nor Mega Chandelure ex was referenced in any changed source file.
+
+### P80 addendum — exact-card matching: adaptive OCR ROI, candidate rescue, photometric evaluation
+
+The owner's follow-up real-device facts (runtime/crop/rectification all confirmed working;
+Shieldon's true card sat at raw visual rank 6, never shown; Mega Chandelure ex absent from the top
+20 entirely; the debug image preview showed both OCR ROIs landing on the wrong card region) moved
+the gate to exact-card retrieval quality specifically. Full research: SCANNER_RESEARCH.md §7c.
+
+1. **Adaptive OCR ROI (`roi.ts`/`analyze.ts`).** The single fixed name/number ROI fractions encode
+   the VINTAGE Pokémon card layout (name top-left, number bottom-right) — correct research for that
+   layout, wrong layout for a modern SM/SWSH/SV-era card like Mega Chandelure ex, which prints the
+   name across most of the top edge and the number bottom-LEFT. `analyze.ts` now tries a bounded
+   set of named layout candidates per field, scores each OCR result (name: confidence + letter
+   ratio; number: confidence + whether the text actually PARSES as a short printed id — parseability
+   dominates raw confidence deliberately), and keeps the winner, with an early-exit once a candidate
+   is already confident so the common case costs the same one-call-per-field the original pipeline
+   had. `nameRoiId`/`numberRoiId` surface which candidate won in the debug diagnostics. A real
+   permissiveness bug in P67's own `parseCollectorNumber` (folds short OCR noise, but a long garbage
+   string with a stray digit run can still structurally parse) was found and closed with a length
+   guard (`looksLikeCollectorNumberText`) while building the number-field scorer — otherwise a
+   number-ROI candidate that happened to land on prose could still "win" by accident.
+
+2. **Candidate rescue — retrieval depth and display depth are now separate knobs.** The engine
+   previously bounded its OWN retained candidate array to 5, the SAME number the UI displayed — so
+   a correct card at raw rank 6 (Shieldon) was discarded by the engine itself before the UI had any
+   chance to show it, independent of any UI logic. `SCORING_TIERS.maxReturnedCandidates` raised to
+   10 (retention only; tier/margin math is unaffected, since it always reads the true top-2
+   regardless of how many the array retains). The UI's own 5-candidate display limit
+   (`SCANNER_UI_CANDIDATE_LIMIT`) widens to 8 (`SCANNER_UI_EXPANDED_CANDIDATE_LIMIT`) ONLY when the
+   score at the normal cutoff rank is still within the engine's own ambiguity margin
+   (`SCORING_TIERS.highMinMargin`) of the top score — a genuinely flat/undifferentiated ranking, not
+   merely "confidence is LOW." A HIGH-tier match never expands (it already has a ≥15-point margin
+   over its runner-up by construction, so the ranking is never flat at rank 5).
+
+3. **Photometric normalization — built, tested, evaluated, NOT wired into the default pipeline.**
+   `src/domain/scanner/photometric.ts` (luma-driven contrast stretch + a bounded 15% blend toward
+   greyscale) was investigated because the Chandelure miss's symptom (unrelated foil/full-art
+   neighbours) is consistent with the embedding weighting color/foil texture over structure for
+   highly reflective printings. A real bounded experiment (`pnpm scanner:visual:benchmark:
+   photometric`, new script, same cached 240-card corpus and real rectify/embed pipeline as the P79
+   hard benchmark) on the geometry-only `tilted-offcenter` profile showed a wash (plain 93.3%/98.3%/
+   98.8% vs. normalized 94.6%/97.5%/98.3% TOP1/3/5, n=240 — differences inside single-flip noise):
+   non-regression confirmed, no meaningful uplift on THIS corpus. Critically, this corpus cannot
+   test the actual hypothesis: it is keyed by TCGdex-style ids, not the real catalog's UUIDs the
+   hosted 19,501-card index uses, so there is no way to ground-truth whether normalization reduces
+   confusion among many visually-similar foil cards at REAL index scale — the failure class the
+   Chandelure miss actually represents. Decision: ship the tested, safe utility as available
+   tooling; do not enable it by default without evidence tied to the real failure mode.
+
+4. **Auxiliary visual signal (second/inner-art embedding) — REJECTED, with a corrected reason.**
+   P79 declined this based on the geometry-only benchmark (93–99% across methods) showing no
+   evidence of single-embedding brittleness. That conclusion was right about robustness to capture
+   noise but measures the wrong axis for Chandelure: TOP1/3/5 against a 240-card pool tests whether
+   a distorted query still resembles its OWN reference more than 239 others, not whether it gets
+   confused with a DIFFERENT similar-looking card among thousands — genuinely untested, not
+   disproven, by either session's benchmark (same id-mapping gap as point 3). The decision to not
+   build it THIS session rests on cost/risk under that uncertainty: re-embedding all 19,501 catalog
+   cards against a second crop is a multi-hour, irreversible regeneration of committed index assets,
+   doubles per-scan worker inference cost, and needs a new merge/rerank contract — not justified
+   without evidence it fixes the actual problem. The concrete prerequisite for revisiting this is a
+   real-index-scale diagnostic (map a handful of cached-corpus ids to real catalog UUIDs, search a
+   real query against the actual committed 19,501-embedding index, inspect true rank as the
+   candidate pool of visually-similar cards grows) — described but not built this session.
+
+**Not changed:** the model, the architecture, any migration (still 90), any financial semantic, the
+committed hosted index. No card was special-cased anywhere — every fix targets a layout FAMILY
+(vintage vs. modern) or a scoring/retrieval RULE, never a specific card id or name.

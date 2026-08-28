@@ -10,6 +10,37 @@ they were**.
 
 ## [Unreleased]
 
+### Fixed — 2026-08-28 — M15b scanner: exact-card matching, adaptive OCR ROI, candidate rescue (P80, D-097 addendum, on PR #63, DRAFT — not merged, not deployed)
+
+P79's camera-resolution and rectification fixes still left two concrete real-device misses: Mega
+Chandelure ex (absent from the top-20 visual candidates) and Shieldon (present at raw rank 6, never
+shown). Investigated and fixed the actual causes:
+
+- **Adaptive OCR ROI.** The fixed name/number ROI fractions encoded the vintage card layout (name
+  top-left, number bottom-right); modern SM/SWSH/SV-era cards print the name across the top edge
+  and the number bottom-left. `analyze.ts` now tries a bounded set of named layout candidates per
+  field, scores each by OCR confidence plus field-specific parseability, and keeps the winner, with
+  an early-exit once a candidate is confident (same one-call-per-field cost as before in the common
+  case). Closed a real permissiveness bug in `parseCollectorNumber` (a long garbage OCR string with
+  a stray digit run could structurally parse as an id) with a length guard.
+- **Candidate rescue.** The engine's own candidate retention bound (5) matched the UI's display
+  bound exactly, so a correct card at raw rank 6 was discarded before the UI could ever show it.
+  Retention raised to 10; the UI's display limit widens from 5 to 8 only when the ranking near the
+  cutoff is genuinely flat (within the engine's own ambiguity margin), never merely for low
+  confidence — a HIGH-tier match never expands.
+- **Photometric normalization** (`domain/scanner/photometric.ts`) built, tested, and evaluated via
+  a new bounded benchmark (`pnpm scanner:visual:benchmark:photometric`): a wash on the available
+  corpus, which cannot ground-truth-test the real foil/style-confusion hypothesis at full index
+  scale. Shipped as tested tooling; not wired into the default pipeline.
+- **Auxiliary visual signal** (second/inner-art embedding) evaluated and rejected again, with a
+  corrected rationale: the existing benchmarks measure robustness to capture noise, not
+  discriminative power at scale — genuinely untested, not disproven; rejected this session on
+  cost/risk (re-embedding all 19,501 cards is multi-hour and irreversible) pending real evidence.
+
+Full account: `ai_outputs/Claude_outputs/output_80.txt`. Unit 789/789 (+12 new); typecheck/lint/
+format clean; build/platform-verifier/E2E green. DB gates not run this session (no local
+Docker/Supabase available); zero DB/migration/RPC files touched.
+
 ### Fixed — 2026-08-27 — M15b scanner: real-device recognition quality repair (P79, D-097 addendum, on PR #63, DRAFT — not merged, not deployed)
 
 The first real iPhone scan with a working runtime (P78) returned real candidates — all wrong, all
