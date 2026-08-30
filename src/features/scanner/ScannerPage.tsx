@@ -31,6 +31,7 @@ import {
   hasMediaDevicesSupport,
 } from './errors'
 import { initialScannerState, scannerReducer } from './state'
+import { setScannerBatchSize } from './unsaved-work'
 import {
   SCANNER_ORIGINS,
   todayIso,
@@ -219,6 +220,17 @@ export function ScannerPage() {
     window.addEventListener('beforeunload', onBeforeUnload)
     return () => {
       window.removeEventListener('beforeunload', onBeforeUnload)
+    }
+  }, [state.batch.length])
+
+  // P83/D-100: mirrors the batch size into a module-level flag build-freshness-runtime.ts reads
+  // before an automatic reload (a stale-deployment/chunk-load-failure signal must never discard an
+  // unsaved batch the way a plain reload's native beforeunload prompt cannot prevent
+  // programmatically). Cleared on unmount — leaving the route always disposes the batch either way.
+  useEffect(() => {
+    setScannerBatchSize(state.batch.length)
+    return () => {
+      setScannerBatchSize(0)
     }
   }, [state.batch.length])
 

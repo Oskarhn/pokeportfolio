@@ -9,6 +9,7 @@
  * {@link ScannerDiagnostics}, which itself never carries any of those.
  */
 import type { ScannerDiagnostics } from './contract'
+import { APP_BUILD_SHA, APP_BUILD_TIME, SCANNER_SCHEMA_VERSION } from '../../platform/build-info'
 
 const EMPTY = '—'
 
@@ -18,6 +19,12 @@ function num(value: number | null): string {
 
 export function formatScannerDiagnostics(d: ScannerDiagnostics): string {
   const lines: string[] = [
+    // P83 §15/§21, D-100: MUST be verified against the branch/PR head before any field below is
+    // trusted — a real-iPhone P82 session pasted an OLD diagnostics schema from a stale cached
+    // deployment with no way to notice until every named field turned out missing.
+    `APP_BUILD_SHA=${APP_BUILD_SHA}`,
+    `APP_BUILD_TIME=${APP_BUILD_TIME}`,
+    `SCANNER_SCHEMA_VERSION=${String(SCANNER_SCHEMA_VERSION)}`,
     `FAST_SCANNER_STATE=${d.fastScannerState}`,
     `OCR_RUNTIME_STATE=${d.ocrRuntimeState}`,
     `ENHANCED_VISUAL_STATE=${d.enhancedVisualState}`,

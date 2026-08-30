@@ -4,7 +4,15 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider } from '@tanstack/react-router'
 import { AuthProvider } from './auth/AuthProvider'
 import { router } from './router'
+import { initBuildFreshnessWatch } from './platform/build-freshness-runtime'
 import './styles/index.css'
+
+// P83/D-100: subscribes to the zero-cost signals that a newer deployment than this bundle is
+// already live (a new Service Worker taking control, or a lazy-chunk import failing because this
+// deployment's file no longer exists) — see StaleDeploymentBanner.tsx for the resulting UI.
+// Started before the first render so a chunk-load failure during the VERY FIRST route transition
+// is still caught.
+initBuildFreshnessWatch()
 
 const queryClient = new QueryClient()
 

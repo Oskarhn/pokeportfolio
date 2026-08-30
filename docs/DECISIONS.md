@@ -3303,3 +3303,89 @@ unverified addition, disclosed as such.
 **Not changed:** `engine.ts`'s scoring model (no hash-evidence channel added), the committed 19,501-
 card DINO index, any migration (still 90), any financial semantic, P80's adaptive-ROI candidate
 selection logic itself (only a new preprocessing axis was added around it).
+
+## D-100 — Build identity, stale-deployment detection and chunk-load-failure recovery (P83)
+
+**Motivated by:** a real-iPhone P82 test returned an OLD diagnostics schema (missing every
+`WORKER_BOOTED`/`FAST_SCANNER_STATE`/etc. field P82 added) and OLD capture dimensions
+(`CAPTURE_CROP_DIMENSIONS=252x352` instead of P79's `746x1044`) — proof the phone was executing
+stale cached JavaScript, not current-code regression. After the scan, pressing the scanner's X
+button produced a full-page crash: `'text/html' is not a valid JavaScript MIME type`. Root cause,
+reproduced directly against the live PR #63 preview and this repo's own `vite preview` server: with
+no top-level `404.html`, Cloudflare Pages (and, separately, `vite preview`'s own dev-only SPA
+fallback) rewrites ANY request that doesn't match a real file to `index.html` at `200 text/html` —
+including a content-hashed chunk a redeploy already removed. The X button navigates to `/portfolio`
+(a lazy `React.lazy` route); a tab still running an OLDER page's module graph requests that OLD
+chunk hash, gets HTML back, and the browser's module loader rejects with the MIME-type error the
+owner saw. `curl` against PR #63's preview confirmed this directly: `GET
+/assets/PortfolioPage-<nonexistent-hash>.js` → `200 text/html`, `Content-Length` matching the
+index.html shell.
+
+### 1. Cloudflare `_redirects`: asset-shaped paths get a real 404, navigation paths keep the SPA fallback
+
+`vite.config.ts`'s `buildAssetFallbackRedirects()` emits `dist/_redirects` at build time (same
+generated-not-checked-in pattern as `_headers`): every `/*.<ext>` pattern for
+js/mjs/css/wasm/map/json/bin/gz/webmanifest routes to `public/404.html` at status 404, ordered
+BEFORE a trailing `/* → /index.html 200` catch-all. A currently-deployed file is served as itself
+regardless (Cloudflare/`vite preview` both check real static files before consulting
+`_redirects`/the SPA fallback) — verified directly: the platform build check
+(`scripts/verify-scanner-platform-build.mjs`) asserts the rule ordering and shape, and a live-preview
+`curl` after this shipped (output_83.txt) confirms an EXISTING hashed asset is unaffected. `404.html`
+is a plain, honest error page — never the app shell — so a stale request never again masquerades as
+malformed JavaScript.
+
+### 2. Immutable build identity, exposed at the very top of scanner diagnostics
+
+`vite.config.ts` injects `__APP_BUILD_SHA__` (Cloudflare Pages' own `CF_PAGES_COMMIT_SHA` when
+building on Pages, else `git rev-parse HEAD` locally) and `__APP_BUILD_TIME__`, following the exact
+`__APP_VERSION__`/`define` pattern already established. `src/platform/build-info.ts` re-exports
+these plus `SCANNER_SCHEMA_VERSION`; `diagnostics-format.ts` prints `APP_BUILD_SHA`/`APP_BUILD_TIME`/
+`SCANNER_SCHEMA_VERSION` as the FIRST three lines of every copied scanner diagnostics dump — an
+owner test must verify `APP_BUILD_SHA` against the PR head before trusting anything else in the
+paste, closing exactly the gap the stale P82 diagnostics exposed.
+
+### 3. Stale-client detection: two zero/near-zero-cost signals, no polling
+
+`src/platform/build-freshness-runtime.ts`'s `initBuildFreshnessWatch()` (started unconditionally in
+`main.tsx`, before first render) subscribes to: (a) Vite's own `vite:preloadError` event — fired by
+the `__vitePreload` wrapper every real `React.lazy` chunk in `router.tsx` already goes through when
+a dynamic import fails, cross-browser by construction (vite.dev/guide/build.html), independent of
+native `unhandledrejection` propagation; (b) `navigator.serviceWorker`'s `controllerchange` event, a
+real newer deployment taking over an already-open tab, at zero network cost. A THIRD, defense-in-
+depth signal — a generic `unhandledrejection` matching `isChunkLoadFailure`'s message patterns — and
+a rate-limited (`checkForNewDeployment`, ≤1/60s) fetch of a tiny generated `build-meta.json`
+(`Cache-Control: no-store`, excluded from the Workbox precache glob) round out coverage for engines/
+paths that bypass Vite's own instrumentation.
+
+**Real bug caught and fixed before shipping:** the first `controllerchange` implementation reacted
+to EVERY controllerchange unconditionally — including the one Workbox's `clientsClaim()` fires the
+FIRST time a fresh page ever becomes controlled by a Service Worker (a transition from no controller
+to a controller, not an update replacing one). This is normal on every first install, not staleness,
+and reloading the page in response to it broke two unrelated E2E specs mid-test (`pnpm test:e2e`)
+before being caught. Fixed by tracking whether a controller already existed when the watch started;
+only a SUBSEQUENT controllerchange (a genuinely different Service Worker replacing one already
+active) triggers the recovery policy. Pinned by a dedicated regression test
+(`tests/ui/build-freshness-runtime.test.ts`).
+
+### 4. Recovery policy: one controlled reload, gated on unsaved scanner work, never a loop
+
+`src/platform/build-freshness.ts`'s `resolveStaleDeploymentAction` (pure, dependency-injected, same
+discipline as `domain/scanner/visual-backend-selection.ts`) reloads immediately when
+`hasUnsavedScannerWork()` (`src/features/scanner/unsaved-work.ts`, mirroring ScannerPage's
+in-memory batch — the app's only real "unsaved work" state) is false AND no automatic reload was
+attempted within the last 15 seconds (`RELOAD_LOOP_GUARD_MS` — no reload loops). Otherwise it
+surfaces `StaleDeploymentBanner.tsx` (mounted once in `AppShell`) with an explicit "save/cancel your
+scan, then reload" prompt and a manual retry button, rather than discarding a nonempty batch
+silently or looping forever against a persistently broken deployment. `router.tsx`'s
+`defaultErrorComponent` gives the SAME distinct message (instead of TanStack Router's generic
+"Something went wrong!" default — the screen the owner actually saw) for a chunk-load failure that
+reaches React as a render error rather than a window-level event, without changing the error UX for
+any other kind of error.
+
+**Not changed:** P80/P81/P82's scanner recognition logic, the committed 19,501-card DINO index, any
+migration (still 90), any financial semantic. Verified end-to-end with a real browser
+(`tests/e2e/stale-deployment.spec.ts`, Chromium AND WebKit): a genuinely missing chunk fails to
+import in both engines, and the app recovers (reload, never a raw MIME-type crash) via the SAME
+`vite:preloadError` production code path in both — chosen over a raw unhandled-rejection trigger
+after finding, and disclosing, that WebKit does not surface an `unhandledrejection` DOM event for a
+rejection from `page.evaluate()`-injected code the way Chromium does.

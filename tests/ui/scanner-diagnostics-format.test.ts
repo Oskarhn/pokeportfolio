@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { formatScannerDiagnostics } from '../../src/features/scanner/diagnostics-format'
 import type { ScannerDiagnostics } from '../../src/features/scanner/contract'
+import { APP_BUILD_SHA } from '../../src/platform/build-info'
 
 function diagnostics(overrides: Partial<ScannerDiagnostics> = {}): ScannerDiagnostics {
   return {
@@ -184,6 +185,18 @@ describe('formatScannerDiagnostics', () => {
     expect(text).toContain('TOP_VISUAL_CANDIDATES:')
     expect(text).toContain('FINAL_RERANKED_CANDIDATES:')
     expect(text).not.toContain('TOP_20_VISUAL_CANDIDATES:')
+  })
+
+  it('P83 S1/S2/§15: exposes the build SHA, and it appears before every scanner field', () => {
+    const text = formatScannerDiagnostics(diagnostics())
+    expect(text).toContain(`APP_BUILD_SHA=${APP_BUILD_SHA}`)
+    expect(APP_BUILD_SHA).not.toBe('unknown')
+    expect(text).toContain('APP_BUILD_TIME=')
+    expect(text).toContain('SCANNER_SCHEMA_VERSION=')
+    const shaIndex = text.indexOf('APP_BUILD_SHA=')
+    const fastStateIndex = text.indexOf('FAST_SCANNER_STATE=')
+    expect(shaIndex).toBeGreaterThanOrEqual(0)
+    expect(shaIndex).toBeLessThan(fastStateIndex)
   })
 
   it('never contains anything resembling a secret/token field name', () => {

@@ -22,11 +22,20 @@ const dist = fileURLToPath(new URL('../dist/', import.meta.url))
 
 let headersFile
 let swFile
+let redirectsFile
+let buildMetaFile
+let notFoundFile
 try {
   headersFile = readFileSync(join(dist, '_headers'), 'utf8')
   swFile = readFileSync(join(dist, 'sw.js'), 'utf8')
+  redirectsFile = readFileSync(join(dist, '_redirects'), 'utf8')
+  buildMetaFile = readFileSync(join(dist, 'build-meta.json'), 'utf8')
+  notFoundFile = readFileSync(join(dist, '404.html'), 'utf8')
 } catch {
-  console.error('dist/_headers or dist/sw.js not found — run `pnpm build` first.')
+  console.error(
+    'dist/_headers, dist/sw.js, dist/_redirects, dist/build-meta.json or dist/404.html not ' +
+      'found — run `pnpm build` first.',
+  )
   process.exit(1)
 }
 
@@ -177,6 +186,57 @@ function cspDirectives(csp) {
     'no network-first style runtime strategy exists in the worker',
     dangerousStrategies.length === 0,
     dangerousStrategies.length ? dangerousStrategies.join(', ') : 'none',
+  )
+}
+
+// ── dist/_redirects, dist/build-meta.json, dist/404.html (P83, D-100) ────────────────────────────
+{
+  const lines = redirectsFile
+    .split('\n')
+    .filter((line) => line.trim() !== '' && !line.startsWith('#'))
+  const assetLines = lines.filter((line) => line.startsWith('/*.'))
+  const catchAllIndex = lines.findIndex((line) => line.startsWith('/*  '))
+
+  record(
+    '_redirects defines a real-404 rule for every asset extension a lazy chunk can use',
+    ['js', 'mjs', 'css', 'wasm', 'json', 'bin'].every((ext) =>
+      assetLines.some((line) => line.startsWith(`/*.${ext} `)),
+    ),
+    assetLines.join(' | ') || '(none)',
+  )
+  record(
+    'every asset rule in _redirects targets 404.html at status 404, before the SPA catch-all',
+    catchAllIndex > -1 &&
+      assetLines.every((line) => /\/404\.html\s+404\s*$/.test(line)) &&
+      assetLines.every((line) => lines.indexOf(line) < catchAllIndex),
+    `catch-all at line ${String(catchAllIndex)}`,
+  )
+  record(
+    '_redirects still falls back real navigation paths to index.html at 200',
+    catchAllIndex > -1 && /\/index\.html\s+200\s*$/.test(lines[catchAllIndex] ?? ''),
+    lines[catchAllIndex] ?? '(no catch-all found)',
+  )
+
+  let buildMeta = null
+  try {
+    buildMeta = JSON.parse(buildMetaFile)
+  } catch {
+    buildMeta = null
+  }
+  record(
+    'build-meta.json is valid JSON carrying a non-empty commit sha',
+    buildMeta !== null && typeof buildMeta.sha === 'string' && buildMeta.sha.length > 0,
+    buildMeta ? JSON.stringify(buildMeta) : '(invalid JSON)',
+  )
+  record(
+    '/build-meta.json is marked no-store in _headers, never HTTP-cached',
+    /\/build-meta\.json\s*\n\s*Cache-Control:\s*no-store/.test(headersFile),
+    /\/build-meta\.json[\s\S]{0,60}/.exec(headersFile)?.[0] ?? '(no rule found)',
+  )
+  record(
+    '404.html exists as a real (non-app-shell) error page — never the SPA index.html content',
+    notFoundFile.length > 0 && !notFoundFile.includes('id="root"'),
+    `${String(notFoundFile.length)} bytes`,
   )
 }
 

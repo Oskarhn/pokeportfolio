@@ -5,12 +5,32 @@ import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { execSync } from 'node:child_process'
 
 // Single source of truth for the app version shown in Profile's footer (M7.1 prompt §65) —
 // package.json, not a hardcoded string that drifts from it.
 const packageJson = JSON.parse(
   readFileSync(fileURLToPath(new URL('./package.json', import.meta.url)), 'utf-8'),
 ) as { version: string }
+
+/**
+ * Immutable build identity (P83, D-100) — the owner's real-iPhone P82 report turned out to be a
+ * STALE deployment silently running old JavaScript (old diagnostics schema, old capture
+ * dimensions); nothing in the app could prove which commit was actually running. Cloudflare Pages
+ * sets `CF_PAGES_COMMIT_SHA` for every Pages build; a local `pnpm build` (no Pages env) falls back
+ * to the checked-out commit so the value is never fabricated either way.
+ */
+function resolveBuildSha(): string {
+  const pagesSha = process.env.CF_PAGES_COMMIT_SHA
+  if (pagesSha) return pagesSha
+  try {
+    return execSync('git rev-parse HEAD', { encoding: 'utf-8' }).trim()
+  } catch {
+    return 'unknown'
+  }
+}
+const appBuildSha = resolveBuildSha()
+const appBuildTime = new Date().toISOString()
 
 /**
  * The Content-Security-Policy served by `_headers`, derived from the Supabase URL this bundle was
@@ -120,8 +140,100 @@ function cloudflareHeaders(): Plugin {
 # ordinary app files (JS/CSS/HTML), which keep Cloudflare's default hashed-asset behaviour.
 /scanner-assets/*
   Cache-Control: public, max-age=31536000, immutable
+
+# P83/D-100: this file exists ONLY so a running client can ask "does a newer deployment than mine
+# exist?" (build-freshness-runtime.ts) without polling every few seconds — an explicit no-store
+# means every check reaches the real edge response for THIS deployment, never a stale HTTP-cached
+# copy answering with an old commit sha.
+/build-meta.json
+  Cache-Control: no-store
 `
       this.emitFile({ type: 'asset', fileName: '_headers', source: headers })
+    },
+  }
+}
+
+/**
+ * Tiny, stable-path, never-content-hashed JSON file a running client fetches (with `cache:
+ * 'no-store'`, belt-and-suspenders against the `_headers` rule above) to learn the SHA of the
+ * deployment CURRENTLY serving this hostname — compared against `__APP_BUILD_SHA__`
+ * (build-info.ts) to answer "is a newer deployment already live?" (P83 §6, D-100). Deliberately
+ * excluded from the Workbox precache glob (globPatterns below lists extensions, `.json` is not
+ * one of them) so the Service Worker never hands back a cached answer for this specific request.
+ */
+function cloudflareBuildMeta(): Plugin {
+  return {
+    name: 'pokeportfolio:build-meta',
+    apply: 'build',
+    generateBundle() {
+      const meta = JSON.stringify({ sha: appBuildSha, builtAt: appBuildTime })
+      this.emitFile({ type: 'asset', fileName: 'build-meta.json', source: meta })
+    },
+  }
+}
+
+/**
+ * File extensions a browser only ever requests as a same-origin build artifact (a lazy route
+ * chunk, a stylesheet, a WASM/ONNX binary, a sourcemap) — never as a client-side navigation path,
+ * which this app's router keeps extension-free throughout (router.tsx). Exported for
+ * tests/config/asset-fallback-redirects.test.ts.
+ */
+export const ASSET_FALLBACK_EXTENSIONS = [
+  'js',
+  'mjs',
+  'css',
+  'wasm',
+  'map',
+  'json',
+  'bin',
+  'gz',
+  'webmanifest',
+]
+
+/**
+ * Emits Cloudflare Pages' `_redirects` file (P83, D-100).
+ *
+ * Root cause, reproduced directly against this project's own deployed preview: with no top-level
+ * `404.html`, Cloudflare Pages treats ANY request that doesn't match a real file as SPA
+ * navigation and rewrites it to `index.html` at `200 text/html` — including a content-hashed
+ * chunk a redeploy has already removed. A tab still running an OLDER page's module graph (it was
+ * open before the redeploy, or simply never reloaded) then executes `import('/assets/OldChunk-
+ * <hash>.js')` against that URL, receives HTML back, and the browser's module loader rejects with
+ * "'text/html' is not a valid JavaScript MIME type" — exactly the real-iPhone failure the owner
+ * hit pressing the scanner's X button (P83 §0/§3).
+ *
+ * These rules intercept every asset-shaped path FIRST, ahead of the trailing catch-all, so a
+ * genuinely missing asset gets a real 404 (`public/404.html`, a plain error page — never the app
+ * shell) instead of malformed module content. The catch-all after it preserves ordinary SPA
+ * behaviour for real navigation paths (deep links, a hard refresh on any client-side route).
+ * Cloudflare serves an EXISTING file at its own path before consulting `_redirects` at all, so a
+ * currently-deployed chunk is unaffected — verified directly against the live preview after this
+ * file first shipped (see output_83.txt).
+ */
+export function buildAssetFallbackRedirects(): string {
+  const assetRules = ASSET_FALLBACK_EXTENSIONS.map((ext) => `/*.${ext}  /404.html  404`).join('\n')
+  return `# Generated by vite.config.ts. Do not edit by hand — edit the plugin.
+#
+# P83/D-100: a request for a build artifact that no longer exists on this deployment (a stale
+# client's OLD chunk hash after a redeploy) must return a real 404, never the app shell — see
+# buildAssetFallbackRedirects's own comment in vite.config.ts for the full failure chain.
+${assetRules}
+
+# Everything else is a client-side route — TanStack Router owns it from here.
+/*  /index.html  200
+`
+}
+
+function cloudflareRedirects(): Plugin {
+  return {
+    name: 'pokeportfolio:cloudflare-redirects',
+    apply: 'build',
+    generateBundle() {
+      this.emitFile({
+        type: 'asset',
+        fileName: '_redirects',
+        source: buildAssetFallbackRedirects(),
+      })
     },
   }
 }
@@ -202,11 +314,15 @@ export const visualAssetRuntimeCache = {
 export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(packageJson.version),
+    __APP_BUILD_SHA__: JSON.stringify(appBuildSha),
+    __APP_BUILD_TIME__: JSON.stringify(appBuildTime),
   },
   plugins: [
     react(),
     tailwindcss(),
     cloudflareHeaders(),
+    cloudflareRedirects(),
+    cloudflareBuildMeta(),
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['icons/apple-touch-icon.png'],

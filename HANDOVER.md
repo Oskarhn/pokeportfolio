@@ -5,6 +5,58 @@ Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) a
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
 **Last updated:** 2026-08-30 — **M15b visual-recognition hybrid scanner is still DRAFT PR #63
+(`feat/m15-scanner-integrated-p68`), NOT merged, NOT deployed.** A real-iPhone P82 retest returned
+an OLD diagnostics schema (none of P82's new `WORKER_BOOTED`/`FAST_SCANNER_STATE`/etc. fields) and
+OLD capture dimensions (`252x352` instead of P79's `746x1044`) — proof the phone was running STALE
+cached JavaScript, not a code regression. Pressing the scanner's X button then crashed with `'text/
+html' is not a valid JavaScript MIME type`. **P83 root-caused and fixed this: with no top-level
+`404.html`, Cloudflare Pages (and, separately, `vite preview`'s own dev-only fallback) rewrites ANY
+missing path — including a redeploy-removed hashed chunk — to `index.html` at `200 text/html`;
+reproduced directly via `curl` against BOTH the live PR #63 preview and this repo's own `vite
+preview`.** Full account: D-100 in [DECISIONS.md](docs/DECISIONS.md),
+`ai_outputs/Claude_outputs/output_83.txt`.
+
+1. **Cloudflare `_redirects` now routes every asset-shaped path (`*.js/mjs/css/wasm/map/json/bin/
+   gz/webmanifest`) to a real `404.html` at status 404, ordered before the SPA catch-all** —
+   `vite.config.ts`'s `buildAssetFallbackRedirects()`, same generated-not-checked-in pattern as
+   `_headers`. An existing deployed asset is unaffected (static files are matched before
+   `_redirects` is consulted); only a genuinely missing one stops masquerading as HTML.
+2. **Immutable build identity, printed FIRST in every scanner diagnostics dump**:
+   `__APP_BUILD_SHA__`/`__APP_BUILD_TIME__` (Cloudflare's own `CF_PAGES_COMMIT_SHA` when building
+   on Pages, else `git rev-parse HEAD`) plus `SCANNER_SCHEMA_VERSION`
+   (`src/platform/build-info.ts`) — an owner test must verify `APP_BUILD_SHA` against the PR head
+   before trusting anything else in a paste.
+3. **Stale-client detection with zero polling**: Vite's own `vite:preloadError` event (fired by the
+   `__vitePreload` wrapper every real lazy route already goes through, cross-browser by
+   construction) plus a GUARDED `controllerchange` listener — guarded because the FIRST
+   `controllerchange` fires on every fresh Service Worker install too (not staleness); reacting to
+   it unconditionally was a real bug this session caught by breaking two unrelated E2E specs before
+   being fixed. A rate-limited `build-meta.json` check and a generic `unhandledrejection` listener
+   round out coverage.
+4. **Recovery is one controlled reload, gated on unsaved scanner work, never a loop**
+   (`resolveStaleDeploymentAction`, `RELOAD_LOOP_GUARD_MS=15s`) — a nonempty in-memory scanner batch
+   blocks the automatic path and shows `StaleDeploymentBanner` instead; `router.tsx`'s
+   `defaultErrorComponent` gives the same honest message in place of TanStack Router's generic
+   "Something went wrong!" (the screen the owner actually saw) for a chunk failure that reaches
+   React as a render error.
+
+**Preserved, NOT touched this session:** every P78–P82 scanner recognition/prewarm fix, the full
+19,501-card DINO index, `engine.ts`'s scoring model. Zero database/migration/RPC files changed
+(`DATABASE_MIGRATIONS=90`, unchanged). Gates: 871/871 unit (up from 845), typecheck/lint(0
+errors)/format clean, build green, 18/18 platform verifier (up from 12, new `_redirects`/
+`build-meta.json`/`404.html` checks), 68/68 E2E (up from 64, new
+`tests/e2e/stale-deployment.spec.ts` on BOTH Chromium and WebKit). DB/M13/M16 not re-run (Docker
+unavailable, same standing constraint since P75) — diff touches zero DB files.
+
+**OWNER_NEXT_ACTION:** open the VERIFIED deployment-specific P83 preview (not the mutable branch
+alias) in Safari, open `?scannerDebug=1`, copy diagnostics, confirm `APP_BUILD_SHA` equals the P83
+FINAL_HEAD BEFORE trusting anything else, then exit/re-enter the scanner and repeat X/back
+navigation several times before resuming any recognition-quality testing. See output_83.txt §21 for
+the full protocol.
+
+Below is P82's own account, preserved for context (superseded by the above where they overlap):
+
+**Last updated:** 2026-08-30 — **M15b visual-recognition hybrid scanner is still DRAFT PR #63
 (`feat/m15-scanner-integrated-p68`), NOT merged, NOT deployed.** P81's cold-start fixes did NOT
 close the gap: a real-iPhone retest still showed `VISUAL_MODEL_STATE=loading` for over a minute
 with every phase-timing field reading "—", and a Shieldon scan that OCR also failed to identify
