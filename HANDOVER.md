@@ -17,10 +17,15 @@ preview`.** Full account: D-100 in [DECISIONS.md](docs/DECISIONS.md),
 `ai_outputs/Claude_outputs/output_83.txt`.
 
 1. **Cloudflare `_redirects` now routes every asset-shaped path (`*.js/mjs/css/wasm/map/json/bin/
-   gz/webmanifest`) to a real `404.html` at status 404, ordered before the SPA catch-all** —
+   gz/webmanifest`) to a real 404, ordered before the SPA catch-all** —
    `vite.config.ts`'s `buildAssetFallbackRedirects()`, same generated-not-checked-in pattern as
    `_headers`. An existing deployed asset is unaffected (static files are matched before
-   `_redirects` is consulted); only a genuinely missing one stops masquerading as HTML.
+   `_redirects` is consulted); only a genuinely missing one stops masquerading as HTML. **The error
+   page is named `missing-asset.html`, deliberately NOT `404.html`** — a real regression, caught
+   live against the PR #63 preview before this shipped: a file literally named `404.html` disables
+   Cloudflare's automatic SPA rewrite for EVERY route project-wide (independent of `_redirects`),
+   which broke `/login`/`/invite/...`/`/admin/invitations` (`deployment-check.mjs` caught it, 3
+   failures). Full account and two new regression tests: D-100.
 2. **Immutable build identity, printed FIRST in every scanner diagnostics dump**:
    `__APP_BUILD_SHA__`/`__APP_BUILD_TIME__` (Cloudflare's own `CF_PAGES_COMMIT_SHA` when building
    on Pages, else `git rev-parse HEAD`) plus `SCANNER_SCHEMA_VERSION`
@@ -42,11 +47,14 @@ preview`.** Full account: D-100 in [DECISIONS.md](docs/DECISIONS.md),
 
 **Preserved, NOT touched this session:** every P78–P82 scanner recognition/prewarm fix, the full
 19,501-card DINO index, `engine.ts`'s scoring model. Zero database/migration/RPC files changed
-(`DATABASE_MIGRATIONS=90`, unchanged). Gates: 871/871 unit (up from 845), typecheck/lint(0
-errors)/format clean, build green, 18/18 platform verifier (up from 12, new `_redirects`/
-`build-meta.json`/`404.html` checks), 68/68 E2E (up from 64, new
-`tests/e2e/stale-deployment.spec.ts` on BOTH Chromium and WebKit). DB/M13/M16 not re-run (Docker
-unavailable, same standing constraint since P75) — diff touches zero DB files.
+(`DATABASE_MIGRATIONS=90`, unchanged). Gates: 872/872 unit (up from 845), typecheck/lint(0
+errors)/format clean, build green, 19/19 platform verifier (up from 12, new `_redirects`/
+`build-meta.json`/`missing-asset.html` checks plus a `dist/404.html`-must-not-exist regression
+guard), 68/68 E2E (up from 64, new `tests/e2e/stale-deployment.spec.ts` on BOTH Chromium and
+WebKit), `deployment-check.mjs` re-verified GREEN against the live PR #63 preview after the
+`404.html`→`missing-asset.html` fix (33/33, one unrelated transient network blip on a re-run,
+resolved on retry — see output_83.txt). DB/M13/M16 not re-run (Docker unavailable, same standing
+constraint since P75) — diff touches zero DB files.
 
 **OWNER_NEXT_ACTION:** open the VERIFIED deployment-specific P83 preview (not the mutable branch
 alias) in Safari, open `?scannerDebug=1`, copy diagnostics, confirm `APP_BUILD_SHA` equals the P83

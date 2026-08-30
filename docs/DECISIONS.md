@@ -3325,14 +3325,34 @@ index.html shell.
 
 `vite.config.ts`'s `buildAssetFallbackRedirects()` emits `dist/_redirects` at build time (same
 generated-not-checked-in pattern as `_headers`): every `/*.<ext>` pattern for
-js/mjs/css/wasm/map/json/bin/gz/webmanifest routes to `public/404.html` at status 404, ordered
-BEFORE a trailing `/* → /index.html 200` catch-all. A currently-deployed file is served as itself
-regardless (Cloudflare/`vite preview` both check real static files before consulting
-`_redirects`/the SPA fallback) — verified directly: the platform build check
-(`scripts/verify-scanner-platform-build.mjs`) asserts the rule ordering and shape, and a live-preview
-`curl` after this shipped (output_83.txt) confirms an EXISTING hashed asset is unaffected. `404.html`
-is a plain, honest error page — never the app shell — so a stale request never again masquerades as
-malformed JavaScript.
+js/mjs/css/wasm/map/json/bin/gz/webmanifest routes to `public/missing-asset.html` at status 404,
+ordered BEFORE a trailing `/* → /index.html 200` catch-all. A currently-deployed file is served as
+itself regardless (Cloudflare/`vite preview` both check real static files before consulting
+`_redirects`/the SPA fallback). `missing-asset.html` is a plain, honest error page — never the app
+shell — so a stale request never again masquerades as malformed JavaScript.
+
+**A real regression was caught and fixed before this shipped**, and is worth recording because it
+directly contradicts what this session initially assumed: the error page was FIRST named
+`404.html` (the obvious choice). Deployed to the live PR #63 preview, this broke EVERY real
+navigation route — `/login`, `/invite/...`, `/admin/invitations` all started returning a bare 404
+instead of the application shell, caught immediately by `deployment-check.mjs`'s own pre-existing
+checks (which `docs/ARCHITECTURE.md` had already documented, in a sentence this session should have
+read FIRST: "Pages serves `index.html` for unmatched paths when the output has no top-level
+`404.html`"). Cloudflare's own top-level-`404.html` file-presence detection is a project-wide switch
+that disables the automatic SPA rewrite entirely, evaluated ahead of and independent of whatever
+`_redirects` declares — an explicit `/* → /index.html 200` catch-all in `_redirects` does NOT
+override it. Renaming the error page to `missing-asset.html` (any name other than the literal
+`404.html`) resolved this: Cloudflare's SPA-detection heuristic no longer triggers, `_redirects`'
+own catch-all is honored normally, and the asset-extension rules still route missing chunks to a
+real 404 exactly as intended. Verified directly against the live preview both ways (broken with
+`404.html`, fixed with `missing-asset.html` — output_83.txt), and pinned by two regression tests: a
+config-level assertion that no `_redirects` rule ever targets a literal `404.html`
+(`tests/config/asset-fallback-redirects.test.ts`) and a build-artefact assertion that `dist/404.html`
+never exists (`scripts/verify-scanner-platform-build.mjs`). This is the specific, concrete reason
+`vite preview`/local tests alone cannot prove this class of fix — neither `_redirects` nor
+Cloudflare's 404.html-presence behaviour exists outside a real Cloudflare Pages deployment, which is
+exactly what `deployment-check.mjs` exists to check and why it must be run against every push that
+touches deployment routing.
 
 ### 2. Immutable build identity, exposed at the very top of scanner diagnostics
 

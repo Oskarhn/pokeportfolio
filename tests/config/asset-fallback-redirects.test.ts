@@ -24,8 +24,19 @@ describe('buildAssetFallbackRedirects (P83, D-100)', () => {
     const assetRuleLines = lines.filter((line) => line.startsWith('/*.'))
     expect(assetRuleLines.length).toBe(ASSET_FALLBACK_EXTENSIONS.length)
     for (const line of assetRuleLines) {
-      expect(line).toMatch(/\/404\.html\s+404\s*$/)
+      expect(line).toMatch(/\/missing-asset\.html\s+404\s*$/)
       expect(line).not.toContain('index.html')
+    }
+  })
+
+  it('no active rule targets a file literally named 404.html', () => {
+    // A real dist/404.html regressed EVERY navigation route to a bare 404 on the live preview:
+    // Cloudflare's own top-level-404.html detection disables the automatic SPA rewrite
+    // project-wide, ahead of and independent of whatever _redirects says (caught by
+    // deployment-check.mjs's /login|/invite|/admin checks, see vite.config.ts's own comment).
+    // Checked against the RULE lines only (comments explaining this are fine to mention it).
+    for (const line of lines) {
+      expect(line).not.toMatch(/\b404\.html\b/)
     }
   })
 
