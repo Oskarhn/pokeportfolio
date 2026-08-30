@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.scripts.tsbuildinfo",
+    "target": "es2023",
+    "lib": ["ES2023", "DOM"],
+    "types": ["node", "vite/client"],
+    "skipLibCheck": true,
+
+    /* Offline pipeline/benchmark scripts (P76): run via `tsx`, which resolves extensionless
+     * relative imports like a bundler. They also import from src/domain and src/features, which
+     * is compiled elsewhere under tsconfig.app.json's bundler settings — matching that here
+     * (rather than node16/nodenext) keeps both projects checking the SAME source files under
+     * compatible rules instead of conflicting over import-extension requirements. */
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "resolveJsonModule": true,
+
+    /* Linting */
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true,
+    "strict": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["scripts/**/*.ts"]
+}

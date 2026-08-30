@@ -5,6 +5,7 @@ import { BottomNav } from '../features/nav/BottomNav'
 import { DesktopNav } from '../features/nav/DesktopNav'
 import { getMyProfile } from '../data/profile'
 import { applyTheme } from './theme'
+import { StaleDeploymentBanner } from './StaleDeploymentBanner'
 
 interface AppShellProps {
   children: ReactNode
@@ -47,6 +48,7 @@ export function AppShell({ children }: AppShellProps) {
   // and the visual viewport are all the same number.
   return (
     <div className="flex min-h-svh flex-col">
+      <StaleDeploymentBanner />
       {!signedIn ? (
         <header
           className="flex items-center px-4 py-3 md:hidden"

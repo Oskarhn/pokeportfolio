@@ -124,7 +124,7 @@ deliberately executed FIRST among the post-MVP areas — see the V1 table note.)
 
 | # | Area | Included |
 |---|---|---|
-| 1 | **Scanner** | Camera capture, on-device recognition, bulk session flow with session defaults. Highest post-MVP priority because manual entry is the bottleneck created by all-card tracking. |
+| 1 | **Scanner** ✅ built as integrated candidate (M15, D-094) | Camera or photo capture, on-device English OCR (Tesseract.js 7, same-origin assets, images never uploaded), candidate shortlist from the app's own catalog with deterministic confidence bands (HIGH preselects only), printing chosen from real active variants, session defaults header (origin without standalone Opening; pre_tracking default), batch-before-write review and sequential save through the existing acquisition path. Release gated on the P69 CSP/security PR and a real-iPhone check. |
 | 2 | **Openings** ✅ shipped (M16, executed ahead of the scanner by owner resequencing) | Full lifecycle incl. bought-and-opened entry, all-cards tracking by default, selected-pulls/not-sure modes, bulk remainder estimate, opening return with completeness marking, provisional-cost reconciliation UI. |
 | 3 | Grading workflow | Submission, pending, return, cost attribution, profitability analysis. |
 | 4 | Trades | Full workflow over the schema already in place; item-leg accounting rule decided first. |

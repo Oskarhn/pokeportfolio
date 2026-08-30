@@ -348,10 +348,11 @@ begin
     -- M6: the atomic collection-writing surface.
     -- M11: gained p_sealed_product_id/p_sealed_intent (DROP+CREATE — an added parameter is a new
     -- signature for Postgres's own matching rules; the old 17-arg form no longer exists to grant).
+    -- M15: gained p_client_request_key for per-item idempotency (D-096); 20-param signature.
     ('routine',
      'add_card_acquisition(uuid, uuid, grading_state, card_condition, grader, numeric, text, ' ||
      'boolean, text, lot_origin, cost_basis_state, bigint, integer, date, uuid, text, bigint, ' ||
-     'uuid, sealed_intent)',
+     'uuid, sealed_intent, uuid)',
      'authenticated', 'EXECUTE'),
     ('routine', 'set_manual_valuation(uuid, bigint, text, date)',   'authenticated', 'EXECUTE'),
     ('routine', 'void_acquisition_lot(uuid, text)',                 'authenticated', 'EXECUTE'),

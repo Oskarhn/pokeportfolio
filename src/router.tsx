@@ -3,10 +3,15 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
+  ErrorComponent,
   Outlet,
   redirect,
+  type ErrorComponentProps,
 } from '@tanstack/react-router'
 import { AppShell } from './ui/AppShell'
+import { Button } from './ui/form'
+import { isChunkLoadFailure } from './platform/build-freshness'
+import { hasUnsavedScannerWork } from './features/scanner/unsaved-work'
 import { RedirectIfSignedIn, RequireAdmin, RequireSession } from './auth/guards'
 import { LoginPage } from './features/auth/LoginPage'
 import { InvitePage } from './features/auth/InvitePage'
@@ -104,6 +109,13 @@ const OpeningDetailPage = lazy(() =>
     default: m.OpeningDetailPage,
   })),
 )
+// M15 scanner UI (P66). Route exists behind feature wiring so the flow is exercisable and E2E-
+// guardable; NO navigation entry advertises it yet — recognition is still the placeholder
+// controller until P68 integrates the real engine. P68 owns flipping Quick Add/Search entries
+// and any final route move.
+const ScannerPage = lazy(() =>
+  import('./features/scanner/ScannerPage').then((m) => ({ default: m.ScannerPage })),
+)
 
 /** Matches the layout these pages render into (AppShell's `<main>`) closely enough that arriving
  *  content doesn't jump — a skeleton rather than a spinner-over-blank-region, per
@@ -113,6 +125,47 @@ function RouteFallback() {
     <div className="mx-auto w-full max-w-2xl animate-pulse space-y-4 py-2">
       <div className="h-9 w-2/3 rounded-full bg-slate-800/60" />
       <div className="h-40 rounded-2xl bg-slate-800/60" />
+    </div>
+  )
+}
+
+/**
+ * Root-level error fallback (P83 §3/§7, D-100). Before this session, ANY thrown render error —
+ * including a lazy-route `import()` rejecting because this deployment no longer has that chunk —
+ * fell through to TanStack Router's own generic default (the "Something went wrong!" screen the
+ * owner saw pressing the scanner's X button, P83 §0). A chunk-load failure now gets a distinct,
+ * honest message instead of a framework-generic one; every other render error still gets
+ * TanStack's own `ErrorComponent` unchanged, so this is additive, not a general error-UX rewrite.
+ *
+ * `initBuildFreshnessWatch()` (main.tsx) already tries to recover a chunk-load failure caught via
+ * `vite:preloadError`/`unhandledrejection` BEFORE it becomes a React render error at all; this is
+ * the backstop for whichever failure shape reaches React first — a route already reset by
+ * `main.tsx`'s reload will unmount this before it ever renders.
+ */
+function AppErrorComponent(props: ErrorComponentProps) {
+  if (!isChunkLoadFailure(props.error)) {
+    return <ErrorComponent {...props} />
+  }
+  const unsaved = hasUnsavedScannerWork()
+  return (
+    <div className="mx-auto flex w-full max-w-md flex-col items-center gap-4 py-10 text-center">
+      <p className="text-lg font-semibold text-slate-100">A new version is available</p>
+      <p className="text-sm text-slate-400">
+        {unsaved
+          ? 'This page belongs to an older version of the app. Save or cancel your current scan, then reload.'
+          : 'This page belongs to an older version of the app. Reload to get the current one.'}
+      </p>
+      {unsaved ? null : (
+        <Button
+          type="button"
+          className="max-w-xs"
+          onClick={() => {
+            window.location.reload()
+          }}
+        >
+          Reload now
+        </Button>
+      )}
     </div>
   )
 }
@@ -593,6 +646,16 @@ const adminInvitationsRoute = createRoute({
   ),
 })
 
+const scannerRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/scan',
+  component: () => (
+    <RequireSession>
+      <ScannerPage />
+    </RequireSession>
+  ),
+})
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   loginRoute,
@@ -624,11 +687,12 @@ const routeTree = rootRoute.addChildren([
   openingDetailRoute,
   profileRoute,
   profileExportRoute,
+  scannerRoute,
   legacyMoreRoute,
   adminInvitationsRoute,
 ])
 
-export const router = createRouter({ routeTree })
+export const router = createRouter({ routeTree, defaultErrorComponent: AppErrorComponent })
 
 declare module '@tanstack/react-router' {
   interface Register {

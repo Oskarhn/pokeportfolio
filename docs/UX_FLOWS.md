@@ -638,29 +638,45 @@ Holding Detail's "Open" action). The wizard offers two modes: open an already-ow
 
 ---
 
-## F12 — Bulk scan (V1, first post-MVP milestone)
+## F12 — Bulk scan — **built as the M15b hybrid-recognition candidate (PR: P76), iPhone retest owed**
 
 Specified now so the scanner is built against a defined target, not improvised.
 
-→ Collection › Scan
-→ Camera starts. **One permission prompt for the whole session.**
-→ Session defaults set once and shown as a persistent header:
-
-```
-Origin      Pulled
-Opening     Surging Sparks Booster Box
-Condition   NM
-Language    English
-Collection  Binder 3
-```
-→ Point at a card → identity proposed in an overlay → tap to accept → immediately ready for the
-  next card
-→ Low confidence → up to three candidates → tap one, or search manually without leaving the session
-→ A running counter shows the batch
-→ End session → review the batch as a list → adjust anything → save all
-✓ No navigation and no URL change at any point while the camera is live (D-006)
-✓ Faster than manual search, measured against a real stack of cards
-✓ Nothing is saved until the review step is confirmed
+→ Quick Add › Scan card, or Search's camera affordance → `/scan` (one dedicated route, D-006)
+→ Camera starts only after an explicit "Start camera" press; one permission prompt per session
+→ Session defaults set once in an "Applied to added cards" header (origin / condition / language
+  / storage / acquired date). **Standalone shipped shape deliberately diverges from the original
+  sketch below:** default origin is **pre_tracking "Existing collection"**, offered origins are
+  pre_tracking/gift/trade_in/other/purchase(cost-unknown with explicit copy) — **no Opening /
+  Pulled option exists standalone** because M16 owns pulled provenance inside its own workflow.
+  Language shows English (V1 recognition is English-only; a Japanese-default profile sees an
+  honest notice). Collection/tag fields are absent — the acquisition path behind commit takes none.
+→ Point at a card → shutter → photo review → Use photo → OCR reads the name + collector-number
+  strips AND an on-device visual embedding searches the reference index (D-097) in parallel —
+  "Preparing scanner…" honestly on first use, larger than before now that a visual model is
+  involved → candidates from the app's own catalog, ranked by BOTH signals together → tap to
+  accept → choose printing (variants fetched ONLY after a candidate is chosen; exactly one
+  preselects itself) → quantity/condition → Add to batch → immediately ready for next
+→ LOW confidence or NO_MATCH → shortlist (≤5) / manual search without leaving the session —
+  unchanged even when OCR alone found nothing, since a strong visual match can carry the
+  shortlist on its own (D-097)
+→ A running counter shows the batch; nothing is written at any point before review
+→ End session → review the batch (per-item variant label, qty, condition, remove; interrupted-
+  transport items flagged "may already have been added") → Add cards → sequential acquisition
+  writes → honest result ("Added N cards." / "Added N. M need attention.")
+✓ No navigation and no URL change while the flow is live (D-006); OCR worker AND the visual
+  worker are both disposed on exit
+✓ Nothing is saved until the review step is confirmed (batch-before-write; D-094/D-097)
+✓ Card photos are processed on this device and aren't uploaded or saved, for EITHER recognition
+  channel (D-094/D-097) — only the derived embedding and any resulting card-id lookups reach the
+  network, never the image
+✓ Recognition never silently upgrades to HIGH confidence and auto-adds — variant and condition
+  stay explicit manual choices even when the visual match is near-certain (D-097)
+✓ Faster and more reliably correct than manual search, measured against a real stack of cards —
+  benchmarked at 95.8/99.9/100% (TOP1/3/5) on a synthetic-distortion corpus (docs/
+  SCANNER_RESEARCH.md §7b); the real iPhone measurement is still owed by the owner-device gate,
+  and the currently-shipped reference index has a real coverage gap against the hosted catalog
+  (D-097) that the next retest should account for
 
 ---
 

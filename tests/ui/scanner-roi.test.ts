@@ -1,0 +1,235 @@
+import { describe, expect, it } from 'vitest'
+import {
+  NAME_ROI_FRACTIONS,
+  NAME_ROI_CANDIDATES,
+  NUMBER_ROI_FRACTIONS,
+  NUMBER_ROI_CANDIDATES,
+  normalizeContrast,
+  otsuThreshold,
+  binarizeGrayscale,
+  roiPixelRect,
+  toGrayscale,
+  ROI_UPSCALE_MIN_HEIGHT_PX,
+  type GrayImage,
+} from '../../src/features/scanner/roi'
+
+/**
+ * ROI extraction + preprocessing rules (prompt §14/§15). The fraction constants are the single
+ * researched definition (name strip top-left; collector number bottom-right) and every mapped
+ * rect must stay strictly inside its card. Preprocessing is deterministic byte-for-byte.
+ */
+
+function grayOf(width: number, height: number, fill: number): GrayImage {
+  return { data: new Uint8ClampedArray(width * height).fill(fill), width, height }
+}
+
+describe('ROI fraction constants', () => {
+  it('name strip = top ~20%, left ~62% of the card', () => {
+    expect(NAME_ROI_FRACTIONS.top).toBe(0)
+    expect(NAME_ROI_FRACTIONS.left).toBe(0)
+    expect(NAME_ROI_FRACTIONS.height).toBeCloseTo(0.2)
+    expect(NAME_ROI_FRACTIONS.width).toBeCloseTo(0.62)
+    expect(NAME_ROI_FRACTIONS.left + NAME_ROI_FRACTIONS.width).toBeLessThanOrEqual(1)
+  })
+
+  it('collector-number strip = bottom ~13%, right ~55% of the card', () => {
+    expect(NUMBER_ROI_FRACTIONS.top).toBeCloseTo(0.87)
+    expect(NUMBER_ROI_FRACTIONS.left).toBeCloseTo(0.45)
+    expect(NUMBER_ROI_FRACTIONS.height).toBeCloseTo(0.13)
+    expect(NUMBER_ROI_FRACTIONS.width).toBeCloseTo(0.55)
+    expect(NUMBER_ROI_FRACTIONS.left + NUMBER_ROI_FRACTIONS.width).toBeLessThanOrEqual(1)
+    expect(NUMBER_ROI_FRACTIONS.top + NUMBER_ROI_FRACTIONS.height).toBeLessThanOrEqual(1)
+  })
+})
+
+describe('P80 adaptive ROI candidates', () => {
+  it('name candidates: unique ids, every fraction rect stays inside the card, and the vintage strip is first-registered', () => {
+    expect(NAME_ROI_CANDIDATES.length).toBeGreaterThanOrEqual(2)
+    const ids = NAME_ROI_CANDIDATES.map((c) => c.id)
+    expect(new Set(ids).size).toBe(ids.length)
+    expect(NAME_ROI_CANDIDATES[0]?.fractions).toEqual(NAME_ROI_FRACTIONS)
+    for (const candidate of NAME_ROI_CANDIDATES) {
+      expect(candidate.fractions.left).toBeGreaterThanOrEqual(0)
+      expect(candidate.fractions.top).toBeGreaterThanOrEqual(0)
+      expect(candidate.fractions.left + candidate.fractions.width).toBeLessThanOrEqual(1)
+      expect(candidate.fractions.top + candidate.fractions.height).toBeLessThanOrEqual(1)
+    }
+  })
+
+  it('number candidates: unique ids, every fraction rect stays inside the card, and include both a bottom-left (modern) and bottom-right (vintage) layout', () => {
+    expect(NUMBER_ROI_CANDIDATES.length).toBeGreaterThanOrEqual(2)
+    const ids = NUMBER_ROI_CANDIDATES.map((c) => c.id)
+    expect(new Set(ids).size).toBe(ids.length)
+    expect(NUMBER_ROI_CANDIDATES.some((c) => c.fractions.left < 0.4)).toBe(true)
+    expect(NUMBER_ROI_CANDIDATES.some((c) => c.id === 'classic-bottom-right')).toBe(true)
+    for (const candidate of NUMBER_ROI_CANDIDATES) {
+      expect(candidate.fractions.left).toBeGreaterThanOrEqual(0)
+      expect(candidate.fractions.top).toBeGreaterThanOrEqual(0)
+      expect(candidate.fractions.left + candidate.fractions.width).toBeLessThanOrEqual(1)
+      expect(candidate.fractions.top + candidate.fractions.height).toBeLessThanOrEqual(1)
+    }
+  })
+})
+
+describe('roiPixelRect mapping', () => {
+  const card = { left: 100, top: 200, width: 500, height: 700 }
+
+  it('maps fractions into absolute pixels inside the CARD rect', () => {
+    const name = roiPixelRect(card, NAME_ROI_FRACTIONS)
+    expect(name.left).toBe(100)
+    expect(name.top).toBe(200)
+    expect(name.width).toBe(Math.round(500 * 0.62))
+    expect(name.height).toBe(Math.round(700 * 0.2))
+  })
+
+  it('number strip hugs the bottom-right corner of the card', () => {
+    const number = roiPixelRect(card, NUMBER_ROI_FRACTIONS)
+    expect(number.left + number.width).toBe(600)
+    expect(number.top + number.height).toBe(900)
+    expect(number.left).toBeGreaterThan(card.left)
+  })
+
+  it('never leaves the card bounds even for odd dimensions', () => {
+    const sizes: [number, number][] = [
+      [37, 51],
+      [1280, 1792],
+      [11, 13],
+    ]
+    for (const [w, h] of sizes) {
+      for (const fractions of [NAME_ROI_FRACTIONS, NUMBER_ROI_FRACTIONS]) {
+        const rect = roiPixelRect({ left: 3, top: 7, width: w, height: h }, fractions)
+        expect(rect.left).toBeGreaterThanOrEqual(3)
+        expect(rect.top).toBeGreaterThanOrEqual(7)
+        expect(rect.left + rect.width).toBeLessThanOrEqual(3 + w)
+        expect(rect.top + rect.height).toBeLessThanOrEqual(7 + h)
+      }
+    }
+  })
+
+  it('is stable under repeated evaluation', () => {
+    expect(roiPixelRect(card, NUMBER_ROI_FRACTIONS)).toEqual(
+      roiPixelRect(card, NUMBER_ROI_FRACTIONS),
+    )
+  })
+})
+
+describe('preprocessing determinism', () => {
+  it('toGrayscale uses BT.601 luma', () => {
+    const rgb: GrayImage = {
+      data: new Uint8ClampedArray([
+        255,
+        0,
+        0,
+        255, // pure red
+        0,
+        255,
+        0,
+        255, // pure green
+        0,
+        0,
+        255,
+        255, // pure blue
+        255,
+        255,
+        255,
+        255, // white
+      ]),
+      width: 2,
+      height: 2,
+    }
+    const gray = toGrayscale(rgb)
+    expect(gray.data[0]).toBe(Math.round(0.299 * 255))
+    expect(gray.data[1]).toBe(Math.round(0.587 * 255))
+    expect(gray.data[2]).toBe(Math.round(0.114 * 255))
+    expect(gray.data[3]).toBe(255)
+  })
+
+  it('normalizeContrast stretches a narrow histogram to full range', () => {
+    // All values between 100 and 150 → stretched so low≈0 and high≈255.
+    const image = grayOf(10, 10, 125)
+    for (let i = 0; i < image.data.length; i += 1) {
+      image.data[i] = 100 + ((i * 7) % 50)
+    }
+    const out = normalizeContrast(image)
+    const min = Math.min(...out.data)
+    const max = Math.max(...out.data)
+    expect(min).toBeLessThanOrEqual(5)
+    expect(max).toBeGreaterThanOrEqual(250)
+  })
+
+  it('normalizeContrast is deterministic — identical bytes in, identical bytes out', () => {
+    const image = grayOf(8, 8, 90)
+    for (let i = 0; i < image.data.length; i += 1) image.data[i] = (i * 31) % 256
+    const a = normalizeContrast(image)
+    const b = normalizeContrast(image)
+    expect([...a.data]).toEqual([...b.data])
+  })
+
+  it('a flat image stays flat instead of amplifying noise', () => {
+    const out = normalizeContrast(grayOf(4, 4, 120))
+    expect(new Set(out.data).size).toBe(1)
+  })
+
+  it('the upscale threshold is small enough to matter only for thin strips', () => {
+    expect(ROI_UPSCALE_MIN_HEIGHT_PX).toBeGreaterThanOrEqual(24)
+    expect(ROI_UPSCALE_MIN_HEIGHT_PX).toBeLessThanOrEqual(96)
+  })
+})
+
+describe('Otsu binarization (P82 §15)', () => {
+  it('finds the midpoint threshold for a clean two-level (bimodal) image', () => {
+    const data = new Uint8ClampedArray(100)
+    data.fill(50, 0, 50)
+    data.fill(200, 50, 100)
+    const threshold = otsuThreshold({ data, width: 10, height: 10 })
+    expect(threshold).toBeGreaterThanOrEqual(50)
+    expect(threshold).toBeLessThan(200)
+  })
+
+  it('is deterministic — identical bytes in, identical threshold out', () => {
+    const image = grayOf(12, 12, 90)
+    for (let i = 0; i < image.data.length; i += 1) image.data[i] = (i * 37) % 256
+    expect(otsuThreshold(image)).toBe(otsuThreshold(image))
+  })
+
+  it('never throws on an empty image', () => {
+    expect(() =>
+      otsuThreshold({ data: new Uint8ClampedArray(0), width: 0, height: 0 }),
+    ).not.toThrow()
+    expect(() =>
+      binarizeGrayscale({ data: new Uint8ClampedArray(0), width: 0, height: 0 }),
+    ).not.toThrow()
+  })
+
+  it('binarizes a bimodal image to exactly two values, dark text (minority) mapped to 0', () => {
+    const data = new Uint8ClampedArray(100)
+    data.fill(220, 0, 90) // background: 90% of pixels, bright
+    data.fill(30, 90, 100) // "text": 10% of pixels, dark — the minority class
+    const out = binarizeGrayscale({ data, width: 10, height: 10 })
+    const values = new Set(out.data)
+    expect(values.size).toBe(2)
+    expect(values.has(0)).toBe(true)
+    expect(values.has(255)).toBe(true)
+    // The minority (originally dark) class stays mapped to near-black text.
+    for (let i = 90; i < 100; i += 1) expect(out.data[i]).toBe(0)
+    for (let i = 0; i < 90; i += 1) expect(out.data[i]).toBe(255)
+  })
+
+  it('orients dark-on-light even when the minority class is originally the BRIGHT pixels', () => {
+    const data = new Uint8ClampedArray(100)
+    data.fill(30, 0, 90) // background: 90% of pixels, dark
+    data.fill(220, 90, 100) // "text": 10% of pixels, bright — still the minority class
+    const out = binarizeGrayscale({ data, width: 10, height: 10 })
+    // The minority class (bright originals) is still oriented to render as dark text.
+    for (let i = 90; i < 100; i += 1) expect(out.data[i]).toBe(0)
+    for (let i = 0; i < 90; i += 1) expect(out.data[i]).toBe(255)
+  })
+
+  it('is deterministic — identical bytes in, identical bytes out', () => {
+    const image = grayOf(10, 10, 90)
+    for (let i = 0; i < image.data.length; i += 1) image.data[i] = (i * 23) % 256
+    const a = binarizeGrayscale(image)
+    const b = binarizeGrayscale(image)
+    expect([...a.data]).toEqual([...b.data])
+  })
+})

@@ -319,7 +319,39 @@ it is not retrofitted later:
 - Filter and session state during scanning is component state, not URL state.
 - The stream is acquired once on entry and released once on exit.
 
-The scanner is not built in this phase, but the routing shape that allows it is fixed now.
+The scanner is now BUILT to this shape (M15 integrated candidate): `/scan` holds one MediaStream
+per session, all confirmation is in-route overlay, and the OCR engine follows the same
+lifetime discipline — ONE Tesseract worker per scanner session, created lazily on the first
+analysis (the tesseract.js module is dynamically imported only there; it never enters the main
+bundle), reused across scans, and terminated on route exit together with the bounded OCR
+canvases (`controller.dispose()`).
+
+**Scanner data layer (M15).** Recognition is local-only: `src/features/scanner/ocr-engine.ts`
+wraps pinned Tesseract.js 7 assets staged same-origin under `/scanner-assets/v7/` by
+`scripts/prepare-scanner-assets.mjs` at build time (D-094). Candidate retrieval rides the
+EXISTING `search_cards` surface through `src/data/scanner/scanner-catalog.ts`; ranking is pure
+domain code in `src/domain/scanner/`; commits go through the existing `add_card_acquisition`
+RPC. No scanner SQL, RPC or migration exists. Captured image bytes never cross the network
+(static audit test enforces the boundary). Deployment note: production WASM compilation needs
+the `'wasm-unsafe-eval'` CSP exception plus the service-worker scanner-asset caching policy —
+owned by the pending P69 security PR; the P68 candidate is knowingly not deployable without it.
+
+**Scanner visual recognition layer (M15b, D-097).** A second, parallel evidence channel alongside
+OCR — same lifecycle discipline, its own dedicated Worker (`src/features/scanner/visual/
+visual-worker.ts`), created lazily on first analysis, one instance per scanner session, reused
+across scans, terminated on route exit. It embeds the captured frame with a pinned DINOv2-small
+ONNX model (Apache-2.0), searches a static same-origin reference index
+(`src/data/scanner/visual-index.ts` — pure decode/search, no I/O), and hands a `cardId →
+similarity` map back to `controller.ts`, which merges any candidate the visual shortlist found
+that OCR's text search did not (one bounded `getCardsByIds` lookup) and feeds BOTH channels into
+the SAME domain matcher (`src/domain/scanner/engine.ts`, `visual-evidence.ts` calibrates the
+points). Model + `onnxruntime-web` WASM binaries are staged same-origin under
+`/scanner-assets/visual-v1/` by `scripts/prepare-scanner-visual-assets.mjs`, SHA-256-pinned; the
+reference index itself is a small (kilobytes-to-single-digit-megabytes) committed binary asset
+generated offline by `scripts/scanner-visual-index/build-index.ts` against a Supabase project's
+`cards` table (never against a browser session) and staged by `stage-index-assets.mjs`. WASM is
+the required execution baseline; WebGPU is used only when a real `GPUAdapter` request succeeds.
+No new SQL, RPC or migration — the index is a static asset, not a database object.
 
 ---
 
