@@ -194,7 +194,10 @@ function cspDirectives(csp) {
   const lines = redirectsFile
     .split('\n')
     .filter((line) => line.trim() !== '' && !line.startsWith('#'))
-  const assetLines = lines.filter((line) => line.startsWith('/*.'))
+  const assetDirectories = ['/assets/*', '/scanner-assets/*']
+  const assetLines = lines.filter((line) =>
+    assetDirectories.some((dir) => line.startsWith(`${dir}  `)),
+  )
   const catchAllIndex = lines.findIndex((line) => line.startsWith('/*  '))
 
   record(
@@ -208,14 +211,16 @@ function cspDirectives(csp) {
     existsSync(join(dist, '404.html')) ? 'dist/404.html is present' : 'absent, as required',
   )
   record(
-    '_redirects defines a real-404 rule for every asset extension a lazy chunk can use',
-    ['js', 'mjs', 'css', 'wasm', 'json', 'bin'].every((ext) =>
-      assetLines.some((line) => line.startsWith(`/*.${ext} `)),
-    ),
+    // A mid-pattern splat (`/*.js`) was tried first — accepted by the file-format parser but
+    // never actually matched anything on Cloudflare (splats only work at the end of a path,
+    // "/blog/*"-style); a missing chunk kept falling through to the plain SPA catch-all exactly
+    // like before this file existed. Directory-prefix rules avoid that failure mode entirely.
+    '_redirects defines a real-404 rule for both build-artifact directories, trailing-splat style',
+    assetDirectories.every((dir) => assetLines.some((line) => line.startsWith(`${dir}  `))),
     assetLines.join(' | ') || '(none)',
   )
   record(
-    'every asset rule in _redirects targets missing-asset.html at 404, before the SPA catch-all',
+    'every asset-directory rule in _redirects targets missing-asset.html at 404, before the SPA catch-all',
     catchAllIndex > -1 &&
       assetLines.every((line) => /\/missing-asset\.html\s+404\s*$/.test(line)) &&
       assetLines.every((line) => lines.indexOf(line) < catchAllIndex),

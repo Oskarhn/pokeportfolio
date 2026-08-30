@@ -5,24 +5,38 @@
  * ignored by `vite dev`/`vite preview` (same limitation `_headers` already has, documented in
  * vite.config.ts) — so that proof lives in output_83.txt's live-preview `curl` evidence, not here.
  * This test pins the generated RULE SHAPE so a future edit cannot silently reorder the catch-all
- * ahead of the asset rules or drop the extensions the real failure needs covered.
+ * ahead of the asset rules, drop a directory the real failure needs covered, or reintroduce a
+ * mid-pattern splat (`/*.js`) — deployed and curled directly, that shape never actually matched
+ * anything on Cloudflare (splats are documented as end-of-path only), leaving the original bug
+ * silently in place despite every local/unit check passing throughout.
  */
 import { describe, expect, it } from 'vitest'
-import { ASSET_FALLBACK_EXTENSIONS, buildAssetFallbackRedirects } from '../../vite.config.ts'
+import { ASSET_FALLBACK_DIRECTORIES, buildAssetFallbackRedirects } from '../../vite.config.ts'
 
 describe('buildAssetFallbackRedirects (P83, D-100)', () => {
   const redirects = buildAssetFallbackRedirects()
   const lines = redirects.split('\n').filter((line) => line.trim() !== '' && !line.startsWith('#'))
 
-  it('covers every asset extension a lazy chunk/build artifact can use', () => {
-    for (const ext of ['js', 'mjs', 'css', 'wasm', 'json', 'bin']) {
-      expect(ASSET_FALLBACK_EXTENSIONS).toContain(ext)
+  it('covers every directory a lazy chunk/scanner build artifact can live under', () => {
+    expect(ASSET_FALLBACK_DIRECTORIES).toEqual(['/assets/*', '/scanner-assets/*'])
+  })
+
+  it('every directory rule uses a TRAILING splat, never a mid-pattern one', () => {
+    // Cloudflare Pages only documents/supports a splat at the end of a source path (its own
+    // example: "/blog/*"). A rule like "/*.js" (splat before a literal suffix) is accepted by
+    // the file-format parser but never matches anything real — verified directly against the
+    // live preview.
+    for (const dir of ASSET_FALLBACK_DIRECTORIES) {
+      expect(dir.endsWith('/*')).toBe(true)
+      expect(dir.indexOf('*')).toBe(dir.length - 1)
     }
   })
 
-  it('routes every asset-extension rule to a real 404, never to index.html', () => {
-    const assetRuleLines = lines.filter((line) => line.startsWith('/*.'))
-    expect(assetRuleLines.length).toBe(ASSET_FALLBACK_EXTENSIONS.length)
+  it('routes every asset-directory rule to a real 404, never to index.html', () => {
+    const assetRuleLines = lines.filter((line) =>
+      ASSET_FALLBACK_DIRECTORIES.some((dir) => line.startsWith(`${dir}  `)),
+    )
+    expect(assetRuleLines.length).toBe(ASSET_FALLBACK_DIRECTORIES.length)
     for (const line of assetRuleLines) {
       expect(line).toMatch(/\/missing-asset\.html\s+404\s*$/)
       expect(line).not.toContain('index.html')
@@ -40,13 +54,15 @@ describe('buildAssetFallbackRedirects (P83, D-100)', () => {
     }
   })
 
-  it('places every asset rule BEFORE the SPA catch-all (first-match-wins ordering)', () => {
+  it('places every asset-directory rule BEFORE the SPA catch-all (first-match-wins ordering)', () => {
     const catchAllIndex = lines.findIndex((line) => line.startsWith('/*  '))
     expect(catchAllIndex).toBeGreaterThan(-1)
     const assetIndexes = lines
-      .map((line, i) => (line.startsWith('/*.') ? i : -1))
+      .map((line, i) =>
+        ASSET_FALLBACK_DIRECTORIES.some((dir) => line.startsWith(`${dir}  `)) ? i : -1,
+      )
       .filter((i) => i !== -1)
-    expect(assetIndexes.length).toBeGreaterThan(0)
+    expect(assetIndexes.length).toBe(ASSET_FALLBACK_DIRECTORIES.length)
     for (const i of assetIndexes) {
       expect(i).toBeLessThan(catchAllIndex)
     }
