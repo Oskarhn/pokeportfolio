@@ -49,19 +49,22 @@ preview`.** Full account: D-100 in [DECISIONS.md](docs/DECISIONS.md),
 
 **Preserved, NOT touched this session:** every P78–P82 scanner recognition/prewarm fix, the full
 19,501-card DINO index, `engine.ts`'s scoring model. Zero database/migration/RPC files changed
-(`DATABASE_MIGRATIONS=90`, unchanged). Gates, full account with exact counts in output_83.txt:
-typecheck/lint(0 errors)/format/unit all clean, build green, platform verifier green (new nested-
-404 checks plus a root-`dist/404.html`-must-not-exist regression guard), E2E green (new
+(`DATABASE_MIGRATIONS=90`, unchanged). Gates: 870/870 unit (up from 845), typecheck/lint(0 errors)/
+format clean, build green, 17/17 platform verifier (up from 12, new nested-404 checks plus a
+root-`dist/404.html`-must-not-exist regression guard), 68/68 E2E (up from 64, new
 `tests/e2e/stale-deployment.spec.ts` on BOTH Chromium and WebKit), `deployment-check.mjs` GREEN
-(33/33) against the live PR #63 preview at the FINAL head, after being RED (3 failures) at an
-intermediate head that shipped the first (top-level-404.html) attempt above — never merged past
-this session, only ever pushed to the draft PR. DB/M13/M16 not re-run (Docker unavailable, same
-standing constraint since P75) — diff touches zero DB files.
+(33/33, re-confirmed twice) against the live PR #63 preview at the FINAL head, after being RED
+(3 failures) at an intermediate head that shipped the first (top-level-404.html) attempt above —
+never merged past this session, only ever pushed to the draft PR. DB/M13/M16 not re-run (Docker
+unavailable, same standing constraint since P75) — diff touches zero DB files.
 
-**OWNER_NEXT_ACTION:** open the VERIFIED deployment-specific P83 preview (not the mutable branch
-alias) in Safari, open `?scannerDebug=1`, copy diagnostics, confirm `APP_BUILD_SHA` equals the P83
-FINAL_HEAD BEFORE trusting anything else, then exit/re-enter the scanner and repeat X/back
-navigation several times before resuming any recognition-quality testing. See output_83.txt §21 for
+**OWNER_NEXT_ACTION:** open the deployment-specific P83 preview
+(https://18c8881f.pokeportfolio-dev.pages.dev, FINAL_HEAD `4a60697` — NOT the mutable branch alias;
+per D-100 §5, test soon rather than assuming this URL stays reachable indefinitely) in Safari, open
+`?scannerDebug=1`, copy diagnostics, confirm `APP_BUILD_SHA` equals
+`4a60697c2c9462530e8a45485050facdebb02388` BEFORE trusting anything else, then exit/re-enter the
+scanner and repeat X/back navigation several times before resuming any recognition-quality testing.
+See output_83.txt §21 for
 the full protocol.
 
 Below is P82's own account, preserved for context (superseded by the above where they overlap):

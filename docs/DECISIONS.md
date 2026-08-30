@@ -3424,3 +3424,18 @@ import in both engines, and the app recovers (reload, never a raw MIME-type cras
 `vite:preloadError` production code path in both — chosen over a raw unhandled-rejection trigger
 after finding, and disclosing, that WebKit does not surface an `unhandledrejection` DOM event for a
 rejection from `page.evaluate()`-injected code the way Chromium does.
+
+### 5. Old hashed asset survival — measured, and less durable than assumed (P83 §9)
+
+Tested directly rather than assumed: a Cloudflare Pages deployment-specific preview URL
+(`https://<hash>.pokeportfolio-dev.pages.dev`) from earlier in this SAME session (~15 minutes and
+six redeploys prior) no longer served its own original hashed JS asset — a 404, the identical
+response its own current deployment gives for a genuinely missing file. The mutable branch alias
+(`https://feat-m15-scanner-integrated.pokeportfolio-dev.pages.dev`) obviously cannot preserve an
+old generation's assets either, by definition — it always serves whichever deployment is newest.
+**Do not treat a deployment-specific URL as a durable long-term reference for asset survival under
+rapid iteration** (this session pushed 7 deployments in roughly 15 minutes); the exact retention
+window Cloudflare Pages applies to a project's non-latest preview deployments was not independently
+documented and is not something this session's evidence pins down further. This finding argues
+FOR, not against, the stale-client detection this session built (§3 above): an old client cannot
+assume it has any particular grace period before its own assets stop resolving.
