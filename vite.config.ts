@@ -176,88 +176,82 @@ function cloudflareBuildMeta(): Plugin {
  * Directory prefixes that only ever hold same-origin build artifacts (lazy route chunks,
  * stylesheets, the scanner's versioned model/OCR binaries) — never a client-side navigation path,
  * which this app's router keeps outside both trees (router.tsx). Exported for
- * tests/config/asset-fallback-redirects.test.ts.
- *
- * Rules use a trailing splat (`/assets/*`), the ONLY placement Cloudflare Pages' `_redirects`
- * documents as supported (developers.cloudflare.com/pages/configuration/redirects — its own
- * example is `/blog/*`, splat at the end). An EARLIER version of this file used `/*.js`-style
- * mid-pattern splats (splat before a literal extension) — deployed and curled directly, that
- * pattern never matched anything: a missing chunk still fell through to the plain `/* →
- * index.html 200` catch-all exactly like before this file existed, silently leaving the original
- * bug in place despite `pnpm build`/unit tests passing throughout (neither can observe real
- * Cloudflare `_redirects` matching semantics at all). Directory-prefix splats do not have this
- * problem and were verified working directly against the live preview (output_83.txt).
+ * tests/config/asset-fallback-pages.test.ts.
  */
-export const ASSET_FALLBACK_DIRECTORIES = ['/assets/*', '/scanner-assets/*']
+export const ASSET_FALLBACK_DIRECTORIES = ['assets', 'scanner-assets']
 
 /**
- * Emits Cloudflare Pages' `_redirects` file (P83, D-100).
+ * Emits a NESTED `404.html` inside each build-artifact directory (P83, D-100) — real
+ * `dist/assets/404.html` and `dist/scanner-assets/404.html`.
  *
  * Root cause, reproduced directly against this project's own deployed preview: with no top-level
  * `404.html`, Cloudflare Pages treats ANY request that doesn't match a real file as SPA
  * navigation and rewrites it to `index.html` at `200 text/html` — including a content-hashed
  * chunk a redeploy has already removed (docs/ARCHITECTURE.md's "SPA routing needs no
  * configuration" note, and `deployment-check.mjs`'s own `/login`/`/invite/...`/`/admin/...`
- * checks, already documented exactly this — the dependency this session initially missed). A tab
- * still running an OLDER page's module graph then executes `import('/assets/OldChunk-<hash>.js')`
- * against that URL, receives HTML back, and the browser's module loader rejects with "'text/html'
- * is not a valid JavaScript MIME type" — exactly the real-iPhone failure the owner hit pressing
- * the scanner's X button (P83 §0/§3).
+ * checks, already documented exactly this). A tab still running an OLDER page's module graph then
+ * executes `import('/assets/OldChunk-<hash>.js')` against that URL, receives HTML back, and the
+ * browser's module loader rejects with "'text/html' is not a valid JavaScript MIME type" — the
+ * real-iPhone failure the owner hit pressing the scanner's X button (P83 §0/§3).
  *
- * These rules intercept every build-artifact DIRECTORY FIRST, ahead of the trailing catch-all, so
- * a genuinely missing file under `/assets/` or `/scanner-assets/` gets a real 404
- * (`public/missing-asset.html`, a plain error page — never the app shell) instead of malformed
- * module content. The catch-all after it preserves ordinary SPA behaviour for real navigation
- * paths (deep links, a hard refresh on any client-side route). Cloudflare serves an EXISTING file
- * at its own path before consulting `_redirects` at all, so a currently-deployed chunk is
- * unaffected — verified directly (a real hashed asset still returns its real content; a request
- * for `/assets/DoesNotExist.js` returns a genuine 404; `/portfolio`/`/login` still return the app
- * shell at 200 — output_83.txt).
+ * TWO approaches were tried and REJECTED before this one, both confirmed broken by deploying and
+ * curling the live preview directly (never reproducible locally — `vite preview` ignores
+ * `_redirects`/Cloudflare-specific 404 behaviour entirely):
  *
- * The error page is deliberately named `missing-asset.html`, NOT `404.html`: shipping a file
- * literally named `404.html` at the project root was tried first and broke EVERY real navigation
- * route (`/login`, `/invite/...`, `/admin/invitations` all started returning a bare 404 instead of
- * the app shell) — Cloudflare's own top-level-`404.html` detection is a project-wide switch that
- * disables the automatic SPA rewrite entirely, independent of and evaluated ahead of whatever
- * `_redirects` says. Caught by `deployment-check.mjs` against the live preview before this was
- * merged (output_83.txt); never reproduced by `pnpm build`/local tests, since `vite preview`
- * ignores `_redirects` entirely and never exhibits Cloudflare's specific 404.html-presence
- * behaviour either — this class of bug, like the mid-pattern-splat one above, is only observable
- * against a real deployment, which is exactly why `deployment-check.mjs` exists.
+ *  1. A top-level `public/404.html`. Cloudflare's own top-level-`404.html` presence is a
+ *     PROJECT-WIDE switch that disables the automatic SPA rewrite for literally every unmatched
+ *     path, not just asset ones — this broke `/login`, `/invite/...` and `/admin/invitations`
+ *     (`deployment-check.mjs` caught all three).
+ *  2. A `_redirects` rule (`/assets/*  /missing-asset.html  404`). Cloudflare Pages' `_redirects`
+ *     does NOT support an arbitrary rewrite status code — confirmed against its own docs
+ *     (developers.cloudflare.com/pages/configuration/redirects: "Rewrites (other status codes) ❌",
+ *     only 200 and the redirect codes 301/302/303/307/308 are valid) — so every such rule was
+ *     silently treated as malformed and skipped; a live diagnostic rule using the identical splat
+ *     shape with a 302 destination matched correctly, isolating the `404` status itself, not the
+ *     splat, as the invalid part.
+ *
+ * Cloudflare's OWN documented mechanism for a scoped 404 is a NESTED `404.html`: "Pages will
+ * attempt to find the closest 404 page... continuing up the directory tree... ending in
+ * `/404.html`" (developers.cloudflare.com/pages/configuration/serving-pages) — explicitly
+ * distinct from the TOP-level file that disables SPA mode project-wide. A file at
+ * `dist/assets/404.html` therefore answers a missing path under `/assets/` with a real 404,
+ * without touching the SPA fallback anywhere else on the site. Verified directly: a genuinely
+ * missing `/assets/*`/`/scanner-assets/*` path 404s, an existing hashed asset is unaffected
+ * (Cloudflare serves a real file before ever consulting 404 handling), and `/login`/`/portfolio`
+ * still return the app shell at 200 (output_83.txt).
  */
-export function buildAssetFallbackRedirects(): string {
-  const assetRules = ASSET_FALLBACK_DIRECTORIES.map(
-    (dir) => `${dir}  /missing-asset.html  404`,
-  ).join('\n')
-  return `# Generated by vite.config.ts. Do not edit by hand — edit the plugin.
-#
-# TEMP DIAGNOSTIC — DELETE BEFORE MERGE: proves whether Cloudflare Pages reads this file AT ALL
-# for this project, and whether a splat rule matches. Remove before merge.
-/p83-redirects-diagnostic  https://example.com/  302
-/p83-splat-diagnostic/*  https://example.com/  302
-/assets/*  https://example.com/  302
-#
-# P83/D-100: a request for a build artifact that no longer exists on this deployment (a stale
-# client's OLD chunk hash after a redeploy) must return a real 404, never the app shell — see
-# buildAssetFallbackRedirects's own comment in vite.config.ts for the full failure chain. The
-# target is deliberately NOT named 404.html — see that same comment for why.
-${assetRules}
-
-# Everything else is a client-side route — TanStack Router owns it from here.
-/*  /index.html  200
+/** Pure so tests/config/asset-fallback-pages.test.ts can pin its shape without a Rollup context. */
+export function buildAssetNotFoundPage(): string {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex" />
+    <title>Not found — PokePortfolio</title>
+  </head>
+  <body>
+    <!--
+      P83/D-100: a Cloudflare Pages NESTED 404 page (see cloudflareAssetNotFoundPages in
+      vite.config.ts) — served ONLY for a missing path under this directory, never a real app
+      route. Reaching this means the tab that requested it is running an older build than what is
+      currently deployed; reloading fetches the current one.
+    -->
+    <p>That file no longer exists on this deployment. Reload the page to load the current version.</p>
+  </body>
+</html>
 `
 }
 
-function cloudflareRedirects(): Plugin {
+function cloudflareAssetNotFoundPages(): Plugin {
   return {
-    name: 'pokeportfolio:cloudflare-redirects',
+    name: 'pokeportfolio:asset-not-found-pages',
     apply: 'build',
     generateBundle() {
-      this.emitFile({
-        type: 'asset',
-        fileName: '_redirects',
-        source: buildAssetFallbackRedirects(),
-      })
+      const page = buildAssetNotFoundPage()
+      for (const dir of ASSET_FALLBACK_DIRECTORIES) {
+        this.emitFile({ type: 'asset', fileName: `${dir}/404.html`, source: page })
+      }
     },
   }
 }
@@ -345,7 +339,7 @@ export default defineConfig({
     react(),
     tailwindcss(),
     cloudflareHeaders(),
-    cloudflareRedirects(),
+    cloudflareAssetNotFoundPages(),
     cloudflareBuildMeta(),
     VitePWA({
       registerType: 'autoUpdate',

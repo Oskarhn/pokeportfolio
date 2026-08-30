@@ -20,21 +20,23 @@ import { fileURLToPath } from 'node:url'
 
 const dist = fileURLToPath(new URL('../dist/', import.meta.url))
 
+const ASSET_FALLBACK_DIRECTORIES = ['assets', 'scanner-assets']
+
 let headersFile
 let swFile
-let redirectsFile
 let buildMetaFile
-let notFoundFile
+let assetNotFoundFiles
 try {
   headersFile = readFileSync(join(dist, '_headers'), 'utf8')
   swFile = readFileSync(join(dist, 'sw.js'), 'utf8')
-  redirectsFile = readFileSync(join(dist, '_redirects'), 'utf8')
   buildMetaFile = readFileSync(join(dist, 'build-meta.json'), 'utf8')
-  notFoundFile = readFileSync(join(dist, 'missing-asset.html'), 'utf8')
+  assetNotFoundFiles = ASSET_FALLBACK_DIRECTORIES.map((dir) =>
+    readFileSync(join(dist, dir, '404.html'), 'utf8'),
+  )
 } catch {
   console.error(
-    'dist/_headers, dist/sw.js, dist/_redirects, dist/build-meta.json or ' +
-      'dist/missing-asset.html not found — run `pnpm build` first.',
+    'dist/_headers, dist/sw.js, dist/build-meta.json, or one of dist/{assets,scanner-assets}/' +
+      '404.html not found — run `pnpm build` first.',
   )
   process.exit(1)
 }
@@ -189,48 +191,29 @@ function cspDirectives(csp) {
   )
 }
 
-// ── dist/_redirects, dist/build-meta.json, dist/missing-asset.html (P83, D-100) ──────────────────
+// ── dist/{assets,scanner-assets}/404.html, dist/build-meta.json (P83, D-100) ──────────────────────
 {
-  const lines = redirectsFile
-    .split('\n')
-    .filter((line) => line.trim() !== '' && !line.startsWith('#'))
-  const assetDirectories = ['/assets/*', '/scanner-assets/*']
-  const assetLines = lines.filter((line) =>
-    assetDirectories.some((dir) => line.startsWith(`${dir}  `)),
-  )
-  const catchAllIndex = lines.findIndex((line) => line.startsWith('/*  '))
-
   record(
-    // A real dist/404.html regressed EVERY navigation route to a bare 404 on the live preview
-    // (deployment-check.mjs's /login|/invite|/admin checks caught it) — Cloudflare's own
-    // top-level-404.html detection disables the automatic SPA rewrite project-wide, ahead of and
-    // independent of whatever _redirects says. Pinned here so this exact regression cannot ship
-    // again without a fast local failure.
-    'dist/404.html does NOT exist (it would disable the SPA fallback for every real route)',
+    // A real TOP-LEVEL dist/404.html regressed EVERY navigation route to a bare 404 on the live
+    // preview (deployment-check.mjs's /login|/invite|/admin checks caught it) — Cloudflare's own
+    // top-level-404.html detection disables the automatic SPA rewrite project-wide. A NESTED
+    // 404.html (dist/assets/404.html etc, Cloudflare's own documented directory-tree 404 lookup)
+    // does not have this problem. Pinned here so this exact regression cannot ship again.
+    'dist/404.html does NOT exist at the project ROOT (only nested, per-directory copies)',
     !existsSync(join(dist, '404.html')),
     existsSync(join(dist, '404.html')) ? 'dist/404.html is present' : 'absent, as required',
   )
-  record(
-    // A mid-pattern splat (`/*.js`) was tried first — accepted by the file-format parser but
-    // never actually matched anything on Cloudflare (splats only work at the end of a path,
-    // "/blog/*"-style); a missing chunk kept falling through to the plain SPA catch-all exactly
-    // like before this file existed. Directory-prefix rules avoid that failure mode entirely.
-    '_redirects defines a real-404 rule for both build-artifact directories, trailing-splat style',
-    assetDirectories.every((dir) => assetLines.some((line) => line.startsWith(`${dir}  `))),
-    assetLines.join(' | ') || '(none)',
-  )
-  record(
-    'every asset-directory rule in _redirects targets missing-asset.html at 404, before the SPA catch-all',
-    catchAllIndex > -1 &&
-      assetLines.every((line) => /\/missing-asset\.html\s+404\s*$/.test(line)) &&
-      assetLines.every((line) => lines.indexOf(line) < catchAllIndex),
-    `catch-all at line ${String(catchAllIndex)}`,
-  )
-  record(
-    '_redirects still falls back real navigation paths to index.html at 200',
-    catchAllIndex > -1 && /\/index\.html\s+200\s*$/.test(lines[catchAllIndex] ?? ''),
-    lines[catchAllIndex] ?? '(no catch-all found)',
-  )
+  ASSET_FALLBACK_DIRECTORIES.forEach((dir, i) => {
+    record(
+      // A `_redirects` rule targeting status 404 was tried first — Cloudflare Pages' `_redirects`
+      // does not support arbitrary rewrite status codes at all (only 200 and the 30x redirect
+      // codes), so every such rule was silently skipped as malformed. A nested 404.html is
+      // Cloudflare's own genuinely-supported mechanism for a real, directory-scoped 404.
+      `dist/${dir}/404.html exists as a real (non-app-shell) error page`,
+      assetNotFoundFiles[i].length > 0 && !assetNotFoundFiles[i].includes('id="root"'),
+      `${String(assetNotFoundFiles[i].length)} bytes`,
+    )
+  })
 
   let buildMeta = null
   try {
@@ -247,11 +230,6 @@ function cspDirectives(csp) {
     '/build-meta.json is marked no-store in _headers, never HTTP-cached',
     /\/build-meta\.json\s*\n\s*Cache-Control:\s*no-store/.test(headersFile),
     /\/build-meta\.json[\s\S]{0,60}/.exec(headersFile)?.[0] ?? '(no rule found)',
-  )
-  record(
-    'missing-asset.html exists as a real (non-app-shell) error page — never the SPA index.html content',
-    notFoundFile.length > 0 && !notFoundFile.includes('id="root"'),
-    `${String(notFoundFile.length)} bytes`,
   )
 }
 

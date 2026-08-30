@@ -16,16 +16,18 @@ reproduced directly via `curl` against BOTH the live PR #63 preview and this rep
 preview`.** Full account: D-100 in [DECISIONS.md](docs/DECISIONS.md),
 `ai_outputs/Claude_outputs/output_83.txt`.
 
-1. **Cloudflare `_redirects` now routes every asset-shaped path (`*.js/mjs/css/wasm/map/json/bin/
-   gz/webmanifest`) to a real 404, ordered before the SPA catch-all** —
-   `vite.config.ts`'s `buildAssetFallbackRedirects()`, same generated-not-checked-in pattern as
-   `_headers`. An existing deployed asset is unaffected (static files are matched before
-   `_redirects` is consulted); only a genuinely missing one stops masquerading as HTML. **The error
-   page is named `missing-asset.html`, deliberately NOT `404.html`** — a real regression, caught
-   live against the PR #63 preview before this shipped: a file literally named `404.html` disables
-   Cloudflare's automatic SPA rewrite for EVERY route project-wide (independent of `_redirects`),
-   which broke `/login`/`/invite/...`/`/admin/invitations` (`deployment-check.mjs` caught it, 3
-   failures). Full account and two new regression tests: D-100.
+1. **A NESTED `404.html` in `dist/assets/` and `dist/scanner-assets/`** —
+   `vite.config.ts`'s `cloudflareAssetNotFoundPages()` — is Cloudflare Pages' own documented
+   directory-tree 404 mechanism. An existing deployed asset is unaffected (a real file is always
+   matched before 404 handling); only a genuinely missing one under either directory now 404s
+   instead of masquerading as HTML. **Getting here took three attempts, each deployed and curled
+   against the live preview before being rejected** (full blow-by-blow: D-100) — a TOP-LEVEL
+   `public/404.html` disables Cloudflare's automatic SPA rewrite for EVERY route project-wide,
+   which broke `/login`/`/invite/...`/`/admin/invitations`; a `_redirects` rule targeting status
+   404 was then tried and silently never fired, because Cloudflare Pages' `_redirects` does not
+   support arbitrary rewrite status codes AT ALL (only `200` and the `30x` redirect codes are
+   valid — confirmed against Cloudflare's own docs). None of the three failures was reproducible
+   locally; each required a real deploy-and-curl cycle to catch.
 2. **Immutable build identity, printed FIRST in every scanner diagnostics dump**:
    `__APP_BUILD_SHA__`/`__APP_BUILD_TIME__` (Cloudflare's own `CF_PAGES_COMMIT_SHA` when building
    on Pages, else `git rev-parse HEAD`) plus `SCANNER_SCHEMA_VERSION`
@@ -47,14 +49,14 @@ preview`.** Full account: D-100 in [DECISIONS.md](docs/DECISIONS.md),
 
 **Preserved, NOT touched this session:** every P78–P82 scanner recognition/prewarm fix, the full
 19,501-card DINO index, `engine.ts`'s scoring model. Zero database/migration/RPC files changed
-(`DATABASE_MIGRATIONS=90`, unchanged). Gates: 872/872 unit (up from 845), typecheck/lint(0
-errors)/format clean, build green, 19/19 platform verifier (up from 12, new `_redirects`/
-`build-meta.json`/`missing-asset.html` checks plus a `dist/404.html`-must-not-exist regression
-guard), 68/68 E2E (up from 64, new `tests/e2e/stale-deployment.spec.ts` on BOTH Chromium and
-WebKit), `deployment-check.mjs` re-verified GREEN against the live PR #63 preview after the
-`404.html`→`missing-asset.html` fix (33/33, one unrelated transient network blip on a re-run,
-resolved on retry — see output_83.txt). DB/M13/M16 not re-run (Docker unavailable, same standing
-constraint since P75) — diff touches zero DB files.
+(`DATABASE_MIGRATIONS=90`, unchanged). Gates, full account with exact counts in output_83.txt:
+typecheck/lint(0 errors)/format/unit all clean, build green, platform verifier green (new nested-
+404 checks plus a root-`dist/404.html`-must-not-exist regression guard), E2E green (new
+`tests/e2e/stale-deployment.spec.ts` on BOTH Chromium and WebKit), `deployment-check.mjs` GREEN
+(33/33) against the live PR #63 preview at the FINAL head, after being RED (3 failures) at an
+intermediate head that shipped the first (top-level-404.html) attempt above — never merged past
+this session, only ever pushed to the draft PR. DB/M13/M16 not re-run (Docker unavailable, same
+standing constraint since P75) — diff touches zero DB files.
 
 **OWNER_NEXT_ACTION:** open the VERIFIED deployment-specific P83 preview (not the mutable branch
 alias) in Safari, open `?scannerDebug=1`, copy diagnostics, confirm `APP_BUILD_SHA` equals the P83
