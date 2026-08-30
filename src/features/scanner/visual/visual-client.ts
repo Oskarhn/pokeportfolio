@@ -8,6 +8,7 @@
  * simply proceeds with OCR-only results, exactly as it did before this channel existed.
  */
 import type { BackendAttemptStatus, VisualBackendOverride } from './visual-worker'
+import type { VisualWorkerProgressPhase } from './phase-timing'
 
 export interface VisualHit {
   readonly cardId: string
@@ -66,6 +67,28 @@ type WorkerMessage =
       embeddingNorm: number
     }
   | { type: 'error'; requestId: number; message: string }
+  | { type: 'progress'; phase: VisualWorkerProgressPhase; atMs: number }
+
+/** P82 §2-§6/§20: a live snapshot of the worker's most recent progress signal, kept even before
+ *  ready/unavailable arrives — the gap that left every P81 phase-timing field as "—" during a real
+ *  stalled init (the owner's real-iPhone report, P82 §0). */
+export interface VisualLiveProgress {
+  readonly workerBooted: boolean
+  /** Time from Worker construction to the 'worker-module-evaluated' progress message, or null
+   *  until that message has arrived — distinguishes a worker that never even finished loading its
+   *  OWN script/module graph from one that booted but is stuck inside a later phase. */
+  readonly workerBootMs: number | null
+  /** Most recent progress phase name, or null if no progress message has arrived at all yet
+   *  (`WORKER_CONSTRUCTED_BUT_NO_BOOT_MESSAGE`, P82 §4). */
+  readonly currentPhase: VisualWorkerProgressPhase | null
+  /** Milliseconds since the CURRENT phase was entered (i.e. since its progress message arrived) —
+   *  computed live at read time from `performance.now()`, never a stored/cached duration. */
+  readonly currentPhaseElapsedMs: number | null
+  /** Milliseconds since the most recent progress message of ANY kind arrived — identical to
+   *  `currentPhaseElapsedMs` today (a progress message always marks entering a new phase), kept as
+   *  its own named field because the prompt's diagnostics contract asks for both labels. */
+  readonly lastProgressMsAgo: number | null
+}
 
 /** Reads the diagnostic-only `?visualBackend=` override (prompt §5) exactly once per client
  *  instance — the value the worker actually used for THIS session, not re-read per scan. Absent
@@ -93,6 +116,15 @@ export class VisualRecognitionClient {
    *  FIRST_EMBED_MS) — the number that answers "once the model is warm, how fast is one actual
    *  scan," distinct from cold model/index load. Null until one real embed has completed. */
   private firstEmbedMs: number | null = null
+  /** P82 §2-§6: live progress bookkeeping, updated as 'progress' messages arrive — see
+   *  {@link VisualLiveProgress}'s own docs for what each field answers. `constructedAtMs` is
+   *  recorded once per Worker construction (see `ensureReady()`) so `workerBootMs` can be computed
+   *  the moment the boot message arrives. */
+  private constructedAtMs: number | null = null
+  private workerBooted = false
+  private workerBootMs: number | null = null
+  private currentPhase: VisualWorkerProgressPhase | null = null
+  private currentPhaseAtMs: number | null = null
 
   /**
    * Explicit prewarm entry point (P81 §6): begins worker/model/index loading in the background
@@ -120,6 +152,7 @@ export class VisualRecognitionClient {
         // different time origin) so `workerStartMs` can measure real script fetch/parse/eval
         // cost instead of a meaningless cross-context diff.
         const constructedAtMs = performance.timeOrigin + performance.now()
+        this.constructedAtMs = constructedAtMs
         const worker = new Worker(new URL('./visual-worker.ts', import.meta.url), {
           type: 'module',
         })
@@ -155,6 +188,18 @@ export class VisualRecognitionClient {
     message: WorkerMessage,
     resolveReady: (r: VisualReadyInfo | null) => void,
   ): void {
+    if (message.type === 'progress') {
+      this.currentPhase = message.phase
+      this.currentPhaseAtMs = message.atMs
+      if (message.phase === 'worker-module-evaluated') {
+        this.workerBooted = true
+        this.workerBootMs =
+          this.constructedAtMs === null
+            ? null
+            : Math.max(0, Math.round(message.atMs - this.constructedAtMs))
+      }
+      return
+    }
     if (message.type === 'ready') {
       this.readyInfo = message
       this.backendDiagnostics = message
@@ -222,6 +267,7 @@ export class VisualRecognitionClient {
     readyInfo: VisualReadyInfo | null
     backendDiagnostics: VisualBackendDiagnostics | null
     firstEmbedMs: number | null
+    liveProgress: VisualLiveProgress
   } {
     const modelState: 'not-loaded' | 'loading' | 'ready' | 'failed' =
       this.readyInfo !== null
@@ -231,12 +277,22 @@ export class VisualRecognitionClient {
           : this.readyPromise !== null
             ? 'loading'
             : 'not-loaded'
+    const now = performance.timeOrigin + performance.now()
+    const elapsedSinceCurrentPhase =
+      this.currentPhaseAtMs === null ? null : Math.max(0, Math.round(now - this.currentPhaseAtMs))
     return {
       modelState,
       unavailableReason: this.unavailableReason,
       readyInfo: this.readyInfo,
       backendDiagnostics: this.backendDiagnostics,
       firstEmbedMs: this.firstEmbedMs,
+      liveProgress: {
+        workerBooted: this.workerBooted,
+        workerBootMs: this.workerBootMs,
+        currentPhase: this.currentPhase,
+        currentPhaseElapsedMs: elapsedSinceCurrentPhase,
+        lastProgressMsAgo: elapsedSinceCurrentPhase,
+      },
     }
   }
 
@@ -246,5 +302,10 @@ export class VisualRecognitionClient {
     this.readyInfo = null
     this.readyPromise = null
     this.pending.clear()
+    this.workerBooted = false
+    this.workerBootMs = null
+    this.currentPhase = null
+    this.currentPhaseAtMs = null
+    this.constructedAtMs = null
   }
 }

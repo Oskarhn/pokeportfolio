@@ -471,3 +471,64 @@ still-open discriminative-power gap, with no benchmarked evidence either way. Gi
 own measurement that compile/session-create is not the dominant real-device cost, a smaller model
 would not address the problem that was actually diagnosed, and would force an irreversible
 multi-hour re-embedding of the 19,501-card index to find out. Not undertaken.
+
+## 7e. Live worker-progress instrumentation, lightweight perceptual-hash retrieval, FAST-baseline reprioritization (M15, 2026-08-30 — P82, D-099)
+
+P81's fixes did not close the gap: the owner's real-iPhone retest showed `VISUAL_MODEL_STATE=
+loading` persisting over a minute with every `VISUAL_PHASE_TIMINGS` field reading "—" (P81 only
+reports per-phase timings inside the TERMINAL ready/unavailable message — a stall in progress was
+unobservable), and a Shieldon scan that OCR also failed to identify despite the debug screenshot
+showing the printed name clearly legible.
+
+**Live progress instrumentation** (full account in D-099): the worker now posts a `progress`
+message at every phase boundary, starting with `worker-module-evaluated` the INSTANT module
+evaluation reaches application code — before transformers.js/onnxruntime-web are touched at all.
+`VisualRecognitionClient` keeps a live snapshot (current phase, elapsed time in that phase, worker
+boot status/timing) readable at any point, not only at a terminal message. Implemented by wrapping
+the non-pure dependencies `visual-worker.ts`'s `init()` passes to
+`domain/scanner/visual-backend-selection.ts` — that module's own pure signature and its 14 tests
+are untouched.
+
+**Lightweight perceptual-hash retrieval — measured on REALISTIC capture noise, REJECTED.** §7b's
+dHash figure (86.7% TOP1) came from EASY resize/rotate-in-place distortions of an already-tight
+reference image — never a captured frame needing real cropping/rectification. Re-run this session
+(`pnpm scanner:visual:benchmark:hash`, new) against the SAME hard, realistic corpus §7c/P79's
+rectification benchmark uses (tilt + off-center placement, the REAL `rectify.ts` pipeline), also
+adding a newly-implemented DCT-based pHash (`computePHash`):
+
+| Method | TOP1 | TOP3 | TOP5 | (tilted-offcenter, n=240) |
+|---|---|---|---|---|
+| dHash | 5.0% | 10.0% | 12.1% | |
+| pHash | 23.3% | 30.8% | 36.3% | |
+| combined (average) | 18.8% | 27.9% | 32.9% | |
+
+Both collapse to 0-2% on the combined glare/shadow/blur profiles, same as DINO's own worst case.
+Decisively: the combined-hash SAME-card vs. DIFFERENT-card similarity distributions overlap almost
+completely across all 720 hard queries (same-card median 0.500, p10-p90 0.422-0.625; different-card
+median 0.492, p10-p90 0.422-0.563) — no threshold separates a correct match from a wrong one
+reliably at this noise level, versus DINO's 93.3% TOP1 on the identical profile (P79). **Decision:
+perceptual-hash similarity is NOT wired into `engine.ts`'s scoring** — it would inject
+near-random noise into ranking under exactly the conditions a real scan produces. The hash functions
+(`computePHash`/`packHashRow`/`unpackHashRow`/`combinedHashSimilarity`) ship as tested, available
+domain tooling (photometric.ts's own precedent); no hash index, generator, or browser client was
+built — ungated by evidence, that would be exactly the "blindly ship a complicated pipeline" this
+project's discipline exists to prevent.
+
+**FAST baseline reprioritized: OCR + text search ahead of DINO.** With hashing rejected, the only
+real fast (no ~45MB DINO cold start) signal is OCR + P67's text matcher — already shipped since
+P68. Route-entry prewarm now starts OCR immediately and stages DINO
+`ENHANCED_VISUAL_PREWARM_STAGGER_MS` (1500ms) behind it — the reverse of P81's own ordering. The
+intro screen's loading copy now gates on `ScannerOcrEngine.getState()`
+(`getFastScannerState()`, new) instead of the DINO channel's own readiness, so it clears once OCR is
+ready rather than waiting for a still-cold DINO load. Debug diagnostics distinguish
+`FAST_SCANNER_STATE`/`OCR_RUNTIME_STATE` from `ENHANCED_VISUAL_STATE` explicitly. Not benchmarked
+against a real device this session (no iPhone available) — disclosed as reasoned, not measured,
+same posture P81's own staggering used.
+
+**OCR preprocessing: Otsu binarization added as a bounded fallback.** `roi.ts` gains
+`otsuThreshold`/`binarizeGrayscale` (self-calibrating per-image threshold, oriented dark-text-on-
+light). `analyze.ts` tries the existing `contrast` pass first (unchanged call cost from P78-P81); a
+`binarize` retry over the same ROI candidates runs ONLY when `contrast` found nothing usable at all
+for that field, so an already-working scan never pays for it. Not benchmarked against a real device
+or a representative real-photo OCR corpus this session — a bounded, motivated but unverified
+addition, disclosed as such.

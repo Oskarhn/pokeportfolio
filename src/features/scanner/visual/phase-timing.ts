@@ -121,6 +121,33 @@ export function nonNetworkRemainder(wallMs: number, networkMs: number): number {
   return Math.max(0, Math.round(wallMs - networkMs))
 }
 
+/**
+ * P82 §2-§6: live progress phases the worker posts WHILE it is still initializing — the gap P81's
+ * instrumentation left. P81 only reported phase timings inside the TERMINAL `ready`/`unavailable`
+ * message, so a real stalled init (the owner's real-iPhone report: `VISUAL_MODEL_STATE=loading` for
+ * over a minute) left every phase field as "—" — the main thread knew NOTHING beyond "loading"
+ * while the worker was genuinely stuck. Each phase name denotes ENTERING that phase; the main
+ * thread infers "how long has the worker been in phase X" from the elapsed time since the most
+ * recent progress message, never from a second timer the worker itself runs.
+ */
+export type VisualWorkerProgressPhase =
+  | 'worker-module-evaluated'
+  | 'init-received'
+  | 'processor-load-started'
+  | 'processor-load-finished'
+  | 'backend-selection-started'
+  | 'webgpu-attempt-started'
+  | 'webgpu-attempt-finished'
+  | 'wasm-attempt-started'
+  | 'wasm-attempt-finished'
+  | 'model-load-finished'
+  | 'index-load-started'
+  | 'index-manifest-loaded'
+  | 'index-ids-loaded'
+  | 'index-embeddings-loaded'
+  | 'index-decode-finished'
+  | 'ready'
+
 export type AssetCacheStatusEstimate = 'unknown' | 'likely-cache' | 'likely-network'
 
 /**

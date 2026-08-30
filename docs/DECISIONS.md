@@ -3195,3 +3195,111 @@ precedent for the identical class of decision (photometric normalization, auxili
 **Not changed:** the model, the architecture beyond the prewarm/bounded-wait/instrumentation/cache
 additions above, any migration (still 90), any financial semantic, the committed hosted index, any
 P80 recognition-quality fix.
+
+## D-099 — Live worker-progress instrumentation; lightweight perceptual-hash retrieval evaluated and REJECTED; FAST (OCR) baseline reprioritized ahead of DINO (P82)
+
+**Motivated by:** P81's fixes did NOT close the gap. The owner's real-iPhone retest on the P81
+preview showed `VISUAL_MODEL_STATE=loading` persisting for over a minute with every
+`VISUAL_PHASE_TIMINGS` field reading "—", then a Shieldon scan that OCR also failed to identify
+despite the debug screenshot showing the printed name clearly legible inside the name ROI. P81's
+8-second bounded degradation worked exactly as designed; the underlying visual-channel prewarm
+performance did not improve enough, and the diagnostics that would explain WHY remained blind
+during an in-progress stall — P81 only ever reported per-phase timings inside the TERMINAL
+`ready`/`unavailable` worker message, so a genuinely stuck init left every phase field unobservable
+until it either finished or the owner gave up.
+
+### 1. Live progress instrumentation closes the P81 observability gap
+
+The worker now posts a `progress` message at every phase boundary (worker-module-evaluated,
+init-received, processor-load-started/finished, backend-selection-started, webgpu/wasm-attempt-
+started/finished, model-load-finished, index-load-started, index-manifest/ids/embeddings-loaded,
+index-decode-finished, ready) — see `src/features/scanner/visual/phase-timing.ts`'s
+`VisualWorkerProgressPhase` and `visual-worker.ts`'s `postProgress`. The worker-boot message
+(`worker-module-evaluated`) fires the INSTANT module evaluation reaches application code, before
+`AutoProcessor`/`AutoModel`/onnxruntime-web are touched at all — a worker that never even reaches
+this point points at script fetch/parse/module-graph-evaluation cost, not model/index loading, and
+is now distinguishable from one stuck in a later phase. `VisualRecognitionClient` keeps a live
+snapshot (`workerBooted`, `workerBootMs`, `currentPhase`, `currentPhaseElapsedMs`,
+`lastProgressMsAgo`) updated as these arrive, surfaced through the existing `?scannerDebug=1` panel
+as `WORKER_BOOTED`/`WORKER_BOOT_MS`/`VISUAL_CURRENT_PHASE`/`DINO_CURRENT_PHASE`/
+`VISUAL_CURRENT_PHASE_ELAPSED_MS`/`VISUAL_LAST_PROGRESS_MS_AGO` — all populated DURING loading, not
+only at a terminal message. Implemented by wrapping the two non-pure dependencies
+(`detectWebgpuAvailable`/`loadModelOnBackend`) inside `visual-worker.ts`'s own `init()`, so
+`domain/scanner/visual-backend-selection.ts`'s pure signature and its 14 existing tests are
+untouched.
+
+### 2. Lightweight perceptual-hash retrieval: evaluated on REALISTIC capture noise, REJECTED
+
+The prompt's premise — that P76's dHash benchmark (86.7%/93.0%/95.0% TOP1/3/5,
+docs/SCANNER_RESEARCH.md §7b) supports a hash-based fast path — was tested against the wrong
+corpus. That number came from EASY, resize/rotate-in-place distortions of an already-tight,
+card-only reference image, never a captured frame needing real cropping/rectification. This session
+built `pnpm scanner:visual:benchmark:hash` (new), running dHash AND a newly-implemented pHash
+(DCT-based, `computePHash`, `src/domain/scanner/perceptual-hash.ts`) through the SAME hard,
+realistic corpus P79's rectification benchmark uses (tilt + off-center placement composed onto a
+larger background, then the REAL `rectify.ts` detect+warp pipeline) — the honest stand-in for an
+actual phone photo. Result:
+
+| Method | TOP1 | TOP3 | TOP5 | (tilted-offcenter profile, n=240) |
+|---|---|---|---|---|
+| dHash | 5.0% | 10.0% | 12.1% | |
+| pHash | 23.3% | 30.8% | 36.3% | |
+| combined (average) | 18.8% | 27.9% | 32.9% | |
+
+Collapsing to 0-2% on the two profiles combining glare/shadow/blur, identically to DINO's own
+catastrophic-failure profiles (P79). Far more decisive: the SAME-card vs. DIFFERENT-card combined-
+hash similarity distributions **overlap almost completely** across the full 720-query hard corpus
+(same-card median 0.500, p10-p90 = 0.422-0.625; different-card median 0.492, p10-p90 =
+0.422-0.563) — there is no threshold that would separate a correct match from a wrong one reliably
+at this noise level. For comparison, DINO's rectified TOP1 on the identical geometry-only profile
+is 93.3% (P79) — a full order of magnitude better under the SAME realistic distortion. **Decision:
+do NOT wire perceptual-hash similarity into `engine.ts`'s scoring as a "fast visual" evidence
+channel.** Doing so would inject near-random noise into candidate ranking under exactly the capture
+conditions a real scan produces, risking false confidence rather than preventing it (a hash-based
+channel that cannot discriminate same-card from different-card is worse than no visual channel at
+all, not a cheaper approximation of one). `computePHash`/`packHashRow`/`unpackHashRow`/
+`combinedHashSimilarity` ship as tested, available domain-layer tooling (mirroring photometric.ts's
+own precedent) — not wired into any production matching path. No hash-index generator, browser
+client, or hosted asset was built; building any of that would be exactly the "blindly ship a
+complicated pipeline ungated by evidence" this project's discipline exists to prevent. If a future
+session finds a genuinely different hash family or a much larger reference-hash pool changes this
+picture, the benchmark script and evidence above are the concrete starting point — not a repeat of
+this session's own measurement.
+
+### 3. The FAST baseline is OCR + text search, reprioritized ahead of DINO
+
+Given (2), the only real, evidence-backed signal that does not require the ~45MB DINO cold start is
+OCR + P67's deterministic text matcher — already shipped since P68, unaffected by this session.
+Route-entry prewarm (`controller.ts`) now starts the OCR engine IMMEDIATELY and stages the
+heavyweight DINO channel `ENHANCED_VISUAL_PREWARM_STAGGER_MS` (1500ms, same value P81 used, now in
+the opposite direction) behind it — a reversal of P81's own ordering, which reasoned (also
+unbenchmarked) that the bigger download deserved the head start. OCR's ~10MB cold assets are a
+small fraction of DINO's ~45MB, and OCR now provides real signal from the moment it is ready rather
+than nothing until DINO finally loads. `ScannerOcrEngine.getState()` (new) reports the OCR engine's
+own `not-loaded`/`loading`/`ready`/`failed` state; `ScannerUiController.getFastScannerState()`
+(new) exposes it. The intro screen's "Preparing card recognition…" copy (`ScannerPage.tsx`) now
+gates on this FAST state instead of the heavyweight DINO channel's own `getVisualPrewarmState()` —
+it clears as soon as OCR is ready, not once DINO's cold ~45MB load finally finishes. Debug
+diagnostics distinguish both explicitly: `FAST_SCANNER_STATE`/`OCR_RUNTIME_STATE` (the OCR/fast
+baseline) vs. `ENHANCED_VISUAL_STATE` (the DINO channel, same value `VISUAL_MODEL_STATE` already
+reported). Neither this reordering nor the honest-loading-copy change is benchmarked against a real
+device this session (no iPhone available) — same disclosed-not-measured posture P81's own staggering
+used.
+
+### 4. OCR preprocessing: Otsu binarization added as a bounded fallback variant
+
+The Shieldon evidence (name ROI visually legible, OCR output garbage) pointed at preprocessing, not
+ROI geometry (already fixed by P80). `roi.ts` gains `otsuThreshold`/`binarizeGrayscale` — a
+self-calibrating (per-image) hard threshold, oriented so the minority pixel class (assumed to be
+text on a mostly-background strip) renders as dark-on-light. `analyze.ts`'s `readBestRoi` tries the
+existing `contrast` (percentile-stretch) pass first, UNCHANGED call-for-call from P78-P81 — a
+`binarize` retry over the same candidates only runs when `contrast` found NOTHING usable from ANY
+candidate for that field, so an already-working scan pays zero extra cost; only the already-failing
+case (full-frame fallback would otherwise be the only recourse) gets a second, differently-processed
+attempt first. Not benchmarked against a real device this session (no representative real-photo
+corpus with ground-truth OCR text available) — a bounded, evidence-motivated but real-device-
+unverified addition, disclosed as such.
+
+**Not changed:** `engine.ts`'s scoring model (no hash-evidence channel added), the committed 19,501-
+card DINO index, any migration (still 90), any financial semantic, P80's adaptive-ROI candidate
+selection logic itself (only a new preprocessing axis was added around it).

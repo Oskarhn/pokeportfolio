@@ -63,6 +63,14 @@ function diagnostics(overrides: Partial<ScannerDiagnostics> = {}): ScannerDiagno
     visualPrewarmStarted: true,
     visualPrewarmReadyBeforeCapture: true,
     ocrPrepareMs: 900,
+    workerBooted: true,
+    workerBootMs: 12,
+    visualCurrentPhase: 'ready',
+    visualCurrentPhaseElapsedMs: 4,
+    visualLastProgressMsAgo: 4,
+    fastScannerState: 'ready',
+    ocrRuntimeState: 'ready',
+    enhancedVisualState: 'ready',
     ...overrides,
   }
 }
@@ -181,6 +189,46 @@ describe('formatScannerDiagnostics', () => {
   it('never contains anything resembling a secret/token field name', () => {
     const text = formatScannerDiagnostics(diagnostics())
     expect(text.toLowerCase()).not.toMatch(/service_role|token|password|auth|email|user_id/)
+  })
+
+  it('P82-4/P82-5: renders live-progress fields even while still loading, distinct from FAST_SCANNER_STATE/ENHANCED_VISUAL_STATE', () => {
+    const text = formatScannerDiagnostics(
+      diagnostics({
+        visualModelState: 'loading',
+        enhancedVisualState: 'loading',
+        fastScannerState: 'ready',
+        ocrRuntimeState: 'ready',
+        workerBooted: true,
+        workerBootMs: 9,
+        visualCurrentPhase: 'wasm-attempt-started',
+        visualCurrentPhaseElapsedMs: 42000,
+        visualLastProgressMsAgo: 42000,
+      }),
+    )
+    expect(text).toContain('FAST_SCANNER_STATE=ready')
+    expect(text).toContain('OCR_RUNTIME_STATE=ready')
+    expect(text).toContain('ENHANCED_VISUAL_STATE=loading')
+    expect(text).toContain('WORKER_BOOTED=yes')
+    expect(text).toContain('WORKER_BOOT_MS=9')
+    expect(text).toContain('VISUAL_CURRENT_PHASE=wasm-attempt-started')
+    expect(text).toContain('DINO_CURRENT_PHASE=wasm-attempt-started')
+    expect(text).toContain('VISUAL_CURRENT_PHASE_ELAPSED_MS=42000')
+    expect(text).toContain('VISUAL_LAST_PROGRESS_MS_AGO=42000')
+  })
+
+  it('P82-4: a worker constructed but never reporting a boot message is distinguishable from one stuck in a later phase', () => {
+    const text = formatScannerDiagnostics(
+      diagnostics({
+        workerBooted: false,
+        workerBootMs: null,
+        visualCurrentPhase: null,
+        visualCurrentPhaseElapsedMs: null,
+        visualLastProgressMsAgo: null,
+      }),
+    )
+    expect(text).toContain('WORKER_BOOTED=no')
+    expect(text).toContain('WORKER_BOOT_MS=—')
+    expect(text).toContain('VISUAL_CURRENT_PHASE=—')
   })
 
   it('renders both backend errors when webgpu and wasm both failed (R6)', () => {

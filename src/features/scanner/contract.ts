@@ -141,6 +141,34 @@ export interface ScannerDiagnostics {
    *  `engine.prepare()` call inside `runOcrAnalysis` still warms it correctly either way; this
    *  field just may not have observed that first-hand in that specific race). */
   ocrPrepareMs: number | null
+  /** P82 §2-§6/§20: whether the worker's OWN module evaluation ever reported in at all — a worker
+   *  constructed but never even posting `worker-module-evaluated` (P82 §5) points at script
+   *  fetch/parse/module-graph-evaluation cost, not model/index loading. */
+  workerBooted: boolean
+  /** Milliseconds from Worker construction to its `worker-module-evaluated` progress message; null
+   *  until that message has arrived. */
+  workerBootMs: number | null
+  /** Most recent live progress phase the worker has reported (P82 §2-§6), or null if none has
+   *  arrived yet at all — the exact gap P81's terminal-only phase timings left unfilled. */
+  visualCurrentPhase: string | null
+  /** Milliseconds since {@link visualCurrentPhase} was entered, computed live at read time. */
+  visualCurrentPhaseElapsedMs: number | null
+  /** Milliseconds since the most recent progress message of any kind arrived — identical to
+   *  `visualCurrentPhaseElapsedMs` today; a distinct field because the debug contract names both. */
+  visualLastProgressMsAgo: number | null
+  /** P82 §17-§19: readiness of the FAST baseline (OCR text recognition) — this is what an honest
+   *  "Preparing card recognition…" message should gate on, not the heavyweight DINO visual
+   *  channel, so a first scan is never blocked on a still-cold ~45MB model/index download. */
+  fastScannerState: 'not-loaded' | 'loading' | 'ready' | 'failed'
+  /** Same value as `fastScannerState` today (the fast baseline IS the OCR runtime — see
+   *  docs/SCANNER_RESEARCH.md §7e for why a perceptual-hash retrieval channel was evaluated and
+   *  NOT added as a second fast signal), kept as its own named field for the debug contract's
+   *  OCR_RUNTIME_STATE label. */
+  ocrRuntimeState: 'not-loaded' | 'loading' | 'ready' | 'failed'
+  /** P82 §17-§19: the (renamed, same-value) enhanced/heavyweight visual channel's own state —
+   *  identical to `visualModelState`, kept as a second named field so the debug contract's
+   *  ENHANCED_VISUAL_STATE label reads as its own concept rather than reusing the older name. */
+  enhancedVisualState: 'not-loaded' | 'loading' | 'ready' | 'failed'
 }
 
 /**
@@ -264,6 +292,12 @@ export interface ScannerUiController {
    *  compatibility, same discipline as the other optional members above. */
   prewarm?(): void
   /** Current visual-channel readiness (P81 §7) for driving an honest loading indicator before the
-   *  model/index have finished loading. Optional for the same reason as above. */
+   *  model/index have finished loading. Optional for the same reason as above. Naming note (P82):
+   *  this reports the HEAVYWEIGHT/enhanced DINO channel specifically — {@link getFastScannerState}
+   *  is what the intro screen should gate its own loading copy on instead. */
   getVisualPrewarmState?(): 'not-loaded' | 'loading' | 'ready' | 'failed'
+  /** P82 §17-§19: readiness of the FAST (OCR) baseline — reaches 'ready' far sooner than
+   *  {@link getVisualPrewarmState} on a cold device, since it does not depend on the ~45MB DINO
+   *  model/index. Optional for the same reason as the other diagnostic getters above. */
+  getFastScannerState?(): 'not-loaded' | 'loading' | 'ready' | 'failed'
 }

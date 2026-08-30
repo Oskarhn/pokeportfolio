@@ -8,6 +8,49 @@ here when there was a real problem with a non-obvious answer.
 
 ---
 
+## 2026-08-30 — M15b: a real-photo benchmark showed the lightweight fast-path idea was worse than no visual signal at all
+
+P81's cold-start fixes shipped, and the owner's real-iPhone retest still showed `VISUAL_MODEL_STATE
+=loading` for over a minute, with every phase-timing field reading "—" — P81 only reported per-
+phase timings inside the terminal ready/unavailable worker message, so a stall IN PROGRESS was
+invisible. That gap got fixed first (live progress messages posted at every phase boundary,
+starting with a boot message the instant the worker's module evaluates, before touching
+transformers.js at all).
+
+The more interesting problem was what to do about the stall itself. The obvious-looking move was a
+perceptual-hash (dHash/pHash) fast path: no ML runtime, computable in milliseconds, and P76's own
+benchmark had already reported dHash at 86.7% TOP1. Building the retrieval index, generator and
+browser client around that number would have been straightforward.
+
+**Checking which corpus that number came from first was the thing that mattered.** P76's benchmark
+distorted an already-tight, card-only reference image in place (resize, rotate, blur) — it never
+tested a query that needed real cropping or alignment correction, because the query started
+perfectly cropped. That is not what a phone photo looks like. P79 had already built the honest
+version of that corpus for exactly this reason (a card composed off-center and tilted onto a larger
+background, then run through the real rectification pipeline) to benchmark DINO — but nobody had
+ever pointed the hash functions at it.
+
+Running dHash and a newly-written DCT-based pHash against that harder corpus collapsed the numbers
+completely: dHash 5.0% TOP1, pHash 23.3%, a combined average 18.8% — against DINO's 93.3% on the
+identical distortion profile. The decisive number wasn't even the TOP1 percentage; it was that the
+same-card and different-card similarity distributions overlapped almost entirely (medians 0.500 vs.
+0.492, with heavily overlapping p10-p90 ranges across all 720 queries). A retrieval signal whose
+correct-match and wrong-match score distributions are indistinguishable isn't a cheaper, slightly-
+worse version of a real visual channel — it's noise with a similarity number attached to it. Wiring
+that into the scoring engine as a "fast visual" evidence channel would have made the scanner
+actively worse at exactly the moment (a cold DINO channel) it was supposed to help, by handing the
+matcher false corroboration for a wrong candidate as often as a right one.
+
+The lesson generalizes past this one decision: a benchmark result is only as trustworthy as the
+distortion profile it was measured against, and "this method scored well" is a claim about ONE
+corpus, not about the method in general — the corpus has to match the actual failure mode being
+addressed before the number means anything. The fallback that survived the check was the boring
+one: OCR + text search already existed, already worked without any ML runtime, and simply hadn't
+been given priority over the heavyweight channel during prewarm. Reversing that priority (OCR
+first, DINO staggered behind it) and gating the intro screen's loading copy on OCR's own readiness
+instead of DINO's took a fraction of the effort the hash pipeline would have, and rests on a signal
+that was already known to work.
+
 ## 2026-08-30 — M15b iPhone cold start: the compile time wasn't the problem, and a fetch monkey-patch missed the fetches that mattered
 
 Real-device evidence after P80's recognition fixes: cold visual-channel init took 106–388 seconds

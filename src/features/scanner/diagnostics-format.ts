@@ -18,6 +18,15 @@ function num(value: number | null): string {
 
 export function formatScannerDiagnostics(d: ScannerDiagnostics): string {
   const lines: string[] = [
+    `FAST_SCANNER_STATE=${d.fastScannerState}`,
+    `OCR_RUNTIME_STATE=${d.ocrRuntimeState}`,
+    `ENHANCED_VISUAL_STATE=${d.enhancedVisualState}`,
+    `WORKER_BOOTED=${d.workerBooted ? 'yes' : 'no'}`,
+    `WORKER_BOOT_MS=${num(d.workerBootMs)}`,
+    `VISUAL_CURRENT_PHASE=${d.visualCurrentPhase ?? EMPTY}`,
+    `DINO_CURRENT_PHASE=${d.visualCurrentPhase ?? EMPTY}`,
+    `VISUAL_CURRENT_PHASE_ELAPSED_MS=${num(d.visualCurrentPhaseElapsedMs)}`,
+    `VISUAL_LAST_PROGRESS_MS_AGO=${num(d.visualLastProgressMsAgo)}`,
     `VISUAL_MODEL_STATE=${d.visualModelState}`,
     `VISUAL_BACKEND_REQUESTED=${d.visualBackendRequested}`,
     'VISUAL_BACKEND_ATTEMPTS:',

@@ -98,12 +98,15 @@ export function ScannerPage() {
   // owns and revokes (DebugImageUrlStore); this state is only a render-time mirror, same
   // discipline as `previewUrl` mirroring CaptureStore above.
   const [debugImages, setDebugImages] = useState<ScannerDebugImages | null>(null)
-  // P81 §6/§7: route-entry prewarm status, polled from the controller so the intro screen can
-  // show honest, non-blocking progress instead of the model/index loading silently in the
-  // background until the user presses the shutter and is surprised by a multi-minute wait.
-  const [visualPrewarmState, setVisualPrewarmState] = useState<
+  // P82 §17-§19: the intro screen's honest loading copy now gates on the FAST (OCR) baseline, not
+  // the heavyweight DINO channel — a cold DINO load can still take a long time (P82 §0's real
+  // iPhone report), but the scanner is genuinely usable as soon as OCR text recognition is ready,
+  // which reaches 'ready' far sooner on a cold device (see ENHANCED_VISUAL_PREWARM_STAGGER_MS's
+  // doc in controller.ts). The debug panel's own diagnostics (ENHANCED_VISUAL_STATE) still read
+  // the DINO channel directly from `getLastDiagnostics()`, unaffected by this.
+  const [fastScannerState, setFastScannerState] = useState<
     'not-loaded' | 'loading' | 'ready' | 'failed'
-  >(() => controller.getVisualPrewarmState?.() ?? 'not-loaded')
+  >(() => controller.getFastScannerState?.() ?? 'not-loaded')
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -173,14 +176,16 @@ export function ScannerPage() {
     controller.prewarm?.()
   }, [controller])
 
-  // Poll the controller's own visual-readiness snapshot so the intro screen can show honest,
-  // non-blocking progress. A plain interval (not a subscription) because VisualRecognitionClient
-  // exposes only a point-in-time snapshot, matching the existing debug-panel/diagnostics read
-  // pattern elsewhere in this file — stops once a terminal state (ready/failed) is reached.
+  // Poll the controller's own FAST-baseline readiness snapshot (P82 §17-§19) so the intro screen
+  // can show honest, non-blocking progress that clears as soon as OCR is ready — not once the
+  // heavyweight DINO channel finally finishes, which a real cold device can take far longer for
+  // (P82 §0). A plain interval (not a subscription) because the underlying clients expose only a
+  // point-in-time snapshot, matching the existing debug-panel/diagnostics read pattern elsewhere
+  // in this file — stops once a terminal state (ready/failed) is reached.
   useEffect(() => {
     const interval = setInterval(() => {
-      const next = controller.getVisualPrewarmState?.() ?? 'not-loaded'
-      setVisualPrewarmState((previous) => (previous === next ? previous : next))
+      const next = controller.getFastScannerState?.() ?? 'not-loaded'
+      setFastScannerState((previous) => (previous === next ? previous : next))
       if (next === 'ready' || next === 'failed') clearInterval(interval)
     }, 500)
     return () => {
@@ -447,7 +452,7 @@ export function ScannerPage() {
               defaults={defaults}
               locations={locations}
               japaneseNotice={japaneseNotice}
-              visualPrewarmState={visualPrewarmState}
+              fastScannerState={fastScannerState}
               onStartCamera={() => {
                 dispatch({ type: 'START_CAMERA_PRESSED' })
               }}
@@ -925,11 +930,16 @@ function ScannerDebugRawCandidates({
   )
 }
 
-/** P81 §7: honest, non-blocking recognition-readiness copy for the intro screen. Never a fake
- *  percentage (Tesseract/transformers.js expose no meaningful progress fraction) — a short phase
- *  label instead, and nothing at all once ready/failed (failure degrades silently to OCR + manual
- *  search, exactly as it always has — prompt §36). */
-function visualPrewarmStatusLabel(
+/** P82 §17-§19: honest, non-blocking recognition-readiness copy for the intro screen — now gated
+ *  on the FAST (OCR) baseline rather than the heavyweight DINO channel (P81's original gate),
+ *  since DINO's own cold start can still take far longer on a real device (P82 §0) than the
+ *  scanner actually needs to become USABLE. Never a fake percentage (neither Tesseract nor
+ *  transformers.js expose a meaningful progress fraction) — a short phase label instead, and
+ *  nothing at all once ready/failed (failure degrades silently to manual search, exactly as it
+ *  always has — prompt §36). Debug mode shows the enhanced/DINO channel's own exact phase via the
+ *  existing diagnostics panel (ENHANCED_VISUAL_STATE/DINO_CURRENT_PHASE) — this label deliberately
+ *  never exposes that implementation detail to a normal user. */
+function fastScannerStatusLabel(
   state: 'not-loaded' | 'loading' | 'ready' | 'failed',
 ): string | null {
   switch (state) {
@@ -947,7 +957,7 @@ function IntroView({
   defaults,
   locations,
   japaneseNotice,
-  visualPrewarmState,
+  fastScannerState,
   onStartCamera,
   onChoosePhoto,
   onDefaultsPatch,
@@ -956,13 +966,13 @@ function IntroView({
   defaults: ScannerSessionDefaults
   locations: { id: string; label: string }[]
   japaneseNotice: boolean
-  visualPrewarmState: 'not-loaded' | 'loading' | 'ready' | 'failed'
+  fastScannerState: 'not-loaded' | 'loading' | 'ready' | 'failed'
   onStartCamera: () => void
   onChoosePhoto: () => void
   onDefaultsPatch: (patch: Partial<ScannerSessionDefaults>) => void
 }) {
   const cameraSupported = hasMediaDevicesSupport(navigator)
-  const prewarmStatus = visualPrewarmStatusLabel(visualPrewarmState)
+  const prewarmStatus = fastScannerStatusLabel(fastScannerState)
   return (
     <div className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center gap-5 overflow-y-auto px-5 pb-8">
       <h1 className="text-2xl font-semibold tracking-tight">Scan cards</h1>

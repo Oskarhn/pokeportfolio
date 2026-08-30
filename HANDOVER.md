@@ -5,6 +5,56 @@ Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) a
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
 **Last updated:** 2026-08-30 — **M15b visual-recognition hybrid scanner is still DRAFT PR #63
+(`feat/m15-scanner-integrated-p68`), NOT merged, NOT deployed.** P81's cold-start fixes did NOT
+close the gap: a real-iPhone retest still showed `VISUAL_MODEL_STATE=loading` for over a minute
+with every phase-timing field reading "—", and a Shieldon scan that OCR also failed to identify
+despite the debug screenshot showing the printed name clearly legible. **P82 (1) closes the P81
+observability gap with LIVE worker-progress instrumentation, (2) evaluates a lightweight
+perceptual-hash fast path on realistic capture noise and REJECTS it with evidence, and (3)
+reprioritizes the FAST baseline to OCR + text search (ahead of the heavyweight DINO channel)** —
+full account: D-099 in [DECISIONS.md](docs/DECISIONS.md), SCANNER_RESEARCH.md §7e,
+`ai_outputs/Claude_outputs/output_82.txt`.
+
+1. **Live progress instrumentation** (`visual/phase-timing.ts`'s `VisualWorkerProgressPhase`,
+   `visual-worker.ts`'s `postProgress`): the worker posts a message at every phase boundary
+   (`worker-module-evaluated` fires the INSTANT module evaluation reaches application code, before
+   transformers.js/onnxruntime-web are touched), so a real stalled init is now attributable to a
+   specific phase WHILE it is still loading — not only after a terminal ready/unavailable message
+   (P81's own gap). New debug fields: `WORKER_BOOTED`/`WORKER_BOOT_MS`/`VISUAL_CURRENT_PHASE`/
+   `DINO_CURRENT_PHASE`/`VISUAL_CURRENT_PHASE_ELAPSED_MS`/`VISUAL_LAST_PROGRESS_MS_AGO`.
+2. **Lightweight perceptual-hash retrieval (dHash + a new DCT-based pHash) — measured against
+   REALISTIC capture noise, REJECTED.** P76's dHash number (86.7% TOP1) came from an EASY corpus
+   (resize/rotate-in-place, no real cropping needed). Re-run against the SAME hard, off-center/
+   tilted corpus P79's rectification benchmark uses: dHash 5.0%/pHash 23.3%/combined 18.8% TOP1 —
+   and the same-card vs. different-card similarity distributions overlap almost completely (no
+   usable threshold), versus DINO's 93.3% TOP1 on the identical profile. **Not wired into
+   `engine.ts`'s scoring** — see D-099 for the full evidence and reasoning. The hash functions ship
+   as tested, unused domain tooling; no index/generator/client was built.
+3. **FAST baseline reprioritized: OCR + text search now starts warming BEFORE the heavyweight DINO
+   channel** (reverses P81's own stagger order — `ENHANCED_VISUAL_PREWARM_STAGGER_MS`,
+   controller.ts), since OCR is the only real, evidence-backed signal that doesn't need DINO's
+   ~45MB cold start. New `ScannerOcrEngine.getState()`/`controller.getFastScannerState()`; the
+   intro screen's loading copy now gates on this instead of the DINO channel, so it clears once OCR
+   is ready rather than waiting for a still-cold DINO load.
+4. **OCR preprocessing: Otsu binarization** (`roi.ts`'s `otsuThreshold`/`binarizeGrayscale`) added
+   as a bounded fallback retry — tried only when the existing `contrast` pass found nothing usable
+   from ANY ROI candidate for a field, so an already-working scan pays zero extra cost.
+
+**Preserved, NOT touched this session:** every P78–P81 fix, every P80 recognition fix, the full
+19,501-card DINO index, `engine.ts`'s scoring model (no hash channel added). Zero database/
+migration/RPC files changed (`DATABASE_MIGRATIONS=90`, unchanged). Gates: 845/845 unit (up from
+823), typecheck/lint/format clean, build green, 12/12 platform verifier, 64/64 E2E. DB/M13/M16 not
+re-run (Docker unavailable, same standing constraint since P75) — diff touches zero DB files.
+
+**IPHONE_DEVICE_GATE=PENDING_OWNER_RETEST.** Next owner test: open
+`/scan?scannerDebug=1&visualBackend=wasm`, note whether "Preparing card recognition…" now clears
+much sooner (OCR-gated, not DINO-gated); if DINO is still slow, copy diagnostics and send the
+`VISUAL_CURRENT_PHASE`/`WORKER_BOOTED`/`WORKER_BOOT_MS` lines — this is the first real-device
+evidence about WHERE a stall actually is.
+
+Below is P81's own account, preserved for context (superseded by the above where they overlap):
+
+**Last updated:** 2026-08-30 — **M15b visual-recognition hybrid scanner is still DRAFT PR #63
 (`feat/m15-scanner-integrated-p68`), NOT merged, NOT deployed.** P80 fixed exact-card matching
 (adaptive OCR ROI, candidate rescue); the owner then hit a NEW, more severe blocker: real-iPhone
 cold initialization of the visual channel took 106–388 seconds across repeated attempts, and one

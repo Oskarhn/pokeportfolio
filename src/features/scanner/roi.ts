@@ -166,3 +166,63 @@ export const ROI_UPSCALE_MIN_HEIGHT_PX = 48
 
 /** The upscale factor applied when an ROI lands under ROI_UPSCALE_MIN_HEIGHT_PX. */
 export const ROI_UPSCALE_FACTOR = 2
+
+/**
+ * Otsu's method (P82 §15): the optimal binarization threshold is the one that MAXIMIZES the
+ * between-class variance of the two pixel populations it would create — a real, self-calibrating
+ * threshold derived from this image's OWN histogram, never a fixed constant (same discipline as
+ * `normalizeContrast`'s percentile stretch). Investigated because a real-device miss (Shieldon,
+ * P82 §0) showed the name ROI visually containing clean, legible text while OCR still produced
+ * garbage — a plausible cause is low LOCAL contrast between text and a colourful/holo background
+ * that the existing global percentile stretch alone does not fully separate.
+ */
+export function otsuThreshold(image: GrayImage): number {
+  if (image.data.length === 0) return 128
+  const histogram = new Uint32Array(256)
+  for (const value of image.data) histogram[value] = (histogram[value] ?? 0) + 1
+  const total = image.data.length
+  let sumAll = 0
+  for (let t = 0; t < 256; t += 1) sumAll += t * (histogram[t] ?? 0)
+  let sumBelow = 0
+  let weightBelow = 0
+  let maxVariance = -1
+  let threshold = 0
+  for (let t = 0; t < 256; t += 1) {
+    weightBelow += histogram[t] ?? 0
+    if (weightBelow === 0) continue
+    const weightAbove = total - weightBelow
+    if (weightAbove === 0) break
+    sumBelow += t * (histogram[t] ?? 0)
+    const meanBelow = sumBelow / weightBelow
+    const meanAbove = (sumAll - sumBelow) / weightAbove
+    const variance = weightBelow * weightAbove * (meanBelow - meanAbove) ** 2
+    if (variance > maxVariance) {
+      maxVariance = variance
+      threshold = t
+    }
+  }
+  return threshold
+}
+
+/**
+ * Hard binarization at the Otsu threshold, ORIENTED so text renders as dark-on-light (P82 §15):
+ * a printed name/number strip is mostly background, so the pixel class with FEWER members is
+ * assumed to be the text and is mapped to near-black; the majority class maps to white. This
+ * matches the polarity Tesseract's LSTM model was trained on far more often than an arbitrary
+ * "whichever side of the threshold" mapping would, without hard-coding a single fixed assumption
+ * about which physical cards print light or dark card frames.
+ */
+export function binarizeGrayscale(image: GrayImage): GrayImage {
+  const out = new Uint8ClampedArray(image.data.length)
+  if (image.data.length === 0) return { data: out, width: image.width, height: image.height }
+  const threshold = otsuThreshold(image)
+  let belowCount = 0
+  for (const value of image.data) if (value <= threshold) belowCount += 1
+  const belowIsMinority = belowCount <= image.data.length - belowCount
+  for (let i = 0; i < image.data.length; i += 1) {
+    const isBelow = (image.data[i] ?? 0) <= threshold
+    const isText = belowIsMinority ? isBelow : !isBelow
+    out[i] = isText ? 0 : 255
+  }
+  return { data: out, width: image.width, height: image.height }
+}

@@ -181,19 +181,25 @@ describe('runOcrAnalysis — capture → observation', () => {
     expect(draw?.[4]).toBe(1400)
   })
 
-  it('P80 R3: runs EXACTLY ONE full-card fallback when EVERY candidate for BOTH fields is unusable', async () => {
-    // 2 name candidates + 2 number candidates, all empty/whitespace-only, then the fallback text.
+  it('P80/P82 R3: runs EXACTLY ONE full-card fallback when EVERY candidate for BOTH fields is unusable across BOTH preprocessing passes', async () => {
+    // 2 name candidates + 2 number candidates, all empty/whitespace-only under BOTH the `contrast`
+    // pass (P78-P81 behaviour, unchanged) AND the P82 `binarize` retry pass (only attempted
+    // because contrast found nothing at all) — then the fallback text.
     const engine = makeEngine([
-      { text: '', confidence: 0 }, // name candidate 1
-      { text: ' ', confidence: 0 }, // name candidate 2
-      { text: '', confidence: 0 }, // number candidate 1
-      { text: ' ', confidence: 0 }, // number candidate 2
+      { text: '', confidence: 0 }, // name candidate 1, contrast
+      { text: ' ', confidence: 0 }, // name candidate 2, contrast
+      { text: '', confidence: 0 }, // name candidate 1, binarize retry
+      { text: ' ', confidence: 0 }, // name candidate 2, binarize retry
+      { text: '', confidence: 0 }, // number candidate 1, contrast
+      { text: ' ', confidence: 0 }, // number candidate 2, contrast
+      { text: '', confidence: 0 }, // number candidate 1, binarize retry
+      { text: ' ', confidence: 0 }, // number candidate 2, binarize retry
       { text: 'TESTASAURUS 58/102 junk', confidence: 40 }, // full-card fallback
     ])
     const pool = makePool()
     const observation = await runOcrAnalysis(makeCapture(), engine, pool as never)
-    expect(engine.recognize).toHaveBeenCalledTimes(5)
-    expect(engine.recognize.mock.calls[4]?.[1]).toBe('auto')
+    expect(engine.recognize).toHaveBeenCalledTimes(9)
+    expect(engine.recognize.mock.calls[8]?.[1]).toBe('auto')
     expect(observation.usedFullFrameFallback).toBe(true)
     expect(observation.rawNameText).toBe('TESTASAURUS')
     expect(observation.rawCollectorNumberText).toBe('58/102')

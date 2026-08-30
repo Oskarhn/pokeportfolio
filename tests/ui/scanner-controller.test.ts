@@ -53,6 +53,26 @@ vi.mock('../../src/features/scanner/visual/visual-client', () => ({
   },
 }))
 
+// P82 §16: the controller now calls engine.prepare() (real tesseract.js, real Worker construction)
+// IMMEDIATELY on prewarm() rather than after a stagger — a controllable stand-in keeps every
+// fake-timer-driven prewarm/stagger test from spawning a real (and, under Node, doomed-to-fail)
+// Tesseract worker as an unhandled side effect, exactly like the existing visual-client mock above.
+const ocrEngineMocks = vi.hoisted(() => ({
+  prepare: vi.fn().mockResolvedValue(undefined),
+  recognize: vi.fn(),
+  dispose: vi.fn(),
+  getState: vi.fn().mockReturnValue('not-loaded' as const),
+}))
+
+vi.mock('../../src/features/scanner/ocr-engine', () => ({
+  ScannerOcrEngine: class {
+    prepare = ocrEngineMocks.prepare
+    recognize = ocrEngineMocks.recognize
+    dispose = ocrEngineMocks.dispose
+    getState = ocrEngineMocks.getState
+  },
+}))
+
 import { runOcrAnalysis } from '../../src/features/scanner/analyze'
 import { getCardVariants, searchCards } from '../../src/data/catalog'
 import { addCardAcquisition } from '../../src/data/collection'
@@ -64,6 +84,16 @@ const mockedAddCardAcquisition = vi.mocked(addCardAcquisition)
 
 /** Default: visual channel unavailable, matching how it naturally behaves in this Node test
  *  environment (no real Worker) — existing tests above assume OCR-only results. */
+function defaultLiveProgress() {
+  return {
+    workerBooted: false,
+    workerBootMs: null,
+    currentPhase: null,
+    currentPhaseElapsedMs: null,
+    lastProgressMsAgo: null,
+  }
+}
+
 function defaultVisualDiagnostics() {
   return {
     modelState: 'not-loaded' as const,
@@ -71,6 +101,7 @@ function defaultVisualDiagnostics() {
     readyInfo: null,
     backendDiagnostics: null,
     firstEmbedMs: null,
+    liveProgress: defaultLiveProgress(),
   }
 }
 
@@ -114,6 +145,8 @@ beforeEach(() => {
   visualMocks.analyze.mockResolvedValue(null)
   visualMocks.getDiagnosticsSnapshot.mockReturnValue(defaultVisualDiagnostics())
   visualMocks.prewarm.mockResolvedValue(null)
+  ocrEngineMocks.prepare.mockResolvedValue(undefined)
+  ocrEngineMocks.getState.mockReturnValue('not-loaded')
 })
 
 describe('analyzeCapture - observation, retrieval, ranking (I2/I3/I4)', () => {
@@ -238,25 +271,32 @@ describe('analyzeCapture - observation, retrieval, ranking (I2/I3/I4)', () => {
   })
 })
 
-describe('P81: route-entry prewarm and bounded visual wait (iPhone cold-start repair)', () => {
+describe('P81/P82: route-entry prewarm and bounded visual wait (iPhone cold-start repair)', () => {
   it('P81-1/P81-2: prewarm() can run without any capture and is idempotent', () => {
-    const controller = createRealScannerController({ userId: 'user-a' })
-    controller.prewarm?.()
-    controller.prewarm?.()
-    expect(visualMocks.prewarm).toHaveBeenCalledTimes(1)
-  })
-
-  it('P81-7: OCR prewarm is staggered behind visual prewarm, not started at the same instant', () => {
     vi.useFakeTimers()
     try {
       const controller = createRealScannerController({ userId: 'user-a' })
       controller.prewarm?.()
-      // Visual prewarm starts immediately.
+      controller.prewarm?.()
+      vi.advanceTimersByTime(1500)
       expect(visualMocks.prewarm).toHaveBeenCalledTimes(1)
-      // OCR's own cold start (engine.prepare(), exercised for real here — no mock on
-      // ocr-engine.ts) has not been given a chance to even begin yet.
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('P82-16: the FAST (OCR) baseline is staggered AHEAD of the heavyweight DINO channel, not started at the same instant', () => {
+    vi.useFakeTimers()
+    try {
+      const controller = createRealScannerController({ userId: 'user-a' })
+      controller.prewarm?.()
+      // The heavyweight DINO channel has NOT been asked to warm yet — OCR gets the head start now
+      // (P82 §16 reverses P81's own ordering; see ENHANCED_VISUAL_PREWARM_STAGGER_MS's doc).
+      expect(visualMocks.prewarm).toHaveBeenCalledTimes(0)
       vi.advanceTimersByTime(1499)
       // Still within the stagger window.
+      expect(visualMocks.prewarm).toHaveBeenCalledTimes(0)
+      vi.advanceTimersByTime(1)
       expect(visualMocks.prewarm).toHaveBeenCalledTimes(1)
     } finally {
       vi.useRealTimers()
@@ -270,9 +310,39 @@ describe('P81: route-entry prewarm and bounded visual wait (iPhone cold-start re
       readyInfo: null,
       backendDiagnostics: null,
       firstEmbedMs: null,
+      liveProgress: defaultLiveProgress(),
     })
     const controller = createRealScannerController({ userId: 'user-a' })
     expect(controller.getVisualPrewarmState?.()).toBe('loading')
+  })
+
+  it('P82-6: the FAST (OCR) baseline can report ready while the heavyweight DINO channel is still loading', () => {
+    ocrEngineMocks.getState.mockReturnValue('ready')
+    visualMocks.getDiagnosticsSnapshot.mockReturnValue({
+      modelState: 'loading',
+      unavailableReason: null,
+      readyInfo: null,
+      backendDiagnostics: null,
+      firstEmbedMs: null,
+      liveProgress: defaultLiveProgress(),
+    })
+    const controller = createRealScannerController({ userId: 'user-a' })
+    expect(controller.getFastScannerState?.()).toBe('ready')
+    expect(controller.getVisualPrewarmState?.()).toBe('loading')
+  })
+
+  it('P82-14: prewarm() called twice starts the OCR engine exactly once (no duplicate worker creation)', () => {
+    vi.useFakeTimers()
+    try {
+      const controller = createRealScannerController({ userId: 'user-a' })
+      controller.prewarm?.()
+      controller.prewarm?.()
+      vi.advanceTimersByTime(1500)
+      expect(ocrEngineMocks.prepare).toHaveBeenCalledTimes(1)
+      expect(visualMocks.prewarm).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   describe('bounded visual wait during a capture', () => {
@@ -303,6 +373,7 @@ describe('P81: route-entry prewarm and bounded visual wait (iPhone cold-start re
           readyInfo: null,
           backendDiagnostics: null,
           firstEmbedMs: null,
+          liveProgress: defaultLiveProgress(),
         })
         // Simulates a real cold model load that would otherwise take minutes (P81's own real-
         // device evidence: up to 388s) — this promise never resolves within the test.
@@ -328,6 +399,7 @@ describe('P81: route-entry prewarm and bounded visual wait (iPhone cold-start re
         readyInfo: null,
         backendDiagnostics: null,
         firstEmbedMs: 120,
+        liveProgress: defaultLiveProgress(),
       })
       visualMocks.analyze.mockResolvedValue({
         hits: [{ cardId: 'card-a', similarity: 0.9 }],
@@ -651,6 +723,8 @@ describe('getLastDiagnostics - visual channel failure reporting (P78 R1)', () =>
         modelLoad: 'failed',
         indexLoad: 'not-reached',
       },
+      firstEmbedMs: null,
+      liveProgress: defaultLiveProgress(),
     })
 
     const controller = createRealScannerController({ userId: 'user-a' })
@@ -685,6 +759,8 @@ describe('getLastDiagnostics - visual channel failure reporting (P78 R1)', () =>
       unavailableReason: null,
       readyInfo: null,
       backendDiagnostics: null,
+      firstEmbedMs: null,
+      liveProgress: defaultLiveProgress(),
     })
 
     const controller = createRealScannerController({ userId: 'user-a' })
@@ -738,6 +814,8 @@ describe('getLastDiagnostics - visual channel failure reporting (P78 R1)', () =>
         modelLoad: 'success',
         indexLoad: 'success',
       },
+      firstEmbedMs: null,
+      liveProgress: defaultLiveProgress(),
     })
 
     const controller = createRealScannerController({ userId: 'user-a' })
@@ -829,6 +907,8 @@ describe('debug mode — widened shortlist, extended candidates, image previews 
         indexLoad: 'success',
       },
       backendDiagnostics: null,
+      firstEmbedMs: null,
+      liveProgress: defaultLiveProgress(),
     })
     const controller = createRealScannerController({ userId: 'user-a' })
     await controller.analyzeCapture(capture())

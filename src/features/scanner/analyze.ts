@@ -18,6 +18,7 @@ import type { ScannerCapture } from './contract'
 import {
   NAME_ROI_CANDIDATES,
   NUMBER_ROI_CANDIDATES,
+  binarizeGrayscale,
   normalizeContrast,
   roiPixelRect,
   toGrayscale,
@@ -132,8 +133,17 @@ function shrinkToLongEdge(
   }
 }
 
-/** Draws one source region at a chosen scale, then runs grayscale + contrast over exactly those
- *  pixels and writes them back. Deterministic by construction. */
+/** Which grayscale preprocessing pass runs before recognition (P82 §15). `contrast` is the
+ *  original, always-tried-first pass (percentile stretch only — zero behavioural change from
+ *  P67-P81). `binarize` is a NEW fallback variant tried only when `contrast` did not already
+ *  produce a confident read for a given ROI candidate: a real-device miss (Shieldon, P82 §0)
+ *  showed a name ROI that visually contained clean text but still read as garbage, consistent with
+ *  low LOCAL contrast against a colourful/holo background that a global percentile stretch alone
+ *  does not fully separate — Otsu binarization (roi.ts) targets exactly that case. */
+export type RoiPreprocess = 'contrast' | 'binarize'
+
+/** Draws one source region at a chosen scale, then runs grayscale + the requested preprocessing
+ *  pass over exactly those pixels and writes them back. Deterministic by construction. */
 function drawPreparedRegion(
   target: BoundedCanvas,
   source: CanvasImageSource,
@@ -142,6 +152,7 @@ function drawPreparedRegion(
   sw: number,
   sh: number,
   scale: number,
+  preprocess: RoiPreprocess = 'contrast',
 ): void {
   target.element.width = Math.max(1, Math.round(sw * scale))
   target.element.height = Math.max(1, Math.round(sh * scale))
@@ -155,10 +166,10 @@ function drawPreparedRegion(
     width: imageData.width,
     height: imageData.height,
   })
-  const normalized = normalizeContrast(gray)
+  const prepared = preprocess === 'binarize' ? binarizeGrayscale(gray) : normalizeContrast(gray)
   const output = context.createImageData(target.element.width, target.element.height)
-  for (let i = 0; i < normalized.data.length; i += 1) {
-    const value = normalized.data[i] ?? 0
+  for (let i = 0; i < prepared.data.length; i += 1) {
+    const value = prepared.data[i] ?? 0
     output.data[i * 4] = value
     output.data[i * 4 + 1] = value
     output.data[i * 4 + 2] = value
@@ -296,6 +307,7 @@ export async function runOcrAnalysis(
     async function readOneCandidate(
       candidate: NamedRoiCandidate,
       slot: 'nameRoi' | 'numberRoi',
+      preprocess: RoiPreprocess = 'contrast',
     ): Promise<{ rect: PixelRect; text: string; confidence: number } | null> {
       const rect = roiPixelRect(cardOnWorking, candidate.fractions)
       if (rect.width < 8 || rect.height < 8) return null
@@ -309,6 +321,7 @@ export async function runOcrAnalysis(
         rect.width,
         rect.height,
         upscale,
+        preprocess,
       )
       const result = await engine.recognize(roi.element, 'single-line')
       return { rect, text: result.text, confidence: result.confidence }
@@ -322,9 +335,18 @@ export async function runOcrAnalysis(
      * through to the next layout hypothesis when the first read is weak, empty or wrong (the real
      * modern-vs-vintage-layout failure this session fixes). Never stops on a merely non-null but
      * low-quality result — only on genuine confidence — so list ORDER never silently decides the
-     * winner in the cases that actually matter. Only in a debug session, the winning region is
-     * redrawn once more afterward for the preview blob (cheap: one extra canvas draw, no extra
-     * recognition call).
+     * winner in the cases that actually matter.
+     *
+     * P82 §15: if this `contrast` pass (identical to P78-P81's own pipeline, zero call-count or
+     * scoring change from before) finds NOTHING usable from ANY candidate, exactly ONE second pass
+     * over the SAME candidates retries `binarize` preprocessing before falling through to the
+     * full-frame OCR pass — a real-device miss (Shieldon, P82 §0) showed a name ROI that visually
+     * contained clean text while OCR still produced garbage, consistent with low LOCAL contrast a
+     * global percentile stretch alone does not always separate. Bounded to the already-failing
+     * case only: a scan that already found SOME text via `contrast` (even if not "confident") never
+     * pays for the second pass, so this cannot regress anything P80's own candidate-scoring tests
+     * already pin. Only in a debug session, the winning region is redrawn once more afterward for
+     * the preview blob (cheap: one extra canvas draw, no extra recognition call).
      */
     async function readBestRoi(
       candidates: readonly NamedRoiCandidate[],
@@ -333,42 +355,61 @@ export async function runOcrAnalysis(
       score: (cleanedText: string, confidence: number) => number,
       isConfident: (cleanedText: string, confidence: number) => boolean,
     ): Promise<{ text: string | null; roiId: string | null; debugBlob: Blob | null }> {
-      let bestRoiId: string | null = null
-      let bestCleaned: string | null = null
-      let bestScore = -Infinity
-      let bestRect: PixelRect | null = null
-      for (const candidate of candidates) {
-        const attempt = await readOneCandidate(candidate, slot)
-        if (attempt === null) continue
-        const cleaned = cleanSignal(attempt.text, minLength)
-        if (cleaned === null) continue
-        const candidateScore = score(cleaned, attempt.confidence)
-        if (candidateScore > bestScore) {
-          bestScore = candidateScore
-          bestRoiId = candidate.id
-          bestCleaned = cleaned
-          bestRect = attempt.rect
-        }
-        if (isConfident(cleaned, attempt.confidence)) break
+      interface BestTrial {
+        roiId: string
+        cleaned: string
+        score: number
+        rect: PixelRect
+        preprocess: RoiPreprocess
       }
+      const best: { value: BestTrial | null } = { value: null }
+
+      async function tryPreprocessPass(preprocess: RoiPreprocess): Promise<boolean> {
+        for (const candidate of candidates) {
+          const attempt = await readOneCandidate(candidate, slot, preprocess)
+          if (attempt === null) continue
+          const cleaned = cleanSignal(attempt.text, minLength)
+          if (cleaned === null) continue
+          const candidateScore = score(cleaned, attempt.confidence)
+          if (best.value === null || candidateScore > best.value.score) {
+            best.value = {
+              roiId: candidate.id,
+              cleaned,
+              score: candidateScore,
+              rect: attempt.rect,
+              preprocess,
+            }
+          }
+          if (isConfident(cleaned, attempt.confidence)) return true
+        }
+        return false
+      }
+
+      const contrastConfident = await tryPreprocessPass('contrast')
+      if (!contrastConfident && best.value === null) {
+        await tryPreprocessPass('binarize')
+      }
+
       let debugBlob: Blob | null = null
-      if (debug && bestRect !== null) {
-        const upscale = bestRect.height < ROI_UPSCALE_MIN_HEIGHT_PX ? ROI_UPSCALE_FACTOR : 1
-        const roi = pool.take(slot, bestRect.width * upscale, bestRect.height * upscale)
+      const winner = best.value
+      if (debug && winner !== null) {
+        const upscale = winner.rect.height < ROI_UPSCALE_MIN_HEIGHT_PX ? ROI_UPSCALE_FACTOR : 1
+        const roi = pool.take(slot, winner.rect.width * upscale, winner.rect.height * upscale)
         drawPreparedRegion(
           roi,
           working.element,
-          bestRect.left,
-          bestRect.top,
-          bestRect.width,
-          bestRect.height,
+          winner.rect.left,
+          winner.rect.top,
+          winner.rect.width,
+          winner.rect.height,
           upscale,
+          winner.preprocess,
         )
         // Captured BEFORE the next scan can reuse/resize this pooled canvas (prompt §4/§12
         // debug-only image preview) — never persisted, never sent anywhere but this call's return.
         debugBlob = await canvasToBlob(roi.element).catch(() => null)
       }
-      return { text: bestCleaned, roiId: bestRoiId, debugBlob }
+      return { text: winner?.cleaned ?? null, roiId: winner?.roiId ?? null, debugBlob }
     }
 
     const nameResult = await readBestRoi(

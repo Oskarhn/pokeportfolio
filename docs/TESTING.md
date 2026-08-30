@@ -181,6 +181,17 @@ Result and its honest limitation (the corpus cannot ground-truth-test the real f
 hypothesis at full 19,501-card index scale): SCANNER_RESEARCH.md §7c,
 `ai_outputs/Claude_outputs/output_80.txt`.
 
+**Lightweight-hash benchmark (`scripts/scanner-visual-benchmark/run-hash-benchmark.ts`, P82 §10, NOT
+part of `pnpm test` or CI — same exclusion reasoning as the other visual benchmarks).**
+`pnpm scanner:visual:benchmark:hash` runs dHash AND a newly-implemented DCT-based pHash through the
+SAME hard, off-center/tilted corpus (and the SAME real `rectify.ts` pipeline) the P79 hard benchmark
+uses — re-testing P76's original 86.7% TOP1 dHash figure, which came from an easy, already-tight-
+crop corpus, against realistic capture noise. Result: dHash 5.0%/pHash 23.3%/combined 18.8% TOP1,
+and same-card vs. different-card similarity distributions that overlap almost completely — an
+evidence-gated REJECTION of wiring hash similarity into production scoring (D-099,
+SCANNER_RESEARCH.md §7e). The hash functions themselves (`computePHash`,
+`tests/domain/scanner/perceptual-hash.test.ts`) remain unit-tested, unused domain tooling.
+
 **Harder visual benchmark (`scripts/scanner-visual-benchmark/run-hard-benchmark.ts`, P79 §7, NOT
 part of `pnpm test` or CI — same exclusion reasoning as the P76 harness below).**
 `pnpm scanner:visual:benchmark:hard` composes a genuinely harder query than the P76 benchmark's

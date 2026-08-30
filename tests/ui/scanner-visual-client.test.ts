@@ -279,3 +279,96 @@ describe('VisualRecognitionClient — P81 prewarm and cold-start diagnostics', (
     expect(firstEmbedMs).toBeGreaterThanOrEqual(0)
   })
 })
+
+describe('VisualRecognitionClient — P82 live progress instrumentation', () => {
+  it('P82-1/P82-5: worker-boot progress arrives (and is observable) before processor/model completion', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const client = new VisualRecognitionClient()
+    const readyPromise = client.ensureReady()
+    const worker = latestWorker()
+
+    // Nothing has arrived yet: distinguishable from "booted but stuck" (P82 §4).
+    let snapshot = client.getDiagnosticsSnapshot()
+    expect(snapshot.liveProgress.workerBooted).toBe(false)
+    expect(snapshot.liveProgress.currentPhase).toBeNull()
+
+    worker.emit('message', {
+      data: { type: 'progress', phase: 'worker-module-evaluated', atMs: 1_000_100 },
+    })
+    snapshot = client.getDiagnosticsSnapshot()
+    expect(snapshot.liveProgress.workerBooted).toBe(true)
+    expect(snapshot.liveProgress.workerBootMs).not.toBeNull()
+    expect(snapshot.liveProgress.currentPhase).toBe('worker-module-evaluated')
+    // The worker has not reported ready/unavailable at all yet — this is exactly the gap P81 left.
+    expect(snapshot.modelState).toBe('loading')
+
+    worker.emit('message', { data: readyMessage() })
+    await readyPromise
+  })
+
+  it('P82-2/P82-3: a stalled processor/model phase remains observable via the live progress snapshot', () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const client = new VisualRecognitionClient()
+    void client.ensureReady()
+    const worker = latestWorker()
+    worker.emit('message', {
+      data: { type: 'progress', phase: 'worker-module-evaluated', atMs: 2_000_000 },
+    })
+    worker.emit('message', {
+      data: { type: 'progress', phase: 'processor-load-started', atMs: 2_000_050 },
+    })
+    let snapshot = client.getDiagnosticsSnapshot()
+    expect(snapshot.liveProgress.currentPhase).toBe('processor-load-started')
+    expect(snapshot.modelState).toBe('loading')
+
+    // Later: the worker is now stuck attempting the WASM backend — still no ready/unavailable.
+    worker.emit('message', {
+      data: { type: 'progress', phase: 'wasm-attempt-started', atMs: 2_000_900 },
+    })
+    snapshot = client.getDiagnosticsSnapshot()
+    expect(snapshot.liveProgress.currentPhase).toBe('wasm-attempt-started')
+    expect(snapshot.modelState).toBe('loading')
+  })
+
+  it('P82-4: the live progress snapshot answers "WORKER_CONSTRUCTED_BUT_NO_BOOT_MESSAGE" honestly when nothing has arrived', () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const client = new VisualRecognitionClient()
+    void client.ensureReady()
+    const snapshot = client.getDiagnosticsSnapshot()
+    expect(snapshot.liveProgress.workerBooted).toBe(false)
+    expect(snapshot.liveProgress.workerBootMs).toBeNull()
+    expect(snapshot.liveProgress.currentPhase).toBeNull()
+  })
+
+  it("P82-5: a terminal 'ready' message still leaves the live progress snapshot's own phase timings intact", async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const client = new VisualRecognitionClient()
+    const readyPromise = client.ensureReady()
+    const worker = latestWorker()
+    worker.emit('message', {
+      data: { type: 'progress', phase: 'worker-module-evaluated', atMs: 3_000_000 },
+    })
+    worker.emit('message', { data: readyMessage() })
+    await readyPromise
+    const snapshot = client.getDiagnosticsSnapshot()
+    expect(snapshot.modelState).toBe('ready')
+    expect(snapshot.liveProgress.workerBooted).toBe(true)
+    expect(snapshot.backendDiagnostics?.phaseTimings.visualReadyTotalMs).toBe(972)
+  })
+
+  it('dispose() clears the live progress snapshot back to an honest all-null state', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const client = new VisualRecognitionClient()
+    const readyPromise = client.ensureReady()
+    const worker = latestWorker()
+    worker.emit('message', {
+      data: { type: 'progress', phase: 'worker-module-evaluated', atMs: 4_000_000 },
+    })
+    worker.emit('message', { data: readyMessage() })
+    await readyPromise
+    client.dispose()
+    const snapshot = client.getDiagnosticsSnapshot()
+    expect(snapshot.liveProgress.workerBooted).toBe(false)
+    expect(snapshot.liveProgress.currentPhase).toBeNull()
+  })
+})

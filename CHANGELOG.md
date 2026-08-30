@@ -10,6 +10,35 @@ they were**.
 
 ## [Unreleased]
 
+### Fixed — 2026-08-30 — M15b scanner: live prewarm-stall diagnostics, FAST (OCR) baseline reprioritized, lightweight hash retrieval evaluated and rejected (P82, D-099, on PR #63, DRAFT — not merged, not deployed)
+
+P81's cold-start fixes did not close the gap: a real-iPhone retest still showed
+`VISUAL_MODEL_STATE=loading` for over a minute with every phase-timing field unreadable ("—"), and
+a Shieldon scan OCR also failed despite the debug screenshot showing the name clearly legible.
+
+- **Live worker-progress instrumentation**: the worker now posts a message at every phase boundary
+  (module-eval, processor/model load, backend attempts, index sub-steps) instead of only at a
+  terminal ready/unavailable message — a stalled init is now attributable to a specific phase WHILE
+  it is still loading. New debug fields: `WORKER_BOOTED`/`WORKER_BOOT_MS`/`VISUAL_CURRENT_PHASE`/
+  `DINO_CURRENT_PHASE`/`VISUAL_CURRENT_PHASE_ELAPSED_MS`/`VISUAL_LAST_PROGRESS_MS_AGO`.
+- **Lightweight perceptual-hash retrieval (dHash + new pHash) evaluated on REALISTIC capture noise
+  and REJECTED**: re-run against the same hard, off-center/tilted corpus P79's rectification
+  benchmark uses (not the easy corpus P76's original 86.7% TOP1 came from) shows same-card vs.
+  different-card similarity distributions overlapping almost completely — no usable threshold, an
+  order of magnitude worse than DINO's 93.3% TOP1 on the identical profile. Not wired into
+  scoring; ships as tested, unused domain tooling (`computePHash` etc.) only.
+- **FAST baseline reprioritized**: OCR + text search now starts warming BEFORE the heavyweight DINO
+  channel (reverses P81's own stagger order) — the only real signal that doesn't need DINO's ~45MB
+  cold start. The intro screen's loading copy now gates on OCR readiness
+  (`getFastScannerState()`), not the DINO channel, so it clears far sooner on a cold device.
+- **OCR preprocessing**: Otsu binarization (`roi.ts`) added as a bounded fallback retried only when
+  the existing contrast-stretch pass found nothing usable from any ROI candidate for a field —
+  zero added cost for an already-working scan.
+
+Full account: D-099 in DECISIONS.md, SCANNER_RESEARCH.md §7e, `ai_outputs/Claude_outputs/output_82.txt`.
+Gates: 845/845 unit tests, typecheck/lint/format clean, build green, 12/12 platform verifier,
+64/64 E2E. DB/M13/M16 not re-run (Docker unavailable — diff touches zero DB files).
+
 ### Fixed — 2026-08-30 — M15b scanner: iPhone cold-start/reliability repair (P81, D-098, on PR #63, DRAFT — not merged, not deployed)
 
 Real-device evidence: cold visual-channel initialization took 106–388 seconds on repeated

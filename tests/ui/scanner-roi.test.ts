@@ -5,6 +5,8 @@ import {
   NUMBER_ROI_FRACTIONS,
   NUMBER_ROI_CANDIDATES,
   normalizeContrast,
+  otsuThreshold,
+  binarizeGrayscale,
   roiPixelRect,
   toGrayscale,
   ROI_UPSCALE_MIN_HEIGHT_PX,
@@ -171,5 +173,63 @@ describe('preprocessing determinism', () => {
   it('the upscale threshold is small enough to matter only for thin strips', () => {
     expect(ROI_UPSCALE_MIN_HEIGHT_PX).toBeGreaterThanOrEqual(24)
     expect(ROI_UPSCALE_MIN_HEIGHT_PX).toBeLessThanOrEqual(96)
+  })
+})
+
+describe('Otsu binarization (P82 §15)', () => {
+  it('finds the midpoint threshold for a clean two-level (bimodal) image', () => {
+    const data = new Uint8ClampedArray(100)
+    data.fill(50, 0, 50)
+    data.fill(200, 50, 100)
+    const threshold = otsuThreshold({ data, width: 10, height: 10 })
+    expect(threshold).toBeGreaterThanOrEqual(50)
+    expect(threshold).toBeLessThan(200)
+  })
+
+  it('is deterministic — identical bytes in, identical threshold out', () => {
+    const image = grayOf(12, 12, 90)
+    for (let i = 0; i < image.data.length; i += 1) image.data[i] = (i * 37) % 256
+    expect(otsuThreshold(image)).toBe(otsuThreshold(image))
+  })
+
+  it('never throws on an empty image', () => {
+    expect(() =>
+      otsuThreshold({ data: new Uint8ClampedArray(0), width: 0, height: 0 }),
+    ).not.toThrow()
+    expect(() =>
+      binarizeGrayscale({ data: new Uint8ClampedArray(0), width: 0, height: 0 }),
+    ).not.toThrow()
+  })
+
+  it('binarizes a bimodal image to exactly two values, dark text (minority) mapped to 0', () => {
+    const data = new Uint8ClampedArray(100)
+    data.fill(220, 0, 90) // background: 90% of pixels, bright
+    data.fill(30, 90, 100) // "text": 10% of pixels, dark — the minority class
+    const out = binarizeGrayscale({ data, width: 10, height: 10 })
+    const values = new Set(out.data)
+    expect(values.size).toBe(2)
+    expect(values.has(0)).toBe(true)
+    expect(values.has(255)).toBe(true)
+    // The minority (originally dark) class stays mapped to near-black text.
+    for (let i = 90; i < 100; i += 1) expect(out.data[i]).toBe(0)
+    for (let i = 0; i < 90; i += 1) expect(out.data[i]).toBe(255)
+  })
+
+  it('orients dark-on-light even when the minority class is originally the BRIGHT pixels', () => {
+    const data = new Uint8ClampedArray(100)
+    data.fill(30, 0, 90) // background: 90% of pixels, dark
+    data.fill(220, 90, 100) // "text": 10% of pixels, bright — still the minority class
+    const out = binarizeGrayscale({ data, width: 10, height: 10 })
+    // The minority class (bright originals) is still oriented to render as dark text.
+    for (let i = 90; i < 100; i += 1) expect(out.data[i]).toBe(0)
+    for (let i = 0; i < 90; i += 1) expect(out.data[i]).toBe(255)
+  })
+
+  it('is deterministic — identical bytes in, identical bytes out', () => {
+    const image = grayOf(10, 10, 90)
+    for (let i = 0; i < image.data.length; i += 1) image.data[i] = (i * 23) % 256
+    const a = binarizeGrayscale(image)
+    const b = binarizeGrayscale(image)
+    expect([...a.data]).toEqual([...b.data])
   })
 })

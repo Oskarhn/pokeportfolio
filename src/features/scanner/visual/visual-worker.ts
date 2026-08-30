@@ -40,6 +40,7 @@ import {
   nonNetworkRemainder,
   type RecordedFetch,
   type VisualPhaseTimings,
+  type VisualWorkerProgressPhase,
 } from './phase-timing'
 
 export type {
@@ -135,7 +136,16 @@ interface ErrorResponse {
   requestId: number
   message: string
 }
-type OutgoingMessage = ReadyResponse | UnavailableResponse | ResultResponse | ErrorResponse
+/** P82 §2-§6: a live progress marker posted WHILE init() is still running — see phase-timing.ts's
+ *  module doc for why this exists. `atMs` is `performance.timeOrigin + performance.now()`, the
+ *  same cross-context-comparable quantity `workerModuleEvalAtMs`/`constructedAtMs` already use. */
+interface ProgressResponse {
+  type: 'progress'
+  phase: VisualWorkerProgressPhase
+  atMs: number
+}
+type OutgoingMessage =
+  ReadyResponse | UnavailableResponse | ResultResponse | ErrorResponse | ProgressResponse
 
 async function detectWebgpuAvailable(): Promise<boolean> {
   const gpu = (navigator as unknown as { gpu?: { requestAdapter(): Promise<unknown> } }).gpu
@@ -156,6 +166,23 @@ let backend: VisualBackend = 'wasm'
 function post(message: OutgoingMessage, transfer: Transferable[] = []): void {
   ;(self as unknown as Worker).postMessage(message, transfer)
 }
+
+/** P82 §2-§6: posts one live progress marker. Never throws, never blocks init — a progress post
+ *  is purely observational, so a hypothetical postMessage failure here must never take down the
+ *  actual init sequence it is reporting on. */
+function postProgress(phase: VisualWorkerProgressPhase): void {
+  try {
+    post({ type: 'progress', phase, atMs: performance.timeOrigin + performance.now() })
+  } catch {
+    // Observational only — see doc above.
+  }
+}
+
+// P82 §5 (REQUIRED): the worker-boot signal fires the INSTANT module evaluation reaches
+// application code — before AutoProcessor/AutoModel/the ORT WASM loader have been touched at all.
+// If a real device never gets even this far, the main thread can tell "worker constructed but no
+// boot message" (P82 §4) apart from "the worker booted but is stuck loading a specific asset."
+postProgress('worker-module-evaluated')
 
 // ---------------------------------------------------------------------------------------------
 // P81 §3/§8: fetch instrumentation + explicit cache-through, installed only for the duration of
@@ -333,6 +360,7 @@ async function loadIndex(): Promise<DecodedVisualIndex | null> {
     lastIndexUnavailableReason = 'manifest cardCount is not positive'
     return null
   }
+  postProgress('index-manifest-loaded')
   const [cardIdsResponse, embeddingsResponse] = await Promise.all([
     fetch(`${ASSET_BASE}/card-ids.json`),
     fetch(`${ASSET_BASE}/embeddings.bin`),
@@ -342,7 +370,9 @@ async function loadIndex(): Promise<DecodedVisualIndex | null> {
     return null
   }
   const cardIds = (await cardIdsResponse.json()) as string[]
+  postProgress('index-ids-loaded')
   const embeddingsBuffer = new Int8Array(await embeddingsResponse.arrayBuffer())
+  postProgress('index-embeddings-loaded')
   const decodeStart = performance.now()
   try {
     // Coverage sanity is defense-in-depth here (already asserted at generation time): a manifest
@@ -352,6 +382,7 @@ async function loadIndex(): Promise<DecodedVisualIndex | null> {
     assertValidCoverage(manifest.coverage, cardIds.length, manifest.cardCount)
     const decoded = decodeVisualIndex(manifest, cardIds, embeddingsBuffer)
     lastIndexDecodeMs = Math.round(performance.now() - decodeStart)
+    postProgress('index-decode-finished')
     return decoded
   } catch (error) {
     lastIndexUnavailableReason =
@@ -442,6 +473,7 @@ function buildPhaseTimings(
 async function init(message: InitMessage): Promise<void> {
   const startedAt = performance.now()
   const workerConstructedAtMs = message.constructedAtMs ?? null
+  postProgress('init-received')
   installFetchProbe()
   const backendRequested = normalizeBackendOverride(message.backendOverride)
 
@@ -483,9 +515,11 @@ async function init(message: InitMessage): Promise<void> {
       typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated ? 4 : 1
   }
 
+  postProgress('processor-load-started')
   const processorStart = performance.now()
   const processorResult = await loadProcessor()
   const processorWallMs = performance.now() - processorStart
+  postProgress('processor-load-finished')
   if (!processorResult.ok) {
     const log = finalizeFetchLog()
     post({
@@ -512,13 +546,21 @@ async function init(message: InitMessage): Promise<void> {
   // Backend selection itself is pure orchestration, delegated to
   // domain/scanner/visual-backend-selection.ts (prompt §3/§10, R2-R9) — see its own docs for the
   // fallback rules; this worker supplies the only two non-pure dependencies (real adapter
-  // detection, real model load).
+  // detection, real model load), wrapped here (P82 §3) to post per-backend attempt progress
+  // WITHOUT touching visual-backend-selection.ts's own pure signature/tests at all.
+  postProgress('backend-selection-started')
   const backendStart = performance.now()
   const selection = await selectVisualBackend(backendRequested, {
     detectWebgpuAvailable,
-    loadModel: loadModelOnBackend,
+    loadModel: async (device) => {
+      postProgress(device === 'webgpu' ? 'webgpu-attempt-started' : 'wasm-attempt-started')
+      const result = await loadModelOnBackend(device)
+      postProgress(device === 'webgpu' ? 'webgpu-attempt-finished' : 'wasm-attempt-finished')
+      return result
+    },
   })
   const backendWallMs = performance.now() - backendStart
+  postProgress('model-load-finished')
   const { chosen, attempts, webgpuError, wasmError } = selection
 
   const backendDiagnostics: BackendDiagnostics = {
@@ -549,6 +591,7 @@ async function init(message: InitMessage): Promise<void> {
   }
   backend = chosen
 
+  postProgress('index-load-started')
   const indexLoadStart = performance.now()
   index = await loadIndex().catch((error: unknown) => {
     lastIndexUnavailableReason = `index load threw: ${(error as Error).message}`
@@ -556,6 +599,7 @@ async function init(message: InitMessage): Promise<void> {
   })
   const indexLoadMs = Math.round(performance.now() - indexLoadStart)
   const log = finalizeFetchLog()
+  postProgress('ready')
 
   post({
     type: 'ready',

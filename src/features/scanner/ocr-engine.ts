@@ -58,10 +58,27 @@ export class ScannerOcrEngine {
   private worker: TesseractWorker | null = null
   private preparing: Promise<TesseractWorker> | null = null
   private disposed = false
+  /** P82 §16-§19: set true only when a `prepare()` attempt actually threw — distinguishes a
+   *  genuinely failed OCR cold start from "never attempted"/"still in flight", which `started`
+   *  alone cannot (both `preparing` and `worker` end up falsy either way). Cleared at the start of
+   *  every new `prepare()` attempt so a later retry can succeed cleanly. */
+  private lastPrepareFailed = false
 
   /** True once preparation has begun (used for honest "Preparing scanner…" copy on first use). */
   get started(): boolean {
     return this.preparing !== null || this.worker !== null
+  }
+
+  /** P82 §16-§19: coarse readiness state for the FAST (OCR) baseline — this is what the intro
+   *  screen's honest loading copy should gate on instead of the heavyweight DINO channel, since
+   *  Tesseract's ~10MB cold download is a small fraction of DINO's ~45MB one and (unlike a
+   *  perceptual-hash retrieval channel this session evaluated and rejected — see
+   *  docs/SCANNER_RESEARCH.md §7e) already provides real, evidence-backed identification signal. */
+  getState(): 'not-loaded' | 'loading' | 'ready' | 'failed' {
+    if (this.worker !== null) return 'ready'
+    if (this.preparing !== null) return 'loading'
+    if (this.lastPrepareFailed) return 'failed'
+    return 'not-loaded'
   }
 
   /**
@@ -73,11 +90,13 @@ export class ScannerOcrEngine {
     if (this.disposed) throw new ScannerEngineDisposedError()
     if (this.worker !== null) return
     if (this.preparing !== null) return this.preparing.then(() => undefined)
+    this.lastPrepareFailed = false
     const creating = this.createWorker()
     this.preparing = creating
     try {
       this.worker = await creating
     } catch (error) {
+      this.lastPrepareFailed = true
       throw error instanceof ScannerEngineError ? error : new ScannerEngineError()
     } finally {
       if (this.preparing === creating) this.preparing = null

@@ -41,15 +41,24 @@ import { estimateAssetCacheStatus } from './visual/phase-timing'
  */
 export const VISUAL_COLD_ANALYSIS_TIMEOUT_MS = 8000
 
-/** P81 §5: how long route-entry prewarm waits before ALSO starting the OCR engine's own cold
- *  start. The visual channel's cold assets (~45MB: 24MB ONNX model, up to 23.5MB ORT WASM, 7.5MB
- *  index) dwarf OCR's (~10MB: one Tesseract WASM+glue pair plus traineddata) — staggering gives
- *  the larger, slower download a head start on both network bandwidth and (more importantly on a
- *  single/few-core phone) WASM-compile CPU time, instead of both cold runtimes contending for the
- *  same resources from the same instant (the exact failure mode P81 §5 describes). A heuristic
- *  chosen for this session, not benchmarked against a real device — same disclosed-not-measured
- *  posture as VISUAL_COLD_ANALYSIS_TIMEOUT_MS above. */
-export const OCR_PREWARM_STAGGER_MS = 1500
+/**
+ * P82 §16: REVERSES P81's own stagger order, evidence-gated (D-099 addendum). P81 started the
+ * heavyweight DINO visual channel FIRST on the reasoning that the bigger, slower download deserved
+ * a network/CPU head start. The owner's real-iPhone retest (P82 §0) showed `VISUAL_MODEL_STATE=
+ * loading` for over a minute while OCR alone — the smaller, faster-to-warm channel — never even
+ * got a chance to identify a clearly-legible card. This session also benchmarked a lightweight
+ * perceptual-hash (dHash/pHash) retrieval channel as a possible THIRD, even-faster signal (P82
+ * §9-§11) and found it does NOT provide usable discrimination once real capture-like distortion
+ * (tilt + off-center placement, the SAME corpus P79's rectification benchmark uses) is present —
+ * same-card and different-card similarity distributions overlap almost completely (see
+ * docs/SCANNER_RESEARCH.md §7e for the measured numbers) — so it was evidence-gated OUT of
+ * production, leaving OCR + text search as the only real, evidence-backed FAST baseline that does
+ * not require the ~45MB DINO cold start. OCR's own cold assets (~10MB: one Tesseract WASM+glue
+ * pair plus traineddata) are a small fraction of DINO's — starting it FIRST gets the fast baseline
+ * ready sooner, at the cost of DINO's own cold start beginning slightly later than it did under
+ * P81's ordering. A heuristic chosen for this session's evidence, not re-benchmarked against a real
+ * device — same disclosed-not-measured posture P81 itself used for the original ordering. */
+export const ENHANCED_VISUAL_PREWARM_STAGGER_MS = 1500
 
 /** Bounded raw visual shortlist handed to the domain matcher (prompt §16/§31): retrieval may
  *  examine this many raw candidates internally, but the UI never sees more than
@@ -333,25 +342,32 @@ export function createRealScannerController(
       })
   }
 
-  /** Route-entry prewarm (P81 §6): begins warming the visual runtime immediately, then the OCR
-   *  engine after a short stagger (see OCR_PREWARM_STAGGER_MS) so neither cold start blindly
-   *  contends with the other for network/CPU on a genuinely cold device. Idempotent — a second
-   *  call is a no-op; both underlying `prepare()`/`prewarm()` calls are already idempotent too, so
-   *  this stays safe even if called from more than one render path. */
+  /** Route-entry prewarm (P82 §16, reverses P81's own order — see
+   *  ENHANCED_VISUAL_PREWARM_STAGGER_MS's doc for the evidence): begins warming the FAST (OCR)
+   *  baseline immediately, then the heavyweight DINO visual channel after a short stagger, so
+   *  neither cold start blindly contends with the other for network/CPU on a genuinely cold
+   *  device. Idempotent — a second call is a no-op; both underlying `prepare()`/`prewarm()` calls
+   *  are already idempotent too, so this stays safe even if called from more than one render path. */
   function prewarm(): void {
     if (visualPrewarmStarted) return
     visualPrewarmStarted = true
-    visualClient.prewarm().catch(() => {
-      // Unavailability is a normal, already-diagnosed outcome (visualClient.getDiagnosticsSnapshot
-      // reports it) — prewarm() itself never needs to react to it.
-    })
+    prewarmOcr()
     setTimeout(() => {
-      prewarmOcr()
-    }, OCR_PREWARM_STAGGER_MS)
+      visualClient.prewarm().catch(() => {
+        // Unavailability is a normal, already-diagnosed outcome
+        // (visualClient.getDiagnosticsSnapshot reports it) — prewarm() itself never needs to react.
+      })
+    }, ENHANCED_VISUAL_PREWARM_STAGGER_MS)
   }
 
   function getVisualPrewarmState(): 'not-loaded' | 'loading' | 'ready' | 'failed' {
     return visualClient.getDiagnosticsSnapshot().modelState
+  }
+
+  /** P82 §17-§19: the FAST baseline's own readiness — OCR only, no dependency on the heavyweight
+   *  DINO channel at all. This is what the intro screen's honest loading copy should gate on. */
+  function getFastScannerState(): 'not-loaded' | 'loading' | 'ready' | 'failed' {
+    return engine.getState()
   }
 
   /** Bounds how long one scan waits on the visual channel when it was NOT already warm (P81 §5):
@@ -557,6 +573,19 @@ export function createRealScannerController(
       visualPrewarmStarted,
       visualPrewarmReadyBeforeCapture,
       ocrPrepareMs,
+      // P82 §2-§6/§20: live-progress fields, populated even while the worker is STILL loading —
+      // the exact gap P81's terminal-only phase timings left (VISUAL_PHASE_TIMINGS all "—" while
+      // VISUAL_MODEL_STATE=loading, the owner's real-iPhone report, P82 §0).
+      workerBooted: visualSnapshot.liveProgress.workerBooted,
+      workerBootMs: visualSnapshot.liveProgress.workerBootMs,
+      visualCurrentPhase: visualSnapshot.liveProgress.currentPhase,
+      visualCurrentPhaseElapsedMs: visualSnapshot.liveProgress.currentPhaseElapsedMs,
+      visualLastProgressMsAgo: visualSnapshot.liveProgress.lastProgressMsAgo,
+      // P82 §17-§19: the FAST (OCR) baseline's own readiness, distinct from the heavyweight DINO
+      // channel's `visualModelState` — this is what an honest loading indicator should gate on.
+      fastScannerState: getFastScannerState(),
+      ocrRuntimeState: getFastScannerState(),
+      enhancedVisualState: visualSnapshot.modelState,
     }
 
     // Debug-only image previews (P79 §4) — memory-only object URLs, never persisted, revoked the
@@ -680,6 +709,7 @@ export function createRealScannerController(
     getLastDebugImages,
     prewarm,
     getVisualPrewarmState,
+    getFastScannerState,
   }
 }
 
