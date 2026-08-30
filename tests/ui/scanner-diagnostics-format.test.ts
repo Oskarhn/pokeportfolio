@@ -40,6 +40,29 @@ function diagnostics(overrides: Partial<ScannerDiagnostics> = {}): ScannerDiagno
     processorLoad: 'success',
     modelLoad: 'success',
     indexLoadStatus: 'success',
+    visualPhaseTimings: {
+      workerStartMs: 42,
+      processorFetchMs: 15,
+      processorInitMs: 3,
+      modelConfigFetchMs: 8,
+      modelOnnxFetchMs: 610,
+      modelOnnxBytes: 24451943,
+      ortRuntimeFetchMs: 5,
+      ortWasmFetchMs: 340,
+      ortWasmBytes: 12942611,
+      modelCompileAndSessionCreateMs: 220,
+      indexManifestFetchMs: 4,
+      indexIdsFetchMs: 30,
+      indexEmbeddingsFetchMs: 90,
+      indexEmbeddingsBytes: 7488384,
+      indexDecodeMs: 25,
+      visualReadyTotalMs: 812,
+    },
+    firstEmbedMs: 640,
+    assetCacheStatus: 'likely-network',
+    visualPrewarmStarted: true,
+    visualPrewarmReadyBeforeCapture: true,
+    ocrPrepareMs: 900,
     ...overrides,
   }
 }
@@ -76,6 +99,43 @@ describe('formatScannerDiagnostics', () => {
     expect(text).toContain('CANDIDATE_EXPANSION_TRIGGERED=no')
     expect(text).toContain('1. card-a "Shieldon" tier=HIGH reasons=visual-strong')
     expect(text).toContain('VISUAL_ERROR=—')
+  })
+
+  it('renders P81 prewarm/timing fields and the full phase-timing block', () => {
+    const text = formatScannerDiagnostics(diagnostics())
+    expect(text).toContain('VISUAL_PREWARM_STARTED=yes')
+    expect(text).toContain('VISUAL_PREWARM_READY_BEFORE_CAPTURE=yes')
+    expect(text).toContain('OCR_PREPARE_MS=900')
+    expect(text).toContain('FIRST_EMBED_MS=640')
+    expect(text).toContain('ASSET_CACHE_STATUS=likely-network')
+    expect(text).toContain('VISUAL_PHASE_TIMINGS:')
+    expect(text).toContain('VISUAL_WORKER_START_MS=42')
+    expect(text).toContain('MODEL_ONNX_FETCH_MS=610')
+    expect(text).toContain('MODEL_ONNX_BYTES=24451943')
+    expect(text).toContain('ORT_WASM_FETCH_MS=340')
+    expect(text).toContain('ORT_WASM_BYTES=12942611')
+    expect(text).toContain('MODEL_COMPILE_AND_SESSION_CREATE_MS=220')
+    expect(text).toContain('INDEX_DECODE_MS=25')
+    expect(text).toContain('VISUAL_READY_TOTAL_MS=812')
+  })
+
+  it('renders an honest placeholder when phase timings/prewarm fields are absent', () => {
+    const text = formatScannerDiagnostics(
+      diagnostics({
+        visualPhaseTimings: null,
+        firstEmbedMs: null,
+        ocrPrepareMs: null,
+        assetCacheStatus: 'unknown',
+        visualPrewarmStarted: false,
+        visualPrewarmReadyBeforeCapture: false,
+      }),
+    )
+    expect(text).toContain('VISUAL_PREWARM_STARTED=no')
+    expect(text).toContain('VISUAL_PREWARM_READY_BEFORE_CAPTURE=no')
+    expect(text).toContain('OCR_PREPARE_MS=—')
+    expect(text).toContain('FIRST_EMBED_MS=—')
+    expect(text).toContain('ASSET_CACHE_STATUS=unknown')
+    expect(text).toContain('VISUAL_PHASE_TIMINGS:\n  —')
   })
 
   it('renders honest placeholders for the P80 adaptive-ROI fields when nothing won', () => {

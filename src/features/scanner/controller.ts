@@ -25,6 +25,31 @@ import { ScannerOcrEngine } from './ocr-engine'
 import { rectifyCapture } from './rectify-capture'
 import { scannerCostBasisState, scannerSessionStore, type ScannerOrigin } from './session-store'
 import { VisualRecognitionClient, type VisualAnalysisResult } from './visual/visual-client'
+import { estimateAssetCacheStatus } from './visual/phase-timing'
+
+/**
+ * P81 §5/§15: how long a scan will wait for the visual channel when it was NOT already warm at
+ * the moment analysis began, before proceeding OCR-only. The real-device evidence this session
+ * repairs (388s and worse cold model loads, one owner wait of 6-7 minutes with no usable result)
+ * makes an unbounded wait on the model unacceptable regardless of how good route-entry prewarming
+ * becomes — a slow/first-ever network condition can still outlast prewarming's head start. Chosen
+ * as a small multiple of the "warm scan" target (P81 §15, a few seconds) rather than tuned against
+ * a real device this session (no iPhone available) — the owner's real-device retest is what
+ * validates whether 8s is generous or stingy in practice; the debug panel's
+ * VISUAL_PREWARM_READY_BEFORE_CAPTURE/CANDIDATE_EXPANSION_TRIGGERED-style honesty extends to this
+ * (a timed-out scan says so in VISUAL_ERROR, never silently degrades unlabeled).
+ */
+export const VISUAL_COLD_ANALYSIS_TIMEOUT_MS = 8000
+
+/** P81 §5: how long route-entry prewarm waits before ALSO starting the OCR engine's own cold
+ *  start. The visual channel's cold assets (~45MB: 24MB ONNX model, up to 23.5MB ORT WASM, 7.5MB
+ *  index) dwarf OCR's (~10MB: one Tesseract WASM+glue pair plus traineddata) — staggering gives
+ *  the larger, slower download a head start on both network bandwidth and (more importantly on a
+ *  single/few-core phone) WASM-compile CPU time, instead of both cold runtimes contending for the
+ *  same resources from the same instant (the exact failure mode P81 §5 describes). A heuristic
+ *  chosen for this session, not benchmarked against a real device — same disclosed-not-measured
+ *  posture as VISUAL_COLD_ANALYSIS_TIMEOUT_MS above. */
+export const OCR_PREWARM_STAGGER_MS = 1500
 
 /** Bounded raw visual shortlist handed to the domain matcher (prompt §16/§31): retrieval may
  *  examine this many raw candidates internally, but the UI never sees more than
@@ -289,6 +314,70 @@ export function createRealScannerController(
   let lastDiagnostics: ScannerDiagnostics | null = null
   const debugImages = new DebugImageUrlStore()
 
+  // P81 §6/§17: session-lifetime prewarm bookkeeping — separate from lastDiagnostics because it
+  // must survive across scans (prewarm runs once per session), not reset per capture.
+  let visualPrewarmStarted = false
+  let ocrPrepareMs: number | null = null
+
+  function prewarmOcr(): void {
+    const start = performance.now()
+    engine
+      .prepare()
+      .then(() => {
+        if (ocrPrepareMs === null) ocrPrepareMs = Math.round(performance.now() - start)
+      })
+      .catch(() => {
+        // A failed prepare still tells the debug panel how long the attempt took; the actual
+        // scan-time failure is reported through the existing OCR error path (errors.ts), not here.
+        if (ocrPrepareMs === null) ocrPrepareMs = Math.round(performance.now() - start)
+      })
+  }
+
+  /** Route-entry prewarm (P81 §6): begins warming the visual runtime immediately, then the OCR
+   *  engine after a short stagger (see OCR_PREWARM_STAGGER_MS) so neither cold start blindly
+   *  contends with the other for network/CPU on a genuinely cold device. Idempotent — a second
+   *  call is a no-op; both underlying `prepare()`/`prewarm()` calls are already idempotent too, so
+   *  this stays safe even if called from more than one render path. */
+  function prewarm(): void {
+    if (visualPrewarmStarted) return
+    visualPrewarmStarted = true
+    visualClient.prewarm().catch(() => {
+      // Unavailability is a normal, already-diagnosed outcome (visualClient.getDiagnosticsSnapshot
+      // reports it) — prewarm() itself never needs to react to it.
+    })
+    setTimeout(() => {
+      prewarmOcr()
+    }, OCR_PREWARM_STAGGER_MS)
+  }
+
+  function getVisualPrewarmState(): 'not-loaded' | 'loading' | 'ready' | 'failed' {
+    return visualClient.getDiagnosticsSnapshot().modelState
+  }
+
+  /** Bounds how long one scan waits on the visual channel when it was NOT already warm (P81 §5):
+   *  never the multi-minute cold-load itself. A warm channel is awaited normally — no bound is
+   *  needed or applied, matching every existing test's fast-resolving mocked behaviour exactly. */
+  async function analyzeVisualBounded(
+    capture: { blob: Blob; cardRect: PixelRect },
+    topK: number,
+  ): Promise<{ result: VisualAnalysisResult | null; errorMessage: string | null }> {
+    const readyBefore = getVisualPrewarmState() === 'ready'
+    const work = analyzeVisualSafely(capture, topK)
+    if (readyBefore) return work
+    return Promise.race([
+      work,
+      new Promise<{ result: null; errorMessage: string }>((resolve) => {
+        setTimeout(() => {
+          resolve({
+            result: null,
+            errorMessage:
+              'Visual recognition is still warming up on this device — used text search only for this scan.',
+          })
+        }, VISUAL_COLD_ANALYSIS_TIMEOUT_MS)
+      }),
+    ])
+  }
+
   /** Returns its own error message rather than mutating shared state (P78): a closure-captured
    *  `let` reassigned inside an awaited call is invisible to TypeScript's control-flow narrowing
    *  at the read site (confirmed — `@typescript-eslint/no-unnecessary-condition` flags the read as
@@ -334,10 +423,14 @@ export function createRealScannerController(
     const defaults = scannerSessionStore.load(options.userId)
     const languageHint = defaults?.language ?? 'en'
 
+    // P81 §6/§17: snapshot BEFORE the race below settles anything — the honest answer to "was
+    // prewarming already done by the time this capture happened."
+    const visualPrewarmReadyBeforeCapture = getVisualPrewarmState() === 'ready'
+
     const [ocrResult, { result: visualResult, errorMessage: visualErrorMessage }] =
       await Promise.all([
         runOcrAnalysis(workingCapture, engine, undefined, debug),
-        analyzeVisualSafely(
+        analyzeVisualBounded(
           workingCapture,
           debug ? VISUAL_DEBUG_SHORTLIST_SIZE : VISUAL_SHORTLIST_SIZE,
         ),
@@ -454,6 +547,16 @@ export function createRealScannerController(
       processorLoad: visualSnapshot.backendDiagnostics?.processorLoad ?? null,
       modelLoad: visualSnapshot.backendDiagnostics?.modelLoad ?? null,
       indexLoadStatus: visualSnapshot.backendDiagnostics?.indexLoad ?? null,
+      // P81 §3/§6/§17: cold-start phase attribution, prewarm bookkeeping and warm-scan timing —
+      // see contract.ts's field docs for what each answers.
+      visualPhaseTimings: visualSnapshot.backendDiagnostics?.phaseTimings ?? null,
+      firstEmbedMs: visualSnapshot.firstEmbedMs,
+      assetCacheStatus: estimateAssetCacheStatus(
+        visualSnapshot.backendDiagnostics?.phaseTimings ?? null,
+      ),
+      visualPrewarmStarted,
+      visualPrewarmReadyBeforeCapture,
+      ocrPrepareMs,
     }
 
     // Debug-only image previews (P79 §4) — memory-only object URLs, never persisted, revoked the
@@ -575,6 +678,8 @@ export function createRealScannerController(
     dispose,
     getLastDiagnostics,
     getLastDebugImages,
+    prewarm,
+    getVisualPrewarmState,
   }
 }
 

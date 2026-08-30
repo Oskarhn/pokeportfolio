@@ -98,6 +98,12 @@ export function ScannerPage() {
   // owns and revokes (DebugImageUrlStore); this state is only a render-time mirror, same
   // discipline as `previewUrl` mirroring CaptureStore above.
   const [debugImages, setDebugImages] = useState<ScannerDebugImages | null>(null)
+  // P81 §6/§7: route-entry prewarm status, polled from the controller so the intro screen can
+  // show honest, non-blocking progress instead of the model/index loading silently in the
+  // background until the user presses the shutter and is surprised by a multi-minute wait.
+  const [visualPrewarmState, setVisualPrewarmState] = useState<
+    'not-loaded' | 'loading' | 'ready' | 'failed'
+  >(() => controller.getVisualPrewarmState?.() ?? 'not-loaded')
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -157,6 +163,30 @@ export function ScannerPage() {
     },
     [controller],
   )
+
+  // P81 §6: begin warming the visual (and, staggered, OCR) recognition runtime the instant this
+  // route mounts — BEFORE the camera opens, BEFORE any photo exists. Never blocks the camera UI
+  // (prompt §5): the user can start the camera, frame a card and even capture while this is still
+  // in flight — analyzeCapture's own bounded wait (controller.ts) is what keeps a still-cold
+  // visual channel from turning into a multi-minute stall on that first scan.
+  useEffect(() => {
+    controller.prewarm?.()
+  }, [controller])
+
+  // Poll the controller's own visual-readiness snapshot so the intro screen can show honest,
+  // non-blocking progress. A plain interval (not a subscription) because VisualRecognitionClient
+  // exposes only a point-in-time snapshot, matching the existing debug-panel/diagnostics read
+  // pattern elsewhere in this file — stops once a terminal state (ready/failed) is reached.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const next = controller.getVisualPrewarmState?.() ?? 'not-loaded'
+      setVisualPrewarmState((previous) => (previous === next ? previous : next))
+      if (next === 'ready' || next === 'failed') clearInterval(interval)
+    }, 500)
+    return () => {
+      clearInterval(interval)
+    }
+  }, [controller])
 
   // Tab hidden ⇒ release the hardware immediately. Returning lands on the start screen with the
   // batch intact; "Start camera" re-opens without a new permission prompt.
@@ -417,6 +447,7 @@ export function ScannerPage() {
               defaults={defaults}
               locations={locations}
               japaneseNotice={japaneseNotice}
+              visualPrewarmState={visualPrewarmState}
               onStartCamera={() => {
                 dispatch({ type: 'START_CAMERA_PRESSED' })
               }}
@@ -894,11 +925,29 @@ function ScannerDebugRawCandidates({
   )
 }
 
+/** P81 §7: honest, non-blocking recognition-readiness copy for the intro screen. Never a fake
+ *  percentage (Tesseract/transformers.js expose no meaningful progress fraction) — a short phase
+ *  label instead, and nothing at all once ready/failed (failure degrades silently to OCR + manual
+ *  search, exactly as it always has — prompt §36). */
+function visualPrewarmStatusLabel(
+  state: 'not-loaded' | 'loading' | 'ready' | 'failed',
+): string | null {
+  switch (state) {
+    case 'loading':
+      return 'Preparing card recognition… you can start scanning any time.'
+    case 'not-loaded':
+    case 'ready':
+    case 'failed':
+      return null
+  }
+}
+
 function IntroView({
   state,
   defaults,
   locations,
   japaneseNotice,
+  visualPrewarmState,
   onStartCamera,
   onChoosePhoto,
   onDefaultsPatch,
@@ -907,17 +956,24 @@ function IntroView({
   defaults: ScannerSessionDefaults
   locations: { id: string; label: string }[]
   japaneseNotice: boolean
+  visualPrewarmState: 'not-loaded' | 'loading' | 'ready' | 'failed'
   onStartCamera: () => void
   onChoosePhoto: () => void
   onDefaultsPatch: (patch: Partial<ScannerSessionDefaults>) => void
 }) {
   const cameraSupported = hasMediaDevicesSupport(navigator)
+  const prewarmStatus = visualPrewarmStatusLabel(visualPrewarmState)
   return (
     <div className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center gap-5 overflow-y-auto px-5 pb-8">
       <h1 className="text-2xl font-semibold tracking-tight">Scan cards</h1>
       <p className="text-sm text-slate-400">
         Use your camera or a photo to identify cards, then confirm before adding them.
       </p>
+      {prewarmStatus !== null ? (
+        <p role="status" className="text-xs text-slate-500">
+          {prewarmStatus}
+        </p>
+      ) : null}
       {state.cameraError ? <ErrorAlert {...state.cameraError} /> : null}
       <div className="mt-2 flex flex-col gap-2">
         {cameraSupported ? (

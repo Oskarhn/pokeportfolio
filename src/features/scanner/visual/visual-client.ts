@@ -23,6 +23,9 @@ export interface VisualAnalysisResult {
   readonly embeddingNorm: number
 }
 
+export type { VisualPhaseTimings } from './phase-timing'
+import type { VisualPhaseTimings } from './phase-timing'
+
 /** Backend-attempt diagnostics (P78 prompt §4/§11/§12) — present on BOTH a successful ready and
  *  an unavailable outcome, so the debug panel can always show what was actually tried. */
 export interface VisualBackendDiagnostics {
@@ -36,6 +39,7 @@ export interface VisualBackendDiagnostics {
   readonly processorLoad: 'success' | 'failed'
   readonly modelLoad: 'success' | 'failed'
   readonly indexLoad: 'success' | 'failed' | 'not-reached'
+  readonly phaseTimings: VisualPhaseTimings
 }
 
 export interface VisualReadyInfo extends VisualBackendDiagnostics {
@@ -85,6 +89,22 @@ export class VisualRecognitionClient {
     number,
     { resolve: (r: VisualAnalysisResult) => void; reject: (e: Error) => void }
   >()
+  /** Wall-clock duration of the FIRST successful `analyze()` round trip (P81 §3/§17
+   *  FIRST_EMBED_MS) — the number that answers "once the model is warm, how fast is one actual
+   *  scan," distinct from cold model/index load. Null until one real embed has completed. */
+  private firstEmbedMs: number | null = null
+
+  /**
+   * Explicit prewarm entry point (P81 §6): begins worker/model/index loading in the background
+   * WITHOUT a captured frame. A thin, clearly-named alias over {@link ensureReady} — identical
+   * idempotency (safe to call repeatedly; concurrent/later callers share the same in-flight or
+   * settled promise), never throws, never fabricates an embedding, uploads nothing. Named
+   * separately from `ensureReady` so callers that only want to START warming (route entry) read
+   * differently from callers that need to actually USE the result (a real scan).
+   */
+  async prewarm(): Promise<VisualReadyInfo | null> {
+    return this.ensureReady()
+  }
 
   /** Lazily creates the worker and waits for it to report ready/unavailable. Safe to call
    *  repeatedly — subsequent calls return the same in-flight/settled promise. */
@@ -95,6 +115,11 @@ export class VisualRecognitionClient {
 
     this.readyPromise = new Promise((resolve) => {
       try {
+        // P81 §3: recorded in a form comparable to the worker's OWN `performance.timeOrigin +
+        // performance.now()` (each context's `performance.now()` alone is relative to a
+        // different time origin) so `workerStartMs` can measure real script fetch/parse/eval
+        // cost instead of a meaningless cross-context diff.
+        const constructedAtMs = performance.timeOrigin + performance.now()
         const worker = new Worker(new URL('./visual-worker.ts', import.meta.url), {
           type: 'module',
         })
@@ -113,7 +138,11 @@ export class VisualRecognitionClient {
           this.unavailableReason = `Visual recognition worker crashed: ${event.message || 'unknown error'}${location}`
           resolve(null)
         })
-        worker.postMessage({ type: 'init', backendOverride: readBackendOverrideFromLocation() })
+        worker.postMessage({
+          type: 'init',
+          backendOverride: readBackendOverrideFromLocation(),
+          constructedAtMs,
+        })
       } catch {
         this.unavailableReason = 'Web Workers are unavailable in this browser.'
         resolve(null)
@@ -169,11 +198,17 @@ export class VisualRecognitionClient {
     const worker = this.worker
     const requestId = this.nextRequestId
     this.nextRequestId += 1
+    const embedCallStart = performance.now()
     try {
-      return await new Promise<VisualAnalysisResult>((resolve, reject) => {
+      const result = await new Promise<VisualAnalysisResult>((resolve, reject) => {
         this.pending.set(requestId, { resolve, reject })
         worker.postMessage({ type: 'embed-and-search', requestId, bitmap, topK }, [bitmap])
       })
+      // P81 §3/§17 FIRST_EMBED_MS: the first successful round trip only — this is the number
+      // that answers "once warm, how fast is one real scan," which cold `modelColdLoadMs` alone
+      // never told the owner.
+      if (this.firstEmbedMs === null) this.firstEmbedMs = performance.now() - embedCallStart
+      return result
     } catch {
       return null
     }
@@ -186,6 +221,7 @@ export class VisualRecognitionClient {
     unavailableReason: string | null
     readyInfo: VisualReadyInfo | null
     backendDiagnostics: VisualBackendDiagnostics | null
+    firstEmbedMs: number | null
   } {
     const modelState: 'not-loaded' | 'loading' | 'ready' | 'failed' =
       this.readyInfo !== null
@@ -200,6 +236,7 @@ export class VisualRecognitionClient {
       unavailableReason: this.unavailableReason,
       readyInfo: this.readyInfo,
       backendDiagnostics: this.backendDiagnostics,
+      firstEmbedMs: this.firstEmbedMs,
     }
   }
 

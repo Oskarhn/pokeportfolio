@@ -8,6 +8,51 @@ here when there was a real problem with a non-obvious answer.
 
 ---
 
+## 2026-08-30 — M15b iPhone cold start: the compile time wasn't the problem, and a fetch monkey-patch missed the fetches that mattered
+
+Real-device evidence after P80's recognition fixes: cold visual-channel init took 106–388 seconds
+across repeated real-iPhone attempts, and one scan produced no usable result after 6–7 minutes.
+The instinct going in was "the model is too big" or "WASM compile is slow on iOS" — neither held up
+against a real measurement.
+
+**Building a real-browser benchmark against the production code path changed the diagnosis.**
+`pnpm scanner:visual:benchmark:cold-start` drives Chromium and WebKit against the ACTUAL built
+`visual-worker-*.js` chunk (no mocks, no Node-side ONNX runtime substitute) and measured localhost
+cold init at ~1.5–2.1 seconds total, with ONNX-compile + WASM-instantiate + session-create
+accounting for ~0.7–1.6s of that. Localhost is not an iPhone's cellular connection, so this doesn't
+prove the exact real-device number — but it rules out "the runtime itself is inherently slow,"
+because the part of the pipeline that architecture/model choice actually controls measures in
+hundreds of milliseconds, not minutes, even from zero cache. What's left as the dominant real-
+device cost is network transfer of ~45MB (24.5MB ONNX model + up to 23.5MB ORT WASM + 7.5MB index)
+plus two confirmed configuration bugs: a wrong Cache-Control header (`max-age=0, must-revalidate`
+on version-pinned, revision-verified assets — Cloudflare Pages' default for non-hashed filenames,
+never overridden), and the visual channel never starting to load until AFTER the user had already
+captured a photo (no prewarm existed at all before this session).
+
+**Instrumenting the cold-start phases surfaced a second real finding, about the instrumentation
+itself.** The first attempt monkey-patched `self.fetch` inside the worker to time every request by
+URL. It worked perfectly for the worker's OWN direct fetches (the index manifest/ids/embeddings)
+and reported exactly 0ms/null-bytes for every fetch transformers.js/onnxruntime-web issue
+internally — the ONNX model, the ORT WASM binary, the processor/model config files. Every one of
+those bundled libraries apparently holds its own reference to `fetch`, captured when their module
+code first evaluates — which happens at Worker script load, before `installFetchProbe()` (called
+from inside `init()`, itself only reached after an 'init' message arrives) ever runs. Reassigning
+`self.fetch` afterward is powerless against a reference a library already captured. The fix:
+Resource Timing (`performance.getEntriesByType('resource')`), which the browser's network stack
+populates for every subresource load regardless of which JS reference initiated it — reading it
+once after init settles gave real numbers for every phase immediately. This is a durable lesson
+for any future in-worker instrumentation in this codebase: monkey-patching the global object is not
+a reliable interception point once bundled third-party code has already run its own module-level
+setup; reading what the platform actually recorded is.
+
+**The response was architectural, not a model swap.** Prewarming on route entry, a bounded wait so
+a still-cold scan degrades to OCR-only instead of hanging, and the Cache-Control fix address the
+measured bottleneck directly. A smaller model was researched and rejected: nothing smaller with a
+permissive license clearly beats DINOv2-small on the actual constraint (network/config, not compile
+cost), and a swap would risk regressing P80's still-unresolved discriminative-power gap while
+forcing an irreversible multi-hour re-embedding of the 19,501-card index — not justified without
+evidence the swap would even help the problem that was actually measured.
+
 ## 2026-08-28 — M15b exact-card matching: a benchmark can prove robustness without proving discriminative power
 
 Two real-device misses remained after P79's rectification/resolution fixes: Mega Chandelure ex

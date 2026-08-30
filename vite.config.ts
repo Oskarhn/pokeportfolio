@@ -104,6 +104,22 @@ function cloudflareHeaders(): Plugin {
   Cross-Origin-Opener-Policy: same-origin
   Permissions-Policy: geolocation=(), microphone=(), payment=(), usb=()
   Strict-Transport-Security: max-age=31536000
+
+# P81 §8/§9: without an explicit rule here, Cloudflare Pages' own default for these paths (files
+# with no content-hashed filename) is "Cache-Control: public, max-age=0, must-revalidate" —
+# confirmed by curling the live preview directly. That means even a browser that already has the
+# 24MB DINO ONNX model or the 13-23MB ORT WASM binary in its plain HTTP cache still spends a full
+# network round trip revalidating it on every visit, on top of whatever the Service Worker's own
+# CacheFirst runtime-caching rule does (scannerAssetRuntimeCache/visualAssetRuntimeCache below) —
+# and that SW rule is not guaranteed to even apply here, since fetches issued from inside the
+# scanner's dedicated Workers are not guaranteed to be intercepted by the controlling Service
+# Worker on every engine. Both asset families are safe to cache aggressively: each lives under a
+# version-pinned path segment (v7, visual-v1) AND the visual worker additionally verifies
+# EXPECTED_MODEL_REVISION before trusting anything it loads (visual-worker.ts) — a stale cached
+# copy can never silently masquerade as a different model/index revision. This does not touch
+# ordinary app files (JS/CSS/HTML), which keep Cloudflare's default hashed-asset behaviour.
+/scanner-assets/*
+  Cache-Control: public, max-age=31536000, immutable
 `
       this.emitFile({ type: 'asset', fileName: '_headers', source: headers })
     },

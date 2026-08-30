@@ -38,6 +38,29 @@ function latestWorker(): FakeWorker {
   return worker
 }
 
+/** P81 §3: a representative phase-timing report, used to prove the client relays it verbatim. */
+function samplePhaseTimings(overrides: Record<string, unknown> = {}) {
+  return {
+    workerStartMs: 18,
+    processorFetchMs: 12,
+    processorInitMs: 2,
+    modelConfigFetchMs: 6,
+    modelOnnxFetchMs: 540,
+    modelOnnxBytes: 24451943,
+    ortRuntimeFetchMs: 4,
+    ortWasmFetchMs: 310,
+    ortWasmBytes: 12942611,
+    modelCompileAndSessionCreateMs: 180,
+    indexManifestFetchMs: 3,
+    indexIdsFetchMs: 22,
+    indexEmbeddingsFetchMs: 71,
+    indexEmbeddingsBytes: 7488384,
+    indexDecodeMs: 19,
+    visualReadyTotalMs: 972,
+    ...overrides,
+  }
+}
+
 function readyMessage(overrides: Record<string, unknown> = {}) {
   return {
     type: 'ready',
@@ -56,6 +79,7 @@ function readyMessage(overrides: Record<string, unknown> = {}) {
     processorLoad: 'success',
     modelLoad: 'success',
     indexLoad: 'success',
+    phaseTimings: samplePhaseTimings(),
     ...overrides,
   }
 }
@@ -71,6 +95,7 @@ function unavailableMessage(overrides: Record<string, unknown> = {}) {
     processorLoad: 'failed',
     modelLoad: 'failed',
     indexLoad: 'not-reached',
+    phaseTimings: samplePhaseTimings({ visualReadyTotalMs: 40 }),
     ...overrides,
   }
 }
@@ -177,5 +202,80 @@ describe('VisualRecognitionClient — backend/init diagnostics (P78)', () => {
     expect(worker.postMessage).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'init', backendOverride: 'auto' }),
     )
+  })
+})
+
+describe('VisualRecognitionClient — P81 prewarm and cold-start diagnostics', () => {
+  it('P81-1/P81-6: prewarm() and ensureReady() share ONE in-flight/settled init — only one Worker is ever constructed', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const client = new VisualRecognitionClient()
+    const [prewarmPromise, readyPromise] = [client.prewarm(), client.ensureReady()]
+    expect(FakeWorker.instances).toHaveLength(1)
+    latestWorker().emit('message', { data: readyMessage() })
+    await Promise.all([prewarmPromise, readyPromise])
+    // A later call, after settlement, still does not construct a second Worker.
+    await client.prewarm()
+    await client.ensureReady()
+    expect(FakeWorker.instances).toHaveLength(1)
+  })
+
+  it('P81-2: prewarm() posts init and resolves independently of any capture/analyze() call', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const client = new VisualRecognitionClient()
+    const prewarmPromise = client.prewarm()
+    const worker = latestWorker()
+    expect(worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'init' }))
+    worker.emit('message', { data: readyMessage() })
+    const info = await prewarmPromise
+    expect(info?.backend).toBe('wasm')
+  })
+
+  it("P81-9/§17: a ready message's phaseTimings are relayed verbatim through getDiagnosticsSnapshot()", async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const client = new VisualRecognitionClient()
+    const readyPromise = client.ensureReady()
+    latestWorker().emit('message', {
+      data: readyMessage({ phaseTimings: samplePhaseTimings({ modelOnnxFetchMs: 5000 }) }),
+    })
+    await readyPromise
+    const snapshot = client.getDiagnosticsSnapshot()
+    expect(snapshot.backendDiagnostics?.phaseTimings.modelOnnxFetchMs).toBe(5000)
+    expect(snapshot.backendDiagnostics?.phaseTimings.visualReadyTotalMs).toBe(972)
+  })
+
+  it("§17 FIRST_EMBED_MS: reports only the FIRST successful analyze() round trip's duration", async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const client = new VisualRecognitionClient()
+    const readyPromise = client.ensureReady()
+    const worker = latestWorker()
+    worker.emit('message', { data: readyMessage() })
+    await readyPromise
+    expect(client.getDiagnosticsSnapshot().firstEmbedMs).toBeNull()
+
+    const bitmap = { close: vi.fn() } as unknown as ImageBitmap
+    const analyzePromise = client.analyze(bitmap, 30)
+    // analyze() awaits ensureReady() (already settled, but still a real microtask hop) before it
+    // calls postMessage — flush the event loop with a real macrotask so the "embed-and-search"
+    // postMessage call has actually happened before we read it back.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const lastCall = worker.postMessage.mock.calls.at(-1)?.[0] as {
+      type: string
+      requestId: number
+    }
+    expect(lastCall.type).toBe('embed-and-search')
+    worker.emit('message', {
+      data: {
+        type: 'result',
+        requestId: lastCall.requestId,
+        hits: [],
+        embedMs: 4,
+        searchMs: 1,
+        embeddingNorm: 3,
+      },
+    })
+    await analyzePromise
+    const firstEmbedMs = client.getDiagnosticsSnapshot().firstEmbedMs
+    expect(firstEmbedMs).not.toBeNull()
+    expect(firstEmbedMs).toBeGreaterThanOrEqual(0)
   })
 })

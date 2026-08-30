@@ -1,5 +1,6 @@
 import type { CardCondition } from '../../data/collection'
 import type { PixelRect } from './guide-geometry'
+import type { VisualPhaseTimings, AssetCacheStatusEstimate } from './visual/phase-timing'
 
 /**
  * The boundary between M15's scanner UI (P66) and everything that makes scanning actually work —
@@ -116,6 +117,30 @@ export interface ScannerDiagnostics {
   processorLoad: 'success' | 'failed' | null
   modelLoad: 'success' | 'failed' | null
   indexLoadStatus: 'success' | 'failed' | 'not-reached' | null
+  /** P81 §3/§17: per-phase cold-start attribution from the worker's most recent init (ready OR
+   *  unavailable) — null before the worker has ever reported either. Persists across scans within
+   *  one session (init runs once per worker lifetime, not per scan), unlike the rest of this
+   *  per-scan diagnostics object. */
+  visualPhaseTimings: VisualPhaseTimings | null
+  /** Wall-clock duration of the FIRST successful visual embed+search round trip this session (P81
+   *  §3/§17 FIRST_EMBED_MS) — the warm per-scan cost, distinct from cold model/index load. Null
+   *  until one has completed. */
+  firstEmbedMs: number | null
+  /** Best-effort heuristic (P81 §17 ASSET_CACHE_STATUS) — see phase-timing.ts's
+   *  `estimateAssetCacheStatus` for exactly what this can and cannot prove. */
+  assetCacheStatus: AssetCacheStatusEstimate
+  /** Whether {@link ScannerUiController.prewarm} was ever called this session (P81 §6/§17). */
+  visualPrewarmStarted: boolean
+  /** Whether the visual model/index were ALREADY ready (prewarm had already completed) by the
+   *  time THIS scan's analyzeCapture call began (P81 §6/§17) — the field that proves whether
+   *  route-entry prewarming actually beat the user to the shutter on a given scan. */
+  visualPrewarmReadyBeforeCapture: boolean
+  /** Wall-clock duration of the session's own OCR engine warm-up (Tesseract worker creation),
+   *  timed from the controller's prewarm path (P81 §17 OCR_PREPARE_MS) — null before prewarm has
+   *  run, e.g. if the user captured before the OCR stagger fired (analyze.ts's own
+   *  `engine.prepare()` call inside `runOcrAnalysis` still warms it correctly either way; this
+   *  field just may not have observed that first-hand in that specific race). */
+  ocrPrepareMs: number | null
 }
 
 /**
@@ -233,4 +258,12 @@ export interface ScannerUiController {
   /** Debug-only image previews for the most recent {@link analyzeCapture} call (P79 §4), or null
    *  before any scan has run / outside debug mode. Optional for the same reason as above. */
   getLastDebugImages?(): ScannerDebugImages | null
+  /** P81 §6: begins warming the visual (and, staggered, OCR) recognition runtime in the
+   *  background — call on scanner route entry, BEFORE any capture exists. Idempotent, never
+   *  throws, never blocks the caller (fire-and-forget). Optional for mock-controller
+   *  compatibility, same discipline as the other optional members above. */
+  prewarm?(): void
+  /** Current visual-channel readiness (P81 §7) for driving an honest loading indicator before the
+   *  model/index have finished loading. Optional for the same reason as above. */
+  getVisualPrewarmState?(): 'not-loaded' | 'loading' | 'ready' | 'failed'
 }

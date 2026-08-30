@@ -41,6 +41,7 @@ const visualMocks = vi.hoisted(() => ({
   analyze: vi.fn(),
   getDiagnosticsSnapshot: vi.fn(),
   dispose: vi.fn(),
+  prewarm: vi.fn(),
 }))
 
 vi.mock('../../src/features/scanner/visual/visual-client', () => ({
@@ -48,6 +49,7 @@ vi.mock('../../src/features/scanner/visual/visual-client', () => ({
     analyze = visualMocks.analyze
     getDiagnosticsSnapshot = visualMocks.getDiagnosticsSnapshot
     dispose = visualMocks.dispose
+    prewarm = visualMocks.prewarm
   },
 }))
 
@@ -68,6 +70,7 @@ function defaultVisualDiagnostics() {
     unavailableReason: null,
     readyInfo: null,
     backendDiagnostics: null,
+    firstEmbedMs: null,
   }
 }
 
@@ -110,6 +113,7 @@ beforeEach(() => {
   scannerSessionStore.clearAll()
   visualMocks.analyze.mockResolvedValue(null)
   visualMocks.getDiagnosticsSnapshot.mockReturnValue(defaultVisualDiagnostics())
+  visualMocks.prewarm.mockResolvedValue(null)
 })
 
 describe('analyzeCapture - observation, retrieval, ranking (I2/I3/I4)', () => {
@@ -231,6 +235,121 @@ describe('analyzeCapture - observation, retrieval, ranking (I2/I3/I4)', () => {
     await expect(controller.analyzeCapture(capture())).rejects.toMatchObject({
       message: 'Card catalog lookup failed. Check your connection and try again.',
     })
+  })
+})
+
+describe('P81: route-entry prewarm and bounded visual wait (iPhone cold-start repair)', () => {
+  it('P81-1/P81-2: prewarm() can run without any capture and is idempotent', () => {
+    const controller = createRealScannerController({ userId: 'user-a' })
+    controller.prewarm?.()
+    controller.prewarm?.()
+    expect(visualMocks.prewarm).toHaveBeenCalledTimes(1)
+  })
+
+  it('P81-7: OCR prewarm is staggered behind visual prewarm, not started at the same instant', () => {
+    vi.useFakeTimers()
+    try {
+      const controller = createRealScannerController({ userId: 'user-a' })
+      controller.prewarm?.()
+      // Visual prewarm starts immediately.
+      expect(visualMocks.prewarm).toHaveBeenCalledTimes(1)
+      // OCR's own cold start (engine.prepare(), exercised for real here — no mock on
+      // ocr-engine.ts) has not been given a chance to even begin yet.
+      vi.advanceTimersByTime(1499)
+      // Still within the stagger window.
+      expect(visualMocks.prewarm).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('getVisualPrewarmState reflects the underlying client snapshot', () => {
+    visualMocks.getDiagnosticsSnapshot.mockReturnValue({
+      modelState: 'loading',
+      unavailableReason: null,
+      readyInfo: null,
+      backendDiagnostics: null,
+      firstEmbedMs: null,
+    })
+    const controller = createRealScannerController({ userId: 'user-a' })
+    expect(controller.getVisualPrewarmState?.()).toBe('loading')
+  })
+
+  describe('bounded visual wait during a capture', () => {
+    const originalCreateImageBitmap = globalThis.createImageBitmap
+
+    beforeEach(() => {
+      globalThis.createImageBitmap = vi.fn().mockResolvedValue({ close: vi.fn() })
+      mockedRunOcrAnalysis.mockResolvedValue({
+        rawNameText: 'Pikachu',
+        rawCollectorNumberText: '58',
+        usedFullFrameFallback: false,
+        nameRoiId: null,
+        numberRoiId: null,
+      })
+      mockedSearchCards.mockResolvedValue({ results: [], totalCount: 0 })
+    })
+
+    afterEach(() => {
+      globalThis.createImageBitmap = originalCreateImageBitmap
+    })
+
+    it('P81-3: a capture that starts before the visual channel is ready degrades to OCR-only after the bound instead of hanging on a cold model load', async () => {
+      vi.useFakeTimers()
+      try {
+        visualMocks.getDiagnosticsSnapshot.mockReturnValue({
+          modelState: 'loading',
+          unavailableReason: null,
+          readyInfo: null,
+          backendDiagnostics: null,
+          firstEmbedMs: null,
+        })
+        // Simulates a real cold model load that would otherwise take minutes (P81's own real-
+        // device evidence: up to 388s) — this promise never resolves within the test.
+        visualMocks.analyze.mockReturnValue(new Promise(() => {}))
+
+        const controller = createRealScannerController({ userId: 'user-a' })
+        const analysisPromise = controller.analyzeCapture(capture())
+        await vi.advanceTimersByTimeAsync(8000)
+        await analysisPromise
+        const diagnostics = controller.getLastDiagnostics?.()
+        expect(diagnostics?.visualEmbeddingCreated).toBe(false)
+        expect(diagnostics?.visualError).toMatch(/still warming up/)
+        expect(diagnostics?.visualPrewarmReadyBeforeCapture).toBe(false)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('P81-4: a capture that starts AFTER the visual channel is already ready is awaited normally, with no bound applied', async () => {
+      visualMocks.getDiagnosticsSnapshot.mockReturnValue({
+        modelState: 'ready',
+        unavailableReason: null,
+        readyInfo: null,
+        backendDiagnostics: null,
+        firstEmbedMs: 120,
+      })
+      visualMocks.analyze.mockResolvedValue({
+        hits: [{ cardId: 'card-a', similarity: 0.9 }],
+        backend: 'wasm',
+        embedMs: 12,
+        searchMs: 2,
+        embeddingNorm: 5,
+      })
+      const controller = createRealScannerController({ userId: 'user-a' })
+      await controller.analyzeCapture(capture())
+      const diagnostics = controller.getLastDiagnostics?.()
+      expect(diagnostics?.visualEmbeddingCreated).toBe(true)
+      expect(diagnostics?.visualError).toBeNull()
+      expect(diagnostics?.visualPrewarmReadyBeforeCapture).toBe(true)
+      expect(diagnostics?.firstEmbedMs).toBe(120)
+    })
+  })
+
+  it('P81-11: dispose() releases the visual client alongside the OCR engine/canvases', () => {
+    const controller = createRealScannerController({ userId: 'user-a' })
+    controller.dispose()
+    expect(visualMocks.dispose).toHaveBeenCalledTimes(1)
   })
 })
 

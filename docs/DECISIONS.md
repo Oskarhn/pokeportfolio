@@ -3084,3 +3084,114 @@ the gate to exact-card retrieval quality specifically. Full research: SCANNER_RE
 **Not changed:** the model, the architecture, any migration (still 90), any financial semantic, the
 committed hosted index. No card was special-cased anywhere — every fix targets a layout FAMILY
 (vintage vs. modern) or a scoring/retrieval RULE, never a specific card id or name.
+
+---
+
+## D-098 — Scanner visual channel: cold-start architecture and evidence-gated model rejection (P81)
+
+**Motivated by:** real-device evidence that superseded D-097's recognition-quality focus. After
+P80's exact-card-matching fixes, the owner's real-iPhone retest reported cold visual-channel
+initialization taking 106–388 seconds across repeated attempts, and one scan producing no usable
+result after 6–7 minutes of waiting. "The visual pipeline can work" (VISUAL_MODEL_STATE=ready was
+achieved) is not the same claim as "the visual pipeline is usable" — this decision record is about
+making it usable, not about further recognition-quality work (deliberately out of scope this
+session per the prompt).
+
+### Root-cause finding, from a real measurement built this session
+
+A new real-browser benchmark (`pnpm scanner:visual:benchmark:cold-start`, Chromium + WebKit,
+driving the ACTUAL built `visual-worker-*.js` production chunk — no mocks) measured cold
+initialization on localhost at ~1.5–2.1 seconds total, of which ONNX-compile + WASM-instantiate +
+session-create is ~0.7–1.6 seconds. That is roughly two orders of magnitude below the real-device
+figures. Desktop-localhost network conditions are not iPhone-cellular conditions, so this does not
+prove the exact real-device number, but it is strong evidence against "the model/runtime is
+inherently slow to initialize" and strong evidence FOR "the real-device time is overwhelmingly
+network transfer plus configuration gaps" — because the compile/instantiate work that *is*
+architecture-dependent measures in the hundreds of milliseconds, not minutes, even cold.
+
+Two concrete, confirmed configuration gaps compound whatever the real network conditions are:
+
+1. **Cache-Control was wrong.** Every scanner asset — the 24.5MB ONNX model, up to 23.5MB ORT WASM,
+   7.5MB embeddings index — was served `Cache-Control: public, max-age=0, must-revalidate`
+   (Cloudflare Pages' own default for a non-content-hashed filename, confirmed live via `curl`),
+   despite living under version-pinned paths (`v7`, `visual-v1`) that the visual worker additionally
+   verifies by exact model revision before trusting anything loaded from them. There was never a
+   reason for these specific paths not to carry a long-lived immutable Cache-Control.
+2. **Nothing began loading the visual channel until after the user had already captured a photo.**
+   `VisualRecognitionClient.ensureReady()` was only ever invoked from inside `analyze()`, itself
+   only called from `analyzeCapture`. On a cold device, this means the multi-minute model/index load
+   happened WHILE the user was staring at "Analyzing card…", with no warning beforehand and no way
+   to know how long it would take.
+
+A third, investigated-but-not-conclusively-implicated factor: `env.backends.onnx.wasm.numThreads`
+was never set explicitly. Current official onnxruntime-web behaviour (verified via research this
+session) is to auto-detect the absence of `self.crossOriginIsolated` (this app sends COOP but not
+COEP) and fall back to single-threaded execution silently and correctly — so this was not a bug,
+but leaving it implicit meant the fallback depended on the library's own internal detection rather
+than being an explicit, disclosed, version-independent choice. Set explicitly to 1 in that
+condition; no behavioural change measured locally.
+
+### Decision: fix the architecture and the configuration, not the model
+
+1. **Route-entry prewarm.** `VisualRecognitionClient.prewarm()` (a thin, explicitly-named alias
+   over the existing idempotent `ensureReady()`) is called from `ScannerPage`'s mount effect via
+   `controller.prewarm()`, the instant `/scan` opens — before the camera is even requested, before
+   any photo exists. The OCR engine's own cold start is staggered ~1.5 seconds behind it
+   (`OCR_PREWARM_STAGGER_MS`), because the old `Promise.all([runOcrAnalysis(...),
+   analyzeVisualSafely(...)])` pattern in `analyzeCapture` started BOTH cold runtimes (visual ~45MB,
+   OCR ~10MB) at the exact same instant on every scan — fine once both are warm, but exactly the
+   "don't cold-start both blindly" failure mode on a genuinely cold device. The stagger amount is a
+   reasoned heuristic for this session (give the larger, slower download a network/CPU head start),
+   not benchmarked against a real device — the owner's retest is what validates it.
+2. **Bounded visual wait.** `analyzeVisualBounded` (controller.ts) races the visual channel against
+   an 8-second timeout (`VISUAL_COLD_ANALYSIS_TIMEOUT_MS`) ONLY when it was not already warm at the
+   moment analysis began; a warm channel is awaited normally, unbounded, matching every prior
+   session's tested behaviour exactly. A bound was chosen over either extreme in the prompt's own
+   §7 options (disable the shutter entirely vs. never bound the wait): disabling the shutter would
+   still leave a user stuck if prewarm itself is slow on a bad connection, and never bounding the
+   wait is the exact behaviour the owner's 6–7-minute report showed is unacceptable. A bounded wait
+   with an honest, labeled degradation (`VISUAL_ERROR="…still warming up…"`) is the only option that
+   is both never worse than a bare multi-minute hang and never silently pretends recognition
+   succeeded when it did not.
+3. **Cache-Control fix**, `Cache-Control: public, max-age=31536000, immutable` for
+   `/scanner-assets/*` (`vite.config.ts`) — safe specifically because these paths are both
+   version-segmented AND revision-verified at load time; a stale cached copy can never silently
+   masquerade as a different model/index revision.
+4. **Cold-start phase instrumentation** (`src/features/scanner/visual/phase-timing.ts`, new): a
+   real methodological finding surfaces here too — an initial `self.fetch` monkey-patch inside the
+   worker correctly timed the worker's OWN direct fetches (the index manifest/ids/embeddings) but
+   reported 0ms/null-bytes for every fetch transformers.js/onnxruntime-web issue internally for the
+   processor config, model config, ONNX weights and ORT WASM/glue — evidence those bundled libraries
+   hold their own reference to `fetch`, captured before the patch installs. Reading the Resource
+   Timing API (`performance.getEntriesByType('resource')`) instead — which the browser populates
+   from its network stack regardless of which JS reference initiated a request — fixed this cleanly
+   and is now the primary timing source, with the fetch-probe log kept only as a fallback for an
+   environment without Resource Timing support.
+5. **Worker-owned Cache Storage layer** (`WORKER_ASSET_CACHE_NAME`) wraps the worker's own
+   `self.fetch` reference with a cache-through read/write, independent of whether the page's Service
+   Worker actually intercepts fetches issued from inside a dedicated Worker — not guaranteed on
+   every engine (documented in the code with the specific reasoning). Given the fetch-reference
+   finding in point 4, its practical coverage in the current build is the index files; the model/
+   processor files already have transformers.js's own separate `env.useBrowserCache` Cache-Storage
+   layer (confirmed by reading the installed package source), unaffected either way.
+
+### Model replacement: researched, REJECTED — evidence-gated, same discipline as P80
+
+Current model (`Xenova/dinov2-small`, D-097) is 24.5MB quantized ONNX. Researched candidates for a
+smaller permissively-licensed alternative: DINOv3-ViT-S/16 is actually LARGER (~41MB in fp16, a
+different generation, not a straightforward drop-in); MobileNet/EfficientNet-class feature
+extractors are smaller but have materially different (generally weaker) fine-grained instance-level
+retrieval characteristics than a DINOv2-family backbone, which risks REGRESSING the already-open
+P80 finding (visual discriminative power at real index scale for foil/full-art cards is unresolved,
+not disproven — see D-097's P80 addendum) rather than helping it, with zero benchmarked evidence
+either way from this session. Given this session's own cold-start benchmark shows compile/session-
+create cost is a few hundred milliseconds to ~1.6s even cold — a small fraction of the reported
+real-device total — a smaller model would not address the measured bottleneck (network transfer
+and configuration) in any case. Re-embedding all 19,501 catalog cards against a different model is
+also a multi-hour, irreversible regeneration of committed index assets — not undertaken without
+compelling, benchmarked justification, per this session's own instruction and P80's established
+precedent for the identical class of decision (photometric normalization, auxiliary visual signal).
+
+**Not changed:** the model, the architecture beyond the prewarm/bounded-wait/instrumentation/cache
+additions above, any migration (still 90), any financial semantic, the committed hosted index, any
+P80 recognition-quality fix.

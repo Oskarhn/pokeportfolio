@@ -4,46 +4,79 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-**Last updated:** 2026-08-28 — **M15b visual-recognition hybrid scanner is still DRAFT PR #63
-(`feat/m15-scanner-integrated-p68`), NOT merged, NOT deployed.** P79 fixed camera resolution and
-added rectification; the owner's next real-iPhone retest still missed two concrete cards — Mega
-Chandelure ex (absent from the top-20 visual candidates entirely) and Shieldon (present at raw
-visual rank 6, never shown because the UI capped at 5) — with the debug image preview showing both
-OCR ROIs landing on the wrong region of a modern card. **P80 fixed the EXACT-CARD MATCHING causes**:
+**Last updated:** 2026-08-30 — **M15b visual-recognition hybrid scanner is still DRAFT PR #63
+(`feat/m15-scanner-integrated-p68`), NOT merged, NOT deployed.** P80 fixed exact-card matching
+(adaptive OCR ROI, candidate rescue); the owner then hit a NEW, more severe blocker: real-iPhone
+cold initialization of the visual channel took 106–388 seconds across repeated attempts, and one
+scan attempt never produced a usable result after 6–7 minutes of waiting. **P81 repairs the
+iPhone cold-start/reliability problem** — recognition QUALITY (Chandelure/Shieldon) is deliberately
+NOT revisited this session per the prompt's own instruction:
 
-1. **Adaptive OCR ROI.** The fixed name/number ROI fractions encoded the VINTAGE card layout (name
-   top-left, number bottom-right) — correct research for that layout, wrong layout for a modern
-   SM/SWSH/SV-era card (name spans the top edge, number sits bottom-LEFT). `analyze.ts` now tries a
-   bounded set of named layout candidates per field, scores each OCR result (name: confidence +
-   letter ratio; number: confidence + whether the text actually PARSES as a short id — the
-   strongest signal), and keeps the winner, with an early-exit once a candidate is confident so the
-   common case costs the same one-call-per-field the original pipeline had. A real permissiveness
-   bug in P67's `parseCollectorNumber` was found and closed with a length guard while building the
-   number scorer (a long garbage string with a stray digit run could otherwise structurally parse).
-2. **Candidate rescue.** The engine's own retained-candidate bound was 5 — the SAME number the UI
-   displayed — so Shieldon's true rank-6 card was discarded before the UI had any chance to show
-   it. Raised to 10 (retention only). The UI's 5-candidate display limit now widens to 8 ONLY when
-   the score at the normal cutoff is still within the engine's own ambiguity margin of the top
-   score (a genuinely flat ranking), never merely because confidence is low; a HIGH-tier match
-   never expands.
-3. **Photometric normalization** (`domain/scanner/photometric.ts`, contrast stretch + bounded
-   desaturation) was built, tested, and evaluated via a new bounded benchmark
-   (`pnpm scanner:visual:benchmark:photometric`) — result: a wash on the available corpus (93.3%→
-   94.6% TOP1, essentially noise at n=240), and the corpus structurally cannot test the real
-   hypothesis (foil/style confusion at the REAL 19,501-card index scale — the benchmark corpus uses
-   different ids than the hosted catalog). Shipped as tested, available tooling; NOT wired into the
-   default embedding pipeline without scale-appropriate evidence.
-4. **Auxiliary visual signal (second/inner-art embedding) — still REJECTED**, but for a corrected
-   reason: P79's geometry-only benchmark measures robustness to capture noise, not discriminative
-   power among many similar cards at real index scale — the actual axis this question needs. Genuinely
-   untested (same corpus limitation as point 3), not disproven; rejected this session on cost/risk
-   (re-embedding all 19,501 cards is multi-hour and irreversible) pending that real evidence.
+1. **Root cause, evidence-based, not assumed.** A real-browser benchmark
+   (`pnpm scanner:visual:benchmark:cold-start`, new — Chromium + WebKit against the ACTUAL built
+   `visual-worker-*.js` chunk, no mocks) shows LOCALHOST cold total time of ~1.5–2.1s, of which
+   ONNX compile + WASM instantiate + session-create is ~0.7–1.6s. That is nowhere near 106–388s —
+   strong evidence the real-device bottleneck is overwhelmingly NETWORK TRANSFER TIME (roughly
+   45MB: 24.5MB ONNX model, up to 23.5MB ORT WASM, 7.5MB embeddings index) over the owner's real
+   connection, compounded by two confirmed configuration gaps below, not WASM compile cost and not
+   "the model is too big."
+2. **Cache-Control was `max-age=0, must-revalidate` on every scanner asset** (Cloudflare Pages'
+   own default for non-content-hashed filenames — confirmed live via `curl`), even though every
+   asset lives under a version-pinned path (`v7`, `visual-v1`) the visual worker ALSO verifies by
+   revision before trusting. Fixed: `vite.config.ts` now emits an explicit
+   `Cache-Control: public, max-age=31536000, immutable` block for `/scanner-assets/*`.
+3. **The scanner never began loading the visual channel until the user had already captured a
+   photo and pressed "Use photo."** So the multi-minute cold load happened WHILE the user stared
+   at "Analyzing card…". Fixed with a route-entry prewarm: `controller.prewarm()` (new, called from
+   `ScannerPage`'s mount effect) starts the visual worker in the background the instant `/scan`
+   opens, staggered ~1.5s ahead of the OCR engine's own cold start so the two don't blindly contend
+   for network/CPU on a genuinely cold device (P81's own diagnosis of the old parallel-Promise.all
+   pattern). The intro screen shows honest, non-blocking "Preparing card recognition…" copy — never
+   a fake percentage.
+4. **A capture that starts before the visual channel is ready no longer waits unboundedly.**
+   `analyzeVisualBounded` (controller.ts) races the visual analysis against an 8-second timeout
+   ONLY when the channel was not already warm; a warm channel (the common case once prewarm has had
+   time to run) is awaited normally with no bound. A timed-out scan degrades to OCR-only with an
+   honest `VISUAL_ERROR="…still warming up…"` message — never another silent multi-minute hang.
+5. **New phase-by-phase cold-start instrumentation** (`visual/phase-timing.ts`, new): the worker
+   reports `VISUAL_WORKER_START_MS`, per-asset fetch time+bytes (processor/model config, ONNX
+   model, ORT runtime+WASM, index manifest/ids/embeddings), decode time and a combined
+   compile+session-create remainder, surfaced in the existing `?scannerDebug=1` "Copy diagnostics"
+   panel. A real finding from building this: monkey-patching `self.fetch` inside the worker only
+   times THIS worker's OWN fetches (the index files) — transformers.js/onnxruntime-web hold their
+   own reference to `fetch`, captured before the patch installs, so their downloads showed
+   0ms/null-bytes under that approach alone. Fixed by reading the Resource Timing API
+   (`performance.getEntriesByType('resource')`) instead, which the browser populates regardless of
+   which JS reference initiated the request — now every asset shows real numbers.
+6. **A worker-owned Cache Storage layer** (`WORKER_ASSET_CACHE_NAME`, visual-worker.ts) wraps every
+   fetch the worker's own `self.fetch` reference sees with a cache-through read/write —
+   independent of whether the page's Service Worker actually intercepts fetches issued from inside
+   a dedicated Worker (not guaranteed on every engine). Because transformers.js/onnxruntime-web
+   bypass the patched `fetch` (see point 5), this layer's practical coverage is the index files;
+   transformers.js has its OWN `env.useBrowserCache` Cache-Storage layer for the model/processor
+   files already (confirmed by reading its source — unaffected either way).
+7. **numThreads explicitly set to 1** when `crossOriginIsolated` is false (this app currently sends
+   COOP but not COEP, so it always is) — makes onnxruntime-web's existing single-thread fallback an
+   explicit, version-independent decision instead of relying on internal auto-detection; no
+   behavioural change measured.
+8. **Model replacement: NOT recommended, evidence-gated.** Researched smaller/alternative
+   permissively-licensed embedding models (DINOv3-ViT-S/16 is actually LARGER at ~41MB fp16;
+   MobileNet/EfficientNet-class models are smaller but would likely regress the ALREADY-open
+   discriminative-power gap from P80 — no benchmarked evidence justifies that trade). The measured
+   bottleneck is network/config/UX, not model size; a model swap would also force an irreversible
+   multi-hour regeneration of the committed 19,501-embedding index, which the prompt explicitly
+   says not to do without compelling, benchmarked justification. See D-098.
 
-Full account: `ai_outputs/Claude_outputs/output_80.txt`, SCANNER_RESEARCH.md §7c, D-097's P80
-addendum in [DECISIONS.md](docs/DECISIONS.md). **IPHONE_DEVICE_GATE=PENDING_OWNER_RETEST** — next
-test is `/scan?scannerDebug=1&visualBackend=wasm` on Shieldon and Mega Chandelure ex again.
+**Preserved, NOT touched this session:** every P80 recognition fix (adaptive OCR ROI, candidate
+rescue, retention/display-depth split), the full 19,501-card index, all debug-panel fields P77–P80
+added. Zero database/migration/RPC files changed (`DATABASE_MIGRATIONS=90`, unchanged).
 
-Below is P79's own account, preserved for context (superseded by the above where they overlap):
+Full account: `ai_outputs/Claude_outputs/output_81.txt`, SCANNER_RESEARCH.md §7d, D-098 in
+[DECISIONS.md](docs/DECISIONS.md). **IPHONE_DEVICE_GATE=PENDING_OWNER_RETEST** — protocol: open
+`/scan?scannerDebug=1&visualBackend=wasm`, wait for "Preparing card recognition…" to clear BEFORE
+capturing, note the warmup time, then scan Shieldon and Chandelure per output_81.txt's protocol.
+
+Below is P80's own account, preserved for context (superseded by the above where they overlap):
 
 P78's runtime fix let the owner
 run the first real end-to-end iPhone scan: model ready, real embedding created, the full

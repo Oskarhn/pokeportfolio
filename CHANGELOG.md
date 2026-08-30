@@ -10,6 +10,41 @@ they were**.
 
 ## [Unreleased]
 
+### Fixed — 2026-08-30 — M15b scanner: iPhone cold-start/reliability repair (P81, D-098, on PR #63, DRAFT — not merged, not deployed)
+
+Real-device evidence: cold visual-channel initialization took 106–388 seconds on repeated
+attempts, and one scan never produced a usable result after 6–7 minutes. A real-browser benchmark
+against the actual production worker chunk (new `pnpm scanner:visual:benchmark:cold-start`) showed
+localhost cold total time of ~1.5–2.1s — evidence the bottleneck is network transfer over the real
+device's connection, compounded by two confirmed configuration gaps, not WASM compile cost or
+model size.
+
+- **Cache-Control fixed**: scanner assets served `max-age=0, must-revalidate` (Cloudflare Pages'
+  default for non-hashed filenames) despite living under version-pinned, revision-verified paths.
+  `vite.config.ts` now emits `Cache-Control: public, max-age=31536000, immutable` for
+  `/scanner-assets/*`.
+- **Route-entry prewarm**: the visual worker now starts loading the instant `/scan` mounts
+  (`controller.prewarm()`), staggered ~1.5s ahead of the OCR engine's own cold start instead of
+  both contending for network/CPU from the same instant. The intro screen shows honest,
+  non-blocking "Preparing card recognition…" copy.
+- **Bounded visual wait**: a capture that starts before the visual channel is warm now waits at
+  most 8 seconds before degrading to OCR-only with an honest `VISUAL_ERROR` message, instead of
+  hanging on a multi-minute cold model load.
+- **New cold-start phase instrumentation** (`visual/phase-timing.ts`): per-asset fetch time/bytes,
+  decode time, worker-start time and a compile+session-create remainder, read via the Resource
+  Timing API (a `self.fetch` monkey-patch alone missed transformers.js/onnxruntime-web's internal
+  fetches — a real finding from this session's own benchmark run, documented in the code).
+- **Worker-owned Cache Storage layer** for the worker's own index fetches, independent of whether
+  the page's Service Worker intercepts fetches issued from inside a dedicated Worker.
+- `numThreads` explicitly set to 1 when not cross-origin-isolated (documents the existing
+  single-thread fallback instead of relying on internal auto-detection).
+- **Model replacement evaluated and rejected** (evidence-gated, same discipline as P80's photometric/
+  auxiliary-signal decisions): no benchmarked case for a smaller model, real risk of regressing
+  P80's still-open discriminative-power gap, and any swap forces an irreversible multi-hour
+  re-embedding of the 19,501-card index. See D-098.
+
+Zero database/migration/RPC files touched. Full account: `ai_outputs/Claude_outputs/output_81.txt`.
+
 ### Fixed — 2026-08-28 — M15b scanner: exact-card matching, adaptive OCR ROI, candidate rescue (P80, D-097 addendum, on PR #63, DRAFT — not merged, not deployed)
 
 P79's camera-resolution and rectification fixes still left two concrete real-device misses: Mega

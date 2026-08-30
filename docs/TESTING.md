@@ -136,6 +136,41 @@ returned unchanged, a narrow luma histogram stretches toward the full range, alp
 exactly, and the bounded desaturation term actually reduces channel spread (full desaturation
 collapses R=G=B; zero desaturation keeps the spread).
 
+**M15b iPhone cold-start repair (P81, D-098, in `pnpm test`).** Real-device evidence shifted the
+gate from recognition quality to cold-start latency/reliability (106–388s, one 6–7-minute scan with
+no usable result). `tests/ui/scanner-phase-timing.test.ts` (new file) covers the pure classification
+logic behind the new per-phase instrumentation: `classifyVisualAssetUrl` (every known asset path,
+absolute vs. relative URLs, query strings, an honest "other" fallback), `summarizeFetchLog`
+(per-phase sums, a phase fetched twice, a null-bytes response), `nonNetworkRemainder` (floors at 0
+under timer jitter) and `estimateAssetCacheStatus` (unknown/likely-cache/likely-network from a
+bytes-per-ms ratio). `tests/ui/scanner-visual-client.test.ts` gained a new describe block: prewarm()/
+ensureReady() share one in-flight/settled init and construct at most one Worker even under
+concurrent calls (P81-1/P81-6), prewarm() resolves independently of any capture (P81-2), a ready
+message's `phaseTimings` are relayed verbatim through `getDiagnosticsSnapshot()` (P81-9), and
+FIRST_EMBED_MS reports only the first successful `analyze()` round trip. `tests/ui/
+scanner-controller.test.ts` gained a P81 describe block: prewarm() is idempotent and callable
+without any capture; OCR prewarm is staggered behind visual prewarm; a capture that starts before
+the visual channel is ready degrades to OCR-only after the 8-second bound instead of hanging on a
+cold model load (the direct regression test for the 6–7-minute real-device report); a capture that
+starts after the channel is already warm is awaited normally with no bound applied; dispose()
+releases the visual client alongside the OCR engine/canvases. `tests/ui/
+scanner-diagnostics-format.test.ts` gained cases for the new debug-panel lines (prewarm state,
+OCR_PREPARE_MS, FIRST_EMBED_MS, ASSET_CACHE_STATUS, the full VISUAL_PHASE_TIMINGS block) and their
+honest-placeholder forms when nothing has run yet. `scripts/verify-scanner-platform-build.mjs`
+gained a check that a real production build's `dist/_headers` carries the new long-lived immutable
+Cache-Control block for `/scanner-assets/*`.
+
+**Real-browser cold-start benchmark (`scripts/scanner-visual-benchmark/browser-cold-start.mjs`,
+P81 §16, NOT part of `pnpm test` or CI — same exclusion reasoning as the other visual
+benchmarks).** `pnpm scanner:visual:benchmark:cold-start` starts its own `vite preview` instance and
+drives Chromium AND WebKit (via `@playwright/test`) against the ACTUAL built `visual-worker-*.js`
+production chunk — no mocks — measuring cold (fresh context, HTTP cache disabled) vs. warm (same
+context, reloaded) init, per-phase timings and first/second embed latency. Explicitly labeled
+DESKTOP/localhost throughout its own output and this doc: it isolates compile/instantiate/decode
+cost from network transfer under reproducible local conditions, and cannot itself prove a real
+iPhone number — see SCANNER_RESEARCH.md §7d and `ai_outputs/Claude_outputs/output_81.txt` for what
+it did and did not establish.
+
 **Photometric-normalization experiment (`scripts/scanner-visual-benchmark/
 run-photometric-experiment.ts`, P80 §5, NOT part of `pnpm test` or CI — same exclusion reasoning as
 the other visual benchmarks).** `pnpm scanner:visual:benchmark:photometric` reuses the SAME cached

@@ -403,3 +403,71 @@ the "blindly ship a complicated ensemble" the prompt warns against. The concrete
 revisiting this is the same real-index diagnostic described above — if it shows discriminative
 power degrading meaningfully as pool size grows toward 19,501 for foil/full-art cards specifically,
 an auxiliary signal becomes an evidence-justified next step, not before.
+
+## 7d. iPhone cold-start / visual runtime performance (M15, 2026-08-30 — P81, D-098)
+
+Recognition quality (§7c above) was superseded as the primary blocker by real-device evidence that
+cold visual-channel initialization took 106–388 seconds across repeated real-iPhone attempts, and
+one scan produced no usable result after 6–7 minutes. This section documents what was actually
+measured and where the time provably does NOT go, complementing §7c rather than replacing it —
+neither Chandelure nor Shieldon were retested this session per the prompt's own scope discipline.
+
+**Real-browser measurement, not assumption.** `pnpm scanner:visual:benchmark:cold-start` (new
+script) drives Chromium and WebKit (Playwright) against the actual production `visual-worker-*.js`
+chunk served by a local `vite preview` instance — no mocks, no Node-side ONNX runtime substitute.
+Measured on this machine (localhost network, effectively zero latency):
+
+| Engine | Cold total | Cold modelColdLoadMs | Cold compile+session-create | Warm total |
+|---|---|---|---|---|
+| Chromium | 2137ms | 1477ms | 715ms | 1374ms |
+| WebKit | 2056ms | 1971ms | 1052ms | 899ms |
+
+These are DESKTOP numbers over a local network — not a claim about real iPhone-cellular
+performance, and explicitly not presented as one. What they DO establish: the part of the pipeline
+architecture/model choice controls (ONNX compile, WASM instantiate, InferenceSession.create) costs
+hundreds of milliseconds to ~1.6s even from a cold cache, nowhere near enough to explain a
+106–388-second real-device figure on its own. The dominant real-device cost is therefore most
+plausibly network transfer of the ~45MB payload (24.5MB ONNX model, up to 23.5MB ORT WASM, 7.5MB
+embeddings index) over the actual device's real connection, compounded by the two configuration
+gaps below — not "the runtime is inherently slow" and not "the model is too big."
+
+**Confirmed configuration gaps, not measured this benchmark can't reach:**
+
+- `curl`-verified live headers showed every scanner asset served `Cache-Control: public,
+  max-age=0, must-revalidate` — Cloudflare Pages' own default for a non-content-hashed filename —
+  despite living under version-pinned paths (`v7`, `visual-v1`) the visual worker separately
+  verifies by exact model revision (`EXPECTED_MODEL_REVISION`) before trusting anything loaded.
+  Fixed: explicit `Cache-Control: public, max-age=31536000, immutable` for `/scanner-assets/*`.
+- The visual channel was never warmed before a capture existed — `ensureReady()` was only ever
+  reached from inside `analyzeCapture`. Fixed with route-entry prewarm (D-098).
+
+**Instrumentation methodology note (a real finding from building it):** an initial `self.fetch`
+monkey-patch inside the worker correctly timed the worker's OWN direct fetches (index manifest/ids/
+embeddings) but reported 0ms/null-bytes for every fetch transformers.js/onnxruntime-web issue
+internally (processor/model config, ONNX weights, ORT WASM/glue) — evidence those libraries hold
+their own `fetch` reference, captured at their module's own top-level evaluation, before the
+worker's `init()` (and therefore the patch) ever runs. Fixed by reading the Resource Timing API
+(`performance.getEntriesByType('resource')`) instead, populated by the browser's network stack
+regardless of which JS reference initiated a request — this is now the primary timing source
+(`src/features/scanner/visual/phase-timing.ts`), with the fetch-probe log retained only as a
+fallback for an environment without Resource Timing support.
+
+**WASM threading:** current official onnxruntime-web behaviour (re-verified this session) enables
+real multi-threading only when `self.crossOriginIsolated` is true (requires COOP AND COEP; this app
+sends COOP only). Without it, the existing "threaded" WASM binary still loads and runs correctly,
+single-threaded, via the library's own internal auto-detection — `numThreads` is now set explicitly
+to 1 in that condition rather than left implicit, for the same reason `wasmPaths` is set explicitly
+elsewhere in this file: an explicit, disclosed, version-independent choice instead of a dependency
+on internal library behaviour holding across upgrades. Enabling COEP (and therefore real threading)
+was investigated but not implemented — it requires every cross-origin resource on the page (notably
+the TCGdex card-image CDN, loaded via plain `<img>` tags throughout the app) to either carry CORP
+headers or be loaded with `crossorigin`, a cross-cutting change with real risk to unrelated features
+that was not justified by this session's evidence (compile time is not the bottleneck — see above).
+
+**Model replacement — researched, rejected, evidence-gated (D-098).** DINOv3-ViT-S/16 was
+considered and is actually LARGER than the current DINOv2-small (~41MB fp16 vs. 24.5MB quantized
+INT8 ONNX). MobileNet/EfficientNet-class extractors are smaller but risk regressing §7c's
+still-open discriminative-power gap, with no benchmarked evidence either way. Given this session's
+own measurement that compile/session-create is not the dominant real-device cost, a smaller model
+would not address the problem that was actually diagnosed, and would force an irreversible
+multi-hour re-embedding of the 19,501-card index to find out. Not undertaken.

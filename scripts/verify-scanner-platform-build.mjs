@@ -116,6 +116,24 @@ function cspDirectives(csp) {
     !/camera\s*=/.test(headersFile),
     /Permissions-Policy:.*/.exec(headersFile)?.[0] ?? '(none)',
   )
+
+  // P81 §8/§9: scanner assets are version-pinned (v7, visual-v1) and the visual worker verifies
+  // EXPECTED_MODEL_REVISION on top of that — safe to cache aggressively, and Cloudflare Pages'
+  // own default for non-content-hashed filenames (max-age=0, must-revalidate, confirmed live) is
+  // NOT that, so this must be an explicit rule, not an assumption.
+  const scannerAssetsBlockIndex = headersFile.indexOf('/scanner-assets/*')
+  const scannerAssetsCacheControl =
+    scannerAssetsBlockIndex === -1
+      ? null
+      : /Cache-Control:\s*(.+)/.exec(headersFile.slice(scannerAssetsBlockIndex))?.[1]?.trim()
+  record(
+    'a dedicated /scanner-assets/* block sets a long-lived immutable Cache-Control',
+    scannerAssetsCacheControl !== null &&
+      scannerAssetsCacheControl !== undefined &&
+      /max-age=31536000/.test(scannerAssetsCacheControl) &&
+      /immutable/.test(scannerAssetsCacheControl),
+    scannerAssetsCacheControl ?? '(no /scanner-assets/* block found)',
+  )
 }
 
 // ── dist/sw.js ─────────────────────────────────────────────────────────────────────────────────
