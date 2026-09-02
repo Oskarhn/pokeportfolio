@@ -132,18 +132,19 @@ describe('runOcrAnalysis — capture → observation', () => {
   })
 
   it('P80 R1: falls through to the modern name candidate and picks it by SCORE when the vintage strip reads worse', async () => {
-    // Name candidates run FIRST; neither crosses the "confident" early-exit bar (score < 70+16),
-    // so both are tried and the higher-scoring one wins — the modern layout's name plate, not
+    // Name candidates run FIRST; none crosses the "confident" early-exit bar (score < 70+16), so
+    // all three are tried and the highest-scoring one wins — the modern layout's name plate, not
     // list order. The number field's first candidate is made trivially confident so it stops
     // after one call, keeping this test's mock sequence focused on the name-selection behavior.
     const engine = makeEngine([
       { text: '58/102', confidence: 60 }, // name candidate 1 (classic-top-left): digit-heavy noise
       { text: 'MEGA CHANDELURE EX', confidence: 55 }, // name candidate 2 (modern-full-width)
+      { text: '', confidence: 0 }, // name candidate 3 (energy-bottom-band, P88 F-17): empty/unusable
       { text: '58/102', confidence: 90 }, // number candidate 1 (modern-bottom-left): parses, stops early
     ])
     const pool = makePool()
     const observation = await runOcrAnalysis(makeCapture(), engine, pool as never)
-    expect(engine.recognize).toHaveBeenCalledTimes(3)
+    expect(engine.recognize).toHaveBeenCalledTimes(4)
     expect(observation.rawNameText).toBe('MEGA CHANDELURE EX')
     expect(observation.nameRoiId).toBe('modern-full-width')
   })
@@ -185,16 +186,19 @@ describe('runOcrAnalysis — capture → observation', () => {
     expect(draw?.[4]).toBe(1400)
   })
 
-  it('P80/P82/P85 R3: runs EXACTLY ONE full-card fallback when EVERY candidate for BOTH fields is unusable across ALL THREE passes', async () => {
-    // 2 name candidates + 2 number candidates, all empty/whitespace-only under the `contrast` pass
-    // (P78-P81 behaviour, unchanged), the P82 `binarize` retry pass, AND the P85 `multi-line`
-    // third pass (number field only — see the dedicated recovery test below for the case where
-    // that pass actually finds something) — only then the full-frame fallback text.
+  it('P80/P82/P85/P88 R3: runs EXACTLY ONE full-card fallback when EVERY candidate for BOTH fields is unusable across ALL THREE passes', async () => {
+    // 3 name candidates (P88 F-17 adds the energy-bottom-band hypothesis) + 2 number candidates,
+    // all empty/whitespace-only under the `contrast` pass (P78-P81 behaviour, unchanged), the P82
+    // `binarize` retry pass, AND the P85 `multi-line` third pass (number field only — see the
+    // dedicated recovery test below for the case where that pass actually finds something) — only
+    // then the full-frame fallback text.
     const engine = makeEngine([
       { text: '', confidence: 0 }, // name candidate 1, contrast
       { text: ' ', confidence: 0 }, // name candidate 2, contrast
+      { text: '', confidence: 0 }, // name candidate 3 (energy-bottom-band), contrast
       { text: '', confidence: 0 }, // name candidate 1, binarize retry
       { text: ' ', confidence: 0 }, // name candidate 2, binarize retry
+      { text: '', confidence: 0 }, // name candidate 3, binarize retry
       { text: '', confidence: 0 }, // number candidate 1, contrast
       { text: ' ', confidence: 0 }, // number candidate 2, contrast
       { text: '', confidence: 0 }, // number candidate 1, binarize retry
@@ -205,9 +209,9 @@ describe('runOcrAnalysis — capture → observation', () => {
     ])
     const pool = makePool()
     const observation = await runOcrAnalysis(makeCapture(), engine, pool as never)
-    expect(engine.recognize).toHaveBeenCalledTimes(11)
-    expect(engine.recognize.mock.calls[8]?.[1]).toBe('multi-line')
-    expect(engine.recognize.mock.calls[10]?.[1]).toBe('auto')
+    expect(engine.recognize).toHaveBeenCalledTimes(13)
+    expect(engine.recognize.mock.calls[10]?.[1]).toBe('multi-line')
+    expect(engine.recognize.mock.calls[12]?.[1]).toBe('auto')
     expect(observation.usedFullFrameFallback).toBe(true)
     expect(observation.rawNameText).toBe('TESTASAURUS')
     expect(observation.rawCollectorNumberText).toBe('58/102')
