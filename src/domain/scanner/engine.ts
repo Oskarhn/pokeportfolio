@@ -149,7 +149,8 @@ export function parseScannerSignals(observation: ScannerObservation): ParsedScan
     languageHint: parseLanguageHint(observation.languageHint),
     nameReliability: ocrTextReliability(observation.nameOcrConfidence),
     collectorReliability:
-      ocrTextReliability(observation.collectorOcrConfidence) * structuralReliability(structuralConfidence),
+      ocrTextReliability(observation.collectorOcrConfidence) *
+      structuralReliability(structuralConfidence),
   }
 }
 

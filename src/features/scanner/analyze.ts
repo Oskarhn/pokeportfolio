@@ -295,7 +295,11 @@ export function scoreNumberRoiCandidate(cleanedText: string, confidence: number)
  *  OCR confidence and a high letter ratio — it must always let the remaining layout candidates be
  *  tried, since ANY genuine name-shaped candidate is more likely correct than confirmed prose. */
 export function isNameRoiConfident(cleanedText: string, confidence: number): boolean {
-  return confidence >= 70 && nameLetterRatio(cleanedText) >= 0.8 && !looksLikeBodyTextNotName(cleanedText)
+  return (
+    confidence >= 70 &&
+    nameLetterRatio(cleanedText) >= 0.8 &&
+    !looksLikeBodyTextNotName(cleanedText)
+  )
 }
 
 /** P88 §8/F-12: a candidate that merely PARSES as a plausible id is no longer enough to early-

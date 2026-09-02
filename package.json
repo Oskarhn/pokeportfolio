@@ -41,7 +41,8 @@
     "scanner:hash-index:build": "tsx scripts/scanner-hash-index/build-index.ts",
     "scanner:ocr:benchmark:psm-forensics": "tsx scripts/scanner-ocr-benchmark/run-psm-forensics.ts",
     "scanner:ocr:benchmark:recognition": "tsx scripts/scanner-ocr-benchmark/run-recognition-benchmark.ts",
-    "scanner:name-lexicon:build": "tsx scripts/scanner-name-lexicon/build-lexicon.ts"
+    "scanner:name-lexicon:build": "tsx scripts/scanner-name-lexicon/build-lexicon.ts",
+    "scanner:roi-fixture:smoke": "tsx scripts/scanner-roi-fixture-smoke.ts"
   },
   "dependencies": {
     "@huggingface/transformers": "4.2.0",

@@ -92,7 +92,9 @@ export function visualEvidencePoints(similarity: number | null | undefined): num
   if (similarity < strongMin) {
     const span = strongMin - moderateMin
     const t = span <= 0 ? 1 : (similarity - moderateMin) / span
-    return Math.round(weakMaxPoints + Math.max(0, Math.min(1, t)) * (moderateMaxPoints - weakMaxPoints))
+    return Math.round(
+      weakMaxPoints + Math.max(0, Math.min(1, t)) * (moderateMaxPoints - weakMaxPoints),
+    )
   }
   const span = 1 - strongMin
   const t = span <= 0 ? 1 : (similarity - strongMin) / span
