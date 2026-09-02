@@ -10,6 +10,38 @@ they were**.
 
 ## [Unreleased]
 
+### Fixed — 2026-09-02 — M15 scanner: OCR forensics, a bounded multi-line collector-number recovery pass, name-lexicon/structured-parser tooling (P85, D-101, isolated research branch `feat/m15-p85-ocr-recognition` — NOT on PR #63, not merged, not deployed)
+
+Built this project's first real, ground-truthed OCR accuracy corpus (`scripts/scanner-ocr-benchmark/`,
+reusing the existing TCGdex fetcher and the P76/P79 augmentation modules for 9 realistic
+perturbation profiles/card) and used it to actually forensically test Tesseract.js 7's
+configuration space instead of reasoning from single real-device screenshots.
+
+- **PSM forensics**: the pre-existing PSM 7 (single-line) default was already correct for both
+  fields when a candidate crop genuinely is one line — measured directly against 4 alternative
+  modes, not assumed.
+- **Real bug found and fixed**: a correctly-cropped collector-number strip routinely contains TWO
+  visual lines (the id plus an adjacent illustrator-credit or copyright line) on both vintage and
+  modern layouts, confirmed by direct visual inspection of real crop images — PSM 7 cannot read a
+  two-line image at all. Fixed with a bounded THIRD pass (PSM 6, "uniform block") for the
+  collector-number field only, tried only when both existing single-line passes already found
+  nothing — zero added cost on an already-working scan.
+- **A second real bug found and fixed before shipping**: the naive fix let a copyright YEAR
+  ("© 1995") win as a fake collector number (a bare 4-digit token that structurally parses).
+  Closed with a stricter plausibility check used only by the new pass.
+- **`src/domain/scanner/name-lexicon.ts`** (fuzzy OCR-name resolution against a local unique-name
+  list) and **`src/domain/scanner/collector-parse.ts`** (structured collector-number parse with a
+  confidence band) ship as tested, available domain tooling — neither wired into production
+  retrieval/scoring this session (no real production-scale name lexicon exists yet; no Supabase
+  credentials available to generate one).
+- **`?scannerDebug=1` OCR debugger**: every considered ROI/preprocess/segmentation attempt is now
+  listed (`OCR_TRIALS`), winner flagged.
+
+Full account: D-101 in DECISIONS.md, SCANNER_RESEARCH.md §7f, `ai_outputs/Claude_outputs/output_85.txt`.
+Gates: typecheck/lint/format clean, build green, unit tests green (see output_85.txt for the exact
+count). DB not run (diff touches zero DB files). This branch is an isolated OCR-only research
+track (P85) run in parallel with P84/P86 — not integrated into PR #63 this session.
+
 ### Fixed — 2026-08-30 — M15b scanner: live prewarm-stall diagnostics, FAST (OCR) baseline reprioritized, lightweight hash retrieval evaluated and rejected (P82, D-099, on PR #63, DRAFT — not merged, not deployed)
 
 P81's cold-start fixes did not close the gap: a real-iPhone retest still showed
