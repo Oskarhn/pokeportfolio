@@ -80,6 +80,7 @@ function readyMessage(overrides: Record<string, unknown> = {}) {
     indexRuntimeChecksumMs: 41,
     indexLoadMs: 76,
     indexUnavailableReason: null,
+    offscreenCanvasAvailableInWorker: true,
     backendRequested: 'auto',
     backendAttempts: { webgpu: 'not-available', wasm: 'success' },
     webgpuError: null,
@@ -431,6 +432,61 @@ describe('VisualRecognitionClient — P81 prewarm and cold-start diagnostics', (
     const firstEmbedMs = client.getDiagnosticsSnapshot().firstEmbedMs
     expect(firstEmbedMs).not.toBeNull()
     expect(firstEmbedMs).toBeGreaterThanOrEqual(0)
+  })
+
+  it('P90 §9: converts the bitmap to RGBA on the main thread and closes it itself when the worker cannot (offscreenCanvasAvailableInWorker: false)', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const fakeImageData = { data: new Uint8ClampedArray(4 * 8 * 8) }
+    const fakeContext = { drawImage: vi.fn(), getImageData: vi.fn().mockReturnValue(fakeImageData) }
+    class FakeOffscreenCanvas {
+      width: number
+      height: number
+      constructor(width: number, height: number) {
+        this.width = width
+        this.height = height
+      }
+      getContext(): typeof fakeContext {
+        return fakeContext
+      }
+    }
+    vi.stubGlobal('OffscreenCanvas', FakeOffscreenCanvas)
+
+    const client = new VisualRecognitionClient()
+    const readyPromise = client.ensureReady()
+    const worker = latestWorker()
+    worker.emit('message', { data: readyMessage({ offscreenCanvasAvailableInWorker: false }) })
+    await readyPromise
+
+    const close = vi.fn()
+    const bitmap = { width: 8, height: 8, close } as unknown as ImageBitmap
+    const analyzePromise = client.analyze(bitmap, 30)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    // The main thread did the conversion itself (never the worker's own OffscreenCanvas path) and
+    // closed the source bitmap immediately after, exactly like the fast path's transfer-and-forget
+    // — no lingering reference either way.
+    expect(fakeContext.drawImage).toHaveBeenCalledWith(bitmap, 0, 0)
+    expect(close).toHaveBeenCalledTimes(1)
+
+    const [lastMessage, transferList] = worker.postMessage.mock.calls.at(-1) as [
+      { type: string; requestId: number; image: { kind: string; buffer?: ArrayBuffer } },
+      Transferable[],
+    ]
+    expect(lastMessage.type).toBe('embed-and-search')
+    expect(lastMessage.image.kind).toBe('rgba')
+    expect(transferList).toEqual([lastMessage.image.buffer])
+
+    worker.emit('message', {
+      data: {
+        type: 'result',
+        requestId: lastMessage.requestId,
+        hits: [],
+        embedMs: 1,
+        searchMs: 1,
+        embeddingNorm: 1,
+      },
+    })
+    await analyzePromise
   })
 })
 

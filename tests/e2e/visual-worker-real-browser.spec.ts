@@ -58,6 +58,7 @@ interface WorkerReadyResult {
   indexLoad?: string
   processorLoad?: string
   modelLoad?: string
+  offscreenCanvasAvailableInWorker?: boolean
 }
 
 interface WorkerSearchResult {
@@ -137,54 +138,75 @@ test.describe('visual worker real-browser smoke (F-31, P89)', () => {
     expect(readyResult.indexAvailable).toBe(true)
     expect(readyResult.indexLoad).toBe('success')
 
-    // Drive a REAL embed + search call — the two pipeline stages F-31 explicitly asks to prove
-    // execute for real, not just worker boot/model load.
-    const searchResult = await page.evaluate(async () => {
-      const worker = (window as unknown as { __f31Worker: Worker }).__f31Worker
-      const canvas = document.createElement('canvas')
-      canvas.width = 224
-      canvas.height = 224
-      const ctx = canvas.getContext('2d')
-      if (ctx === null) throw new Error('2D canvas context unavailable in this browser.')
-      ctx.fillStyle = 'rgb(120, 180, 90)'
-      ctx.fillRect(0, 0, 224, 224)
-      const bitmap = await createImageBitmap(canvas)
-      const requestId = 1
-      const result = await new Promise<WorkerSearchResult>((resolve) => {
-        worker.addEventListener('message', function handler(event: MessageEvent) {
-          const data = event.data as { type?: string; requestId?: number } | undefined
-          if (data?.requestId === requestId) {
-            worker.removeEventListener('message', handler)
-            resolve(data as WorkerSearchResult)
-          }
+    // F-31 (P89) real finding, kept as live context rather than papered over: on Playwright's
+    // Windows-hosted WebKit build (26.5), `OffscreenCanvas` was observed undefined inside this
+    // worker's global scope — real Safari has shipped it (2D context) in Worker scopes since 16.4
+    // (March 2023), and Playwright's own docs disclose its non-macOS WebKit builds are for
+    // cross-engine CI coverage, not guaranteed Apple-Safari parity, so this is most likely a
+    // testing-environment gap rather than a genuine real-device limitation — never confirmed
+    // against a real Mac/iPhone this session. P90 §9: the worker now reports this via
+    // `offscreenCanvasAvailableInWorker` in its 'ready' message, and the client has a REAL
+    // main-thread RGBA-conversion fallback for exactly this case — drive it here too, so this
+    // spec proves visual recognition actually still works end to end on an engine with this gap,
+    // not merely that the failure path is well-formed.
+    const searchResult = await page.evaluate(
+      async (offscreenAvailable: boolean) => {
+        const worker = (window as unknown as { __f31Worker: Worker }).__f31Worker
+        const canvas = document.createElement('canvas')
+        canvas.width = 224
+        canvas.height = 224
+        const ctx = canvas.getContext('2d')
+        if (ctx === null) throw new Error('2D canvas context unavailable in this browser.')
+        ctx.fillStyle = 'rgb(120, 180, 90)'
+        ctx.fillRect(0, 0, 224, 224)
+        const bitmap = await createImageBitmap(canvas)
+        const requestId = 1
+        const message = offscreenAvailable
+          ? { type: 'embed-and-search', requestId, image: { kind: 'bitmap', bitmap }, topK: 5 }
+          : (() => {
+              // Mirrors visual-client.ts's bitmapToRgbaOnMainThread exactly (same conversion, done
+              // here because this spec drives the raw Worker, not the client class).
+              const mainCanvas = document.createElement('canvas')
+              mainCanvas.width = bitmap.width
+              mainCanvas.height = bitmap.height
+              const mainCtx = mainCanvas.getContext('2d')
+              if (mainCtx === null) throw new Error('2D canvas context unavailable on main thread.')
+              mainCtx.drawImage(bitmap, 0, 0)
+              const { buffer } = mainCtx.getImageData(0, 0, bitmap.width, bitmap.height).data
+              bitmap.close()
+              return {
+                type: 'embed-and-search',
+                requestId,
+                image: { kind: 'rgba', buffer, width: mainCanvas.width, height: mainCanvas.height },
+                topK: 5,
+              }
+            })()
+        const transferList = offscreenAvailable
+          ? [bitmap]
+          : [(message.image as { buffer: ArrayBuffer }).buffer]
+        const result = await new Promise<WorkerSearchResult>((resolve) => {
+          worker.addEventListener('message', function handler(event: MessageEvent) {
+            const data = event.data as { type?: string; requestId?: number } | undefined
+            if (data?.requestId === requestId) {
+              worker.removeEventListener('message', handler)
+              resolve(data as WorkerSearchResult)
+            }
+          })
+          worker.postMessage(message, transferList)
         })
-        worker.postMessage({ type: 'embed-and-search', requestId, bitmap, topK: 5 }, [bitmap])
-      })
-      worker.terminate()
-      return result
-    })
+        worker.terminate()
+        return result
+      },
+      readyResult.offscreenCanvasAvailableInWorker ?? true,
+    )
 
-    // F-31 (P89) real finding, disclosed rather than papered over: on Playwright's Windows-
-    // hosted WebKit build (26.5), `OffscreenCanvas` was observed undefined inside this worker's
-    // global scope — real Safari has shipped it (2D context) in Worker scopes since 16.4 (March
-    // 2023), and Playwright's own docs disclose its non-macOS WebKit builds are for cross-engine
-    // CI coverage, not guaranteed Apple-Safari parity, so this is most likely a testing-
-    // environment gap — but it was never confirmed against a real Mac/iPhone this session. The
-    // production code now turns this into the SAME attributable 'error' shape every other
-    // embedAndSearch failure uses (visual-worker.ts's bitmapToRgba) instead of a raw
-    // ReferenceError, which is what this branch actually asserts — an environment where this
-    // specific known-and-named gap fires still proves the worker's error path is well-formed,
-    // even though it cannot prove a successful embed+search on THIS engine/OS combination.
-    if (
-      searchResult.type === 'error' &&
-      searchResult.message === 'OffscreenCanvas is unavailable in this worker context.'
-    ) {
+    if (!readyResult.offscreenCanvasAvailableInWorker) {
       test.info().annotations.push({
-        type: 'F-31 known gap (unconfirmed against real Safari)',
+        type: 'F-31 / P90 §9 fallback exercised',
         description:
-          'OffscreenCanvas unavailable inside the worker on this WebKit build — see visual-worker.ts bitmapToRgba comment. Needs verification against a real Mac/iPhone.',
+          'This engine reported offscreenCanvasAvailableInWorker=false — the main-thread RGBA ' +
+          'conversion fallback was used instead of the fast bitmap-transfer path.',
       })
-      return
     }
 
     expect(searchResult.type).toBe('result')

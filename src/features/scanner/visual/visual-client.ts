@@ -67,6 +67,10 @@ export interface VisualReadyInfo extends VisualBackendDiagnostics {
   readonly indexRuntimeChecksumMs: number | null
   readonly indexLoadMs: number | null
   readonly indexUnavailableReason: string | null
+  /** P90 §9: whether the worker itself can convert a captured frame to RGBA. False means every
+   *  `analyze()` call converts on the main thread instead and transfers raw bytes — see
+   *  {@link bitmapToRgbaOnMainThread}. */
+  readonly offscreenCanvasAvailableInWorker: boolean
 }
 
 /** Debug-only (P84, ported P87) — mirrors {@link ExpectedCardRank} in contract.ts (kept as its
@@ -115,6 +119,35 @@ export interface VisualLiveProgress {
    *  `currentPhaseElapsedMs` today (a progress message always marks entering a new phase), kept as
    *  its own named field because the prompt's diagnostics contract asks for both labels. */
   readonly lastProgressMsAgo: number | null
+}
+
+/**
+ * P90 §9: main-thread fallback conversion, used ONLY when the worker itself reported
+ * `offscreenCanvasAvailableInWorker: false` in its 'ready' message. The main thread always has a
+ * real canvas available — `OffscreenCanvas` when present (identical code path to the worker's own
+ * conversion), otherwise a plain `<canvas>` element, which every browser that can run this app at
+ * all supports — so visual recognition keeps working end to end instead of the worker's own
+ * structured 'error' response silently degrading every scan to OCR-only. Exactly one canvas draw
+ * either way (here or in the worker) — never a duplicate conversion of the same frame.
+ */
+function bitmapToRgbaOnMainThread(bitmap: ImageBitmap): {
+  buffer: ArrayBuffer
+  width: number
+  height: number
+} {
+  let context: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D | null
+  if (typeof OffscreenCanvas !== 'undefined') {
+    context = new OffscreenCanvas(bitmap.width, bitmap.height).getContext('2d')
+  } else {
+    const canvas = document.createElement('canvas')
+    canvas.width = bitmap.width
+    canvas.height = bitmap.height
+    context = canvas.getContext('2d')
+  }
+  if (!context) throw new Error('No 2D canvas context available on the main thread.')
+  context.drawImage(bitmap, 0, 0)
+  const { buffer } = context.getImageData(0, 0, bitmap.width, bitmap.height).data
+  return { buffer, width: bitmap.width, height: bitmap.height }
 }
 
 /** Reads the diagnostic-only `?visualBackend=` override (prompt §5) exactly once per client
@@ -291,9 +324,30 @@ export class VisualRecognitionClient {
     this.nextRequestId += 1
     const embedCallStart = performance.now()
     try {
+      // P90 §9: the worker reports once, at 'ready' time, whether it can convert a captured frame
+      // to RGBA itself. When it cannot, convert here instead (the main thread always has a real
+      // canvas) and transfer raw bytes rather than the ImageBitmap — same information, same
+      // single conversion, just done on whichever side actually supports it.
       const result = await new Promise<VisualAnalysisResult>((resolve, reject) => {
         this.pending.set(requestId, { resolve, reject })
-        worker.postMessage({ type: 'embed-and-search', requestId, bitmap, topK }, [bitmap])
+        if (ready.offscreenCanvasAvailableInWorker) {
+          worker.postMessage(
+            { type: 'embed-and-search', requestId, image: { kind: 'bitmap', bitmap }, topK },
+            [bitmap],
+          )
+        } else {
+          const { buffer, width, height } = bitmapToRgbaOnMainThread(bitmap)
+          bitmap.close()
+          worker.postMessage(
+            {
+              type: 'embed-and-search',
+              requestId,
+              image: { kind: 'rgba', buffer, width, height },
+              topK,
+            },
+            [buffer],
+          )
+        }
       })
       // P81 §3/§17 FIRST_EMBED_MS: the first successful round trip only — this is the number
       // that answers "once warm, how fast is one real scan," which cold `modelColdLoadMs` alone

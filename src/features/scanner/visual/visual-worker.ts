@@ -105,6 +105,13 @@ const EMBEDDING_DIM = 384
 // constant only needs to be compared, never re-derived (same duplication precedent as
 // scripts/scanner-visual-benchmark/lib/embed.mjs). ANY change is a deliberate model bump.
 const EXPECTED_MODEL_REVISION = 'c2bb04a51fab207c420665f1946016107bffc701'
+/** P90 §9: whether THIS worker context can convert an ImageBitmap to RGBA itself. Real Safari has
+ *  shipped OffscreenCanvas + a 2D context inside Worker scopes since 16.4 (March 2023, the actual
+ *  target platform per SCANNER_RESEARCH.md) — false is expected only on a genuinely older/unusual
+ *  engine, never on this project's real target devices. Computed once at module scope (this cannot
+ *  change mid-session) and reported to the client in the 'ready' message so it can choose the
+ *  matching capture-conversion path BEFORE the first scan, not per-scan. */
+const OFFSCREEN_CANVAS_AVAILABLE_IN_WORKER = typeof OffscreenCanvas !== 'undefined'
 
 interface InitMessage {
   type: 'init'
@@ -114,10 +121,21 @@ interface InitMessage {
    *  evaluation took (`workerStartMs`) before any application code below even ran. */
   constructedAtMs?: number
 }
+/** P90 §9: the two shapes a captured frame can arrive in. `bitmap` is the fast, default path
+ *  (worker converts to RGBA itself via OffscreenCanvas, zero main-thread cost beyond the transfer).
+ *  `rgba` is the fallback path used ONLY when {@link OFFSCREEN_CANVAS_AVAILABLE_IN_WORKER} is
+ *  false — the client (which always has a real `<canvas>` element available, unlike a worker
+ *  scope) does the identical RGBA conversion itself and transfers the raw buffer instead, so visual
+ *  recognition keeps working rather than always degrading to OCR-only in a worker environment that
+ *  lacks OffscreenCanvas. Never a second, duplicate conversion — exactly one canvas draw happens
+ *  either way, just on whichever side can actually do it. */
+type CapturedImage =
+  | { kind: 'bitmap'; bitmap: ImageBitmap }
+  | { kind: 'rgba'; buffer: ArrayBuffer; width: number; height: number }
 interface EmbedAndSearchMessage {
   type: 'embed-and-search'
   requestId: number
-  bitmap: ImageBitmap
+  image: CapturedImage
   topK: number
 }
 /** Debug-only (P84, ported P87): re-rank the cached last query vector against the full index for
@@ -149,6 +167,10 @@ interface ReadyResponse extends BackendDiagnostics {
   indexAvailable: boolean
   cardCount: number
   modelColdLoadMs: number
+  /** P90 §9: whether this worker can convert a captured frame to RGBA itself. False tells the
+   *  client to do that conversion on the main thread instead and transfer raw RGBA bytes for every
+   *  subsequent {@link EmbedAndSearchMessage} — see `CapturedImage`'s own docs. */
+  offscreenCanvasAvailableInWorker: boolean
   /** Diagnostics-only (prompt §40) — never used for match logic, only surfaced in the debug
    *  panel and never persisted. */
   indexVersion: string | null
@@ -786,6 +808,7 @@ async function init(message: InitMessage): Promise<void> {
     indexAvailable: index !== null,
     cardCount: index?.cardIds.length ?? 0,
     modelColdLoadMs: Math.round(performance.now() - startedAt),
+    offscreenCanvasAvailableInWorker: OFFSCREEN_CANVAS_AVAILABLE_IN_WORKER,
     indexVersion: index?.manifest.version ?? null,
     indexSourceProjectRef: index?.manifest.sourceProjectRef ?? null,
     indexModelRevision: index?.manifest.modelRevision ?? null,
@@ -815,12 +838,8 @@ async function embedAndSearch(message: EmbedAndSearchMessage): Promise<void> {
   }
   try {
     const embedStart = performance.now()
-    const image = new RawImage(
-      new Uint8ClampedArray(bitmapToRgba(message.bitmap)),
-      message.bitmap.width,
-      message.bitmap.height,
-      4,
-    )
+    const { buffer, width, height } = capturedImageToRgba(message.image)
+    const image = new RawImage(new Uint8ClampedArray(buffer), width, height, 4)
     const inputs = (await processor(image)) as Record<string, unknown>
     const output = (await model(inputs)) as { last_hidden_state: { data: ArrayLike<number> } }
     const raw = Float32Array.from(output.last_hidden_state.data).slice(0, EMBEDDING_DIM)
@@ -860,7 +879,7 @@ async function embedAndSearch(message: EmbedAndSearchMessage): Promise<void> {
   } catch (error) {
     post({ type: 'error', requestId: message.requestId, message: (error as Error).message })
   } finally {
-    message.bitmap.close()
+    if (message.image.kind === 'bitmap') message.image.bitmap.close()
   }
 }
 
@@ -873,13 +892,24 @@ async function embedAndSearch(message: EmbedAndSearchMessage): Promise<void> {
  * rather than guaranteed parity with Apple's shipped Safari, so this is most likely a
  * testing-environment gap rather than a genuine real-device regression — but it was NEVER
  * verified against a real Mac/iPhone from this session, so it is disclosed as unconfirmed, not
- * asserted safe. Either way, the raw ReferenceError itself was a real defect independent of root
- * cause: an unattributable native error is exactly what this project's own diagnostics posture
- * (prompt §11/§12: init/analysis failures must be phase-attributable) exists to prevent. The
- * explicit feature check below turns it into the SAME structured, attributable 'error' path
- * every other embedAndSearch failure already uses, with a message that names the actual gap.
+ * asserted safe.
+ *
+ * P90 §9: rather than stopping at a structured error, the client now feature-detects this SAME
+ * gap before the first scan (via `offscreenCanvasAvailableInWorker` in the 'ready' message) and,
+ * when true, converts every captured frame to RGBA on the main thread itself instead — the main
+ * thread always has a real `<canvas>` element regardless of Worker OffscreenCanvas support, so
+ * visual recognition keeps working end to end rather than silently degrading to OCR-only. This
+ * function is therefore only ever reached with `message.image.kind === 'bitmap'` when the worker
+ * DOES support OffscreenCanvas (the client's own fast-path default) — the `undefined` branch below
+ * stays as defense-in-depth, never expected to fire given the client checks first.
  */
-function bitmapToRgba(bitmap: ImageBitmap): ArrayBuffer {
+function capturedImageToRgba(image: CapturedImage): {
+  buffer: ArrayBuffer
+  width: number
+  height: number
+} {
+  if (image.kind === 'rgba') return image
+  const bitmap = image.bitmap
   if (typeof OffscreenCanvas === 'undefined') {
     throw new Error('OffscreenCanvas is unavailable in this worker context.')
   }
@@ -887,7 +917,8 @@ function bitmapToRgba(bitmap: ImageBitmap): ArrayBuffer {
   const context = canvas.getContext('2d')
   if (!context) throw new Error('OffscreenCanvas 2D context unavailable in worker.')
   context.drawImage(bitmap, 0, 0)
-  return context.getImageData(0, 0, bitmap.width, bitmap.height).data.buffer
+  const { buffer } = context.getImageData(0, 0, bitmap.width, bitmap.height).data
+  return { buffer, width: bitmap.width, height: bitmap.height }
 }
 
 /**
