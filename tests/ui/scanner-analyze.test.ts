@@ -58,6 +58,10 @@ function makePool() {
       return canvas
     }),
     release: vi.fn(),
+    // F-15 (P89): matches the real CanvasPool's serialization API — a plain pass-through here
+    // since these tests never drive genuinely concurrent runOcrAnalysis calls against one fake
+    // pool; the real lock's own behavior is covered by tests/ui/scanner-analyze-concurrency.test.ts.
+    withLock: vi.fn(<T>(work: () => Promise<T>) => work()),
     canvases,
   }
 }
