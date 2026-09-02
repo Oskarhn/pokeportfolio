@@ -87,7 +87,16 @@ interface EmbedAndSearchMessage {
   bitmap: ImageBitmap
   topK: number
 }
-type IncomingMessage = InitMessage | EmbedAndSearchMessage
+/** P84 §12: debug-only diagnostic lookup — "where did this specific card rank in the LAST scan's
+ *  full-index search." Carries only a `cardId` (an opaque catalog identifier, not an image) and
+ *  never triggers a new embedding — it re-ranks the query vector already computed by the most
+ *  recent embed-and-search call. */
+interface RankLookupMessage {
+  type: 'rank-lookup'
+  requestId: number
+  cardId: string
+}
+type IncomingMessage = InitMessage | EmbedAndSearchMessage | RankLookupMessage
 
 /** Shared by ready/unavailable so the debug panel can always show what was actually attempted,
  *  win or lose (prompt §4/§11/§12). */
@@ -136,6 +145,17 @@ interface ErrorResponse {
   requestId: number
   message: string
 }
+/** P84 §12: answers a debug-only rank-lookup request. `found=false` covers both "no scan has run
+ *  yet this session" and "the index is unavailable" — the caller (visual-client.ts) never needs to
+ *  distinguish those for display purposes, both simply mean "no answer available right now." */
+interface RankLookupResultResponse {
+  type: 'rank-lookup-result'
+  requestId: number
+  found: boolean
+  rank: number | null
+  similarity: number | null
+  totalCards: number
+}
 /** P82 §2-§6: a live progress marker posted WHILE init() is still running — see phase-timing.ts's
  *  module doc for why this exists. `atMs` is `performance.timeOrigin + performance.now()`, the
  *  same cross-context-comparable quantity `workerModuleEvalAtMs`/`constructedAtMs` already use. */
@@ -145,7 +165,12 @@ interface ProgressResponse {
   atMs: number
 }
 type OutgoingMessage =
-  ReadyResponse | UnavailableResponse | ResultResponse | ErrorResponse | ProgressResponse
+  | ReadyResponse
+  | UnavailableResponse
+  | ResultResponse
+  | ErrorResponse
+  | ProgressResponse
+  | RankLookupResultResponse
 
 async function detectWebgpuAvailable(): Promise<boolean> {
   const gpu = (navigator as unknown as { gpu?: { requestAdapter(): Promise<unknown> } }).gpu
@@ -162,6 +187,12 @@ let model: Awaited<ReturnType<typeof AutoModel.from_pretrained>> | null = null
 let processor: Awaited<ReturnType<typeof AutoProcessor.from_pretrained>> | null = null
 let index: DecodedVisualIndex | null = null
 let backend: VisualBackend = 'wasm'
+/** P84 §12: the most recent successful scan's L2-normalized query vector — 384 floats, never an
+ *  image, never persisted beyond this worker's own memory, overwritten by every new scan. Exists
+ *  ONLY so a debug-only rank-lookup request can re-rank against the FULL index without either
+ *  re-embedding or widening every ordinary scan's own search depth (which stays bounded by
+ *  whatever `topK` the caller requested, unaffected by this cache existing). */
+let lastQueryVector: Float32Array | null = null
 
 function post(message: OutgoingMessage, transfer: Transferable[] = []): void {
   ;(self as unknown as Worker).postMessage(message, transfer)
@@ -664,6 +695,8 @@ async function embedAndSearch(message: EmbedAndSearchMessage): Promise<void> {
     const embeddingNorm = Math.sqrt(normSquared)
     const queryVector = l2Normalize(raw)
     const embedMs = performance.now() - embedStart
+    // P84 §12: cache for a possible later debug rank-lookup — see the module-scope doc comment.
+    lastQueryVector = queryVector
 
     if (!index) {
       post({
@@ -694,6 +727,39 @@ async function embedAndSearch(message: EmbedAndSearchMessage): Promise<void> {
   }
 }
 
+/**
+ * P84 §12: debug-only diagnostic — "where did EXPECTED_CARD_ID rank in the last scan's full-index
+ * search." Re-ranks the cached `lastQueryVector` against the ENTIRE decoded index (never bounded
+ * by any scan's own `topK`), which is cheap: `searchVisualIndex` is already a single O(cardCount)
+ * brute-force pass (real-device evidence: ~16ms at 19,501 cards, prompt §0), so asking it for a
+ * full ranking instead of a shortlist costs the same sort, just a longer returned/scanned array.
+ * Never re-embeds, never triggers a new capture, never writes/persists anything — a pure read over
+ * already-in-memory state.
+ */
+function rankLookup(message: RankLookupMessage): void {
+  if (!index || !lastQueryVector) {
+    post({
+      type: 'rank-lookup-result',
+      requestId: message.requestId,
+      found: false,
+      rank: null,
+      similarity: null,
+      totalCards: index?.cardIds.length ?? 0,
+    })
+    return
+  }
+  const hits = searchVisualIndex(index, lastQueryVector, index.cardIds.length)
+  const position = hits.findIndex((hit) => hit.cardId === message.cardId)
+  post({
+    type: 'rank-lookup-result',
+    requestId: message.requestId,
+    found: position !== -1,
+    rank: position === -1 ? null : position + 1,
+    similarity: position === -1 ? null : (hits[position]?.similarity ?? null),
+    totalCards: index.cardIds.length,
+  })
+}
+
 function bitmapToRgba(bitmap: ImageBitmap): ArrayBuffer {
   const canvas = new OffscreenCanvas(bitmap.width, bitmap.height)
   const context = canvas.getContext('2d')
@@ -706,6 +772,10 @@ self.addEventListener('message', (event: MessageEvent<IncomingMessage>) => {
   const message = event.data
   if (message.type === 'init') {
     void init(message)
+    return
+  }
+  if (message.type === 'rank-lookup') {
+    rankLookup(message)
     return
   }
   void embedAndSearch(message)

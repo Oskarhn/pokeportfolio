@@ -42,6 +42,7 @@ const visualMocks = vi.hoisted(() => ({
   getDiagnosticsSnapshot: vi.fn(),
   dispose: vi.fn(),
   prewarm: vi.fn(),
+  getExpectedCardRank: vi.fn(),
 }))
 
 vi.mock('../../src/features/scanner/visual/visual-client', () => ({
@@ -50,6 +51,7 @@ vi.mock('../../src/features/scanner/visual/visual-client', () => ({
     getDiagnosticsSnapshot = visualMocks.getDiagnosticsSnapshot
     dispose = visualMocks.dispose
     prewarm = visualMocks.prewarm
+    getExpectedCardRank = visualMocks.getExpectedCardRank
   },
 }))
 
@@ -866,18 +868,18 @@ describe('debug mode — widened shortlist, extended candidates, image previews 
     if (hadRevoke?.configurable) delete (URL as unknown as Record<string, unknown>).revokeObjectURL
   })
 
-  it('requests the widened debug shortlist size, not the production one (Q5)', async () => {
+  it('requests the widened debug shortlist size, not the production one (Q5, raised P84 §13)', async () => {
     visualMocks.analyze.mockResolvedValue(null)
     visualMocks.getDiagnosticsSnapshot.mockReturnValue(defaultVisualDiagnostics())
     const controller = createRealScannerController({ userId: 'user-a' })
     await controller.analyzeCapture(capture())
-    expect(visualMocks.analyze).toHaveBeenCalledWith(expect.anything(), 50)
+    expect(visualMocks.analyze).toHaveBeenCalledWith(expect.anything(), 200)
   })
 
-  it('populates topVisualCandidatesExtended up to 20 only in debug mode (Q5/Q7)', async () => {
-    const hits = Array.from({ length: 25 }, (_, i) => ({
+  it('V84-9: populates topVisualCandidatesExtended up to 100 only in debug mode (Q5/Q7, raised P84 §13)', async () => {
+    const hits = Array.from({ length: 150 }, (_, i) => ({
       cardId: `card-${i}`,
-      similarity: 0.9 - i * 0.01,
+      similarity: 0.9 - i * 0.001,
     }))
     visualMocks.analyze.mockResolvedValue({
       hits,
@@ -913,7 +915,7 @@ describe('debug mode — widened shortlist, extended candidates, image previews 
     const controller = createRealScannerController({ userId: 'user-a' })
     await controller.analyzeCapture(capture())
     const diagnostics = controller.getLastDiagnostics?.()
-    expect(diagnostics?.topVisualCandidatesExtended).toHaveLength(20)
+    expect(diagnostics?.topVisualCandidatesExtended).toHaveLength(100)
     expect(diagnostics?.topVisualCandidatesExtended[0]?.cardId).toBe('card-0')
     // The production top-5 field is unaffected by the widened debug list.
     expect(diagnostics?.topVisualCandidates).toHaveLength(5)
@@ -957,5 +959,59 @@ describe('debug mode — widened shortlist, extended candidates, image previews 
     const images = controller.getLastDebugImages?.()
     controller.dispose()
     expect(revokeObjectURL).toHaveBeenCalledWith(images?.rectifiedUrl)
+  })
+
+  describe('V84-8: getExpectedCardRank — the real-index-scale diagnostic tool', () => {
+    it('delegates to the visual client and returns its answer verbatim while in debug mode', async () => {
+      visualMocks.getExpectedCardRank.mockResolvedValue({
+        found: true,
+        rank: 6,
+        similarity: 0.71,
+        totalCards: 19501,
+        inTop20: true,
+        inTop100: true,
+      })
+      const controller = createRealScannerController({ userId: 'user-a' })
+      const result = await controller.getExpectedCardRank?.('card-42')
+      expect(visualMocks.getExpectedCardRank).toHaveBeenCalledWith('card-42')
+      expect(result?.rank).toBe(6)
+      expect(result?.inTop20).toBe(true)
+    })
+
+    it('never calls the visual client and resolves null OUTSIDE debug mode (§12 must not affect normal matching)', async () => {
+      vi.stubGlobal('window', { location: { search: '' } })
+      const controller = createRealScannerController({ userId: 'user-a' })
+      const result = await controller.getExpectedCardRank?.('card-42')
+      expect(result).toBeNull()
+      expect(visualMocks.getExpectedCardRank).not.toHaveBeenCalled()
+    })
+
+    it('V84-10: never writes to any storage — a lookup does not persist the expected-card id anywhere', async () => {
+      visualMocks.getExpectedCardRank.mockResolvedValue({
+        found: false,
+        rank: null,
+        similarity: null,
+        totalCards: 19501,
+        inTop20: false,
+        inTop100: false,
+      })
+      const before = scannerSessionStore.load('user-b')
+      const controller = createRealScannerController({ userId: 'user-b' })
+      await controller.getExpectedCardRank?.('some-card-id')
+      // `getExpectedCardRank` in controller.ts is a two-line passthrough (debug gate + delegate)
+      // with no persistence call in its body at all — a lookup must never change what the session
+      // store holds for this (or any) user, and it does not touch scannerSessionStore at all.
+      expect(scannerSessionStore.load('user-b')).toEqual(before)
+    })
+
+    it('V84-11: never triggers a new embedding or upload — the visual client method is called with only a cardId, no image data', async () => {
+      visualMocks.getExpectedCardRank.mockResolvedValue(null)
+      const controller = createRealScannerController({ userId: 'user-a' })
+      await controller.getExpectedCardRank?.('card-x')
+      expect(visualMocks.getExpectedCardRank).toHaveBeenCalledTimes(1)
+      const args = visualMocks.getExpectedCardRank.mock.calls[0]
+      expect(args).toEqual(['card-x'])
+      expect(visualMocks.analyze).not.toHaveBeenCalled()
+    })
   })
 })

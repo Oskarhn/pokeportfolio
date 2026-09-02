@@ -1,6 +1,7 @@
 import type { CardCondition } from '../../data/collection'
 import type { PixelRect } from './guide-geometry'
 import type { VisualPhaseTimings, AssetCacheStatusEstimate } from './visual/phase-timing'
+import type { ExpectedCardRank } from './visual/visual-client'
 
 /**
  * The boundary between M15's scanner UI (P66) and everything that makes scanning actually work —
@@ -300,4 +301,10 @@ export interface ScannerUiController {
    *  {@link getVisualPrewarmState} on a cold device, since it does not depend on the ~45MB DINO
    *  model/index. Optional for the same reason as the other diagnostic getters above. */
   getFastScannerState?(): 'not-loaded' | 'loading' | 'ready' | 'failed'
+  /** P84 §12: the real-index-scale diagnostic tool — "where did EXPECTED_CARD_ID rank in the
+   *  LAST scan's full-index search." Debug-mode-only (resolves null outside `?scannerDebug=1`);
+   *  never auto-adds the looked-up card, never persists the expected-card id anywhere, never
+   *  triggers a new embedding or upload. Optional for the same mock-controller-compatibility
+   *  reason as every other diagnostic member above. */
+  getExpectedCardRank?(cardId: string): Promise<ExpectedCardRank | null>
 }
