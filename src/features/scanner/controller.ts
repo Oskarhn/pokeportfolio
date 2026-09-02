@@ -478,9 +478,10 @@ export function createRealScannerController(
       if (unknownVisualIds.length > 0) {
         // Visual shortlist candidates the text search never found (prompt §16's hybrid
         // retrieval): fetch their identity/metadata in one bounded round trip. A card the
-        // catalog no longer has (e.g. deactivated since the index was built) is simply dropped —
-        // never fabricated.
-        const enriched = await getCardsByIds(unknownVisualIds).catch(() => [])
+        // catalog no longer has, is now inactive, or is not the expected catalog language
+        // (F-28/F-29/P88 §16 — the visual index is English-only today, `session-store.ts`'s
+        // `language: 'en'` default) is simply dropped — never fabricated.
+        const enriched = await getCardsByIds(unknownVisualIds, 'en').catch(() => [])
         mergedCandidates = [
           ...textCandidates,
           ...enriched.map((card) => toCandidateRecordFromCatalog(card)),
