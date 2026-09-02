@@ -677,7 +677,25 @@ async function embedAndSearch(message: EmbedAndSearchMessage): Promise<void> {
   }
 }
 
+/**
+ * F-31 (P89): a real-browser smoke test (tests/e2e/visual-worker-real-browser.spec.ts) caught
+ * this throwing a raw, unattributable `ReferenceError: Can't find variable: OffscreenCanvas` on
+ * Playwright's Windows-hosted WebKit build (26.5) specifically — real Safari has shipped
+ * OffscreenCanvas + a 2D context inside Worker scopes since 16.4 (March 2023), and Playwright's
+ * own docs disclose that its non-macOS WebKit builds are provided for cross-engine CI coverage
+ * rather than guaranteed parity with Apple's shipped Safari, so this is most likely a
+ * testing-environment gap rather than a genuine real-device regression — but it was NEVER
+ * verified against a real Mac/iPhone from this session, so it is disclosed as unconfirmed, not
+ * asserted safe. Either way, the raw ReferenceError itself was a real defect independent of root
+ * cause: an unattributable native error is exactly what this project's own diagnostics posture
+ * (prompt §11/§12: init/analysis failures must be phase-attributable) exists to prevent. The
+ * explicit feature check below turns it into the SAME structured, attributable 'error' path
+ * every other embedAndSearch failure already uses, with a message that names the actual gap.
+ */
 function bitmapToRgba(bitmap: ImageBitmap): ArrayBuffer {
+  if (typeof OffscreenCanvas === 'undefined') {
+    throw new Error('OffscreenCanvas is unavailable in this worker context.')
+  }
   const canvas = new OffscreenCanvas(bitmap.width, bitmap.height)
   const context = canvas.getContext('2d')
   if (!context) throw new Error('OffscreenCanvas 2D context unavailable in worker.')
