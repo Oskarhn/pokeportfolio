@@ -64,13 +64,22 @@ export const ENHANCED_VISUAL_PREWARM_STAGGER_MS = 1500
  *  examine this many raw candidates internally, but the UI never sees more than
  *  SCANNER_UI_CANDIDATE_LIMIT of them after reranking. */
 const VISUAL_SHORTLIST_SIZE = 30
-/** Debug-only widened shortlist (P79 §10): lets a debug session see whether the correct card
- *  exists deeper in the raw visual neighbours than production ever surfaces. Never used for
- *  actual matching/reranking — `matchScannerObservation` still only ever sees the SAME merged
- *  candidate pool either way; this only changes how many raw hits the debug panel can show. */
-const VISUAL_DEBUG_SHORTLIST_SIZE = 50
-/** How many raw visual neighbours the debug panel's extended list shows (P79 §10). */
-const DEBUG_EXTENDED_CANDIDATE_LIMIT = 20
+/** Debug-only widened shortlist (P79 §10, raised P84 §13): lets a debug session see whether the
+ *  correct card exists deeper in the raw visual neighbours than production ever surfaces. Never
+ *  used for actual matching/reranking — `matchScannerObservation` still only ever sees the SAME
+ *  merged candidate pool either way; this only changes how many raw hits the debug panel can show.
+ *  Raised 50 -> 200 (P84 §13's explicit ask for top-100/200 debug depth): the search itself is a
+ *  single O(cardCount) brute-force pass regardless of topK (real-device evidence:
+ *  INDEX_SEARCH_MS=16 at 19,501 cards for a topK of 30 — the same pass, just returning more of an
+ *  already-fully-sorted array, costs the same sort with a longer slice), and this constant only
+ *  ever applies when `debug` is true — production's VISUAL_SHORTLIST_SIZE (30) is untouched. */
+const VISUAL_DEBUG_SHORTLIST_SIZE = 200
+/** How many raw visual neighbours the debug panel's extended list shows (P79 §10, raised P84
+ *  §13). Still well short of VISUAL_DEBUG_SHORTLIST_SIZE's own depth — the full 200 are searched
+ *  and available to `getExpectedCardRank`'s underlying full-index lookup, but rendering all 200 as
+ *  thumbnails in the panel would be noise; 100 is the prompt's own explicit target for "capable of
+ *  top 100 or top 200," and matches what a human can actually scan through. */
+const DEBUG_EXTENDED_CANDIDATE_LIMIT = 100
 import type {
   ScannerAnalysis,
   ScannerCandidate,
@@ -619,6 +628,22 @@ export function createRealScannerController(
     return debugImages.get()
   }
 
+  /**
+   * P84 §12: the real-index-scale diagnostic tool. Debug-mode-only (returns null outside
+   * `?scannerDebug=1`, matching every other debug-only surface in this file — prompt §12's own
+   * "must not affect normal matching" requirement is satisfied structurally, since this never
+   * touches `match`/`mergedCandidates`/anything `analyzeCapture` returns). Answers "where did
+   * EXPECTED_CARD_ID rank in the LAST scan's full-index search" without auto-adding it, without
+   * persisting the expected-card label anywhere (the id is passed straight through to the worker
+   * and back; nothing here writes it to storage or session state), and without uploading the scan
+   * (the round trip is a same-tab Worker postMessage, never network — the same boundary
+   * `analyzeVisualSafely` already holds).
+   */
+  async function getExpectedCardRank(cardId: string) {
+    if (!isScannerDebugEnabled()) return null
+    return visualClient.getExpectedCardRank(cardId)
+  }
+
   async function searchFallback(query: ScannerSearchQuery) {
     const defaults = scannerSessionStore.load(options.userId)
     const language = defaults?.language ?? null
@@ -707,6 +732,7 @@ export function createRealScannerController(
     dispose,
     getLastDiagnostics,
     getLastDebugImages,
+    getExpectedCardRank,
     prewarm,
     getVisualPrewarmState,
     getFastScannerState,

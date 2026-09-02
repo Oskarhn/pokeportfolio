@@ -3439,3 +3439,129 @@ window Cloudflare Pages applies to a project's non-latest preview deployments wa
 documented and is not something this session's evidence pins down further. This finding argues
 FOR, not against, the stale-client detection this session built (§3 above): an old client cannot
 assume it has any particular grace period before its own assets stop resolving.
+
+## D-101 — Embedding-contract parity proven; the 0.18-similarity anomaly is the known combined-photometric-defect domain gap, now quantified; real-index-scale diagnostic tooling shipped (P84, isolated research branch, NOT part of PR #63)
+
+**Scope note:** unlike D-097 through D-100, this decision was recorded on an ISOLATED worktree/
+branch (`feat/m15-p84-visual-retrieval-forensics`, branched from PR #63's exact head `7d037e6`)
+running in parallel with other M15 sessions, per its own prompt's explicit instruction never to
+modify PR #63 directly. Nothing here is merged anywhere; it exists to be cherry-picked or
+re-applied to PR #63 by a future integration session once reviewed.
+
+**Motivated by:** a real-device scan reporting TOP1 visual similarity of only 0.1816 — well below
+the 0.65-0.75 "moderate" band earlier scans showed — with OCR name empty and the final reranked
+candidate list empty. Rather than tune recognition blind, this session built the prompt's own
+REQUIRED gate first: prove or disprove that the offline index-GENERATOR embedding path and the
+BROWSER RUNTIME embedding path actually compute the same thing, using the 240-card cached benchmark
+corpus (real TCGdex images, the closest real-image stand-in available without hosted DB credentials
+— the REAL 19,501-card index's own source images remain unavailable to any session without hosted
+catalog read access, the same disclosed gap every session since P77).
+
+### 1. The embedding contract IS compatible — proven empirically
+
+`scripts/scanner-visual-benchmark/run-parity-gate.ts` (new) embeds all 240 corpus images through
+both the generator path (`embed.mjs`'s `embedImageBuffer`, file-bytes → `RawImage.fromBlob`) and a
+browser-path-equivalent (raw RGBA pixel bytes → `new RawImage(...)`, mirroring `visual-worker.ts`'s
+`bitmapToRgba` exactly) and compares them directly:
+
+- `GENERATOR_BROWSER_EMBEDDING_COSINE = 1.000000` for all 240/240 images (mean/median/min/max all
+  exactly 1.0) — embedding-IDENTICAL for the same visual content.
+- DINO output semantics confirmed empirically (not just re-stated from a code comment):
+  `last_hidden_state.dims = [1, 257, 384]` — CLS token at sequence position 0, confirming
+  `data.slice(0, 384)` in both code paths genuinely extracts it.
+- Pristine self-retrieval: 100% TOP1/TOP3/TOP5 both for the generator path alone and for the
+  browser-simulated path searched against a generator-built index — the prompt's REQUIRED gate
+  passes.
+- INT8 vs. FP32: 100% TOP1 rank agreement, mean cosine delta from quantization ≈0.00099 — re-proven
+  against the CURRENT contract, not assumed from P76's original claim.
+- The REAL committed 19,501-card `embeddings.bin`/`card-ids.json`/`manifest.json` were decoded and
+  searched directly (not simulated): a 501-row stratified sample (every ~39th row) shows 100% of
+  rows retrieve themselves as rank 1 against the full real index — `decodeVisualIndex`/
+  `searchVisualIndex` and the committed index bytes are internally consistent, not corrupted.
+
+**This rules out a foundational embedding-contract bug as the cause of the 0.18 anomaly.**
+
+### 2. Similarity calibration: 0.18 is the already-disclosed combined-defect domain gap, now measured
+
+`scripts/scanner-visual-benchmark/run-similarity-calibration.ts` (new) records, for every hard-
+augmented query against the real production pipeline (P79's `rectify.ts`, real INT8 round trip),
+BOTH the similarity to its own true reference AND to the nearest WRONG reference:
+
+| Profile | same-card similarity (mean/median/p90) | nearest-wrong similarity (mean/median) | TOP1 |
+|---|---|---|---|
+| tilted-offcenter (geometry only) | 0.812 / 0.828 / 0.900 | 0.674 / 0.684 | 92.9% |
+| tilted-glare-shadow-blur | 0.101 / 0.099 / 0.186 | 0.282 / 0.281 | 0.8% |
+| skewed-partial-shadow-noisy | 0.107 / 0.103 / 0.197 | 0.326 / 0.324 | 0.4% |
+
+Under the two profiles combining glare+shadow+blur or partial-shadow+noise+skew, same-card
+similarity (mean ≈0.10, p90 ≈0.19) closely matches the owner's reported 0.1816, and — more
+importantly — the WRONG-card similarity is systematically HIGHER than the true card's own. This is
+signal inversion, not merely weak signal: under severe combined defects, DINOv2 ranks unrelated
+cards above the true card more often than not. **0.1816 sits inside the CATASTROPHIC-failure
+regime of this pipeline's own calibrated distribution, not a borderline "moderate" reading** — the
+owner's scan is very likely a real instance of the already-disclosed, still-unsolved P79/P80
+combined-photometric-defect domain gap, not a new or different bug.
+
+### 3. Query-only multi-view evaluation: no representation or fusion rescues the combined-defect case
+
+`scripts/scanner-visual-benchmark/run-query-variants.ts` (new) tested 5 query representations
+(rectified/raw-crop/5%-inset/10%-inset/photometric-normalized) plus 3 fusion strategies (max/
+average similarity, rank average) against the same reference pool. On the geometry-only profile
+every variant sits at or near ceiling (92.5-100%, n=40 — too small for the differences between
+variants to be meaningful). **On both combined-defect profiles, EVERY variant and EVERY fusion
+strategy scores EXACTLY 0% TOP1/TOP3/TOP5** — a clean, decisive negative result: the captured pixels
+carry no recoverable signal under severe combined defects regardless of crop/inset/photometric
+choice, so no bounded query-side transform can close this gap. `BEST_QUERY_VARIANT` = none shows a
+real uplift over the shipped `rectified` baseline once n=40 sample noise is accounted for.
+
+### 4. Auxiliary reference representation / local-feature rerank / reference-image rerank — reasoned rejection
+
+All three (prompt §9-§11) presuppose the failure mode is "query resembles its true card reasonably
+well but gets confused with a visually similar different card" (P80's original Chandelure
+hypothesis). §2's calibration data shows the DOMINANT combined-defect failure is structurally
+different: same-card similarity sits BELOW the mean wrong-card similarity, meaning the query barely
+resembles its own true reference at all under these conditions — not "close but confused."
+Consequences: a second reference crop embedded from the SAME degraded query would suffer the
+identical defect (not built); local-feature reranking over DINO's shortlist only helps if the true
+card is already IN that shortlist, which this evidence suggests is frequently not the case under
+combined defects, and classical local-feature descriptors are, if anything, LESS robust to
+blur/glare than a global CNN embedding (not built); reference-thumbnail pixel rerank inherits the
+same structural limitation plus adds real per-scan network traffic this project's privacy discipline
+treats as a cost to avoid without compelling evidence (not built). None of the three were
+benchmarked this session — this is reasoned rejection from the calibration evidence, disclosed as
+such, not a claimed experimental result, following the same evidence-gated discipline D-097/D-098
+already established.
+
+### 5. Real-index-scale diagnostic tooling shipped (prompt §12/§13) — real, tested, integration-ready
+
+Two small additions to the shipped scanner code, gated behind `?scannerDebug=1`, covered by real
+`pnpm test` unit tests (not benchmark scripts):
+
+1. **`ScannerUiController.getExpectedCardRank(cardId)`** — `visual-worker.ts` now caches the last
+   scan's L2-normalized 384-float query vector (never an image) and can re-rank it against the
+   FULL decoded index on a debug-only request, without re-embedding. Cheap: `searchVisualIndex` is
+   already one O(cardCount) brute-force pass regardless of how much of the sorted result is kept
+   (real-device evidence: `INDEX_SEARCH_MS=16` at 19,501 cards). Debug-mode-gated
+   (`isScannerDebugEnabled()`), resolves `null` outside debug mode without ever calling the worker;
+   never auto-adds the looked-up card, never persists the expected-card id anywhere, never triggers
+   a new embedding or network request.
+2. **Debug shortlist depth raised**: `VISUAL_DEBUG_SHORTLIST_SIZE` 50→200,
+   `DEBUG_EXTENDED_CANDIDATE_LIMIT` 20→100 — production's own `VISUAL_SHORTLIST_SIZE` (30) is
+   untouched.
+
+### 6. Model suitability — not reconsidered, and evidence now argues MORE strongly against a switch
+
+Per the prompt's own gate (only evaluate a model swap once contract parity is proven AND a
+benchmarked alternative shows a material gain): §1 proves the contract is fine, and §2-§4's finding
+that the dominant real-world failure is a photometric-robustness domain gap — not a discriminative-
+power/capacity gap — means a different permissively-licensed retrieval model would need to be
+BETTER SPECIFICALLY AT surviving severe glare/shadow/blur/noise to help here, a property this
+session found no evidence for in any candidate (same candidates D-098 already researched:
+DINOv3-ViT-S/16 is larger, not smaller; MobileNet/EfficientNet-class extractors are smaller but have
+weaker fine-grained instance retrieval characteristics, the opposite of helpful). Re-embedding the
+19,501-card index against a new model remains an irreversible, multi-hour regeneration not
+undertaken without compelling benchmarked justification. `MODEL_CHANGE_RECOMMENDED=no`.
+
+**Not changed:** the model, `engine.ts`'s scoring model, the committed 19,501-card index, any
+migration (still 90), any financial semantic, any P78-P83 recognition/prewarm/build-identity fix.
+No card was special-cased anywhere.

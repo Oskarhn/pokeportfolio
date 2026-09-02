@@ -355,7 +355,135 @@ describe('VisualRecognitionClient — P82 live progress instrumentation', () => 
     expect(snapshot.liveProgress.workerBooted).toBe(true)
     expect(snapshot.backendDiagnostics?.phaseTimings.visualReadyTotalMs).toBe(972)
   })
+})
 
+describe('VisualRecognitionClient — P84 §12 expected-card rank lookup', () => {
+  it('V84-8a: a found card reports its rank/similarity and derived inTop20/inTop100 flags', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const client = new VisualRecognitionClient()
+    const readyPromise = client.ensureReady()
+    const worker = latestWorker()
+    worker.emit('message', { data: readyMessage() })
+    await readyPromise
+
+    const rankPromise = client.getExpectedCardRank('card-42')
+    const lastCall = worker.postMessage.mock.calls.at(-1)?.[0] as {
+      type: string
+      requestId: number
+      cardId: string
+    }
+    expect(lastCall.type).toBe('rank-lookup')
+    expect(lastCall.cardId).toBe('card-42')
+    worker.emit('message', {
+      data: {
+        type: 'rank-lookup-result',
+        requestId: lastCall.requestId,
+        found: true,
+        rank: 6,
+        similarity: 0.71,
+        totalCards: 19501,
+      },
+    })
+    const result = await rankPromise
+    expect(result).toEqual({
+      found: true,
+      rank: 6,
+      similarity: 0.71,
+      totalCards: 19501,
+      inTop20: true,
+      inTop100: true,
+    })
+  })
+
+  it('V84-8b: a rank beyond 100 reports inTop20/inTop100 as false, never fabricating a smaller rank', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const client = new VisualRecognitionClient()
+    const readyPromise = client.ensureReady()
+    const worker = latestWorker()
+    worker.emit('message', { data: readyMessage() })
+    await readyPromise
+
+    const rankPromise = client.getExpectedCardRank('card-far')
+    const lastCall = worker.postMessage.mock.calls.at(-1)?.[0] as { requestId: number }
+    worker.emit('message', {
+      data: {
+        type: 'rank-lookup-result',
+        requestId: lastCall.requestId,
+        found: true,
+        rank: 8204,
+        similarity: 0.12,
+        totalCards: 19501,
+      },
+    })
+    const result = await rankPromise
+    expect(result?.rank).toBe(8204)
+    expect(result?.inTop20).toBe(false)
+    expect(result?.inTop100).toBe(false)
+  })
+
+  it('V84-8c: a card genuinely absent from the index reports found=false with null rank/similarity', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const client = new VisualRecognitionClient()
+    const readyPromise = client.ensureReady()
+    const worker = latestWorker()
+    worker.emit('message', { data: readyMessage() })
+    await readyPromise
+
+    const rankPromise = client.getExpectedCardRank('deactivated-card')
+    const lastCall = worker.postMessage.mock.calls.at(-1)?.[0] as { requestId: number }
+    worker.emit('message', {
+      data: {
+        type: 'rank-lookup-result',
+        requestId: lastCall.requestId,
+        found: false,
+        rank: null,
+        similarity: null,
+        totalCards: 19501,
+      },
+    })
+    const result = await rankPromise
+    expect(result).toEqual({
+      found: false,
+      rank: null,
+      similarity: null,
+      totalCards: 19501,
+      inTop20: false,
+      inTop100: false,
+    })
+  })
+
+  it('V84-11: no worker constructed yet resolves null without ever posting a message', async () => {
+    const client = new VisualRecognitionClient()
+    const result = await client.getExpectedCardRank('any-card')
+    expect(result).toBeNull()
+  })
+
+  it('V84-10: dispose() clears any in-flight rank-lookup request (never resolves stale, never leaks a resolver)', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const client = new VisualRecognitionClient()
+    const readyPromise = client.ensureReady()
+    const worker = latestWorker()
+    worker.emit('message', { data: readyMessage() })
+    await readyPromise
+    void client.getExpectedCardRank('card-x')
+    client.dispose()
+    // A late-arriving message for the disposed request must not throw or resolve anything.
+    expect(() => {
+      worker.emit('message', {
+        data: {
+          type: 'rank-lookup-result',
+          requestId: 1,
+          found: true,
+          rank: 1,
+          similarity: 1,
+          totalCards: 1,
+        },
+      })
+    }).not.toThrow()
+  })
+})
+
+describe('VisualRecognitionClient — dispose', () => {
   it('dispose() clears the live progress snapshot back to an honest all-null state', async () => {
     vi.stubGlobal('Worker', FakeWorker)
     const client = new VisualRecognitionClient()

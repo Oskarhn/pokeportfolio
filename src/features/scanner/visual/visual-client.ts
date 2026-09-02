@@ -68,6 +68,26 @@ type WorkerMessage =
     }
   | { type: 'error'; requestId: number; message: string }
   | { type: 'progress'; phase: VisualWorkerProgressPhase; atMs: number }
+  | {
+      type: 'rank-lookup-result'
+      requestId: number
+      found: boolean
+      rank: number | null
+      similarity: number | null
+      totalCards: number
+    }
+
+/** P84 §12: result of a debug-only "where does this specific card rank" lookup. `found=false`
+ *  covers both "no scan has happened yet this session" and "the card is genuinely outside the
+ *  index" — the caller does not need finer detail than "no rank available" for either. */
+export interface ExpectedCardRank {
+  readonly found: boolean
+  readonly rank: number | null
+  readonly similarity: number | null
+  readonly totalCards: number
+  readonly inTop20: boolean
+  readonly inTop100: boolean
+}
 
 /** P82 §2-§6/§20: a live snapshot of the worker's most recent progress signal, kept even before
  *  ready/unavailable arrives — the gap that left every P81 phase-timing field as "—" during a real
@@ -112,6 +132,10 @@ export class VisualRecognitionClient {
     number,
     { resolve: (r: VisualAnalysisResult) => void; reject: (e: Error) => void }
   >()
+  /** P84 §12: separate request map for rank-lookup round trips — distinct response shape from
+   *  `pending`, and rank lookups never transfer/close a bitmap, so keeping them apart avoids any
+   *  risk of the two request kinds' resolve signatures being confused. */
+  private pendingRankLookups = new Map<number, (r: ExpectedCardRank) => void>()
   /** Wall-clock duration of the FIRST successful `analyze()` round trip (P81 §3/§17
    *  FIRST_EMBED_MS) — the number that answers "once the model is warm, how fast is one actual
    *  scan," distinct from cold model/index load. Null until one real embed has completed. */
@@ -225,6 +249,20 @@ export class VisualRecognitionClient {
       })
       return
     }
+    if (message.type === 'rank-lookup-result') {
+      const resolveRank = this.pendingRankLookups.get(message.requestId)
+      if (!resolveRank) return
+      this.pendingRankLookups.delete(message.requestId)
+      resolveRank({
+        found: message.found,
+        rank: message.rank,
+        similarity: message.similarity,
+        totalCards: message.totalCards,
+        inTop20: message.rank !== null && message.rank <= 20,
+        inTop100: message.rank !== null && message.rank <= 100,
+      })
+      return
+    }
     // Only 'error' remains after the branches above have returned.
     const pending = this.pending.get(message.requestId)
     if (!pending) return
@@ -257,6 +295,25 @@ export class VisualRecognitionClient {
     } catch {
       return null
     }
+  }
+
+  /**
+   * P84 §12: debug-only diagnostic — "where does EXPECTED_CARD_ID rank against the LAST scan's
+   * full-index search." Resolves `null` when no scan has happened yet this session or the visual
+   * channel is unavailable (worker never constructed) — never throws, never triggers a new
+   * embedding, never uploads or persists anything (a single small request/response round trip to
+   * a Worker this tab already owns). Callers are expected to gate this behind their own debug-mode
+   * check (this method itself has no opinion on that — `controller.ts` owns the gate).
+   */
+  async getExpectedCardRank(cardId: string): Promise<ExpectedCardRank | null> {
+    if (this.worker === null) return null
+    const worker = this.worker
+    const requestId = this.nextRequestId
+    this.nextRequestId += 1
+    return new Promise((resolve) => {
+      this.pendingRankLookups.set(requestId, resolve)
+      worker.postMessage({ type: 'rank-lookup', requestId, cardId })
+    })
   }
 
   /** Diagnostics-only snapshot (prompt §40) — never affects matching, safe to read at any time
@@ -302,6 +359,7 @@ export class VisualRecognitionClient {
     this.readyInfo = null
     this.readyPromise = null
     this.pending.clear()
+    this.pendingRankLookups.clear()
     this.workerBooted = false
     this.workerBootMs = null
     this.currentPhase = null
