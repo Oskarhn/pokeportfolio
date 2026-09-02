@@ -53,6 +53,30 @@ describe('P88 scenario A — strong correct visual must beat a coincidental wron
     )
     expect(match.candidates[0]?.card.cardId).toBe('correct')
   })
+
+  it("the pure repro: correct card has ZERO text evidence of its own (F-02's exact failure mode)", () => {
+    // Isolates the audit's precise mechanism — the CORRECT card's own printed id/name are totally
+    // unrelated to what OCR read (a real photo with a badly misread number/name), so it earns NO
+    // text points at all; only the WRONG card coincidentally converges with the OCR text. Under
+    // the pre-P88 scoring (visual ceiling 62, id+name+language = 80), the wrong card scored 80 vs
+    // the correct card's 48 — the wrong card won unconditionally. This is the case the dominance
+    // guard exists for.
+    const correct = card('correct', 'Shieldon', '999', 'Diamond & Pearl')
+    const wrong = card('wrong', 'Pidgey', '58', 'Base Set')
+    const visualScores: VisualEvidenceByCard = new Map([
+      ['correct', 0.9],
+      ['wrong', 0.05],
+    ])
+    const match = matchScannerObservation(
+      { rawNameText: 'Pidgey', rawCollectorNumberText: '58', languageHint: 'en' },
+      [correct, wrong],
+      visualScores,
+    )
+    expect(match.candidates[0]?.card.cardId).toBe('correct')
+    // The wrong card's coincidental text convergence must have been visibly discounted.
+    const wrongEntry = match.candidates.find((c) => c.card.cardId === 'wrong')
+    expect(wrongEntry?.reasons).toContain('visual-dominance-guarded')
+  })
 })
 
 describe('P88 scenario B — weak/catastrophic visual (~0.18) must never overpower trustworthy exact OCR', () => {
