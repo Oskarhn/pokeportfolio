@@ -532,3 +532,35 @@ light). `analyze.ts` tries the existing `contrast` pass first (unchanged call co
 for that field, so an already-working scan never pays for it. Not benchmarked against a real device
 or a representative real-photo OCR corpus this session — a bounded, motivated but unverified
 addition, disclosed as such.
+
+## 7f. Content-addressed index publishing, runtime integrity and cache coherence (M15, 2026-09-02 — P87, D-101)
+
+P86's independent adversarial audit (F-01, CRITICAL/P0) found the visual reference INDEX served
+`Cache-Control: immutable, max-age=1y` at a fixed literal path whose DATA had already been
+rebuilt at least three times (P76/P77/P79) — a device that already ran the scanner could keep
+using a stale or incomplete index for up to a year with no diagnostic signal. Full mechanism,
+design and every touched surface: D-101. Summary for a future session:
+
+- The index is now content-addressed (`.../visual-v1/index/generations/<contentId>/`, a SHA-256
+  over semantic manifest fields + card-ids + embeddings bytes, `src/domain/scanner/
+  index-content-id.ts`), with a tiny always-revalidating pointer (`current.json`) as the one
+  thing a client fetches first. Model/engine binaries (content-stable per model revision) keep
+  their existing path, untouched.
+- `verify-index.ts`'s checks are now build-load-bearing (`stage-index-assets.mjs` calls them
+  directly before staging anything into `public/`), publishing is atomic (temp-write, verify,
+  rename — `atomic-publish.ts`), and `drainAllCardPages` uses keyset (not OFFSET) pagination with
+  a before/after exact-count reconciliation around the full drain.
+- The runtime worker gates a loaded index's declared source project against THIS deployment's
+  own configured Supabase project (never gated in local/CI-placeholder builds), and independently
+  re-hashes the fetched embeddings via WebCrypto rather than trusting the manifest's own checksum
+  field alone.
+- The already-valid, already-hosted-sourced 19,501-card committed index was repackaged under its
+  correct content id by a one-time local script — zero re-embedding, zero database access.
+- P84's debug-only `getExpectedCardRank` tooling (a sibling, unmerged branch off the same base)
+  was ported by hand, unchanged in behavior.
+
+Not addressed here, and still open for a future session per P86's other findings: F-02 (the
+visual-evidence score ceiling structurally below coincidental text-match convergence — the
+CRITICAL/P0 companion finding to F-01, a matcher-scoring defect, out of this session's scope),
+F-03 (the discriminative-power-at-scale benchmark gap), and the remaining HIGH/MEDIUM findings
+this session was not asked to fix (F-05 through F-41 except where explicitly listed in D-101).

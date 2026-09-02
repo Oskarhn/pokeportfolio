@@ -128,22 +128,50 @@ function cspDirectives(csp) {
     /Permissions-Policy:.*/.exec(headersFile)?.[0] ?? '(none)',
   )
 
-  // P81 §8/§9: scanner assets are version-pinned (v7, visual-v1) and the visual worker verifies
-  // EXPECTED_MODEL_REVISION on top of that — safe to cache aggressively, and Cloudflare Pages'
-  // own default for non-content-hashed filenames (max-age=0, must-revalidate, confirmed live) is
-  // NOT that, so this must be an explicit rule, not an assumption.
-  const scannerAssetsBlockIndex = headersFile.indexOf('/scanner-assets/*')
-  const scannerAssetsCacheControl =
-    scannerAssetsBlockIndex === -1
+  // P81 §8/§9: scanner ENGINE assets (OCR v7, the pinned DINOv2 model + onnxruntime-web WASM) are
+  // version-pinned and content-stable — safe to cache aggressively, and Cloudflare Pages' own
+  // default for non-content-hashed filenames (max-age=0, must-revalidate, confirmed live) is NOT
+  // that, so each must be an explicit rule.
+  function cacheControlFor(blockPath) {
+    const blockIndex = headersFile.indexOf(blockPath)
+    return blockIndex === -1
       ? null
-      : /Cache-Control:\s*(.+)/.exec(headersFile.slice(scannerAssetsBlockIndex))?.[1]?.trim()
+      : /Cache-Control:\s*(.+)/.exec(headersFile.slice(blockIndex))?.[1]?.trim()
+  }
+  const immutable = (cc) =>
+    cc !== null && cc !== undefined && /max-age=31536000/.test(cc) && /immutable/.test(cc)
+
+  for (const enginePath of [
+    '/scanner-assets/v7/*',
+    '/scanner-assets/visual-v1/model/*',
+    '/scanner-assets/visual-v1/ort/*',
+  ]) {
+    record(
+      `a dedicated ${enginePath} block sets a long-lived immutable Cache-Control`,
+      immutable(cacheControlFor(enginePath)),
+      cacheControlFor(enginePath) ?? `(no ${enginePath} block found)`,
+    )
+  }
+
+  // P87 F-01: the visual INDEX (data, rebuilt independently of the model) is now published
+  // content-addressed under .../index/generations/<contentId>/ — genuinely safe to be immutable,
+  // since a new generation is a new URL rather than mutated content at a fixed one.
   record(
-    'a dedicated /scanner-assets/* block sets a long-lived immutable Cache-Control',
-    scannerAssetsCacheControl !== null &&
-      scannerAssetsCacheControl !== undefined &&
-      /max-age=31536000/.test(scannerAssetsCacheControl) &&
-      /immutable/.test(scannerAssetsCacheControl),
-    scannerAssetsCacheControl ?? '(no /scanner-assets/* block found)',
+    'a dedicated /scanner-assets/visual-v1/index/generations/* block sets a long-lived immutable Cache-Control',
+    immutable(cacheControlFor('/scanner-assets/visual-v1/index/generations/*')),
+    cacheControlFor('/scanner-assets/visual-v1/index/generations/*') ?? '(no block found)',
+  )
+  // The bootstrap pointer must revalidate, never be cached immutably — this is the exact bug
+  // (F-01) this whole restructure fixes, so it is pinned here as a build-artifact-level gate, not
+  // just a source-level test.
+  const currentJsonCacheControl = cacheControlFor('/scanner-assets/visual-v1/index/current.json')
+  record(
+    '/scanner-assets/visual-v1/index/current.json revalidates (no-cache), never immutable',
+    currentJsonCacheControl !== null &&
+      currentJsonCacheControl !== undefined &&
+      /no-cache/.test(currentJsonCacheControl) &&
+      !/immutable/.test(currentJsonCacheControl),
+    currentJsonCacheControl ?? '(no current.json block found)',
   )
 }
 
@@ -188,6 +216,29 @@ function cspDirectives(csp) {
     'no network-first style runtime strategy exists in the worker',
     dangerousStrategies.length === 0,
     dangerousStrategies.length ? dangerousStrategies.join(', ') : 'none',
+  )
+
+  // P87 F-01/F-42: the visual model/engine runtime cache and the content-addressed index-
+  // generation runtime cache are separate named caches — an index-generation rebuild must never
+  // require bumping the model cache's name, and vice versa.
+  record(
+    "the visual model/engine cache is named 'scanner-assets-visual-v1'",
+    swFile.includes('scanner-assets-visual-v1'),
+    '(cacheName)',
+  )
+  record(
+    "the visual index-generation cache is named 'scanner-assets-visual-v1-index'",
+    swFile.includes('scanner-assets-visual-v1-index'),
+    '(cacheName)',
+  )
+  // The bootstrap pointer (current.json) must never be interceptable by a CacheFirst Workbox
+  // route — the whole point of F-01's fix is that it always reaches the network/HTTP-cache layer
+  // (governed by its own no-cache header + the worker's `cache: 'no-store'` fetch) rather than
+  // being answered from Cache Storage by a route that can never learn about a newer generation.
+  record(
+    'no runtime-caching route pattern in the worker matches .../index/current.json',
+    !swFile.includes('current\\\\.json') && !/index\/current\.json/.test(swFile),
+    '(current.json must be absent from every registerRoute pattern)',
   )
 }
 

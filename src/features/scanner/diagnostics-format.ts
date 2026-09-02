@@ -80,6 +80,18 @@ export function formatScannerDiagnostics(d: ScannerDiagnostics): string {
     `INDEX_VERSION=${d.indexVersion ?? EMPTY}`,
     `INDEX_CARD_COUNT=${num(d.indexCardCount)}`,
     `INDEX_SOURCE_PROJECT_REF=${d.indexSourceProjectRef ?? EMPTY}`,
+    // P87 F-01/F-22/§6/§15: makes a stale or wrong-project index impossible to hide in a
+    // screenshot/diagnostics paste — the content id changes whenever the underlying data does,
+    // even across a rebuild against the identical model revision.
+    `INDEX_POINTER_CONTENT_ID=${d.indexContentId ?? EMPTY}`,
+    `INDEX_MANIFEST_CONTENT_ID=${d.indexContentId ?? EMPTY}`,
+    `INDEX_GENERATED_AT=${d.indexGeneratedAt ?? EMPTY}`,
+    `INDEX_MODEL_REVISION=${d.indexModelRevision ?? EMPTY}`,
+    `INDEX_EMBEDDINGS_SHA256=${d.indexEmbeddingsSha256 ?? EMPTY}`,
+    `INDEX_SOURCE_PROJECT_EXPECTED=${d.indexSourceProjectExpected ?? EMPTY}`,
+    `INDEX_SOURCE_PROJECT_MATCH=${d.indexSourceProjectMatch === null ? EMPTY : d.indexSourceProjectMatch ? 'yes' : 'no'}`,
+    `INDEX_RUNTIME_SHA256_VERIFIED=${d.indexRuntimeChecksumVerified === null ? EMPTY : d.indexRuntimeChecksumVerified ? 'yes' : 'no'}`,
+    `INDEX_RUNTIME_CHECKSUM_MS=${num(d.indexRuntimeChecksumMs)}`,
     `INDEX_LOAD_MS=${num(d.indexLoadMs)}`,
     `INDEX_SEARCH_MS=${num(d.indexSearchMs)}`,
     'TOP_VISUAL_CANDIDATES:',

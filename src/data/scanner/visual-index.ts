@@ -57,6 +57,21 @@ export class VisualIndexError extends Error {
   }
 }
 
+/**
+ * The tiny bootstrap pointer (P87 F-01) a client fetches FIRST, with a revalidating
+ * Cache-Control (`no-cache` — see vite.config.ts's `_headers` generation and `cache: 'no-store'`
+ * on the fetch call itself, belt-and-suspenders), to learn which content-addressed generation is
+ * CURRENT — analogous to `build-meta.json`'s existing role for app deployments (D-100), applied to
+ * index data instead. `manifest.json`/`card-ids.json`/`embeddings.bin` for that generation then
+ * live under `.../index/generations/<contentId>/`, served genuinely immutable (the URL itself
+ * changes when the content does, so the directive is finally true rather than merely asserted).
+ */
+export interface VisualIndexPointer {
+  readonly indexVersion: string
+  readonly contentId: string
+  readonly manifestPath: string
+}
+
 export interface DecodedVisualIndex {
   readonly manifest: VisualIndexManifest
   readonly cardIds: readonly string[]

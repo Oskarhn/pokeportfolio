@@ -74,6 +74,31 @@ export interface ScannerDiagnostics {
   indexVersion: string | null
   indexCardCount: number | null
   indexSourceProjectRef: string | null
+  /** P87 §15: the loaded generation's own declared identity fields — makes a stale index
+   *  impossible to hide from a screenshot/diagnostics paste, alongside indexContentId below. */
+  indexModelRevision: string | null
+  indexGeneratedAt: string | null
+  indexEmbeddingsSha256: string | null
+  /** P87 F-01: the content-addressed id of the generation actually loaded this session — the
+   *  field that makes a stale index impossible to hide (see current.json/generations/<id>). Null
+   *  before the index has loaded (or if it never becomes available). */
+  indexContentId: string | null
+  /** P87 F-22: which source project THIS deployment expects the index to resolve against
+   *  (derived from `VITE_SUPABASE_URL`), or null when this deployment itself has no real hosted
+   *  project configured (the local/CI-placeholder case, where nothing is gated). */
+  indexSourceProjectExpected: string | null
+  /** P87 F-22: whether `indexSourceProjectRef` matched `indexSourceProjectExpected`. Null when
+   *  there was nothing to compare (no expectation configured, or no index loaded at all) — never
+   *  fabricated as true/false in that case. */
+  indexSourceProjectMatch: boolean | null
+  /** P87 §6: whether the loaded generation's embeddings were independently re-hashed at load time
+   *  and found to match `manifest.embeddingsSha256` (WebCrypto SHA-256 over the fetched bytes,
+   *  not merely trusting the byte-for-byte identical manifest field). Null before the index has
+   *  loaded. */
+  indexRuntimeChecksumVerified: boolean | null
+  /** Milliseconds the runtime SHA-256 re-hash actually took (P87 §6) — measured once per newly
+   *  loaded generation, never repeated per scan. Null before the index has loaded. */
+  indexRuntimeChecksumMs: number | null
   indexLoadMs: number | null
   indexSearchMs: number | null
   topVisualCandidates: { cardId: string; similarity: number; name: string | null }[]
@@ -177,6 +202,25 @@ export interface ScannerDiagnostics {
  * scan replaces them or the controller disposes. A null field means that stage never ran (e.g.
  * the full-frame OCR fallback path never produced ROI crops) — never a fabricated placeholder.
  */
+/**
+ * Debug-only diagnostic (P84, ported P87): re-ranks the MOST RECENT scan's query embedding
+ * against the FULL decoded visual index for one candidate card, without re-embedding or making a
+ * second scan. Never persists the expected card's identity, never auto-adds anything, never
+ * uploads anything — a pure read over an already-in-memory query vector. See
+ * {@link ScannerUiController.getExpectedCardRank}'s own doc for the debug-mode gating contract.
+ */
+export interface ExpectedCardRank {
+  readonly found: boolean
+  readonly rank: number | null
+  readonly similarity: number | null
+  readonly totalCards: number
+  readonly inTop20: boolean
+  readonly inTop100: boolean
+  /** The content-addressed generation this rank was computed against (P87 F-01) — lets the owner
+   *  confirm which index generation a diagnostic reading actually came from. */
+  readonly indexContentId: string | null
+}
+
 export interface ScannerDebugImages {
   /** The plain crop-to-guide-rect image, BEFORE rectification — the "what the guide alone saw"
    *  comparison baseline. */
@@ -296,6 +340,13 @@ export interface ScannerUiController {
    *  this reports the HEAVYWEIGHT/enhanced DINO channel specifically — {@link getFastScannerState}
    *  is what the intro screen should gate its own loading copy on instead. */
   getVisualPrewarmState?(): 'not-loaded' | 'loading' | 'ready' | 'failed'
+  /** Debug-only (P84, ported P87): re-ranks the most recent scan's cached query vector against
+   *  the full visual index for `cardId`, without re-embedding. Resolves `null` immediately,
+   *  WITHOUT ever calling the visual client/worker, outside `?scannerDebug=1` — this is a debug
+   *  tool, never a production matching path. Also resolves `null` when no scan has produced a
+   *  query vector yet this session, or when the visual channel/index is unavailable. Never adds,
+   *  saves, or uploads anything. Optional for the same reason as the other optional members above. */
+  getExpectedCardRank?(cardId: string): Promise<ExpectedCardRank | null>
   /** P82 §17-§19: readiness of the FAST (OCR) baseline — reaches 'ready' far sooner than
    *  {@link getVisualPrewarmState} on a cold device, since it does not depend on the ~45MB DINO
    *  model/index. Optional for the same reason as the other diagnostic getters above. */

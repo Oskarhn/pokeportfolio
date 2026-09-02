@@ -26,6 +26,13 @@
 
 export const CHECKPOINT_SCHEMA_VERSION = 2
 
+/** The well-known local/CI-placeholder Supabase URL (build-index.ts's own `LOCAL_DEFAULTS.url`,
+ *  and CI's `build-and-test` job's `VITE_SUPABASE_URL`, are both exactly this value) — shared here
+ *  so the RUNTIME source-project gate (visual-worker.ts, P87 F-22) can recognize "this deployment
+ *  itself has no real hosted project configured" and treat that as nothing-to-gate-against rather
+ *  than a hard rejection, using the identical constant the generator already treats as local. */
+export const LOCAL_SUPABASE_URL = 'http://127.0.0.1:54321'
+
 export interface CheckpointIdentity {
   readonly schemaVersion: number
   /** Derived from SUPABASE_URL's host — e.g. "127.0.0.1:54321" or "nopmkroeygmlvndzjjqs.supabase.co". */
