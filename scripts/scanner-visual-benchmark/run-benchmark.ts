@@ -19,12 +19,16 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   matchScannerObservation,
-  computeDHash,
-  hammingDistance,
-  dHashSimilarity,
   type ScannerCandidateRecord,
   type VisualEvidenceByCard,
 } from '../../src/domain/scanner/index'
+// F-33 (P89): dHash/pHash are benchmark-only — no longer re-exported from the domain barrel
+// (rejected as a live retrieval channel, P82 §9-§11) — imported directly by path here instead.
+import {
+  computeDHash,
+  hammingDistance,
+  dHashSimilarity,
+} from '../../src/domain/scanner/perceptual-hash'
 import { splitFullFrameCardText, cleanSignal } from '../../src/features/scanner/analyze'
 import { buildCorpus } from './lib/fetch-references.mjs'
 import { augmentAll, AUGMENTATION_PROFILES } from './lib/augment.mjs'

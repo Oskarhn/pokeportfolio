@@ -37,8 +37,7 @@
     "scanner:visual:benchmark:cold-start": "node scripts/scanner-visual-benchmark/browser-cold-start.mjs",
     "scanner:visual:benchmark:hash": "tsx scripts/scanner-visual-benchmark/run-hash-benchmark.ts",
     "scanner:index:build": "tsx scripts/scanner-visual-index/build-index.ts",
-    "scanner:index:verify": "tsx scripts/scanner-visual-index/verify-index.ts",
-    "scanner:hash-index:build": "tsx scripts/scanner-hash-index/build-index.ts"
+    "scanner:index:verify": "tsx scripts/scanner-visual-index/verify-index.ts"
   },
   "dependencies": {
     "@huggingface/transformers": "4.2.0",
