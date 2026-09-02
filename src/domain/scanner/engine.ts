@@ -32,6 +32,7 @@
  */
 import { compareCollectorNumber } from './collector-compare'
 import { parseCollectorNumber } from './collector-number'
+import { parseCollectorNumberStructured, type CollectorParseConfidence } from './collector-parse'
 import { compareNames } from './name-similarity'
 import { normalizeCardText, parseLanguageHint } from './normalize'
 import { compareSetHint } from './set-hint'
@@ -94,6 +95,41 @@ export const SCORING_TIERS = {
   minNameLengthForSignal: 3,
 } as const
 
+/**
+ * P88 §8/F-12 — OCR text evidence reliability. `collectorNumberExact`/`nameExact` etc. are
+ * strong ONLY when the underlying OCR read itself was trustworthy; a low-confidence read that
+ * happens to structurally match a candidate must not be scored identically to a clean, confident
+ * one — this is exactly the "confidently wrong" gap F-12 found (OCR confidence never reached
+ * engine.ts at all). `confidence` is Tesseract's own 0-100 mean-word confidence; `undefined`
+ * means the caller did not supply it (every pre-P88 call site, and every existing test) and is
+ * treated as full reliability — a strictly additive, backward-compatible change.
+ */
+const OCR_RELIABILITY_FULL_MIN = 70
+const OCR_RELIABILITY_FLOOR_MAX = 15
+const OCR_RELIABILITY_FLOOR = 0.4
+
+export function ocrTextReliability(confidence: number | null | undefined): number {
+  if (confidence === null || confidence === undefined || !Number.isFinite(confidence)) return 1
+  const clamped = Math.max(0, Math.min(100, confidence))
+  if (clamped >= OCR_RELIABILITY_FULL_MIN) return 1
+  if (clamped <= OCR_RELIABILITY_FLOOR_MAX) return OCR_RELIABILITY_FLOOR
+  const span = OCR_RELIABILITY_FULL_MIN - OCR_RELIABILITY_FLOOR_MAX
+  const t = (clamped - OCR_RELIABILITY_FLOOR_MAX) / span
+  return OCR_RELIABILITY_FLOOR + t * (1 - OCR_RELIABILITY_FLOOR)
+}
+
+/** Structural parse confidence (collector-parse.ts) discounts collector-number evidence only for
+ *  a LOW-confidence shape — a bare parse success that merely LOOKS like an id ("Z7", a stray
+ *  "1995") is worth less than a real printed-id shape, even at identical OCR confidence. 'medium'
+ *  is the ORDINARY real-catalog shape (a bare 1-3 digit vintage id like "4", or a known
+ *  multi-letter prefix like "TG01") and is NOT discounted — only 'low' (single generic letter +
+ *  digit, or a bare 4+-digit run with no total, i.e. exactly the noise shapes P85 found) is.
+ *  `undefined`/'none' is treated as full reliability for backward compatibility — callers that
+ *  never computed a structural confidence (every pre-P88 test) behave exactly as before. */
+export function structuralReliability(confidence: CollectorParseConfidence | undefined): number {
+  return confidence === 'low' ? 0.55 : 1
+}
+
 /** Parses one observation into comparable signals. Junk/short fields become null — absence of
  *  evidence, never a guess. `visualSimilarity` is intentionally dropped here (reserved seam). */
 export function parseScannerSignals(observation: ScannerObservation): ParsedScannerSignals {
@@ -101,6 +137,9 @@ export function parseScannerSignals(observation: ScannerObservation): ParsedScan
   const normalized = normalizedNameRaw === '' ? '' : normalizeCardText(normalizedNameRaw)
   const setHintRaw = observation.rawSetText?.trim() ?? ''
   const setHintNormalized = setHintRaw === '' ? '' : normalizeCardText(setHintRaw)
+  const structuralConfidence = observation.rawCollectorNumberText
+    ? parseCollectorNumberStructured(observation.rawCollectorNumberText).confidence
+    : undefined
   return {
     normalizedName: normalized.length >= SCORING_TIERS.minNameLengthForSignal ? normalized : null,
     collectorNumber: observation.rawCollectorNumberText
@@ -108,6 +147,9 @@ export function parseScannerSignals(observation: ScannerObservation): ParsedScan
       : null,
     setHint: setHintNormalized.length >= 4 ? setHintNormalized : null,
     languageHint: parseLanguageHint(observation.languageHint),
+    nameReliability: ocrTextReliability(observation.nameOcrConfidence),
+    collectorReliability:
+      ocrTextReliability(observation.collectorOcrConfidence) * structuralReliability(structuralConfidence),
   }
 }
 
@@ -134,27 +176,31 @@ function scoreCandidate(
   const reasons: ScannerReasonCode[] = []
   let score = 0
 
+  // P88 §8/F-12: id/name evidence points are scaled by how trustworthy the underlying OCR read
+  // actually was (reliability 1 when the observation supplied no confidence — every pre-P88
+  // caller/test) — a low-confidence-but-structurally-plausible read no longer scores identically
+  // to a clean, confident one, the "confidently wrong" gap F-12 found.
   const idEvidence = compareCollectorNumber(signals.collectorNumber, card.localId)
   if (idEvidence === 'exact') {
-    score += SCORING_WEIGHTS.collectorNumberExact
+    score += Math.round(SCORING_WEIGHTS.collectorNumberExact * signals.collectorReliability)
     reasons.push('collector-number-exact')
   } else if (idEvidence === 'folded') {
-    score += SCORING_WEIGHTS.collectorNumberFolded
+    score += Math.round(SCORING_WEIGHTS.collectorNumberFolded * signals.collectorReliability)
     reasons.push('collector-number-ocr-folded')
   } else if (idEvidence === 'numeric') {
-    score += SCORING_WEIGHTS.collectorNumberNumericOnly
+    score += Math.round(SCORING_WEIGHTS.collectorNumberNumericOnly * signals.collectorReliability)
     reasons.push('collector-number-numeric-only')
   }
 
   const nameEvidence = compareNames(signals.normalizedName, card.name)
   if (nameEvidence === 'exact') {
-    score += SCORING_WEIGHTS.nameExact
+    score += Math.round(SCORING_WEIGHTS.nameExact * signals.nameReliability)
     reasons.push('name-exact')
   } else if (nameEvidence === 'close') {
-    score += SCORING_WEIGHTS.nameClose
+    score += Math.round(SCORING_WEIGHTS.nameClose * signals.nameReliability)
     reasons.push('name-close')
   } else if (nameEvidence === 'partial') {
-    score += SCORING_WEIGHTS.namePartial
+    score += Math.round(SCORING_WEIGHTS.namePartial * signals.nameReliability)
     reasons.push('name-partial')
   }
 
@@ -192,6 +238,74 @@ function scoreCandidate(
 }
 
 /**
+ * P88 §2/§3/F-02 — visual-dominance guard. A text-favoured candidate whose OWN visual similarity
+ * is none/weak must not outrank a DIFFERENT candidate the visual channel is confident about
+ * (>= strongMin) purely because a coincidental OCR text convergence (e.g. id-exact + name-exact
+ * = 75) happens to sit above that visual match's point value — the exact mechanism F-02 found.
+ *
+ * The guard only fires when the visual channel produced a genuinely STRONG anchor for some
+ * specific card (never for the catastrophic/weak regime — P84's calibration shows a value like
+ * 0.18 is nowhere near this band, so a trustworthy OCR-exact read is never touched when visual
+ * evidence is merely absent or weak, satisfying the opposite required property from prompt §3).
+ * A candidate whose OWN visual similarity also reaches 'strong' is NEVER guarded (two genuinely
+ * similar prints/artworks — collector number, not visual, should differentiate those, per the
+ * scenario-C "two legitimate same-name printings" requirement).
+ *
+ * `OVERWHELMING_TEXT_SCORE` is an escape hatch for the (extremely rare) case where a wrong card's
+ * TEXT evidence alone is essentially total-coverage-convergent (id + name + set + language all
+ * agreeing) — a coincidence so complete it is treated as its own strong evidence rather than
+ * guarded away.
+ */
+const VISUAL_DOMINANCE_TEXT_FACTOR = 0.5
+const OVERWHELMING_TEXT_SCORE = 90
+
+function applyVisualDominanceGuard(
+  scored: readonly RankedScannerCandidate[],
+  signals: ParsedScannerSignals,
+): { guarded: readonly RankedScannerCandidate[]; anyGuarded: boolean } {
+  let anchorCardId: string | null = null
+  let anchorSimilarity = -Infinity
+  for (const entry of scored) {
+    if (
+      entry.visualSimilarity !== null &&
+      entry.visualSimilarity !== undefined &&
+      Number.isFinite(entry.visualSimilarity) &&
+      entry.visualSimilarity > anchorSimilarity
+    ) {
+      anchorSimilarity = entry.visualSimilarity
+      anchorCardId = entry.card.cardId
+    }
+  }
+  if (anchorCardId === null || visualEvidenceTier(anchorSimilarity) !== 'strong') {
+    return { guarded: scored, anyGuarded: false }
+  }
+
+  let anyGuarded = false
+  const guarded = scored.map((entry) => {
+    if (entry.card.cardId === anchorCardId) return entry
+    const ownTier = visualEvidenceTier(entry.visualSimilarity)
+    if (ownTier !== 'none' && ownTier !== 'weak') return entry
+
+    const textOnlyScore = scoreCandidate(signals, entry.card).score
+    if (textOnlyScore >= OVERWHELMING_TEXT_SCORE) return entry
+
+    const ownVisualPoints = visualEvidencePoints(entry.visualSimilarity)
+    const guardedScore = Math.max(
+      0,
+      Math.min(100, Math.round(textOnlyScore * VISUAL_DOMINANCE_TEXT_FACTOR) + ownVisualPoints),
+    )
+    if (guardedScore >= entry.score) return entry
+    anyGuarded = true
+    return {
+      ...entry,
+      score: guardedScore,
+      reasons: [...entry.reasons, 'visual-dominance-guarded' as const],
+    }
+  })
+  return { guarded, anyGuarded }
+}
+
+/**
  * Ranks candidates against parsed signals plus optional per-candidate visual evidence (P76,
  * D-097). Bounded output, deterministic order (score desc, then cardId asc so equal scores never
  * depend on input order), duplicates removed. `visualScores` candidates that never appeared in
@@ -218,7 +332,8 @@ export function rankScannerCandidates(
       deduped.set(card.cardId, scoreCandidate(signals, card, visualScores))
     }
   }
-  const sorted = [...deduped.values()].sort((a, b) => {
+  const { guarded } = applyVisualDominanceGuard([...deduped.values()], signals)
+  const sorted = [...guarded].sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score
     return a.card.cardId < b.card.cardId ? -1 : a.card.cardId > b.card.cardId ? 1 : 0
   })
@@ -253,6 +368,10 @@ export function rankScannerCandidates(
     }
   }
 
+  // P88 §4/F-26: 'visual-text-disagreement' used to be pure telemetry (no reader anywhere) — now
+  // it actually caps tier. Restricted to a MEANINGFUL visual disagreement (moderate/strong tier
+  // only, never 'weak'/catastrophic — prompt §3/§4: a low-quality visual read must never punish
+  // otherwise-trustworthy text evidence).
   if (visualScores && visualScores.size > 0 && top) {
     let textOnlyTopCardId: string | null = null
     let textOnlyBestScore = -1
@@ -271,14 +390,16 @@ export function rankScannerCandidates(
         visualOnlyTopCardId = cardId
       }
     }
+    const visualOnlyTier = visualEvidenceTier(visualOnlyBestSimilarity)
     if (
       textOnlyTopCardId !== null &&
       visualOnlyTopCardId !== null &&
       textOnlyTopCardId !== visualOnlyTopCardId &&
       textOnlyBestScore > 0 &&
-      visualEvidenceTier(visualOnlyBestSimilarity) !== 'none'
+      (visualOnlyTier === 'moderate' || visualOnlyTier === 'strong')
     ) {
       notes.push('visual-text-disagreement')
+      if (tier === 'high') tier = 'medium'
     }
   }
 
