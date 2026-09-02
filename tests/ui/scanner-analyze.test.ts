@@ -3,6 +3,7 @@ import {
   OCR_WORKING_LONG_EDGE,
   runOcrAnalysis,
   splitFullFrameCardText,
+  extractCollectorNumberLine,
   scoreNameRoiCandidate,
   scoreNumberRoiCandidate,
   isNameRoiConfident,
@@ -181,10 +182,11 @@ describe('runOcrAnalysis — capture → observation', () => {
     expect(draw?.[4]).toBe(1400)
   })
 
-  it('P80/P82 R3: runs EXACTLY ONE full-card fallback when EVERY candidate for BOTH fields is unusable across BOTH preprocessing passes', async () => {
-    // 2 name candidates + 2 number candidates, all empty/whitespace-only under BOTH the `contrast`
-    // pass (P78-P81 behaviour, unchanged) AND the P82 `binarize` retry pass (only attempted
-    // because contrast found nothing at all) — then the fallback text.
+  it('P80/P82/P85 R3: runs EXACTLY ONE full-card fallback when EVERY candidate for BOTH fields is unusable across ALL THREE passes', async () => {
+    // 2 name candidates + 2 number candidates, all empty/whitespace-only under the `contrast` pass
+    // (P78-P81 behaviour, unchanged), the P82 `binarize` retry pass, AND the P85 `multi-line`
+    // third pass (number field only — see the dedicated recovery test below for the case where
+    // that pass actually finds something) — only then the full-frame fallback text.
     const engine = makeEngine([
       { text: '', confidence: 0 }, // name candidate 1, contrast
       { text: ' ', confidence: 0 }, // name candidate 2, contrast
@@ -194,18 +196,45 @@ describe('runOcrAnalysis — capture → observation', () => {
       { text: ' ', confidence: 0 }, // number candidate 2, contrast
       { text: '', confidence: 0 }, // number candidate 1, binarize retry
       { text: ' ', confidence: 0 }, // number candidate 2, binarize retry
+      { text: '', confidence: 0 }, // number candidate 1, multi-line retry (P85)
+      { text: ' ', confidence: 0 }, // number candidate 2, multi-line retry (P85)
       { text: 'TESTASAURUS 58/102 junk', confidence: 40 }, // full-card fallback
     ])
     const pool = makePool()
     const observation = await runOcrAnalysis(makeCapture(), engine, pool as never)
-    expect(engine.recognize).toHaveBeenCalledTimes(9)
-    expect(engine.recognize.mock.calls[8]?.[1]).toBe('auto')
+    expect(engine.recognize).toHaveBeenCalledTimes(11)
+    expect(engine.recognize.mock.calls[8]?.[1]).toBe('multi-line')
+    expect(engine.recognize.mock.calls[10]?.[1]).toBe('auto')
     expect(observation.usedFullFrameFallback).toBe(true)
     expect(observation.rawNameText).toBe('TESTASAURUS')
     expect(observation.rawCollectorNumberText).toBe('58/102')
     // Fails gracefully: no candidate ever won either field.
     expect(observation.nameRoiId).toBeNull()
     expect(observation.numberRoiId).toBeNull()
+  })
+
+  it('O85-14/P85 §7: the multi-line third pass recovers a collector number sharing its line with credit text, at bounded extra cost', async () => {
+    // Name resolves confidently on the first candidate (1 call). The number field's contrast AND
+    // binarize passes both find nothing usable on EITHER candidate (4 calls) — exactly the
+    // real-corpus failure this session found (docs/SCANNER_RESEARCH.md §7f): a single-line read of
+    // a crop that structurally contains two lines returns empty. The bounded multi-line retry then
+    // finds the id on candidate 2's block-read second line — 2 extra calls, never the full-frame
+    // fallback.
+    const engine = makeEngine([
+      { text: 'CHANDELURE', confidence: 90 }, // name candidate 1: confident, stops early
+      { text: '', confidence: 0 }, // number candidate 1, contrast
+      { text: '', confidence: 0 }, // number candidate 2, contrast
+      { text: '', confidence: 0 }, // number candidate 1, binarize
+      { text: '', confidence: 0 }, // number candidate 2, binarize
+      { text: 'Illus. Ken Sugimori\n049/197', confidence: 55 }, // number candidate 1, multi-line: two real lines
+    ])
+    const pool = makePool()
+    const observation = await runOcrAnalysis(makeCapture(), engine, pool as never)
+    expect(engine.recognize).toHaveBeenCalledTimes(6)
+    expect(engine.recognize.mock.calls[5]?.[1]).toBe('multi-line')
+    expect(observation.usedFullFrameFallback).toBe(false)
+    expect(observation.rawCollectorNumberText).toBe('049/197')
+    expect(observation.numberRoiId).toBe('modern-bottom-left')
   })
 
   it('returns honest NULLS when nothing at all was read — never fabricated signals', async () => {
@@ -258,6 +287,52 @@ describe('splitFullFrameCardText', () => {
       name: 'JUST SOME WORDS HERE',
       number: null,
     })
+  })
+})
+
+describe('P85 §7 extractCollectorNumberLine (pure)', () => {
+  it('picks the LAST line when it is the one that parses as a printed id', () => {
+    expect(extractCollectorNumberLine('Illus. Ken Sugimori\n049/197')).toBe('049/197')
+  })
+
+  it('finds the id even when it is not the last line', () => {
+    expect(extractCollectorNumberLine('049/197\nNintendo, Creatures, GAMEFREAK')).toBe('049/197')
+  })
+
+  it('returns null when NO line looks like a printed id', () => {
+    expect(extractCollectorNumberLine('Illus. Ken Sugimori\nNintendo, Creatures')).toBeNull()
+  })
+
+  it('returns null for empty/whitespace-only input', () => {
+    expect(extractCollectorNumberLine('')).toBeNull()
+    expect(extractCollectorNumberLine('   \n  \n')).toBeNull()
+  })
+
+  it('ignores blank lines between real content', () => {
+    expect(extractCollectorNumberLine('Illus. Ken Sugimori\n\n\nTG01/TG30')).toBe('TG01/TG30')
+  })
+
+  it('extracts the id TOKEN from a line with real surrounding noise (confirmed set-symbol misread)', () => {
+    // Real PSM 6 output on a Scarlet & Violet card: a misread set-symbol icon box "(BI" and a
+    // trailing bullet glyph share the line with the actual printed id.
+    expect(extractCollectorNumberLine('ius. Shigenori Negishi\n(BI 001/198 ®\n')).toBe('001/198')
+  })
+
+  it('never fabricates an id out of a line with no digit-bearing token at all', () => {
+    expect(
+      extractCollectorNumberLine('Rg TTY\nspits out a fluid that it uses to glue tree bark'),
+    ).toBeNull()
+  })
+
+  it('O85-13: never mistakes a bare copyright YEAR for a printed id (confirmed real false positive)', () => {
+    // Real PSM 6 output on a Base Set card: the copyright line reads as a bare "1995" — digits
+    // only, structurally parseable, but this catalog's real local ids never reach 4 digits
+    // without a total attached, so a bare 4-digit run with no total must be rejected here even
+    // though `looksLikeCollectorNumberText` alone would accept it.
+    expect(
+      extractCollectorNumberLine('Nintendo, Creatures, GAMEFREAK. © 1995 Wizards.\n1/102 ★'),
+    ).toBe('1/102 ★') // the whole line already parses (parseCollectorNumber tolerates the trailing glyph)
+    expect(extractCollectorNumberLine('© 1995 Nintendo, Creatures, GAMEFREAK.')).toBeNull()
   })
 })
 

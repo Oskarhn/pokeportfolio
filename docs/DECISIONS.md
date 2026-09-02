@@ -3439,3 +3439,59 @@ window Cloudflare Pages applies to a project's non-latest preview deployments wa
 documented and is not something this session's evidence pins down further. This finding argues
 FOR, not against, the stale-client detection this session built (§3 above): an old client cannot
 assume it has any particular grace period before its own assets stop resolving.
+
+## D-101 — OCR engine forensics; a bounded multi-line collector-number recovery pass; name-lexicon and structured collector-number parsing tooling shipped, NOT wired into production retrieval (P85)
+
+Full account in `docs/SCANNER_RESEARCH.md` §7f. Summary for a session that hasn't read that:
+
+1. **Built the project's first real, ground-truthed OCR accuracy corpus** —
+   `scripts/scanner-ocr-benchmark/`, reusing the existing TCGdex fetcher and BOTH existing
+   augmentation modules (P76's `augment.mjs`, P79's `hard-augment.mjs`) for 9 realistic
+   perturbation profiles per card. Ran actual Tesseract.js 7 PSM/preprocess forensics instead of
+   reasoning from single real-device screenshots the way every prior M15 session had to.
+
+2. **The pre-existing PSM 7 (single-line) default was already correct** for both name and number
+   fields when a candidate ROI genuinely contains one line — measured directly against 4 other
+   modes, not assumed. No PSM change was warranted for the existing single-line pass.
+
+3. **Real bug found and fixed:** a correctly-cropped collector-number strip routinely contains TWO
+   visual lines (the id plus an adjacent illustrator-credit or copyright line) on BOTH vintage and
+   modern layouts — confirmed by direct visual inspection of the actual crop images on two real
+   cards. PSM 7 cannot read a two-line image at all; it returns empty. Fixed with a bounded THIRD
+   pass (`analyze.ts`'s `readBestRoi`, new `multiLineExtract` parameter) using PSM 6 (uniform
+   block) ONLY for the collector-number field, ONLY when both existing single-line passes
+   (contrast, then binarize) already found nothing at all — never extra cost on an already-working
+   scan, at most 2 extra recognition calls in the worst case.
+
+4. **A second real bug found and fixed WHILE building the above, before it shipped:** the naive
+   version of this fix let a vintage card's copyright YEAR ("© 1995") win as a fake "collector
+   number" — a bare, prefix-less 4-digit token that structurally parses via the existing
+   `looksLikeCollectorNumberText` but is not a real printed id (this catalog's local ids never
+   reach 4 digits without a total attached). Closed with a stricter predicate
+   (`looksLikePlausibleMultiLineToken`) used ONLY by the new multi-line fallback — the existing,
+   already-tested `looksLikeCollectorNumberText` used everywhere else is untouched.
+
+5. **Full-corpus benchmark result (BASELINE P82/P83 vs. NEW P85):** see §7f's table for exact
+   numbers. The fix is real and directly confirmed on individual lightly-degraded images, but its
+   measured recovery rate across the full 9-profile perturbed corpus is small — most perturbation
+   profiles (blur/glare/shadow/tilt) degrade the small, often-stylized printed collector number
+   past what any page-segmentation mode can recover, consistent with §7c/P79's own "combined
+   photometric defects collapse every method" finding for the visual channel. Disclosed as a
+   genuine, still-open, hard sub-problem — not a claim that collector-number OCR is now solved.
+
+6. **Name-lexicon fuzzy resolution (`src/domain/scanner/name-lexicon.ts`) and structured
+   collector-number parsing (`src/domain/scanner/collector-parse.ts`) ship as tested, available
+   domain tooling — NEITHER is wired into the production retrieval/scoring path this session.**
+   The name lexicon needs a real production-scale unique-name list to be worth wiring in; no
+   Supabase credentials were available this session to generate one from the real ~20,946-card
+   catalog (the same standing gap every M15 session since P75 has disclosed) — the demo lexicon
+   this session generated from the 988-card OCR benchmark corpus (667 unique names, 8,021 bytes)
+   is a real, measured confirmation of the "far fewer unique names than printings" premise, but not
+   itself production-scale evidence. Wiring either module in ungated by real evidence would be
+   exactly the "blindly ship a complicated ensemble" this project's discipline exists to prevent —
+   same reasoning D-097/D-099 already applied to the auxiliary visual signal and the perceptual-
+   hash channel.
+
+**Not changed:** P80/P81/P82's name-field ROI logic or scoring (name recognition is byte-for-byte
+unchanged this session), the committed 19,501-card DINO index, `engine.ts`'s matching/scoring
+weights, any migration (still 90), any financial semantic. No card was special-cased anywhere.

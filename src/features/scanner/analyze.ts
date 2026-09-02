@@ -35,6 +35,7 @@ import {
 } from './canvas-compat'
 import type { PixelRect } from './guide-geometry'
 import { parseCollectorNumber } from '../../domain/scanner/collector-number'
+import { parseCollectorNumberStructured } from '../../domain/scanner/collector-parse'
 
 /** Long edge of the temporary OCR working bitmap (prompt §12). The stored review image is never
  *  mutated for OCR's benefit — recognition works on its own smaller copy. */
@@ -56,14 +57,33 @@ export interface RawOcrObservation {
    *  for each field, for the debug panel's "is the model seeing the card cleanly?" preview. Null
    *  values mean that field never produced a usable candidate (e.g. the full-frame fallback path). */
   debugImages?: { nameRoiBlob: Blob | null; numberRoiBlob: Blob | null }
+  /** P85 §11: every ROI/preprocess/segmentation attempt considered this scan, present only when
+   *  the caller asked for debug — same gating as `debugImages`. */
+  trials?: OcrDebugTrial[]
 }
 
 export interface OcrEnginePort {
   prepare: () => Promise<void>
   recognize: (
     source: HTMLCanvasElement | OffscreenCanvas,
-    segmentation?: 'single-line' | 'auto',
+    segmentation?: 'single-line' | 'auto' | 'multi-line',
   ) => Promise<{ text: string; confidence: number }>
+}
+
+/** P85 §11 OCR debugger: one considered ROI attempt, recorded only when `debug` is true. Never
+ *  persisted anywhere beyond the return value of one `runOcrAnalysis` call — same in-memory-only
+ *  discipline as the existing debug image previews. Raw OCR text already surfaces in this exact
+ *  debug panel via `OCR_NAME_SIGNAL`/`OCR_COLLECTOR_SIGNAL` (P77) — a per-trial breakdown is the
+ *  same information at finer grain, not a new privacy boundary. */
+export interface OcrDebugTrial {
+  readonly field: 'name' | 'number'
+  readonly roiId: string
+  readonly preprocess: RoiPreprocess
+  readonly segmentation: 'single-line' | 'multi-line'
+  readonly text: string
+  readonly confidence: number
+  readonly plausibilityScore: number
+  readonly isWinner: boolean
 }
 
 /** Minimum usable signal lengths — anything shorter is treated as "nothing read" rather than
@@ -236,6 +256,55 @@ export function isNumberRoiConfident(cleanedText: string): boolean {
 }
 
 /**
+ * P85 §7/§9 — extracts the most plausible collector-number LINE out of a multi-line OCR block.
+ * Real-corpus forensics (docs/SCANNER_RESEARCH.md §7f) found that a correctly-cropped number strip
+ * routinely shares its visual line with an illustrator credit or copyright line — a real, common
+ * template shape (confirmed directly on both a vintage Base-Set-style card and a modern
+ * Scarlet & Violet card), not a rare edge case. Search from the LAST line backward: the printed id
+ * sits on the bottom-most line of these crops far more consistently than the credit/copyright text
+ * above it. Pure; exported for tests. Returns null rather than guessing when no line qualifies.
+ */
+/**
+ * P85 §7/§8/§10 — a real, confirmed false positive: a PSM 6 block read of a vintage card's
+ * copyright line ("...© 1995 Nintendo...") produces a bare 4-digit token ("1995") that
+ * `looksLikeCollectorNumberText` structurally accepts (digits only, ≤12 chars, parses) but is not
+ * remotely a real printed id. `parseCollectorNumberStructured`'s own structural-plausibility bands
+ * (`collector-parse.ts`, built for exactly this "prevent garbage from scoring like a real id"
+ * purpose) already reject this shape down to `low` — reused here rather than a second, divergent
+ * ad hoc predicate. Requires `medium`+ (a total, a bare 1-3-digit number, or a recognized prefix)
+ * — stricter than the plain `looksLikeCollectorNumberText` still used by the single-line pass
+ * above (where this specific two-line ambiguity does not arise) — used ONLY by the multi-line
+ * fallback's per-token search below.
+ */
+function looksLikePlausibleMultiLineToken(token: string): boolean {
+  if (!looksLikeCollectorNumberText(token)) return false
+  const confidence = parseCollectorNumberStructured(token).confidence
+  return confidence === 'high' || confidence === 'medium'
+}
+
+export function extractCollectorNumberLine(text: string): string | null {
+  const lines = text
+    .split('\n')
+    .map((line) => line.replace(/\s+/g, ' ').trim())
+    .filter((line) => line.length > 0)
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index] ?? ''
+    if (looksLikePlausibleMultiLineToken(line)) return line
+    // A PSM 6 block-read line often carries real noise AROUND the id itself — a misread
+    // set-symbol icon box, a trailing bullet/star glyph — so the id is one TOKEN inside an
+    // otherwise-unparseable line, not the whole line (real, confirmed directly against
+    // Scarlet & Violet's "(BI 001/198 ®"-shaped read). Strip stray punctuation per token (never
+    // letters/digits/slash/hyphen — those stay meaningful to `parseCollectorNumber`) and try each.
+    const tokens = line.split(' ').filter(Boolean)
+    for (const token of tokens) {
+      const stripped = token.replace(/[^A-Za-z0-9/-]/g, '')
+      if (stripped.length > 0 && looksLikePlausibleMultiLineToken(stripped)) return stripped
+    }
+  }
+  return null
+}
+
+/**
  * Conservative split of ONE full-card fallback text into (name, collector-number) candidates:
  * scanning from the end, the first token that plausibly IS a printed id (short, contains a
  * digit, not prose) becomes the number candidate and everything before it the name candidate.
@@ -303,11 +372,17 @@ export async function runOcrAnalysis(
     }
 
     /** Runs ONE ROI candidate's crop+prep+recognize (no scoring/selection) — the atomic unit both
-     *  the trial loop and the final debug redraw below share. */
+     *  the trial loop and the final debug redraw below share. `segmentation` defaults to
+     *  `single-line` (P85 §3 forensics: the current default beats every other page-segmentation
+     *  mode decisively for both fields when a candidate crop genuinely IS one line — see
+     *  docs/SCANNER_RESEARCH.md §7f); `multi-line` (P85 §7/§9) is used ONLY by the collector-number
+     *  field's bounded third pass below, for the specific case forensics found single-line cannot
+     *  handle at all: a crop that structurally contains two visual lines. */
     async function readOneCandidate(
       candidate: NamedRoiCandidate,
       slot: 'nameRoi' | 'numberRoi',
       preprocess: RoiPreprocess = 'contrast',
+      segmentation: 'single-line' | 'multi-line' = 'single-line',
     ): Promise<{ rect: PixelRect; text: string; confidence: number } | null> {
       const rect = roiPixelRect(cardOnWorking, candidate.fractions)
       if (rect.width < 8 || rect.height < 8) return null
@@ -323,7 +398,7 @@ export async function runOcrAnalysis(
         upscale,
         preprocess,
       )
-      const result = await engine.recognize(roi.element, 'single-line')
+      const result = await engine.recognize(roi.element, segmentation)
       return { rect, text: result.text, confidence: result.confidence }
     }
 
@@ -347,6 +422,15 @@ export async function runOcrAnalysis(
      * pays for the second pass, so this cannot regress anything P80's own candidate-scoring tests
      * already pin. Only in a debug session, the winning region is redrawn once more afterward for
      * the preview blob (cheap: one extra canvas draw, no extra recognition call).
+     *
+     * P85 §7/§9: for the collector-number field ONLY (`multiLineExtract` provided), a THIRD
+     * bounded pass retries the SAME candidates with `multi-line` segmentation + `contrast`
+     * preprocessing when BOTH earlier passes found nothing usable at all — real-corpus forensics
+     * (docs/SCANNER_RESEARCH.md §7f) found this recovers a real, common failure class
+     * (single-line segmentation cannot read a crop that structurally contains two visual lines,
+     * e.g. an illustrator credit sharing its line with the printed id) that no amount of
+     * preprocessing variation on `single-line` alone can fix. Still bounded to at most
+     * `candidates.length` extra recognition calls, and only in the already-failing case.
      */
     async function readBestRoi(
       candidates: readonly NamedRoiCandidate[],
@@ -354,7 +438,14 @@ export async function runOcrAnalysis(
       minLength: number,
       score: (cleanedText: string, confidence: number) => number,
       isConfident: (cleanedText: string, confidence: number) => boolean,
-    ): Promise<{ text: string | null; roiId: string | null; debugBlob: Blob | null }> {
+      field: 'name' | 'number',
+      multiLineExtract?: (rawText: string) => string | null,
+    ): Promise<{
+      text: string | null
+      roiId: string | null
+      debugBlob: Blob | null
+      trials: OcrDebugTrial[]
+    }> {
       interface BestTrial {
         roiId: string
         cleaned: string
@@ -363,14 +454,58 @@ export async function runOcrAnalysis(
         preprocess: RoiPreprocess
       }
       const best: { value: BestTrial | null } = { value: null }
+      const trials: OcrDebugTrial[] = []
 
-      async function tryPreprocessPass(preprocess: RoiPreprocess): Promise<boolean> {
+      function recordTrial(
+        candidate: NamedRoiCandidate,
+        preprocess: RoiPreprocess,
+        segmentation: 'single-line' | 'multi-line',
+        text: string,
+        confidence: number,
+        plausibilityScore: number,
+      ): void {
+        if (!debug) return
+        trials.push({
+          field,
+          roiId: candidate.id,
+          preprocess,
+          segmentation,
+          text,
+          confidence,
+          plausibilityScore,
+          isWinner: false,
+        })
+      }
+
+      // Returns whether anything usable was found, not just whether it was CONFIDENT (same
+      // shape as `readOneCandidate`'s honest tri-state elsewhere): a closure-mutated `let`/object
+      // property reassigned only inside an awaited nested call is invisible to TypeScript's own
+      // control-flow narrowing at the CALLER's later read site (confirmed directly — real repro,
+      // same class of bug P78 already found in this exact file: see PROJECT_JOURNAL.md's
+      // 2026-08-27 entry). Returning the fact explicitly, rather than re-reading `best.value`
+      // afterward, sidesteps that pitfall instead of fighting it.
+      async function tryPreprocessPass(
+        preprocess: RoiPreprocess,
+      ): Promise<{ confident: boolean; foundAny: boolean }> {
+        let foundAny = false
         for (const candidate of candidates) {
           const attempt = await readOneCandidate(candidate, slot, preprocess)
           if (attempt === null) continue
           const cleaned = cleanSignal(attempt.text, minLength)
-          if (cleaned === null) continue
+          if (cleaned === null) {
+            recordTrial(candidate, preprocess, 'single-line', attempt.text, attempt.confidence, 0)
+            continue
+          }
+          foundAny = true
           const candidateScore = score(cleaned, attempt.confidence)
+          recordTrial(
+            candidate,
+            preprocess,
+            'single-line',
+            cleaned,
+            attempt.confidence,
+            candidateScore,
+          )
           if (best.value === null || candidateScore > best.value.score) {
             best.value = {
               roiId: candidate.id,
@@ -380,14 +515,50 @@ export async function runOcrAnalysis(
               preprocess,
             }
           }
-          if (isConfident(cleaned, attempt.confidence)) return true
+          if (isConfident(cleaned, attempt.confidence)) return { confident: true, foundAny: true }
         }
-        return false
+        return { confident: false, foundAny }
       }
 
-      const contrastConfident = await tryPreprocessPass('contrast')
-      if (!contrastConfident && best.value === null) {
-        await tryPreprocessPass('binarize')
+      async function tryMultiLinePass(): Promise<void> {
+        if (!multiLineExtract) return
+        for (const candidate of candidates) {
+          const attempt = await readOneCandidate(candidate, slot, 'contrast', 'multi-line')
+          if (attempt === null) continue
+          const line = multiLineExtract(attempt.text)
+          const cleaned = line === null ? null : cleanSignal(line, minLength)
+          if (cleaned === null) {
+            recordTrial(candidate, 'contrast', 'multi-line', attempt.text, attempt.confidence, 0)
+            continue
+          }
+          const candidateScore = score(cleaned, attempt.confidence)
+          recordTrial(
+            candidate,
+            'contrast',
+            'multi-line',
+            cleaned,
+            attempt.confidence,
+            candidateScore,
+          )
+          if (best.value === null || candidateScore > best.value.score) {
+            best.value = {
+              roiId: candidate.id,
+              cleaned,
+              score: candidateScore,
+              rect: attempt.rect,
+              preprocess: 'contrast',
+            }
+          }
+          if (isConfident(cleaned, attempt.confidence)) return
+        }
+      }
+
+      const contrastResult = await tryPreprocessPass('contrast')
+      if (!contrastResult.confident && !contrastResult.foundAny) {
+        const binarizeResult = await tryPreprocessPass('binarize')
+        if (!binarizeResult.confident && !binarizeResult.foundAny) {
+          await tryMultiLinePass()
+        }
       }
 
       let debugBlob: Blob | null = null
@@ -408,8 +579,18 @@ export async function runOcrAnalysis(
         // Captured BEFORE the next scan can reuse/resize this pooled canvas (prompt §4/§12
         // debug-only image preview) — never persisted, never sent anywhere but this call's return.
         debugBlob = await canvasToBlob(roi.element).catch(() => null)
+        for (const trial of trials) {
+          if (
+            trial.roiId === winner.roiId &&
+            trial.preprocess === winner.preprocess &&
+            trial.text === winner.cleaned
+          ) {
+            trials[trials.indexOf(trial)] = { ...trial, isWinner: true }
+            break
+          }
+        }
       }
-      return { text: winner?.cleaned ?? null, roiId: winner?.roiId ?? null, debugBlob }
+      return { text: winner?.cleaned ?? null, roiId: winner?.roiId ?? null, debugBlob, trials }
     }
 
     const nameResult = await readBestRoi(
@@ -418,6 +599,7 @@ export async function runOcrAnalysis(
       MIN_NAME_TEXT_LENGTH,
       scoreNameRoiCandidate,
       isNameRoiConfident,
+      'name',
     )
     const numberResult = await readBestRoi(
       NUMBER_ROI_CANDIDATES,
@@ -425,7 +607,10 @@ export async function runOcrAnalysis(
       MIN_NUMBER_TEXT_LENGTH,
       scoreNumberRoiCandidate,
       isNumberRoiConfident,
+      'number',
+      extractCollectorNumberLine,
     )
+    const allTrials = [...nameResult.trials, ...numberResult.trials]
 
     if (nameResult.text !== null || numberResult.text !== null) {
       return {
@@ -440,6 +625,7 @@ export async function runOcrAnalysis(
                 nameRoiBlob: nameResult.debugBlob,
                 numberRoiBlob: numberResult.debugBlob,
               },
+              trials: allTrials,
             }
           : {}),
       }
@@ -457,6 +643,7 @@ export async function runOcrAnalysis(
       numberRoiId: null,
       ...(debug
         ? {
+            trials: allTrials,
             debugImages: {
               nameRoiBlob: nameResult.debugBlob,
               numberRoiBlob: numberResult.debugBlob,
