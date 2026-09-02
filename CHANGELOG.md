@@ -10,6 +10,24 @@ they were**.
 
 ## [Unreleased]
 
+### Fixed — 2026-09-02 — M15 scanner: evidence-aware matcher redesign closes the F-02 visual/text scoring gap; OCR confidence weighting; retrieval consistency (P88, D-102, isolated repair branch `fix/m15-p88-matcher-ocr-correctness` — draft PR #66 against PR #63's integration branch, NOT on PR #63 itself, not merged, not deployed)
+
+Redesigns `visual-evidence.ts`'s point curve (calibrated bands matching P84's real similarity
+distributions) and adds a new visual-dominance guard (`engine.ts`) that discounts a coincidentally
+text-matching WRONG candidate when a DIFFERENT candidate carries strong, dedicated visual evidence
+it lacks — closes the audited F-02 CRITICAL/P0 finding (a single OCR misread could always outrank
+a correct, strong visual match by construction). Re-running the project's own existing 240-card
+benchmark with the new matcher: hybrid TOP1 99.4% vs. the documented OLD hybrid's 95.8% (visual-
+alone stays 99.7%) — the hybrid-vs-visual-alone gap shrank from -3.9 to -0.3 points. Also fixes
+F-12 (OCR confidence now gates collector-number ROI selection and matcher text-evidence
+reliability), F-16 (recovers OCR separator noise in collector numbers), F-17 (adds a Basic-Energy
+name-ROI layout), F-26 (visual-text-disagreement now actually caps tier), F-27 (non-finite
+similarity fails closed), F-28/F-29 (the visual-shortlist enrichment channel now filters
+`is_active`/`language`, matching `search_cards`), F-34 (real-OCR fixtures + a real-Tesseract smoke
+test for every layout family), and a generic attack/rules body-text-contamination penalty (P88
+§13). Full account: `docs/DECISIONS.md` D-102, `docs/SCANNER_RESEARCH.md` §8,
+`ai_outputs/Claude_outputs/output_88.txt`.
+
 ### Fixed — 2026-09-02 — M15 scanner: OCR forensics, a bounded multi-line collector-number recovery pass, name-lexicon/structured-parser tooling (P85, D-101, isolated research branch `feat/m15-p85-ocr-recognition` — NOT on PR #63, not merged, not deployed)
 
 Built this project's first real, ground-truthed OCR accuracy corpus (`scripts/scanner-ocr-benchmark/`,

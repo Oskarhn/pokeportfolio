@@ -720,3 +720,58 @@ confidence, a plausibility score, and the actual recognized text, with the winni
 `<-- WINNER`. Textual only, memory-only, never persisted — the exact same privacy floor the
 existing `OCR_NAME_SIGNAL`/`OCR_COLLECTOR_SIGNAL` fields already established (P77); this is the
 same information at finer grain, not a new boundary.
+
+## 8. Matcher evidence-combination redesign (P88, D-102)
+
+Responds to the independent adversarial audit's two P0/CRITICAL findings this session owned
+(F-02) — full decision record in `docs/DECISIONS.md` D-102; this section carries only the
+measured numbers.
+
+### Re-run of the existing §7b/D-097 benchmark methodology with the NEW matcher
+
+Same corpus (240 real TCGdex cards, 6 sets, 1,440 augmented queries), same real production
+matcher/embeddings — only `engine.ts`/`visual-evidence.ts`'s scoring changed:
+
+| Method | TOP1 | TOP3 | TOP5 |
+|---|---|---|---|
+| OCR-first | 30.2% | 39.3% | 41.6% |
+| Perceptual (dHash) | 86.7% | 93% | 95% |
+| Visual (DINOv2) alone | 99.7% | 100% | 100% |
+| Hybrid — OLD (pre-P88, documented above) | 95.8% | 99.9% | 100% |
+| **Hybrid — NEW (P88)** | **99.4%** | **100%** | **100%** |
+
+The hybrid-vs-visual-alone gap shrank from -3.9 points (OLD) to -0.3 points (NEW) on the project's
+own existing measurement. This does not by itself prove F-02 is closed at the real 19,501-card
+catalog's discriminative scale (see F-03/§7 above — this 240-card corpus still cannot measure
+confusability against 19,500 OTHER cards) — it proves the redesign does not regress the existing,
+already-relied-upon benchmark, and the isolated adversarial unit suite
+(`tests/domain/scanner/engine-visual-dominance.test.ts`) proves the specific coincidental-text-
+convergence mechanism the audit found is now guarded against by construction, independent of
+corpus scale.
+
+### Full-corpus OCR recognition benchmark (P85's methodology, re-run with this session's F-16/F-12/§13 fixes)
+
+210 of the 240-card corpus (a fresh random sample), 9 perturbation profiles, 1,890 queries:
+
+| Field | Baseline | This session |
+|---|---|---|
+| Name exact | — | 3.3% (P85's own 180-card sample: 3.8% — within sampling noise, not a regression) |
+| Name fuzzy/normalized | — | 14.8% |
+| Collector-number exact | 0.1% | 0.4% |
+| Collector-number fuzzy/normalized | 1.0% | 1.3% |
+
+Consistent with P85's own numbers (small differences are sampling noise from a different random
+210-of-240 draw, not a regression). F-16 (separator recovery) and F-12/§13 (confidence gating,
+body-text penalty) target failure classes this synthetic corpus does not heavily represent
+(stray-separator OCR noise, low-confidence-garbage ROI winners, attack/rules-text contamination)
+— their effect is demonstrated by dedicated unit tests
+(`tests/domain/scanner/collector-number.test.ts`, `tests/ui/scanner-analyze.test.ts`), not expected
+to move this particular aggregate benchmark meaningfully.
+
+### Not done this session (disclosed)
+
+A scale-appropriate confusable-group benchmark against the real 19,501-card hosted catalog
+(prompt §17/§18, F-03) — still blocked on hosted Supabase credentials, the same standing gap every
+M15 session since P75 has disclosed. No card-name/set metadata for the real catalog exists locally
+to construct deliberate confusable groups (same-Pokémon-different-printing, adjacent evolution
+families, GX/V/VSTAR/ex families) without a live database connection.

@@ -3495,3 +3495,89 @@ Full account in `docs/SCANNER_RESEARCH.md` §7f. Summary for a session that hasn
 **Not changed:** P80/P81/P82's name-field ROI logic or scoring (name recognition is byte-for-byte
 unchanged this session), the committed 19,501-card DINO index, `engine.ts`'s matching/scoring
 weights, any migration (still 90), any financial semantic. No card was special-cased anywhere.
+
+## D-102 — evidence-aware matcher redesign closes F-02; visual-dominance guard; OCR-confidence-weighted evidence reliability (P88)
+
+Full account: `ai_outputs/Claude_outputs/output_88.txt`. Responds to the independent adversarial
+audit (`ai_outputs/Claude_outputs/output_86.txt`, Opus 5/MAX effort) that BLOCKed release on two
+P0 findings — F-01 (stale visual-index caching, owned by a parallel P87 session) and F-02
+(visual-evidence scoring, this session).
+
+**F-02, the core problem:** `visualEvidencePoints`' 62-point ceiling at similarity==1.0 was
+structurally below a coincidental two-signal OCR text convergence on a WRONG card
+(`collector-number-exact` 45 + `name-exact` 30 [+ `language-match` 5] = 75-80) — a realistic
+strong visual match (similarity 0.85-0.90) scored only 41-48 points under the old linear curve,
+so a single OCR misread that happened to structurally match a different card's printed id/name
+could ALWAYS outrank a genuinely correct, strong visual match. This is the audit's identified
+mechanism behind the project's own measured 99.7% (visual-alone) -> 95.8% (hybrid) TOP1 regression
+(`docs/SCANNER_RESEARCH.md` §7b).
+
+**Fix, two parts, deliberately not just "raise the ceiling":**
+
+1. `visual-evidence.ts`'s point curve is now piecewise, banded to P84's own calibration
+   (D-101's sibling session): near-zero in the 'weak' band, a real but capped scale in 'moderate',
+   and a discrete jump into 'strong' territory (>= similarity 0.82, P84's own same-card floor)
+   reaching ~55-92 points. A realistic strong match now scores ~61-71 — genuinely competitive with,
+   though still not automatically dominant over, a coincidental text convergence.
+2. A new **visual-dominance guard** (`engine.ts`'s `applyVisualDominanceGuard`) is the actual
+   structural guarantee: when the visual channel produces a genuinely STRONG (>= 0.82) anchor for
+   one specific candidate, any OTHER candidate whose own visual similarity is none/weak has its
+   TEXT-only evidence discounted (halved) before ranking — unless that text evidence is itself
+   total-coverage-convergent (id + name + set + language all agreeing, score >= 90, an escape
+   hatch for a genuine multi-signal coincidence rather than a two-signal one). The guard never
+   fires when no candidate reaches the strong band (so P84's catastrophic ~0.18 regime, where
+   WRONG-card similarity is systematically higher than the true card's own, stays fully inert and
+   never punishes trustworthy OCR — the opposite failure mode the audit also warned against), and
+   never fires against a candidate whose own visual similarity is ALSO strong (two genuinely
+   similar prints/artworks — collector number should differentiate those, not a visual veto).
+
+**Verified against the exact pre-P88 formula, not just asserted:** the isolated pure repro (correct
+card carries zero text evidence at all; a different, wrong card coincidentally converges on
+id-exact + name-exact + language-match) scores, under the OLD formula, correct=48 / wrong=80 (wrong
+wins — reproduces the audit's finding exactly); under the NEW formula, correct=100 (clamped) /
+wrong=40 (guarded) — correct wins
+(`tests/domain/scanner/engine-visual-dominance.test.ts`).
+
+**Verified against the project's own existing benchmark methodology**, not just synthetic
+adversarial unit cases: re-ran `pnpm scanner:visual:benchmark` (P76's real 240-card/6-set/1,440-
+query corpus, real production matcher, real DINOv2 embeddings) with this session's NEW matcher.
+Hybrid TOP1 = **99.4%** (TOP3/TOP5 = 100%/100%), vs. the documented OLD hybrid TOP1 of 95.8%
+(`docs/SCANNER_RESEARCH.md` §7b) and visual-alone TOP1 of 99.7% (both figures reconfirmed by this
+same re-run). The hybrid-vs-visual-alone gap shrank from -3.9 points to -0.3 points on the
+project's own existing measurement — real, run, measured evidence, not merely reasoned.
+
+**F-26** (companion finding): `visual-text-disagreement` was pure unread telemetry (three non-test
+`git grep` hits, none of which changed behavior) — now caps tier below HIGH when the disagreement
+is meaningful (visual-only-best reaches at least the 'moderate' band), and is explicitly excluded
+for a 'weak'/catastrophic disagreement so it can never punish otherwise-trustworthy text (the
+opposite-direction requirement the audit's own prompt insisted on holding simultaneously).
+
+**F-27:** non-finite similarity (NaN/Infinity/-Infinity) now fails closed to zero evidence in both
+`visualEvidenceTier` and `visualEvidencePoints`, rather than propagating a corrupted number into
+diagnostics.
+
+**F-12 (scoring-layer half):** collector-number/name text evidence is now scaled by a new
+OCR-confidence reliability multiplier (`ocrTextReliability`) and, for the collector-number field,
+by `collector-parse.ts`'s structural confidence (`structuralReliability` — LOW-confidence shapes
+only, e.g. a stray single letter + digit or a bare 4+-digit run; the ordinary MEDIUM real-catalog
+shape, a bare 1-3-digit vintage id, is NOT discounted). Both are backward-compatible: an omitted
+confidence (every pre-P88 caller/test) resolves to full reliability. The ROI-selection-layer half
+of F-12 (OCR confidence never gated `isNumberRoiConfident`'s early-exit) is a separate, paired fix
+in `analyze.ts` — see `output_88.txt`.
+
+**Cherry-picked from P85** (reviewed, not blindly trusted — diffs read in full before applying):
+`name-lexicon.ts`, `collector-parse.ts`, the bounded multi-line collector-number OCR recovery pass,
+and the OCR forensics/benchmark tooling (commits `3c86999`/`56338ca`/`56e2757`/`f2ff180`). This
+session's own structural-confidence-based reliability weighting builds directly on
+`collector-parse.ts`'s bands.
+
+**Not changed:** the committed 19,501-card DINO index; the visual embedding pipeline (P84's own
+scope); scanner batch/UI save-state (P89's own scope); any migration (still 90); any financial
+semantic. No card was special-cased anywhere.
+
+**Not done, disclosed rather than silently skipped:** a scale-appropriate benchmark against the
+real 19,501-card hosted catalog (F-03) — blocked on hosted Supabase credentials, the same standing
+gap every M15 session since P75 has disclosed; production wiring of the name-lexicon (no real
+production-scale lexicon exists without those same credentials — the exact generator command is
+recorded in `output_88.txt` for whichever future session has them); real-device performance
+measurement.
