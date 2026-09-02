@@ -95,6 +95,21 @@ export interface ScannerDiagnostics {
   ocrNameRoiId: string | null
   /** Same as `ocrNameRoiId` for the collector-number field. */
   ocrNumberRoiId: string | null
+  /** P85 §11 OCR debugger: every ROI/preprocess/segmentation attempt considered this scan — empty
+   *  outside a debug session (the search itself never records trials unless debug is set, so
+   *  there is nothing extra to show even if this were populated unconditionally). Diagnostics
+   *  only: the winner here is always identical to `ocrNameRoiId`/`ocrNumberRoiId` above; nothing
+   *  on this list feeds back into matching. */
+  ocrTrials: {
+    field: 'name' | 'number'
+    roiId: string
+    preprocess: 'contrast' | 'binarize'
+    segmentation: 'single-line' | 'multi-line'
+    text: string
+    confidence: number
+    plausibilityScore: number
+    isWinner: boolean
+  }[]
   /** True when the visible candidate shortlist widened past the normal 5 because the ranking near
    *  the cutoff was flat/ambiguous (P80 §6 — the Shieldon rank-6 real-device case). */
   candidateExpansionTriggered: boolean

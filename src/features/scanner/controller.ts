@@ -536,6 +536,9 @@ export function createRealScannerController(
       // `id`) — null means no candidate produced anything usable for that field.
       ocrNameRoiId: ocrResult.nameRoiId,
       ocrNumberRoiId: ocrResult.numberRoiId,
+      // P85 §11: empty outside a debug session (ocrResult.trials is only ever populated when
+      // `debug` was true — see analyze.ts's `runOcrAnalysis`).
+      ocrTrials: ocrResult.trials ?? [],
       // P80 §6: true exactly when the visible shortlist widened past the normal 5 — lets the
       // debug panel/owner confirm expansion actually fired for a flat ranking like Shieldon's.
       candidateExpansionTriggered: visibleCandidateCount > SCANNER_UI_CANDIDATE_LIMIT,

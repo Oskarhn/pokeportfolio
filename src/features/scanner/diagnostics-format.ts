@@ -106,6 +106,20 @@ export function formatScannerDiagnostics(d: ScannerDiagnostics): string {
     `OCR_NAME_ROI=${d.ocrNameRoiId ?? EMPTY}`,
     `OCR_COLLECTOR_SIGNAL=${d.ocrCollectorSignal ?? EMPTY}`,
     `OCR_NUMBER_ROI=${d.ocrNumberRoiId ?? EMPTY}`,
+    'OCR_TRIALS:',
+  )
+  if (d.ocrTrials.length === 0) {
+    lines.push(`  ${EMPTY}`)
+  } else {
+    d.ocrTrials.forEach((trial) => {
+      lines.push(
+        `  [${trial.field}] roi=${trial.roiId} preprocess=${trial.preprocess} segmentation=${trial.segmentation} ` +
+          `confidence=${String(trial.confidence)} plausibility=${trial.plausibilityScore.toFixed(1)} ` +
+          `text=${JSON.stringify(trial.text)}${trial.isWinner ? ' <-- WINNER' : ''}`,
+      )
+    })
+  }
+  lines.push(
     `CANDIDATE_EXPANSION_TRIGGERED=${d.candidateExpansionTriggered ? 'yes' : 'no'}`,
     'FINAL_RERANKED_CANDIDATES:',
   )
