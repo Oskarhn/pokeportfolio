@@ -53,6 +53,14 @@ export interface RawOcrObservation {
   nameRoiId: string | null
   /** Same as `nameRoiId` for the collector-number field. */
   numberRoiId: string | null
+  /** P88 §8/F-12: the winning name-field OCR read's own Tesseract confidence (0-100), null/absent
+   *  when nothing usable was read for this field. Feeds the matcher's OCR-confidence reliability
+   *  weighting (engine.ts's `ocrTextReliability`) — never used for ROI selection beyond the
+   *  existing `isNameRoiConfident` gate above. Optional (rather than required) so every
+   *  hand-constructed test fixture that predates this field keeps compiling unchanged. */
+  nameConfidence?: number | null
+  /** Same as `nameConfidence` for the collector-number field. */
+  collectorNumberConfidence?: number | null
   /** Present only when the caller asked for debug images (P79 §4/§12) — the WINNING ROI's bitmap
    *  for each field, for the debug panel's "is the model seeing the card cleanly?" preview. Null
    *  values mean that field never produced a usable candidate (e.g. the full-frame fallback path). */
@@ -251,8 +259,20 @@ export function isNameRoiConfident(cleanedText: string, confidence: number): boo
   return confidence >= 70 && nameLetterRatio(cleanedText) >= 0.8
 }
 
-export function isNumberRoiConfident(cleanedText: string): boolean {
-  return looksLikeCollectorNumberText(cleanedText)
+/** P88 §8/F-12: a candidate that merely PARSES as a plausible id is no longer enough to early-
+ *  exit the remaining layout candidates on its own — the real bug was that OCR confidence never
+ *  gated this decision at all (unlike the name field's `isNameRoiConfident`, which always
+ *  required `confidence >= 70`), so a low-confidence-but-shape-plausible digit run from the
+ *  FIRST-tried layout (e.g. `modern-bottom-left` landing on background/rules text for a vintage
+ *  card) could win immediately and the correct layout was never even read. The floor is lower
+ *  than the name field's (55 vs 70): short 2-6 character digit-only ROIs are inherently noisier
+ *  for Tesseract's own per-character confidence estimate than a multi-letter word, so requiring
+ *  70 here would regress plenty of genuinely-correct short reads — 55 is a deliberately modest
+ *  floor that still rejects the specific "near-zero confidence garbage" failure class F-12 found. */
+export const NUMBER_ROI_CONFIDENCE_FLOOR = 55
+
+export function isNumberRoiConfident(cleanedText: string, confidence: number): boolean {
+  return confidence >= NUMBER_ROI_CONFIDENCE_FLOOR && looksLikeCollectorNumberText(cleanedText)
 }
 
 /**
@@ -443,6 +463,7 @@ export async function runOcrAnalysis(
     ): Promise<{
       text: string | null
       roiId: string | null
+      confidence: number | null
       debugBlob: Blob | null
       trials: OcrDebugTrial[]
     }> {
@@ -452,6 +473,7 @@ export async function runOcrAnalysis(
         score: number
         rect: PixelRect
         preprocess: RoiPreprocess
+        confidence: number
       }
       const best: { value: BestTrial | null } = { value: null }
       const trials: OcrDebugTrial[] = []
@@ -513,6 +535,7 @@ export async function runOcrAnalysis(
               score: candidateScore,
               rect: attempt.rect,
               preprocess,
+              confidence: attempt.confidence,
             }
           }
           if (isConfident(cleaned, attempt.confidence)) return { confident: true, foundAny: true }
@@ -547,6 +570,7 @@ export async function runOcrAnalysis(
               score: candidateScore,
               rect: attempt.rect,
               preprocess: 'contrast',
+              confidence: attempt.confidence,
             }
           }
           if (isConfident(cleaned, attempt.confidence)) return
@@ -590,7 +614,13 @@ export async function runOcrAnalysis(
           }
         }
       }
-      return { text: winner?.cleaned ?? null, roiId: winner?.roiId ?? null, debugBlob, trials }
+      return {
+        text: winner?.cleaned ?? null,
+        roiId: winner?.roiId ?? null,
+        confidence: winner?.confidence ?? null,
+        debugBlob,
+        trials,
+      }
     }
 
     const nameResult = await readBestRoi(
@@ -619,6 +649,8 @@ export async function runOcrAnalysis(
         usedFullFrameFallback: false,
         nameRoiId: nameResult.roiId,
         numberRoiId: numberResult.roiId,
+        nameConfidence: nameResult.confidence,
+        collectorNumberConfidence: numberResult.confidence,
         ...(debug
           ? {
               debugImages: {
@@ -632,7 +664,10 @@ export async function runOcrAnalysis(
     }
 
     // No candidate for EITHER field produced anything usable: exactly ONE bounded full-card pass
-    // (prompt §17), auto layout mode.
+    // (prompt §17), auto layout mode. Its confidence is deliberately NOT threaded into the
+    // per-field confidence fields above (P88 §8): the auto-mode text is a best-effort SPLIT of
+    // one whole-card OCR read, not a field-specific recognition, so a per-field OCR-confidence
+    // reliability weighting would misrepresent what was actually measured.
     const fullResult = await engine.recognize(working.element, 'auto')
     const split = splitFullFrameCardText(fullResult.text)
     return {
@@ -641,6 +676,8 @@ export async function runOcrAnalysis(
       usedFullFrameFallback: true,
       nameRoiId: null,
       numberRoiId: null,
+      nameConfidence: null,
+      collectorNumberConfidence: null,
       ...(debug
         ? {
             trials: allTrials,

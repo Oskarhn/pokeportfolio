@@ -8,6 +8,7 @@ import {
   scoreNumberRoiCandidate,
   isNameRoiConfident,
   isNumberRoiConfident,
+  NUMBER_ROI_CONFIDENCE_FLOOR,
   looksLikeCollectorNumberText,
   type OcrEnginePort,
 } from '../../src/features/scanner/analyze'
@@ -125,6 +126,8 @@ describe('runOcrAnalysis — capture → observation', () => {
       usedFullFrameFallback: false,
       nameRoiId: 'classic-top-left',
       numberRoiId: 'modern-bottom-left',
+      nameConfidence: 91,
+      collectorNumberConfidence: 88,
     })
   })
 
@@ -365,8 +368,12 @@ describe('P80 adaptive-ROI scoring (pure)', () => {
     expect(isNameRoiConfident('58/102', 95)).toBe(false) // high confidence, but not letters
   })
 
-  it('isNumberRoiConfident is exactly looksLikeCollectorNumberText (parseability is the whole signal)', () => {
-    expect(isNumberRoiConfident('049/197')).toBe(true)
-    expect(isNumberRoiConfident('Illus. Ken S')).toBe(false)
+  it('isNumberRoiConfident requires BOTH parseability AND a minimum OCR confidence (F-12/P88 §8)', () => {
+    expect(isNumberRoiConfident('049/197', 90)).toBe(true)
+    expect(isNumberRoiConfident('Illus. Ken S', 90)).toBe(false)
+    // Real F-12 repro: a shape-plausible digit run at near-zero OCR confidence must not win.
+    expect(isNumberRoiConfident('049/197', 1)).toBe(false)
+    expect(isNumberRoiConfident('049/197', NUMBER_ROI_CONFIDENCE_FLOOR)).toBe(true)
+    expect(isNumberRoiConfident('049/197', NUMBER_ROI_CONFIDENCE_FLOOR - 1)).toBe(false)
   })
 })

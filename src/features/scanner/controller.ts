@@ -457,6 +457,11 @@ export function createRealScannerController(
       rawCollectorNumberText: ocrResult.rawCollectorNumberText,
       rawSetText: null,
       languageHint,
+      // P88 §8/F-12: threads the winning OCR read's own confidence into the matcher's evidence
+      // reliability weighting (engine.ts's `ocrTextReliability`) — null/absent when the full-frame
+      // fallback ran instead of a field-specific ROI read (analyze.ts never fabricates one).
+      nameOcrConfidence: ocrResult.nameConfidence ?? null,
+      collectorOcrConfidence: ocrResult.collectorNumberConfidence ?? null,
     }
 
     // Textual signals meet the catalog through P67's adapter (existing search_cards surface).
