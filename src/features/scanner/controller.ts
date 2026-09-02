@@ -8,6 +8,8 @@ import { addCardAcquisition } from '../../data/collection'
 import {
   matchScannerObservation,
   parseCollectorNumberStructured,
+  rankScannerCandidates,
+  rankScannerCandidatesFull,
   SCORING_TIERS,
   visualEvidenceTier,
   type RankedScannerCandidate,
@@ -375,6 +377,16 @@ export function createRealScannerController(
   // matching, never persisted, overwritten by the next analyzeCapture call.
   let lastDiagnostics: ScannerDiagnostics | null = null
   const debugImages = new DebugImageUrlStore()
+  /** P90 §21 (debug-only): the exact evidence the most recent scan's real match() call scored
+   *  against — kept ONLY so {@link getExpectedCardRank} can compute a real hybrid rank for a card
+   *  the owner names after the fact, using the SAME scoring pipeline production used, not a
+   *  re-derived approximation. Never read by anything on the production matching path; overwritten
+   *  every scan, cleared on dispose. */
+  let lastMatchContext: {
+    signals: ReturnType<typeof matchScannerObservation>['signals']
+    candidates: ScannerCandidateRecord[]
+    visualScores: VisualEvidenceByCard | undefined
+  } | null = null
 
   // P81 §6/§17: session-lifetime prewarm bookkeeping — separate from lastDiagnostics because it
   // must survive across scans (prewarm runs once per session), not reset per capture.
@@ -549,6 +561,9 @@ export function createRealScannerController(
     }
 
     const match = matchScannerObservation(observation, mergedCandidates, visualScores)
+    // P90 §21: snapshot for the debug-only expected-card-rank tool — see lastMatchContext's own
+    // doc. Always overwritten, never merged with a previous scan's evidence.
+    lastMatchContext = { signals: match.signals, candidates: mergedCandidates, visualScores }
     // P80 §6/§13: how many of match.candidates the user actually sees this scan — normally 5,
     // widened toward SCANNER_UI_EXPANDED_CANDIDATE_LIMIT only when the ranking near the cutoff is
     // genuinely flat (the Shieldon rank-6 real-device case).
@@ -801,14 +816,68 @@ export function createRealScannerController(
     releaseOcrCanvases()
     visualClient.dispose()
     debugImages.clear()
+    lastMatchContext = null
   }
 
-  /** Debug-only (P84, ported P87): resolves `null` immediately, WITHOUT ever calling
-   *  `visualClient`, outside `?scannerDebug=1` — this is the gate contract.ts's own doc promises.
-   *  See visual-client.ts's `getExpectedCardRank` for what happens once debug mode is confirmed. */
+  /** Debug-only (P84/P87 visual rank, P90 §21 hybrid rank): resolves `null` immediately, WITHOUT
+   *  ever calling `visualClient`, outside `?scannerDebug=1` — this is the gate contract.ts's own
+   *  doc promises. Once confirmed: the visual-only rank comes from `visualClient.getExpectedCardRank`
+   *  unchanged (P87); the hybrid fields are computed HERE, against `lastMatchContext` — the exact
+   *  OCR/visual evidence the most recent real scan's `matchScannerObservation` call scored — using
+   *  `rankScannerCandidatesFull`, the SAME scoring/visual-dominance-guard pipeline production runs,
+   *  never a separate approximation. A card outside `lastMatchContext.candidates` (never retrieved
+   *  by this scan's text/visual search at all) is looked up by id and scored as an honest
+   *  what-if — this never mutates the batch, never adds anything, never re-runs the scan. */
   async function getExpectedCardRank(cardId: string): Promise<ExpectedCardRank | null> {
     if (!isScannerDebugEnabled()) return null
-    return visualClient.getExpectedCardRank(cardId)
+    const visualRank = await visualClient.getExpectedCardRank(cardId)
+    if (lastMatchContext === null) return visualRank
+
+    let candidates = lastMatchContext.candidates
+    if (!candidates.some((c) => c.cardId === cardId)) {
+      const fetched = await getCardsByIds([cardId], 'en').catch(() => [])
+      const [firstFetched] = fetched
+      if (firstFetched !== undefined) {
+        candidates = [...candidates, toCandidateRecordFromCatalog(firstFetched)]
+      }
+    }
+    const fullRanked = rankScannerCandidatesFull(
+      lastMatchContext.signals,
+      candidates,
+      lastMatchContext.visualScores,
+    )
+    const hybridIndex = fullRanked.findIndex((entry) => entry.card.cardId === cardId)
+    const hybridEntry = hybridIndex === -1 ? null : fullRanked[hybridIndex]
+
+    // The REAL production tier for this exact scenario, only when the card would actually appear
+    // in the bounded top N — never fabricated for a candidate production would never surface.
+    const boundedMatch = rankScannerCandidates(
+      lastMatchContext.signals,
+      candidates,
+      lastMatchContext.visualScores,
+    )
+    const inBounded = boundedMatch.candidates.some((entry) => entry.card.cardId === cardId)
+
+    const fallback: ExpectedCardRank = {
+      found: false,
+      rank: null,
+      similarity: null,
+      totalCards: 0,
+      inTop20: false,
+      inTop100: false,
+      indexContentId: null,
+      hybridRank: null,
+      hybridScore: null,
+      hybridTier: null,
+      scoreComponents: [],
+    }
+    return {
+      ...(visualRank ?? fallback),
+      hybridRank: hybridIndex === -1 ? null : hybridIndex + 1,
+      hybridScore: hybridEntry?.score ?? null,
+      hybridTier: inBounded ? boundedMatch.tier : null,
+      scoreComponents: hybridEntry?.reasons ?? [],
+    }
   }
 
   return {

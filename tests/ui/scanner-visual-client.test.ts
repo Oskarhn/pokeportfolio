@@ -306,6 +306,11 @@ describe('VisualRecognitionClient — getExpectedCardRank (P84, ported P87)', ()
       inTop20: true,
       inTop100: true,
       indexContentId: '0123456789abcdef',
+      // P90 §21: this class only answers the visual-only question; controller.ts fills these in.
+      hybridRank: null,
+      hybridScore: null,
+      hybridTier: null,
+      scoreComponents: [],
     })
   })
 
@@ -343,6 +348,10 @@ describe('VisualRecognitionClient — getExpectedCardRank (P84, ported P87)', ()
       inTop20: false,
       inTop100: false,
       indexContentId: '0123456789abcdef',
+      hybridRank: null,
+      hybridScore: null,
+      hybridTier: null,
+      scoreComponents: [],
     })
   })
 

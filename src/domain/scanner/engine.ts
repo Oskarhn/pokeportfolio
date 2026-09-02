@@ -313,6 +313,33 @@ function applyVisualDominanceGuard(
  * the text-search pool must already be merged into `candidates` by the data layer (P76 §16's
  * hybrid retrieval) — this function only SCORES, never fetches or invents identity.
  */
+/**
+ * P90 §21 (debug-only): the SAME dedup/score/visual-dominance-guard/sort pipeline
+ * {@link rankScannerCandidates} uses, but returns every candidate rather than truncating to
+ * `SCORING_TIERS.maxReturnedCandidates` — needed by the expected-card-rank debug tool, which must
+ * report a real rank position even for a candidate production would never surface in the visible
+ * top N. Never called from the production matching path (`matchScannerObservation`); reuses this
+ * module's own private scoring/guard logic so the debug tool cannot silently drift from what
+ * production actually computes.
+ */
+export function rankScannerCandidatesFull(
+  signals: ParsedScannerSignals,
+  candidates: readonly ScannerCandidateRecord[],
+  visualScores?: VisualEvidenceByCard,
+): readonly RankedScannerCandidate[] {
+  const deduped = new Map<string, RankedScannerCandidate>()
+  for (const card of candidates) {
+    if (!deduped.has(card.cardId)) {
+      deduped.set(card.cardId, scoreCandidate(signals, card, visualScores))
+    }
+  }
+  const { guarded } = applyVisualDominanceGuard([...deduped.values()], signals)
+  return [...guarded].sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score
+    return a.card.cardId < b.card.cardId ? -1 : a.card.cardId > b.card.cardId ? 1 : 0
+  })
+}
+
 export function rankScannerCandidates(
   signals: ParsedScannerSignals,
   candidates: readonly ScannerCandidateRecord[],
@@ -327,17 +354,7 @@ export function rankScannerCandidates(
     }
   }
 
-  const deduped = new Map<string, RankedScannerCandidate>()
-  for (const card of candidates) {
-    if (!deduped.has(card.cardId)) {
-      deduped.set(card.cardId, scoreCandidate(signals, card, visualScores))
-    }
-  }
-  const { guarded } = applyVisualDominanceGuard([...deduped.values()], signals)
-  const sorted = [...guarded].sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score
-    return a.card.cardId < b.card.cardId ? -1 : a.card.cardId > b.card.cardId ? 1 : 0
-  })
+  const sorted = rankScannerCandidatesFull(signals, candidates, visualScores)
   const bounded = sorted.slice(0, SCORING_TIERS.maxReturnedCandidates)
 
   const top = bounded[0]

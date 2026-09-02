@@ -265,6 +265,23 @@ export interface ExpectedCardRank {
   /** The content-addressed generation this rank was computed against (P87 F-01) — lets the owner
    *  confirm which index generation a diagnostic reading actually came from. */
   readonly indexContentId: string | null
+  /** P90 §21: where this card would rank against the FULL hybrid (text + visual) scoring for the
+   *  most recent scan's actual OCR/visual evidence — null when no scan has produced usable
+   *  evidence yet this session, distinguishing "not computed" from "ranked last." Reuses the exact
+   *  scoring/visual-dominance-guard logic `matchScannerObservation` runs in production
+   *  (`rankScannerCandidatesFull`), never a separate/approximated calculation. */
+  readonly hybridRank: number | null
+  readonly hybridScore: number | null
+  /** The REAL production tier this exact scenario would produce ('high'/'medium'/'low'/'none'),
+   *  ONLY when the card ranks inside the visible top N (`SCORING_TIERS.maxReturnedCandidates`) —
+   *  null otherwise rather than fabricating a tier for a candidate production would never surface.
+   *  Deliberately a plain string, not the domain's `ScannerConfidenceTier` — this module stays
+   *  independent of domain types, same principle as {@link ScannerConfidence} above. */
+  readonly hybridTier: 'high' | 'medium' | 'low' | 'none' | null
+  /** Which scoring signals matched for this card this scan (e.g. 'name-exact',
+   *  'collector-number-exact', 'visual-strong') — the same reason codes engine.ts's own scoring
+   *  attaches, not a re-derived summary. Empty when the card scored zero evidence. */
+  readonly scoreComponents: readonly string[]
 }
 
 export interface ScannerDebugImages {

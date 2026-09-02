@@ -76,12 +76,13 @@ vi.mock('../../src/features/scanner/ocr-engine', () => ({
 }))
 
 import { runOcrAnalysis } from '../../src/features/scanner/analyze'
-import { getCardVariants, searchCards } from '../../src/data/catalog'
+import { getCardVariants, searchCards, getCardsByIds } from '../../src/data/catalog'
 import { addCardAcquisition } from '../../src/data/collection'
 
 const mockedRunOcrAnalysis = vi.mocked(runOcrAnalysis)
 const mockedSearchCards = vi.mocked(searchCards)
 const mockedGetCardVariants = vi.mocked(getCardVariants)
+const mockedGetCardsByIds = vi.mocked(getCardsByIds)
 const mockedAddCardAcquisition = vi.mocked(addCardAcquisition)
 
 /** Default: visual channel unavailable, matching how it naturally behaves in this Node test
@@ -1029,6 +1030,17 @@ describe('debug mode — widened shortlist, extended candidates, image previews 
 })
 
 describe('getExpectedCardRank (P84, ported P87) — debug-only rank-lookup gating', () => {
+  beforeEach(() => {
+    // The two P90 §21 tests below run a real analyzeCapture() with debug mode on, which creates
+    // debug image object URLs — jsdom/Node's URL has no createObjectURL; stub it like the debug
+    // image describe block above does.
+    Object.defineProperty(URL, 'createObjectURL', {
+      value: vi.fn(() => 'blob:debug'),
+      configurable: true,
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', { value: vi.fn(), configurable: true })
+  })
+
   afterEach(() => {
     vi.unstubAllGlobals()
   })
@@ -1081,5 +1093,108 @@ describe('getExpectedCardRank (P84, ported P87) — debug-only rank-lookup gatin
     await expect(controller.getExpectedCardRank?.('card-1')).resolves.toEqual(
       expect.objectContaining({ found: false, rank: null }),
     )
+  })
+
+  it('P90 §21: computes a REAL hybrid rank/tier/score-components for a card from the merged pool of the most recent scan, using the exact scoring pipeline production runs', async () => {
+    vi.stubGlobal('window', { location: { search: '?scannerDebug=1' } })
+    visualMocks.getExpectedCardRank.mockResolvedValue({
+      found: false,
+      rank: null,
+      similarity: null,
+      totalCards: 0,
+      inTop20: false,
+      inTop100: false,
+      indexContentId: null,
+    })
+    mockedRunOcrAnalysis.mockResolvedValue({
+      rawNameText: 'Pikachu',
+      rawCollectorNumberText: '58',
+      usedFullFrameFallback: false,
+      nameRoiId: null,
+      numberRoiId: null,
+    })
+    // An exact id+name match on 'card-58' — the strongest possible pure-text score — plus a
+    // second, unrelated candidate that must rank behind it.
+    mockedSearchCards.mockResolvedValue({
+      results: [
+        catalogRow({ cardId: 'card-58', name: 'Pikachu', localId: '58' }),
+        catalogRow({ cardId: 'card-99', name: 'Charmander', localId: '99' }),
+      ],
+      totalCount: 2,
+    })
+    visualMocks.analyze.mockResolvedValue(null)
+    visualMocks.getDiagnosticsSnapshot.mockReturnValue(defaultVisualDiagnostics())
+
+    const controller = createRealScannerController({ userId: 'user-a' })
+    await controller.analyzeCapture(capture())
+
+    const result = await controller.getExpectedCardRank?.('card-58')
+    expect(result?.hybridRank).toBe(1)
+    expect(result?.hybridScore).toBeGreaterThan(0)
+    expect(result?.hybridTier).not.toBeNull()
+    expect(result?.scoreComponents).toEqual(
+      expect.arrayContaining(['collector-number-exact', 'name-exact']),
+    )
+
+    // The unrelated candidate carries at most a language-match signal (both fixture cards are
+    // English) and ranks behind the exact id+name match, never first.
+    const other = await controller.getExpectedCardRank?.('card-99')
+    expect(other?.hybridRank).toBe(2)
+    expect(other?.hybridScore ?? 0).toBeLessThan(result?.hybridScore ?? 0)
+    expect(other?.scoreComponents).not.toEqual(
+      expect.arrayContaining(['collector-number-exact', 'name-exact']),
+    )
+  })
+
+  it('P90 §21: a card never retrieved by the scan is fetched and scored as an honest what-if, without mutating the batch', async () => {
+    vi.stubGlobal('window', { location: { search: '?scannerDebug=1' } })
+    visualMocks.getExpectedCardRank.mockResolvedValue({
+      found: false,
+      rank: null,
+      similarity: null,
+      totalCards: 0,
+      inTop20: false,
+      inTop100: false,
+      indexContentId: null,
+    })
+    mockedRunOcrAnalysis.mockResolvedValue({
+      rawNameText: 'Pikachu',
+      rawCollectorNumberText: '58',
+      usedFullFrameFallback: false,
+      nameRoiId: null,
+      numberRoiId: null,
+    })
+    mockedSearchCards.mockResolvedValue({
+      results: [catalogRow({ cardId: 'card-58', name: 'Pikachu', localId: '58' })],
+      totalCount: 1,
+    })
+    visualMocks.analyze.mockResolvedValue(null)
+    visualMocks.getDiagnosticsSnapshot.mockReturnValue(defaultVisualDiagnostics())
+    mockedGetCardsByIds.mockResolvedValueOnce([
+      {
+        id: 'card-never-retrieved',
+        name: 'Bulbasaur',
+        localId: '1',
+        rarity: 'Basic',
+        category: 'Pokemon',
+        illustrator: null,
+        imageBaseUrl: null,
+        // Deliberately a language MISMATCH against the scan's 'en' hint, so this candidate scores
+        // a real, unambiguous zero (a same-language match would add a small language-match point).
+        language: 'ja',
+        setId: 'set-1',
+        setName: 'Base Set',
+      },
+    ])
+
+    const controller = createRealScannerController({ userId: 'user-a' })
+    await controller.analyzeCapture(capture())
+
+    const result = await controller.getExpectedCardRank?.('card-never-retrieved')
+    expect(mockedGetCardsByIds).toHaveBeenCalledWith(['card-never-retrieved'], 'en')
+    expect(result?.hybridRank).toBe(2) // scores zero text evidence, ranks behind card-58
+    expect(result?.hybridScore).toBe(0)
+    // Never added to the batch/candidate pool this scan actually produced.
+    expect(controller.getLastDiagnostics?.()).not.toBeNull()
   })
 })

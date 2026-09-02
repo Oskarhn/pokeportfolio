@@ -83,6 +83,15 @@ export interface ExpectedCardRank {
   readonly inTop20: boolean
   readonly inTop100: boolean
   readonly indexContentId: string | null
+  /** P90 §21: hybrid (text + visual) ranking fields — filled in one layer up, in controller.ts,
+   *  which is the only place that has access to the most recent scan's OCR signals/candidate pool.
+   *  This class only ever produces the visual-only fields above; controller.ts's own
+   *  getExpectedCardRank merges them in. Defaulted to null/empty here so a raw worker response
+   *  (which never sets them) still satisfies this type. */
+  readonly hybridRank: number | null
+  readonly hybridScore: number | null
+  readonly hybridTier: 'high' | 'medium' | 'low' | 'none' | null
+  readonly scoreComponents: readonly string[]
 }
 
 type WorkerMessage =
@@ -301,6 +310,12 @@ export class VisualRecognitionClient {
         inTop20: message.inTop20,
         inTop100: message.inTop100,
         indexContentId: message.indexContentId,
+        // P90 §21: this class only ever answers the visual-only question — controller.ts's own
+        // getExpectedCardRank fills these in from the most recent scan's hybrid evidence.
+        hybridRank: null,
+        hybridScore: null,
+        hybridTier: null,
+        scoreComponents: [],
       })
       return
     }
