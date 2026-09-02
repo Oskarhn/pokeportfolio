@@ -97,6 +97,33 @@ describe('parseCollectorNumber — canonical observed shapes', () => {
   it('ignores junk after the total instead of guessing', () => {
     expect(parseCollectorNumber('123/198 x2')).toMatchObject({ numeric: 123, total: 198 })
   })
+
+  describe('F-16/P88 §15 — recovers well-justified OCR separator noise', () => {
+    it('recovers a stray hyphen or period between prefix and digits', () => {
+      expect(parseCollectorNumber('SWSH-001')).toMatchObject({
+        prefix: 'SWSH',
+        numericText: '001',
+        numeric: 1,
+      })
+      expect(parseCollectorNumber('TG.01')).toMatchObject({ prefix: 'TG', numeric: 1 })
+      expect(parseCollectorNumber('H·31')).toMatchObject({ prefix: 'H', numeric: 31 })
+    })
+
+    it('still fails closed on garbage that merely contains a separator', () => {
+      // "RE" has no digit anywhere — stripping separators cannot manufacture one.
+      expect(parseCollectorNumber('RE-')).toBeNull()
+      expect(parseCollectorNumber('R.E.')).toBeNull()
+    })
+
+    it('never strips a separator that sits inside the slash-total split (unaffected path)', () => {
+      // The slash branch already handles "049/197" before parseLeftSide ever sees a separator.
+      expect(parseCollectorNumber('SWSH-001/197')).toMatchObject({
+        prefix: 'SWSH',
+        numeric: 1,
+        total: 197,
+      })
+    })
+  })
 })
 
 describe('compareCollectorNumber — evidence levels vs canonical local_id', () => {

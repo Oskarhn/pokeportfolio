@@ -120,6 +120,21 @@ export interface ScannerDiagnostics {
   ocrNameRoiId: string | null
   /** Same as `ocrNameRoiId` for the collector-number field. */
   ocrNumberRoiId: string | null
+  /** P85 §11 OCR debugger: every ROI/preprocess/segmentation attempt considered this scan — empty
+   *  outside a debug session (the search itself never records trials unless debug is set, so
+   *  there is nothing extra to show even if this were populated unconditionally). Diagnostics
+   *  only: the winner here is always identical to `ocrNameRoiId`/`ocrNumberRoiId` above; nothing
+   *  on this list feeds back into matching. */
+  ocrTrials: {
+    field: 'name' | 'number'
+    roiId: string
+    preprocess: 'contrast' | 'binarize'
+    segmentation: 'single-line' | 'multi-line'
+    text: string
+    confidence: number
+    plausibilityScore: number
+    isWinner: boolean
+  }[]
   /** True when the visible candidate shortlist widened past the normal 5 because the ranking near
    *  the cutoff was flat/ambiguous (P80 §6 — the Shieldon rank-6 real-device case). */
   candidateExpansionTriggered: boolean
@@ -130,6 +145,37 @@ export interface ScannerDiagnostics {
     reasons: readonly string[]
   }[]
   visualError: string | null
+  /** P88 §21 — the calibrated tier (visual-evidence.ts's `visualEvidenceTier`) of the STRONGEST
+   *  visual similarity found this scan, independent of which candidate it belongs to. Lets a real-
+   *  device report say "this scan's visual channel was in the 0.10-0.19 catastrophic-defect band"
+   *  instead of a bare cosine number nobody can calibrate by eye. Null when no visual hit exists. */
+  visualCalibrationBand: 'strong' | 'moderate' | 'weak' | 'none' | null
+  /** P88 §8/§21/F-12: the winning OCR read's own Tesseract confidence for each field — the exact
+   *  number `engine.ts`'s `ocrTextReliability` weighted this scan's evidence by. Null when nothing
+   *  usable was read for that field. */
+  ocrNameConfidence: number | null
+  ocrCollectorConfidence: number | null
+  /** P88 §21: the collector-number field's structural parse confidence (collector-parse.ts) —
+   *  distinguishes "read something, and it looks like a real printed id" from "read something
+   *  that merely parses." Null when nothing was read for the field. */
+  ocrCollectorParseConfidence: 'high' | 'medium' | 'low' | 'none' | null
+  /** P88 §21/§11-§12: the local name-lexicon's fuzzy-match resolution for this scan's OCR name
+   *  reading, when a lexicon is wired in. Both null this release — the fuzzy lexicon resolver
+   *  (name-lexicon.ts) ships tested but unwired into production retrieval/scoring (no real
+   *  production-scale lexicon exists without hosted Supabase credentials; see
+   *  scripts/scanner-name-lexicon/build-lexicon.ts). Present now so a FUTURE session that wires it
+   *  in needs no new diagnostics field. */
+  ocrNameLexiconMatch: string | null
+  ocrNameLexiconMargin: number | null
+  /** P88 §4/§21/F-26: true when the text-only best candidate and the visual-only best candidate
+   *  disagreed meaningfully this scan (engine.ts's 'visual-text-disagreement' note). */
+  visualTextDisagreement: boolean
+  /** P88 §21: WHY the tier was capped below what the raw top score alone would have implied, when
+   *  it was — 'runner-up-margin-small' (ambiguous ranking), 'visual-text-disagreement' (F-26), or
+   *  'visual-dominance-guarded' (F-02's guard discounted the coincidental-text top candidate).
+   *  Null when nothing capped the tier this scan. */
+  tierCapReason:
+    'runner-up-margin-small' | 'visual-text-disagreement' | 'visual-dominance-guarded' | null
   /** Backend-attempt diagnostics (P78 prompt §4/§11/§12) — what was actually tried, present
    *  whether the visual channel ended up ready or unavailable. */
   visualBackendRequested: 'auto' | 'wasm' | 'webgpu'

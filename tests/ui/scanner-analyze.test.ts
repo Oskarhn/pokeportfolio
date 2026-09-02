@@ -3,11 +3,14 @@ import {
   OCR_WORKING_LONG_EDGE,
   runOcrAnalysis,
   splitFullFrameCardText,
+  extractCollectorNumberLine,
   scoreNameRoiCandidate,
   scoreNumberRoiCandidate,
   isNameRoiConfident,
   isNumberRoiConfident,
+  NUMBER_ROI_CONFIDENCE_FLOOR,
   looksLikeCollectorNumberText,
+  looksLikeBodyTextNotName,
   type OcrEnginePort,
 } from '../../src/features/scanner/analyze'
 import type { ScannerCapture } from '../../src/features/scanner/contract'
@@ -124,22 +127,25 @@ describe('runOcrAnalysis — capture → observation', () => {
       usedFullFrameFallback: false,
       nameRoiId: 'classic-top-left',
       numberRoiId: 'modern-bottom-left',
+      nameConfidence: 91,
+      collectorNumberConfidence: 88,
     })
   })
 
   it('P80 R1: falls through to the modern name candidate and picks it by SCORE when the vintage strip reads worse', async () => {
-    // Name candidates run FIRST; neither crosses the "confident" early-exit bar (score < 70+16),
-    // so both are tried and the higher-scoring one wins — the modern layout's name plate, not
+    // Name candidates run FIRST; none crosses the "confident" early-exit bar (score < 70+16), so
+    // all three are tried and the highest-scoring one wins — the modern layout's name plate, not
     // list order. The number field's first candidate is made trivially confident so it stops
     // after one call, keeping this test's mock sequence focused on the name-selection behavior.
     const engine = makeEngine([
       { text: '58/102', confidence: 60 }, // name candidate 1 (classic-top-left): digit-heavy noise
       { text: 'MEGA CHANDELURE EX', confidence: 55 }, // name candidate 2 (modern-full-width)
+      { text: '', confidence: 0 }, // name candidate 3 (energy-bottom-band, P88 F-17): empty/unusable
       { text: '58/102', confidence: 90 }, // number candidate 1 (modern-bottom-left): parses, stops early
     ])
     const pool = makePool()
     const observation = await runOcrAnalysis(makeCapture(), engine, pool as never)
-    expect(engine.recognize).toHaveBeenCalledTimes(3)
+    expect(engine.recognize).toHaveBeenCalledTimes(4)
     expect(observation.rawNameText).toBe('MEGA CHANDELURE EX')
     expect(observation.nameRoiId).toBe('modern-full-width')
   })
@@ -181,31 +187,62 @@ describe('runOcrAnalysis — capture → observation', () => {
     expect(draw?.[4]).toBe(1400)
   })
 
-  it('P80/P82 R3: runs EXACTLY ONE full-card fallback when EVERY candidate for BOTH fields is unusable across BOTH preprocessing passes', async () => {
-    // 2 name candidates + 2 number candidates, all empty/whitespace-only under BOTH the `contrast`
-    // pass (P78-P81 behaviour, unchanged) AND the P82 `binarize` retry pass (only attempted
-    // because contrast found nothing at all) — then the fallback text.
+  it('P80/P82/P85/P88 R3: runs EXACTLY ONE full-card fallback when EVERY candidate for BOTH fields is unusable across ALL THREE passes', async () => {
+    // 3 name candidates (P88 F-17 adds the energy-bottom-band hypothesis) + 2 number candidates,
+    // all empty/whitespace-only under the `contrast` pass (P78-P81 behaviour, unchanged), the P82
+    // `binarize` retry pass, AND the P85 `multi-line` third pass (number field only — see the
+    // dedicated recovery test below for the case where that pass actually finds something) — only
+    // then the full-frame fallback text.
     const engine = makeEngine([
       { text: '', confidence: 0 }, // name candidate 1, contrast
       { text: ' ', confidence: 0 }, // name candidate 2, contrast
+      { text: '', confidence: 0 }, // name candidate 3 (energy-bottom-band), contrast
       { text: '', confidence: 0 }, // name candidate 1, binarize retry
       { text: ' ', confidence: 0 }, // name candidate 2, binarize retry
+      { text: '', confidence: 0 }, // name candidate 3, binarize retry
       { text: '', confidence: 0 }, // number candidate 1, contrast
       { text: ' ', confidence: 0 }, // number candidate 2, contrast
       { text: '', confidence: 0 }, // number candidate 1, binarize retry
       { text: ' ', confidence: 0 }, // number candidate 2, binarize retry
+      { text: '', confidence: 0 }, // number candidate 1, multi-line retry (P85)
+      { text: ' ', confidence: 0 }, // number candidate 2, multi-line retry (P85)
       { text: 'TESTASAURUS 58/102 junk', confidence: 40 }, // full-card fallback
     ])
     const pool = makePool()
     const observation = await runOcrAnalysis(makeCapture(), engine, pool as never)
-    expect(engine.recognize).toHaveBeenCalledTimes(9)
-    expect(engine.recognize.mock.calls[8]?.[1]).toBe('auto')
+    expect(engine.recognize).toHaveBeenCalledTimes(13)
+    expect(engine.recognize.mock.calls[10]?.[1]).toBe('multi-line')
+    expect(engine.recognize.mock.calls[12]?.[1]).toBe('auto')
     expect(observation.usedFullFrameFallback).toBe(true)
     expect(observation.rawNameText).toBe('TESTASAURUS')
     expect(observation.rawCollectorNumberText).toBe('58/102')
     // Fails gracefully: no candidate ever won either field.
     expect(observation.nameRoiId).toBeNull()
     expect(observation.numberRoiId).toBeNull()
+  })
+
+  it('O85-14/P85 §7: the multi-line third pass recovers a collector number sharing its line with credit text, at bounded extra cost', async () => {
+    // Name resolves confidently on the first candidate (1 call). The number field's contrast AND
+    // binarize passes both find nothing usable on EITHER candidate (4 calls) — exactly the
+    // real-corpus failure this session found (docs/SCANNER_RESEARCH.md §7f): a single-line read of
+    // a crop that structurally contains two lines returns empty. The bounded multi-line retry then
+    // finds the id on candidate 2's block-read second line — 2 extra calls, never the full-frame
+    // fallback.
+    const engine = makeEngine([
+      { text: 'CHANDELURE', confidence: 90 }, // name candidate 1: confident, stops early
+      { text: '', confidence: 0 }, // number candidate 1, contrast
+      { text: '', confidence: 0 }, // number candidate 2, contrast
+      { text: '', confidence: 0 }, // number candidate 1, binarize
+      { text: '', confidence: 0 }, // number candidate 2, binarize
+      { text: 'Illus. Ken Sugimori\n049/197', confidence: 55 }, // number candidate 1, multi-line: two real lines
+    ])
+    const pool = makePool()
+    const observation = await runOcrAnalysis(makeCapture(), engine, pool as never)
+    expect(engine.recognize).toHaveBeenCalledTimes(6)
+    expect(engine.recognize.mock.calls[5]?.[1]).toBe('multi-line')
+    expect(observation.usedFullFrameFallback).toBe(false)
+    expect(observation.rawCollectorNumberText).toBe('049/197')
+    expect(observation.numberRoiId).toBe('modern-bottom-left')
   })
 
   it('returns honest NULLS when nothing at all was read — never fabricated signals', async () => {
@@ -261,6 +298,52 @@ describe('splitFullFrameCardText', () => {
   })
 })
 
+describe('P85 §7 extractCollectorNumberLine (pure)', () => {
+  it('picks the LAST line when it is the one that parses as a printed id', () => {
+    expect(extractCollectorNumberLine('Illus. Ken Sugimori\n049/197')).toBe('049/197')
+  })
+
+  it('finds the id even when it is not the last line', () => {
+    expect(extractCollectorNumberLine('049/197\nNintendo, Creatures, GAMEFREAK')).toBe('049/197')
+  })
+
+  it('returns null when NO line looks like a printed id', () => {
+    expect(extractCollectorNumberLine('Illus. Ken Sugimori\nNintendo, Creatures')).toBeNull()
+  })
+
+  it('returns null for empty/whitespace-only input', () => {
+    expect(extractCollectorNumberLine('')).toBeNull()
+    expect(extractCollectorNumberLine('   \n  \n')).toBeNull()
+  })
+
+  it('ignores blank lines between real content', () => {
+    expect(extractCollectorNumberLine('Illus. Ken Sugimori\n\n\nTG01/TG30')).toBe('TG01/TG30')
+  })
+
+  it('extracts the id TOKEN from a line with real surrounding noise (confirmed set-symbol misread)', () => {
+    // Real PSM 6 output on a Scarlet & Violet card: a misread set-symbol icon box "(BI" and a
+    // trailing bullet glyph share the line with the actual printed id.
+    expect(extractCollectorNumberLine('ius. Shigenori Negishi\n(BI 001/198 ®\n')).toBe('001/198')
+  })
+
+  it('never fabricates an id out of a line with no digit-bearing token at all', () => {
+    expect(
+      extractCollectorNumberLine('Rg TTY\nspits out a fluid that it uses to glue tree bark'),
+    ).toBeNull()
+  })
+
+  it('O85-13: never mistakes a bare copyright YEAR for a printed id (confirmed real false positive)', () => {
+    // Real PSM 6 output on a Base Set card: the copyright line reads as a bare "1995" — digits
+    // only, structurally parseable, but this catalog's real local ids never reach 4 digits
+    // without a total attached, so a bare 4-digit run with no total must be rejected here even
+    // though `looksLikeCollectorNumberText` alone would accept it.
+    expect(
+      extractCollectorNumberLine('Nintendo, Creatures, GAMEFREAK. © 1995 Wizards.\n1/102 ★'),
+    ).toBe('1/102 ★') // the whole line already parses (parseCollectorNumber tolerates the trailing glyph)
+    expect(extractCollectorNumberLine('© 1995 Nintendo, Creatures, GAMEFREAK.')).toBeNull()
+  })
+})
+
 describe('P80 adaptive-ROI scoring (pure)', () => {
   it('scoreNameRoiCandidate rewards high confidence AND a high letter ratio', () => {
     const cleanName = scoreNameRoiCandidate('CHANDELURE', 80)
@@ -290,8 +373,46 @@ describe('P80 adaptive-ROI scoring (pure)', () => {
     expect(isNameRoiConfident('58/102', 95)).toBe(false) // high confidence, but not letters
   })
 
-  it('isNumberRoiConfident is exactly looksLikeCollectorNumberText (parseability is the whole signal)', () => {
-    expect(isNumberRoiConfident('049/197')).toBe(true)
-    expect(isNumberRoiConfident('Illus. Ken S')).toBe(false)
+  it('isNumberRoiConfident requires BOTH parseability AND a minimum OCR confidence (F-12/P88 §8)', () => {
+    expect(isNumberRoiConfident('049/197', 90)).toBe(true)
+    expect(isNumberRoiConfident('Illus. Ken S', 90)).toBe(false)
+    // Real F-12 repro: a shape-plausible digit run at near-zero OCR confidence must not win.
+    expect(isNumberRoiConfident('049/197', 1)).toBe(false)
+    expect(isNumberRoiConfident('049/197', NUMBER_ROI_CONFIDENCE_FLOOR)).toBe(true)
+    expect(isNumberRoiConfident('049/197', NUMBER_ROI_CONFIDENCE_FLOOR - 1)).toBe(false)
+  })
+
+  describe('P88 §13/F-* — attack/rules body-text contamination', () => {
+    it('flags long, multi-sentence rules text as body text, never a name', () => {
+      expect(
+        looksLikeBodyTextNotName('Flip a coin. If heads, this attack does 30 more damage.'),
+      ).toBe(true)
+    })
+
+    it('flags text with more words than any real printed name uses', () => {
+      expect(looksLikeBodyTextNotName('Discard all Energy attached to this Pokemon')).toBe(true)
+    })
+
+    it('does not flag ordinary real card names, including long ones', () => {
+      expect(looksLikeBodyTextNotName('Pikachu')).toBe(false)
+      expect(looksLikeBodyTextNotName('Mega Chandelure ex')).toBe(false)
+      expect(looksLikeBodyTextNotName("Professor Sada's Vitality")).toBe(false)
+    })
+
+    it('scoreNameRoiCandidate discounts body-text-shaped candidates so a real name wins', () => {
+      const bodyText = scoreNameRoiCandidate(
+        'Flip a coin. If heads, this attack does 30 more damage.',
+        90,
+      )
+      const realName = scoreNameRoiCandidate('Chandelure', 60)
+      expect(realName).toBeGreaterThan(bodyText)
+    })
+
+    it('isNameRoiConfident never early-exits on body-text-shaped text, even at high confidence', () => {
+      expect(
+        isNameRoiConfident('Flip a coin. If heads, this attack does 30 more damage.', 99),
+      ).toBe(false)
+      expect(isNameRoiConfident('Chandelure', 91)).toBe(true)
+    })
   })
 })

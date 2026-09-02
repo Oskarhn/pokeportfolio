@@ -118,6 +118,20 @@ export function formatScannerDiagnostics(d: ScannerDiagnostics): string {
     `OCR_NAME_ROI=${d.ocrNameRoiId ?? EMPTY}`,
     `OCR_COLLECTOR_SIGNAL=${d.ocrCollectorSignal ?? EMPTY}`,
     `OCR_NUMBER_ROI=${d.ocrNumberRoiId ?? EMPTY}`,
+    'OCR_TRIALS:',
+  )
+  if (d.ocrTrials.length === 0) {
+    lines.push(`  ${EMPTY}`)
+  } else {
+    d.ocrTrials.forEach((trial) => {
+      lines.push(
+        `  [${trial.field}] roi=${trial.roiId} preprocess=${trial.preprocess} segmentation=${trial.segmentation} ` +
+          `confidence=${String(trial.confidence)} plausibility=${trial.plausibilityScore.toFixed(1)} ` +
+          `text=${JSON.stringify(trial.text)}${trial.isWinner ? ' <-- WINNER' : ''}`,
+      )
+    })
+  }
+  lines.push(
     `CANDIDATE_EXPANSION_TRIGGERED=${d.candidateExpansionTriggered ? 'yes' : 'no'}`,
     'FINAL_RERANKED_CANDIDATES:',
   )
@@ -132,6 +146,26 @@ export function formatScannerDiagnostics(d: ScannerDiagnostics): string {
       )
     })
   }
-  lines.push(`VISUAL_ERROR=${d.visualError ?? EMPTY}`)
+  lines.push(
+    `VISUAL_ERROR=${d.visualError ?? EMPTY}`,
+    `VISUAL_CALIBRATION_BAND=${d.visualCalibrationBand ?? EMPTY}`,
+    `OCR_NAME_CONFIDENCE=${num(d.ocrNameConfidence)}`,
+    `OCR_NAME_LEXICON_MATCH=${d.ocrNameLexiconMatch ?? EMPTY}`,
+    `OCR_NAME_LEXICON_MARGIN=${d.ocrNameLexiconMargin === null ? EMPTY : d.ocrNameLexiconMargin.toFixed(3)}`,
+    `OCR_COLLECTOR_CONFIDENCE=${num(d.ocrCollectorConfidence)}`,
+    `OCR_COLLECTOR_PARSE_CONFIDENCE=${d.ocrCollectorParseConfidence ?? EMPTY}`,
+    'HYBRID_SCORE_COMPONENTS:',
+  )
+  if (d.finalRerankedCandidates.length === 0) {
+    lines.push(`  ${EMPTY}`)
+  } else {
+    d.finalRerankedCandidates.forEach((c) => {
+      lines.push(`  ${c.cardId}: ${c.reasons.length > 0 ? c.reasons.join('+') : EMPTY}`)
+    })
+  }
+  lines.push(
+    `VISUAL_TEXT_DISAGREEMENT=${d.visualTextDisagreement ? 'yes' : 'no'}`,
+    `TIER_CAP_REASON=${d.tierCapReason ?? EMPTY}`,
+  )
   return lines.join('\n')
 }

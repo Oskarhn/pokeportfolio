@@ -134,16 +134,34 @@ export async function getCard(cardId: string): Promise<CatalogCard | null> {
  *  retrieval worker returns a shortlist of `cards.id`s that never went through `search_cards`'
  *  text match, so the hybrid pipeline needs their identity/metadata in one round trip rather than
  *  one `getCard` call per candidate. Same table, same RLS, no new RPC. Silently drops ids the
- *  catalog no longer has (an existing scan candidate that has since been marked inactive) rather
- *  than failing the whole shortlist. */
-export async function getCardsByIds(cardIds: readonly string[]): Promise<CatalogCard[]> {
+ *  catalog no longer has, or that fail the filters below, rather than failing the whole shortlist.
+ *
+ *  F-28/P88 §16: filters `is_active = true`, mirroring `search_cards`' own `and c.is_active`
+ *  clause — the visual index is built at a point in time from active cards, but by the time a
+ *  scan runs against a (possibly weeks-old) index, some of those ids may have since been
+ *  deactivated; without this filter they resolved and ranked anyway, through a code path ordinary
+ *  catalog search would never surface them through.
+ *  F-29/P88 §16: filters `language`, mirroring `search_cards`' `p_language` parameter — defense
+ *  in depth for the day the visual index is ever built without the current English-only
+ *  restriction (`build-index.ts` only embeds `language='en'` cards today), or if a
+ *  contaminated id ever enters the visual shortlist. Optional so a caller with no language
+ *  preference gets every language, same default as `search_cards`. */
+export async function getCardsByIds(
+  cardIds: readonly string[],
+  language?: CatalogLanguage,
+): Promise<CatalogCard[]> {
   if (cardIds.length === 0) return []
-  const { data, error } = await supabase
+  let query = supabase
     .from('cards')
     .select(
       'id, name, local_id, rarity, category, illustrator, image_base_url, language, set_id, card_sets(name)',
     )
     .in('id', cardIds)
+    .eq('is_active', true)
+  if (language !== undefined) {
+    query = query.eq('language', language)
+  }
+  const { data, error } = await query
   if (error) throw new Error(error.message)
 
   return data.map((row) => ({

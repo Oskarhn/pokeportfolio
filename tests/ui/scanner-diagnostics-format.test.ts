@@ -37,6 +37,7 @@ function diagnostics(overrides: Partial<ScannerDiagnostics> = {}): ScannerDiagno
     ocrNameRoiId: 'classic-top-left',
     ocrCollectorSignal: '049/102',
     ocrNumberRoiId: 'modern-bottom-left',
+    ocrTrials: [],
     candidateExpansionTriggered: false,
     finalRerankedCandidates: [
       { cardId: 'card-a', name: 'Shieldon', confidenceTier: 'HIGH', reasons: ['visual-strong'] },
@@ -80,6 +81,14 @@ function diagnostics(overrides: Partial<ScannerDiagnostics> = {}): ScannerDiagno
     fastScannerState: 'ready',
     ocrRuntimeState: 'ready',
     enhancedVisualState: 'ready',
+    visualCalibrationBand: 'strong',
+    ocrNameConfidence: 91,
+    ocrCollectorConfidence: 88,
+    ocrCollectorParseConfidence: 'high',
+    ocrNameLexiconMatch: null,
+    ocrNameLexiconMargin: null,
+    visualTextDisagreement: false,
+    tierCapReason: null,
     ...overrides,
   }
 }
@@ -116,6 +125,30 @@ describe('formatScannerDiagnostics', () => {
     expect(text).toContain('CANDIDATE_EXPANSION_TRIGGERED=no')
     expect(text).toContain('1. card-a "Shieldon" tier=HIGH reasons=visual-strong')
     expect(text).toContain('VISUAL_ERROR=—')
+    expect(text).toContain('VISUAL_CALIBRATION_BAND=strong')
+    expect(text).toContain('OCR_NAME_CONFIDENCE=91')
+    expect(text).toContain('OCR_NAME_LEXICON_MATCH=—')
+    expect(text).toContain('OCR_NAME_LEXICON_MARGIN=—')
+    expect(text).toContain('OCR_COLLECTOR_CONFIDENCE=88')
+    expect(text).toContain('OCR_COLLECTOR_PARSE_CONFIDENCE=high')
+    expect(text).toContain('card-a: visual-strong')
+    expect(text).toContain('VISUAL_TEXT_DISAGREEMENT=no')
+    expect(text).toContain('TIER_CAP_REASON=—')
+  })
+
+  it('P88 §21: renders a capped tier reason and disagreement flag when present', () => {
+    const text = formatScannerDiagnostics(
+      diagnostics({
+        visualTextDisagreement: true,
+        tierCapReason: 'visual-dominance-guarded',
+        visualCalibrationBand: 'weak',
+        ocrCollectorParseConfidence: 'low',
+      }),
+    )
+    expect(text).toContain('VISUAL_TEXT_DISAGREEMENT=yes')
+    expect(text).toContain('TIER_CAP_REASON=visual-dominance-guarded')
+    expect(text).toContain('VISUAL_CALIBRATION_BAND=weak')
+    expect(text).toContain('OCR_COLLECTOR_PARSE_CONFIDENCE=low')
   })
 
   it('renders P81 prewarm/timing fields and the full phase-timing block', () => {
@@ -250,6 +283,44 @@ describe('formatScannerDiagnostics', () => {
     expect(text).toContain('WORKER_BOOTED=no')
     expect(text).toContain('WORKER_BOOT_MS=—')
     expect(text).toContain('VISUAL_CURRENT_PHASE=—')
+  })
+
+  it('O85-11: renders every OCR trial with its winner flagged, and an honest placeholder when empty', () => {
+    const empty = formatScannerDiagnostics(diagnostics())
+    expect(empty).toContain('OCR_TRIALS:\n  —')
+
+    const text = formatScannerDiagnostics(
+      diagnostics({
+        ocrTrials: [
+          {
+            field: 'number',
+            roiId: 'modern-bottom-left',
+            preprocess: 'contrast',
+            segmentation: 'single-line',
+            text: '',
+            confidence: 0,
+            plausibilityScore: 0,
+            isWinner: false,
+          },
+          {
+            field: 'number',
+            roiId: 'modern-bottom-left',
+            preprocess: 'contrast',
+            segmentation: 'multi-line',
+            text: '049/197',
+            confidence: 55,
+            plausibilityScore: 155,
+            isWinner: true,
+          },
+        ],
+      }),
+    )
+    expect(text).toContain(
+      '[number] roi=modern-bottom-left preprocess=contrast segmentation=single-line confidence=0 plausibility=0.0 text=""',
+    )
+    expect(text).toContain(
+      '[number] roi=modern-bottom-left preprocess=contrast segmentation=multi-line confidence=55 plausibility=155.0 text="049/197" <-- WINNER',
+    )
   })
 
   it('renders both backend errors when webgpu and wasm both failed (R6)', () => {

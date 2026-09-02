@@ -35,10 +35,17 @@ interface TesseractWorker {
 }
 
 /** Page segmentation mode for one recognition call: strips read best as single lines; the
- *  full-card fallback reads best in auto layout mode. */
-export type OcrSegmentation = 'single-line' | 'auto'
+ *  full-card fallback reads best in auto layout mode. `multi-line` (PSM 6, "uniform block of
+ *  text") is a P85 §3/§7 addition, used ONLY as a bounded third pass for the collector-number
+ *  field — real-corpus forensics (docs/SCANNER_RESEARCH.md §7f) found that a correctly-cropped
+ *  number strip routinely shares its visual line with an illustrator credit or copyright line
+ *  (a real, common template shape, not a rare edge case), which `single-line` (PSM 7)
+ *  structurally cannot read at all because it assumes exactly one line and mis-segments a
+ *  genuinely two-line crop; PSM 6 reads the whole block instead, and the id is then extracted
+ *  from whichever line actually parses as one (analyze.ts's `extractCollectorNumberLine`). */
+export type OcrSegmentation = 'single-line' | 'auto' | 'multi-line'
 
-const SEGMENTATION_VALUES = { 'single-line': '7', auto: '3' } as const
+const SEGMENTATION_VALUES = { 'single-line': '7', auto: '3', 'multi-line': '6' } as const
 
 export class ScannerEngineError extends Error {
   constructor() {

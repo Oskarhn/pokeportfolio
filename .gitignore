@@ -85,6 +85,12 @@ scripts/scanner-visual-benchmark/reports/
 # not this one deliberate, reviewed, checked-in artifact.
 !scripts/scanner-visual-index/generated/
 !scripts/scanner-visual-index/generated/**
+# P85 OCR benchmark reports and the name-lexicon generator's output — reproducible, never
+# committed (this session's lexicon is a small DEMO dataset, not the real catalog — see
+# scripts/scanner-name-lexicon/build-lexicon.ts's own header for why). The OCR benchmark corpus
+# itself reuses scripts/scanner-visual-benchmark/.benchmark-cache/ above — no second image cache.
+scripts/scanner-ocr-benchmark/reports/
+scripts/scanner-name-lexicon/generated/
 
 # ── Editor and OS ──────────────────────────────────────────────────────────
 .vscode/*

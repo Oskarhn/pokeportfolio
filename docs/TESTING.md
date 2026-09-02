@@ -213,6 +213,20 @@ Hugging Face model fetch on first run) and takes minutes, not seconds — the sa
 offline index-generation/verification pair (D-097); `build` needs `SUPABASE_URL`/
 `SUPABASE_SERVICE_ROLE_KEY` (never `.env.local`, same posture as `portfolio-perf-benchmark.mjs`).
 
+**OCR benchmark harness (`scripts/scanner-ocr-benchmark/`, P85 §7f, NOT part of `pnpm test` or
+CI — same exclusion reasoning as the visual benchmarks above: live TCGdex network access, minutes
+not seconds).** Two entrypoints, no DINOv2/embedding dependency at all: `pnpm
+scanner:ocr:benchmark:psm-forensics` runs a bounded Tesseract PSM × preprocess grid search on a
+representative subset to find the winning configuration per field rather than assume one (result:
+the pre-existing PSM 7 default was already correct — see SCANNER_RESEARCH.md §7f);
+`pnpm scanner:ocr:benchmark:recognition` runs the REAL production adaptive-ROI pipeline functions
+(the exact exports `analyze.ts` calls) against a diverse, proportionally-sampled real corpus with
+9 realistic perturbation profiles per card, reporting BASELINE (P82/P83) vs. NEW (P85's bounded
+multi-line collector-number recovery pass) side by side. `pnpm scanner:name-lexicon:build`
+generates the fuzzy-name lexicon (`src/domain/scanner/name-lexicon.ts`) from either the real
+catalog (`SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`) or, absent credentials, this benchmark's own
+corpus as an honestly-labeled demo substitute.
+
 **M15 scanner idempotency (`tests/db/m15_scanner_idempotency.test.ts`, in `pnpm test:db`).**
 21 cases (I1–I21) against real Postgres pin D-096's per-item idempotency key on
 `add_card_acquisition`: sequential and concurrent replay (including a forced-overlap race for
