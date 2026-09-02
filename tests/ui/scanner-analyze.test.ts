@@ -10,6 +10,7 @@ import {
   isNumberRoiConfident,
   NUMBER_ROI_CONFIDENCE_FLOOR,
   looksLikeCollectorNumberText,
+  looksLikeBodyTextNotName,
   type OcrEnginePort,
 } from '../../src/features/scanner/analyze'
 import type { ScannerCapture } from '../../src/features/scanner/contract'
@@ -379,5 +380,39 @@ describe('P80 adaptive-ROI scoring (pure)', () => {
     expect(isNumberRoiConfident('049/197', 1)).toBe(false)
     expect(isNumberRoiConfident('049/197', NUMBER_ROI_CONFIDENCE_FLOOR)).toBe(true)
     expect(isNumberRoiConfident('049/197', NUMBER_ROI_CONFIDENCE_FLOOR - 1)).toBe(false)
+  })
+
+  describe('P88 §13/F-* — attack/rules body-text contamination', () => {
+    it('flags long, multi-sentence rules text as body text, never a name', () => {
+      expect(
+        looksLikeBodyTextNotName('Flip a coin. If heads, this attack does 30 more damage.'),
+      ).toBe(true)
+    })
+
+    it('flags text with more words than any real printed name uses', () => {
+      expect(looksLikeBodyTextNotName('Discard all Energy attached to this Pokemon')).toBe(true)
+    })
+
+    it('does not flag ordinary real card names, including long ones', () => {
+      expect(looksLikeBodyTextNotName('Pikachu')).toBe(false)
+      expect(looksLikeBodyTextNotName('Mega Chandelure ex')).toBe(false)
+      expect(looksLikeBodyTextNotName("Professor Sada's Vitality")).toBe(false)
+    })
+
+    it('scoreNameRoiCandidate discounts body-text-shaped candidates so a real name wins', () => {
+      const bodyText = scoreNameRoiCandidate(
+        'Flip a coin. If heads, this attack does 30 more damage.',
+        90,
+      )
+      const realName = scoreNameRoiCandidate('Chandelure', 60)
+      expect(realName).toBeGreaterThan(bodyText)
+    })
+
+    it('isNameRoiConfident never early-exits on body-text-shaped text, even at high confidence', () => {
+      expect(
+        isNameRoiConfident('Flip a coin. If heads, this attack does 30 more damage.', 99),
+      ).toBe(false)
+      expect(isNameRoiConfident('Chandelure', 91)).toBe(true)
+    })
   })
 })

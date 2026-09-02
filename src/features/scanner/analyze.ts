@@ -213,13 +213,49 @@ export function cleanSignal(text: string | null, minimumLength: number): string 
 }
 
 /**
+ * P88 §13 — attack/ability/rules BODY TEXT contamination. A name ROI that lands even partly on
+ * printed rules text ("Binding Flame", "Retreat Cost", or a full attack description) can read as
+ * clean, high-confidence, letters-only OCR — `nameLetterRatio` alone cannot tell it apart from a
+ * real name. Two structural properties genuinely DO distinguish body/rules PROSE specifically
+ * (multi-sentence attack descriptions, "Flip a coin. If heads, ..."), independent of catalog
+ * content — real printed card names are never sentences and are always short:
+ * - A real printed name (checked against every card this catalog currently stores) tops out
+ *   around 25 characters ("Professor Sada's Vitality", "Iron Valiant ex" and similar).
+ * - A real name is never more than a few WORDS, and never contains a sentence boundary (a
+ *   terminal punctuation mark followed by a new capitalized word) the way multi-sentence rules
+ *   text does.
+ * This does NOT solve every contamination case — a short attack NAME-shaped fragment ("Retreat
+ * Cost", two words, 12 characters) cannot be told apart from a real card name by text shape
+ * alone; that residual gap needs layout/proximity reasoning (HP-line adjacency, multi-ROI
+ * agreement) this session did not build — disclosed, not silently claimed solved.
+ */
+const MAX_PLAUSIBLE_NAME_TEXT_LENGTH = 26
+const MAX_PLAUSIBLE_NAME_WORD_COUNT = 6
+const SENTENCE_BOUNDARY_PATTERN = /[.!?]\s+[A-Z]/
+
+export function looksLikeBodyTextNotName(cleanedText: string): boolean {
+  if (cleanedText.length > MAX_PLAUSIBLE_NAME_TEXT_LENGTH) return true
+  if (SENTENCE_BOUNDARY_PATTERN.test(cleanedText)) return true
+  const wordCount = cleanedText.trim().split(/\s+/).filter(Boolean).length
+  return wordCount > MAX_PLAUSIBLE_NAME_WORD_COUNT
+}
+
+/** Points deducted from an otherwise name-shaped candidate that structurally reads as rules/body
+ *  prose (P88 §13) — a penalty, not an outright reject: a genuinely prose-shaped read still beats
+ *  having no candidate at all when every other layout hypothesis also failed, but it must never
+ *  win over a real, shorter, non-prose candidate. */
+const BODY_TEXT_SCORE_PENALTY = 60
+
+/**
  * P80 adaptive-ROI scoring — name field. OCR confidence dominates; the letter-ratio term breaks
  * ties AND penalizes symbol/digit-heavy noise a name ROI landing on artwork or a stat line tends
- * to produce (a real name is almost entirely letters and spaces). Pure and exported so tests pin
- * the exact numbers, same discipline as engine.ts's SCORING_WEIGHTS.
+ * to produce (a real name is almost entirely letters and spaces). The P88 §13 body-text penalty
+ * discounts candidates that structurally read as attack/rules prose rather than a printed name.
+ * Pure and exported so tests pin the exact numbers, same discipline as engine.ts's SCORING_WEIGHTS.
  */
 export function scoreNameRoiCandidate(cleanedText: string, confidence: number): number {
-  return confidence + nameLetterRatio(cleanedText) * 20
+  const base = confidence + nameLetterRatio(cleanedText) * 20
+  return looksLikeBodyTextNotName(cleanedText) ? base - BODY_TEXT_SCORE_PENALTY : base
 }
 
 function nameLetterRatio(cleanedText: string): number {
@@ -254,9 +290,12 @@ export function scoreNumberRoiCandidate(cleanedText: string, confidence: number)
 /** P80 early-exit predicates: once a candidate is this good, the remaining layout candidates for
  *  the same field are skipped — restores the original single-ROI-read latency for the common,
  *  already-correct-layout case, while still trying every candidate when the first read is weak or
- *  wrong (the real modern-layout failure this session fixes). */
+ *  wrong (the real modern-layout failure this session fixes). P88 §13: a candidate that
+ *  structurally reads as attack/rules body prose can never early-exit as "confident" even at high
+ *  OCR confidence and a high letter ratio — it must always let the remaining layout candidates be
+ *  tried, since ANY genuine name-shaped candidate is more likely correct than confirmed prose. */
 export function isNameRoiConfident(cleanedText: string, confidence: number): boolean {
-  return confidence >= 70 && nameLetterRatio(cleanedText) >= 0.8
+  return confidence >= 70 && nameLetterRatio(cleanedText) >= 0.8 && !looksLikeBodyTextNotName(cleanedText)
 }
 
 /** P88 §8/F-12: a candidate that merely PARSES as a plausible id is no longer enough to early-
