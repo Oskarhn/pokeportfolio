@@ -300,6 +300,40 @@ describe('scanner state machine — batch review editing', () => {
     state = reduce(state, { type: 'BATCH_ITEM_REMOVED', index: 0 })
     expect(state.batch.map((item) => item.candidate.candidateId)).toEqual(['b'])
   })
+
+  it('F-19/§8: a needsVerification item freezes quantity and condition edits', () => {
+    let state = atReviewWithTwo()
+    // Simulate the item having survived a partial commit as needs_verification (the shape
+    // COMMIT_SUCCEEDED itself produces — reproduced directly here since this describe block
+    // exercises batch-review editing in isolation from commit outcomes).
+    state = {
+      ...state,
+      batch: state.batch.map((item, index) =>
+        index === 1 ? { ...item, needsVerification: true } : item,
+      ),
+    }
+    const originalQuantity = state.batch[1]?.quantity
+    const originalCondition = state.batch[1]?.condition
+    const afterQuantityAttempt = reduce(state, {
+      type: 'BATCH_ITEM_QUANTITY_CHANGED',
+      index: 1,
+      value: '9',
+    })
+    expect(afterQuantityAttempt.batch[1]?.quantity).toBe(originalQuantity)
+    const afterConditionAttempt = reduce(state, {
+      type: 'BATCH_ITEM_CONDITION_CHANGED',
+      index: 1,
+      condition: 'PO',
+    })
+    expect(afterConditionAttempt.batch[1]?.condition).toBe(originalCondition)
+    // The OTHER item (not flagged) still edits normally — the freeze is per-item, not global.
+    const editsOtherItem = reduce(state, {
+      type: 'BATCH_ITEM_QUANTITY_CHANGED',
+      index: 0,
+      value: '5',
+    })
+    expect(editsOtherItem.batch[0]?.quantity).toBe(5)
+  })
 })
 
 describe('scanner state machine — commit outcomes', () => {

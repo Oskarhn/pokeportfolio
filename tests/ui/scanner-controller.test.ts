@@ -662,6 +662,31 @@ describe('commitBatch - existing acquisition path, honest outcomes (I12/I13/I14)
     expect(plain.status).toBe('needs_verification')
   })
 
+  it('F-19: idempotency-key-reuse names the possibility of a pre-existing entry, not "edit or remove it"', () => {
+    const reused = classifyAcquisitionFailure(
+      0,
+      Object.assign(
+        new Error(
+          "idempotency-key-reuse: key 'abc' already belongs to a different acquisition attempt",
+        ),
+        { code: 'P0001' },
+      ),
+    )
+    expect(reused.status).toBe('failed')
+    expect(reused.message).toMatch(/already be in your collection/i)
+    expect(reused.message).toMatch(/check portfolio/i)
+    expect(reused.message).not.toMatch(/edit it or remove it/i)
+  })
+
+  it('F-19: an ordinary coded server refusal keeps the generic edit-or-remove message', () => {
+    const ordinary = classifyAcquisitionFailure(
+      0,
+      Object.assign(new Error('quantity must be a positive integer'), { code: '23514' }),
+    )
+    expect(ordinary.status).toBe('failed')
+    expect(ordinary.message).toMatch(/edit it or remove it/i)
+  })
+
   it('falls back safely when no session defaults exist - never guessing financial values', async () => {
     mockedAddCardAcquisition.mockResolvedValue({ holdingId: 'h', lotId: 'l' })
     const controller = createRealScannerController({ userId: null })

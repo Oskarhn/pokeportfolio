@@ -307,8 +307,16 @@ export function scannerReducer(state: ScannerState, action: ScannerAction): Scan
     case 'REVIEW_BATCH_PRESSED':
       return { ...state, step: 'batch-review', commitError: null }
     case 'BATCH_ITEM_QUANTITY_CHANGED': {
+      // F-19/§8 (P89): a needsVerification item's requestKey was generated for the material
+      // facts (quantity/condition/variant) it ALREADY attempted to save under — that attempt's
+      // outcome is genuinely unknown (see classifyAcquisitionFailure's ambiguous-transport
+      // case). Editing those facts and retrying under the SAME key deterministically triggers
+      // the server's idempotency-key-reuse guard if the original attempt actually succeeded
+      // (F-19); silently minting a NEW key instead would risk a real duplicate if it did. The
+      // only safe move is to freeze material edits until the user removes the item (after an
+      // explicit warning) and rescans as a genuinely new capture.
       const batch = state.batch.map((item, index) =>
-        index === action.index
+        index === action.index && !item.needsVerification
           ? { ...item, quantity: parseBatchQuantity(action.value, item.quantity) }
           : item,
       )
@@ -316,7 +324,9 @@ export function scannerReducer(state: ScannerState, action: ScannerAction): Scan
     }
     case 'BATCH_ITEM_CONDITION_CHANGED': {
       const batch = state.batch.map((item, index) =>
-        index === action.index ? { ...item, condition: action.condition } : item,
+        index === action.index && !item.needsVerification
+          ? { ...item, condition: action.condition }
+          : item,
       )
       return { ...state, batch }
     }

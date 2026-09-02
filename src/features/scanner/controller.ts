@@ -218,12 +218,31 @@ export function variantChoiceLabel(variant: CatalogVariant): string {
  * server response (code/details/hint), never on message text.
  */
 export function classifyAcquisitionFailure(index: number, error: unknown): ScannerCommitOutcome {
-  const candidate = error as { code?: unknown; details?: unknown; hint?: unknown }
+  const candidate = error as { code?: unknown; details?: unknown; hint?: unknown; message?: unknown }
   const hasServerAnswer =
     typeof candidate.code === 'string' ||
     typeof candidate.details === 'string' ||
     typeof candidate.hint === 'string'
   if (hasServerAnswer) {
+    const rawMessage = typeof candidate.message === 'string' ? candidate.message : ''
+    // F-19 (P89): idempotency-key-reuse is a DEFINITE server answer like any other refusal, but
+    // it means something categorically different — this exact request key already committed
+    // under DIFFERENT material facts, most often because an earlier ambiguous
+    // ('needs_verification') attempt actually succeeded server-side before its response reached
+    // the client, and the item was then edited before retrying. "Edit it or remove it" is
+    // actively dangerous for this specific case: editing-and-resubmitting can never update the
+    // existing entry (the RPC has no update semantics), and removing-and-rescanning generates a
+    // brand new request key that WILL create a genuine duplicate lot on top of the one that
+    // already silently succeeded. Mirrors the sibling Openings feature's own handling of the
+    // identical server pattern (src/features/openings/controller.ts's mapOpeningErrorMessage).
+    if (/idempotency-key-reuse/.test(rawMessage)) {
+      return {
+        index,
+        status: 'failed',
+        message:
+          'This card may already be in your collection with different details. Check Portfolio before trying again — editing and resubmitting this item will not update the existing entry.',
+      }
+    }
     return {
       index,
       status: 'failed',

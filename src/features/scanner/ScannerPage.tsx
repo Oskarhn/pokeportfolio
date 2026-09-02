@@ -1752,6 +1752,18 @@ function BatchReviewView({
                 <button
                   type="button"
                   onClick={() => {
+                    // F-19/§8 (P89): a needsVerification item may already have been saved by an
+                    // earlier attempt whose server answer was lost in transit — removing it here
+                    // only clears THIS scanning session's local record, never anything already in
+                    // the Portfolio. Warn explicitly before that record disappears silently.
+                    if (
+                      item.needsVerification &&
+                      !confirm(
+                        'This card may already be in your Portfolio from an earlier attempt. Removing it here only clears this scan — it does NOT undo anything already saved. Check Portfolio first if you are unsure. Remove anyway?',
+                      )
+                    ) {
+                      return
+                    }
                     onRemove(index)
                   }}
                   aria-label={`Remove ${item.candidate.name}`}
@@ -1765,8 +1777,10 @@ function BatchReviewView({
                   role="status"
                   className="rounded-lg bg-amber-900/30 px-3 py-2 text-xs leading-relaxed text-amber-200"
                 >
-                  Connection was interrupted. This card may already have been added. Check Portfolio
-                  before retrying.
+                  Connection was interrupted. This card may already be in your Portfolio. Check
+                  Portfolio before retrying — quantity and condition are locked for this item since
+                  editing and resubmitting will not update an existing entry. Remove it (after
+                  checking Portfolio) to rescan as a new card instead.
                 </p>
               ) : null}
               <div className="flex items-end gap-2">
@@ -1777,20 +1791,22 @@ function BatchReviewView({
                     inputMode="numeric"
                     min={1}
                     value={item.quantity}
+                    disabled={item.needsVerification}
                     onChange={(event) => {
                       onQuantityChange(index, event.target.value)
                     }}
-                    className="mt-1 min-h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-base tabular-nums text-slate-100 outline-none focus-visible:border-sky-500 focus-visible:ring-2 focus-visible:ring-sky-500/40"
+                    className="mt-1 min-h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-base tabular-nums text-slate-100 outline-none focus-visible:border-sky-500 focus-visible:ring-2 focus-visible:ring-sky-500/40 disabled:opacity-50"
                   />
                 </label>
                 <label className="min-w-0 flex-1 text-xs text-slate-400">
                   Condition
                   <select
                     value={item.condition}
+                    disabled={item.needsVerification}
                     onChange={(event) => {
                       onConditionChange(index, event.target.value as CardCondition)
                     }}
-                    className="mt-1 min-h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-base text-slate-100 outline-none focus-visible:border-sky-500 focus-visible:ring-2 focus-visible:ring-sky-500/40"
+                    className="mt-1 min-h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-base text-slate-100 outline-none focus-visible:border-sky-500 focus-visible:ring-2 focus-visible:ring-sky-500/40 disabled:opacity-50"
                   >
                     {CONDITIONS.map((value) => (
                       <option key={value} value={value}>
