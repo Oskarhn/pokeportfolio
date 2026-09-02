@@ -26,6 +26,7 @@ import {
   type VisualBackendOverride,
   type BackendAttempts,
 } from '../../../domain/scanner/visual-backend-selection'
+import { detectIsSafariUserAgent } from './safari-detection'
 import {
   decodeVisualIndex,
   searchVisualIndex,
@@ -621,24 +622,6 @@ async function init(message: InitMessage): Promise<void> {
       visualReadyTotalMs: performance.now() - startedAt,
     }),
   })
-}
-
-/**
- * `@huggingface/transformers` v4.2.0 does not re-export its internal `apis` feature-detection
- * object from the package root (confirmed by inspecting the actual runtime module — only `env`
- * is exported), so this replicates its exact Safari check (same source) rather than depending on
- * an unavailable import.
- */
-function detectIsSafariUserAgent(): boolean {
-  if (typeof navigator === 'undefined') return false
-  const userAgent = navigator.userAgent
-  const vendor = navigator.vendor || ''
-  const isAppleVendor = vendor.indexOf('Apple') > -1
-  const notOtherBrowser =
-    !userAgent.match(/CriOS|FxiOS|EdgiOS|OPiOS|mercury|brave/i) &&
-    !userAgent.includes('Chrome') &&
-    !userAgent.includes('Android')
-  return isAppleVendor && notOtherBrowser
 }
 
 async function embedAndSearch(message: EmbedAndSearchMessage): Promise<void> {
