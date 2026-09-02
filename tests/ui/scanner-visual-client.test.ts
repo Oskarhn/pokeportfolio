@@ -70,6 +70,14 @@ function readyMessage(overrides: Record<string, unknown> = {}) {
     modelColdLoadMs: 972,
     indexVersion: 'visual-v1',
     indexSourceProjectRef: 'nopmkroeygmlvndzjjqs.supabase.co',
+    indexModelRevision: 'c2bb04a51fab207c420665f1946016107bffc701',
+    indexGeneratedAt: '2026-09-01T00:00:00.000Z',
+    indexEmbeddingsSha256: 'deadbeef',
+    indexContentId: '0123456789abcdef',
+    indexSourceProjectExpected: 'nopmkroeygmlvndzjjqs.supabase.co',
+    indexSourceProjectMatch: true,
+    indexRuntimeChecksumVerified: true,
+    indexRuntimeChecksumMs: 41,
     indexLoadMs: 76,
     indexUnavailableReason: null,
     backendRequested: 'auto',
@@ -202,6 +210,152 @@ describe('VisualRecognitionClient — backend/init diagnostics (P78)', () => {
     expect(worker.postMessage).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'init', backendOverride: 'auto' }),
     )
+  })
+})
+
+describe('VisualRecognitionClient — P87 F-01/F-22/§6 index-integrity diagnostics relay', () => {
+  it('relays the content id, source-project expectation/match, and runtime checksum fields verbatim', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const client = new VisualRecognitionClient()
+    const readyPromise = client.ensureReady()
+    const worker = latestWorker()
+    worker.emit('message', {
+      data: readyMessage({
+        indexContentId: 'deadbeefcafef00d',
+        indexSourceProjectExpected: 'nopmkroeygmlvndzjjqs.supabase.co',
+        indexSourceProjectMatch: true,
+        indexRuntimeChecksumVerified: true,
+        indexRuntimeChecksumMs: 37,
+      }),
+    })
+    const ready = await readyPromise
+    expect(ready?.indexContentId).toBe('deadbeefcafef00d')
+    expect(ready?.indexSourceProjectExpected).toBe('nopmkroeygmlvndzjjqs.supabase.co')
+    expect(ready?.indexSourceProjectMatch).toBe(true)
+    expect(ready?.indexRuntimeChecksumVerified).toBe(true)
+    expect(ready?.indexRuntimeChecksumMs).toBe(37)
+  })
+
+  it('a rejected index (source-project mismatch) reports indexAvailable=false with the mismatch visible', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const client = new VisualRecognitionClient()
+    const readyPromise = client.ensureReady()
+    const worker = latestWorker()
+    worker.emit('message', {
+      data: readyMessage({
+        indexAvailable: false,
+        cardCount: 0,
+        indexLoad: 'failed',
+        indexSourceProjectRef: 'some-other-project.supabase.co',
+        indexSourceProjectExpected: 'nopmkroeygmlvndzjjqs.supabase.co',
+        indexSourceProjectMatch: false,
+        indexContentId: null,
+        indexUnavailableReason: 'manifest sourceProjectRef mismatch',
+      }),
+    })
+    const ready = await readyPromise
+    expect(ready?.indexAvailable).toBe(false)
+    expect(ready?.indexSourceProjectMatch).toBe(false)
+    expect(ready?.indexUnavailableReason).toContain('sourceProjectRef mismatch')
+  })
+})
+
+describe('VisualRecognitionClient — getExpectedCardRank (P84, ported P87)', () => {
+  it('returns null without constructing a Worker when ensureReady/analyze was never called', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const client = new VisualRecognitionClient()
+    const result = await client.getExpectedCardRank('some-card-id')
+    expect(result).toBeNull()
+    expect(FakeWorker.instances.length).toBe(0)
+  })
+
+  it('sends a get-expected-rank request and resolves the matching response by requestId', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const client = new VisualRecognitionClient()
+    const readyPromise = client.ensureReady()
+    const worker = latestWorker()
+    worker.emit('message', { data: readyMessage() })
+    await readyPromise
+
+    const rankPromise = client.getExpectedCardRank('card-42')
+    const call = worker.postMessage.mock.calls.find(
+      (call) => (call[0] as { type: string }).type === 'get-expected-rank',
+    )
+    expect(call).toBeDefined()
+    const requestId = (call?.[0] as { requestId: number }).requestId
+    worker.emit('message', {
+      data: {
+        type: 'expected-rank',
+        requestId,
+        found: true,
+        rank: 7,
+        similarity: 0.91,
+        totalCards: 19501,
+        inTop20: true,
+        inTop100: true,
+        indexContentId: '0123456789abcdef',
+      },
+    })
+    const result = await rankPromise
+    expect(result).toEqual({
+      found: true,
+      rank: 7,
+      similarity: 0.91,
+      totalCards: 19501,
+      inTop20: true,
+      inTop100: true,
+      indexContentId: '0123456789abcdef',
+    })
+  })
+
+  it('a not-found rank lookup resolves with found=false and null rank/similarity, never throws', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const client = new VisualRecognitionClient()
+    const readyPromise = client.ensureReady()
+    const worker = latestWorker()
+    worker.emit('message', { data: readyMessage() })
+    await readyPromise
+
+    const rankPromise = client.getExpectedCardRank('unknown-card')
+    const call = worker.postMessage.mock.calls.find(
+      (call) => (call[0] as { type: string }).type === 'get-expected-rank',
+    )
+    const requestId = (call?.[0] as { requestId: number }).requestId
+    worker.emit('message', {
+      data: {
+        type: 'expected-rank',
+        requestId,
+        found: false,
+        rank: null,
+        similarity: null,
+        totalCards: 19501,
+        inTop20: false,
+        inTop100: false,
+        indexContentId: '0123456789abcdef',
+      },
+    })
+    await expect(rankPromise).resolves.toEqual({
+      found: false,
+      rank: null,
+      similarity: null,
+      totalCards: 19501,
+      inTop20: false,
+      inTop100: false,
+      indexContentId: '0123456789abcdef',
+    })
+  })
+
+  it('dispose() clears any in-flight rank request bookkeeping without throwing', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const client = new VisualRecognitionClient()
+    const readyPromise = client.ensureReady()
+    const worker = latestWorker()
+    worker.emit('message', { data: readyMessage() })
+    await readyPromise
+    void client.getExpectedCardRank('card-x')
+    expect(() => {
+      client.dispose()
+    }).not.toThrow()
   })
 })
 

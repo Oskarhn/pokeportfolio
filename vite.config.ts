@@ -19,12 +19,21 @@ const packageJson = JSON.parse(
  * dimensions); nothing in the app could prove which commit was actually running. Cloudflare Pages
  * sets `CF_PAGES_COMMIT_SHA` for every Pages build; a local `pnpm build` (no Pages env) falls back
  * to the checked-out commit so the value is never fabricated either way.
+ *
+ * P87 F-43: the local-build fallback now appends a `+dirty` suffix when the worktree has
+ * uncommitted changes. Before this, a local build with edits not yet committed reported a
+ * `APP_BUILD_SHA` naming a commit that does NOT contain the code actually running — exactly the
+ * "which commit is this actually running" confusion D-100 exists to eliminate, reintroduced for
+ * local debugging. `CF_PAGES_COMMIT_SHA` (the production path) is unaffected: Cloudflare Pages
+ * always builds from a clean checkout of a real commit, so `git status` is never consulted there.
  */
-function resolveBuildSha(): string {
+export function resolveBuildSha(): string {
   const pagesSha = process.env.CF_PAGES_COMMIT_SHA
   if (pagesSha) return pagesSha
   try {
-    return execSync('git rev-parse HEAD', { encoding: 'utf-8' }).trim()
+    const sha = execSync('git rev-parse HEAD', { encoding: 'utf-8' }).trim()
+    const dirty = execSync('git status --porcelain', { encoding: 'utf-8' }).trim().length > 0
+    return dirty ? `${sha}+dirty` : sha
   } catch {
     return 'unknown'
   }
@@ -116,6 +125,16 @@ function cloudflareHeaders(): Plugin {
 #
 # Cloudflare Pages applies these to static asset responses. There are no Pages Functions in this
 # project; if one is ever added, note that custom headers do not apply to its responses.
+#
+# IMPORTANT (P87 F-01): Cloudflare Pages MERGES headers from every rule whose path pattern
+# matches a request — "an incoming request which matches multiple rules' URL patterns will
+# inherit all rules' headers" (developers.cloudflare.com/pages/configuration/headers), and a
+# header set by two matching rules has its values joined with a comma, never simply overridden by
+# the more specific one. That makes a single broad "/scanner-assets/*" immutable rule fundamentally
+# incompatible with also serving a short-lived, revalidating Cache-Control on any path underneath
+# it (the index pointer below) — the two values would concatenate into one nonsensical header, not
+# replace each other. The rules below are therefore deliberately non-overlapping path prefixes
+# instead of one catch-all splat: each real file matches EXACTLY ONE rule.
 
 /*
   Content-Security-Policy: ${csp}
@@ -133,13 +152,37 @@ function cloudflareHeaders(): Plugin {
 # CacheFirst runtime-caching rule does (scannerAssetRuntimeCache/visualAssetRuntimeCache below) —
 # and that SW rule is not guaranteed to even apply here, since fetches issued from inside the
 # scanner's dedicated Workers are not guaranteed to be intercepted by the controlling Service
-# Worker on every engine. Both asset families are safe to cache aggressively: each lives under a
-# version-pinned path segment (v7, visual-v1) AND the visual worker additionally verifies
-# EXPECTED_MODEL_REVISION before trusting anything it loads (visual-worker.ts) — a stale cached
-# copy can never silently masquerade as a different model/index revision. This does not touch
-# ordinary app files (JS/CSS/HTML), which keep Cloudflare's default hashed-asset behaviour.
-/scanner-assets/*
+# Worker on every engine. This tree is genuinely immutable per engine version: a version bump ships
+# under a new path (v7 -> v8), never by mutating this one's contents.
+/scanner-assets/v7/*
   Cache-Control: public, max-age=31536000, immutable
+
+# The pinned DINOv2 model weights and onnxruntime-web WASM binaries (prepare-scanner-visual-
+# assets.mjs) — content-STABLE per VISUAL_MODEL_REVISION (model-pin.mjs); a model bump is a
+# deliberate revision change, never an in-place mutation of these same files.
+/scanner-assets/visual-v1/model/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/scanner-assets/visual-v1/ort/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# P87 F-01: the visual reference INDEX (manifest.json/card-ids.json/embeddings.bin) is DATA, not
+# engine code — it has already been rebuilt multiple times against what used to be one fixed URL
+# (P76/P77/P79 hosted rebuilds), while being served exactly this "immutable, 1 year" directive the
+# whole time. It is now published content-addressed: every real generation lives under its own
+# .../index/generations/<contentId>/ path, so THIS rule is finally true — the URL genuinely cannot
+# serve two different generations, because a new generation is a new URL.
+/scanner-assets/visual-v1/index/generations/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# The tiny bootstrap pointer a client fetches FIRST to learn the CURRENT contentId — the one file
+# in this whole tree that must always revalidate, mirroring /build-meta.json's existing role
+# below for the app shell (D-100) applied to index data instead. Deliberately its OWN rule, not
+# covered by any splat above (see the merge-semantics note at the top of this file) — the worker's
+# own fetch call additionally passes cache: 'no-store' as belt-and-suspenders, the same pattern
+# already established for build-meta.json.
+/scanner-assets/visual-v1/index/current.json
+  Cache-Control: no-cache
 
 # P83/D-100: this file exists ONLY so a running client can ask "does a newer deployment than mine
 # exist?" (build-freshness-runtime.ts) without polling every few seconds — an explicit no-store
@@ -307,18 +350,49 @@ export const scannerAssetRuntimeCache = {
 }
 
 /**
- * Same CacheFirst/same-origin-only shape as scannerAssetRuntimeCache, for the M15b visual
- * recognition model + reference index (D-097, prompt §38): a NEW explicit namespace
- * (`visual-v1`, not reused v7) because it is a functionally distinct asset family (ONNX model,
- * onnxruntime-web WASM, and the binary index), not another OCR engine version. `.onnx`/`.bin` are
- * scoped to this one versioned path — never a generic `*.onnx`/`*.bin` rule anywhere else in the
- * app, which could otherwise opaquely cache an unrelated future asset under the same extension.
+ * CacheFirst, same-origin-only, for the M15b visual recognition MODEL + engine binaries only
+ * (D-097, prompt §38; scoped P87 F-01): the pinned DINOv2 ONNX model and onnxruntime-web WASM
+ * under `.../visual-v1/model/` and `.../visual-v1/ort/` — a NEW explicit namespace (`visual-v1`,
+ * not reused v7) because it is a functionally distinct asset family from the OCR engine. These
+ * files are content-STABLE per `VISUAL_MODEL_REVISION` (model-pin.mjs), never rebuilt
+ * independently of a deliberate model bump — unlike the reference INDEX, which is deliberately a
+ * SEPARATE cache/pattern below (`visualIndexRuntimeCache`) precisely because its content changes
+ * on its own schedule (a catalog re-embed), not the model's.
  */
 export const visualAssetRuntimeCache = {
-  urlPattern: /\/scanner-assets\/visual-v1\/.+\.(?:onnx|wasm|mjs|json|bin)(?:[?#].*)?$/,
+  urlPattern: /\/scanner-assets\/visual-v1\/(?:model|ort)\/.+\.(?:onnx|wasm|mjs|json)(?:[?#].*)?$/,
   handler: 'CacheFirst' as const,
   options: {
     cacheName: 'scanner-assets-visual-v1',
+    expiration: {
+      maxEntries: 16,
+      maxAgeSeconds: 60 * 60 * 24 * 90,
+      purgeOnQuotaError: true,
+    },
+    cacheableResponse: { statuses: [200] },
+  },
+}
+
+/**
+ * CacheFirst, same-origin-only, for one content-addressed visual-index GENERATION (P87 F-01):
+ * `.../visual-v1/index/generations/<contentId>/{manifest,card-ids,embeddings}` — genuinely safe
+ * to CacheFirst-forever, because the content id is IN the URL: a rebuilt index is a different URL,
+ * never a mutation of this one. Deliberately its OWN cache (`scanner-assets-visual-v1-index`), not
+ * folded into `scanner-assets-visual-v1` above — an index rebuild must never need to bump the
+ * model cache's name, and vice versa.
+ *
+ * The bootstrap pointer, `.../visual-v1/index/current.json`, is DELIBERATELY excluded from this
+ * pattern (and from every other runtime-caching rule in this file) — see visual-worker.ts's
+ * `loadIndex()`, which fetches it with `cache: 'no-store'`. A CacheFirst route matching it would
+ * silently defeat that: Workbox answers a matched request from Cache Storage before the request's
+ * own `cache` mode is ever consulted, so the pointer must simply have no matching route at all in
+ * order to always reach the network/HTTP-cache layer governed by its own `_headers` rule.
+ */
+export const visualIndexRuntimeCache = {
+  urlPattern: /\/scanner-assets\/visual-v1\/index\/generations\/.+\.(?:json|bin)(?:[?#].*)?$/,
+  handler: 'CacheFirst' as const,
+  options: {
+    cacheName: 'scanner-assets-visual-v1-index',
     expiration: {
       maxEntries: 16,
       maxAgeSeconds: 60 * 60 * 24 * 90,
@@ -372,7 +446,11 @@ export default defineConfig({
         globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2}'],
         globIgnores: scannerAssetGlobIgnores,
         navigateFallbackDenylist: [/^\/api\//, ...scannerAssetsNavigateFallbackDenylist],
-        runtimeCaching: [scannerAssetRuntimeCache, visualAssetRuntimeCache],
+        runtimeCaching: [
+          scannerAssetRuntimeCache,
+          visualAssetRuntimeCache,
+          visualIndexRuntimeCache,
+        ],
       },
     }),
   ],

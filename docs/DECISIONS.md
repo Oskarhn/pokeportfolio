@@ -3439,3 +3439,145 @@ window Cloudflare Pages applies to a project's non-latest preview deployments wa
 documented and is not something this session's evidence pins down further. This finding argues
 FOR, not against, the stale-client detection this session built (§3 above): an old client cannot
 assume it has any particular grace period before its own assets stop resolving.
+
+---
+
+## D-101 — Content-addressed visual index publishing, runtime integrity gates and cache coherence (P87)
+
+**2026-09-02 · Accepted**
+
+**Context.** P86's independent adversarial audit (F-01, CRITICAL/P0) found that
+`/scanner-assets/visual-v1/{manifest.json,card-ids.json,embeddings.bin}` — the visual
+recognition reference INDEX (data, rebuilt at least three times: P76/P77/P79) — was served
+`Cache-Control: public, max-age=31536000, immutable` at a fixed literal path shared with the
+pinned model/engine binaries (which genuinely are content-stable per model revision). The only
+runtime check, `EXPECTED_MODEL_REVISION`, verifies the MODEL never the INDEX, so it cannot detect
+staleness across a rebuild: a device that already ran the scanner could silently keep using a
+stale or incomplete card index for up to a year, with every diagnostic field reporting healthy.
+The same audit found the index's declared source-project identity logged but never gated
+(F-22), the only committed-index verifier never wired into the actual build/staging path (F-23),
+non-atomic multi-file generation writes (F-24), OFFSET pagination not safe under concurrent
+catalog mutation (F-25), no proactive cleanup of obsolete Service-Worker runtime caches (F-42),
+and a local dirty-worktree build silently naming a stale commit sha (F-43).
+
+**Decision.**
+
+1. **Content-addressed publishing.** The three generation files move under
+   `.../visual-v1/index/generations/<contentId>/`, where `contentId` is the first 16 hex chars of
+   a SHA-256 over the manifest's semantic fields (excluding `generatedAt`) concatenated with the
+   raw `card-ids.json` and `embeddings.bin` bytes (`src/domain/scanner/index-content-id.ts`) —
+   deliberately NOT `cardCount` alone, `generatedAt` alone, or `modelRevision` alone, each of
+   which the prompt's own audit ruled insufficient. A new file, `.../visual-v1/index/current.json`
+   (`{indexVersion, contentId, manifestPath}`), is the one thing a client fetches first, always
+   with `Cache-Control: no-cache` server-side AND `cache: 'no-store'` client-side
+   (belt-and-suspenders, the same pattern `build-meta.json`/D-100 already established). Every
+   `generations/<id>/*` file is genuinely immutable — the URL itself changes when the content
+   does, so the directive is finally true rather than merely asserted. Model/engine binaries stay
+   at their existing `.../visual-v1/model/` and `.../visual-v1/ort/` paths, unaffected: they are
+   content-stable per `VISUAL_MODEL_REVISION`, a materially different lifecycle from the index.
+2. **Non-overlapping `_headers` rules.** Cloudflare Pages MERGES headers from every rule whose
+   path matches a request (values joined by comma, never one rule overriding another) — a single
+   catch-all `/scanner-assets/*` immutable rule is therefore structurally incompatible with also
+   serving a revalidating pointer underneath it. `vite.config.ts`'s generated `_headers` now uses
+   deliberately non-overlapping prefixes (`v7/*`, `visual-v1/model/*`, `visual-v1/ort/*`,
+   `visual-v1/index/generations/*`, `visual-v1/index/current.json`) instead of one blanket rule.
+3. **Split Workbox runtime caches.** `visualAssetRuntimeCache` (model/engine, cache name
+   `scanner-assets-visual-v1`, unchanged) and a new `visualIndexRuntimeCache` (content-addressed
+   generations only, cache name `scanner-assets-visual-v1-index`) — `current.json` matches NEITHER
+   pattern, so it is never interceptable by a CacheFirst route (which would silently defeat its
+   no-store contract by answering from Cache Storage before the request's own cache mode is ever
+   consulted).
+4. **Worker-owned cache-through respects `cache: 'no-store'`.** `visual-worker.ts`'s manual Cache
+   Storage cache-through (`installFetchProbe`, independent of Service Worker fetch interception —
+   not guaranteed for Worker-issued requests on every engine) previously ignored the caller's own
+   `cache` mode entirely; it now bypasses both read and write for any request marked `no-store`.
+5. **Runtime source-project gate (F-22).** `visual-worker.ts` derives
+   `EXPECTED_SOURCE_PROJECT_REF` from `import.meta.env.VITE_SUPABASE_URL` (via the same
+   `deriveProjectIdentity` the generator already used) and REJECTS an index whose
+   `manifest.sourceProjectRef` disagrees — but only when THIS deployment itself has a real hosted
+   project configured (`VITE_SUPABASE_URL` is not the well-known local/CI-placeholder URL). A
+   local dev build or CI's own placeholder-URL build has nothing meaningful to gate against and
+   stays informational, matching `build-index.ts`'s own local/hosted distinction. `verify-index.ts`
+   gained the same gate as an opt-in (`SCANNER_INDEX_EXPECTED_SOURCE_REF`), never derived
+   automatically from `VITE_SUPABASE_URL` at verify/build time — that variable is a placeholder in
+   CI's `build-and-test` job on purpose, and hard-gating on it there would fail every ordinary CI
+   run against the real, correctly-hosted committed index.
+6. **`verify-index.ts` is build-load-bearing (F-23).** `stage-index-assets.mjs` now imports and
+   calls `verifyCurrentGeneration` directly (via `tsx`, not plain `node` — the staging script now
+   runs the same way `scanner:index:build`/`scanner:index:verify` already did) BEFORE copying
+   anything into `public/`, failing `prebuild` (and therefore `pnpm build`, including CI's
+   `build-and-test` job) loudly on any corruption. The CLI entry point
+   (`pnpm scanner:index:verify`) is now a thin wrapper over the same exported function.
+7. **Atomic publish (F-24).** `scripts/scanner-visual-index/atomic-publish.ts` extracts
+   write-temp-verify-rename as reusable, independently-tested primitives.
+   `publishGenerationAtomically` never creates the final `generations/<id>/` directory until the
+   staged content passes the SAME checks `verify-index.ts` runs on a committed index;
+   `publishPointerAtomically` updates `current.json` LAST, itself via write-temp-then-rename. A
+   process killed at any point leaves `current.json` naming the previous valid generation (or
+   absent, on a first-ever build) — proven by a dedicated interruption-simulation test, not just
+   asserted from reading the script.
+8. **Keyset pagination (F-25).** `drainAllCardPages` (`src/domain/scanner/index-pagination.ts`)
+   changed from OFFSET (`.range(from, to)`) to keyset (id-cursor, `LIMIT pageSize`) — stable
+   under concurrent inserts/deletes anywhere in the table, unlike an ordinal offset walk.
+   `build-index.ts` additionally takes an exact count both BEFORE and AFTER the full drain and
+   refuses to certify the result if they disagree (no single transaction spans an hours-long
+   paginated walk, so this is detection of gross mutation, not true snapshot isolation — the same
+   honest scope `pagination-integrity.ts`/D-074 already discloses for the M13 export).
+9. **Explicit generator target (F-22, local-dev policy).** `build-index.ts` now requires
+   `--target=local` or `--target=hosted` explicitly (or `SCANNER_INDEX_TARGET`) — no silent
+   default. `--target=hosted` refuses to run without `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`
+   already exported (never falls back to the local demo stack for what must be a shippable index).
+10. **Bounded stale-cache cleanup (F-42).** `src/platform/scanner-cache-cleanup.ts` deletes any
+    Cache Storage entry matching a known scanner-cache prefix but absent from an explicit current
+    allowlist, run once at app boot from the MAIN THREAD (not a Service Worker `activate`
+    handler — this project's `generateSW` Workbox strategy has no seam for custom activate logic
+    without switching to `injectManifest`, a materially larger change; Cache Storage is
+    origin-scoped, reachable identically from `window`). Bounded and prefix-scoped: never touches
+    an unrelated cache name, never wipes everything.
+11. **Local dirty-worktree marker (F-43).** `vite.config.ts`'s `resolveBuildSha()` appends
+    `+dirty` to the local-fallback commit sha when `git status --porcelain` is non-empty.
+    `CF_PAGES_COMMIT_SHA` (the production path) is untouched — Cloudflare Pages always builds a
+    clean checkout, so `git status` is never consulted there.
+12. **Runtime checksum + expanded diagnostics.** `visual-worker.ts` independently re-hashes the
+    fetched `embeddings.bin` via `crypto.subtle.digest` and compares it to
+    `manifest.embeddingsSha256` once per newly loaded generation (never per scan); it also
+    cross-checks the fetched trio's own content actually hashes to the `contentId` its URL was
+    published under. `ScannerDiagnostics` gained `indexContentId`/`indexSourceProjectExpected`/
+    `indexSourceProjectMatch`/`indexRuntimeChecksumVerified`/`indexRuntimeChecksumMs`/
+    `indexModelRevision`/`indexGeneratedAt`/`indexEmbeddingsSha256` so a stale or wrong-project
+    index is impossible to hide in a debug-panel screenshot or copied diagnostics paste.
+13. **P84's debug-only rank-lookup tooling, ported.** P84 (`feat/m15-p84-visual-retrieval-
+    forensics`, a sibling branch off the same base commit, not merged) built
+    `getExpectedCardRank(cardId)` — re-ranks the last scan's cached query vector against the FULL
+    index without re-embedding, gated to resolve `null` outside `?scannerDebug=1` WITHOUT ever
+    calling the visual client — and raised the debug-only shortlist/candidate-list depth
+    (`VISUAL_DEBUG_SHORTLIST_SIZE` 50->200, `DEBUG_EXTENDED_CANDIDATE_LIMIT` 20->100; production's
+    own `VISUAL_SHORTLIST_SIZE` of 30 is untouched). Ported here by hand (not cherry-picked — this
+    branch's index-publishing changes touch overlapping worker/client surface) since P87 and P84
+    were developed in parallel from the same base and P84 was never merged into this branch's
+    history.
+14. **Existing 19,501-card index repackaged, not rebuilt.** A one-time migration script
+    (`scripts/scanner-visual-index/migrate-to-content-addressed.ts`) repackaged the already-valid,
+    already-hosted-sourced committed index under its correct content id, computed locally from the
+    committed bytes — zero DINO re-embedding, zero database access, zero owner multi-hour rebuild.
+
+**Alternatives considered.** Query-string cache-busting on the existing fixed path — rejected:
+the prompt explicitly disfavors it as the primary design, and it does not stop the Service
+Worker's own separate CacheFirst layer from serving a stale entry keyed by the un-versioned base
+URL depending on exact Workbox cache-key normalization. Dropping `immutable` and using a short
+`max-age` with revalidation instead of content-addressing — rejected as a first choice per the
+prompt's own preference for genuine immutability; would still cost a round-trip revalidation on
+every cold scanner load. A Service-Worker `activate`-handler cache cleanup — rejected for F-42
+specifically because of the `generateSW`-strategy constraint above; main-thread cleanup reaches
+the identical Cache Storage entries.
+
+**Consequences.** A rebuilt index (owner-run `pnpm scanner:index:build --target=hosted`) now
+mints a genuinely new URL automatically — no cache can ever serve mixed old/new generation data,
+and a client already open when a new generation ships picks it up on its next scanner session
+(pointer fetch bypasses every cache layer) without needing to wait out any TTL. `stage-index-
+assets.mjs` failing loudly on a corrupt index is a deliberate new build-time failure mode; a
+developer who edits a generated index file by hand (never expected in normal use) now sees an
+immediate, explicit build error instead of a silently-shipped corruption. The runtime
+source-project gate means a genuinely wrong-project index degrades gracefully to OCR-only
+exactly like a missing/corrupt one always has — never a crash, never a silent wrong-catalog
+resolution.
