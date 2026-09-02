@@ -29,6 +29,7 @@ function diagnostics(overrides: Partial<ScannerDiagnostics> = {}): ScannerDiagno
     ocrNameRoiId: 'classic-top-left',
     ocrCollectorSignal: '049/102',
     ocrNumberRoiId: 'modern-bottom-left',
+    ocrTrials: [],
     candidateExpansionTriggered: false,
     finalRerankedCandidates: [
       { cardId: 'card-a', name: 'Shieldon', confidenceTier: 'HIGH', reasons: ['visual-strong'] },
@@ -242,6 +243,44 @@ describe('formatScannerDiagnostics', () => {
     expect(text).toContain('WORKER_BOOTED=no')
     expect(text).toContain('WORKER_BOOT_MS=—')
     expect(text).toContain('VISUAL_CURRENT_PHASE=—')
+  })
+
+  it('O85-11: renders every OCR trial with its winner flagged, and an honest placeholder when empty', () => {
+    const empty = formatScannerDiagnostics(diagnostics())
+    expect(empty).toContain('OCR_TRIALS:\n  —')
+
+    const text = formatScannerDiagnostics(
+      diagnostics({
+        ocrTrials: [
+          {
+            field: 'number',
+            roiId: 'modern-bottom-left',
+            preprocess: 'contrast',
+            segmentation: 'single-line',
+            text: '',
+            confidence: 0,
+            plausibilityScore: 0,
+            isWinner: false,
+          },
+          {
+            field: 'number',
+            roiId: 'modern-bottom-left',
+            preprocess: 'contrast',
+            segmentation: 'multi-line',
+            text: '049/197',
+            confidence: 55,
+            plausibilityScore: 155,
+            isWinner: true,
+          },
+        ],
+      }),
+    )
+    expect(text).toContain(
+      '[number] roi=modern-bottom-left preprocess=contrast segmentation=single-line confidence=0 plausibility=0.0 text=""',
+    )
+    expect(text).toContain(
+      '[number] roi=modern-bottom-left preprocess=contrast segmentation=multi-line confidence=55 plausibility=155.0 text="049/197" <-- WINNER',
+    )
   })
 
   it('renders both backend errors when webgpu and wasm both failed (R6)', () => {
