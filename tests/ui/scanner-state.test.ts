@@ -541,3 +541,88 @@ describe('scanner state machine — exit discipline', () => {
     expect(discarded.step).toBe('intro')
   })
 })
+
+describe('scanner state machine — §25 (P89): 10+ card soak', () => {
+  /** Drives one full capture -> analyze -> confirm -> scanned cycle for `id`, appending it to
+   *  whatever batch `state` already carries — the same shape atReviewWithTwo() hand-rolls for
+   *  exactly two cards, generalized to N so a soak test can drive it in a loop. */
+  function scanOneMoreCard(state: ScannerState, id: string): ScannerState {
+    let next = reduce(state, { type: 'SCAN_NEXT_PRESSED' })
+    next = reduce(next, { type: 'CAMERA_STARTED' })
+    next = reduce(next, { type: 'CAPTURE_SUCCEEDED' })
+    next = reduce(next, { type: 'USE_PHOTO_PRESSED' })
+    next = reduce(next, { type: 'ANALYSIS_COMPLETED', analysis: highAnalysis([candidate(id)]) })
+    next = reduce(next, { type: 'CONFIRM_CARD_PRESSED', candidate: candidate(id) })
+    next = variantsLoaded(next)
+    return reduce(next, { type: 'CARD_CONFIRMED' })
+  }
+
+  it('10 consecutive capture/analyze/confirm cycles: no candidate bleed, no key collisions, correct order', () => {
+    const ids = Array.from({ length: 10 }, (_, i) => `soak-${i}`)
+    let state = atScanned() // card 0 already confirmed via the standard happy-path helper
+    for (const id of ids.slice(1)) {
+      state = scanOneMoreCard(state, id)
+    }
+
+    expect(state.batch).toHaveLength(10)
+    // Order preserved, no candidate bleed between cycles (each item names ITS OWN card, not a
+    // neighbour's or a stale one from an earlier cycle).
+    expect(state.batch.map((item) => item.candidate.candidateId)).toEqual(['a', ...ids.slice(1)])
+    // Every requestKey is genuinely unique — no two items silently share an idempotency key
+    // across a long session (would risk exactly the F-19 material-mismatch class if it ever
+    // happened).
+    const keys = new Set(state.batch.map((item) => item.requestKey))
+    expect(keys.size).toBe(10)
+    // Every item carries a real variant selection — CARD_CONFIRMED's own guard (§22) means none
+    // of these 10 cycles could have silently skipped that requirement.
+    expect(state.batch.every((item) => item.variantId === 'variant-1')).toBe(true)
+
+    // The batch survives review and commits as one coherent unit.
+    const reviewing = reduce(state, { type: 'REVIEW_BATCH_PRESSED' })
+    expect(reviewing.step).toBe('batch-review')
+    expect(reviewing.batch).toHaveLength(10)
+    const committing = reduce(reviewing, { type: 'ADD_CARDS_PRESSED' })
+    const outcomes: ScannerCommitOutcome[] = ids.map((_id, index) => ({
+      index,
+      status: 'added',
+      message: null,
+    }))
+    const committed = reduce(committing, {
+      type: 'COMMIT_SUCCEEDED',
+      addedCount: 10,
+      outcomes,
+    })
+    expect(committed.addedCount).toBe(10)
+    expect(committed.batch).toHaveLength(0)
+    expect(committed.attentionCount).toBeNull()
+  })
+
+  it('10-card soak with every 3rd item interrupted (needs_verification): survivors carry exactly the right identities', () => {
+    const ids = Array.from({ length: 10 }, (_, i) => `soak-${i}`)
+    let state = atScanned()
+    for (const id of ids.slice(1)) {
+      state = scanOneMoreCard(state, id)
+    }
+    const committing = reduce(state, { type: 'ADD_CARDS_PRESSED' })
+    const interruptedIndexes = new Set([2, 5, 8])
+    const outcomes: ScannerCommitOutcome[] = ids.map((_id, index) => ({
+      index,
+      status: interruptedIndexes.has(index) ? 'needs_verification' : 'added',
+      message: interruptedIndexes.has(index) ? 'Connection was interrupted.' : null,
+    }))
+    const committed = reduce(committing, {
+      type: 'COMMIT_SUCCEEDED',
+      addedCount: 7,
+      outcomes,
+    })
+    expect(committed.addedCount).toBe(7)
+    expect(committed.attentionCount).toBe(3)
+    expect(committed.batch).toHaveLength(3)
+    // Exactly the interrupted cards survive, in their original order, each correctly flagged.
+    const allIds = ['a', ...ids.slice(1)]
+    expect(committed.batch.map((item) => item.candidate.candidateId)).toEqual(
+      [...interruptedIndexes].sort((x, y) => x - y).map((index) => allIds[index]),
+    )
+    expect(committed.batch.every((item) => item.needsVerification === true)).toBe(true)
+  })
+})
