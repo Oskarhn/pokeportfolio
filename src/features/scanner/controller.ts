@@ -7,7 +7,9 @@ import {
 import { addCardAcquisition } from '../../data/collection'
 import {
   matchScannerObservation,
+  parseCollectorNumberStructured,
   SCORING_TIERS,
+  visualEvidenceTier,
   type RankedScannerCandidate,
   type ScannerObservation,
   type ScannerCandidateRecord,
@@ -500,6 +502,21 @@ export function createRealScannerController(
     const visualSnapshot = visualClient.getDiagnosticsSnapshot()
     const nameById = new Map(mergedCandidates.map((c) => [c.cardId, c.name]))
     const imageBaseUrlById = new Map(mergedCandidates.map((c) => [c.cardId, c.imageBaseUrl]))
+    // P88 §21: the calibrated band of the strongest visual hit this scan, independent of which
+    // candidate wins overall — real-device reports can then say "the visual channel was in the
+    // catastrophic band" instead of a bare, uncalibrated cosine number.
+    const strongestVisualSimilarity =
+      visualScores && visualScores.size > 0 ? Math.max(...visualScores.values()) : null
+    // P88 §21: why (if at all) the tier was capped below what the raw top score alone implies —
+    // mirrors engine.ts's own precedence (a visual-dominance guard already discounted the score
+    // before tiering ran; the margin/disagreement checks run afterward, in that order).
+    const tierCapReason = match.notes.includes('visual-text-disagreement')
+      ? ('visual-text-disagreement' as const)
+      : match.notes.includes('runner-up-margin-small')
+        ? ('runner-up-margin-small' as const)
+        : match.candidates.some((c) => c.reasons.includes('visual-dominance-guarded'))
+          ? ('visual-dominance-guarded' as const)
+          : null
     lastDiagnostics = {
       visualModelState: visualSnapshot.modelState,
       visualBackend: visualResult?.backend ?? visualSnapshot.readyInfo?.backend ?? 'unknown',
@@ -562,6 +579,19 @@ export function createRealScannerController(
       // back to the snapshot's own unavailableReason surfaces it.
       visualError:
         visualResult === null ? (visualErrorMessage ?? visualSnapshot.unavailableReason) : null,
+      visualCalibrationBand:
+        strongestVisualSimilarity === null ? null : visualEvidenceTier(strongestVisualSimilarity),
+      ocrNameConfidence: ocrResult.nameConfidence ?? null,
+      ocrCollectorConfidence: ocrResult.collectorNumberConfidence ?? null,
+      ocrCollectorParseConfidence: ocrResult.rawCollectorNumberText
+        ? parseCollectorNumberStructured(ocrResult.rawCollectorNumberText).confidence
+        : null,
+      // P88 §11/§12: not wired into production retrieval this release — see the field's own
+      // doc comment on ScannerDiagnostics (contract.ts).
+      ocrNameLexiconMatch: null,
+      ocrNameLexiconMargin: null,
+      visualTextDisagreement: match.notes.includes('visual-text-disagreement'),
+      tierCapReason,
       visualBackendRequested: visualSnapshot.backendDiagnostics?.backendRequested ?? 'auto',
       visualBackendAttempts: visualSnapshot.backendDiagnostics?.backendAttempts ?? {
         webgpu: 'not-attempted',

@@ -73,6 +73,14 @@ function diagnostics(overrides: Partial<ScannerDiagnostics> = {}): ScannerDiagno
     fastScannerState: 'ready',
     ocrRuntimeState: 'ready',
     enhancedVisualState: 'ready',
+    visualCalibrationBand: 'strong',
+    ocrNameConfidence: 91,
+    ocrCollectorConfidence: 88,
+    ocrCollectorParseConfidence: 'high',
+    ocrNameLexiconMatch: null,
+    ocrNameLexiconMargin: null,
+    visualTextDisagreement: false,
+    tierCapReason: null,
     ...overrides,
   }
 }
@@ -109,6 +117,30 @@ describe('formatScannerDiagnostics', () => {
     expect(text).toContain('CANDIDATE_EXPANSION_TRIGGERED=no')
     expect(text).toContain('1. card-a "Shieldon" tier=HIGH reasons=visual-strong')
     expect(text).toContain('VISUAL_ERROR=—')
+    expect(text).toContain('VISUAL_CALIBRATION_BAND=strong')
+    expect(text).toContain('OCR_NAME_CONFIDENCE=91')
+    expect(text).toContain('OCR_NAME_LEXICON_MATCH=—')
+    expect(text).toContain('OCR_NAME_LEXICON_MARGIN=—')
+    expect(text).toContain('OCR_COLLECTOR_CONFIDENCE=88')
+    expect(text).toContain('OCR_COLLECTOR_PARSE_CONFIDENCE=high')
+    expect(text).toContain('card-a: visual-strong')
+    expect(text).toContain('VISUAL_TEXT_DISAGREEMENT=no')
+    expect(text).toContain('TIER_CAP_REASON=—')
+  })
+
+  it('P88 §21: renders a capped tier reason and disagreement flag when present', () => {
+    const text = formatScannerDiagnostics(
+      diagnostics({
+        visualTextDisagreement: true,
+        tierCapReason: 'visual-dominance-guarded',
+        visualCalibrationBand: 'weak',
+        ocrCollectorParseConfidence: 'low',
+      }),
+    )
+    expect(text).toContain('VISUAL_TEXT_DISAGREEMENT=yes')
+    expect(text).toContain('TIER_CAP_REASON=visual-dominance-guarded')
+    expect(text).toContain('VISUAL_CALIBRATION_BAND=weak')
+    expect(text).toContain('OCR_COLLECTOR_PARSE_CONFIDENCE=low')
   })
 
   it('renders P81 prewarm/timing fields and the full phase-timing block', () => {
