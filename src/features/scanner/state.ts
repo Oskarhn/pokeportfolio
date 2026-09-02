@@ -351,6 +351,17 @@ export function scannerReducer(state: ScannerState, action: ScannerAction): Scan
       // Batch stays intact so nothing is lost to a transient failure — retry, not re-entry.
       return { ...state, step: 'batch-review', commitError: action.error }
     case 'COMMITTED_DONE_PRESSED':
+      // F-09 (P89): a partial commit deliberately keeps not-yet-saved survivor items in
+      // state.batch (failed / needs_verification outcomes) so nothing scanned-but-unsaved is
+      // lost. "Done" reads as an ordinary acknowledgement, not "discard" — it must not bypass
+      // the SAME nonempty-batch protection every other exit path in this feature enforces
+      // (compare EXIT_PRESSED below). Routing through exitWarningOpen reuses the existing
+      // discard-confirmation sheet; the component distinguishes THIS case from the pre-save
+      // "nothing added yet" case by state.step still being 'committed' when the sheet opens, and
+      // renders explicit "Review remaining" / "Discard remaining and exit" copy accordingly.
+      if (state.batch.length > 0) {
+        return { ...state, exitWarningOpen: true }
+      }
       return { ...initialScannerState, exitRequested: true }
     case 'SEARCH_OPENED':
       return {

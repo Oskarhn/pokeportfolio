@@ -118,6 +118,28 @@ export function ScannerPage() {
   const cameraGenerationRef = useRef(0)
   // Guards double variant fetches for the same candidate across StrictMode-style re-runs.
   const variantsInFlightRef = useRef<string | null>(null)
+  // F-05 (P89): bumped on every event that makes an in-flight analyzeCapture() result stale
+  // (cancel, retake, route exit, controller replacement/unmount) — its .then()/.catch() checks
+  // this before touching any state, so a late-resolving cancelled analysis can never clobber
+  // whatever photo/state the user has moved on to. abortAnalysisRef lets those same events also
+  // signal the controller to skip remaining pipeline work cooperatively (best-effort only).
+  const analysisGenerationRef = useRef(0)
+  const analysisAbortControllerRef = useRef<AbortController | null>(null)
+  function cancelInFlightAnalysis(): void {
+    analysisGenerationRef.current += 1
+    analysisAbortControllerRef.current?.abort()
+    analysisAbortControllerRef.current = null
+  }
+  // F-07 (P89): set SYNCHRONOUSLY at the top of handleShutter, before any await — the rendered
+  // `disabled` attribute alone cannot block a second pointerup dispatched before React commits
+  // the re-render, so a double-tap/multi-touch could otherwise fire captureVideoFrame() twice
+  // concurrently (CaptureStore's revoke-then-replace makes whichever encode lands second win
+  // nondeterministically). A ref read is synchronous and cannot race with the event dispatch.
+  const capturingRef = useRef(false)
+  // F-10 (P89): same synchronous-lock pattern for "Add cards" — server-side idempotency
+  // (client_request_key) already makes a duplicate commitBatch call harmless, but the UI layer
+  // should not depend on that alone.
+  const committingRef = useRef(false)
 
   const cameraWanted = state.step === 'starting-camera' || state.step === 'camera'
 
@@ -163,6 +185,9 @@ export function ScannerPage() {
       cameraGenerationRef.current += 1
       stopActiveScannerCamera()
       captureStoreRef.current.clear()
+      // F-05: an account switch (userId change → new controller) or unmount both make any
+      // analysis still in flight against the OLD controller permanently stale.
+      cancelInFlightAnalysis()
       controller.dispose()
     },
     [controller],
@@ -255,6 +280,7 @@ export function ScannerPage() {
 
   useEffect(() => {
     if (!state.exitRequested) return
+    cancelInFlightAnalysis()
     captureStoreRef.current.clear()
     stopActiveScannerCamera()
     void navigate({ to: '/portfolio' })
@@ -289,8 +315,10 @@ export function ScannerPage() {
   }, [state.step, state.confirmVariantsPending, state.selectedCandidate?.candidateId, controller])
 
   function handleShutter(): void {
+    if (capturingRef.current) return
     const video = videoRef.current
     if (video === null) return
+    capturingRef.current = true
     void captureVideoFrame(video)
       .then((frame) => {
         // Stop the stream as soon as a frame is held — shortest possible camera lifetime.
@@ -304,9 +332,13 @@ export function ScannerPage() {
       .catch((error: unknown) => {
         dispatch({ type: 'CAPTURE_FAILED', error: describeCaptureError(error) })
       })
+      .finally(() => {
+        capturingRef.current = false
+      })
   }
 
   function handleRetake(): void {
+    cancelInFlightAnalysis()
     captureStoreRef.current.clear()
     setPreviewUrl(null)
     dispatch({ type: 'RETAKE_PRESSED' })
@@ -340,11 +372,21 @@ export function ScannerPage() {
       cardRect: stored.cardRect,
     }
     dispatch({ type: 'USE_PHOTO_PRESSED' })
-    // One explicit capture leads to exactly one analysis request — never a continuous loop
-    // while the user is framing (prompt §12).
+    // F-05 (P89): this call's own generation is pinned at the moment it starts. Cancel/retake/
+    // route-exit/unmount/account-switch all bump analysisGenerationRef — if THIS call's
+    // generation no longer matches when the promise settles, the result is stale (the user has
+    // moved on to a different photo or left entirely) and must never touch state: not the
+    // capture store, not the preview URL, not the reducer. One explicit capture still leads to
+    // exactly one analysis REQUEST — never a continuous loop while framing (prompt §12) — but a
+    // late-arriving stale RESPONSE is now a guaranteed no-op instead of clobbering whatever the
+    // user is looking at next.
+    const generation = ++analysisGenerationRef.current
+    const abortController = new AbortController()
+    analysisAbortControllerRef.current = abortController
     void controller
-      .analyzeCapture(payload)
+      .analyzeCapture(payload, abortController.signal)
       .then((analysis) => {
+        if (generation !== analysisGenerationRef.current) return
         setHasCompletedAnalysis(true)
         if (debugEnabled) {
           setDiagnostics(controller.getLastDiagnostics?.() ?? null)
@@ -356,7 +398,13 @@ export function ScannerPage() {
         dispatch({ type: 'ANALYSIS_COMPLETED', analysis })
       })
       .catch((error: unknown) => {
+        if (generation !== analysisGenerationRef.current) return
         dispatch({ type: 'ANALYSIS_FAILED', error: describeAnalysisError(error) })
+      })
+      .finally(() => {
+        if (analysisAbortControllerRef.current === abortController) {
+          analysisAbortControllerRef.current = null
+        }
       })
   }
 
@@ -380,7 +428,13 @@ export function ScannerPage() {
   }
 
   function handleCommit(): void {
+    // F-10 (P89): synchronous lock, independent of the rendered `disabled` attribute — two
+    // pointerups dispatched before React commits the disabled state must still invoke
+    // commitBatch at most once. Server-side idempotency (client_request_key) is defense-in-
+    // depth, not the primary guard.
+    if (committingRef.current) return
     if (state.batch.length === 0) return
+    committingRef.current = true
     dispatch({ type: 'ADD_CARDS_PRESSED' })
     void controller
       .commitBatch(
@@ -408,6 +462,9 @@ export function ScannerPage() {
       })
       .catch((error: unknown) => {
         dispatch({ type: 'COMMIT_FAILED', error: describeCommitError(error) })
+      })
+      .finally(() => {
+        committingRef.current = false
       })
   }
 
@@ -536,6 +593,7 @@ export function ScannerPage() {
         <AnalyzingView
           firstUse={!hasCompletedAnalysis}
           onCancel={() => {
+            cancelInFlightAnalysis()
             dispatch({ type: 'ANALYSIS_CANCELLED' })
           }}
         />
@@ -663,6 +721,11 @@ export function ScannerPage() {
         <ScannerDebugPanel diagnostics={diagnostics} debugImages={debugImages} />
       ) : null}
 
+      {/* F-09 (P89): this same sheet now also guards "Done" after a PARTIAL commit — distinguished
+          from the pre-save "nothing added yet" exit warning purely by state.step still being
+          'committed' when it opens (both COMMITTED_DONE_PRESSED and a nav-blocker EXIT_PRESSED
+          route here identically). The copy must never let "Done" quietly mean "discard": it names
+          what was already added and what still needs attention. */}
       <Sheet
         open={state.exitWarningOpen}
         onClose={() => {
@@ -672,16 +735,24 @@ export function ScannerPage() {
           }
           dispatch({ type: 'EXIT_CANCELLED' })
         }}
-        title="Discard scanned cards?"
+        title={
+          state.step === 'committed' ? 'Discard remaining cards?' : 'Discard scanned cards?'
+        }
       >
         <div className="space-y-4">
           <p className="text-sm text-slate-300">
-            Nothing has been added to your portfolio yet. Discarding clears this scanning session.
+            {state.step === 'committed'
+              ? `${state.addedCount ?? 0} card${(state.addedCount ?? 0) === 1 ? '' : 's'} ${(state.addedCount ?? 0) === 1 ? 'was' : 'were'} already added to your Portfolio. ${state.batch.length} still ${state.batch.length === 1 ? 'needs' : 'need'} attention and ${state.batch.length === 1 ? 'has' : 'have'} NOT been saved. Reviewing lets you retry or remove them; leaving now permanently drops the record of which cards still need attention.`
+              : 'Nothing has been added to your portfolio yet. Discarding clears this scanning session.'}
           </p>
           <div className="flex flex-col gap-2">
             <Button
               type="button"
               onClick={() => {
+                if (state.step === 'committed') {
+                  dispatch({ type: 'REVIEW_BATCH_PRESSED' })
+                  return
+                }
                 // Keep scanning: cancel both the X-button exit and any SPA navigation blocker.
                 if (blockedNavigationRef.current.status === 'blocked') {
                   blockedNavigationRef.current.reset()
@@ -689,7 +760,7 @@ export function ScannerPage() {
                 dispatch({ type: 'EXIT_CANCELLED' })
               }}
             >
-              Keep scanning
+              {state.step === 'committed' ? 'Review remaining' : 'Keep scanning'}
             </Button>
             <Button
               type="button"
@@ -705,7 +776,7 @@ export function ScannerPage() {
                 }
               }}
             >
-              Discard and exit
+              {state.step === 'committed' ? 'Discard remaining and exit' : 'Discard and exit'}
             </Button>
           </div>
         </div>

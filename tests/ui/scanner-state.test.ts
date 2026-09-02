@@ -386,6 +386,58 @@ describe('scanner state machine — commit outcomes', () => {
     expect(done.batch).toHaveLength(0)
     expect(done.step).toBe('intro')
   })
+
+  it('F-09: Done after a PARTIAL commit never silently discards survivor items', () => {
+    const committed = reduce(atReviewWithTwo(), { type: 'ADD_CARDS_PRESSED' })
+    const partial = reduce(committed, {
+      type: 'COMMIT_SUCCEEDED',
+      addedCount: 1,
+      outcomes: [
+        { index: 0, status: 'added', message: null },
+        { index: 1, status: 'needs_verification', message: 'Connection was interrupted.' },
+      ],
+    })
+    expect(partial.batch).toHaveLength(1)
+    const done = reduce(partial, { type: 'COMMITTED_DONE_PRESSED' })
+    // Must NOT behave like the all-success case: no silent reset, no exit request. The survivor
+    // item stays exactly where it was, and the machine instead opens the same discard-
+    // confirmation guard every other exit path in this feature already enforces.
+    expect(done.exitRequested).toBe(false)
+    expect(done.step).toBe('committed')
+    expect(done.batch).toHaveLength(1)
+    expect(done.batch[0]?.needsVerification).toBe(true)
+    expect(done.exitWarningOpen).toBe(true)
+
+    // "Review remaining" (the reused REVIEW_BATCH_PRESSED action) returns to batch-review with
+    // the survivor intact and clears the warning implicitly by moving off 'committed'.
+    const reviewing = reduce(done, { type: 'REVIEW_BATCH_PRESSED' })
+    expect(reviewing.step).toBe('batch-review')
+    expect(reviewing.batch).toHaveLength(1)
+
+    // Explicitly discarding from the warning sheet still works and still requests exit — this is
+    // the only path that may drop the survivor record.
+    const discarded = reduce(done, { type: 'DISCARD_CONFIRMED' })
+    expect(discarded.exitRequested).toBe(true)
+    expect(discarded.batch).toHaveLength(0)
+  })
+
+  it('F-09: Done after a full-success TWO-item commit behaves like plain success (no warning)', () => {
+    // Every item 'added' ⇒ batch ends up empty; Done must still take the plain-exit path rather
+    // than opening an empty-batch warning sheet with nothing to review.
+    const committing = reduce(atReviewWithTwo(), { type: 'ADD_CARDS_PRESSED' })
+    const committed = reduce(committing, {
+      type: 'COMMIT_SUCCEEDED',
+      addedCount: 2,
+      outcomes: [
+        { index: 0, status: 'added', message: null },
+        { index: 1, status: 'added', message: null },
+      ],
+    })
+    expect(committed.batch).toHaveLength(0)
+    const done = reduce(committed, { type: 'COMMITTED_DONE_PRESSED' })
+    expect(done.exitRequested).toBe(true)
+    expect(done.exitWarningOpen).toBe(false)
+  })
 })
 
 describe('scanner state machine — manual search fallback', () => {

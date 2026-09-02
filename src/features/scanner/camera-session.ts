@@ -51,12 +51,27 @@ export const CAMERA_VIDEO_PROPS = {
  */
 const CAMERA_IDEAL_RESOLUTION_PX = 1920
 
+/**
+ * F-06 (P89): the module's own "stops any previous session first" guarantee used to hold only
+ * against SEQUENTIAL callers — two overlapping invocations (neither awaited before the next
+ * starts) both saw `activeScannerSession === null` at the top and both proceeded, so whichever
+ * `acquire()` resolved SECOND silently overwrote `activeScannerSession`, leaking the other's
+ * tracks. `openGeneration` makes the primitive itself enforce the invariant regardless of caller
+ * discipline: each call is stamped with the generation current when it started, and a call whose
+ * generation has since been superseded (a later `openEnvironmentCamera` call started before this
+ * one's `acquire()` resolved) stops its own just-acquired stream immediately instead of ever
+ * touching `video`/`activeScannerSession` — so exactly one stream ever becomes active no matter
+ * which underlying `acquire()` promise happens to settle first.
+ */
+let openGeneration = 0
+
 export async function openEnvironmentCamera(
   video: HTMLVideoElement,
   acquire: (constraints: MediaStreamConstraints) => Promise<MediaStream> = defaultAcquire,
   onEnded?: () => void,
 ): Promise<ManagedCameraSession> {
   stopActiveScannerCamera()
+  const myGeneration = ++openGeneration
   const stream = await acquire({
     video: {
       facingMode: { ideal: 'environment' },
@@ -65,6 +80,12 @@ export async function openEnvironmentCamera(
     },
     audio: false,
   })
+  if (myGeneration !== openGeneration) {
+    // A newer openEnvironmentCamera call started while this one's acquire() was pending — this
+    // stream lost the race before it ever became visible; stop it immediately, touch nothing.
+    for (const track of stream.getTracks()) track.stop()
+    return { stream, stop() {} }
+  }
   video.srcObject = stream
   try {
     // Muted+playsInline makes this succeed on iOS; a rejected play() here must not fail the
