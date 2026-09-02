@@ -50,7 +50,6 @@ describe('origin → basis semantics via the SHARED helper (I11)', () => {
   it('purchase resolves to unknown here — the scanner never collects amounts, never fabricates zero', () => {
     expect(fixedCostBasisState('purchase')).toBeNull()
     expect(scannerCostBasisState('purchase')).toBe('unknown')
-    expect(scannerSessionStore).toBeDefined()
   })
 })
 
