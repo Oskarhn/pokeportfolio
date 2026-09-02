@@ -41,6 +41,22 @@ import { estimateAssetCacheStatus } from './visual/phase-timing'
  */
 export const VISUAL_COLD_ANALYSIS_TIMEOUT_MS = 8000
 
+/** F-05 (P89): thrown by {@link analyzeCapture} when its caller's `AbortSignal` fires between
+ *  pipeline stages. Distinguishable from a real analysis failure so a caller can tell "this was
+ *  cancelled" apart from "this genuinely failed" — the ScannerPage caller never surfaces either
+ *  case to the user once the analysis has gone stale (its own generation-ref check already no-ops
+ *  first), but the distinct name keeps that intent legible and testable. */
+export class ScannerAnalysisAbortedError extends Error {
+  constructor() {
+    super('Scan analysis was cancelled.')
+    this.name = 'ScannerAnalysisAbortedError'
+  }
+}
+
+function throwIfAnalysisAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new ScannerAnalysisAbortedError()
+}
+
 /**
  * P82 §16: REVERSES P81's own stagger order, evidence-gated (D-099 addendum). P81 started the
  * heavyweight DINO visual channel FIRST on the reasoning that the bigger, slower download deserved
@@ -202,12 +218,36 @@ export function variantChoiceLabel(variant: CatalogVariant): string {
  * server response (code/details/hint), never on message text.
  */
 export function classifyAcquisitionFailure(index: number, error: unknown): ScannerCommitOutcome {
-  const candidate = error as { code?: unknown; details?: unknown; hint?: unknown }
+  const candidate = error as {
+    code?: unknown
+    details?: unknown
+    hint?: unknown
+    message?: unknown
+  }
   const hasServerAnswer =
     typeof candidate.code === 'string' ||
     typeof candidate.details === 'string' ||
     typeof candidate.hint === 'string'
   if (hasServerAnswer) {
+    const rawMessage = typeof candidate.message === 'string' ? candidate.message : ''
+    // F-19 (P89): idempotency-key-reuse is a DEFINITE server answer like any other refusal, but
+    // it means something categorically different — this exact request key already committed
+    // under DIFFERENT material facts, most often because an earlier ambiguous
+    // ('needs_verification') attempt actually succeeded server-side before its response reached
+    // the client, and the item was then edited before retrying. "Edit it or remove it" is
+    // actively dangerous for this specific case: editing-and-resubmitting can never update the
+    // existing entry (the RPC has no update semantics), and removing-and-rescanning generates a
+    // brand new request key that WILL create a genuine duplicate lot on top of the one that
+    // already silently succeeded. Mirrors the sibling Openings feature's own handling of the
+    // identical server pattern (src/features/openings/controller.ts's mapOpeningErrorMessage).
+    if (/idempotency-key-reuse/.test(rawMessage)) {
+      return {
+        index,
+        status: 'failed',
+        message:
+          'This card may already be in your collection with different details. Check Portfolio before trying again — editing and resubmitting this item will not update the existing entry.',
+      }
+    }
     return {
       index,
       status: 'failed',
@@ -422,7 +462,10 @@ export function createRealScannerController(
     }
   }
 
-  async function analyzeCapture(capture: Parameters<ScannerUiController['analyzeCapture']>[0]) {
+  async function analyzeCapture(
+    capture: Parameters<ScannerUiController['analyzeCapture']>[0],
+    signal?: AbortSignal,
+  ) {
     const debug = isScannerDebugEnabled()
 
     // P79: rectify BEFORE either channel sees a frame — detects the card's real boundary within
@@ -431,6 +474,7 @@ export function createRealScannerController(
     // their existing, unchanged code paths. Never throws: a detection failure or any canvas error
     // resolves to the original, unrectified capture (see rectify-capture.ts).
     const rectified = await rectifyCapture(capture, { debug })
+    throwIfAnalysisAborted(signal)
     const workingCapture = rectified.frame
 
     // On-device OCR and on-device visual embedding run in parallel — both stay entirely local
@@ -452,6 +496,7 @@ export function createRealScannerController(
         ),
       ])
 
+    throwIfAnalysisAborted(signal)
     const observation: ScannerObservation = {
       rawNameText: ocrResult.rawNameText,
       rawCollectorNumberText: ocrResult.rawCollectorNumberText,
@@ -461,6 +506,7 @@ export function createRealScannerController(
 
     // Textual signals meet the catalog through P67's adapter (existing search_cards surface).
     const textCandidates = await retrieveScannerCandidates(observation)
+    throwIfAnalysisAborted(signal)
 
     let visualScores: VisualEvidenceByCard | undefined
     let mergedCandidates = textCandidates

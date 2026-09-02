@@ -662,6 +662,31 @@ describe('commitBatch - existing acquisition path, honest outcomes (I12/I13/I14)
     expect(plain.status).toBe('needs_verification')
   })
 
+  it('F-19: idempotency-key-reuse names the possibility of a pre-existing entry, not "edit or remove it"', () => {
+    const reused = classifyAcquisitionFailure(
+      0,
+      Object.assign(
+        new Error(
+          "idempotency-key-reuse: key 'abc' already belongs to a different acquisition attempt",
+        ),
+        { code: 'P0001' },
+      ),
+    )
+    expect(reused.status).toBe('failed')
+    expect(reused.message).toMatch(/already be in your collection/i)
+    expect(reused.message).toMatch(/check portfolio/i)
+    expect(reused.message).not.toMatch(/edit it or remove it/i)
+  })
+
+  it('F-19: an ordinary coded server refusal keeps the generic edit-or-remove message', () => {
+    const ordinary = classifyAcquisitionFailure(
+      0,
+      Object.assign(new Error('quantity must be a positive integer'), { code: '23514' }),
+    )
+    expect(ordinary.status).toBe('failed')
+    expect(ordinary.message).toMatch(/edit it or remove it/i)
+  })
+
   it('falls back safely when no session defaults exist - never guessing financial values', async () => {
     mockedAddCardAcquisition.mockResolvedValue({ holdingId: 'h', lotId: 'l' })
     const controller = createRealScannerController({ userId: null })
@@ -767,6 +792,47 @@ describe('getLastDiagnostics - visual channel failure reporting (P78 R1)', () =>
     await controller.analyzeCapture(capture())
     const diagnostics = controller.getLastDiagnostics?.()
     expect(diagnostics?.visualError).toBe('createImageBitmap decode failure')
+  })
+
+  it('F-30 (P89): the visual embedding is created from the CROPPED card rect, not the full camera frame', async () => {
+    // Pins the exact P77 regression class: production code must call
+    // createImageBitmap(blob, cardRect.left, cardRect.top, cardRect.width, cardRect.height), not
+    // a bare createImageBitmap(blob) that embeds the entire captured frame. A NON-trivial rect
+    // (non-zero origin, smaller than the full frame) is required — a zero-origin/full-frame rect
+    // would pass even a regressed bare call by coincidence for some argument counts.
+    mockedRunOcrAnalysis.mockResolvedValue({
+      rawNameText: 'Pikachu',
+      rawCollectorNumberText: '58',
+      usedFullFrameFallback: false,
+      nameRoiId: null,
+      numberRoiId: null,
+    })
+    mockedSearchCards.mockResolvedValue({ results: [], totalCount: 0 })
+    const createImageBitmapSpy = vi.fn().mockResolvedValue({ close: vi.fn() })
+    globalThis.createImageBitmap = createImageBitmapSpy
+    visualMocks.analyze.mockResolvedValue(null)
+
+    const nonTrivialCardRect = { left: 43, top: 27, width: 401, height: 561 }
+    const controller = createRealScannerController({ userId: 'user-a' })
+    await controller.analyzeCapture({ ...capture(), cardRect: nonTrivialCardRect })
+
+    // rectifyCapture falls back to the original, unrectified capture in this Node test
+    // environment (no OffscreenCanvas/2D context available) — see the neighbouring test's own
+    // comment above — so the working capture's cardRect is exactly what was passed in, making
+    // this a precise pin rather than an approximation. rectifyCapture itself also calls
+    // createImageBitmap once (bare, for its own boundary-detection attempt, before falling back)
+    // against the SAME spy — so the crop call is found by argument count, not by call index.
+    expect(createImageBitmapSpy).toHaveBeenCalledWith(
+      expect.anything(),
+      nonTrivialCardRect.left,
+      nonTrivialCardRect.top,
+      nonTrivialCardRect.width,
+      nonTrivialCardRect.height,
+    )
+    // A regression to a bare createImageBitmap(blob) call for the VISUAL channel specifically
+    // would leave no 5-argument call at all among the recorded calls.
+    const fiveArgCalls = createImageBitmapSpy.mock.calls.filter((call) => call.length === 5)
+    expect(fiveArgCalls).toHaveLength(1)
   })
 
   it('reports a successful visual match with real backend/index fields (no init failure)', async () => {

@@ -11,7 +11,7 @@ import {
 import { AppShell } from './ui/AppShell'
 import { Button } from './ui/form'
 import { isChunkLoadFailure } from './platform/build-freshness'
-import { hasUnsavedScannerWork } from './features/scanner/unsaved-work'
+import { hasAnyUnsavedWork } from './platform/unsaved-work-registry'
 import { RedirectIfSignedIn, RequireAdmin, RequireSession } from './auth/guards'
 import { LoginPage } from './features/auth/LoginPage'
 import { InvitePage } from './features/auth/InvitePage'
@@ -146,13 +146,15 @@ function AppErrorComponent(props: ErrorComponentProps) {
   if (!isChunkLoadFailure(props.error)) {
     return <ErrorComponent {...props} />
   }
-  const unsaved = hasUnsavedScannerWork()
+  // F-40 (P89): the registry-wide check, not the scanner alone — any unsaved form on any route
+  // must block the automatic reload button exactly like an unsaved scan does.
+  const unsaved = hasAnyUnsavedWork()
   return (
     <div className="mx-auto flex w-full max-w-md flex-col items-center gap-4 py-10 text-center">
       <p className="text-lg font-semibold text-slate-100">A new version is available</p>
       <p className="text-sm text-slate-400">
         {unsaved
-          ? 'This page belongs to an older version of the app. Save or cancel your current scan, then reload.'
+          ? 'This page belongs to an older version of the app. Save or cancel what you were doing, then reload.'
           : 'This page belongs to an older version of the app. Reload to get the current one.'}
       </p>
       {unsaved ? null : (
