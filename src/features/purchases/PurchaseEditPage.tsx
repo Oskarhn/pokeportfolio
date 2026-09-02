@@ -15,6 +15,7 @@ import type { CurrencyCode } from '../../domain/currency'
 import { Button, FormMessage, SelectField, TextField } from '../../ui/form'
 import { LINE_TYPE_LABEL } from './labels'
 import { at } from './util'
+import { useUnsavedWorkSnapshot } from '../../platform/unsaved-work-registry'
 
 function parseAmount(raw: string, currency: CurrencyCode): bigint {
   const trimmed = raw.trim().replace(',', '.')
@@ -97,6 +98,17 @@ function PurchaseEditForm({ purchaseId, detail }: { purchaseId: string; detail: 
   const [notes, setNotes] = useState(detail.purchase.notes ?? '')
   const [editLines, setEditLines] = useState<EditLineState[]>(() => linesFrom(detail))
   const [error, setError] = useState<string | null>(null)
+
+  // F-40 (P89): see PurchaseFormPage's identical registration for why.
+  useUnsavedWorkSnapshot('purchase-edit-form', {
+    purchasedOn,
+    retailerId,
+    shippingInput,
+    customsInput,
+    discountInput,
+    notes,
+    editLines,
+  })
 
   const preview = useMemo(() => {
     try {

@@ -735,9 +735,7 @@ export function ScannerPage() {
           }
           dispatch({ type: 'EXIT_CANCELLED' })
         }}
-        title={
-          state.step === 'committed' ? 'Discard remaining cards?' : 'Discard scanned cards?'
-        }
+        title={state.step === 'committed' ? 'Discard remaining cards?' : 'Discard scanned cards?'}
       >
         <div className="space-y-4">
           <p className="text-sm text-slate-300">

@@ -12,6 +12,7 @@ import { Button, FormMessage, SelectField, TextField } from '../../ui/form'
 import { LineEditorRow, newLineDraft, type LineDraft } from './LineEditor'
 import { LINE_TYPE_LABEL } from './labels'
 import { at } from './util'
+import { useUnsavedWorkSnapshot } from '../../platform/unsaved-work-registry'
 
 const CURRENCIES: CurrencyCode[] = ['NOK', 'EUR', 'USD', 'GBP', 'JPY']
 
@@ -58,6 +59,23 @@ export function PurchaseFormPage() {
   const [fxRateDate, setFxRateDate] = useState<string>('')
   const [fxError, setFxError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  // F-40 (P89): registers this form's own dirty-by-diff state (see unsaved-work-registry.ts) so
+  // an app-wide automatic reload (stale deployment / new chunk) never silently discards typed-
+  // but-unsubmitted purchase input the way it used to for every route except Scanner.
+  useUnsavedWorkSnapshot('purchase-form', {
+    purchasedOn,
+    retailerId,
+    newRetailerName,
+    currency,
+    lines,
+    shippingInput,
+    customsInput,
+    discountInput,
+    notes,
+    fxMode,
+    fxRate,
+  })
 
   const retailers = useQuery({ queryKey: ['retailers'], queryFn: listRetailers })
 

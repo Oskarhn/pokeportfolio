@@ -218,7 +218,12 @@ export function variantChoiceLabel(variant: CatalogVariant): string {
  * server response (code/details/hint), never on message text.
  */
 export function classifyAcquisitionFailure(index: number, error: unknown): ScannerCommitOutcome {
-  const candidate = error as { code?: unknown; details?: unknown; hint?: unknown; message?: unknown }
+  const candidate = error as {
+    code?: unknown
+    details?: unknown
+    hint?: unknown
+    message?: unknown
+  }
   const hasServerAnswer =
     typeof candidate.code === 'string' ||
     typeof candidate.details === 'string' ||
