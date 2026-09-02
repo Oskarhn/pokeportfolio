@@ -4,7 +4,7 @@ import {
   retryStaleDeploymentAction,
   subscribeStaleDeployment,
 } from '../platform/build-freshness-runtime'
-import { hasUnsavedScannerWork } from '../features/scanner/unsaved-work'
+import { hasAnyUnsavedWork } from '../platform/unsaved-work-registry'
 import { Button } from './form'
 
 /**
@@ -22,7 +22,8 @@ export function StaleDeploymentBanner() {
     return null
   }
 
-  const unsaved = hasUnsavedScannerWork()
+  // F-40 (P89): registry-wide, not the scanner alone.
+  const unsaved = hasAnyUnsavedWork()
 
   return (
     <div
@@ -32,7 +33,7 @@ export function StaleDeploymentBanner() {
     >
       <p className="font-medium">
         {unsaved
-          ? 'App update required. Save or cancel your current scan before reloading.'
+          ? 'App update required. Save or cancel what you were doing before reloading.'
           : 'A new version of PokePortfolio is available.'}
       </p>
       <div className="max-w-xs">

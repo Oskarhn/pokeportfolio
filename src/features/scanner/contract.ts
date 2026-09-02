@@ -359,7 +359,13 @@ export interface ScannerCommitResult {
  * it against the real engine/catalog/acquisition paths; tests inject mocks of this interface.
  */
 export interface ScannerUiController {
-  analyzeCapture(frame: ScannerCapture): Promise<ScannerAnalysis>
+  /** F-05 (P89): `signal` is best-effort cooperative cancellation — checked between pipeline
+   *  stages (after rectification, after the OCR/visual race, after candidate retrieval) so a
+   *  cancelled analysis skips remaining work instead of running matching/scoring to completion
+   *  for a result nobody will see. It cannot interrupt an already-in-flight OCR/visual call; the
+   *  caller's own generation-ref discipline is what guarantees a stale result never reaches the
+   *  UI regardless of whether this signal actually shortened the work. */
+  analyzeCapture(frame: ScannerCapture, signal?: AbortSignal): Promise<ScannerAnalysis>
   searchFallback(query: ScannerSearchQuery): Promise<ScannerCandidate[]>
   /** Active printing choices for an identified card (fetched ONLY after the user picks the
    *  candidate — prompt §22/I6). Empty means the card has no active variant to add. */

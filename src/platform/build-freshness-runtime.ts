@@ -13,7 +13,7 @@ import {
   type StaleDeploymentAction,
   type StaleDeploymentTrigger,
 } from './build-freshness'
-import { hasUnsavedScannerWork } from '../features/scanner/unsaved-work'
+import { hasAnyUnsavedWork } from './unsaved-work-registry'
 
 const LAST_RELOAD_STORAGE_KEY = 'pp-stale-reload-last-at'
 const BUILD_META_CHECK_COOLDOWN_MS = 60_000
@@ -63,7 +63,9 @@ export function retryStaleDeploymentAction(): void {
 
 function realDeps(): BuildFreshnessDeps {
   return {
-    hasUnsavedWork: hasUnsavedScannerWork,
+    // F-40 (P89): the union of every registered source, not the scanner alone (see
+    // unsaved-work-registry.ts's header for the regression this closes).
+    hasUnsavedWork: hasAnyUnsavedWork,
     now: () => Date.now(),
     readLastReloadAt: () => {
       try {
@@ -176,6 +178,27 @@ export function initBuildFreshnessWatch(): () => void {
   cleanups.push(() => {
     window.removeEventListener('unhandledrejection', onUnhandledRejection)
   })
+
+  // F-41 (P89): checkForNewDeployment() (the build-meta.json polling path) previously existed
+  // fully built and tested but was never actually CALLED from any production code path — so a
+  // long-lived tab that never triggers controllerchange/vite:preloadError (navigates only via
+  // already-cached in-app links) got no freshness signal at all. Wired here to the cheapest real
+  // checkpoint: the tab becoming visible again (tab-switch back, app foregrounded on mobile) —
+  // its own ≤1/60s internal rate limit already bounds the cost regardless of how often this
+  // fires. `typeof document` guards the same Node-test-environment shape every other browser-only
+  // check in this codebase uses (this file's own header already runs under `environment: 'node'`
+  // with only window/navigator/sessionStorage/fetch normally stubbed).
+  if (typeof document !== 'undefined') {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void checkForNewDeployment()
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    cleanups.push(() => {
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+    })
+  }
 
   return () => {
     cleanups.forEach((cleanup) => {

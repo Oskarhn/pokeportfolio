@@ -115,6 +115,22 @@ export class CanvasPool {
   private working: BoundedCanvas | null = null
   private nameRoi: BoundedCanvas | null = null
   private numberRoi: BoundedCanvas | null = null
+  /** F-15 (P89): serializes access to this pool's shared canvases across concurrent callers —
+   *  see runOcrAnalysis's own comment at its `pool.withLock` call site for why this exists. A
+   *  plain promise-chaining mutex: each queued unit of work waits for the PREVIOUS one to settle
+   *  (success or failure) before starting, and the queue itself never rejects regardless of what
+   *  any individual unit of work does, so one failure can never wedge every later caller. */
+  private queue: Promise<unknown> = Promise.resolve()
+
+  async withLock<T>(work: () => Promise<T>): Promise<T> {
+    const previous = this.queue.catch(() => undefined)
+    const run = previous.then(work)
+    this.queue = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    return run
+  }
 
   take(slot: 'working' | 'nameRoi' | 'numberRoi', width: number, height: number): BoundedCanvas {
     const existing =
@@ -411,326 +427,336 @@ export async function runOcrAnalysis(
   }
   const bitmap = await createImageBitmap(capture.blob)
   try {
-    const workingSize = shrinkToLongEdge(
-      capture.cardRect.width,
-      capture.cardRect.height,
-      OCR_WORKING_LONG_EDGE,
-    )
-    const working = pool.take('working', workingSize.width, workingSize.height)
-    drawPreparedRegion(
-      working,
-      bitmap,
-      capture.cardRect.left,
-      capture.cardRect.top,
-      capture.cardRect.width,
-      capture.cardRect.height,
-      workingSize.width / capture.cardRect.width,
-    )
-
-    const cardOnWorking: PixelRect = {
-      left: 0,
-      top: 0,
-      width: working.element.width,
-      height: working.element.height,
-    }
-
-    /** Runs ONE ROI candidate's crop+prep+recognize (no scoring/selection) — the atomic unit both
-     *  the trial loop and the final debug redraw below share. `segmentation` defaults to
-     *  `single-line` (P85 §3 forensics: the current default beats every other page-segmentation
-     *  mode decisively for both fields when a candidate crop genuinely IS one line — see
-     *  docs/SCANNER_RESEARCH.md §7f); `multi-line` (P85 §7/§9) is used ONLY by the collector-number
-     *  field's bounded third pass below, for the specific case forensics found single-line cannot
-     *  handle at all: a crop that structurally contains two visual lines. */
-    async function readOneCandidate(
-      candidate: NamedRoiCandidate,
-      slot: 'nameRoi' | 'numberRoi',
-      preprocess: RoiPreprocess = 'contrast',
-      segmentation: 'single-line' | 'multi-line' = 'single-line',
-    ): Promise<{ rect: PixelRect; text: string; confidence: number } | null> {
-      const rect = roiPixelRect(cardOnWorking, candidate.fractions)
-      if (rect.width < 8 || rect.height < 8) return null
-      const upscale = rect.height < ROI_UPSCALE_MIN_HEIGHT_PX ? ROI_UPSCALE_FACTOR : 1
-      const roi = pool.take(slot, rect.width * upscale, rect.height * upscale)
-      drawPreparedRegion(
-        roi,
-        working.element,
-        rect.left,
-        rect.top,
-        rect.width,
-        rect.height,
-        upscale,
-        preprocess,
+    // F-15 (P89): the ENTIRE pipeline below shares `pool`'s canvases (working + both ROI slots)
+    // across possibly-concurrent runOcrAnalysis calls — not reachable through the shipped UI
+    // today (the scanner state machine serializes analysis calls), but a latent hazard for any
+    // future caller that invokes this twice concurrently against the same default shared pool.
+    // `pool.withLock` serializes the whole per-capture pipeline as one atomic unit so a second
+    // call's own `working`-canvas draw (itself unprotected, since it happens before any
+    // recognize() call yields control) can never land on a canvas a first call's in-flight
+    // recognize() is still reading from.
+    return await pool.withLock(async () => {
+      const workingSize = shrinkToLongEdge(
+        capture.cardRect.width,
+        capture.cardRect.height,
+        OCR_WORKING_LONG_EDGE,
       )
-      const result = await engine.recognize(roi.element, segmentation)
-      return { rect, text: result.text, confidence: result.confidence }
-    }
+      const working = pool.take('working', workingSize.width, workingSize.height)
+      drawPreparedRegion(
+        working,
+        bitmap,
+        capture.cardRect.left,
+        capture.cardRect.top,
+        capture.cardRect.width,
+        capture.cardRect.height,
+        workingSize.width / capture.cardRect.width,
+      )
 
-    /**
-     * P80 adaptive ROI: tries each layout candidate for one field in order, scoring every usable
-     * result and keeping the best, but stops as soon as one candidate is already "confident"
-     * (`isConfident`) — this is what keeps the common, already-correctly-laid-out scan at the
-     * SAME one-recognition-call cost the original single-ROI pipeline had, while still falling
-     * through to the next layout hypothesis when the first read is weak, empty or wrong (the real
-     * modern-vs-vintage-layout failure this session fixes). Never stops on a merely non-null but
-     * low-quality result — only on genuine confidence — so list ORDER never silently decides the
-     * winner in the cases that actually matter.
-     *
-     * P82 §15: if this `contrast` pass (identical to P78-P81's own pipeline, zero call-count or
-     * scoring change from before) finds NOTHING usable from ANY candidate, exactly ONE second pass
-     * over the SAME candidates retries `binarize` preprocessing before falling through to the
-     * full-frame OCR pass — a real-device miss (Shieldon, P82 §0) showed a name ROI that visually
-     * contained clean text while OCR still produced garbage, consistent with low LOCAL contrast a
-     * global percentile stretch alone does not always separate. Bounded to the already-failing
-     * case only: a scan that already found SOME text via `contrast` (even if not "confident") never
-     * pays for the second pass, so this cannot regress anything P80's own candidate-scoring tests
-     * already pin. Only in a debug session, the winning region is redrawn once more afterward for
-     * the preview blob (cheap: one extra canvas draw, no extra recognition call).
-     *
-     * P85 §7/§9: for the collector-number field ONLY (`multiLineExtract` provided), a THIRD
-     * bounded pass retries the SAME candidates with `multi-line` segmentation + `contrast`
-     * preprocessing when BOTH earlier passes found nothing usable at all — real-corpus forensics
-     * (docs/SCANNER_RESEARCH.md §7f) found this recovers a real, common failure class
-     * (single-line segmentation cannot read a crop that structurally contains two visual lines,
-     * e.g. an illustrator credit sharing its line with the printed id) that no amount of
-     * preprocessing variation on `single-line` alone can fix. Still bounded to at most
-     * `candidates.length` extra recognition calls, and only in the already-failing case.
-     */
-    async function readBestRoi(
-      candidates: readonly NamedRoiCandidate[],
-      slot: 'nameRoi' | 'numberRoi',
-      minLength: number,
-      score: (cleanedText: string, confidence: number) => number,
-      isConfident: (cleanedText: string, confidence: number) => boolean,
-      field: 'name' | 'number',
-      multiLineExtract?: (rawText: string) => string | null,
-    ): Promise<{
-      text: string | null
-      roiId: string | null
-      confidence: number | null
-      debugBlob: Blob | null
-      trials: OcrDebugTrial[]
-    }> {
-      interface BestTrial {
-        roiId: string
-        cleaned: string
-        score: number
-        rect: PixelRect
-        preprocess: RoiPreprocess
-        confidence: number
+      const cardOnWorking: PixelRect = {
+        left: 0,
+        top: 0,
+        width: working.element.width,
+        height: working.element.height,
       }
-      const best: { value: BestTrial | null } = { value: null }
-      const trials: OcrDebugTrial[] = []
 
-      function recordTrial(
+      /** Runs ONE ROI candidate's crop+prep+recognize (no scoring/selection) — the atomic unit both
+       *  the trial loop and the final debug redraw below share. `segmentation` defaults to
+       *  `single-line` (P85 §3 forensics: the current default beats every other page-segmentation
+       *  mode decisively for both fields when a candidate crop genuinely IS one line — see
+       *  docs/SCANNER_RESEARCH.md §7f); `multi-line` (P85 §7/§9) is used ONLY by the collector-number
+       *  field's bounded third pass below, for the specific case forensics found single-line cannot
+       *  handle at all: a crop that structurally contains two visual lines. */
+      async function readOneCandidate(
         candidate: NamedRoiCandidate,
-        preprocess: RoiPreprocess,
-        segmentation: 'single-line' | 'multi-line',
-        text: string,
-        confidence: number,
-        plausibilityScore: number,
-      ): void {
-        if (!debug) return
-        trials.push({
-          field,
-          roiId: candidate.id,
-          preprocess,
-          segmentation,
-          text,
-          confidence,
-          plausibilityScore,
-          isWinner: false,
-        })
-      }
-
-      // Returns whether anything usable was found, not just whether it was CONFIDENT (same
-      // shape as `readOneCandidate`'s honest tri-state elsewhere): a closure-mutated `let`/object
-      // property reassigned only inside an awaited nested call is invisible to TypeScript's own
-      // control-flow narrowing at the CALLER's later read site (confirmed directly — real repro,
-      // same class of bug P78 already found in this exact file: see PROJECT_JOURNAL.md's
-      // 2026-08-27 entry). Returning the fact explicitly, rather than re-reading `best.value`
-      // afterward, sidesteps that pitfall instead of fighting it.
-      async function tryPreprocessPass(
-        preprocess: RoiPreprocess,
-      ): Promise<{ confident: boolean; foundAny: boolean }> {
-        let foundAny = false
-        for (const candidate of candidates) {
-          const attempt = await readOneCandidate(candidate, slot, preprocess)
-          if (attempt === null) continue
-          const cleaned = cleanSignal(attempt.text, minLength)
-          if (cleaned === null) {
-            recordTrial(candidate, preprocess, 'single-line', attempt.text, attempt.confidence, 0)
-            continue
-          }
-          foundAny = true
-          const candidateScore = score(cleaned, attempt.confidence)
-          recordTrial(
-            candidate,
-            preprocess,
-            'single-line',
-            cleaned,
-            attempt.confidence,
-            candidateScore,
-          )
-          if (best.value === null || candidateScore > best.value.score) {
-            best.value = {
-              roiId: candidate.id,
-              cleaned,
-              score: candidateScore,
-              rect: attempt.rect,
-              preprocess,
-              confidence: attempt.confidence,
-            }
-          }
-          if (isConfident(cleaned, attempt.confidence)) return { confident: true, foundAny: true }
-        }
-        return { confident: false, foundAny }
-      }
-
-      async function tryMultiLinePass(): Promise<void> {
-        if (!multiLineExtract) return
-        for (const candidate of candidates) {
-          const attempt = await readOneCandidate(candidate, slot, 'contrast', 'multi-line')
-          if (attempt === null) continue
-          const line = multiLineExtract(attempt.text)
-          const cleaned = line === null ? null : cleanSignal(line, minLength)
-          if (cleaned === null) {
-            recordTrial(candidate, 'contrast', 'multi-line', attempt.text, attempt.confidence, 0)
-            continue
-          }
-          const candidateScore = score(cleaned, attempt.confidence)
-          recordTrial(
-            candidate,
-            'contrast',
-            'multi-line',
-            cleaned,
-            attempt.confidence,
-            candidateScore,
-          )
-          if (best.value === null || candidateScore > best.value.score) {
-            best.value = {
-              roiId: candidate.id,
-              cleaned,
-              score: candidateScore,
-              rect: attempt.rect,
-              preprocess: 'contrast',
-              confidence: attempt.confidence,
-            }
-          }
-          if (isConfident(cleaned, attempt.confidence)) return
-        }
-      }
-
-      const contrastResult = await tryPreprocessPass('contrast')
-      if (!contrastResult.confident && !contrastResult.foundAny) {
-        const binarizeResult = await tryPreprocessPass('binarize')
-        if (!binarizeResult.confident && !binarizeResult.foundAny) {
-          await tryMultiLinePass()
-        }
-      }
-
-      let debugBlob: Blob | null = null
-      const winner = best.value
-      if (debug && winner !== null) {
-        const upscale = winner.rect.height < ROI_UPSCALE_MIN_HEIGHT_PX ? ROI_UPSCALE_FACTOR : 1
-        const roi = pool.take(slot, winner.rect.width * upscale, winner.rect.height * upscale)
+        slot: 'nameRoi' | 'numberRoi',
+        preprocess: RoiPreprocess = 'contrast',
+        segmentation: 'single-line' | 'multi-line' = 'single-line',
+      ): Promise<{ rect: PixelRect; text: string; confidence: number } | null> {
+        const rect = roiPixelRect(cardOnWorking, candidate.fractions)
+        if (rect.width < 8 || rect.height < 8) return null
+        const upscale = rect.height < ROI_UPSCALE_MIN_HEIGHT_PX ? ROI_UPSCALE_FACTOR : 1
+        const roi = pool.take(slot, rect.width * upscale, rect.height * upscale)
         drawPreparedRegion(
           roi,
           working.element,
-          winner.rect.left,
-          winner.rect.top,
-          winner.rect.width,
-          winner.rect.height,
+          rect.left,
+          rect.top,
+          rect.width,
+          rect.height,
           upscale,
-          winner.preprocess,
+          preprocess,
         )
-        // Captured BEFORE the next scan can reuse/resize this pooled canvas (prompt §4/§12
-        // debug-only image preview) — never persisted, never sent anywhere but this call's return.
-        debugBlob = await canvasToBlob(roi.element).catch(() => null)
-        for (const trial of trials) {
-          if (
-            trial.roiId === winner.roiId &&
-            trial.preprocess === winner.preprocess &&
-            trial.text === winner.cleaned
-          ) {
-            trials[trials.indexOf(trial)] = { ...trial, isWinner: true }
-            break
+        const result = await engine.recognize(roi.element, segmentation)
+        return { rect, text: result.text, confidence: result.confidence }
+      }
+
+      /**
+       * P80 adaptive ROI: tries each layout candidate for one field in order, scoring every usable
+       * result and keeping the best, but stops as soon as one candidate is already "confident"
+       * (`isConfident`) — this is what keeps the common, already-correctly-laid-out scan at the
+       * SAME one-recognition-call cost the original single-ROI pipeline had, while still falling
+       * through to the next layout hypothesis when the first read is weak, empty or wrong (the real
+       * modern-vs-vintage-layout failure this session fixes). Never stops on a merely non-null but
+       * low-quality result — only on genuine confidence — so list ORDER never silently decides the
+       * winner in the cases that actually matter.
+       *
+       * P82 §15: if this `contrast` pass (identical to P78-P81's own pipeline, zero call-count or
+       * scoring change from before) finds NOTHING usable from ANY candidate, exactly ONE second pass
+       * over the SAME candidates retries `binarize` preprocessing before falling through to the
+       * full-frame OCR pass — a real-device miss (Shieldon, P82 §0) showed a name ROI that visually
+       * contained clean text while OCR still produced garbage, consistent with low LOCAL contrast a
+       * global percentile stretch alone does not always separate. Bounded to the already-failing
+       * case only: a scan that already found SOME text via `contrast` (even if not "confident") never
+       * pays for the second pass, so this cannot regress anything P80's own candidate-scoring tests
+       * already pin. Only in a debug session, the winning region is redrawn once more afterward for
+       * the preview blob (cheap: one extra canvas draw, no extra recognition call).
+       *
+       * P85 §7/§9: for the collector-number field ONLY (`multiLineExtract` provided), a THIRD
+       * bounded pass retries the SAME candidates with `multi-line` segmentation + `contrast`
+       * preprocessing when BOTH earlier passes found nothing usable at all — real-corpus forensics
+       * (docs/SCANNER_RESEARCH.md §7f) found this recovers a real, common failure class
+       * (single-line segmentation cannot read a crop that structurally contains two visual lines,
+       * e.g. an illustrator credit sharing its line with the printed id) that no amount of
+       * preprocessing variation on `single-line` alone can fix. Still bounded to at most
+       * `candidates.length` extra recognition calls, and only in the already-failing case.
+       */
+      async function readBestRoi(
+        candidates: readonly NamedRoiCandidate[],
+        slot: 'nameRoi' | 'numberRoi',
+        minLength: number,
+        score: (cleanedText: string, confidence: number) => number,
+        isConfident: (cleanedText: string, confidence: number) => boolean,
+        field: 'name' | 'number',
+        multiLineExtract?: (rawText: string) => string | null,
+      ): Promise<{
+        text: string | null
+        roiId: string | null
+        confidence: number | null
+        debugBlob: Blob | null
+        trials: OcrDebugTrial[]
+      }> {
+        interface BestTrial {
+          roiId: string
+          cleaned: string
+          score: number
+          rect: PixelRect
+          preprocess: RoiPreprocess
+          confidence: number
+        }
+        const best: { value: BestTrial | null } = { value: null }
+        const trials: OcrDebugTrial[] = []
+
+        function recordTrial(
+          candidate: NamedRoiCandidate,
+          preprocess: RoiPreprocess,
+          segmentation: 'single-line' | 'multi-line',
+          text: string,
+          confidence: number,
+          plausibilityScore: number,
+        ): void {
+          if (!debug) return
+          trials.push({
+            field,
+            roiId: candidate.id,
+            preprocess,
+            segmentation,
+            text,
+            confidence,
+            plausibilityScore,
+            isWinner: false,
+          })
+        }
+
+        // Returns whether anything usable was found, not just whether it was CONFIDENT (same
+        // shape as `readOneCandidate`'s honest tri-state elsewhere): a closure-mutated `let`/object
+        // property reassigned only inside an awaited nested call is invisible to TypeScript's own
+        // control-flow narrowing at the CALLER's later read site (confirmed directly — real repro,
+        // same class of bug P78 already found in this exact file: see PROJECT_JOURNAL.md's
+        // 2026-08-27 entry). Returning the fact explicitly, rather than re-reading `best.value`
+        // afterward, sidesteps that pitfall instead of fighting it.
+        async function tryPreprocessPass(
+          preprocess: RoiPreprocess,
+        ): Promise<{ confident: boolean; foundAny: boolean }> {
+          let foundAny = false
+          for (const candidate of candidates) {
+            const attempt = await readOneCandidate(candidate, slot, preprocess)
+            if (attempt === null) continue
+            const cleaned = cleanSignal(attempt.text, minLength)
+            if (cleaned === null) {
+              recordTrial(candidate, preprocess, 'single-line', attempt.text, attempt.confidence, 0)
+              continue
+            }
+            foundAny = true
+            const candidateScore = score(cleaned, attempt.confidence)
+            recordTrial(
+              candidate,
+              preprocess,
+              'single-line',
+              cleaned,
+              attempt.confidence,
+              candidateScore,
+            )
+            if (best.value === null || candidateScore > best.value.score) {
+              best.value = {
+                roiId: candidate.id,
+                cleaned,
+                score: candidateScore,
+                rect: attempt.rect,
+                preprocess,
+                confidence: attempt.confidence,
+              }
+            }
+            if (isConfident(cleaned, attempt.confidence)) return { confident: true, foundAny: true }
+          }
+          return { confident: false, foundAny }
+        }
+
+        async function tryMultiLinePass(): Promise<void> {
+          if (!multiLineExtract) return
+          for (const candidate of candidates) {
+            const attempt = await readOneCandidate(candidate, slot, 'contrast', 'multi-line')
+            if (attempt === null) continue
+            const line = multiLineExtract(attempt.text)
+            const cleaned = line === null ? null : cleanSignal(line, minLength)
+            if (cleaned === null) {
+              recordTrial(candidate, 'contrast', 'multi-line', attempt.text, attempt.confidence, 0)
+              continue
+            }
+            const candidateScore = score(cleaned, attempt.confidence)
+            recordTrial(
+              candidate,
+              'contrast',
+              'multi-line',
+              cleaned,
+              attempt.confidence,
+              candidateScore,
+            )
+            if (best.value === null || candidateScore > best.value.score) {
+              best.value = {
+                roiId: candidate.id,
+                cleaned,
+                score: candidateScore,
+                rect: attempt.rect,
+                preprocess: 'contrast',
+                confidence: attempt.confidence,
+              }
+            }
+            if (isConfident(cleaned, attempt.confidence)) return
           }
         }
-      }
-      return {
-        text: winner?.cleaned ?? null,
-        roiId: winner?.roiId ?? null,
-        confidence: winner?.confidence ?? null,
-        debugBlob,
-        trials,
-      }
-    }
 
-    const nameResult = await readBestRoi(
-      NAME_ROI_CANDIDATES,
-      'nameRoi',
-      MIN_NAME_TEXT_LENGTH,
-      scoreNameRoiCandidate,
-      isNameRoiConfident,
-      'name',
-    )
-    const numberResult = await readBestRoi(
-      NUMBER_ROI_CANDIDATES,
-      'numberRoi',
-      MIN_NUMBER_TEXT_LENGTH,
-      scoreNumberRoiCandidate,
-      isNumberRoiConfident,
-      'number',
-      extractCollectorNumberLine,
-    )
-    const allTrials = [...nameResult.trials, ...numberResult.trials]
+        const contrastResult = await tryPreprocessPass('contrast')
+        if (!contrastResult.confident && !contrastResult.foundAny) {
+          const binarizeResult = await tryPreprocessPass('binarize')
+          if (!binarizeResult.confident && !binarizeResult.foundAny) {
+            await tryMultiLinePass()
+          }
+        }
 
-    if (nameResult.text !== null || numberResult.text !== null) {
+        let debugBlob: Blob | null = null
+        const winner = best.value
+        if (debug && winner !== null) {
+          const upscale = winner.rect.height < ROI_UPSCALE_MIN_HEIGHT_PX ? ROI_UPSCALE_FACTOR : 1
+          const roi = pool.take(slot, winner.rect.width * upscale, winner.rect.height * upscale)
+          drawPreparedRegion(
+            roi,
+            working.element,
+            winner.rect.left,
+            winner.rect.top,
+            winner.rect.width,
+            winner.rect.height,
+            upscale,
+            winner.preprocess,
+          )
+          // Captured BEFORE the next scan can reuse/resize this pooled canvas (prompt §4/§12
+          // debug-only image preview) — never persisted, never sent anywhere but this call's return.
+          debugBlob = await canvasToBlob(roi.element).catch(() => null)
+          for (const trial of trials) {
+            if (
+              trial.roiId === winner.roiId &&
+              trial.preprocess === winner.preprocess &&
+              trial.text === winner.cleaned
+            ) {
+              trials[trials.indexOf(trial)] = { ...trial, isWinner: true }
+              break
+            }
+          }
+        }
+        return {
+          text: winner?.cleaned ?? null,
+          roiId: winner?.roiId ?? null,
+          confidence: winner?.confidence ?? null,
+          debugBlob,
+          trials,
+        }
+      }
+
+      const nameResult = await readBestRoi(
+        NAME_ROI_CANDIDATES,
+        'nameRoi',
+        MIN_NAME_TEXT_LENGTH,
+        scoreNameRoiCandidate,
+        isNameRoiConfident,
+        'name',
+      )
+      const numberResult = await readBestRoi(
+        NUMBER_ROI_CANDIDATES,
+        'numberRoi',
+        MIN_NUMBER_TEXT_LENGTH,
+        scoreNumberRoiCandidate,
+        isNumberRoiConfident,
+        'number',
+        extractCollectorNumberLine,
+      )
+      const allTrials = [...nameResult.trials, ...numberResult.trials]
+
+      if (nameResult.text !== null || numberResult.text !== null) {
+        return {
+          rawNameText: nameResult.text,
+          rawCollectorNumberText: numberResult.text,
+          usedFullFrameFallback: false,
+          nameRoiId: nameResult.roiId,
+          numberRoiId: numberResult.roiId,
+          nameConfidence: nameResult.confidence,
+          collectorNumberConfidence: numberResult.confidence,
+          ...(debug
+            ? {
+                debugImages: {
+                  nameRoiBlob: nameResult.debugBlob,
+                  numberRoiBlob: numberResult.debugBlob,
+                },
+                trials: allTrials,
+              }
+            : {}),
+        }
+      }
+
+      // No candidate for EITHER field produced anything usable: exactly ONE bounded full-card pass
+      // (prompt §17), auto layout mode. Its confidence is deliberately NOT threaded into the
+      // per-field confidence fields above (P88 §8): the auto-mode text is a best-effort SPLIT of
+      // one whole-card OCR read, not a field-specific recognition, so a per-field OCR-confidence
+      // reliability weighting would misrepresent what was actually measured.
+      const fullResult = await engine.recognize(working.element, 'auto')
+      const split = splitFullFrameCardText(fullResult.text)
       return {
-        rawNameText: nameResult.text,
-        rawCollectorNumberText: numberResult.text,
-        usedFullFrameFallback: false,
-        nameRoiId: nameResult.roiId,
-        numberRoiId: numberResult.roiId,
-        nameConfidence: nameResult.confidence,
-        collectorNumberConfidence: numberResult.confidence,
+        rawNameText: split.name,
+        rawCollectorNumberText: split.number,
+        usedFullFrameFallback: true,
+        nameRoiId: null,
+        numberRoiId: null,
+        nameConfidence: null,
+        collectorNumberConfidence: null,
         ...(debug
           ? {
+              trials: allTrials,
               debugImages: {
                 nameRoiBlob: nameResult.debugBlob,
                 numberRoiBlob: numberResult.debugBlob,
               },
-              trials: allTrials,
             }
           : {}),
       }
-    }
-
-    // No candidate for EITHER field produced anything usable: exactly ONE bounded full-card pass
-    // (prompt §17), auto layout mode. Its confidence is deliberately NOT threaded into the
-    // per-field confidence fields above (P88 §8): the auto-mode text is a best-effort SPLIT of
-    // one whole-card OCR read, not a field-specific recognition, so a per-field OCR-confidence
-    // reliability weighting would misrepresent what was actually measured.
-    const fullResult = await engine.recognize(working.element, 'auto')
-    const split = splitFullFrameCardText(fullResult.text)
-    return {
-      rawNameText: split.name,
-      rawCollectorNumberText: split.number,
-      usedFullFrameFallback: true,
-      nameRoiId: null,
-      numberRoiId: null,
-      nameConfidence: null,
-      collectorNumberConfidence: null,
-      ...(debug
-        ? {
-            trials: allTrials,
-            debugImages: {
-              nameRoiBlob: nameResult.debugBlob,
-              numberRoiBlob: numberResult.debugBlob,
-            },
-          }
-        : {}),
-    }
+    })
   } finally {
     bitmap.close()
   }

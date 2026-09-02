@@ -18,6 +18,12 @@ class FakeWindow extends EventTarget {
   location = { reload: vi.fn() }
 }
 
+/** F-41 (P89): the visibilitychange checkpoint lives on `document`, not `window` — a separate
+ *  fake with its own mutable `visibilityState`, matching the real DOM shape. */
+class FakeDocument extends EventTarget {
+  visibilityState: 'visible' | 'hidden' = 'hidden'
+}
+
 class FakeSessionStorage {
   private store = new Map<string, string>()
   getItem(key: string): string | null {
@@ -29,6 +35,7 @@ class FakeSessionStorage {
 }
 
 let fakeWindow: FakeWindow
+let fakeDocument: FakeDocument
 let fakeServiceWorker: FakeServiceWorkerContainer
 let fakeSessionStorage: FakeSessionStorage
 let fetchMock: ReturnType<typeof vi.fn>
@@ -42,10 +49,12 @@ async function loadModules() {
 beforeEach(() => {
   vi.resetModules()
   fakeWindow = new FakeWindow()
+  fakeDocument = new FakeDocument()
   fakeServiceWorker = new FakeServiceWorkerContainer()
   fakeSessionStorage = new FakeSessionStorage()
   fetchMock = vi.fn()
   vi.stubGlobal('window', fakeWindow)
+  vi.stubGlobal('document', fakeDocument)
   vi.stubGlobal('navigator', { serviceWorker: fakeServiceWorker })
   vi.stubGlobal('sessionStorage', fakeSessionStorage)
   vi.stubGlobal('fetch', fetchMock)
@@ -202,5 +211,59 @@ describe('checkForNewDeployment', () => {
     fetchMock.mockRejectedValue(new Error('offline'))
 
     await expect(runtime.checkForNewDeployment()).resolves.toBeUndefined()
+  })
+})
+
+describe('F-41 (P89): checkForNewDeployment is actually invoked, not merely callable', () => {
+  it('a tab becoming visible triggers checkForNewDeployment via initBuildFreshnessWatch', async () => {
+    const { runtime, unsavedWork } = await loadModules()
+    unsavedWork.setScannerBatchSize(0)
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ sha: 'a-different-sha' }),
+    })
+    const stop = runtime.initBuildFreshnessWatch()
+
+    expect(fetchMock).not.toHaveBeenCalled()
+    fakeDocument.visibilityState = 'visible'
+    fakeDocument.dispatchEvent(new Event('visibilitychange'))
+    // checkForNewDeployment is async; let its microtask/fetch chain settle.
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(fetchMock).toHaveBeenCalledWith('/build-meta.json', { cache: 'no-store' })
+    expect(runtime.getStaleDeploymentSnapshot().trigger).toBe('newer-deployment-detected')
+    stop()
+  })
+
+  it('a tab going hidden does NOT trigger a check', async () => {
+    const { runtime, unsavedWork } = await loadModules()
+    unsavedWork.setScannerBatchSize(0)
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ sha: 'a-different-sha' }),
+    })
+    const stop = runtime.initBuildFreshnessWatch()
+
+    fakeDocument.visibilityState = 'hidden'
+    fakeDocument.dispatchEvent(new Event('visibilitychange'))
+    await Promise.resolve()
+
+    expect(fetchMock).not.toHaveBeenCalled()
+    stop()
+  })
+
+  it('stopping the watch removes the visibilitychange listener', async () => {
+    const { runtime, unsavedWork } = await loadModules()
+    unsavedWork.setScannerBatchSize(0)
+    fetchMock.mockResolvedValue({ ok: true, json: () => Promise.resolve({ sha: 'x' }) })
+    const stop = runtime.initBuildFreshnessWatch()
+    stop()
+
+    fakeDocument.visibilityState = 'visible'
+    fakeDocument.dispatchEvent(new Event('visibilitychange'))
+    await Promise.resolve()
+
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })

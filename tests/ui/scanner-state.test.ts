@@ -300,6 +300,40 @@ describe('scanner state machine — batch review editing', () => {
     state = reduce(state, { type: 'BATCH_ITEM_REMOVED', index: 0 })
     expect(state.batch.map((item) => item.candidate.candidateId)).toEqual(['b'])
   })
+
+  it('F-19/§8: a needsVerification item freezes quantity and condition edits', () => {
+    let state = atReviewWithTwo()
+    // Simulate the item having survived a partial commit as needs_verification (the shape
+    // COMMIT_SUCCEEDED itself produces — reproduced directly here since this describe block
+    // exercises batch-review editing in isolation from commit outcomes).
+    state = {
+      ...state,
+      batch: state.batch.map((item, index) =>
+        index === 1 ? { ...item, needsVerification: true } : item,
+      ),
+    }
+    const originalQuantity = state.batch[1]?.quantity
+    const originalCondition = state.batch[1]?.condition
+    const afterQuantityAttempt = reduce(state, {
+      type: 'BATCH_ITEM_QUANTITY_CHANGED',
+      index: 1,
+      value: '9',
+    })
+    expect(afterQuantityAttempt.batch[1]?.quantity).toBe(originalQuantity)
+    const afterConditionAttempt = reduce(state, {
+      type: 'BATCH_ITEM_CONDITION_CHANGED',
+      index: 1,
+      condition: 'PO',
+    })
+    expect(afterConditionAttempt.batch[1]?.condition).toBe(originalCondition)
+    // The OTHER item (not flagged) still edits normally — the freeze is per-item, not global.
+    const editsOtherItem = reduce(state, {
+      type: 'BATCH_ITEM_QUANTITY_CHANGED',
+      index: 0,
+      value: '5',
+    })
+    expect(editsOtherItem.batch[0]?.quantity).toBe(5)
+  })
 })
 
 describe('scanner state machine — commit outcomes', () => {
@@ -386,6 +420,58 @@ describe('scanner state machine — commit outcomes', () => {
     expect(done.batch).toHaveLength(0)
     expect(done.step).toBe('intro')
   })
+
+  it('F-09: Done after a PARTIAL commit never silently discards survivor items', () => {
+    const committed = reduce(atReviewWithTwo(), { type: 'ADD_CARDS_PRESSED' })
+    const partial = reduce(committed, {
+      type: 'COMMIT_SUCCEEDED',
+      addedCount: 1,
+      outcomes: [
+        { index: 0, status: 'added', message: null },
+        { index: 1, status: 'needs_verification', message: 'Connection was interrupted.' },
+      ],
+    })
+    expect(partial.batch).toHaveLength(1)
+    const done = reduce(partial, { type: 'COMMITTED_DONE_PRESSED' })
+    // Must NOT behave like the all-success case: no silent reset, no exit request. The survivor
+    // item stays exactly where it was, and the machine instead opens the same discard-
+    // confirmation guard every other exit path in this feature already enforces.
+    expect(done.exitRequested).toBe(false)
+    expect(done.step).toBe('committed')
+    expect(done.batch).toHaveLength(1)
+    expect(done.batch[0]?.needsVerification).toBe(true)
+    expect(done.exitWarningOpen).toBe(true)
+
+    // "Review remaining" (the reused REVIEW_BATCH_PRESSED action) returns to batch-review with
+    // the survivor intact and clears the warning implicitly by moving off 'committed'.
+    const reviewing = reduce(done, { type: 'REVIEW_BATCH_PRESSED' })
+    expect(reviewing.step).toBe('batch-review')
+    expect(reviewing.batch).toHaveLength(1)
+
+    // Explicitly discarding from the warning sheet still works and still requests exit — this is
+    // the only path that may drop the survivor record.
+    const discarded = reduce(done, { type: 'DISCARD_CONFIRMED' })
+    expect(discarded.exitRequested).toBe(true)
+    expect(discarded.batch).toHaveLength(0)
+  })
+
+  it('F-09: Done after a full-success TWO-item commit behaves like plain success (no warning)', () => {
+    // Every item 'added' ⇒ batch ends up empty; Done must still take the plain-exit path rather
+    // than opening an empty-batch warning sheet with nothing to review.
+    const committing = reduce(atReviewWithTwo(), { type: 'ADD_CARDS_PRESSED' })
+    const committed = reduce(committing, {
+      type: 'COMMIT_SUCCEEDED',
+      addedCount: 2,
+      outcomes: [
+        { index: 0, status: 'added', message: null },
+        { index: 1, status: 'added', message: null },
+      ],
+    })
+    expect(committed.batch).toHaveLength(0)
+    const done = reduce(committed, { type: 'COMMITTED_DONE_PRESSED' })
+    expect(done.exitRequested).toBe(true)
+    expect(done.exitWarningOpen).toBe(false)
+  })
 })
 
 describe('scanner state machine — manual search fallback', () => {
@@ -453,5 +539,90 @@ describe('scanner state machine — exit discipline', () => {
     expect(discarded.batch).toHaveLength(0)
     expect(discarded.exitRequested).toBe(true)
     expect(discarded.step).toBe('intro')
+  })
+})
+
+describe('scanner state machine — §25 (P89): 10+ card soak', () => {
+  /** Drives one full capture -> analyze -> confirm -> scanned cycle for `id`, appending it to
+   *  whatever batch `state` already carries — the same shape atReviewWithTwo() hand-rolls for
+   *  exactly two cards, generalized to N so a soak test can drive it in a loop. */
+  function scanOneMoreCard(state: ScannerState, id: string): ScannerState {
+    let next = reduce(state, { type: 'SCAN_NEXT_PRESSED' })
+    next = reduce(next, { type: 'CAMERA_STARTED' })
+    next = reduce(next, { type: 'CAPTURE_SUCCEEDED' })
+    next = reduce(next, { type: 'USE_PHOTO_PRESSED' })
+    next = reduce(next, { type: 'ANALYSIS_COMPLETED', analysis: highAnalysis([candidate(id)]) })
+    next = reduce(next, { type: 'CONFIRM_CARD_PRESSED', candidate: candidate(id) })
+    next = variantsLoaded(next)
+    return reduce(next, { type: 'CARD_CONFIRMED' })
+  }
+
+  it('10 consecutive capture/analyze/confirm cycles: no candidate bleed, no key collisions, correct order', () => {
+    const ids = Array.from({ length: 10 }, (_, i) => `soak-${i}`)
+    let state = atScanned() // card 0 already confirmed via the standard happy-path helper
+    for (const id of ids.slice(1)) {
+      state = scanOneMoreCard(state, id)
+    }
+
+    expect(state.batch).toHaveLength(10)
+    // Order preserved, no candidate bleed between cycles (each item names ITS OWN card, not a
+    // neighbour's or a stale one from an earlier cycle).
+    expect(state.batch.map((item) => item.candidate.candidateId)).toEqual(['a', ...ids.slice(1)])
+    // Every requestKey is genuinely unique — no two items silently share an idempotency key
+    // across a long session (would risk exactly the F-19 material-mismatch class if it ever
+    // happened).
+    const keys = new Set(state.batch.map((item) => item.requestKey))
+    expect(keys.size).toBe(10)
+    // Every item carries a real variant selection — CARD_CONFIRMED's own guard (§22) means none
+    // of these 10 cycles could have silently skipped that requirement.
+    expect(state.batch.every((item) => item.variantId === 'variant-1')).toBe(true)
+
+    // The batch survives review and commits as one coherent unit.
+    const reviewing = reduce(state, { type: 'REVIEW_BATCH_PRESSED' })
+    expect(reviewing.step).toBe('batch-review')
+    expect(reviewing.batch).toHaveLength(10)
+    const committing = reduce(reviewing, { type: 'ADD_CARDS_PRESSED' })
+    const outcomes: ScannerCommitOutcome[] = ids.map((_id, index) => ({
+      index,
+      status: 'added',
+      message: null,
+    }))
+    const committed = reduce(committing, {
+      type: 'COMMIT_SUCCEEDED',
+      addedCount: 10,
+      outcomes,
+    })
+    expect(committed.addedCount).toBe(10)
+    expect(committed.batch).toHaveLength(0)
+    expect(committed.attentionCount).toBeNull()
+  })
+
+  it('10-card soak with every 3rd item interrupted (needs_verification): survivors carry exactly the right identities', () => {
+    const ids = Array.from({ length: 10 }, (_, i) => `soak-${i}`)
+    let state = atScanned()
+    for (const id of ids.slice(1)) {
+      state = scanOneMoreCard(state, id)
+    }
+    const committing = reduce(state, { type: 'ADD_CARDS_PRESSED' })
+    const interruptedIndexes = new Set([2, 5, 8])
+    const outcomes: ScannerCommitOutcome[] = ids.map((_id, index) => ({
+      index,
+      status: interruptedIndexes.has(index) ? 'needs_verification' : 'added',
+      message: interruptedIndexes.has(index) ? 'Connection was interrupted.' : null,
+    }))
+    const committed = reduce(committing, {
+      type: 'COMMIT_SUCCEEDED',
+      addedCount: 7,
+      outcomes,
+    })
+    expect(committed.addedCount).toBe(7)
+    expect(committed.attentionCount).toBe(3)
+    expect(committed.batch).toHaveLength(3)
+    // Exactly the interrupted cards survive, in their original order, each correctly flagged.
+    const allIds = ['a', ...ids.slice(1)]
+    expect(committed.batch.map((item) => item.candidate.candidateId)).toEqual(
+      [...interruptedIndexes].sort((x, y) => x - y).map((index) => allIds[index]),
+    )
+    expect(committed.batch.every((item) => item.needsVerification === true)).toBe(true)
   })
 })
