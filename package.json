@@ -9,7 +9,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "prebuild": "node scripts/prepare-scanner-assets.mjs && node scripts/prepare-scanner-visual-assets.mjs && node scripts/scanner-visual-index/stage-index-assets.mjs",
+    "prebuild": "node scripts/prepare-scanner-assets.mjs && node scripts/prepare-scanner-visual-assets.mjs && tsx scripts/scanner-visual-index/stage-index-assets.mjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",

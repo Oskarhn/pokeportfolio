@@ -84,11 +84,24 @@ describe('I8 static network-privacy audit', () => {
       expect(fetchCalls.length).toBeGreaterThan(0)
       for (const match of fetchCalls) {
         const argument = match[1] ?? ''
+        // P87 F-01: `INDEX_BASE` and `generationBase` are both derived FROM `ASSET_BASE`
+        // (`${ASSET_BASE}/index` and `${INDEX_BASE}/generations/${contentId}` respectively,
+        // confirmed by the literal-derivation assertions below) — same-origin by construction,
+        // never independently sourced.
         expect(
-          argument.includes('/scanner-assets/visual-v1/') || argument.includes('${ASSET_BASE}'),
+          argument.includes('/scanner-assets/visual-v1/') ||
+            argument.includes('${ASSET_BASE}') ||
+            argument.includes('${INDEX_BASE}') ||
+            argument.includes('${generationBase}'),
         ).toBe(true)
         expect(argument).not.toMatch(/https?:\/\/|jsdelivr|unpkg|huggingface|supabase/i)
       }
+      // The two new base constants used above must themselves be literal derivations of
+      // ASSET_BASE — never independently constructed from anything network-supplied.
+      expect(code).toMatch(/const INDEX_BASE = `\$\{ASSET_BASE\}\/index`/)
+      expect(code).toMatch(
+        /const generationBase = `\$\{INDEX_BASE\}\/generations\/\$\{contentId\}`/,
+      )
     }
   })
 

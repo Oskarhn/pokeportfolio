@@ -51,8 +51,34 @@ export interface VisualReadyInfo extends VisualBackendDiagnostics {
   /** Diagnostics-only (prompt §40/§56) fields describing the reference index itself. */
   readonly indexVersion: string | null
   readonly indexSourceProjectRef: string | null
+  /** P87 §15: the loaded generation's own declared identity fields. */
+  readonly indexModelRevision: string | null
+  readonly indexGeneratedAt: string | null
+  readonly indexEmbeddingsSha256: string | null
+  /** P87 F-01: the content-addressed id of the generation actually loaded, or null if none. */
+  readonly indexContentId: string | null
+  /** P87 F-22: this deployment's expected source project (null when unconfigured/local), and
+   *  whether the loaded index matched it. */
+  readonly indexSourceProjectExpected: string | null
+  readonly indexSourceProjectMatch: boolean | null
+  /** P87 §6: whether the runtime SHA-256 re-hash of the fetched embeddings matched the manifest's
+   *  own checksum, and how long that hash took. */
+  readonly indexRuntimeChecksumVerified: boolean | null
+  readonly indexRuntimeChecksumMs: number | null
   readonly indexLoadMs: number | null
   readonly indexUnavailableReason: string | null
+}
+
+/** Debug-only (P84, ported P87) — mirrors {@link ExpectedCardRank} in contract.ts (kept as its
+ *  own type here so this module stays independent of the feature-level contract). */
+export interface ExpectedCardRank {
+  readonly found: boolean
+  readonly rank: number | null
+  readonly similarity: number | null
+  readonly totalCards: number
+  readonly inTop20: boolean
+  readonly inTop100: boolean
+  readonly indexContentId: string | null
 }
 
 type WorkerMessage =
@@ -68,6 +94,7 @@ type WorkerMessage =
     }
   | { type: 'error'; requestId: number; message: string }
   | { type: 'progress'; phase: VisualWorkerProgressPhase; atMs: number }
+  | ({ type: 'expected-rank'; requestId: number } & ExpectedCardRank)
 
 /** P82 §2-§6/§20: a live snapshot of the worker's most recent progress signal, kept even before
  *  ready/unavailable arrives — the gap that left every P81 phase-timing field as "—" during a real
@@ -112,6 +139,10 @@ export class VisualRecognitionClient {
     number,
     { resolve: (r: VisualAnalysisResult) => void; reject: (e: Error) => void }
   >()
+  /** P84, ported P87: pending debug-only rank-lookup requests, kept separate from `pending`
+   *  (real analyze() calls) since they resolve a different response shape and never reject —
+   *  see {@link getExpectedCardRank}. */
+  private pendingRankRequests = new Map<number, (r: ExpectedCardRank) => void>()
   /** Wall-clock duration of the FIRST successful `analyze()` round trip (P81 §3/§17
    *  FIRST_EMBED_MS) — the number that answers "once the model is warm, how fast is one actual
    *  scan," distinct from cold model/index load. Null until one real embed has completed. */
@@ -225,6 +256,21 @@ export class VisualRecognitionClient {
       })
       return
     }
+    if (message.type === 'expected-rank') {
+      const resolve = this.pendingRankRequests.get(message.requestId)
+      if (!resolve) return
+      this.pendingRankRequests.delete(message.requestId)
+      resolve({
+        found: message.found,
+        rank: message.rank,
+        similarity: message.similarity,
+        totalCards: message.totalCards,
+        inTop20: message.inTop20,
+        inTop100: message.inTop100,
+        indexContentId: message.indexContentId,
+      })
+      return
+    }
     // Only 'error' remains after the branches above have returned.
     const pending = this.pending.get(message.requestId)
     if (!pending) return
@@ -257,6 +303,28 @@ export class VisualRecognitionClient {
     } catch {
       return null
     }
+  }
+
+  /**
+   * Debug-only (P84, ported P87): re-ranks the most recent {@link analyze} call's query vector
+   * against the full visual index for `cardId`, without re-embedding, re-fetching or making a
+   * network call. Never throws. Returns `null` when the worker was never constructed (a rank
+   * lookup must never itself trigger `ensureReady()`/worker construction — this is a read over
+   * whatever is ALREADY in memory, not a reason to start loading the model).
+   *
+   * Debug-mode gating happens ONE LAYER UP, in controller.ts — this method answers unconditionally
+   * whatever it is asked; controller.ts's own wrapper is what resolves `null` outside
+   * `?scannerDebug=1` without ever calling this method at all.
+   */
+  async getExpectedCardRank(cardId: string): Promise<ExpectedCardRank | null> {
+    if (this.worker === null) return null
+    const worker = this.worker
+    const requestId = this.nextRequestId
+    this.nextRequestId += 1
+    return new Promise<ExpectedCardRank>((resolve) => {
+      this.pendingRankRequests.set(requestId, resolve)
+      worker.postMessage({ type: 'get-expected-rank', requestId, cardId })
+    })
   }
 
   /** Diagnostics-only snapshot (prompt §40) — never affects matching, safe to read at any time
@@ -302,6 +370,7 @@ export class VisualRecognitionClient {
     this.readyInfo = null
     this.readyPromise = null
     this.pending.clear()
+    this.pendingRankRequests.clear()
     this.workerBooted = false
     this.workerBootMs = null
     this.currentPhase = null

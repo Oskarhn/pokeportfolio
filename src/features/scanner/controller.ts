@@ -24,7 +24,11 @@ import type { PixelRect } from './guide-geometry'
 import { ScannerOcrEngine } from './ocr-engine'
 import { rectifyCapture } from './rectify-capture'
 import { scannerCostBasisState, scannerSessionStore, type ScannerOrigin } from './session-store'
-import { VisualRecognitionClient, type VisualAnalysisResult } from './visual/visual-client'
+import {
+  VisualRecognitionClient,
+  type VisualAnalysisResult,
+  type ExpectedCardRank,
+} from './visual/visual-client'
 import { estimateAssetCacheStatus } from './visual/phase-timing'
 
 /**
@@ -62,15 +66,22 @@ export const ENHANCED_VISUAL_PREWARM_STAGGER_MS = 1500
 
 /** Bounded raw visual shortlist handed to the domain matcher (prompt §16/§31): retrieval may
  *  examine this many raw candidates internally, but the UI never sees more than
- *  SCANNER_UI_CANDIDATE_LIMIT of them after reranking. */
+ *  SCANNER_UI_CANDIDATE_LIMIT of them after reranking. Production's own value is UNCHANGED by
+ *  P84/P87 — only the debug-only constants below were raised. */
 const VISUAL_SHORTLIST_SIZE = 30
-/** Debug-only widened shortlist (P79 §10): lets a debug session see whether the correct card
- *  exists deeper in the raw visual neighbours than production ever surfaces. Never used for
- *  actual matching/reranking — `matchScannerObservation` still only ever sees the SAME merged
- *  candidate pool either way; this only changes how many raw hits the debug panel can show. */
-const VISUAL_DEBUG_SHORTLIST_SIZE = 50
-/** How many raw visual neighbours the debug panel's extended list shows (P79 §10). */
-const DEBUG_EXTENDED_CANDIDATE_LIMIT = 20
+/** Debug-only widened shortlist (P79 §10, raised 50->200 by P84/ported P87): lets a debug session
+ *  see whether the correct card exists deeper in the raw visual neighbours than production ever
+ *  surfaces — load-bearing for the {@link ExpectedCardRank} debug tool, which needs the FULL index
+ *  reachable, not just a shallow shortlist. Never used for actual matching/reranking —
+ *  `matchScannerObservation` still only ever sees the SAME merged candidate pool either way; this
+ *  only changes how many raw hits the debug panel can show. A full-index brute-force search costs
+ *  the same regardless of how much of the sorted result is kept (real-device evidence, P84:
+ *  INDEX_SEARCH_MS=16 at 19,501 cards for topK=30), so widening this for debug sessions only is
+ *  not expected to be measurably slower. */
+const VISUAL_DEBUG_SHORTLIST_SIZE = 200
+/** How many raw visual neighbours the debug panel's extended list shows (P79 §10, raised 20->100
+ *  by P84/ported P87 — same reasoning as {@link VISUAL_DEBUG_SHORTLIST_SIZE} above). */
+const DEBUG_EXTENDED_CANDIDATE_LIMIT = 100
 import type {
   ScannerAnalysis,
   ScannerCandidate,
@@ -512,6 +523,14 @@ export function createRealScannerController(
       indexVersion: visualSnapshot.readyInfo?.indexVersion ?? null,
       indexCardCount: visualSnapshot.readyInfo?.cardCount ?? null,
       indexSourceProjectRef: visualSnapshot.readyInfo?.indexSourceProjectRef ?? null,
+      indexModelRevision: visualSnapshot.readyInfo?.indexModelRevision ?? null,
+      indexGeneratedAt: visualSnapshot.readyInfo?.indexGeneratedAt ?? null,
+      indexEmbeddingsSha256: visualSnapshot.readyInfo?.indexEmbeddingsSha256 ?? null,
+      indexContentId: visualSnapshot.readyInfo?.indexContentId ?? null,
+      indexSourceProjectExpected: visualSnapshot.readyInfo?.indexSourceProjectExpected ?? null,
+      indexSourceProjectMatch: visualSnapshot.readyInfo?.indexSourceProjectMatch ?? null,
+      indexRuntimeChecksumVerified: visualSnapshot.readyInfo?.indexRuntimeChecksumVerified ?? null,
+      indexRuntimeChecksumMs: visualSnapshot.readyInfo?.indexRuntimeChecksumMs ?? null,
       indexLoadMs: visualSnapshot.readyInfo?.indexLoadMs ?? null,
       indexSearchMs: visualResult?.searchMs ?? null,
       topVisualCandidates: (visualResult?.hits ?? []).slice(0, 5).map((hit) => ({
@@ -699,6 +718,14 @@ export function createRealScannerController(
     debugImages.clear()
   }
 
+  /** Debug-only (P84, ported P87): resolves `null` immediately, WITHOUT ever calling
+   *  `visualClient`, outside `?scannerDebug=1` — this is the gate contract.ts's own doc promises.
+   *  See visual-client.ts's `getExpectedCardRank` for what happens once debug mode is confirmed. */
+  async function getExpectedCardRank(cardId: string): Promise<ExpectedCardRank | null> {
+    if (!isScannerDebugEnabled()) return null
+    return visualClient.getExpectedCardRank(cardId)
+  }
+
   return {
     analyzeCapture,
     searchFallback,
@@ -710,6 +737,7 @@ export function createRealScannerController(
     prewarm,
     getVisualPrewarmState,
     getFastScannerState,
+    getExpectedCardRank,
   }
 }
 
