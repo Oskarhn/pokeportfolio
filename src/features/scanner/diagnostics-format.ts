@@ -196,7 +196,13 @@ export function formatScannerDiagnostics(d: ScannerDiagnostics): string {
     lines.push(`  ${EMPTY}`)
   } else {
     d.finalRerankedCandidates.forEach((c) => {
-      lines.push(`  ${c.cardId}: ${c.reasons.length > 0 ? c.reasons.join('+') : EMPTY}`)
+      lines.push(
+        `  ${c.cardId}: ${c.reasons.length > 0 ? c.reasons.join('+') : EMPTY}`,
+        `    RAW_RANK_SCORE=${c.rawRankScore} DISPLAY_SCORE=${c.displayScore} ` +
+          `TEXT_RELIABILITY=${c.textReliability.toFixed(2)} ` +
+          `VISUAL_RELIABILITY=${c.visualReliability.toFixed(2)} ` +
+          `FINAL_TIER=${c.finalTier} TIER_REASON=${c.tierReason ?? EMPTY}`,
+      )
     })
   }
   lines.push(

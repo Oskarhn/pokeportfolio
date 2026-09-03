@@ -156,6 +156,24 @@ export interface ScannerDiagnostics {
     name: string
     confidenceTier: ScannerConfidence
     reasons: readonly string[]
+    /** P93 §25 debug fields — the SAME values `engine.ts` actually computed for this candidate,
+     *  not a re-derived summary. `rawRankScore` is the full-resolution, unclamped total sorting
+     *  used; `displayScore` is the same clamped-to-[0,100] value the (non-debug) UI would show.
+     *  `textReliability` is this SCAN's combined OCR-confidence reliability (the max of name/
+     *  collector reliability that actually contributed a nonzero score component this scan) —
+     *  identical across every candidate in one scan, since it comes from the observation, not the
+     *  candidate. `visualReliability` is per-candidate (nonzero only for this scan's visual
+     *  anchor). `finalTier` is this candidate's OWN score-band tier in isolation (no margin/
+     *  ambiguity demotion — a distinct, narrower concept than `confidenceTier`, which is the
+     *  match-level tier after margin/disagreement checks and only meaningful for rank 1).
+     *  `tierReason` mirrors the match-level `tierCapReason` (identical for every candidate this
+     *  scan — there is no per-candidate cap reason concept, only a match-level one). */
+    rawRankScore: number
+    displayScore: number
+    textReliability: number
+    visualReliability: number
+    finalTier: ScannerConfidence
+    tierReason: 'runner-up-margin-small' | 'visual-text-disagreement' | null
   }[]
   visualError: string | null
   /** P88 §21 — the calibrated tier (visual-evidence.ts's `visualEvidenceTier`) of the STRONGEST

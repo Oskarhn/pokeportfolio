@@ -193,6 +193,17 @@ function languageLabel(language: ScannerCandidateRecord['language']): string {
   return language === 'ja' ? 'Japanese' : 'English'
 }
 
+/** P93 §25 debug field — this candidate's OWN score-band tier in isolation, ignoring the
+ *  match-level margin/ambiguity demotion (`confidenceTier`/`match.tier` already carries that).
+ *  Reads `rawRankScore`, matching engine.ts's own tier decision (SCORING_TIERS bands compared
+ *  against the full-resolution raw score, never the clamped display value — P93/N-05). */
+function standaloneTierForScore(rawRankScore: number): ScannerConfidence {
+  if (rawRankScore >= SCORING_TIERS.highMinScore) return 'HIGH'
+  if (rawRankScore >= SCORING_TIERS.mediumMinScore) return 'MEDIUM'
+  if (rawRankScore >= SCORING_TIERS.lowMinScore) return 'LOW'
+  return 'NO_MATCH'
+}
+
 function toUiCandidate(record: ScannerCandidateRecord): ScannerCandidate {
   return {
     candidateId: record.cardId,
@@ -672,6 +683,19 @@ export function createRealScannerController(
         name: ranked.card.name,
         confidenceTier: tierToConfidence(match.tier),
         reasons: ranked.reasons,
+        rawRankScore: ranked.rawRankScore,
+        displayScore: ranked.score,
+        textReliability: Math.max(
+          match.signals.nameReliability,
+          match.signals.collectorReliability,
+        ),
+        visualReliability: ranked.visualReliability,
+        finalTier: standaloneTierForScore(ranked.rawRankScore),
+        tierReason: match.notes.includes('visual-text-disagreement')
+          ? ('visual-text-disagreement' as const)
+          : match.notes.includes('runner-up-margin-small')
+            ? ('runner-up-margin-small' as const)
+            : null,
       })),
       // P78 fix: `visualErrorMessage` only ever covers exceptions thrown INSIDE
       // analyzeVisualSafely (createImageBitmap/client.analyze throwing) — a model/backend
