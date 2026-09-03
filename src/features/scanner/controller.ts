@@ -2,7 +2,9 @@ import {
   searchCards,
   getCardVariants,
   getCardsByIds,
+  classifyCardIdsAgainstCatalog,
   type CatalogVariant,
+  type CardCatalogPresence,
 } from '../../data/catalog'
 import { addCardAcquisition } from '../../data/collection'
 import {
@@ -377,6 +379,18 @@ export function createRealScannerController(
   // matching, never persisted, overwritten by the next analyzeCapture call.
   let lastDiagnostics: ScannerDiagnostics | null = null
   const debugImages = new DebugImageUrlStore()
+  // N-21 (P94): a controller instance is created per signed-in identity (D-104 F-05: an account
+  // switch replaces it, it never survives across users) and this session's whole write-authority
+  // ultimately comes from the CURRENT Supabase auth session, not from anything captured here —
+  // `commitBatch`'s RPC calls carry no user id, so a `for` loop still mid-flight after THIS
+  // controller has been disposed (unmount, or an account switch that constructed a fresh
+  // controller for the new identity) would otherwise keep writing rows under whatever session
+  // happens to be current when each remaining `await` resolves. Checked before EACH item so a
+  // disposal mid-batch stops issuing further writes instead of silently continuing under a
+  // possibly-different signed-in identity. This is defense in depth, not the authority boundary —
+  // backend RLS (`auth.uid()`-scoped, D-104/D-096) is what actually prevents a cross-user write;
+  // this only prevents a stale controller from attempting one in the first place.
+  let disposed = false
   /** P90 §21 (debug-only): the exact evidence the most recent scan's real match() call scored
    *  against — kept ONLY so {@link getExpectedCardRank} can compute a real hybrid rank for a card
    *  the owner names after the fact, using the SAME scoring pipeline production used, not a
@@ -540,12 +554,20 @@ export function createRealScannerController(
 
     let visualScores: VisualEvidenceByCard | undefined
     let mergedCandidates = textCandidates
+    // N-08 (P94): aggregate counts distinguishing "the visual index found this id" from "it also
+    // survived catalog enrichment" — computed for free from data this block already produces, so
+    // a diagnostics reader never has to infer the enrichment-filtering gap from a bare candidate
+    // count alone. Null (not 0) when there was nothing to enrich in the first place.
+    let visualUnknownIdCount: number | null = null
+    let visualEnrichedIdCount: number | null = null
+    let visualMissingIdCount: number | null = null
     if (visualResult && visualResult.hits.length > 0) {
       visualScores = new Map(visualResult.hits.map((hit) => [hit.cardId, hit.similarity]))
       const knownIds = new Set(textCandidates.map((c) => c.cardId))
       const unknownVisualIds = visualResult.hits
         .map((hit) => hit.cardId)
         .filter((id) => !knownIds.has(id))
+      visualUnknownIdCount = unknownVisualIds.length
       if (unknownVisualIds.length > 0) {
         // Visual shortlist candidates the text search never found (prompt §16's hybrid
         // retrieval): fetch their identity/metadata in one bounded round trip. A card the
@@ -553,10 +575,15 @@ export function createRealScannerController(
         // (F-28/F-29/P88 §16 — the visual index is English-only today, `session-store.ts`'s
         // `language: 'en'` default) is simply dropped — never fabricated.
         const enriched = await getCardsByIds(unknownVisualIds, 'en').catch(() => [])
+        visualEnrichedIdCount = enriched.length
+        visualMissingIdCount = unknownVisualIds.length - enriched.length
         mergedCandidates = [
           ...textCandidates,
           ...enriched.map((card) => toCandidateRecordFromCatalog(card)),
         ]
+      } else {
+        visualEnrichedIdCount = 0
+        visualMissingIdCount = 0
       }
     }
 
@@ -705,6 +732,9 @@ export function createRealScannerController(
       fastScannerState: getFastScannerState(),
       ocrRuntimeState: getFastScannerState(),
       enhancedVisualState: visualSnapshot.modelState,
+      visualUnknownIdCount,
+      visualEnrichedIdCount,
+      visualMissingIdCount,
     }
 
     // Debug-only image previews (P79 §4) — memory-only object URLs, never persisted, revoked the
@@ -788,6 +818,10 @@ export function createRealScannerController(
     // Sequential by design (prompt §29): partial failures stay explainable, one item's outcome
     // never races another's, and successes are marked before the next attempt begins.
     for (let index = 0; index < items.length; index += 1) {
+      // N-21: stop issuing further writes the moment this controller has been disposed —
+      // whatever items already committed above stay committed; anything from here on is simply
+      // never attempted rather than potentially written under a since-changed signed-in identity.
+      if (disposed) break
       const item = items[index]
       if (item === undefined) continue
       try {
@@ -812,6 +846,7 @@ export function createRealScannerController(
   }
 
   function dispose(): void {
+    disposed = true
     engine.dispose()
     releaseOcrCanvases()
     visualClient.dispose()
@@ -831,15 +866,48 @@ export function createRealScannerController(
   async function getExpectedCardRank(cardId: string): Promise<ExpectedCardRank | null> {
     if (!isScannerDebugEnabled()) return null
     const visualRank = await visualClient.getExpectedCardRank(cardId)
-    if (lastMatchContext === null) return visualRank
 
-    let candidates = lastMatchContext.candidates
-    if (!candidates.some((c) => c.cardId === cardId)) {
+    // Unconditional, EXACTLY as before N-08 (independent of whether the visual index found this
+    // card at all): a card outside `lastMatchContext.candidates` is looked up by id and scored as
+    // an honest what-if. This also doubles as the first half of N-08's enrichment classification
+    // below — if it resolves, that's already the answer; only a genuine miss needs the extra
+    // classification query.
+    const alreadyKnown = lastMatchContext?.candidates.some((c) => c.cardId === cardId) ?? false
+    let extraCandidate: ScannerCandidateRecord | null = null
+    let fetchedFromCatalog = false
+    if (!alreadyKnown) {
       const fetched = await getCardsByIds([cardId], 'en').catch(() => [])
       const [firstFetched] = fetched
       if (firstFetched !== undefined) {
-        candidates = [...candidates, toCandidateRecordFromCatalog(firstFetched)]
+        extraCandidate = toCandidateRecordFromCatalog(firstFetched)
+        fetchedFromCatalog = true
       }
+    }
+
+    // N-08 (P94): WHY this card does or doesn't have real scoreable evidence. 'not-in-index' is
+    // about the VISUAL index specifically — independent of whether it's ALSO reachable via plain
+    // catalog/text lookup (the fetch above serves scoring regardless of visualRank.found). Only a
+    // card the visual index DID find, but which failed the fetch above, needs the extra
+    // classification query to say WHY (inactive, wrong language, or no catalog row at all).
+    let enrichmentStatus: ExpectedCardRank['enrichmentStatus']
+    if (visualRank === null || !visualRank.found) {
+      enrichmentStatus = 'not-in-index'
+    } else if (alreadyKnown || fetchedFromCatalog) {
+      enrichmentStatus = 'resolved'
+    } else {
+      const classification = await classifyCardIdsAgainstCatalog([cardId], 'en').catch(
+        () => new Map<string, CardCatalogPresence>(),
+      )
+      enrichmentStatus = classification.get(cardId) ?? 'missing-catalog-row'
+    }
+
+    if (lastMatchContext === null) {
+      return visualRank === null ? null : { ...visualRank, enrichmentStatus }
+    }
+
+    let candidates = lastMatchContext.candidates
+    if (extraCandidate !== null && !alreadyKnown) {
+      candidates = [...candidates, extraCandidate]
     }
     const fullRanked = rankScannerCandidatesFull(
       lastMatchContext.signals,
@@ -870,6 +938,7 @@ export function createRealScannerController(
       hybridScore: null,
       hybridTier: null,
       scoreComponents: [],
+      enrichmentStatus,
     }
     return {
       ...(visualRank ?? fallback),
@@ -877,6 +946,7 @@ export function createRealScannerController(
       hybridScore: hybridEntry?.score ?? null,
       hybridTier: inBounded ? boundedMatch.tier : null,
       scoreComponents: hybridEntry?.reasons ?? [],
+      enrichmentStatus,
     }
   }
 

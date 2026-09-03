@@ -31,6 +31,10 @@ export function formatExpectedCardRankDiagnostics(
     `EXPECTED_CARD_NAME=${card.name}`,
     `EXPECTED_CARD_SET=${card.setName}`,
     `EXPECTED_CARD_NUMBER=${card.localId}`,
+    // N-08 (P94): explicit, so "not present in the visual index at all" is never confused with
+    // "present, but filtered out during ordinary catalog enrichment" (see ExpectedCardRank's doc).
+    `EXPECTED_PRESENT_IN_VISUAL_INDEX=${rank.found ? 'yes' : 'no'}`,
+    `EXPECTED_ENRICHMENT_STATUS=${rank.enrichmentStatus}`,
     `EXPECTED_VISUAL_RANK=${num(rank.rank)}`,
     `EXPECTED_VISUAL_SIMILARITY=${rank.similarity === null ? EMPTY : rank.similarity.toFixed(4)}`,
     `EXPECTED_VISUAL_PERCENTILE=${
@@ -126,6 +130,10 @@ export function formatScannerDiagnostics(d: ScannerDiagnostics): string {
     `INDEX_RUNTIME_CHECKSUM_MS=${num(d.indexRuntimeChecksumMs)}`,
     `INDEX_LOAD_MS=${num(d.indexLoadMs)}`,
     `INDEX_SEARCH_MS=${num(d.indexSearchMs)}`,
+    // N-08 (P94): the aggregate found-vs-enriched gap — see ScannerDiagnostics's own field docs.
+    `RAW_VISUAL_ID_COUNT=${num(d.visualUnknownIdCount)}`,
+    `ENRICHED_VISUAL_ID_COUNT=${num(d.visualEnrichedIdCount)}`,
+    `MISSING_ID_COUNT=${num(d.visualMissingIdCount)}`,
     'TOP_VISUAL_CANDIDATES:',
   ]
   if (d.topVisualCandidates.length === 0) {
