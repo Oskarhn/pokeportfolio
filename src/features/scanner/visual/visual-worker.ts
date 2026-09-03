@@ -43,7 +43,8 @@ import {
 } from '../../../domain/scanner/index-content-id'
 import {
   deriveProjectIdentity,
-  LOCAL_SUPABASE_URL,
+  canonicalizeProjectIdentity,
+  LOCAL_PROJECT_IDENTITY_SENTINEL,
 } from '../../../domain/scanner/checkpoint-identity'
 import {
   classifyVisualAssetUrl,
@@ -73,16 +74,34 @@ const INDEX_BASE = `${ASSET_BASE}/index`
 const CONFIGURED_SUPABASE_URL: string | undefined = (
   import.meta as unknown as { env?: Record<string, string | undefined> }
 ).env?.VITE_SUPABASE_URL
+/** P94 N-13: an explicit, build-time override for the canonical project ref this deployment
+ *  expects, for the case a hosted Supabase project is ever fronted by a custom domain (where
+ *  deriving a ref from the URL's hostname would no longer work at all). Left unset in every build
+ *  today — the standard `*.supabase.co` derivation below covers the real deployment. */
+const CONFIGURED_PROJECT_REF: string | undefined = (
+  import.meta as unknown as { env?: Record<string, string | undefined> }
+).env?.VITE_SUPABASE_PROJECT_REF
 /** True when THIS deployment itself has no real hosted project configured — the local dev stack
- *  or CI's own placeholder build (both use the identical well-known URL, `LOCAL_SUPABASE_URL`).
- *  In that case there is nothing meaningful to gate the index's `sourceProjectRef` against, so the
- *  gate stays informational rather than rejecting (P87 §8's "do not destroy convenient local
- *  development" requirement). */
+ *  or CI's own placeholder build. Compares CANONICAL identities (P94 N-13), not raw strings: a
+ *  local Supabase CLI reached via `localhost:54321` or `127.0.0.1:54321` (or any port a developer
+ *  configured) must be recognized as local either way — the old exact-string comparison against
+ *  `LOCAL_SUPABASE_URL` alone would wrongly treat a `localhost`-spelled local stack as "a real
+ *  hosted deployment" and silently disable the visual channel. In that case there is nothing
+ *  meaningful to gate the index's `sourceProjectRef` against, so the gate stays informational
+ *  rather than rejecting (P87 §8's "do not destroy convenient local development" requirement). */
 const IS_LOCAL_OR_UNCONFIGURED_DEPLOYMENT =
-  CONFIGURED_SUPABASE_URL === undefined || CONFIGURED_SUPABASE_URL === LOCAL_SUPABASE_URL
+  CONFIGURED_SUPABASE_URL === undefined ||
+  canonicalizeProjectIdentity(CONFIGURED_SUPABASE_URL) === LOCAL_PROJECT_IDENTITY_SENTINEL
+/** The canonical ref this deployment expects the index's `sourceProjectRef` to resolve to (P94
+ *  N-13): `VITE_SUPABASE_PROJECT_REF` when explicitly configured (the custom-domain escape
+ *  hatch), otherwise derived from `VITE_SUPABASE_URL` and canonicalized — which strips the
+ *  `.supabase.co` suffix, so this matches an EXISTING committed manifest's raw host-string
+ *  `sourceProjectRef` (canonicalized the same way at comparison time below) without needing to
+ *  regenerate it. */
 const EXPECTED_SOURCE_PROJECT_REF = IS_LOCAL_OR_UNCONFIGURED_DEPLOYMENT
   ? null
-  : deriveProjectIdentity(CONFIGURED_SUPABASE_URL)
+  : (CONFIGURED_PROJECT_REF?.toLowerCase() ??
+    canonicalizeProjectIdentity(deriveProjectIdentity(CONFIGURED_SUPABASE_URL)))
 /** P81 §8: a Cache-Storage-API cache this worker owns and reads/writes directly, INDEPENDENT of
  *  whether the page's Service Worker actually intercepts fetches issued from inside a dedicated
  *  Worker — a real cross-browser gap (historically, WebKit did not route Worker-issued fetches
@@ -506,12 +525,21 @@ async function loadIndex(): Promise<DecodedVisualIndex | null> {
   // P87 F-22: source-project identity is now an enforceable gate at runtime, not just a logged
   // field — but ONLY when THIS deployment itself has a real hosted project configured (never in
   // local dev / CI's placeholder build, per EXPECTED_SOURCE_PROJECT_REF's own doc above).
+  // P94 N-13: the manifest's stored value is canonicalized at COMPARISON time (never rewritten in
+  // place — that would change the content-id hash of an already-published generation), so an
+  // existing manifest's raw host string (`"nopmkroeygmlvndzjjqs.supabase.co"`) still matches a
+  // canonical expectation (`"nopmkroeygmlvndzjjqs"`) without needing to regenerate the index.
   if (EXPECTED_SOURCE_PROJECT_REF !== null) {
-    lastIndexSourceProjectMatch = manifest.sourceProjectRef === EXPECTED_SOURCE_PROJECT_REF
+    const manifestProjectIdentity =
+      manifest.sourceProjectRef !== undefined
+        ? canonicalizeProjectIdentity(manifest.sourceProjectRef)
+        : undefined
+    lastIndexSourceProjectMatch = manifestProjectIdentity === EXPECTED_SOURCE_PROJECT_REF
     if (!lastIndexSourceProjectMatch) {
       lastIndexUnavailableReason =
-        `manifest sourceProjectRef "${String(manifest.sourceProjectRef)}" != expected ` +
-        `"${EXPECTED_SOURCE_PROJECT_REF}" — refusing an index built against the wrong Supabase project.`
+        `manifest sourceProjectRef "${String(manifest.sourceProjectRef)}" (canonical: ` +
+        `"${String(manifestProjectIdentity)}") != expected "${EXPECTED_SOURCE_PROJECT_REF}" — ` +
+        'refusing an index built against the wrong Supabase project.'
       return null
     }
   }

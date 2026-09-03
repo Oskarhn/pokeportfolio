@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { getCardsByIds } from '../../src/data/catalog'
+import { getCardsByIds, classifyCardIdsAgainstCatalog } from '../../src/data/catalog'
 
 /**
  * F-28/F-29/P88 §16 — retrieval consistency between the scanner's visual-shortlist enrichment
@@ -101,5 +101,89 @@ describe('getCardsByIds — bounds', () => {
     mocks.from.mockReturnValue(builder)
     await getCardsByIds(['card-1', 'card-2'])
     expect(inCalls).toContainEqual(['id', ['card-1', 'card-2']])
+  })
+})
+
+describe('classifyCardIdsAgainstCatalog (N-08, P94)', () => {
+  it('classifies an active, correct-language row as resolved', async () => {
+    const { builder } = fakeBuilder({
+      data: [{ id: 'card-1', is_active: true, language: 'en' }],
+      error: null,
+    })
+    mocks.from.mockReturnValue(builder)
+    const result = await classifyCardIdsAgainstCatalog(['card-1'], 'en')
+    expect(result.get('card-1')).toBe('resolved')
+  })
+
+  it('classifies an inactive row as inactive-filtered, even in the right language', async () => {
+    const { builder } = fakeBuilder({
+      data: [{ id: 'card-1', is_active: false, language: 'en' }],
+      error: null,
+    })
+    mocks.from.mockReturnValue(builder)
+    const result = await classifyCardIdsAgainstCatalog(['card-1'], 'en')
+    expect(result.get('card-1')).toBe('inactive-filtered')
+  })
+
+  it('classifies an active row in the wrong language as language-filtered', async () => {
+    const { builder } = fakeBuilder({
+      data: [{ id: 'card-1', is_active: true, language: 'ja' }],
+      error: null,
+    })
+    mocks.from.mockReturnValue(builder)
+    const result = await classifyCardIdsAgainstCatalog(['card-1'], 'en')
+    expect(result.get('card-1')).toBe('language-filtered')
+  })
+
+  it('classifies an id with no matching row at all as missing-catalog-row', async () => {
+    const { builder } = fakeBuilder({ data: [], error: null })
+    mocks.from.mockReturnValue(builder)
+    const result = await classifyCardIdsAgainstCatalog(['card-nonexistent'], 'en')
+    expect(result.get('card-nonexistent')).toBe('missing-catalog-row')
+  })
+
+  it('with no language argument, an active row of any language resolves', async () => {
+    const { builder } = fakeBuilder({
+      data: [{ id: 'card-1', is_active: true, language: 'ja' }],
+      error: null,
+    })
+    mocks.from.mockReturnValue(builder)
+    const result = await classifyCardIdsAgainstCatalog(['card-1'])
+    expect(result.get('card-1')).toBe('resolved')
+  })
+
+  it('classifies every requested id independently in one query', async () => {
+    const { builder, inCalls } = fakeBuilder({
+      data: [
+        { id: 'card-1', is_active: true, language: 'en' },
+        { id: 'card-2', is_active: false, language: 'en' },
+      ],
+      error: null,
+    })
+    mocks.from.mockReturnValue(builder)
+    const result = await classifyCardIdsAgainstCatalog(['card-1', 'card-2', 'card-3'], 'en')
+    expect(result.get('card-1')).toBe('resolved')
+    expect(result.get('card-2')).toBe('inactive-filtered')
+    expect(result.get('card-3')).toBe('missing-catalog-row')
+    expect(inCalls).toContainEqual(['id', ['card-1', 'card-2', 'card-3']])
+  })
+
+  it('never queries for an empty id list', async () => {
+    const result = await classifyCardIdsAgainstCatalog([])
+    expect(result.size).toBe(0)
+    expect(mocks.from).not.toHaveBeenCalled()
+  })
+
+  it('propagates a real query error rather than misclassifying', async () => {
+    const { builder } = fakeBuilder({ data: null, error: { message: 'boom' } })
+    mocks.from.mockReturnValue(builder)
+    await expect(classifyCardIdsAgainstCatalog(['card-1'])).rejects.toThrow('boom')
+  })
+
+  it('never applies the is_active/language filters this function exists to see past', async () => {
+    const { builder, eqCalls } = fakeBuilder({ data: [], error: null })
+    mocks.from.mockReturnValue(builder)
+    await classifyCardIdsAgainstCatalog(['card-1'], 'en')
+    expect(eqCalls).toEqual([])
   })
 })

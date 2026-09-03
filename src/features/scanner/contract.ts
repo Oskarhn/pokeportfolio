@@ -240,6 +240,22 @@ export interface ScannerDiagnostics {
    *  identical to `visualModelState`, kept as a second named field so the debug contract's
    *  ENHANCED_VISUAL_STATE label reads as its own concept rather than reusing the older name. */
   enhancedVisualState: 'not-loaded' | 'loading' | 'ready' | 'failed'
+  /** N-08 (P94): how many ids the visual shortlist found that the text search DIDN'T already have
+   *  (before enrichment/filtering) — null when no visual hits existed this scan, 0 when every
+   *  visual hit was already among the text candidates (nothing needed enriching). Computed for
+   *  free from data the pipeline already produces; no extra query. */
+  visualUnknownIdCount: number | null
+  /** N-08: of `visualUnknownIdCount`, how many actually resolved through `getCardsByIds` (active,
+   *  correct language) and joined the candidate set. Null under the same condition as above. */
+  visualEnrichedIdCount: number | null
+  /** N-08: `visualUnknownIdCount - visualEnrichedIdCount` — ids the visual index found that never
+   *  became a candidate at all, whatever the reason (inactive, wrong language, or a stale/missing
+   *  catalog row). This is the aggregate count this codebase's own N-07 finding warned against
+   *  hiding behind a single "found" boolean; a specific card's own reason is available on demand
+   *  via the debug tool's `enrichmentStatus` ({@link ExpectedCardRank}), not computed per-scan for
+   *  every candidate (that would cost an extra unfiltered query every scan for information ordinary
+   *  matching never needs). Null under the same condition as `visualUnknownIdCount`. */
+  visualMissingIdCount: number | null
 }
 
 /**
@@ -282,6 +298,14 @@ export interface ExpectedCardRank {
    *  'collector-number-exact', 'visual-strong') — the same reason codes engine.ts's own scoring
    *  attaches, not a re-derived summary. Empty when the card scored zero evidence. */
   readonly scoreComponents: readonly string[]
+  /** N-08 (P94): WHY this card does or doesn't have real evidence to score, distinguishing "the
+   *  visual index never found this card at all" (`not-in-index`) from "the visual index found it,
+   *  but ordinary catalog enrichment filtered it out" (`inactive-filtered`/`language-filtered`/
+   *  `missing-catalog-row`) — previously indistinguishable everywhere in the scanner's
+   *  diagnostics. `resolved` means it's a real, scoreable candidate (whether or not it also came
+   *  from the text search). Never `null`: always computed once `found`/`rank`/`similarity` are. */
+  readonly enrichmentStatus:
+    'not-in-index' | 'resolved' | 'inactive-filtered' | 'language-filtered' | 'missing-catalog-row'
 }
 
 export interface ScannerDebugImages {

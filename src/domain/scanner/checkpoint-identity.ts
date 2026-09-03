@@ -51,13 +51,79 @@ export interface Checkpoint {
 
 /** Never returns or logs the URL's credentials — Supabase project URLs carry none, but this
  *  stays defensive: only `.host` (or the raw string on a malformed URL) ever leaves this
- *  function. */
+ *  function. Storage-facing only (checkpoint identity, `manifest.sourceProjectRef`) — never
+ *  changed retroactively for an already-published generation, since it feeds the content-id hash.
+ *  Runtime COMPARISONS should go through {@link canonicalizeProjectIdentity} instead (P94 N-13),
+ *  which normalizes local aliases and strips the `.supabase.co` suffix so an already-committed
+ *  manifest's raw host string still matches a canonicalized runtime expectation. */
 export function deriveProjectIdentity(supabaseUrl: string): string {
   try {
     return new URL(supabaseUrl).host
   } catch {
     return supabaseUrl
   }
+}
+
+/** Canonical sentinel for "this is some local Supabase alias" — one value regardless of which of
+ *  the equivalent local hostnames was used to reach it. */
+export const LOCAL_PROJECT_IDENTITY_SENTINEL = 'local'
+
+const LOCAL_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '::1', '[::1]'])
+
+/**
+ * Canonicalizes a raw project identity string (as produced by {@link deriveProjectIdentity}, a
+ * `host` — hostname[:port] — or a full URL) into a stable form for COMPARISON, not storage
+ * (P94 N-13).
+ *
+ * WHY THIS EXISTS: `deriveProjectIdentity` returns the raw `URL.host`, so `127.0.0.1:54321` and
+ * `localhost:54321` — both genuinely local Supabase stacks, interchangeable in practice — compare
+ * unequal by exact string match. A developer whose `VITE_SUPABASE_URL` happens to say `localhost`
+ * instead of the `127.0.0.1` this codebase's own `LOCAL_SUPABASE_URL` constant uses would have the
+ * runtime source-project gate wrongly conclude "this is a real hosted deployment" and start
+ * comparing against a project ref that was never configured — silently disabling the visual
+ * channel on an ordinary local dev machine. Canonicalizing both sides of every such comparison
+ * through this function fixes that without changing what gets STORED anywhere: an
+ * already-published manifest's `sourceProjectRef` (e.g. the committed index's
+ * `"nopmkroeygmlvndzjjqs.supabase.co"`) still canonicalizes to the same short ref
+ * (`"nopmkroeygmlvndzjjqs"`) a freshly-derived hosted URL does, so the existing index keeps
+ * verifying correctly — no silent brick, no need to regenerate it.
+ *
+ * Rules, in order:
+ *   1. Accepts either a bare `host` string (`hostname[:port]`) or a full URL; a full URL is
+ *      parsed for its hostname, a bare host string has its port stripped by hand (`new URL` would
+ *      reject a schemeless string).
+ *   2. A hostname that is a known local alias (`127.0.0.1`, `localhost`, `::1`) canonicalizes to
+ *      {@link LOCAL_PROJECT_IDENTITY_SENTINEL} regardless of port — a differently-configured local
+ *      Supabase CLI port must never be treated as "a different hosted project."
+ *   3. A `<ref>.supabase.co` hostname canonicalizes to just `<ref>` — the actual stable project
+ *      identity Supabase assigns, independent of the fixed `.supabase.co` suffix.
+ *   4. Anything else (a future custom domain fronting Supabase) canonicalizes to its bare
+ *      hostname, lowercased — the best available stable identity without an explicit override.
+ */
+export function canonicalizeProjectIdentity(raw: string): string {
+  let hostname: string
+  // Deliberately gated on the presence of "://": `new URL('localhost:54321')` does NOT throw —
+  // "localhost" is valid URL *scheme* syntax (alpha, then alnum/+/-/.), so the WHATWG parser reads
+  // it as an opaque non-special URL (scheme "localhost:", empty host) instead of failing, which
+  // would silently produce the WRONG hostname ("") for exactly the bare `host` strings this
+  // function most needs to handle correctly (`deriveProjectIdentity`'s own return shape).
+  if (raw.includes('://')) {
+    try {
+      hostname = new URL(raw).hostname
+    } catch {
+      hostname = raw
+    }
+  } else {
+    // A bare `host` string (hostname[:port]). Strip a trailing `:port` by hand; IPv6 literals
+    // arrive bracketed (`[::1]:54321`).
+    hostname = raw.startsWith('[') ? raw.slice(0, raw.indexOf(']') + 1) : (raw.split(':')[0] ?? raw)
+  }
+  const normalizedHostname = hostname.toLowerCase()
+  if (LOCAL_HOSTNAMES.has(normalizedHostname)) return LOCAL_PROJECT_IDENTITY_SENTINEL
+  if (normalizedHostname.endsWith('.supabase.co')) {
+    return normalizedHostname.slice(0, -'.supabase.co'.length)
+  }
+  return normalizedHostname
 }
 
 /** True only when every identity field matches exactly — a checkpoint from a different project,

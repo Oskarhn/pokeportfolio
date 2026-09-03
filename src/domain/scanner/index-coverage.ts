@@ -69,3 +69,66 @@ export function assertValidCoverage(
     )
   }
 }
+
+/**
+ * Full, honestly-labelled breakdown of an index's coverage (N-07): the old single-line summary
+ * ("X/Y canonical cards (Z failures)") read as "only Z cards are missing out of Y", which hides
+ * the far larger "no usable reference image at all" gap entirely — `failures` only ever counted
+ * cards that HAD a usable image but still failed to embed (fetch/decode error), never the cards
+ * with no image to begin with. Every consumer of coverage numbers (the build script, the verify
+ * script) must report all six quantities with their denominators labelled, never a bare
+ * percentage or a "failures" count that implies it is the only gap.
+ */
+export interface CoverageBreakdown {
+  readonly totalCanonical: number
+  readonly cardsWithUsableImage: number
+  readonly cardsWithoutUsableImage: number
+  readonly cardsIndexed: number
+  readonly indexFailuresAmongUsableImages: number
+  readonly totalUnindexed: number
+  /** cardsIndexed / totalCanonical, as a 0-100 percentage. */
+  readonly indexedOfTotalPercent: number
+  /** cardsIndexed / cardsWithUsableImage, as a 0-100 percentage (undefined when no usable images exist). */
+  readonly indexedOfUsableImagePercent: number | null
+}
+
+export function computeCoverageBreakdown(coverage: IndexCoverage): CoverageBreakdown {
+  const { totalCanonicalCards, cardsWithUsableImage, cardsIndexed, failures } = coverage
+  return {
+    totalCanonical: totalCanonicalCards,
+    cardsWithUsableImage,
+    cardsWithoutUsableImage: totalCanonicalCards - cardsWithUsableImage,
+    cardsIndexed,
+    indexFailuresAmongUsableImages: failures,
+    totalUnindexed: totalCanonicalCards - cardsIndexed,
+    indexedOfTotalPercent: totalCanonicalCards > 0 ? (100 * cardsIndexed) / totalCanonicalCards : 0,
+    indexedOfUsableImagePercent:
+      cardsWithUsableImage > 0 ? (100 * cardsIndexed) / cardsWithUsableImage : null,
+  }
+}
+
+/** Prints the full breakdown to the console with every denominator named — never a bare
+ *  percentage or an unlabelled "N failures" line (N-07). Shared by build-index.ts and
+ *  verify-index.ts so both report identically instead of drifting. */
+export function logCoverageBreakdown(
+  coverage: IndexCoverage,
+  log: (line: string) => void = console.log,
+): void {
+  const b = computeCoverageBreakdown(coverage)
+  log(`[coverage] TOTAL_CANONICAL=${String(b.totalCanonical)}`)
+  log(`[coverage] CARDS_WITH_USABLE_IMAGE=${String(b.cardsWithUsableImage)}`)
+  log(
+    `[coverage] CARDS_WITHOUT_USABLE_IMAGE=${String(b.cardsWithoutUsableImage)} (no reference image at all — not attempted, not a failure)`,
+  )
+  log(`[coverage] CARDS_INDEXED=${String(b.cardsIndexed)}`)
+  log(
+    `[coverage] INDEX_FAILURES_AMONG_USABLE_IMAGES=${String(b.indexFailuresAmongUsableImages)} (had a usable image, still failed to embed)`,
+  )
+  log(
+    `[coverage] TOTAL_UNINDEXED=${String(b.totalUnindexed)} (= without-usable-image + failures-among-usable)`,
+  )
+  log(
+    `[coverage] indexed/total = ${b.indexedOfTotalPercent.toFixed(1)}% of ${String(b.totalCanonical)} canonical cards; ` +
+      `indexed/usable-image = ${b.indexedOfUsableImagePercent === null ? 'n/a (no usable images)' : `${b.indexedOfUsableImagePercent.toFixed(1)}%`} of ${String(b.cardsWithUsableImage)} cards with a usable image.`,
+  )
+}

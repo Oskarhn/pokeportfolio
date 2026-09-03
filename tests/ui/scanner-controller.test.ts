@@ -28,6 +28,9 @@ vi.mock('../../src/data/catalog', () => ({
   searchCards: vi.fn(),
   getCardVariants: vi.fn(),
   getCardsByIds: vi.fn().mockResolvedValue([]),
+  // N-08 (P94): default to "no classification data" — individual tests override when they need a
+  // specific inactive/language-filtered/missing-row answer.
+  classifyCardIdsAgainstCatalog: vi.fn().mockResolvedValue(new Map()),
 }))
 
 vi.mock('../../src/data/collection', () => ({
@@ -76,13 +79,19 @@ vi.mock('../../src/features/scanner/ocr-engine', () => ({
 }))
 
 import { runOcrAnalysis } from '../../src/features/scanner/analyze'
-import { getCardVariants, searchCards, getCardsByIds } from '../../src/data/catalog'
+import {
+  getCardVariants,
+  searchCards,
+  getCardsByIds,
+  classifyCardIdsAgainstCatalog,
+} from '../../src/data/catalog'
 import { addCardAcquisition } from '../../src/data/collection'
 
 const mockedRunOcrAnalysis = vi.mocked(runOcrAnalysis)
 const mockedSearchCards = vi.mocked(searchCards)
 const mockedGetCardVariants = vi.mocked(getCardVariants)
 const mockedGetCardsByIds = vi.mocked(getCardsByIds)
+const mockedClassifyCardIdsAgainstCatalog = vi.mocked(classifyCardIdsAgainstCatalog)
 const mockedAddCardAcquisition = vi.mocked(addCardAcquisition)
 
 /** Default: visual channel unavailable, matching how it naturally behaves in this Node test
@@ -654,6 +663,27 @@ describe('commitBatch - existing acquisition path, honest outcomes (I12/I13/I14)
     expect(result.outcomes[0]?.message).not.toMatch(/may already have been added/)
   })
 
+  it('N-21: commitBatch stops issuing further writes once the controller is disposed mid-batch', async () => {
+    const controller = createRealScannerController({ userId: 'user-a' })
+    let calls = 0
+    mockedAddCardAcquisition.mockImplementation(() => {
+      calls += 1
+      if (calls === 1) {
+        // Simulate an account switch / unmount landing WHILE the first write is still in flight —
+        // ScannerPage constructs a fresh controller and disposes this one, exactly D-104's F-05
+        // "controller replacement" path.
+        controller.dispose()
+      }
+      return Promise.resolve({ holdingId: `h${String(calls)}`, lotId: `l${String(calls)}` })
+    })
+    const result = await controller.commitBatch(items(3))
+    // Item 0's write was already in flight when dispose() ran — it still completes and counts.
+    // Items 1 and 2 must never be attempted once disposed is observed at the top of the loop.
+    expect(calls).toBe(1)
+    expect(result.addedCount).toBe(1)
+    expect(result.outcomes).toEqual([{ index: 0, status: 'added', message: null }])
+  })
+
   it('classifyAcquisitionFailure keys on evidence of a server ANSWER, not message text', () => {
     const coded = classifyAcquisitionFailure(0, Object.assign(new Error('x'), { code: '42501' }))
     expect(coded.status).toBe('failed')
@@ -1075,6 +1105,10 @@ describe('getExpectedCardRank (P84, ported P87) — debug-only rank-lookup gatin
       inTop20: true,
       inTop100: true,
       indexContentId: '0123456789abcdef',
+      // N-08 (P94): found:true but not in the (empty, no-scan-yet) candidate pool and the default
+      // catalog mocks resolve nothing for it — the honest classification is that this specific
+      // mock scenario has no catalog row for the id at all.
+      enrichmentStatus: 'missing-catalog-row',
     })
   })
 
@@ -1196,5 +1230,135 @@ describe('getExpectedCardRank (P84, ported P87) — debug-only rank-lookup gatin
     expect(result?.hybridScore).toBe(0)
     // Never added to the batch/candidate pool this scan actually produced.
     expect(controller.getLastDiagnostics?.()).not.toBeNull()
+  })
+
+  describe('N-08 (P94): enrichmentStatus classification', () => {
+    it("is 'not-in-index' when the visual client never found the card, regardless of catalog state", async () => {
+      vi.stubGlobal('window', { location: { search: '?scannerDebug=1' } })
+      visualMocks.getExpectedCardRank.mockResolvedValue({
+        found: false,
+        rank: null,
+        similarity: null,
+        totalCards: 0,
+        inTop20: false,
+        inTop100: false,
+        indexContentId: null,
+      })
+      const controller = createRealScannerController({ userId: 'user-a' })
+      const result = await controller.getExpectedCardRank?.('card-1')
+      expect(result?.enrichmentStatus).toBe('not-in-index')
+      // The classification query is specific to a genuine visual-index hit that failed to
+      // resolve — it must never run just because a card wasn't found by the index at all.
+      expect(mockedClassifyCardIdsAgainstCatalog).not.toHaveBeenCalled()
+    })
+
+    it("is 'resolved' when the visual index found it AND getCardsByIds resolves it", async () => {
+      vi.stubGlobal('window', { location: { search: '?scannerDebug=1' } })
+      visualMocks.getExpectedCardRank.mockResolvedValue({
+        found: true,
+        rank: 5,
+        similarity: 0.5,
+        totalCards: 100,
+        inTop20: true,
+        inTop100: true,
+        indexContentId: 'abc',
+      })
+      mockedGetCardsByIds.mockResolvedValueOnce([
+        {
+          id: 'card-2',
+          name: 'Squirtle',
+          localId: '7',
+          rarity: 'Basic',
+          category: 'Pokemon',
+          illustrator: null,
+          imageBaseUrl: null,
+          language: 'en',
+          setId: 'set-1',
+          setName: 'Base Set',
+        },
+      ])
+      const controller = createRealScannerController({ userId: 'user-a' })
+      const result = await controller.getExpectedCardRank?.('card-2')
+      expect(result?.enrichmentStatus).toBe('resolved')
+      expect(mockedClassifyCardIdsAgainstCatalog).not.toHaveBeenCalled()
+    })
+
+    it.each([
+      ['inactive-filtered', 'inactive-filtered'],
+      ['language-filtered', 'language-filtered'],
+      ['missing-catalog-row', 'missing-catalog-row'],
+    ] as const)(
+      "is '%s' when the visual index found the card but getCardsByIds filtered it — classified via the dedicated query",
+      async (_label, expected) => {
+        vi.stubGlobal('window', { location: { search: '?scannerDebug=1' } })
+        visualMocks.getExpectedCardRank.mockResolvedValue({
+          found: true,
+          rank: 8,
+          similarity: 0.4,
+          totalCards: 100,
+          inTop20: true,
+          inTop100: true,
+          indexContentId: 'abc',
+        })
+        mockedGetCardsByIds.mockResolvedValueOnce([]) // getCardsByIds' own filtered query finds nothing
+        mockedClassifyCardIdsAgainstCatalog.mockResolvedValueOnce(new Map([['card-3', expected]]))
+        const controller = createRealScannerController({ userId: 'user-a' })
+        const result = await controller.getExpectedCardRank?.('card-3')
+        expect(result?.enrichmentStatus).toBe(expected)
+        expect(mockedClassifyCardIdsAgainstCatalog).toHaveBeenCalledWith(['card-3'], 'en')
+      },
+    )
+
+    it('a failed classification query never throws — falls back to missing-catalog-row', async () => {
+      vi.stubGlobal('window', { location: { search: '?scannerDebug=1' } })
+      visualMocks.getExpectedCardRank.mockResolvedValue({
+        found: true,
+        rank: 8,
+        similarity: 0.4,
+        totalCards: 100,
+        inTop20: true,
+        inTop100: true,
+        indexContentId: 'abc',
+      })
+      mockedGetCardsByIds.mockResolvedValueOnce([])
+      mockedClassifyCardIdsAgainstCatalog.mockRejectedValueOnce(new Error('network'))
+      const controller = createRealScannerController({ userId: 'user-a' })
+      await expect(controller.getExpectedCardRank?.('card-4')).resolves.toMatchObject({
+        enrichmentStatus: 'missing-catalog-row',
+      })
+    })
+
+    it('a card already in the current scan\'s own candidate pool is "resolved" without any extra query', async () => {
+      vi.stubGlobal('window', { location: { search: '?scannerDebug=1' } })
+      visualMocks.getExpectedCardRank.mockResolvedValue({
+        found: true,
+        rank: 1,
+        similarity: 0.9,
+        totalCards: 100,
+        inTop20: true,
+        inTop100: true,
+        indexContentId: 'abc',
+      })
+      mockedRunOcrAnalysis.mockResolvedValue({
+        rawNameText: 'Pikachu',
+        rawCollectorNumberText: '58',
+        usedFullFrameFallback: false,
+        nameRoiId: null,
+        numberRoiId: null,
+      })
+      mockedSearchCards.mockResolvedValue({
+        results: [catalogRow({ cardId: 'card-58', name: 'Pikachu', localId: '58' })],
+        totalCount: 1,
+      })
+      visualMocks.analyze.mockResolvedValue(null)
+      visualMocks.getDiagnosticsSnapshot.mockReturnValue(defaultVisualDiagnostics())
+      const controller = createRealScannerController({ userId: 'user-a' })
+      await controller.analyzeCapture(capture())
+      mockedGetCardsByIds.mockClear()
+      const result = await controller.getExpectedCardRank?.('card-58')
+      expect(result?.enrichmentStatus).toBe('resolved')
+      expect(mockedGetCardsByIds).not.toHaveBeenCalled()
+      expect(mockedClassifyCardIdsAgainstCatalog).not.toHaveBeenCalled()
+    })
   })
 })
