@@ -92,6 +92,14 @@ scripts/scanner-visual-benchmark/reports/
 scripts/scanner-ocr-benchmark/reports/
 scripts/scanner-name-lexicon/generated/
 
+# P91 recognition R&D lab: downloaded corpus images, HF model cache, checkpoint runs and
+# generated reports are all reproducible research artifacts — never committed. Only the lab's
+# own source code (corpus/embedding/quality/rerank/retrieval scripts) and small hand-written
+# markdown scoreboards under reports/ (if explicitly promoted) belong in git.
+scripts/scanner-recognition-lab/.cache/
+scripts/scanner-recognition-lab/.runs/
+scripts/scanner-recognition-lab/reports/*.json
+
 # ── Editor and OS ──────────────────────────────────────────────────────────
 .vscode/*
 !.vscode/extensions.json
