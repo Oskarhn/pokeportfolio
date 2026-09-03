@@ -206,40 +206,33 @@ test.describe('visual worker real-browser smoke (F-31, P89)', () => {
       })
     }
 
-    // P94 §24 real finding, disclosed rather than papered over: running this spec for real against
-    // Playwright's Windows-hosted WebKit build showed the P90 main-thread RGBA-conversion fallback
-    // (D-105) does NOT actually restore a full working search on an OffscreenCanvas-less engine.
-    // visual-worker.ts's OWN bitmap->RGBA conversion trick works exactly as designed — the worker
-    // receives raw pixel data instead of an ImageBitmap and never itself calls `new
-    // OffscreenCanvas(...)` — but `@huggingface/transformers`' OWN internal image-preprocessing
-    // step (resizing the input to the model's expected dimensions, inside its `RawImage`
-    // pipeline) unconditionally constructs its own `OffscreenCanvas` with no equivalent
-    // main-thread fallback of its own, regardless of whether the caller supplied a bitmap or raw
-    // RGBA bytes. The result: `Error: OffscreenCanvas not supported by this environment.` —
-    // thrown from inside the library's minified image-processing code, confirmed by inspecting
-    // the actual built `dist/assets/visual-worker-*.js` chunk directly this session. This is a
-    // REAL, currently-unresolved limitation of D-105's fallback design, not a flake and not
-    // something a small worker-side change can fix (it would need patching or replacing the
-    // library's own resize step). Documented in docs/DECISIONS.md's D-105 entry addendum.
+    // P96/D-107: P94 §24 found the P90/D-105 main-thread RGBA fallback incomplete — worker-worker
+    // `OffscreenCanvas` was avoided, but `@huggingface/transformers`' own internal preprocessing
+    // (RawImage.resize/.center_crop) unconditionally constructed its own OffscreenCanvas with no
+    // fallback, so `processor(image)` always threw on an OffscreenCanvas-less engine. This session
+    // closed that gap: `runModelOnRgba` (visual-worker.ts) skips `processor(image)` entirely on
+    // such an engine and uses `preprocessRgbaForDino` — a canvas-free reimplementation of the same
+    // pinned-model preprocessing, numerically verified against the AutoProcessor path (D-107,
+    // scripts/scanner-preprocess-parity/). A real DINO embedding+search is therefore now expected
+    // unconditionally, whether or not this engine has OffscreenCanvas — this spec must NOT accept
+    // a structured "unavailable"/OffscreenCanvas error as a passing visual result any more.
     if (!readyResult.offscreenCanvasAvailableInWorker) {
-      if (searchResult.type === 'error') {
-        expect(searchResult.message).toContain('OffscreenCanvas')
-        test.info().annotations.push({
-          type: 'P94 §24 disclosed gap',
-          description:
-            'The P90/D-105 main-thread RGBA fallback does not restore a working search on this ' +
-            "OffscreenCanvas-less engine — @huggingface/transformers' own internal image resize " +
-            'step also requires OffscreenCanvas, with no fallback of its own. Attributable, ' +
-            `well-formed failure (never a hang, never a raw crash): "${searchResult.message ?? ''}".`,
-        })
-        return
-      }
-      // If a future transformers.js release (or a workaround) fixes this, this spec should start
-      // asserting full success unconditionally — leaving the branch below ready for that.
+      test.info().annotations.push({
+        type: 'P96/D-107 canvas-free path exercised',
+        description:
+          'This engine reported offscreenCanvasAvailableInWorker=false — the canvas-free ' +
+          'preprocessRgbaForDino path was used instead of AutoProcessor, and must still produce ' +
+          'a real embedding+search result.',
+      })
     }
 
     expect(searchResult.type).toBe('result')
     expect(Array.isArray(searchResult.hits)).toBe(true)
+    // A real search against the real committed index must return candidates — an empty array
+    // would mean the index never actually loaded/searched, not a genuine "no match" (searchVisualIndex
+    // is an exhaustive top-K scan with no similarity threshold, so it always returns min(topK,
+    // cardCount) hits once an embedding was computed at all).
+    expect((searchResult.hits ?? []).length).toBeGreaterThan(0)
     expect(typeof searchResult.embedMs).toBe('number')
     expect(typeof searchResult.searchMs).toBe('number')
     expect(typeof searchResult.embeddingNorm).toBe('number')

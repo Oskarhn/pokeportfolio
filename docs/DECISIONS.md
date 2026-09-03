@@ -4104,3 +4104,87 @@ estimated. Full E2E/DB/build gates run as part of this session's own closing ver
 
 **Not changed:** any financial semantic; any migration; the committed 19,501-card DINO index's
 actual content or the DINOv2-small model itself. No card was special-cased anywhere.
+
+## D-107 — Canvas-free DINOv2 preprocessing closes the real WebKit/OffscreenCanvas gap (P96)
+
+**2026-09-03 · Accepted**
+
+**Context.** P90's main-thread RGBA-conversion fallback (D-105) solved only half of the real
+OffscreenCanvas dependency: it stopped THIS worker from constructing an `OffscreenCanvas` itself
+when converting a captured `ImageBitmap` to RGBA, but `@huggingface/transformers` 4.2.0's own
+`AutoProcessor`-produced `BitImageProcessor` calls `RawImage.resize`/`.center_crop` internally
+during `processor(image)`, and those unconditionally construct their OWN `OffscreenCanvas`
+regardless of whether the caller already supplied raw RGBA bytes — confirmed by reading the
+installed bundle directly (`node_modules/@huggingface/transformers/dist/transformers.js`'s
+`src/utils/image.js` section: `createCanvasFunction`/`toCanvas`, gated only on
+`apis.IS_WEB_ENV`, no non-canvas branch exists). P94 found this for real (§24, D-105's own
+addendum): running the real WebKit E2E spec against Playwright's WebKit build (which genuinely
+reports `OffscreenCanvas === undefined` in Worker scope) produced a well-formed but real failure —
+`Error: OffscreenCanvas not supported by this environment.` — thrown from inside the library's own
+minified preprocessing code, not from any of this project's own worker logic.
+
+**Decision.** Rather than patching or forking `@huggingface/transformers` to remove one internal
+`OffscreenCanvas` call, this session reimplemented the exact preprocessing numerically —
+`src/domain/scanner/dino-preprocess.ts`'s `preprocessRgbaForDino`: RGBA → drop alpha → bilinear
+resize (shortest edge to 256, matching `preprocessor_config.json`'s `size.shortest_edge`) → center
+crop 224×224 → rescale (`1/255`) → normalize (ImageNet mean/std, both copied verbatim from the
+committed `public/scanner-assets/visual-v1/model/preprocessor_config.json`, never remembered
+defaults) → permute HWC→CHW. Pure typed-array arithmetic — no canvas, no DOM, no
+`OffscreenCanvas` anywhere in the file, so it runs identically on every JS engine.
+`visual-worker.ts`'s new `runModelOnRgba` branches on `OFFSCREEN_CANVAS_AVAILABLE_IN_WORKER`: when
+true, the existing AutoProcessor path is completely unchanged (zero risk to the already-proven
+99.7%-TOP1 Chromium path); when false, `processor(image)` is skipped entirely — never merely
+caught — in favor of the canvas-free path, which feeds the model directly via a hand-built
+`Tensor('float32', ..., [1,3,224,224])`.
+
+**RESAMPLE NOTE, disclosed rather than glossed over.** The preprocessor config's `resample: 3`
+(bicubic) label does NOT describe what the browser-path AutoProcessor has ever actually done in
+this project: `RawImage.resize`'s web-environment branch calls `ctx.drawImage(canvas, 0, 0, w, h)`
+unconditionally and never consults `resample` at all (that parameter is Node/`sharp`-only). So
+there is no existing browser-path pixel algorithm for this reimplementation to bit-match — the
+real target is RETRIEVAL-OUTCOME parity, not literal resample-algorithm parity, and this module
+uses plain bilinear resampling (half-pixel-center convention) as a simple, easy-to-verify choice.
+
+**Parity evidence (`scripts/scanner-preprocess-parity/`, `pnpm scanner:preprocess:parity`), run for
+real over 100 real card images × 6 shape variants (portrait-native, landscape-rotated,
+odd-dimensions, near-crop-size ~230px, large-iPhone-scale ~3024×4032, RGBA-semi-transparent) = 600
+evaluations, comparing this module's output against the library's own Node/`sharp`-backed
+AutoProcessor path (same pinned model, same input pixels, isolating the comparison to the
+preprocessing algorithm itself) — both queried against the real committed 19,501-card production
+index:**
+
+- `PREPROCESSOR_PARITY_IMAGES=100` (600 total evaluations across 6 shape variants)
+- `PREPROCESSOR_MEAN_COSINE=0.9762` (min 0.9202 across all 600 evaluations)
+- `PREPROCESSOR_TOP1_AGREEMENT=96.2%` overall — by variant: portrait-native 100%, RGBA-
+  semi-transparent 100% (confirms alpha is genuinely ignored, not merely untested),
+  odd-dimensions 99%, large-iPhone-scale 98%, near-crop-size 95%, landscape-rotated 85% (the one
+  weak spot — rotation changes which pixels land at the resize/crop boundary more than any other
+  variant; disclosed as a real, measured residual, not hidden)
+- `PREPROCESSOR_TOP5_AGREEMENT` (identical top-5 sets) `=32.3%`; mean top-5 SET OVERLAP `=79.6%`
+  (most disagreement is a swapped 4th/5th-place near-tie, not the true match falling out of
+  contention — the two paths' shortlists overlap substantially even when not byte-identical)
+
+**Verdict.** 96.2% TOP1 agreement and 0.976 mean cosine similarity are not literal 100% parity, but
+the evidence supports the substitution: DINOv2 embeddings are already known (P91/P93/P95) to be
+robust to small preprocessing perturbations at this similarity range, and this module is a
+fallback path — it activates ONLY on an engine that would otherwise have zero working visual
+recognition at all (an outright crash), so a small measured gap from a from-scratch bilinear
+resize against the library's own resize is a real improvement over the status quo, not a
+regression against any currently-shipping behavior. The landscape-rotated residual is flagged as a
+disclosed follow-up: a future session with more time could measure whether area-averaging
+downsampling (rather than plain bilinear) narrows that specific gap, but was not judged worth
+delaying this fix over given the fallback framing above.
+
+**iPhone memory (§9, not separately benchmarked on real hardware this session — reasoned from the
+implementation).** `preprocessRgbaForDino` allocates, at peak: one RGBA→RGB float buffer
+(`width×height×3×4` bytes), one resized buffer (`resizedWidth×resizedHeight×3×4` bytes, typically
+smaller since the source is downscaled to a ~256px short edge), and the final fixed 224×224×3×4
+(~600KB) tensor — each intermediate is a local variable eligible for GC the instant the next stage
+starts (no retained references), so this never holds more than roughly two full-resolution-scale
+buffers simultaneously, the same order of magnitude the existing OffscreenCanvas path already
+holds (a canvas backing store plus its `ImageData` buffer). No raw card image is ever persisted by
+either path.
+
+**Not changed:** the default OffscreenCanvas-available path (byte-for-byte the same code, same
+proven 99.7% TOP1); the committed 19,501-card visual index; any migration; any financial semantic.
+`docs/SCANNER_RESEARCH.md` §11 records the same evidence in narrative form.

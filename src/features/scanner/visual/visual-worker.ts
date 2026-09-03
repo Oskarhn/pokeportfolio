@@ -16,7 +16,8 @@
  * failure is attributable to one stage instead of one opaque message (prompt §11/§12).
  */
 /// <reference lib="webworker" />
-import { AutoModel, AutoProcessor, RawImage, env } from '@huggingface/transformers'
+import { AutoModel, AutoProcessor, RawImage, Tensor, env } from '@huggingface/transformers'
+import { preprocessRgbaForDino } from '../../../domain/scanner/dino-preprocess'
 import { assertValidCoverage, CoverageInvariantError } from '../../../domain/scanner/index-coverage'
 import {
   selectVisualBackend,
@@ -859,6 +860,43 @@ async function init(message: InitMessage): Promise<void> {
   })
 }
 
+/**
+ * P96/D-107: `@huggingface/transformers`' own AutoProcessor path (the `OFFSCREEN_CANVAS_AVAILABLE_
+ * IN_WORKER` branch below) unconditionally constructs an `OffscreenCanvas` internally during
+ * resize/center-crop, REGARDLESS of whether this worker already has plain RGBA bytes — confirmed
+ * by reading the installed bundle directly (`src/utils/image.js`'s `RawImage.resize`/
+ * `.center_crop`, both gated on `apis.IS_WEB_ENV` with no non-canvas branch). P90's own main-thread
+ * RGBA-conversion fallback (`capturedImageToRgba`, `visual-client.ts`) therefore only ever solved
+ * HALF the real gap: it kept THIS worker from constructing an OffscreenCanvas itself, but the
+ * library's own internal preprocessing still does, so `processor(image)` always throws
+ * `OffscreenCanvas not supported by this environment.` on an engine that lacks it (D-105's own
+ * correction, confirmed by running the real WebKit E2E spec — see docs/DECISIONS.md D-105/D-107).
+ *
+ * On such an engine, `processor(image)` is skipped entirely — never merely caught — in favor of
+ * `preprocessRgbaForDino` (`src/domain/scanner/dino-preprocess.ts`), a canvas-free reimplementation
+ * of the exact same pinned-model preprocessing that runs identically on every JS engine because it
+ * touches nothing but typed arrays. Numerically verified against this exact AutoProcessor path
+ * over a real card-image corpus — see `scripts/scanner-preprocess-parity/` and D-107 for the
+ * measured cosine-similarity/retrieval-agreement evidence this substitution was accepted on. The
+ * default, already-proven-at-scale OffscreenCanvas path is completely unchanged either way.
+ */
+async function runModelOnRgba(
+  buffer: Uint8ClampedArray,
+  width: number,
+  height: number,
+): Promise<{ last_hidden_state: { data: ArrayLike<number> } }> {
+  if (!model) throw new Error('Visual model not initialized.')
+  if (OFFSCREEN_CANVAS_AVAILABLE_IN_WORKER) {
+    if (!processor) throw new Error('Visual processor not initialized.')
+    const image = new RawImage(buffer, width, height, 4)
+    const inputs = (await processor(image)) as Record<string, unknown>
+    return (await model(inputs)) as { last_hidden_state: { data: ArrayLike<number> } }
+  }
+  const preprocessed = preprocessRgbaForDino({ data: buffer, width, height })
+  const pixel_values = new Tensor('float32', preprocessed.data, [1, ...preprocessed.dims])
+  return (await model({ pixel_values })) as { last_hidden_state: { data: ArrayLike<number> } }
+}
+
 async function embedAndSearch(message: EmbedAndSearchMessage): Promise<void> {
   if (!model || !processor) {
     post({ type: 'error', requestId: message.requestId, message: 'Visual model not initialized.' })
@@ -867,9 +905,7 @@ async function embedAndSearch(message: EmbedAndSearchMessage): Promise<void> {
   try {
     const embedStart = performance.now()
     const { buffer, width, height } = capturedImageToRgba(message.image)
-    const image = new RawImage(new Uint8ClampedArray(buffer), width, height, 4)
-    const inputs = (await processor(image)) as Record<string, unknown>
-    const output = (await model(inputs)) as { last_hidden_state: { data: ArrayLike<number> } }
+    const output = await runModelOnRgba(new Uint8ClampedArray(buffer), width, height)
     const raw = Float32Array.from(output.last_hidden_state.data).slice(0, EMBEDDING_DIM)
     // Norm of the RAW embedding, captured before l2Normalize mutates it in place — diagnostics
     // sanity signal only (prompt §40 EMBEDDING_NORM), never used in the actual search.

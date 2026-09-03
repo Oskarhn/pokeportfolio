@@ -933,3 +933,61 @@ implemented. No new DINO model was evaluated (D-098 stands). Glare/shadow/perspe
 severity dimensions were not swept continuously — P91 already found its simple metrics for those
 have ~zero discriminative power on this project's synthetic composites, and neither is wired into
 production.
+
+## 11. Canvas-free DINOv2 preprocessing closes the real WebKit gap (M15, 2026-09-03 — P96, D-107)
+
+P94 confirmed for real (not merely suspected) that P90's main-thread RGBA fallback (D-105) does
+not restore visual recognition on an engine lacking `OffscreenCanvas` in a Worker scope:
+`@huggingface/transformers`' own `AutoProcessor`-produced image processor calls
+`RawImage.resize`/`.center_crop` internally, and those construct their OWN `OffscreenCanvas`
+regardless of what the caller supplies. Traced directly against the installed bundle
+(`node_modules/@huggingface/transformers/dist/transformers.js`, `src/utils/image.js` section):
+every resize/crop/pad/toCanvas operation is gated on `apis.IS_WEB_ENV` with no non-canvas branch.
+
+### §11a — the fix: numeric reimplementation, not a library patch
+
+`src/domain/scanner/dino-preprocess.ts`'s `preprocessRgbaForDino` reimplements the pinned model's
+exact preprocessing (`public/scanner-assets/visual-v1/model/preprocessor_config.json`: shortest
+edge 256, center crop 224, rescale 1/255, ImageNet mean/std) using only typed-array arithmetic —
+bilinear resize, integer-offset center crop, fused rescale+normalize, HWC→CHW permute. No canvas,
+no DOM reference anywhere in the file. `visual-worker.ts`'s `runModelOnRgba` uses the existing
+AutoProcessor path unchanged when `OffscreenCanvas` is available (the proven, unmodified default)
+and this canvas-free path only when it is not — `processor(image)` is skipped entirely rather than
+merely wrapped in a try/catch, since the library call is known in advance to always throw there.
+
+The config's `resample: 3` (bicubic) label was found NOT to describe existing browser-path
+behavior at all — `RawImage.resize`'s web-environment branch never consults `resample`, only
+`ctx.drawImage(...)`'s own browser-implementation-defined scaling. This reimplementation's target
+is therefore retrieval-outcome parity, not literal resample-algorithm parity; bilinear was chosen
+as a simple, well-understood, easy-to-verify baseline.
+
+### §11b — permanent parity harness (`scripts/scanner-preprocess-parity/`)
+
+`pnpm scanner:preprocess:parity` compares this module against the library's own Node/`sharp`-
+backed AutoProcessor path (same pinned model, same input pixels) over 100 real card images × 6
+shape variants (native portrait, 90°-rotated landscape, odd/non-round dimensions, an already-
+~230px near-crop-size image, an upscaled ~3024×4032 large-iPhone-photo scale, and an RGBA buffer
+carrying non-opaque alpha) = 600 evaluations, each queried against the real committed
+19,501-card production index:
+
+| Metric | Value |
+|---|---|
+| Mean cosine similarity | 0.9762 (min 0.9202) |
+| TOP1 agreement (overall) | 96.2% |
+| TOP1 agreement by variant | portrait-native 100% · rgba-semi-transparent 100% · odd-dimensions 99% · large-iphone-scale 98% · near-crop-size 95% · landscape-rotated 85% |
+| TOP5 identical-set rate | 32.3% |
+| Mean TOP5 set overlap | 79.6% |
+
+Landscape rotation is the one measured weak spot (85% TOP1 agreement) — rotation shifts which
+pixels land at the resize/crop boundary more than any other variant tested. Disclosed as a real,
+measured residual rather than hidden; a future session could try area-averaging downsampling to
+narrow it specifically, judged not worth delaying this fix over given it only activates as a
+fallback on an engine that otherwise has zero working visual recognition at all. Full per-image
+results: `scripts/scanner-preprocess-parity/reports/parity-report.json`.
+
+### §11c — real WebKit confirmation
+
+`tests/e2e/visual-worker-real-browser.spec.ts`, run for real against Playwright's `mobile-iphone`
+(WebKit) project after this fix: PASSED, with a real non-empty search result (previously this
+engine could only reach the disclosed `OffscreenCanvas not supported` error — see D-105's
+addendum). The spec no longer accepts that error as a passing outcome for the visual channel.

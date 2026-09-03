@@ -40,6 +40,7 @@
     "scanner:recognition-lab:p93-blur-severity": "tsx scripts/scanner-recognition-lab/experiments/09-p93-continuous-blur-severity.ts",
     "scanner:index:build": "tsx scripts/scanner-visual-index/build-index.ts",
     "scanner:index:verify": "tsx scripts/scanner-visual-index/verify-index.ts",
+    "scanner:preprocess:parity": "tsx scripts/scanner-preprocess-parity/run-parity.ts",
     "scanner:ocr:benchmark:psm-forensics": "tsx scripts/scanner-ocr-benchmark/run-psm-forensics.ts",
     "scanner:ocr:benchmark:recognition": "tsx scripts/scanner-ocr-benchmark/run-recognition-benchmark.ts",
     "scanner:name-lexicon:build": "tsx scripts/scanner-name-lexicon/build-lexicon.ts",
