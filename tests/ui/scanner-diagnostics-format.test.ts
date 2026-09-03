@@ -16,6 +16,10 @@ function diagnostics(overrides: Partial<ScannerDiagnostics> = {}): ScannerDiagno
     captureFrameWidth: 1350,
     captureFrameHeight: 1800,
     rectificationUsed: true,
+    captureBlurScore: 512.34,
+    captureSevereBlur: false,
+    visualAbstained: false,
+    visualAbstainReason: null,
     visualEmbeddingCreated: true,
     embeddingNorm: 12.3456,
     indexVersion: 'visual-v1',
@@ -43,7 +47,18 @@ function diagnostics(overrides: Partial<ScannerDiagnostics> = {}): ScannerDiagno
     ocrTrials: [],
     candidateExpansionTriggered: false,
     finalRerankedCandidates: [
-      { cardId: 'card-a', name: 'Shieldon', confidenceTier: 'HIGH', reasons: ['visual-strong'] },
+      {
+        cardId: 'card-a',
+        name: 'Shieldon',
+        confidenceTier: 'HIGH',
+        reasons: ['visual-strong'],
+        rawRankScore: 91,
+        displayScore: 91,
+        textReliability: 1,
+        visualReliability: 0.6,
+        finalTier: 'HIGH',
+        tierReason: null,
+      },
     ],
     visualError: null,
     visualBackendRequested: 'auto',
@@ -143,13 +158,13 @@ describe('formatScannerDiagnostics', () => {
     const text = formatScannerDiagnostics(
       diagnostics({
         visualTextDisagreement: true,
-        tierCapReason: 'visual-dominance-guarded',
+        tierCapReason: 'runner-up-margin-small',
         visualCalibrationBand: 'weak',
         ocrCollectorParseConfidence: 'low',
       }),
     )
     expect(text).toContain('VISUAL_TEXT_DISAGREEMENT=yes')
-    expect(text).toContain('TIER_CAP_REASON=visual-dominance-guarded')
+    expect(text).toContain('TIER_CAP_REASON=runner-up-margin-small')
     expect(text).toContain('VISUAL_CALIBRATION_BAND=weak')
     expect(text).toContain('OCR_COLLECTOR_PARSE_CONFIDENCE=low')
   })

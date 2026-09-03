@@ -121,21 +121,37 @@ export type ScannerReasonCode =
   | 'visual-strong'
   | 'visual-moderate'
   | 'visual-weak'
-  /** P88 §2/F-02: this candidate's text-only score was discounted because a DIFFERENT candidate
-   *  carries strong, dedicated visual evidence (>= strongMin) while this one has none/weak visual
-   *  support of its own — the guard that stops a coincidental OCR text match from outranking a
-   *  genuinely strong visual match purely by point-value construction. */
-  | 'visual-dominance-guarded'
+  /** P93/D-106 (replaces P88's 'visual-dominance-guarded'): this candidate IS the visual channel's
+   *  best-supported pick (the highest finite similarity among this scan's candidates), and its own
+   *  evidence was reliable enough (high absolute similarity AND a real margin over the runner-up —
+   *  see engine.ts's `computeVisualAnchorReliability`) to earn a corroboration boost on top of the
+   *  plain similarity-to-points curve. Never applied to any OTHER candidate, and never SUBTRACTS
+   *  from anyone — see D-106 for why P88's discount-the-competition guard was replaced rather than
+   *  re-tuned (P92 finding N-01: an absolute-threshold discount can make a false visual spike
+   *  actively worse than having no guard at all; a pure, non-negative anchor boost cannot). */
+  | 'visual-anchor-corroborated'
 
 /** A ranked candidate: the canonical printing identity plus explainable evidence. */
 export interface RankedScannerCandidate {
   readonly card: ScannerCandidateRecord
-  /** Deterministic 0–100 explainable score. Not a probability; see engine.ts weight table. */
+  /** Deterministic 0–100 DISPLAY score — clamped for presentation only. Not a probability; see
+   *  engine.ts weight table. Never used for sorting/tie-break internally (P93/N-05) — see
+   *  {@link RankedScannerCandidate.rawRankScore}. */
   readonly score: number
+  /** Full-resolution, UNCLAMPED score (P93/N-05): can exceed 100 (a well-corroborated visual
+   *  anchor) or dip below 0 (a language mismatch with no other evidence). This is what candidate
+   *  ORDERING and margin/tier-ambiguity logic actually use — clamping happens only when producing
+   *  the display `score` above, never before. Never displayed directly to a user. */
+  readonly rawRankScore: number
   readonly reasons: readonly ScannerReasonCode[]
   /** Raw cosine-similarity evidence for this candidate, when the visual channel ran (P76).
    *  Informational/diagnostic only — never re-derived into a fake percentage in the UI. */
   readonly visualSimilarity?: number | null
+  /** [0,1] visual-anchor reliability actually applied to THIS candidate (P93 §12) — nonzero only
+   *  for the single candidate that was this scan's visual anchor, 0 for every other candidate
+   *  (including one with its own strong similarity that simply wasn't the single best). Diagnostic
+   *  only; the score above already reflects it. */
+  readonly visualReliability: number
 }
 
 /** Per-candidate visual-embedding evidence keyed by `cards.id` (P76, D-097). Produced by the

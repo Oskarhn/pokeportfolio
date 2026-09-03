@@ -69,6 +69,19 @@ export interface ScannerDiagnostics {
   /** Whether the P79 rectification step found a real card boundary (true) or fell back to the
    *  plain guide rectangle unchanged (false) — never a crash either way. */
   rectificationUsed: boolean
+  /** P93/D-106 — capture-quality.ts's raw Laplacian-variance blur metric on the canonical
+   *  rectified image, or null on the rare double-fallback path where rectification never produced
+   *  a working image at all (see RectifyCaptureResult's own doc). */
+  captureBlurScore: number | null
+  /** Whether `captureBlurScore` fell below the calibrated severe-blur threshold this scan. */
+  captureSevereBlur: boolean
+  /** Whether the VISUAL channel was skipped this scan because of severe blur — OCR and manual
+   *  search are never affected by this flag. Currently always equal to `captureSevereBlur` (the
+   *  only abstention reason implemented so far), kept as its own named field so a future second
+   *  abstention reason does not require a breaking rename. */
+  visualAbstained: boolean
+  /** Why the visual channel was abstained this scan, or null when it was not. */
+  visualAbstainReason: 'severe-blur' | null
   visualEmbeddingCreated: boolean
   embeddingNorm: number | null
   indexVersion: string | null
@@ -143,6 +156,24 @@ export interface ScannerDiagnostics {
     name: string
     confidenceTier: ScannerConfidence
     reasons: readonly string[]
+    /** P93 §25 debug fields — the SAME values `engine.ts` actually computed for this candidate,
+     *  not a re-derived summary. `rawRankScore` is the full-resolution, unclamped total sorting
+     *  used; `displayScore` is the same clamped-to-[0,100] value the (non-debug) UI would show.
+     *  `textReliability` is this SCAN's combined OCR-confidence reliability (the max of name/
+     *  collector reliability that actually contributed a nonzero score component this scan) —
+     *  identical across every candidate in one scan, since it comes from the observation, not the
+     *  candidate. `visualReliability` is per-candidate (nonzero only for this scan's visual
+     *  anchor). `finalTier` is this candidate's OWN score-band tier in isolation (no margin/
+     *  ambiguity demotion — a distinct, narrower concept than `confidenceTier`, which is the
+     *  match-level tier after margin/disagreement checks and only meaningful for rank 1).
+     *  `tierReason` mirrors the match-level `tierCapReason` (identical for every candidate this
+     *  scan — there is no per-candidate cap reason concept, only a match-level one). */
+    rawRankScore: number
+    displayScore: number
+    textReliability: number
+    visualReliability: number
+    finalTier: ScannerConfidence
+    tierReason: 'runner-up-margin-small' | 'visual-text-disagreement' | null
   }[]
   visualError: string | null
   /** P88 §21 — the calibrated tier (visual-evidence.ts's `visualEvidenceTier`) of the STRONGEST
@@ -170,12 +201,12 @@ export interface ScannerDiagnostics {
   /** P88 §4/§21/F-26: true when the text-only best candidate and the visual-only best candidate
    *  disagreed meaningfully this scan (engine.ts's 'visual-text-disagreement' note). */
   visualTextDisagreement: boolean
-  /** P88 §21: WHY the tier was capped below what the raw top score alone would have implied, when
-   *  it was — 'runner-up-margin-small' (ambiguous ranking), 'visual-text-disagreement' (F-26), or
-   *  'visual-dominance-guarded' (F-02's guard discounted the coincidental-text top candidate).
-   *  Null when nothing capped the tier this scan. */
-  tierCapReason:
-    'runner-up-margin-small' | 'visual-text-disagreement' | 'visual-dominance-guarded' | null
+  /** P88 §21/P93: WHY the tier was capped below what the raw top score alone would have implied,
+   *  when it was — 'runner-up-margin-small' (ambiguous ranking) or 'visual-text-disagreement'
+   *  (F-26). Null when nothing capped the tier this scan. P93/D-106 removed the old
+   *  'visual-dominance-guarded' cause: the redesigned visual-anchor mechanism only ever ADDS a
+   *  corroboration boost, so it can never itself be a reason a tier was capped down. */
+  tierCapReason: 'runner-up-margin-small' | 'visual-text-disagreement' | null
   /** Backend-attempt diagnostics (P78 prompt §4/§11/§12) — what was actually tried, present
    *  whether the visual channel ended up ready or unavailable. */
   visualBackendRequested: 'auto' | 'wasm' | 'webgpu'
