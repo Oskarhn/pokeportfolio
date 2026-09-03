@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { formatScannerDiagnostics } from '../../src/features/scanner/diagnostics-format'
-import type { ScannerDiagnostics } from '../../src/features/scanner/contract'
+import {
+  formatScannerDiagnostics,
+  formatExpectedCardRankDiagnostics,
+} from '../../src/features/scanner/diagnostics-format'
+import type { ExpectedCardRank, ScannerDiagnostics } from '../../src/features/scanner/contract'
 import { APP_BUILD_SHA } from '../../src/platform/build-info'
 
 function diagnostics(overrides: Partial<ScannerDiagnostics> = {}): ScannerDiagnostics {
@@ -18,6 +21,14 @@ function diagnostics(overrides: Partial<ScannerDiagnostics> = {}): ScannerDiagno
     indexVersion: 'visual-v1',
     indexCardCount: 985,
     indexSourceProjectRef: 'nopmkroeygmlvndzjjqs.supabase.co',
+    indexModelRevision: 'c2bb04a51fab207c420665f1946016107bffc701',
+    indexGeneratedAt: '2026-09-01T00:00:00.000Z',
+    indexEmbeddingsSha256: 'deadbeef',
+    indexContentId: '0123456789abcdef',
+    indexSourceProjectExpected: 'nopmkroeygmlvndzjjqs.supabase.co',
+    indexSourceProjectMatch: true,
+    indexRuntimeChecksumVerified: true,
+    indexRuntimeChecksumMs: 41,
     indexLoadMs: 15,
     indexSearchMs: 2,
     topVisualCandidates: [{ cardId: 'card-a', similarity: 0.91, name: 'Shieldon' }],
@@ -29,6 +40,7 @@ function diagnostics(overrides: Partial<ScannerDiagnostics> = {}): ScannerDiagno
     ocrNameRoiId: 'classic-top-left',
     ocrCollectorSignal: '049/102',
     ocrNumberRoiId: 'modern-bottom-left',
+    ocrTrials: [],
     candidateExpansionTriggered: false,
     finalRerankedCandidates: [
       { cardId: 'card-a', name: 'Shieldon', confidenceTier: 'HIGH', reasons: ['visual-strong'] },
@@ -72,6 +84,14 @@ function diagnostics(overrides: Partial<ScannerDiagnostics> = {}): ScannerDiagno
     fastScannerState: 'ready',
     ocrRuntimeState: 'ready',
     enhancedVisualState: 'ready',
+    visualCalibrationBand: 'strong',
+    ocrNameConfidence: 91,
+    ocrCollectorConfidence: 88,
+    ocrCollectorParseConfidence: 'high',
+    ocrNameLexiconMatch: null,
+    ocrNameLexiconMargin: null,
+    visualTextDisagreement: false,
+    tierCapReason: null,
     ...overrides,
   }
 }
@@ -108,6 +128,30 @@ describe('formatScannerDiagnostics', () => {
     expect(text).toContain('CANDIDATE_EXPANSION_TRIGGERED=no')
     expect(text).toContain('1. card-a "Shieldon" tier=HIGH reasons=visual-strong')
     expect(text).toContain('VISUAL_ERROR=—')
+    expect(text).toContain('VISUAL_CALIBRATION_BAND=strong')
+    expect(text).toContain('OCR_NAME_CONFIDENCE=91')
+    expect(text).toContain('OCR_NAME_LEXICON_MATCH=—')
+    expect(text).toContain('OCR_NAME_LEXICON_MARGIN=—')
+    expect(text).toContain('OCR_COLLECTOR_CONFIDENCE=88')
+    expect(text).toContain('OCR_COLLECTOR_PARSE_CONFIDENCE=high')
+    expect(text).toContain('card-a: visual-strong')
+    expect(text).toContain('VISUAL_TEXT_DISAGREEMENT=no')
+    expect(text).toContain('TIER_CAP_REASON=—')
+  })
+
+  it('P88 §21: renders a capped tier reason and disagreement flag when present', () => {
+    const text = formatScannerDiagnostics(
+      diagnostics({
+        visualTextDisagreement: true,
+        tierCapReason: 'visual-dominance-guarded',
+        visualCalibrationBand: 'weak',
+        ocrCollectorParseConfidence: 'low',
+      }),
+    )
+    expect(text).toContain('VISUAL_TEXT_DISAGREEMENT=yes')
+    expect(text).toContain('TIER_CAP_REASON=visual-dominance-guarded')
+    expect(text).toContain('VISUAL_CALIBRATION_BAND=weak')
+    expect(text).toContain('OCR_COLLECTOR_PARSE_CONFIDENCE=low')
   })
 
   it('renders P81 prewarm/timing fields and the full phase-timing block', () => {
@@ -244,6 +288,44 @@ describe('formatScannerDiagnostics', () => {
     expect(text).toContain('VISUAL_CURRENT_PHASE=—')
   })
 
+  it('O85-11: renders every OCR trial with its winner flagged, and an honest placeholder when empty', () => {
+    const empty = formatScannerDiagnostics(diagnostics())
+    expect(empty).toContain('OCR_TRIALS:\n  —')
+
+    const text = formatScannerDiagnostics(
+      diagnostics({
+        ocrTrials: [
+          {
+            field: 'number',
+            roiId: 'modern-bottom-left',
+            preprocess: 'contrast',
+            segmentation: 'single-line',
+            text: '',
+            confidence: 0,
+            plausibilityScore: 0,
+            isWinner: false,
+          },
+          {
+            field: 'number',
+            roiId: 'modern-bottom-left',
+            preprocess: 'contrast',
+            segmentation: 'multi-line',
+            text: '049/197',
+            confidence: 55,
+            plausibilityScore: 155,
+            isWinner: true,
+          },
+        ],
+      }),
+    )
+    expect(text).toContain(
+      '[number] roi=modern-bottom-left preprocess=contrast segmentation=single-line confidence=0 plausibility=0.0 text=""',
+    )
+    expect(text).toContain(
+      '[number] roi=modern-bottom-left preprocess=contrast segmentation=multi-line confidence=55 plausibility=155.0 text="049/197" <-- WINNER',
+    )
+  })
+
   it('renders both backend errors when webgpu and wasm both failed (R6)', () => {
     const text = formatScannerDiagnostics(
       diagnostics({
@@ -264,5 +346,68 @@ describe('formatScannerDiagnostics', () => {
     expect(text).toContain(
       'VISUAL_ERROR=model load failed: webgpu: no available backend found; wasm: out of memory',
     )
+  })
+})
+
+describe('formatExpectedCardRankDiagnostics (P90 §10/§21)', () => {
+  const card = { id: 'card-58', name: 'Pikachu', setName: 'Base Set', localId: '58' }
+
+  function rank(overrides: Partial<ExpectedCardRank> = {}): ExpectedCardRank {
+    return {
+      found: true,
+      rank: 3,
+      similarity: 0.87,
+      totalCards: 19501,
+      inTop20: true,
+      inTop100: true,
+      indexContentId: '0123456789abcdef',
+      hybridRank: 1,
+      hybridScore: 85,
+      hybridTier: 'high',
+      scoreComponents: ['collector-number-exact', 'name-exact', 'visual-strong'],
+      ...overrides,
+    }
+  }
+
+  it('renders every required field with real values', () => {
+    const text = formatExpectedCardRankDiagnostics(card, rank())
+    expect(text).toContain('EXPECTED_CARD_ID=card-58')
+    expect(text).toContain('EXPECTED_CARD_NAME=Pikachu')
+    expect(text).toContain('EXPECTED_CARD_SET=Base Set')
+    expect(text).toContain('EXPECTED_CARD_NUMBER=58')
+    expect(text).toContain('EXPECTED_VISUAL_RANK=3')
+    expect(text).toContain('EXPECTED_VISUAL_SIMILARITY=0.8700')
+    expect(text).toContain('EXPECTED_IN_TOP20=yes')
+    expect(text).toContain('EXPECTED_IN_TOP100=yes')
+    expect(text).toContain('EXPECTED_TOTAL_INDEX_CARDS=19501')
+    expect(text).toContain('EXPECTED_INDEX_CONTENT_ID=0123456789abcdef')
+    expect(text).toContain('EXPECTED_HYBRID_RANK=1')
+    expect(text).toContain('EXPECTED_HYBRID_TIER=high')
+    expect(text).toContain('EXPECTED_TEXT_EVIDENCE=collector-number-exact,name-exact')
+    expect(text).toContain(
+      'EXPECTED_SCORE_COMPONENTS=collector-number-exact,name-exact,visual-strong',
+    )
+  })
+
+  it('never fabricates a rank/tier when the card was not found or not in the bounded top N', () => {
+    const text = formatExpectedCardRankDiagnostics(
+      card,
+      rank({
+        found: false,
+        rank: null,
+        similarity: null,
+        hybridRank: null,
+        hybridScore: null,
+        hybridTier: null,
+        scoreComponents: [],
+      }),
+    )
+    expect(text).toContain('EXPECTED_VISUAL_RANK=—')
+    expect(text).toContain('EXPECTED_VISUAL_SIMILARITY=—')
+    expect(text).toContain('EXPECTED_VISUAL_PERCENTILE=—')
+    expect(text).toContain('EXPECTED_HYBRID_RANK=—')
+    expect(text).toContain('EXPECTED_HYBRID_TIER=—')
+    expect(text).toContain('EXPECTED_TEXT_EVIDENCE=—')
+    expect(text).toContain('EXPECTED_SCORE_COMPONENTS=—')
   })
 })

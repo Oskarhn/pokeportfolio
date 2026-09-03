@@ -10,10 +10,16 @@ import {
 } from 'react'
 import { useBlocker, useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import type { ScannerCandidate, ScannerDebugImages, ScannerDiagnostics } from './contract'
+import type {
+  ExpectedCardRank,
+  ScannerCandidate,
+  ScannerDebugImages,
+  ScannerDiagnostics,
+} from './contract'
 import { getScannerUiController } from './controller'
 import { isScannerDebugEnabled } from './debug-flag'
-import { formatScannerDiagnostics } from './diagnostics-format'
+import { formatExpectedCardRankDiagnostics, formatScannerDiagnostics } from './diagnostics-format'
+import { APP_BUILD_SHA } from '../../platform/build-info'
 import {
   CAMERA_VIDEO_PROPS,
   openEnvironmentCamera,
@@ -47,6 +53,7 @@ import {
 } from './guide-geometry'
 import { getMyProfile, type Profile } from '../../data/profile'
 import { listStorageLocations } from '../../data/collection'
+import { searchCards, type CatalogSearchResult } from '../../data/catalog'
 import { useAuth } from '../../auth/useAuth'
 import { CardImage } from '../catalog/CardImage'
 import { CONDITION_LABEL, ORIGIN_LABEL } from '../collection/labels'
@@ -108,6 +115,15 @@ export function ScannerPage() {
   const [fastScannerState, setFastScannerState] = useState<
     'not-loaded' | 'loading' | 'ready' | 'failed'
   >(() => controller.getFastScannerState?.() ?? 'not-loaded')
+  // P90 §16: tracked ONLY to show a concise, non-jargon fallback note once the visual (DINO)
+  // channel definitively fails — index pointer/checksum/source-project failures all already
+  // degrade the SCAN pipeline to OCR-only silently and honestly (visual-worker.ts never crashes);
+  // this is purely about telling the user why recognition might feel weaker than expected, without
+  // exposing any of the debug panel's own integrity jargon (content ids, checksums, source-project
+  // refs) to an ordinary user. Never shown while still 'loading' — only a genuine terminal failure.
+  const [visualScannerState, setVisualScannerState] = useState<
+    'not-loaded' | 'loading' | 'ready' | 'failed'
+  >(() => controller.getVisualPrewarmState?.() ?? 'not-loaded')
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -118,6 +134,28 @@ export function ScannerPage() {
   const cameraGenerationRef = useRef(0)
   // Guards double variant fetches for the same candidate across StrictMode-style re-runs.
   const variantsInFlightRef = useRef<string | null>(null)
+  // F-05 (P89): bumped on every event that makes an in-flight analyzeCapture() result stale
+  // (cancel, retake, route exit, controller replacement/unmount) — its .then()/.catch() checks
+  // this before touching any state, so a late-resolving cancelled analysis can never clobber
+  // whatever photo/state the user has moved on to. abortAnalysisRef lets those same events also
+  // signal the controller to skip remaining pipeline work cooperatively (best-effort only).
+  const analysisGenerationRef = useRef(0)
+  const analysisAbortControllerRef = useRef<AbortController | null>(null)
+  function cancelInFlightAnalysis(): void {
+    analysisGenerationRef.current += 1
+    analysisAbortControllerRef.current?.abort()
+    analysisAbortControllerRef.current = null
+  }
+  // F-07 (P89): set SYNCHRONOUSLY at the top of handleShutter, before any await — the rendered
+  // `disabled` attribute alone cannot block a second pointerup dispatched before React commits
+  // the re-render, so a double-tap/multi-touch could otherwise fire captureVideoFrame() twice
+  // concurrently (CaptureStore's revoke-then-replace makes whichever encode lands second win
+  // nondeterministically). A ref read is synchronous and cannot race with the event dispatch.
+  const capturingRef = useRef(false)
+  // F-10 (P89): same synchronous-lock pattern for "Add cards" — server-side idempotency
+  // (client_request_key) already makes a duplicate commitBatch call harmless, but the UI layer
+  // should not depend on that alone.
+  const committingRef = useRef(false)
 
   const cameraWanted = state.step === 'starting-camera' || state.step === 'camera'
 
@@ -163,6 +201,9 @@ export function ScannerPage() {
       cameraGenerationRef.current += 1
       stopActiveScannerCamera()
       captureStoreRef.current.clear()
+      // F-05: an account switch (userId change → new controller) or unmount both make any
+      // analysis still in flight against the OLD controller permanently stale.
+      cancelInFlightAnalysis()
       controller.dispose()
     },
     [controller],
@@ -187,7 +228,14 @@ export function ScannerPage() {
     const interval = setInterval(() => {
       const next = controller.getFastScannerState?.() ?? 'not-loaded'
       setFastScannerState((previous) => (previous === next ? previous : next))
-      if (next === 'ready' || next === 'failed') clearInterval(interval)
+      const nextVisual = controller.getVisualPrewarmState?.() ?? 'not-loaded'
+      setVisualScannerState((previous) => (previous === nextVisual ? previous : nextVisual))
+      if (
+        (next === 'ready' || next === 'failed') &&
+        (nextVisual === 'ready' || nextVisual === 'failed')
+      ) {
+        clearInterval(interval)
+      }
     }, 500)
     return () => {
       clearInterval(interval)
@@ -255,6 +303,7 @@ export function ScannerPage() {
 
   useEffect(() => {
     if (!state.exitRequested) return
+    cancelInFlightAnalysis()
     captureStoreRef.current.clear()
     stopActiveScannerCamera()
     void navigate({ to: '/portfolio' })
@@ -289,8 +338,10 @@ export function ScannerPage() {
   }, [state.step, state.confirmVariantsPending, state.selectedCandidate?.candidateId, controller])
 
   function handleShutter(): void {
+    if (capturingRef.current) return
     const video = videoRef.current
     if (video === null) return
+    capturingRef.current = true
     void captureVideoFrame(video)
       .then((frame) => {
         // Stop the stream as soon as a frame is held — shortest possible camera lifetime.
@@ -304,9 +355,13 @@ export function ScannerPage() {
       .catch((error: unknown) => {
         dispatch({ type: 'CAPTURE_FAILED', error: describeCaptureError(error) })
       })
+      .finally(() => {
+        capturingRef.current = false
+      })
   }
 
   function handleRetake(): void {
+    cancelInFlightAnalysis()
     captureStoreRef.current.clear()
     setPreviewUrl(null)
     dispatch({ type: 'RETAKE_PRESSED' })
@@ -340,11 +395,21 @@ export function ScannerPage() {
       cardRect: stored.cardRect,
     }
     dispatch({ type: 'USE_PHOTO_PRESSED' })
-    // One explicit capture leads to exactly one analysis request — never a continuous loop
-    // while the user is framing (prompt §12).
+    // F-05 (P89): this call's own generation is pinned at the moment it starts. Cancel/retake/
+    // route-exit/unmount/account-switch all bump analysisGenerationRef — if THIS call's
+    // generation no longer matches when the promise settles, the result is stale (the user has
+    // moved on to a different photo or left entirely) and must never touch state: not the
+    // capture store, not the preview URL, not the reducer. One explicit capture still leads to
+    // exactly one analysis REQUEST — never a continuous loop while framing (prompt §12) — but a
+    // late-arriving stale RESPONSE is now a guaranteed no-op instead of clobbering whatever the
+    // user is looking at next.
+    const generation = ++analysisGenerationRef.current
+    const abortController = new AbortController()
+    analysisAbortControllerRef.current = abortController
     void controller
-      .analyzeCapture(payload)
+      .analyzeCapture(payload, abortController.signal)
       .then((analysis) => {
+        if (generation !== analysisGenerationRef.current) return
         setHasCompletedAnalysis(true)
         if (debugEnabled) {
           setDiagnostics(controller.getLastDiagnostics?.() ?? null)
@@ -356,7 +421,13 @@ export function ScannerPage() {
         dispatch({ type: 'ANALYSIS_COMPLETED', analysis })
       })
       .catch((error: unknown) => {
+        if (generation !== analysisGenerationRef.current) return
         dispatch({ type: 'ANALYSIS_FAILED', error: describeAnalysisError(error) })
+      })
+      .finally(() => {
+        if (analysisAbortControllerRef.current === abortController) {
+          analysisAbortControllerRef.current = null
+        }
       })
   }
 
@@ -380,7 +451,13 @@ export function ScannerPage() {
   }
 
   function handleCommit(): void {
+    // F-10 (P89): synchronous lock, independent of the rendered `disabled` attribute — two
+    // pointerups dispatched before React commits the disabled state must still invoke
+    // commitBatch at most once. Server-side idempotency (client_request_key) is defense-in-
+    // depth, not the primary guard.
+    if (committingRef.current) return
     if (state.batch.length === 0) return
+    committingRef.current = true
     dispatch({ type: 'ADD_CARDS_PRESSED' })
     void controller
       .commitBatch(
@@ -408,6 +485,9 @@ export function ScannerPage() {
       })
       .catch((error: unknown) => {
         dispatch({ type: 'COMMIT_FAILED', error: describeCommitError(error) })
+      })
+      .finally(() => {
+        committingRef.current = false
       })
   }
 
@@ -465,6 +545,7 @@ export function ScannerPage() {
               locations={locations}
               japaneseNotice={japaneseNotice}
               fastScannerState={fastScannerState}
+              visualScannerState={visualScannerState}
               onStartCamera={() => {
                 dispatch({ type: 'START_CAMERA_PRESSED' })
               }}
@@ -536,6 +617,7 @@ export function ScannerPage() {
         <AnalyzingView
           firstUse={!hasCompletedAnalysis}
           onCancel={() => {
+            cancelInFlightAnalysis()
             dispatch({ type: 'ANALYSIS_CANCELLED' })
           }}
         />
@@ -660,9 +742,20 @@ export function ScannerPage() {
       ) : null}
 
       {debugEnabled ? (
-        <ScannerDebugPanel diagnostics={diagnostics} debugImages={debugImages} />
+        <ScannerDebugPanel
+          diagnostics={diagnostics}
+          debugImages={debugImages}
+          getExpectedCardRank={(cardId) =>
+            controller.getExpectedCardRank?.(cardId) ?? Promise.resolve(null)
+          }
+        />
       ) : null}
 
+      {/* F-09 (P89): this same sheet now also guards "Done" after a PARTIAL commit — distinguished
+          from the pre-save "nothing added yet" exit warning purely by state.step still being
+          'committed' when it opens (both COMMITTED_DONE_PRESSED and a nav-blocker EXIT_PRESSED
+          route here identically). The copy must never let "Done" quietly mean "discard": it names
+          what was already added and what still needs attention. */}
       <Sheet
         open={state.exitWarningOpen}
         onClose={() => {
@@ -672,16 +765,22 @@ export function ScannerPage() {
           }
           dispatch({ type: 'EXIT_CANCELLED' })
         }}
-        title="Discard scanned cards?"
+        title={state.step === 'committed' ? 'Discard remaining cards?' : 'Discard scanned cards?'}
       >
         <div className="space-y-4">
           <p className="text-sm text-slate-300">
-            Nothing has been added to your portfolio yet. Discarding clears this scanning session.
+            {state.step === 'committed'
+              ? `${state.addedCount ?? 0} card${(state.addedCount ?? 0) === 1 ? '' : 's'} ${(state.addedCount ?? 0) === 1 ? 'was' : 'were'} already added to your Portfolio. ${state.batch.length} still ${state.batch.length === 1 ? 'needs' : 'need'} attention and ${state.batch.length === 1 ? 'has' : 'have'} NOT been saved. Reviewing lets you retry or remove them; leaving now permanently drops the record of which cards still need attention.`
+              : 'Nothing has been added to your portfolio yet. Discarding clears this scanning session.'}
           </p>
           <div className="flex flex-col gap-2">
             <Button
               type="button"
               onClick={() => {
+                if (state.step === 'committed') {
+                  dispatch({ type: 'REVIEW_BATCH_PRESSED' })
+                  return
+                }
                 // Keep scanning: cancel both the X-button exit and any SPA navigation blocker.
                 if (blockedNavigationRef.current.status === 'blocked') {
                   blockedNavigationRef.current.reset()
@@ -689,7 +788,7 @@ export function ScannerPage() {
                 dispatch({ type: 'EXIT_CANCELLED' })
               }}
             >
-              Keep scanning
+              {state.step === 'committed' ? 'Review remaining' : 'Keep scanning'}
             </Button>
             <Button
               type="button"
@@ -705,7 +804,7 @@ export function ScannerPage() {
                 }
               }}
             >
-              Discard and exit
+              {state.step === 'committed' ? 'Discard remaining and exit' : 'Discard and exit'}
             </Button>
           </div>
         </div>
@@ -791,17 +890,29 @@ function ErrorAlert({ title, message }: { title: string; message: string }) {
 function ScannerDebugPanel({
   diagnostics,
   debugImages,
+  getExpectedCardRank,
 }: {
   diagnostics: ScannerDiagnostics | null
   debugImages: ScannerDebugImages | null
+  getExpectedCardRank?: (cardId: string) => Promise<ExpectedCardRank | null>
 }) {
   const [open, setOpen] = useState(true)
   const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const [expectedCardResult, setExpectedCardResult] = useState<{
+    card: { id: string; name: string; setName: string; localId: string }
+    rank: ExpectedCardRank
+  } | null>(null)
 
   async function handleCopy(): Promise<void> {
     if (diagnostics === null) return
+    const parts = [formatScannerDiagnostics(diagnostics)]
+    if (expectedCardResult !== null) {
+      parts.push(
+        formatExpectedCardRankDiagnostics(expectedCardResult.card, expectedCardResult.rank),
+      )
+    }
     try {
-      await navigator.clipboard.writeText(formatScannerDiagnostics(diagnostics))
+      await navigator.clipboard.writeText(parts.join('\n\n'))
       setCopyStatus('copied')
     } catch {
       setCopyStatus('failed')
@@ -812,7 +923,7 @@ function ScannerDebugPanel({
   }
 
   return (
-    <div className="fixed inset-x-0 bottom-0 z-[60] max-h-[45svh] overflow-y-auto border-t border-amber-700/60 bg-slate-950/95 px-3 py-2 text-[11px] text-amber-100">
+    <div className="fixed inset-x-0 bottom-0 z-[60] max-h-[60svh] overflow-y-auto border-t border-amber-700/60 bg-slate-950/95 px-3 py-2 text-[11px] text-amber-100">
       <div className="flex items-center justify-between gap-2">
         <span className="font-semibold uppercase tracking-wide text-amber-300">Scanner debug</span>
         <div className="flex items-center gap-2">
@@ -846,15 +957,191 @@ function ScannerDebugPanel({
           <p className="pt-2 text-amber-300/70">No scan analyzed yet this session.</p>
         ) : (
           <>
+            <ScannerDebugSummaryLine diagnostics={diagnostics} expectedRank={expectedCardResult} />
             <ScannerDebugImagePreviews debugImages={debugImages} />
             {diagnostics.topVisualCandidatesExtended.length > 0 ? (
               <ScannerDebugRawCandidates candidates={diagnostics.topVisualCandidatesExtended} />
             ) : null}
-            <pre className="whitespace-pre-wrap break-words pt-2 font-mono leading-relaxed">
-              {formatScannerDiagnostics(diagnostics)}
-            </pre>
+            {getExpectedCardRank ? (
+              <ExpectedCardRankTool
+                getExpectedCardRank={getExpectedCardRank}
+                result={expectedCardResult}
+                onResult={setExpectedCardResult}
+              />
+            ) : null}
+            <details className="pt-2" open>
+              <summary className="cursor-pointer text-[10px] uppercase tracking-wide text-amber-300/70">
+                Raw diagnostics text
+              </summary>
+              <pre className="whitespace-pre-wrap break-words pt-2 font-mono leading-relaxed">
+                {formatScannerDiagnostics(diagnostics)}
+              </pre>
+            </details>
           </>
         )
+      ) : null}
+    </div>
+  )
+}
+
+/**
+ * P90 §12: an "at a glance" line above the full diagnostics dump — the handful of fields that
+ * answer "is this even the build I think it is, and did the last scan look healthy" without
+ * scrolling the raw text block. Never a substitute for it: the full copy-diagnostics text still
+ * carries everything, this is a reading aid only.
+ */
+function ScannerDebugSummaryLine({
+  diagnostics,
+  expectedRank,
+}: {
+  diagnostics: ScannerDiagnostics
+  expectedRank: { card: { name: string }; rank: ExpectedCardRank } | null
+}) {
+  const top1 = diagnostics.topVisualCandidates[0] ?? null
+  return (
+    <div className="flex flex-wrap gap-x-3 gap-y-1 border-b border-amber-900/40 pb-2 pt-1 text-[10px] text-amber-200/90">
+      <span>SHA {APP_BUILD_SHA.slice(0, 8)}</span>
+      <span>INDEX {diagnostics.indexContentId ?? '—'}</span>
+      <span>VISUAL {diagnostics.visualModelState}</span>
+      <span>OCR {diagnostics.ocrRuntimeState}</span>
+      <span>TOP1 {top1 ? `${top1.name ?? top1.cardId} ${top1.similarity.toFixed(2)}` : '—'}</span>
+      {expectedRank ? (
+        <span>
+          EXPECTED &quot;{expectedRank.card.name}&quot; visual #{expectedRank.rank.rank ?? '—'}
+          {expectedRank.rank.hybridRank !== null
+            ? ` · hybrid #${expectedRank.rank.hybridRank}`
+            : ''}
+        </span>
+      ) : null}
+    </div>
+  )
+}
+
+/**
+ * P90 §10: "check expected card rank" — an owner-facing affordance for a wrong-or-missing scan
+ * result. Search the catalog for the card that SHOULD have been recognized, pick it, and see
+ * exactly where it actually ranked (visual and hybrid) — without adding it to the batch, without
+ * mutating the scanner candidate choice, without persisting anything. Memory-only, `?scannerDebug=
+ * 1`-gated (the parent panel already restricts this component's very existence to debug mode).
+ */
+function ExpectedCardRankTool({
+  getExpectedCardRank,
+  result,
+  onResult,
+}: {
+  getExpectedCardRank: (cardId: string) => Promise<ExpectedCardRank | null>
+  result: {
+    card: { id: string; name: string; setName: string; localId: string }
+    rank: ExpectedCardRank
+  } | null
+  onResult: (
+    result: {
+      card: { id: string; name: string; setName: string; localId: string }
+      rank: ExpectedCardRank
+    } | null,
+  ) => void
+}) {
+  const [searching, setSearching] = useState(false)
+  const [query, setQuery] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const results = useQuery({
+    queryKey: ['scanner-debug-expected-card-search', query],
+    queryFn: () => searchCards({ query, language: null, limit: 10 }),
+    enabled: searching && query.trim().length > 0,
+  })
+
+  async function handlePick(card: CatalogSearchResult): Promise<void> {
+    setLoading(true)
+    try {
+      const rank = await getExpectedCardRank(card.cardId)
+      if (rank === null) {
+        onResult(null)
+        return
+      }
+      onResult({
+        card: {
+          id: card.cardId,
+          name: card.name,
+          setName: card.setName,
+          localId: card.localId,
+        },
+        rank,
+      })
+      setSearching(false)
+      setQuery('')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="border-t border-amber-900/40 pt-2">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10px] uppercase tracking-wide text-amber-300/70">
+          Expected card rank
+        </span>
+        <button
+          type="button"
+          onClick={() => {
+            setSearching((v) => !v)
+          }}
+          className="rounded border border-amber-700/60 px-2 py-0.5 text-[10px] text-amber-200 hover:bg-amber-900/40"
+        >
+          {searching ? 'Cancel' : 'Check expected card rank'}
+        </button>
+      </div>
+      {searching ? (
+        <div className="mt-2 space-y-2">
+          <input
+            autoFocus
+            value={query}
+            onChange={(event) => {
+              setQuery(event.target.value)
+            }}
+            placeholder="Search for the card that should have won…"
+            aria-label="Search for the expected card"
+            className="w-full rounded border border-amber-800/60 bg-slate-900 px-2 py-1 text-[11px] text-amber-100 outline-none focus-visible:border-amber-500"
+          />
+          {loading ? (
+            <p className="text-amber-300/70">Checking rank…</p>
+          ) : query.trim() === '' ? null : results.isPending ? (
+            <p className="text-amber-300/70">Searching…</p>
+          ) : results.isError ? (
+            <p className="text-rose-300">The catalog could not be searched right now.</p>
+          ) : results.data.results.length === 0 ? (
+            <p className="text-amber-300/70">No catalog cards match.</p>
+          ) : (
+            <ul className="max-h-40 space-y-1 overflow-y-auto">
+              {results.data.results.map((card) => (
+                <li key={card.cardId}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void handlePick(card)
+                    }}
+                    className="flex w-full items-center gap-2 rounded border border-amber-900/40 px-2 py-1 text-left hover:bg-amber-900/30"
+                  >
+                    <CardImage
+                      imageBaseUrl={card.imageBaseUrl}
+                      alt={card.name}
+                      quality="low"
+                      className="h-8 w-6 shrink-0"
+                    />
+                    <span className="min-w-0 flex-1 truncate">
+                      {card.name} · {card.setName} #{card.localId}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ) : null}
+      {result ? (
+        <pre className="mt-2 whitespace-pre-wrap break-words border-t border-amber-900/40 pt-2 font-mono leading-relaxed">
+          {formatExpectedCardRankDiagnostics(result.card, result.rank)}
+        </pre>
       ) : null}
     </div>
   )
@@ -970,6 +1257,7 @@ function IntroView({
   locations,
   japaneseNotice,
   fastScannerState,
+  visualScannerState,
   onStartCamera,
   onChoosePhoto,
   onDefaultsPatch,
@@ -979,6 +1267,7 @@ function IntroView({
   locations: { id: string; label: string }[]
   japaneseNotice: boolean
   fastScannerState: 'not-loaded' | 'loading' | 'ready' | 'failed'
+  visualScannerState: 'not-loaded' | 'loading' | 'ready' | 'failed'
   onStartCamera: () => void
   onChoosePhoto: () => void
   onDefaultsPatch: (patch: Partial<ScannerSessionDefaults>) => void
@@ -994,6 +1283,14 @@ function IntroView({
       {prewarmStatus !== null ? (
         <p role="status" className="text-xs text-slate-500">
           {prewarmStatus}
+        </p>
+      ) : null}
+      {/* P90 §16: a genuine, terminal visual-channel failure (missing/stale/corrupt index, no
+          WebGPU/WASM backend, etc.) degrades matching to OCR-only already — this note only
+          explains why, in plain language, never the debug panel's own integrity jargon. */}
+      {visualScannerState === 'failed' ? (
+        <p role="status" className="text-xs text-slate-500">
+          Visual recognition unavailable on this device — text recognition is still available.
         </p>
       ) : null}
       {state.cameraError ? <ErrorAlert {...state.cameraError} /> : null}
@@ -1681,6 +1978,18 @@ function BatchReviewView({
                 <button
                   type="button"
                   onClick={() => {
+                    // F-19/§8 (P89): a needsVerification item may already have been saved by an
+                    // earlier attempt whose server answer was lost in transit — removing it here
+                    // only clears THIS scanning session's local record, never anything already in
+                    // the Portfolio. Warn explicitly before that record disappears silently.
+                    if (
+                      item.needsVerification &&
+                      !confirm(
+                        'This card may already be in your Portfolio from an earlier attempt. Removing it here only clears this scan — it does NOT undo anything already saved. Check Portfolio first if you are unsure. Remove anyway?',
+                      )
+                    ) {
+                      return
+                    }
                     onRemove(index)
                   }}
                   aria-label={`Remove ${item.candidate.name}`}
@@ -1694,8 +2003,10 @@ function BatchReviewView({
                   role="status"
                   className="rounded-lg bg-amber-900/30 px-3 py-2 text-xs leading-relaxed text-amber-200"
                 >
-                  Connection was interrupted. This card may already have been added. Check Portfolio
-                  before retrying.
+                  Connection was interrupted. This card may already be in your Portfolio. Check
+                  Portfolio before retrying — quantity and condition are locked for this item since
+                  editing and resubmitting will not update an existing entry. Remove it (after
+                  checking Portfolio) to rescan as a new card instead.
                 </p>
               ) : null}
               <div className="flex items-end gap-2">
@@ -1706,20 +2017,22 @@ function BatchReviewView({
                     inputMode="numeric"
                     min={1}
                     value={item.quantity}
+                    disabled={item.needsVerification}
                     onChange={(event) => {
                       onQuantityChange(index, event.target.value)
                     }}
-                    className="mt-1 min-h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-base tabular-nums text-slate-100 outline-none focus-visible:border-sky-500 focus-visible:ring-2 focus-visible:ring-sky-500/40"
+                    className="mt-1 min-h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-base tabular-nums text-slate-100 outline-none focus-visible:border-sky-500 focus-visible:ring-2 focus-visible:ring-sky-500/40 disabled:opacity-50"
                   />
                 </label>
                 <label className="min-w-0 flex-1 text-xs text-slate-400">
                   Condition
                   <select
                     value={item.condition}
+                    disabled={item.needsVerification}
                     onChange={(event) => {
                       onConditionChange(index, event.target.value as CardCondition)
                     }}
-                    className="mt-1 min-h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-base text-slate-100 outline-none focus-visible:border-sky-500 focus-visible:ring-2 focus-visible:ring-sky-500/40"
+                    className="mt-1 min-h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-base text-slate-100 outline-none focus-visible:border-sky-500 focus-visible:ring-2 focus-visible:ring-sky-500/40 disabled:opacity-50"
                   >
                     {CONDITIONS.map((value) => (
                       <option key={value} value={value}>

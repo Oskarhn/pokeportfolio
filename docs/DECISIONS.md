@@ -3439,3 +3439,504 @@ window Cloudflare Pages applies to a project's non-latest preview deployments wa
 documented and is not something this session's evidence pins down further. This finding argues
 FOR, not against, the stale-client detection this session built (§3 above): an old client cannot
 assume it has any particular grace period before its own assets stop resolving.
+
+---
+
+## D-101 — Content-addressed visual index publishing, runtime integrity gates and cache coherence (P87)
+
+**2026-09-02 · Accepted**
+
+**Context.** P86's independent adversarial audit (F-01, CRITICAL/P0) found that
+`/scanner-assets/visual-v1/{manifest.json,card-ids.json,embeddings.bin}` — the visual
+recognition reference INDEX (data, rebuilt at least three times: P76/P77/P79) — was served
+`Cache-Control: public, max-age=31536000, immutable` at a fixed literal path shared with the
+pinned model/engine binaries (which genuinely are content-stable per model revision). The only
+runtime check, `EXPECTED_MODEL_REVISION`, verifies the MODEL never the INDEX, so it cannot detect
+staleness across a rebuild: a device that already ran the scanner could silently keep using a
+stale or incomplete card index for up to a year, with every diagnostic field reporting healthy.
+The same audit found the index's declared source-project identity logged but never gated
+(F-22), the only committed-index verifier never wired into the actual build/staging path (F-23),
+non-atomic multi-file generation writes (F-24), OFFSET pagination not safe under concurrent
+catalog mutation (F-25), no proactive cleanup of obsolete Service-Worker runtime caches (F-42),
+and a local dirty-worktree build silently naming a stale commit sha (F-43).
+
+**Decision.**
+
+1. **Content-addressed publishing.** The three generation files move under
+   `.../visual-v1/index/generations/<contentId>/`, where `contentId` is the first 16 hex chars of
+   a SHA-256 over the manifest's semantic fields (excluding `generatedAt`) concatenated with the
+   raw `card-ids.json` and `embeddings.bin` bytes (`src/domain/scanner/index-content-id.ts`) —
+   deliberately NOT `cardCount` alone, `generatedAt` alone, or `modelRevision` alone, each of
+   which the prompt's own audit ruled insufficient. A new file, `.../visual-v1/index/current.json`
+   (`{indexVersion, contentId, manifestPath}`), is the one thing a client fetches first, always
+   with `Cache-Control: no-cache` server-side AND `cache: 'no-store'` client-side
+   (belt-and-suspenders, the same pattern `build-meta.json`/D-100 already established). Every
+   `generations/<id>/*` file is genuinely immutable — the URL itself changes when the content
+   does, so the directive is finally true rather than merely asserted. Model/engine binaries stay
+   at their existing `.../visual-v1/model/` and `.../visual-v1/ort/` paths, unaffected: they are
+   content-stable per `VISUAL_MODEL_REVISION`, a materially different lifecycle from the index.
+2. **Non-overlapping `_headers` rules.** Cloudflare Pages MERGES headers from every rule whose
+   path matches a request (values joined by comma, never one rule overriding another) — a single
+   catch-all `/scanner-assets/*` immutable rule is therefore structurally incompatible with also
+   serving a revalidating pointer underneath it. `vite.config.ts`'s generated `_headers` now uses
+   deliberately non-overlapping prefixes (`v7/*`, `visual-v1/model/*`, `visual-v1/ort/*`,
+   `visual-v1/index/generations/*`, `visual-v1/index/current.json`) instead of one blanket rule.
+3. **Split Workbox runtime caches.** `visualAssetRuntimeCache` (model/engine, cache name
+   `scanner-assets-visual-v1`, unchanged) and a new `visualIndexRuntimeCache` (content-addressed
+   generations only, cache name `scanner-assets-visual-v1-index`) — `current.json` matches NEITHER
+   pattern, so it is never interceptable by a CacheFirst route (which would silently defeat its
+   no-store contract by answering from Cache Storage before the request's own cache mode is ever
+   consulted).
+4. **Worker-owned cache-through respects `cache: 'no-store'`.** `visual-worker.ts`'s manual Cache
+   Storage cache-through (`installFetchProbe`, independent of Service Worker fetch interception —
+   not guaranteed for Worker-issued requests on every engine) previously ignored the caller's own
+   `cache` mode entirely; it now bypasses both read and write for any request marked `no-store`.
+5. **Runtime source-project gate (F-22).** `visual-worker.ts` derives
+   `EXPECTED_SOURCE_PROJECT_REF` from `import.meta.env.VITE_SUPABASE_URL` (via the same
+   `deriveProjectIdentity` the generator already used) and REJECTS an index whose
+   `manifest.sourceProjectRef` disagrees — but only when THIS deployment itself has a real hosted
+   project configured (`VITE_SUPABASE_URL` is not the well-known local/CI-placeholder URL). A
+   local dev build or CI's own placeholder-URL build has nothing meaningful to gate against and
+   stays informational, matching `build-index.ts`'s own local/hosted distinction. `verify-index.ts`
+   gained the same gate as an opt-in (`SCANNER_INDEX_EXPECTED_SOURCE_REF`), never derived
+   automatically from `VITE_SUPABASE_URL` at verify/build time — that variable is a placeholder in
+   CI's `build-and-test` job on purpose, and hard-gating on it there would fail every ordinary CI
+   run against the real, correctly-hosted committed index.
+6. **`verify-index.ts` is build-load-bearing (F-23).** `stage-index-assets.mjs` now imports and
+   calls `verifyCurrentGeneration` directly (via `tsx`, not plain `node` — the staging script now
+   runs the same way `scanner:index:build`/`scanner:index:verify` already did) BEFORE copying
+   anything into `public/`, failing `prebuild` (and therefore `pnpm build`, including CI's
+   `build-and-test` job) loudly on any corruption. The CLI entry point
+   (`pnpm scanner:index:verify`) is now a thin wrapper over the same exported function.
+7. **Atomic publish (F-24).** `scripts/scanner-visual-index/atomic-publish.ts` extracts
+   write-temp-verify-rename as reusable, independently-tested primitives.
+   `publishGenerationAtomically` never creates the final `generations/<id>/` directory until the
+   staged content passes the SAME checks `verify-index.ts` runs on a committed index;
+   `publishPointerAtomically` updates `current.json` LAST, itself via write-temp-then-rename. A
+   process killed at any point leaves `current.json` naming the previous valid generation (or
+   absent, on a first-ever build) — proven by a dedicated interruption-simulation test, not just
+   asserted from reading the script.
+8. **Keyset pagination (F-25).** `drainAllCardPages` (`src/domain/scanner/index-pagination.ts`)
+   changed from OFFSET (`.range(from, to)`) to keyset (id-cursor, `LIMIT pageSize`) — stable
+   under concurrent inserts/deletes anywhere in the table, unlike an ordinal offset walk.
+   `build-index.ts` additionally takes an exact count both BEFORE and AFTER the full drain and
+   refuses to certify the result if they disagree (no single transaction spans an hours-long
+   paginated walk, so this is detection of gross mutation, not true snapshot isolation — the same
+   honest scope `pagination-integrity.ts`/D-074 already discloses for the M13 export).
+9. **Explicit generator target (F-22, local-dev policy).** `build-index.ts` now requires
+   `--target=local` or `--target=hosted` explicitly (or `SCANNER_INDEX_TARGET`) — no silent
+   default. `--target=hosted` refuses to run without `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`
+   already exported (never falls back to the local demo stack for what must be a shippable index).
+10. **Bounded stale-cache cleanup (F-42).** `src/platform/scanner-cache-cleanup.ts` deletes any
+    Cache Storage entry matching a known scanner-cache prefix but absent from an explicit current
+    allowlist, run once at app boot from the MAIN THREAD (not a Service Worker `activate`
+    handler — this project's `generateSW` Workbox strategy has no seam for custom activate logic
+    without switching to `injectManifest`, a materially larger change; Cache Storage is
+    origin-scoped, reachable identically from `window`). Bounded and prefix-scoped: never touches
+    an unrelated cache name, never wipes everything.
+11. **Local dirty-worktree marker (F-43).** `vite.config.ts`'s `resolveBuildSha()` appends
+    `+dirty` to the local-fallback commit sha when `git status --porcelain` is non-empty.
+    `CF_PAGES_COMMIT_SHA` (the production path) is untouched — Cloudflare Pages always builds a
+    clean checkout, so `git status` is never consulted there.
+12. **Runtime checksum + expanded diagnostics.** `visual-worker.ts` independently re-hashes the
+    fetched `embeddings.bin` via `crypto.subtle.digest` and compares it to
+    `manifest.embeddingsSha256` once per newly loaded generation (never per scan); it also
+    cross-checks the fetched trio's own content actually hashes to the `contentId` its URL was
+    published under. `ScannerDiagnostics` gained `indexContentId`/`indexSourceProjectExpected`/
+    `indexSourceProjectMatch`/`indexRuntimeChecksumVerified`/`indexRuntimeChecksumMs`/
+    `indexModelRevision`/`indexGeneratedAt`/`indexEmbeddingsSha256` so a stale or wrong-project
+    index is impossible to hide in a debug-panel screenshot or copied diagnostics paste.
+13. **P84's debug-only rank-lookup tooling, ported.** P84 (`feat/m15-p84-visual-retrieval-
+    forensics`, a sibling branch off the same base commit, not merged) built
+    `getExpectedCardRank(cardId)` — re-ranks the last scan's cached query vector against the FULL
+    index without re-embedding, gated to resolve `null` outside `?scannerDebug=1` WITHOUT ever
+    calling the visual client — and raised the debug-only shortlist/candidate-list depth
+    (`VISUAL_DEBUG_SHORTLIST_SIZE` 50->200, `DEBUG_EXTENDED_CANDIDATE_LIMIT` 20->100; production's
+    own `VISUAL_SHORTLIST_SIZE` of 30 is untouched). Ported here by hand (not cherry-picked — this
+    branch's index-publishing changes touch overlapping worker/client surface) since P87 and P84
+    were developed in parallel from the same base and P84 was never merged into this branch's
+    history.
+14. **Existing 19,501-card index repackaged, not rebuilt.** A one-time migration script
+    (`scripts/scanner-visual-index/migrate-to-content-addressed.ts`) repackaged the already-valid,
+    already-hosted-sourced committed index under its correct content id, computed locally from the
+    committed bytes — zero DINO re-embedding, zero database access, zero owner multi-hour rebuild.
+
+**Alternatives considered.** Query-string cache-busting on the existing fixed path — rejected:
+the prompt explicitly disfavors it as the primary design, and it does not stop the Service
+Worker's own separate CacheFirst layer from serving a stale entry keyed by the un-versioned base
+URL depending on exact Workbox cache-key normalization. Dropping `immutable` and using a short
+`max-age` with revalidation instead of content-addressing — rejected as a first choice per the
+prompt's own preference for genuine immutability; would still cost a round-trip revalidation on
+every cold scanner load. A Service-Worker `activate`-handler cache cleanup — rejected for F-42
+specifically because of the `generateSW`-strategy constraint above; main-thread cleanup reaches
+the identical Cache Storage entries.
+
+**Consequences.** A rebuilt index (owner-run `pnpm scanner:index:build --target=hosted`) now
+mints a genuinely new URL automatically — no cache can ever serve mixed old/new generation data,
+and a client already open when a new generation ships picks it up on its next scanner session
+(pointer fetch bypasses every cache layer) without needing to wait out any TTL. `stage-index-
+assets.mjs` failing loudly on a corrupt index is a deliberate new build-time failure mode; a
+developer who edits a generated index file by hand (never expected in normal use) now sees an
+immediate, explicit build error instead of a silently-shipped corruption. The runtime
+source-project gate means a genuinely wrong-project index degrades gracefully to OCR-only
+exactly like a missing/corrupt one always has — never a crash, never a silent wrong-catalog
+resolution.
+## D-102 — OCR engine forensics; a bounded multi-line collector-number recovery pass; name-lexicon and structured collector-number parsing tooling shipped, NOT wired into production retrieval (P85)
+
+Full account in `docs/SCANNER_RESEARCH.md` §7g. Summary for a session that hasn't read that:
+
+1. **Built the project's first real, ground-truthed OCR accuracy corpus** —
+   `scripts/scanner-ocr-benchmark/`, reusing the existing TCGdex fetcher and BOTH existing
+   augmentation modules (P76's `augment.mjs`, P79's `hard-augment.mjs`) for 9 realistic
+   perturbation profiles per card. Ran actual Tesseract.js 7 PSM/preprocess forensics instead of
+   reasoning from single real-device screenshots the way every prior M15 session had to.
+
+2. **The pre-existing PSM 7 (single-line) default was already correct** for both name and number
+   fields when a candidate ROI genuinely contains one line — measured directly against 4 other
+   modes, not assumed. No PSM change was warranted for the existing single-line pass.
+
+3. **Real bug found and fixed:** a correctly-cropped collector-number strip routinely contains TWO
+   visual lines (the id plus an adjacent illustrator-credit or copyright line) on BOTH vintage and
+   modern layouts — confirmed by direct visual inspection of the actual crop images on two real
+   cards. PSM 7 cannot read a two-line image at all; it returns empty. Fixed with a bounded THIRD
+   pass (`analyze.ts`'s `readBestRoi`, new `multiLineExtract` parameter) using PSM 6 (uniform
+   block) ONLY for the collector-number field, ONLY when both existing single-line passes
+   (contrast, then binarize) already found nothing at all — never extra cost on an already-working
+   scan, at most 2 extra recognition calls in the worst case.
+
+4. **A second real bug found and fixed WHILE building the above, before it shipped:** the naive
+   version of this fix let a vintage card's copyright YEAR ("© 1995") win as a fake "collector
+   number" — a bare, prefix-less 4-digit token that structurally parses via the existing
+   `looksLikeCollectorNumberText` but is not a real printed id (this catalog's local ids never
+   reach 4 digits without a total attached). Closed with a stricter predicate
+   (`looksLikePlausibleMultiLineToken`) used ONLY by the new multi-line fallback — the existing,
+   already-tested `looksLikeCollectorNumberText` used everywhere else is untouched.
+
+5. **Full-corpus benchmark result (BASELINE P82/P83 vs. NEW P85):** see §7f's table for exact
+   numbers. The fix is real and directly confirmed on individual lightly-degraded images, but its
+   measured recovery rate across the full 9-profile perturbed corpus is small — most perturbation
+   profiles (blur/glare/shadow/tilt) degrade the small, often-stylized printed collector number
+   past what any page-segmentation mode can recover, consistent with §7c/P79's own "combined
+   photometric defects collapse every method" finding for the visual channel. Disclosed as a
+   genuine, still-open, hard sub-problem — not a claim that collector-number OCR is now solved.
+
+6. **Name-lexicon fuzzy resolution (`src/domain/scanner/name-lexicon.ts`) and structured
+   collector-number parsing (`src/domain/scanner/collector-parse.ts`) ship as tested, available
+   domain tooling — NEITHER is wired into the production retrieval/scoring path this session.**
+   The name lexicon needs a real production-scale unique-name list to be worth wiring in; no
+   Supabase credentials were available this session to generate one from the real ~20,946-card
+   catalog (the same standing gap every M15 session since P75 has disclosed) — the demo lexicon
+   this session generated from the 988-card OCR benchmark corpus (667 unique names, 8,021 bytes)
+   is a real, measured confirmation of the "far fewer unique names than printings" premise, but not
+   itself production-scale evidence. Wiring either module in ungated by real evidence would be
+   exactly the "blindly ship a complicated ensemble" this project's discipline exists to prevent —
+   same reasoning D-097/D-099 already applied to the auxiliary visual signal and the perceptual-
+   hash channel.
+
+**Not changed:** P80/P81/P82's name-field ROI logic or scoring (name recognition is byte-for-byte
+unchanged this session), the committed 19,501-card DINO index, `engine.ts`'s matching/scoring
+weights, any migration (still 90), any financial semantic. No card was special-cased anywhere.
+
+## D-103 — evidence-aware matcher redesign closes F-02; visual-dominance guard; OCR-confidence-weighted evidence reliability (P88)
+
+Full account: `ai_outputs/Claude_outputs/output_88.txt`. Responds to the independent adversarial
+audit (`ai_outputs/Claude_outputs/output_86.txt`, Opus 5/MAX effort) that BLOCKed release on two
+P0 findings — F-01 (stale visual-index caching, owned by a parallel P87 session) and F-02
+(visual-evidence scoring, this session).
+
+**F-02, the core problem:** `visualEvidencePoints`' 62-point ceiling at similarity==1.0 was
+structurally below a coincidental two-signal OCR text convergence on a WRONG card
+(`collector-number-exact` 45 + `name-exact` 30 [+ `language-match` 5] = 75-80) — a realistic
+strong visual match (similarity 0.85-0.90) scored only 41-48 points under the old linear curve,
+so a single OCR misread that happened to structurally match a different card's printed id/name
+could ALWAYS outrank a genuinely correct, strong visual match. This is the audit's identified
+mechanism behind the project's own measured 99.7% (visual-alone) -> 95.8% (hybrid) TOP1 regression
+(`docs/SCANNER_RESEARCH.md` §7b).
+
+**Fix, two parts, deliberately not just "raise the ceiling":**
+
+1. `visual-evidence.ts`'s point curve is now piecewise, banded to P84's own calibration
+   (D-102's sibling session): near-zero in the 'weak' band, a real but capped scale in 'moderate',
+   and a discrete jump into 'strong' territory (>= similarity 0.82, P84's own same-card floor)
+   reaching ~55-92 points. A realistic strong match now scores ~61-71 — genuinely competitive with,
+   though still not automatically dominant over, a coincidental text convergence.
+2. A new **visual-dominance guard** (`engine.ts`'s `applyVisualDominanceGuard`) is the actual
+   structural guarantee: when the visual channel produces a genuinely STRONG (>= 0.82) anchor for
+   one specific candidate, any OTHER candidate whose own visual similarity is none/weak has its
+   TEXT-only evidence discounted (halved) before ranking — unless that text evidence is itself
+   total-coverage-convergent (id + name + set + language all agreeing, score >= 90, an escape
+   hatch for a genuine multi-signal coincidence rather than a two-signal one). The guard never
+   fires when no candidate reaches the strong band (so P84's catastrophic ~0.18 regime, where
+   WRONG-card similarity is systematically higher than the true card's own, stays fully inert and
+   never punishes trustworthy OCR — the opposite failure mode the audit also warned against), and
+   never fires against a candidate whose own visual similarity is ALSO strong (two genuinely
+   similar prints/artworks — collector number should differentiate those, not a visual veto).
+
+**Verified against the exact pre-P88 formula, not just asserted:** the isolated pure repro (correct
+card carries zero text evidence at all; a different, wrong card coincidentally converges on
+id-exact + name-exact + language-match) scores, under the OLD formula, correct=48 / wrong=80 (wrong
+wins — reproduces the audit's finding exactly); under the NEW formula, correct=100 (clamped) /
+wrong=40 (guarded) — correct wins
+(`tests/domain/scanner/engine-visual-dominance.test.ts`).
+
+**Verified against the project's own existing benchmark methodology**, not just synthetic
+adversarial unit cases: re-ran `pnpm scanner:visual:benchmark` (P76's real 240-card/6-set/1,440-
+query corpus, real production matcher, real DINOv2 embeddings) with this session's NEW matcher.
+Hybrid TOP1 = **99.4%** (TOP3/TOP5 = 100%/100%), vs. the documented OLD hybrid TOP1 of 95.8%
+(`docs/SCANNER_RESEARCH.md` §7b) and visual-alone TOP1 of 99.7% (both figures reconfirmed by this
+same re-run). The hybrid-vs-visual-alone gap shrank from -3.9 points to -0.3 points on the
+project's own existing measurement — real, run, measured evidence, not merely reasoned.
+
+**F-26** (companion finding): `visual-text-disagreement` was pure unread telemetry (three non-test
+`git grep` hits, none of which changed behavior) — now caps tier below HIGH when the disagreement
+is meaningful (visual-only-best reaches at least the 'moderate' band), and is explicitly excluded
+for a 'weak'/catastrophic disagreement so it can never punish otherwise-trustworthy text (the
+opposite-direction requirement the audit's own prompt insisted on holding simultaneously).
+
+**F-27:** non-finite similarity (NaN/Infinity/-Infinity) now fails closed to zero evidence in both
+`visualEvidenceTier` and `visualEvidencePoints`, rather than propagating a corrupted number into
+diagnostics.
+
+**F-12 (scoring-layer half):** collector-number/name text evidence is now scaled by a new
+OCR-confidence reliability multiplier (`ocrTextReliability`) and, for the collector-number field,
+by `collector-parse.ts`'s structural confidence (`structuralReliability` — LOW-confidence shapes
+only, e.g. a stray single letter + digit or a bare 4+-digit run; the ordinary MEDIUM real-catalog
+shape, a bare 1-3-digit vintage id, is NOT discounted). Both are backward-compatible: an omitted
+confidence (every pre-P88 caller/test) resolves to full reliability. The ROI-selection-layer half
+of F-12 (OCR confidence never gated `isNumberRoiConfident`'s early-exit) is a separate, paired fix
+in `analyze.ts` — see `output_88.txt`.
+
+**Cherry-picked from P85** (reviewed, not blindly trusted — diffs read in full before applying):
+`name-lexicon.ts`, `collector-parse.ts`, the bounded multi-line collector-number OCR recovery pass,
+and the OCR forensics/benchmark tooling (commits `3c86999`/`56338ca`/`56e2757`/`f2ff180`). This
+session's own structural-confidence-based reliability weighting builds directly on
+`collector-parse.ts`'s bands.
+
+**Not changed:** the committed 19,501-card DINO index; the visual embedding pipeline (P84's own
+scope); scanner batch/UI save-state (P89's own scope); any migration (still 90); any financial
+semantic. No card was special-cased anywhere.
+
+**Not done, disclosed rather than silently skipped:** a scale-appropriate benchmark against the
+real 19,501-card hosted catalog (F-03) — blocked on hosted Supabase credentials, the same standing
+gap every M15 session since P75 has disclosed; production wiring of the name-lexicon (no real
+production-scale lexicon exists without those same credentials — the exact generator command is
+recorded in `output_88.txt` for whichever future session has them); real-device performance
+measurement.
+
+---
+
+## D-104 — Scanner UI state-machine concurrency, idempotency-reuse UX, and OCR-engine/worker test hardening (P89)
+
+**2026-09-02 · Accepted**
+
+**Context.** P86's independent adversarial audit found a cluster of real concurrency and UX gaps
+in the scanner's UI layer, all independent of the two P0 findings (F-01/F-02) P87/P88 owned:
+cancelling an in-flight analysis did not stop it from later clobbering a different, already-retaken
+capture (F-05); `openEnvironmentCamera`'s "stops any previous session" guarantee was false under
+concurrent invocation (F-06); the shutter and "Add cards" buttons had no synchronous in-flight lock
+(F-07/F-10); "Done" after a partial batch commit silently discarded not-yet-saved survivor items
+with no warning, unlike every other exit path in the same feature (F-09); a scanner
+idempotency-key-reuse rejection was mislabeled as a generic "failed, edit or remove" error, inviting
+a genuine duplicate (F-19); `ScannerOcrEngine`'s worker lifecycle/race-safety had zero dedicated
+tests and an unverified disposal-during-recognition claim (F-13/F-14/F-15); the visual-embedding
+crop fix (P77) and the visual worker's `init()` (where 3 of 4 confirmed real-device root causes
+lived) had no regression test that could actually catch a reintroduction (F-30/F-31); and the
+stale-deployment auto-reload (D-100) only ever consulted the scanner's own batch for "unsaved
+work," silently discarding in-progress purchase/sale form input on every other route (F-40), while
+the already-built `checkForNewDeployment()` polling path was never wired to any actual checkpoint
+(F-41).
+
+**Decision.** Fixed on its own branch/draft PR (`fix/m15-p89-ui-concurrency-release-hardening`,
+PR #68), touching only scanner UI/controller/state, the OCR engine, two small new platform modules,
+and the purchase/sale form pages — never `engine.ts`/`visual-evidence.ts` (P88's scope) or the
+visual-index cache path (P87's scope):
+
+1. **Cancellation is generation-ref guarded, matching the existing camera-open pattern.**
+   `ScannerPage.tsx` bumps `analysisGenerationRef` on cancel/retake/route-exit/unmount/controller
+   replacement; `analyzeCapture`'s `.then()`/`.catch()` no-ops when stale. A best-effort
+   `AbortSignal` additionally short-circuits `analyzeCapture` between pipeline stages (after
+   rectification, after the OCR/visual race, after candidate retrieval) so a cancelled analysis
+   skips remaining work — but this cannot interrupt an already-in-flight OCR/visual call; the
+   generation-ref no-op is what actually guarantees a stale result never reaches the UI, matching
+   the audit's own accepted minimum bar ("if full cancellation is not practical: stale results MUST
+   at minimum no-op").
+2. **Camera-open serialization moved into the primitive itself.** `camera-session.ts`'s
+   `openEnvironmentCamera` now serializes concurrent opens via its own generation counter, rather
+   than relying on caller discipline alone.
+3. **Synchronous locks for shutter and commit.** `capturingRef`/`committingRef`, set before any
+   `await`, gate `handleShutter`/`handleCommit` against a double-tap/multi-touch race a rendered
+   `disabled` attribute alone cannot close (React commits asynchronously).
+4. **"Done" after a partial commit routes through the same nonempty-batch guard every other exit
+   path already has** — the shared discard-confirmation sheet renders distinct copy for the
+   post-commit case ("Review remaining" / "Discard remaining and exit") so it can never read as an
+   ordinary acknowledgement that quietly means "discard."
+5. **Idempotency-key-reuse gets an honest, specific message.** `classifyAcquisitionFailure` gained
+   the same string-matching branch the sibling Openings feature already had, naming the possibility
+   of a pre-existing entry rather than inviting an edit-and-resubmit that creates a real duplicate.
+   A `needsVerification` batch item's quantity/condition edits are frozen (reducer no-ops the
+   mutation) until removed, with an explicit confirmation naming that removal only clears the local
+   session record.
+6. **App-wide unsaved-work registry** (`src/platform/unsaved-work-registry.ts`) replaces the
+   scanner-only flag `build-freshness.ts`/`StaleDeploymentBanner.tsx` consulted — the scanner batch,
+   Add/Edit Purchase, Add/Edit Sale (dirty-by-diff snapshots) and the Portfolio bulk-action
+   selection all register into one shared union, so a stale-deployment reload now prompts instead of
+   silently discarding typed-but-unsaved input on any of those routes. `checkForNewDeployment()` is
+   now actually invoked from two real checkpoints (`visibilitychange`-to-visible and every completed
+   router navigation), both bounded by its existing ≤1/60s rate limit — no new polling loop.
+7. **OCR engine gets dedicated tests and two real concurrency fixes found while writing them:**
+   `dispose()` now rejects every in-flight AND already-queued `recognize()` call's own disposal
+   signal (a queued-but-not-yet-running call had no signal registered before), and `recognize()`
+   itself serializes `setParameters`+`recognize` as one logical operation per instance. `CanvasPool`
+   (`analyze.ts`) gained the identical mutex shape, wrapping the ENTIRE per-capture OCR pipeline
+   (not just one `recognize()` call) — the shared `working` canvas draw happens before any `await`
+   the old code protected.
+8. **A real, built-worker browser smoke test** (`tests/e2e/visual-worker-real-browser.spec.ts`)
+   drives the actual `dist/assets/visual-worker-*.js` chunk through init + one embed-and-search
+   call. This is what actually FOUND that Playwright's Windows-hosted WebKit build (26.5) reports
+   `OffscreenCanvas` as undefined inside the worker — real Safari has shipped it in Worker scopes
+   since 16.4 (March 2023), so this is most likely a testing-environment gap, not a genuine
+   real-device regression, but was never confirmed against a real Mac/iPhone this session. Fixed
+   regardless of root cause with a structured, attributable error instead of a raw
+   `ReferenceError` (superseded by D-105's real fallback, below).
+
+**Disclosed gap, not fixed:** F-20/F-21 (a race-path idempotency SQL check, and grader/grade
+material-mismatch DB coverage) — Docker Desktop was unavailable this session, so no migration was
+written and no DB test was run; both remain real, if low-probability, open items for a session with
+a working local Postgres stack.
+
+**Not changed:** matcher/visual scoring (P88's scope); the visual-index cache path (P87's scope).
+
+---
+
+## D-105 — M15 mega-integration: P87 + P88 + P89 combined, worker fallback, expected-card debug UI, hosted build-safety hardening (P90)
+
+**2026-09-02/03 · Accepted**
+
+**Context.** P87 (D-101, content-addressed visual-index publishing), P88 (D-102/D-103, OCR
+forensics + matcher redesign) and P89 (D-104, UI concurrency + release hardening) were built in
+parallel, isolated worktrees against the identical base commit
+(`7d037e6db30296157a1d746a8844738767591d07`), each as its own draft PR against
+`feat/m15-scanner-integrated-p68` (PR #63). This session combined all three onto one integration
+branch (`feat/m15-p90-mega-integrated`) via real `git merge` (preserving each branch's own commit
+history, not squash/cherry-pick), resolved the resulting conflicts by hand, then closed the
+concrete gaps the combined branches still left open.
+
+**Merge conflicts and how they were resolved** (semantic reconstruction, never `--ours`/`--theirs`):
+
+1. **`docs/DECISIONS.md`/`docs/SCANNER_RESEARCH.md`** — P87 and P88 each independently used
+   `D-101`/section `7f` for unrelated content (P87: index publishing; P88, carrying P85's own work:
+   OCR forensics). Renumbered collision-free: D-101 (P87, index publishing) unchanged, P85's OCR
+   forensics section/decision moved to §7g/D-102, P88's own matcher redesign moved from D-102 to
+   D-103, with every internal cross-reference updated to match.
+2. **`package.json`** — kept every real script both sides added (P88's OCR-benchmark/name-lexicon/
+   ROI-fixture-smoke scripts), dropped only the one entry P89 correctly identified as dead
+   (`scanner:hash-index:build`, F-32 — pointed at a directory that was never created this
+   milestone).
+3. **`src/features/scanner/analyze.ts`** — the highest-risk conflict: P88's full OCR pipeline
+   (multi-line collector-number recovery, per-field confidence threading, the `OcrDebugTrial` trial
+   log) needed to end up wrapped in P89's `pool.withLock` mutex (F-15, serializing the whole
+   per-capture pipeline against concurrent callers) without losing either side's behavior. Resolved
+   by reconstructing the merged function from both branches' actual git history (not just the
+   conflict-marker diff, which interleaved partial statements confusingly) and verifying byte-exact
+   equivalence to P88's own logic via the full existing OCR test suite, unchanged.
+4. **`src/main.tsx`** — P87's `cleanupObsoleteScannerCaches()` call and P89's `router.subscribe`
+   deployment-freshness checkpoint are independent, unrelated fire-and-forget calls; both kept.
+
+**Section 9 — a real OffscreenCanvas fallback, not just a structured error.** P89's F-31 finding
+(above) left the worker unable to convert a captured frame to RGBA on any engine lacking
+`OffscreenCanvas` inside a Worker scope. Investigated whether a main-thread conversion could
+restore full functionality rather than degrading to OCR-only, against four criteria (must preserve
+privacy, never upload the image, never explode memory, never duplicate the encode/decode): the
+worker now reports `offscreenCanvasAvailableInWorker` in its 'ready' message; when false,
+`VisualRecognitionClient.analyze()` converts the bitmap to RGBA on the main thread itself (which
+always has a real canvas, `OffscreenCanvas` or `<canvas>`, regardless of Worker support) and
+transfers the raw buffer instead of the `ImageBitmap` — exactly one canvas draw happens either way,
+never a duplicate. `tests/e2e/visual-worker-real-browser.spec.ts` now exercises this fallback
+directly against the real built worker chunk whenever it detects the gap, proving a REAL successful
+embed+search result instead of merely tolerating the old structured error.
+
+**Section 10/12/21 — the expected-card debug UI P87 shipped plumbing for but never built.** Under
+`?scannerDebug=1`, "Check expected card rank" searches the catalog (reusing the same
+`searchCards`/`CardImage` pattern `PullPickerSheet.tsx` already established), and picking a card
+calls `getExpectedCardRank` without touching the batch or scanner candidate choice — memory-only,
+no persistence, no image involved. Extended beyond P87's visual-only rank with a real HYBRID rank:
+a new `rankScannerCandidatesFull` (engine.ts) reuses the exact scoring/visual-dominance-guard
+pipeline `matchScannerObservation` runs in production, minus the top-N truncation, so a named card
+gets a genuine rank position even outside the visible shortlist; `controller.ts` keeps the most
+recent scan's actual OCR/visual evidence (`lastMatchContext`) purely so this debug tool can score
+against it, never fed back into matching. A card never retrieved by the scan itself is fetched by
+id and scored as an honest what-if. The debug panel also gained a compact "at a glance" summary
+line (build SHA, index content id, visual/OCR state, top1, expected rank) above the existing raw
+diagnostics text, now behind a collapsible `<details>`.
+
+**Section 14/15 — the platform build verifier and the hosted missing-index policy are now
+mode-aware.** P87 disclosed `verify-scanner-platform-build.mjs` failing its own connect-src shape
+check (23/24) under the local/CI placeholder Supabase origin (`http://127.0.0.1:54321`), treating a
+structural impossibility (a local Supabase stack cannot present an `https://*.supabase.co` origin)
+as a security failure. The verifier now detects LOCAL/CI PLACEHOLDER vs HOSTED mode from the
+connect-src origin itself, reports which one it verified, and only relaxes the origin-shape
+requirement in local mode — a real hosted build still enforces the full `https://*.supabase.co`
+shape with no exception. Manually confirmed both branches: 24/24 in local mode, unchanged strict
+behavior in hosted mode. Separately, `stage-index-assets.mjs`'s missing-index handling was a
+blanket warn-and-skip regardless of build target — correct for local development (an OCR-only
+fallback is honest and expected) but wrong for a build Cloudflare Pages will actually deploy. It now
+hard-fails (`process.exit(1)`) when `CF_PAGES_COMMIT_SHA` is set (the same signal
+`vite.config.ts`'s own `resolveBuildSha` already uses to recognize a real Pages build) and the index
+is missing, while local/CI builds keep the original warn-and-skip. Verified directly by simulating
+both branches against the real committed index (temporarily renamed and restored).
+
+**Section 16 — a plain-language fallback note, not silence.** A confirmed terminal visual-channel
+failure already degraded matching to OCR-only silently (visual-worker.ts never crashes) with zero
+user-facing signal either way. Added one calm line to the scanner intro screen
+("Visual recognition unavailable on this device — text recognition is still available"), shown only
+on a genuine terminal `failed` state (never while still loading, never speculative), carrying none
+of the debug panel's own integrity vocabulary (content ids, checksums, source-project refs).
+
+**Sections 17/18/19/20/22/24 — verified already coherent by construction, no code change
+required** (each investigated directly against the merged tree, not assumed):
+
+- **Index update during an open session (§17).** A `VisualRecognitionClient`/Worker is constructed
+  once per `ScannerPage` mount (`useMemo` keyed on `userId`) and loads exactly one index generation
+  for its whole lifetime — so a scan mid-session never mixes generation A and B embeddings by
+  construction. A newly published generation becomes visible only on the NEXT worker construction
+  (route re-entry, or the existing stale-deployment reload), which always re-fetches `current.json`
+  fresh (`cache: 'no-store'`, both HTTP- and Cache-Storage-layer). This is exactly the prompt's own
+  preferred policy, achieved by the existing per-mount lifecycle with no dedicated
+  freshness-triggered worker-disposal code needed.
+- **Unsaved-work registry vs. index freshness (§18).** These are two independent, non-competing
+  mechanisms: the app-wide stale-deployment reload (D-104's unsaved-work registry) governs WHOLE-APP
+  reloads; the index pointer refetch (D-101) is a silent, lower-level worker-internal concern that
+  never prompts or reloads anything on its own. There is exactly one reload-trigger path, not two
+  racing ones.
+- **Abort vs. visual-worker state, and the OCR mutex vs. cancellation (§19/§20).** P89's own
+  disclosed scope decision (best-effort `AbortSignal` plus the generation-ref no-op guarantee, D-104
+  above) is unchanged by this integration — P87/P88 never touched `ScannerPage.tsx`/`camera-
+  session.ts`/`ocr-engine.ts` at all (confirmed: these files merged with zero conflicts), and this
+  session's own `analyze.ts` merge preserves P89's `pool.withLock` wrapping the whole OCR pipeline
+  exactly as designed, verified by the full existing concurrency test suite passing unchanged.
+- **F-02 post-integration sanity (§22).** `tests/domain/scanner/engine-visual-dominance.test.ts`
+  (P88's own adversarial suite pinning the exact pre/post-fix formula) and the full
+  `tests/domain/scanner/engine.test.ts` suite both pass unchanged post-merge — this session touched
+  `engine.ts` only to add `rankScannerCandidatesFull`, a pure additive wrapper reusing the exact same
+  private `scoreCandidate`/`applyVisualDominanceGuard` the production path already uses.
+- **Test-fixture consistency (§24).** P87's cache-coherence E2E and P89's real-worker E2E already
+  independently reference the identical content-addressed `/scanner-assets/visual-v1/index/...`
+  layout (one via mocked fixtures, one via the real committed data) — no flat/legacy layout
+  assumption survives anywhere in either suite.
+
+**Schema version.** `SCANNER_SCHEMA_VERSION` bumped 1 → 2 (`src/platform/build-info.ts`) — the
+diagnostics shape has grown materially since v1 across P87 (content-addressed index fields),
+P88 (OCR confidence/trial fields, hybrid score components), P89 (unchanged diagnostics shape) and
+this session (the expected-card hybrid-rank fields) without ever being bumped; a copy-diagnostics
+paste from a stale cached build is now distinguishable from the current shape by this field alone,
+same discipline `APP_BUILD_SHA` already established for build identity (D-100).
+
+**Verified this session (real, run, not assumed):** `pnpm typecheck`/`pnpm lint`/`pnpm format:check`
+clean; full unit suite green (1052+ tests, up from the pre-merge branches' own totals); a full
+production build succeeds and `verify-scanner-platform-build.mjs` passes 24/24 in local mode;
+`stage-index-assets.mjs`'s hosted/local missing-index branches both manually exercised against the
+real committed index. Full E2E/DB gates deliberately deferred to the next session per this prompt's
+own instruction (overnight priority: integration, not ceremony).
+
+**Not changed:** any financial semantic; any migration (still 90); the committed 19,501-card DINO
+index's actual content. No card was special-cased anywhere.

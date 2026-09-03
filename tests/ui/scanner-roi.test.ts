@@ -69,6 +69,20 @@ describe('P80 adaptive ROI candidates', () => {
       expect(candidate.fractions.top + candidate.fractions.height).toBeLessThanOrEqual(1)
     }
   })
+
+  it('F-17/P88 §14: includes a bottom-anchored name layout for Basic Energy cards', () => {
+    const energy = NAME_ROI_CANDIDATES.find((c) => c.id === 'energy-bottom-band')
+    expect(energy).toBeDefined()
+    // Bottom-anchored (unlike every other name candidate, all top-anchored) — the real distinguishing
+    // shape F-17 found: Energy cards print the name below the artwork, not near the top edge.
+    expect(energy!.fractions.top).toBeGreaterThan(0.5)
+    // Must not overlap either number-strip candidate's own vertical band, so both fields can be
+    // read from the same working image without stepping on each other.
+    for (const number of NUMBER_ROI_CANDIDATES) {
+      const energyBottom = energy!.fractions.top + energy!.fractions.height
+      expect(energyBottom).toBeLessThanOrEqual(number.fractions.top + 0.001)
+    }
+  })
 })
 
 describe('roiPixelRect mapping', () => {

@@ -7,7 +7,11 @@ import {
 import { addCardAcquisition } from '../../data/collection'
 import {
   matchScannerObservation,
+  parseCollectorNumberStructured,
+  rankScannerCandidates,
+  rankScannerCandidatesFull,
   SCORING_TIERS,
+  visualEvidenceTier,
   type RankedScannerCandidate,
   type ScannerObservation,
   type ScannerCandidateRecord,
@@ -24,7 +28,11 @@ import type { PixelRect } from './guide-geometry'
 import { ScannerOcrEngine } from './ocr-engine'
 import { rectifyCapture } from './rectify-capture'
 import { scannerCostBasisState, scannerSessionStore, type ScannerOrigin } from './session-store'
-import { VisualRecognitionClient, type VisualAnalysisResult } from './visual/visual-client'
+import {
+  VisualRecognitionClient,
+  type VisualAnalysisResult,
+  type ExpectedCardRank,
+} from './visual/visual-client'
 import { estimateAssetCacheStatus } from './visual/phase-timing'
 
 /**
@@ -40,6 +48,22 @@ import { estimateAssetCacheStatus } from './visual/phase-timing'
  * (a timed-out scan says so in VISUAL_ERROR, never silently degrades unlabeled).
  */
 export const VISUAL_COLD_ANALYSIS_TIMEOUT_MS = 8000
+
+/** F-05 (P89): thrown by {@link analyzeCapture} when its caller's `AbortSignal` fires between
+ *  pipeline stages. Distinguishable from a real analysis failure so a caller can tell "this was
+ *  cancelled" apart from "this genuinely failed" — the ScannerPage caller never surfaces either
+ *  case to the user once the analysis has gone stale (its own generation-ref check already no-ops
+ *  first), but the distinct name keeps that intent legible and testable. */
+export class ScannerAnalysisAbortedError extends Error {
+  constructor() {
+    super('Scan analysis was cancelled.')
+    this.name = 'ScannerAnalysisAbortedError'
+  }
+}
+
+function throwIfAnalysisAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new ScannerAnalysisAbortedError()
+}
 
 /**
  * P82 §16: REVERSES P81's own stagger order, evidence-gated (D-099 addendum). P81 started the
@@ -62,15 +86,22 @@ export const ENHANCED_VISUAL_PREWARM_STAGGER_MS = 1500
 
 /** Bounded raw visual shortlist handed to the domain matcher (prompt §16/§31): retrieval may
  *  examine this many raw candidates internally, but the UI never sees more than
- *  SCANNER_UI_CANDIDATE_LIMIT of them after reranking. */
+ *  SCANNER_UI_CANDIDATE_LIMIT of them after reranking. Production's own value is UNCHANGED by
+ *  P84/P87 — only the debug-only constants below were raised. */
 const VISUAL_SHORTLIST_SIZE = 30
-/** Debug-only widened shortlist (P79 §10): lets a debug session see whether the correct card
- *  exists deeper in the raw visual neighbours than production ever surfaces. Never used for
- *  actual matching/reranking — `matchScannerObservation` still only ever sees the SAME merged
- *  candidate pool either way; this only changes how many raw hits the debug panel can show. */
-const VISUAL_DEBUG_SHORTLIST_SIZE = 50
-/** How many raw visual neighbours the debug panel's extended list shows (P79 §10). */
-const DEBUG_EXTENDED_CANDIDATE_LIMIT = 20
+/** Debug-only widened shortlist (P79 §10, raised 50->200 by P84/ported P87): lets a debug session
+ *  see whether the correct card exists deeper in the raw visual neighbours than production ever
+ *  surfaces — load-bearing for the {@link ExpectedCardRank} debug tool, which needs the FULL index
+ *  reachable, not just a shallow shortlist. Never used for actual matching/reranking —
+ *  `matchScannerObservation` still only ever sees the SAME merged candidate pool either way; this
+ *  only changes how many raw hits the debug panel can show. A full-index brute-force search costs
+ *  the same regardless of how much of the sorted result is kept (real-device evidence, P84:
+ *  INDEX_SEARCH_MS=16 at 19,501 cards for topK=30), so widening this for debug sessions only is
+ *  not expected to be measurably slower. */
+const VISUAL_DEBUG_SHORTLIST_SIZE = 200
+/** How many raw visual neighbours the debug panel's extended list shows (P79 §10, raised 20->100
+ *  by P84/ported P87 — same reasoning as {@link VISUAL_DEBUG_SHORTLIST_SIZE} above). */
+const DEBUG_EXTENDED_CANDIDATE_LIMIT = 100
 import type {
   ScannerAnalysis,
   ScannerCandidate,
@@ -202,12 +233,36 @@ export function variantChoiceLabel(variant: CatalogVariant): string {
  * server response (code/details/hint), never on message text.
  */
 export function classifyAcquisitionFailure(index: number, error: unknown): ScannerCommitOutcome {
-  const candidate = error as { code?: unknown; details?: unknown; hint?: unknown }
+  const candidate = error as {
+    code?: unknown
+    details?: unknown
+    hint?: unknown
+    message?: unknown
+  }
   const hasServerAnswer =
     typeof candidate.code === 'string' ||
     typeof candidate.details === 'string' ||
     typeof candidate.hint === 'string'
   if (hasServerAnswer) {
+    const rawMessage = typeof candidate.message === 'string' ? candidate.message : ''
+    // F-19 (P89): idempotency-key-reuse is a DEFINITE server answer like any other refusal, but
+    // it means something categorically different — this exact request key already committed
+    // under DIFFERENT material facts, most often because an earlier ambiguous
+    // ('needs_verification') attempt actually succeeded server-side before its response reached
+    // the client, and the item was then edited before retrying. "Edit it or remove it" is
+    // actively dangerous for this specific case: editing-and-resubmitting can never update the
+    // existing entry (the RPC has no update semantics), and removing-and-rescanning generates a
+    // brand new request key that WILL create a genuine duplicate lot on top of the one that
+    // already silently succeeded. Mirrors the sibling Openings feature's own handling of the
+    // identical server pattern (src/features/openings/controller.ts's mapOpeningErrorMessage).
+    if (/idempotency-key-reuse/.test(rawMessage)) {
+      return {
+        index,
+        status: 'failed',
+        message:
+          'This card may already be in your collection with different details. Check Portfolio before trying again — editing and resubmitting this item will not update the existing entry.',
+      }
+    }
     return {
       index,
       status: 'failed',
@@ -322,6 +377,16 @@ export function createRealScannerController(
   // matching, never persisted, overwritten by the next analyzeCapture call.
   let lastDiagnostics: ScannerDiagnostics | null = null
   const debugImages = new DebugImageUrlStore()
+  /** P90 §21 (debug-only): the exact evidence the most recent scan's real match() call scored
+   *  against — kept ONLY so {@link getExpectedCardRank} can compute a real hybrid rank for a card
+   *  the owner names after the fact, using the SAME scoring pipeline production used, not a
+   *  re-derived approximation. Never read by anything on the production matching path; overwritten
+   *  every scan, cleared on dispose. */
+  let lastMatchContext: {
+    signals: ReturnType<typeof matchScannerObservation>['signals']
+    candidates: ScannerCandidateRecord[]
+    visualScores: VisualEvidenceByCard | undefined
+  } | null = null
 
   // P81 §6/§17: session-lifetime prewarm bookkeeping — separate from lastDiagnostics because it
   // must survive across scans (prewarm runs once per session), not reset per capture.
@@ -422,7 +487,10 @@ export function createRealScannerController(
     }
   }
 
-  async function analyzeCapture(capture: Parameters<ScannerUiController['analyzeCapture']>[0]) {
+  async function analyzeCapture(
+    capture: Parameters<ScannerUiController['analyzeCapture']>[0],
+    signal?: AbortSignal,
+  ) {
     const debug = isScannerDebugEnabled()
 
     // P79: rectify BEFORE either channel sees a frame — detects the card's real boundary within
@@ -431,6 +499,7 @@ export function createRealScannerController(
     // their existing, unchanged code paths. Never throws: a detection failure or any canvas error
     // resolves to the original, unrectified capture (see rectify-capture.ts).
     const rectified = await rectifyCapture(capture, { debug })
+    throwIfAnalysisAborted(signal)
     const workingCapture = rectified.frame
 
     // On-device OCR and on-device visual embedding run in parallel — both stay entirely local
@@ -452,15 +521,22 @@ export function createRealScannerController(
         ),
       ])
 
+    throwIfAnalysisAborted(signal)
     const observation: ScannerObservation = {
       rawNameText: ocrResult.rawNameText,
       rawCollectorNumberText: ocrResult.rawCollectorNumberText,
       rawSetText: null,
       languageHint,
+      // P88 §8/F-12: threads the winning OCR read's own confidence into the matcher's evidence
+      // reliability weighting (engine.ts's `ocrTextReliability`) — null/absent when the full-frame
+      // fallback ran instead of a field-specific ROI read (analyze.ts never fabricates one).
+      nameOcrConfidence: ocrResult.nameConfidence ?? null,
+      collectorOcrConfidence: ocrResult.collectorNumberConfidence ?? null,
     }
 
     // Textual signals meet the catalog through P67's adapter (existing search_cards surface).
     const textCandidates = await retrieveScannerCandidates(observation)
+    throwIfAnalysisAborted(signal)
 
     let visualScores: VisualEvidenceByCard | undefined
     let mergedCandidates = textCandidates
@@ -473,9 +549,10 @@ export function createRealScannerController(
       if (unknownVisualIds.length > 0) {
         // Visual shortlist candidates the text search never found (prompt §16's hybrid
         // retrieval): fetch their identity/metadata in one bounded round trip. A card the
-        // catalog no longer has (e.g. deactivated since the index was built) is simply dropped —
-        // never fabricated.
-        const enriched = await getCardsByIds(unknownVisualIds).catch(() => [])
+        // catalog no longer has, is now inactive, or is not the expected catalog language
+        // (F-28/F-29/P88 §16 — the visual index is English-only today, `session-store.ts`'s
+        // `language: 'en'` default) is simply dropped — never fabricated.
+        const enriched = await getCardsByIds(unknownVisualIds, 'en').catch(() => [])
         mergedCandidates = [
           ...textCandidates,
           ...enriched.map((card) => toCandidateRecordFromCatalog(card)),
@@ -484,6 +561,9 @@ export function createRealScannerController(
     }
 
     const match = matchScannerObservation(observation, mergedCandidates, visualScores)
+    // P90 §21: snapshot for the debug-only expected-card-rank tool — see lastMatchContext's own
+    // doc. Always overwritten, never merged with a previous scan's evidence.
+    lastMatchContext = { signals: match.signals, candidates: mergedCandidates, visualScores }
     // P80 §6/§13: how many of match.candidates the user actually sees this scan — normally 5,
     // widened toward SCANNER_UI_EXPANDED_CANDIDATE_LIMIT only when the ranking near the cutoff is
     // genuinely flat (the Shieldon rank-6 real-device case).
@@ -494,6 +574,21 @@ export function createRealScannerController(
     const visualSnapshot = visualClient.getDiagnosticsSnapshot()
     const nameById = new Map(mergedCandidates.map((c) => [c.cardId, c.name]))
     const imageBaseUrlById = new Map(mergedCandidates.map((c) => [c.cardId, c.imageBaseUrl]))
+    // P88 §21: the calibrated band of the strongest visual hit this scan, independent of which
+    // candidate wins overall — real-device reports can then say "the visual channel was in the
+    // catastrophic band" instead of a bare, uncalibrated cosine number.
+    const strongestVisualSimilarity =
+      visualScores && visualScores.size > 0 ? Math.max(...visualScores.values()) : null
+    // P88 §21: why (if at all) the tier was capped below what the raw top score alone implies —
+    // mirrors engine.ts's own precedence (a visual-dominance guard already discounted the score
+    // before tiering ran; the margin/disagreement checks run afterward, in that order).
+    const tierCapReason = match.notes.includes('visual-text-disagreement')
+      ? ('visual-text-disagreement' as const)
+      : match.notes.includes('runner-up-margin-small')
+        ? ('runner-up-margin-small' as const)
+        : match.candidates.some((c) => c.reasons.includes('visual-dominance-guarded'))
+          ? ('visual-dominance-guarded' as const)
+          : null
     lastDiagnostics = {
       visualModelState: visualSnapshot.modelState,
       visualBackend: visualResult?.backend ?? visualSnapshot.readyInfo?.backend ?? 'unknown',
@@ -512,6 +607,14 @@ export function createRealScannerController(
       indexVersion: visualSnapshot.readyInfo?.indexVersion ?? null,
       indexCardCount: visualSnapshot.readyInfo?.cardCount ?? null,
       indexSourceProjectRef: visualSnapshot.readyInfo?.indexSourceProjectRef ?? null,
+      indexModelRevision: visualSnapshot.readyInfo?.indexModelRevision ?? null,
+      indexGeneratedAt: visualSnapshot.readyInfo?.indexGeneratedAt ?? null,
+      indexEmbeddingsSha256: visualSnapshot.readyInfo?.indexEmbeddingsSha256 ?? null,
+      indexContentId: visualSnapshot.readyInfo?.indexContentId ?? null,
+      indexSourceProjectExpected: visualSnapshot.readyInfo?.indexSourceProjectExpected ?? null,
+      indexSourceProjectMatch: visualSnapshot.readyInfo?.indexSourceProjectMatch ?? null,
+      indexRuntimeChecksumVerified: visualSnapshot.readyInfo?.indexRuntimeChecksumVerified ?? null,
+      indexRuntimeChecksumMs: visualSnapshot.readyInfo?.indexRuntimeChecksumMs ?? null,
       indexLoadMs: visualSnapshot.readyInfo?.indexLoadMs ?? null,
       indexSearchMs: visualResult?.searchMs ?? null,
       topVisualCandidates: (visualResult?.hits ?? []).slice(0, 5).map((hit) => ({
@@ -536,6 +639,9 @@ export function createRealScannerController(
       // `id`) — null means no candidate produced anything usable for that field.
       ocrNameRoiId: ocrResult.nameRoiId,
       ocrNumberRoiId: ocrResult.numberRoiId,
+      // P85 §11: empty outside a debug session (ocrResult.trials is only ever populated when
+      // `debug` was true — see analyze.ts's `runOcrAnalysis`).
+      ocrTrials: ocrResult.trials ?? [],
       // P80 §6: true exactly when the visible shortlist widened past the normal 5 — lets the
       // debug panel/owner confirm expansion actually fired for a flat ranking like Shieldon's.
       candidateExpansionTriggered: visibleCandidateCount > SCANNER_UI_CANDIDATE_LIMIT,
@@ -553,6 +659,19 @@ export function createRealScannerController(
       // back to the snapshot's own unavailableReason surfaces it.
       visualError:
         visualResult === null ? (visualErrorMessage ?? visualSnapshot.unavailableReason) : null,
+      visualCalibrationBand:
+        strongestVisualSimilarity === null ? null : visualEvidenceTier(strongestVisualSimilarity),
+      ocrNameConfidence: ocrResult.nameConfidence ?? null,
+      ocrCollectorConfidence: ocrResult.collectorNumberConfidence ?? null,
+      ocrCollectorParseConfidence: ocrResult.rawCollectorNumberText
+        ? parseCollectorNumberStructured(ocrResult.rawCollectorNumberText).confidence
+        : null,
+      // P88 §11/§12: not wired into production retrieval this release — see the field's own
+      // doc comment on ScannerDiagnostics (contract.ts).
+      ocrNameLexiconMatch: null,
+      ocrNameLexiconMargin: null,
+      visualTextDisagreement: match.notes.includes('visual-text-disagreement'),
+      tierCapReason,
       visualBackendRequested: visualSnapshot.backendDiagnostics?.backendRequested ?? 'auto',
       visualBackendAttempts: visualSnapshot.backendDiagnostics?.backendAttempts ?? {
         webgpu: 'not-attempted',
@@ -697,6 +816,68 @@ export function createRealScannerController(
     releaseOcrCanvases()
     visualClient.dispose()
     debugImages.clear()
+    lastMatchContext = null
+  }
+
+  /** Debug-only (P84/P87 visual rank, P90 §21 hybrid rank): resolves `null` immediately, WITHOUT
+   *  ever calling `visualClient`, outside `?scannerDebug=1` — this is the gate contract.ts's own
+   *  doc promises. Once confirmed: the visual-only rank comes from `visualClient.getExpectedCardRank`
+   *  unchanged (P87); the hybrid fields are computed HERE, against `lastMatchContext` — the exact
+   *  OCR/visual evidence the most recent real scan's `matchScannerObservation` call scored — using
+   *  `rankScannerCandidatesFull`, the SAME scoring/visual-dominance-guard pipeline production runs,
+   *  never a separate approximation. A card outside `lastMatchContext.candidates` (never retrieved
+   *  by this scan's text/visual search at all) is looked up by id and scored as an honest
+   *  what-if — this never mutates the batch, never adds anything, never re-runs the scan. */
+  async function getExpectedCardRank(cardId: string): Promise<ExpectedCardRank | null> {
+    if (!isScannerDebugEnabled()) return null
+    const visualRank = await visualClient.getExpectedCardRank(cardId)
+    if (lastMatchContext === null) return visualRank
+
+    let candidates = lastMatchContext.candidates
+    if (!candidates.some((c) => c.cardId === cardId)) {
+      const fetched = await getCardsByIds([cardId], 'en').catch(() => [])
+      const [firstFetched] = fetched
+      if (firstFetched !== undefined) {
+        candidates = [...candidates, toCandidateRecordFromCatalog(firstFetched)]
+      }
+    }
+    const fullRanked = rankScannerCandidatesFull(
+      lastMatchContext.signals,
+      candidates,
+      lastMatchContext.visualScores,
+    )
+    const hybridIndex = fullRanked.findIndex((entry) => entry.card.cardId === cardId)
+    const hybridEntry = hybridIndex === -1 ? null : fullRanked[hybridIndex]
+
+    // The REAL production tier for this exact scenario, only when the card would actually appear
+    // in the bounded top N — never fabricated for a candidate production would never surface.
+    const boundedMatch = rankScannerCandidates(
+      lastMatchContext.signals,
+      candidates,
+      lastMatchContext.visualScores,
+    )
+    const inBounded = boundedMatch.candidates.some((entry) => entry.card.cardId === cardId)
+
+    const fallback: ExpectedCardRank = {
+      found: false,
+      rank: null,
+      similarity: null,
+      totalCards: 0,
+      inTop20: false,
+      inTop100: false,
+      indexContentId: null,
+      hybridRank: null,
+      hybridScore: null,
+      hybridTier: null,
+      scoreComponents: [],
+    }
+    return {
+      ...(visualRank ?? fallback),
+      hybridRank: hybridIndex === -1 ? null : hybridIndex + 1,
+      hybridScore: hybridEntry?.score ?? null,
+      hybridTier: inBounded ? boundedMatch.tier : null,
+      scoreComponents: hybridEntry?.reasons ?? [],
+    }
   }
 
   return {
@@ -710,6 +891,7 @@ export function createRealScannerController(
     prewarm,
     getVisualPrewarmState,
     getFastScannerState,
+    getExpectedCardRank,
   }
 }
 

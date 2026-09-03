@@ -74,6 +74,31 @@ export interface ScannerDiagnostics {
   indexVersion: string | null
   indexCardCount: number | null
   indexSourceProjectRef: string | null
+  /** P87 §15: the loaded generation's own declared identity fields — makes a stale index
+   *  impossible to hide from a screenshot/diagnostics paste, alongside indexContentId below. */
+  indexModelRevision: string | null
+  indexGeneratedAt: string | null
+  indexEmbeddingsSha256: string | null
+  /** P87 F-01: the content-addressed id of the generation actually loaded this session — the
+   *  field that makes a stale index impossible to hide (see current.json/generations/<id>). Null
+   *  before the index has loaded (or if it never becomes available). */
+  indexContentId: string | null
+  /** P87 F-22: which source project THIS deployment expects the index to resolve against
+   *  (derived from `VITE_SUPABASE_URL`), or null when this deployment itself has no real hosted
+   *  project configured (the local/CI-placeholder case, where nothing is gated). */
+  indexSourceProjectExpected: string | null
+  /** P87 F-22: whether `indexSourceProjectRef` matched `indexSourceProjectExpected`. Null when
+   *  there was nothing to compare (no expectation configured, or no index loaded at all) — never
+   *  fabricated as true/false in that case. */
+  indexSourceProjectMatch: boolean | null
+  /** P87 §6: whether the loaded generation's embeddings were independently re-hashed at load time
+   *  and found to match `manifest.embeddingsSha256` (WebCrypto SHA-256 over the fetched bytes,
+   *  not merely trusting the byte-for-byte identical manifest field). Null before the index has
+   *  loaded. */
+  indexRuntimeChecksumVerified: boolean | null
+  /** Milliseconds the runtime SHA-256 re-hash actually took (P87 §6) — measured once per newly
+   *  loaded generation, never repeated per scan. Null before the index has loaded. */
+  indexRuntimeChecksumMs: number | null
   indexLoadMs: number | null
   indexSearchMs: number | null
   topVisualCandidates: { cardId: string; similarity: number; name: string | null }[]
@@ -95,6 +120,21 @@ export interface ScannerDiagnostics {
   ocrNameRoiId: string | null
   /** Same as `ocrNameRoiId` for the collector-number field. */
   ocrNumberRoiId: string | null
+  /** P85 §11 OCR debugger: every ROI/preprocess/segmentation attempt considered this scan — empty
+   *  outside a debug session (the search itself never records trials unless debug is set, so
+   *  there is nothing extra to show even if this were populated unconditionally). Diagnostics
+   *  only: the winner here is always identical to `ocrNameRoiId`/`ocrNumberRoiId` above; nothing
+   *  on this list feeds back into matching. */
+  ocrTrials: {
+    field: 'name' | 'number'
+    roiId: string
+    preprocess: 'contrast' | 'binarize'
+    segmentation: 'single-line' | 'multi-line'
+    text: string
+    confidence: number
+    plausibilityScore: number
+    isWinner: boolean
+  }[]
   /** True when the visible candidate shortlist widened past the normal 5 because the ranking near
    *  the cutoff was flat/ambiguous (P80 §6 — the Shieldon rank-6 real-device case). */
   candidateExpansionTriggered: boolean
@@ -105,6 +145,37 @@ export interface ScannerDiagnostics {
     reasons: readonly string[]
   }[]
   visualError: string | null
+  /** P88 §21 — the calibrated tier (visual-evidence.ts's `visualEvidenceTier`) of the STRONGEST
+   *  visual similarity found this scan, independent of which candidate it belongs to. Lets a real-
+   *  device report say "this scan's visual channel was in the 0.10-0.19 catastrophic-defect band"
+   *  instead of a bare cosine number nobody can calibrate by eye. Null when no visual hit exists. */
+  visualCalibrationBand: 'strong' | 'moderate' | 'weak' | 'none' | null
+  /** P88 §8/§21/F-12: the winning OCR read's own Tesseract confidence for each field — the exact
+   *  number `engine.ts`'s `ocrTextReliability` weighted this scan's evidence by. Null when nothing
+   *  usable was read for that field. */
+  ocrNameConfidence: number | null
+  ocrCollectorConfidence: number | null
+  /** P88 §21: the collector-number field's structural parse confidence (collector-parse.ts) —
+   *  distinguishes "read something, and it looks like a real printed id" from "read something
+   *  that merely parses." Null when nothing was read for the field. */
+  ocrCollectorParseConfidence: 'high' | 'medium' | 'low' | 'none' | null
+  /** P88 §21/§11-§12: the local name-lexicon's fuzzy-match resolution for this scan's OCR name
+   *  reading, when a lexicon is wired in. Both null this release — the fuzzy lexicon resolver
+   *  (name-lexicon.ts) ships tested but unwired into production retrieval/scoring (no real
+   *  production-scale lexicon exists without hosted Supabase credentials; see
+   *  scripts/scanner-name-lexicon/build-lexicon.ts). Present now so a FUTURE session that wires it
+   *  in needs no new diagnostics field. */
+  ocrNameLexiconMatch: string | null
+  ocrNameLexiconMargin: number | null
+  /** P88 §4/§21/F-26: true when the text-only best candidate and the visual-only best candidate
+   *  disagreed meaningfully this scan (engine.ts's 'visual-text-disagreement' note). */
+  visualTextDisagreement: boolean
+  /** P88 §21: WHY the tier was capped below what the raw top score alone would have implied, when
+   *  it was — 'runner-up-margin-small' (ambiguous ranking), 'visual-text-disagreement' (F-26), or
+   *  'visual-dominance-guarded' (F-02's guard discounted the coincidental-text top candidate).
+   *  Null when nothing capped the tier this scan. */
+  tierCapReason:
+    'runner-up-margin-small' | 'visual-text-disagreement' | 'visual-dominance-guarded' | null
   /** Backend-attempt diagnostics (P78 prompt §4/§11/§12) — what was actually tried, present
    *  whether the visual channel ended up ready or unavailable. */
   visualBackendRequested: 'auto' | 'wasm' | 'webgpu'
@@ -177,6 +248,42 @@ export interface ScannerDiagnostics {
  * scan replaces them or the controller disposes. A null field means that stage never ran (e.g.
  * the full-frame OCR fallback path never produced ROI crops) — never a fabricated placeholder.
  */
+/**
+ * Debug-only diagnostic (P84, ported P87): re-ranks the MOST RECENT scan's query embedding
+ * against the FULL decoded visual index for one candidate card, without re-embedding or making a
+ * second scan. Never persists the expected card's identity, never auto-adds anything, never
+ * uploads anything — a pure read over an already-in-memory query vector. See
+ * {@link ScannerUiController.getExpectedCardRank}'s own doc for the debug-mode gating contract.
+ */
+export interface ExpectedCardRank {
+  readonly found: boolean
+  readonly rank: number | null
+  readonly similarity: number | null
+  readonly totalCards: number
+  readonly inTop20: boolean
+  readonly inTop100: boolean
+  /** The content-addressed generation this rank was computed against (P87 F-01) — lets the owner
+   *  confirm which index generation a diagnostic reading actually came from. */
+  readonly indexContentId: string | null
+  /** P90 §21: where this card would rank against the FULL hybrid (text + visual) scoring for the
+   *  most recent scan's actual OCR/visual evidence — null when no scan has produced usable
+   *  evidence yet this session, distinguishing "not computed" from "ranked last." Reuses the exact
+   *  scoring/visual-dominance-guard logic `matchScannerObservation` runs in production
+   *  (`rankScannerCandidatesFull`), never a separate/approximated calculation. */
+  readonly hybridRank: number | null
+  readonly hybridScore: number | null
+  /** The REAL production tier this exact scenario would produce ('high'/'medium'/'low'/'none'),
+   *  ONLY when the card ranks inside the visible top N (`SCORING_TIERS.maxReturnedCandidates`) —
+   *  null otherwise rather than fabricating a tier for a candidate production would never surface.
+   *  Deliberately a plain string, not the domain's `ScannerConfidenceTier` — this module stays
+   *  independent of domain types, same principle as {@link ScannerConfidence} above. */
+  readonly hybridTier: 'high' | 'medium' | 'low' | 'none' | null
+  /** Which scoring signals matched for this card this scan (e.g. 'name-exact',
+   *  'collector-number-exact', 'visual-strong') — the same reason codes engine.ts's own scoring
+   *  attaches, not a re-derived summary. Empty when the card scored zero evidence. */
+  readonly scoreComponents: readonly string[]
+}
+
 export interface ScannerDebugImages {
   /** The plain crop-to-guide-rect image, BEFORE rectification — the "what the guide alone saw"
    *  comparison baseline. */
@@ -269,7 +376,13 @@ export interface ScannerCommitResult {
  * it against the real engine/catalog/acquisition paths; tests inject mocks of this interface.
  */
 export interface ScannerUiController {
-  analyzeCapture(frame: ScannerCapture): Promise<ScannerAnalysis>
+  /** F-05 (P89): `signal` is best-effort cooperative cancellation — checked between pipeline
+   *  stages (after rectification, after the OCR/visual race, after candidate retrieval) so a
+   *  cancelled analysis skips remaining work instead of running matching/scoring to completion
+   *  for a result nobody will see. It cannot interrupt an already-in-flight OCR/visual call; the
+   *  caller's own generation-ref discipline is what guarantees a stale result never reaches the
+   *  UI regardless of whether this signal actually shortened the work. */
+  analyzeCapture(frame: ScannerCapture, signal?: AbortSignal): Promise<ScannerAnalysis>
   searchFallback(query: ScannerSearchQuery): Promise<ScannerCandidate[]>
   /** Active printing choices for an identified card (fetched ONLY after the user picks the
    *  candidate — prompt §22/I6). Empty means the card has no active variant to add. */
@@ -296,6 +409,13 @@ export interface ScannerUiController {
    *  this reports the HEAVYWEIGHT/enhanced DINO channel specifically — {@link getFastScannerState}
    *  is what the intro screen should gate its own loading copy on instead. */
   getVisualPrewarmState?(): 'not-loaded' | 'loading' | 'ready' | 'failed'
+  /** Debug-only (P84, ported P87): re-ranks the most recent scan's cached query vector against
+   *  the full visual index for `cardId`, without re-embedding. Resolves `null` immediately,
+   *  WITHOUT ever calling the visual client/worker, outside `?scannerDebug=1` — this is a debug
+   *  tool, never a production matching path. Also resolves `null` when no scan has produced a
+   *  query vector yet this session, or when the visual channel/index is unavailable. Never adds,
+   *  saves, or uploads anything. Optional for the same reason as the other optional members above. */
+  getExpectedCardRank?(cardId: string): Promise<ExpectedCardRank | null>
   /** P82 §17-§19: readiness of the FAST (OCR) baseline — reaches 'ready' far sooner than
    *  {@link getVisualPrewarmState} on a cold device, since it does not depend on the ~45MB DINO
    *  model/index. Optional for the same reason as the other diagnostic getters above. */

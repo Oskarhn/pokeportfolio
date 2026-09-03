@@ -170,6 +170,41 @@ describe('camera teardown guarantees', () => {
     void firstSession
   })
 
+  it('two concurrent unresolved getUserMedia calls leave exactly one live stream and stop the other (F-06)', async () => {
+    const first = fakeStream(1)
+    const second = fakeStream(1)
+    const { video } = fakeVideoElement()
+    let resolveFirstAcquire!: (stream: MediaStream) => void
+    let resolveSecondAcquire!: (stream: MediaStream) => void
+    const firstAcquire = vi.fn(
+      () =>
+        new Promise<MediaStream>((resolve) => {
+          resolveFirstAcquire = resolve
+        }),
+    )
+    const secondAcquire = vi.fn(
+      () =>
+        new Promise<MediaStream>((resolve) => {
+          resolveSecondAcquire = resolve
+        }),
+    )
+    // Neither call is awaited before the next starts — both getUserMedia calls are in flight
+    // simultaneously, which is exactly the race the module-level active-session check alone
+    // cannot serialize against.
+    const firstPromise = openEnvironmentCamera(video, firstAcquire)
+    const secondPromise = openEnvironmentCamera(video, secondAcquire)
+    // Resolve the SECOND call's getUserMedia first — the primitive must still serialize behind
+    // whichever call started first, not whichever getUserMedia promise happens to settle first.
+    resolveSecondAcquire(second.stream)
+    resolveFirstAcquire(first.stream)
+    const [firstSession, secondSession] = await Promise.all([firstPromise, secondPromise])
+    expect(first.stops[0]).toHaveBeenCalledTimes(1)
+    expect(second.stops[0]).not.toHaveBeenCalled()
+    expect(video.srcObject).toBe(second.stream)
+    void firstSession
+    secondSession.stop()
+  })
+
   it('the safety valve used on unmount/visibility stops whatever session exists', async () => {
     const { stream, stops } = fakeStream(1)
     const { video } = fakeVideoElement()

@@ -10,6 +10,56 @@ they were**.
 
 ## [Unreleased]
 
+### Fixed — 2026-09-02 — M15 scanner: evidence-aware matcher redesign closes the F-02 visual/text scoring gap; OCR confidence weighting; retrieval consistency (P88, D-102, isolated repair branch `fix/m15-p88-matcher-ocr-correctness` — draft PR #66 against PR #63's integration branch, NOT on PR #63 itself, not merged, not deployed)
+
+Redesigns `visual-evidence.ts`'s point curve (calibrated bands matching P84's real similarity
+distributions) and adds a new visual-dominance guard (`engine.ts`) that discounts a coincidentally
+text-matching WRONG candidate when a DIFFERENT candidate carries strong, dedicated visual evidence
+it lacks — closes the audited F-02 CRITICAL/P0 finding (a single OCR misread could always outrank
+a correct, strong visual match by construction). Re-running the project's own existing 240-card
+benchmark with the new matcher: hybrid TOP1 99.4% vs. the documented OLD hybrid's 95.8% (visual-
+alone stays 99.7%) — the hybrid-vs-visual-alone gap shrank from -3.9 to -0.3 points. Also fixes
+F-12 (OCR confidence now gates collector-number ROI selection and matcher text-evidence
+reliability), F-16 (recovers OCR separator noise in collector numbers), F-17 (adds a Basic-Energy
+name-ROI layout), F-26 (visual-text-disagreement now actually caps tier), F-27 (non-finite
+similarity fails closed), F-28/F-29 (the visual-shortlist enrichment channel now filters
+`is_active`/`language`, matching `search_cards`), F-34 (real-OCR fixtures + a real-Tesseract smoke
+test for every layout family), and a generic attack/rules body-text-contamination penalty (P88
+§13). Full account: `docs/DECISIONS.md` D-102, `docs/SCANNER_RESEARCH.md` §8,
+`ai_outputs/Claude_outputs/output_88.txt`.
+
+### Fixed — 2026-09-02 — M15 scanner: OCR forensics, a bounded multi-line collector-number recovery pass, name-lexicon/structured-parser tooling (P85, D-101, isolated research branch `feat/m15-p85-ocr-recognition` — NOT on PR #63, not merged, not deployed)
+
+Built this project's first real, ground-truthed OCR accuracy corpus (`scripts/scanner-ocr-benchmark/`,
+reusing the existing TCGdex fetcher and the P76/P79 augmentation modules for 9 realistic
+perturbation profiles/card) and used it to actually forensically test Tesseract.js 7's
+configuration space instead of reasoning from single real-device screenshots.
+
+- **PSM forensics**: the pre-existing PSM 7 (single-line) default was already correct for both
+  fields when a candidate crop genuinely is one line — measured directly against 4 alternative
+  modes, not assumed.
+- **Real bug found and fixed**: a correctly-cropped collector-number strip routinely contains TWO
+  visual lines (the id plus an adjacent illustrator-credit or copyright line) on both vintage and
+  modern layouts, confirmed by direct visual inspection of real crop images — PSM 7 cannot read a
+  two-line image at all. Fixed with a bounded THIRD pass (PSM 6, "uniform block") for the
+  collector-number field only, tried only when both existing single-line passes already found
+  nothing — zero added cost on an already-working scan.
+- **A second real bug found and fixed before shipping**: the naive fix let a copyright YEAR
+  ("© 1995") win as a fake collector number (a bare 4-digit token that structurally parses).
+  Closed with a stricter plausibility check used only by the new pass.
+- **`src/domain/scanner/name-lexicon.ts`** (fuzzy OCR-name resolution against a local unique-name
+  list) and **`src/domain/scanner/collector-parse.ts`** (structured collector-number parse with a
+  confidence band) ship as tested, available domain tooling — neither wired into production
+  retrieval/scoring this session (no real production-scale name lexicon exists yet; no Supabase
+  credentials available to generate one).
+- **`?scannerDebug=1` OCR debugger**: every considered ROI/preprocess/segmentation attempt is now
+  listed (`OCR_TRIALS`), winner flagged.
+
+Full account: D-101 in DECISIONS.md, SCANNER_RESEARCH.md §7f, `ai_outputs/Claude_outputs/output_85.txt`.
+Gates: typecheck/lint/format clean, build green, unit tests green (see output_85.txt for the exact
+count). DB not run (diff touches zero DB files). This branch is an isolated OCR-only research
+track (P85) run in parallel with P84/P86 — not integrated into PR #63 this session.
+
 ### Fixed — 2026-08-30 — M15b scanner: live prewarm-stall diagnostics, FAST (OCR) baseline reprioritized, lightweight hash retrieval evaluated and rejected (P82, D-099, on PR #63, DRAFT — not merged, not deployed)
 
 P81's cold-start fixes did not close the gap: a real-iPhone retest still showed

@@ -15,6 +15,7 @@ import {
   scannerAssetGlobIgnores,
   scannerAssetRuntimeCache,
   visualAssetRuntimeCache,
+  visualIndexRuntimeCache,
 } from '../../vite.config.ts'
 
 const DEV_SUPABASE_URL = 'https://exampleprojectref.supabase.co'
@@ -131,7 +132,7 @@ describe('scanner asset runtime-cache rule', () => {
   })
 })
 
-describe('visual recognition asset runtime-cache rule (P76, D-097)', () => {
+describe('visual recognition MODEL/ENGINE runtime-cache rule (P76, D-097; scoped P87 F-01)', () => {
   const pattern = visualAssetRuntimeCache.urlPattern
 
   it('is a CacheFirst rule over its OWN dedicated versioned cache (not v7)', () => {
@@ -142,19 +143,33 @@ describe('visual recognition asset runtime-cache rule (P76, D-097)', () => {
     )
   })
 
-  it('matches the model/index file classes under /scanner-assets/visual-v1/', () => {
+  it('matches only the model/engine file classes under /scanner-assets/visual-v1/model|ort/', () => {
     expect(pattern.test('/scanner-assets/visual-v1/model/onnx/model_quantized.onnx')).toBe(true)
+    expect(pattern.test('/scanner-assets/visual-v1/model/config.json')).toBe(true)
     expect(pattern.test('/scanner-assets/visual-v1/ort/ort-wasm-simd-threaded.wasm')).toBe(true)
     expect(pattern.test('/scanner-assets/visual-v1/ort/ort-wasm-simd-threaded.mjs')).toBe(true)
-    expect(pattern.test('/scanner-assets/visual-v1/manifest.json')).toBe(true)
-    expect(pattern.test('/scanner-assets/visual-v1/embeddings.bin')).toBe(true)
     expect(
-      pattern.test('https://pokeportfolio-dev.pages.dev/scanner-assets/visual-v1/embeddings.bin'),
+      pattern.test(
+        'https://pokeportfolio-dev.pages.dev/scanner-assets/visual-v1/model/onnx/model_quantized.onnx',
+      ),
     ).toBe(true)
-    expect(pattern.test('/scanner-assets/visual-v1/embeddings.bin?v=1')).toBe(true)
+    expect(pattern.test('/scanner-assets/visual-v1/model/onnx/model_quantized.onnx?v=1')).toBe(true)
   })
 
-  it('rejects everything outside the exact visual-v1 prefix and file classes, including the OCR v7 tree', () => {
+  it('P87 F-01: never matches the index data files or the bootstrap pointer, even by extension', () => {
+    // These are DATA (rebuilt independently of the model) and live under a different subtree now
+    // (visualIndexRuntimeCache, or the never-cached current.json pointer) — this rule must never
+    // widen back to catching them by extension alone.
+    expect(pattern.test('/scanner-assets/visual-v1/index/current.json')).toBe(false)
+    expect(
+      pattern.test('/scanner-assets/visual-v1/index/generations/0123456789abcdef/manifest.json'),
+    ).toBe(false)
+    expect(
+      pattern.test('/scanner-assets/visual-v1/index/generations/0123456789abcdef/embeddings.bin'),
+    ).toBe(false)
+  })
+
+  it('rejects everything outside the exact visual-v1 model/ort prefix, including the OCR v7 tree', () => {
     expect(pattern.test('/scanner-assets/v7/worker.min.js')).toBe(false)
     expect(pattern.test('/scanner-assets/visual-v2/model/onnx/model_quantized.onnx')).toBe(false)
     expect(pattern.test('/scanner-assets/visual-v1/index.html')).toBe(false)
@@ -163,7 +178,7 @@ describe('visual recognition asset runtime-cache rule (P76, D-097)', () => {
   })
 
   it('cannot serve cross-origin responses under Workbox RegExpRoute semantics', () => {
-    const foreignHref = 'https://malicious.example/scanner-assets/visual-v1/embeddings.bin'
+    const foreignHref = 'https://malicious.example/scanner-assets/visual-v1/model/config.json'
     const match = pattern.exec(foreignHref)
     expect(match === null || match.index !== 0).toBe(true)
   })
@@ -173,6 +188,67 @@ describe('visual recognition asset runtime-cache rule (P76, D-097)', () => {
     expect(visualAssetRuntimeCache.options.expiration.maxAgeSeconds).toBeGreaterThan(0)
     expect(visualAssetRuntimeCache.options.expiration.purgeOnQuotaError).toBe(true)
     expect(visualAssetRuntimeCache.options.cacheableResponse.statuses).toEqual([200])
+  })
+})
+
+describe('visual INDEX generation runtime-cache rule (P87 F-01)', () => {
+  const pattern = visualIndexRuntimeCache.urlPattern
+
+  it('is a CacheFirst rule over its OWN dedicated cache, distinct from the model cache', () => {
+    expect(visualIndexRuntimeCache.handler).toBe('CacheFirst')
+    expect(visualIndexRuntimeCache.options.cacheName).toBe('scanner-assets-visual-v1-index')
+    expect(visualIndexRuntimeCache.options.cacheName).not.toBe(
+      visualAssetRuntimeCache.options.cacheName,
+    )
+  })
+
+  it('matches only files under a content-addressed generation directory', () => {
+    expect(
+      pattern.test('/scanner-assets/visual-v1/index/generations/0123456789abcdef/manifest.json'),
+    ).toBe(true)
+    expect(
+      pattern.test('/scanner-assets/visual-v1/index/generations/0123456789abcdef/card-ids.json'),
+    ).toBe(true)
+    expect(
+      pattern.test('/scanner-assets/visual-v1/index/generations/0123456789abcdef/embeddings.bin'),
+    ).toBe(true)
+    expect(
+      pattern.test(
+        'https://pokeportfolio-dev.pages.dev/scanner-assets/visual-v1/index/generations/0123456789abcdef/embeddings.bin',
+      ),
+    ).toBe(true)
+  })
+
+  it('P87 F-01 (the load-bearing negative case): never matches the bootstrap pointer', () => {
+    // A CacheFirst route matching current.json would silently defeat its whole no-cache/no-store
+    // design — Workbox answers a matched request from Cache Storage before ever consulting the
+    // request's own cache mode. This must stay false.
+    expect(pattern.test('/scanner-assets/visual-v1/index/current.json')).toBe(false)
+    expect(
+      pattern.test(
+        'https://pokeportfolio-dev.pages.dev/scanner-assets/visual-v1/index/current.json',
+      ),
+    ).toBe(false)
+  })
+
+  it('rejects model/engine files and everything outside its own subtree', () => {
+    expect(pattern.test('/scanner-assets/visual-v1/model/onnx/model_quantized.onnx')).toBe(false)
+    expect(pattern.test('/scanner-assets/visual-v1/ort/ort-wasm-simd-threaded.wasm')).toBe(false)
+    expect(pattern.test('/scanner-assets/v7/worker.min.js')).toBe(false)
+  })
+
+  it('cannot serve cross-origin responses under Workbox RegExpRoute semantics', () => {
+    const foreignHref =
+      'https://malicious.example/scanner-assets/visual-v1/index/generations/0123456789abcdef/embeddings.bin'
+    const match = pattern.exec(foreignHref)
+    expect(match === null || match.index !== 0).toBe(true)
+  })
+
+  it('bounds cache growth and refuses non-200 responses', () => {
+    expect(visualIndexRuntimeCache.options.expiration.maxEntries).toBeGreaterThan(0)
+    expect(visualIndexRuntimeCache.options.expiration.maxAgeSeconds).toBeGreaterThan(0)
+    expect(visualIndexRuntimeCache.options.expiration.purgeOnQuotaError).toBe(true)
+    expect(visualIndexRuntimeCache.options.cacheableResponse.statuses).toEqual([200])
   })
 })
 

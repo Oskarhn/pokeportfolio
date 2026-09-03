@@ -18,6 +18,7 @@ import { CONDITION_LABEL, GRADER_LABEL, ORIGIN_LABEL } from '../collection/label
 import { CardImage } from '../catalog/CardImage'
 import { Button, FormMessage, SelectField, TextField } from '../../ui/form'
 import { ItemPicker } from './ItemPicker'
+import { useUnsavedWorkSnapshot } from '../../platform/unsaved-work-registry'
 
 const CURRENCIES: CurrencyCode[] = ['NOK', 'EUR', 'USD', 'GBP', 'JPY']
 
@@ -93,6 +94,20 @@ export function SaleFormPage() {
   const [fxError, setFxError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [idempotencyKey] = useState(() => crypto.randomUUID())
+
+  // F-40 (P89): see PurchaseFormPage's identical registration for why.
+  useUnsavedWorkSnapshot('sale-form', {
+    items,
+    soldOn,
+    marketplace,
+    currency,
+    feesInput,
+    shippingCostInput,
+    shippingChargedInput,
+    notes,
+    fxMode,
+    fxRate,
+  })
 
   const holdingIds = useMemo(() => {
     const ids = new Set<string>()

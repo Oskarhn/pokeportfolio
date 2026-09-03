@@ -26,6 +26,7 @@ import {
   type VisualBackendOverride,
   type BackendAttempts,
 } from '../../../domain/scanner/visual-backend-selection'
+import { detectIsSafariUserAgent } from './safari-detection'
 import {
   decodeVisualIndex,
   searchVisualIndex,
@@ -33,7 +34,17 @@ import {
   VisualIndexError,
   type DecodedVisualIndex,
   type VisualIndexManifest,
+  type VisualIndexPointer,
 } from '../../../data/scanner/visual-index'
+import {
+  buildIndexContentPayload,
+  truncateDigestHex,
+  isWellFormedContentId,
+} from '../../../domain/scanner/index-content-id'
+import {
+  deriveProjectIdentity,
+  LOCAL_SUPABASE_URL,
+} from '../../../domain/scanner/checkpoint-identity'
 import {
   classifyVisualAssetUrl,
   summarizeFetchLog,
@@ -50,6 +61,28 @@ export type {
 } from '../../../domain/scanner/visual-backend-selection'
 
 const ASSET_BASE = '/scanner-assets/visual-v1'
+/** P87 F-01: the visual index's own subtree, distinct from the model/engine files that stay
+ *  directly under {@link ASSET_BASE} (`model/`, `ort/`) — see current.json/generations/<id> below. */
+const INDEX_BASE = `${ASSET_BASE}/index`
+/** P87 F-22: which source project THIS deployment expects the index to resolve against, derived
+ *  the same way `checkpoint-identity.ts` derives it for the generator — a project HOST string,
+ *  never a secret (`VITE_SUPABASE_URL` carries no credential). `import.meta.env.VITE_SUPABASE_URL`
+ *  is always defined in a real build (vite.config.ts refuses to build without it) but may be
+ *  undefined in a raw unit-test environment that never ran through Vite's define step; treated the
+ *  same as "no real hosted project configured" (never gated) in that case. */
+const CONFIGURED_SUPABASE_URL: string | undefined = (
+  import.meta as unknown as { env?: Record<string, string | undefined> }
+).env?.VITE_SUPABASE_URL
+/** True when THIS deployment itself has no real hosted project configured — the local dev stack
+ *  or CI's own placeholder build (both use the identical well-known URL, `LOCAL_SUPABASE_URL`).
+ *  In that case there is nothing meaningful to gate the index's `sourceProjectRef` against, so the
+ *  gate stays informational rather than rejecting (P87 §8's "do not destroy convenient local
+ *  development" requirement). */
+const IS_LOCAL_OR_UNCONFIGURED_DEPLOYMENT =
+  CONFIGURED_SUPABASE_URL === undefined || CONFIGURED_SUPABASE_URL === LOCAL_SUPABASE_URL
+const EXPECTED_SOURCE_PROJECT_REF = IS_LOCAL_OR_UNCONFIGURED_DEPLOYMENT
+  ? null
+  : deriveProjectIdentity(CONFIGURED_SUPABASE_URL)
 /** P81 §8: a Cache-Storage-API cache this worker owns and reads/writes directly, INDEPENDENT of
  *  whether the page's Service Worker actually intercepts fetches issued from inside a dedicated
  *  Worker — a real cross-browser gap (historically, WebKit did not route Worker-issued fetches
@@ -72,6 +105,13 @@ const EMBEDDING_DIM = 384
 // constant only needs to be compared, never re-derived (same duplication precedent as
 // scripts/scanner-visual-benchmark/lib/embed.mjs). ANY change is a deliberate model bump.
 const EXPECTED_MODEL_REVISION = 'c2bb04a51fab207c420665f1946016107bffc701'
+/** P90 §9: whether THIS worker context can convert an ImageBitmap to RGBA itself. Real Safari has
+ *  shipped OffscreenCanvas + a 2D context inside Worker scopes since 16.4 (March 2023, the actual
+ *  target platform per SCANNER_RESEARCH.md) — false is expected only on a genuinely older/unusual
+ *  engine, never on this project's real target devices. Computed once at module scope (this cannot
+ *  change mid-session) and reported to the client in the 'ready' message so it can choose the
+ *  matching capture-conversion path BEFORE the first scan, not per-scan. */
+const OFFSCREEN_CANVAS_AVAILABLE_IN_WORKER = typeof OffscreenCanvas !== 'undefined'
 
 interface InitMessage {
   type: 'init'
@@ -81,13 +121,33 @@ interface InitMessage {
    *  evaluation took (`workerStartMs`) before any application code below even ran. */
   constructedAtMs?: number
 }
+/** P90 §9: the two shapes a captured frame can arrive in. `bitmap` is the fast, default path
+ *  (worker converts to RGBA itself via OffscreenCanvas, zero main-thread cost beyond the transfer).
+ *  `rgba` is the fallback path used ONLY when {@link OFFSCREEN_CANVAS_AVAILABLE_IN_WORKER} is
+ *  false — the client (which always has a real `<canvas>` element available, unlike a worker
+ *  scope) does the identical RGBA conversion itself and transfers the raw buffer instead, so visual
+ *  recognition keeps working rather than always degrading to OCR-only in a worker environment that
+ *  lacks OffscreenCanvas. Never a second, duplicate conversion — exactly one canvas draw happens
+ *  either way, just on whichever side can actually do it. */
+type CapturedImage =
+  | { kind: 'bitmap'; bitmap: ImageBitmap }
+  | { kind: 'rgba'; buffer: ArrayBuffer; width: number; height: number }
 interface EmbedAndSearchMessage {
   type: 'embed-and-search'
   requestId: number
-  bitmap: ImageBitmap
+  image: CapturedImage
   topK: number
 }
-type IncomingMessage = InitMessage | EmbedAndSearchMessage
+/** Debug-only (P84, ported P87): re-rank the cached last query vector against the full index for
+ *  one candidate card. The caller (visual-client.ts / controller.ts) is responsible for the
+ *  `?scannerDebug=1` gate — this worker answers whatever it is asked, since it has no notion of
+ *  "debug mode" itself; never triggered by production matching. */
+interface GetExpectedRankMessage {
+  type: 'get-expected-rank'
+  requestId: number
+  cardId: string
+}
+type IncomingMessage = InitMessage | EmbedAndSearchMessage | GetExpectedRankMessage
 
 /** Shared by ready/unavailable so the debug panel can always show what was actually attempted,
  *  win or lose (prompt §4/§11/§12). */
@@ -107,10 +167,29 @@ interface ReadyResponse extends BackendDiagnostics {
   indexAvailable: boolean
   cardCount: number
   modelColdLoadMs: number
+  /** P90 §9: whether this worker can convert a captured frame to RGBA itself. False tells the
+   *  client to do that conversion on the main thread instead and transfer raw RGBA bytes for every
+   *  subsequent {@link EmbedAndSearchMessage} — see `CapturedImage`'s own docs. */
+  offscreenCanvasAvailableInWorker: boolean
   /** Diagnostics-only (prompt §40) — never used for match logic, only surfaced in the debug
    *  panel and never persisted. */
   indexVersion: string | null
   indexSourceProjectRef: string | null
+  /** P87 §15: the loaded generation's own declared identity fields — makes a stale index
+   *  impossible to hide from a screenshot/diagnostics paste, alongside indexContentId below. */
+  indexModelRevision: string | null
+  indexGeneratedAt: string | null
+  indexEmbeddingsSha256: string | null
+  /** P87 F-01: the content-addressed id of the generation actually loaded, or null if none. */
+  indexContentId: string | null
+  /** P87 F-22: this deployment's expected source project (null when unconfigured/local — nothing
+   *  gated in that case), and whether the loaded index actually matched it. */
+  indexSourceProjectExpected: string | null
+  indexSourceProjectMatch: boolean | null
+  /** P87 §6: whether the fetched embeddings bytes were independently re-hashed (WebCrypto
+   *  SHA-256) and found to match `manifest.embeddingsSha256`, and how long that took. */
+  indexRuntimeChecksumVerified: boolean | null
+  indexRuntimeChecksumMs: number | null
   indexLoadMs: number | null
   indexUnavailableReason: string | null
   /** P81 §3/§17: per-phase cold-start attribution — where the wall-clock time actually went. */
@@ -120,6 +199,18 @@ interface UnavailableResponse extends BackendDiagnostics {
   type: 'unavailable'
   reason: string
   phaseTimings: VisualPhaseTimings
+}
+/** Debug-only (P84, ported P87) response to {@link GetExpectedRankMessage}. */
+interface ExpectedRankResponse {
+  type: 'expected-rank'
+  requestId: number
+  found: boolean
+  rank: number | null
+  similarity: number | null
+  totalCards: number
+  inTop20: boolean
+  inTop100: boolean
+  indexContentId: string | null
 }
 interface ResultResponse {
   type: 'result'
@@ -145,7 +236,12 @@ interface ProgressResponse {
   atMs: number
 }
 type OutgoingMessage =
-  ReadyResponse | UnavailableResponse | ResultResponse | ErrorResponse | ProgressResponse
+  | ReadyResponse
+  | UnavailableResponse
+  | ResultResponse
+  | ErrorResponse
+  | ProgressResponse
+  | ExpectedRankResponse
 
 async function detectWebgpuAvailable(): Promise<boolean> {
   const gpu = (navigator as unknown as { gpu?: { requestAdapter(): Promise<unknown> } }).gpu
@@ -161,6 +257,11 @@ async function detectWebgpuAvailable(): Promise<boolean> {
 let model: Awaited<ReturnType<typeof AutoModel.from_pretrained>> | null = null
 let processor: Awaited<ReturnType<typeof AutoProcessor.from_pretrained>> | null = null
 let index: DecodedVisualIndex | null = null
+let indexContentId: string | null = null
+/** P84, ported P87: the last scan's L2-normalized query vector, worker-memory only — never an
+ *  image, never persisted, overwritten by every new embed-and-search call. Powers the debug-only
+ *  {@link GetExpectedRankMessage} rank lookup without re-embedding. */
+let lastQueryVector: Float32Array | null = null
 let backend: VisualBackend = 'wasm'
 
 function post(message: OutgoingMessage, transfer: Transferable[] = []): void {
@@ -226,7 +327,14 @@ function installFetchProbe(): void {
   ;(self as unknown as { fetch: typeof fetch }).fetch = async (input, init) => {
     const url = requestUrl(input)
     const start = performance.now()
-    const cache = await getWorkerAssetCache()
+    // P87 F-01/§4: a caller that explicitly asked for `cache: 'no-store'` (the index pointer,
+    // `current.json`) must actually bypass BOTH the browser HTTP cache AND this worker's own
+    // manual Cache-Storage cache-through — honoring only the former and silently serving a
+    // previously cached copy from `workerAssetCache` here would defeat the whole point of the
+    // no-store request. Every other fetch (model/engine files, and content-addressed generation
+    // files, both genuinely immutable) keeps the existing cache-through behavior unchanged.
+    const bypassCache = init?.cache === 'no-store'
+    const cache = bypassCache ? null : await getWorkerAssetCache()
     if (
       cache !== null &&
       (init === undefined || init.method === undefined || init.method === 'GET')
@@ -251,7 +359,7 @@ function installFetchProbe(): void {
       ms,
       bytes: bytesHeader !== null ? Number(bytesHeader) : null,
     })
-    if (cache !== null && response.ok && response.status === 200) {
+    if (!bypassCache && cache !== null && response.ok && response.status === 200) {
       const toCache = response.clone()
       void cache.put(input, toCache).catch(() => {
         // Quota/opaque-response failures never block the real response reaching the caller.
@@ -327,10 +435,12 @@ function finalizeFetchLog(): RecordedFetch[] {
 }
 
 /**
- * Runtime manifest gate (P77 prompt §21): a manifest this browser's pin does not recognize, or
- * whose coverage numbers are internally impossible, must never be trusted — the visual channel
- * simply becomes unavailable and the scanner falls back to OCR + manual search (prompt §36),
- * never a crash. `lastIndexUnavailableReason` lets `init()` report WHY for the diagnostics panel
+ * Runtime manifest gate (P77 prompt §21, hardened P87 F-01/F-22): a manifest this browser's pin
+ * does not recognize, whose coverage numbers are internally impossible, whose content id does not
+ * match what its own bytes hash to, or whose declared source project does not match what THIS
+ * deployment expects, must never be trusted — the visual channel simply becomes unavailable and
+ * the scanner falls back to OCR + manual search (prompt §36), never a crash. The
+ * `lastIndex*`-prefixed module state lets `init()` report WHY/WHAT for the diagnostics panel
  * (prompt §40) without changing this function's null-on-failure contract.
  */
 let lastIndexUnavailableReason: string | null = null
@@ -338,11 +448,44 @@ let lastIndexUnavailableReason: string | null = null
  *  network wait already visible in the fetch log. Module-scope like `lastIndexUnavailableReason`
  *  because loadIndex() has no other return channel for a "null on failure" contract it must keep. */
 let lastIndexDecodeMs: number | null = null
+let lastIndexRuntimeChecksumVerified: boolean | null = null
+let lastIndexRuntimeChecksumMs: number | null = null
+let lastIndexSourceProjectMatch: boolean | null = null
+
+function bufferToHex(buffer: ArrayBuffer): string {
+  return Array.from(new Uint8Array(buffer))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('')
+}
 
 async function loadIndex(): Promise<DecodedVisualIndex | null> {
   lastIndexUnavailableReason = null
   lastIndexDecodeMs = null
-  const manifestResponse = await fetch(`${ASSET_BASE}/manifest.json`)
+  lastIndexRuntimeChecksumVerified = null
+  lastIndexRuntimeChecksumMs = null
+  lastIndexSourceProjectMatch = null
+  indexContentId = null
+  lastQueryVector = null
+
+  // P87 F-01: fetch the tiny bootstrap pointer FIRST, explicitly bypassing every cache layer
+  // (`cache: 'no-store'` skips this worker's own manual cache-through in `installFetchProbe` too
+  // — see its check there — belt-and-suspenders alongside the `_headers` `no-cache` rule) so a
+  // newly published generation is discoverable the moment a new scanner session starts, never
+  // hidden behind a year-old immutable HTTP cache entry the way the old fixed-path design was.
+  const pointerResponse = await fetch(`${INDEX_BASE}/current.json`, { cache: 'no-store' })
+  if (!pointerResponse.ok) {
+    lastIndexUnavailableReason = `current.json fetch failed (HTTP ${String(pointerResponse.status)})`
+    return null
+  }
+  const pointer = (await pointerResponse.json()) as Partial<VisualIndexPointer>
+  if (!isWellFormedContentId(pointer.contentId)) {
+    lastIndexUnavailableReason = `current.json's contentId is not well-formed: ${String(pointer.contentId)}`
+    return null
+  }
+  const contentId = pointer.contentId
+  const generationBase = `${INDEX_BASE}/generations/${contentId}`
+
+  const manifestResponse = await fetch(`${generationBase}/manifest.json`)
   if (!manifestResponse.ok) {
     lastIndexUnavailableReason = `manifest.json fetch failed (HTTP ${String(manifestResponse.status)})`
     return null
@@ -360,19 +503,74 @@ async function loadIndex(): Promise<DecodedVisualIndex | null> {
     lastIndexUnavailableReason = 'manifest cardCount is not positive'
     return null
   }
+  // P87 F-22: source-project identity is now an enforceable gate at runtime, not just a logged
+  // field — but ONLY when THIS deployment itself has a real hosted project configured (never in
+  // local dev / CI's placeholder build, per EXPECTED_SOURCE_PROJECT_REF's own doc above).
+  if (EXPECTED_SOURCE_PROJECT_REF !== null) {
+    lastIndexSourceProjectMatch = manifest.sourceProjectRef === EXPECTED_SOURCE_PROJECT_REF
+    if (!lastIndexSourceProjectMatch) {
+      lastIndexUnavailableReason =
+        `manifest sourceProjectRef "${String(manifest.sourceProjectRef)}" != expected ` +
+        `"${EXPECTED_SOURCE_PROJECT_REF}" — refusing an index built against the wrong Supabase project.`
+      return null
+    }
+  }
   postProgress('index-manifest-loaded')
   const [cardIdsResponse, embeddingsResponse] = await Promise.all([
-    fetch(`${ASSET_BASE}/card-ids.json`),
-    fetch(`${ASSET_BASE}/embeddings.bin`),
+    fetch(`${generationBase}/card-ids.json`),
+    fetch(`${generationBase}/embeddings.bin`),
   ])
   if (!cardIdsResponse.ok || !embeddingsResponse.ok) {
     lastIndexUnavailableReason = 'card-ids.json or embeddings.bin fetch failed'
     return null
   }
-  const cardIds = (await cardIdsResponse.json()) as string[]
+  const cardIdsText = await cardIdsResponse.text()
+  const cardIds = JSON.parse(cardIdsText) as string[]
   postProgress('index-ids-loaded')
-  const embeddingsBuffer = new Int8Array(await embeddingsResponse.arrayBuffer())
+  const embeddingsArrayBuffer = await embeddingsResponse.arrayBuffer()
+  const embeddingsBuffer = new Int8Array(embeddingsArrayBuffer)
   postProgress('index-embeddings-loaded')
+
+  // P87 F-01: the directory's own content id must equal what its content actually hashes to —
+  // a defense-in-depth cross-check that a fetched trio genuinely belongs together and under the
+  // URL it was published at, independent of decodeVisualIndex's own internal shape checks below.
+  // WebCrypto (`crypto.subtle`) is always present under the webworker lib's own types — no
+  // feature-detection guard, matching how this file already treats `performance`/`fetch` as
+  // unconditionally available in this environment.
+  {
+    const payload = buildIndexContentPayload(
+      manifest,
+      new TextEncoder().encode(cardIdsText),
+      new Uint8Array(embeddingsArrayBuffer),
+    )
+    const digest = await crypto.subtle.digest('SHA-256', payload)
+    const actualContentId = truncateDigestHex(bufferToHex(digest))
+    if (actualContentId !== contentId) {
+      lastIndexUnavailableReason =
+        `content id mismatch: published as ${contentId}, actual content hashes to ` +
+        `${actualContentId} — refusing a generation whose own files disagree with its URL.`
+      return null
+    }
+  }
+
+  // P87 §6: independent runtime integrity check — re-hash the fetched embeddings bytes with
+  // WebCrypto and compare against the manifest's own declared checksum, rather than merely
+  // trusting that a byte-for-byte-identical field exists in the same JSON payload. Measured once
+  // per newly loaded generation (here, at init), never repeated per scan.
+  {
+    const checksumStart = performance.now()
+    const digest = await crypto.subtle.digest('SHA-256', embeddingsArrayBuffer)
+    lastIndexRuntimeChecksumMs = Math.round(performance.now() - checksumStart)
+    const actualSha256 = bufferToHex(digest)
+    lastIndexRuntimeChecksumVerified = actualSha256 === manifest.embeddingsSha256
+    if (!lastIndexRuntimeChecksumVerified) {
+      lastIndexUnavailableReason =
+        `embeddings.bin runtime checksum mismatch: manifest says ${manifest.embeddingsSha256}, ` +
+        `actual ${actualSha256}.`
+      return null
+    }
+  }
+
   const decodeStart = performance.now()
   try {
     // Coverage sanity is defense-in-depth here (already asserted at generation time): a manifest
@@ -382,6 +580,7 @@ async function loadIndex(): Promise<DecodedVisualIndex | null> {
     assertValidCoverage(manifest.coverage, cardIds.length, manifest.cardCount)
     const decoded = decodeVisualIndex(manifest, cardIds, embeddingsBuffer)
     lastIndexDecodeMs = Math.round(performance.now() - decodeStart)
+    indexContentId = contentId
     postProgress('index-decode-finished')
     return decoded
   } catch (error) {
@@ -609,8 +808,17 @@ async function init(message: InitMessage): Promise<void> {
     indexAvailable: index !== null,
     cardCount: index?.cardIds.length ?? 0,
     modelColdLoadMs: Math.round(performance.now() - startedAt),
+    offscreenCanvasAvailableInWorker: OFFSCREEN_CANVAS_AVAILABLE_IN_WORKER,
     indexVersion: index?.manifest.version ?? null,
     indexSourceProjectRef: index?.manifest.sourceProjectRef ?? null,
+    indexModelRevision: index?.manifest.modelRevision ?? null,
+    indexGeneratedAt: index?.manifest.generatedAt ?? null,
+    indexEmbeddingsSha256: index?.manifest.embeddingsSha256 ?? null,
+    indexContentId,
+    indexSourceProjectExpected: EXPECTED_SOURCE_PROJECT_REF,
+    indexSourceProjectMatch: lastIndexSourceProjectMatch,
+    indexRuntimeChecksumVerified: lastIndexRuntimeChecksumVerified,
+    indexRuntimeChecksumMs: lastIndexRuntimeChecksumMs,
     indexLoadMs: index !== null ? indexLoadMs : null,
     indexUnavailableReason: index === null ? lastIndexUnavailableReason : null,
     phaseTimings: buildPhaseTimings(log, {
@@ -623,24 +831,6 @@ async function init(message: InitMessage): Promise<void> {
   })
 }
 
-/**
- * `@huggingface/transformers` v4.2.0 does not re-export its internal `apis` feature-detection
- * object from the package root (confirmed by inspecting the actual runtime module — only `env`
- * is exported), so this replicates its exact Safari check (same source) rather than depending on
- * an unavailable import.
- */
-function detectIsSafariUserAgent(): boolean {
-  if (typeof navigator === 'undefined') return false
-  const userAgent = navigator.userAgent
-  const vendor = navigator.vendor || ''
-  const isAppleVendor = vendor.indexOf('Apple') > -1
-  const notOtherBrowser =
-    !userAgent.match(/CriOS|FxiOS|EdgiOS|OPiOS|mercury|brave/i) &&
-    !userAgent.includes('Chrome') &&
-    !userAgent.includes('Android')
-  return isAppleVendor && notOtherBrowser
-}
-
 async function embedAndSearch(message: EmbedAndSearchMessage): Promise<void> {
   if (!model || !processor) {
     post({ type: 'error', requestId: message.requestId, message: 'Visual model not initialized.' })
@@ -648,12 +838,8 @@ async function embedAndSearch(message: EmbedAndSearchMessage): Promise<void> {
   }
   try {
     const embedStart = performance.now()
-    const image = new RawImage(
-      new Uint8ClampedArray(bitmapToRgba(message.bitmap)),
-      message.bitmap.width,
-      message.bitmap.height,
-      4,
-    )
+    const { buffer, width, height } = capturedImageToRgba(message.image)
+    const image = new RawImage(new Uint8ClampedArray(buffer), width, height, 4)
     const inputs = (await processor(image)) as Record<string, unknown>
     const output = (await model(inputs)) as { last_hidden_state: { data: ArrayLike<number> } }
     const raw = Float32Array.from(output.last_hidden_state.data).slice(0, EMBEDDING_DIM)
@@ -664,6 +850,9 @@ async function embedAndSearch(message: EmbedAndSearchMessage): Promise<void> {
     const embeddingNorm = Math.sqrt(normSquared)
     const queryVector = l2Normalize(raw)
     const embedMs = performance.now() - embedStart
+    // P84, ported P87: cache the query vector (memory only, overwritten every scan) so a debug
+    // session can re-rank it against the full index afterward without re-embedding.
+    lastQueryVector = queryVector
 
     if (!index) {
       post({
@@ -690,22 +879,95 @@ async function embedAndSearch(message: EmbedAndSearchMessage): Promise<void> {
   } catch (error) {
     post({ type: 'error', requestId: message.requestId, message: (error as Error).message })
   } finally {
-    message.bitmap.close()
+    if (message.image.kind === 'bitmap') message.image.bitmap.close()
   }
 }
 
-function bitmapToRgba(bitmap: ImageBitmap): ArrayBuffer {
+/**
+ * F-31 (P89): a real-browser smoke test (tests/e2e/visual-worker-real-browser.spec.ts) caught
+ * this throwing a raw, unattributable `ReferenceError: Can't find variable: OffscreenCanvas` on
+ * Playwright's Windows-hosted WebKit build (26.5) specifically — real Safari has shipped
+ * OffscreenCanvas + a 2D context inside Worker scopes since 16.4 (March 2023), and Playwright's
+ * own docs disclose that its non-macOS WebKit builds are provided for cross-engine CI coverage
+ * rather than guaranteed parity with Apple's shipped Safari, so this is most likely a
+ * testing-environment gap rather than a genuine real-device regression — but it was NEVER
+ * verified against a real Mac/iPhone from this session, so it is disclosed as unconfirmed, not
+ * asserted safe.
+ *
+ * P90 §9: rather than stopping at a structured error, the client now feature-detects this SAME
+ * gap before the first scan (via `offscreenCanvasAvailableInWorker` in the 'ready' message) and,
+ * when true, converts every captured frame to RGBA on the main thread itself instead — the main
+ * thread always has a real `<canvas>` element regardless of Worker OffscreenCanvas support, so
+ * visual recognition keeps working end to end rather than silently degrading to OCR-only. This
+ * function is therefore only ever reached with `message.image.kind === 'bitmap'` when the worker
+ * DOES support OffscreenCanvas (the client's own fast-path default) — the `undefined` branch below
+ * stays as defense-in-depth, never expected to fire given the client checks first.
+ */
+function capturedImageToRgba(image: CapturedImage): {
+  buffer: ArrayBuffer
+  width: number
+  height: number
+} {
+  if (image.kind === 'rgba') return image
+  const bitmap = image.bitmap
+  if (typeof OffscreenCanvas === 'undefined') {
+    throw new Error('OffscreenCanvas is unavailable in this worker context.')
+  }
   const canvas = new OffscreenCanvas(bitmap.width, bitmap.height)
   const context = canvas.getContext('2d')
   if (!context) throw new Error('OffscreenCanvas 2D context unavailable in worker.')
   context.drawImage(bitmap, 0, 0)
-  return context.getImageData(0, 0, bitmap.width, bitmap.height).data.buffer
+  const { buffer } = context.getImageData(0, 0, bitmap.width, bitmap.height).data
+  return { buffer, width: bitmap.width, height: bitmap.height }
+}
+
+/**
+ * Debug-only (P84, ported P87): re-ranks the cached {@link lastQueryVector} against the FULL
+ * decoded index for one candidate card, without re-embedding, re-fetching, or making a network
+ * call of any kind. Pure read: never adds, saves, uploads, or persists anything. The caller
+ * (visual-client.ts) is responsible for the `?scannerDebug=1` gate — this handler answers
+ * unconditionally whatever it is asked, since production matching never sends this message type.
+ */
+function getExpectedRank(message: GetExpectedRankMessage): void {
+  if (!index || !lastQueryVector) {
+    post({
+      type: 'expected-rank',
+      requestId: message.requestId,
+      found: false,
+      rank: null,
+      similarity: null,
+      totalCards: index?.cardIds.length ?? 0,
+      inTop20: false,
+      inTop100: false,
+      indexContentId,
+    })
+    return
+  }
+  const hits = searchVisualIndex(index, lastQueryVector, index.cardIds.length)
+  const rankIndex = hits.findIndex((hit) => hit.cardId === message.cardId)
+  const found = rankIndex !== -1
+  const rank = found ? rankIndex + 1 : null
+  post({
+    type: 'expected-rank',
+    requestId: message.requestId,
+    found,
+    rank,
+    similarity: found ? (hits[rankIndex]?.similarity ?? null) : null,
+    totalCards: index.cardIds.length,
+    inTop20: rank !== null && rank <= 20,
+    inTop100: rank !== null && rank <= 100,
+    indexContentId,
+  })
 }
 
 self.addEventListener('message', (event: MessageEvent<IncomingMessage>) => {
   const message = event.data
   if (message.type === 'init') {
     void init(message)
+    return
+  }
+  if (message.type === 'get-expected-rank') {
+    getExpectedRank(message)
     return
   }
   void embedAndSearch(message)

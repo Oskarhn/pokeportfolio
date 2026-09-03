@@ -413,8 +413,20 @@ describe('property invariants (fast-check)', () => {
   })
 })
 
-describe('pure-ranking performance (§22 — measured, not fabricated)', () => {
-  it('ranks 20/50/100 candidates well inside any OCR/network budget', () => {
+/**
+ * F-36 (P89): this is a crash/catastrophic-regression SMOKE test, not a real performance gate —
+ * relabelled from its previous "performance (§22 — measured, not fabricated)" framing, which
+ * overclaimed what a bound this loose actually proves. `toBeLessThan(5)` after 2000 warmed-up
+ * runs is deliberately generous enough that slow CI hardware cannot flake it, which also means a
+ * regression of well over 100x in the ranking function's real cost would still pass silently.
+ * What it DOES catch: a hang, an accidental N+1/exponential blow-up, or any change that makes
+ * ranking synchronously pathological — genuinely useful, just not "performance" in the sense of
+ * detecting an ordinary 2x-10x slowdown. If a real regression gate is wanted later, compare
+ * against a committed baseline measurement rather than tightening this absolute bound (tightening
+ * it would just reintroduce the CI-hardware-flake risk it was loosened to avoid).
+ */
+describe('pure-ranking smoke test (§22) — crash/catastrophic-regression detector, not a performance gate', () => {
+  it('ranks 20/50/100 candidates without hanging or exploding in cost', () => {
     const makeCatalog = (size: number): ScannerCandidateRecord[] =>
       Array.from({ length: size }, (_, i) =>
         card(`perf-${i}`, `Pokémon ${i}`, `${(i % 250) + 1}/400`, `Set ${i % 40}`),
@@ -439,9 +451,9 @@ describe('pure-ranking performance (§22 — measured, not fabricated)', () => {
       timings[size] = (performance.now() - startedAt) / RUNS
     }
 
-    // Real machine-dependent numbers go to the log for the session record; the assertion is a
-    // catastrophic-only budget (a pathological regression or accidental N+1 would blow past
-    // it), deliberately loose enough that slow CI hardware cannot flake.
+    // Real machine-dependent numbers go to the log for the session record; the assertion itself
+    // is a catastrophic-only budget (see this describe block's own header comment) — a genuine
+    // ordinary slowdown will NOT fail this test, only a hang/pathological blow-up will.
     console.info(
       '[scanner perf] avg ms per full ranking — 20:',
       timings[20]?.toFixed(4),

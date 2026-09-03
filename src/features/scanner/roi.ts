@@ -68,11 +68,26 @@ const MODERN_NUMBER_ROI_FRACTIONS: RoiFractions = {
   height: 0.08,
 }
 
+/** F-17/P88 §14 — Basic Energy layout: the name prints in a band toward the BOTTOM of the card,
+ *  below the artwork, unlike every other card type this catalog stores (Pokémon and Trainer
+ *  cards both print the name near the top — CLAUDE.md's "all cards are trackable, never
+ *  special-cased" rule means Energy cannot be left with zero matching layout hypothesis, the
+ *  effective special-case F-17 found: every Energy scan silently fell through to the crude
+ *  full-frame fallback on every attempt). Sits well above both number-strip candidates' own
+ *  vertical bands (0.87-1.0 / 0.9-0.98) so the two never overlap. */
+const ENERGY_NAME_ROI_FRACTIONS: RoiFractions = {
+  left: 0.08,
+  top: 0.74,
+  width: 0.84,
+  height: 0.13,
+}
+
 /** Every name-strip layout hypothesis `analyze.ts` tries, in no particular priority order — the
  *  winner is chosen by OCR score, not by list position (P80). */
 export const NAME_ROI_CANDIDATES: readonly NamedRoiCandidate[] = [
   { id: 'classic-top-left', fractions: NAME_ROI_FRACTIONS },
   { id: 'modern-full-width', fractions: MODERN_NAME_ROI_FRACTIONS },
+  { id: 'energy-bottom-band', fractions: ENERGY_NAME_ROI_FRACTIONS },
 ]
 
 /** Every collector-number layout hypothesis `analyze.ts` tries (P80). */

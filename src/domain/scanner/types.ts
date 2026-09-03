@@ -36,6 +36,12 @@ export interface ScannerObservation {
    * perceptual evidence — this field exists so adding that channel later is not a rewrite.
    */
   readonly visualSimilarity?: number | null
+  /** Tesseract's own 0-100 mean-word confidence for the name-field OCR read (P88 §8/F-12).
+   *  `undefined`/`null` means unknown — treated as full reliability (backward-compatible with
+   *  every caller/test that predates this field). Never re-derived into a fake percentage. */
+  readonly nameOcrConfidence?: number | null
+  /** Same as {@link nameOcrConfidence} for the collector-number field. */
+  readonly collectorOcrConfidence?: number | null
 }
 
 /** One parsed collector/local number: prefix + digit run + suffix, plus the "/total" when one
@@ -64,6 +70,14 @@ export interface ParsedScannerSignals {
   /** Normalized set-name hint for comparison; null when absent/too short. */
   readonly setHint: string | null
   readonly languageHint: ScannerLanguage | null
+  /** P88 §8/F-12: combined [0,1] reliability multiplier for name-field text evidence, derived
+   *  from `ScannerObservation.nameOcrConfidence`. 1 when the observation did not supply a
+   *  confidence (backward compatible). */
+  readonly nameReliability: number
+  /** Same as {@link nameReliability} for collector-number evidence — combines OCR confidence AND
+   *  the structural parse confidence (collector-parse.ts): a read that merely LOOKS like an id
+   *  is worth less than one that also has a real printed-id shape. */
+  readonly collectorReliability: number
 }
 
 /**
@@ -107,6 +121,11 @@ export type ScannerReasonCode =
   | 'visual-strong'
   | 'visual-moderate'
   | 'visual-weak'
+  /** P88 §2/F-02: this candidate's text-only score was discounted because a DIFFERENT candidate
+   *  carries strong, dedicated visual evidence (>= strongMin) while this one has none/weak visual
+   *  support of its own — the guard that stops a coincidental OCR text match from outranking a
+   *  genuinely strong visual match purely by point-value construction. */
+  | 'visual-dominance-guarded'
 
 /** A ranked candidate: the canonical printing identity plus explainable evidence. */
 export interface RankedScannerCandidate {

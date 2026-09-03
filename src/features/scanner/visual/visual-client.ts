@@ -51,8 +51,47 @@ export interface VisualReadyInfo extends VisualBackendDiagnostics {
   /** Diagnostics-only (prompt §40/§56) fields describing the reference index itself. */
   readonly indexVersion: string | null
   readonly indexSourceProjectRef: string | null
+  /** P87 §15: the loaded generation's own declared identity fields. */
+  readonly indexModelRevision: string | null
+  readonly indexGeneratedAt: string | null
+  readonly indexEmbeddingsSha256: string | null
+  /** P87 F-01: the content-addressed id of the generation actually loaded, or null if none. */
+  readonly indexContentId: string | null
+  /** P87 F-22: this deployment's expected source project (null when unconfigured/local), and
+   *  whether the loaded index matched it. */
+  readonly indexSourceProjectExpected: string | null
+  readonly indexSourceProjectMatch: boolean | null
+  /** P87 §6: whether the runtime SHA-256 re-hash of the fetched embeddings matched the manifest's
+   *  own checksum, and how long that hash took. */
+  readonly indexRuntimeChecksumVerified: boolean | null
+  readonly indexRuntimeChecksumMs: number | null
   readonly indexLoadMs: number | null
   readonly indexUnavailableReason: string | null
+  /** P90 §9: whether the worker itself can convert a captured frame to RGBA. False means every
+   *  `analyze()` call converts on the main thread instead and transfers raw bytes — see
+   *  {@link bitmapToRgbaOnMainThread}. */
+  readonly offscreenCanvasAvailableInWorker: boolean
+}
+
+/** Debug-only (P84, ported P87) — mirrors {@link ExpectedCardRank} in contract.ts (kept as its
+ *  own type here so this module stays independent of the feature-level contract). */
+export interface ExpectedCardRank {
+  readonly found: boolean
+  readonly rank: number | null
+  readonly similarity: number | null
+  readonly totalCards: number
+  readonly inTop20: boolean
+  readonly inTop100: boolean
+  readonly indexContentId: string | null
+  /** P90 §21: hybrid (text + visual) ranking fields — filled in one layer up, in controller.ts,
+   *  which is the only place that has access to the most recent scan's OCR signals/candidate pool.
+   *  This class only ever produces the visual-only fields above; controller.ts's own
+   *  getExpectedCardRank merges them in. Defaulted to null/empty here so a raw worker response
+   *  (which never sets them) still satisfies this type. */
+  readonly hybridRank: number | null
+  readonly hybridScore: number | null
+  readonly hybridTier: 'high' | 'medium' | 'low' | 'none' | null
+  readonly scoreComponents: readonly string[]
 }
 
 type WorkerMessage =
@@ -68,6 +107,7 @@ type WorkerMessage =
     }
   | { type: 'error'; requestId: number; message: string }
   | { type: 'progress'; phase: VisualWorkerProgressPhase; atMs: number }
+  | ({ type: 'expected-rank'; requestId: number } & ExpectedCardRank)
 
 /** P82 §2-§6/§20: a live snapshot of the worker's most recent progress signal, kept even before
  *  ready/unavailable arrives — the gap that left every P81 phase-timing field as "—" during a real
@@ -88,6 +128,35 @@ export interface VisualLiveProgress {
    *  `currentPhaseElapsedMs` today (a progress message always marks entering a new phase), kept as
    *  its own named field because the prompt's diagnostics contract asks for both labels. */
   readonly lastProgressMsAgo: number | null
+}
+
+/**
+ * P90 §9: main-thread fallback conversion, used ONLY when the worker itself reported
+ * `offscreenCanvasAvailableInWorker: false` in its 'ready' message. The main thread always has a
+ * real canvas available — `OffscreenCanvas` when present (identical code path to the worker's own
+ * conversion), otherwise a plain `<canvas>` element, which every browser that can run this app at
+ * all supports — so visual recognition keeps working end to end instead of the worker's own
+ * structured 'error' response silently degrading every scan to OCR-only. Exactly one canvas draw
+ * either way (here or in the worker) — never a duplicate conversion of the same frame.
+ */
+function bitmapToRgbaOnMainThread(bitmap: ImageBitmap): {
+  buffer: ArrayBuffer
+  width: number
+  height: number
+} {
+  let context: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D | null
+  if (typeof OffscreenCanvas !== 'undefined') {
+    context = new OffscreenCanvas(bitmap.width, bitmap.height).getContext('2d')
+  } else {
+    const canvas = document.createElement('canvas')
+    canvas.width = bitmap.width
+    canvas.height = bitmap.height
+    context = canvas.getContext('2d')
+  }
+  if (!context) throw new Error('No 2D canvas context available on the main thread.')
+  context.drawImage(bitmap, 0, 0)
+  const { buffer } = context.getImageData(0, 0, bitmap.width, bitmap.height).data
+  return { buffer, width: bitmap.width, height: bitmap.height }
 }
 
 /** Reads the diagnostic-only `?visualBackend=` override (prompt §5) exactly once per client
@@ -112,6 +181,10 @@ export class VisualRecognitionClient {
     number,
     { resolve: (r: VisualAnalysisResult) => void; reject: (e: Error) => void }
   >()
+  /** P84, ported P87: pending debug-only rank-lookup requests, kept separate from `pending`
+   *  (real analyze() calls) since they resolve a different response shape and never reject —
+   *  see {@link getExpectedCardRank}. */
+  private pendingRankRequests = new Map<number, (r: ExpectedCardRank) => void>()
   /** Wall-clock duration of the FIRST successful `analyze()` round trip (P81 §3/§17
    *  FIRST_EMBED_MS) — the number that answers "once the model is warm, how fast is one actual
    *  scan," distinct from cold model/index load. Null until one real embed has completed. */
@@ -225,6 +298,27 @@ export class VisualRecognitionClient {
       })
       return
     }
+    if (message.type === 'expected-rank') {
+      const resolve = this.pendingRankRequests.get(message.requestId)
+      if (!resolve) return
+      this.pendingRankRequests.delete(message.requestId)
+      resolve({
+        found: message.found,
+        rank: message.rank,
+        similarity: message.similarity,
+        totalCards: message.totalCards,
+        inTop20: message.inTop20,
+        inTop100: message.inTop100,
+        indexContentId: message.indexContentId,
+        // P90 §21: this class only ever answers the visual-only question — controller.ts's own
+        // getExpectedCardRank fills these in from the most recent scan's hybrid evidence.
+        hybridRank: null,
+        hybridScore: null,
+        hybridTier: null,
+        scoreComponents: [],
+      })
+      return
+    }
     // Only 'error' remains after the branches above have returned.
     const pending = this.pending.get(message.requestId)
     if (!pending) return
@@ -245,9 +339,30 @@ export class VisualRecognitionClient {
     this.nextRequestId += 1
     const embedCallStart = performance.now()
     try {
+      // P90 §9: the worker reports once, at 'ready' time, whether it can convert a captured frame
+      // to RGBA itself. When it cannot, convert here instead (the main thread always has a real
+      // canvas) and transfer raw bytes rather than the ImageBitmap — same information, same
+      // single conversion, just done on whichever side actually supports it.
       const result = await new Promise<VisualAnalysisResult>((resolve, reject) => {
         this.pending.set(requestId, { resolve, reject })
-        worker.postMessage({ type: 'embed-and-search', requestId, bitmap, topK }, [bitmap])
+        if (ready.offscreenCanvasAvailableInWorker) {
+          worker.postMessage(
+            { type: 'embed-and-search', requestId, image: { kind: 'bitmap', bitmap }, topK },
+            [bitmap],
+          )
+        } else {
+          const { buffer, width, height } = bitmapToRgbaOnMainThread(bitmap)
+          bitmap.close()
+          worker.postMessage(
+            {
+              type: 'embed-and-search',
+              requestId,
+              image: { kind: 'rgba', buffer, width, height },
+              topK,
+            },
+            [buffer],
+          )
+        }
       })
       // P81 §3/§17 FIRST_EMBED_MS: the first successful round trip only — this is the number
       // that answers "once warm, how fast is one real scan," which cold `modelColdLoadMs` alone
@@ -257,6 +372,28 @@ export class VisualRecognitionClient {
     } catch {
       return null
     }
+  }
+
+  /**
+   * Debug-only (P84, ported P87): re-ranks the most recent {@link analyze} call's query vector
+   * against the full visual index for `cardId`, without re-embedding, re-fetching or making a
+   * network call. Never throws. Returns `null` when the worker was never constructed (a rank
+   * lookup must never itself trigger `ensureReady()`/worker construction — this is a read over
+   * whatever is ALREADY in memory, not a reason to start loading the model).
+   *
+   * Debug-mode gating happens ONE LAYER UP, in controller.ts — this method answers unconditionally
+   * whatever it is asked; controller.ts's own wrapper is what resolves `null` outside
+   * `?scannerDebug=1` without ever calling this method at all.
+   */
+  async getExpectedCardRank(cardId: string): Promise<ExpectedCardRank | null> {
+    if (this.worker === null) return null
+    const worker = this.worker
+    const requestId = this.nextRequestId
+    this.nextRequestId += 1
+    return new Promise<ExpectedCardRank>((resolve) => {
+      this.pendingRankRequests.set(requestId, resolve)
+      worker.postMessage({ type: 'get-expected-rank', requestId, cardId })
+    })
   }
 
   /** Diagnostics-only snapshot (prompt §40) — never affects matching, safe to read at any time
@@ -302,6 +439,7 @@ export class VisualRecognitionClient {
     this.readyInfo = null
     this.readyPromise = null
     this.pending.clear()
+    this.pendingRankRequests.clear()
     this.workerBooted = false
     this.workerBootMs = null
     this.currentPhase = null

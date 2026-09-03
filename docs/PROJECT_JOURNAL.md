@@ -2223,3 +2223,35 @@ was presentation ("Sold" / "1 of 2 remaining"), not new queries. The reconciliat
 followed the same grain: rather than a privileged definer read or N+1 lookups, three owner-only
 provenance columns on an existing bounded invoker read let the client mirror the server's target
 rule while the RPC stays the only authority.
+
+## 2026-09-02 (M15/P85) - A clean, legible crop still read as empty because the "single line" assumption was the actual bug
+
+Four prior M15 sessions (P78-P82) reasoned about collector-number OCR misses from real-device
+screenshots and confidence numbers alone - reasonable given no ground-truthed corpus existed yet
+to test against. This session built one and, for the first time, could look directly at the
+PREPROCESSED PIXELS Tesseract was actually receiving rather than only its output. On a real Base
+Set card and a real Scarlet & Violet card, the number ROI crop was unambiguously legible to a
+human eye ("1/102 star", "001/198") - and Tesseract still returned empty text or garbage under
+the existing PSM 7 ("single line") mode. The instinct at that point is to blame preprocessing
+(contrast, binarization, upscaling) or the crop coordinates - all three were investigated first
+and all three were fine. The actual defect was a structural mismatch nobody had named: these
+crops routinely contain TWO printed lines (the id sharing its strip with an illustrator credit or
+a copyright line), and PSM 7 does not degrade gracefully on a two-line image - it returns nothing,
+which looks identical to "the crop found no text at all" from the caller's side. The fix (PSM 6,
+"uniform block," retried only when the existing single-line passes have already fully failed)
+took minutes once the actual cause was visible; finding the cause took looking at images instead
+of only reading recognition() return values.
+
+Two more lessons stacked on top of that one. First, a benchmark's own sampling can silently
+encode the exact bias it exists to catch: the first grid-search run sliced a corpus cache's first
+N rows, and because that cache is built one real card set at a time, "40 cards" turned out to be
+100% vintage Base Set with zero modern representation - a sample that could only ever measure one
+of the two layout families this project has spent multiple sessions distinguishing (P80, D-097).
+Second, fixing the two-line problem immediately manufactured a new one: a bare, structurally
+valid 4-digit token ("1995") won as a fake collector number because it was, in fact, the
+copyright year sitting on the adjacent line PSM 6 now also reads. Structural parseability
+(`parseCollectorNumber` succeeds) and structural PLAUSIBILITY (does this look like a real printed
+id, versus a numerically-shaped fact that happens to sit nearby) are different questions, and a
+scorer that only asks the first one will eventually promote the second by accident. Neither bug
+was visible from confidence scores or pass/fail test counts alone; both were caught by actually
+looking at what the block-read text contained before trusting that it "found something."

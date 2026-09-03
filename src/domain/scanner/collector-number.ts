@@ -30,6 +30,19 @@ function foldOcrLetters(input: string): string {
   return input.replace(/[OILS]/g, (ch) => OCR_LETTER_FOR_DIGIT[ch] ?? ch)
 }
 
+/**
+ * F-16/P88 §15 — well-justified OCR separator noise: a hyphen, period or middle-dot stray glyph
+ * between the prefix and digit run on a tiny collector-number strip ("SWSH-001", "TG.01"). Never
+ * a general "strip all punctuation" pass (that would silently repair genuine garbage) — only
+ * these three specific characters, and only as a last-resort retry after both the literal and
+ * OCR-folded shapes have already failed (fail-closed remains the default).
+ */
+const SEPARATOR_PATTERN = /[-.·]/g
+
+function stripSeparators(token: string): string {
+  return token.replace(SEPARATOR_PATTERN, '')
+}
+
 interface StrictParts {
   readonly prefix: string
   readonly numericText: string
@@ -97,13 +110,27 @@ export function parseCollectorNumber(rawInput: string): ParsedCollectorNumber | 
   return parts ? toParsed(parts, null, raw) : null
 }
 
-/** Attempts strict recognition, then one conservative OCR-folding pass. Folding is allowed ONLY
- *  when the raw token already contains a digit: an id must have digits structurally, so folding
- *  "PIKACHU" into "P1KACHU" would manufacture an id out of ordinary prose — fail closed instead. */
+/** Attempts strict recognition, then one conservative OCR-folding pass, then (F-16) one
+ *  conservative separator-stripping pass. Folding/stripping are allowed ONLY when the raw token
+ *  already contains a digit: an id must have digits structurally, so folding "PIKACHU" into
+ *  "P1KACHU" (or treating "RE" as a stray-separator id) would manufacture an id out of ordinary
+ *  prose — fail closed instead. */
 function parseLeftSide(token: string): StrictParts | null {
   if (token === '') return null
   const literal = matchStrict(token)
   if (literal) return literal
   if (!/\d/.test(token)) return null
-  return matchStrict(foldOcrLetters(token))
+  const folded = matchStrict(foldOcrLetters(token))
+  if (folded) return folded
+  // Note: comparing `stripped !== token` (rather than testing SEPARATOR_PATTERN first) avoids
+  // relying on a stateful `.test()` call against a `g`-flagged regex, whose `lastIndex` would
+  // otherwise leak across calls.
+  const stripped = stripSeparators(token)
+  if (stripped !== token && stripped !== '') {
+    const strippedLiteral = matchStrict(stripped)
+    if (strippedLiteral) return strippedLiteral
+    const strippedFolded = matchStrict(foldOcrLetters(stripped))
+    if (strippedFolded) return strippedFolded
+  }
+  return null
 }

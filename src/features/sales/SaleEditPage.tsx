@@ -12,6 +12,7 @@ import { fetchFxRate } from '../../data/fx'
 import { fromDecimalString, toDecimalString } from '../../domain/money'
 import type { CurrencyCode } from '../../domain/currency'
 import { Button, FormMessage, TextField } from '../../ui/form'
+import { useUnsavedWorkSnapshot } from '../../platform/unsaved-work-registry'
 
 function parseAmount(raw: string, currency: CurrencyCode): bigint {
   const trimmed = raw.trim().replace(',', '.')
@@ -94,6 +95,18 @@ function SaleEditForm({ saleId, sale, lines }: { saleId: string; sale: Sale; lin
     ),
   )
   const [error, setError] = useState<string | null>(null)
+
+  // F-40 (P89): see PurchaseFormPage's identical registration for why.
+  useUnsavedWorkSnapshot('sale-edit-form', {
+    soldOn,
+    marketplace,
+    feesInput,
+    shippingCostInput,
+    shippingChargedInput,
+    notes,
+    fxRate,
+    lineInputs,
+  })
 
   const preview = useMemo(() => {
     try {

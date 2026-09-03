@@ -42,6 +42,7 @@ const visualMocks = vi.hoisted(() => ({
   getDiagnosticsSnapshot: vi.fn(),
   dispose: vi.fn(),
   prewarm: vi.fn(),
+  getExpectedCardRank: vi.fn(),
 }))
 
 vi.mock('../../src/features/scanner/visual/visual-client', () => ({
@@ -50,6 +51,7 @@ vi.mock('../../src/features/scanner/visual/visual-client', () => ({
     getDiagnosticsSnapshot = visualMocks.getDiagnosticsSnapshot
     dispose = visualMocks.dispose
     prewarm = visualMocks.prewarm
+    getExpectedCardRank = visualMocks.getExpectedCardRank
   },
 }))
 
@@ -74,12 +76,13 @@ vi.mock('../../src/features/scanner/ocr-engine', () => ({
 }))
 
 import { runOcrAnalysis } from '../../src/features/scanner/analyze'
-import { getCardVariants, searchCards } from '../../src/data/catalog'
+import { getCardVariants, searchCards, getCardsByIds } from '../../src/data/catalog'
 import { addCardAcquisition } from '../../src/data/collection'
 
 const mockedRunOcrAnalysis = vi.mocked(runOcrAnalysis)
 const mockedSearchCards = vi.mocked(searchCards)
 const mockedGetCardVariants = vi.mocked(getCardVariants)
+const mockedGetCardsByIds = vi.mocked(getCardsByIds)
 const mockedAddCardAcquisition = vi.mocked(addCardAcquisition)
 
 /** Default: visual channel unavailable, matching how it naturally behaves in this Node test
@@ -662,6 +665,31 @@ describe('commitBatch - existing acquisition path, honest outcomes (I12/I13/I14)
     expect(plain.status).toBe('needs_verification')
   })
 
+  it('F-19: idempotency-key-reuse names the possibility of a pre-existing entry, not "edit or remove it"', () => {
+    const reused = classifyAcquisitionFailure(
+      0,
+      Object.assign(
+        new Error(
+          "idempotency-key-reuse: key 'abc' already belongs to a different acquisition attempt",
+        ),
+        { code: 'P0001' },
+      ),
+    )
+    expect(reused.status).toBe('failed')
+    expect(reused.message).toMatch(/already be in your collection/i)
+    expect(reused.message).toMatch(/check portfolio/i)
+    expect(reused.message).not.toMatch(/edit it or remove it/i)
+  })
+
+  it('F-19: an ordinary coded server refusal keeps the generic edit-or-remove message', () => {
+    const ordinary = classifyAcquisitionFailure(
+      0,
+      Object.assign(new Error('quantity must be a positive integer'), { code: '23514' }),
+    )
+    expect(ordinary.status).toBe('failed')
+    expect(ordinary.message).toMatch(/edit it or remove it/i)
+  })
+
   it('falls back safely when no session defaults exist - never guessing financial values', async () => {
     mockedAddCardAcquisition.mockResolvedValue({ holdingId: 'h', lotId: 'l' })
     const controller = createRealScannerController({ userId: null })
@@ -769,6 +797,47 @@ describe('getLastDiagnostics - visual channel failure reporting (P78 R1)', () =>
     expect(diagnostics?.visualError).toBe('createImageBitmap decode failure')
   })
 
+  it('F-30 (P89): the visual embedding is created from the CROPPED card rect, not the full camera frame', async () => {
+    // Pins the exact P77 regression class: production code must call
+    // createImageBitmap(blob, cardRect.left, cardRect.top, cardRect.width, cardRect.height), not
+    // a bare createImageBitmap(blob) that embeds the entire captured frame. A NON-trivial rect
+    // (non-zero origin, smaller than the full frame) is required — a zero-origin/full-frame rect
+    // would pass even a regressed bare call by coincidence for some argument counts.
+    mockedRunOcrAnalysis.mockResolvedValue({
+      rawNameText: 'Pikachu',
+      rawCollectorNumberText: '58',
+      usedFullFrameFallback: false,
+      nameRoiId: null,
+      numberRoiId: null,
+    })
+    mockedSearchCards.mockResolvedValue({ results: [], totalCount: 0 })
+    const createImageBitmapSpy = vi.fn().mockResolvedValue({ close: vi.fn() })
+    globalThis.createImageBitmap = createImageBitmapSpy
+    visualMocks.analyze.mockResolvedValue(null)
+
+    const nonTrivialCardRect = { left: 43, top: 27, width: 401, height: 561 }
+    const controller = createRealScannerController({ userId: 'user-a' })
+    await controller.analyzeCapture({ ...capture(), cardRect: nonTrivialCardRect })
+
+    // rectifyCapture falls back to the original, unrectified capture in this Node test
+    // environment (no OffscreenCanvas/2D context available) — see the neighbouring test's own
+    // comment above — so the working capture's cardRect is exactly what was passed in, making
+    // this a precise pin rather than an approximation. rectifyCapture itself also calls
+    // createImageBitmap once (bare, for its own boundary-detection attempt, before falling back)
+    // against the SAME spy — so the crop call is found by argument count, not by call index.
+    expect(createImageBitmapSpy).toHaveBeenCalledWith(
+      expect.anything(),
+      nonTrivialCardRect.left,
+      nonTrivialCardRect.top,
+      nonTrivialCardRect.width,
+      nonTrivialCardRect.height,
+    )
+    // A regression to a bare createImageBitmap(blob) call for the VISUAL channel specifically
+    // would leave no 5-argument call at all among the recorded calls.
+    const fiveArgCalls = createImageBitmapSpy.mock.calls.filter((call) => call.length === 5)
+    expect(fiveArgCalls).toHaveLength(1)
+  })
+
   it('reports a successful visual match with real backend/index fields (no init failure)', async () => {
     mockedRunOcrAnalysis.mockResolvedValue({
       rawNameText: 'Pikachu',
@@ -866,18 +935,18 @@ describe('debug mode — widened shortlist, extended candidates, image previews 
     if (hadRevoke?.configurable) delete (URL as unknown as Record<string, unknown>).revokeObjectURL
   })
 
-  it('requests the widened debug shortlist size, not the production one (Q5)', async () => {
+  it('requests the widened debug shortlist size, not the production one (Q5, raised 50->200 P84/P87)', async () => {
     visualMocks.analyze.mockResolvedValue(null)
     visualMocks.getDiagnosticsSnapshot.mockReturnValue(defaultVisualDiagnostics())
     const controller = createRealScannerController({ userId: 'user-a' })
     await controller.analyzeCapture(capture())
-    expect(visualMocks.analyze).toHaveBeenCalledWith(expect.anything(), 50)
+    expect(visualMocks.analyze).toHaveBeenCalledWith(expect.anything(), 200)
   })
 
-  it('populates topVisualCandidatesExtended up to 20 only in debug mode (Q5/Q7)', async () => {
-    const hits = Array.from({ length: 25 }, (_, i) => ({
+  it('populates topVisualCandidatesExtended up to 100 only in debug mode (Q5/Q7, raised 20->100 P84/P87)', async () => {
+    const hits = Array.from({ length: 150 }, (_, i) => ({
       cardId: `card-${i}`,
-      similarity: 0.9 - i * 0.01,
+      similarity: 0.9 - i * 0.001,
     }))
     visualMocks.analyze.mockResolvedValue({
       hits,
@@ -913,7 +982,7 @@ describe('debug mode — widened shortlist, extended candidates, image previews 
     const controller = createRealScannerController({ userId: 'user-a' })
     await controller.analyzeCapture(capture())
     const diagnostics = controller.getLastDiagnostics?.()
-    expect(diagnostics?.topVisualCandidatesExtended).toHaveLength(20)
+    expect(diagnostics?.topVisualCandidatesExtended).toHaveLength(100)
     expect(diagnostics?.topVisualCandidatesExtended[0]?.cardId).toBe('card-0')
     // The production top-5 field is unaffected by the widened debug list.
     expect(diagnostics?.topVisualCandidates).toHaveLength(5)
@@ -957,5 +1026,175 @@ describe('debug mode — widened shortlist, extended candidates, image previews 
     const images = controller.getLastDebugImages?.()
     controller.dispose()
     expect(revokeObjectURL).toHaveBeenCalledWith(images?.rectifiedUrl)
+  })
+})
+
+describe('getExpectedCardRank (P84, ported P87) — debug-only rank-lookup gating', () => {
+  beforeEach(() => {
+    // The two P90 §21 tests below run a real analyzeCapture() with debug mode on, which creates
+    // debug image object URLs — jsdom/Node's URL has no createObjectURL; stub it like the debug
+    // image describe block above does.
+    Object.defineProperty(URL, 'createObjectURL', {
+      value: vi.fn(() => 'blob:debug'),
+      configurable: true,
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', { value: vi.fn(), configurable: true })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('resolves null WITHOUT ever calling the visual client outside ?scannerDebug=1', async () => {
+    vi.stubGlobal('window', { location: { search: '' } })
+    const controller = createRealScannerController({ userId: 'user-a' })
+    const result = await controller.getExpectedCardRank?.('some-card-id')
+    expect(result).toBeNull()
+    expect(visualMocks.getExpectedCardRank).not.toHaveBeenCalled()
+  })
+
+  it('delegates to the visual client and relays its result verbatim inside ?scannerDebug=1', async () => {
+    vi.stubGlobal('window', { location: { search: '?scannerDebug=1' } })
+    visualMocks.getExpectedCardRank.mockResolvedValue({
+      found: true,
+      rank: 3,
+      similarity: 0.87,
+      totalCards: 19501,
+      inTop20: true,
+      inTop100: true,
+      indexContentId: '0123456789abcdef',
+    })
+    const controller = createRealScannerController({ userId: 'user-a' })
+    const result = await controller.getExpectedCardRank?.('card-42')
+    expect(visualMocks.getExpectedCardRank).toHaveBeenCalledWith('card-42')
+    expect(result).toEqual({
+      found: true,
+      rank: 3,
+      similarity: 0.87,
+      totalCards: 19501,
+      inTop20: true,
+      inTop100: true,
+      indexContentId: '0123456789abcdef',
+    })
+  })
+
+  it('a debug-mode lookup with no prior scan (no cached query vector) resolves found=false, never throws', async () => {
+    vi.stubGlobal('window', { location: { search: '?scannerDebug=1' } })
+    visualMocks.getExpectedCardRank.mockResolvedValue({
+      found: false,
+      rank: null,
+      similarity: null,
+      totalCards: 0,
+      inTop20: false,
+      inTop100: false,
+      indexContentId: null,
+    })
+    const controller = createRealScannerController({ userId: 'user-a' })
+    await expect(controller.getExpectedCardRank?.('card-1')).resolves.toEqual(
+      expect.objectContaining({ found: false, rank: null }),
+    )
+  })
+
+  it('P90 §21: computes a REAL hybrid rank/tier/score-components for a card from the merged pool of the most recent scan, using the exact scoring pipeline production runs', async () => {
+    vi.stubGlobal('window', { location: { search: '?scannerDebug=1' } })
+    visualMocks.getExpectedCardRank.mockResolvedValue({
+      found: false,
+      rank: null,
+      similarity: null,
+      totalCards: 0,
+      inTop20: false,
+      inTop100: false,
+      indexContentId: null,
+    })
+    mockedRunOcrAnalysis.mockResolvedValue({
+      rawNameText: 'Pikachu',
+      rawCollectorNumberText: '58',
+      usedFullFrameFallback: false,
+      nameRoiId: null,
+      numberRoiId: null,
+    })
+    // An exact id+name match on 'card-58' — the strongest possible pure-text score — plus a
+    // second, unrelated candidate that must rank behind it.
+    mockedSearchCards.mockResolvedValue({
+      results: [
+        catalogRow({ cardId: 'card-58', name: 'Pikachu', localId: '58' }),
+        catalogRow({ cardId: 'card-99', name: 'Charmander', localId: '99' }),
+      ],
+      totalCount: 2,
+    })
+    visualMocks.analyze.mockResolvedValue(null)
+    visualMocks.getDiagnosticsSnapshot.mockReturnValue(defaultVisualDiagnostics())
+
+    const controller = createRealScannerController({ userId: 'user-a' })
+    await controller.analyzeCapture(capture())
+
+    const result = await controller.getExpectedCardRank?.('card-58')
+    expect(result?.hybridRank).toBe(1)
+    expect(result?.hybridScore).toBeGreaterThan(0)
+    expect(result?.hybridTier).not.toBeNull()
+    expect(result?.scoreComponents).toEqual(
+      expect.arrayContaining(['collector-number-exact', 'name-exact']),
+    )
+
+    // The unrelated candidate carries at most a language-match signal (both fixture cards are
+    // English) and ranks behind the exact id+name match, never first.
+    const other = await controller.getExpectedCardRank?.('card-99')
+    expect(other?.hybridRank).toBe(2)
+    expect(other?.hybridScore ?? 0).toBeLessThan(result?.hybridScore ?? 0)
+    expect(other?.scoreComponents).not.toEqual(
+      expect.arrayContaining(['collector-number-exact', 'name-exact']),
+    )
+  })
+
+  it('P90 §21: a card never retrieved by the scan is fetched and scored as an honest what-if, without mutating the batch', async () => {
+    vi.stubGlobal('window', { location: { search: '?scannerDebug=1' } })
+    visualMocks.getExpectedCardRank.mockResolvedValue({
+      found: false,
+      rank: null,
+      similarity: null,
+      totalCards: 0,
+      inTop20: false,
+      inTop100: false,
+      indexContentId: null,
+    })
+    mockedRunOcrAnalysis.mockResolvedValue({
+      rawNameText: 'Pikachu',
+      rawCollectorNumberText: '58',
+      usedFullFrameFallback: false,
+      nameRoiId: null,
+      numberRoiId: null,
+    })
+    mockedSearchCards.mockResolvedValue({
+      results: [catalogRow({ cardId: 'card-58', name: 'Pikachu', localId: '58' })],
+      totalCount: 1,
+    })
+    visualMocks.analyze.mockResolvedValue(null)
+    visualMocks.getDiagnosticsSnapshot.mockReturnValue(defaultVisualDiagnostics())
+    mockedGetCardsByIds.mockResolvedValueOnce([
+      {
+        id: 'card-never-retrieved',
+        name: 'Bulbasaur',
+        localId: '1',
+        rarity: 'Basic',
+        category: 'Pokemon',
+        illustrator: null,
+        imageBaseUrl: null,
+        // Deliberately a language MISMATCH against the scan's 'en' hint, so this candidate scores
+        // a real, unambiguous zero (a same-language match would add a small language-match point).
+        language: 'ja',
+        setId: 'set-1',
+        setName: 'Base Set',
+      },
+    ])
+
+    const controller = createRealScannerController({ userId: 'user-a' })
+    await controller.analyzeCapture(capture())
+
+    const result = await controller.getExpectedCardRank?.('card-never-retrieved')
+    expect(mockedGetCardsByIds).toHaveBeenCalledWith(['card-never-retrieved'], 'en')
+    expect(result?.hybridRank).toBe(2) // scores zero text evidence, ranks behind card-58
+    expect(result?.hybridScore).toBe(0)
+    // Never added to the batch/candidate pool this scan actually produced.
+    expect(controller.getLastDiagnostics?.()).not.toBeNull()
   })
 })

@@ -17,6 +17,7 @@ import { MoneyDisplay, ValuePrivacyToggle } from '../../ui/MoneyDisplay'
 import { formatNokMinor } from '../../ui/money-format'
 import { useDebouncedValue } from '../../ui/useDebouncedValue'
 import { SearchIcon, XIcon, StarIcon } from '../../ui/icons'
+import { useUnsavedWorkSource } from '../../platform/unsaved-work-registry'
 
 /**
  * Portfolio: the user's owned-card browser (M7.1 prompt §37-46, owner feedback pass). No generic
@@ -35,6 +36,10 @@ export function PortfolioPage() {
   const debouncedQuery = useDebouncedValue(queryInput, 250)
   const [selectMode, setSelectMode] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  // F-40 (P89): a live multi-select would otherwise be silently cleared by an app-wide automatic
+  // reload exactly like unsubmitted form input — only while there is an actual selection to lose,
+  // not merely while select mode is toggled on with nothing picked yet.
+  useUnsavedWorkSource('portfolio-bulk-selection', selectMode && selectedIds.size > 0)
 
   const profile = useQuery({ queryKey: ['my-profile'], queryFn: getMyProfile })
   const counts = useQuery({

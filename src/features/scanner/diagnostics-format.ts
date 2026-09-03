@@ -8,13 +8,45 @@
  * Supabase key, no email, no user id, no full auth state — every field here already lives on
  * {@link ScannerDiagnostics}, which itself never carries any of those.
  */
-import type { ScannerDiagnostics } from './contract'
+import type { ExpectedCardRank, ScannerDiagnostics } from './contract'
 import { APP_BUILD_SHA, APP_BUILD_TIME, SCANNER_SCHEMA_VERSION } from '../../platform/build-info'
 
 const EMPTY = '—'
 
 function num(value: number | null): string {
   return value === null ? EMPTY : String(value)
+}
+
+/** P90 §10/§21: the "should this card have won?" debug tool result — a card the owner names AFTER
+ *  a scan, purely diagnostic, never persisted, never fed back into matching. Kept as its own
+ *  formatter (not folded into `formatScannerDiagnostics`) because it answers a question about ONE
+ *  named card, not the scan as a whole, and the tool may run zero or several times per scan. */
+export function formatExpectedCardRankDiagnostics(
+  card: { id: string; name: string; setName: string; localId: string },
+  rank: ExpectedCardRank,
+): string {
+  const textEvidence = rank.scoreComponents.filter((reason) => !reason.startsWith('visual-'))
+  return [
+    `EXPECTED_CARD_ID=${card.id}`,
+    `EXPECTED_CARD_NAME=${card.name}`,
+    `EXPECTED_CARD_SET=${card.setName}`,
+    `EXPECTED_CARD_NUMBER=${card.localId}`,
+    `EXPECTED_VISUAL_RANK=${num(rank.rank)}`,
+    `EXPECTED_VISUAL_SIMILARITY=${rank.similarity === null ? EMPTY : rank.similarity.toFixed(4)}`,
+    `EXPECTED_VISUAL_PERCENTILE=${
+      rank.rank === null || rank.totalCards === 0
+        ? EMPTY
+        : (((rank.totalCards - rank.rank) / rank.totalCards) * 100).toFixed(1)
+    }`,
+    `EXPECTED_IN_TOP20=${rank.inTop20 ? 'yes' : 'no'}`,
+    `EXPECTED_IN_TOP100=${rank.inTop100 ? 'yes' : 'no'}`,
+    `EXPECTED_TOTAL_INDEX_CARDS=${num(rank.totalCards)}`,
+    `EXPECTED_INDEX_CONTENT_ID=${rank.indexContentId ?? EMPTY}`,
+    `EXPECTED_HYBRID_RANK=${num(rank.hybridRank)}`,
+    `EXPECTED_HYBRID_TIER=${rank.hybridTier ?? EMPTY}`,
+    `EXPECTED_TEXT_EVIDENCE=${textEvidence.length > 0 ? textEvidence.join(',') : EMPTY}`,
+    `EXPECTED_SCORE_COMPONENTS=${rank.scoreComponents.length > 0 ? rank.scoreComponents.join(',') : EMPTY}`,
+  ].join('\n')
 }
 
 export function formatScannerDiagnostics(d: ScannerDiagnostics): string {
@@ -80,6 +112,18 @@ export function formatScannerDiagnostics(d: ScannerDiagnostics): string {
     `INDEX_VERSION=${d.indexVersion ?? EMPTY}`,
     `INDEX_CARD_COUNT=${num(d.indexCardCount)}`,
     `INDEX_SOURCE_PROJECT_REF=${d.indexSourceProjectRef ?? EMPTY}`,
+    // P87 F-01/F-22/§6/§15: makes a stale or wrong-project index impossible to hide in a
+    // screenshot/diagnostics paste — the content id changes whenever the underlying data does,
+    // even across a rebuild against the identical model revision.
+    `INDEX_POINTER_CONTENT_ID=${d.indexContentId ?? EMPTY}`,
+    `INDEX_MANIFEST_CONTENT_ID=${d.indexContentId ?? EMPTY}`,
+    `INDEX_GENERATED_AT=${d.indexGeneratedAt ?? EMPTY}`,
+    `INDEX_MODEL_REVISION=${d.indexModelRevision ?? EMPTY}`,
+    `INDEX_EMBEDDINGS_SHA256=${d.indexEmbeddingsSha256 ?? EMPTY}`,
+    `INDEX_SOURCE_PROJECT_EXPECTED=${d.indexSourceProjectExpected ?? EMPTY}`,
+    `INDEX_SOURCE_PROJECT_MATCH=${d.indexSourceProjectMatch === null ? EMPTY : d.indexSourceProjectMatch ? 'yes' : 'no'}`,
+    `INDEX_RUNTIME_SHA256_VERIFIED=${d.indexRuntimeChecksumVerified === null ? EMPTY : d.indexRuntimeChecksumVerified ? 'yes' : 'no'}`,
+    `INDEX_RUNTIME_CHECKSUM_MS=${num(d.indexRuntimeChecksumMs)}`,
     `INDEX_LOAD_MS=${num(d.indexLoadMs)}`,
     `INDEX_SEARCH_MS=${num(d.indexSearchMs)}`,
     'TOP_VISUAL_CANDIDATES:',
@@ -106,6 +150,20 @@ export function formatScannerDiagnostics(d: ScannerDiagnostics): string {
     `OCR_NAME_ROI=${d.ocrNameRoiId ?? EMPTY}`,
     `OCR_COLLECTOR_SIGNAL=${d.ocrCollectorSignal ?? EMPTY}`,
     `OCR_NUMBER_ROI=${d.ocrNumberRoiId ?? EMPTY}`,
+    'OCR_TRIALS:',
+  )
+  if (d.ocrTrials.length === 0) {
+    lines.push(`  ${EMPTY}`)
+  } else {
+    d.ocrTrials.forEach((trial) => {
+      lines.push(
+        `  [${trial.field}] roi=${trial.roiId} preprocess=${trial.preprocess} segmentation=${trial.segmentation} ` +
+          `confidence=${String(trial.confidence)} plausibility=${trial.plausibilityScore.toFixed(1)} ` +
+          `text=${JSON.stringify(trial.text)}${trial.isWinner ? ' <-- WINNER' : ''}`,
+      )
+    })
+  }
+  lines.push(
     `CANDIDATE_EXPANSION_TRIGGERED=${d.candidateExpansionTriggered ? 'yes' : 'no'}`,
     'FINAL_RERANKED_CANDIDATES:',
   )
@@ -120,6 +178,26 @@ export function formatScannerDiagnostics(d: ScannerDiagnostics): string {
       )
     })
   }
-  lines.push(`VISUAL_ERROR=${d.visualError ?? EMPTY}`)
+  lines.push(
+    `VISUAL_ERROR=${d.visualError ?? EMPTY}`,
+    `VISUAL_CALIBRATION_BAND=${d.visualCalibrationBand ?? EMPTY}`,
+    `OCR_NAME_CONFIDENCE=${num(d.ocrNameConfidence)}`,
+    `OCR_NAME_LEXICON_MATCH=${d.ocrNameLexiconMatch ?? EMPTY}`,
+    `OCR_NAME_LEXICON_MARGIN=${d.ocrNameLexiconMargin === null ? EMPTY : d.ocrNameLexiconMargin.toFixed(3)}`,
+    `OCR_COLLECTOR_CONFIDENCE=${num(d.ocrCollectorConfidence)}`,
+    `OCR_COLLECTOR_PARSE_CONFIDENCE=${d.ocrCollectorParseConfidence ?? EMPTY}`,
+    'HYBRID_SCORE_COMPONENTS:',
+  )
+  if (d.finalRerankedCandidates.length === 0) {
+    lines.push(`  ${EMPTY}`)
+  } else {
+    d.finalRerankedCandidates.forEach((c) => {
+      lines.push(`  ${c.cardId}: ${c.reasons.length > 0 ? c.reasons.join('+') : EMPTY}`)
+    })
+  }
+  lines.push(
+    `VISUAL_TEXT_DISAGREEMENT=${d.visualTextDisagreement ? 'yes' : 'no'}`,
+    `TIER_CAP_REASON=${d.tierCapReason ?? EMPTY}`,
+  )
   return lines.join('\n')
 }

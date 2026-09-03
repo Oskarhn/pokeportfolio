@@ -532,3 +532,308 @@ light). `analyze.ts` tries the existing `contrast` pass first (unchanged call co
 for that field, so an already-working scan never pays for it. Not benchmarked against a real device
 or a representative real-photo OCR corpus this session — a bounded, motivated but unverified
 addition, disclosed as such.
+
+## 7f. Content-addressed index publishing, runtime integrity and cache coherence (M15, 2026-09-02 — P87, D-101)
+
+P86's independent adversarial audit (F-01, CRITICAL/P0) found the visual reference INDEX served
+`Cache-Control: immutable, max-age=1y` at a fixed literal path whose DATA had already been
+rebuilt at least three times (P76/P77/P79) — a device that already ran the scanner could keep
+using a stale or incomplete index for up to a year with no diagnostic signal. Full mechanism,
+design and every touched surface: D-101. Summary for a future session:
+
+- The index is now content-addressed (`.../visual-v1/index/generations/<contentId>/`, a SHA-256
+  over semantic manifest fields + card-ids + embeddings bytes, `src/domain/scanner/
+  index-content-id.ts`), with a tiny always-revalidating pointer (`current.json`) as the one
+  thing a client fetches first. Model/engine binaries (content-stable per model revision) keep
+  their existing path, untouched.
+- `verify-index.ts`'s checks are now build-load-bearing (`stage-index-assets.mjs` calls them
+  directly before staging anything into `public/`), publishing is atomic (temp-write, verify,
+  rename — `atomic-publish.ts`), and `drainAllCardPages` uses keyset (not OFFSET) pagination with
+  a before/after exact-count reconciliation around the full drain.
+- The runtime worker gates a loaded index's declared source project against THIS deployment's
+  own configured Supabase project (never gated in local/CI-placeholder builds), and independently
+  re-hashes the fetched embeddings via WebCrypto rather than trusting the manifest's own checksum
+  field alone.
+- The already-valid, already-hosted-sourced 19,501-card committed index was repackaged under its
+  correct content id by a one-time local script — zero re-embedding, zero database access.
+- P84's debug-only `getExpectedCardRank` tooling (a sibling, unmerged branch off the same base)
+  was ported by hand, unchanged in behavior.
+
+Not addressed here, and still open for a future session per P86's other findings: F-02 (the
+visual-evidence score ceiling structurally below coincidental text-match convergence — the
+CRITICAL/P0 companion finding to F-01, a matcher-scoring defect, out of this session's scope),
+F-03 (the discriminative-power-at-scale benchmark gap), and the remaining HIGH/MEDIUM findings
+this session was not asked to fix (F-05 through F-41 except where explicitly listed in D-101).
+
+## 7g. OCR engine forensics and a real, evidence-backed collector-number recovery pass (M15, 2026-09-02 — P85, D-102)
+
+§7e's `binarize` fallback was shipped unbenchmarked against any real OCR corpus (disclosed
+directly above). This session built one — the first real, ground-truthed OCR accuracy corpus this
+project has had — and used it to actually forensically test Tesseract.js 7's configuration space
+rather than continue reasoning from single anecdotal real-device screenshots (Shieldon, Mega
+Chandelure ex) the way P78-P83 all had to.
+
+### Corpus and methodology
+
+`scripts/scanner-ocr-benchmark/` reuses the EXISTING real TCGdex reference-image fetcher
+(`scripts/scanner-visual-benchmark/lib/fetch-references.mjs`, unchanged — no second corpus-fetch
+implementation) for ground truth (real printed `name`/`localId` across 7 real sets spanning
+vintage WOTC/e-series through Scarlet & Violet), then applies BOTH existing augmentation modules
+this project already had for the P76/P79 visual benchmarks — `augment.mjs`'s 6 profiles (resize,
+perspective-rotate, brightness-contrast, blur-jpeg, glare-overlay, shadow-color-shift) and
+`hard-augment.mjs`'s 3 profiles (tilt + off-center placement composed onto a larger background,
+optionally with combined glare/shadow/blur/noise, run through the REAL `rectify.ts` detect+warp
+pipeline) — for 9 realistic perturbation profiles per card, covering every distortion class P85
+asked for (perspective, skew, brightness, shadow, glare, blur, compression, small text,
+vintage/modern layout) without a third reimplementation of any of it.
+
+Two new benchmark entrypoints:
+- `pnpm scanner:ocr:benchmark:psm-forensics` — a bounded PSM × preprocess grid search (5 page-
+  segmentation modes × 2 preprocessing passes × both ROI candidates, on a representative 40-card/
+  4-profile subset) to find which Tesseract configuration actually wins per field, rather than
+  assuming one.
+- `pnpm scanner:ocr:benchmark:recognition` — runs the REAL production pipeline functions (the
+  exact exports `analyze.ts` itself calls: `NAME_ROI_CANDIDATES`/`NUMBER_ROI_CANDIDATES`,
+  `scoreNameRoiCandidate`/`scoreNumberRoiCandidate`, `isNameRoiConfident`/`isNumberRoiConfident`,
+  `extractCollectorNumberLine`) against a diverse, proportionally-sampled corpus (every real set
+  represented, not just however `corpus.json` happens to be ordered — a real methodology bug this
+  session found and fixed mid-session, see below) and reports BASELINE (P82/P83 behavior) vs. NEW
+  (this session's addition) side by side.
+
+**A real methodology bug, caught before it produced a false conclusion:** the first forensics run
+sliced `corpus.json`'s first N rows unconditionally — which, because the corpus cache is built set
+by set, meant "40 cards" was silently ALL Base Set (vintage) with zero modern SWSH/SV
+representation. `diverseSample()` (new) samples proportionally across every real set instead.
+Disclosed here because the wrong conclusion this bug could have produced (a PSM/preprocess winner
+tuned only for one layout family) is exactly the kind of category error P80 already spent a whole
+session fixing (§7c) — this project's benchmark tooling itself is not exempt from that lesson.
+
+### PSM forensics result: the existing default was already correct for a genuinely single-line crop
+
+Tested PSM 3 (auto), 6 (single uniform block), 7 (single line — the pre-existing default), 8
+(single word), 11 (sparse text) against both `contrast` and `binarize` preprocessing, 40 cards ×
+4 representative profiles (n=241-300 usable attempts per configuration after empty-text
+exclusion). PSM 0/2/12 (any OSD-dependent mode) were excluded: `osd.traineddata` is not staged
+(`scripts/prepare-scanner-assets.mjs` ships `eng.traineddata` only) — confirmed directly that
+these modes do NOT throw, they silently degrade to `{text: '', confidence: 0}` every time with
+stderr noise ("Tesseract couldn't load any languages!"), a worse failure mode than an exception.
+
+**PSM 7 (single-line) wins decisively for BOTH fields when the candidate crop genuinely is one
+line** — `contrast|7` and `binarize|7` are the top two configurations for the name field by a wide
+margin (name-exact 7-8% / name-lexicon-fuzzy 39-44% vs. 0-3% for every other PSM); `binarize|7`
+also leads the number-field grid, though every configuration in that grid scored near zero (see
+below — this is the real finding, not a PSM problem). **The pre-existing default was already the
+right choice; no PSM change was warranted for the single-line pass.** Full report:
+`scripts/scanner-ocr-benchmark/reports/psm-forensics-report.json` (gitignored, regenerable).
+
+### The real collector-number failure: a correctly-cropped strip routinely contains TWO lines, which PSM 7 cannot read at all
+
+Direct visual inspection of the actual cropped/preprocessed ROI images (not just OCR output) on
+two real cards — Base Set Alakazam (vintage `classic-bottom-right`) and Scarlet & Violet Pineco
+(modern `modern-bottom-left`) — showed the crop containing perfectly legible printed text
+("1/102 ★", "001/198") that `readOneCandidate`'s single-line recognition (PSM 7) nonetheless read
+as EMPTY or as unrelated garbage. Root cause, confirmed by testing the identical crop at PSM 6
+(uniform block): the crop structurally contains the id's line PLUS an adjacent illustrator-credit
+or copyright line — a real, common template shape on both vintage AND modern layouts, not a rare
+edge case — and PSM 7's single-line assumption mis-segments a genuinely two-line image into
+nothing usable. PSM 6 reads the whole block, including both lines.
+
+**Fix:** `analyze.ts`'s adaptive-ROI trial loop gains a bounded THIRD pass for the
+collector-number field only (`readBestRoi`'s new `multiLineExtract` parameter, wired only at the
+number call site): when the existing `contrast` AND `binarize` single-line passes BOTH find
+nothing usable for EITHER number candidate, one more bounded attempt retries the SAME candidates
+with `multi-line` segmentation (PSM 6) and extracts the id from whichever line/token actually
+parses as one (`extractCollectorNumberLine`, new, exported and unit-tested). Never attempted
+unless the field has already fully failed — an already-working scan pays zero extra cost, and the
+worst case adds at most `NUMBER_ROI_CANDIDATES.length` (2) extra recognition calls, matching P85
+§9's staged-budget requirement exactly.
+
+**A real false positive found and closed before this shipped:** a bare structural
+`looksLikeCollectorNumberText` check on a PSM 6 multi-line read let a vintage card's copyright
+YEAR ("© 1995") win as a plausible "collector number" — a 4-digit, prefix-less token that
+structurally parses but is not remotely a real printed id (this catalog's real local ids never
+reach 4 digits without a total attached). `looksLikePlausibleMultiLineToken` (analyze.ts, used
+ONLY by the multi-line fallback) additionally requires either a total (`X/Y` shape) or a
+non-empty/known prefix or a numeric run of ≤3 digits — closing the exact false-positive shape
+found, without touching the existing, already-tested `looksLikeCollectorNumberText` used
+elsewhere. A second real shape — a misread set-symbol icon box sharing its line with the real id
+(Scarlet & Violet: `"(BI 001/198 ®"`) — needed per-TOKEN extraction inside the line, not just a
+per-line check, since the line as a whole never parses.
+
+### Full-corpus recognition benchmark (BASELINE vs. NEW)
+
+`pnpm scanner:ocr:benchmark:recognition`, sample=180 cards proportionally drawn from every real
+set (base1/base2/neo1/swsh1/swsh7/sv01, 30 each — the 7th set, `cel25cc`, contributed fewer than
+30 usable rows), 1,620 total perturbed queries (9 profiles/card):
+
+| Metric | BASELINE (P82/P83) | NEW (P85) |
+|---|---|---|
+| Collector number EXACT | 0.0% | 0.4% |
+| Collector number folded/numeric-only | 0.9% | 1.3% |
+| Queries recovered ONLY by the multi-line pass (found SOMETHING baseline found nothing for) | n/a | 22/1620 (1.4%) |
+| Avg. recognition calls/query (number field) | 2.25 | 2.36 |
+
+Name field (unaffected by this session — measured once, n=1,620): EXACT 3.8%, lexicon-fuzzy
+15.4%, lexicon-top-3 18.3%. By layout family: vintage EXACT 5.9%/fuzzy 23.1%/top-3 27.8% vs.
+modern EXACT 1.7%/fuzzy 7.8%/top-3 8.9% — consistent with vintage's simpler, less busy name-plate
+typography being easier for a general-purpose LSTM model than modern full-bleed name art.
+
+**The fix is real, measured and non-zero — and honestly small at this benchmark's harsh scale.**
+22 real queries out of 1,620 recovered SOME usable text ONLY because the multi-line pass ran;
+collector-number EXACT moved from a flat 0.0% to 0.4%, and folded/numeric-partial evidence from
+0.9% to 1.3% — a genuine, directly-attributable improvement with zero regression (BASELINE
+numbers here are reproduced from the SAME pipeline code paths NEW uses minus the third pass, not
+re-derived, so this is an apples-to-apples delta). It is also small in absolute terms: this
+benchmark deliberately includes the harsh combined-defect profiles (blur, glare, shadow,
+tilt+off-center composited with noise) that §7c/P79 already found collapse near-EVERY recognition
+method to near-zero, and a card's collector number is printed in a much smaller, often more
+stylized font than its name — the single hardest text on the card to recover once resolution/
+contrast has already been degraded by a realistic capture. The individual-image confirmations
+above (Alakazam, Pineco) show the mechanism genuinely working when the source is only lightly
+degraded; the population-scale number here shows how much of this benchmark's corpus is NOT lightly
+degraded. Disclosed as a real, still-open, hard sub-problem — not a claim that collector-number
+OCR is solved.
+
+**Honest limitation, disclosed rather than smoothed over:** the multi-line recovery is real and
+directly confirmed on individual, lightly-degraded images (see above), but its measured recovery
+rate across the FULL 9-profile perturbed corpus is small — most of this benchmark's perturbation
+profiles (blur, glare, shadow, tilt+off-center) degrade the already-small, often stylized printed
+collector-number font enough that no page-segmentation mode recovers it, consistent with §7c/P79's
+own "combined photometric defects collapse every method to near-zero" finding for the VISUAL
+channel. This is a genuine, still-open, hard sub-problem — not something ROI/PSM tuning alone can
+fully close — rather than a claim that P85 solved collector-number OCR outright.
+
+### Local name-lexicon fuzzy resolution — built, tested, NOT wired into production retrieval this session
+
+`src/domain/scanner/name-lexicon.ts` (new): resolves a noisy OCR name reading against a small
+local list of UNIQUE catalog names via bounded Damerau-Levenshtein similarity, requiring both a
+minimum ratio (`LEXICON_MIN_RATIO`, 0.72) AND a real margin over the runner-up
+(`LEXICON_MIN_MARGIN`, 0.08) before calling anything "confident" — the same
+score-alone-proves-nothing discipline `engine.ts`'s own ambiguity-margin tiers use. Directly
+confirmed to resolve a Shieldon-shaped one-letter OCR miss ("Shieidon" → "shieldon") with real
+confidence while REJECTING genuine garbage ("3S oa |") outright — no manufactured confidence.
+
+This is a separate, EARLIER-stage concern from `name-similarity.ts`'s existing `compareNames`
+(which scores a candidate the catalog has ALREADY returned): a lexicon resolution would let a
+badly garbled OCR string produce a sane search query before any catalog call, rather than one
+guaranteed to return nothing. `scripts/scanner-name-lexicon/build-lexicon.ts` (new) generates the
+lexicon for real, from either the real catalog (`SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`) or,
+absent credentials, this session's own OCR benchmark corpus as an honestly-labeled DEMO substitute
+— run this session (no DB credentials available, the same standing gap every M15 session since
+P75 has disclosed): 667 unique names from 988 raw rows (the full OCR benchmark corpus), 8,021
+bytes — a real, measured confirmation of the
+"far fewer unique names than printings" premise (32% reduction even at this small, low-duplication
+demo scale; a real ~20,946-card catalog with many more reprints/re-releases would show a
+materially starker ratio). **Not wired into `retrieveScannerCandidates`'s default retrieval path
+this session** — the real production-scale lexicon does not exist yet (no DB access), and wiring
+an unvalidated demo-scale substitute into the shipped retrieval path would be exactly the
+"blindly ship a complicated ensemble" this project's discipline exists to prevent. Ships as
+tested, available domain tooling (`photometric.ts`/`perceptual-hash.ts`'s own precedent) for a
+future session with real catalog access to wire in once a real lexicon is generated and verified
+at production scale.
+
+### Structured collector-number parsing
+
+`src/domain/scanner/collector-parse.ts` (new): wraps the existing `parseCollectorNumber` with a
+canonical `normalized` form and a `PARSE_CONFIDENCE` band (`high`/`medium`/`low`/`none`) driven by
+STRUCTURAL plausibility, independent of raw OCR confidence — a total (`X/Y`) is the strongest
+signal (HIGH); a bare numeric id or a recognized multi-letter/known-single-letter prefix is the
+ordinary real-catalog shape (MEDIUM); a generic single letter plus a stray digit or two with no
+total ("Z7", "x2" — exactly the garbage shapes P85 §8 named) is LOW, never promoted further
+without more evidence; text with no digits at all never parses (NONE). Diagnostics/scoring
+tooling only — `engine.ts`'s own matching scores are untouched.
+
+### OCR debugger
+
+`?scannerDebug=1` now surfaces every considered ROI/preprocess/segmentation attempt this scan
+(`ScannerDiagnostics.ocrTrials`, new — `analyze.ts`'s `readBestRoi` records one entry per attempt
+when `debug` is true), each line showing field, ROI id, preprocessing variant, segmentation mode,
+confidence, a plausibility score, and the actual recognized text, with the winning attempt flagged
+`<-- WINNER`. Textual only, memory-only, never persisted — the exact same privacy floor the
+existing `OCR_NAME_SIGNAL`/`OCR_COLLECTOR_SIGNAL` fields already established (P77); this is the
+same information at finer grain, not a new boundary.
+
+## 8. Matcher evidence-combination redesign (P88, D-103)
+
+Responds to the independent adversarial audit's two P0/CRITICAL findings this session owned
+(F-02) — full decision record in `docs/DECISIONS.md` D-103; this section carries only the
+measured numbers.
+
+### Re-run of the existing §7b/D-097 benchmark methodology with the NEW matcher
+
+Same corpus (240 real TCGdex cards, 6 sets, 1,440 augmented queries), same real production
+matcher/embeddings — only `engine.ts`/`visual-evidence.ts`'s scoring changed:
+
+| Method | TOP1 | TOP3 | TOP5 |
+|---|---|---|---|
+| OCR-first | 30.2% | 39.3% | 41.6% |
+| Perceptual (dHash) | 86.7% | 93% | 95% |
+| Visual (DINOv2) alone | 99.7% | 100% | 100% |
+| Hybrid — OLD (pre-P88, documented above) | 95.8% | 99.9% | 100% |
+| **Hybrid — NEW (P88)** | **99.4%** | **100%** | **100%** |
+
+The hybrid-vs-visual-alone gap shrank from -3.9 points (OLD) to -0.3 points (NEW) on the project's
+own existing measurement. This does not by itself prove F-02 is closed at the real 19,501-card
+catalog's discriminative scale (see F-03/§7 above — this 240-card corpus still cannot measure
+confusability against 19,500 OTHER cards) — it proves the redesign does not regress the existing,
+already-relied-upon benchmark, and the isolated adversarial unit suite
+(`tests/domain/scanner/engine-visual-dominance.test.ts`) proves the specific coincidental-text-
+convergence mechanism the audit found is now guarded against by construction, independent of
+corpus scale.
+
+### Full-corpus OCR recognition benchmark (P85's methodology, re-run with this session's F-16/F-12/§13 fixes)
+
+210 of the 240-card corpus (a fresh random sample), 9 perturbation profiles, 1,890 queries:
+
+| Field | Baseline | This session |
+|---|---|---|
+| Name exact | — | 3.3% (P85's own 180-card sample: 3.8% — within sampling noise, not a regression) |
+| Name fuzzy/normalized | — | 14.8% |
+| Collector-number exact | 0.1% | 0.4% |
+| Collector-number fuzzy/normalized | 1.0% | 1.3% |
+
+Consistent with P85's own numbers (small differences are sampling noise from a different random
+210-of-240 draw, not a regression). F-16 (separator recovery) and F-12/§13 (confidence gating,
+body-text penalty) target failure classes this synthetic corpus does not heavily represent
+(stray-separator OCR noise, low-confidence-garbage ROI winners, attack/rules-text contamination)
+— their effect is demonstrated by dedicated unit tests
+(`tests/domain/scanner/collector-number.test.ts`, `tests/ui/scanner-analyze.test.ts`), not expected
+to move this particular aggregate benchmark meaningfully.
+
+### Not done this session (disclosed)
+
+A scale-appropriate confusable-group benchmark against the real 19,501-card hosted catalog
+(prompt §17/§18, F-03) — still blocked on hosted Supabase credentials, the same standing gap every
+M15 session since P75 has disclosed. No card-name/set metadata for the real catalog exists locally
+to construct deliberate confusable groups (same-Pokémon-different-printing, adjacent evolution
+families, GX/V/VSTAR/ex families) without a live database connection.
+
+## 9. Mega-integration: P87 + P88 + P89 combined, worker fallback, expected-card debug UI (M15, 2026-09-02/03 — P90, D-105)
+
+Combines all three parallel M15 repair branches above onto one integration branch via real `git
+merge` (never squash/cherry-pick — each branch's own commit history is preserved), then closes the
+concrete gaps the combined result still left open. Full account: D-105.
+
+Beyond the merge conflict resolution itself (§7f/§7g/§8 renumbering, the `analyze.ts`
+OCR-pipeline/mutex reconstruction, `main.tsx`'s two independent fire-and-forget calls), this session:
+
+- Implemented a REAL main-thread RGBA-conversion fallback for the one confirmed engine gap P89's
+  real-worker smoke test found (`OffscreenCanvas` unavailable inside a Worker scope) — the worker
+  reports `offscreenCanvasAvailableInWorker`, and the client converts on the main thread instead of
+  degrading to a structured error, keeping visual recognition working end to end.
+- Finished the expected-card debug UI P87 shipped plumbing for but never built (§7f/D-101's own
+  disclosed gap) — a catalog search + rank lookup under `?scannerDebug=1`, extended with a real
+  hybrid (text + visual) rank via a new `rankScannerCandidatesFull` that reuses production's exact
+  scoring pipeline without the top-N truncation.
+- Made the platform build verifier and the hosted missing-index policy mode-aware (LOCAL/CI
+  PLACEHOLDER vs HOSTED), closing a false-failure P87 had disclosed (23/24 under the local
+  placeholder origin) and a real gap (a hosted build could previously ship with no visual index at
+  all, silently, with every other gate green).
+- Added a plain-language "visual recognition unavailable" note to the scanner intro screen for a
+  confirmed terminal failure — previously silent either way.
+- Verified (not assumed) that index-update-during-an-open-session, the unsaved-work registry vs.
+  index-freshness interaction, abort vs. visual-worker state, the OCR mutex vs. cancellation, F-02's
+  guard, and test-fixture path consistency were ALL already coherent by construction post-merge, with
+  no code change required — each investigated directly against the merged tree.
+
+`SCANNER_SCHEMA_VERSION` bumped 1 → 2 — see `src/platform/build-info.ts`'s own comment.

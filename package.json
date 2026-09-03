@@ -9,7 +9,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "prebuild": "node scripts/prepare-scanner-assets.mjs && node scripts/prepare-scanner-visual-assets.mjs && node scripts/scanner-visual-index/stage-index-assets.mjs",
+    "prebuild": "node scripts/prepare-scanner-assets.mjs && node scripts/prepare-scanner-visual-assets.mjs && tsx scripts/scanner-visual-index/stage-index-assets.mjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
@@ -38,7 +38,10 @@
     "scanner:visual:benchmark:hash": "tsx scripts/scanner-visual-benchmark/run-hash-benchmark.ts",
     "scanner:index:build": "tsx scripts/scanner-visual-index/build-index.ts",
     "scanner:index:verify": "tsx scripts/scanner-visual-index/verify-index.ts",
-    "scanner:hash-index:build": "tsx scripts/scanner-hash-index/build-index.ts"
+    "scanner:ocr:benchmark:psm-forensics": "tsx scripts/scanner-ocr-benchmark/run-psm-forensics.ts",
+    "scanner:ocr:benchmark:recognition": "tsx scripts/scanner-ocr-benchmark/run-recognition-benchmark.ts",
+    "scanner:name-lexicon:build": "tsx scripts/scanner-name-lexicon/build-lexicon.ts",
+    "scanner:roi-fixture:smoke": "tsx scripts/scanner-roi-fixture-smoke.ts"
   },
   "dependencies": {
     "@huggingface/transformers": "4.2.0",
