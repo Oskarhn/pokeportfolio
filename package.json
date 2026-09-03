@@ -36,6 +36,8 @@
     "scanner:visual:benchmark:photometric": "tsx scripts/scanner-visual-benchmark/run-photometric-experiment.ts",
     "scanner:visual:benchmark:cold-start": "node scripts/scanner-visual-benchmark/browser-cold-start.mjs",
     "scanner:visual:benchmark:hash": "tsx scripts/scanner-visual-benchmark/run-hash-benchmark.ts",
+    "scanner:recognition-lab:p93-adversarial": "tsx scripts/scanner-recognition-lab/experiments/08-p93-hybrid-false-confidence.ts",
+    "scanner:recognition-lab:p93-blur-severity": "tsx scripts/scanner-recognition-lab/experiments/09-p93-continuous-blur-severity.ts",
     "scanner:index:build": "tsx scripts/scanner-visual-index/build-index.ts",
     "scanner:index:verify": "tsx scripts/scanner-visual-index/verify-index.ts",
     "scanner:ocr:benchmark:psm-forensics": "tsx scripts/scanner-ocr-benchmark/run-psm-forensics.ts",
