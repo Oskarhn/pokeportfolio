@@ -3581,3 +3581,128 @@ gap every M15 session since P75 has disclosed; production wiring of the name-lex
 production-scale lexicon exists without those same credentials — the exact generator command is
 recorded in `output_88.txt` for whichever future session has them); real-device performance
 measurement.
+
+## D-103 — Recognition R&D marathon: reference-side multi-prototype gain, blur-only abstention gate, dominance-threshold recalibration; catastrophic photometric gap CONFIRMED UNCLOSED at 18x scale (P91)
+
+Full account: `ai_outputs/Claude_outputs/output_91.txt`. Research-only branch
+(`research/m15-p91-recognition-marathon`, based on P88's exact head `40450ea`) built a reusable
+benchmark lab (`scripts/scanner-recognition-lab/`) and a real ~4,300-card corpus (33 English
+TCGdex sets spanning vintage through current SV, plus reprint-heavy sets) — 18x P84's 240-card
+corpus — to re-test P84's catastrophic-photometric-defect finding (D-101 §2) at meaningfully
+larger scale, and to run several tracks D-101 explicitly left untested.
+
+**The catastrophic gap is CONFIRMED, not resolved, and gets WORSE at scale.** Re-running P84's own
+hard-augment methodology on the larger corpus: same-card similarity under combined glare+shadow+
+blur or partial-shadow+noise defects stays ~0.13 (matching D-101's ~0.10-0.11), but nearest-WRONG-
+card similarity rises to ~0.41 (vs D-101's ~0.28-0.33 on the smaller corpus) — a larger reference
+pool gives the matcher more chances to find a coincidentally-similar wrong card, widening the
+inversion gap rather than closing it. TOP1 stays 0% across every method this session tried.
+
+**Eight tracks D-101 left untested were run for real this session, with an honest split of one
+genuine positive finding and several decisive negatives:**
+
+1. **Reference-side augmentation (the track P84 never tried — it only tested query-side variants).**
+   A 9-strategy sweep (pristine-only through 7-prototype max-similarity search) found a REAL,
+   repeatable gain on the MODERATE geometry-only-distortion regime: `pristinePlus1Aux` (pristine +
+   one centroid-of-6-photometric-augmentations, 2 prototypes/card) raises geometry-only TOP1 from
+   85% (pristine-only baseline) to 98%, at ZERO added query-time inference cost (only reference-
+   side storage roughly doubles, and search cost — one linear scan — stays trivial). `maxSimAllProtos`
+   (7 prototypes) reaches 98.5% with no clean-case precision loss at all. Single-vector aggregates
+   (centroid/trimmed-mean/medoid collapsing all views into ONE reference vector) measurably HURT
+   exact clean-case self-retrieval (99-99.5% vs pristine's 100%) for a smaller geometry gain than
+   the multi-prototype approach — collapsing to one vector is the wrong shape for this problem.
+   **On the catastrophic hard-defect regime specifically, every one of the 9 strategies still
+   scores 0% TOP1** — reference augmentation is a real win for moderate distortion, not a fix for
+   the catastrophic gap.
+2. **DINO pooling-representation sweep** (CLS vs mean/max/GeM-patch-pooling, a CLS+mean blend,
+   center-patch) — all six variants are statistically tied on RANK-based TOP1/TOP5 under hard
+   defects (0-1.4%, noise-level differences). The shipped CLS-token representation (D-097) is
+   confirmed not to be leaving pooling-choice accuracy on the table. (Caution for future readers:
+   raw cosine-similarity SCALE differs enormously by pooling method — e.g. max-patch pooling
+   reports same-card similarity ~0.81 even under hard defects, an artifact of max-pooling
+   saturation, NOT better discrimination; rank accuracy, not the absolute similarity number, is
+   the only comparable metric across pooling methods.)
+3. **Photometric normalization, 8 variants** (CLAHE, gray-world, percentile-clip, adaptive gamma,
+   single-scale Retinex, unsharp mask, grayscale-triplicate, none) — all score 0% TOP1/TOP5 on both
+   hard-defect profiles; several (gray-world, percentile-clip, Retinex, grayscale) measurably LOWER
+   same-card similarity versus doing nothing. Extends D-101 §3's single-normalization negative
+   result to eight, decisively closing this avenue.
+4. **Visual-dominance guard threshold (D-102's `applyVisualDominanceGuard`, shipped at 0.82)
+   recalibrated against this session's larger corpus.** At the shipped 0.82: 77.9% of genuinely
+   correct TOP1 matches clear the "strong" bar (guard fires correctly), but so do 2.07% of WRONG
+   TOP1 matches overall — and, broken out by profile, 26.5% of WRONG TOP1 matches specifically
+   under geometry-only distortion (18 of 68) clear 0.82, a materially higher false-confidence rate
+   in exactly the regime this guard is meant to police. Raising the threshold to 0.88-0.90 cuts the
+   overall false-high rate to ~0.12% (a ~17x reduction) at the cost of dropping the correct-match
+   rescue rate to 56-60% (down from 77.9%) — matches not reaching the new bar do not become WRONG,
+   they simply fall back to ordinary (non-guarded) scoring. **Recommendation: raise the threshold
+   from 0.82 to 0.88-0.90** — not implemented on this branch (a shipped-logic threshold change
+   deserves the same full-benchmark-plus-regression-suite verification D-102 itself ran before
+   shipping 0.82, which this overnight session's time budget did not include; see NEXT_RECOMMENDATION
+   in `output_91.txt`).
+5. **Capture-quality abstention gate — real positive result, honestly scoped.** A 500-card,
+   card-id-split (60% tune / 40% holdout, no card's augmentations leak across the split) sweep of
+   six pixel-only quality metrics found Laplacian-variance/Tenengrad blur scores separate this
+   project's two hard-defect profiles from clean/geometry-only captures with holdout recall 99.5%,
+   precision 98.6%, false-rejection-of-good-captures 1.4%. **Disclosed limitation, not glossed
+   over:** because both hard-defect profiles include an explicit blur pass while clean/geometry
+   profiles never do, this benchmark's "bad capture" label is close to bimodal-by-construction with
+   blur specifically — restricted to the geometry-only profile alone (a real, non-degenerate 1.4%
+   bad-rate, NOT blur-dominated), the same gate's recall drops to 33%. **This is a validated
+   severe-blur detector, not a general "will this scan fail" detector.** Glare-fraction and
+   shadow-coefficient-of-variation metrics also tried showed ~zero discriminative power against
+   this project's specific synthetic glare/shadow composites (miscalibrated heuristics, not
+   evidence glare/shadow never matter). Shipped as tested, isolated, NOT-wired-in tooling:
+   `src/domain/scanner/capture-quality.ts` (`computeBlurScore`, `shouldAbstainForBlur`,
+   `BLUR_ABSTAIN_THRESHOLD = 378`), 9 new unit tests, zero production wiring — same
+   ship-tooling-not-behavior discipline as D-101's name-lexicon and P84's debug tooling.
+6. **Confusable groups from public metadata** (694 groups / 2,973 cards, built from exact-name
+   matches across different sets — the first time any M15 session has measured discrimination
+   against deliberately-confusable siblings rather than only robustness-to-capture-noise against a
+   card's own single reference). Under geometry-only distortion, the nearest WRONG card shares a
+   confusable group with the true card 31.3% of the time even when overall retrieval still
+   succeeds — real evidence that same-name/different-printing pairs are a genuinely harder
+   sub-problem, though this approximates but does NOT replace F-03's still-open real-UUID
+   benchmark (no rarity/illustrator/evolution-family metadata was fetched — cost/time-bounded
+   against TCGdex's free public API, name-only grouping is the disclosed limitation).
+7. **Art-crop dual-score representation** — the one clean negative-by-design result: tested only
+   under CLEAN query conditions (a ceiling-effect flaw in this session's own experiment design, not
+   a real finding), every representation (full-card, art-crop, dual-average, dual-max) scores 100%
+   — self-retrieval is trivial when the query IS the reference image. Flagged honestly as
+   inconclusive by construction; a real test needs the query distorted (geometry/hard) against the
+   confusable-restricted candidate pool, not attempted this session.
+8. **Alternative-model license screening** (no new model weights downloaded or benchmarked — P84's
+   own finding that the failure is a photometric-ROBUSTNESS gap, not a discriminative-power gap,
+   means a different backbone has no established reason to help without evidence it is MORE
+   glare/blur-robust than DINOv2-small, and re-embedding the 19,501-card index is an irreversible
+   multi-hour operation not undertaken speculatively). SigLIP2-base, ConvNeXtV2-tiny,
+   MobileNetV3-small and EfficientFormer-L1 weights are all Apache-2.0 (commercial/product use
+   clear) if a future session gathers robustness evidence justifying a benchmark. MobileCLIP's
+   weights license was independently re-fetched this session
+   (`raw.githubusercontent.com/apple/ml-mobileclip/main/LICENSE_MODELS`, 2026-09-02) and remains
+   Apple's non-commercial "Research Purposes" restriction — D-098's rejection stands, confirmed
+   fresh rather than assumed stale.
+
+**Index-cost estimate for the recommended dual-prototype architecture** (finding 1) at the real
+19,501-card scale: current single-prototype int8 index ≈7.14 MB (384 bytes/card); a second
+auxiliary prototype adds another ≈7.14 MB (≈14.3 MB total) for the measured 85%→98% geometry-only
+TOP1 gain, at zero added query-side inference (dual-prototype only doubles reference-side storage
+and search-time dot products — a real-device search over the full single-prototype index already
+measures 16 ms at topK=30 per D-101/P84's own instrumentation; doubling the vectors scanned is not
+expected to be perceptible, though not independently re-measured on a real device this session).
+
+**Not changed:** the committed 19,501-card DINO index; `src/features/scanner/` (batch/UI); any
+migration (still 90); any financial semantic; `applyVisualDominanceGuard`'s shipped 0.82 threshold
+(recommended change only, not applied — see above); any card special-cased anywhere.
+
+**Not done, disclosed rather than silently skipped:** the real 19,501-card hosted-catalog
+confusable-group benchmark (F-03, same standing credential gap every M15 session since P75 has
+disclosed); benchmarking any alternative model's actual robustness (license-screened only, per
+finding 8); local-feature (ORB/AKAZE) reranking (no keypoint-descriptor library exists in this
+project's dependency tree; P84's own reasoned-rejection — classical descriptors are typically LESS
+blur-robust than a global CNN embedding, the opposite of what this failure needs — was not
+benchmarked this session either, so it remains a reasoned rejection, not a measured one); a
+continuous-severity (not two-tier) synthetic benchmark that would let the quality gate's
+generalization beyond pure-blur be properly measured; full release gates (deliberately deferred
+per the prompt's own §40 — targeted unit/typecheck/lint/format only, all green, see
+`output_91.txt`).
