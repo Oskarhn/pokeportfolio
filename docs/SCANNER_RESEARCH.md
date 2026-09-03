@@ -775,3 +775,134 @@ A scale-appropriate confusable-group benchmark against the real 19,501-card host
 M15 session since P75 has disclosed. No card-name/set metadata for the real catalog exists locally
 to construct deliberate confusable groups (same-Pokémon-different-printing, adjacent evolution
 families, GX/V/VSTAR/ex families) without a live database connection.
+
+## 9. Recognition R&D marathon at 18x corpus scale (P91, D-103)
+
+Full decision record: `docs/DECISIONS.md` D-103. Reusable lab: `scripts/scanner-recognition-lab/`
+(corpus/embedding/augment/quality/rerank/retrieval modules + numbered experiment scripts + a
+markdown-scoreboard generator). Corpus: 4,296 real cards across 33 English TCGdex sets (vintage
+through current SV, plus reprint-heavy sets), embedded once into a reusable CLS reference index —
+18x P84's 240-card corpus. This section carries the measured numbers; D-103 carries the narrative.
+
+### 9a. Baseline reproduction at scale (n=300 queries)
+
+| Profile | TOP1 | TOP5 | TOP20 | mean true-sim | mean nearest-wrong-sim |
+|---|---|---|---|---|---|
+| clean | 100% | 100% | 100% | 1.000 | 0.753 |
+| geometry-only (tilted-offcenter) | 88.0% | 94.0% | 96.7% | 0.796 | 0.706 |
+| glare+shadow+blur | 0% | 0.3% | 0.3% | 0.128 | 0.410 |
+| partial-shadow+noise+skew | 0% | 0% | 0.3% | 0.135 | 0.405 |
+
+Same-card similarity under the two catastrophic profiles matches D-101's 240-card figures
+(~0.10-0.13), but nearest-wrong similarity is markedly HIGHER at this scale (~0.41 vs D-101's
+~0.28-0.33) — the inversion gets worse, not better, with a larger candidate pool. Confusable
+groups (694 groups / 2,973 of 4,296 cards, built from exact cross-set name matches): even under
+CLEAN conditions the single nearest-WRONG hit shares a confusable group with the true card 40.4%
+of the time; under geometry-only distortion, 31.3% of the time.
+
+### 9b. Reference-side augmentation / robust-centroid sweep (n=200, 9 strategies)
+
+| Strategy (prototypes/card) | clean TOP1 | geometry TOP1 | glare/shadow/blur TOP1 | shadow/noise TOP1 |
+|---|---|---|---|---|
+| pristineOnly (1) | 100% | 85.0% | 0% | 0% |
+| centroidAll (1, averaged) | 99.5% | 97.5% | 0% | 0% |
+| trimmedMeanAll (1, averaged) | 99.5% | 93.5% | 0% | 0% |
+| medoidAll (1, averaged) | 99.0% | 90.0% | 0% | 0% |
+| pristinePlus1Aux (2) | 100% | 98.0% | 0% | 0% |
+| pristinePlus2Aux (3) | 100% | 94.0% | 0% | 0% |
+| pristinePlus4Aux (5) | 100% | 98.5% | 0% | 0% |
+| maxSimAllProtos (7) | 100% | 98.5% | 0% | 0% |
+| avgTop2AllProtos (7) | 100% | 98.5% | 0% | 0% |
+
+**Recommendation (not yet implemented in production): `pristinePlus1Aux`, a 2-prototype-per-card
+index** — best cost/benefit, +13 points of geometry-only TOP1 at 2x reference storage and zero
+added query-time inference. Single-vector aggregation strategies (centroid/trimmed-mean/medoid)
+are dominated — they cost clean-case precision for a smaller geometry gain than any multi-prototype
+strategy. Every strategy remains at 0% on the catastrophic profiles.
+
+### 9c. DINO pooling-representation sweep (n=500 subset, 6 variants)
+
+| Variant | clean TOP1 | glare/shadow/blur TOP1 | shadow/noise TOP1 |
+|---|---|---|---|
+| cls (shipped, D-097) | 100% | 0.2% | 0.2% |
+| meanPatch | 100% | 0.2% | 0.2% |
+| maxPatch | 100% | 0.2% | 0.2% |
+| clsMeanBlend | 100% | 0.2% | 0.2% |
+| centerPatch | 100% | 0% | 0.4% |
+| gem (p=3) | 100% | 0.2% | 0.2% |
+
+Statistically tied on rank-based accuracy. Absolute cosine-similarity SCALE differs enormously by
+pooling method (e.g. maxPatch reports ~0.81 same-card similarity even under hard defects — a
+pooling-saturation artifact, not better discrimination); only rank accuracy is comparable across
+variants. The shipped CLS-token choice is confirmed not to be leaving pooling accuracy on the
+table.
+
+### 9d. Photometric normalization sweep (n=150, 8 variants x 2 hard profiles)
+
+All 8 variants (none/CLAHE/gray-world/percentile-clip/adaptive-gamma/single-scale-Retinex/unsharp/
+grayscale) score 0% TOP1 and 0% TOP5 on both catastrophic profiles — several (gray-world,
+percentile-clip, Retinex, grayscale) measurably LOWER mean true-card similarity versus doing
+nothing at all. Full table: `scripts/scanner-recognition-lab/reports/SCOREBOARD.md`.
+
+### 9e. Visual-dominance guard threshold calibration (n=400, 1,600 observations)
+
+| Threshold | correct-TOP1 rescue rate | wrong-TOP1 false-high rate |
+|---|---|---|
+| 0.70 | 97.3% | 6.11% |
+| 0.75 | 93.3% | 3.92% |
+| 0.80 | 82.9% | 2.42% |
+| **0.82 (shipped)** | **77.9%** | **2.07%** |
+| 0.85 | 68.3% | 1.04% |
+| 0.88 | 60.0% | 0.12% |
+| 0.90 | 56.4% | 0.12% |
+| 0.92 | 55.3% | 0% |
+
+At the shipped 0.82, the geometry-only profile specifically shows 18/68 (26.5%) of its WRONG TOP1
+matches clearing the "strong" bar — a materially higher false-confidence rate than the 2.07%
+blended figure suggests. Recommendation: raise to 0.88-0.90 (not applied this session — a
+shipped-scoring-constant change deserves the same full-benchmark-plus-regression verification
+D-102 itself ran, out of this session's time budget).
+
+### 9f. Capture-quality abstention gate (n=500, 60/40 tune/holdout split BY CARD ID)
+
+| Split | recall | precision | good-capture false-rejection |
+|---|---|---|---|
+| tune | 97.6% | 99.3% | 0.7% |
+| holdout | 99.5% | 98.6% | 1.4% |
+
+WRONG_RESULTS_SUPPRESSED on holdout BAD queries: 99.5%. Top discriminating metrics: Laplacian
+variance and Tenengrad (both blur proxies) — glare-fraction and shadow-coefficient-of-variation, as
+implemented, showed ~zero discriminative power on this synthetic dataset (Youden's J ≈ 0),
+disclosed as likely miscalibrated heuristics rather than evidence glare/shadow never matter.
+
+**Confound, disclosed rather than hidden:** the two catastrophic profiles always include an
+explicit blur pass; clean/geometry profiles never do — so the "bad capture" label is close to
+bimodal-by-construction with blur. Restricted to the geometry-only profile alone (real bad-rate
+1.4%, not blur-dominated), the SAME gate's recall drops to 33% (1 of 3 real bad captures caught).
+**This is a validated severe-blur detector, not yet a general bad-capture detector.** Shipped as
+tested, unwired tooling: `src/domain/scanner/capture-quality.ts`
+(`computeBlurScore`/`shouldAbstainForBlur`/`BLUR_ABSTAIN_THRESHOLD=378`), 9 unit tests, zero
+production wiring.
+
+### 9g. Art-crop dual-score confusable-sibling test (n=1,086 queries, 300 groups) — inconclusive by design
+
+Every representation (full-card / art-crop / dual-average / dual-max) scores 100% — this
+experiment only tested CLEAN queries (the query IS the reference image), a ceiling-effect flaw in
+the experiment's own design, not a real finding. A real test needs a DISTORTED query against the
+confusable-restricted candidate pool; not attempted this session.
+
+### 9h. Alternative-model license screening (no weights downloaded/benchmarked)
+
+| Model | Code/weights license | Commercial/product use |
+|---|---|---|
+| DINOv2-small (shipped) | Apache-2.0 | Yes |
+| SigLIP2-base-patch16-224 | Apache-2.0 | Yes |
+| ConvNeXtV2-tiny-22k-224 | Apache-2.0 | Yes |
+| MobileNetV3-small (timm) | Apache-2.0 | Yes |
+| EfficientFormer-L1 | Apache-2.0 | Yes |
+| MobileCLIP (apple/ml-mobileclip) | Code: MIT; **weights: Apple ML Research License** | **No — "Research Purposes" explicitly excludes commercial/product use** (re-verified live against `LICENSE_MODELS` 2026-09-02; D-098's rejection stands, unchanged) |
+
+No candidate was benchmarked: D-101's own finding that the failure is a photometric-ROBUSTNESS
+gap, not a discriminative-power gap, means a different backbone needs evidence of being MORE
+glare/blur-robust than DINOv2-small before a multi-hour, irreversible 19,501-card re-embedding is
+justified — no such evidence was sought or found this session.
