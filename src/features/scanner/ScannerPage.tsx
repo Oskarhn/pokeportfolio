@@ -206,6 +206,23 @@ export function ScannerPage() {
 
   // Leaving the route releases EVERYTHING: every track stopped, object URL revoked, OCR worker
   // terminated and canvases dropped (prompt §8/I16/I17).
+  //
+  // P96 KNOWN GAP (D-108, not fixed this session — see its own entry for the full diagnosis): under
+  // React StrictMode (`pnpm dev` only; production builds strip this entirely, so the real deployed
+  // PWA is unaffected) this component's render function runs twice for the initial mount as part of
+  // React's render-purity check, and `useMemo`'s factory — `getScannerUiController(userId)` — is a
+  // real side effect that runs both times, constructing TWO controller instances. The FIRST one
+  // (not the second) ends up wired into the actually-committed render's event handlers, and this
+  // effect's cleanup/remount cycle disposes it — permanently breaking OCR/visual analysis for the
+  // rest of that real mount (every `analyzeCapture()` afterward throws `ScannerEngineDisposedError`,
+  // "The card reader was closed"). A deferred/cancelable-timer dispose was tried and confirmed NOT
+  // to fix this (the double controller construction happens at the RENDER level, not the effect
+  // level, so cancelling the effect's own synthetic cleanup doesn't help — the wrong instance was
+  // already disposed by the time any cancellation logic could run). The correct fix requires moving
+  // controller construction out of `useMemo` into a ref populated inside this effect (so React's
+  // double-render can no longer produce two independently-alive instances) — deferred as a properly
+  // scoped follow-up given the real regression risk of restructuring `controller`'s ~9 read sites in
+  // one of this project's most heavily audited files, for a bug with zero production impact.
   useEffect(
     () => () => {
       cameraGenerationRef.current += 1

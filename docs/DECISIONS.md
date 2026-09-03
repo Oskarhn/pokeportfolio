@@ -4188,3 +4188,85 @@ either path.
 **Not changed:** the default OffscreenCanvas-available path (byte-for-byte the same code, same
 proven 99.7% TOP1); the committed 19,501-card visual index; any migration; any financial semantic.
 `docs/SCANNER_RESEARCH.md` §11 records the same evidence in narrative form.
+
+## D-108 — ScannerPage's controller is double-constructed by React StrictMode's render-purity check; the wrong instance gets disposed, permanently breaking OCR/visual analysis under `pnpm dev` (P96, NOT FIXED — disclosed)
+
+**2026-09-03 · Accepted (finding disclosed; fix deferred)**
+
+**Context.** Building the first-ever real, authenticated, camera-free (file-picker) scanner E2E
+test (P96 §15 — closing P94's own disclosed "real nonempty-scanner-batch authenticated E2E" gap)
+surfaced a genuine bug no prior session's E2E coverage had ever exercised: every real capture
+analysis failed with `ScannerEngineDisposedError` ("The card reader was closed"), thrown by
+`ocr-engine.ts`'s own disposal guard, visible in the page as `ReviewView` bouncing back to
+"Use photo"/"Retake" with that exact error text instead of reaching a result.
+
+**First hypothesis, tried and DISPROVEN.** The obvious suspect was `ScannerPage.tsx`'s route-exit
+cleanup effect (`useEffect(() => () => {..., controller.dispose()}, [controller])`) running under
+React StrictMode's well-known EFFECT double-invoke (mount → synchronous synthetic cleanup →
+synchronous synthetic remount, all for the same committed render). A fix deferring the dispose to a
+cancelable macrotask (`setTimeout(..., 0)`, cancelled by a same-tick StrictMode remount) was built
+and shipped — and the bug still reproduced identically. That disproof is what led to the real
+diagnosis below; the timer-based fix has been reverted (it added real complexity for zero benefit).
+
+**Actual root cause, confirmed by instance-tagged debug logging** (a monotonic counter plus
+`console.error` at construction/dispose/analyzeCapture, read back through Playwright's real
+browser console — not inferred from source reading alone):
+
+```
+controller #1 CREATED userId=<real-uuid>
+controller #2 CREATED userId=<same real-uuid>      <- SAME dependency, constructed AGAIN
+controller #1 DISPOSE (already disposed=false)      <- #1, not #2, gets torn down
+controller #1 analyzeCapture called, disposed=true  <- #1, not #2, is what the click handler uses
+```
+
+React 18/19 StrictMode has a SEPARATE, RENDER-level double-invoke (distinct from the effect one):
+for the initial mount, the component function body itself is called twice as part of React's
+"detect impure renders" check, and the FIRST call's rendered output is discarded in favor of the
+SECOND. But `useMemo(() => getScannerUiController(userId), [userId])`'s factory is not automatically
+"pure-checked" or deduplicated by React — it is a real side effect (constructs a `ScannerOcrEngine`
++ `VisualRecognitionClient`), and it genuinely runs on BOTH invocations, producing two independently
+alive controller instances for the identical `userId`. Empirically, the FIRST instance — not the
+second, and not whichever one a naive "first render is thrown away" mental model would predict — is
+the one that ends up wired into the actually-committed render's event handlers (`handleUsePhoto`
+closes over it), while the route-exit cleanup effect (keyed on `[controller]`, correctly following
+that same first instance through React's hook-identity bookkeeping) disposes it once StrictMode's
+effect-level double-invoke runs its synthetic cleanup/remount cycle. The deferred-timer fix could
+never have worked: the double CONSTRUCTION happens at the RENDER phase, before any effect (or its
+cleanup timing) is even in play — there is no effect-level signal available to distinguish "which of
+these two already-constructed instances is the real one."
+
+This was invisible to every prior M15 session because every existing scanner E2E spec drives the
+PRODUCTION preview server (`pnpm build && pnpm preview`, where StrictMode's entire double-invoke
+machinery — both the render-level and effect-level checks — is compiled out and inert; the real
+deployed PWA was NEVER affected). The `desktop-chromium-authenticated` project P94 built is the
+only one that drives Vite's DEV server (`pnpm exec vite`, where StrictMode is live), and nothing had
+ever navigated it to `/scan` before this session's new test.
+
+**Decision.** Disclose and defer, rather than ship a second unverified fix attempt. The correct fix
+requires moving controller construction OUT of `useMemo` and INTO the mount effect itself (stored in
+a ref that event handlers read), so React's render-level double-invoke can no longer produce two
+independently-alive instances in the first place — `useMemo`'s own factory has no such guarantee
+StrictMode respects, but effect bodies genuinely only run once per REAL mount. That restructuring
+touches every one of `controller`'s ~9 read sites in `ScannerPage.tsx`, several inside their own
+`[controller]`-keyed effects (prewarm, fast-baseline polling, `analyzeCapture`, `commitBatch`), plus
+two `useState` lazy initializers that currently read `controller` synchronously at first render
+(`getFastScannerState`/`getVisualPrewarmState` — safe to default to `'not-loaded'` unconditionally
+instead, since a truly fresh controller cannot report anything else at that exact instant, but still
+a change to verify). This is a materially larger, riskier change — in one of this project's most
+heavily adversarially-reviewed files — than this session could responsibly design AND re-validate
+end to end after two already-spent diagnostic attempts, for a bug with zero production impact.
+`tests/e2e/authenticated/account-boundary.spec.ts`'s scanner-batch test (P96 §15) is marked
+`test.fixme()` with this decision's own diagnosis inline, ready to un-skip the moment a future
+session lands the ref-based restructuring — the test itself is otherwise complete and correct.
+
+**Verified:** the full unit suite (1142/1142) and lint/format/build are all clean after reverting the
+ineffective timer fix and removing every debug log added during diagnosis (confirmed by
+`tests/ui/scanner-network-audit.test.ts`'s own static privacy audit, which caught the leftover
+`console.error` calls immediately — a real, useful catch of exactly the class of regression it
+exists to prevent). Production build/bundle size unaffected (ScannerPage chunk unchanged at 105.52
+KB raw, byte-identical to pre-investigation).
+
+**Not changed:** anything about the controller's own dispose()/analyzeCapture() contracts; the
+production (StrictMode-inert) code path, which was never affected by this bug in the first place;
+any other file. The DECISIONS.md entry originally written for the (disproven) timer-based fix has
+been fully replaced by this one rather than left alongside it as a second, contradictory record.

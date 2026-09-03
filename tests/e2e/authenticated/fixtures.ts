@@ -74,3 +74,49 @@ export async function createFixtureHolding(): Promise<{ holdingId: string; lotId
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- Supabase does not narrow on error check
   return { holdingId: data!.holding_id, lotId: data!.lot_id }
 }
+
+/** Creates one real Purchase (via the real `create_purchase` RPC, one Pikachu card line) for the
+ *  signed-in E2E user — a real purchase id a spec can navigate `/purchases/$purchaseId/edit`
+ *  against (P96 §16). */
+export async function createFixturePurchase(): Promise<{ purchaseId: string }> {
+  const client = await signInAsE2eUser()
+  const { data, error } = await client
+    .rpc('create_purchase', {
+      p_purchased_on: new Date().toISOString().slice(0, 10),
+      p_currency: 'NOK',
+      p_lines: [
+        {
+          line_type: 'card',
+          card_variant_id: seedCatalog.pikachuVariantId,
+          condition: 'NM',
+          quantity: 1,
+          unit_price_minor: 5000,
+        },
+      ],
+    })
+    .select('id')
+    .single<{ id: string }>()
+  if (error) throw new Error(`failed to create fixture purchase: ${error.message}`)
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- Supabase does not narrow on error check
+  return { purchaseId: data!.id }
+}
+
+/** Creates one real Sale (via the real `create_sale` RPC) against a fresh fixture holding/lot for
+ *  the signed-in E2E user — a real sale id a spec can navigate `/sales/$saleId/edit` against
+ *  (P96 §16). */
+export async function createFixtureSale(): Promise<{ saleId: string }> {
+  const client = await signInAsE2eUser()
+  const { lotId } = await createFixtureHolding()
+  const { data, error } = await client
+    .rpc('create_sale', {
+      p_sold_on: new Date().toISOString().slice(0, 10),
+      p_currency: 'NOK',
+      p_lines: [{ lot_id: lotId, quantity: 1, unit_gross_minor: 8000 }],
+      p_idempotency_key: crypto.randomUUID(),
+    })
+    .select('id')
+    .single<{ id: string }>()
+  if (error) throw new Error(`failed to create fixture sale: ${error.message}`)
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- Supabase does not narrow on error check
+  return { saleId: data!.id }
+}
