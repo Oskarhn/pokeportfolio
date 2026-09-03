@@ -3940,3 +3940,145 @@ own instruction (overnight priority: integration, not ceremony).
 
 **Not changed:** any financial semantic; any migration (still 90); the committed 19,501-card DINO
 index's actual content. No card was special-cased anywhere.
+
+## D-106 — M15 matcher correctness rewrite: continuous scoring, reliability-weighted evidence, severe-blur abstention (P93)
+
+**2026-09-03 · Accepted**
+
+**Context.** A cross-branch adversarial audit (P92, `ai_outputs/Claude_outputs/output_92.txt`)
+re-derived D-103's F-02 fix by hand against the actual shipped code and found it structurally
+incomplete, not merely under-tuned: (1) the guard's escape hatch required a total-coverage text
+signal (`id + name + set + language`) production can never produce — `rawSetText` is hardcoded
+`null` at every call site, so the maximum reachable text score (80, with the language credit D-106
+itself now removes — see below) never reaches the escape hatch's 90-point threshold; (2) the
+guard's 0.82 activation threshold sat ABOVE P84's own measured MEAN genuine-match similarity
+(0.812, D-101 §2), so an entirely ordinary correct scan could land on the wrong side of the guard
+by sampling noise alone, reproducing F-02's exact failure mode at the threshold's own typical
+operating point; (3) the same absolute-threshold design meant a defect-driven false visual spike on
+a WRONG card could actively discount the TRUE card's text evidence with no escape route — strictly
+worse than having no guard at all. P92 also flagged N-04 (a 17-point scoring discontinuity exactly
+at 0.82), N-05 (the display-score clamp colliding with margin/tie logic, risking a UUID-decided
+rank #1), and N-09 (language-match agreement scoring points despite being guaranteed, not
+evidence, given the retrieval layer's own English-only filter).
+
+**Decision.** Redesigned the mechanism rather than re-tuning the constant, per three structural
+changes:
+
+1. **Continuous visual-evidence curve** (`src/domain/scanner/visual-evidence.ts`) — the old
+   three-band piecewise curve (weak/moderate/strong, meeting at hard threshold boundaries) is
+   replaced by a single continuous logistic curve, `points(s) = ceilingPoints / (1 + e^{-k(s-m)})`,
+   solved algebraically from two P84-calibrated anchors (`points(moderateMin=0.68) ≈ 25`,
+   `points(strongMin=0.82) ≈ 60`), giving `k ≈ 11.53`, `m ≈ 0.7655`. No jump anywhere; every ±0.01
+   similarity step changes points by only a few. `strongMin`/`moderateMin`/`weakMin` remain as
+   CLASSIFICATION boundaries (tier labels, reason codes) but no longer gate the point curve itself.
+2. **Visual-anchor reliability replaces the absolute dominance guard**
+   (`computeVisualAnchorReliability`/`applyVisualAnchorReliability`, `engine.ts`) — P88's
+   discount-the-competition guard is gone entirely. The new mechanism only ever ADDS a
+   corroboration boost to the single candidate the visual channel most confidently supports (the
+   "anchor" — highest finite similarity this scan), scaled by two continuous, non-negative signals:
+   how far into calibrated same-card territory the anchor's own similarity sits (reusing
+   `visualEvidencePoints`'s own curve, `strengthFactor = points/ceilingPoints` — no second
+   calibration to drift out of sync), and how much clearer the anchor is than the runner-up visual
+   candidate (`marginFactor`, saturating at 0.12 similarity units — P84's own geometry-regime mean
+   true-vs-nearest-wrong margin). A single visual candidate with nothing to compare against gets a
+   fixed neutral margin factor (0.7) rather than 0 (unprovably discriminative ≠ disproven) or 1 (an
+   unverified lone reading should not get full credit). Because no candidate's score is ever
+   REDUCED by this mechanism, it structurally cannot reproduce failure mode #3 above — the worst
+   case is simply "no boost," identical to the mechanism not existing. Under P84's catastrophic-
+   defect calibration (same-card mean 0.10-0.13, nearest-wrong mean 0.28-0.41 — wrong-card
+   similarity systematically HIGHER), `strengthFactor` for whichever candidate tops that regime is
+   already near zero, so the guard-equivalent mechanism stays structurally inert there without a
+   second, separate abstention check.
+3. **Rank score vs. display score** (`RankedScannerCandidate.rawRankScore`, N-05) —
+   ordering/margin/tier logic now reads a full-resolution, UNCLAMPED raw score exclusively; the
+   existing `score` field is a clamped-to-[0,100] DISPLAY value derived from it only at the very
+   end, never fed back into any decision. `cardId` is reduced to the final exact-identity-stability
+   tie-break, reached only when raw score AND own visual similarity are BOTH exactly equal — never
+   a meaningful signal. (P93 deliberately did NOT add "original retrieval-array position" as an
+   intermediate tie-break step, despite reading naturally as one: this module has always guaranteed
+   permutation-invariance of its input array, pinned by an existing property test, and plain array
+   position is not the same thing as a genuine retrieval rank a future data-layer field could
+   provide — see engine.ts's own doc for the full reasoning.)
+
+**N-09 — language-match no longer scores.** Audited via a full call-flow trace, not assumed:
+`controller.ts` derives `languageHint` from `scannerSessionStore`, whose `language` field's TYPE is
+the literal `'en'` (V1 is English-only by design, not convention), and BOTH
+`retrieveScannerCandidates` and the visual-shortlist enrichment path (`getCardsByIds`) pass that
+same `'en'` as an explicit server-side filter — every candidate that can reach the scorer in
+production already has `card.language === 'en'`. Agreement is guaranteed, not evidence, and was
+inflating every candidate's score UNIFORMLY (never changing relative ranking, but capable of
+pushing an absolute score across a tier boundary on a fabricated +5 that discriminated nothing). The
+`languageMatch` weight is removed from `SCORING_WEIGHTS`; the mismatch penalty (−12) is KEPT — a
+genuine disagreement remains real, if currently unreachable, evidence against a candidate. The
+'language-match' reason code is still pushed for diagnostic legibility even though it now moves
+zero points. **Real consequence, disclosed rather than silently absorbed:** pure two-signal
+(id-exact + name-exact) text convergence now tops out at 75 — below `highMinScore` (80) — where it
+previously could reach exactly 80 (HIGH) via the now-removed +5. Genuine HIGH confidence from text
+alone now requires the full id+name+set composition (rare in production, since `rawSetText` is
+never populated) or the visual channel's own corroboration boost — a deliberate tightening, not a
+regression: it closes the same "2.5-signal coincidence masquerading as 3-signal certainty" gap F-02
+itself was about, just for the language credit specifically.
+
+**N-19 — OCR-noise slack for the body-text-contamination penalty.** The old 26-character ceiling
+(`analyze.ts`'s `looksLikeBodyTextNotName`) equalled the longest known real card name with ZERO
+slack for OCR noise — a single stray inserted character on that exact name ate the full 60-point
+penalty. Length alone no longer disqualifies a candidate until a real, no-slack-needed hard ceiling
+(30); between the old and new ceilings, only the independent sentence-boundary and word-count checks
+can flag a candidate, and real multi-sentence rules prose reliably trips one of those regardless of
+its exact length, so no real rejection power is lost.
+
+**Severe-blur visual abstention (D-103's own capture-quality.ts, ported and WIRED).** P91 built and
+tested `src/domain/scanner/capture-quality.ts` (Laplacian-variance blur gate,
+`BLUR_ABSTAIN_THRESHOLD=378`) but deliberately shipped it unwired. P93 ports it unchanged and wires
+it below `ScannerPage` at the controller/`rectify-capture.ts` boundary (never touching
+`ScannerPage.tsx` itself, in scope-safety coordination with the parallel P94 session): the blur
+score is computed on the canonical rectified `RgbaImage` `rectify-capture.ts` already produces
+before encoding it to a blob (no extra decode), and when it falls below the threshold, ONLY the
+visual channel is skipped for that scan — OCR text recognition and manual search proceed
+unaffected. New diagnostics: `CAPTURE_BLUR_SCORE`, `CAPTURE_SEVERE_BLUR`, `VISUAL_ABSTAINED`,
+`VISUAL_ABSTAIN_REASON`. The threshold itself is NOT re-derived this session (see the continuous-
+severity benchmark below) — kept at P91's own calibrated value.
+
+**Real benchmark evidence (all actually run this session, not estimated):**
+
+- **240-card/6-set benchmark** (`pnpm scanner:visual:benchmark`, same methodology D-097/D-102
+  established): `NEW_HYBRID_TOP1=99.7%` (TOP3/TOP5 100%/100%, n=1440) — matches `VISUAL_ONLY_TOP1`
+  exactly (99.7%), closing the hybrid-vs-visual-alone gap the audit tracked from -3.9pts
+  (pre-D-103) to -0.3pts (D-103) to ~0pts here.
+- **Real corpus-scale adversarial benchmark** (new, `scripts/scanner-recognition-lab/experiments/
+  08-p93-hybrid-false-confidence.ts`, reusing P91's cached ~4,300-card corpus/reference index): the
+  F-02 adversarial construction (a different corpus card given the true card's own coincidental
+  id+name text match; the true card carries zero text evidence) run through the REAL production
+  matcher, n=300 cards × 3 conditions = 900 trials. Clean: 100% correct, 0% false-HIGH. Geometry-
+  only (`tilted-offcenter`, mean true similarity 0.7999 — essentially P84's own calibrated 0.812):
+  60.7% correct outright, only 1.33% false-HIGH — the true card frequently still wins this
+  worst-case-constructed adversarial matchup at the exact operating point the audit flagged as
+  broken, and even when it loses, it almost never does so at HIGH confidence. Catastrophic
+  (`tilted-glare-shadow-blur`, mean true similarity 0.1195): 0% correct (expected — the true card
+  has genuinely no evidence of its own in this construction) but ALSO 0% false-HIGH — the matcher
+  loses honestly (MEDIUM/LOW/NONE) rather than confidently wrong, in every one of 300 trials.
+- **Continuous blur-severity sweep** (new, `.../09-p93-continuous-blur-severity.ts`, n=80,
+  isolated Gaussian-blur-sigma dimension only — P91 already found its glare/shadow metrics have
+  ~zero discriminative power and neither is wired into production): real TOP1 retrieval accuracy on
+  pure blur alone stays high (96.3%+) at blur scores already below `BLUR_ABSTAIN_THRESHOLD`,
+  cratering steeply between sigma 8-10 (71.3% → 36.3%). The shipped threshold sits conservatively
+  on the safe side of that cliff — appropriate, since real captures rarely blur in total isolation
+  (P91's own calibration bundles blur with the co-occurring tilt/glare/shadow a phone photo
+  realistically has) — and is NOT changed based on this isolated-dimension evidence, per this
+  session's own instruction not to broaden the gate without evidence.
+
+**Explicitly not done, disclosed rather than silently skipped:** the real 19,501-card hosted-catalog
+confusable-group benchmark (F-03) remains open, unchanged since every M15 session since P75 — this
+session's adversarial/blur-severity benchmarks reuse P91's ~4,300-card public-corpus approximation,
+not the real catalog. The dual-prototype reference-index recommendation (P91) was not implemented
+(would require re-embedding the real 19,501-card index, an irreversible multi-hour operation not
+undertaken without a dedicated follow-up decision). No new DINO model was evaluated (D-098 stands
+unchanged — P91 already found no evidenced reason to switch).
+
+**Verified this session:** `pnpm typecheck`/`pnpm lint`/`pnpm format:check` clean; full unit suite
+green; the 240-card visual benchmark and both new real-corpus experiments above actually run, not
+estimated. Full E2E/DB/build gates run as part of this session's own closing verification (see
+`ai_outputs/Claude_outputs/output_93.txt`).
+
+**Not changed:** any financial semantic; any migration; the committed 19,501-card DINO index's
+actual content or the DINOv2-small model itself. No card was special-cased anywhere.
