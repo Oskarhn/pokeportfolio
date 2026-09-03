@@ -579,16 +579,16 @@ export function createRealScannerController(
     // catastrophic band" instead of a bare, uncalibrated cosine number.
     const strongestVisualSimilarity =
       visualScores && visualScores.size > 0 ? Math.max(...visualScores.values()) : null
-    // P88 §21: why (if at all) the tier was capped below what the raw top score alone implies —
-    // mirrors engine.ts's own precedence (a visual-dominance guard already discounted the score
-    // before tiering ran; the margin/disagreement checks run afterward, in that order).
+    // P88 §21/P93: why (if at all) the tier was capped below what the raw top score alone
+    // implies. P93 removed the old 'visual-dominance-guarded' cause entirely — the P88 guard that
+    // discounted a competing candidate's score is gone (D-106); the redesigned mechanism only ever
+    // ADDS a corroboration boost to the visual anchor, so it can never by itself be the reason a
+    // tier was capped BELOW what the raw score implies.
     const tierCapReason = match.notes.includes('visual-text-disagreement')
       ? ('visual-text-disagreement' as const)
       : match.notes.includes('runner-up-margin-small')
         ? ('runner-up-margin-small' as const)
-        : match.candidates.some((c) => c.reasons.includes('visual-dominance-guarded'))
-          ? ('visual-dominance-guarded' as const)
-          : null
+        : null
     lastDiagnostics = {
       visualModelState: visualSnapshot.modelState,
       visualBackend: visualResult?.backend ?? visualSnapshot.readyInfo?.backend ?? 'unknown',

@@ -46,8 +46,16 @@ describe('visual-evidence calibration', () => {
     expect(visualEvidenceTier(null)).toBe('none')
   })
 
-  it('points scale monotonically with similarity and are zero below the floor', () => {
-    expect(visualEvidencePoints(0.5)).toBe(0)
+  it('points scale continuously and monotonically, vanishing at the low end (P93/N-04)', () => {
+    // P93 replaced the old three-band piecewise curve (a hard floor plus a 17-point jump at the
+    // 'strong' threshold) with one continuous logistic curve — see visual-evidence.ts's module
+    // doc. There is no hard "zero below exactly this threshold" floor anymore: the curve
+    // approaches zero smoothly as similarity falls, landing on an exact 0 only for non-positive
+    // or non-finite similarity.
+    expect(visualEvidencePoints(0)).toBe(0)
+    expect(visualEvidencePoints(-0.5)).toBe(0)
+    expect(visualEvidencePoints(0.1)).toBeLessThan(visualEvidencePoints(0.5))
+    expect(visualEvidencePoints(0.5)).toBeLessThan(visualEvidencePoints(0.7))
     expect(visualEvidencePoints(0.99)).toBeGreaterThan(visualEvidencePoints(0.7))
     expect(visualEvidencePoints(1)).toBeGreaterThanOrEqual(visualEvidencePoints(0.99))
   })

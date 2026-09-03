@@ -1,13 +1,13 @@
 /**
- * Deterministic scanner matching engine (P67 §14–§15, §17).
+ * Deterministic scanner matching engine (P67 §14–§15, §17; redesigned P93/D-106).
  *
  * Pure ranking over catalog records the data layer has already retrieved. No network, no React,
  * no randomness, no object-iteration-order dependence — equal input always produces an equal,
  * stably ordered result.
  *
  * ── Scoring model ────────────────────────────────────────────────────────────────────────────
- * Additive explainable points, clamped to [0, 100]. Weights encode how identifying each piece
- * of printed text actually is on a real Pokémon card:
+ * Additive explainable points. Weights encode how identifying each piece of printed text
+ * actually is on a real Pokémon card:
  *
  * - Collector/local id EXACT (45): within its set a printed number identifies exactly one card,
  *   so this is the single strongest text signal — but NOT globally unique: the same local id
@@ -18,17 +18,47 @@
  *   printings, and Trainer cards reuse names aggressively.
  * - Name CLOSE (22) / PARTIAL (8): OCR-tolerant versions.
  * - Set EXACT (15) / CLOSE (8): supporting weight; sets are unique but hints arrive garbled.
- * - Language match +5 / mismatch −12: agreement corroborates; disagreement is real evidence
- *   against (a Japanese card will not read "Surging Sparks").
+ * - Language mismatch −12: a real disagreement argues AGAINST the candidate (a Japanese card
+ *   will not read "Surging Sparks"). Agreement no longer earns points (P93/§20/N-09's audit) —
+ *   see `SCORING_WEIGHTS`'s own doc for why.
  *
  * The arithmetic itself enforces the prompt's uniqueness rules (P67 §9): name-exact alone tops
- * out at 35 → LOW; id-exact alone reaches 50 → MEDIUM at best; HIGH requires the composition
- * of id + name (+set/language), i.e. genuinely convergent printed evidence.
+ * out at 30 → LOW; id-exact alone reaches 45 → LOW/MEDIUM at best; HIGH requires the composition
+ * of id + name (+set), i.e. genuinely convergent printed evidence.
  *
- * ── Confidence ───────────────────────────────────────────────────────────────────────────────
- * Tier comes from score AND ambiguity: a top score with a nearly-equal runner-up is DEMOTED
- * (high needs ≥15 points of margin, medium ≥8). Ranking must surface ambiguity, never invent
- * certainty.
+ * ── P93 redesign: rank score vs. display score (N-05) ───────────────────────────────────────────
+ * `rawRankScore` is unclamped and is the ONLY value ordering/margin/tier logic uses. `score` is a
+ * clamped-to-[0,100] DISPLAY value derived from it afterward, never the reverse — a well-
+ * corroborated visual anchor can legitimately raw-score above 100 (more evidence, not an
+ * overflow bug), and a language mismatch with nothing else can legitimately raw-score below 0.
+ * Two candidates that both happened to clamp to the SAME display value under the old design could
+ * produce a zero margin and fall back to alphabetic-by-cardId ordering — a wrong card could then
+ * display as rank #1 purely because its UUID sorted first (P92 finding N-05). Sorting on the full-
+ * resolution raw score removes that failure mode structurally: it is astronomically unlikely for
+ * two genuinely different pieces of evidence to sum to the exact same raw integer.
+ *
+ * ── P93 redesign: visual-anchor reliability, not an absolute dominance guard (N-01/N-04) ────────
+ * P88's `applyVisualDominanceGuard` discounted every OTHER candidate's text score by a fixed
+ * factor whenever some candidate's OWN similarity crossed one absolute threshold (0.82) — a
+ * discontinuous, all-or-nothing guard with two structural problems P92's audit found: (1) its
+ * only escape hatch required a text signal production can never produce (a set-name OCR channel
+ * that does not exist — `rawSetText` is always null, see controller.ts), and (2) the 0.82
+ * activation threshold sat ABOVE P84's own measured MEAN genuine-match similarity (0.812), so an
+ * entirely ordinary correct scan could land on the wrong side of the cliff by sampling noise
+ * alone — and once triggered by a false spike, the guard could make the TRUE card's evidence
+ * strictly worse than having no guard at all.
+ *
+ * `computeVisualAnchorReliability`/`applyVisualAnchorReliability` replace it with additive,
+ * reliability-weighted evidence that NEVER discounts any candidate — it only ever ADDS a
+ * corroboration boost to the single candidate the visual channel most confidently supports (the
+ * "anchor": whichever candidate has the highest finite similarity this scan), scaled by two
+ * continuous signals: how far into calibrated same-card territory that similarity itself sits
+ * (reusing `visualEvidencePoints`'s own continuous curve — no second calibration to drift out of
+ * sync), and how much CLEARER the anchor is than the next-best visual candidate (a lone,
+ * unseparated spike earns little boost; a well-separated one earns close to the maximum). Because
+ * no candidate's score is ever reduced by this mechanism, it cannot reproduce N-01's failure mode
+ * #3 (a guard making a true card's own evidence worse than not having one) by construction — the
+ * worst case is simply "no boost applied," identical to not having the mechanism at all.
  */
 import { compareCollectorNumber } from './collector-compare'
 import { parseCollectorNumber } from './collector-number'
@@ -36,7 +66,7 @@ import { parseCollectorNumberStructured, type CollectorParseConfidence } from '.
 import { compareNames } from './name-similarity'
 import { normalizeCardText, parseLanguageHint } from './normalize'
 import { compareSetHint } from './set-hint'
-import { visualEvidencePoints, visualEvidenceTier } from './visual-evidence'
+import { VISUAL_EVIDENCE_CURVE, visualEvidencePoints, visualEvidenceTier } from './visual-evidence'
 import type {
   ParsedScannerSignals,
   RankedScannerCandidate,
@@ -70,13 +100,27 @@ export const SCORING_WEIGHTS = {
   setExact: 15,
   /** Set-name hint close to (or contained in) the candidate's set name. */
   setClose: 8,
-  /** Observation language agrees with the card's catalog language. */
-  languageMatch: 5,
-  /** Observation language disagrees — subtracted, because it argues AGAINST the candidate. */
+  /**
+   * P93/§20/N-09 — audited via a full call-flow trace, not assumed: `controller.ts` derives
+   * `languageHint` from `scannerSessionStore`, whose `language` field's TYPE is the literal `'en'`
+   * (session-store.ts — V1 is English-only by design, not merely by convention), and BOTH
+   * `retrieveScannerCandidates` (text search) and the visual-shortlist enrichment path
+   * (`getCardsByIds`) pass that same `'en'` as an explicit server-side filter. Every candidate
+   * that can ever reach this scorer in production therefore already has `card.language === 'en'`
+   * — agreement is guaranteed, not evidence, and used to inflate every candidate's score
+   * UNIFORMLY (never changing relative ranking, but capable of pushing a scan's absolute score
+   * across a tier boundary on a fabricated +5 that discriminated nothing). Agreement earns ZERO
+   * points now. A genuine MISMATCH remains real, if currently unreachable, evidence AGAINST a
+   * candidate (a future non-English catalog widening, or a data anomaly that let a foreign-
+   * language row leak past the filter, would still be worth penalizing) — kept, not removed.
+   */
   languageMismatchPenalty: 12,
 } as const
 
-/** Score bands and ambiguity margins. Exported and pinned by tests like the weights. */
+/** Score bands and ambiguity margins. Exported and pinned by tests like the weights. Compared
+ *  against `rawRankScore` (P93/N-05) — the full-resolution, unclamped total — never the clamped
+ *  display score, so a well-corroborated visual anchor's raw score above 100 still reads as
+ *  unambiguously HIGH rather than being truncated away before the tier check ever sees it. */
 export const SCORING_TIERS = {
   /** Minimum score for HIGH eligibility (before the margin check). */
   highMinScore: 80,
@@ -169,13 +213,24 @@ export function hasUsableSignal(
   return false
 }
 
+interface ScoredEntry {
+  readonly card: ScannerCandidateRecord
+  /** Unclamped sum of every TEXT weight (id/name/set/language) — never includes visual points. */
+  readonly textScore: number
+  /** This candidate's own visual-curve contribution (P93: `visualEvidencePoints`), before any
+   *  anchor-reliability boost. 0 when this candidate has no similarity entry. */
+  readonly visualPoints: number
+  readonly visualSimilarity: number | null
+  readonly reasons: ScannerReasonCode[]
+}
+
 function scoreCandidate(
   signals: ParsedScannerSignals,
   card: ScannerCandidateRecord,
   visualScores?: VisualEvidenceByCard,
-): RankedScannerCandidate {
+): ScoredEntry {
   const reasons: ScannerReasonCode[] = []
-  let score = 0
+  let textScore = 0
 
   // P88 §8/F-12: id/name evidence points are scaled by how trustworthy the underlying OCR read
   // actually was (reliability 1 when the observation supplied no confidence — every pre-P88
@@ -183,161 +238,224 @@ function scoreCandidate(
   // to a clean, confident one, the "confidently wrong" gap F-12 found.
   const idEvidence = compareCollectorNumber(signals.collectorNumber, card.localId)
   if (idEvidence === 'exact') {
-    score += Math.round(SCORING_WEIGHTS.collectorNumberExact * signals.collectorReliability)
+    textScore += Math.round(SCORING_WEIGHTS.collectorNumberExact * signals.collectorReliability)
     reasons.push('collector-number-exact')
   } else if (idEvidence === 'folded') {
-    score += Math.round(SCORING_WEIGHTS.collectorNumberFolded * signals.collectorReliability)
+    textScore += Math.round(SCORING_WEIGHTS.collectorNumberFolded * signals.collectorReliability)
     reasons.push('collector-number-ocr-folded')
   } else if (idEvidence === 'numeric') {
-    score += Math.round(SCORING_WEIGHTS.collectorNumberNumericOnly * signals.collectorReliability)
+    textScore += Math.round(
+      SCORING_WEIGHTS.collectorNumberNumericOnly * signals.collectorReliability,
+    )
     reasons.push('collector-number-numeric-only')
   }
 
   const nameEvidence = compareNames(signals.normalizedName, card.name)
   if (nameEvidence === 'exact') {
-    score += Math.round(SCORING_WEIGHTS.nameExact * signals.nameReliability)
+    textScore += Math.round(SCORING_WEIGHTS.nameExact * signals.nameReliability)
     reasons.push('name-exact')
   } else if (nameEvidence === 'close') {
-    score += Math.round(SCORING_WEIGHTS.nameClose * signals.nameReliability)
+    textScore += Math.round(SCORING_WEIGHTS.nameClose * signals.nameReliability)
     reasons.push('name-close')
   } else if (nameEvidence === 'partial') {
-    score += Math.round(SCORING_WEIGHTS.namePartial * signals.nameReliability)
+    textScore += Math.round(SCORING_WEIGHTS.namePartial * signals.nameReliability)
     reasons.push('name-partial')
   }
 
   const setEvidence = compareSetHint(signals.setHint, card.setName)
   if (setEvidence === 'exact') {
-    score += SCORING_WEIGHTS.setExact
+    textScore += SCORING_WEIGHTS.setExact
     reasons.push('set-exact')
   } else if (setEvidence === 'close') {
-    score += SCORING_WEIGHTS.setClose
+    textScore += SCORING_WEIGHTS.setClose
     reasons.push('set-close')
   }
 
   if (signals.languageHint !== null) {
     if (signals.languageHint === card.language) {
-      score += SCORING_WEIGHTS.languageMatch
+      // P93/N-09: no longer scored — see SCORING_WEIGHTS's own doc. Reason code retained for
+      // diagnostic legibility (a reader can still see language agreed) even though it moves zero
+      // points.
       reasons.push('language-match')
     } else {
-      score -= SCORING_WEIGHTS.languageMismatchPenalty
+      textScore -= SCORING_WEIGHTS.languageMismatchPenalty
       reasons.push('language-mismatch')
     }
   }
 
   const visualSimilarity = visualScores?.get(card.cardId) ?? null
-  const visualTier = visualEvidenceTier(visualSimilarity)
   const visualPoints = visualEvidencePoints(visualSimilarity)
   if (visualPoints > 0) {
-    score += visualPoints
+    const visualTier = visualEvidenceTier(visualSimilarity)
     if (visualTier === 'strong') reasons.push('visual-strong')
     else if (visualTier === 'moderate') reasons.push('visual-moderate')
     else reasons.push('visual-weak')
   }
 
-  const clamped = Math.max(0, Math.min(100, score))
-  return { card, score: clamped, reasons, visualSimilarity }
+  return { card, textScore, visualPoints, visualSimilarity, reasons }
 }
 
 /**
- * P88 §2/§3/F-02 — visual-dominance guard. A text-favoured candidate whose OWN visual similarity
- * is none/weak must not outrank a DIFFERENT candidate the visual channel is confident about
- * (>= strongMin) purely because a coincidental OCR text convergence (e.g. id-exact + name-exact
- * = 75) happens to sit above that visual match's point value — the exact mechanism F-02 found.
+ * P93 §6/§12 — continuous, non-negative visual-anchor reliability. Replaces P88's absolute
+ * dominance guard entirely (see module doc). Returns the single candidate the visual channel most
+ * confidently supports this scan (the "anchor" — highest finite similarity) plus a [0,1]
+ * reliability score combining two continuous signals, or `null` when no candidate has any finite
+ * similarity at all (no visual evidence this scan).
  *
- * The guard only fires when the visual channel produced a genuinely STRONG anchor for some
- * specific card (never for the catastrophic/weak regime — P84's calibration shows a value like
- * 0.18 is nowhere near this band, so a trustworthy OCR-exact read is never touched when visual
- * evidence is merely absent or weak, satisfying the opposite required property from prompt §3).
- * A candidate whose OWN visual similarity also reaches 'strong' is NEVER guarded (two genuinely
- * similar prints/artworks — collector number, not visual, should differentiate those, per the
- * scenario-C "two legitimate same-name printings" requirement).
+ * - `strengthFactor`: how far into calibrated same-card territory the anchor's OWN similarity
+ *   sits, reusing `visualEvidencePoints`'s own curve (`points / ceilingPoints`) — never a second,
+ *   independently-tunable calibration to drift out of sync with the point curve itself.
+ * - `marginFactor`: how much clearer the anchor is than the next-best visual candidate,
+ *   saturating at `ANCHOR_MARGIN_SATURATE` similarity units (chosen from P84's own calibration:
+ *   the geometry-only-distortion regime's mean true-vs-nearest-wrong margin is ~0.14 — see
+ *   docs/SCANNER_RESEARCH.md §7i). A single visual candidate with nothing to compare against uses
+ *   a fixed neutral factor rather than 0 (unprovably discriminative is not the same as
+ *   disproven) or 1 (an unverified lone reading should not receive the SAME credit as one that
+ *   has demonstrably separated itself from its neighbours).
  *
- * `OVERWHELMING_TEXT_SCORE` is an escape hatch for the (extremely rare) case where a wrong card's
- * TEXT evidence alone is essentially total-coverage-convergent (id + name + set + language all
- * agreeing) — a coincidence so complete it is treated as its own strong evidence rather than
- * guarded away.
+ * Critically, under P84's own catastrophic-defect calibration (same-card mean ~0.10-0.13,
+ * nearest-wrong mean ~0.28-0.41 — WRONG-card similarity systematically HIGHER), `strengthFactor`
+ * for whichever candidate tops that regime is already near zero (the curve itself has barely
+ * begun rising by similarity 0.41), so reliability stays near zero regardless of margin — the
+ * guard-equivalent mechanism stays structurally inert in exactly the regime where a real spike
+ * would otherwise be most dangerous, without needing a second, separate abstention check.
  */
-const VISUAL_DOMINANCE_TEXT_FACTOR = 0.5
-const OVERWHELMING_TEXT_SCORE = 90
+const ANCHOR_BOOST_MAX = 0.8
+const ANCHOR_MARGIN_SATURATE = 0.12
+const ANCHOR_SINGLE_CANDIDATE_MARGIN_FACTOR = 0.7
+/** Below this reliability, the boost (and its diagnostic reason code) is treated as a no-op —
+ *  avoids a cosmetic +0/+1-point "corroborated" label on evidence too thin to mean anything. */
+const ANCHOR_RELIABILITY_MIN = 0.05
 
-function applyVisualDominanceGuard(
-  scored: readonly RankedScannerCandidate[],
-  signals: ParsedScannerSignals,
-): { guarded: readonly RankedScannerCandidate[]; anyGuarded: boolean } {
-  let anchorCardId: string | null = null
-  let anchorSimilarity = -Infinity
-  for (const entry of scored) {
+export interface VisualAnchorReliability {
+  readonly cardId: string
+  readonly similarity: number
+  readonly reliability: number
+}
+
+export function computeVisualAnchorReliability(
+  entries: readonly ScoredEntry[],
+): VisualAnchorReliability | null {
+  let anchor: ScoredEntry | null = null
+  let runnerUpSimilarity: number | null = null
+  for (const entry of entries) {
+    const s = entry.visualSimilarity
+    if (s === null || !Number.isFinite(s)) continue
+    if (anchor === null || s > anchor.visualSimilarity!) {
+      if (anchor !== null) runnerUpSimilarity = anchor.visualSimilarity
+      anchor = entry
+    } else if (runnerUpSimilarity === null || s > runnerUpSimilarity) {
+      runnerUpSimilarity = s
+    }
+  }
+  if (anchor === null || anchor.visualSimilarity === null) return null
+
+  const strengthFactor = anchor.visualPoints / VISUAL_EVIDENCE_CURVE.ceilingPoints
+  const marginFactor =
+    runnerUpSimilarity === null
+      ? ANCHOR_SINGLE_CANDIDATE_MARGIN_FACTOR
+      : Math.max(0, Math.min(1, (anchor.visualSimilarity - runnerUpSimilarity) / ANCHOR_MARGIN_SATURATE))
+
+  const reliability = Math.max(0, Math.min(1, strengthFactor * marginFactor))
+  return { cardId: anchor.card.cardId, similarity: anchor.visualSimilarity, reliability }
+}
+
+/** Applies the anchor's corroboration boost (P93 §6/§12) — ADDITIVE ONLY, never touches any other
+ *  candidate's score. Returns each entry's final unclamped raw score plus the visual reliability
+ *  actually attributed to it (0 for every non-anchor candidate). */
+function applyVisualAnchorReliability(
+  entries: readonly ScoredEntry[],
+): ReadonlyArray<{ entry: ScoredEntry; rawRankScore: number; visualReliability: number }> {
+  const anchor = computeVisualAnchorReliability(entries)
+  return entries.map((entry) => {
+    const base = entry.textScore + entry.visualPoints
     if (
-      entry.visualSimilarity !== null &&
-      entry.visualSimilarity !== undefined &&
-      Number.isFinite(entry.visualSimilarity) &&
-      entry.visualSimilarity > anchorSimilarity
+      anchor === null ||
+      entry.card.cardId !== anchor.cardId ||
+      anchor.reliability < ANCHOR_RELIABILITY_MIN
     ) {
-      anchorSimilarity = entry.visualSimilarity
-      anchorCardId = entry.card.cardId
+      return { entry, rawRankScore: base, visualReliability: 0 }
     }
-  }
-  if (anchorCardId === null || visualEvidenceTier(anchorSimilarity) !== 'strong') {
-    return { guarded: scored, anyGuarded: false }
-  }
-
-  let anyGuarded = false
-  const guarded = scored.map((entry) => {
-    if (entry.card.cardId === anchorCardId) return entry
-    const ownTier = visualEvidenceTier(entry.visualSimilarity)
-    if (ownTier !== 'none' && ownTier !== 'weak') return entry
-
-    const textOnlyScore = scoreCandidate(signals, entry.card).score
-    if (textOnlyScore >= OVERWHELMING_TEXT_SCORE) return entry
-
-    const ownVisualPoints = visualEvidencePoints(entry.visualSimilarity)
-    const guardedScore = Math.max(
-      0,
-      Math.min(100, Math.round(textOnlyScore * VISUAL_DOMINANCE_TEXT_FACTOR) + ownVisualPoints),
-    )
-    if (guardedScore >= entry.score) return entry
-    anyGuarded = true
-    return {
-      ...entry,
-      score: guardedScore,
-      reasons: [...entry.reasons, 'visual-dominance-guarded' as const],
-    }
+    const boost = Math.round(entry.visualPoints * ANCHOR_BOOST_MAX * anchor.reliability)
+    return { entry, rawRankScore: base + boost, visualReliability: anchor.reliability }
   })
-  return { guarded, anyGuarded }
+}
+
+function toDisplayScore(rawRankScore: number): number {
+  return Math.max(0, Math.min(100, Math.round(rawRankScore)))
 }
 
 /**
  * Ranks candidates against parsed signals plus optional per-candidate visual evidence (P76,
- * D-097). Bounded output, deterministic order (score desc, then cardId asc so equal scores never
- * depend on input order), duplicates removed. `visualScores` candidates that never appeared in
- * the text-search pool must already be merged into `candidates` by the data layer (P76 §16's
- * hybrid retrieval) — this function only SCORES, never fetches or invents identity.
+ * D-097). Bounded output, deterministic order — full-resolution `rawRankScore` desc, then own
+ * `visualSimilarity` desc, then `cardId` asc as the FINAL exact-identity-stability fallback only
+ * (P93/N-05: never the meaningful signal) — duplicates removed.
+ *
+ * P93 deliberately does NOT add "original retrieval-array position" as a tie-break step between
+ * those two, even though it reads naturally as a candidate signal: `candidates` here is simply
+ * whatever order the data layer happened to hand in, and this module has always guaranteed
+ * (pinned by `tests/domain/scanner/engine.test.ts`'s "input permutation cannot change ranked
+ * output" property test) that reversing that input array can never change the result. A retrieval
+ * RANK (e.g. the catalog search's own relevance ordering) would be a legitimate additional signal
+ * if the data layer threaded one through as an explicit field — plain array position is not the
+ * same thing and would silently break that invariant instead.
+ *
+ * `visualScores` candidates that never appeared in the text-search pool must already be merged
+ * into `candidates` by the data layer (P76 §16's hybrid retrieval) — this function only SCORES,
+ * never fetches or invents identity.
  */
 /**
- * P90 §21 (debug-only): the SAME dedup/score/visual-dominance-guard/sort pipeline
+ * P90 §21 (debug-only): the SAME dedup/score/anchor-reliability/sort pipeline
  * {@link rankScannerCandidates} uses, but returns every candidate rather than truncating to
  * `SCORING_TIERS.maxReturnedCandidates` — needed by the expected-card-rank debug tool, which must
  * report a real rank position even for a candidate production would never surface in the visible
  * top N. Never called from the production matching path (`matchScannerObservation`); reuses this
- * module's own private scoring/guard logic so the debug tool cannot silently drift from what
- * production actually computes.
+ * module's own private scoring/anchor-reliability logic so the debug tool cannot silently drift
+ * from what production actually computes.
  */
 export function rankScannerCandidatesFull(
   signals: ParsedScannerSignals,
   candidates: readonly ScannerCandidateRecord[],
   visualScores?: VisualEvidenceByCard,
 ): readonly RankedScannerCandidate[] {
-  const deduped = new Map<string, RankedScannerCandidate>()
+  const deduped = new Map<string, ScoredEntry>()
   for (const card of candidates) {
     if (!deduped.has(card.cardId)) {
       deduped.set(card.cardId, scoreCandidate(signals, card, visualScores))
     }
   }
-  const { guarded } = applyVisualDominanceGuard([...deduped.values()], signals)
-  return [...guarded].sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score
-    return a.card.cardId < b.card.cardId ? -1 : a.card.cardId > b.card.cardId ? 1 : 0
+
+  const boosted = applyVisualAnchorReliability([...deduped.values()])
+  const withReasons = boosted.map(({ entry, rawRankScore, visualReliability }) => {
+    const reasons =
+      visualReliability >= ANCHOR_RELIABILITY_MIN
+        ? [...entry.reasons, 'visual-anchor-corroborated' as const]
+        : entry.reasons
+    return { entry, rawRankScore, visualReliability, reasons }
   })
+
+  return withReasons
+    .sort((a, b) => {
+      if (b.rawRankScore !== a.rawRankScore) return b.rawRankScore - a.rawRankScore
+      const aSim = a.entry.visualSimilarity ?? -Infinity
+      const bSim = b.entry.visualSimilarity ?? -Infinity
+      if (bSim !== aSim) return bSim - aSim
+      return a.entry.card.cardId < b.entry.card.cardId
+        ? -1
+        : a.entry.card.cardId > b.entry.card.cardId
+          ? 1
+          : 0
+    })
+    .map(
+      ({ entry, rawRankScore, visualReliability, reasons }): RankedScannerCandidate => ({
+        card: entry.card,
+        score: toDisplayScore(rawRankScore),
+        rawRankScore,
+        reasons,
+        visualSimilarity: entry.visualSimilarity,
+        visualReliability,
+      }),
+    )
 }
 
 export function rankScannerCandidates(
@@ -364,16 +482,18 @@ export function rankScannerCandidates(
   if (!top) {
     tier = 'none'
   } else {
+    // P93/N-05: tier/margin decisions read the full-resolution rawRankScore, never the clamped
+    // display score — see SCORING_TIERS's own doc.
     tier =
-      top.score >= SCORING_TIERS.highMinScore
+      top.rawRankScore >= SCORING_TIERS.highMinScore
         ? 'high'
-        : top.score >= SCORING_TIERS.mediumMinScore
+        : top.rawRankScore >= SCORING_TIERS.mediumMinScore
           ? 'medium'
-          : top.score >= SCORING_TIERS.lowMinScore
+          : top.rawRankScore >= SCORING_TIERS.lowMinScore
             ? 'low'
             : 'none'
     if (runnerUp) {
-      const margin = top.score - runnerUp.score
+      const margin = top.rawRankScore - runnerUp.rawRankScore
       if (tier === 'high' && margin < SCORING_TIERS.highMinMargin) {
         tier = 'medium'
         notes.push('runner-up-margin-small')
@@ -395,8 +515,8 @@ export function rankScannerCandidates(
     let textOnlyBestScore = -1
     for (const card of candidates) {
       const textOnly = scoreCandidate(signals, card)
-      if (textOnly.score > textOnlyBestScore) {
-        textOnlyBestScore = textOnly.score
+      if (textOnly.textScore > textOnlyBestScore) {
+        textOnlyBestScore = textOnly.textScore
         textOnlyTopCardId = card.cardId
       }
     }

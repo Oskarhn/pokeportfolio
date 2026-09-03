@@ -170,12 +170,12 @@ export interface ScannerDiagnostics {
   /** P88 §4/§21/F-26: true when the text-only best candidate and the visual-only best candidate
    *  disagreed meaningfully this scan (engine.ts's 'visual-text-disagreement' note). */
   visualTextDisagreement: boolean
-  /** P88 §21: WHY the tier was capped below what the raw top score alone would have implied, when
-   *  it was — 'runner-up-margin-small' (ambiguous ranking), 'visual-text-disagreement' (F-26), or
-   *  'visual-dominance-guarded' (F-02's guard discounted the coincidental-text top candidate).
-   *  Null when nothing capped the tier this scan. */
-  tierCapReason:
-    'runner-up-margin-small' | 'visual-text-disagreement' | 'visual-dominance-guarded' | null
+  /** P88 §21/P93: WHY the tier was capped below what the raw top score alone would have implied,
+   *  when it was — 'runner-up-margin-small' (ambiguous ranking) or 'visual-text-disagreement'
+   *  (F-26). Null when nothing capped the tier this scan. P93/D-106 removed the old
+   *  'visual-dominance-guarded' cause: the redesigned visual-anchor mechanism only ever ADDS a
+   *  corroboration boost, so it can never itself be a reason a tier was capped down. */
+  tierCapReason: 'runner-up-margin-small' | 'visual-text-disagreement' | null
   /** Backend-attempt diagnostics (P78 prompt §4/§11/§12) — what was actually tried, present
    *  whether the visual channel ended up ready or unavailable. */
   visualBackendRequested: 'auto' | 'wasm' | 'webgpu'

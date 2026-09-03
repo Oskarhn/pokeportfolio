@@ -143,13 +143,13 @@ describe('formatScannerDiagnostics', () => {
     const text = formatScannerDiagnostics(
       diagnostics({
         visualTextDisagreement: true,
-        tierCapReason: 'visual-dominance-guarded',
+        tierCapReason: 'runner-up-margin-small',
         visualCalibrationBand: 'weak',
         ocrCollectorParseConfidence: 'low',
       }),
     )
     expect(text).toContain('VISUAL_TEXT_DISAGREEMENT=yes')
-    expect(text).toContain('TIER_CAP_REASON=visual-dominance-guarded')
+    expect(text).toContain('TIER_CAP_REASON=runner-up-margin-small')
     expect(text).toContain('VISUAL_CALIBRATION_BAND=weak')
     expect(text).toContain('OCR_COLLECTOR_PARSE_CONFIDENCE=low')
   })
