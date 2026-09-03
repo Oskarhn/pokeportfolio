@@ -8,13 +8,45 @@
  * Supabase key, no email, no user id, no full auth state — every field here already lives on
  * {@link ScannerDiagnostics}, which itself never carries any of those.
  */
-import type { ScannerDiagnostics } from './contract'
+import type { ExpectedCardRank, ScannerDiagnostics } from './contract'
 import { APP_BUILD_SHA, APP_BUILD_TIME, SCANNER_SCHEMA_VERSION } from '../../platform/build-info'
 
 const EMPTY = '—'
 
 function num(value: number | null): string {
   return value === null ? EMPTY : String(value)
+}
+
+/** P90 §10/§21: the "should this card have won?" debug tool result — a card the owner names AFTER
+ *  a scan, purely diagnostic, never persisted, never fed back into matching. Kept as its own
+ *  formatter (not folded into `formatScannerDiagnostics`) because it answers a question about ONE
+ *  named card, not the scan as a whole, and the tool may run zero or several times per scan. */
+export function formatExpectedCardRankDiagnostics(
+  card: { id: string; name: string; setName: string; localId: string },
+  rank: ExpectedCardRank,
+): string {
+  const textEvidence = rank.scoreComponents.filter((reason) => !reason.startsWith('visual-'))
+  return [
+    `EXPECTED_CARD_ID=${card.id}`,
+    `EXPECTED_CARD_NAME=${card.name}`,
+    `EXPECTED_CARD_SET=${card.setName}`,
+    `EXPECTED_CARD_NUMBER=${card.localId}`,
+    `EXPECTED_VISUAL_RANK=${num(rank.rank)}`,
+    `EXPECTED_VISUAL_SIMILARITY=${rank.similarity === null ? EMPTY : rank.similarity.toFixed(4)}`,
+    `EXPECTED_VISUAL_PERCENTILE=${
+      rank.rank === null || rank.totalCards === 0
+        ? EMPTY
+        : (((rank.totalCards - rank.rank) / rank.totalCards) * 100).toFixed(1)
+    }`,
+    `EXPECTED_IN_TOP20=${rank.inTop20 ? 'yes' : 'no'}`,
+    `EXPECTED_IN_TOP100=${rank.inTop100 ? 'yes' : 'no'}`,
+    `EXPECTED_TOTAL_INDEX_CARDS=${num(rank.totalCards)}`,
+    `EXPECTED_INDEX_CONTENT_ID=${rank.indexContentId ?? EMPTY}`,
+    `EXPECTED_HYBRID_RANK=${num(rank.hybridRank)}`,
+    `EXPECTED_HYBRID_TIER=${rank.hybridTier ?? EMPTY}`,
+    `EXPECTED_TEXT_EVIDENCE=${textEvidence.length > 0 ? textEvidence.join(',') : EMPTY}`,
+    `EXPECTED_SCORE_COMPONENTS=${rank.scoreComponents.length > 0 ? rank.scoreComponents.join(',') : EMPTY}`,
+  ].join('\n')
 }
 
 export function formatScannerDiagnostics(d: ScannerDiagnostics): string {

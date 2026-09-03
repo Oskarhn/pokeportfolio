@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { formatScannerDiagnostics } from '../../src/features/scanner/diagnostics-format'
-import type { ScannerDiagnostics } from '../../src/features/scanner/contract'
+import {
+  formatScannerDiagnostics,
+  formatExpectedCardRankDiagnostics,
+} from '../../src/features/scanner/diagnostics-format'
+import type { ExpectedCardRank, ScannerDiagnostics } from '../../src/features/scanner/contract'
 import { APP_BUILD_SHA } from '../../src/platform/build-info'
 
 function diagnostics(overrides: Partial<ScannerDiagnostics> = {}): ScannerDiagnostics {
@@ -343,5 +346,68 @@ describe('formatScannerDiagnostics', () => {
     expect(text).toContain(
       'VISUAL_ERROR=model load failed: webgpu: no available backend found; wasm: out of memory',
     )
+  })
+})
+
+describe('formatExpectedCardRankDiagnostics (P90 §10/§21)', () => {
+  const card = { id: 'card-58', name: 'Pikachu', setName: 'Base Set', localId: '58' }
+
+  function rank(overrides: Partial<ExpectedCardRank> = {}): ExpectedCardRank {
+    return {
+      found: true,
+      rank: 3,
+      similarity: 0.87,
+      totalCards: 19501,
+      inTop20: true,
+      inTop100: true,
+      indexContentId: '0123456789abcdef',
+      hybridRank: 1,
+      hybridScore: 85,
+      hybridTier: 'high',
+      scoreComponents: ['collector-number-exact', 'name-exact', 'visual-strong'],
+      ...overrides,
+    }
+  }
+
+  it('renders every required field with real values', () => {
+    const text = formatExpectedCardRankDiagnostics(card, rank())
+    expect(text).toContain('EXPECTED_CARD_ID=card-58')
+    expect(text).toContain('EXPECTED_CARD_NAME=Pikachu')
+    expect(text).toContain('EXPECTED_CARD_SET=Base Set')
+    expect(text).toContain('EXPECTED_CARD_NUMBER=58')
+    expect(text).toContain('EXPECTED_VISUAL_RANK=3')
+    expect(text).toContain('EXPECTED_VISUAL_SIMILARITY=0.8700')
+    expect(text).toContain('EXPECTED_IN_TOP20=yes')
+    expect(text).toContain('EXPECTED_IN_TOP100=yes')
+    expect(text).toContain('EXPECTED_TOTAL_INDEX_CARDS=19501')
+    expect(text).toContain('EXPECTED_INDEX_CONTENT_ID=0123456789abcdef')
+    expect(text).toContain('EXPECTED_HYBRID_RANK=1')
+    expect(text).toContain('EXPECTED_HYBRID_TIER=high')
+    expect(text).toContain('EXPECTED_TEXT_EVIDENCE=collector-number-exact,name-exact')
+    expect(text).toContain(
+      'EXPECTED_SCORE_COMPONENTS=collector-number-exact,name-exact,visual-strong',
+    )
+  })
+
+  it('never fabricates a rank/tier when the card was not found or not in the bounded top N', () => {
+    const text = formatExpectedCardRankDiagnostics(
+      card,
+      rank({
+        found: false,
+        rank: null,
+        similarity: null,
+        hybridRank: null,
+        hybridScore: null,
+        hybridTier: null,
+        scoreComponents: [],
+      }),
+    )
+    expect(text).toContain('EXPECTED_VISUAL_RANK=—')
+    expect(text).toContain('EXPECTED_VISUAL_SIMILARITY=—')
+    expect(text).toContain('EXPECTED_VISUAL_PERCENTILE=—')
+    expect(text).toContain('EXPECTED_HYBRID_RANK=—')
+    expect(text).toContain('EXPECTED_HYBRID_TIER=—')
+    expect(text).toContain('EXPECTED_TEXT_EVIDENCE=—')
+    expect(text).toContain('EXPECTED_SCORE_COMPONENTS=—')
   })
 })

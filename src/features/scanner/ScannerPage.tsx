@@ -10,10 +10,16 @@ import {
 } from 'react'
 import { useBlocker, useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import type { ScannerCandidate, ScannerDebugImages, ScannerDiagnostics } from './contract'
+import type {
+  ExpectedCardRank,
+  ScannerCandidate,
+  ScannerDebugImages,
+  ScannerDiagnostics,
+} from './contract'
 import { getScannerUiController } from './controller'
 import { isScannerDebugEnabled } from './debug-flag'
-import { formatScannerDiagnostics } from './diagnostics-format'
+import { formatExpectedCardRankDiagnostics, formatScannerDiagnostics } from './diagnostics-format'
+import { APP_BUILD_SHA } from '../../platform/build-info'
 import {
   CAMERA_VIDEO_PROPS,
   openEnvironmentCamera,
@@ -47,6 +53,7 @@ import {
 } from './guide-geometry'
 import { getMyProfile, type Profile } from '../../data/profile'
 import { listStorageLocations } from '../../data/collection'
+import { searchCards, type CatalogSearchResult } from '../../data/catalog'
 import { useAuth } from '../../auth/useAuth'
 import { CardImage } from '../catalog/CardImage'
 import { CONDITION_LABEL, ORIGIN_LABEL } from '../collection/labels'
@@ -718,7 +725,13 @@ export function ScannerPage() {
       ) : null}
 
       {debugEnabled ? (
-        <ScannerDebugPanel diagnostics={diagnostics} debugImages={debugImages} />
+        <ScannerDebugPanel
+          diagnostics={diagnostics}
+          debugImages={debugImages}
+          getExpectedCardRank={(cardId) =>
+            controller.getExpectedCardRank?.(cardId) ?? Promise.resolve(null)
+          }
+        />
       ) : null}
 
       {/* F-09 (P89): this same sheet now also guards "Done" after a PARTIAL commit — distinguished
@@ -860,17 +873,29 @@ function ErrorAlert({ title, message }: { title: string; message: string }) {
 function ScannerDebugPanel({
   diagnostics,
   debugImages,
+  getExpectedCardRank,
 }: {
   diagnostics: ScannerDiagnostics | null
   debugImages: ScannerDebugImages | null
+  getExpectedCardRank?: (cardId: string) => Promise<ExpectedCardRank | null>
 }) {
   const [open, setOpen] = useState(true)
   const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const [expectedCardResult, setExpectedCardResult] = useState<{
+    card: { id: string; name: string; setName: string; localId: string }
+    rank: ExpectedCardRank
+  } | null>(null)
 
   async function handleCopy(): Promise<void> {
     if (diagnostics === null) return
+    const parts = [formatScannerDiagnostics(diagnostics)]
+    if (expectedCardResult !== null) {
+      parts.push(
+        formatExpectedCardRankDiagnostics(expectedCardResult.card, expectedCardResult.rank),
+      )
+    }
     try {
-      await navigator.clipboard.writeText(formatScannerDiagnostics(diagnostics))
+      await navigator.clipboard.writeText(parts.join('\n\n'))
       setCopyStatus('copied')
     } catch {
       setCopyStatus('failed')
@@ -881,7 +906,7 @@ function ScannerDebugPanel({
   }
 
   return (
-    <div className="fixed inset-x-0 bottom-0 z-[60] max-h-[45svh] overflow-y-auto border-t border-amber-700/60 bg-slate-950/95 px-3 py-2 text-[11px] text-amber-100">
+    <div className="fixed inset-x-0 bottom-0 z-[60] max-h-[60svh] overflow-y-auto border-t border-amber-700/60 bg-slate-950/95 px-3 py-2 text-[11px] text-amber-100">
       <div className="flex items-center justify-between gap-2">
         <span className="font-semibold uppercase tracking-wide text-amber-300">Scanner debug</span>
         <div className="flex items-center gap-2">
@@ -915,15 +940,191 @@ function ScannerDebugPanel({
           <p className="pt-2 text-amber-300/70">No scan analyzed yet this session.</p>
         ) : (
           <>
+            <ScannerDebugSummaryLine diagnostics={diagnostics} expectedRank={expectedCardResult} />
             <ScannerDebugImagePreviews debugImages={debugImages} />
             {diagnostics.topVisualCandidatesExtended.length > 0 ? (
               <ScannerDebugRawCandidates candidates={diagnostics.topVisualCandidatesExtended} />
             ) : null}
-            <pre className="whitespace-pre-wrap break-words pt-2 font-mono leading-relaxed">
-              {formatScannerDiagnostics(diagnostics)}
-            </pre>
+            {getExpectedCardRank ? (
+              <ExpectedCardRankTool
+                getExpectedCardRank={getExpectedCardRank}
+                result={expectedCardResult}
+                onResult={setExpectedCardResult}
+              />
+            ) : null}
+            <details className="pt-2" open>
+              <summary className="cursor-pointer text-[10px] uppercase tracking-wide text-amber-300/70">
+                Raw diagnostics text
+              </summary>
+              <pre className="whitespace-pre-wrap break-words pt-2 font-mono leading-relaxed">
+                {formatScannerDiagnostics(diagnostics)}
+              </pre>
+            </details>
           </>
         )
+      ) : null}
+    </div>
+  )
+}
+
+/**
+ * P90 §12: an "at a glance" line above the full diagnostics dump — the handful of fields that
+ * answer "is this even the build I think it is, and did the last scan look healthy" without
+ * scrolling the raw text block. Never a substitute for it: the full copy-diagnostics text still
+ * carries everything, this is a reading aid only.
+ */
+function ScannerDebugSummaryLine({
+  diagnostics,
+  expectedRank,
+}: {
+  diagnostics: ScannerDiagnostics
+  expectedRank: { card: { name: string }; rank: ExpectedCardRank } | null
+}) {
+  const top1 = diagnostics.topVisualCandidates[0] ?? null
+  return (
+    <div className="flex flex-wrap gap-x-3 gap-y-1 border-b border-amber-900/40 pb-2 pt-1 text-[10px] text-amber-200/90">
+      <span>SHA {APP_BUILD_SHA.slice(0, 8)}</span>
+      <span>INDEX {diagnostics.indexContentId ?? '—'}</span>
+      <span>VISUAL {diagnostics.visualModelState}</span>
+      <span>OCR {diagnostics.ocrRuntimeState}</span>
+      <span>TOP1 {top1 ? `${top1.name ?? top1.cardId} ${top1.similarity.toFixed(2)}` : '—'}</span>
+      {expectedRank ? (
+        <span>
+          EXPECTED &quot;{expectedRank.card.name}&quot; visual #{expectedRank.rank.rank ?? '—'}
+          {expectedRank.rank.hybridRank !== null
+            ? ` · hybrid #${expectedRank.rank.hybridRank}`
+            : ''}
+        </span>
+      ) : null}
+    </div>
+  )
+}
+
+/**
+ * P90 §10: "check expected card rank" — an owner-facing affordance for a wrong-or-missing scan
+ * result. Search the catalog for the card that SHOULD have been recognized, pick it, and see
+ * exactly where it actually ranked (visual and hybrid) — without adding it to the batch, without
+ * mutating the scanner candidate choice, without persisting anything. Memory-only, `?scannerDebug=
+ * 1`-gated (the parent panel already restricts this component's very existence to debug mode).
+ */
+function ExpectedCardRankTool({
+  getExpectedCardRank,
+  result,
+  onResult,
+}: {
+  getExpectedCardRank: (cardId: string) => Promise<ExpectedCardRank | null>
+  result: {
+    card: { id: string; name: string; setName: string; localId: string }
+    rank: ExpectedCardRank
+  } | null
+  onResult: (
+    result: {
+      card: { id: string; name: string; setName: string; localId: string }
+      rank: ExpectedCardRank
+    } | null,
+  ) => void
+}) {
+  const [searching, setSearching] = useState(false)
+  const [query, setQuery] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const results = useQuery({
+    queryKey: ['scanner-debug-expected-card-search', query],
+    queryFn: () => searchCards({ query, language: null, limit: 10 }),
+    enabled: searching && query.trim().length > 0,
+  })
+
+  async function handlePick(card: CatalogSearchResult): Promise<void> {
+    setLoading(true)
+    try {
+      const rank = await getExpectedCardRank(card.cardId)
+      if (rank === null) {
+        onResult(null)
+        return
+      }
+      onResult({
+        card: {
+          id: card.cardId,
+          name: card.name,
+          setName: card.setName,
+          localId: card.localId,
+        },
+        rank,
+      })
+      setSearching(false)
+      setQuery('')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="border-t border-amber-900/40 pt-2">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10px] uppercase tracking-wide text-amber-300/70">
+          Expected card rank
+        </span>
+        <button
+          type="button"
+          onClick={() => {
+            setSearching((v) => !v)
+          }}
+          className="rounded border border-amber-700/60 px-2 py-0.5 text-[10px] text-amber-200 hover:bg-amber-900/40"
+        >
+          {searching ? 'Cancel' : 'Check expected card rank'}
+        </button>
+      </div>
+      {searching ? (
+        <div className="mt-2 space-y-2">
+          <input
+            autoFocus
+            value={query}
+            onChange={(event) => {
+              setQuery(event.target.value)
+            }}
+            placeholder="Search for the card that should have won…"
+            aria-label="Search for the expected card"
+            className="w-full rounded border border-amber-800/60 bg-slate-900 px-2 py-1 text-[11px] text-amber-100 outline-none focus-visible:border-amber-500"
+          />
+          {loading ? (
+            <p className="text-amber-300/70">Checking rank…</p>
+          ) : query.trim() === '' ? null : results.isPending ? (
+            <p className="text-amber-300/70">Searching…</p>
+          ) : results.isError ? (
+            <p className="text-rose-300">The catalog could not be searched right now.</p>
+          ) : results.data.results.length === 0 ? (
+            <p className="text-amber-300/70">No catalog cards match.</p>
+          ) : (
+            <ul className="max-h-40 space-y-1 overflow-y-auto">
+              {results.data.results.map((card) => (
+                <li key={card.cardId}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void handlePick(card)
+                    }}
+                    className="flex w-full items-center gap-2 rounded border border-amber-900/40 px-2 py-1 text-left hover:bg-amber-900/30"
+                  >
+                    <CardImage
+                      imageBaseUrl={card.imageBaseUrl}
+                      alt={card.name}
+                      quality="low"
+                      className="h-8 w-6 shrink-0"
+                    />
+                    <span className="min-w-0 flex-1 truncate">
+                      {card.name} · {card.setName} #{card.localId}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ) : null}
+      {result ? (
+        <pre className="mt-2 whitespace-pre-wrap break-words border-t border-amber-900/40 pt-2 font-mono leading-relaxed">
+          {formatExpectedCardRankDiagnostics(result.card, result.rank)}
+        </pre>
       ) : null}
     </div>
   )
