@@ -201,6 +201,14 @@ interface ReadyResponse extends BackendDiagnostics {
   indexEmbeddingsSha256: string | null
   /** P87 F-01: the content-addressed id of the generation actually loaded, or null if none. */
   indexContentId: string | null
+  /** P97 (D-106): resolved prototype count of the loaded index (1 for a v1/pre-P97 generation),
+   *  the strategy name driving prototypes beyond the first (null on v1), and the total row count
+   *  (`cardCount * prototypeCount`) actually decoded. Diagnostics-only — never affects matching;
+   *  the matcher downstream still sees exactly one similarity score per canonical card either way
+   *  (searchVisualIndex's own per-card max-over-prototypes reduction). Null before the index loads. */
+  indexPrototypeCount: number | null
+  indexPrototypeStrategy: string | null
+  indexRowCount: number | null
   /** P87 F-22: this deployment's expected source project (null when unconfigured/local — nothing
    *  gated in that case), and whether the loaded index actually matched it. */
   indexSourceProjectExpected: string | null
@@ -843,6 +851,9 @@ async function init(message: InitMessage): Promise<void> {
     indexGeneratedAt: index?.manifest.generatedAt ?? null,
     indexEmbeddingsSha256: index?.manifest.embeddingsSha256 ?? null,
     indexContentId,
+    indexPrototypeCount: index?.prototypeCount ?? null,
+    indexPrototypeStrategy: index?.manifest.prototypeStrategy ?? null,
+    indexRowCount: index !== null ? index.cardIds.length * index.prototypeCount : null,
     indexSourceProjectExpected: EXPECTED_SOURCE_PROJECT_REF,
     indexSourceProjectMatch: lastIndexSourceProjectMatch,
     indexRuntimeChecksumVerified: lastIndexRuntimeChecksumVerified,

@@ -83,6 +83,13 @@ export interface ScannerDiagnostics {
    *  field that makes a stale index impossible to hide (see current.json/generations/<id>). Null
    *  before the index has loaded (or if it never becomes available). */
   indexContentId: string | null
+  /** P97 (D-106): the loaded index's resolved prototype count (1 on a v1/pre-P97 index), the
+   *  auxiliary-prototype strategy name (null on v1), and the total row count actually decoded
+   *  (`cardCount * prototypeCount`). Diagnostics-only — the matcher always sees one score per
+   *  canonical card regardless of prototype count. Null before the index has loaded. */
+  indexPrototypeCount: number | null
+  indexPrototypeStrategy: string | null
+  indexRowCount: number | null
   /** P87 F-22: which source project THIS deployment expects the index to resolve against
    *  (derived from `VITE_SUPABASE_URL`), or null when this deployment itself has no real hosted
    *  project configured (the local/CI-placeholder case, where nothing is gated). */

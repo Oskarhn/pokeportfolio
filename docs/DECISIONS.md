@@ -3962,3 +3962,78 @@ is a materially larger change than this correction. Never confirmed against a re
 either way. The test now asserts this exact disclosed failure shape when
 `offscreenCanvasAvailableInWorker` is false, rather than a full search success it cannot actually
 prove on this engine.
+
+## D-106 — dual-prototype reference index (`pristinePlus1Aux`), versioned multi-prototype format, backward-compatible with the shipped v1 index (P97)
+
+P91's recognition R&D (research/m15-p91-recognition-marathon) measured that reference-side
+multi-prototype augmentation — adding one auxiliary prototype per card, a centroid of 6
+deterministic photometric/geometric augmented views embedded and L2-normalized-averaged — closes
+most of the moderate-distortion accuracy gap at zero added query-time inference cost (one embed
+pass per scan, unchanged). P95 (research/m15-p95-recognition-phase2) independently re-confirmed the
+identical strategy (`pristinePlus1Aux`) in a full six-architecture head-to-head comparison: it wins
+or ties every non-catastrophic regime — including a NEW, more realistic "iPhone-like moderate"
+distortion profile P91 never tested — at the lowest complexity of any option that beats plain DINO,
+and explicitly REJECTED the alternatives a naive reading of the same evidence might suggest: image
+rerank (NCC/SSIM/histogram) is actively dangerous outside geometry-only distortion (a 68-69%
+false-confident rate on the realistic moderate regime); a general (non-blur) capture-quality gate
+has no viable precision/recall tradeoff; local-feature rerank is real but non-essential; a different
+backbone model has no evidence of being more photometric-robust than DINOv2-small. This session
+implements ONLY the recommended strategy — dual-prototype reference augmentation — deliberately not
+the rejected alternatives.
+
+**Format.** `VisualIndexManifest` gains three OPTIONAL fields — `prototypeCount`,
+`prototypeStrategy`, `prototypeStrategyVersion` — plus an optional `rowCount` cross-check, and
+`coverage` gains optional `cardsWithAuxPrototype`/`cardsAuxFallback`. Absent (every already-
+committed manifest) means implicitly `prototypeCount=1`, exactly today's shipped single-prototype
+shape — no regeneration required, no runtime behavior change for the existing index.
+`embeddings.bin` is card-major, prototype-minor (card0-proto0, card0-proto1, card1-proto0, ...);
+`decodeVisualIndex` validates the byte length against `cardCount * prototypeCount * embeddingDim`
+and rejects a mismatched `rowCount`, a non-positive/non-integer `prototypeCount`, or
+`prototypeCount > 1` without both strategy fields present. `searchVisualIndex` scores each card by
+the MAX dot product over its own prototype rows (P91/P95's own `searchMultiProto` reduction,
+reproduced exactly) and pushes exactly one hit per card — the matcher downstream (untouched, out of
+this session's scope) sees the identical "one similarity score per candidate" shape it always has.
+
+**Backward compatibility is load-bearing, not incidental — verified empirically, not just by
+design.** `buildIndexContentPayload`'s canonical hash object assigns the three new prototype fields
+WITHOUT `?? null` (unlike the existing `sourceProjectRef`/`sourceEnglishActiveCount` fields):
+`JSON.stringify` drops an `undefined`-valued key, so a v1 manifest (which never sets these fields)
+serializes to a BYTE-IDENTICAL payload to what this function produced before these fields existed —
+the content id of an already-published generation never shifts. This was proven, not assumed:
+`pnpm scanner:index:verify` was run against this repository's actual real, committed 19,501-card
+generation after every code change in this session, and it verifies to the exact same content id
+(`1a1df11a73c462d8`) P94 recorded. `CHECKPOINT_SCHEMA_VERSION` bumped 2 -> 3 and
+`CheckpointIdentity` gained required `prototypeCount`/`prototypeStrategy`/`prototypeStrategyVersion`
+fields, so a checkpoint from a prior (single-prototype) build session is automatically discarded and
+rebuilt from scratch — a single-prototype checkpoint can never silently resume into a dual-prototype
+build, and vice versa.
+
+**Auxiliary-prototype fallback (prompt §13).** A card whose pristine embedding succeeds but whose
+auxiliary (6-augmentation-centroid) computation fails is still indexed and fully searchable — its
+prototype-1 row is a deterministic DUPLICATE of prototype 0 (never a zero vector, which would make
+that prototype an artificially bad match instead of a neutral no-op) — `coverage.cardsAuxFallback`
+counts these; `coverage.cardsWithAuxPrototype` counts cards with a real auxiliary embedding. Unlike
+the (deliberately permanent, not-a-skip-gate) `auxFallback` checkpoint marker's role in earlier
+drafts of this session's own implementation, the SHIPPED behavior retries a failed auxiliary
+computation on every resumption until it actually succeeds — exactly mirroring how a failed
+PRISTINE embedding has always behaved (never persisted as "permanently given up"). `auxFallback` in
+the checkpoint is diagnostic-only, always overwritten fresh, and cleared on a later success.
+
+**Cost, measured against the real committed index, not estimated.** Real single-prototype generation:
+`embeddings.bin` 7,488,384 bytes (7.14 MB) + `card-ids.json` 760,540 bytes (0.73 MB) = 7.87 MB.
+Projected dual-prototype generation at the same real 19,501-card scale: `embeddings.bin`
+14,976,768 bytes (14.28 MB, exactly 2x) + the same `card-ids.json` = ~15.01 MB total — a ~7.14 MB
+delta, matching P95's own independent recomputation from this exact production format almost
+exactly. Decoded runtime memory (Float32, one generation held at a time, unchanged pattern from the
+single-prototype worker) roughly doubles in step: ~28.6 MB -> ~57.1 MB — an expected, disclosed
+consequence of dequantizing twice as many rows, not an accidental duplication; the worker never
+holds more than one decoded generation in memory at once, matching the existing single-prototype
+pattern exactly.
+
+**Not implemented this session, and why:** the real hosted 19,501-card dual-prototype rebuild, F-03
+against the real hosted catalog, the real-19,501-scale P95 reproduction, and the production name
+lexicon build all require `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`, which were not present in this
+environment (the same standing gap every M15 session since P75 has disclosed) — this session never
+fakes, estimates, or assumes those results; it ships CODE_READY_NEEDS_OWNER_BUILD with the exact
+commands recorded for the next session or the owner to run. The committed 19,501-card v1 index is
+untouched. No card was special-cased anywhere.

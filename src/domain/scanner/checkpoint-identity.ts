@@ -13,6 +13,16 @@
  * The identity NEVER contains the service-role key or any other secret — only a project host
  * string derived from the (non-secret) `SUPABASE_URL`.
  *
+ * P97 (D-106) addendum: `CHECKPOINT_SCHEMA_VERSION` bumped 2 -> 3 and `CheckpointIdentity` gained
+ * `prototypeCount`/`prototypeStrategy`/`prototypeStrategyVersion`, for the identical reason the
+ * original fields exist — a checkpoint built for the single-prototype (v1) format must never be
+ * silently resumed into a dual-prototype build (it would have no auxiliary embeddings at all for
+ * every "already done" card, which `checkpointMatchesIdentity` returning false here forces a full,
+ * loud, from-scratch rebuild to fix) and, symmetrically, a checkpoint built under one auxiliary
+ * strategy/version must never be resumed under a different one. The schema-version bump alone
+ * already invalidates every pre-P97 checkpoint regardless of the new fields, matching this
+ * module's own established pattern for a breaking identity-shape change.
+ *
  * P78 addendum: `Checkpoint` used to carry a persisted `failures` counter, incremented every time
  * a card's image fetch/decode failed and never reset or deduplicated across a resumed run — a
  * card that fails on every attempt (e.g. a permanently-404 image) inflated this count once per
@@ -24,7 +34,7 @@
  * cumulative across historical attempts.
  */
 
-export const CHECKPOINT_SCHEMA_VERSION = 2
+export const CHECKPOINT_SCHEMA_VERSION = 3
 
 /** The well-known local/CI-placeholder Supabase URL (build-index.ts's own `LOCAL_DEFAULTS.url`,
  *  and CI's `build-and-test` job's `VITE_SUPABASE_URL`, are both exactly this value) — shared here
@@ -41,12 +51,34 @@ export interface CheckpointIdentity {
   readonly modelRevision: string
   readonly embeddingDim: number
   readonly quantization: string
+  /** P97 (D-106): how many reference prototypes per card this checkpoint is building towards, and
+   *  which recipe/version produces the ones beyond the first (pristine). Required (not optional)
+   *  so a pre-P97 checkpoint — which never set these fields at all — can never satisfy
+   *  {@link checkpointMatchesIdentity} by accident. */
+  readonly prototypeCount: number
+  readonly prototypeStrategy: string
+  readonly prototypeStrategyVersion: string
 }
 
 export interface Checkpoint {
   totalCanonicalCards: number
   cardsWithUsableImage: number
+  /** Prototype 0 — the plain pristine reference embedding. Unchanged in shape/meaning from every
+   *  prior single-prototype build. */
   readonly embeddings: Record<string, number[]>
+  /** P97 (D-106): prototype 1 — the auxiliary (dual-prototype) embedding, present only for a card
+   *  whose auxiliary computation actually succeeded. A card present in `embeddings` but absent
+   *  here (and not marked in `auxFallback` either) simply hasn't had its auxiliary attempted yet
+   *  by this resumed run — the same "not done yet" meaning `embeddings` itself already carries. */
+  readonly auxEmbeddings: Record<string, number[]>
+  /** P97 (D-106): ids whose auxiliary computation was attempted and FAILED (at least once, this
+   *  build) — packed with the pristine embedding duplicated into the auxiliary prototype slot
+   *  (prompt §13's safe fallback) rather than left unindexed. A card can appear here without ever
+   *  appearing in `auxEmbeddings` (fallback stays permanent for that card, this run) or can appear
+   *  in `auxEmbeddings` from an earlier successful attempt before a later resumption re-marks it
+   *  fallback — the packer (`build-index.ts`) always prefers a real `auxEmbeddings` entry over a
+   *  fallback marker when both exist for the same id. */
+  readonly auxFallback: Record<string, true>
 }
 
 /** Never returns or logs the URL's credentials — Supabase project URLs carry none, but this
@@ -139,7 +171,10 @@ export function checkpointMatchesIdentity(
     checkpoint.modelId === expected.modelId &&
     checkpoint.modelRevision === expected.modelRevision &&
     checkpoint.embeddingDim === expected.embeddingDim &&
-    checkpoint.quantization === expected.quantization
+    checkpoint.quantization === expected.quantization &&
+    checkpoint.prototypeCount === expected.prototypeCount &&
+    checkpoint.prototypeStrategy === expected.prototypeStrategy &&
+    checkpoint.prototypeStrategyVersion === expected.prototypeStrategyVersion
   )
 }
 
@@ -152,6 +187,8 @@ export function freshCheckpoint(identity: CheckpointIdentity): Checkpoint & Chec
     totalCanonicalCards: 0,
     cardsWithUsableImage: 0,
     embeddings: {},
+    auxEmbeddings: {},
+    auxFallback: {},
   }
 }
 
