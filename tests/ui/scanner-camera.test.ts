@@ -2,6 +2,7 @@
 import {
   CAMERA_VIDEO_PROPS,
   openEnvironmentCamera,
+  ScannerCameraSupersededError,
   stopActiveScannerCamera,
   visibilityChangeAction,
 } from '../../src/features/scanner/camera-session'
@@ -170,7 +171,7 @@ describe('camera teardown guarantees', () => {
     void firstSession
   })
 
-  it('two concurrent unresolved getUserMedia calls leave exactly one live stream and stop the other (F-06)', async () => {
+  it('two concurrent unresolved getUserMedia calls leave exactly one live stream — the loser REJECTS, never a fake success (F-06/N-10)', async () => {
     const first = fakeStream(1)
     const second = fakeStream(1)
     const { video } = fakeVideoElement()
@@ -193,16 +194,124 @@ describe('camera teardown guarantees', () => {
     // cannot serialize against.
     const firstPromise = openEnvironmentCamera(video, firstAcquire)
     const secondPromise = openEnvironmentCamera(video, secondAcquire)
-    // Resolve the SECOND call's getUserMedia first — the primitive must still serialize behind
-    // whichever call started first, not whichever getUserMedia promise happens to settle first.
+    // Resolve the SECOND call's getUserMedia first — the primitive must still let the LATER
+    // (second) call win regardless of settle order, not whichever getUserMedia promise happens
+    // to resolve first.
     resolveSecondAcquire(second.stream)
     resolveFirstAcquire(first.stream)
-    const [firstSession, secondSession] = await Promise.all([firstPromise, secondPromise])
+    // The loser (first) must reject clearly — the pre-N-10 bug resolved it as a fake success with
+    // a dead, already-stopped stream and no error surfaced anywhere.
+    await expect(firstPromise).rejects.toThrow(ScannerCameraSupersededError)
+    const secondSession = await secondPromise
     expect(first.stops[0]).toHaveBeenCalledTimes(1)
     expect(second.stops[0]).not.toHaveBeenCalled()
     expect(video.srcObject).toBe(second.stream)
-    void firstSession
     secondSession.stop()
+  })
+
+  describe('N-10 ordering matrix — a call that fails must never wrongly invalidate an unrelated in-flight or later call', () => {
+    it('B (started after A, still in flight) rejects; A (started first, still in flight) later succeeds — A must win, not be misclassified as stale (the exact P92 bug)', async () => {
+      const aStream = fakeStream(1)
+      const { video } = fakeVideoElement()
+      let resolveA!: (stream: MediaStream) => void
+      let rejectB!: (error: unknown) => void
+      const acquireA = vi.fn(() => new Promise<MediaStream>((resolve) => (resolveA = resolve)))
+      const acquireB = vi.fn(
+        () => new Promise<MediaStream>((_resolve, reject) => (rejectB = reject)),
+      )
+      const promiseA = openEnvironmentCamera(video, acquireA)
+      const promiseB = openEnvironmentCamera(video, acquireB)
+      rejectB(new Error('getUserMedia denied'))
+      await expect(promiseB).rejects.toThrow('getUserMedia denied')
+      resolveA(aStream.stream)
+      const sessionA = await promiseA
+      expect(video.srcObject).toBe(aStream.stream)
+      expect(aStream.stops[0]).not.toHaveBeenCalled()
+      sessionA.stop()
+    })
+
+    it('A rejects, B (started after) succeeds — ordinary case, unaffected', async () => {
+      const bStream = fakeStream(1)
+      const { video } = fakeVideoElement()
+      let rejectA!: (error: unknown) => void
+      let resolveB!: (stream: MediaStream) => void
+      const acquireA = vi.fn(
+        () => new Promise<MediaStream>((_resolve, reject) => (rejectA = reject)),
+      )
+      const acquireB = vi.fn(() => new Promise<MediaStream>((resolve) => (resolveB = resolve)))
+      const promiseA = openEnvironmentCamera(video, acquireA)
+      const promiseB = openEnvironmentCamera(video, acquireB)
+      rejectA(new Error('denied'))
+      await expect(promiseA).rejects.toThrow('denied')
+      resolveB(bStream.stream)
+      const sessionB = await promiseB
+      expect(video.srcObject).toBe(bStream.stream)
+      sessionB.stop()
+    })
+
+    it('both A and B reject — no active session, no unhandled state corruption for a later C', async () => {
+      const { video } = fakeVideoElement()
+      let rejectA!: (error: unknown) => void
+      let rejectB!: (error: unknown) => void
+      const acquireA = vi.fn(
+        () => new Promise<MediaStream>((_resolve, reject) => (rejectA = reject)),
+      )
+      const acquireB = vi.fn(
+        () => new Promise<MediaStream>((_resolve, reject) => (rejectB = reject)),
+      )
+      const promiseA = openEnvironmentCamera(video, acquireA)
+      const promiseB = openEnvironmentCamera(video, acquireB)
+      rejectB(new Error('B denied'))
+      await expect(promiseB).rejects.toThrow('B denied')
+      rejectA(new Error('A denied'))
+      await expect(promiseA).rejects.toThrow('A denied')
+
+      // A fresh call afterward must behave normally — no residual state from the two failures.
+      const cStream = fakeStream(1)
+      const sessionC = await openEnvironmentCamera(video, () => Promise.resolve(cStream.stream))
+      expect(video.srcObject).toBe(cStream.stream)
+      sessionC.stop()
+    })
+
+    it('a third request C supersedes a still-queued B before B even settles; C wins, B rejects', async () => {
+      const cStream = fakeStream(1)
+      const { video } = fakeVideoElement()
+      let resolveB!: (stream: MediaStream) => void
+      const acquireA = vi.fn(() => Promise.resolve(fakeStream(1).stream))
+      const acquireB = vi.fn(() => new Promise<MediaStream>((resolve) => (resolveB = resolve)))
+      const acquireC = vi.fn(() => Promise.resolve(cStream.stream))
+      await openEnvironmentCamera(video, acquireA) // A settles immediately, becomes active first
+      const promiseB = openEnvironmentCamera(video, acquireB) // still pending
+      const promiseC = openEnvironmentCamera(video, acquireC) // C supersedes B before B resolves
+      const sessionC = await promiseC
+      expect(video.srcObject).toBe(cStream.stream)
+      resolveB(fakeStream(1).stream)
+      await expect(promiseB).rejects.toThrow(ScannerCameraSupersededError)
+      // C is still the one and only live session after B's late resolution.
+      expect(video.srcObject).toBe(cStream.stream)
+      sessionC.stop()
+    })
+
+    it('unmount mid-flight: the caller-side generation guard discards a late resolution instead of leaking a stream', async () => {
+      // Mirrors ScannerPage.tsx's own cameraGenerationRef pattern directly against the primitive.
+      const { video } = fakeVideoElement()
+      let resolveA!: (stream: MediaStream) => void
+      const acquireA = vi.fn(() => new Promise<MediaStream>((resolve) => (resolveA = resolve)))
+      let callerGeneration = 1
+      const myGeneration = callerGeneration
+      const promise = openEnvironmentCamera(video, acquireA)
+      // Simulate unmount: caller bumps its own generation and would call stopActiveScannerCamera().
+      callerGeneration += 1
+      stopActiveScannerCamera()
+      const aStream = fakeStream(1)
+      resolveA(aStream.stream)
+      const session = await promise
+      // The primitive itself has no idea about the unmount — it resolved successfully. The
+      // CALLER'S OWN guard (already shipped in ScannerPage.tsx) is what must stop the now-unwanted
+      // session rather than leaving a live stream attached to a torn-down video element.
+      if (myGeneration !== callerGeneration) session.stop()
+      expect(aStream.stops[0]).toHaveBeenCalledTimes(1)
+    })
   })
 
   it('the safety valve used on unmount/visibility stops whatever session exists', async () => {

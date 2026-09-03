@@ -4,6 +4,9 @@
  * scanner-cache-cleanup.ts's own header for why this runs from the main thread rather than a
  * Service Worker `activate` handler.
  */
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   cleanupObsoleteScannerCaches,
@@ -98,5 +101,53 @@ describe('cleanupObsoleteScannerCaches (P87 F-42)', () => {
     const result = await cleanupObsoleteScannerCaches()
     expect(deleted).toEqual(['scanner-assets-v6'])
     expect(result.deleted).toEqual(['scanner-assets-v5', 'scanner-assets-v6'])
+  })
+})
+
+describe('CURRENT_SCANNER_CACHE_NAMES — contract test against its two real sources (N-18, P94)', () => {
+  // `CURRENT_SCANNER_CACHE_NAMES` is a hand-duplicated literal (this module's own header explains
+  // why it cannot import vite.config.ts, which is Node-only build config, not shippable browser
+  // code). A future cache-name bump that updates one source and forgets the other would make this
+  // cleanup delete the new, currently-active cache on every boot instead of an obsolete one — the
+  // opposite of what it's for. Rather than build config-loading machinery to compare the REAL
+  // values at runtime (out of proportion for a low-risk drift check), this reads both source files
+  // as plain text and regex-extracts their cache-name literals — no Vite/Workbox/worker module is
+  // ever imported or evaluated.
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
+
+  function extractWorkboxCacheNames(): string[] {
+    const source = readFileSync(join(repoRoot, 'vite.config.ts'), 'utf-8')
+    return [...source.matchAll(/cacheName:\s*'([^']+)'/g)].map((m) => m[1] as string)
+  }
+
+  function extractWorkerAssetCacheName(): string {
+    const source = readFileSync(
+      join(repoRoot, 'src', 'features', 'scanner', 'visual', 'visual-worker.ts'),
+      'utf-8',
+    )
+    const match = /WORKER_ASSET_CACHE_NAME\s*=\s*'([^']+)'/.exec(source)
+    if (match?.[1] === undefined) {
+      throw new Error(
+        'Could not find WORKER_ASSET_CACHE_NAME in visual-worker.ts — has it been renamed or moved?',
+      )
+    }
+    return match[1]
+  }
+
+  it('every Workbox cacheName in vite.config.ts is present in the allowlist', () => {
+    const workboxNames = extractWorkboxCacheNames()
+    expect(workboxNames.length).toBeGreaterThan(0) // the extraction itself must find something real
+    for (const name of workboxNames) {
+      expect(CURRENT_SCANNER_CACHE_NAMES).toContain(name)
+    }
+  })
+
+  it("the worker's own Cache Storage API cache name is present in the allowlist", () => {
+    expect(CURRENT_SCANNER_CACHE_NAMES).toContain(extractWorkerAssetCacheName())
+  })
+
+  it('the allowlist contains nothing BEYOND its two real sources (no stale leftover entry)', () => {
+    const expected = new Set([...extractWorkboxCacheNames(), extractWorkerAssetCacheName()])
+    expect(new Set(CURRENT_SCANNER_CACHE_NAMES)).toEqual(expected)
   })
 })

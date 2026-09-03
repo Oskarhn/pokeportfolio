@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   assertValidCoverage,
+  computeCoverageBreakdown,
   CoverageInvariantError,
 } from '../../../src/domain/scanner/index-coverage'
 
@@ -97,5 +98,51 @@ describe('assertValidCoverage', () => {
         20946,
       )
     }).toThrow(/exceeds cardsWithUsableImage/)
+  })
+})
+
+describe('computeCoverageBreakdown (N-07: honest coverage, denominators labelled)', () => {
+  it('separates the no-usable-image gap from genuine embed failures instead of hiding it', () => {
+    // Synthetic P94 prompt fixture: 100 total, 80 usable, 78 indexed, 2 real embed failures,
+    // 20 cards with no usable image at all. The old single "2 failures" line implied 98/100
+    // coverage; the honest breakdown must make the 20-card gap impossible to miss.
+    const breakdown = computeCoverageBreakdown({
+      totalCanonicalCards: 100,
+      cardsWithUsableImage: 80,
+      cardsIndexed: 78,
+      failures: 2,
+    })
+    expect(breakdown.totalCanonical).toBe(100)
+    expect(breakdown.cardsWithUsableImage).toBe(80)
+    expect(breakdown.cardsWithoutUsableImage).toBe(20)
+    expect(breakdown.cardsIndexed).toBe(78)
+    expect(breakdown.indexFailuresAmongUsableImages).toBe(2)
+    expect(breakdown.totalUnindexed).toBe(22) // 20 no-image + 2 embed failures
+    expect(breakdown.indexedOfTotalPercent).toBeCloseTo(78, 5)
+    expect(breakdown.indexedOfUsableImagePercent).toBeCloseTo(97.5, 5)
+  })
+
+  it('reports null (not a divide-by-zero NaN or misleading 0%) for indexed/usable-image when no card has a usable image', () => {
+    const breakdown = computeCoverageBreakdown({
+      totalCanonicalCards: 5,
+      cardsWithUsableImage: 0,
+      cardsIndexed: 0,
+      failures: 0,
+    })
+    expect(breakdown.indexedOfUsableImagePercent).toBeNull()
+    expect(breakdown.cardsWithoutUsableImage).toBe(5)
+  })
+
+  it("matches the owner's real full-catalog hosted rebuild breakdown (19501/20946)", () => {
+    const breakdown = computeCoverageBreakdown({
+      totalCanonicalCards: 20946,
+      cardsWithUsableImage: 19508,
+      cardsIndexed: 19501,
+      failures: 7,
+    })
+    expect(breakdown.cardsWithoutUsableImage).toBe(1438)
+    expect(breakdown.totalUnindexed).toBe(1445)
+    expect(breakdown.indexedOfTotalPercent).toBeCloseTo(93.1013, 2)
+    expect(breakdown.indexedOfUsableImagePercent).toBeCloseTo(99.964, 2)
   })
 })

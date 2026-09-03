@@ -156,6 +156,16 @@ export function ScannerPage() {
   // (client_request_key) already makes a duplicate commitBatch call harmless, but the UI layer
   // should not depend on that alone.
   const committingRef = useRef(false)
+  // N-15 (P94): the manual-search fallback had NO generation/identity guard at all — only React's
+  // own `pending` state (async, not synchronous) gated the submit button, so a double-tap before
+  // React commits `disabled=true` could fire `searchFallback` twice, and a stale older query's
+  // result could still land after a newer one and win. `searchPendingRef` is the same synchronous
+  // lock as `capturingRef`/`committingRef`; `searchGenerationRef` is bumped on every new submit AND
+  // whenever the query changes or the search sheet is closed, matching `analysisGenerationRef`'s
+  // pattern — a `.then()`/`.catch()` whose generation has since moved on no-ops instead of
+  // dispatching stale results over whatever the user is looking at now.
+  const searchPendingRef = useRef(false)
+  const searchGenerationRef = useRef(0)
 
   const cameraWanted = state.step === 'starting-camera' || state.step === 'camera'
 
@@ -321,9 +331,17 @@ export function ScannerPage() {
     void controller
       .listVariantChoices(candidateId)
       .then((variants) => {
+        // N-11 (P94): a fetch for a PREVIOUSLY-viewed candidate can resolve after the user has
+        // already moved on to a different one — `variantsInFlightRef.current` is overwritten to
+        // the new candidate's id the instant its own effect run starts (line above), so by the
+        // time this stale `.then()` fires it no longer matches `candidateId` and must no-op
+        // instead of clobbering whichever candidate is actually showing now. Only `.finally()` was
+        // guarded before; a stale success/failure could still overwrite a newer candidate's state.
+        if (variantsInFlightRef.current !== candidateId) return
         dispatch({ type: 'CONFIRM_VARIANTS_LOADED', variants })
       })
       .catch(() => {
+        if (variantsInFlightRef.current !== candidateId) return
         dispatch({
           type: 'CONFIRM_VARIANTS_FAILED',
           error: {
@@ -433,9 +451,14 @@ export function ScannerPage() {
 
   function handleSearchSubmit(event?: SyntheticEvent): void {
     event?.preventDefault()
+    // N-15: synchronous lock — a double-tap before React commits `disabled=true` must still call
+    // searchFallback at most once, the same guarantee handleShutter/handleCommit already have.
+    if (searchPendingRef.current) return
     const name = searchName.trim()
     if (name === '') return
     const collectorNumber = searchCollectorNumber.trim()
+    searchPendingRef.current = true
+    const generation = ++searchGenerationRef.current
     dispatch({ type: 'SEARCH_PENDING' })
     void controller
       .searchFallback({
@@ -443,11 +466,28 @@ export function ScannerPage() {
         collectorNumber: collectorNumber !== '' ? collectorNumber : undefined,
       })
       .then((candidates) => {
+        if (generation !== searchGenerationRef.current) return
         dispatch({ type: 'SEARCH_RESULTS', candidates })
       })
       .catch((error: unknown) => {
+        if (generation !== searchGenerationRef.current) return
         dispatch({ type: 'SEARCH_FAILED', error: describeSearchError(error) })
       })
+      .finally(() => {
+        searchPendingRef.current = false
+      })
+  }
+
+  function handleSearchNameChange(value: string): void {
+    // N-15: a query edit invalidates whatever search is still in flight for the OLD query — its
+    // result, if it lands late, must never populate results for a query the user has since edited.
+    searchGenerationRef.current += 1
+    setSearchName(value)
+  }
+
+  function handleSearchCollectorNumberChange(value: string): void {
+    searchGenerationRef.current += 1
+    setSearchCollectorNumber(value)
   }
 
   function handleCommit(): void {
@@ -652,8 +692,8 @@ export function ScannerPage() {
           results={state.searchResults}
           pending={state.searchPending}
           error={state.searchError}
-          onNameChange={setSearchName}
-          onCollectorNumberChange={setSearchCollectorNumber}
+          onNameChange={handleSearchNameChange}
+          onCollectorNumberChange={handleSearchCollectorNumberChange}
           onSubmit={() => {
             handleSearchSubmit()
           }}
@@ -661,6 +701,9 @@ export function ScannerPage() {
             dispatch({ type: 'SEARCH_RESULT_SELECTED', candidate })
           }}
           onClose={() => {
+            // N-15: closing search invalidates whatever search is still in flight — a late result
+            // must never silently reopen/repopulate the sheet the user just dismissed.
+            searchGenerationRef.current += 1
             dispatch({ type: 'SEARCH_CLOSED' })
           }}
         />

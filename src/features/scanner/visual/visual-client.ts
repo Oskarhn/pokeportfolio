@@ -92,6 +92,12 @@ export interface ExpectedCardRank {
   readonly hybridScore: number | null
   readonly hybridTier: 'high' | 'medium' | 'low' | 'none' | null
   readonly scoreComponents: readonly string[]
+  /** N-08 (P94): same defer-to-controller.ts shape as the hybrid fields above — this class has no
+   *  concept of catalog enrichment (is_active/language filtering) at all, so it always answers
+   *  'not-in-index' here; controller.ts's own getExpectedCardRank overwrites it with the real
+   *  classification once it has enough context to compute one. */
+  readonly enrichmentStatus:
+    'not-in-index' | 'resolved' | 'inactive-filtered' | 'language-filtered' | 'missing-catalog-row'
 }
 
 type WorkerMessage =
@@ -316,6 +322,7 @@ export class VisualRecognitionClient {
         hybridScore: null,
         hybridTier: null,
         scoreComponents: [],
+        enrichmentStatus: 'not-in-index',
       })
       return
     }

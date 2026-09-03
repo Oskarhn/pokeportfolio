@@ -193,6 +193,13 @@ export class ScannerOcrEngine {
           confidence: typeof data.confidence === 'number' ? data.confidence : 0,
         }
       })()
+      // N-20 (P94): when `disposedSignal` wins the race below, `work` is left running with no
+      // attached handler — if it later rejects (e.g. `worker.recognize()` failing because
+      // `dispose()` just terminated the very worker it was mid-call on), that becomes an unhandled
+      // promise rejection. The race already bounds every caller correctly either way; this exists
+      // solely to keep a post-disposal rejection from surfacing as a console warning/crash-reporter
+      // noise once nothing is listening for it any more.
+      work.catch(() => {})
       return await Promise.race([work, disposedSignal])
     } finally {
       this.disposalRejecters.delete(rejectOnDispose)

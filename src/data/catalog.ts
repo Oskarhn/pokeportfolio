@@ -178,6 +178,51 @@ export async function getCardsByIds(
   }))
 }
 
+/** Why a card id did NOT resolve through {@link getCardsByIds}'s filtered path (N-08, P94) — or
+ *  that it did. Distinguishes three previously-indistinguishable outcomes the scanner's own
+ *  diagnostics could never tell apart: a card the visual index found that `getCardsByIds` then
+ *  silently dropped (inactive, wrong language) reads identically to "the visual index never found
+ *  it at all" everywhere downstream, unless something classifies the gap explicitly. */
+export type CardCatalogPresence =
+  'resolved' | 'inactive-filtered' | 'language-filtered' | 'missing-catalog-row'
+
+/**
+ * Debug/diagnostic-only companion to {@link getCardsByIds} (N-08, P94): classifies each requested
+ * id against the catalog WITHOUT the `is_active`/`language` filters, so a caller that already
+ * knows an id came back empty from `getCardsByIds` can tell WHY — the row exists but is inactive,
+ * the row exists but is the wrong language, or there is no row for this id at all (a stale or
+ * corrupted visual-index entry). Deliberately NOT used on the production scan path: an extra
+ * unfiltered query per scan would cost a real round trip for information ordinary matching never
+ * needs — this exists for the scanner debug tool (`getExpectedCardRank`) and any future targeted
+ * diagnostics, never invoked unconditionally per scan.
+ */
+export async function classifyCardIdsAgainstCatalog(
+  cardIds: readonly string[],
+  language?: CatalogLanguage,
+): Promise<Map<string, CardCatalogPresence>> {
+  const result = new Map<string, CardCatalogPresence>()
+  if (cardIds.length === 0) return result
+  const { data, error } = await supabase
+    .from('cards')
+    .select('id, is_active, language')
+    .in('id', cardIds)
+  if (error) throw new Error(error.message)
+  const byId = new Map(data.map((row) => [row.id, row]))
+  for (const id of cardIds) {
+    const row = byId.get(id)
+    if (row === undefined) {
+      result.set(id, 'missing-catalog-row')
+    } else if (!row.is_active) {
+      result.set(id, 'inactive-filtered')
+    } else if (language !== undefined && row.language !== language) {
+      result.set(id, 'language-filtered')
+    } else {
+      result.set(id, 'resolved')
+    }
+  }
+  return result
+}
+
 export async function getCardVariants(cardId: string): Promise<CatalogVariant[]> {
   const { data, error } = await supabase
     .from('card_variants')

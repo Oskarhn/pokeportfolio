@@ -57,6 +57,9 @@ playwright-report/
 test-results/
 blob-report/
 .playwright/
+# P94: local-authenticated-E2E synthetic-user session state — a real, if throwaway, JWT for a
+# local-only synthetic account. Never committed, same discipline as .env.local.
+playwright/.auth/
 
 # ── Scanner artefacts ──────────────────────────────────────────────────────
 # Models and card-image corpora are downloaded at build time, never committed.

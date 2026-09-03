@@ -553,3 +553,162 @@ describe('I21 manual valuation not duplicated on replay', () => {
     expect(valAfter).toBe(valBefore)
   })
 })
+
+// P94 F-21: same shape as I7-I13, but for the two material fields those cases never covered —
+// grader and grade. The sequential replay path's material-equivalence check already covers both
+// (checkpoint-identity.ts §7 / the migration's own `coalesce(grader_to_text(...))`/`coalesce(grade, -1)`
+// predicate), but no test previously exercised either — a genuine coverage gap this closes.
+describe('I22 same key different grader rejected', () => {
+  it('raises when the same key is used with a different grader (grade unchanged)', async () => {
+    const key = crypto.randomUUID()
+    await addCard(clientA, {
+      clientRequestKey: key,
+      gradingState: 'graded',
+      grader: 'psa',
+      grade: 9,
+    })
+
+    try {
+      await addCard(clientA, {
+        clientRequestKey: key,
+        gradingState: 'graded',
+        grader: 'bgs',
+        grade: 9,
+      })
+      expect.fail('should have thrown')
+    } catch (e: unknown) {
+      expect((e as Error).message).toContain('idempotency-key-reuse')
+    }
+
+    const { data: lots } = await service
+      .from('acquisition_lots')
+      .select('id')
+      .eq('user_id', userA.id)
+      .eq('client_request_key', key)
+    expect(lots).toHaveLength(1)
+  })
+})
+
+describe('I23 same key different grade rejected', () => {
+  it('raises when the same key is used with a different grade (grader unchanged)', async () => {
+    const key = crypto.randomUUID()
+    await addCard(clientA, {
+      clientRequestKey: key,
+      gradingState: 'graded',
+      grader: 'psa',
+      grade: 9,
+    })
+
+    try {
+      await addCard(clientA, {
+        clientRequestKey: key,
+        gradingState: 'graded',
+        grader: 'psa',
+        grade: 10,
+      })
+      expect.fail('should have thrown')
+    } catch (e: unknown) {
+      expect((e as Error).message).toContain('idempotency-key-reuse')
+    }
+
+    const { data: lots } = await service
+      .from('acquisition_lots')
+      .select('id')
+      .eq('user_id', userA.id)
+      .eq('client_request_key', key)
+    expect(lots).toHaveLength(1)
+  })
+
+  it('an EXACT grader+grade replay still returns the same lot (positive control for I22/I23)', async () => {
+    const key = crypto.randomUUID()
+    const first = await addCard(clientA, {
+      clientRequestKey: key,
+      gradingState: 'graded',
+      grader: 'psa',
+      grade: 9,
+    })
+
+    const replay = await addCard(clientA, {
+      clientRequestKey: key,
+      gradingState: 'graded',
+      grader: 'psa',
+      grade: 9,
+    })
+
+    expect(replay.holding_id).toBe(first.holding_id)
+    expect(replay.lot_id).toBe(first.lot_id)
+  })
+})
+
+// P94 F-20: the race-path (unique_violation exception handler) must apply the SAME voided_at and
+// material-equivalence checks the sequential early-check path already does.
+//
+// ON DETERMINISM: this migration's own header explains WHY a client-orchestrated test cannot
+// reliably force the exact vulnerable interleaving (winner commits -> gets voided -> loser's
+// exception-handler SELECT runs) — that window sits between two adjacent statements inside a
+// single PL/pgSQL execution with no client-observable pause point in between; a client-issued
+// void() call is a real network round trip competing against a pure in-process continuation with
+// no round trip at all, so it cannot be relied on to land inside that window. Rather than assert
+// a specific interleaving under a timing lottery (explicitly disallowed by this prompt), two
+// behavioral DB tests here plus one source-level test (in
+// tests/data/scanner-idempotency-migration-source.test.ts, which needs no live database at all)
+// together cover the fix:
+//   1. `concurrent replay against an ALREADY-voided key` — a real regression test proving the
+//      end-to-end user-visible behavior (concurrent replay attempts against a voided key must ALL
+//      be rejected) holds under real concurrency, even though in THIS specific shape (the row
+//      already exists before either call starts) both calls are expected to take the early path.
+//   2. `two brand-new concurrent inserts still converge to exactly one lot` — re-confirms (I2's own
+//      proven shape) that this migration's edit did not regress the exception handler's NORMAL
+//      (non-voided) convergence behavior, which the fix's replacement body depends on unchanged.
+//   3. (separate file) asserts the MIGRATION SOURCE's exception-handler block specifically (not
+//      just the early-check block) contains the voided_at guard — a source-level, not behavioral,
+//      proof, but the one deterministic way available here to pin that the exception handler
+//      branch carries the fix and catch a future edit that drops it back out of just that branch.
+describe('F-20 concurrent race-path void consistency', () => {
+  it('concurrent replay attempts against an ALREADY-voided key are all rejected (real regression test)', async () => {
+    const key = crypto.randomUUID()
+    const { lot_id } = await addCard(clientA, { clientRequestKey: key })
+
+    const { error: voidErr } = await clientA.rpc('void_acquisition_lot', {
+      p_lot_id: lot_id,
+      p_reason: 'F-20 regression: void before concurrent replay wave',
+    })
+    expect(voidErr).toBeNull()
+
+    const results = await Promise.allSettled([
+      addCard(clientA, { clientRequestKey: key }),
+      addCard(clientA, { clientRequestKey: key }),
+    ])
+
+    for (const result of results) {
+      expect(result.status).toBe('rejected')
+      if (result.status === 'rejected') {
+        expect((result.reason as Error).message).toContain('idempotency-key-reuse')
+      }
+    }
+
+    const { data: lots } = await service
+      .from('acquisition_lots')
+      .select('id, voided_at')
+      .eq('user_id', userA.id)
+      .eq('client_request_key', key)
+    expect(lots).toHaveLength(1)
+    expect(lots![0]!.voided_at).not.toBeNull()
+  })
+
+  it('two brand-new concurrent inserts for the same key still converge to exactly one lot (I2 shape, post-fix non-regression)', async () => {
+    const key = crypto.randomUUID()
+    const results = await Promise.all([
+      addCard(clientA, { clientRequestKey: key }),
+      addCard(clientA, { clientRequestKey: key }),
+    ])
+    expect(results[0].lot_id).toBe(results[1].lot_id)
+
+    const { data: lots } = await service
+      .from('acquisition_lots')
+      .select('id')
+      .eq('user_id', userA.id)
+      .eq('client_request_key', key)
+    expect(lots).toHaveLength(1)
+  })
+})

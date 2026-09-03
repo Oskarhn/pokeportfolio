@@ -15,7 +15,7 @@
 import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { assertValidCoverage } from '../../src/domain/scanner/index-coverage'
+import { assertValidCoverage, logCoverageBreakdown } from '../../src/domain/scanner/index-coverage'
 import { decodeVisualIndex, type VisualIndexManifest } from '../../src/data/scanner/visual-index'
 import {
   buildIndexContentPayload,
@@ -153,10 +153,7 @@ export async function verifyIndexGeneration(
     `[verify] OK — ${decoded.cardIds.length} cards, dim ${manifest.embeddingDim}, ` +
       `${manifest.quantization}, checksum verified, content id ${actualContentId}, no duplicates, all finite, in-range.`,
   )
-  console.log(
-    `[verify] coverage: ${manifest.coverage.cardsIndexed}/${manifest.coverage.totalCanonicalCards} ` +
-      `canonical cards (${manifest.coverage.failures} failures).`,
-  )
+  logCoverageBreakdown(manifest.coverage)
 
   return { manifest, cardIds, actualContentId }
 }
