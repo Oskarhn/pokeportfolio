@@ -70,6 +70,7 @@ import { drainAllCardPages, type PageFetchResult } from '../../src/domain/scanne
 import {
   quantizeEmbedding,
   l2Normalize,
+  meanVectors,
   VISUAL_INDEX_QUANTIZATION,
   type VisualIndexManifest,
   type VisualIndexPointer,
@@ -79,7 +80,15 @@ import {
   truncateDigestHex,
 } from '../../src/domain/scanner/index-content-id'
 import { embedImageBuffer, warmUpModel } from '../scanner-visual-benchmark/lib/embed.mjs'
-import { VISUAL_MODEL_REPO, VISUAL_MODEL_REVISION, VISUAL_EMBEDDING_DIM } from './lib/model-pin.mjs'
+import {
+  VISUAL_MODEL_REPO,
+  VISUAL_MODEL_REVISION,
+  VISUAL_EMBEDDING_DIM,
+  PROTOTYPE_STRATEGY,
+  PROTOTYPE_STRATEGY_VERSION,
+  PROTOTYPE_COUNT,
+} from './lib/model-pin.mjs'
+import { augmentAll } from './lib/prototype-augmentation.mjs'
 import { verifyIndexGeneration } from './verify-index'
 import { publishGenerationAtomically, publishPointerAtomically } from './atomic-publish'
 import { pruneOldGenerations, readPreviousContentId } from './generation-retention'
@@ -243,6 +252,9 @@ async function main() {
     modelRevision: VISUAL_MODEL_REVISION,
     embeddingDim: VISUAL_EMBEDDING_DIM,
     quantization: VISUAL_INDEX_QUANTIZATION,
+    prototypeCount: PROTOTYPE_COUNT,
+    prototypeStrategy: PROTOTYPE_STRATEGY,
+    prototypeStrategyVersion: PROTOTYPE_STRATEGY_VERSION,
   }
   const loaded = await loadCheckpointFile()
   let checkpoint: Checkpoint & Partial<CheckpointIdentity>
@@ -273,34 +285,76 @@ async function main() {
   await warmUpModel()
 
   const imageFailures: ImageFailureCounts = { notFound: 0, otherHttp: 0, decode: 0 }
+  let auxFailures = 0
   let processed = 0
   for (const card of withImage) {
-    if (Object.hasOwn(checkpoint.embeddings, card.id)) continue
+    const needsPristine = !Object.hasOwn(checkpoint.embeddings, card.id)
+    // P97 (D-106): retried on EVERY resumption until it actually succeeds — deliberately NOT
+    // gated on `auxFallback` (which is diagnostic-only, cleared on success). Mirrors exactly how
+    // a failed PRISTINE embedding already behaves above (never persisted as "permanently given
+    // up", always retried next run) — a transient network/decode failure should get another
+    // chance, not a permanent downgrade to the fallback-duplicated prototype.
+    const needsAux = !Object.hasOwn(checkpoint.auxEmbeddings, card.id)
+    if (!needsPristine && !needsAux) continue
     const imageUrl = `${card.image_base_url}/high.webp`
-    try {
-      const response = await fetch(imageUrl)
-      if (!response.ok) {
-        if (response.status === 404) imageFailures.notFound += 1
-        else imageFailures.otherHttp += 1
-        throw new Error(`image fetch ${String(response.status)}`)
-      }
-      const buffer = Buffer.from(await response.arrayBuffer())
-      let raw: Float32Array
+    let buffer: Buffer | null = null
+    if (needsPristine) {
       try {
-        raw = await embedImageBuffer(buffer)
-      } catch (decodeError) {
-        imageFailures.decode += 1
-        throw decodeError
+        const response = await fetch(imageUrl)
+        if (!response.ok) {
+          if (response.status === 404) imageFailures.notFound += 1
+          else imageFailures.otherHttp += 1
+          throw new Error(`image fetch ${String(response.status)}`)
+        }
+        buffer = Buffer.from(await response.arrayBuffer())
+        let raw: Float32Array
+        try {
+          raw = await embedImageBuffer(buffer)
+        } catch (decodeError) {
+          imageFailures.decode += 1
+          throw decodeError
+        }
+        const normalized = l2Normalize(new Float32Array(raw))
+        checkpoint.embeddings[card.id] = Array.from(normalized)
+      } catch (err) {
+        // No persisted failure counter here (P78, §18): a card that keeps failing across resumed
+        // runs used to increment a checkpoint-carried total every attempt, double-counting the
+        // SAME card each time the build was resumed. `coverage.failures` below is derived fresh
+        // from cardsWithUsableImage - cardsIndexed at pack time instead — current-build-based,
+        // never cumulative.
+        console.warn(`[index] failed ${card.id} (${card.name}): ${(err as Error).message}`)
       }
-      const normalized = l2Normalize(new Float32Array(raw))
-      checkpoint.embeddings[card.id] = Array.from(normalized)
-    } catch (err) {
-      // No persisted failure counter here (P78, §18): a card that keeps failing across resumed
-      // runs used to increment a checkpoint-carried total every attempt, double-counting the SAME
-      // card each time the build was resumed. `coverage.failures` below is derived fresh from
-      // cardsWithUsableImage - cardsIndexed at pack time instead — current-build-based, never
-      // cumulative.
-      console.warn(`[index] failed ${card.id} (${card.name}): ${(err as Error).message}`)
+    }
+    // P97 (D-106): the auxiliary (dual-prototype) embedding is only attempted for a card whose
+    // pristine embedding is either already checkpointed or just succeeded above — a card with no
+    // pristine at all is simply excluded from this index run (unchanged coverage semantics); it
+    // gets a fresh chance at BOTH on the next resumption once its pristine fetch succeeds.
+    const hasPristine = Object.hasOwn(checkpoint.embeddings, card.id)
+    if (needsAux && hasPristine) {
+      try {
+        if (buffer === null) {
+          const response = await fetch(imageUrl)
+          if (!response.ok) throw new Error(`image fetch ${String(response.status)} (aux re-fetch)`)
+          buffer = Buffer.from(await response.arrayBuffer())
+        }
+        const augmentedResults = await augmentAll(buffer, card.id)
+        const augmentedVecs: Float32Array[] = []
+        for (const a of augmentedResults) augmentedVecs.push(await embedImageBuffer(a.buffer))
+        const centroid = meanVectors(augmentedVecs)
+        checkpoint.auxEmbeddings[card.id] = Array.from(centroid)
+        // Clears a stale fallback marker from an earlier resumption's failed attempt — this
+        // card now has a REAL auxiliary embedding, not a duplicated-pristine placeholder.
+        Reflect.deleteProperty(checkpoint.auxFallback, card.id)
+      } catch (err) {
+        auxFailures += 1
+        // Prompt §13: deterministic safe fallback — the pristine-succeeded card stays fully
+        // searchable (prototype 1 row duplicates prototype 0 at pack time below), never dropped
+        // from the index just because its auxiliary view failed to compute. Diagnostic-only: NOT
+        // used to skip a future retry (see `needsAux` above) — always overwritten fresh so it
+        // never lies about "still failing right now" vs. "failed once, long since fixed".
+        checkpoint.auxFallback[card.id] = true
+        console.warn(`[index] aux failed ${card.id} (${card.name}): ${(err as Error).message}`)
+      }
     }
     processed += 1
     if (processed % 25 === 0) {
@@ -311,7 +365,8 @@ async function main() {
   await saveCheckpoint(checkpoint)
   console.log(
     `[index] image failures — 404: ${String(imageFailures.notFound)}, other HTTP: ` +
-      `${String(imageFailures.otherHttp)}, decode: ${String(imageFailures.decode)}.`,
+      `${String(imageFailures.otherHttp)}, decode: ${String(imageFailures.decode)}, aux: ` +
+      `${String(auxFailures)}.`,
   )
 
   // ---- Pack: constrained to the CURRENT canonical fetch, in its deterministic id order ----
@@ -328,12 +383,29 @@ async function main() {
   }
 
   const dim = VISUAL_EMBEDDING_DIM
-  const int8Buffer = new Int8Array(cardIds.length * dim)
-  cardIds.forEach((cardId, row) => {
-    const stored = checkpoint.embeddings[cardId]
-    if (!stored) throw new Error(`Missing embedding for ${cardId} while packing the index.`)
-    const quantized = quantizeEmbedding(new Float32Array(stored))
-    int8Buffer.set(quantized, row * dim)
+  // P97 (D-106): card-major, prototype-minor layout — card0-proto0, card0-proto1, card1-proto0,
+  // ... (prompt §4). Prototype 0 is always the pristine embedding; prototype 1 is the auxiliary
+  // centroid when it succeeded, or a DUPLICATE of prototype 0 when the card's aux computation
+  // fell back (prompt §13) — never a zero vector, which would silently make that card's second
+  // prototype row an artificially bad match instead of a neutral no-op.
+  const int8Buffer = new Int8Array(cardIds.length * PROTOTYPE_COUNT * dim)
+  let cardsWithAuxPrototype = 0
+  let cardsAuxFallback = 0
+  cardIds.forEach((cardId, cardIndex) => {
+    const pristineStored = checkpoint.embeddings[cardId]
+    if (!pristineStored) throw new Error(`Missing embedding for ${cardId} while packing the index.`)
+    const pristineQuantized = quantizeEmbedding(new Float32Array(pristineStored))
+    const rowStart = cardIndex * PROTOTYPE_COUNT
+    int8Buffer.set(pristineQuantized, rowStart * dim)
+
+    const auxStored = checkpoint.auxEmbeddings[cardId]
+    if (auxStored) {
+      cardsWithAuxPrototype += 1
+      int8Buffer.set(quantizeEmbedding(new Float32Array(auxStored)), (rowStart + 1) * dim)
+    } else {
+      cardsAuxFallback += 1
+      int8Buffer.set(pristineQuantized, (rowStart + 1) * dim)
+    }
   })
 
   const embeddingsBuffer = Buffer.from(
@@ -353,6 +425,11 @@ async function main() {
     // or a still-unresolved failure from an earlier resumption). Counts each card at most once,
     // however many times its embedding attempt has been retried across resumptions.
     failures: withImage.length - cardIds.length,
+    // P97 (D-106): also derived fresh from the current packed state, not accumulated — a card
+    // whose aux fell back on one resumption but succeeds on a later one moves from
+    // cardsAuxFallback to cardsWithAuxPrototype automatically, never double-counted either way.
+    cardsWithAuxPrototype,
+    cardsAuxFallback,
   }
   // Hard-fail BEFORE writing anything (prompt §8): a corrupt/impossible-coverage index must
   // never ship, whether or not verify-index.ts is run afterward as a separate manual step.
@@ -374,6 +451,10 @@ async function main() {
     coverage,
     sourceProjectRef: deriveProjectIdentity(url),
     sourceEnglishActiveCount: totalCanonicalCards,
+    prototypeCount: PROTOTYPE_COUNT,
+    prototypeStrategy: PROTOTYPE_STRATEGY,
+    prototypeStrategyVersion: PROTOTYPE_STRATEGY_VERSION,
+    rowCount: cardIds.length * PROTOTYPE_COUNT,
   }
 
   // P87 F-01: content id derived from the manifest's SEMANTIC fields (excluding generatedAt) plus
@@ -441,8 +522,13 @@ async function main() {
   }
 
   console.log(
-    `[index] wrote ${String(cardIds.length)} embeddings (${(int8Buffer.byteLength / 1024).toFixed(1)} KB) ` +
+    `[index] wrote ${String(cardIds.length)} cards x ${String(PROTOTYPE_COUNT)} prototype(s) ` +
+      `(${String(cardIds.length * PROTOTYPE_COUNT)} rows, ${(int8Buffer.byteLength / 1024).toFixed(1)} KB) ` +
       `as generation ${contentId}. Source project: ${target === 'local' ? 'LOCAL dev stack' : url}.`,
+  )
+  console.log(
+    `[index] INDEX_PROTOTYPE_COUNT=${String(PROTOTYPE_COUNT)} ` +
+      `INDEX_PROTOTYPE_STRATEGY=${PROTOTYPE_STRATEGY} INDEX_ROW_COUNT=${String(cardIds.length * PROTOTYPE_COUNT)}`,
   )
   logCoverageBreakdown(coverage)
   if (target === 'local') {

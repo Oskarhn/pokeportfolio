@@ -9,6 +9,7 @@ import {
   decodeVisualIndex,
   quantizeEmbedding,
   l2Normalize,
+  meanVectors,
   searchVisualIndex,
   VisualIndexError,
   VISUAL_INDEX_QUANTIZATION,
@@ -154,5 +155,179 @@ describe('V6 — corrupt index rejection', () => {
     expect(() => decodeVisualIndex(wrongShapeManifest, ['a'], new Int8Array([1, 2, 3]))).toThrow(
       VisualIndexError,
     )
+  })
+})
+
+describe('meanVectors (P97, D-106 — the aux-prototype centroid step)', () => {
+  it('L2-normalizes the plain average of its inputs', () => {
+    const centroid = meanVectors([new Float32Array([1, 0, 0, 0]), new Float32Array([0, 1, 0, 0])])
+    let normSquared = 0
+    for (const v of centroid) normSquared += v * v
+    expect(Math.sqrt(normSquared)).toBeCloseTo(1, 5)
+    expect(centroid[0]).toBeCloseTo(centroid[1] ?? 0, 5)
+  })
+
+  it('returns the input unchanged (after normalization) for a single vector', () => {
+    const centroid = meanVectors([l2Normalize(new Float32Array([3, 4, 0, 0]))])
+    expect(centroid[0]).toBeCloseTo(0.6, 5)
+    expect(centroid[1]).toBeCloseTo(0.8, 5)
+  })
+
+  it('throws on an empty input rather than silently returning a zero/NaN vector', () => {
+    expect(() => meanVectors([])).toThrow(VisualIndexError)
+  })
+})
+
+describe('P97 (D-106) — dual/multi-prototype decode and search', () => {
+  function dualManifest(overrides: Partial<VisualIndexManifest> = {}): VisualIndexManifest {
+    return manifest({
+      cardCount: 2,
+      prototypeCount: 2,
+      prototypeStrategy: 'pristinePlus1Aux',
+      prototypeStrategyVersion: '1',
+      coverage: {
+        totalCanonicalCards: 2,
+        cardsWithUsableImage: 2,
+        cardsIndexed: 2,
+        failures: 0,
+        cardsWithAuxPrototype: 2,
+        cardsAuxFallback: 0,
+      },
+      ...overrides,
+    })
+  }
+
+  it('a v1 (single-prototype) manifest with no prototypeCount field still decodes exactly as before — prototypeCount resolves to 1', () => {
+    const rows = [
+      [127, 0, -127, 0],
+      [0, 127, 0, -127],
+    ]
+    const decoded = decodeVisualIndex(manifest(), ['card-a', 'card-b'], packInt8(rows))
+    expect(decoded.prototypeCount).toBe(1)
+    expect(decoded.embeddings.length).toBe(8)
+  })
+
+  it('a v2 (dual-prototype) manifest decodes card-major, 2 rows per card', () => {
+    // card 'a': proto0 points +x, proto1 points +y. card 'b': proto0 points -x, proto1 points -y.
+    const rows = [
+      [127, 0, 0, 0], // a-proto0
+      [0, 127, 0, 0], // a-proto1
+      [-127, 0, 0, 0], // b-proto0
+      [0, -127, 0, 0], // b-proto1
+    ]
+    const decoded = decodeVisualIndex(dualManifest(), ['a', 'b'], packInt8(rows))
+    expect(decoded.prototypeCount).toBe(2)
+    expect(decoded.embeddings.length).toBe(16)
+    expect(decoded.embeddings[5]).toBeCloseTo(1, 2) // a-proto1's y component (row 1 = indices 4-7)
+  })
+
+  it('search returns exactly ONE hit per card, never one per prototype row', () => {
+    const rows = [
+      [127, 0, 0, 0],
+      [0, 127, 0, 0],
+      [-127, 0, 0, 0],
+      [0, -127, 0, 0],
+    ]
+    const decoded = decodeVisualIndex(dualManifest(), ['a', 'b'], packInt8(rows))
+    const hits = searchVisualIndex(decoded, new Float32Array([1, 0, 0, 0]), 10)
+    expect(hits.length).toBe(2) // not 4
+    expect(new Set(hits.map((h) => h.cardId)).size).toBe(2)
+  })
+
+  it("per-card similarity is the MAX over that card's own prototypes — prototype 1 can rescue a card whose prototype 0 is a poor match", () => {
+    // card 'a': proto0 is a poor match (orthogonal), proto1 is a near-perfect match.
+    // card 'b': proto0 is a decent match, proto1 is a poor match — proto0 should win for b.
+    const rows = [
+      [0, 127, 0, 0], // a-proto0: orthogonal to query
+      [126, 10, 0, 0], // a-proto1: near-perfect match to query
+      [100, 50, 0, 0], // b-proto0: decent match
+      [0, 0, 127, 0], // b-proto1: orthogonal
+    ]
+    const decoded = decodeVisualIndex(dualManifest(), ['a', 'b'], packInt8(rows))
+    const query = new Float32Array([1, 0, 0, 0])
+    const hits = searchVisualIndex(decoded, query, 2)
+    // a's winning similarity comes from proto1 (dot ~126/127), which beats b's proto0 (~100/127).
+    expect(hits[0]!.cardId).toBe('a')
+    expect(hits[0]!.similarity).toBeGreaterThan(hits[1]!.similarity)
+  })
+
+  it("prototype 0 can remain the winner when it is already the card's best-matching prototype", () => {
+    const rows = [
+      [127, 0, 0, 0], // a-proto0: perfect match
+      [0, 127, 0, 0], // a-proto1: orthogonal (worse)
+    ]
+    const decoded = decodeVisualIndex(dualManifest({ cardCount: 1 }), ['a'], packInt8(rows))
+    const hits = searchVisualIndex(decoded, new Float32Array([1, 0, 0, 0]), 1)
+    expect(hits[0]!.similarity).toBeCloseTo(1, 2)
+  })
+
+  it('a 5-prototype card is scored correctly too — the max-reduction generalizes beyond 2', () => {
+    const rows = [
+      [10, 0, 0, 0],
+      [20, 0, 0, 0],
+      [126, 0, 0, 0], // the real winner among this card's 5 prototypes
+      [5, 0, 0, 0],
+      [-100, 0, 0, 0],
+    ]
+    const decoded = decodeVisualIndex(
+      manifest({
+        cardCount: 1,
+        prototypeCount: 5,
+        prototypeStrategy: 'maxSimAllProtos',
+        prototypeStrategyVersion: '1',
+      }),
+      ['a'],
+      packInt8(rows),
+    )
+    const hits = searchVisualIndex(decoded, new Float32Array([1, 0, 0, 0]), 1)
+    expect(hits[0]!.similarity).toBeCloseTo(126 / 127, 3)
+  })
+
+  it('rejects an embeddings buffer whose length does not match cardCount x prototypeCount x dim (bad rowCount)', () => {
+    const rows = [
+      [127, 0, 0, 0],
+      [0, 127, 0, 0],
+      [-127, 0, 0, 0],
+      // missing b-proto1 — only 3 rows for a 2-card, 2-prototype manifest
+    ]
+    expect(() => decodeVisualIndex(dualManifest(), ['a', 'b'], packInt8(rows))).toThrow(
+      VisualIndexError,
+    )
+  })
+
+  it('rejects a manifest.rowCount that disagrees with cardCount x prototypeCount', () => {
+    const rows = [
+      [127, 0, 0, 0],
+      [0, 127, 0, 0],
+      [-127, 0, 0, 0],
+      [0, -127, 0, 0],
+    ]
+    expect(() =>
+      decodeVisualIndex(dualManifest({ rowCount: 3 }), ['a', 'b'], packInt8(rows)),
+    ).toThrow(VisualIndexError)
+  })
+
+  it('rejects a non-positive or non-integer prototypeCount', () => {
+    const rows = [[127, 0, 0, 0]]
+    expect(() =>
+      decodeVisualIndex(manifest({ cardCount: 1, prototypeCount: 0 }), ['a'], packInt8(rows)),
+    ).toThrow(VisualIndexError)
+    expect(() =>
+      decodeVisualIndex(manifest({ cardCount: 1, prototypeCount: 1.5 }), ['a'], packInt8(rows)),
+    ).toThrow(VisualIndexError)
+  })
+
+  it('rejects prototypeCount > 1 with no prototypeStrategy/prototypeStrategyVersion declared', () => {
+    const rows = [
+      [127, 0, 0, 0],
+      [0, 127, 0, 0],
+    ]
+    expect(() =>
+      decodeVisualIndex(
+        manifest({ cardCount: 1, prototypeCount: 2, prototypeStrategy: undefined }),
+        ['a'],
+        packInt8(rows),
+      ),
+    ).toThrow(VisualIndexError)
   })
 })

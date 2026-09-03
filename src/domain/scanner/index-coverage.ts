@@ -23,6 +23,13 @@ export interface IndexCoverage {
   readonly cardsWithUsableImage: number
   readonly cardsIndexed: number
   readonly failures: number
+  /** P97 (D-106): of `cardsIndexed`, how many got a REAL auxiliary (dual-prototype) embedding —
+   *  vs. `cardsAuxFallback`, where the auxiliary computation failed and the card was still indexed
+   *  (kept searchable) with its auxiliary prototype row deliberately duplicated from the pristine
+   *  one (prompt §13's "prefer deterministic safe fallback"). Both optional/absent on a
+   *  single-prototype (v1) build, where there is no auxiliary prototype to report on at all. */
+  readonly cardsWithAuxPrototype?: number
+  readonly cardsAuxFallback?: number
 }
 
 /**
@@ -68,6 +75,21 @@ export function assertValidCoverage(
         `(${String(cardsIndexed)}).`,
     )
   }
+  // P97 (D-106): both optional and independently defaulted to 0 (not "absent means skip the
+  // check") — a manifest that declares one but not the other, or whose sum exceeds cardsIndexed,
+  // is exactly as impossible as the 1224/1000 shape this module already exists to catch.
+  const cardsWithAuxPrototype = coverage.cardsWithAuxPrototype ?? 0
+  const cardsAuxFallback = coverage.cardsAuxFallback ?? 0
+  if (cardsWithAuxPrototype < 0 || cardsAuxFallback < 0) {
+    throw new CoverageInvariantError('Auxiliary-prototype coverage numbers must never be negative.')
+  }
+  if (cardsWithAuxPrototype + cardsAuxFallback > cardsIndexed) {
+    throw new CoverageInvariantError(
+      `cardsWithAuxPrototype (${String(cardsWithAuxPrototype)}) + cardsAuxFallback ` +
+        `(${String(cardsAuxFallback)}) exceeds cardsIndexed (${String(cardsIndexed)}) — an index ` +
+        'cannot report more auxiliary-prototype outcomes than cards it actually indexed.',
+    )
+  }
 }
 
 /**
@@ -90,6 +112,10 @@ export interface CoverageBreakdown {
   readonly indexedOfTotalPercent: number
   /** cardsIndexed / cardsWithUsableImage, as a 0-100 percentage (undefined when no usable images exist). */
   readonly indexedOfUsableImagePercent: number | null
+  /** P97 (D-106): pass-through of the manifest's own auxiliary-prototype coverage — undefined on a
+   *  v1 (single-prototype) index, where there is nothing to report. */
+  readonly cardsWithAuxPrototype?: number
+  readonly cardsAuxFallback?: number
 }
 
 export function computeCoverageBreakdown(coverage: IndexCoverage): CoverageBreakdown {
@@ -104,6 +130,8 @@ export function computeCoverageBreakdown(coverage: IndexCoverage): CoverageBreak
     indexedOfTotalPercent: totalCanonicalCards > 0 ? (100 * cardsIndexed) / totalCanonicalCards : 0,
     indexedOfUsableImagePercent:
       cardsWithUsableImage > 0 ? (100 * cardsIndexed) / cardsWithUsableImage : null,
+    cardsWithAuxPrototype: coverage.cardsWithAuxPrototype,
+    cardsAuxFallback: coverage.cardsAuxFallback,
   }
 }
 
@@ -131,4 +159,12 @@ export function logCoverageBreakdown(
     `[coverage] indexed/total = ${b.indexedOfTotalPercent.toFixed(1)}% of ${String(b.totalCanonical)} canonical cards; ` +
       `indexed/usable-image = ${b.indexedOfUsableImagePercent === null ? 'n/a (no usable images)' : `${b.indexedOfUsableImagePercent.toFixed(1)}%`} of ${String(b.cardsWithUsableImage)} cards with a usable image.`,
   )
+  if (b.cardsWithAuxPrototype !== undefined || b.cardsAuxFallback !== undefined) {
+    log(
+      `[coverage] CARDS_WITH_AUX_PROTOTYPE=${String(b.cardsWithAuxPrototype ?? 0)} (real dual-prototype auxiliary embedding)`,
+    )
+    log(
+      `[coverage] CARDS_AUX_FALLBACK=${String(b.cardsAuxFallback ?? 0)} (auxiliary computation failed — indexed with the pristine prototype duplicated as a safe fallback)`,
+    )
+  }
 }

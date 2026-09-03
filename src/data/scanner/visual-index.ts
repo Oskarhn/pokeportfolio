@@ -39,6 +39,11 @@ export interface VisualIndexManifest {
     readonly cardsWithUsableImage: number
     readonly cardsIndexed: number
     readonly failures: number
+    /** P97 (D-106): of `cardsIndexed`, how many got a REAL auxiliary (dual-prototype) embedding
+     *  vs. a deterministic pristine-duplicate fallback because the auxiliary computation failed.
+     *  Optional/absent on a single-prototype (v1) manifest — see `prototypeCount` below. */
+    readonly cardsWithAuxPrototype?: number
+    readonly cardsAuxFallback?: number
   }
   /**
    * Non-secret source identity (P77 prompt §20/§56): which project this index was actually built
@@ -48,6 +53,25 @@ export interface VisualIndexManifest {
    */
   readonly sourceProjectRef?: string
   readonly sourceEnglishActiveCount?: number
+  /**
+   * P97 (D-106): how many reference prototype vectors `embeddings.bin` stores PER CARD, card-major
+   * (card0-proto0, card0-proto1, ..., card1-proto0, ...). Absent/undefined means a pre-P97 (v1)
+   * single-prototype manifest — implicitly 1, exactly today's committed format, so an existing
+   * generation keeps decoding and verifying identically with no regeneration required. A present
+   * value of 2 (or more) is the dual/multi-prototype format; `prototypeStrategy` and
+   * `prototypeStrategyVersion` must also be present whenever this is > 1.
+   */
+  readonly prototypeCount?: number
+  /** Name of the reference-augmentation strategy that produced the extra prototypes (e.g.
+   *  `pristinePlus1Aux`) — present only when `prototypeCount` > 1. */
+  readonly prototypeStrategy?: string
+  /** Version of `prototypeStrategy`'s exact recipe (profile list/seeding/parameters) — bumped
+   *  whenever the recipe changes, so two generations covering identical cards under two DIFFERENT
+   *  recipes never collide on content id. Present only when `prototypeCount` > 1. */
+  readonly prototypeStrategyVersion?: string
+  /** Total rows in `embeddings.bin` = `cardCount * (prototypeCount ?? 1)`. Optional/redundant with
+   *  `cardCount`/`prototypeCount` on a v1 manifest; when present, decode/verify cross-check it. */
+  readonly rowCount?: number
 }
 
 export class VisualIndexError extends Error {
@@ -75,8 +99,14 @@ export interface VisualIndexPointer {
 export interface DecodedVisualIndex {
   readonly manifest: VisualIndexManifest
   readonly cardIds: readonly string[]
-  /** Row-major dequantized embeddings, Float32, length cardCount * embeddingDim. */
+  /** Row-major dequantized embeddings, Float32, CARD-MAJOR: card0-proto0, card0-proto1, ...,
+   *  card1-proto0, ... Length = cardCount * prototypeCount * embeddingDim. For a v1
+   *  (prototypeCount=1) index this is identical in shape to the pre-P97 format — one row per
+   *  card, in `cardIds` order. */
   readonly embeddings: Float32Array
+  /** Resolved prototype count (manifest.prototypeCount ?? 1) — always a positive integer,
+   *  computed once at decode time so search never has to re-derive it per call. */
+  readonly prototypeCount: number
 }
 
 function assertFinite(vector: Float32Array, cardId: string): void {
@@ -108,11 +138,37 @@ export function decodeVisualIndex(
       `Manifest declares ${manifest.cardCount} cards but card-ids has ${cardIds.length}.`,
     )
   }
-  const expectedLength = manifest.cardCount * manifest.embeddingDim
+  // P97 (D-106): absent/undefined means a pre-P97 (v1) single-prototype manifest — implicitly 1,
+  // exactly the format every already-committed generation uses. A present value must be a positive
+  // integer; anything else is a corrupt/impossible manifest, never silently coerced.
+  const prototypeCount = manifest.prototypeCount ?? 1
+  if (!Number.isInteger(prototypeCount) || prototypeCount < 1) {
+    throw new VisualIndexError(
+      `Manifest declares an invalid prototypeCount: ${String(manifest.prototypeCount)}.`,
+    )
+  }
+  if (
+    prototypeCount > 1 &&
+    (manifest.prototypeStrategy === undefined || manifest.prototypeStrategyVersion === undefined)
+  ) {
+    throw new VisualIndexError(
+      `Manifest declares prototypeCount=${String(prototypeCount)} but is missing prototypeStrategy/prototypeStrategyVersion.`,
+    )
+  }
+  const expectedLength = manifest.cardCount * prototypeCount * manifest.embeddingDim
   if (embeddingsBytes.length !== expectedLength) {
     throw new VisualIndexError(
       `Embeddings buffer has ${embeddingsBytes.length} bytes, expected ${expectedLength} ` +
-        `(${manifest.cardCount} cards x ${manifest.embeddingDim} dims).`,
+        `(${manifest.cardCount} cards x ${String(prototypeCount)} prototypes x ${manifest.embeddingDim} dims).`,
+    )
+  }
+  if (
+    manifest.rowCount !== undefined &&
+    manifest.rowCount !== manifest.cardCount * prototypeCount
+  ) {
+    throw new VisualIndexError(
+      `Manifest declares rowCount=${String(manifest.rowCount)} but cardCount x prototypeCount = ` +
+        `${String(manifest.cardCount * prototypeCount)}.`,
     )
   }
   const seen = new Set<string>()
@@ -125,13 +181,31 @@ export function decodeVisualIndex(
   for (let i = 0; i < expectedLength; i += 1) {
     embeddings[i] = (embeddingsBytes[i] ?? 0) / VISUAL_INDEX_INT8_SCALE
   }
-  for (let row = 0; row < manifest.cardCount; row += 1) {
+  const totalRows = manifest.cardCount * prototypeCount
+  for (let row = 0; row < totalRows; row += 1) {
     const start = row * manifest.embeddingDim
     const vector = embeddings.subarray(start, start + manifest.embeddingDim)
-    assertFinite(vector, cardIds[row] ?? '?')
+    const cardId = cardIds[Math.floor(row / prototypeCount)] ?? '?'
+    assertFinite(vector, cardId)
   }
 
-  return { manifest, cardIds, embeddings }
+  return { manifest, cardIds, embeddings, prototypeCount }
+}
+
+/** L2-normalized mean of a set of same-length vectors — the "centroid" step of the dual-prototype
+ *  auxiliary embedding (P97, D-106): average N augmented-view embeddings, then re-normalize to
+ *  unit length so the result stays directly comparable (dot-product-as-cosine) with every other
+ *  stored prototype. Exported so both the offline generator and this module's own tests share one
+ *  implementation. Throws on an empty input — a caller always has at least one augmented view. */
+export function meanVectors(vectors: readonly Float32Array[]): Float32Array {
+  if (vectors.length === 0) throw new VisualIndexError('meanVectors requires at least one vector.')
+  const dim = vectors[0]?.length ?? 0
+  const out = new Float32Array(dim)
+  for (const v of vectors) {
+    for (let i = 0; i < dim; i += 1) out[i] = (out[i] ?? 0) + (v[i] ?? 0)
+  }
+  for (let i = 0; i < dim; i += 1) out[i] = (out[i] ?? 0) / vectors.length
+  return l2Normalize(out)
 }
 
 export interface VisualSearchHit {
@@ -169,6 +243,13 @@ export function l2Normalize(vector: Float32Array): Float32Array {
  * phone's per-scan budget (measured in scripts/scanner-visual-benchmark; see SCANNER_RESEARCH).
  * No external ANN library: it would be dead weight at this index size and is exactly the kind of
  * unjustified dependency the project avoids.
+ *
+ * P97 (D-106): a card with `prototypeCount` > 1 stores multiple reference rows (card-major); its
+ * similarity is the MAX dot product over its own prototypes (P91/P95's `searchMultiProto`
+ * strategy, reproduced here) — one hit per CARD is ever pushed, never one per prototype row, so
+ * the matcher downstream (unchanged, out of scope for this work) keeps seeing exactly the same
+ * "one score per candidate card" shape it always has. For prototypeCount=1 this degenerates to
+ * exactly the pre-P97 single-row-per-card loop (no extra allocation, no behavior change).
  */
 export function searchVisualIndex(
   index: DecodedVisualIndex,
@@ -181,15 +262,22 @@ export function searchVisualIndex(
     )
   }
   const dim = index.manifest.embeddingDim
+  const prototypeCount = index.prototypeCount
   const hits: VisualSearchHit[] = []
-  for (let row = 0; row < index.cardIds.length; row += 1) {
-    const start = row * dim
-    let dot = 0
-    for (let d = 0; d < dim; d += 1) {
-      dot += (index.embeddings[start + d] ?? 0) * (queryVector[d] ?? 0)
+  for (let cardIndex = 0; cardIndex < index.cardIds.length; cardIndex += 1) {
+    const cardId = index.cardIds[cardIndex]
+    if (cardId === undefined) continue
+    let best = -Infinity
+    const cardRowStart = cardIndex * prototypeCount
+    for (let proto = 0; proto < prototypeCount; proto += 1) {
+      const start = (cardRowStart + proto) * dim
+      let dot = 0
+      for (let d = 0; d < dim; d += 1) {
+        dot += (index.embeddings[start + d] ?? 0) * (queryVector[d] ?? 0)
+      }
+      if (dot > best) best = dot
     }
-    const cardId = index.cardIds[row]
-    if (cardId !== undefined) hits.push({ cardId, similarity: dot })
+    hits.push({ cardId, similarity: best })
   }
   hits.sort((a, b) => b.similarity - a.similarity)
   return hits.slice(0, Math.max(0, topK))
