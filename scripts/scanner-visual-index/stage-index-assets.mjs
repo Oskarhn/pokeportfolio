@@ -28,10 +28,21 @@
  * already was before this session — see verify-index.ts's own header for why this is not derived
  * from `VITE_SUPABASE_URL` automatically.
  *
- * Runs as part of `prebuild`. If no generated index has been committed yet (a fresh clone before
- * anyone has run `pnpm scanner:index:build`), this step logs a warning and skips: the browser
- * runtime treats a missing index as "visual recognition unavailable this session" and falls back
- * to OCR + manual search (prompt §36) — it must never crash the build.
+ * Runs as part of `prebuild`. Missing-index policy is now mode-aware (P90 §15) — a missing index
+ * used to skip-with-warning unconditionally, which is the right call for local development and
+ * CI's `build-and-test` job (neither ships anything real), but genuinely wrong for a build
+ * Cloudflare Pages will actually deploy: shipping a scanner with NO visual index, silently and
+ * with every other gate green, is a real production regression waiting to happen the moment
+ * someone edits vite.config.ts/package.json's index-staging wiring without noticing the index
+ * itself never got committed.
+ *
+ *   - LOCAL/CI (no `CF_PAGES_COMMIT_SHA` — Cloudflare Pages sets this for every real Pages build,
+ *     the same signal vite.config.ts's own `resolveBuildSha` already uses to distinguish a hosted
+ *     build): missing index -> warn and skip, exactly as before. The browser runtime treats a
+ *     missing index as "visual recognition unavailable this session" and falls back to OCR +
+ *     manual search (prompt §36) — it must never crash a LOCAL build.
+ *   - HOSTED (`CF_PAGES_COMMIT_SHA` set): missing index -> HARD FAILURE. A deployed build must
+ *     never silently ship without its visual index while every other check stays green.
  */
 import { existsSync, mkdirSync, cpSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -42,11 +53,22 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const sourceDir = join(repoRoot, 'scripts', 'scanner-visual-index', 'generated', 'visual-v1')
 const outDir = join(repoRoot, 'public', 'scanner-assets', 'visual-v1', 'index')
 
+const isHostedBuild = process.env.CF_PAGES_COMMIT_SHA !== undefined
+
 if (!existsSync(join(sourceDir, 'current.json'))) {
+  if (isHostedBuild) {
+    console.error(
+      'stage-index-assets: HOSTED build (CF_PAGES_COMMIT_SHA is set) but no generated index ' +
+        `exists at ${sourceDir} — refusing to ship a deployed scanner with no visual index. Run ` +
+        '`pnpm scanner:index:build --target=hosted` and commit the result before deploying.',
+    )
+    process.exit(1)
+  }
   console.warn(
     'stage-index-assets: no generated index found at ' +
-      `${sourceDir} — skipping. Run \`pnpm scanner:index:build\` first, or the shipped scanner ` +
-      'will fall back to OCR + manual search only (no crash, no missing-asset error).',
+      `${sourceDir} — skipping (LOCAL/CI build, CF_PAGES_COMMIT_SHA unset). Run ` +
+      '`pnpm scanner:index:build` first, or the shipped scanner will fall back to OCR + manual ' +
+      'search only (no crash, no missing-asset error).',
   )
   process.exit(0)
 }

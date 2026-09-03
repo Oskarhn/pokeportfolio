@@ -96,14 +96,35 @@ function cspDirectives(csp) {
     workerSrc.join(' ') || '(none)',
   )
 
-  // Shape check always; exact-value check when the expected project is known.
-  const connectShapeOk =
-    connectSrc.length === 3 &&
-    connectSrc[0] === "'self'" &&
-    /^https:\/\/.+\.supabase\.co$/.test(connectSrc[1] ?? '') &&
-    connectSrc[2] === (connectSrc[1] ?? '').replace(/^http/, 'ws')
+  // P90 §14: LOCAL/CI PLACEHOLDER MODE vs HOSTED BUILD MODE — mirrors
+  // src/domain/scanner/checkpoint-identity.ts's own LOCAL_SUPABASE_URL constant (duplicated here
+  // deliberately, same precedent as visual-worker.ts's EXPECTED_MODEL_REVISION: this script has no
+  // TS import machinery for src/). A build made against the well-known local/CI placeholder origin
+  // (every `pnpm build`/CI `build-and-test` run that never exported a real SUPABASE_URL) has no
+  // real hosted project to enforce HTTPS/*.supabase.co against — treating that as a security
+  // FAILURE was never correct (P87 disclosed this exact false failure: "23/24 ... requires a real
+  // https://*.supabase.co URL"). A HOSTED build (anything else) still enforces the real shape in
+  // full, with no local exception.
+  const LOCAL_SUPABASE_ORIGIN = 'http://127.0.0.1:54321'
+  const connectOrigin = connectSrc[1] ?? ''
+  const isLocalOrPlaceholderBuild = connectOrigin === LOCAL_SUPABASE_ORIGIN
+  const buildMode = isLocalOrPlaceholderBuild ? 'LOCAL/CI PLACEHOLDER' : 'HOSTED'
+  console.log(`\nPlatform verifier build mode: ${buildMode} (connect-src origin: ${connectOrigin || '(none)'})\n`)
+
+  const connectShapeOk = isLocalOrPlaceholderBuild
+    ? // Local mode: still require the real 3-token self+project+realtime SHAPE (never a missing or
+      // malformed connect-src) — just not the HTTPS/*.supabase.co project-origin requirement,
+      // which a local Supabase stack genuinely cannot satisfy.
+      connectSrc.length === 3 &&
+      connectSrc[0] === "'self'" &&
+      connectOrigin === LOCAL_SUPABASE_ORIGIN &&
+      connectSrc[2] === connectOrigin.replace(/^http/, 'ws')
+    : connectSrc.length === 3 &&
+      connectSrc[0] === "'self'" &&
+      /^https:\/\/.+\.supabase\.co$/.test(connectOrigin) &&
+      connectSrc[2] === connectOrigin.replace(/^http/, 'ws')
   record(
-    'connect-src keeps the exact three-token shape (self + project + realtime)',
+    `connect-src keeps the exact three-token shape (self + project + realtime) [${buildMode} mode]`,
     connectShapeOk,
     connectSrc.join(' ') || '(none)',
   )
