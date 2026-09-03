@@ -6,6 +6,7 @@ import {
 } from '../../data/catalog'
 import { addCardAcquisition } from '../../data/collection'
 import {
+  BLUR_ABSTAIN_THRESHOLD,
   matchScannerObservation,
   parseCollectorNumberStructured,
   rankScannerCandidates,
@@ -502,6 +503,15 @@ export function createRealScannerController(
     throwIfAnalysisAborted(signal)
     const workingCapture = rectified.frame
 
+    // P93/D-106 — severe-blur visual abstention (capture-quality.ts): a scan this blurred is
+    // catastrophically unreliable for the visual channel specifically (P91's calibrated finding —
+    // see the module's own doc for the honest, disclosed scope of what "severe blur" does and
+    // does not detect). Only the visual channel is skipped; OCR and manual search proceed exactly
+    // as normal either way — this is an abstention of ONE evidence channel, never a scan-blocking
+    // gate (that product decision, if any, belongs to a future UI-facing session).
+    const captureBlurScore = rectified.captureBlurScore
+    const severeBlur = captureBlurScore !== null && captureBlurScore < BLUR_ABSTAIN_THRESHOLD
+
     // On-device OCR and on-device visual embedding run in parallel — both stay entirely local
     // (prompt §6/§41): no image bytes cross the network either way, only the RESULTING textual
     // catalog queries (OCR) and card-id lookups (visual shortlist enrichment) do.
@@ -515,10 +525,16 @@ export function createRealScannerController(
     const [ocrResult, { result: visualResult, errorMessage: visualErrorMessage }] =
       await Promise.all([
         runOcrAnalysis(workingCapture, engine, undefined, debug),
-        analyzeVisualBounded(
-          workingCapture,
-          debug ? VISUAL_DEBUG_SHORTLIST_SIZE : VISUAL_SHORTLIST_SIZE,
-        ),
+        severeBlur
+          ? Promise.resolve({
+              result: null,
+              errorMessage:
+                'Image is too blurry for visual recognition — used text search only for this scan.',
+            })
+          : analyzeVisualBounded(
+              workingCapture,
+              debug ? VISUAL_DEBUG_SHORTLIST_SIZE : VISUAL_SHORTLIST_SIZE,
+            ),
       ])
 
     throwIfAnalysisAborted(signal)
@@ -602,6 +618,12 @@ export function createRealScannerController(
       captureCropWidth: capture.cardRect.width,
       captureCropHeight: capture.cardRect.height,
       rectificationUsed: !rectified.usedFallback,
+      // P93/D-106: the capture-quality blur gate's own numbers — see capture-quality.ts's module
+      // doc for exactly what "severe blur" is calibrated against.
+      captureBlurScore,
+      captureSevereBlur: severeBlur,
+      visualAbstained: severeBlur,
+      visualAbstainReason: severeBlur ? ('severe-blur' as const) : null,
       visualEmbeddingCreated: visualResult !== null,
       embeddingNorm: visualResult?.embeddingNorm ?? null,
       indexVersion: visualSnapshot.readyInfo?.indexVersion ?? null,

@@ -16,6 +16,7 @@
  * with `usedFallback: true` — the scanner must keep working exactly as it did before this module
  * existed, never crash.
  */
+import { computeBlurScore } from '../../domain/scanner/capture-quality'
 import { rectifyCard, type Quadrilateral, type RgbaImage } from '../../domain/scanner/rectify'
 import { canvasToBlob, createCompatCanvas } from './canvas-compat'
 import type { PixelRect } from './guide-geometry'
@@ -53,6 +54,14 @@ export interface RectifyCaptureResult {
    *  preview at the same canonical size, for the debug panel's side-by-side comparison. Never
    *  produced otherwise — encoding it costs a real JPEG pass this module skips by default. */
   debugRawCropBlob: Blob | null
+  /** P93/D-106: the capture-quality blur gate's raw metric (domain/scanner/capture-quality.ts),
+   *  computed on the SAME canonical rectified RgbaImage this module already holds before encoding
+   *  it to a blob — no extra decode. Null only when rectification itself fell all the way back
+   *  before ever producing a working image (the `typeof createImageBitmap !== 'function'` or
+   *  bitmap-decode-failure paths) — those callers have no card-shaped pixels to score at all, not
+   *  even the plain-fallback ones (`usedFallback: true` alone still produces a real image and a
+   *  real blur score; this is a stricter, rarer null). */
+  captureBlurScore: number | null
 }
 
 /** Expands `rect` by `fraction` on every side, clamped to [0, boundsWidth] x [0, boundsHeight].
@@ -110,7 +119,13 @@ export function detectionMarginPx(
 }
 
 function fallbackResult(capture: CapturedFrame): RectifyCaptureResult {
-  return { frame: capture, usedFallback: true, corners: null, debugRawCropBlob: null }
+  return {
+    frame: capture,
+    usedFallback: true,
+    corners: null,
+    debugRawCropBlob: null,
+    captureBlurScore: null,
+  }
 }
 
 /**
@@ -167,6 +182,9 @@ export async function rectifyCapture(
       RECTIFY_OUTPUT_HEIGHT,
       margin,
     )
+    // P93/D-106: scored on the exact canonical RgbaImage this module already produced — no extra
+    // decode, no extra canvas work.
+    const captureBlurScore = computeBlurScore(rectified.image)
 
     const output = createCompatCanvas(RECTIFY_OUTPUT_WIDTH, RECTIFY_OUTPUT_HEIGHT)
     const outputImageData = output.context.createImageData(
@@ -204,6 +222,7 @@ export async function rectifyCapture(
       usedFallback: rectified.usedFallback,
       corners: rectified.corners,
       debugRawCropBlob,
+      captureBlurScore,
     }
   } catch {
     return fallbackResult(capture)

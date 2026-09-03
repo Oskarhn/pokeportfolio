@@ -69,6 +69,19 @@ export interface ScannerDiagnostics {
   /** Whether the P79 rectification step found a real card boundary (true) or fell back to the
    *  plain guide rectangle unchanged (false) — never a crash either way. */
   rectificationUsed: boolean
+  /** P93/D-106 — capture-quality.ts's raw Laplacian-variance blur metric on the canonical
+   *  rectified image, or null on the rare double-fallback path where rectification never produced
+   *  a working image at all (see RectifyCaptureResult's own doc). */
+  captureBlurScore: number | null
+  /** Whether `captureBlurScore` fell below the calibrated severe-blur threshold this scan. */
+  captureSevereBlur: boolean
+  /** Whether the VISUAL channel was skipped this scan because of severe blur — OCR and manual
+   *  search are never affected by this flag. Currently always equal to `captureSevereBlur` (the
+   *  only abstention reason implemented so far), kept as its own named field so a future second
+   *  abstention reason does not require a breaking rename. */
+  visualAbstained: boolean
+  /** Why the visual channel was abstained this scan, or null when it was not. */
+  visualAbstainReason: 'severe-blur' | null
   visualEmbeddingCreated: boolean
   embeddingNorm: number | null
   indexVersion: string | null
