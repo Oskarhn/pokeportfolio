@@ -6,6 +6,7 @@ import {
 } from '../../data/catalog'
 import { addCardAcquisition } from '../../data/collection'
 import {
+  shouldAbstainForBlurScore,
   matchScannerObservation,
   parseCollectorNumberStructured,
   rankScannerCandidates,
@@ -190,6 +191,17 @@ function tierToConfidence(tier: ScannerConfidenceTier): ScannerConfidence {
 
 function languageLabel(language: ScannerCandidateRecord['language']): string {
   return language === 'ja' ? 'Japanese' : 'English'
+}
+
+/** P93 §25 debug field — this candidate's OWN score-band tier in isolation, ignoring the
+ *  match-level margin/ambiguity demotion (`confidenceTier`/`match.tier` already carries that).
+ *  Reads `rawRankScore`, matching engine.ts's own tier decision (SCORING_TIERS bands compared
+ *  against the full-resolution raw score, never the clamped display value — P93/N-05). */
+function standaloneTierForScore(rawRankScore: number): ScannerConfidence {
+  if (rawRankScore >= SCORING_TIERS.highMinScore) return 'HIGH'
+  if (rawRankScore >= SCORING_TIERS.mediumMinScore) return 'MEDIUM'
+  if (rawRankScore >= SCORING_TIERS.lowMinScore) return 'LOW'
+  return 'NO_MATCH'
 }
 
 function toUiCandidate(record: ScannerCandidateRecord): ScannerCandidate {
@@ -502,6 +514,15 @@ export function createRealScannerController(
     throwIfAnalysisAborted(signal)
     const workingCapture = rectified.frame
 
+    // P93/D-106 — severe-blur visual abstention (capture-quality.ts): a scan this blurred is
+    // catastrophically unreliable for the visual channel specifically (P91's calibrated finding —
+    // see the module's own doc for the honest, disclosed scope of what "severe blur" does and
+    // does not detect). Only the visual channel is skipped; OCR and manual search proceed exactly
+    // as normal either way — this is an abstention of ONE evidence channel, never a scan-blocking
+    // gate (that product decision, if any, belongs to a future UI-facing session).
+    const captureBlurScore = rectified.captureBlurScore
+    const severeBlur = shouldAbstainForBlurScore(captureBlurScore)
+
     // On-device OCR and on-device visual embedding run in parallel — both stay entirely local
     // (prompt §6/§41): no image bytes cross the network either way, only the RESULTING textual
     // catalog queries (OCR) and card-id lookups (visual shortlist enrichment) do.
@@ -515,10 +536,16 @@ export function createRealScannerController(
     const [ocrResult, { result: visualResult, errorMessage: visualErrorMessage }] =
       await Promise.all([
         runOcrAnalysis(workingCapture, engine, undefined, debug),
-        analyzeVisualBounded(
-          workingCapture,
-          debug ? VISUAL_DEBUG_SHORTLIST_SIZE : VISUAL_SHORTLIST_SIZE,
-        ),
+        severeBlur
+          ? Promise.resolve({
+              result: null,
+              errorMessage:
+                'Image is too blurry for visual recognition — used text search only for this scan.',
+            })
+          : analyzeVisualBounded(
+              workingCapture,
+              debug ? VISUAL_DEBUG_SHORTLIST_SIZE : VISUAL_SHORTLIST_SIZE,
+            ),
       ])
 
     throwIfAnalysisAborted(signal)
@@ -579,16 +606,16 @@ export function createRealScannerController(
     // catastrophic band" instead of a bare, uncalibrated cosine number.
     const strongestVisualSimilarity =
       visualScores && visualScores.size > 0 ? Math.max(...visualScores.values()) : null
-    // P88 §21: why (if at all) the tier was capped below what the raw top score alone implies —
-    // mirrors engine.ts's own precedence (a visual-dominance guard already discounted the score
-    // before tiering ran; the margin/disagreement checks run afterward, in that order).
+    // P88 §21/P93: why (if at all) the tier was capped below what the raw top score alone
+    // implies. P93 removed the old 'visual-dominance-guarded' cause entirely — the P88 guard that
+    // discounted a competing candidate's score is gone (D-106); the redesigned mechanism only ever
+    // ADDS a corroboration boost to the visual anchor, so it can never by itself be the reason a
+    // tier was capped BELOW what the raw score implies.
     const tierCapReason = match.notes.includes('visual-text-disagreement')
       ? ('visual-text-disagreement' as const)
       : match.notes.includes('runner-up-margin-small')
         ? ('runner-up-margin-small' as const)
-        : match.candidates.some((c) => c.reasons.includes('visual-dominance-guarded'))
-          ? ('visual-dominance-guarded' as const)
-          : null
+        : null
     lastDiagnostics = {
       visualModelState: visualSnapshot.modelState,
       visualBackend: visualResult?.backend ?? visualSnapshot.readyInfo?.backend ?? 'unknown',
@@ -602,6 +629,12 @@ export function createRealScannerController(
       captureCropWidth: capture.cardRect.width,
       captureCropHeight: capture.cardRect.height,
       rectificationUsed: !rectified.usedFallback,
+      // P93/D-106: the capture-quality blur gate's own numbers — see capture-quality.ts's module
+      // doc for exactly what "severe blur" is calibrated against.
+      captureBlurScore,
+      captureSevereBlur: severeBlur,
+      visualAbstained: severeBlur,
+      visualAbstainReason: severeBlur ? ('severe-blur' as const) : null,
       visualEmbeddingCreated: visualResult !== null,
       embeddingNorm: visualResult?.embeddingNorm ?? null,
       indexVersion: visualSnapshot.readyInfo?.indexVersion ?? null,
@@ -650,6 +683,19 @@ export function createRealScannerController(
         name: ranked.card.name,
         confidenceTier: tierToConfidence(match.tier),
         reasons: ranked.reasons,
+        rawRankScore: ranked.rawRankScore,
+        displayScore: ranked.score,
+        textReliability: Math.max(
+          match.signals.nameReliability,
+          match.signals.collectorReliability,
+        ),
+        visualReliability: ranked.visualReliability,
+        finalTier: standaloneTierForScore(ranked.rawRankScore),
+        tierReason: match.notes.includes('visual-text-disagreement')
+          ? ('visual-text-disagreement' as const)
+          : match.notes.includes('runner-up-margin-small')
+            ? ('runner-up-margin-small' as const)
+            : null,
       })),
       // P78 fix: `visualErrorMessage` only ever covers exceptions thrown INSIDE
       // analyzeVisualSafely (createImageBitmap/client.analyze throwing) — a model/backend

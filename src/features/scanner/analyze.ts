@@ -244,13 +244,23 @@ export function cleanSignal(text: string | null, minimumLength: number): string 
  * Cost", two words, 12 characters) cannot be told apart from a real card name by text shape
  * alone; that residual gap needs layout/proximity reasoning (HP-line adjacency, multi-ROI
  * agreement) this session did not build — disclosed, not silently claimed solved.
+ *
+ * P93/N-19: the original 26-character ceiling equalled the longest known real card name
+ * ("Professor Sada's Vitality") with ZERO slack for OCR noise — a single stray inserted/misread
+ * character on that exact name would eat the full penalty. Length ALONE no longer disqualifies a
+ * candidate until `MAX_PLAUSIBLE_NAME_TEXT_LENGTH_HARD_CEILING` (a real, no-slack-needed ceiling
+ * no genuine single-sentence name shape approaches even with noise); between the two thresholds,
+ * only the SENTENCE-BOUNDARY and WORD-COUNT checks (both still independent of length) can flag a
+ * candidate — real multi-sentence rules prose reliably trips one of those regardless of exactly
+ * how long it happens to be, so this loses no real rejection power against the failure mode the
+ * penalty exists for, while a maximal-length legitimate name plus one OCR artifact survives.
  */
-const MAX_PLAUSIBLE_NAME_TEXT_LENGTH = 26
+const MAX_PLAUSIBLE_NAME_TEXT_LENGTH_HARD_CEILING = 30
 const MAX_PLAUSIBLE_NAME_WORD_COUNT = 6
 const SENTENCE_BOUNDARY_PATTERN = /[.!?]\s+[A-Z]/
 
 export function looksLikeBodyTextNotName(cleanedText: string): boolean {
-  if (cleanedText.length > MAX_PLAUSIBLE_NAME_TEXT_LENGTH) return true
+  if (cleanedText.length > MAX_PLAUSIBLE_NAME_TEXT_LENGTH_HARD_CEILING) return true
   if (SENTENCE_BOUNDARY_PATTERN.test(cleanedText)) return true
   const wordCount = cleanedText.trim().split(/\s+/).filter(Boolean).length
   return wordCount > MAX_PLAUSIBLE_NAME_WORD_COUNT

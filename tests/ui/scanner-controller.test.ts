@@ -218,7 +218,12 @@ describe('analyzeCapture - observation, retrieval, ranking (I2/I3/I4)', () => {
     const low = await controller.analyzeCapture(capture())
     expect(low.confidence).toBe('LOW')
 
-    // Convergent printed evidence (name + id + language) reaches HIGH.
+    // Convergent printed evidence (name + id) reaches MEDIUM, not HIGH (P93/N-09): language
+    // agreement no longer scores (every candidate is already 'en' by construction) and
+    // `rawSetText` is never populated in production (controller.ts's own `observation` literal),
+    // so text-only id+name convergence tops out at 75 — below highMinScore (80). Reaching HIGH
+    // now genuinely requires either a third text signal or the visual channel's corroboration
+    // (engine.test.ts's own suite exercises that combination at the pure-domain level).
     mockedRunOcrAnalysis.mockResolvedValue({
       rawNameText: 'Pikachu',
       rawCollectorNumberText: '58/102',
@@ -234,7 +239,7 @@ describe('analyzeCapture - observation, retrieval, ranking (I2/I3/I4)', () => {
       totalCount: 2,
     })
     const high = await controller.analyzeCapture(capture())
-    expect(high.confidence).toBe('HIGH')
+    expect(high.confidence).toBe('MEDIUM')
   })
 
   it('never lets image bytes cross into the domain or data layers (I8 runtime half)', async () => {
@@ -477,12 +482,31 @@ describe('P80 R4/R5: low-confidence candidate expansion (Shieldon rank-6 real-de
       ],
       totalCount: 9,
     })
-    const controller = createRealScannerController({ userId: 'user-a' })
-    const analysis = await controller.analyzeCapture(capture())
-    expect(analysis.confidence).toBe('HIGH')
-    expect(analysis.candidates.length).toBe(5)
-    const diagnostics = controller.getLastDiagnostics?.()
-    expect(diagnostics?.candidateExpansionTriggered).toBe(false)
+    // P93/N-09: text-only id+name convergence now tops out at MEDIUM (75) — a well-separated
+    // strong visual anchor is what actually reaches HIGH, since production never populates
+    // rawSetText and language agreement no longer scores. See the sibling I3/I4 test's own note.
+    // The visual channel only actually runs in this Node test environment when
+    // `createImageBitmap` is polyfilled (it is not, by default, in this describe block) — save
+    // and restore it locally rather than widening the polyfill to the whole block.
+    const originalCreateImageBitmap = globalThis.createImageBitmap
+    globalThis.createImageBitmap = vi.fn().mockResolvedValue({ close: vi.fn() }) as never
+    visualMocks.analyze.mockResolvedValue({
+      hits: [{ cardId: 'true-match', similarity: 0.93 }],
+      backend: 'wasm',
+      embedMs: 12,
+      searchMs: 2,
+      embeddingNorm: 5,
+    })
+    try {
+      const controller = createRealScannerController({ userId: 'user-a' })
+      const analysis = await controller.analyzeCapture(capture())
+      expect(analysis.confidence).toBe('HIGH')
+      expect(analysis.candidates.length).toBe(5)
+      const diagnostics = controller.getLastDiagnostics?.()
+      expect(diagnostics?.candidateExpansionTriggered).toBe(false)
+    } finally {
+      globalThis.createImageBitmap = originalCreateImageBitmap
+    }
   })
 })
 

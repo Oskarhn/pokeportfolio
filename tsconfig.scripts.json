@@ -13,6 +13,7 @@
      * compatible rules instead of conflicting over import-extension requirements. */
     "module": "esnext",
     "moduleResolution": "bundler",
+    "allowJs": true,
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "moduleDetection": "force",

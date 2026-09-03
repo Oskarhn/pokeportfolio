@@ -403,6 +403,22 @@ describe('P80 adaptive-ROI scoring (pure)', () => {
       expect(looksLikeBodyTextNotName("Professor Sada's Vitality")).toBe(false)
     })
 
+    it('M93-12: a maximal-length real name plus one OCR-noise character is NOT flagged (N-19)', () => {
+      // The longest known real card name at its exact 26-char length, PLUS a single stray OCR
+      // artifact (27 chars total) — the old ceiling (== 26, zero slack) would have flagged this
+      // on length alone; the new hard ceiling (30) does not, and neither the sentence-boundary nor
+      // word-count checks fire on a genuine 3-word name fragment like this.
+      expect(looksLikeBodyTextNotName("Professor Sada's Vitalityz")).toBe(false)
+      expect(looksLikeBodyTextNotName("Professor Sada's Vitalitya")).toBe(false)
+      // Still rejects real prose that happens to land in the same length neighbourhood — a
+      // multi-sentence rules fragment trips the sentence-boundary check regardless of length.
+      expect(looksLikeBodyTextNotName('Flip a coin. Heads: 30 damage.')).toBe(true)
+      // And length alone still disqualifies well past any plausible noise allowance.
+      expect(
+        looksLikeBodyTextNotName('This is a much longer stretch of printed rules text here'),
+      ).toBe(true)
+    })
+
     it('scoreNameRoiCandidate discounts body-text-shaped candidates so a real name wins', () => {
       const bodyText = scoreNameRoiCandidate(
         'Flip a coin. If heads, this attack does 30 more damage.',
