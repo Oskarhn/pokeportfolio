@@ -115,6 +115,15 @@ export function ScannerPage() {
   const [fastScannerState, setFastScannerState] = useState<
     'not-loaded' | 'loading' | 'ready' | 'failed'
   >(() => controller.getFastScannerState?.() ?? 'not-loaded')
+  // P90 §16: tracked ONLY to show a concise, non-jargon fallback note once the visual (DINO)
+  // channel definitively fails — index pointer/checksum/source-project failures all already
+  // degrade the SCAN pipeline to OCR-only silently and honestly (visual-worker.ts never crashes);
+  // this is purely about telling the user why recognition might feel weaker than expected, without
+  // exposing any of the debug panel's own integrity jargon (content ids, checksums, source-project
+  // refs) to an ordinary user. Never shown while still 'loading' — only a genuine terminal failure.
+  const [visualScannerState, setVisualScannerState] = useState<
+    'not-loaded' | 'loading' | 'ready' | 'failed'
+  >(() => controller.getVisualPrewarmState?.() ?? 'not-loaded')
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -219,7 +228,14 @@ export function ScannerPage() {
     const interval = setInterval(() => {
       const next = controller.getFastScannerState?.() ?? 'not-loaded'
       setFastScannerState((previous) => (previous === next ? previous : next))
-      if (next === 'ready' || next === 'failed') clearInterval(interval)
+      const nextVisual = controller.getVisualPrewarmState?.() ?? 'not-loaded'
+      setVisualScannerState((previous) => (previous === nextVisual ? previous : nextVisual))
+      if (
+        (next === 'ready' || next === 'failed') &&
+        (nextVisual === 'ready' || nextVisual === 'failed')
+      ) {
+        clearInterval(interval)
+      }
     }, 500)
     return () => {
       clearInterval(interval)
@@ -529,6 +545,7 @@ export function ScannerPage() {
               locations={locations}
               japaneseNotice={japaneseNotice}
               fastScannerState={fastScannerState}
+              visualScannerState={visualScannerState}
               onStartCamera={() => {
                 dispatch({ type: 'START_CAMERA_PRESSED' })
               }}
@@ -1240,6 +1257,7 @@ function IntroView({
   locations,
   japaneseNotice,
   fastScannerState,
+  visualScannerState,
   onStartCamera,
   onChoosePhoto,
   onDefaultsPatch,
@@ -1249,6 +1267,7 @@ function IntroView({
   locations: { id: string; label: string }[]
   japaneseNotice: boolean
   fastScannerState: 'not-loaded' | 'loading' | 'ready' | 'failed'
+  visualScannerState: 'not-loaded' | 'loading' | 'ready' | 'failed'
   onStartCamera: () => void
   onChoosePhoto: () => void
   onDefaultsPatch: (patch: Partial<ScannerSessionDefaults>) => void
@@ -1264,6 +1283,14 @@ function IntroView({
       {prewarmStatus !== null ? (
         <p role="status" className="text-xs text-slate-500">
           {prewarmStatus}
+        </p>
+      ) : null}
+      {/* P90 §16: a genuine, terminal visual-channel failure (missing/stale/corrupt index, no
+          WebGPU/WASM backend, etc.) degrades matching to OCR-only already — this note only
+          explains why, in plain language, never the debug panel's own integrity jargon. */}
+      {visualScannerState === 'failed' ? (
+        <p role="status" className="text-xs text-slate-500">
+          Visual recognition unavailable on this device — text recognition is still available.
         </p>
       ) : null}
       {state.cameraError ? <ErrorAlert {...state.cameraError} /> : null}
