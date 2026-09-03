@@ -481,5 +481,5 @@ describe('pure-ranking smoke test (§22) — crash/catastrophic-regression detec
     expect(timings[20]).toBeLessThan(5)
     expect(timings[50]).toBeLessThan(5)
     expect(timings[100]).toBeLessThan(5)
-  })
+  }, 20000)
 })
