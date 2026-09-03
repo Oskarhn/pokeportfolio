@@ -6,7 +6,7 @@ import {
 } from '../../data/catalog'
 import { addCardAcquisition } from '../../data/collection'
 import {
-  BLUR_ABSTAIN_THRESHOLD,
+  shouldAbstainForBlurScore,
   matchScannerObservation,
   parseCollectorNumberStructured,
   rankScannerCandidates,
@@ -510,7 +510,7 @@ export function createRealScannerController(
     // as normal either way — this is an abstention of ONE evidence channel, never a scan-blocking
     // gate (that product decision, if any, belongs to a future UI-facing session).
     const captureBlurScore = rectified.captureBlurScore
-    const severeBlur = captureBlurScore !== null && captureBlurScore < BLUR_ABSTAIN_THRESHOLD
+    const severeBlur = shouldAbstainForBlurScore(captureBlurScore)
 
     // On-device OCR and on-device visual embedding run in parallel — both stay entirely local
     // (prompt §6/§41): no image bytes cross the network either way, only the RESULTING textual

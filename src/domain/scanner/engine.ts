@@ -337,27 +337,29 @@ export function computeVisualAnchorReliability(
   entries: readonly ScoredEntry[],
 ): VisualAnchorReliability | null {
   let anchor: ScoredEntry | null = null
+  let anchorSimilarity = -Infinity
   let runnerUpSimilarity: number | null = null
   for (const entry of entries) {
     const s = entry.visualSimilarity
     if (s === null || !Number.isFinite(s)) continue
-    if (anchor === null || s > anchor.visualSimilarity!) {
-      if (anchor !== null) runnerUpSimilarity = anchor.visualSimilarity
+    if (anchor === null || s > anchorSimilarity) {
+      if (anchor !== null) runnerUpSimilarity = anchorSimilarity
       anchor = entry
+      anchorSimilarity = s
     } else if (runnerUpSimilarity === null || s > runnerUpSimilarity) {
       runnerUpSimilarity = s
     }
   }
-  if (anchor === null || anchor.visualSimilarity === null) return null
+  if (anchor === null) return null
 
   const strengthFactor = anchor.visualPoints / VISUAL_EVIDENCE_CURVE.ceilingPoints
   const marginFactor =
     runnerUpSimilarity === null
       ? ANCHOR_SINGLE_CANDIDATE_MARGIN_FACTOR
-      : Math.max(0, Math.min(1, (anchor.visualSimilarity - runnerUpSimilarity) / ANCHOR_MARGIN_SATURATE))
+      : Math.max(0, Math.min(1, (anchorSimilarity - runnerUpSimilarity) / ANCHOR_MARGIN_SATURATE))
 
   const reliability = Math.max(0, Math.min(1, strengthFactor * marginFactor))
-  return { cardId: anchor.card.cardId, similarity: anchor.visualSimilarity, reliability }
+  return { cardId: anchor.card.cardId, similarity: anchorSimilarity, reliability }
 }
 
 /** Applies the anchor's corroboration boost (P93 §6/§12) — ADDITIVE ONLY, never touches any other
@@ -446,16 +448,14 @@ export function rankScannerCandidatesFull(
           ? 1
           : 0
     })
-    .map(
-      ({ entry, rawRankScore, visualReliability, reasons }): RankedScannerCandidate => ({
-        card: entry.card,
-        score: toDisplayScore(rawRankScore),
-        rawRankScore,
-        reasons,
-        visualSimilarity: entry.visualSimilarity,
-        visualReliability,
-      }),
-    )
+    .map(({ entry, rawRankScore, visualReliability, reasons }): RankedScannerCandidate => ({
+      card: entry.card,
+      score: toDisplayScore(rawRankScore),
+      rawRankScore,
+      reasons,
+      visualSimilarity: entry.visualSimilarity,
+      visualReliability,
+    }))
 }
 
 export function rankScannerCandidates(

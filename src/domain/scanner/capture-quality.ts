@@ -116,6 +116,19 @@ export function computeBlurScore(image: RgbaImage): number {
   return laplacianVariance(gray)
 }
 
+/** The actual abstention decision given an ALREADY-COMPUTED blur score (P93/D-106) — the form
+ *  `rectify-capture.ts`/`controller.ts` actually use, since they compute the score once (on the
+ *  canonical rectified image, before it's encoded to a blob) and thread the NUMBER through rather
+ *  than re-decoding pixels. `null` (rectification never produced a working image at all) never
+ *  abstains on its own — that path has no visual-channel-poisoning pixels to be severely blurred,
+ *  and the visual channel's own existing failure handling covers it independently. */
+export function shouldAbstainForBlurScore(
+  blurScore: number | null,
+  threshold: number = BLUR_ABSTAIN_THRESHOLD,
+): boolean {
+  return blurScore !== null && blurScore < threshold
+}
+
 /** Whether this captured (post-crop) frame is severely blurred enough that P91's benchmark found
  *  visual retrieval catastrophically unreliable on it — see the module header for exactly what
  *  this does and does not detect. Wired (P93/D-106) to abstain the VISUAL channel only — OCR text
@@ -124,5 +137,5 @@ export function shouldAbstainForBlur(
   image: RgbaImage,
   threshold: number = BLUR_ABSTAIN_THRESHOLD,
 ): boolean {
-  return computeBlurScore(image) < threshold
+  return shouldAbstainForBlurScore(computeBlurScore(image), threshold)
 }
