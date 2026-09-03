@@ -837,3 +837,157 @@ OCR-pipeline/mutex reconstruction, `main.tsx`'s two independent fire-and-forget 
   no code change required — each investigated directly against the merged tree.
 
 `SCANNER_SCHEMA_VERSION` bumped 1 → 2 — see `src/platform/build-info.ts`'s own comment.
+
+## 10. Matcher correctness rewrite: continuous scoring, reliability-weighted evidence, severe-blur abstention (P93, D-106)
+
+Responds to P92's cross-branch audit re-derivation, which found D-103's F-02 fix structurally
+incomplete (N-01/N-04/N-05/N-09) — full decision record in `docs/DECISIONS.md` D-106; this section
+carries the calibration derivation and the measured numbers.
+
+### §10a — continuous visual-evidence curve derivation
+
+The old curve was three piecewise-linear bands meeting at hard thresholds (a 17-point jump exactly
+at similarity 0.82, N-04). The new curve is a single logistic function,
+`points(s) = ceilingPoints / (1 + e^{-k(s - m)})`, with `ceilingPoints = 92` (unchanged asymptotic
+ceiling) and `k`/`m` solved from two calibration anchors read directly off P84's own measured
+distributions (D-101 §2):
+
+- `points(moderateMin = 0.68) ≈ 25` — a plausible-but-unproven visual read, well below confident.
+- `points(strongMin = 0.82) ≈ 60` — just above P84's own mean genuine-match similarity (0.812),
+  genuinely competitive with (though not overwhelming) the maximum reachable coincidental TEXT-only
+  score a wrong card can score in production (75 — id-exact 45 + name-exact 30, since `rawSetText`
+  is never populated and language-match no longer scores per D-106).
+
+Solving `logit(25/92) = k(0.68 - m)` and `logit(60/92) = k(0.82 - m)` simultaneously gives
+`k ≈ 11.53`, `m ≈ 0.7655`. Selected points on the resulting curve:
+
+| similarity | 0.0 | 0.2 | 0.4 | 0.55 | 0.6 | 0.68 | 0.75 | 0.79 | 0.80 | 0.81 | 0.812 | 0.82 | 0.83 | 0.88 | 0.90 | 0.95 | 1.0 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| points | 0 | 0 | 1 | 7 | 12 | 25 | 42 | 52 | 55 | 58 | 58 | 60 | 62 | 73 | 76 | 82 | 86 |
+
+No jump anywhere; every ±0.01 step near the old 0.82 cliff changes points by 2-3 at most (pinned by
+`tests/domain/scanner/engine-p93-redesign.test.ts`'s M93-2 case, which asserts every ±0.001 step in
+[0.8, 0.84) differs by at most 2 points).
+
+### §10b — real benchmark evidence (all actually run this session)
+
+**240-card/6-set benchmark** (`pnpm scanner:visual:benchmark`, same methodology as §8 above):
+
+| Method | TOP1 | TOP3 | TOP5 |
+|---|---|---|---|
+| Visual (DINOv2) alone | 99.7% | 100% | 100% |
+| Hybrid — P88 (D-103, documented above) | 99.4% | 100% | 100% |
+| **Hybrid — P93 (D-106)** | **99.7%** | **100%** | **100%** |
+
+The hybrid-vs-visual-alone gap is now ~0 points (was -3.9 pre-D-103, -0.3 at D-103).
+
+**Real corpus-scale adversarial benchmark** (new, `scripts/scanner-recognition-lab/experiments/
+08-p93-hybrid-false-confidence.ts`, reusing P91's cached ~4,300-card corpus/reference index rather
+than re-downloading — see that script's own header for exactly how). For each of n=300 sampled
+cards, a DIFFERENT corpus card is given the true card's own coincidental id+name text match while
+the true card carries ZERO text evidence — the F-02 mechanism, at real scale, across three real
+embedded conditions per card (900 trials total):
+
+| Profile | mean true similarity | correct (TOP1) | false-HIGH rate |
+|---|---|---|---|
+| clean | 1.000 | 100% | 0% |
+| tilted-offcenter (geometry-only) | 0.7999 (≈ P84's 0.812) | 60.7% | 1.33% |
+| tilted-glare-shadow-blur (catastrophic) | 0.1195 | 0% | 0% |
+
+The geometry-only row is the exact operating point P92's audit flagged as broken (P84's own MEAN
+genuine similarity, previously below the 0.82 absolute activation threshold): the true card now
+wins outright in 6 of 10 of this deliberately worst-case adversarial matchups (zero text evidence
+of its own, competing against a coincidental exact id+name match), and even in the 4 of 10 it loses,
+it almost never loses at HIGH confidence. The catastrophic row shows the true card losing HONESTLY
+(the matcher correctly has no real evidence to work with there) rather than the wrong card ever
+displaying false HIGH confidence — 0% false-HIGH across all 300 catastrophic-profile trials.
+
+**Continuous blur-severity sweep** (new, `.../09-p93-continuous-blur-severity.ts`, n=80, isolated
+Gaussian-blur-sigma dimension — glare/shadow are not swept, see the script's own header for why):
+
+| sigma | mean blur score | TOP1 accuracy | below BLUR_ABSTAIN_THRESHOLD (378) |
+|---|---|---|---|
+| 0 | 10298.69 | 100% | no |
+| 2 | 1194.21 | 98.8% | no |
+| 3 | 335.78 | 96.3% | yes |
+| 4 | 130.78 | 87.5% | yes |
+| 6 | 39.93 | 88.8% | yes |
+| 8 | 16.31 | 71.3% | yes |
+| 10 | 9.92 | 36.3% | yes |
+| 14 | 5.29 | 6.3% | yes |
+| 20 | 3.78 | 3.8% | yes |
+
+On pure, isolated blur, retrieval accuracy actually stays high (96%+) somewhat past where the
+threshold already triggers abstention (sigma 3), and the real accuracy cliff sits later (sigma
+8-10). The shipped threshold is therefore conservative relative to isolated blur severity alone —
+expected and appropriate, since P91's own calibration derived it from hard-defect profiles that
+bundle blur with co-occurring tilt/glare/shadow, which a real phone photo is more likely to exhibit
+together than blur in total isolation. Not changed based on this evidence, per this session's own
+instruction not to broaden the gate without evidence exceeding the measured range.
+
+### §10c — not done this session (disclosed)
+
+The real 19,501-card hosted-catalog confusable-group benchmark (F-03) remains open — unchanged
+since every M15 session since P75. The dual-prototype reference-index recommendation (P91) was not
+implemented. No new DINO model was evaluated (D-098 stands). Glare/shadow/perspective/noise
+severity dimensions were not swept continuously — P91 already found its simple metrics for those
+have ~zero discriminative power on this project's synthetic composites, and neither is wired into
+production.
+
+## 11. Canvas-free DINOv2 preprocessing closes the real WebKit gap (M15, 2026-09-03 — P96, D-107)
+
+P94 confirmed for real (not merely suspected) that P90's main-thread RGBA fallback (D-105) does
+not restore visual recognition on an engine lacking `OffscreenCanvas` in a Worker scope:
+`@huggingface/transformers`' own `AutoProcessor`-produced image processor calls
+`RawImage.resize`/`.center_crop` internally, and those construct their OWN `OffscreenCanvas`
+regardless of what the caller supplies. Traced directly against the installed bundle
+(`node_modules/@huggingface/transformers/dist/transformers.js`, `src/utils/image.js` section):
+every resize/crop/pad/toCanvas operation is gated on `apis.IS_WEB_ENV` with no non-canvas branch.
+
+### §11a — the fix: numeric reimplementation, not a library patch
+
+`src/domain/scanner/dino-preprocess.ts`'s `preprocessRgbaForDino` reimplements the pinned model's
+exact preprocessing (`public/scanner-assets/visual-v1/model/preprocessor_config.json`: shortest
+edge 256, center crop 224, rescale 1/255, ImageNet mean/std) using only typed-array arithmetic —
+bilinear resize, integer-offset center crop, fused rescale+normalize, HWC→CHW permute. No canvas,
+no DOM reference anywhere in the file. `visual-worker.ts`'s `runModelOnRgba` uses the existing
+AutoProcessor path unchanged when `OffscreenCanvas` is available (the proven, unmodified default)
+and this canvas-free path only when it is not — `processor(image)` is skipped entirely rather than
+merely wrapped in a try/catch, since the library call is known in advance to always throw there.
+
+The config's `resample: 3` (bicubic) label was found NOT to describe existing browser-path
+behavior at all — `RawImage.resize`'s web-environment branch never consults `resample`, only
+`ctx.drawImage(...)`'s own browser-implementation-defined scaling. This reimplementation's target
+is therefore retrieval-outcome parity, not literal resample-algorithm parity; bilinear was chosen
+as a simple, well-understood, easy-to-verify baseline.
+
+### §11b — permanent parity harness (`scripts/scanner-preprocess-parity/`)
+
+`pnpm scanner:preprocess:parity` compares this module against the library's own Node/`sharp`-
+backed AutoProcessor path (same pinned model, same input pixels) over 100 real card images × 6
+shape variants (native portrait, 90°-rotated landscape, odd/non-round dimensions, an already-
+~230px near-crop-size image, an upscaled ~3024×4032 large-iPhone-photo scale, and an RGBA buffer
+carrying non-opaque alpha) = 600 evaluations, each queried against the real committed
+19,501-card production index:
+
+| Metric | Value |
+|---|---|
+| Mean cosine similarity | 0.9762 (min 0.9202) |
+| TOP1 agreement (overall) | 96.2% |
+| TOP1 agreement by variant | portrait-native 100% · rgba-semi-transparent 100% · odd-dimensions 99% · large-iphone-scale 98% · near-crop-size 95% · landscape-rotated 85% |
+| TOP5 identical-set rate | 32.3% |
+| Mean TOP5 set overlap | 79.6% |
+
+Landscape rotation is the one measured weak spot (85% TOP1 agreement) — rotation shifts which
+pixels land at the resize/crop boundary more than any other variant tested. Disclosed as a real,
+measured residual rather than hidden; a future session could try area-averaging downsampling to
+narrow it specifically, judged not worth delaying this fix over given it only activates as a
+fallback on an engine that otherwise has zero working visual recognition at all. Full per-image
+results: `scripts/scanner-preprocess-parity/reports/parity-report.json`.
+
+### §11c — real WebKit confirmation
+
+`tests/e2e/visual-worker-real-browser.spec.ts`, run for real against Playwright's `mobile-iphone`
+(WebKit) project after this fix: PASSED, with a real non-empty search result (previously this
+engine could only reach the disclosed `OffscreenCanvas not supported` error — see D-105's
+addendum). The spec no longer accepts that error as a passing outcome for the visual channel.

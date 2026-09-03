@@ -16,6 +16,10 @@ function diagnostics(overrides: Partial<ScannerDiagnostics> = {}): ScannerDiagno
     captureFrameWidth: 1350,
     captureFrameHeight: 1800,
     rectificationUsed: true,
+    captureBlurScore: 512.34,
+    captureSevereBlur: false,
+    visualAbstained: false,
+    visualAbstainReason: null,
     visualEmbeddingCreated: true,
     embeddingNorm: 12.3456,
     indexVersion: 'visual-v1',
@@ -43,7 +47,18 @@ function diagnostics(overrides: Partial<ScannerDiagnostics> = {}): ScannerDiagno
     ocrTrials: [],
     candidateExpansionTriggered: false,
     finalRerankedCandidates: [
-      { cardId: 'card-a', name: 'Shieldon', confidenceTier: 'HIGH', reasons: ['visual-strong'] },
+      {
+        cardId: 'card-a',
+        name: 'Shieldon',
+        confidenceTier: 'HIGH',
+        reasons: ['visual-strong'],
+        rawRankScore: 91,
+        displayScore: 91,
+        textReliability: 1,
+        visualReliability: 0.6,
+        finalTier: 'HIGH',
+        tierReason: null,
+      },
     ],
     visualError: null,
     visualBackendRequested: 'auto',
@@ -92,6 +107,9 @@ function diagnostics(overrides: Partial<ScannerDiagnostics> = {}): ScannerDiagno
     ocrNameLexiconMargin: null,
     visualTextDisagreement: false,
     tierCapReason: null,
+    visualUnknownIdCount: 2,
+    visualEnrichedIdCount: 1,
+    visualMissingIdCount: 1,
     ...overrides,
   }
 }
@@ -120,6 +138,10 @@ describe('formatScannerDiagnostics', () => {
     expect(text).toContain('INDEX_VERSION=visual-v1')
     expect(text).toContain('INDEX_CARD_COUNT=985')
     expect(text).toContain('INDEX_SOURCE_PROJECT_REF=nopmkroeygmlvndzjjqs.supabase.co')
+    // N-08 (P94): the found-vs-enriched gap, labelled explicitly.
+    expect(text).toContain('RAW_VISUAL_ID_COUNT=2')
+    expect(text).toContain('ENRICHED_VISUAL_ID_COUNT=1')
+    expect(text).toContain('MISSING_ID_COUNT=1')
     expect(text).toContain('1. card-a similarity=0.9100 name=Shieldon')
     expect(text).toContain('OCR_NAME_SIGNAL=Shieldon')
     expect(text).toContain('OCR_NAME_ROI=classic-top-left')
@@ -143,13 +165,13 @@ describe('formatScannerDiagnostics', () => {
     const text = formatScannerDiagnostics(
       diagnostics({
         visualTextDisagreement: true,
-        tierCapReason: 'visual-dominance-guarded',
+        tierCapReason: 'runner-up-margin-small',
         visualCalibrationBand: 'weak',
         ocrCollectorParseConfidence: 'low',
       }),
     )
     expect(text).toContain('VISUAL_TEXT_DISAGREEMENT=yes')
-    expect(text).toContain('TIER_CAP_REASON=visual-dominance-guarded')
+    expect(text).toContain('TIER_CAP_REASON=runner-up-margin-small')
     expect(text).toContain('VISUAL_CALIBRATION_BAND=weak')
     expect(text).toContain('OCR_COLLECTOR_PARSE_CONFIDENCE=low')
   })
@@ -365,12 +387,15 @@ describe('formatExpectedCardRankDiagnostics (P90 §10/§21)', () => {
       hybridScore: 85,
       hybridTier: 'high',
       scoreComponents: ['collector-number-exact', 'name-exact', 'visual-strong'],
+      enrichmentStatus: 'resolved',
       ...overrides,
     }
   }
 
   it('renders every required field with real values', () => {
     const text = formatExpectedCardRankDiagnostics(card, rank())
+    expect(text).toContain('EXPECTED_PRESENT_IN_VISUAL_INDEX=yes')
+    expect(text).toContain('EXPECTED_ENRICHMENT_STATUS=resolved')
     expect(text).toContain('EXPECTED_CARD_ID=card-58')
     expect(text).toContain('EXPECTED_CARD_NAME=Pikachu')
     expect(text).toContain('EXPECTED_CARD_SET=Base Set')
@@ -400,8 +425,11 @@ describe('formatExpectedCardRankDiagnostics (P90 §10/§21)', () => {
         hybridScore: null,
         hybridTier: null,
         scoreComponents: [],
+        enrichmentStatus: 'not-in-index',
       }),
     )
+    expect(text).toContain('EXPECTED_PRESENT_IN_VISUAL_INDEX=no')
+    expect(text).toContain('EXPECTED_ENRICHMENT_STATUS=not-in-index')
     expect(text).toContain('EXPECTED_VISUAL_RANK=—')
     expect(text).toContain('EXPECTED_VISUAL_SIMILARITY=—')
     expect(text).toContain('EXPECTED_VISUAL_PERCENTILE=—')
@@ -410,4 +438,16 @@ describe('formatExpectedCardRankDiagnostics (P90 §10/§21)', () => {
     expect(text).toContain('EXPECTED_TEXT_EVIDENCE=—')
     expect(text).toContain('EXPECTED_SCORE_COMPONENTS=—')
   })
+
+  // N-08 (P94): the exact gap this finding closes — a card the visual index FOUND but catalog
+  // enrichment filtered must render distinguishably from "the index never found it at all."
+  it.each(['inactive-filtered', 'language-filtered', 'missing-catalog-row'] as const)(
+    'renders EXPECTED_ENRICHMENT_STATUS=%s distinctly from not-in-index, even though the card WAS found',
+    (status) => {
+      const text = formatExpectedCardRankDiagnostics(card, rank({ enrichmentStatus: status }))
+      expect(text).toContain('EXPECTED_PRESENT_IN_VISUAL_INDEX=yes')
+      expect(text).toContain(`EXPECTED_ENRICHMENT_STATUS=${status}`)
+      expect(text).not.toContain('EXPECTED_ENRICHMENT_STATUS=not-in-index')
+    },
+  )
 })

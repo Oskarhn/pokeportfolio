@@ -12,7 +12,7 @@
  * its core by package resolution from the same pinned tesseract.js-core version the prepare
  * script copies into public/ - one version, two views of it.
  */
-import { existsSync, statSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -32,12 +32,17 @@ if (!existsSync(join(assetsDir, 'eng.traineddata.gz'))) {
   process.exit(1)
 }
 
+// F-18 (P94): the old `statSync(path) && readFileSync(...)` guard was dead code — `statSync`
+// either returns a truthy `Stats` object or THROWS on a missing path, so it never short-circuits
+// anything; a missing package.json already fails loudly via that thrown ENOENT, which is exactly
+// the right behavior here (this file legitimately cannot proceed without it), so the guard is
+// simply removed rather than replaced with an equivalent check.
 const corePackage = JSON.parse(
-  readFileSyncOf(join(dirname(require.resolve('tesseract.js-core/package.json')), 'package.json')),
+  readFileSync(
+    join(dirname(require.resolve('tesseract.js-core/package.json')), 'package.json'),
+    'utf-8',
+  ),
 )
-function readFileSyncOf(path) {
-  return statSync(path) && require('node:fs').readFileSync(path, 'utf-8')
-}
 
 console.log(`engine:    tesseract.js ${require('tesseract.js/package.json').version}`)
 console.log(`core:      tesseract.js-core ${corePackage.version} (same pin as staged assets)`)

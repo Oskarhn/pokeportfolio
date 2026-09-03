@@ -57,6 +57,9 @@ playwright-report/
 test-results/
 blob-report/
 .playwright/
+# P94: local-authenticated-E2E synthetic-user session state — a real, if throwaway, JWT for a
+# local-only synthetic account. Never committed, same discipline as .env.local.
+playwright/.auth/
 
 # ── Scanner artefacts ──────────────────────────────────────────────────────
 # Models and card-image corpora are downloaded at build time, never committed.
@@ -91,6 +94,15 @@ scripts/scanner-visual-benchmark/reports/
 # itself reuses scripts/scanner-visual-benchmark/.benchmark-cache/ above — no second image cache.
 scripts/scanner-ocr-benchmark/reports/
 scripts/scanner-name-lexicon/generated/
+# P91/P93 recognition R&D lab: the corpus manifest/reference-index cache and every experiment
+# report are reproducible (re-buildable from TCGdex + the model cache), never committed. The
+# corpus's own imagePath fields may point at a sibling worktree's images directory rather than a
+# local copy — see the P93 adversarial experiment's own header comment.
+scripts/scanner-recognition-lab/.cache/
+scripts/scanner-recognition-lab/reports/
+# P96 preprocessor-parity harness: reproducible from the committed index + benchmark corpus cache
+# above, never committed.
+scripts/scanner-preprocess-parity/reports/
 
 # ── Editor and OS ──────────────────────────────────────────────────────────
 .vscode/*

@@ -7,9 +7,11 @@
 import { describe, expect, it } from 'vitest'
 import {
   CHECKPOINT_SCHEMA_VERSION,
+  canonicalizeProjectIdentity,
   checkpointMatchesIdentity,
   deriveProjectIdentity,
   freshCheckpoint,
+  LOCAL_PROJECT_IDENTITY_SENTINEL,
   packCurrentCardIds,
   type CheckpointIdentity,
 } from '../../../src/domain/scanner/checkpoint-identity'
@@ -36,6 +38,46 @@ describe('deriveProjectIdentity', () => {
       'nopmkroeygmlvndzjjqs.supabase.co',
     )
     expect(deriveProjectIdentity('http://127.0.0.1:54321')).toBe('127.0.0.1:54321')
+  })
+})
+
+describe('canonicalizeProjectIdentity (P94 N-13)', () => {
+  it('normalizes every local Supabase alias to the same sentinel, any port', () => {
+    expect(canonicalizeProjectIdentity('http://127.0.0.1:54321')).toBe(
+      LOCAL_PROJECT_IDENTITY_SENTINEL,
+    )
+    expect(canonicalizeProjectIdentity('http://localhost:54321')).toBe(
+      LOCAL_PROJECT_IDENTITY_SENTINEL,
+    )
+    expect(canonicalizeProjectIdentity('http://localhost:9999')).toBe(
+      LOCAL_PROJECT_IDENTITY_SENTINEL,
+    )
+    expect(canonicalizeProjectIdentity('http://[::1]:54321')).toBe(LOCAL_PROJECT_IDENTITY_SENTINEL)
+    // Also accepts a bare `host` string (deriveProjectIdentity's own return shape), not just a URL.
+    expect(canonicalizeProjectIdentity('127.0.0.1:54321')).toBe(LOCAL_PROJECT_IDENTITY_SENTINEL)
+    expect(canonicalizeProjectIdentity('localhost:54321')).toBe(LOCAL_PROJECT_IDENTITY_SENTINEL)
+  })
+
+  it('strips the .supabase.co suffix to the bare project ref', () => {
+    expect(canonicalizeProjectIdentity('https://nopmkroeygmlvndzjjqs.supabase.co')).toBe(
+      'nopmkroeygmlvndzjjqs',
+    )
+    // The raw host string form already committed in an existing manifest (no port on hosted URLs).
+    expect(canonicalizeProjectIdentity('nopmkroeygmlvndzjjqs.supabase.co')).toBe(
+      'nopmkroeygmlvndzjjqs',
+    )
+  })
+
+  it('a hosted URL and its already-committed raw-host-string manifest value canonicalize identically (migration compatibility)', () => {
+    const fromRuntimeUrl = canonicalizeProjectIdentity('https://nopmkroeygmlvndzjjqs.supabase.co')
+    const fromStoredManifestHost = canonicalizeProjectIdentity(
+      deriveProjectIdentity('https://nopmkroeygmlvndzjjqs.supabase.co'),
+    )
+    expect(fromRuntimeUrl).toBe(fromStoredManifestHost)
+  })
+
+  it('falls back to the bare lowercased hostname for an unrecognized (future custom) domain', () => {
+    expect(canonicalizeProjectIdentity('https://Db.MyCompany.example')).toBe('db.mycompany.example')
   })
 })
 
