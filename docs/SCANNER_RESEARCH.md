@@ -906,3 +906,148 @@ No candidate was benchmarked: D-101's own finding that the failure is a photomet
 gap, not a discriminative-power gap, means a different backbone needs evidence of being MORE
 glare/blur-robust than DINOv2-small before a multi-hour, irreversible 19,501-card re-embedding is
 justified — no such evidence was sought or found this session.
+
+## 10. Recognition R&D Phase 2 (P95, D-104)
+
+Full decision record: `docs/DECISIONS.md` D-104. Branch `research/m15-p95-recognition-phase2`,
+based on P91's exact head. Reused P91's lab (`scripts/scanner-recognition-lab/`, same 4,296-card
+corpus/reference index) and added: `augment/continuous.mjs` (independent 0-5 severity dials),
+`quality/metrics-v2.mjs` (edge density, dark-clipping, block-luminance-variation metrics),
+`quality/local-features.mjs` (Harris-corner + patch-NCC keypoint matcher), `retrieval/build-art-
+crop-index.mjs` (full-corpus art-crop reference embeddings), extensions to `rerank/image-
+rerank.mjs` (precompute-once feature variants + edge/color-moment signals), and
+`scripts/scanner-recognition-lab/f03/real-hosted-benchmark.ts` (ready, unrun F-03 tooling).
+
+### 10a. Continuous-severity dataset (n=5,160 query evaluations)
+
+Six axes (blur/shadow/glare/noise/perspective/brightness), levels 0-5, 120 cards per level, plus 6
+pairwise interactions at moderate/severe combined levels. Confirms graceful, monotonic degradation
+absent from P91's two-tier catastrophic profiles — e.g. single-axis noise at level 5: meanTrueSim
+0.70 (n=120 pilot run showed 0.70 dropping from 0.96 at level 1); perspective level 5: meanTrueSim
+0.69. No single axis alone reaches P91's catastrophic ~0.13 regime — only the COMBINED canvas-
+composite hard profiles (P91's `hardAugmentAll`) do. Full per-level summary:
+`scripts/scanner-recognition-lab/reports/08-continuous-severity-dataset.json`.
+
+### 10b. Quality-metric correlation (tune split, n=2,881)
+
+Pearson/point-biserial correlation of every pixel-only metric against reciprocal-rank, TOP1/TOP5
+correctness, "bad" (rank>20), true-similarity, nearest-wrong-similarity and margin. Strongest:
+`meanBlockStd` (r=0.207 vs reciprocal-rank), `brightnessMean` (r=-0.172), `shadowCv` (r=0.172),
+`contrastStd` (r=0.164) — all WEAK. Ground-truth axis severity correlates strongly with
+true-similarity (noise r=-0.88, blur r=-0.86, perspective r=-0.82) but weakly with TOP1/bad —
+confirming most moderate-severity captures still retrieve correctly even as similarity degrades.
+Full table: `reports/12-quality-metric-correlation.json`.
+
+### 10c. General quality gate — REJECTED (train/validation/holdout, n=2,322/559/2,279)
+
+| Model | Holdout recall | Holdout precision | Holdout goodCaptureRejection | Holdout acceptedAccuracy |
+|---|---|---|---|---|
+| Rule tree (top-1 metric: contrastStd) | 52.9% | 1.1% | 35.0% | 99.5% |
+| Logistic regression (10 features) | 88.2% | 2.5% | 25.7% | 99.9% |
+| Calibration table (contrastStd bins) | 0% | — | 0% | 99.3% |
+
+No model achieves usable precision — true "bad" captures are rare at moderate severity (badRate
+0-2.6% per single axis), so even the best recall (logistic regression, 88.2%) comes with a
+25.7-35% false-rejection rate of GOOD captures. **Do not ship a general gate**; the severe-blur-
+specific gate (D-103) is unaffected by this finding — it targets a genuinely bimodal regime.
+Full report: `reports/13-general-quality-gate.json`.
+
+### 10d. Image rerank — actually run (n=150 x 5 regimes x 5 K-values x 6 signals)
+
+`histIntersection`@K=5 is the only net-positive signal (+4.6pt geometryOnly, +4.6pt confusable);
+every other signal/K combination is flat-to-catastrophically negative (colorMoments: -84.7pt on
+iPhone-like at K=100). True-card-in-K coverage is high everywhere except the catastrophic regime
+(≤4% even at K=100). Full per-signal/per-K table: `reports/10-image-rerank.json`.
+
+### 10e. Local-feature rerank — actually measured (n=150, K=20)
+
+| Regime | DINO TOP1 | Local-feature rerank TOP1 | Delta |
+|---|---|---|---|
+| Good geometry | 92.7% | 97.3% | +4.6 |
+| Blur | 97.3% | 99.3% | +2.0 |
+| Glare | 99.3% | 98.7% | -0.6 |
+| Confusable | 92.6% | 96.3% | +3.7 |
+
+The one rerank mechanism this session found with no large regression anywhere tested. Full report:
+`reports/15-local-feature-rerank.json`.
+
+### 10f. Distorted art-crop confusable (n=400, redoing P91's ceiling-effect-flawed experiment)
+
+Full-corpus, iPhone-like-moderate regime — the regime P91's version could not measure: full-card
+75.8% TOP1 vs dualMax 91.3%, artCrop-alone 90.8%, dualAverage 90.5% (+~15pts). Geometry-only:
+full-card 91% vs dualAverage 95.3% (+4.3pts). Catastrophic (hardGlareShadowBlur): 0% for every
+representation, full corpus — confirms art-crop tricks do not touch the catastrophic regime.
+Full table: `reports/11-distorted-art-crop-confusable.json`.
+
+### 10g. DINO / dual-prototype K-coverage (n=300)
+
+| Regime | Single-proto TOP1 | Single-proto TOP20 | Single-proto TOP200 | Dual-proto TOP1 |
+|---|---|---|---|---|
+| Geometry-only | 92.7% | 100% | 100% | 100% |
+| iPhone-like-moderate | 76.7% | 98.7% | 100% | 99% |
+| Hard glare+shadow+blur | 0% | 1% | 5% | 0% |
+
+The true card is almost always retrievable within a practical shortlist in the moderate regime
+(explaining why reranking CAN help there) but is essentially absent even at TOP200 in the
+catastrophic regime (explaining why nothing tried this session or P91 helps there). Full table:
+`reports/09-k-coverage.json`.
+
+### 10h. Two-stage architecture comparison — the production decision (n=150 x 4 regimes)
+
+| Architecture | Clean | Geometry-only | iPhone-like | Hard (glare+shadow+blur) |
+|---|---|---|---|---|
+| A. DINO alone | 100% | 92.7% (7.3% false-confident) | 84% (15.3% false-confident) | 0% (100% abstained) |
+| B. Dual-prototype alone | 100% | 100% | **100%** | 0% (100% abstained) |
+| C. DINO + histIntersection@K5 | 100% | 98% | **28%** (69.3% false-confident) | 0% (100% abstained) |
+| D. Dual-proto + histIntersection@K5 | 100% | 98% | **29.3%** (68% false-confident) | 0% (100% abstained) |
+| E. DINO + full/art-crop dualMax | 100% | 97.3% | 93.3% | 0% (100% abstained) |
+| F. Dual-proto + local-feature rerank@K20 | 100% | 98% | 97.3% | 0% (100% abstained) |
+
+Image rerank (C/D) is not merely unhelpful outside geometry-only — it is ACTIVELY DANGEROUS on the
+realistic moderate regime, cratering TOP1 by 55-71 points with a 68-69% false-confident rate.
+Dual-prototype alone (B) wins or ties every non-catastrophic regime with the lowest complexity of
+any option that beats plain DINO. Full report: `reports/17-two-stage-pipeline-search.json`.
+
+### 10i. Alternative model benchmark — actually run (n=150, 400-card shared subset)
+
+| Model | Embed dim | Weights (quantized) | Mean embed latency | iPhone-like TOP1 |
+|---|---|---|---|---|
+| DINOv2-small (shipped) | 384 (true embedding) | 24.45MB | 56.2ms | **91.3%** |
+| ConvNeXtV2-tiny-22k-224 | 1000 (classification logits, lossy) | 29.5MB | 148.8ms | 73.3% |
+
+MobileNetV3-small and EfficientFormer-L1 have no ready ONNX/transformers.js conversion (verified
+live against the Hugging Face API — every plausible Xenova/onnx-community repo id returned 401);
+converting either from PyTorch weights would need a standalone export+calibration pipeline, out of
+scope per this session's own stop-the-rabbit-hole instruction. MobileCLIP was not tested (D-098's
+non-commercial weights restriction, unchanged). DINOv2-small remains the best available model.
+Full report: `reports/14-alternative-model-benchmark.json`.
+
+### 10j. Real production-format cost/search recompute
+
+Recomputed (not re-estimated) from `src/data/scanner/visual-index.ts`'s actual Int8Array/scale-127
+format: single-prototype 7.87MB total (matches shipped ~7.5MB), dual-prototype 15.01MB, decoded RAM
+28.6MB→57.1MB. Brute-force search benchmark (this lab's Node environment): 19,501 rows 15.4ms
+(matches D-101/P84's real-device 16ms measurement almost exactly), 39,002 rows (dual-proto) 36.2ms,
+97,505 rows (5-proto) 75.7ms — comfortably sub-100ms at every prototype count tested; no ANN index
+warranted. Full table: `reports/16-cost-and-search-benchmark.json`.
+
+### 10k. F-03 / production lexicon — still blocked, tooling now ready
+
+No `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` this session (the same standing gap every M15 session
+since P75 has disclosed). Unlike prior sessions, `scripts/scanner-recognition-lab/f03/real-hosted-
+benchmark.ts` is now a complete, ready-to-run script — it reuses the production `drainAllCardPages`
+pagination discipline, loads the ALREADY-BUILT real 19,501-card visual index directly (no
+re-embedding), and needs only credentials:
+
+```
+SUPABASE_URL=https://<project-ref>.supabase.co SUPABASE_SERVICE_ROLE_KEY=<key> \
+  pnpm tsx scripts/scanner-recognition-lab/f03/real-hosted-benchmark.ts [--n=400]
+```
+
+The production name-lexicon generator (`scripts/scanner-name-lexicon/build-lexicon.ts`, P85) also
+already auto-detects credentials and needs no new work — same command pattern:
+
+```
+SUPABASE_URL=https://<project-ref>.supabase.co SUPABASE_SERVICE_ROLE_KEY=<key> \
+  pnpm scanner:name-lexicon:build
+```

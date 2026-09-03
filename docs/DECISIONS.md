@@ -3582,6 +3582,90 @@ production-scale lexicon exists without those same credentials — the exact gen
 recorded in `output_88.txt` for whichever future session has them); real-device performance
 measurement.
 
+## D-104 — Recognition R&D Phase 2: dual-prototype reference augmentation is the production recommendation; naive image rerank REJECTED as unsafe outside a narrow regime; local-feature (Harris) rerank is a real, previously-untested positive; no general (non-blur) quality gate is viable; DINOv2-small confirmed best model (P95)
+
+Full account: `ai_outputs/Claude_outputs/output_95.txt`. Research-only branch
+(`research/m15-p95-recognition-phase2`, based on P91's exact head `e4029a2`) extended P91's lab
+with a continuous-severity synthetic benchmark (independent 0-5 dials for blur/shadow/glare/noise/
+perspective/brightness, ~5,300 query evaluations), a real "iPhone-like moderate" capture profile
+sitting between P91's geometry-only and catastrophic regimes, and finally EXERCISED three tracks
+P91 built but never ran or reasoned away without measurement.
+
+**1. General (non-blur) capture-quality gate: REJECTED, evidence-based.** P91's severe-blur gate
+(99.5% holdout recall) was calibrated on a two-tier taxonomy where "bad" is close to
+bimodal-with-blur by construction. On the new continuous-severity dataset — where most captures at
+moderate severity still retrieve correctly — no pixel-only metric correlates strongly with failure
+(best |r|≈0.21, `meanBlockStd` vs reciprocal-rank; every other metric weaker). Three model classes
+(greedy rule tree, logistic regression, empirical calibration table), card-id-split
+train/validation/holdout, all converge on the same finding: holdout precision never exceeds ~8%
+(logistic regression: 88.2% recall / 2.5% precision) because true "bad" (rank>20) captures are rare
+at moderate severity — a general gate would reject roughly 20-30x more good captures than bad ones
+it catches. **Do not ship a general quality gate.** The severe-blur-specific gate
+(`BLUR_ABSTAIN_THRESHOLD=378`, D-103) remains the only well-evidenced abstention mechanism.
+
+**2. Image rerank (NCC/SSIM/histogram/edge/color-moments, P91's built-but-never-run module):
+measured, and the one net-positive configuration is UNSAFE to ship broadly.** Wired into an actual
+DINO-shortlist → rerank pipeline for the first time (K=5..100, six signals). `histIntersection` at
+K=5 is the only signal that ever beats the DINO baseline, and only on geometry-only/confusable
+distortion (+2.6 to +4.6 points). Every other signal, and histIntersection at higher K, actively
+HURTS accuracy — colorMoments costs up to -84.7 points on the realistic moderate ("iPhone-like")
+regime. **Confirmed catastrophic in the two-stage architecture comparison below**: wiring
+histIntersection@K=5 onto either the plain or dual-prototype pipeline collapses iPhone-like-regime
+TOP1 from 84-100% to 28-29.3%, with a 68-69.3% FALSE-CONFIDENT rate (a wrong answer presented as
+if correct) — this is exactly the "false confidence is worse than abstention" failure mode D-103
+§38 warned about, now measured concretely. **Do not ship image rerank as a blanket post-DINO step.**
+
+**3. Local-feature rerank (Harris-corner + patch-NCC, dependency-free — P91 reasoned this away
+without benchmarking, assuming classical keypoints would be less blur-robust than a global CNN
+embedding): MEASURED, and the assumption was wrong.** A from-scratch, ~150-line, no-new-dependency
+ORB-inspired matcher (`quality/local-features.mjs`) reranks a DINO top-20 shortlist and is net
+POSITIVE on 3 of 4 tested regimes (+4.6 good-geometry, +2.0 blur, +3.7 confusable; -0.6 glare,
+noise-level) — the one rerank mechanism this session found that never produces a large regression.
+Folded into the two-stage architecture comparison as `F_dualProtoLocalFeature`.
+
+**4. Two-stage architecture comparison (A-F, n=150 x 4 regimes) — the production decision.**
+Dual-prototype reference augmentation ALONE (`B_dualProto`, P91's `pristinePlus1Aux`) reaches 100%
+TOP1 on both geometry-only and the new iPhone-like-moderate regime — matching or beating every more
+complex combination tested, including the version with local-feature rerank stacked on top
+(`F_dualProtoLocalFeature`: 98%/97.3% on the same two regimes, at ~30-50ms higher latency for no
+net accuracy gain over B in this session's sample). Plain DINO alone reaches only 84-92.7% TOP1 on
+the same two regimes with a 7.3-15.3% false-confident rate. **Recommendation: ship dual-prototype
+reference augmentation; do not add image rerank; local-feature rerank is a defensible but
+non-essential addition given B already saturates the regimes it would help.** Nothing helps the
+catastrophic regime (0% TOP1 across all six architectures, DINO true-card coverage still <5% even
+at TOP200) — it remains a capture-time (retake/abstention), not a retrieval-time, problem.
+
+**5. DINOv2-small reconfirmed as the best available model.** ConvNeXtV2-tiny-22k-224 (the one
+alternative with a ready ONNX/transformers.js conversion; MobileNetV3-small and EfficientFormer-L1
+have none and would require a standalone PyTorch→ONNX export pipeline, out of scope per this
+session's own time-box) was benchmarked head-to-head on an identical 400-card subset. DINOv2-small
+wins on every axis that matters: iPhone-like-regime TOP1 91.3% vs ConvNeXt's 73.3%, ~2.6x faster
+per-embed (56ms vs 149ms), smaller quantized weights (24.45MB vs 29.5MB), and a true pooled
+embedding vs ConvNeXt's lossy classification-logits stand-in (no feature-extraction ONNX export
+exists for this repo). No evidence found anywhere to switch models.
+
+**6. Real production-format cost recompute (not a fresh estimate — recomputed from
+`src/data/scanner/visual-index.ts`'s actual Int8Array/scale-127/dequantize-on-load format) confirms
+P91's dual-prototype estimate almost exactly**: single-prototype 7.87MB total (matches the shipped
+~7.5MB), dual-prototype 15.01MB, decoded RAM 28.6MB→57.1MB. Brute-force search benchmarked at
+19,501/39,002/97,505 rows (single/dual/five-prototype row counts): 15.4ms/36.2ms/75.7ms median in
+this lab's Node environment — comfortably sub-100ms even at 5x scale; **no ANN index is warranted**
+(matches D-103's own "linear scan stays trivial" framing, now measured rather than assumed).
+
+**7. F-03 (real 19,501-card hosted confusable-group benchmark) remains blocked** — no
+`SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` this session, the same standing gap every M15 session
+since P75 has disclosed. Unlike prior sessions, the EXACT ready tooling now exists and was written,
+not merely described: `scripts/scanner-recognition-lab/f03/real-hosted-benchmark.ts` reuses the
+production pagination discipline, loads the ALREADY-BUILT real 19,501-card index directly (no
+re-embedding), and needs only credentials to run. Same standing gap for the production name-lexicon
+(`scripts/scanner-name-lexicon/build-lexicon.ts` already auto-detects credentials — P85 tooling,
+unchanged).
+
+**Not changed:** the committed 19,501-card DINO index; `src/features/scanner/` (batch/UI); any
+migration; any financial semantic; P90/PR63/PR70; the shipped 0.82 visual-dominance threshold; any
+card special-cased anywhere. **Production code changed:** none — every finding above is a
+recommendation for a future implementation session, not code shipped this session.
+
 ## D-103 — Recognition R&D marathon: reference-side multi-prototype gain, blur-only abstention gate, dominance-threshold recalibration; catastrophic photometric gap CONFIRMED UNCLOSED at 18x scale (P91)
 
 Full account: `ai_outputs/Claude_outputs/output_91.txt`. Research-only branch
