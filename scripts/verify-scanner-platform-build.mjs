@@ -109,7 +109,9 @@ function cspDirectives(csp) {
   const connectOrigin = connectSrc[1] ?? ''
   const isLocalOrPlaceholderBuild = connectOrigin === LOCAL_SUPABASE_ORIGIN
   const buildMode = isLocalOrPlaceholderBuild ? 'LOCAL/CI PLACEHOLDER' : 'HOSTED'
-  console.log(`\nPlatform verifier build mode: ${buildMode} (connect-src origin: ${connectOrigin || '(none)'})\n`)
+  console.log(
+    `\nPlatform verifier build mode: ${buildMode} (connect-src origin: ${connectOrigin || '(none)'})\n`,
+  )
 
   const connectShapeOk = isLocalOrPlaceholderBuild
     ? // Local mode: still require the real 3-token self+project+realtime SHAPE (never a missing or

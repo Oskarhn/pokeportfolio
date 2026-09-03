@@ -807,3 +807,33 @@ A scale-appropriate confusable-group benchmark against the real 19,501-card host
 M15 session since P75 has disclosed. No card-name/set metadata for the real catalog exists locally
 to construct deliberate confusable groups (same-Pokémon-different-printing, adjacent evolution
 families, GX/V/VSTAR/ex families) without a live database connection.
+
+## 9. Mega-integration: P87 + P88 + P89 combined, worker fallback, expected-card debug UI (M15, 2026-09-02/03 — P90, D-105)
+
+Combines all three parallel M15 repair branches above onto one integration branch via real `git
+merge` (never squash/cherry-pick — each branch's own commit history is preserved), then closes the
+concrete gaps the combined result still left open. Full account: D-105.
+
+Beyond the merge conflict resolution itself (§7f/§7g/§8 renumbering, the `analyze.ts`
+OCR-pipeline/mutex reconstruction, `main.tsx`'s two independent fire-and-forget calls), this session:
+
+- Implemented a REAL main-thread RGBA-conversion fallback for the one confirmed engine gap P89's
+  real-worker smoke test found (`OffscreenCanvas` unavailable inside a Worker scope) — the worker
+  reports `offscreenCanvasAvailableInWorker`, and the client converts on the main thread instead of
+  degrading to a structured error, keeping visual recognition working end to end.
+- Finished the expected-card debug UI P87 shipped plumbing for but never built (§7f/D-101's own
+  disclosed gap) — a catalog search + rank lookup under `?scannerDebug=1`, extended with a real
+  hybrid (text + visual) rank via a new `rankScannerCandidatesFull` that reuses production's exact
+  scoring pipeline without the top-N truncation.
+- Made the platform build verifier and the hosted missing-index policy mode-aware (LOCAL/CI
+  PLACEHOLDER vs HOSTED), closing a false-failure P87 had disclosed (23/24 under the local
+  placeholder origin) and a real gap (a hosted build could previously ship with no visual index at
+  all, silently, with every other gate green).
+- Added a plain-language "visual recognition unavailable" note to the scanner intro screen for a
+  confirmed terminal failure — previously silent either way.
+- Verified (not assumed) that index-update-during-an-open-session, the unsaved-work registry vs.
+  index-freshness interaction, abort vs. visual-worker state, the OCR mutex vs. cancellation, F-02's
+  guard, and test-fixture path consistency were ALL already coherent by construction post-merge, with
+  no code change required — each investigated directly against the merged tree.
+
+`SCANNER_SCHEMA_VERSION` bumped 1 → 2 — see `src/platform/build-info.ts`'s own comment.

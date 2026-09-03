@@ -149,56 +149,53 @@ test.describe('visual worker real-browser smoke (F-31, P89)', () => {
     // main-thread RGBA-conversion fallback for exactly this case — drive it here too, so this
     // spec proves visual recognition actually still works end to end on an engine with this gap,
     // not merely that the failure path is well-formed.
-    const searchResult = await page.evaluate(
-      async (offscreenAvailable: boolean) => {
-        const worker = (window as unknown as { __f31Worker: Worker }).__f31Worker
-        const canvas = document.createElement('canvas')
-        canvas.width = 224
-        canvas.height = 224
-        const ctx = canvas.getContext('2d')
-        if (ctx === null) throw new Error('2D canvas context unavailable in this browser.')
-        ctx.fillStyle = 'rgb(120, 180, 90)'
-        ctx.fillRect(0, 0, 224, 224)
-        const bitmap = await createImageBitmap(canvas)
-        const requestId = 1
-        const message = offscreenAvailable
-          ? { type: 'embed-and-search', requestId, image: { kind: 'bitmap', bitmap }, topK: 5 }
-          : (() => {
-              // Mirrors visual-client.ts's bitmapToRgbaOnMainThread exactly (same conversion, done
-              // here because this spec drives the raw Worker, not the client class).
-              const mainCanvas = document.createElement('canvas')
-              mainCanvas.width = bitmap.width
-              mainCanvas.height = bitmap.height
-              const mainCtx = mainCanvas.getContext('2d')
-              if (mainCtx === null) throw new Error('2D canvas context unavailable on main thread.')
-              mainCtx.drawImage(bitmap, 0, 0)
-              const { buffer } = mainCtx.getImageData(0, 0, bitmap.width, bitmap.height).data
-              bitmap.close()
-              return {
-                type: 'embed-and-search',
-                requestId,
-                image: { kind: 'rgba', buffer, width: mainCanvas.width, height: mainCanvas.height },
-                topK: 5,
-              }
-            })()
-        const transferList = offscreenAvailable
-          ? [bitmap]
-          : [(message.image as { buffer: ArrayBuffer }).buffer]
-        const result = await new Promise<WorkerSearchResult>((resolve) => {
-          worker.addEventListener('message', function handler(event: MessageEvent) {
-            const data = event.data as { type?: string; requestId?: number } | undefined
-            if (data?.requestId === requestId) {
-              worker.removeEventListener('message', handler)
-              resolve(data as WorkerSearchResult)
+    const searchResult = await page.evaluate(async (offscreenAvailable: boolean) => {
+      const worker = (window as unknown as { __f31Worker: Worker }).__f31Worker
+      const canvas = document.createElement('canvas')
+      canvas.width = 224
+      canvas.height = 224
+      const ctx = canvas.getContext('2d')
+      if (ctx === null) throw new Error('2D canvas context unavailable in this browser.')
+      ctx.fillStyle = 'rgb(120, 180, 90)'
+      ctx.fillRect(0, 0, 224, 224)
+      const bitmap = await createImageBitmap(canvas)
+      const requestId = 1
+      const message = offscreenAvailable
+        ? { type: 'embed-and-search', requestId, image: { kind: 'bitmap', bitmap }, topK: 5 }
+        : (() => {
+            // Mirrors visual-client.ts's bitmapToRgbaOnMainThread exactly (same conversion, done
+            // here because this spec drives the raw Worker, not the client class).
+            const mainCanvas = document.createElement('canvas')
+            mainCanvas.width = bitmap.width
+            mainCanvas.height = bitmap.height
+            const mainCtx = mainCanvas.getContext('2d')
+            if (mainCtx === null) throw new Error('2D canvas context unavailable on main thread.')
+            mainCtx.drawImage(bitmap, 0, 0)
+            const { buffer } = mainCtx.getImageData(0, 0, bitmap.width, bitmap.height).data
+            bitmap.close()
+            return {
+              type: 'embed-and-search',
+              requestId,
+              image: { kind: 'rgba', buffer, width: mainCanvas.width, height: mainCanvas.height },
+              topK: 5,
             }
-          })
-          worker.postMessage(message, transferList)
+          })()
+      const transferList = offscreenAvailable
+        ? [bitmap]
+        : [(message.image as { buffer: ArrayBuffer }).buffer]
+      const result = await new Promise<WorkerSearchResult>((resolve) => {
+        worker.addEventListener('message', function handler(event: MessageEvent) {
+          const data = event.data as { type?: string; requestId?: number } | undefined
+          if (data?.requestId === requestId) {
+            worker.removeEventListener('message', handler)
+            resolve(data as WorkerSearchResult)
+          }
         })
-        worker.terminate()
-        return result
-      },
-      readyResult.offscreenCanvasAvailableInWorker ?? true,
-    )
+        worker.postMessage(message, transferList)
+      })
+      worker.terminate()
+      return result
+    }, readyResult.offscreenCanvasAvailableInWorker ?? true)
 
     if (!readyResult.offscreenCanvasAvailableInWorker) {
       test.info().annotations.push({

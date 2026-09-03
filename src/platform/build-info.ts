@@ -20,5 +20,10 @@ export const APP_BUILD_TIME: string =
  * that would make an old paste incomparable to a new one — an integer, not tied to the app
  * version or commit, so a reviewer can tell "this diagnostics dump used a schema I don't
  * recognize" without cross-referencing a commit history.
+ *
+ * 1 -> 2 (P90, D-105): the diagnostics shape grew materially across P87 (content-addressed index
+ * fields), P88 (OCR confidence/trial fields, hybrid score components) and this session's own
+ * expected-card hybrid-rank fields, without ever being bumped — a paste from a build predating any
+ * of that is now distinguishable by this field alone.
  */
-export const SCANNER_SCHEMA_VERSION = 1
+export const SCANNER_SCHEMA_VERSION = 2
