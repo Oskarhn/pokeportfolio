@@ -3940,3 +3940,25 @@ own instruction (overnight priority: integration, not ceremony).
 
 **Not changed:** any financial semantic; any migration (still 90); the committed 19,501-card DINO
 index's actual content. No card was special-cased anywhere.
+
+**P94 correction (2026-09-03):** Section 9's claim above — that the main-thread RGBA-conversion
+fallback restores "a REAL successful embed+search result" on an engine lacking `OffscreenCanvas`
+inside a Worker — is only PARTIALLY true and was never actually run to completion before this
+session; `tests/e2e/visual-worker-real-browser.spec.ts` deferred the E2E gates and the fallback's
+own real-search assertion was never exercised. Running it for real (P94 §24) against Playwright's
+WebKit build (which reports `OffscreenCanvas` undefined in Worker scope) showed the fallback
+converts the captured frame correctly — `visual-worker.ts` itself never constructs an
+`OffscreenCanvas` on this path — but `@huggingface/transformers`' OWN internal image-preprocessing
+step (resizing the input to the model's expected dimensions) unconditionally constructs its own
+`OffscreenCanvas`, with no fallback of its own, regardless of whether the caller supplied an
+`ImageBitmap` or raw RGBA bytes. The result on such an engine is still a well-formed, attributable
+failure (`Error: OffscreenCanvas not supported by this environment.`, thrown from inside the
+library's own minified code — confirmed by inspecting the built `visual-worker-*.js` chunk
+directly) rather than a working search. This is a real, currently open limitation: OCR-only
+matching remains fully available on such a device (D-105 §16's plain-language fallback note still
+applies), but visual recognition genuinely does not work there, and no session has fixed this yet —
+it would need patching or replacing `@huggingface/transformers`' own `RawImage` resize step, which
+is a materially larger change than this correction. Never confirmed against a real Mac/iPhone
+either way. The test now asserts this exact disclosed failure shape when
+`offscreenCanvasAvailableInWorker` is false, rather than a full search success it cannot actually
+prove on this engine.
