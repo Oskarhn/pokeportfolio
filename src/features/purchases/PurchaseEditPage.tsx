@@ -314,8 +314,11 @@ function PurchaseEditForm({ purchaseId, detail }: { purchaseId: string; detail: 
       ) : null}
 
       <div className="space-y-1.5">
-        <label className="block text-sm font-medium text-slate-300">Notes</label>
+        <label htmlFor="purchase-edit-notes" className="block text-sm font-medium text-slate-300">
+          Notes
+        </label>
         <textarea
+          id="purchase-edit-notes"
           value={notes}
           onChange={(event) => {
             setNotes(event.target.value)

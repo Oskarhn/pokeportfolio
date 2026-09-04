@@ -104,7 +104,7 @@ export function PortfolioListView({
                           aria-hidden
                           className={`flex size-5 shrink-0 items-center justify-center rounded-full border-2 ${
                             selectedIds?.has(tile.holdingId)
-                              ? 'border-sky-500 bg-sky-600 text-white'
+                              ? 'border-sky-500 bg-sky-600 text-accent-foreground'
                               : 'border-slate-600'
                           }`}
                         >
@@ -263,7 +263,7 @@ export function PortfolioTableView({
                           }}
                           className={`flex size-5 items-center justify-center rounded-full border-2 ${
                             selectedIds?.has(tile.holdingId)
-                              ? 'border-sky-500 bg-sky-600 text-white'
+                              ? 'border-sky-500 bg-sky-600 text-accent-foreground'
                               : 'border-slate-600'
                           }`}
                         >

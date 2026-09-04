@@ -531,8 +531,11 @@ export function SaleFormPage() {
       ) : null}
 
       <div className="space-y-1.5">
-        <label className="block text-sm font-medium text-slate-300">Notes</label>
+        <label htmlFor="sale-notes" className="block text-sm font-medium text-slate-300">
+          Notes
+        </label>
         <textarea
+          id="sale-notes"
           value={notes}
           onChange={(event) => {
             setNotes(event.target.value)

@@ -667,6 +667,9 @@ export function ScannerPage() {
       ) : state.step === 'starting-camera' || state.step === 'camera' ? (
         <>
           <div className="relative flex-1 overflow-hidden">
+            {/* eslint-disable-next-line jsx-a11y/media-has-caption -- live self-view of the
+                device's own camera, muted by CAMERA_VIDEO_PROPS: there is no audio or dialogue
+                track at any point to caption, unlike prerecorded/broadcast media the rule targets. */}
             <video
               ref={videoRef}
               {...CAMERA_VIDEO_PROPS}
@@ -1557,7 +1560,7 @@ function ReviewView({
       {previewUrl !== null ? (
         <img
           src={previewUrl}
-          alt="Captured card photo"
+          alt="The card you captured"
           className="mx-auto max-h-[52svh] w-auto rounded-xl border border-slate-700"
         />
       ) : null}

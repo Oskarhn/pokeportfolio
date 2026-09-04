@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Hand-written and intentionally tiny — PokePortfolio is invite-only (docs/PRODUCT_SPEC.md §1.1),
+  so these three pages are the entire genuinely public surface. Never add a private/authenticated
+  route here. scripts/check-links.mjs cross-checks this file against public/robots.txt's Allow
+  list so the two can't silently drift apart.
+-->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://pokeportfolio-dev.pages.dev/privacy</loc>
+  </url>
+  <url>
+    <loc>https://pokeportfolio-dev.pages.dev/terms</loc>
+  </url>
+  <url>
+    <loc>https://pokeportfolio-dev.pages.dev/faq</loc>
+  </url>
+</urlset>

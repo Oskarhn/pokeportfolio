@@ -552,7 +552,7 @@ function DangerZone() {
  */
 function Footer() {
   return (
-    <footer className="space-y-1 border-t border-slate-800 pt-4 text-xs text-slate-500">
+    <footer className="space-y-2 border-t border-slate-800 pt-4 text-xs text-slate-500">
       <p>
         Card data and images from TCGdex. Price data from Cardmarket and TCGplayer, via TCGdex.
         Exchange rates from Norges Bank.
@@ -560,6 +560,17 @@ function Footer() {
       <p>
         PokePortfolio is unofficial and unaffiliated with The Pokémon Company, Nintendo, Creatures
         or GAME FREAK.
+      </p>
+      <p className="flex flex-wrap gap-x-3">
+        <Link to="/privacy" className="hover:text-slate-300 hover:underline">
+          Privacy
+        </Link>
+        <Link to="/terms" className="hover:text-slate-300 hover:underline">
+          Terms
+        </Link>
+        <Link to="/faq" className="hover:text-slate-300 hover:underline">
+          FAQ
+        </Link>
       </p>
       <p>v{__APP_VERSION__}</p>
     </footer>
