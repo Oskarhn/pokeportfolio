@@ -38,6 +38,7 @@
     "scanner:visual:benchmark:hash": "tsx scripts/scanner-visual-benchmark/run-hash-benchmark.ts",
     "scanner:recognition-lab:p93-adversarial": "tsx scripts/scanner-recognition-lab/experiments/08-p93-hybrid-false-confidence.ts",
     "scanner:recognition-lab:p93-blur-severity": "tsx scripts/scanner-recognition-lab/experiments/09-p93-continuous-blur-severity.ts",
+    "scanner:recognition-lab:p99-scoring-tiers-sweep": "tsx scripts/scanner-recognition-lab/experiments/10-p99-scoring-tiers-sweep.ts",
     "scanner:index:build": "tsx scripts/scanner-visual-index/build-index.ts",
     "scanner:index:verify": "tsx scripts/scanner-visual-index/verify-index.ts",
     "scanner:preprocess:parity": "tsx scripts/scanner-preprocess-parity/run-parity.ts",

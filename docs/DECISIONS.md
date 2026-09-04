@@ -4446,3 +4446,95 @@ lint (0 errors, 28 warnings — P96's own reported baseline, unchanged)/format c
 `PurchaseFormPage.tsx` was checked and does NOT have an analogous async holdingId-keyed prefill (its
 own `useUnsavedWorkSnapshot` registration — referenced by this file's own F-40 comment — uses the
 default `ready=true`, no async prefill involved), so it is not affected and was not changed.
+
+---
+
+## D-111 — P99 follow-ups: landscape-preprocessor parity gap is a synthetic-only state; blur benchmark now routed through the real rectify pipeline
+
+**2026-09-04 · Accepted**
+
+**Landscape parity (P96's 85% weak spot, prompt §11).** Traced the full call chain from a real
+scan to the DINO preprocessing stage, code-verified rather than assumed:
+
+1. `controller.ts`'s `analyzeCapture` calls `rectifyCapture(capture, {debug})` — UNCONDITIONALLY,
+   before either the OCR or visual channel ever sees the frame (`rectify-capture.ts`'s own header:
+   "produces a canonical, card-only image that BOTH the OCR and visual channels then consume").
+2. `rectifyCapture` always returns a frame sized EXACTLY `RECTIFY_OUTPUT_WIDTH x
+   RECTIFY_OUTPUT_HEIGHT` = 700x980 — a fixed constant, never derived from the source capture's own
+   dimensions or orientation. This holds on BOTH branches: real corner detection warps the detected
+   quadrilateral to 700x980, and the `usedFallback: true` path (detection failed, or rectification
+   errored) still warps the plain nominal rectangle to the SAME fixed 700x980 via the identical
+   `warpPerspective` call — "rectification failed" and "no rectification requested" are
+   pixel-equivalent through the one code path, never a second special case (rectify.ts's own header
+   makes this explicit).
+3. `analyzeVisualSafely` (controller.ts) builds its `ImageBitmap` from `rectified.frame`'s blob
+   using `cardRect = {left:0, top:0, width:700, height:980}` (the full rectified image — no further
+   cropping), and hands that bitmap straight to `VisualRecognitionClient.analyze`.
+4. The bitmap's own `width`/`height` (read directly off the `ImageBitmap`, never recomputed) are
+   what eventually reach `visual-worker.ts`'s `runModelOnRgba`/`preprocessRgbaForDino` as the `rgba`
+   message payload.
+
+Conclusion: **a landscape-shaped (width > height) buffer can never reach
+`preprocessRgbaForDino`/`processor(image)` in the real production pipeline** — every real scan,
+regardless of camera orientation, device, file-upload EXIF orientation, or corner-detection success/
+failure, feeds the DINO preprocessing stage a fixed 700x980 PORTRAIT buffer. P96's own parity
+harness (`scripts/scanner-preprocess-parity/run-parity.ts`) tests a `landscape-rotated` variant by
+rotating a card image 90° and feeding the RAW (pre-rectify) buffer directly to both preprocessing
+paths — a deliberate stress test of the preprocessing ALGORITHM in isolation, which is a legitimate
+and useful thing to measure (it establishes a worst-case bound on `preprocessRgbaForDino`'s fidelity
+under an input shape the algorithm itself does not special-case for), but its 85% TOP1-agreement
+result describes a state this benchmark manufactures, not one the shipped call path can ever
+present to it. No preprocessing-orientation fix is needed or warranted — chasing this would tune
+against an input the production code structurally cannot produce (prompt §11's own instruction: "do
+not chase synthetic impossible states"). Recommend (documentation only, not code): the parity
+report's own summary should note this scope explicitly in future runs so a 85% number is never
+misread as a live production risk.
+
+**Blur benchmark full-pipeline validation (prompt §7/§8, P98's disclosed gap).**
+`scripts/scanner-recognition-lab/experiments/09-p93-continuous-blur-severity.ts` previously fed the
+blurred corpus image directly into `computeBlurScore`, skipping the real `rectifyCard` stage
+entirely — P98's audit confirmed this as a genuine calibration/production mismatch (nearest-neighbor
+downsample inflates Laplacian variance 2-5x over a filtered resize near the threshold boundary) that
+had never been closed. Fixed: the script now runs every query through the real `rectifyCard` (the
+identical platform-neutral function `rectify-capture.ts` calls) at the real 700x980 canonical size
+BEFORE computing the blur score, and embeds that SAME rectified image for retrieval (matching
+`rectify-capture.ts`'s own "both channels consume the same canonical image" contract) — see that
+script's own header for the full reasoning.
+
+**Real full-pipeline results** (`pnpm scanner:recognition-lab:p93-blur-severity`, 80-card sample,
+10-point Gaussian-sigma sweep, real production `rectifyCard` -> `computeBlurScore` -> real
+retrieval against the full 4,296-card benchmark corpus):
+
+| sigma | meanBlurScore | TOP1 acc | abstention rate | false-rejection rate | bad-capture catch rate |
+|---|---|---|---|---|---|
+| 0 (clean) | 8156.72 | 100% | 0% | 0% | n/a (0 bad captures) |
+| 1 | 4505.34 | 98.8% | 0% | 0% | 0% (n=1) |
+| 2 | 1149.70 | 97.5% | 1.3% | 1.3% | 0% (n=2) |
+| 3 | 330.82 | 95.0% | 81.3% | 81.6% | 75% (n=4) |
+| 4 | 128.58 | 90.0% | 100% | 100% | 100% (n=8) |
+| 6 | 37.97 | 86.3% | 100% | 100% | 100% (n=11) |
+| 8 | 14.88 | 72.5% | 100% | 100% | 100% (n=22) |
+| 10 | 8.90 | 37.5% | 100% | 100% | 100% (n=50) |
+| 14 | 4.66 | 6.3% | 100% | 100% | 100% (n=75) |
+| 20 | 3.36 | 3.8% | 100% | 100% | 100% (n=77) |
+
+**Disposition: KEEP 378, threshold now validated end-to-end.** The gate never misses a genuinely
+bad capture past the sigma=3 boundary (100% bad-capture catch rate from sigma=4 onward, holding
+through the most severe levels tested) — the safety property this project's own doctrine prioritizes
+("false confidence is worse than abstention," this module's own header). The real, disclosed cost
+sits exactly at the sigma=3 boundary: TOP1 accuracy is still 95% there, yet the gate already
+abstains on 81.3% of those captures — a real over-rejection this full-pipeline run newly quantifies
+precisely (the pre-P99 benchmark, which skipped the rectify stage, could only say the gate "trends
+conservative" without a number this sharp). This is DIRECTIONALLY consistent with, and now
+numerically confirms, P98's own finding from the un-rectified re-check (conservative, not
+dangerously loose) — it does not newly disqualify 378, it quantifies the safety margin's real cost.
+Per this prompt's own explicit instruction ("do not tune on the same cards used for validation"),
+no new threshold is derived from this 80-card sample; recalibrating narrower (to reduce the sigma=3
+false-rejection rate) would trade toward the riskier failure mode this project has repeatedly
+chosen not to accept, and is left as a properly holdout-separated follow-up, not attempted here.
+
+Note on `rectifyUsedFallbackRatePct` (85-100% across the sweep): expected and disclosed, not a
+defect — this benchmark's corpus images are tight card crops with no background, so the corner
+detector genuinely has no real margin to search (see the script's own header); the fallback path
+still exercises the identical bilinear-warp-then-nearest-neighbor-downsample resize chain under
+test, which is what this validation is actually checking.

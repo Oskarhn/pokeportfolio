@@ -72,28 +72,21 @@ test.describe('Account-switch privacy: unsaved purchase input does not leak acro
    * proves) AND is completely gone for a second user after a real sign-out/sign-in — not merely
    * "the intro screen renders," which would be true regardless of what A did.
    *
-   * CURRENTLY test.fixme() — see D-108 (docs/DECISIONS.md). Building this spec surfaced a REAL,
-   * confirmed bug this session diagnosed but did not fix: under React StrictMode (this project's
-   * dev server only — `pnpm exec vite`, which is what the `desktop-chromium-authenticated` project
-   * drives; production builds strip StrictMode's double-invoke entirely, so the real deployed PWA
-   * is unaffected), ScannerPage's render function runs twice for the initial mount as part of
-   * React's render-purity check, and `useMemo(() => getScannerUiController(userId), [userId])`'s
-   * factory is a real side effect that runs both times — confirmed via instance-tagged debug
-   * logging (controller #1 and #2 both actually constructed for the identical userId in the same
-   * tick). The FIRST instance, not the second, ends up wired into the actually-committed render's
-   * event handlers, and the route-exit cleanup effect disposes it — so every `analyzeCapture()`
-   * after that point throws `ScannerEngineDisposedError`. A deferred/cancelable-timer dispose was
-   * tried and confirmed NOT to fix this (the double construction happens at the RENDER level, not
-   * the effect level, so nothing in the effect's own cleanup/remount cycle can distinguish which
-   * instance is the "real" one). This is why NO prior M15 session's E2E coverage ever caught it:
-   * every existing scanner E2E spec drives the PRODUCTION preview server, where StrictMode is
-   * inert; this project's authenticated E2E project is the only one that drives the dev server, and
-   * nothing had ever navigated it to `/scan` before this test. Once a future session fixes the
-   * underlying controller-construction lifecycle (moving it out of `useMemo` into a ref populated
-   * inside the mount effect, so React's double-render can no longer produce two independently-alive
-   * instances), this test should be un-skipped — it is otherwise complete and correct as written.
+   * P99: was `test.fixme()` — see D-108 (docs/DECISIONS.md). Building this spec originally
+   * surfaced a real, confirmed bug: under React StrictMode (this project's dev server only —
+   * `pnpm exec vite`, which is what the `desktop-chromium-authenticated` project drives; production
+   * builds strip StrictMode's double-invoke entirely, so the real deployed PWA was never affected),
+   * ScannerPage's render function ran twice for the initial mount as part of React's render-purity
+   * check, and `useMemo(() => getScannerUiController(userId), [userId])`'s factory was a real side
+   * effect that ran both times, producing two independently-alive controller instances — the FIRST
+   * one ended up wired into the actually-committed render's event handlers, and the route-exit
+   * cleanup effect disposed it, so every `analyzeCapture()` afterward threw
+   * `ScannerEngineDisposedError`. Fixed in D-108 by moving construction out of `useMemo` into the
+   * mount effect itself (stored in a ref, not a state value — see D-108's own note on why): effect
+   * bodies genuinely run once per REAL mount even under StrictMode, so exactly one live instance now
+   * survives. This test is the real, execution-level proof of that fix — un-skipped below.
    */
-  test.fixme('A scans a card into a nonempty batch (never committed); it blocks the stale-deployment reload and is gone for B after sign-out/sign-in', async ({
+  test('A scans a card into a nonempty batch (never committed); it blocks the stale-deployment reload and is gone for B after sign-out/sign-in', async ({
     page,
   }) => {
     // A cold model/OCR-WASM load (60s budget below) plus the full sign-out/sign-in round trip

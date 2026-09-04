@@ -2,11 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   createRealScannerController,
   classifyAcquisitionFailure,
+  resolveVisibleCandidateCount,
+  SCANNER_UI_CANDIDATE_LIMIT,
+  SCANNER_UI_EXPANDED_CANDIDATE_LIMIT,
 } from '../../src/features/scanner/controller'
 import {
   initialScannerDefaults,
   scannerSessionStore,
 } from '../../src/features/scanner/session-store'
+import { SCORING_TIERS } from '../../src/domain/scanner/engine'
+import type { RankedScannerCandidate } from '../../src/domain/scanner/types'
 
 /**
  * Controller-level integration seams (prompt sections 18-22 and 29-31): OCR text to P67
@@ -1384,5 +1389,92 @@ describe('getExpectedCardRank (P84, ported P87) — debug-only rank-lookup gatin
       expect(mockedGetCardsByIds).not.toHaveBeenCalled()
       expect(mockedClassifyCardIdsAgainstCatalog).not.toHaveBeenCalled()
     })
+  })
+})
+
+/**
+ * P99/§9 — `resolveVisibleCandidateCount` (P80) is what makes "expose useful alternatives" for a
+ * LOW/MEDIUM result more than a slogan: HIGH never needs to widen (a HIGH tier already carries a
+ * wide margin by construction — engine.ts), but a genuinely flat/ambiguous non-HIGH tail widens the
+ * shortlist from 5 to 8 rather than silently hiding the correct card past the normal cutoff (the
+ * real Shieldon device bug this mechanism was built to close). Had zero direct test coverage before
+ * this session despite being exported and load-bearing for the audit's own confidence-safety
+ * requirement — added here rather than left implicit in end-to-end coverage.
+ */
+function rankedCandidate(cardId: string, score: number): RankedScannerCandidate {
+  return {
+    card: {
+      cardId,
+      name: `Card ${cardId}`,
+      localId: cardId,
+      rarity: null,
+      category: null,
+      illustrator: null,
+      imageBaseUrl: null,
+      language: 'en',
+      setId: 'set-1',
+      setName: 'Base Set',
+      variantCount: 1,
+    },
+    score,
+    rawRankScore: score,
+    reasons: [],
+    visualReliability: 0,
+  }
+}
+
+describe('resolveVisibleCandidateCount (P80, §9 LOW/MEDIUM alternatives audit)', () => {
+  it('returns every candidate when there are 5 or fewer, regardless of tier', () => {
+    const ranked = [rankedCandidate('a', 90), rankedCandidate('b', 40)]
+    expect(resolveVisibleCandidateCount('low', ranked)).toBe(2)
+    expect(resolveVisibleCandidateCount('high', ranked)).toBe(2)
+  })
+
+  it('HIGH never expands past the normal limit, even given a long flat tail', () => {
+    const ranked = Array.from({ length: 10 }, (_, i) => rankedCandidate(`c${i}`, 90 - i))
+    expect(resolveVisibleCandidateCount('high', ranked)).toBe(SCANNER_UI_CANDIDATE_LIMIT)
+  })
+
+  it('a non-HIGH tier stays at the normal limit when the top-5 is clearly separated from the rest', () => {
+    const ranked = [
+      rankedCandidate('a', 90),
+      rankedCandidate('b', 80),
+      rankedCandidate('c', 70),
+      rankedCandidate('d', 60),
+      rankedCandidate('e', 50),
+      // Far below — not a flat/ambiguous tail, just more low-ranked noise.
+      rankedCandidate('f', 5),
+      rankedCandidate('g', 4),
+    ]
+    expect(resolveVisibleCandidateCount('medium', ranked)).toBe(SCANNER_UI_CANDIDATE_LIMIT)
+  })
+
+  it('a non-HIGH tier widens to the expanded limit when rank 5 is still close to the top score', () => {
+    const ranked = [
+      rankedCandidate('a', 50),
+      rankedCandidate('b', 49),
+      rankedCandidate('c', 48),
+      rankedCandidate('d', 47),
+      // Within the ambiguity margin of the top score — the real "correct card sat at rank 6" shape.
+      rankedCandidate('e', 50 - SCORING_TIERS.highMinMargin),
+      rankedCandidate('f', 30),
+      rankedCandidate('g', 20),
+      rankedCandidate('h', 10),
+    ]
+    expect(resolveVisibleCandidateCount('low', ranked)).toBe(SCANNER_UI_EXPANDED_CANDIDATE_LIMIT)
+  })
+
+  it('a single strong LOW candidate with a real gap to its runner-up does not force expansion', () => {
+    // A LOW tier alone must never widen the list on confidence level alone — only a genuinely
+    // flat tail does (this file's own header comment states this explicitly).
+    const ranked = [
+      rankedCandidate('a', 25),
+      rankedCandidate('b', 2),
+      rankedCandidate('c', 1),
+      rankedCandidate('d', 0),
+      rankedCandidate('e', -1),
+      rankedCandidate('f', -2),
+    ]
+    expect(resolveVisibleCandidateCount('low', ranked)).toBe(SCANNER_UI_CANDIDATE_LIMIT)
   })
 })
