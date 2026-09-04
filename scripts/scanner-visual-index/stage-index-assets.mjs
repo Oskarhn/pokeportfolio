@@ -44,7 +44,7 @@
  *   - HOSTED (`CF_PAGES_COMMIT_SHA` set): missing index -> HARD FAILURE. A deployed build must
  *     never silently ship without its visual index while every other check stays green.
  */
-import { existsSync, mkdirSync, cpSync } from 'node:fs'
+import { existsSync, mkdirSync, cpSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { verifyCurrentGeneration } from './verify-index.ts'
@@ -88,6 +88,14 @@ try {
   process.exit(1)
 }
 
+// P106 build-isolation hardening: this was a plain additive cpSync, which never removes a stale
+// generation folder left in outDir from an earlier build in this same working directory (e.g. a
+// prior checkout whose committed index had a different content id). current.json always points
+// at the right one, so an orphaned folder was never actually served — but a directory that can
+// silently accumulate unrelated generations across builds is exactly the class of build-isolation
+// hazard this session's differential investigation was run to rule out. Wiping outDir first makes
+// every build's staged index deterministic: exactly the current generation, nothing left over.
+rmSync(outDir, { recursive: true, force: true })
 mkdirSync(outDir, { recursive: true })
 cpSync(join(sourceDir, 'current.json'), join(outDir, 'current.json'))
 cpSync(join(sourceDir, 'generations'), join(outDir, 'generations'), { recursive: true })
