@@ -83,7 +83,13 @@
   --pp-step-2: #d6d2c7;
   --pp-text-primary: #17181a;
   --pp-text-secondary: #53534d;
-  --pp-text-tertiary: #767569;
+  /* P101: measured by axe-core against a real page (12px tertiary text on --pp-background) —
+     the previous #767569 was 4.41:1, just under WCAG AA's 4.5:1 for normal-size text. #6e6d61
+     measures ~4.95:1 against #faf9f6, same warm-graphite hue direction (DESIGN_SYSTEM.md §1),
+     barely distinguishable from the previous value. This is the sanctioned fix mechanism per the
+     module comment above: one shared token, every `text-slate-500`/`text-slate-600` consumer
+     app-wide corrected at once, in both themes, without touching a single component. */
+  --pp-text-tertiary: #6e6d61;
   --pp-accent: #8f5f35;
   --pp-accent-soft: #8f5f35;
   --pp-accent-wash: #f1e4d6;

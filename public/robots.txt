@@ -1,0 +1,17 @@
+# PokePortfolio is a private, invite-only tool (docs/PRODUCT_SPEC.md §1.1 — "Not a public
+# platform"). Almost nothing here has any business being indexed. This file is a request, not a
+# security control — the actual boundary is Postgres row-level security and route guards
+# (docs/SECURITY.md); this exists purely to keep well-behaved crawlers away from URLs that carry
+# live secrets (an invitation token, a password-recovery token) or that simply have zero value to
+# index for a closed tool.
+#
+# Regenerate this list's intent, never its shape, from src/router.tsx's "public" route class
+# comment if that ever changes — scripts/check-links.mjs asserts the two stay consistent.
+
+User-agent: *
+Disallow: /
+Allow: /privacy
+Allow: /terms
+Allow: /faq
+
+Sitemap: https://pokeportfolio-dev.pages.dev/sitemap.xml
