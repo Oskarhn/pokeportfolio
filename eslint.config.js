@@ -67,18 +67,6 @@ export default tseslint.config(
     },
   },
   {
-    // Scanner internals are P99/P100's active territory this session (never touched here). The
-    // two remaining findings there are a live, silent camera-preview <video> (media-has-caption
-    // is a false positive — there is no dialogue/audio track to caption) and an alt-text wording
-    // nit on a captured-photo preview. Left for whichever session owns that code, rather than
-    // edited here or silenced app-wide.
-    files: ['src/features/scanner/**/*.tsx'],
-    rules: {
-      'jsx-a11y/media-has-caption': 'off',
-      'jsx-a11y/img-redundant-alt': 'off',
-    },
-  },
-  {
     files: ['tests/**/*.ts'],
     languageOptions: {
       globals: globals.node,
