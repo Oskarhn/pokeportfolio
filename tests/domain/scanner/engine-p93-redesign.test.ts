@@ -5,6 +5,7 @@ import {
   parseScannerSignals,
   rankScannerCandidates,
   rankScannerCandidatesFull,
+  SCORING_TIERS,
   SCORING_WEIGHTS,
   shouldAbstainForBlurScore,
   structuralReliability,
@@ -343,5 +344,63 @@ describe('M93-16 — performance smoke (matcher stays negligible with the new an
     // Catastrophic-only budget (same discipline as engine.test.ts's own §22 smoke test) — this
     // catches a hang/exponential blow-up, not an ordinary 2-10x slowdown.
     expect(avgMs).toBeLessThan(5)
+  })
+})
+
+describe('M93-17 (P99/P98 §4-6) — anchor-reliability boost boundary regression at ~0.817 similarity', () => {
+  /**
+   * P98's audit found the anchor boost is QUADRATIC in the anchor's own visual similarity
+   * (`boost ≈ 0.008696 × visualPoints² × marginFactor`, since `strengthFactor = visualPoints/92`
+   * is substituted back into the boost that itself scales by `strengthFactor`) — the anchor's own
+   * reading is used twice: once linearly as `visualPoints`, once again to scale its own boost.
+   * Solving for the well-separated (marginFactor=1) similarity at which a single candidate's own
+   * anchor score, with ZERO text evidence, first reaches the ~90-point region a genuine id+name
+   * text match plus the full 15-point HIGH margin would produce gives ≈0.817 — an entirely
+   * ORDINARY similarity (barely above P84's own 0.812 mean genuine-match value), not a rare tail
+   * event. This is not independently dangerous BY ITSELF (verified: F02_VERDICT in
+   * ai_outputs/Claude_outputs/output_98.txt — the one cross-candidate manifestation where a WRONG
+   * anchor could outrank a DIFFERENT card's genuine text evidence is already caught by the
+   * pre-existing visual-text-disagreement cap, M93-14 above), but the magnitude was previously
+   * undisclosed and untested — this pins the exact boundary so a future re-tune of
+   * `ANCHOR_BOOST_MAX` or the visual-evidence curve cannot silently reopen it without a test
+   * noticing, per P98's own explicit MUST_FIX_BEFORE_RELEASE recommendation.
+   */
+  it('a single well-separated visual anchor with ZERO text evidence reaches HIGH purely from the boost, at an ordinary similarity', () => {
+    const trueCard = card('anchor', 'Pikachu', '58', 'Base Set')
+    // A distant runner-up purely to saturate marginFactor to 1 (the "well-separated" shape P98's
+    // own math assumed) — far enough below 0.817 that the gap exceeds the 0.12-similarity-unit
+    // saturation band, and with no text evidence of its own so it cannot become the winner.
+    const distantRunnerUp = card('other', 'Some Other Card', '99', 'Base Set')
+    // No text evidence for EITHER candidate (rawNameText/rawCollectorNumberText both empty) —
+    // isolates the anchor-reliability boost from any text contribution entirely, matching P98's
+    // own "no-disagreement-possible" single-evidenced-candidate construction (text-best and
+    // visual-best trivially coincide on the anchor since neither candidate has any text score, so
+    // the pre-existing visual-text-disagreement cap — M93-14 — structurally cannot engage here).
+    const signals = parseScannerSignals({ rawNameText: '', rawCollectorNumberText: '' })
+    const visualScores: VisualEvidenceByCard = new Map([
+      ['anchor', 0.817],
+      ['other', 0.6],
+    ])
+    const match = rankScannerCandidates(signals, [trueCard, distantRunnerUp], visualScores)
+    const top = match.candidates[0]!
+
+    expect(top.card.cardId).toBe('anchor')
+    expect(match.notes).not.toContain('visual-text-disagreement')
+    // The boundary itself: HIGH, reached with literally zero text evidence — pins the magnitude
+    // P98's audit disclosed rather than leaving it implicit. A future change to the curve/boost
+    // constants that moves this boundary will change `top.rawRankScore`'s value and fail this
+    // assertion, which is the point.
+    expect(match.tier).toBe('high')
+    expect(top.rawRankScore).toBeGreaterThanOrEqual(SCORING_TIERS.highMinScore)
+    expect(top.visualReliability).toBeGreaterThan(0.5)
+  })
+
+  it('a materially lower similarity (well below the boundary) with zero text evidence never reaches HIGH', () => {
+    const trueCard = card('anchor2', 'Pikachu', '58', 'Base Set')
+    const signals = parseScannerSignals({ rawNameText: '', rawCollectorNumberText: '' })
+    // 0.7 sits comfortably below the ~0.817 boundary — a sanity floor confirming this is a real
+    // threshold effect, not a claim that any nonzero similarity reaches HIGH.
+    const match = rankScannerCandidates(signals, [trueCard], new Map([['anchor2', 0.7]]))
+    expect(match.tier).not.toBe('high')
   })
 })

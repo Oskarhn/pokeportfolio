@@ -4105,6 +4105,37 @@ estimated. Full E2E/DB/build gates run as part of this session's own closing ver
 **Not changed:** any financial semantic; any migration; the committed 19,501-card DINO index's
 actual content or the DINOv2-small model itself. No card was special-cased anywhere.
 
+**P99 addendum — the anchor-reliability boost is QUADRATIC in the anchor's own similarity, not a
+fixed or externally-calibrated increment (P98 finding, honestly disclosed here as this decision's
+own follow-up instructed).** `applyVisualAnchorReliability`'s boost is
+`round(visualPoints * ANCHOR_BOOST_MAX * reliability)`, and `reliability`'s own `strengthFactor`
+term is `visualPoints / VISUAL_EVIDENCE_CURVE.ceilingPoints` — substituting back in gives
+`boost ≈ 0.008696 × visualPoints² × marginFactor`: the anchor's own visual reading is used TWICE,
+once linearly as `visualPoints`, once again to scale its own boost. Concretely, a well-separated
+single-evidenced candidate (`marginFactor` saturated to 1) with ZERO text evidence reaches the
+`highMinScore` threshold at similarity ≈0.817 — an entirely ORDINARY similarity, barely above P84's
+own 0.812 mean genuine-match value, not a rare tail event. This is monotonic, never negative, and
+never touches any candidate other than the anchor (the safety property this decision's own §5/§12
+already claimed and which still holds) — what was previously undisclosed is the MAGNITUDE: the
+addition grows quadratically in the anchor's own points, not linearly. The one manifestation where
+this could matter (a wrong visual anchor outranking a DIFFERENT card's genuine text evidence) is
+independently caught by the pre-existing `visual-text-disagreement` cap (unchanged by this
+decision, inherited from P88/F-26; M93-14 pins it). A single-evidenced-candidate shape — where
+text-best and visual-best trivially coincide because neither candidate has any text score, so the
+disagreement cap structurally cannot engage — is NOT independently dangerous either, since a HIGH
+tier there still requires the anchor to genuinely be the scanned card for the result to be correct;
+it is disclosed here because the magnitude itself was previously untested, not because a concrete
+false-positive path was found. Boundary pinned permanently: `tests/domain/scanner/
+engine-p93-redesign.test.ts`'s M93-17 (P99), a single well-separated zero-text anchor at similarity
+0.817 asserted to reach HIGH — a future re-tune of `ANCHOR_BOOST_MAX` or the visual-evidence curve
+that silently reopens this now has a test to fail. `SCORING_TIERS` itself was separately
+revalidated against this widened raw-score range (0-2198 real adversarial trials across four
+scenario categories via `scripts/scanner-recognition-lab/experiments/10-p99-scoring-tiers-sweep.ts`,
+`pnpm scanner:recognition-lab:p99-scoring-tiers-sweep`): the shipped constants produced ZERO false
+HIGH results across every trial and category, and no combination in a real parameter-grid sweep
+strictly dominates them (fewer false-HIGH with no worse false-medium-or-above and no worse
+true-card HIGH recall) — kept unchanged, with evidence, not by coincidence.
+
 ## D-107 — Canvas-free DINOv2 preprocessing closes the real WebKit/OffscreenCanvas gap (P96)
 
 **2026-09-03 · Accepted**
