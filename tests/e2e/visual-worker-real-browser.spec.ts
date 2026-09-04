@@ -145,10 +145,10 @@ test.describe('visual worker real-browser smoke (F-31, P89)', () => {
     // cross-engine CI coverage, not guaranteed Apple-Safari parity, so this is most likely a
     // testing-environment gap rather than a genuine real-device limitation — never confirmed
     // against a real Mac/iPhone this session. P90 §9: the worker now reports this via
-    // `offscreenCanvasAvailableInWorker` in its 'ready' message, and the client has a REAL
-    // main-thread RGBA-conversion fallback for exactly this case — drive it here too, so this
-    // spec proves visual recognition actually still works end to end on an engine with this gap,
-    // not merely that the failure path is well-formed.
+    // `offscreenCanvasAvailableInWorker` in its 'ready' message, and the client has a main-thread
+    // RGBA-conversion fallback for exactly this case — drive it here too. P94 §24: running this
+    // for real revealed the fallback is INCOMPLETE — see the disclosed-gap block below, right
+    // before the final assertions, for what actually happens on this engine and why.
     const searchResult = await page.evaluate(async (offscreenAvailable: boolean) => {
       const worker = (window as unknown as { __f31Worker: Worker }).__f31Worker
       const canvas = document.createElement('canvas')
@@ -206,8 +206,33 @@ test.describe('visual worker real-browser smoke (F-31, P89)', () => {
       })
     }
 
+    // P96/D-107: P94 §24 found the P90/D-105 main-thread RGBA fallback incomplete — worker-worker
+    // `OffscreenCanvas` was avoided, but `@huggingface/transformers`' own internal preprocessing
+    // (RawImage.resize/.center_crop) unconditionally constructed its own OffscreenCanvas with no
+    // fallback, so `processor(image)` always threw on an OffscreenCanvas-less engine. This session
+    // closed that gap: `runModelOnRgba` (visual-worker.ts) skips `processor(image)` entirely on
+    // such an engine and uses `preprocessRgbaForDino` — a canvas-free reimplementation of the same
+    // pinned-model preprocessing, numerically verified against the AutoProcessor path (D-107,
+    // scripts/scanner-preprocess-parity/). A real DINO embedding+search is therefore now expected
+    // unconditionally, whether or not this engine has OffscreenCanvas — this spec must NOT accept
+    // a structured "unavailable"/OffscreenCanvas error as a passing visual result any more.
+    if (!readyResult.offscreenCanvasAvailableInWorker) {
+      test.info().annotations.push({
+        type: 'P96/D-107 canvas-free path exercised',
+        description:
+          'This engine reported offscreenCanvasAvailableInWorker=false — the canvas-free ' +
+          'preprocessRgbaForDino path was used instead of AutoProcessor, and must still produce ' +
+          'a real embedding+search result.',
+      })
+    }
+
     expect(searchResult.type).toBe('result')
     expect(Array.isArray(searchResult.hits)).toBe(true)
+    // A real search against the real committed index must return candidates — an empty array
+    // would mean the index never actually loaded/searched, not a genuine "no match" (searchVisualIndex
+    // is an exhaustive top-K scan with no similarity threshold, so it always returns min(topK,
+    // cardCount) hits once an embedding was computed at all).
+    expect((searchResult.hits ?? []).length).toBeGreaterThan(0)
     expect(typeof searchResult.embedMs).toBe('number')
     expect(typeof searchResult.searchMs).toBe('number')
     expect(typeof searchResult.embeddingNorm).toBe('number')

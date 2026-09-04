@@ -70,7 +70,7 @@ test.describe('visual-index two-generation cache coherence (P87 F-01)', () => {
     expect(pointerHits).toBe(2)
   })
 
-  test('a content-addressed generation is served from cache on a repeat fetch, and two generations never mix', async ({
+  test('a content-addressed generation is safe to re-fetch repeatedly, and two generations never mix', async ({
     page,
   }) => {
     let genAHits = 0
@@ -117,5 +117,19 @@ test.describe('visual-index two-generation cache coherence (P87 F-01)', () => {
     const b2 = await fetchJson(GEN_B_MANIFEST)
     expect(a2).toEqual({ contentId: 'aaaaaaaaaaaaaaaa', cardCount: 111 })
     expect(b2).toEqual({ contentId: 'bbbbbbbbbbbbbbbb', cardCount: 222 })
+    // N-12 (P94): the test's own PRIOR name/docstring claimed the repeat fetch was answered FROM
+    // CACHE, not the network, but nothing ever re-asserted the hit counters after the repeat reads
+    // above to back that up — it only ever proved content correctness. This fix's first attempt
+    // was to add exactly that re-assertion (`expect(genAHits).toBe(1)`) — empirically WRONG:
+    // running it for real showed `page.route` interception fires on Chromium/WebKit here even for
+    // a same-page repeat `fetch()` of an immutable-cache-control response (genAHits/genBHits came
+    // back 2, not 1), so a stable route-hit-count is NOT a reliable proxy for "the browser's own
+    // HTTP cache served this" in this harness — exactly the risk this migration's own comment
+    // flagged and the prompt warned against faking. The claim this test can actually stand behind,
+    // and the one it makes now, is CONTENT correctness under repeated/interleaved fetches — real
+    // native HTTP-cache-hit behavior for an immutable, content-addressed URL is standard browser
+    // behavior guaranteed by the `Cache-Control` header the real server sends (verified separately
+    // by `scripts/verify-scanner-platform-build.mjs`'s `_headers` checks), not something this E2E
+    // harness needs to re-prove via a hit counter it cannot make reliable.
   })
 })

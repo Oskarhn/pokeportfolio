@@ -31,6 +31,10 @@ export function formatExpectedCardRankDiagnostics(
     `EXPECTED_CARD_NAME=${card.name}`,
     `EXPECTED_CARD_SET=${card.setName}`,
     `EXPECTED_CARD_NUMBER=${card.localId}`,
+    // N-08 (P94): explicit, so "not present in the visual index at all" is never confused with
+    // "present, but filtered out during ordinary catalog enrichment" (see ExpectedCardRank's doc).
+    `EXPECTED_PRESENT_IN_VISUAL_INDEX=${rank.found ? 'yes' : 'no'}`,
+    `EXPECTED_ENRICHMENT_STATUS=${rank.enrichmentStatus}`,
     `EXPECTED_VISUAL_RANK=${num(rank.rank)}`,
     `EXPECTED_VISUAL_SIMILARITY=${rank.similarity === null ? EMPTY : rank.similarity.toFixed(4)}`,
     `EXPECTED_VISUAL_PERCENTILE=${
@@ -107,6 +111,10 @@ export function formatScannerDiagnostics(d: ScannerDiagnostics): string {
     `CAPTURE_FRAME_DIMENSIONS=${d.captureFrameWidth ?? EMPTY}x${d.captureFrameHeight ?? EMPTY}`,
     `CAPTURE_CROP_DIMENSIONS=${d.captureCropWidth ?? EMPTY}x${d.captureCropHeight ?? EMPTY}`,
     `RECTIFICATION_USED=${d.rectificationUsed ? 'yes' : 'no'}`,
+    `CAPTURE_BLUR_SCORE=${d.captureBlurScore === null ? EMPTY : d.captureBlurScore.toFixed(2)}`,
+    `CAPTURE_SEVERE_BLUR=${d.captureSevereBlur ? 'yes' : 'no'}`,
+    `VISUAL_ABSTAINED=${d.visualAbstained ? 'yes' : 'no'}`,
+    `VISUAL_ABSTAIN_REASON=${d.visualAbstainReason ?? EMPTY}`,
     `VISUAL_EMBEDDING_CREATED=${d.visualEmbeddingCreated ? 'yes' : 'no'}`,
     `EMBEDDING_NORM=${d.embeddingNorm === null ? EMPTY : d.embeddingNorm.toFixed(4)}`,
     `INDEX_VERSION=${d.indexVersion ?? EMPTY}`,
@@ -126,6 +134,10 @@ export function formatScannerDiagnostics(d: ScannerDiagnostics): string {
     `INDEX_RUNTIME_CHECKSUM_MS=${num(d.indexRuntimeChecksumMs)}`,
     `INDEX_LOAD_MS=${num(d.indexLoadMs)}`,
     `INDEX_SEARCH_MS=${num(d.indexSearchMs)}`,
+    // N-08 (P94): the aggregate found-vs-enriched gap — see ScannerDiagnostics's own field docs.
+    `RAW_VISUAL_ID_COUNT=${num(d.visualUnknownIdCount)}`,
+    `ENRICHED_VISUAL_ID_COUNT=${num(d.visualEnrichedIdCount)}`,
+    `MISSING_ID_COUNT=${num(d.visualMissingIdCount)}`,
     'TOP_VISUAL_CANDIDATES:',
   ]
   if (d.topVisualCandidates.length === 0) {
@@ -192,7 +204,13 @@ export function formatScannerDiagnostics(d: ScannerDiagnostics): string {
     lines.push(`  ${EMPTY}`)
   } else {
     d.finalRerankedCandidates.forEach((c) => {
-      lines.push(`  ${c.cardId}: ${c.reasons.length > 0 ? c.reasons.join('+') : EMPTY}`)
+      lines.push(
+        `  ${c.cardId}: ${c.reasons.length > 0 ? c.reasons.join('+') : EMPTY}`,
+        `    RAW_RANK_SCORE=${c.rawRankScore} DISPLAY_SCORE=${c.displayScore} ` +
+          `TEXT_RELIABILITY=${c.textReliability.toFixed(2)} ` +
+          `VISUAL_RELIABILITY=${c.visualReliability.toFixed(2)} ` +
+          `FINAL_TIER=${c.finalTier} TIER_REASON=${c.tierReason ?? EMPTY}`,
+      )
     })
   }
   lines.push(

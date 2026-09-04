@@ -13,56 +13,65 @@
  * (glare+shadow+blur), same-card similarity collapses to ~0.10 while the nearest WRONG card
  * scores systematically HIGHER (~0.28-0.33) — signal inversion, not just weak signal. A value
  * around 0.18 is calibrated CATASTROPHIC, never "moderate."
+ *
+ * ── P93/N-04 redesign: continuous point curve ──────────────────────────────────────────────────
+ * The previous point curve was three PIECEWISE-LINEAR bands that met at hard threshold
+ * boundaries — at similarity 0.819999 a candidate scored 38 points, at 0.82 exactly it jumped to
+ * 55 (a 17-point discontinuity, P92 finding N-04). A discontinuous curve is dangerous specifically
+ * BECAUSE the matcher's dominance logic used to key off that same absolute boundary: P84's own
+ * calibration puts the MEAN genuine same-card similarity at 0.812 — already below 0.82 — so an
+ * entirely ordinary correct scan could land on the wrong side of the cliff by pure sampling noise.
+ *
+ * `visualEvidencePoints` is now a single continuous, monotonic logistic curve over the whole
+ * [0, 1] similarity range — no bands, no jump, no hidden dependence on `strongMin` at all. The
+ * curve's two free parameters (`midpoint`, `steepness`) are solved algebraically from two
+ * calibration anchors read directly off P84's measured distributions (D-101 §2), not tuned by
+ * eye:
+ *   - at similarity = moderateMin (0.68, P84's nearest-wrong-card mean under clean geometry
+ *     distortion), points ≈ 25 — a plausible-but-unproven read, well below a confident signal.
+ *   - at similarity = strongMin (0.82, just above P84's own mean genuine-match similarity of
+ *     0.812), points ≈ 60 — genuinely competitive with the maximum coincidental TEXT-only score a
+ *     wrong card can reach today (id-exact + name-exact = 75, since `rawSetText` is never
+ *     populated in production and language-match no longer scores — see engine.ts's own
+ *     `SCORING_WEIGHTS` doc), without erasing the gap outright — closing that residual gap for a
+ *     genuinely well-supported visual anchor is `applyVisualAnchorReliability`'s job, not this
+ *     curve's (see engine.ts).
+ * Solving `points(0.68) = 25` and `points(0.82) = 60` for a logistic
+ * `f(s) = ceilingPoints / (1 + e^{-steepness·(s - midpoint)})` gives `steepness ≈ 11.53`,
+ * `midpoint ≈ 0.7655` — see docs/SCANNER_RESEARCH.md §7i for the worked algebra and the full
+ * similarity → points table (0.0 through 1.0, plus every 0.01 step from 0.79 to 0.90).
+ *
+ * `strongMin`/`moderateMin`/`weakMin` remain as CLASSIFICATION boundaries only — `visualEvidence
+ * Tier` still reports discrete tiers for reason codes, diagnostics and the (also redesigned,
+ * non-absolute) visual-anchor-reliability model in engine.ts. They no longer gate the point
+ * curve itself.
  */
 
 export type VisualEvidenceTier = 'strong' | 'moderate' | 'weak' | 'none'
 
 export const VISUAL_SIMILARITY_THRESHOLDS = {
   /** Same physical card under realistic capture noise reliably scores at or above this
-   *  (P84: clean-geometry same-card mean 0.812, p90 0.900; nearest-wrong mean 0.674). */
+   *  (P84: clean-geometry same-card mean 0.812, p90 0.900; nearest-wrong mean 0.674). Used only
+   *  for tier CLASSIFICATION (reason codes, diagnostics, the anchor-reliability model) — the point
+   *  curve below is continuous and does not key off this value at all (P93/N-04). */
   strongMin: 0.82,
   moderateMin: 0.68,
   weakMin: 0.55,
 } as const
 
 /**
- * Point CONTRIBUTION is a continuous, PIECEWISE function of similarity, banded to match the P84
- * calibration rather than one straight line from floor to 1.0 (P88 §2/§3 redesign — the prior
- * single-slope curve made a realistic strong match, similarity 0.85-0.90, worth only 41-48
- * points: structurally below a coincidental two-signal OCR text convergence on a WRONG card
- * (collector-number-exact + name-exact = 75), which could then ALWAYS outrank a genuinely correct
- * visual match by construction — F-02).
- *
- * The bands:
- * - [floorSimilarity, moderateMin): 'weak' territory — P84's own catastrophic-defect nearest-
- *   wrong-card similarity (0.28-0.33) sits well BELOW this band already (visualEvidencePoints
- *   returns 0 below floorSimilarity), so this band only ever fires for a genuinely marginal read;
- *   capped low (weakMaxPoints) so it can never dominate a clean text signal on its own.
- * - [moderateMin, strongMin): 'moderate' — plausible but not yet the calibrated same-card range;
- *   scales up to moderateMaxPoints.
- * - [strongMin, 1.0]: 'strong' — P84's own calibrated same-card territory. Crossing into this
- *   band is itself informative (same-card similarity clusters tightly above strongMin in clean
- *   conditions while wrong-card similarity clusters below moderateMin), so points jump to
- *   strongMinPoints at the boundary rather than continuing the moderate band's slope, then scale
- *   up to maxPoints (asymptotic ceiling at similarity 1.0, never actually reached with real
- *   photos). At a realistic strong match (0.85-0.90) this now yields ~61-71 points — genuinely
- *   competitive with a coincidental id+name text convergence (75), closing most of the gap that
- *   made F-02 possible on point value alone. The remaining, harder guarantee (a strong visual
- *   match must not be defeated PURELY BY CONSTRUCTION regardless of point tuning) is engine.ts's
- *   own visual-dominance guard, not this curve.
+ * Continuous logistic point curve (P93/N-04 — replaces the old three-band piecewise curve, see
+ * module doc for the calibration derivation). `midpoint`/`steepness` are solved from two P84-
+ * calibrated anchors, not guessed; `ceilingPoints` is the asymptotic value as similarity -> 1.0
+ * (never actually reached with real photos, same ceiling concept the old curve used).
  */
-export const VISUAL_EVIDENCE_WEIGHTS = {
-  /** Points at the top of the 'weak' band (just below moderateMin). */
-  weakMaxPoints: 15,
-  /** Points at the top of the 'moderate' band (just below strongMin). */
-  moderateMaxPoints: 38,
-  /** Points at similarity == strongMin, the calibrated floor of "same physical card" territory. */
-  strongMinPoints: 55,
-  /** Points at similarity == 1.0 (never actually reached with real photos, so this is a ceiling,
-   *  not a typical value). */
-  maxPoints: 92,
-  /** Below this similarity, visual evidence contributes nothing (matches weakMin). */
-  floorSimilarity: VISUAL_SIMILARITY_THRESHOLDS.weakMin,
+export const VISUAL_EVIDENCE_CURVE = {
+  /** Logistic midpoint (cosine similarity at which the curve crosses half its ceiling). */
+  midpoint: 0.7655,
+  /** Logistic steepness — larger means a sharper transition around `midpoint`. */
+  steepness: 11.53,
+  /** Points at similarity == 1.0 (asymptotic ceiling, never actually reached with real photos). */
+  ceilingPoints: 92,
 } as const
 
 export function visualEvidenceTier(similarity: number | null | undefined): VisualEvidenceTier {
@@ -73,30 +82,18 @@ export function visualEvidenceTier(similarity: number | null | undefined): Visua
   return 'none'
 }
 
-/** Continuous, banded point contribution for the composite score (engine.ts) — see the module
- *  doc for the calibrated bands. Zero below `floorSimilarity` AND for any non-finite input
- *  (NaN/Infinity/-Infinity fail closed to "no visual evidence" rather than propagating a
- *  corrupted number into diagnostics — F-27). */
+/** Continuous, monotonic point contribution for the composite score (engine.ts) — see the module
+ *  doc for the calibration. Zero for any non-finite input (NaN/Infinity/-Infinity fail closed to
+ *  "no visual evidence" rather than propagating a corrupted number into diagnostics — F-27) and
+ *  for any similarity at or below zero (a logistic curve alone would still return a vanishingly
+ *  small but nonzero value there; rounding already makes this a no-op above ~-0.05, but zeroing it
+ *  explicitly for non-positive cosine similarity keeps the contract simple: a card that reads as
+ *  actively DISSIMILAR never contributes a positive point value, even a rounding artifact). */
 export function visualEvidencePoints(similarity: number | null | undefined): number {
   if (similarity === null || similarity === undefined || !Number.isFinite(similarity)) return 0
-  const { floorSimilarity, weakMaxPoints, moderateMaxPoints, strongMinPoints, maxPoints } =
-    VISUAL_EVIDENCE_WEIGHTS
-  const { moderateMin, strongMin } = VISUAL_SIMILARITY_THRESHOLDS
-  if (similarity < floorSimilarity) return 0
-
-  if (similarity < moderateMin) {
-    const span = moderateMin - floorSimilarity
-    const t = span <= 0 ? 1 : (similarity - floorSimilarity) / span
-    return Math.round(Math.max(0, Math.min(1, t)) * weakMaxPoints)
-  }
-  if (similarity < strongMin) {
-    const span = strongMin - moderateMin
-    const t = span <= 0 ? 1 : (similarity - moderateMin) / span
-    return Math.round(
-      weakMaxPoints + Math.max(0, Math.min(1, t)) * (moderateMaxPoints - weakMaxPoints),
-    )
-  }
-  const span = 1 - strongMin
-  const t = span <= 0 ? 1 : (similarity - strongMin) / span
-  return Math.round(strongMinPoints + Math.max(0, Math.min(1, t)) * (maxPoints - strongMinPoints))
+  if (similarity <= 0) return 0
+  const { midpoint, steepness, ceilingPoints } = VISUAL_EVIDENCE_CURVE
+  const z = steepness * (similarity - midpoint)
+  const sigmoid = 1 / (1 + Math.exp(-z))
+  return Math.round(sigmoid * ceilingPoints)
 }

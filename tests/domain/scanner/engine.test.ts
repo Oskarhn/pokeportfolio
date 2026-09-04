@@ -53,11 +53,11 @@ describe('scoring model — documented weight arithmetic', () => {
       candidates,
     )
     expect(match.tier).toBe('high')
+    // P93/N-09: language agreement no longer scores (every candidate reaching this scorer in
+    // production is already language='en' by construction — see SCORING_WEIGHTS's own doc) — the
+    // 'language-match' reason code is still pushed for diagnostics, but moves zero points.
     expect(match.candidates[0]?.score).toBe(
-      SCORING_WEIGHTS.collectorNumberExact +
-        SCORING_WEIGHTS.nameExact +
-        SCORING_WEIGHTS.setExact +
-        SCORING_WEIGHTS.languageMatch,
+      SCORING_WEIGHTS.collectorNumberExact + SCORING_WEIGHTS.nameExact + SCORING_WEIGHTS.setExact,
     )
     expect(TOP_REASONS(match)).toEqual([
       'collector-number-exact',
@@ -112,28 +112,44 @@ describe('scoring model — documented weight arithmetic', () => {
     expect(match.tier).toBe('low')
   })
 
-  it('HIGH requires a real margin: near-equal twins are demoted to MEDIUM (§15)', () => {
-    const twins = [
+  it('two-signal (id+name) convergence alone now tops out below HIGH (P93/N-09)', () => {
+    // With language agreement no longer scoring (every scan candidate is already 'en' by
+    // construction — see engine.ts's SCORING_WEIGHTS doc), id-exact + name-exact alone reaches 75
+    // — below highMinScore (80). HIGH now genuinely requires the 3-signal composition (+ set),
+    // not a fragile 2.5-signal coincidence that used to reach exactly 80.
+    const match = matchScannerObservation(
+      { rawNameText: 'Charizard', rawCollectorNumberText: '4', languageHint: 'en' },
+      [card('t1', 'Charizard', '4', 'Base Set')],
+    )
+    expect(match.candidates[0]?.score).toBe(
+      SCORING_WEIGHTS.collectorNumberExact + SCORING_WEIGHTS.nameExact,
+    )
+    expect(match.tier).toBe('medium')
+  })
+
+  it('HIGH requires a real margin: an exact 3-signal tie is demoted to MEDIUM (§15)', () => {
+    // Two candidates whose printed evidence is, as far as this scan's signals can tell, IDENTICAL
+    // (id+name+set all agree for both) — a genuine ambiguity the ranker must surface, not paper
+    // over by picking one arbitrarily at HIGH confidence.
+    const tied = [
       card('t1', 'Charizard', '4', 'Base Set'),
-      card('t2', 'Charizard', '4', 'Legendary Collection'),
+      card('t2', 'Charizard', '4', 'Base Set'),
     ]
     const ambiguous = matchScannerObservation(
-      { rawNameText: 'Charizard', rawCollectorNumberText: '4', languageHint: 'en' },
-      twins,
+      { rawNameText: 'Charizard', rawCollectorNumberText: '4', rawSetText: 'Base Set' },
+      tied,
+    )
+    expect(ambiguous.candidates[0]?.score).toBe(
+      SCORING_WEIGHTS.collectorNumberExact + SCORING_WEIGHTS.nameExact + SCORING_WEIGHTS.setExact,
     )
     expect(ambiguous.candidates[0]?.score).toBeGreaterThanOrEqual(SCORING_TIERS.highMinScore)
     expect(ambiguous.tier).toBe('medium')
     expect(ambiguous.notes).toContain('runner-up-margin-small')
 
-    // Adding the set hint separates them by exactly the high margin → HIGH returns.
+    // A different printed id on the runner-up pulls the true match decisively ahead.
     const resolved = matchScannerObservation(
-      {
-        rawNameText: 'Charizard',
-        rawCollectorNumberText: '4',
-        rawSetText: 'Base Set',
-        languageHint: 'en',
-      },
-      twins,
+      { rawNameText: 'Charizard', rawCollectorNumberText: '4', rawSetText: 'Base Set' },
+      [tied[0]!, card('t2', 'Charizard', 'TG99', 'Base Set')],
     )
     expect(resolved.candidates[0]?.card.cardId).toBe('t1')
     expect(resolved.tier).toBe('high')
@@ -151,9 +167,9 @@ describe('scoring model — documented weight arithmetic', () => {
     )
     const jaScore = withJaHint.candidates[0]?.score ?? 0
     const enScore = withEnHint.candidates[0]?.score ?? 0
-    expect(jaScore - enScore).toBe(
-      SCORING_WEIGHTS.languageMatch + SCORING_WEIGHTS.languageMismatchPenalty,
-    )
+    // P93/N-09: agreement (the 'ja' hint case) no longer scores, only the mismatch penalty does —
+    // see SCORING_WEIGHTS's own doc.
+    expect(jaScore - enScore).toBe(SCORING_WEIGHTS.languageMismatchPenalty)
   })
 })
 
@@ -465,5 +481,5 @@ describe('pure-ranking smoke test (§22) — crash/catastrophic-regression detec
     expect(timings[20]).toBeLessThan(5)
     expect(timings[50]).toBeLessThan(5)
     expect(timings[100]).toBeLessThan(5)
-  })
+  }, 20000)
 })

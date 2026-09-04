@@ -15,7 +15,9 @@ import type {
   ScannerCandidate,
   ScannerDebugImages,
   ScannerDiagnostics,
+  ScannerUiController,
 } from './contract'
+import { CameraAcquisitionGuard } from './camera-acquisition-guard'
 import { getScannerUiController } from './controller'
 import { isScannerDebugEnabled } from './debug-flag'
 import { formatExpectedCardRankDiagnostics, formatScannerDiagnostics } from './diagnostics-format'
@@ -88,7 +90,26 @@ export function ScannerPage() {
   const queryClient = useQueryClient()
   const { session } = useAuth()
   const userId = session?.user.id ?? null
-  const controller = useMemo(() => getScannerUiController(userId), [userId])
+  // D-108: construction MUST NOT be a render-time side effect. `useMemo`'s factory is not
+  // deduplicated by React — under StrictMode the component's render body genuinely runs twice for
+  // the initial mount, and a `useMemo(() => getScannerUiController(userId), [userId])` factory ran
+  // on BOTH invocations, producing two independently-alive controller instances (only one of which
+  // stayed wired into the committed render, while the OTHER's disposal — via the route-exit
+  // cleanup effect — tore down the live one instead). Effect bodies, unlike render bodies and
+  // `useMemo` factories, genuinely run only once per REAL mount even under StrictMode (its
+  // synthetic effect-level double-invoke is mount→cleanup→remount, always ending mounted) — so
+  // construction now happens inside the mount effect below, which stores the instance ONLY in this
+  // ref (no mirrored `useState`: setting one synchronously inside an effect body is exactly what
+  // react-hooks/set-state-in-effect exists to catch, and there is no real need for it here — every
+  // effect below that needs "the controller" is keyed on `userId` instead of a `controller` state
+  // value, and reads this ref directly. React always runs a component's effects in declaration
+  // order on every commit (StrictMode's synthetic double-invoke runs the full set, then all their
+  // cleanups in reverse, then the full set again), so by the time any LATER-declared effect in this
+  // component runs, this ref is guaranteed already populated — event handlers get the same
+  // guarantee for the same reason (no real user interaction is possible before mount effects have
+  // run). `null` only during the brief window before the mount effect has run at all; every reader
+  // below guards for it.
+  const controllerRef = useRef<ScannerUiController | null>(null)
   const [state, dispatch] = useReducer(scannerReducer, initialScannerState)
   const [searchName, setSearchName] = useState('')
   const [searchCollectorNumber, setSearchCollectorNumber] = useState('')
@@ -112,9 +133,13 @@ export function ScannerPage() {
   // which reaches 'ready' far sooner on a cold device (see ENHANCED_VISUAL_PREWARM_STAGGER_MS's
   // doc in controller.ts). The debug panel's own diagnostics (ENHANCED_VISUAL_STATE) still read
   // the DINO channel directly from `getLastDiagnostics()`, unaffected by this.
+  // D-108: the controller does not exist yet at first render (see above) — a truly fresh
+  // controller cannot report anything but 'not-loaded' at that exact instant anyway, so this no
+  // longer needs to read the controller synchronously; the polling effect below takes over the
+  // instant the controller exists.
   const [fastScannerState, setFastScannerState] = useState<
     'not-loaded' | 'loading' | 'ready' | 'failed'
-  >(() => controller.getFastScannerState?.() ?? 'not-loaded')
+  >('not-loaded')
   // P90 §16: tracked ONLY to show a concise, non-jargon fallback note once the visual (DINO)
   // channel definitively fails — index pointer/checksum/source-project failures all already
   // degrade the SCAN pipeline to OCR-only silently and honestly (visual-worker.ts never crashes);
@@ -123,15 +148,16 @@ export function ScannerPage() {
   // refs) to an ordinary user. Never shown while still 'loading' — only a genuine terminal failure.
   const [visualScannerState, setVisualScannerState] = useState<
     'not-loaded' | 'loading' | 'ready' | 'failed'
-  >(() => controller.getVisualPrewarmState?.() ?? 'not-loaded')
+  >('not-loaded')
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const sessionRef = useRef<ManagedCameraSession | null>(null)
   const captureStoreRef = useRef<CaptureStore>(new CaptureStore())
-  // Bumped whenever the desire to hold a live stream ends; an in-flight getUserMedia whose
-  // generation went stale stops its stream on arrival instead of leaking it.
-  const cameraGenerationRef = useRef(0)
+  // Tracks the desire to hold a live camera stream; an in-flight getUserMedia whose token has
+  // since stopped being current (P98: including exit-requested, not just a newer open) stops its
+  // stream on arrival instead of leaking it or resurrecting a camera the user already closed.
+  const cameraGuardRef = useRef(new CameraAcquisitionGuard())
   // Guards double variant fetches for the same candidate across StrictMode-style re-runs.
   const variantsInFlightRef = useRef<string | null>(null)
   // F-05 (P89): bumped on every event that makes an in-flight analyzeCapture() result stale
@@ -156,29 +182,39 @@ export function ScannerPage() {
   // (client_request_key) already makes a duplicate commitBatch call harmless, but the UI layer
   // should not depend on that alone.
   const committingRef = useRef(false)
+  // N-15 (P94): the manual-search fallback had NO generation/identity guard at all — only React's
+  // own `pending` state (async, not synchronous) gated the submit button, so a double-tap before
+  // React commits `disabled=true` could fire `searchFallback` twice, and a stale older query's
+  // result could still land after a newer one and win. `searchPendingRef` is the same synchronous
+  // lock as `capturingRef`/`committingRef`; `searchGenerationRef` is bumped on every new submit AND
+  // whenever the query changes or the search sheet is closed, matching `analysisGenerationRef`'s
+  // pattern — a `.then()`/`.catch()` whose generation has since moved on no-ops instead of
+  // dispatching stale results over whatever the user is looking at now.
+  const searchPendingRef = useRef(false)
+  const searchGenerationRef = useRef(0)
 
   const cameraWanted = state.step === 'starting-camera' || state.step === 'camera'
 
   // Open/close the single MediaStream as the machine enters/leaves the preview steps.
   useEffect(() => {
     if (!cameraWanted) {
-      cameraGenerationRef.current += 1
+      cameraGuardRef.current.invalidate()
       stopActiveScannerCamera()
       sessionRef.current = null
       return
     }
     const video = videoRef.current
     if (video === null || sessionRef.current !== null) return
-    const generation = ++cameraGenerationRef.current
+    const generation = cameraGuardRef.current.begin()
     let cancelled = false
     void openEnvironmentCamera(video, undefined, () => {
       // L1 (P70): track ended unexpectedly — clean up and return to start screen.
-      if (cancelled || generation !== cameraGenerationRef.current) return
+      if (cancelled || !cameraGuardRef.current.isCurrent(generation)) return
       sessionRef.current = null
       dispatch({ type: 'CAMERA_EXITED' })
     })
       .then((session) => {
-        if (cancelled || generation !== cameraGenerationRef.current) {
+        if (cancelled || !cameraGuardRef.current.isCurrent(generation)) {
           session.stop()
           return
         }
@@ -186,7 +222,7 @@ export function ScannerPage() {
         dispatch({ type: 'CAMERA_STARTED' })
       })
       .catch((error: unknown) => {
-        if (cancelled || generation !== cameraGenerationRef.current) return
+        if (cancelled || !cameraGuardRef.current.isCurrent(generation)) return
         dispatch({ type: 'CAMERA_FAILED', error: describeCameraError(error) })
       })
     return () => {
@@ -194,20 +230,34 @@ export function ScannerPage() {
     }
   }, [cameraWanted])
 
-  // Leaving the route releases EVERYTHING: every track stopped, object URL revoked, OCR worker
-  // terminated and canvases dropped (prompt §8/I16/I17).
-  useEffect(
-    () => () => {
-      cameraGenerationRef.current += 1
+  // D-108 fix: controller construction AND disposal now live in the same effect, keyed on
+  // `userId` alone. Effects run exactly once per REAL mount even under StrictMode
+  // (its synthetic double-invoke is mount→cleanup→remount, so this still constructs exactly one
+  // LIVE instance per real mount), and exactly once again whenever `userId` changes (account
+  // switch), disposing the outgoing instance first — so a new user can never inherit the previous
+  // user's controller. Leaving the route (real unmount) runs the same cleanup: every camera track
+  // stopped, capture store cleared, in-flight analysis cancelled, OCR worker terminated and
+  // canvases dropped (prompt §8/I16/I17).
+  useEffect(() => {
+    const instance = getScannerUiController(userId)
+    controllerRef.current = instance
+    // Captured here (not read fresh inside the cleanup) purely to satisfy exhaustive-deps' generic
+    // "this ref may have changed by cleanup time" check — both refs are `useRef(new X())` with no
+    // reassignment anywhere in this component, so `.current` is the same object throughout this
+    // component's life either way.
+    const cameraGuard = cameraGuardRef.current
+    const captureStore = captureStoreRef.current
+    return () => {
+      cameraGuard.invalidate()
       stopActiveScannerCamera()
-      captureStoreRef.current.clear()
+      captureStore.clear()
       // F-05: an account switch (userId change → new controller) or unmount both make any
       // analysis still in flight against the OLD controller permanently stale.
       cancelInFlightAnalysis()
-      controller.dispose()
-    },
-    [controller],
-  )
+      if (controllerRef.current === instance) controllerRef.current = null
+      instance.dispose()
+    }
+  }, [userId])
 
   // P81 §6: begin warming the visual (and, staggered, OCR) recognition runtime the instant this
   // route mounts — BEFORE the camera opens, BEFORE any photo exists. Never blocks the camera UI
@@ -215,8 +265,14 @@ export function ScannerPage() {
   // in flight — analyzeCapture's own bounded wait (controller.ts) is what keeps a still-cold
   // visual channel from turning into a multi-minute stall on that first scan.
   useEffect(() => {
-    controller.prewarm?.()
-  }, [controller])
+    // Keyed on `userId`, not a `controller` state value (there isn't one — see the construction
+    // effect's own doc above): this effect is declared AFTER it, so `controllerRef.current` is
+    // always populated by the time this runs, including on every re-run this component's own
+    // account-switch effect ordering guarantees.
+    const activeController = controllerRef.current
+    if (activeController === null) return
+    activeController.prewarm?.()
+  }, [userId])
 
   // Poll the controller's own FAST-baseline readiness snapshot (P82 §17-§19) so the intro screen
   // can show honest, non-blocking progress that clears as soon as OCR is ready — not once the
@@ -225,10 +281,12 @@ export function ScannerPage() {
   // point-in-time snapshot, matching the existing debug-panel/diagnostics read pattern elsewhere
   // in this file — stops once a terminal state (ready/failed) is reached.
   useEffect(() => {
+    const activeController = controllerRef.current
+    if (activeController === null) return
     const interval = setInterval(() => {
-      const next = controller.getFastScannerState?.() ?? 'not-loaded'
+      const next = activeController.getFastScannerState?.() ?? 'not-loaded'
       setFastScannerState((previous) => (previous === next ? previous : next))
-      const nextVisual = controller.getVisualPrewarmState?.() ?? 'not-loaded'
+      const nextVisual = activeController.getVisualPrewarmState?.() ?? 'not-loaded'
       setVisualScannerState((previous) => (previous === nextVisual ? previous : nextVisual))
       if (
         (next === 'ready' || next === 'failed') &&
@@ -240,7 +298,7 @@ export function ScannerPage() {
     return () => {
       clearInterval(interval)
     }
-  }, [controller])
+  }, [userId])
 
   // Tab hidden ⇒ release the hardware immediately. Returning lands on the start screen with the
   // batch intact; "Start camera" re-opens without a new permission prompt.
@@ -305,6 +363,18 @@ export function ScannerPage() {
     if (!state.exitRequested) return
     cancelInFlightAnalysis()
     captureStoreRef.current.clear()
+    // P98 camera-resurrection fix: this used to be the ONE call site that stopped the camera
+    // without invalidating `cameraGuardRef` (every other stop/close site in this file pairs the
+    // two — see the camera-open effect above, handleShutter, handleFilePicked, the controller
+    // lifecycle effect). Without the invalidation, a pending `acquire()` started just before the
+    // user tapped "Close scanner" (e.g. mid permission-prompt) could still resolve after this
+    // point, see its own stale `myToken === liveGeneration` check in camera-session.ts pass, and
+    // reattach a stream to a camera the user explicitly closed — `state.step` does not change
+    // synchronously here, so the camera-open effect's own `cancelled` flag alone does not catch
+    // this; `navigate()` is async and StrictMode-inert timing means real unmount can lag well
+    // behind this point. Invalidating here closes that window regardless of how long the route
+    // transition that follows takes to actually unmount the component.
+    cameraGuardRef.current.invalidate()
     stopActiveScannerCamera()
     void navigate({ to: '/portfolio' })
     // previewUrl state needs no manual reset here: navigating away unmounts the page.
@@ -315,15 +385,25 @@ export function ScannerPage() {
   useEffect(() => {
     if (state.step !== 'confirm') return
     if (!state.confirmVariantsPending) return
+    const activeController = controllerRef.current
+    if (activeController === null) return
     const candidateId = state.selectedCandidate?.candidateId
     if (candidateId === undefined || variantsInFlightRef.current === candidateId) return
     variantsInFlightRef.current = candidateId
-    void controller
+    void activeController
       .listVariantChoices(candidateId)
       .then((variants) => {
+        // N-11 (P94): a fetch for a PREVIOUSLY-viewed candidate can resolve after the user has
+        // already moved on to a different one — `variantsInFlightRef.current` is overwritten to
+        // the new candidate's id the instant its own effect run starts (line above), so by the
+        // time this stale `.then()` fires it no longer matches `candidateId` and must no-op
+        // instead of clobbering whichever candidate is actually showing now. Only `.finally()` was
+        // guarded before; a stale success/failure could still overwrite a newer candidate's state.
+        if (variantsInFlightRef.current !== candidateId) return
         dispatch({ type: 'CONFIRM_VARIANTS_LOADED', variants })
       })
       .catch(() => {
+        if (variantsInFlightRef.current !== candidateId) return
         dispatch({
           type: 'CONFIRM_VARIANTS_FAILED',
           error: {
@@ -335,7 +415,7 @@ export function ScannerPage() {
       .finally(() => {
         if (variantsInFlightRef.current === candidateId) variantsInFlightRef.current = null
       })
-  }, [state.step, state.confirmVariantsPending, state.selectedCandidate?.candidateId, controller])
+  }, [state.step, state.confirmVariantsPending, state.selectedCandidate?.candidateId, userId])
 
   function handleShutter(): void {
     if (capturingRef.current) return
@@ -345,7 +425,7 @@ export function ScannerPage() {
     void captureVideoFrame(video)
       .then((frame) => {
         // Stop the stream as soon as a frame is held — shortest possible camera lifetime.
-        cameraGenerationRef.current += 1
+        cameraGuardRef.current.invalidate()
         stopActiveScannerCamera()
         sessionRef.current = null
         const stored = captureStoreRef.current.set(frame)
@@ -373,7 +453,7 @@ export function ScannerPage() {
     if (file === undefined) return
     void decodeImageFile(file)
       .then((frame) => {
-        cameraGenerationRef.current += 1
+        cameraGuardRef.current.invalidate()
         stopActiveScannerCamera()
         sessionRef.current = null
         const stored = captureStoreRef.current.set(frame)
@@ -386,6 +466,8 @@ export function ScannerPage() {
   }
 
   function handleUsePhoto(): void {
+    const activeController = controllerRef.current
+    if (activeController === null) return
     const stored = captureStoreRef.current.get()
     if (stored === null) return
     const payload = {
@@ -406,14 +488,14 @@ export function ScannerPage() {
     const generation = ++analysisGenerationRef.current
     const abortController = new AbortController()
     analysisAbortControllerRef.current = abortController
-    void controller
+    void activeController
       .analyzeCapture(payload, abortController.signal)
       .then((analysis) => {
         if (generation !== analysisGenerationRef.current) return
         setHasCompletedAnalysis(true)
         if (debugEnabled) {
-          setDiagnostics(controller.getLastDiagnostics?.() ?? null)
-          setDebugImages(controller.getLastDebugImages?.() ?? null)
+          setDiagnostics(activeController.getLastDiagnostics?.() ?? null)
+          setDebugImages(activeController.getLastDebugImages?.() ?? null)
         }
         // The photo has served its purpose; candidates carry the identity from here.
         captureStoreRef.current.clear()
@@ -433,21 +515,45 @@ export function ScannerPage() {
 
   function handleSearchSubmit(event?: SyntheticEvent): void {
     event?.preventDefault()
+    // N-15: synchronous lock — a double-tap before React commits `disabled=true` must still call
+    // searchFallback at most once, the same guarantee handleShutter/handleCommit already have.
+    if (searchPendingRef.current) return
+    const activeController = controllerRef.current
+    if (activeController === null) return
     const name = searchName.trim()
     if (name === '') return
     const collectorNumber = searchCollectorNumber.trim()
+    searchPendingRef.current = true
+    const generation = ++searchGenerationRef.current
     dispatch({ type: 'SEARCH_PENDING' })
-    void controller
+    void activeController
       .searchFallback({
         name,
         collectorNumber: collectorNumber !== '' ? collectorNumber : undefined,
       })
       .then((candidates) => {
+        if (generation !== searchGenerationRef.current) return
         dispatch({ type: 'SEARCH_RESULTS', candidates })
       })
       .catch((error: unknown) => {
+        if (generation !== searchGenerationRef.current) return
         dispatch({ type: 'SEARCH_FAILED', error: describeSearchError(error) })
       })
+      .finally(() => {
+        searchPendingRef.current = false
+      })
+  }
+
+  function handleSearchNameChange(value: string): void {
+    // N-15: a query edit invalidates whatever search is still in flight for the OLD query — its
+    // result, if it lands late, must never populate results for a query the user has since edited.
+    searchGenerationRef.current += 1
+    setSearchName(value)
+  }
+
+  function handleSearchCollectorNumberChange(value: string): void {
+    searchGenerationRef.current += 1
+    setSearchCollectorNumber(value)
   }
 
   function handleCommit(): void {
@@ -457,9 +563,11 @@ export function ScannerPage() {
     // depth, not the primary guard.
     if (committingRef.current) return
     if (state.batch.length === 0) return
+    const activeController = controllerRef.current
+    if (activeController === null) return
     committingRef.current = true
     dispatch({ type: 'ADD_CARDS_PRESSED' })
-    void controller
+    void activeController
       .commitBatch(
         state.batch.map((item) => ({
           candidateId: item.candidate.candidateId,
@@ -652,8 +760,8 @@ export function ScannerPage() {
           results={state.searchResults}
           pending={state.searchPending}
           error={state.searchError}
-          onNameChange={setSearchName}
-          onCollectorNumberChange={setSearchCollectorNumber}
+          onNameChange={handleSearchNameChange}
+          onCollectorNumberChange={handleSearchCollectorNumberChange}
           onSubmit={() => {
             handleSearchSubmit()
           }}
@@ -661,6 +769,9 @@ export function ScannerPage() {
             dispatch({ type: 'SEARCH_RESULT_SELECTED', candidate })
           }}
           onClose={() => {
+            // N-15: closing search invalidates whatever search is still in flight — a late result
+            // must never silently reopen/repopulate the sheet the user just dismissed.
+            searchGenerationRef.current += 1
             dispatch({ type: 'SEARCH_CLOSED' })
           }}
         />
@@ -746,7 +857,7 @@ export function ScannerPage() {
           diagnostics={diagnostics}
           debugImages={debugImages}
           getExpectedCardRank={(cardId) =>
-            controller.getExpectedCardRank?.(cardId) ?? Promise.resolve(null)
+            controllerRef.current?.getExpectedCardRank?.(cardId) ?? Promise.resolve(null)
           }
         />
       ) : null}

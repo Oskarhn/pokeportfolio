@@ -73,9 +73,18 @@ describe('P88 scenario A — strong correct visual must beat a coincidental wron
       visualScores,
     )
     expect(match.candidates[0]?.card.cardId).toBe('correct')
-    // The wrong card's coincidental text convergence must have been visibly discounted.
+    // P93/D-106: the CORRECT card's strong, well-separated visual anchor earned a corroboration
+    // boost (never a discount applied to the wrong card — see engine.ts's own module doc for why
+    // P88's discount-the-competition guard was replaced).
+    const correctEntry = match.candidates.find((c) => c.card.cardId === 'correct')
+    expect(correctEntry?.reasons).toContain('visual-anchor-corroborated')
+    expect(correctEntry?.visualReliability ?? 0).toBeGreaterThan(0)
+    // The wrong card's own score was never touched — its raw score still equals its plain text
+    // evidence, proving nothing was discounted (the defining property that makes this mechanism
+    // immune to N-01's "guard makes things worse than no guard" failure mode).
     const wrongEntry = match.candidates.find((c) => c.card.cardId === 'wrong')
-    expect(wrongEntry?.reasons).toContain('visual-dominance-guarded')
+    expect(wrongEntry?.reasons).not.toContain('visual-anchor-corroborated')
+    expect(wrongEntry?.rawRankScore).toBe(75) // collector-number-exact(45) + name-exact(30)
   })
 })
 

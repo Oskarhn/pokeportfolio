@@ -19,6 +19,9 @@ export default tseslint.config(
       // part of any tsconfig project the typed-lint service knows about. Verified by the
       // authorization suite exercising the deployed function, not by this linter.
       'supabase/functions',
+      // Scratch state the Supabase CLI writes locally when `supabase start`/`db reset` runs
+      // (gitignored, .gitignore:19) — not source, not part of any tsconfig project.
+      'supabase/.temp',
     ],
   },
   {

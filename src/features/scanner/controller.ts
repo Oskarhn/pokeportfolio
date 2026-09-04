@@ -2,10 +2,13 @@ import {
   searchCards,
   getCardVariants,
   getCardsByIds,
+  classifyCardIdsAgainstCatalog,
   type CatalogVariant,
+  type CardCatalogPresence,
 } from '../../data/catalog'
 import { addCardAcquisition } from '../../data/collection'
 import {
+  shouldAbstainForBlurScore,
   matchScannerObservation,
   parseCollectorNumberStructured,
   rankScannerCandidates,
@@ -190,6 +193,17 @@ function tierToConfidence(tier: ScannerConfidenceTier): ScannerConfidence {
 
 function languageLabel(language: ScannerCandidateRecord['language']): string {
   return language === 'ja' ? 'Japanese' : 'English'
+}
+
+/** P93 §25 debug field — this candidate's OWN score-band tier in isolation, ignoring the
+ *  match-level margin/ambiguity demotion (`confidenceTier`/`match.tier` already carries that).
+ *  Reads `rawRankScore`, matching engine.ts's own tier decision (SCORING_TIERS bands compared
+ *  against the full-resolution raw score, never the clamped display value — P93/N-05). */
+function standaloneTierForScore(rawRankScore: number): ScannerConfidence {
+  if (rawRankScore >= SCORING_TIERS.highMinScore) return 'HIGH'
+  if (rawRankScore >= SCORING_TIERS.mediumMinScore) return 'MEDIUM'
+  if (rawRankScore >= SCORING_TIERS.lowMinScore) return 'LOW'
+  return 'NO_MATCH'
 }
 
 function toUiCandidate(record: ScannerCandidateRecord): ScannerCandidate {
@@ -377,6 +391,18 @@ export function createRealScannerController(
   // matching, never persisted, overwritten by the next analyzeCapture call.
   let lastDiagnostics: ScannerDiagnostics | null = null
   const debugImages = new DebugImageUrlStore()
+  // N-21 (P94): a controller instance is created per signed-in identity (D-104 F-05: an account
+  // switch replaces it, it never survives across users) and this session's whole write-authority
+  // ultimately comes from the CURRENT Supabase auth session, not from anything captured here —
+  // `commitBatch`'s RPC calls carry no user id, so a `for` loop still mid-flight after THIS
+  // controller has been disposed (unmount, or an account switch that constructed a fresh
+  // controller for the new identity) would otherwise keep writing rows under whatever session
+  // happens to be current when each remaining `await` resolves. Checked before EACH item so a
+  // disposal mid-batch stops issuing further writes instead of silently continuing under a
+  // possibly-different signed-in identity. This is defense in depth, not the authority boundary —
+  // backend RLS (`auth.uid()`-scoped, D-104/D-096) is what actually prevents a cross-user write;
+  // this only prevents a stale controller from attempting one in the first place.
+  let disposed = false
   /** P90 §21 (debug-only): the exact evidence the most recent scan's real match() call scored
    *  against — kept ONLY so {@link getExpectedCardRank} can compute a real hybrid rank for a card
    *  the owner names after the fact, using the SAME scoring pipeline production used, not a
@@ -502,6 +528,15 @@ export function createRealScannerController(
     throwIfAnalysisAborted(signal)
     const workingCapture = rectified.frame
 
+    // P93/D-106 — severe-blur visual abstention (capture-quality.ts): a scan this blurred is
+    // catastrophically unreliable for the visual channel specifically (P91's calibrated finding —
+    // see the module's own doc for the honest, disclosed scope of what "severe blur" does and
+    // does not detect). Only the visual channel is skipped; OCR and manual search proceed exactly
+    // as normal either way — this is an abstention of ONE evidence channel, never a scan-blocking
+    // gate (that product decision, if any, belongs to a future UI-facing session).
+    const captureBlurScore = rectified.captureBlurScore
+    const severeBlur = shouldAbstainForBlurScore(captureBlurScore)
+
     // On-device OCR and on-device visual embedding run in parallel — both stay entirely local
     // (prompt §6/§41): no image bytes cross the network either way, only the RESULTING textual
     // catalog queries (OCR) and card-id lookups (visual shortlist enrichment) do.
@@ -515,10 +550,16 @@ export function createRealScannerController(
     const [ocrResult, { result: visualResult, errorMessage: visualErrorMessage }] =
       await Promise.all([
         runOcrAnalysis(workingCapture, engine, undefined, debug),
-        analyzeVisualBounded(
-          workingCapture,
-          debug ? VISUAL_DEBUG_SHORTLIST_SIZE : VISUAL_SHORTLIST_SIZE,
-        ),
+        severeBlur
+          ? Promise.resolve({
+              result: null,
+              errorMessage:
+                'Image is too blurry for visual recognition — used text search only for this scan.',
+            })
+          : analyzeVisualBounded(
+              workingCapture,
+              debug ? VISUAL_DEBUG_SHORTLIST_SIZE : VISUAL_SHORTLIST_SIZE,
+            ),
       ])
 
     throwIfAnalysisAborted(signal)
@@ -540,12 +581,20 @@ export function createRealScannerController(
 
     let visualScores: VisualEvidenceByCard | undefined
     let mergedCandidates = textCandidates
+    // N-08 (P94): aggregate counts distinguishing "the visual index found this id" from "it also
+    // survived catalog enrichment" — computed for free from data this block already produces, so
+    // a diagnostics reader never has to infer the enrichment-filtering gap from a bare candidate
+    // count alone. Null (not 0) when there was nothing to enrich in the first place.
+    let visualUnknownIdCount: number | null = null
+    let visualEnrichedIdCount: number | null = null
+    let visualMissingIdCount: number | null = null
     if (visualResult && visualResult.hits.length > 0) {
       visualScores = new Map(visualResult.hits.map((hit) => [hit.cardId, hit.similarity]))
       const knownIds = new Set(textCandidates.map((c) => c.cardId))
       const unknownVisualIds = visualResult.hits
         .map((hit) => hit.cardId)
         .filter((id) => !knownIds.has(id))
+      visualUnknownIdCount = unknownVisualIds.length
       if (unknownVisualIds.length > 0) {
         // Visual shortlist candidates the text search never found (prompt §16's hybrid
         // retrieval): fetch their identity/metadata in one bounded round trip. A card the
@@ -553,10 +602,15 @@ export function createRealScannerController(
         // (F-28/F-29/P88 §16 — the visual index is English-only today, `session-store.ts`'s
         // `language: 'en'` default) is simply dropped — never fabricated.
         const enriched = await getCardsByIds(unknownVisualIds, 'en').catch(() => [])
+        visualEnrichedIdCount = enriched.length
+        visualMissingIdCount = unknownVisualIds.length - enriched.length
         mergedCandidates = [
           ...textCandidates,
           ...enriched.map((card) => toCandidateRecordFromCatalog(card)),
         ]
+      } else {
+        visualEnrichedIdCount = 0
+        visualMissingIdCount = 0
       }
     }
 
@@ -579,16 +633,16 @@ export function createRealScannerController(
     // catastrophic band" instead of a bare, uncalibrated cosine number.
     const strongestVisualSimilarity =
       visualScores && visualScores.size > 0 ? Math.max(...visualScores.values()) : null
-    // P88 §21: why (if at all) the tier was capped below what the raw top score alone implies —
-    // mirrors engine.ts's own precedence (a visual-dominance guard already discounted the score
-    // before tiering ran; the margin/disagreement checks run afterward, in that order).
+    // P88 §21/P93: why (if at all) the tier was capped below what the raw top score alone
+    // implies. P93 removed the old 'visual-dominance-guarded' cause entirely — the P88 guard that
+    // discounted a competing candidate's score is gone (D-106); the redesigned mechanism only ever
+    // ADDS a corroboration boost to the visual anchor, so it can never by itself be the reason a
+    // tier was capped BELOW what the raw score implies.
     const tierCapReason = match.notes.includes('visual-text-disagreement')
       ? ('visual-text-disagreement' as const)
       : match.notes.includes('runner-up-margin-small')
         ? ('runner-up-margin-small' as const)
-        : match.candidates.some((c) => c.reasons.includes('visual-dominance-guarded'))
-          ? ('visual-dominance-guarded' as const)
-          : null
+        : null
     lastDiagnostics = {
       visualModelState: visualSnapshot.modelState,
       visualBackend: visualResult?.backend ?? visualSnapshot.readyInfo?.backend ?? 'unknown',
@@ -602,6 +656,12 @@ export function createRealScannerController(
       captureCropWidth: capture.cardRect.width,
       captureCropHeight: capture.cardRect.height,
       rectificationUsed: !rectified.usedFallback,
+      // P93/D-106: the capture-quality blur gate's own numbers — see capture-quality.ts's module
+      // doc for exactly what "severe blur" is calibrated against.
+      captureBlurScore,
+      captureSevereBlur: severeBlur,
+      visualAbstained: severeBlur,
+      visualAbstainReason: severeBlur ? ('severe-blur' as const) : null,
       visualEmbeddingCreated: visualResult !== null,
       embeddingNorm: visualResult?.embeddingNorm ?? null,
       indexVersion: visualSnapshot.readyInfo?.indexVersion ?? null,
@@ -650,6 +710,19 @@ export function createRealScannerController(
         name: ranked.card.name,
         confidenceTier: tierToConfidence(match.tier),
         reasons: ranked.reasons,
+        rawRankScore: ranked.rawRankScore,
+        displayScore: ranked.score,
+        textReliability: Math.max(
+          match.signals.nameReliability,
+          match.signals.collectorReliability,
+        ),
+        visualReliability: ranked.visualReliability,
+        finalTier: standaloneTierForScore(ranked.rawRankScore),
+        tierReason: match.notes.includes('visual-text-disagreement')
+          ? ('visual-text-disagreement' as const)
+          : match.notes.includes('runner-up-margin-small')
+            ? ('runner-up-margin-small' as const)
+            : null,
       })),
       // P78 fix: `visualErrorMessage` only ever covers exceptions thrown INSIDE
       // analyzeVisualSafely (createImageBitmap/client.analyze throwing) — a model/backend
@@ -705,6 +778,9 @@ export function createRealScannerController(
       fastScannerState: getFastScannerState(),
       ocrRuntimeState: getFastScannerState(),
       enhancedVisualState: visualSnapshot.modelState,
+      visualUnknownIdCount,
+      visualEnrichedIdCount,
+      visualMissingIdCount,
     }
 
     // Debug-only image previews (P79 §4) — memory-only object URLs, never persisted, revoked the
@@ -788,6 +864,10 @@ export function createRealScannerController(
     // Sequential by design (prompt §29): partial failures stay explainable, one item's outcome
     // never races another's, and successes are marked before the next attempt begins.
     for (let index = 0; index < items.length; index += 1) {
+      // N-21: stop issuing further writes the moment this controller has been disposed —
+      // whatever items already committed above stay committed; anything from here on is simply
+      // never attempted rather than potentially written under a since-changed signed-in identity.
+      if (disposed) break
       const item = items[index]
       if (item === undefined) continue
       try {
@@ -812,6 +892,7 @@ export function createRealScannerController(
   }
 
   function dispose(): void {
+    disposed = true
     engine.dispose()
     releaseOcrCanvases()
     visualClient.dispose()
@@ -831,15 +912,48 @@ export function createRealScannerController(
   async function getExpectedCardRank(cardId: string): Promise<ExpectedCardRank | null> {
     if (!isScannerDebugEnabled()) return null
     const visualRank = await visualClient.getExpectedCardRank(cardId)
-    if (lastMatchContext === null) return visualRank
 
-    let candidates = lastMatchContext.candidates
-    if (!candidates.some((c) => c.cardId === cardId)) {
+    // Unconditional, EXACTLY as before N-08 (independent of whether the visual index found this
+    // card at all): a card outside `lastMatchContext.candidates` is looked up by id and scored as
+    // an honest what-if. This also doubles as the first half of N-08's enrichment classification
+    // below — if it resolves, that's already the answer; only a genuine miss needs the extra
+    // classification query.
+    const alreadyKnown = lastMatchContext?.candidates.some((c) => c.cardId === cardId) ?? false
+    let extraCandidate: ScannerCandidateRecord | null = null
+    let fetchedFromCatalog = false
+    if (!alreadyKnown) {
       const fetched = await getCardsByIds([cardId], 'en').catch(() => [])
       const [firstFetched] = fetched
       if (firstFetched !== undefined) {
-        candidates = [...candidates, toCandidateRecordFromCatalog(firstFetched)]
+        extraCandidate = toCandidateRecordFromCatalog(firstFetched)
+        fetchedFromCatalog = true
       }
+    }
+
+    // N-08 (P94): WHY this card does or doesn't have real scoreable evidence. 'not-in-index' is
+    // about the VISUAL index specifically — independent of whether it's ALSO reachable via plain
+    // catalog/text lookup (the fetch above serves scoring regardless of visualRank.found). Only a
+    // card the visual index DID find, but which failed the fetch above, needs the extra
+    // classification query to say WHY (inactive, wrong language, or no catalog row at all).
+    let enrichmentStatus: ExpectedCardRank['enrichmentStatus']
+    if (visualRank === null || !visualRank.found) {
+      enrichmentStatus = 'not-in-index'
+    } else if (alreadyKnown || fetchedFromCatalog) {
+      enrichmentStatus = 'resolved'
+    } else {
+      const classification = await classifyCardIdsAgainstCatalog([cardId], 'en').catch(
+        () => new Map<string, CardCatalogPresence>(),
+      )
+      enrichmentStatus = classification.get(cardId) ?? 'missing-catalog-row'
+    }
+
+    if (lastMatchContext === null) {
+      return visualRank === null ? null : { ...visualRank, enrichmentStatus }
+    }
+
+    let candidates = lastMatchContext.candidates
+    if (extraCandidate !== null && !alreadyKnown) {
+      candidates = [...candidates, extraCandidate]
     }
     const fullRanked = rankScannerCandidatesFull(
       lastMatchContext.signals,
@@ -870,6 +984,7 @@ export function createRealScannerController(
       hybridScore: null,
       hybridTier: null,
       scoreComponents: [],
+      enrichmentStatus,
     }
     return {
       ...(visualRank ?? fallback),
@@ -877,6 +992,7 @@ export function createRealScannerController(
       hybridScore: hybridEntry?.score ?? null,
       hybridTier: inBounded ? boundedMatch.tier : null,
       scoreComponents: hybridEntry?.reasons ?? [],
+      enrichmentStatus,
     }
   }
 

@@ -184,6 +184,17 @@ describe('scanner state machine — result confirmation discipline', () => {
     expect(state.selectedCandidate?.candidateId).toBe('only')
   })
 
+  it('preselects a lone LOW candidate but the batch stays untouched until explicit confirmation (P98/§9)', () => {
+    // Mirrors the HIGH assertion above: preselecting the only option is a UX convenience (no need
+    // to tap a single-item list before "Confirm card" becomes available), never a shortcut around
+    // the explicit confirmation gate itself — a LOW-confidence result must never end up silently
+    // added to the batch just because there was nothing to disambiguate.
+    const state = atResult({ confidence: 'LOW', candidates: [candidate('only')] })
+    expect(state.step).toBe('result')
+    expect(state.selectedCandidate?.candidateId).toBe('only')
+    expect(state.batch).toHaveLength(0)
+  })
+
   it('routes NO_MATCH to the dedicated recovery state', () => {
     const state = atResult({ confidence: 'NO_MATCH', candidates: [] })
     expect(state.step).toBe('no-match')

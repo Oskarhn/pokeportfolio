@@ -2,11 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   createRealScannerController,
   classifyAcquisitionFailure,
+  resolveVisibleCandidateCount,
+  SCANNER_UI_CANDIDATE_LIMIT,
+  SCANNER_UI_EXPANDED_CANDIDATE_LIMIT,
 } from '../../src/features/scanner/controller'
 import {
   initialScannerDefaults,
   scannerSessionStore,
 } from '../../src/features/scanner/session-store'
+import { SCORING_TIERS } from '../../src/domain/scanner/engine'
+import type { RankedScannerCandidate } from '../../src/domain/scanner/types'
 
 /**
  * Controller-level integration seams (prompt sections 18-22 and 29-31): OCR text to P67
@@ -28,6 +33,9 @@ vi.mock('../../src/data/catalog', () => ({
   searchCards: vi.fn(),
   getCardVariants: vi.fn(),
   getCardsByIds: vi.fn().mockResolvedValue([]),
+  // N-08 (P94): default to "no classification data" — individual tests override when they need a
+  // specific inactive/language-filtered/missing-row answer.
+  classifyCardIdsAgainstCatalog: vi.fn().mockResolvedValue(new Map()),
 }))
 
 vi.mock('../../src/data/collection', () => ({
@@ -76,13 +84,19 @@ vi.mock('../../src/features/scanner/ocr-engine', () => ({
 }))
 
 import { runOcrAnalysis } from '../../src/features/scanner/analyze'
-import { getCardVariants, searchCards, getCardsByIds } from '../../src/data/catalog'
+import {
+  getCardVariants,
+  searchCards,
+  getCardsByIds,
+  classifyCardIdsAgainstCatalog,
+} from '../../src/data/catalog'
 import { addCardAcquisition } from '../../src/data/collection'
 
 const mockedRunOcrAnalysis = vi.mocked(runOcrAnalysis)
 const mockedSearchCards = vi.mocked(searchCards)
 const mockedGetCardVariants = vi.mocked(getCardVariants)
 const mockedGetCardsByIds = vi.mocked(getCardsByIds)
+const mockedClassifyCardIdsAgainstCatalog = vi.mocked(classifyCardIdsAgainstCatalog)
 const mockedAddCardAcquisition = vi.mocked(addCardAcquisition)
 
 /** Default: visual channel unavailable, matching how it naturally behaves in this Node test
@@ -218,7 +232,12 @@ describe('analyzeCapture - observation, retrieval, ranking (I2/I3/I4)', () => {
     const low = await controller.analyzeCapture(capture())
     expect(low.confidence).toBe('LOW')
 
-    // Convergent printed evidence (name + id + language) reaches HIGH.
+    // Convergent printed evidence (name + id) reaches MEDIUM, not HIGH (P93/N-09): language
+    // agreement no longer scores (every candidate is already 'en' by construction) and
+    // `rawSetText` is never populated in production (controller.ts's own `observation` literal),
+    // so text-only id+name convergence tops out at 75 — below highMinScore (80). Reaching HIGH
+    // now genuinely requires either a third text signal or the visual channel's corroboration
+    // (engine.test.ts's own suite exercises that combination at the pure-domain level).
     mockedRunOcrAnalysis.mockResolvedValue({
       rawNameText: 'Pikachu',
       rawCollectorNumberText: '58/102',
@@ -234,7 +253,7 @@ describe('analyzeCapture - observation, retrieval, ranking (I2/I3/I4)', () => {
       totalCount: 2,
     })
     const high = await controller.analyzeCapture(capture())
-    expect(high.confidence).toBe('HIGH')
+    expect(high.confidence).toBe('MEDIUM')
   })
 
   it('never lets image bytes cross into the domain or data layers (I8 runtime half)', async () => {
@@ -477,12 +496,31 @@ describe('P80 R4/R5: low-confidence candidate expansion (Shieldon rank-6 real-de
       ],
       totalCount: 9,
     })
-    const controller = createRealScannerController({ userId: 'user-a' })
-    const analysis = await controller.analyzeCapture(capture())
-    expect(analysis.confidence).toBe('HIGH')
-    expect(analysis.candidates.length).toBe(5)
-    const diagnostics = controller.getLastDiagnostics?.()
-    expect(diagnostics?.candidateExpansionTriggered).toBe(false)
+    // P93/N-09: text-only id+name convergence now tops out at MEDIUM (75) — a well-separated
+    // strong visual anchor is what actually reaches HIGH, since production never populates
+    // rawSetText and language agreement no longer scores. See the sibling I3/I4 test's own note.
+    // The visual channel only actually runs in this Node test environment when
+    // `createImageBitmap` is polyfilled (it is not, by default, in this describe block) — save
+    // and restore it locally rather than widening the polyfill to the whole block.
+    const originalCreateImageBitmap = globalThis.createImageBitmap
+    globalThis.createImageBitmap = vi.fn().mockResolvedValue({ close: vi.fn() }) as never
+    visualMocks.analyze.mockResolvedValue({
+      hits: [{ cardId: 'true-match', similarity: 0.93 }],
+      backend: 'wasm',
+      embedMs: 12,
+      searchMs: 2,
+      embeddingNorm: 5,
+    })
+    try {
+      const controller = createRealScannerController({ userId: 'user-a' })
+      const analysis = await controller.analyzeCapture(capture())
+      expect(analysis.confidence).toBe('HIGH')
+      expect(analysis.candidates.length).toBe(5)
+      const diagnostics = controller.getLastDiagnostics?.()
+      expect(diagnostics?.candidateExpansionTriggered).toBe(false)
+    } finally {
+      globalThis.createImageBitmap = originalCreateImageBitmap
+    }
   })
 })
 
@@ -652,6 +690,27 @@ describe('commitBatch - existing acquisition path, honest outcomes (I12/I13/I14)
     // the copy says so instead of the old "may already have been added" uncertainty.
     expect(result.outcomes[0]?.message).toMatch(/retry safely/)
     expect(result.outcomes[0]?.message).not.toMatch(/may already have been added/)
+  })
+
+  it('N-21: commitBatch stops issuing further writes once the controller is disposed mid-batch', async () => {
+    const controller = createRealScannerController({ userId: 'user-a' })
+    let calls = 0
+    mockedAddCardAcquisition.mockImplementation(() => {
+      calls += 1
+      if (calls === 1) {
+        // Simulate an account switch / unmount landing WHILE the first write is still in flight —
+        // ScannerPage constructs a fresh controller and disposes this one, exactly D-104's F-05
+        // "controller replacement" path.
+        controller.dispose()
+      }
+      return Promise.resolve({ holdingId: `h${String(calls)}`, lotId: `l${String(calls)}` })
+    })
+    const result = await controller.commitBatch(items(3))
+    // Item 0's write was already in flight when dispose() ran — it still completes and counts.
+    // Items 1 and 2 must never be attempted once disposed is observed at the top of the loop.
+    expect(calls).toBe(1)
+    expect(result.addedCount).toBe(1)
+    expect(result.outcomes).toEqual([{ index: 0, status: 'added', message: null }])
   })
 
   it('classifyAcquisitionFailure keys on evidence of a server ANSWER, not message text', () => {
@@ -1075,6 +1134,10 @@ describe('getExpectedCardRank (P84, ported P87) — debug-only rank-lookup gatin
       inTop20: true,
       inTop100: true,
       indexContentId: '0123456789abcdef',
+      // N-08 (P94): found:true but not in the (empty, no-scan-yet) candidate pool and the default
+      // catalog mocks resolve nothing for it — the honest classification is that this specific
+      // mock scenario has no catalog row for the id at all.
+      enrichmentStatus: 'missing-catalog-row',
     })
   })
 
@@ -1196,5 +1259,222 @@ describe('getExpectedCardRank (P84, ported P87) — debug-only rank-lookup gatin
     expect(result?.hybridScore).toBe(0)
     // Never added to the batch/candidate pool this scan actually produced.
     expect(controller.getLastDiagnostics?.()).not.toBeNull()
+  })
+
+  describe('N-08 (P94): enrichmentStatus classification', () => {
+    it("is 'not-in-index' when the visual client never found the card, regardless of catalog state", async () => {
+      vi.stubGlobal('window', { location: { search: '?scannerDebug=1' } })
+      visualMocks.getExpectedCardRank.mockResolvedValue({
+        found: false,
+        rank: null,
+        similarity: null,
+        totalCards: 0,
+        inTop20: false,
+        inTop100: false,
+        indexContentId: null,
+      })
+      const controller = createRealScannerController({ userId: 'user-a' })
+      const result = await controller.getExpectedCardRank?.('card-1')
+      expect(result?.enrichmentStatus).toBe('not-in-index')
+      // The classification query is specific to a genuine visual-index hit that failed to
+      // resolve — it must never run just because a card wasn't found by the index at all.
+      expect(mockedClassifyCardIdsAgainstCatalog).not.toHaveBeenCalled()
+    })
+
+    it("is 'resolved' when the visual index found it AND getCardsByIds resolves it", async () => {
+      vi.stubGlobal('window', { location: { search: '?scannerDebug=1' } })
+      visualMocks.getExpectedCardRank.mockResolvedValue({
+        found: true,
+        rank: 5,
+        similarity: 0.5,
+        totalCards: 100,
+        inTop20: true,
+        inTop100: true,
+        indexContentId: 'abc',
+      })
+      mockedGetCardsByIds.mockResolvedValueOnce([
+        {
+          id: 'card-2',
+          name: 'Squirtle',
+          localId: '7',
+          rarity: 'Basic',
+          category: 'Pokemon',
+          illustrator: null,
+          imageBaseUrl: null,
+          language: 'en',
+          setId: 'set-1',
+          setName: 'Base Set',
+        },
+      ])
+      const controller = createRealScannerController({ userId: 'user-a' })
+      const result = await controller.getExpectedCardRank?.('card-2')
+      expect(result?.enrichmentStatus).toBe('resolved')
+      expect(mockedClassifyCardIdsAgainstCatalog).not.toHaveBeenCalled()
+    })
+
+    it.each([
+      ['inactive-filtered', 'inactive-filtered'],
+      ['language-filtered', 'language-filtered'],
+      ['missing-catalog-row', 'missing-catalog-row'],
+    ] as const)(
+      "is '%s' when the visual index found the card but getCardsByIds filtered it — classified via the dedicated query",
+      async (_label, expected) => {
+        vi.stubGlobal('window', { location: { search: '?scannerDebug=1' } })
+        visualMocks.getExpectedCardRank.mockResolvedValue({
+          found: true,
+          rank: 8,
+          similarity: 0.4,
+          totalCards: 100,
+          inTop20: true,
+          inTop100: true,
+          indexContentId: 'abc',
+        })
+        mockedGetCardsByIds.mockResolvedValueOnce([]) // getCardsByIds' own filtered query finds nothing
+        mockedClassifyCardIdsAgainstCatalog.mockResolvedValueOnce(new Map([['card-3', expected]]))
+        const controller = createRealScannerController({ userId: 'user-a' })
+        const result = await controller.getExpectedCardRank?.('card-3')
+        expect(result?.enrichmentStatus).toBe(expected)
+        expect(mockedClassifyCardIdsAgainstCatalog).toHaveBeenCalledWith(['card-3'], 'en')
+      },
+    )
+
+    it('a failed classification query never throws — falls back to missing-catalog-row', async () => {
+      vi.stubGlobal('window', { location: { search: '?scannerDebug=1' } })
+      visualMocks.getExpectedCardRank.mockResolvedValue({
+        found: true,
+        rank: 8,
+        similarity: 0.4,
+        totalCards: 100,
+        inTop20: true,
+        inTop100: true,
+        indexContentId: 'abc',
+      })
+      mockedGetCardsByIds.mockResolvedValueOnce([])
+      mockedClassifyCardIdsAgainstCatalog.mockRejectedValueOnce(new Error('network'))
+      const controller = createRealScannerController({ userId: 'user-a' })
+      await expect(controller.getExpectedCardRank?.('card-4')).resolves.toMatchObject({
+        enrichmentStatus: 'missing-catalog-row',
+      })
+    })
+
+    it('a card already in the current scan\'s own candidate pool is "resolved" without any extra query', async () => {
+      vi.stubGlobal('window', { location: { search: '?scannerDebug=1' } })
+      visualMocks.getExpectedCardRank.mockResolvedValue({
+        found: true,
+        rank: 1,
+        similarity: 0.9,
+        totalCards: 100,
+        inTop20: true,
+        inTop100: true,
+        indexContentId: 'abc',
+      })
+      mockedRunOcrAnalysis.mockResolvedValue({
+        rawNameText: 'Pikachu',
+        rawCollectorNumberText: '58',
+        usedFullFrameFallback: false,
+        nameRoiId: null,
+        numberRoiId: null,
+      })
+      mockedSearchCards.mockResolvedValue({
+        results: [catalogRow({ cardId: 'card-58', name: 'Pikachu', localId: '58' })],
+        totalCount: 1,
+      })
+      visualMocks.analyze.mockResolvedValue(null)
+      visualMocks.getDiagnosticsSnapshot.mockReturnValue(defaultVisualDiagnostics())
+      const controller = createRealScannerController({ userId: 'user-a' })
+      await controller.analyzeCapture(capture())
+      mockedGetCardsByIds.mockClear()
+      const result = await controller.getExpectedCardRank?.('card-58')
+      expect(result?.enrichmentStatus).toBe('resolved')
+      expect(mockedGetCardsByIds).not.toHaveBeenCalled()
+      expect(mockedClassifyCardIdsAgainstCatalog).not.toHaveBeenCalled()
+    })
+  })
+})
+
+/**
+ * P99/§9 — `resolveVisibleCandidateCount` (P80) is what makes "expose useful alternatives" for a
+ * LOW/MEDIUM result more than a slogan: HIGH never needs to widen (a HIGH tier already carries a
+ * wide margin by construction — engine.ts), but a genuinely flat/ambiguous non-HIGH tail widens the
+ * shortlist from 5 to 8 rather than silently hiding the correct card past the normal cutoff (the
+ * real Shieldon device bug this mechanism was built to close). Had zero direct test coverage before
+ * this session despite being exported and load-bearing for the audit's own confidence-safety
+ * requirement — added here rather than left implicit in end-to-end coverage.
+ */
+function rankedCandidate(cardId: string, score: number): RankedScannerCandidate {
+  return {
+    card: {
+      cardId,
+      name: `Card ${cardId}`,
+      localId: cardId,
+      rarity: null,
+      category: null,
+      illustrator: null,
+      imageBaseUrl: null,
+      language: 'en',
+      setId: 'set-1',
+      setName: 'Base Set',
+      variantCount: 1,
+    },
+    score,
+    rawRankScore: score,
+    reasons: [],
+    visualReliability: 0,
+  }
+}
+
+describe('resolveVisibleCandidateCount (P80, §9 LOW/MEDIUM alternatives audit)', () => {
+  it('returns every candidate when there are 5 or fewer, regardless of tier', () => {
+    const ranked = [rankedCandidate('a', 90), rankedCandidate('b', 40)]
+    expect(resolveVisibleCandidateCount('low', ranked)).toBe(2)
+    expect(resolveVisibleCandidateCount('high', ranked)).toBe(2)
+  })
+
+  it('HIGH never expands past the normal limit, even given a long flat tail', () => {
+    const ranked = Array.from({ length: 10 }, (_, i) => rankedCandidate(`c${i}`, 90 - i))
+    expect(resolveVisibleCandidateCount('high', ranked)).toBe(SCANNER_UI_CANDIDATE_LIMIT)
+  })
+
+  it('a non-HIGH tier stays at the normal limit when the top-5 is clearly separated from the rest', () => {
+    const ranked = [
+      rankedCandidate('a', 90),
+      rankedCandidate('b', 80),
+      rankedCandidate('c', 70),
+      rankedCandidate('d', 60),
+      rankedCandidate('e', 50),
+      // Far below — not a flat/ambiguous tail, just more low-ranked noise.
+      rankedCandidate('f', 5),
+      rankedCandidate('g', 4),
+    ]
+    expect(resolveVisibleCandidateCount('medium', ranked)).toBe(SCANNER_UI_CANDIDATE_LIMIT)
+  })
+
+  it('a non-HIGH tier widens to the expanded limit when rank 5 is still close to the top score', () => {
+    const ranked = [
+      rankedCandidate('a', 50),
+      rankedCandidate('b', 49),
+      rankedCandidate('c', 48),
+      rankedCandidate('d', 47),
+      // Within the ambiguity margin of the top score — the real "correct card sat at rank 6" shape.
+      rankedCandidate('e', 50 - SCORING_TIERS.highMinMargin),
+      rankedCandidate('f', 30),
+      rankedCandidate('g', 20),
+      rankedCandidate('h', 10),
+    ]
+    expect(resolveVisibleCandidateCount('low', ranked)).toBe(SCANNER_UI_EXPANDED_CANDIDATE_LIMIT)
+  })
+
+  it('a single strong LOW candidate with a real gap to its runner-up does not force expansion', () => {
+    // A LOW tier alone must never widen the list on confidence level alone — only a genuinely
+    // flat tail does (this file's own header comment states this explicitly).
+    const ranked = [
+      rankedCandidate('a', 25),
+      rankedCandidate('b', 2),
+      rankedCandidate('c', 1),
+      rankedCandidate('d', 0),
+      rankedCandidate('e', -1),
+      rankedCandidate('f', -2),
+    ]
+    expect(resolveVisibleCandidateCount('low', ranked)).toBe(SCANNER_UI_CANDIDATE_LIMIT)
   })
 })

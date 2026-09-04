@@ -78,7 +78,17 @@ export function useUnsavedWorkSource(id: string, isDirty: boolean): void {
  * field-count objects every caller in this codebase passes (a handful of primitives plus a short
  * line-item array), not intended for large/deeply nested values.
  */
-export function useIsDirtyByDiff(values: unknown): boolean {
+/**
+ * `ready` (P94 N-14): defaults to `true` — most callers have every field available synchronously
+ * at mount. A form with an ASYNC one-time prefill (e.g. `SaleFormPage`'s holdingId(s) lookup) must
+ * pass `false` until that prefill resolves: without it, the baseline snapshot is captured against
+ * pre-prefill (typically empty) values, and the moment prefill's `setState` lands, the diff
+ * against that stale baseline reports dirty with ZERO actual user edits — a false positive that
+ * would trigger an unwanted "unsaved work" prompt on a page the user hasn't touched yet. While
+ * `ready` is `false`, no baseline is captured AND no comparison runs (`isDirty` stays `false`);
+ * the first render where it is `true` captures the baseline from THAT render's values.
+ */
+export function useIsDirtyByDiff(values: unknown, ready = true): boolean {
   const initialRef = useRef<string | undefined>(undefined)
   const [isDirty, setIsDirty] = useState(false)
   // Comparison happens inside an effect, never during render, so the initial snapshot and every
@@ -86,19 +96,21 @@ export function useIsDirtyByDiff(values: unknown): boolean {
   // a value changing and isDirty flipping is immaterial here — this only gates a decision made
   // in response to a background browser event (stale deployment / reload), never render output.
   useEffect(() => {
+    if (!ready) return
     const serialized = JSON.stringify(values)
     if (initialRef.current === undefined) {
       initialRef.current = serialized
       return
     }
     setIsDirty(serialized !== initialRef.current)
-  }, [values])
+  }, [values, ready])
   return isDirty
 }
 
 /** Combines {@link useIsDirtyByDiff} and {@link useUnsavedWorkSource} — the one call most page
- *  components need: register `values`'s current dirty-by-diff state under `id`. */
-export function useUnsavedWorkSnapshot(id: string, values: unknown): void {
-  const isDirty = useIsDirtyByDiff(values)
+ *  components need: register `values`'s current dirty-by-diff state under `id`. `ready` is
+ *  {@link useIsDirtyByDiff}'s own delayed-baseline parameter (P94 N-14), passed through unchanged. */
+export function useUnsavedWorkSnapshot(id: string, values: unknown, ready = true): void {
+  const isDirty = useIsDirtyByDiff(values, ready)
   useUnsavedWorkSource(id, isDirty)
 }

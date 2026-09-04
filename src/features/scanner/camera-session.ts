@@ -8,6 +8,20 @@ export class ScannerCameraUnsupportedError extends Error {
   }
 }
 
+/** Thrown when a call to {@link openEnvironmentCamera} loses the race to a newer call that is
+ *  still eligible to win (P94 N-10) — never resolved as a fake "success" with a dead stream. Its
+ *  own just-acquired stream has already been stopped by the time this rejects. Callers that
+ *  already guard on their own external generation/identity ref (as `ScannerPage.tsx` does) can
+ *  safely ignore this specific error class: a genuinely superseded call always corresponds to an
+ *  outdated external generation too, so the caller's own stale-result guard already discards it
+ *  before this error's content would ever matter. */
+export class ScannerCameraSupersededError extends Error {
+  constructor() {
+    super('A newer camera-open request superseded this one before it could become active.')
+    this.name = 'ScannerCameraSupersededError'
+  }
+}
+
 /**
  * Camera lifecycle for the scanner (prompt §7/§8, D-006). The scanner route owns exactly ONE
  * MediaStream at a time: opening a new session stops any previous one first, and every exit
@@ -56,14 +70,36 @@ const CAMERA_IDEAL_RESOLUTION_PX = 1920
  * against SEQUENTIAL callers — two overlapping invocations (neither awaited before the next
  * starts) both saw `activeScannerSession === null` at the top and both proceeded, so whichever
  * `acquire()` resolved SECOND silently overwrote `activeScannerSession`, leaking the other's
- * tracks. `openGeneration` makes the primitive itself enforce the invariant regardless of caller
- * discipline: each call is stamped with the generation current when it started, and a call whose
- * generation has since been superseded (a later `openEnvironmentCamera` call started before this
- * one's `acquire()` resolved) stops its own just-acquired stream immediately instead of ever
- * touching `video`/`activeScannerSession` — so exactly one stream ever becomes active no matter
- * which underlying `acquire()` promise happens to settle first.
+ * tracks. A per-call token (`openSeq`) plus one piece of AUTHORITATIVE shared state
+ * (`liveGeneration` — "which token is still eligible to become/stay the active session") makes
+ * the primitive itself enforce the invariant regardless of caller discipline.
+ *
+ * N-10 (P94): the ORIGINAL fix here bumped a single shared counter on every call start and
+ * compared against it on every call's OWN resolution — but never rolled it back when a call's
+ * `acquire()` REJECTED. Concretely: call A starts (token 1, counter now 1); call B starts before
+ * A resolves (token 2, counter now 2); B's `acquire()` rejects — the counter stays at 2, nothing
+ * restores it to 1; A's `acquire()` later resolves and is wrongly compared against the counter's
+ * now-permanently-stale value of 2, sees `1 !== 2`, concludes it lost a race that never actually
+ * happened (B never became live — it FAILED), stops its own perfectly good stream, and used to
+ * resolve as if successful anyway. Zero live streams, no error surfaced.
+ *
+ * The fix is NOT a blind decrement on failure (`liveGeneration -= 1`) — with more than two
+ * overlapping calls that is just as unsafe: which value to fall back to depends on exactly which
+ * other calls are still in flight, not a fixed offset. Instead, each call captures the
+ * `liveGeneration` value it is about to DISPLACE (`previousLiveGeneration`) when it claims the
+ * slot; on failure, it restores exactly that captured value — but ONLY if nothing even newer has
+ * claimed the slot since (checked via `liveGeneration === myToken` immediately before restoring).
+ * That guard is what makes chained failures/successes resolve correctly no matter how many calls
+ * overlap or what order their `acquire()` promises settle in — proven by the ordering matrix in
+ * `tests/ui/scanner-camera.test.ts`.
+ *
+ * A call that ends up NOT holding the slot once its own `acquire()` settles — because a still-live
+ * newer call already displaced it — stops its own stream immediately and REJECTS with
+ * {@link ScannerCameraSupersededError} rather than ever resolving a dead session as if it were a
+ * success (the old, buggy `{ stream, stop() {} }` shape).
  */
-let openGeneration = 0
+let openSeq = 0
+let liveGeneration = 0
 
 export async function openEnvironmentCamera(
   video: HTMLVideoElement,
@@ -71,20 +107,32 @@ export async function openEnvironmentCamera(
   onEnded?: () => void,
 ): Promise<ManagedCameraSession> {
   stopActiveScannerCamera()
-  const myGeneration = ++openGeneration
-  const stream = await acquire({
-    video: {
-      facingMode: { ideal: 'environment' },
-      width: { ideal: CAMERA_IDEAL_RESOLUTION_PX },
-      height: { ideal: CAMERA_IDEAL_RESOLUTION_PX },
-    },
-    audio: false,
-  })
-  if (myGeneration !== openGeneration) {
-    // A newer openEnvironmentCamera call started while this one's acquire() was pending — this
-    // stream lost the race before it ever became visible; stop it immediately, touch nothing.
+  const myToken = ++openSeq
+  const previousLiveGeneration = liveGeneration
+  liveGeneration = myToken
+  let stream: MediaStream
+  try {
+    stream = await acquire({
+      video: {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: CAMERA_IDEAL_RESOLUTION_PX },
+        height: { ideal: CAMERA_IDEAL_RESOLUTION_PX },
+      },
+      audio: false,
+    })
+  } catch (error) {
+    // Retract this call's claim on the slot — but ONLY if nothing newer has claimed it since
+    // (a newer call's own eventual success/failure must not be affected by an older call's
+    // unrelated rejection). Restores the EXACT value this call displaced, not a blind decrement.
+    if (liveGeneration === myToken) liveGeneration = previousLiveGeneration
+    throw error
+  }
+  if (myToken !== liveGeneration) {
+    // A still-live newer call already holds the slot — this stream lost the race before it ever
+    // became visible. Stop it immediately and reject clearly; never resolve a dead session as a
+    // fake success.
     for (const track of stream.getTracks()) track.stop()
-    return { stream, stop() {} }
+    throw new ScannerCameraSupersededError()
   }
   video.srcObject = stream
   try {
