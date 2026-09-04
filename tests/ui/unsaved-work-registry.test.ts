@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  DirtyByDiffBaseline,
   hasAnyUnsavedWork,
   registerUnsavedWorkSource,
   resetUnsavedWorkRegistryForTests,
@@ -73,5 +74,138 @@ describe('unsaved-work-registry', () => {
     expect(hasAnyUnsavedWork()).toBe(false)
     registerUnsavedWorkSource('purchase-form', () => true)
     expect(hasAnyUnsavedWork()).toBe(true)
+  })
+})
+
+/**
+ * D-110 residual fix: `DirtyByDiffBaseline` is the core logic behind `useIsDirtyByDiff`, extracted
+ * so it is directly testable (this project has no React renderer). `tick()` below reproduces the
+ * hook's effect body verbatim, threading `isDirty` through exactly the way React state would
+ * carry it from one tick to the next — matching `sale-form-keyed-prefill-guard.test.ts`'s own
+ * "reproduce the real effect body against a real primitive" approach for the sibling D-109/D-110
+ * fix.
+ */
+function tick(
+  tracker: DirtyByDiffBaseline,
+  currentIsDirty: boolean,
+  values: unknown,
+  ready: boolean,
+  resetKey?: unknown,
+): boolean {
+  let isDirty = currentIsDirty
+  if (tracker.observeResetKey(resetKey)) isDirty = false
+  if (!ready) return isDirty
+  const serialized = JSON.stringify(values)
+  if (!tracker.hasBaseline()) {
+    tracker.captureBaseline(serialized)
+    return isDirty
+  }
+  return tracker.isDirty(serialized)
+}
+
+describe('DirtyByDiffBaseline (useIsDirtyByDiff core logic)', () => {
+  it('captures the baseline on the first ready tick and reports not dirty until values change', () => {
+    const tracker = new DirtyByDiffBaseline()
+    let isDirty = tick(tracker, false, { x: 1 }, true)
+    expect(isDirty).toBe(false)
+    isDirty = tick(tracker, isDirty, { x: 1 }, true)
+    expect(isDirty).toBe(false)
+    isDirty = tick(tracker, isDirty, { x: 2 }, true)
+    expect(isDirty).toBe(true)
+  })
+
+  it("no resetKey (the default): behaves exactly as before — one baseline for the tracker's whole lifetime", () => {
+    const tracker = new DirtyByDiffBaseline()
+    let isDirty = tick(tracker, false, { x: 1 }, true, undefined)
+    expect(isDirty).toBe(false)
+    isDirty = tick(tracker, isDirty, { x: 2 }, true, undefined)
+    expect(isDirty).toBe(true)
+    // A later tick with the same (still undefined) resetKey never re-baselines.
+    isDirty = tick(tracker, isDirty, { x: 2 }, true, undefined)
+    expect(isDirty).toBe(true)
+  })
+
+  it('does not capture or compare while not ready', () => {
+    const tracker = new DirtyByDiffBaseline()
+    const isDirty = tick(tracker, false, { x: 1 }, false, 'a')
+    expect(isDirty).toBe(false)
+    expect(tracker.hasBaseline()).toBe(false)
+  })
+
+  it('D-110: A completes (baseline captured) -> navigate to B -> B completes -> B untouched is NOT dirty', () => {
+    const tracker = new DirtyByDiffBaseline()
+    // A's prefill completes; baseline captured against A's data.
+    let isDirty = tick(tracker, false, { items: ['a'] }, true, 'holding-a')
+    expect(isDirty).toBe(false)
+    // Same-instance navigation to B: resetKey changes immediately, ready drops to false in the
+    // very same tick (matches SaleFormPage's own `prefillReady` derivation) — must not report
+    // dirty even though `values` still reflects whatever the render passed (e.g. stale A data).
+    isDirty = tick(tracker, isDirty, { items: ['a'] }, false, 'holding-b')
+    expect(isDirty).toBe(false)
+    expect(tracker.hasBaseline()).toBe(false)
+    // B's own prefill completes: a fresh baseline is captured from B's own values, exactly once.
+    isDirty = tick(tracker, isDirty, { items: ['b'] }, true, 'holding-b')
+    expect(isDirty).toBe(false)
+    // B untouched afterward: still not dirty.
+    isDirty = tick(tracker, isDirty, { items: ['b'] }, true, 'holding-b')
+    expect(isDirty).toBe(false)
+  })
+
+  it('D-110: A completes -> B slow (several not-ready ticks) -> B completes -> not dirty', () => {
+    const tracker = new DirtyByDiffBaseline()
+    let isDirty = tick(tracker, false, { items: ['a'] }, true, 'holding-a')
+    isDirty = tick(tracker, isDirty, { items: ['a'] }, false, 'holding-b')
+    expect(isDirty).toBe(false)
+    // B's own fetch is still in flight across several intervening ticks (e.g. other form fields
+    // changing while B's prefill has not resolved yet) — must stay not-dirty throughout.
+    isDirty = tick(tracker, isDirty, { items: ['a'], soldOn: '2026-09-01' }, false, 'holding-b')
+    expect(isDirty).toBe(false)
+    isDirty = tick(tracker, isDirty, { items: ['a'], soldOn: '2026-09-02' }, false, 'holding-b')
+    expect(isDirty).toBe(false)
+    isDirty = tick(tracker, isDirty, { items: ['b'], soldOn: '2026-09-02' }, true, 'holding-b')
+    expect(isDirty).toBe(false)
+  })
+
+  it('D-110: A completes -> B errors (prefill still completes via .finally, empty/unchanged items) -> not dirty, then editing B is dirty', () => {
+    const tracker = new DirtyByDiffBaseline()
+    let isDirty = tick(tracker, false, { items: ['a'] }, true, 'holding-a')
+    isDirty = tick(tracker, isDirty, { items: ['a'] }, false, 'holding-b')
+    // B's lookup rejects; SaleFormPage's `.finally()` still marks the key completed (prefillReady
+    // derives true) with whatever `items` the catch left in place.
+    isDirty = tick(tracker, isDirty, { items: ['a'] }, true, 'holding-b')
+    expect(isDirty).toBe(false)
+    // A real user edit after B "completes" (even via error) must be recognized as dirty.
+    isDirty = tick(tracker, isDirty, { items: ['a', 'manually-added'] }, true, 'holding-b')
+    expect(isDirty).toBe(true)
+  })
+
+  it('D-110: A -> B -> A (return to the first key) re-baselines again, not comparing against the original A baseline', () => {
+    const tracker = new DirtyByDiffBaseline()
+    let isDirty = tick(tracker, false, { items: ['a'] }, true, 'holding-a')
+    isDirty = tick(tracker, isDirty, { items: ['a'] }, false, 'holding-b')
+    isDirty = tick(tracker, isDirty, { items: ['b'] }, true, 'holding-b')
+    // Navigate back to A. Even though this exact value ({items:['a']}) matches A's ORIGINAL
+    // baseline, that baseline was discarded when B began — A must re-baseline from scratch, not
+    // silently resurrect the old snapshot.
+    isDirty = tick(tracker, isDirty, { items: ['b'] }, false, 'holding-a')
+    expect(isDirty).toBe(false)
+    expect(tracker.hasBaseline()).toBe(false)
+    isDirty = tick(tracker, isDirty, { items: ['a'] }, true, 'holding-a')
+    expect(isDirty).toBe(false)
+    isDirty = tick(tracker, isDirty, { items: ['a', 'edited'] }, true, 'holding-a')
+    expect(isDirty).toBe(true)
+  })
+
+  it('StrictMode: the same resetKey/values tick running twice in a row (synthetic double-invoke) stays stable', () => {
+    const tracker = new DirtyByDiffBaseline()
+    // First (synthetic) invocation.
+    let isDirty = tick(tracker, false, { items: ['a'] }, true, 'holding-a')
+    expect(isDirty).toBe(false)
+    // Second invocation with the IDENTICAL resetKey and values — must not re-reset the baseline
+    // or flip isDirty; the tracker instance itself persists across StrictMode's synthetic
+    // mount/cleanup/remount because it lives in a useRef, same as KeyedPrefillGuard's own ref.
+    isDirty = tick(tracker, isDirty, { items: ['a'] }, true, 'holding-a')
+    expect(isDirty).toBe(false)
+    expect(tracker.hasBaseline()).toBe(true)
   })
 })

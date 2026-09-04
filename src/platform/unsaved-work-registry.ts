@@ -70,15 +70,61 @@ export function useUnsavedWorkSource(id: string, isDirty: boolean): void {
 }
 
 /**
- * Snapshots `values` on first render and reports `true` from then on whenever a later render's
- * `values` no longer deep-equals (via JSON serialization) that snapshot. Deliberately generic
- * over per-field dirty logic: an "Add" form's snapshot is its own empty defaults, an "Edit"
- * form's snapshot is the record as fetched, and either way "differs from where it started" is
- * exactly what "unsaved work" means for a plain form with no autosave. Cheap for the small
- * field-count objects every caller in this codebase passes (a handful of primitives plus a short
- * line-item array), not intended for large/deeply nested values.
+ * Core baseline/diff bookkeeping behind {@link useIsDirtyByDiff}, extracted into a plain class so
+ * it is directly unit-testable — this project has no React renderer/testing-library dependency
+ * (see `KeyedPrefillGuard`/`CameraAcquisitionGuard` for the same extraction pattern, and this
+ * file's own header comment for why the hook wrappers stay thin glue over testable core logic).
+ *
+ * D-110's disclosed residual: a component instance reused for a genuinely different logical
+ * entity (e.g. `SaleFormPage` navigating from one holdingId set to another with no remount) must
+ * not keep comparing the NEW entity's values against the OLD entity's baseline forever. Passing a
+ * `resetKey` that changes when the entity changes makes the tracker discard its baseline and wait
+ * to recapture it — exactly the identity/generation discipline `KeyedPrefillGuard` already uses
+ * for the fetch itself, applied here to the diff baseline it feeds.
  */
+const UNOBSERVED_RESET_KEY = Symbol('dirty-by-diff-baseline-unobserved')
+
+export class DirtyByDiffBaseline {
+  private resetKey: unknown = UNOBSERVED_RESET_KEY
+  private baseline: string | undefined = undefined
+
+  /**
+   * Call on every tick with the current `resetKey`. If it differs from the last-observed value
+   * (including the very first call, or a caller that never passes one — `undefined` is a normal
+   * key), the baseline is discarded and this returns `true`, meaning `isDirty` must report `false`
+   * until a baseline is recaptured. A caller whose `resetKey` never changes gets `false` forever
+   * after its first (harmless) reset, preserving the original "capture once, ever" behavior.
+   */
+  observeResetKey(resetKey: unknown): boolean {
+    if (this.resetKey === resetKey) return false
+    this.resetKey = resetKey
+    this.baseline = undefined
+    return true
+  }
+
+  hasBaseline(): boolean {
+    return this.baseline !== undefined
+  }
+
+  captureBaseline(serialized: string): void {
+    this.baseline = serialized
+  }
+
+  isDirty(serialized: string): boolean {
+    return this.baseline !== undefined && serialized !== this.baseline
+  }
+}
+
 /**
+ * Snapshots `values` on the first `ready` tick (of the current `resetKey`, see below) and reports
+ * `true` from then on whenever a later tick's `values` no longer deep-equals (via JSON
+ * serialization) that snapshot. Deliberately generic over per-field dirty logic: an "Add" form's
+ * snapshot is its own empty defaults, an "Edit" form's snapshot is the record as fetched, and
+ * either way "differs from where it started" is exactly what "unsaved work" means for a plain
+ * form with no autosave. Cheap for the small field-count objects every caller in this codebase
+ * passes (a handful of primitives plus a short line-item array), not intended for large/deeply
+ * nested values.
+ *
  * `ready` (P94 N-14): defaults to `true` — most callers have every field available synchronously
  * at mount. A form with an ASYNC one-time prefill (e.g. `SaleFormPage`'s holdingId(s) lookup) must
  * pass `false` until that prefill resolves: without it, the baseline snapshot is captured against
@@ -86,31 +132,49 @@ export function useUnsavedWorkSource(id: string, isDirty: boolean): void {
  * against that stale baseline reports dirty with ZERO actual user edits — a false positive that
  * would trigger an unwanted "unsaved work" prompt on a page the user hasn't touched yet. While
  * `ready` is `false`, no baseline is captured AND no comparison runs (`isDirty` stays `false`);
- * the first render where it is `true` captures the baseline from THAT render's values.
+ * the first tick where it is `true` captures the baseline from THAT tick's values.
+ *
+ * `resetKey` (D-110 residual fix): omit it for the common case (one entity per component
+ * lifetime — the default `undefined` never changes, so behavior is identical to before this
+ * parameter existed). Pass a value that identifies WHICH entity `values` currently describes for
+ * a component instance that can be reused for a different entity without remounting (matching
+ * `KeyedPrefillGuard`'s own `key` for the same form). When `resetKey` changes, any captured
+ * baseline is discarded immediately — even before `ready` flips back to `true` for the new
+ * entity — so `isDirty` reports `false` (never a stale true) while the new entity's own data is
+ * still loading, and a fresh baseline is captured exactly once, from the new entity's own first
+ * `ready` tick, rather than comparing it forever against the previous entity's snapshot.
  */
-export function useIsDirtyByDiff(values: unknown, ready = true): boolean {
-  const initialRef = useRef<string | undefined>(undefined)
+export function useIsDirtyByDiff(values: unknown, ready = true, resetKey?: unknown): boolean {
+  const trackerRef = useRef(new DirtyByDiffBaseline())
   const [isDirty, setIsDirty] = useState(false)
   // Comparison happens inside an effect, never during render, so the initial snapshot and every
   // later comparison both stay off the render-phase ref-access rule; the one-tick delay between
   // a value changing and isDirty flipping is immaterial here — this only gates a decision made
   // in response to a background browser event (stale deployment / reload), never render output.
   useEffect(() => {
+    const tracker = trackerRef.current
+    if (tracker.observeResetKey(resetKey)) setIsDirty(false)
     if (!ready) return
     const serialized = JSON.stringify(values)
-    if (initialRef.current === undefined) {
-      initialRef.current = serialized
+    if (!tracker.hasBaseline()) {
+      tracker.captureBaseline(serialized)
       return
     }
-    setIsDirty(serialized !== initialRef.current)
-  }, [values, ready])
+    setIsDirty(tracker.isDirty(serialized))
+  }, [values, ready, resetKey])
   return isDirty
 }
 
 /** Combines {@link useIsDirtyByDiff} and {@link useUnsavedWorkSource} — the one call most page
- *  components need: register `values`'s current dirty-by-diff state under `id`. `ready` is
- *  {@link useIsDirtyByDiff}'s own delayed-baseline parameter (P94 N-14), passed through unchanged. */
-export function useUnsavedWorkSnapshot(id: string, values: unknown, ready = true): void {
-  const isDirty = useIsDirtyByDiff(values, ready)
+ *  components need: register `values`'s current dirty-by-diff state under `id`. `ready` and
+ *  `resetKey` are {@link useIsDirtyByDiff}'s own parameters (P94 N-14; D-110), passed through
+ *  unchanged. */
+export function useUnsavedWorkSnapshot(
+  id: string,
+  values: unknown,
+  ready = true,
+  resetKey?: unknown,
+): void {
+  const isDirty = useIsDirtyByDiff(values, ready, resetKey)
   useUnsavedWorkSource(id, isDirty)
 }
