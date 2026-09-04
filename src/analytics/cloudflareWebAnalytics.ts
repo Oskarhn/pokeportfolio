@@ -1,5 +1,5 @@
 /**
- * Cloudflare Web Analytics (P101, D-111) — opt-in, off by default. No-ops entirely when
+ * Cloudflare Web Analytics (P101, D-114) — opt-in, off by default. No-ops entirely when
  * `VITE_CF_ANALYTICS_TOKEN` is unset (the default in every environment until the owner
  * configures it — see .env.example). `vite.config.ts`'s `buildContentSecurityPolicy` only grants
  * the `static.cloudflareinsights.com`/`cloudflareinsights.com` CSP allowances when this same

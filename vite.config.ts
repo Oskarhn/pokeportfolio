@@ -6,6 +6,7 @@ import { VitePWA } from 'vite-plugin-pwa'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { execSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 
 // Single source of truth for the app version shown in Profile's footer (M7.1 prompt §65) —
 // package.json, not a hardcoded string that drifts from it.
@@ -42,6 +43,36 @@ const appBuildSha = resolveBuildSha()
 const appBuildTime = new Date().toISOString()
 
 /**
+ * Anti-FOUC theme bootstrap (P103, D-112 addendum below): applies a remembered light/dark
+ * override (`src/ui/theme.ts`'s `pp-theme` localStorage key) before first paint, so a returning
+ * user with an explicit preference never sees a flash of the wrong palette while the profile
+ * round-trips from Supabase. `system` (or nothing stored yet) leaves the attribute unset and
+ * CSS's `prefers-color-scheme` block decides.
+ *
+ * This is the ONE place its source is authored. `themeBootstrapHtml()` below injects this EXACT
+ * string as index.html's first-in-head inline `<script>` (both `vite dev` and `vite build`, via
+ * the `transformIndexHtml` hook — never hand-written HTML), and `buildContentSecurityPolicy`
+ * hashes this SAME string into `script-src` as a `'sha256-…'` source expression. Because both
+ * consumers read one constant, the injected script and the CSP that permits it cannot drift apart
+ * the way an independently hand-computed hash could if someone edited the script text later
+ * without recomputing it — the exact class of silent bug this fix exists to close (P101 shipped
+ * the script as inline HTML with no CSP allowance at all, so the real Cloudflare Pages CSP
+ * silently blocked it in production; `'unsafe-inline'` is refused as the fix, per this project's
+ * standing CSP posture). `tests/config/security-headers.test.ts` pins the hash is present, and
+ * `scripts/verify-scanner-platform-build.mjs` additionally recomputes the hash of the ACTUAL
+ * built dist/index.html script tag and asserts it equals the ACTUAL built dist/_headers CSP
+ * entry — a real-artifact proof, not just a same-constant assumption.
+ */
+export const THEME_BOOTSTRAP_SCRIPT =
+  "try{var t=localStorage.getItem('pp-theme');if(t==='light'||t==='dark'){" +
+  "document.documentElement.setAttribute('data-theme',t)}}catch(e){}"
+
+function themeBootstrapScriptHash(): string {
+  const digest = createHash('sha256').update(THEME_BOOTSTRAP_SCRIPT, 'utf-8').digest('base64')
+  return `'sha256-${digest}'`
+}
+
+/**
  * The Content-Security-Policy served by `_headers`, derived from the Supabase URL this bundle was
  * actually built against. Exported pure so tests/config/security-headers.test.ts can pin the
  * exact directives — this is the file a WASM-era regression would edit first.
@@ -57,14 +88,18 @@ export function buildContentSecurityPolicy(
   const origin = new URL(supabaseUrl).origin
   const realtime = origin.replace(/^http/, 'ws')
 
-  // Cloudflare Web Analytics (D-111): the beacon script loads from static.cloudflareinsights.com
+  // Cloudflare Web Analytics (D-114): the beacon script loads from static.cloudflareinsights.com
   // and posts to cloudflareinsights.com (confirmed against Cloudflare's own docs/community
   // reporting, 2026-09 — there is no first-party same-origin variant for a plain static site).
   // Named explicitly, never widened to a wildcard, and only present at all when analytics is
   // actually enabled.
+  //
+  // The theme-bootstrap hash (P103): a single, exact `'sha256-…'` source expression for the one
+  // inline script this app ships (see THEME_BOOTSTRAP_SCRIPT above) — never 'unsafe-inline'.
+  const themeBootstrapHash = themeBootstrapScriptHash()
   const scriptSrc = analyticsEnabled
-    ? "script-src 'self' 'wasm-unsafe-eval' blob: https://static.cloudflareinsights.com"
-    : "script-src 'self' 'wasm-unsafe-eval' blob:"
+    ? `script-src 'self' 'wasm-unsafe-eval' blob: ${themeBootstrapHash} https://static.cloudflareinsights.com`
+    : `script-src 'self' 'wasm-unsafe-eval' blob: ${themeBootstrapHash}`
   const connectSrc = analyticsEnabled
     ? `connect-src 'self' ${origin} ${realtime} https://cloudflareinsights.com`
     : `connect-src 'self' ${origin} ${realtime}`
@@ -72,9 +107,9 @@ export function buildContentSecurityPolicy(
   return [
     // Nothing loads from anywhere by default; every allowance below is deliberate.
     "default-src 'self'",
-    // The build emits module scripts as files and no inline script — verified in dist. So this
-    // still needs no 'unsafe-inline' and no nonce, which is what makes the rest of the policy
-    // worth having. 'wasm-unsafe-eval' is the CSP3 source expression that permits WebAssembly
+    // The build emits module scripts as files, plus exactly ONE inline script (the theme
+    // bootstrap above), permitted by its own exact hash rather than 'unsafe-inline' or a nonce —
+    // verified in dist. 'wasm-unsafe-eval' is the CSP3 source expression that permits WebAssembly
     // *compilation* — required by the M15 scanner's on-device OCR engine — while JavaScript
     // eval() remains refused; the two are distinct grants under CSP3 and only the former is
     // given.
@@ -214,6 +249,30 @@ function cloudflareHeaders(): Plugin {
   Cache-Control: no-store
 `
       this.emitFile({ type: 'asset', fileName: '_headers', source: headers })
+    },
+  }
+}
+
+/**
+ * Injects THEME_BOOTSTRAP_SCRIPT as index.html's first-in-head inline `<script>`, in both `vite
+ * dev` and `vite build`, via the standard `transformIndexHtml` hook — never hand-written into
+ * index.html itself, so the exact bytes served always match the exact bytes
+ * `buildContentSecurityPolicy` hashed (see THEME_BOOTSTRAP_SCRIPT's own comment above for why that
+ * matters). `head-prepend` places it before every other head tag (charset/viewport excepted, since
+ * those are supplied by index.html itself and Vite always keeps them first) so the theme
+ * attribute is set before the browser has anything else to paint.
+ */
+function themeBootstrapHtml(): Plugin {
+  return {
+    name: 'pokeportfolio:theme-bootstrap',
+    transformIndexHtml() {
+      return [
+        {
+          tag: 'script',
+          injectTo: 'head-prepend',
+          children: THEME_BOOTSTRAP_SCRIPT,
+        },
+      ]
     },
   }
 }
@@ -434,6 +493,7 @@ export default defineConfig({
   plugins: [
     react(),
     tailwindcss(),
+    themeBootstrapHtml(),
     cloudflareHeaders(),
     cloudflareAssetNotFoundPages(),
     cloudflareBuildMeta(),

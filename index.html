@@ -10,19 +10,14 @@
       Referer header. Nothing in this application needs referrers. See docs/SECURITY.md §5.
     -->
     <meta name="referrer" content="no-referrer" />
-    <script>
-      // Applies a remembered theme override before first paint, so a returning user with an
-      // explicit light/dark preference (src/ui/theme.ts) never sees a flash of the wrong palette
-      // while the profile round-trips from Supabase. Reads localStorage only — no network, no
-      // React. `system` (or nothing stored yet) leaves the attribute unset and CSS's
-      // prefers-color-scheme block decides.
-      try {
-        var t = localStorage.getItem('pp-theme')
-        if (t === 'light' || t === 'dark') {
-          document.documentElement.setAttribute('data-theme', t)
-        }
-      } catch (e) {}
-    </script>
+    <!--
+      The anti-FOUC theme-bootstrap <script> is injected here by vite.config.ts's
+      themeBootstrapHtml() plugin (head-prepend), not hand-written — see THEME_BOOTSTRAP_SCRIPT's
+      own comment there for why: the exact same string is what buildContentSecurityPolicy hashes
+      into the CSP's script-src, so the script actually served and the CSP that permits it cannot
+      drift apart (P103; P101 shipped this as a static inline script the real Cloudflare Pages CSP
+      had no allowance for at all, silently blocking it in production).
+    -->
     <meta
       name="description"
       content="PokePortfolio — a private Pokémon TCG collection and financial tracker."

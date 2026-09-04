@@ -14,6 +14,7 @@
  * still asserted structurally.
  */
 
+import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -195,6 +196,42 @@ function cspDirectives(csp) {
       /no-cache/.test(currentJsonCacheControl) &&
       !/immutable/.test(currentJsonCacheControl),
     currentJsonCacheControl ?? '(no current.json block found)',
+  )
+}
+
+// ── dist/index.html theme-bootstrap <-> dist/_headers CSP hash (P103) ────────────────────────────
+{
+  const indexHtml = readFileSync(join(dist, 'index.html'), 'utf8')
+  const scriptMatch = /<script>([\s\S]*?)<\/script>/.exec(indexHtml)
+  const inlineScript = scriptMatch?.[1] ?? null
+
+  const cspLine = headersFile
+    .split('\n')
+    .map((line) => line.trim())
+    .find((line) => line.startsWith('Content-Security-Policy:'))
+  const csp = cspLine?.slice('Content-Security-Policy:'.length).trim() ?? ''
+  const directives = cspDirectives(csp)
+  const scriptSrc = directives.get('script-src') ?? []
+
+  record(
+    'dist/index.html carries exactly one inline <script> (the theme bootstrap)',
+    inlineScript !== null,
+    inlineScript === null ? '(none found)' : `${inlineScript.length} chars`,
+  )
+
+  if (inlineScript !== null) {
+    const actualHash = `'sha256-${createHash('sha256').update(inlineScript, 'utf8').digest('base64')}'`
+    record(
+      "the ACTUAL built inline script's hash is present in the ACTUAL built _headers CSP script-src",
+      scriptSrc.includes(actualHash),
+      `computed ${actualHash}; script-src: ${scriptSrc.join(' ') || '(none)'}`,
+    )
+  }
+
+  record(
+    'script-src grants no unsafe-inline anywhere in the built CSP',
+    !scriptSrc.includes("'unsafe-inline'"),
+    scriptSrc.join(' ') || '(none)',
   )
 }
 

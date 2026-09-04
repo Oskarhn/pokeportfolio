@@ -9,7 +9,7 @@ import { cleanupObsoleteScannerCaches } from './platform/scanner-cache-cleanup'
 import { initCloudflareWebAnalytics } from './analytics/cloudflareWebAnalytics'
 import './styles/index.css'
 
-// P101/D-111: no-ops unless the owner has configured VITE_CF_ANALYTICS_TOKEN — see
+// P101/D-114: no-ops unless the owner has configured VITE_CF_ANALYTICS_TOKEN — see
 // src/analytics/cloudflareWebAnalytics.ts.
 initCloudflareWebAnalytics()
 
