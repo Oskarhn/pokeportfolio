@@ -111,7 +111,7 @@ describe('buildIndexContentPayload / deriveIndexContentId (P87 F-01)', () => {
 
 describe('P97 (D-106) — dual-prototype fields in the content-id hash', () => {
   it('a v1 manifest (no prototype fields at all) hashes IDENTICALLY before and after this change — backward compatibility for the already-published real index', () => {
-    // fields() never sets prototypeCount/prototypeStrategy/prototypeStrategyVersion, so they are
+    // fields() never sets prototypesPerCard/prototypeStrategy/prototypeStrategyVersion, so they are
     // `undefined` here — the exact shape every already-committed single-prototype manifest has.
     // JSON.stringify drops undefined-valued keys, so this payload must be byte-identical to what
     // this function produced before prototype fields existed at all.
@@ -138,12 +138,12 @@ describe('P97 (D-106) — dual-prototype fields in the content-id hash', () => {
     expect(hashHex(v1Payload)).toBe(hashHex(expectedPayload))
   })
 
-  it('changes the content id when prototypeCount/strategy/version are present, even with identical card ids and embeddings bytes', () => {
+  it('changes the content id when prototypesPerCard/strategy/version are present, even with identical card ids and embeddings bytes', () => {
     const v1 = hashHex(buildIndexContentPayload(fields(), cardIdsBytes, embeddingsBytes))
     const v2 = hashHex(
       buildIndexContentPayload(
         fields({
-          prototypeCount: 2,
+          prototypesPerCard: 2,
           prototypeStrategy: 'pristinePlus1Aux',
           prototypeStrategyVersion: '1',
         }),
@@ -159,7 +159,7 @@ describe('P97 (D-106) — dual-prototype fields in the content-id hash', () => {
       hashHex(
         buildIndexContentPayload(
           fields({
-            prototypeCount: 2,
+            prototypesPerCard: 2,
             prototypeStrategy: 'pristinePlus1Aux',
             prototypeStrategyVersion: version,
           }),
@@ -199,6 +199,88 @@ describe('P97 (D-106) — dual-prototype fields in the content-id hash', () => {
             cardsAuxFallback: 1,
           },
         }),
+        cardIdsBytes,
+        embeddingsBytes,
+      ),
+    )
+    expect(a).not.toBe(b)
+  })
+})
+
+describe('P100 (D-1xx) — schemaVersion/payloadFormat enter the hash independently', () => {
+  const dualBase = {
+    schemaVersion: 2,
+    payloadFormat: 'multi-prototype-v2',
+    prototypesPerCard: 2,
+    prototypeStrategy: 'pristinePlus1Aux',
+    prototypeStrategyVersion: '1',
+  }
+
+  it('same bytes + different schemaVersion alone => different content id', () => {
+    const a = hashHex(
+      buildIndexContentPayload(
+        fields({ ...dualBase, schemaVersion: 2 }),
+        cardIdsBytes,
+        embeddingsBytes,
+      ),
+    )
+    const b = hashHex(
+      buildIndexContentPayload(
+        fields({ ...dualBase, schemaVersion: 3 }),
+        cardIdsBytes,
+        embeddingsBytes,
+      ),
+    )
+    expect(a).not.toBe(b)
+  })
+
+  it('same bytes + different payloadFormat alone => different content id', () => {
+    const a = hashHex(
+      buildIndexContentPayload(
+        fields({ ...dualBase, payloadFormat: 'multi-prototype-v2' }),
+        cardIdsBytes,
+        embeddingsBytes,
+      ),
+    )
+    const b = hashHex(
+      buildIndexContentPayload(
+        fields({ ...dualBase, payloadFormat: 'multi-prototype-v3' }),
+        cardIdsBytes,
+        embeddingsBytes,
+      ),
+    )
+    expect(a).not.toBe(b)
+  })
+
+  it('same bytes + different prototypesPerCard alone (strategy/version held fixed) => different content id', () => {
+    const a = hashHex(
+      buildIndexContentPayload(
+        fields({ ...dualBase, prototypesPerCard: 2 }),
+        cardIdsBytes,
+        embeddingsBytes,
+      ),
+    )
+    const b = hashHex(
+      buildIndexContentPayload(
+        fields({ ...dualBase, prototypesPerCard: 3 }),
+        cardIdsBytes,
+        embeddingsBytes,
+      ),
+    )
+    expect(a).not.toBe(b)
+  })
+
+  it('same bytes + different prototypeStrategy name alone (count/version held fixed) => different content id', () => {
+    const a = hashHex(
+      buildIndexContentPayload(
+        fields({ ...dualBase, prototypeStrategy: 'pristinePlus1Aux' }),
+        cardIdsBytes,
+        embeddingsBytes,
+      ),
+    )
+    const b = hashHex(
+      buildIndexContentPayload(
+        fields({ ...dualBase, prototypeStrategy: 'maxSimAllProtos' }),
         cardIdsBytes,
         embeddingsBytes,
       ),

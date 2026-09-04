@@ -74,7 +74,7 @@ function readyMessage(overrides: Record<string, unknown> = {}) {
     indexGeneratedAt: '2026-09-01T00:00:00.000Z',
     indexEmbeddingsSha256: 'deadbeef',
     indexContentId: '0123456789abcdef',
-    indexPrototypeCount: 2,
+    indexPrototypesPerCard: 2,
     indexPrototypeStrategy: 'pristinePlus1Aux',
     indexRowCount: 39002,
     indexSourceProjectExpected: 'nopmkroeygmlvndzjjqs.supabase.co',

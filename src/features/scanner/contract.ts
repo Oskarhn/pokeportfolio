@@ -83,11 +83,18 @@ export interface ScannerDiagnostics {
    *  field that makes a stale index impossible to hide (see current.json/generations/<id>). Null
    *  before the index has loaded (or if it never becomes available). */
   indexContentId: string | null
+  /** P100 (D-1xx): the loaded manifest's own fail-closed schema discriminant —
+   *  `VISUAL_INDEX_SCHEMA_LABEL_LEGACY_V1` (or its numeric schemaVersion) on a manifest with no
+   *  explicit schema fields, the real `schemaVersion`/`payloadFormat` otherwise. Null before the
+   *  index has loaded. Makes a future unrecognized-schema rejection visible in a copy-pasted
+   *  diagnostics report instead of silently reading as "index just didn't load." */
+  indexSchemaVersion: number | null
+  indexPayloadFormat: string | null
   /** P97 (D-106): the loaded index's resolved prototype count (1 on a v1/pre-P97 index), the
    *  auxiliary-prototype strategy name (null on v1), and the total row count actually decoded
-   *  (`cardCount * prototypeCount`). Diagnostics-only — the matcher always sees one score per
+   *  (`cardCount * prototypesPerCard`). Diagnostics-only — the matcher always sees one score per
    *  canonical card regardless of prototype count. Null before the index has loaded. */
-  indexPrototypeCount: number | null
+  indexPrototypesPerCard: number | null
   indexPrototypeStrategy: string | null
   indexRowCount: number | null
   /** P87 F-22: which source project THIS deployment expects the index to resolve against

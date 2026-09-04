@@ -19,7 +19,7 @@ export const VISUAL_INDEX_VERSION = 'visual-v1'
 // seeding, parameters) is a deliberate strategy version bump — see prototype-augmentation.mjs.
 export const PROTOTYPE_STRATEGY = 'pristinePlus1Aux'
 export const PROTOTYPE_STRATEGY_VERSION = '1'
-export const PROTOTYPE_COUNT = 2
+export const PROTOTYPES_PER_CARD = 2
 
 // Upstream file -> local staged name + expected SHA-256 (recorded 2026-08-26 from the pinned
 // revision above; see docs/DECISIONS.md D-097 for how these were verified).

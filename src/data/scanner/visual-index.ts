@@ -21,6 +21,35 @@
 export const VISUAL_INDEX_QUANTIZATION = 'int8' as const
 export const VISUAL_INDEX_INT8_SCALE = 127
 
+/**
+ * P100 (D-1xx): fail-closed schema/payload discriminant for a semantic BINARY LAYOUT change —
+ * distinct from the free-text `version` string on `VisualIndexManifest`, which only ever names
+ * the embedding CONTRACT (model/revision/preprocessing/dim, e.g. "visual-v1") and was never
+ * designed to gate how many rows `embeddings.bin` stores per card (P98's finding: a future format
+ * doubling `embeddingDim` to concatenate two prototypes per card would pass every check `version`
+ * alone could offer and be silently misdecoded as one nonsensical double-length vector).
+ *
+ * A manifest with NONE of `schemaVersion`/`payloadFormat`/`prototypesPerCard` set is LEGACY_V1 —
+ * the exact shape of every already-published, already-committed generation: implicitly one
+ * prototype per card, one row per card. A manifest setting ANY of the three must set ALL three,
+ * and `schemaVersion` must be one this build actually recognizes — `decodeVisualIndex` throws
+ * (fails closed) for a manifest that partially declares the explicit schema, or names a
+ * `schemaVersion` this exact build was never taught, rather than guessing at an unknown layout.
+ */
+export const VISUAL_INDEX_SCHEMA_LABEL_LEGACY_V1 = 'LEGACY_V1'
+/** Numeric equivalent of LEGACY_V1, for a diagnostics field that always wants a number — never
+ *  written into a manifest (a legacy manifest has NO schemaVersion field at all), only used to
+ *  describe an already-resolved legacy decode. */
+export const VISUAL_INDEX_SCHEMA_VERSION_LEGACY_V1 = 1
+export const VISUAL_INDEX_SCHEMA_VERSION_MULTI_PROTOTYPE = 2
+export const VISUAL_INDEX_PAYLOAD_FORMAT_MULTI_PROTOTYPE = 'multi-prototype-v2'
+/** Closed allow-list of `schemaVersion` values this exact build's decoder understands, for a
+ *  manifest that declares an EXPLICIT schema (i.e. is not LEGACY_V1). Extend only alongside a
+ *  corresponding new branch in `decodeVisualIndex` — never widen this to "accept and hope." */
+export const SUPPORTED_EXPLICIT_SCHEMA_VERSIONS: ReadonlySet<number> = new Set([
+  VISUAL_INDEX_SCHEMA_VERSION_MULTI_PROTOTYPE,
+])
+
 export interface VisualIndexManifest {
   /** Bumped whenever the embedding contract (model/revision/preprocessing/dim) changes. */
   readonly version: string
@@ -41,7 +70,7 @@ export interface VisualIndexManifest {
     readonly failures: number
     /** P97 (D-106): of `cardsIndexed`, how many got a REAL auxiliary (dual-prototype) embedding
      *  vs. a deterministic pristine-duplicate fallback because the auxiliary computation failed.
-     *  Optional/absent on a single-prototype (v1) manifest — see `prototypeCount` below. */
+     *  Optional/absent on a single-prototype (v1) manifest — see `prototypesPerCard` below. */
     readonly cardsWithAuxPrototype?: number
     readonly cardsAuxFallback?: number
   }
@@ -54,23 +83,34 @@ export interface VisualIndexManifest {
   readonly sourceProjectRef?: string
   readonly sourceEnglishActiveCount?: number
   /**
-   * P97 (D-106): how many reference prototype vectors `embeddings.bin` stores PER CARD, card-major
-   * (card0-proto0, card0-proto1, ..., card1-proto0, ...). Absent/undefined means a pre-P97 (v1)
-   * single-prototype manifest — implicitly 1, exactly today's committed format, so an existing
-   * generation keeps decoding and verifying identically with no regeneration required. A present
-   * value of 2 (or more) is the dual/multi-prototype format; `prototypeStrategy` and
-   * `prototypeStrategyVersion` must also be present whenever this is > 1.
+   * P100 (D-1xx): fail-closed schema discriminant — see the module-level comment above
+   * `VISUAL_INDEX_SCHEMA_LABEL_LEGACY_V1`. Absent (together with `payloadFormat`/
+   * `prototypesPerCard`) means LEGACY_V1. Present means an explicit schema that
+   * `decodeVisualIndex` validates against a closed allow-list, requiring `payloadFormat` and
+   * `prototypesPerCard` alongside it.
    */
-  readonly prototypeCount?: number
+  readonly schemaVersion?: number
+  /** Must be present whenever `schemaVersion` is — the human-legible name of that exact binary
+   *  layout (e.g. `"multi-prototype-v2"`), checked verbatim, not merely presence-checked. */
+  readonly payloadFormat?: string
+  /**
+   * P97/P100 (D-106): how many reference prototype vectors `embeddings.bin` stores PER CARD,
+   * card-major (card0-proto0, card0-proto1, ..., card1-proto0, ...). Part of the explicit-schema
+   * group above — on a LEGACY_V1 manifest this is absent and implicitly 1 (today's committed
+   * format, decoding identically with no regeneration required). A present value of 2 (or more)
+   * requires `schemaVersion`/`payloadFormat` to also be present, and `prototypeStrategy`/
+   * `prototypeStrategyVersion` to be present whenever this is > 1.
+   */
+  readonly prototypesPerCard?: number
   /** Name of the reference-augmentation strategy that produced the extra prototypes (e.g.
-   *  `pristinePlus1Aux`) — present only when `prototypeCount` > 1. */
+   *  `pristinePlus1Aux`) — present only when `prototypesPerCard` > 1. */
   readonly prototypeStrategy?: string
   /** Version of `prototypeStrategy`'s exact recipe (profile list/seeding/parameters) — bumped
    *  whenever the recipe changes, so two generations covering identical cards under two DIFFERENT
-   *  recipes never collide on content id. Present only when `prototypeCount` > 1. */
+   *  recipes never collide on content id. Present only when `prototypesPerCard` > 1. */
   readonly prototypeStrategyVersion?: string
-  /** Total rows in `embeddings.bin` = `cardCount * (prototypeCount ?? 1)`. Optional/redundant with
-   *  `cardCount`/`prototypeCount` on a v1 manifest; when present, decode/verify cross-check it. */
+  /** Total rows in `embeddings.bin` = `cardCount * (prototypesPerCard ?? 1)`. Optional/redundant with
+   *  `cardCount`/`prototypesPerCard` on a v1 manifest; when present, decode/verify cross-check it. */
   readonly rowCount?: number
 }
 
@@ -100,13 +140,17 @@ export interface DecodedVisualIndex {
   readonly manifest: VisualIndexManifest
   readonly cardIds: readonly string[]
   /** Row-major dequantized embeddings, Float32, CARD-MAJOR: card0-proto0, card0-proto1, ...,
-   *  card1-proto0, ... Length = cardCount * prototypeCount * embeddingDim. For a v1
-   *  (prototypeCount=1) index this is identical in shape to the pre-P97 format — one row per
+   *  card1-proto0, ... Length = cardCount * prototypesPerCard * embeddingDim. For a v1
+   *  (prototypesPerCard=1) index this is identical in shape to the pre-P97 format — one row per
    *  card, in `cardIds` order. */
   readonly embeddings: Float32Array
-  /** Resolved prototype count (manifest.prototypeCount ?? 1) — always a positive integer,
+  /** Resolved prototype count (manifest.prototypesPerCard ?? 1) — always a positive integer,
    *  computed once at decode time so search never has to re-derive it per call. */
-  readonly prototypeCount: number
+  readonly prototypesPerCard: number
+  /** P100: `VISUAL_INDEX_SCHEMA_LABEL_LEGACY_V1` for a manifest with no explicit schema fields, or
+   *  the manifest's own `payloadFormat` string otherwise — diagnostics-only, resolved once here so
+   *  callers never have to re-derive "is this legacy or explicit" themselves. */
+  readonly schemaLabel: string
 }
 
 function assertFinite(vector: Float32Array, cardId: string): void {
@@ -138,37 +182,76 @@ export function decodeVisualIndex(
       `Manifest declares ${manifest.cardCount} cards but card-ids has ${cardIds.length}.`,
     )
   }
-  // P97 (D-106): absent/undefined means a pre-P97 (v1) single-prototype manifest — implicitly 1,
-  // exactly the format every already-committed generation uses. A present value must be a positive
-  // integer; anything else is a corrupt/impossible manifest, never silently coerced.
-  const prototypeCount = manifest.prototypeCount ?? 1
-  if (!Number.isInteger(prototypeCount) || prototypeCount < 1) {
-    throw new VisualIndexError(
-      `Manifest declares an invalid prototypeCount: ${String(manifest.prototypeCount)}.`,
-    )
+  // P100 (D-1xx): fail-closed schema/payload discriminant. A manifest with NONE of
+  // schemaVersion/payloadFormat/prototypesPerCard set is LEGACY_V1 (every already-committed
+  // generation) — implicitly one prototype per card. A manifest setting ANY of the three must set
+  // ALL three, and schemaVersion must be one this exact build recognizes; anything else is a
+  // corrupt manifest or a genuinely future/unknown format, and this throws rather than guessing.
+  const hasExplicitSchemaFields =
+    manifest.schemaVersion !== undefined ||
+    manifest.payloadFormat !== undefined ||
+    manifest.prototypesPerCard !== undefined
+
+  let prototypesPerCard: number
+  let schemaLabel: string
+  if (!hasExplicitSchemaFields) {
+    prototypesPerCard = 1
+    schemaLabel = VISUAL_INDEX_SCHEMA_LABEL_LEGACY_V1
+  } else {
+    if (
+      manifest.schemaVersion === undefined ||
+      manifest.payloadFormat === undefined ||
+      manifest.prototypesPerCard === undefined
+    ) {
+      throw new VisualIndexError(
+        'Manifest declares an explicit schema (one of schemaVersion/payloadFormat/' +
+          'prototypesPerCard is present) but not all three — they must be present together or ' +
+          'not at all (fail closed).',
+      )
+    }
+    if (!SUPPORTED_EXPLICIT_SCHEMA_VERSIONS.has(manifest.schemaVersion)) {
+      throw new VisualIndexError(
+        `Unrecognized index schemaVersion ${String(manifest.schemaVersion)} — this build does not ` +
+          'know how to decode this format (fail closed, not best-effort).',
+      )
+    }
+    if (manifest.payloadFormat !== VISUAL_INDEX_PAYLOAD_FORMAT_MULTI_PROTOTYPE) {
+      throw new VisualIndexError(
+        `Manifest declares schemaVersion=${String(manifest.schemaVersion)} with unrecognized ` +
+          `payloadFormat "${manifest.payloadFormat}" (expected ` +
+          `"${VISUAL_INDEX_PAYLOAD_FORMAT_MULTI_PROTOTYPE}").`,
+      )
+    }
+    prototypesPerCard = manifest.prototypesPerCard
+    schemaLabel = manifest.payloadFormat
+    if (!Number.isInteger(prototypesPerCard) || prototypesPerCard < 1) {
+      throw new VisualIndexError(
+        `Manifest declares an invalid prototypesPerCard: ${String(manifest.prototypesPerCard)}.`,
+      )
+    }
   }
   if (
-    prototypeCount > 1 &&
+    prototypesPerCard > 1 &&
     (manifest.prototypeStrategy === undefined || manifest.prototypeStrategyVersion === undefined)
   ) {
     throw new VisualIndexError(
-      `Manifest declares prototypeCount=${String(prototypeCount)} but is missing prototypeStrategy/prototypeStrategyVersion.`,
+      `Manifest declares prototypesPerCard=${String(prototypesPerCard)} but is missing prototypeStrategy/prototypeStrategyVersion.`,
     )
   }
-  const expectedLength = manifest.cardCount * prototypeCount * manifest.embeddingDim
+  const expectedLength = manifest.cardCount * prototypesPerCard * manifest.embeddingDim
   if (embeddingsBytes.length !== expectedLength) {
     throw new VisualIndexError(
       `Embeddings buffer has ${embeddingsBytes.length} bytes, expected ${expectedLength} ` +
-        `(${manifest.cardCount} cards x ${String(prototypeCount)} prototypes x ${manifest.embeddingDim} dims).`,
+        `(${manifest.cardCount} cards x ${String(prototypesPerCard)} prototypes x ${manifest.embeddingDim} dims).`,
     )
   }
   if (
     manifest.rowCount !== undefined &&
-    manifest.rowCount !== manifest.cardCount * prototypeCount
+    manifest.rowCount !== manifest.cardCount * prototypesPerCard
   ) {
     throw new VisualIndexError(
-      `Manifest declares rowCount=${String(manifest.rowCount)} but cardCount x prototypeCount = ` +
-        `${String(manifest.cardCount * prototypeCount)}.`,
+      `Manifest declares rowCount=${String(manifest.rowCount)} but cardCount x prototypesPerCard = ` +
+        `${String(manifest.cardCount * prototypesPerCard)}.`,
     )
   }
   const seen = new Set<string>()
@@ -181,15 +264,15 @@ export function decodeVisualIndex(
   for (let i = 0; i < expectedLength; i += 1) {
     embeddings[i] = (embeddingsBytes[i] ?? 0) / VISUAL_INDEX_INT8_SCALE
   }
-  const totalRows = manifest.cardCount * prototypeCount
+  const totalRows = manifest.cardCount * prototypesPerCard
   for (let row = 0; row < totalRows; row += 1) {
     const start = row * manifest.embeddingDim
     const vector = embeddings.subarray(start, start + manifest.embeddingDim)
-    const cardId = cardIds[Math.floor(row / prototypeCount)] ?? '?'
+    const cardId = cardIds[Math.floor(row / prototypesPerCard)] ?? '?'
     assertFinite(vector, cardId)
   }
 
-  return { manifest, cardIds, embeddings, prototypeCount }
+  return { manifest, cardIds, embeddings, prototypesPerCard, schemaLabel }
 }
 
 /** L2-normalized mean of a set of same-length vectors — the "centroid" step of the dual-prototype
@@ -244,11 +327,11 @@ export function l2Normalize(vector: Float32Array): Float32Array {
  * No external ANN library: it would be dead weight at this index size and is exactly the kind of
  * unjustified dependency the project avoids.
  *
- * P97 (D-106): a card with `prototypeCount` > 1 stores multiple reference rows (card-major); its
+ * P97 (D-106): a card with `prototypesPerCard` > 1 stores multiple reference rows (card-major); its
  * similarity is the MAX dot product over its own prototypes (P91/P95's `searchMultiProto`
  * strategy, reproduced here) — one hit per CARD is ever pushed, never one per prototype row, so
  * the matcher downstream (unchanged, out of scope for this work) keeps seeing exactly the same
- * "one score per candidate card" shape it always has. For prototypeCount=1 this degenerates to
+ * "one score per candidate card" shape it always has. For prototypesPerCard=1 this degenerates to
  * exactly the pre-P97 single-row-per-card loop (no extra allocation, no behavior change).
  */
 export function searchVisualIndex(
@@ -262,14 +345,14 @@ export function searchVisualIndex(
     )
   }
   const dim = index.manifest.embeddingDim
-  const prototypeCount = index.prototypeCount
+  const prototypesPerCard = index.prototypesPerCard
   const hits: VisualSearchHit[] = []
   for (let cardIndex = 0; cardIndex < index.cardIds.length; cardIndex += 1) {
     const cardId = index.cardIds[cardIndex]
     if (cardId === undefined) continue
     let best = -Infinity
-    const cardRowStart = cardIndex * prototypeCount
-    for (let proto = 0; proto < prototypeCount; proto += 1) {
+    const cardRowStart = cardIndex * prototypesPerCard
+    for (let proto = 0; proto < prototypesPerCard; proto += 1) {
       const start = (cardRowStart + proto) * dim
       let dot = 0
       for (let d = 0; d < dim; d += 1) {

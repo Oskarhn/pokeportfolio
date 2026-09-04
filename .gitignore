@@ -94,6 +94,13 @@ scripts/scanner-visual-benchmark/reports/
 # itself reuses scripts/scanner-visual-benchmark/.benchmark-cache/ above — no second image cache.
 scripts/scanner-ocr-benchmark/reports/
 scripts/scanner-name-lexicon/generated/
+# P91/P95/P100 recognition R&D lab (scripts/scanner-recognition-lab/) — downloaded reference
+# images, HF model cache and generated benchmark reports are all reproducible, never committed
+# (same discipline as the other benchmark labs above). SCOREBOARD.md and the scoreboard generator
+# ARE committed (reviewed, hand-authored/summary content, not raw run output).
+scripts/scanner-recognition-lab/.cache/
+scripts/scanner-recognition-lab/.runs/
+scripts/scanner-recognition-lab/reports/*.json
 
 # ── Editor and OS ──────────────────────────────────────────────────────────
 .vscode/*

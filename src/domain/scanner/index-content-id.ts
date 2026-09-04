@@ -50,12 +50,17 @@ export interface IndexContentIdManifestFields {
   }
   readonly sourceProjectRef?: string
   readonly sourceEnglishActiveCount?: number
-  /** P97 (D-106): deliberately OMITTED from the canonical payload (not even as `?? null`) when
-   *  undefined — see `buildIndexContentPayload`'s own note below for why: any already-published
-   *  v1 (single-prototype) manifest must keep hashing to EXACTLY the content id it already
-   *  published under, so `JSON.stringify` dropping an `undefined`-valued key is load-bearing, not
-   *  incidental. */
-  readonly prototypeCount?: number
+  /** P97/P100 (D-106/D-1xx): deliberately OMITTED from the canonical payload (not even as
+   *  `?? null`) when undefined — see `buildIndexContentPayload`'s own note below for why: any
+   *  already-published v1 (LEGACY_V1, single-prototype) manifest must keep hashing to EXACTLY the
+   *  content id it already published under, so `JSON.stringify` dropping an `undefined`-valued key
+   *  is load-bearing, not incidental. P100 adds `schemaVersion`/`payloadFormat` as the fail-closed
+   *  discriminant (index-coverage-schema.ts) alongside the P97 prototype-shape fields — all five
+   *  enter the hash together so a schema-version bump alone (even with byte-identical embeddings)
+   *  still mints a new content id. */
+  readonly schemaVersion?: number
+  readonly payloadFormat?: string
+  readonly prototypesPerCard?: number
   readonly prototypeStrategy?: string
   readonly prototypeStrategyVersion?: string
 }
@@ -104,7 +109,9 @@ export function buildIndexContentPayload(
     },
     sourceProjectRef: manifestFields.sourceProjectRef ?? null,
     sourceEnglishActiveCount: manifestFields.sourceEnglishActiveCount ?? null,
-    prototypeCount: manifestFields.prototypeCount,
+    schemaVersion: manifestFields.schemaVersion,
+    payloadFormat: manifestFields.payloadFormat,
+    prototypesPerCard: manifestFields.prototypesPerCard,
     prototypeStrategy: manifestFields.prototypeStrategy,
     prototypeStrategyVersion: manifestFields.prototypeStrategyVersion,
   }
