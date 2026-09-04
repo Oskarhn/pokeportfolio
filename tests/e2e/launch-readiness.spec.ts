@@ -54,6 +54,35 @@ test.describe('per-route document metadata', () => {
       'noindex, nofollow',
     )
   })
+
+  test('P103: token-bearing and private routes never set a canonical tag or leak their query/path value into meta', async ({
+    page,
+  }) => {
+    const SECRET_INVITE_TOKEN = 'p103-test-invite-secret-do-not-index'
+    const SECRET_RESET_TOKEN = 'p103-test-reset-secret-do-not-index'
+    const routes = [
+      `/invite/${SECRET_INVITE_TOKEN}`,
+      `/reset-password?token=${SECRET_RESET_TOKEN}`,
+      '/scanner?scannerDebug=1',
+      '/portfolio?holdingId=11111111-1111-1111-1111-111111111111',
+    ]
+    for (const route of routes) {
+      await page.goto(route)
+      // None of these routes call useDocumentMeta — robots must stay the safe default and no
+      // canonical tag may exist (a canonical pointing at a URL that embeds the secret would be
+      // exactly the leak vector DECISIONS.md D-112 calls out).
+      await expect(page.locator('meta[name="robots"]')).toHaveAttribute(
+        'content',
+        'noindex, nofollow',
+      )
+      await expect(page.locator('link[rel="canonical"]')).toHaveCount(0)
+      // Belt-and-suspenders: the secret string itself must not appear in ANY meta/link tag's
+      // content/href, however it got there.
+      const headHtml = await page.locator('head').innerHTML()
+      expect(headHtml).not.toContain(SECRET_INVITE_TOKEN)
+      expect(headHtml).not.toContain(SECRET_RESET_TOKEN)
+    }
+  })
 })
 
 test.describe('legal page footer links', () => {
@@ -97,23 +126,36 @@ test.describe('sign-in form: keyboard submit and double-submit guard', () => {
 
 test.describe('representative viewport sweep (public pages)', () => {
   // playwright.config.ts already runs every spec at both a 1440×900 desktop project and an
-  // iPhone-14 mobile project; this adds the small-phone and tablet points the checklist names
-  // that aren't otherwise covered by the project matrix.
+  // iPhone-14 mobile project; this covers the P103 prompt's full named matrix (§9) explicitly,
+  // independent of whatever the two projects happen to use.
   const viewports = [
     { name: '320x568 (iPhone SE)', width: 320, height: 568 },
+    { name: '375x667 (iPhone 8)', width: 375, height: 667 },
+    { name: '390x844 (iPhone 12/13/14)', width: 390, height: 844 },
+    { name: '430x932 (iPhone 14 Pro Max)', width: 430, height: 932 },
     { name: '768x1024 (tablet portrait)', width: 768, height: 1024 },
+    { name: '1280x720 (small desktop)', width: 1280, height: 720 },
     { name: '1920x1080 (desktop)', width: 1920, height: 1080 },
+  ]
+  const pages = [
+    '/login',
+    '/privacy',
+    '/terms',
+    '/faq',
+    '/this-path-does-not-exist',
+    '/forgot-password',
+    '/invite/p103-viewport-sweep-token',
   ]
 
   for (const { name, width, height } of viewports) {
-    test(`login and privacy fit without horizontal scroll at ${name}`, async ({ page }) => {
+    test(`every public page fits without horizontal scroll at ${name}`, async ({ page }) => {
       await page.setViewportSize({ width, height })
-      for (const path of ['/login', '/privacy']) {
+      for (const path of pages) {
         await page.goto(path)
         const overflow = await page.evaluate(
           () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
         )
-        expect(overflow).toBeLessThanOrEqual(0)
+        expect(overflow, `${path} at ${name}`).toBeLessThanOrEqual(0)
       }
     })
   }

@@ -4,6 +4,41 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
+## P103 — Final frontend launch hardening (branch `feat/p103-final-launch-ui`, draft PR base
+`feat/m15-p99-clean-final-base`, NOT merged)
+
+Applied the P101 delta (below) as a clean diff onto P99's base (never merged PR #77's history),
+resolving the one real conflict — P99 and P101 both minted D-109/D-110/D-111 independently; P99's
+scanner decisions keep those numbers, P101's are renumbered to D-112/D-113/D-114 everywhere they're
+referenced. Then closed BOTH items P101 explicitly left open, plus one it left too broad:
+
+1. **CSP-blocked theme bootstrap — CLOSED.** `THEME_BOOTSTRAP_SCRIPT` (`vite.config.ts`) is now the
+   one place the anti-FOUC inline script's source is authored; `themeBootstrapHtml()` injects that
+   exact string into index.html via `transformIndexHtml`, and `buildContentSecurityPolicy` hashes
+   the same string into `script-src` as `'sha256-…'` — never `'unsafe-inline'`. Verified against
+   real built artifacts: `scripts/verify-scanner-platform-build.mjs` recomputes the hash of the
+   ACTUAL `dist/index.html` script and asserts it matches the ACTUAL `dist/_headers` CSP (27/27).
+2. **Dark-mode primary-button contrast (2.53:1) — CLOSED.** New `--pp-accent-foreground` token
+   (`src/styles/index.css`): white in light mode (unchanged, ~5.44:1), `#101113` in dark mode
+   (~7.46:1). Fixed the shared `Button` component AND 14 independent call sites app-wide that had
+   hardcoded `text-white` instead of going through it. Verified three ways: a computational WCAG
+   contrast test against the real hex values, a live `@axe-core/playwright` dark-mode run against
+   the 404 page (zero violations), and re-measured Lighthouse (`/login` accessibility 92 → 100).
+3. **Scanner a11y directory-wide suppression — narrowed.** Removed P101's
+   `src/features/scanner/**` blanket `jsx-a11y/media-has-caption`/`img-redundant-alt` disable.
+   `media-has-caption` is now a single inline `eslint-disable-next-line` on the one live camera
+   `<video>` with its justification inline (genuine false positive — muted, no audio ever exists);
+   `img-redundant-alt` is fixed, not suppressed (`"Captured card photo"` → `"The card you
+   captured"`). `pnpm lint` unchanged: 0 errors, 28 warnings.
+
+Full account: `docs/LAUNCH_CHECKLIST.md` items 17/17a/20 and the CSP/scanner-a11y entries under
+"Other items resolved", `ai_outputs/Claude_outputs/output_103.txt`. `pnpm test` 1181/1181;
+`pnpm test:e2e` (non-authenticated) 128/130 — the 2 failures are the identical pre-existing
+`visual-worker-real-browser.spec.ts` `cardCount` assertion, confirmed to reproduce IDENTICALLY on
+the unmodified P99 base before any P101/P103 change (an environment/catalog-state issue in the
+visual-index staging pipeline, out of this session's scope). `main`, the hosted database and
+production are all unchanged; cost $0.
+
 ## P101 — Launch readiness (branch `feat/p101-launch-readiness`, draft PR, NOT merged)
 
 Runs in parallel with P99/P100's M15 scanner work, on the same base (`feat/m15-p96-integrated` @
@@ -13,9 +48,9 @@ lifecycle, `SaleForm` async-prefill logic). Full account: `ai_outputs/Claude_out
 
 Adds the entire public-facing surface that did not exist before this session: `/privacy`, `/terms`,
 `/faq`, a custom 404 (`notFoundComponent`, previously unset), `robots.txt`/`sitemap.xml` (deny-by-
-default — D-109), per-route document title/meta/canonical (`src/ui/useDocumentMeta.ts`), static
+default — D-112), per-route document title/meta/canonical (`src/ui/useDocumentMeta.ts`), static
 Open Graph metadata, Cloudflare Web Analytics wired but inactive until the owner sets
-`VITE_CF_ANALYTICS_TOKEN` (D-111), a cookie-consent audit concluding no banner is needed (D-110),
+`VITE_CF_ANALYTICS_TOKEN` (D-114), a cookie-consent audit concluding no banner is needed (D-113),
 `eslint-plugin-jsx-a11y` (found and fixed 4 real `label-has-associated-control` gaps in the
 Purchase/Sale "Notes" field; found and scoped-off 2 scanner-only findings left for whoever owns
 that code), a real WCAG contrast fix (`--pp-text-tertiary` light value, measured 4.41:1 -> ~4.95:1),
@@ -43,7 +78,7 @@ still outside the precache manifest), Lighthouse against the 4 public pages (94-
 best-practices/SEO on privacy/terms/faq; `/login` scores lower on SEO by design — it is
 deliberately not indexed).
 
-Owner action required: set `VITE_CF_ANALYTICS_TOKEN` to activate analytics (D-111); the standing
+Owner action required: set `VITE_CF_ANALYTICS_TOKEN` to activate analytics (D-114); the standing
 signed-in mobile/accessibility/forms walkthrough this session could not run (no-sign-in boundary);
 a design decision on the dark-mode button-contrast finding above.
 

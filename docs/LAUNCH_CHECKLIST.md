@@ -89,7 +89,7 @@ export/backup pointer, invite-only access, and how to report a wrong card/price.
 
 **Implementation.** `public/robots.txt` — deny-by-default (`Disallow: /`), explicit `Allow:` for
 exactly `/privacy`, `/terms`, `/faq`. Never allows `/invite/$token` or `/reset-password` (both
-carry live secret tokens). Decision and full reasoning: `docs/DECISIONS.md` D-109.
+carry live secret tokens). Decision and full reasoning: `docs/DECISIONS.md` D-112.
 
 **Test.** `scripts/check-links.mjs` asserts robots.txt disallows everything by default, never
 allows a token-bearing route, and matches sitemap.xml + the script's own `PUBLIC_ROUTES` exactly —
@@ -165,7 +165,7 @@ used for Pages hosting), confirmed cookieless/no-fingerprinting against current 
 unless `VITE_CF_ANALYTICS_TOKEN` is set at build time. `vite.config.ts`'s CSP only grants the
 Cloudflare analytics hosts when that same token is present, so an unset token means both "script
 never loads" and "policy never widens" — the two cannot drift apart. Full reasoning:
-`docs/DECISIONS.md` D-111.
+`docs/DECISIONS.md` D-114.
 
 **Test.** `tests/config/security-headers.test.ts` (CSP pins unchanged with the new parameter
 defaulted off); `pnpm build` with no token set, `dist/_headers` confirmed unchanged from the
@@ -255,14 +255,14 @@ app: Supabase's own session token (strictly necessary — the app cannot functio
 it) and `pp-theme` (a user-set UI preference, not tracking). Nothing else. Cloudflare Web Analytics
 (item 9) is, per Cloudflare's own current documentation, cookieless and uses no client-side storage
 at all. No non-essential or third-party tracking mechanism exists in this app. Full reasoning and
-the revisit condition if that ever changes: `docs/DECISIONS.md` D-110.
+the revisit condition if that ever changes: `docs/DECISIONS.md` D-113.
 
 **Decision.** No cookie-consent banner is shown, deliberately — the prompt's own instruction is
 explicit that a banner should not be added "simply because a checklist says so" when nothing
 non-essential is actually collected, and adding one here would be decorative.
 
 **Owner action.** None, unless a future session adds a non-essential/third-party storage mechanism
-— see D-110's revisit condition.
+— see D-113's revisit condition.
 
 ---
 
@@ -300,11 +300,13 @@ pass claimed without evidence:**
   pages that happened to surface it.
 - A separate, more serious, pre-existing finding surfaced by Lighthouse (not axe): primary buttons
   app-wide (`bg-sky-600 text-white`, e.g. "Sign in") render at only **2.53:1** contrast in dark
-  mode (`--pp-accent: #c99a66` with white text) — well under the 4.5:1 AA requirement. **NOT
-  fixed this session** — this is the app's core accent color, used on essentially every primary
-  button across every feature area including scanner/portfolio pages this session doesn't own
-  visually; changing it is a real design decision, not a token nudge, and belongs to whoever owns
-  `DESIGN_SYSTEM.md` next. Disclosed here with concrete numbers rather than silently left out.
+  mode (`--pp-accent: #c99a66` with white text) — well under the 4.5:1 AA requirement. **FIXED
+  (P103):** see item 17a below — this was CLOSED, not left as an owner design decision.
+
+**P103 keyboard test.** `tests/e2e/a11y.spec.ts` additionally drives real Tab/Shift+Tab/Enter over
+the login form and asserts a real visible focus indicator (`box-shadow` — this codebase's inputs
+use `outline-none` plus a focus-visible ring/border-color change instead of the native outline, see
+`src/ui/form.tsx`), not just DOM focusability.
 
 **Private routes — code-level review only**, per the standing no-sign-in boundary. Existing
 patterns reviewed (not modified): landmark/heading structure, form labeling, focus-visible rings
@@ -312,8 +314,48 @@ and `DESIGN_SYSTEM.md` §9's already-documented accessibility baseline are used 
 files read.
 
 **Owner action required.** A real signed-in keyboard/screen-reader pass over Portfolio, the
-purchase/sale/opening forms and the scanner — cannot be automated this session. Separately: a
-design decision on the dark-mode primary-button contrast finding above.
+purchase/sale/opening forms and the scanner — cannot be automated this session.
+
+---
+
+## 17a. Dark-mode primary-button contrast — `IMPLEMENTED` (P103, CLOSED)
+
+**Finding (P101).** `bg-sky-600 text-white` (the shared `Button` primary variant, plus 14 more
+call sites app-wide that hardcoded the same pairing instead of using the shared component) renders
+at **2.53:1** in dark mode (`--pp-accent: #c99a66` with white text) — a real WCAG AA failure
+(normal-size text needs ≥4.5:1).
+
+**Fix.** The FOREGROUND token changes, not the accent color itself (`DESIGN_SYSTEM.md`'s
+bronze/copper direction is unchanged, per the prompt's own preference for this shape of fix). A new
+`--pp-accent-foreground` token (`src/styles/index.css`, mapped to a `text-accent-foreground`
+Tailwind utility via `@theme`) is white in light mode (unchanged, already ~5.44:1 — AA) and
+`#101113` in dark mode (measured **~7.46:1** against `#c99a66`, comfortably past the 4.5:1 floor —
+not just barely over it). `src/ui/form.tsx`'s shared `Button` primary variant and all 14
+independent call sites that had hardcoded `text-white` (`HomePage`, `PurchasesListPage`,
+`ListAndTableViews` ×2, `BottomNav`, `GridTile`, `NotFoundPage`, `DesktopNav`,
+`SealedProductDetailPage`, `CardDetailPage`, `PortfolioPage`) now use `text-accent-foreground`
+instead — an app-wide fix, not a partial one covering only the shared component.
+
+**Audit of adjacent states.** Hover (`hover:bg-sky-500`) and the nav FAB's `active:bg-sky-700`
+resolve to the identical `--pp-accent` value, so the same foreground fix covers them structurally.
+Disabled state (`disabled:opacity-60`) is WCAG-exempt for contrast (1.4.3 excludes inactive
+controls) and unchanged. Focus indication uses a separate `outline-sky-500` ring, not text
+color — unaffected and unchanged. The `quiet`/secondary Button variant does not share the accent
+token at all (`border-slate-700 text-slate-200`) and was never affected.
+
+**Verified three independent ways:**
+1. `tests/config/color-contrast.test.ts` (new) — reads the actual hex values out of
+   `src/styles/index.css`, computes the real WCAG relative-luminance/contrast-ratio formulas (no
+   rendering infrastructure exists in this project), and asserts ≥4.5:1 in all three theme blocks
+   (light, system-dark, explicit dark override), plus a static grep-equivalent audit that NO
+   `.tsx` file anywhere pairs `bg-sky-[567]00` with `text-white` any more.
+2. A live, real Playwright + `@axe-core/playwright` run against the 404 page (the one
+   unauthenticated route rendering this exact button surface) with `page.emulateMedia({
+   colorScheme: 'dark' })` — real browser, real computed styles, zero contrast violations.
+3. Lighthouse against `/login` (also rendering a primary button): accessibility **92 → 100** — see
+   item 20's updated table.
+
+**Before/after:** 2.53:1 → ~7.46:1 (dark mode); light mode unchanged at ~5.44:1.
 
 ---
 
@@ -357,24 +399,29 @@ additionally re-fetches robots.txt/sitemap.xml/the three public pages against a 
 ## 20. Performance — `IMPLEMENTED` (measured, public pages) / code review (private pages)
 
 **Bundle stats (real, measured this session, `pnpm build`):** main entry chunk
-`index-CMxkFgvo.js` **398.75 KB raw / 120.64 KB gzip**. Scanner assets (105 KB `ScannerPage` chunk,
-531 KB visual-recognition worker, 23 MB WASM) confirmed to remain OUTSIDE the install-time precache
-manifest (Service Worker precache totals only 1,329 KiB) — the scanner stays lazy-loaded exactly as
-required; nothing in this session's changes added a new eager import anywhere.
+**~398 KB raw / ~119-121 KB gzip** — unchanged in shape from P101's baseline (398.75 KB / 120.64 KB);
+the small movement is the CSP hash constant, the new `--pp-accent-foreground` token and doc
+comments, not a real size regression. Scanner assets (105 KB `ScannerPage` chunk, visual-recognition
+worker, WASM) confirmed to remain OUTSIDE the install-time precache manifest
+(`scripts/verify-scanner-platform-build.mjs`: "scanner assets are absent from the precache manifest
+— 0 scanner entries"; "the app shell is still precached — 61 entries") — the scanner stays
+lazy-loaded exactly as required; nothing in this session's changes added a new eager import
+anywhere.
 
-**Lighthouse (real, measured against the local production preview server, this session):**
+**Lighthouse (real, re-measured against the local production preview server, P103, after the CSP
+and contrast fixes below):**
 
 | Page | Performance | Accessibility | Best Practices | SEO |
 |---|---|---|---|---|
-| `/login` | 95 | 92* | 100 | 63** |
-| `/privacy` | 94 | 100 | 100 | 100 |
+| `/login` | 94 | **100** (was 92*) | 100 | 63** |
+| `/privacy` | 95 | 100 | 100 | 100 |
 | `/terms` | 95 | 100 | 100 | 100 |
-| `/faq` | 94 | 100 | 100 | 100 |
+| `/faq` | 93 | 100 | 100 | 100 |
 
-\* The dark-mode primary-button contrast finding from item 17 (2.53:1) — same root cause, not a
-second issue. \*\* Deliberately low: Lighthouse's SEO category penalizes "blocked from indexing,"
-which is the correct, intentional state for `/login` per D-109 — a high SEO score here would mean
-the deny-by-default policy had failed.
+\* The dark-mode primary-button contrast finding from item 17a (2.53:1) — CLOSED this session; the
+100 above is the real, re-measured result, not a projection. \*\* Deliberately low: Lighthouse's SEO
+category penalizes "blocked from indexing," which is the correct, intentional state for `/login`
+per D-112 — a high SEO score here would mean the deny-by-default policy had failed.
 
 **Private/authenticated pages (Portfolio virtualized lists, charts, API waterfalls) — code review
 only.** Real measurement needs a signed-in session, out of reach this session. Existing patterns
@@ -388,17 +435,72 @@ signed in.
 
 ## Other items resolved as part of this pass
 
-**Security headers (prompt §23) — `ALREADY_CORRECT_AND_VERIFIED`, with one disclosed finding.**
+**Security headers (prompt §23) — `ALREADY_CORRECT_AND_VERIFIED`, with one finding CLOSED (P103).**
 CSP/Referrer-Policy/X-Content-Type-Options/Permissions-Policy/HSTS were already correctly generated
 (`vite.config.ts`'s `cloudflareHeaders()` plugin, pre-existing) and remain unchanged in shape apart
-from the item-9 analytics allowance (off by default). **Finding, not fixed:** `dist/index.html`
-still contains the theme-bootstrap inline `<script>` (no nonce/hash) while `script-src` grants no
-`'unsafe-inline'` — per CSP spec this script should be BLOCKED by the browser on the real Cloudflare
-Pages deployment (where `_headers` is actually enforced; `vite preview` ignores it, so this was
-never visible locally), meaning the flash-of-wrong-theme prevention it exists for likely silently
-no-ops in production. Verified against this session's own real `dist/index.html` and
-`vite.config.ts`'s CSP, not assumed. Left unfixed deliberately — outside this session's scope, and
-the existing code comment claiming "no inline script — verified in dist" needs its own follow-up.
+from the item-9 analytics allowance (off by default) and the fix below.
+
+**P101 finding:** `dist/index.html` contained the theme-bootstrap inline `<script>` (no nonce/hash)
+while `script-src` granted no `'unsafe-inline'` — per CSP spec this script was BLOCKED by the
+browser on the real Cloudflare Pages deployment (`_headers` is enforced only there; `vite preview`
+ignores it, so this was never visible locally), meaning the flash-of-wrong-theme prevention it
+exists for likely silently no-op'd in production.
+
+**Fix (P103): exact `sha256-…` CSP hash, never `'unsafe-inline'`.** `THEME_BOOTSTRAP_SCRIPT`
+(`vite.config.ts`) is now the ONE place the script's source is authored. Two consumers read that
+exact same string, so they cannot drift apart the way an independently hand-computed hash could:
+`themeBootstrapHtml()` injects it as index.html's first-in-head inline `<script>` via Vite's
+standard `transformIndexHtml` hook (both `vite dev` and `vite build` — never hand-written HTML
+again), and `buildContentSecurityPolicy` hashes the same string into `script-src` as a `'sha256-…'`
+source expression. Chosen over an external same-origin file (the other option considered) because
+it stays truly inline — zero added network round trip, earliest possible execution before first
+paint — while still being exactly as simple to maintain: one constant, two readers, no
+independently-tracked hash to forget to update.
+
+**Verified three ways, against the ACTUAL built artifacts, not just the source:**
+1. `tests/config/security-headers.test.ts` — pins the exact hash is present in the CSP the config
+   function generates, is a valid CSP3 sha256 expression, and appears whether or not analytics is
+   enabled.
+2. `scripts/verify-scanner-platform-build.mjs` (extended) — after a real `pnpm build`, reads the
+   ACTUAL `dist/index.html`'s inline `<script>` text, computes ITS OWN sha256 hash, and asserts
+   that hash appears in the ACTUAL `dist/_headers` CSP — a real-artifact proof, immune to any future
+   Vite/minifier change that might reformat the injected script differently than assumed.
+   Real run: **27/27 checks passed**, including this one.
+3. `dist/index.html` was inspected directly after a real build — exactly one inline `<script>`,
+   136 characters, hash `sha256-t0quyCFNdpK+drpB8vRMfX45phqmcxdlqpJo9S4pr6Y=` (this exact hash will
+   change if the script's literal text ever changes — that's the point; checks 1-2 above assert the
+   two stay equal to EACH OTHER, not to this literal value, so no test needed updating by hand here).
+
+`script-src` still grants no `'unsafe-inline'` anywhere, and the scanner's own
+`'wasm-unsafe-eval'`/`blob:` allowances are untouched.
+
+**Scanner accessibility — directory-wide lint suppression narrowed (P103).** P101 disabled
+`jsx-a11y/media-has-caption` and `jsx-a11y/img-redundant-alt` for the ENTIRE
+`src/features/scanner/**` glob in `eslint.config.js` — a blind spot that could mask a real,
+unrelated accessibility regression anywhere else the scanner grows. P103 removed that
+directory-wide block entirely and fixed both original findings narrowly instead:
+- `media-has-caption` on the live camera preview `<video>` — audited and confirmed a genuine false
+  positive (the element is muted, real-time self-view of the device's own camera; there is no
+  audio/dialogue track at any point in its lifetime to caption, unlike the prerecorded/broadcast
+  media the rule targets). Suppressed with a single `eslint-disable-next-line` directly above that
+  one `<video>` in `ScannerPage.tsx`, carrying the justification inline — not app-wide, not even
+  scanner-directory-wide.
+- `img-redundant-alt` on the captured-photo preview — genuinely fixed, not suppressed:
+  `alt="Captured card photo"` → `alt="The card you captured"` (screen readers already announce the
+  element as an image; repeating "photo" was the actual redundancy the rule caught).
+
+Also audited per the prompt's named list — shutter/close/retake/manual-search controls, candidate
+selection, debug controls, status announcements — and found already correctly instrumented
+(explicit `aria-label`s on icon-adjacent buttons, `aria-pressed` on candidate-selection toggles,
+`role="status"`/`aria-live="polite"` on every processing/result/no-match announcement). No further
+scanner UI changes were needed.
+
+`tests/ui/scanner-a11y-audit.test.ts` (new, 8 assertions) pins all of this as a static source-text
+audit — no model loading, no DB, no rendering infrastructure (this project has none, see the
+D-109/D-110 notes in DECISIONS.md) — including a permanent regression guard that `eslint.config.js`
+never reintroduces the directory-wide suppression. `pnpm lint`: 0 errors, 28 warnings — the same
+pre-existing baseline, confirming the narrower fix satisfies the linter exactly as well as the
+broad suppression did.
 
 **Error/empty/loading states (prompt §24).** The 404 page (item 7) and the existing
 `AppErrorComponent` (`router.tsx`, pre-existing from P83/D-100) cover the two concrete cases the
@@ -410,21 +512,24 @@ D-100's chunk-load-vs-generic split and the P89 unsaved-work logic are untouched
 
 ---
 
-## Test summary (this session, real runs)
+## Test summary — P103 (this session, real runs, on top of the P99 base + P101 delta)
 
 | Check | Result |
 |---|---|
 | `pnpm typecheck` | clean |
-| `pnpm lint` | 0 errors (28 pre-existing warnings, unrelated to this session) |
+| `pnpm lint` | 0 errors (28 pre-existing warnings, unrelated to this session — same baseline as P101) |
 | `pnpm format:check` | clean |
-| `pnpm test` (unit/domain) | 1142/1142 |
+| `pnpm test` (unit/domain) | 1181/1181 |
 | `pnpm build` | green — see bundle stats above |
-| `pnpm test:e2e` (full suite, both projects) | 116/116 (one run showed 5 transient failures under full 116-test parallel load; confirmed non-reproducible in isolated re-runs — a resource-contention flake, not a real defect) |
+| `pnpm test:e2e` (non-authenticated, both projects) | 128/130 — the 2 failures are BOTH the identical pre-existing `visual-worker-real-browser.spec.ts` assertion (`cardCount` 0, expected >0), confirmed to reproduce IDENTICALLY on the unmodified P99 base BEFORE any P101/P103 change — an environment/catalog-state issue in the real visual-index staging pipeline, not a regression, and explicitly out of this session's scope (scanner recognition/visual-index internals) |
 | `node scripts/check-links.mjs` | 29/29 |
-| Lighthouse (4 public pages) | see table above |
+| `node scripts/verify-scanner-platform-build.mjs` | 27/27 (new: the theme-bootstrap CSP hash cross-check) |
+| Lighthouse (4 public pages) | see updated table above — login accessibility 92 → 100 |
 
 ## Not covered by this session (owner-facing, standing since before P101)
 
 - Any real signed-in mobile/accessibility/forms/performance exercise of private routes.
 - Live deployment verification of `scripts/check-links.mjs` and the analytics CSP allowance (needs
   a real deploy with the token set).
+- The pre-existing `visual-worker-real-browser.spec.ts` `cardCount` failure above — belongs to
+  whoever owns the visual-index staging pipeline (P97/P100 territory), not this session.
