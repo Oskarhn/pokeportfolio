@@ -55,18 +55,31 @@ interface Query {
   vector: Float32Array
 }
 
-/** OLD production shape, reimplemented verbatim for comparison only (see module header). */
+/** OLD production shape, reimplemented for comparison only (see module header): decode the whole
+ *  int8 buffer to Float32 ONCE (matching the real removed `decodeVisualIndex`, which decoded at
+ *  index-LOAD time, not per search call), then reuse that same decoded array across every query —
+ *  re-decoding per query would be both unfaithful to the real old architecture and needlessly slow
+ *  (a real earlier version of this script did that and took an unreasonable time to finish). */
+function decodeFloat32Once(
+  int8Embeddings: Int8Array,
+  cardCount: number,
+  prototypesPerCard: number,
+  dim: number,
+): Float32Array {
+  const totalValues = cardCount * prototypesPerCard * dim
+  const decoded = new Float32Array(totalValues)
+  for (let i = 0; i < totalValues; i += 1) decoded[i] = (int8Embeddings[i] ?? 0) / INT8_SCALE
+  return decoded
+}
+
 function searchFloat32Decoded(
   queryVec: Float32Array,
-  int8Embeddings: Int8Array,
+  decoded: Float32Array,
   cardIds: readonly string[],
   prototypesPerCard: number,
   dim: number,
   topK: number,
 ): OldHit[] {
-  const totalValues = cardIds.length * prototypesPerCard * dim
-  const decoded = new Float32Array(totalValues)
-  for (let i = 0; i < totalValues; i += 1) decoded[i] = (int8Embeddings[i] ?? 0) / INT8_SCALE
   const hits: OldHit[] = []
   for (let cardIndex = 0; cardIndex < cardIds.length; cardIndex += 1) {
     let best = -Infinity
@@ -148,7 +161,7 @@ async function loadQueries(): Promise<Query[]> {
 function runPass(
   label: string,
   decoded: DecodedVisualIndex,
-  int8ForOld: Int8Array,
+  float32ForOld: Float32Array,
   cardIds: readonly string[],
   prototypesPerCard: number,
   dim: number,
@@ -172,7 +185,7 @@ function runPass(
   for (const q of queries) {
     const oldHits = searchFloat32Decoded(
       q.vector,
-      int8ForOld,
+      float32ForOld,
       cardIds,
       prototypesPerCard,
       dim,
@@ -259,10 +272,11 @@ async function main() {
   )
 
   const decodedV1 = decodeVisualIndex(manifest, cardIds, int8)
+  const float32V1 = decodeFloat32Once(int8, cardIds.length, 1, manifest.embeddingDim)
   const legacyResult = runPass(
     'legacy-v1 (real 19,501-card index)',
     decodedV1,
-    int8,
+    float32V1,
     cardIds,
     1,
     manifest.embeddingDim,
@@ -283,10 +297,11 @@ async function main() {
     rowCount: cardIds.length * 2,
   }
   const decodedV2 = decodeVisualIndex(dualManifest, cardIds, dualInt8)
+  const float32V2 = decodeFloat32Once(dualInt8, cardIds.length, 2, manifest.embeddingDim)
   const dualResult = runPass(
     'synthetic schema-v2 (2 prototypes/card, real card count)',
     decodedV2,
-    dualInt8,
+    float32V2,
     cardIds,
     2,
     manifest.embeddingDim,
