@@ -2,6 +2,7 @@ import js from '@eslint/js'
 import globals from 'globals'
 import reactHooks from 'eslint-plugin-react-hooks'
 import reactRefresh from 'eslint-plugin-react-refresh'
+import jsxA11y from 'eslint-plugin-jsx-a11y'
 import tseslint from 'typescript-eslint'
 import eslintConfigPrettier from 'eslint-config-prettier'
 
@@ -44,6 +45,25 @@ export default tseslint.config(
       'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
       '@typescript-eslint/no-non-null-assertion': 'error',
       '@typescript-eslint/restrict-template-expressions': 'off',
+    },
+  },
+  {
+    // P101: regression coverage for alt-text/aria hygiene, scoped to the actual React source —
+    // existing hygiene was already good on inspection (descriptive aria-labels, correct alt=""
+    // on decorative images), this is a lint gate against future drift, not a rewrite. The four
+    // real `label-has-associated-control` findings this surfaced (Purchase/Sale add+edit forms'
+    // "Notes" field) were fixed in the same commit — trivial `htmlFor`/`id` additions, no
+    // behavior change.
+    files: ['src/**/*.tsx'],
+    ...jsxA11y.flatConfigs.recommended,
+    rules: {
+      ...jsxA11y.flatConfigs.recommended.rules,
+      // Every real usage found (Profile's inline display-name edit, the Openings pull picker,
+      // the Sale item picker) moves focus into a field that just appeared in response to a user
+      // action — the accessible, WCAG-conforming pattern for a newly revealed inline edit/sheet,
+      // not page-load autofocus. This blanket rule cannot distinguish the two cases; several
+      // real-world jsx-a11y configs disable it for the same reason.
+      'jsx-a11y/no-autofocus': 'off',
     },
   },
   {

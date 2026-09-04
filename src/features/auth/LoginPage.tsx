@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { useAuth } from '../../auth/useAuth'
 import { AuthLayout, Button, FormMessage, PasswordField, TextField } from '../../ui/form'
+import { PublicFooter } from '../legal/LegalLayout'
 
 /**
  * There is deliberately no "Create account" link. Account creation happens only by redeeming an
@@ -74,6 +75,7 @@ export function LoginPage() {
       >
         Forgot your password?
       </Link>
+      <PublicFooter />
     </AuthLayout>
   )
 }

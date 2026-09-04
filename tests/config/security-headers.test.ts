@@ -9,11 +9,13 @@
  * because `'wasm-unsafe-eval'` contains the substring `unsafe-eval` and any substring check
  * would be meaningless in both directions.
  */
+import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import {
   buildContentSecurityPolicy,
   scannerAssetGlobIgnores,
   scannerAssetRuntimeCache,
+  THEME_BOOTSTRAP_SCRIPT,
   visualAssetRuntimeCache,
   visualIndexRuntimeCache,
 } from '../../vite.config.ts'
@@ -74,6 +76,27 @@ describe('generated Content-Security-Policy (M15 WASM OCR)', () => {
 
   it("keeps default-src 'self' as the deny-by-default backstop", () => {
     expect(directives.get('default-src')).toEqual(["'self'"])
+  })
+})
+
+describe('theme-bootstrap inline script CSP allowance (P103)', () => {
+  const directives = directivesOf(buildContentSecurityPolicy(DEV_SUPABASE_URL))
+  const scriptSrc = directives.get('script-src') ?? []
+  const expectedHash = `'sha256-${createHash('sha256').update(THEME_BOOTSTRAP_SCRIPT, 'utf-8').digest('base64')}'`
+
+  it('grants the exact sha256 hash of THEME_BOOTSTRAP_SCRIPT, never a wildcard or unsafe-inline', () => {
+    expect(scriptSrc).toContain(expectedHash)
+    expect(scriptSrc).not.toContain("'unsafe-inline'")
+  })
+
+  it('the granted hash is a real CSP3 sha256 source expression (not e.g. sha1/sha512 by accident)', () => {
+    expect(expectedHash).toMatch(/^'sha256-[A-Za-z0-9+/]+=*'$/)
+  })
+
+  it('the hash is present whether or not analytics is enabled', () => {
+    const analyticsScriptSrc =
+      directivesOf(buildContentSecurityPolicy(DEV_SUPABASE_URL, true)).get('script-src') ?? []
+    expect(analyticsScriptSrc).toContain(expectedHash)
   })
 })
 

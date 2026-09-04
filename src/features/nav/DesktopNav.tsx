@@ -30,7 +30,7 @@ export function DesktopNav() {
           onClick={() => {
             setAddOpen(true)
           }}
-          className="ml-4 flex min-h-9 items-center gap-1.5 rounded-full bg-sky-600 px-3 text-sm font-semibold text-white hover:bg-sky-500"
+          className="ml-4 flex min-h-9 items-center gap-1.5 rounded-full bg-sky-600 px-3 text-sm font-semibold text-accent-foreground hover:bg-sky-500"
         >
           <PlusIcon className="size-4" />
           Add

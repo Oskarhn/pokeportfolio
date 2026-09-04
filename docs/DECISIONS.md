@@ -4569,3 +4569,106 @@ defect — this benchmark's corpus images are tight card crops with no backgroun
 detector genuinely has no real margin to search (see the script's own header); the fallback path
 still exercises the identical bilinear-warp-then-nearest-neighbor-downsample resize chain under
 test, which is what this validation is actually checking.
+
+---
+
+## D-112 — robots.txt/sitemap default to "disallow everything, allow three pages" (P101)
+
+**Decision.** `public/robots.txt` disallows the entire site by default and explicitly allows only
+`/privacy`, `/terms`, `/faq`; `public/sitemap.xml` lists exactly those same three URLs.
+
+**Why not the conventional "allow everything, disallow the private paths" shape.** PokePortfolio is
+genuinely private (PRODUCT_SPEC.md §1.1: "Not a public platform. No social features... no public
+profiles," invite-only, no public signup). There is no organic-discovery value in indexing a closed
+tool's sign-in form, and doing so risks the app reading as a public consumer product it deliberately
+isn't. Deny-by-default also means a future route added to `router.tsx` is automatically excluded
+from crawling unless someone deliberately opens it up — the safer failure direction for an app whose
+private routes carry real financial/collection data.
+
+`/login` is deliberately NOT in the allow list, on the same reasoning — no discovery value, avoids
+looking like a public signup surface. `/invite/$token` and `/reset-password` are never eligible
+regardless of policy shape: both carry a live, single-use secret token in the URL, and indexing
+either would be an actual secret-leak vector, not just an SEO nit.
+
+**Enforcement.** `robots.txt`/`sitemap.xml` are a crawler *request*, not an access-control boundary
+— Postgres RLS and route guards remain the real boundary (SECURITY.md §2/§3), unchanged by this
+decision. `scripts/check-links.mjs` cross-checks `robots.txt`'s `Allow:` list against
+`sitemap.xml`'s URLs and against its own hardcoded `PUBLIC_ROUTES` constant, so the three can't
+silently drift — a route added to one and not the other two fails the check rather than shipping
+unnoticed.
+
+**Verified:** `node scripts/check-links.mjs` against a real production build, 29/29 checks passed,
+including the three-way consistency check and the never-allow-a-token-route check.
+
+---
+
+## D-113 — No cookie-consent banner; nothing non-essential is stored client-side (P101)
+
+**Decision.** No cookie/consent banner is shown anywhere in the app.
+
+**Why.** A real inventory of every client-side storage mechanism in use, done before deciding
+anything (`src/data/supabase-client.ts`, `src/ui/theme.ts`, grep across `src/` for
+`localStorage`/`sessionStorage`/`document.cookie`):
+
+- Supabase's own session token (`@supabase/supabase-js`'s default `persistSession`/`localStorage`
+  storage) — strictly necessary; the app cannot function signed-in without it.
+- `pp-theme` (`src/ui/theme.ts`) — a UI preference the user explicitly sets (Profile), not tracking.
+- Nothing else. No analytics storage exists yet (see D-114): Cloudflare Web Analytics is, per
+  Cloudflare's own documentation, cookieless and uses no client-side storage at all — confirmed
+  against current docs before this decision was written, not assumed from general reputation.
+- SECURITY.md §9.1's query-cache boundary already establishes the TanStack Query cache itself holds
+  nothing in `localStorage` (module-lifetime memory only, cleared on identity change).
+
+Every stored value is either strictly necessary (session) or a user-set preference with no tracking
+purpose (theme). Neither category requires consent under the ePrivacy "strictly necessary" /
+first-party-preference exemptions this reasoning relies on, and there is no non-essential or
+third-party tracking mechanism in the app to gate behind a banner. A banner would therefore be
+decorative — asking consent for something that collects nothing — which the P101 prompt explicitly
+warned against ("do not add a fake cookie banner simply because a checklist says so").
+
+**Revisit condition.** If a future session adds any cookie/storage mechanism that is NOT strictly
+necessary and NOT a plain first-party UI preference (a third-party script that sets cookies, a
+tracking pixel, a non-Cloudflare analytics tool), this decision no longer holds and a real
+consent/preferences UI must be built and gated in front of it — see COST_POLICY.md's service-vetting
+checklist for the same rule applied to the cost dimension.
+
+---
+
+## D-114 — Cloudflare Web Analytics adopted, opt-in via env var, off by default (P101)
+
+**Decision.** Cloudflare Web Analytics is wired into the app (`src/analytics/cloudflareWebAnalytics.ts`,
+loaded from `main.tsx`) but stays completely inactive — no script loads, no CSP allowance is
+granted — unless `VITE_CF_ANALYTICS_TOKEN` is set at build time.
+
+**Why this option.** Selection-order per COST_POLICY.md §3 (existing stack first): Cloudflare Pages
+is already the hosting provider and already the account in use, so its own analytics product is a
+capability the existing stack provides for $0, not a new vendor relationship. Confirmed against
+current official Cloudflare documentation (developers.cloudflare.com/web-analytics, 2026-09, not
+assumed from training data): free, no card/billing tier gate, and — the deciding factor over any
+alternative — "does not use any client-side state, such as cookies or localStorage... does not
+'fingerprint' individuals via IP address, User Agent, or any other data." That is what makes D-113's
+no-consent-banner decision hold.
+
+**Mechanism.** The official snippet
+(`<script defer src="https://static.cloudflareinsights.com/beacon.min.js" data-cf-beacon='{"token":"…"}'>`)
+is injected via a DOM-created `<script>` element rather than a static tag in `index.html`, so it
+stays governed by the ordinary CSP `script-src` allowance rather than needing an inline-script
+exception. The default snippet shape (no `"spa": false"`) auto-tracks route changes via the History
+API — confirmed against Cloudflare's SPA-specific docs — which is exactly right for this
+client-side-routed app and needed no custom per-navigation tracking code.
+
+`vite.config.ts`'s `buildContentSecurityPolicy(supabaseUrl, analyticsEnabled)` gained a second,
+default-`false` parameter: `script-src` gains `https://static.cloudflareinsights.com` and
+`connect-src` gains `https://cloudflareinsights.com` only when `VITE_CF_ANALYTICS_TOKEN` was present
+at build time, so the policy stays at its previous strict shape for every build until the owner
+configures it. `tests/config/security-headers.test.ts`'s existing pins are unchanged (they call the
+function with one argument, exercising the default-off shape).
+
+**Owner action required.** Add the site in the Cloudflare dashboard (Analytics & Logs → Web
+Analytics → Add a site — the existing Pages account, no new account) and set
+`VITE_CF_ANALYTICS_TOKEN` as a Cloudflare Pages build environment variable. Until then this ships
+code-complete but genuinely inactive, not merely "off by convention."
+
+**Verified:** `pnpm test` (security-headers.test.ts's CSP pins unchanged, 1142/1142 overall),
+`pnpm build` with no token set — `dist/_headers`' CSP `script-src`/`connect-src` unchanged from the
+pre-P101 shape.
