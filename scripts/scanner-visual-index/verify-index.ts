@@ -16,7 +16,11 @@ import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { assertValidCoverage, logCoverageBreakdown } from '../../src/domain/scanner/index-coverage'
-import { decodeVisualIndex, type VisualIndexManifest } from '../../src/data/scanner/visual-index'
+import {
+  decodeVisualIndex,
+  VISUAL_INDEX_INT8_SCALE,
+  type VisualIndexManifest,
+} from '../../src/data/scanner/visual-index'
 import {
   buildIndexContentPayload,
   truncateDigestHex,
@@ -149,12 +153,17 @@ export async function verifyIndexGeneration(
     )
   }
 
+  // P102 (direct-int8 search): `decoded.embeddingsInt8` is the raw quantized byte, not a
+  // dequantized Float32 — check it directly against the symmetric int8 scale range instead of the
+  // dequantized [-1,1] range this check used before decodeVisualIndex stopped materializing a
+  // Float32 copy. Same intent: a genuinely corrupt embeddings.bin can still write -128 (the one
+  // value outside quantizeEmbedding's own [-127,127] clamp), which this still catches.
   let outOfRange = 0
-  for (const value of decoded.embeddings) {
-    if (value < -1.01 || value > 1.01) outOfRange += 1
+  for (const value of decoded.embeddingsInt8) {
+    if (value < -VISUAL_INDEX_INT8_SCALE || value > VISUAL_INDEX_INT8_SCALE) outOfRange += 1
   }
   if (outOfRange > 0) {
-    throw new Error(`${outOfRange} dequantized values fall outside the expected [-1,1] range.`)
+    throw new Error(`${outOfRange} quantized values fall outside the expected [-127,127] range.`)
   }
 
   console.log(

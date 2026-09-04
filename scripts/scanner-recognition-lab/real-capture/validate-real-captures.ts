@@ -38,6 +38,7 @@ import { join, dirname, extname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   decodeVisualIndex,
+  VISUAL_INDEX_INT8_SCALE,
   type VisualIndexManifest,
   type DecodedVisualIndex,
 } from '../../../src/data/scanner/visual-index'
@@ -141,9 +142,13 @@ function searchWithPrototypeWinner(
     const rowStart = cardIndex * prototypesPerCard
     for (let proto = 0; proto < prototypesPerCard; proto += 1) {
       const start = (rowStart + proto) * dim
-      let dot = 0
+      // P102 (direct-int8 search): dequantize inline against the raw int8 bytes, matching
+      // searchVisualIndex's own approach — index.embeddingsInt8 replaces the old decoded Float32
+      // embeddings field.
+      let rawDot = 0
       for (let d = 0; d < dim; d += 1)
-        dot += (index.embeddings[start + d] ?? 0) * (queryVector[d] ?? 0)
+        rawDot += (index.embeddingsInt8[start + d] ?? 0) * (queryVector[d] ?? 0)
+      const dot = rawDot / VISUAL_INDEX_INT8_SCALE
       if (dot > best) {
         best = dot
         bestProto = proto

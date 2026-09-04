@@ -139,11 +139,21 @@ export interface VisualIndexPointer {
 export interface DecodedVisualIndex {
   readonly manifest: VisualIndexManifest
   readonly cardIds: readonly string[]
-  /** Row-major dequantized embeddings, Float32, CARD-MAJOR: card0-proto0, card0-proto1, ...,
-   *  card1-proto0, ... Length = cardCount * prototypesPerCard * embeddingDim. For a v1
-   *  (prototypesPerCard=1) index this is identical in shape to the pre-P97 format — one row per
-   *  card, in `cardIds` order. */
-  readonly embeddings: Float32Array
+  /**
+   * Raw quantized embeddings, Int8, CARD-MAJOR: card0-proto0, card0-proto1, ..., card1-proto0, ...
+   * Length = cardCount * prototypesPerCard * embeddingDim. For a v1 (prototypesPerCard=1) index
+   * this is identical in shape to the pre-P97 format — one row per card, in `cardIds` order.
+   *
+   * P102 (direct-int8 search): kept as the raw `Int8Array` this module was handed, never decoded
+   * to a Float32Array up front. `searchVisualIndex` dequantizes each component inline, at multiply
+   * time, so decoding an index never materializes a second, ~4x-larger copy of it (P97 disclosed
+   * this roughly doubling runtime memory again for a dual-prototype index, 28.56MB -> 57.13MB, as
+   * a DIRECT, unavoidable consequence of that eager Float32 conversion — direct-int8 search removes
+   * the conversion, not just avoids duplicating it). Measured faster too, not just lighter (P100:
+   * 24-61ms direct-int8 vs 43-122ms decode-then-search across 1/2/5 prototypes/card) — one fewer
+   * full pass over the buffer per decode, and no allocation at all beyond the source bytes.
+   */
+  readonly embeddingsInt8: Int8Array
   /** Resolved prototype count (manifest.prototypesPerCard ?? 1) — always a positive integer,
    *  computed once at decode time so search never has to re-derive it per call. */
   readonly prototypesPerCard: number
@@ -151,15 +161,6 @@ export interface DecodedVisualIndex {
    *  the manifest's own `payloadFormat` string otherwise — diagnostics-only, resolved once here so
    *  callers never have to re-derive "is this legacy or explicit" themselves. */
   readonly schemaLabel: string
-}
-
-function assertFinite(vector: Float32Array, cardId: string): void {
-  for (let i = 0; i < vector.length; i += 1) {
-    const value = vector[i]
-    if (value === undefined || !Number.isFinite(value)) {
-      throw new VisualIndexError(`Non-finite embedding value for card ${cardId} at index ${i}.`)
-    }
-  }
 }
 
 /**
@@ -260,19 +261,20 @@ export function decodeVisualIndex(
     seen.add(id)
   }
 
-  const embeddings = new Float32Array(expectedLength)
-  for (let i = 0; i < expectedLength; i += 1) {
-    embeddings[i] = (embeddingsBytes[i] ?? 0) / VISUAL_INDEX_INT8_SCALE
+  // No Float32 decode and no per-value finiteness scan here (P102, direct-int8 search): an
+  // Int8Array component is always an integer in [-128, 127] — dividing it by the fixed nonzero
+  // VISUAL_INDEX_INT8_SCALE can never produce NaN/Infinity, so the old per-row `assertFinite` pass
+  // over the fully-decoded Float32 copy was always vacuously true for this quantization scheme; it
+  // validated a conversion step that no longer happens, not the source bytes themselves (which the
+  // byte-length check above already validates the shape of). `embeddingsBytes` is stored as handed
+  // to this function, not copied — the caller keeps whatever ownership/lifetime it already had.
+  return {
+    manifest,
+    cardIds,
+    embeddingsInt8: embeddingsBytes,
+    prototypesPerCard,
+    schemaLabel,
   }
-  const totalRows = manifest.cardCount * prototypesPerCard
-  for (let row = 0; row < totalRows; row += 1) {
-    const start = row * manifest.embeddingDim
-    const vector = embeddings.subarray(start, start + manifest.embeddingDim)
-    const cardId = cardIds[Math.floor(row / prototypesPerCard)] ?? '?'
-    assertFinite(vector, cardId)
-  }
-
-  return { manifest, cardIds, embeddings, prototypesPerCard, schemaLabel }
 }
 
 /** L2-normalized mean of a set of same-length vectors — the "centroid" step of the dual-prototype
@@ -295,6 +297,95 @@ export interface VisualSearchHit {
   readonly cardId: string
   /** Dot product of the (near-unit-norm) query and reference vectors — cosine-similarity proxy. */
   readonly similarity: number
+}
+
+/**
+ * Bounded top-K selection (P102 §7): a fixed-capacity binary MIN-heap over parallel typed arrays
+ * (no per-candidate object allocation), keyed on similarity. Keeps only the best `capacity`
+ * candidates seen so far — `push` is O(log capacity), so scanning `n` candidates costs
+ * O(n log capacity) instead of a full O(n log n) sort. Measured, not assumed: at the real
+ * dual-prototype scale (39,002 rows), `Array.prototype.sort` with a comparator over hit objects
+ * cost ~13ms against a ~24ms dot-product scan — a real ~36% addition, not the negligible cost an
+ * earlier draft of this code assumed (see D-114) — while `topK` in the actual production search
+ * path is a small, fixed 30 (D-101/controller.ts), so a heap capped at the real `topK` does
+ * meaningfully less comparison work than sorting every row. `drainSorted()` is the only place that
+ * pays for sorting, and only over `capacity` elements (tiny), not `n`.
+ *
+ * Exported and unit-tested directly (not just exercised through `searchVisualIndex`) so its
+ * ordering/tie-breaking/eviction semantics are pinned on their own.
+ */
+export class BoundedTopK {
+  private readonly capacity: number
+  private readonly sims: Float64Array
+  private readonly indices: Int32Array
+  private size = 0
+
+  constructor(capacity: number) {
+    if (!Number.isInteger(capacity) || capacity < 1) {
+      throw new VisualIndexError(
+        `BoundedTopK capacity must be a positive integer, got ${String(capacity)}.`,
+      )
+    }
+    this.capacity = capacity
+    this.sims = new Float64Array(capacity)
+    this.indices = new Int32Array(capacity)
+  }
+
+  /** Offers one (index, similarity) candidate. Kept if the heap has room, or if it beats the
+   *  current worst kept candidate (which is then evicted). O(log capacity). */
+  push(index: number, similarity: number): void {
+    if (this.size < this.capacity) {
+      let i = this.size
+      this.sims[i] = similarity
+      this.indices[i] = index
+      this.size += 1
+      while (i > 0) {
+        const parent = (i - 1) >> 1
+        if ((this.sims[parent] ?? Infinity) <= (this.sims[i] ?? -Infinity)) break
+        this.swap(i, parent)
+        i = parent
+      }
+      return
+    }
+    if (similarity <= (this.sims[0] ?? -Infinity)) return // worse than the current minimum kept
+    this.sims[0] = similarity
+    this.indices[0] = index
+    let i = 0
+    for (;;) {
+      const left = i * 2 + 1
+      const right = left + 1
+      let smallest = i
+      if (left < this.size && (this.sims[left] ?? Infinity) < (this.sims[smallest] ?? Infinity)) {
+        smallest = left
+      }
+      if (right < this.size && (this.sims[right] ?? Infinity) < (this.sims[smallest] ?? Infinity)) {
+        smallest = right
+      }
+      if (smallest === i) break
+      this.swap(i, smallest)
+      i = smallest
+    }
+  }
+
+  private swap(a: number, b: number): void {
+    const simA = this.sims[a] ?? 0
+    const idxA = this.indices[a] ?? 0
+    this.sims[a] = this.sims[b] ?? 0
+    this.indices[a] = this.indices[b] ?? 0
+    this.sims[b] = simA
+    this.indices[b] = idxA
+  }
+
+  /** Drains the kept candidates as `{ index, similarity }`, best (highest similarity) first —
+   *  sorts only the `size` kept elements, never `n`. Consumes the heap (call once). */
+  drainSorted(): { index: number; similarity: number }[] {
+    const out: { index: number; similarity: number }[] = []
+    for (let i = 0; i < this.size; i += 1) {
+      out.push({ index: this.indices[i] ?? 0, similarity: this.sims[i] ?? 0 })
+    }
+    out.sort((a, b) => b.similarity - a.similarity)
+    return out
+  }
 }
 
 /**
@@ -321,18 +412,37 @@ export function l2Normalize(vector: Float32Array): Float32Array {
 }
 
 /**
- * Bounded top-K search over the decoded index (prompt §13/§31): a brute-force dot product scan.
- * At a few tens of thousands of 384-dim rows this is a few million multiply-adds — well within a
- * phone's per-scan budget (measured in scripts/scanner-visual-benchmark; see SCANNER_RESEARCH).
- * No external ANN library: it would be dead weight at this index size and is exactly the kind of
- * unjustified dependency the project avoids.
+ * Bounded top-K search directly against the raw int8 index (prompt §13/§31; P102 direct-int8): a
+ * brute-force dot product scan, dequantizing each component inline at multiply time rather than
+ * against a pre-decoded Float32 copy — see `DecodedVisualIndex.embeddingsInt8`'s own doc for why.
+ * `queryVector` stays Float32 (the runtime always has a real embedding to search with, never a
+ * quantized one) — only the STORED side is int8; `dot(queryFloat, int8Row) / SCALE` is the same
+ * value `dot(queryFloat, int8Row/SCALE)` would be (SCALE is a positive constant, so division
+ * distributes over the sum), computed with one division per prototype instead of one per
+ * dimension. At a few tens of thousands of 384-dim rows this is a few million multiply-adds —
+ * well within a phone's per-scan budget (measured in scripts/scanner-visual-benchmark; see
+ * SCANNER_RESEARCH). No external ANN library: it would be dead weight at this index size and is
+ * exactly the kind of unjustified dependency the project avoids.
  *
- * P97 (D-106): a card with `prototypesPerCard` > 1 stores multiple reference rows (card-major); its
- * similarity is the MAX dot product over its own prototypes (P91/P95's `searchMultiProto`
- * strategy, reproduced here) — one hit per CARD is ever pushed, never one per prototype row, so
- * the matcher downstream (unchanged, out of scope for this work) keeps seeing exactly the same
- * "one score per candidate card" shape it always has. For prototypesPerCard=1 this degenerates to
- * exactly the pre-P97 single-row-per-card loop (no extra allocation, no behavior change).
+ * Top-K selection (P102 §7, D-114): measured, not assumed. `Array.prototype.sort` over the full
+ * hit-object list is NOT a negligible cost next to the dot-product scan — at the real
+ * dual-prototype scale (39,002 rows) it measured ~13ms against a ~24ms scan, a real ~36% addition,
+ * not the "two orders of magnitude smaller" an earlier draft of this comment assumed before
+ * actually measuring it. The real production search path's `topK` is a small, fixed 30
+ * (D-101/controller.ts) — far smaller than `cardIds.length` — so `BoundedTopK` (a capacity-`topK`
+ * min-heap, above) replaces the full sort with O(n log topK) selection whenever `topK` is smaller
+ * than the index; a caller asking for a FULL ranking (`topK >= cardIds.length`, used only by the
+ * diagnostics rank-lookup path, not the hot per-scan path) gets no benefit from a same-size heap,
+ * so that case falls back to the plain full sort instead of paying heap overhead for nothing.
+ *
+ * Legacy (v1, prototypesPerCard=1) and schema-v2 (prototypesPerCard>=2) indexes share this exact
+ * loop, parameterized by `index.prototypesPerCard` — never two independent search
+ * implementations that could silently drift apart. P97 (D-112): a card with `prototypesPerCard` >
+ * 1 stores multiple reference rows (card-major); its similarity is the MAX dot product over its
+ * own prototypes (P91/P95's `searchMultiProto` strategy, reproduced here) — one hit per CARD is
+ * ever pushed, never one per prototype row, so the matcher downstream (unchanged, out of scope for
+ * this work) keeps seeing exactly the same "one score per candidate card" shape it always has. For
+ * prototypesPerCard=1 this degenerates to exactly the pre-P97 single-row-per-card loop.
  */
 export function searchVisualIndex(
   index: DecodedVisualIndex,
@@ -346,22 +456,47 @@ export function searchVisualIndex(
   }
   const dim = index.manifest.embeddingDim
   const prototypesPerCard = index.prototypesPerCard
-  const hits: VisualSearchHit[] = []
-  for (let cardIndex = 0; cardIndex < index.cardIds.length; cardIndex += 1) {
-    const cardId = index.cardIds[cardIndex]
-    if (cardId === undefined) continue
+  const embeddingsInt8 = index.embeddingsInt8
+  const cardCount = index.cardIds.length
+  const boundedK = Math.max(0, topK)
+
+  function bestSimilarityForCard(cardIndex: number): number {
     let best = -Infinity
     const cardRowStart = cardIndex * prototypesPerCard
     for (let proto = 0; proto < prototypesPerCard; proto += 1) {
       const start = (cardRowStart + proto) * dim
-      let dot = 0
+      let rawDot = 0
       for (let d = 0; d < dim; d += 1) {
-        dot += (index.embeddings[start + d] ?? 0) * (queryVector[d] ?? 0)
+        rawDot += (embeddingsInt8[start + d] ?? 0) * (queryVector[d] ?? 0)
       }
+      const dot = rawDot / VISUAL_INDEX_INT8_SCALE
       if (dot > best) best = dot
     }
-    hits.push({ cardId, similarity: best })
+    return best
+  }
+
+  if (boundedK === 0) return []
+
+  if (boundedK < cardCount) {
+    const heap = new BoundedTopK(boundedK)
+    for (let cardIndex = 0; cardIndex < cardCount; cardIndex += 1) {
+      if (index.cardIds[cardIndex] === undefined) continue
+      heap.push(cardIndex, bestSimilarityForCard(cardIndex))
+    }
+    return heap.drainSorted().map(({ index: cardIndex, similarity }) => ({
+      cardId: index.cardIds[cardIndex] ?? '?',
+      similarity,
+    }))
+  }
+
+  // Full ranking requested (topK >= cardCount, e.g. the diagnostics rank-lookup path) — a
+  // same-size heap has no selection advantage here, so this falls back to a plain sort.
+  const hits: VisualSearchHit[] = []
+  for (let cardIndex = 0; cardIndex < cardCount; cardIndex += 1) {
+    const cardId = index.cardIds[cardIndex]
+    if (cardId === undefined) continue
+    hits.push({ cardId, similarity: bestSimilarityForCard(cardIndex) })
   }
   hits.sort((a, b) => b.similarity - a.similarity)
-  return hits.slice(0, Math.max(0, topK))
+  return hits.slice(0, boundedK)
 }
