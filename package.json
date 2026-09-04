@@ -24,6 +24,7 @@
     "test:m13-adversarial": "vitest run --config test/m13-independent-adversarial/vitest.config.ts",
     "test:e2e": "playwright test",
     "check": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test",
+    "check:links": "node scripts/check-links.mjs",
     "db:start": "supabase start",
     "db:stop": "supabase stop",
     "db:migrate": "supabase migration up",
@@ -60,6 +61,7 @@
     "tesseract.js": "7.0.0"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.62.1",
     "@tesseract.js-data/eng": "1.0.0",
@@ -70,10 +72,12 @@
     "@vitest/coverage-v8": "^4.1.10",
     "eslint": "^10.8.1",
     "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-jsx-a11y": "^6.10.2",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.4",
     "fast-check": "^4.9.0",
     "globals": "^17.11.0",
+    "lighthouse": "^13.4.1",
     "prettier": "^3.9.6",
     "sharp": "0.34.5",
     "supabase": "^2.114.0",
