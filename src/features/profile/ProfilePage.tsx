@@ -139,7 +139,7 @@ export function ProfilePage() {
         {remindExport ? (
           <p
             role="status"
-            className="rounded-lg border border-dashed border-amber-900/60 bg-amber-950/30 p-3 text-xs leading-relaxed text-amber-100/90"
+            className="rounded-lg border border-dashed border-slate-600 bg-slate-800/60 p-3 text-xs leading-relaxed text-slate-200"
           >
             It may be a while since your last export. A fresh backup keeps your ledger safe — see{' '}
             <Link to="/profile/export" className="underline underline-offset-2">
