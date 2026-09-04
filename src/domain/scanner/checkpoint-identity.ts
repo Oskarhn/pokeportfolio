@@ -14,7 +14,7 @@
  * string derived from the (non-secret) `SUPABASE_URL`.
  *
  * P97 (D-106) addendum: `CHECKPOINT_SCHEMA_VERSION` bumped 2 -> 3 and `CheckpointIdentity` gained
- * `prototypeCount`/`prototypeStrategy`/`prototypeStrategyVersion`, for the identical reason the
+ * `prototypesPerCard`/`prototypeStrategy`/`prototypeStrategyVersion`, for the identical reason the
  * original fields exist — a checkpoint built for the single-prototype (v1) format must never be
  * silently resumed into a dual-prototype build (it would have no auxiliary embeddings at all for
  * every "already done" card, which `checkpointMatchesIdentity` returning false here forces a full,
@@ -55,7 +55,7 @@ export interface CheckpointIdentity {
    *  which recipe/version produces the ones beyond the first (pristine). Required (not optional)
    *  so a pre-P97 checkpoint — which never set these fields at all — can never satisfy
    *  {@link checkpointMatchesIdentity} by accident. */
-  readonly prototypeCount: number
+  readonly prototypesPerCard: number
   readonly prototypeStrategy: string
   readonly prototypeStrategyVersion: string
 }
@@ -172,7 +172,7 @@ export function checkpointMatchesIdentity(
     checkpoint.modelRevision === expected.modelRevision &&
     checkpoint.embeddingDim === expected.embeddingDim &&
     checkpoint.quantization === expected.quantization &&
-    checkpoint.prototypeCount === expected.prototypeCount &&
+    checkpoint.prototypesPerCard === expected.prototypesPerCard &&
     checkpoint.prototypeStrategy === expected.prototypeStrategy &&
     checkpoint.prototypeStrategyVersion === expected.prototypeStrategyVersion
   )

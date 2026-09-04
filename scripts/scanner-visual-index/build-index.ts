@@ -72,6 +72,8 @@ import {
   l2Normalize,
   meanVectors,
   VISUAL_INDEX_QUANTIZATION,
+  VISUAL_INDEX_SCHEMA_VERSION_MULTI_PROTOTYPE,
+  VISUAL_INDEX_PAYLOAD_FORMAT_MULTI_PROTOTYPE,
   type VisualIndexManifest,
   type VisualIndexPointer,
 } from '../../src/data/scanner/visual-index'
@@ -86,7 +88,7 @@ import {
   VISUAL_EMBEDDING_DIM,
   PROTOTYPE_STRATEGY,
   PROTOTYPE_STRATEGY_VERSION,
-  PROTOTYPE_COUNT,
+  PROTOTYPES_PER_CARD,
 } from './lib/model-pin.mjs'
 import { augmentAll } from './lib/prototype-augmentation.mjs'
 import { verifyIndexGeneration } from './verify-index'
@@ -252,7 +254,7 @@ async function main() {
     modelRevision: VISUAL_MODEL_REVISION,
     embeddingDim: VISUAL_EMBEDDING_DIM,
     quantization: VISUAL_INDEX_QUANTIZATION,
-    prototypeCount: PROTOTYPE_COUNT,
+    prototypesPerCard: PROTOTYPES_PER_CARD,
     prototypeStrategy: PROTOTYPE_STRATEGY,
     prototypeStrategyVersion: PROTOTYPE_STRATEGY_VERSION,
   }
@@ -388,14 +390,14 @@ async function main() {
   // centroid when it succeeded, or a DUPLICATE of prototype 0 when the card's aux computation
   // fell back (prompt §13) — never a zero vector, which would silently make that card's second
   // prototype row an artificially bad match instead of a neutral no-op.
-  const int8Buffer = new Int8Array(cardIds.length * PROTOTYPE_COUNT * dim)
+  const int8Buffer = new Int8Array(cardIds.length * PROTOTYPES_PER_CARD * dim)
   let cardsWithAuxPrototype = 0
   let cardsAuxFallback = 0
   cardIds.forEach((cardId, cardIndex) => {
     const pristineStored = checkpoint.embeddings[cardId]
     if (!pristineStored) throw new Error(`Missing embedding for ${cardId} while packing the index.`)
     const pristineQuantized = quantizeEmbedding(new Float32Array(pristineStored))
-    const rowStart = cardIndex * PROTOTYPE_COUNT
+    const rowStart = cardIndex * PROTOTYPES_PER_CARD
     int8Buffer.set(pristineQuantized, rowStart * dim)
 
     const auxStored = checkpoint.auxEmbeddings[cardId]
@@ -451,10 +453,17 @@ async function main() {
     coverage,
     sourceProjectRef: deriveProjectIdentity(url),
     sourceEnglishActiveCount: totalCanonicalCards,
-    prototypeCount: PROTOTYPE_COUNT,
+    // P100 (D-1xx): this build always produces the explicit multi-prototype schema — all three of
+    // schemaVersion/payloadFormat/prototypesPerCard are set together (never partially), matching
+    // decodeVisualIndex's fail-closed requirement. A future single-prototype-only build (should one
+    // ever be needed again) would omit all three to stay LEGACY_V1, not set prototypesPerCard=1
+    // alongside an explicit schemaVersion.
+    schemaVersion: VISUAL_INDEX_SCHEMA_VERSION_MULTI_PROTOTYPE,
+    payloadFormat: VISUAL_INDEX_PAYLOAD_FORMAT_MULTI_PROTOTYPE,
+    prototypesPerCard: PROTOTYPES_PER_CARD,
     prototypeStrategy: PROTOTYPE_STRATEGY,
     prototypeStrategyVersion: PROTOTYPE_STRATEGY_VERSION,
-    rowCount: cardIds.length * PROTOTYPE_COUNT,
+    rowCount: cardIds.length * PROTOTYPES_PER_CARD,
   }
 
   // P87 F-01: content id derived from the manifest's SEMANTIC fields (excluding generatedAt) plus
@@ -522,13 +531,15 @@ async function main() {
   }
 
   console.log(
-    `[index] wrote ${String(cardIds.length)} cards x ${String(PROTOTYPE_COUNT)} prototype(s) ` +
-      `(${String(cardIds.length * PROTOTYPE_COUNT)} rows, ${(int8Buffer.byteLength / 1024).toFixed(1)} KB) ` +
+    `[index] wrote ${String(cardIds.length)} cards x ${String(PROTOTYPES_PER_CARD)} prototype(s) ` +
+      `(${String(cardIds.length * PROTOTYPES_PER_CARD)} rows, ${(int8Buffer.byteLength / 1024).toFixed(1)} KB) ` +
       `as generation ${contentId}. Source project: ${target === 'local' ? 'LOCAL dev stack' : url}.`,
   )
   console.log(
-    `[index] INDEX_PROTOTYPE_COUNT=${String(PROTOTYPE_COUNT)} ` +
-      `INDEX_PROTOTYPE_STRATEGY=${PROTOTYPE_STRATEGY} INDEX_ROW_COUNT=${String(cardIds.length * PROTOTYPE_COUNT)}`,
+    `[index] INDEX_SCHEMA_VERSION=${String(VISUAL_INDEX_SCHEMA_VERSION_MULTI_PROTOTYPE)} ` +
+      `INDEX_PAYLOAD_FORMAT=${VISUAL_INDEX_PAYLOAD_FORMAT_MULTI_PROTOTYPE} ` +
+      `INDEX_PROTOTYPES_PER_CARD=${String(PROTOTYPES_PER_CARD)} ` +
+      `INDEX_PROTOTYPE_STRATEGY=${PROTOTYPE_STRATEGY} INDEX_ROW_COUNT=${String(cardIds.length * PROTOTYPES_PER_CARD)}`,
   )
   logCoverageBreakdown(coverage)
   if (target === 'local') {

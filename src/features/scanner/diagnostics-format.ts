@@ -121,9 +121,14 @@ export function formatScannerDiagnostics(d: ScannerDiagnostics): string {
     // even across a rebuild against the identical model revision.
     `INDEX_POINTER_CONTENT_ID=${d.indexContentId ?? EMPTY}`,
     `INDEX_MANIFEST_CONTENT_ID=${d.indexContentId ?? EMPTY}`,
+    // P100 (D-1xx): the loaded manifest's fail-closed schema discriminant — makes an unrecognized
+    // future schema (which the worker refuses to load at all) or a legacy/dual mismatch visible in
+    // a copy-pasted diagnostics report rather than reading as an unexplained "index didn't load".
+    `INDEX_SCHEMA_VERSION=${num(d.indexSchemaVersion)}`,
+    `INDEX_PAYLOAD_FORMAT=${d.indexPayloadFormat ?? EMPTY}`,
     // P97 (D-106): 1 / null on a v1 (pre-dual-prototype) index — never affects matching, purely
     // makes a stale/mismatched-format index visible in a copy-pasted diagnostics report.
-    `INDEX_PROTOTYPE_COUNT=${num(d.indexPrototypeCount)}`,
+    `INDEX_PROTOTYPES_PER_CARD=${num(d.indexPrototypesPerCard)}`,
     `INDEX_PROTOTYPE_STRATEGY=${d.indexPrototypeStrategy ?? EMPTY}`,
     `INDEX_ROW_COUNT=${num(d.indexRowCount)}`,
     `INDEX_GENERATED_AT=${d.indexGeneratedAt ?? EMPTY}`,

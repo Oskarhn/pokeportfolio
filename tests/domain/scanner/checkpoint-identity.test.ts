@@ -28,7 +28,7 @@ function identity(overrides: Partial<CheckpointIdentity> = {}): CheckpointIdenti
     modelRevision: 'c2bb04a51fab207c420665f1946016107bffc701',
     embeddingDim: 384,
     quantization: 'int8',
-    prototypeCount: 2,
+    prototypesPerCard: 2,
     prototypeStrategy: 'pristinePlus1Aux',
     prototypeStrategyVersion: '1',
     ...overrides,
@@ -165,16 +165,16 @@ describe('CP7 — the 1224/1000 historical failure shape is rejected', () => {
 })
 
 describe('CP8 (P97, D-106) — a checkpoint built under one prototype strategy cannot resume another', () => {
-  it('rejects a checkpoint whose prototypeCount differs (a single-prototype checkpoint resuming a dual-prototype build)', () => {
+  it('rejects a checkpoint whose prototypesPerCard differs (a single-prototype checkpoint resuming a dual-prototype build)', () => {
     const singleProto = freshCheckpoint(
       identity({
-        prototypeCount: 1,
+        prototypesPerCard: 1,
         prototypeStrategy: 'pristineOnly',
         prototypeStrategyVersion: '0',
       }),
     )
     const dualProto = identity({
-      prototypeCount: 2,
+      prototypesPerCard: 2,
       prototypeStrategy: 'pristinePlus1Aux',
       prototypeStrategyVersion: '1',
     })

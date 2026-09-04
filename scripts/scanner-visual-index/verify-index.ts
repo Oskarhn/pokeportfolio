@@ -88,11 +88,11 @@ export async function verifyIndexGeneration(
     )
   }
 
-  // P97 (D-106): NOT pinned to today's PROTOTYPE_COUNT/STRATEGY — this generation may legitimately
-  // be either the v1 (single-prototype, prototypeCount undefined) format every already-committed
+  // P97 (D-106): NOT pinned to today's PROTOTYPES_PER_CARD/STRATEGY — this generation may legitimately
+  // be either the v1 (single-prototype, prototypesPerCard undefined) format every already-committed
   // generation uses, or the dual-prototype format. verify-index.ts's job is "is this generation
   // internally valid", not "is this exactly the newest format" — decodeVisualIndex below (the one
-  // shared implementation) already enforces the actual invariants: prototypeCount must be a
+  // shared implementation) already enforces the actual invariants: prototypesPerCard must be a
   // positive integer, prototypeStrategy/prototypeStrategyVersion must both be present whenever it
   // is > 1, and the embeddings/rowCount byte lengths must agree with it exactly.
 
@@ -162,9 +162,11 @@ export async function verifyIndexGeneration(
       `${manifest.quantization}, checksum verified, content id ${actualContentId}, no duplicates, all finite, in-range.`,
   )
   console.log(
-    `[verify] INDEX_PROTOTYPE_COUNT=${String(decoded.prototypeCount)} ` +
+    `[verify] INDEX_SCHEMA_VERSION=${String(manifest.schemaVersion ?? 1)} ` +
+      `INDEX_PAYLOAD_FORMAT=${decoded.schemaLabel} ` +
+      `INDEX_PROTOTYPES_PER_CARD=${String(decoded.prototypesPerCard)} ` +
       `INDEX_PROTOTYPE_STRATEGY=${manifest.prototypeStrategy ?? '(v1 pristine-only)'} ` +
-      `INDEX_ROW_COUNT=${String(decoded.cardIds.length * decoded.prototypeCount)}`,
+      `INDEX_ROW_COUNT=${String(decoded.cardIds.length * decoded.prototypesPerCard)}`,
   )
   logCoverageBreakdown(manifest.coverage)
 

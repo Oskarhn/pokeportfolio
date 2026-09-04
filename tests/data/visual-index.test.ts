@@ -182,7 +182,9 @@ describe('P97 (D-106) — dual/multi-prototype decode and search', () => {
   function dualManifest(overrides: Partial<VisualIndexManifest> = {}): VisualIndexManifest {
     return manifest({
       cardCount: 2,
-      prototypeCount: 2,
+      schemaVersion: 2,
+      payloadFormat: 'multi-prototype-v2',
+      prototypesPerCard: 2,
       prototypeStrategy: 'pristinePlus1Aux',
       prototypeStrategyVersion: '1',
       coverage: {
@@ -197,13 +199,13 @@ describe('P97 (D-106) — dual/multi-prototype decode and search', () => {
     })
   }
 
-  it('a v1 (single-prototype) manifest with no prototypeCount field still decodes exactly as before — prototypeCount resolves to 1', () => {
+  it('a v1 (single-prototype) manifest with no prototypesPerCard field still decodes exactly as before — prototypesPerCard resolves to 1', () => {
     const rows = [
       [127, 0, -127, 0],
       [0, 127, 0, -127],
     ]
     const decoded = decodeVisualIndex(manifest(), ['card-a', 'card-b'], packInt8(rows))
-    expect(decoded.prototypeCount).toBe(1)
+    expect(decoded.prototypesPerCard).toBe(1)
     expect(decoded.embeddings.length).toBe(8)
   })
 
@@ -216,7 +218,7 @@ describe('P97 (D-106) — dual/multi-prototype decode and search', () => {
       [0, -127, 0, 0], // b-proto1
     ]
     const decoded = decodeVisualIndex(dualManifest(), ['a', 'b'], packInt8(rows))
-    expect(decoded.prototypeCount).toBe(2)
+    expect(decoded.prototypesPerCard).toBe(2)
     expect(decoded.embeddings.length).toBe(16)
     expect(decoded.embeddings[5]).toBeCloseTo(1, 2) // a-proto1's y component (row 1 = indices 4-7)
   })
@@ -272,7 +274,9 @@ describe('P97 (D-106) — dual/multi-prototype decode and search', () => {
     const decoded = decodeVisualIndex(
       manifest({
         cardCount: 1,
-        prototypeCount: 5,
+        schemaVersion: 2,
+        payloadFormat: 'multi-prototype-v2',
+        prototypesPerCard: 5,
         prototypeStrategy: 'maxSimAllProtos',
         prototypeStrategyVersion: '1',
       }),
@@ -283,7 +287,7 @@ describe('P97 (D-106) — dual/multi-prototype decode and search', () => {
     expect(hits[0]!.similarity).toBeCloseTo(126 / 127, 3)
   })
 
-  it('rejects an embeddings buffer whose length does not match cardCount x prototypeCount x dim (bad rowCount)', () => {
+  it('rejects an embeddings buffer whose length does not match cardCount x prototypesPerCard x dim (bad rowCount)', () => {
     const rows = [
       [127, 0, 0, 0],
       [0, 127, 0, 0],
@@ -295,7 +299,7 @@ describe('P97 (D-106) — dual/multi-prototype decode and search', () => {
     )
   })
 
-  it('rejects a manifest.rowCount that disagrees with cardCount x prototypeCount', () => {
+  it('rejects a manifest.rowCount that disagrees with cardCount x prototypesPerCard', () => {
     const rows = [
       [127, 0, 0, 0],
       [0, 127, 0, 0],
@@ -307,24 +311,125 @@ describe('P97 (D-106) — dual/multi-prototype decode and search', () => {
     ).toThrow(VisualIndexError)
   })
 
-  it('rejects a non-positive or non-integer prototypeCount', () => {
+  it('rejects a non-positive or non-integer prototypesPerCard', () => {
     const rows = [[127, 0, 0, 0]]
     expect(() =>
-      decodeVisualIndex(manifest({ cardCount: 1, prototypeCount: 0 }), ['a'], packInt8(rows)),
+      decodeVisualIndex(
+        dualManifest({ cardCount: 1, prototypesPerCard: 0 }),
+        ['a'],
+        packInt8(rows),
+      ),
     ).toThrow(VisualIndexError)
     expect(() =>
-      decodeVisualIndex(manifest({ cardCount: 1, prototypeCount: 1.5 }), ['a'], packInt8(rows)),
+      decodeVisualIndex(
+        dualManifest({ cardCount: 1, prototypesPerCard: 1.5 }),
+        ['a'],
+        packInt8(rows),
+      ),
     ).toThrow(VisualIndexError)
   })
 
-  it('rejects prototypeCount > 1 with no prototypeStrategy/prototypeStrategyVersion declared', () => {
+  it('rejects prototypesPerCard > 1 with no prototypeStrategy/prototypeStrategyVersion declared', () => {
     const rows = [
       [127, 0, 0, 0],
       [0, 127, 0, 0],
     ]
     expect(() =>
       decodeVisualIndex(
-        manifest({ cardCount: 1, prototypeCount: 2, prototypeStrategy: undefined }),
+        dualManifest({ cardCount: 1, prototypeStrategy: undefined }),
+        ['a'],
+        packInt8(rows),
+      ),
+    ).toThrow(VisualIndexError)
+  })
+})
+
+describe('P100 (D-1xx) — fail-closed schema/payload discriminant', () => {
+  it('a manifest with none of schemaVersion/payloadFormat/prototypesPerCard is LEGACY_V1', () => {
+    const decoded = decodeVisualIndex(
+      manifest(),
+      ['card-a', 'card-b'],
+      packInt8([
+        [127, 0, -127, 0],
+        [0, 127, 0, -127],
+      ]),
+    )
+    expect(decoded.schemaLabel).toBe('LEGACY_V1')
+    expect(decoded.prototypesPerCard).toBe(1)
+  })
+
+  it('an explicit dual-prototype manifest resolves schemaLabel to its own payloadFormat', () => {
+    const decoded = decodeVisualIndex(
+      manifest({
+        cardCount: 1,
+        schemaVersion: 2,
+        payloadFormat: 'multi-prototype-v2',
+        prototypesPerCard: 2,
+        prototypeStrategy: 'pristinePlus1Aux',
+        prototypeStrategyVersion: '1',
+      }),
+      ['a'],
+      packInt8([
+        [127, 0, 0, 0],
+        [0, 127, 0, 0],
+      ]),
+    )
+    expect(decoded.schemaLabel).toBe('multi-prototype-v2')
+  })
+
+  it('rejects a manifest that sets only ONE of the three explicit-schema fields (partial declaration)', () => {
+    const rows = [[127, 0, 0, 0]]
+    expect(() =>
+      decodeVisualIndex(manifest({ cardCount: 1, schemaVersion: 2 }), ['a'], packInt8(rows)),
+    ).toThrow(VisualIndexError)
+    expect(() =>
+      decodeVisualIndex(
+        manifest({ cardCount: 1, payloadFormat: 'multi-prototype-v2' }),
+        ['a'],
+        packInt8(rows),
+      ),
+    ).toThrow(VisualIndexError)
+    expect(() =>
+      decodeVisualIndex(manifest({ cardCount: 1, prototypesPerCard: 1 }), ['a'], packInt8(rows)),
+    ).toThrow(VisualIndexError)
+  })
+
+  it('fails closed on an unrecognized schemaVersion — never guesses at a future format', () => {
+    const rows = [
+      [127, 0, 0, 0],
+      [0, 127, 0, 0],
+    ]
+    expect(() =>
+      decodeVisualIndex(
+        manifest({
+          cardCount: 1,
+          schemaVersion: 99,
+          payloadFormat: 'multi-prototype-v2',
+          prototypesPerCard: 2,
+          prototypeStrategy: 'x',
+          prototypeStrategyVersion: '1',
+        }),
+        ['a'],
+        packInt8(rows),
+      ),
+    ).toThrow(VisualIndexError)
+  })
+
+  it('rejects a recognized schemaVersion paired with an unrecognized payloadFormat string', () => {
+    const rows = [
+      [127, 0, 0, 0],
+      [0, 127, 0, 0],
+    ]
+    expect(() =>
+      decodeVisualIndex(
+        manifest({
+          cardCount: 1,
+          schemaVersion: 2,
+          payloadFormat: 'some-future-format-v3',
+          prototypesPerCard: 2,
+          prototypeStrategy: 'x',
+          prototypeStrategyVersion: '1',
+        }),
         ['a'],
         packInt8(rows),
       ),
