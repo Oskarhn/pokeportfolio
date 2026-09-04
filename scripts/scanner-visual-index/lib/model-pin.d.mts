@@ -10,3 +10,6 @@ export interface VisualModelFile {
   bytes: number | null
 }
 export const VISUAL_MODEL_FILES: VisualModelFile[]
+export const PROTOTYPE_STRATEGY: string
+export const PROTOTYPE_STRATEGY_VERSION: string
+export const PROTOTYPES_PER_CARD: number

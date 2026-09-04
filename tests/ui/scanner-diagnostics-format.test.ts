@@ -29,6 +29,11 @@ function diagnostics(overrides: Partial<ScannerDiagnostics> = {}): ScannerDiagno
     indexGeneratedAt: '2026-09-01T00:00:00.000Z',
     indexEmbeddingsSha256: 'deadbeef',
     indexContentId: '0123456789abcdef',
+    indexSchemaVersion: 2,
+    indexPayloadFormat: 'multi-prototype-v2',
+    indexPrototypesPerCard: 2,
+    indexPrototypeStrategy: 'pristinePlus1Aux',
+    indexRowCount: 1970,
     indexSourceProjectExpected: 'nopmkroeygmlvndzjjqs.supabase.co',
     indexSourceProjectMatch: true,
     indexRuntimeChecksumVerified: true,
@@ -138,6 +143,11 @@ describe('formatScannerDiagnostics', () => {
     expect(text).toContain('INDEX_VERSION=visual-v1')
     expect(text).toContain('INDEX_CARD_COUNT=985')
     expect(text).toContain('INDEX_SOURCE_PROJECT_REF=nopmkroeygmlvndzjjqs.supabase.co')
+    expect(text).toContain('INDEX_SCHEMA_VERSION=2')
+    expect(text).toContain('INDEX_PAYLOAD_FORMAT=multi-prototype-v2')
+    expect(text).toContain('INDEX_PROTOTYPES_PER_CARD=2')
+    expect(text).toContain('INDEX_PROTOTYPE_STRATEGY=pristinePlus1Aux')
+    expect(text).toContain('INDEX_ROW_COUNT=1970')
     // N-08 (P94): the found-vs-enriched gap, labelled explicitly.
     expect(text).toContain('RAW_VISUAL_ID_COUNT=2')
     expect(text).toContain('ENRICHED_VISUAL_ID_COUNT=1')
@@ -234,6 +244,11 @@ describe('formatScannerDiagnostics', () => {
         embeddingNorm: null,
         indexVersion: null,
         indexCardCount: null,
+        indexSchemaVersion: null,
+        indexPayloadFormat: null,
+        indexPrototypesPerCard: null,
+        indexPrototypeStrategy: null,
+        indexRowCount: null,
         topVisualCandidates: [],
         topVisualCandidatesExtended: [],
         finalRerankedCandidates: [],
@@ -245,6 +260,11 @@ describe('formatScannerDiagnostics', () => {
     expect(text).toContain('CAPTURE_CROP_DIMENSIONS=—x—')
     expect(text).toContain('RECTIFICATION_USED=no')
     expect(text).toContain('EMBEDDING_NORM=—')
+    expect(text).toContain('INDEX_SCHEMA_VERSION=—')
+    expect(text).toContain('INDEX_PAYLOAD_FORMAT=—')
+    expect(text).toContain('INDEX_PROTOTYPES_PER_CARD=—')
+    expect(text).toContain('INDEX_PROTOTYPE_STRATEGY=—')
+    expect(text).toContain('INDEX_ROW_COUNT=—')
     expect(text).toContain('VISUAL_ERROR=model load failed: out of memory')
     // Never crashes or omits the section header on an empty list; an empty EXTENDED list simply
     // omits that optional section rather than printing an empty header.

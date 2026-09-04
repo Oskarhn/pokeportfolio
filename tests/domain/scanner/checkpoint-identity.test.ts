@@ -28,6 +28,9 @@ function identity(overrides: Partial<CheckpointIdentity> = {}): CheckpointIdenti
     modelRevision: 'c2bb04a51fab207c420665f1946016107bffc701',
     embeddingDim: 384,
     quantization: 'int8',
+    prototypesPerCard: 2,
+    prototypeStrategy: 'pristinePlus1Aux',
+    prototypeStrategyVersion: '1',
     ...overrides,
   }
 }
@@ -158,5 +161,58 @@ describe('CP7 — the 1224/1000 historical failure shape is rejected', () => {
     const currentIds = Array.from({ length: 1000 }, (_, i) => `card-${String(i)}`)
     const packed = packCurrentCardIds(currentIds, embeddings)
     expect(packed.length).toBe(1000)
+  })
+})
+
+describe('CP8 (P97, D-106) — a checkpoint built under one prototype strategy cannot resume another', () => {
+  it('rejects a checkpoint whose prototypesPerCard differs (a single-prototype checkpoint resuming a dual-prototype build)', () => {
+    const singleProto = freshCheckpoint(
+      identity({
+        prototypesPerCard: 1,
+        prototypeStrategy: 'pristineOnly',
+        prototypeStrategyVersion: '0',
+      }),
+    )
+    const dualProto = identity({
+      prototypesPerCard: 2,
+      prototypeStrategy: 'pristinePlus1Aux',
+      prototypeStrategyVersion: '1',
+    })
+    expect(checkpointMatchesIdentity(singleProto, dualProto)).toBe(false)
+  })
+
+  it('rejects identity match when only prototypeStrategy differs', () => {
+    const a = freshCheckpoint(identity({ prototypeStrategy: 'pristinePlus1Aux' }))
+    const b = identity({ prototypeStrategy: 'centroidAll' })
+    expect(checkpointMatchesIdentity(a, b)).toBe(false)
+  })
+
+  it('rejects identity match when only prototypeStrategyVersion differs (a recipe change)', () => {
+    const a = freshCheckpoint(identity({ prototypeStrategyVersion: '1' }))
+    const b = identity({ prototypeStrategyVersion: '2' })
+    expect(checkpointMatchesIdentity(a, b)).toBe(false)
+  })
+
+  it('accepts identity match when every prototype field agrees too', () => {
+    const checkpoint = freshCheckpoint(identity())
+    expect(checkpointMatchesIdentity(checkpoint, identity())).toBe(true)
+  })
+
+  it('every pre-P97 checkpoint (schemaVersion 2, no prototype fields) is rejected outright by the schema-version bump alone', () => {
+    const preP97: Partial<CheckpointIdentity> = {
+      schemaVersion: 2,
+      sourceProjectIdentity: 'nopmkroeygmlvndzjjqs.supabase.co',
+      modelId: 'Xenova/dinov2-small',
+      modelRevision: 'c2bb04a51fab207c420665f1946016107bffc701',
+      embeddingDim: 384,
+      quantization: 'int8',
+    }
+    expect(checkpointMatchesIdentity(preP97, identity())).toBe(false)
+  })
+
+  it('freshCheckpoint always starts with empty auxEmbeddings/auxFallback maps', () => {
+    const checkpoint = freshCheckpoint(identity())
+    expect(checkpoint.auxEmbeddings).toEqual({})
+    expect(checkpoint.auxFallback).toEqual({})
   })
 })

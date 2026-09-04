@@ -145,4 +145,60 @@ describe('computeCoverageBreakdown (N-07: honest coverage, denominators labelled
     expect(breakdown.indexedOfTotalPercent).toBeCloseTo(93.1013, 2)
     expect(breakdown.indexedOfUsableImagePercent).toBeCloseTo(99.964, 2)
   })
+
+  it('P97 (D-106): passes through aux-prototype coverage when present, absent when not (v1)', () => {
+    const dual = computeCoverageBreakdown({
+      totalCanonicalCards: 100,
+      cardsWithUsableImage: 100,
+      cardsIndexed: 100,
+      failures: 0,
+      cardsWithAuxPrototype: 97,
+      cardsAuxFallback: 3,
+    })
+    expect(dual.cardsWithAuxPrototype).toBe(97)
+    expect(dual.cardsAuxFallback).toBe(3)
+
+    const single = computeCoverageBreakdown({
+      totalCanonicalCards: 100,
+      cardsWithUsableImage: 100,
+      cardsIndexed: 100,
+      failures: 0,
+    })
+    expect(single.cardsWithAuxPrototype).toBeUndefined()
+    expect(single.cardsAuxFallback).toBeUndefined()
+  })
+})
+
+describe('assertValidCoverage — P97 (D-106) auxiliary-prototype invariants', () => {
+  it('accepts aux coverage that sums to exactly cardsIndexed', () => {
+    expect(() => {
+      assertValidCoverage(
+        coverage({ cardsWithAuxPrototype: 80, cardsAuxFallback: 5, cardsIndexed: 85 }),
+        85,
+        85,
+      )
+    }).not.toThrow()
+  })
+
+  it('rejects cardsWithAuxPrototype + cardsAuxFallback exceeding cardsIndexed', () => {
+    expect(() => {
+      assertValidCoverage(
+        coverage({ cardsWithAuxPrototype: 80, cardsAuxFallback: 10, cardsIndexed: 85 }),
+        85,
+        85,
+      )
+    }).toThrow(/exceeds cardsIndexed/)
+  })
+
+  it('rejects a negative aux coverage number', () => {
+    expect(() => {
+      assertValidCoverage(coverage({ cardsWithAuxPrototype: -1 }), 985, 985)
+    }).toThrow(/Auxiliary-prototype coverage/)
+  })
+
+  it('a v1 manifest with no aux fields at all still passes (both default to 0)', () => {
+    expect(() => {
+      assertValidCoverage(coverage(), 985, 985)
+    }).not.toThrow()
+  })
 })

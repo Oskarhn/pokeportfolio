@@ -45,9 +45,24 @@ export interface IndexContentIdManifestFields {
     readonly cardsWithUsableImage: number
     readonly cardsIndexed: number
     readonly failures: number
+    readonly cardsWithAuxPrototype?: number
+    readonly cardsAuxFallback?: number
   }
   readonly sourceProjectRef?: string
   readonly sourceEnglishActiveCount?: number
+  /** P97/P100 (D-106/D-1xx): deliberately OMITTED from the canonical payload (not even as
+   *  `?? null`) when undefined — see `buildIndexContentPayload`'s own note below for why: any
+   *  already-published v1 (LEGACY_V1, single-prototype) manifest must keep hashing to EXACTLY the
+   *  content id it already published under, so `JSON.stringify` dropping an `undefined`-valued key
+   *  is load-bearing, not incidental. P100 adds `schemaVersion`/`payloadFormat` as the fail-closed
+   *  discriminant (index-coverage-schema.ts) alongside the P97 prototype-shape fields — all five
+   *  enter the hash together so a schema-version bump alone (even with byte-identical embeddings)
+   *  still mints a new content id. */
+  readonly schemaVersion?: number
+  readonly payloadFormat?: string
+  readonly prototypesPerCard?: number
+  readonly prototypeStrategy?: string
+  readonly prototypeStrategyVersion?: string
 }
 
 /** Number of leading hex characters kept from the full SHA-256 digest — long enough that an
@@ -65,6 +80,17 @@ export function buildIndexContentPayload(
 ): Uint8Array<ArrayBuffer> {
   // Fixed key order — never `JSON.stringify` on the manifest object directly, whose own key
   // order is an implementation detail of however it was constructed, not a stable hash input.
+  //
+  // P97 (D-106): the three prototype-* fields below are assigned WITHOUT `?? null` — deliberately,
+  // unlike `sourceProjectRef`/`sourceEnglishActiveCount` above them. `JSON.stringify` drops an
+  // object key whose value is `undefined`, so on any manifest that predates this field (every
+  // already-published v1/single-prototype generation, including the real committed 19,501-card
+  // index) the serialized payload is BYTE-IDENTICAL to what this function produced before these
+  // fields existed — the existing content id never shifts and `verify-index.ts` keeps passing
+  // against the unmodified committed generation. A genuine dual-prototype manifest supplies real
+  // values for all three, which DOES change the payload (and therefore the content id), exactly as
+  // required: two generations covering the same cards under two different prototype strategies (or
+  // strategy versions) must never collide.
   const canonical = {
     version: manifestFields.version,
     modelId: manifestFields.modelId,
@@ -78,9 +104,16 @@ export function buildIndexContentPayload(
       cardsWithUsableImage: manifestFields.coverage.cardsWithUsableImage,
       cardsIndexed: manifestFields.coverage.cardsIndexed,
       failures: manifestFields.coverage.failures,
+      cardsWithAuxPrototype: manifestFields.coverage.cardsWithAuxPrototype,
+      cardsAuxFallback: manifestFields.coverage.cardsAuxFallback,
     },
     sourceProjectRef: manifestFields.sourceProjectRef ?? null,
     sourceEnglishActiveCount: manifestFields.sourceEnglishActiveCount ?? null,
+    schemaVersion: manifestFields.schemaVersion,
+    payloadFormat: manifestFields.payloadFormat,
+    prototypesPerCard: manifestFields.prototypesPerCard,
+    prototypeStrategy: manifestFields.prototypeStrategy,
+    prototypeStrategyVersion: manifestFields.prototypeStrategyVersion,
   }
   const fieldsBytes = new TextEncoder().encode(JSON.stringify(canonical))
   const payload = new Uint8Array(fieldsBytes.length + cardIdsBytes.length + embeddingsBytes.length)
