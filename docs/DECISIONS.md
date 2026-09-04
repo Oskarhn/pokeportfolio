@@ -4277,11 +4277,9 @@ StrictMode double-invoke protection) into the mount effect itself, keyed on `use
 
 ```ts
 const controllerRef = useRef<ScannerUiController | null>(null)
-const [controller, setController] = useState<ScannerUiController | null>(null)
 useEffect(() => {
   const instance = getScannerUiController(userId)
   controllerRef.current = instance
-  setController(instance)
   return () => {
     /* camera/capture/analysis cleanup, then: */
     if (controllerRef.current === instance) controllerRef.current = null
@@ -4295,15 +4293,27 @@ under StrictMode — its synthetic effect-level double-invoke is mount → clean
 FIRST instance is always disposed by the SAME synthetic cycle that constructs the second, leaving
 exactly one live instance by the time any real interaction is possible; an account switch
 (`userId` change) disposes the outgoing user's instance before the new one exists, so a new user
-can never inherit the previous user's controller. `controllerRef` gives event handlers
-(`handleUsePhoto`/`handleSearchSubmit`/`handleCommit`) a synchronous, always-current reference and
-a `null`-guard against the brief pre-mount-effect window; `controller` (state) is what the
-prewarm/polling/variant-choices effects react to, each now starting with `if (controller === null)
-return`. The two `useState` lazy initializers (`fastScannerState`/`visualScannerState`) now default
-unconditionally to `'not-loaded'`, exactly as this entry's own "Decision" section anticipated.
+can never inherit the previous user's controller.
 
-All ~9 read sites updated; full unit suite green (1148/1148, +6 from this session's own guard
-tests — see D-109); typecheck/lint/format/build clean, ScannerPage chunk size unaffected.
+Deliberately NO mirrored `useState<ScannerUiController | null>` alongside the ref — an early draft
+of this fix had one (`setController(instance)` called synchronously inside the effect body) and
+`pnpm lint` correctly rejected it: `react-hooks/set-state-in-effect` (a real error in this
+project's ESLint config, not a warning) flags exactly that pattern. Removed rather than suppressed:
+`controllerRef` gives event handlers (`handleUsePhoto`/`handleSearchSubmit`/`handleCommit`) and the
+debug-panel JSX prop a synchronous, always-current reference; the prewarm/polling/variant-choices
+effects that used to depend on a `controller` state value are now keyed on `userId` instead and
+read `controllerRef.current` directly — correct because React always runs a component's effects in
+declaration order on every commit (StrictMode's double-invoke runs the full set, then all cleanups
+in reverse, then the full set again), so any effect declared AFTER the construction effect is
+guaranteed to see the ref already populated. The two `useState` lazy initializers
+(`fastScannerState`/`visualScannerState`) default unconditionally to `'not-loaded'`, exactly as
+this entry's own "Decision" section anticipated.
+
+All ~9 read sites updated; full unit suite green (1153/1153: P96's 1142 + 6 D-109 guard tests + 5
+D-110 sale-form guard tests); typecheck clean; lint 0 errors / 28 warnings (P96's own reported
+baseline, unchanged — two transient `react-hooks/exhaustive-deps` warnings from capturing
+`cameraGuardRef`/`captureStoreRef` were resolved by copying them to local consts before the
+cleanup closure, not suppressed); format clean; ScannerPage chunk size unaffected.
 `tests/e2e/authenticated/account-boundary.spec.ts`'s scanner-batch test's `test.fixme()` is removed
 — it now runs for real (see the P99 output record for the pass evidence).
 
@@ -4368,3 +4378,71 @@ against the real primitives, not a reimplementation.
 
 **Verified:** unit suite 1148/1148 (up from P96's 1142: +6 for this fix's own tests); typecheck/
 lint/format clean; no change to `camera-session.ts` itself (P94's primitive was already correct).
+
+---
+
+## D-110 — `SaleFormPage`'s permanent prefill latch could leak one holding's line items into a different holding's sale form (P98, FIXED P99)
+
+**2026-09-04 · Accepted**
+
+**Context.** P98's audit set out to confirm the StrictMode `setState`-after-real-unmount concern
+this prompt cycle originally raised about `SaleFormPage.tsx`'s holdingId(s) prefill effect, and
+found that concern is a non-issue in React 18 (`setState` on an unmounted component is a
+documented, silent no-op) — but investigating it surfaced a DIFFERENT, real, previously-untested
+bug: `prefillStarted` was a `useRef(false)` latch that flipped permanently true on the FIRST
+effect run and was never reset, keyed on nothing. `/sales/new` (reached from the central + menu,
+Portfolio's select mode, or Holding Detail's "Sell" button — all three via the same `holdingId(s)`
+search param, per this file's own header comment) has no `remountDeps` configured — so a
+same-component-instance navigation that changed `holdingIds` (e.g. browser back/forward landing on
+a different holding's sale-add URL) re-fired the effect, which then silently no-opped FOREVER: the
+NEW holding's own prefill never ran, and if the OLD holding's fetch was still in flight, its result
+landed later and unconditionally appended into whatever form was now on screen for the NEW holding
+— a genuine cross-entity data leak (one card's acquisition line silently injected into a different
+card's sale), with no existing test covering it.
+
+**Fix.** Replaced the permanent one-shot latch with `KeyedPrefillGuard`
+(`src/features/sales/keyed-prefill-guard.ts`) — the same identity/generation discipline
+`ScannerPage.tsx`'s `analyzeCapture` already used, and the same one D-109 (above) just applied to
+the camera-open path, extracted here as its own small class rather than re-derived inline so its
+semantics are directly unit-testable (no React component-rendering infrastructure exists in this
+project). `begin(key)` starts a fetch only for a genuinely NEW key (returning `null`, a no-op, for
+the SAME key StrictMode's synthetic double-invoke re-presents); `isCurrent(generation)` gates every
+`.then()`/`.catch()`/`.finally()` state update, so a stale result for a superseded key can never
+touch `items` or mark completion.
+
+`prefillReady` itself was also redesigned: instead of a boolean flipped true once by the effect
+(a synchronous `setState` in the effect body would itself violate `react-hooks/set-state-in-effect`
+— see D-108's own note on the identical trap), it is now DERIVED during render from comparing a
+`prefillCompletedKey` state value against the current `prefillKey`
+(`holdingIds.length === 0 || prefillCompletedKey === prefillKey`). This means a `holdingIds` change
+makes `prefillReady` false again immediately, with no effect tick needed — closing a second,
+related gap: `useIsDirtyByDiff` (`src/platform/unsaved-work-registry.ts`) captures its dirty-diff
+baseline on the FIRST render where `ready` is true and never re-captures it, so if `prefillReady`
+had gone true prematurely (before the new holding's own data arrived), the eventual real prefill
+would register as unsaved user edits against an empty/wrong baseline — a false "unsaved work"
+warning on a form the user never touched. The fix ensures the baseline is captured only once the
+CURRENT key's own prefill has genuinely completed.
+
+**Known residual (disclosed, not covered by this fix):** if the OLD holding's prefill had already
+completed successfully — populating `items` and capturing the dirty-diff baseline — BEFORE the user
+navigated to the NEW holding (as opposed to this fix's covered scenario, where the old fetch is
+still in flight at navigation time), `useIsDirtyByDiff`'s baseline stays locked to the old holding's
+data; the new holding's own prefill would then register as a dirty diff against that stale
+baseline. This is a narrower, lower-severity variant (the user actually saw the old holding's data
+render before navigating away, rather than a silent unseen leak) that the P98 audit's own named
+test scenarios do not cover and this session did not independently discover — flagged here for a
+future session rather than silently left undocumented.
+
+**Tests** (`tests/ui/sale-form-keyed-prefill-guard.test.ts`): `KeyedPrefillGuard`'s
+`begin()`/`isCurrent()` semantics pinned directly, plus two scenarios reproducing
+`SaleFormPage.tsx`'s own effect body verbatim against real controllable-timing async lookups: (1) A
+starts → navigate to B → A resolves late ⇒ A never appears in items, B's own prefill still
+completes correctly once it resolves; (2) A starts → navigate to B → A REJECTS late ⇒ no stale
+error/completion state leaks into B, B still completes normally afterward with the correct
+baseline-capture timing.
+
+**Verified:** unit suite 1153/1153 (+5 for this fix's own tests, on top of D-109's +6); typecheck/
+lint (0 errors, 28 warnings — P96's own reported baseline, unchanged)/format clean.
+`PurchaseFormPage.tsx` was checked and does NOT have an analogous async holdingId-keyed prefill (its
+own `useUnsavedWorkSnapshot` registration — referenced by this file's own F-40 comment — uses the
+default `ready=true`, no async prefill involved), so it is not affected and was not changed.

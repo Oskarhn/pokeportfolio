@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CameraAcquisitionGuard } from '../../src/features/scanner/camera-acquisition-guard'
-import { openEnvironmentCamera, stopActiveScannerCamera } from '../../src/features/scanner/camera-session'
+import {
+  openEnvironmentCamera,
+  stopActiveScannerCamera,
+} from '../../src/features/scanner/camera-session'
 
 // Never let a fake session leak between tests via camera-session.ts's module-level active-slot,
 // matching the existing scanner-camera.test.ts discipline.

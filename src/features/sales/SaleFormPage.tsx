@@ -18,6 +18,7 @@ import { CONDITION_LABEL, GRADER_LABEL, ORIGIN_LABEL } from '../collection/label
 import { CardImage } from '../catalog/CardImage'
 import { Button, FormMessage, SelectField, TextField } from '../../ui/form'
 import { ItemPicker } from './ItemPicker'
+import { KeyedPrefillGuard } from './keyed-prefill-guard'
 import { useUnsavedWorkSnapshot } from '../../platform/unsaved-work-registry'
 
 const CURRENCIES: CurrencyCode[] = ['NOK', 'EUR', 'USD', 'GBP', 'JPY']
@@ -79,7 +80,6 @@ export function SaleFormPage() {
   const search = useSearch({ from: '/sales/new' })
 
   const [items, setItems] = useState<ItemDraft[]>([])
-  const prefillStarted = useRef(false)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [soldOn, setSoldOn] = useState(today)
   const [marketplace, setMarketplace] = useState('')
@@ -103,13 +103,22 @@ export function SaleFormPage() {
     }
     return [...ids]
   }, [search.holdingId, search.holdingIds])
+  // P98 cross-holding fix: a stable identity for "which holdingIds set is this render for" —
+  // used both to guard the prefill effect below against a same-instance navigation that changes
+  // holdingIds (no `remountDeps` on `/sales/new`) and to derive `prefillReady` without a
+  // synchronous setState in the effect body.
+  const prefillKey = holdingIds.join(',')
 
   // N-14 (P94): the dirty-by-diff baseline must not be captured until the async holdingId(s)
   // prefill below has resolved (or there is none to wait for) — see useIsDirtyByDiff's own doc.
-  // Computed via a lazy initializer (never a synchronous setState-in-effect,
-  // react-hooks/set-state-in-effect) — when there is nothing to prefill, the render's OWN first
-  // pass already knows that from `holdingIds`, so there is no need to wait a tick for an effect.
-  const [prefillReady, setPrefillReady] = useState(() => holdingIds.length === 0)
+  // P98: `prefillCompletedKey` records which holdingIds set the LAST successfully-applied prefill
+  // was for — `prefillReady` is derived from comparing it against the CURRENT `prefillKey`, so a
+  // holdingIds change (same component instance) makes `prefillReady` false again immediately
+  // (during render, no effect tick needed) until the NEW set's own prefill actually completes.
+  // Nothing here is a synchronous setState call in an effect body (react-hooks/set-state-in-effect
+  // stays satisfied) — every setter below fires only inside an async .then()/.finally().
+  const [prefillCompletedKey, setPrefillCompletedKey] = useState<string | null>(null)
+  const prefillReady = holdingIds.length === 0 || prefillCompletedKey === prefillKey
 
   // F-40 (P89): see PurchaseFormPage's identical registration for why.
   useUnsavedWorkSnapshot(
@@ -129,35 +138,46 @@ export function SaleFormPage() {
     prefillReady,
   )
 
-  // One-time prefill from the route's holdingId(s) — a bounded direct lookup, not a search. The
-  // "already started" flag lives in a ref (never a setState call in the effect body itself,
-  // react-hooks/set-state-in-effect) — only the eventual async result calls setState, inside .then.
+  // Prefill from the route's holdingId(s) — a bounded direct lookup, not a search. Runs once per
+  // DISTINCT `prefillKey` (`KeyedPrefillGuard`, never a setState call in the effect body itself,
+  // react-hooks/set-state-in-effect; every setter below fires only inside .then()/.finally()), and
+  // re-runs for real when `prefillKey` genuinely changes.
   //
   // P94 (found via the new authenticated-E2E infrastructure, docs/TESTING.md §6b): this effect
   // used to ALSO track a per-instance `active` closure flag, set false by the effect's own
-  // cleanup, and discarded the fetch's result (and skipped `setPrefillReady(true)` entirely) once
-  // `active` was false. Under React StrictMode's real dev-mode double-invoke (mount, synthetic
-  // unmount, remount — src/main.tsx wraps the app in `<StrictMode>`), the sequence was: mount 1
-  // sets `prefillStarted.current = true` and starts the fetch; mount 1's OWN cleanup fires
-  // (StrictMode's synthetic unmount), setting mount 1's `active = false`; mount 2 sees
-  // `prefillStarted.current` already true and does nothing. Mount 1's fetch then resolves, sees
-  // its own `active` is false, and discards the result — items never populate, AND
-  // `prefillReady` never becomes true (so the N-14 dirty-baseline fix above never even engages).
-  // Two guards that were each independently correct fought each other. `prefillStarted.current`
-  // is already the right, StrictMode-safe "start the fetch exactly once" guard on its own — a
-  // fetch's result reaching an unmounted-for-real component is harmless in React 18+ (setState on
-  // an unmounted component is a silent no-op, not a warning), so the extra `active` cancellation
-  // bought nothing but this bug. Removed; the ref alone is sufficient and correct under both a
-  // real single mount and StrictMode's simulated double one.
+  // cleanup, and discarded the fetch's result entirely once `active` was false. Under React
+  // StrictMode's real dev-mode double-invoke (mount, synthetic unmount, remount), that fought the
+  // "already started" ref guard and left `prefillReady` stuck false forever. Fixed by removing
+  // `active` — a fetch's result reaching an unmounted-for-real component is harmless in React 18+
+  // (setState on an unmounted component is a silent no-op, not a warning).
+  //
+  // P98 (confirmed via adversarial audit, not test-discovered): the "already started" guard above
+  // was a PERMANENT ref latch (`prefillStarted.current`, set once and never reset) keyed on
+  // nothing — a same-component-instance navigation that changed `holdingIds` (no `remountDeps` on
+  // `/sales/new`; e.g. browser back/forward landing on a different holding's sale-add URL)
+  // re-fired this effect, which then silently no-opped forever (the OLD holding's fetch, if still
+  // in flight, unconditionally appended its line items into whatever form was now on screen for
+  // the NEW holding once it resolved — a genuine cross-entity data leak — while the NEW holding's
+  // own prefill never ran at all). Fixed with explicit identity/generation semantics, matching the
+  // pattern `ScannerPage.tsx`'s `analyzeCapture` already uses, extracted as `KeyedPrefillGuard`
+  // (`./keyed-prefill-guard.ts`) so its semantics are directly unit-testable — no React
+  // component-rendering infrastructure exists in this project. `begin(key)` guards per-KEY (so a
+  // genuine `holdingIds` change starts a fresh fetch instead of no-opping forever, but the SAME
+  // key — StrictMode's synthetic re-invoke — still only starts one real request); `isCurrent()` is
+  // checked before every `.then()`/`.finally()` state update — a fetch whose generation no longer
+  // matches the current one (a newer `holdingIds` change superseded it) touches neither `items`
+  // nor `prefillCompletedKey`, so a late-arriving OLD holding's result can never leak into a NEW
+  // holding's form, and the new holding's own baseline is captured only once ITS OWN prefill
+  // actually completes (see `prefillReady`'s derivation above) rather than inheriting an earlier,
+  // now-irrelevant "ready" state.
+  const prefillGuardRef = useRef(new KeyedPrefillGuard())
   useEffect(() => {
-    if (prefillStarted.current) return
-    prefillStarted.current = true
-    if (holdingIds.length === 0) {
-      // Nothing to prefill — prefillReady's own lazy initializer already accounted for this.
-      return
-    }
+    if (holdingIds.length === 0) return // nothing to fetch; prefillReady already derives true
+    const generation = prefillGuardRef.current.begin(prefillKey)
+    if (generation === null) return // same key already started/completed
     listPortfolio({ sort: 'name_asc', limit: 100 })
       .then((page) => {
+        if (!prefillGuardRef.current.isCurrent(generation)) return
         const byId = new Map(page.results.map((t) => [t.holdingId, t]))
         const found = holdingIds.map((id) => byId.get(id)).filter((t): t is PortfolioTile => !!t)
         setItems((current) => [
@@ -173,9 +193,10 @@ export function SaleFormPage() {
         // exist right now (unchanged) as the real baseline.
       })
       .finally(() => {
-        setPrefillReady(true)
+        if (!prefillGuardRef.current.isCurrent(generation)) return
+        setPrefillCompletedKey(prefillKey)
       })
-  }, [holdingIds])
+  }, [holdingIds, prefillKey])
 
   const lotQueries = useQueries({
     queries: items.map((item) => ({

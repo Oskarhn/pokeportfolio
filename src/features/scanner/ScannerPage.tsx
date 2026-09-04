@@ -98,11 +98,18 @@ export function ScannerPage() {
   // cleanup effect — tore down the live one instead). Effect bodies, unlike render bodies and
   // `useMemo` factories, genuinely run only once per REAL mount even under StrictMode (its
   // synthetic effect-level double-invoke is mount→cleanup→remount, always ending mounted) — so
-  // construction now happens inside the effect below. `controllerRef` gives event handlers a
-  // synchronous, always-current reference; `controller` (state) is what effects/JSX below react to,
-  // and is `null` for the brief window before the mount effect has run.
+  // construction now happens inside the mount effect below, which stores the instance ONLY in this
+  // ref (no mirrored `useState`: setting one synchronously inside an effect body is exactly what
+  // react-hooks/set-state-in-effect exists to catch, and there is no real need for it here — every
+  // effect below that needs "the controller" is keyed on `userId` instead of a `controller` state
+  // value, and reads this ref directly. React always runs a component's effects in declaration
+  // order on every commit (StrictMode's synthetic double-invoke runs the full set, then all their
+  // cleanups in reverse, then the full set again), so by the time any LATER-declared effect in this
+  // component runs, this ref is guaranteed already populated — event handlers get the same
+  // guarantee for the same reason (no real user interaction is possible before mount effects have
+  // run). `null` only during the brief window before the mount effect has run at all; every reader
+  // below guards for it.
   const controllerRef = useRef<ScannerUiController | null>(null)
-  const [controller, setController] = useState<ScannerUiController | null>(null)
   const [state, dispatch] = useReducer(scannerReducer, initialScannerState)
   const [searchName, setSearchName] = useState('')
   const [searchCollectorNumber, setSearchCollectorNumber] = useState('')
@@ -224,8 +231,7 @@ export function ScannerPage() {
   }, [cameraWanted])
 
   // D-108 fix: controller construction AND disposal now live in the same effect, keyed on
-  // `userId` alone (not on the `controller` state this effect itself sets — that would be a
-  // self-referential dependency). Effects run exactly once per REAL mount even under StrictMode
+  // `userId` alone. Effects run exactly once per REAL mount even under StrictMode
   // (its synthetic double-invoke is mount→cleanup→remount, so this still constructs exactly one
   // LIVE instance per real mount), and exactly once again whenever `userId` changes (account
   // switch), disposing the outgoing instance first — so a new user can never inherit the previous
@@ -235,11 +241,16 @@ export function ScannerPage() {
   useEffect(() => {
     const instance = getScannerUiController(userId)
     controllerRef.current = instance
-    setController(instance)
+    // Captured here (not read fresh inside the cleanup) purely to satisfy exhaustive-deps' generic
+    // "this ref may have changed by cleanup time" check — both refs are `useRef(new X())` with no
+    // reassignment anywhere in this component, so `.current` is the same object throughout this
+    // component's life either way.
+    const cameraGuard = cameraGuardRef.current
+    const captureStore = captureStoreRef.current
     return () => {
-      cameraGuardRef.current.invalidate()
+      cameraGuard.invalidate()
       stopActiveScannerCamera()
-      captureStoreRef.current.clear()
+      captureStore.clear()
       // F-05: an account switch (userId change → new controller) or unmount both make any
       // analysis still in flight against the OLD controller permanently stale.
       cancelInFlightAnalysis()
@@ -254,9 +265,14 @@ export function ScannerPage() {
   // in flight — analyzeCapture's own bounded wait (controller.ts) is what keeps a still-cold
   // visual channel from turning into a multi-minute stall on that first scan.
   useEffect(() => {
-    if (controller === null) return
-    controller.prewarm?.()
-  }, [controller])
+    // Keyed on `userId`, not a `controller` state value (there isn't one — see the construction
+    // effect's own doc above): this effect is declared AFTER it, so `controllerRef.current` is
+    // always populated by the time this runs, including on every re-run this component's own
+    // account-switch effect ordering guarantees.
+    const activeController = controllerRef.current
+    if (activeController === null) return
+    activeController.prewarm?.()
+  }, [userId])
 
   // Poll the controller's own FAST-baseline readiness snapshot (P82 §17-§19) so the intro screen
   // can show honest, non-blocking progress that clears as soon as OCR is ready — not once the
@@ -265,11 +281,12 @@ export function ScannerPage() {
   // point-in-time snapshot, matching the existing debug-panel/diagnostics read pattern elsewhere
   // in this file — stops once a terminal state (ready/failed) is reached.
   useEffect(() => {
-    if (controller === null) return
+    const activeController = controllerRef.current
+    if (activeController === null) return
     const interval = setInterval(() => {
-      const next = controller.getFastScannerState?.() ?? 'not-loaded'
+      const next = activeController.getFastScannerState?.() ?? 'not-loaded'
       setFastScannerState((previous) => (previous === next ? previous : next))
-      const nextVisual = controller.getVisualPrewarmState?.() ?? 'not-loaded'
+      const nextVisual = activeController.getVisualPrewarmState?.() ?? 'not-loaded'
       setVisualScannerState((previous) => (previous === nextVisual ? previous : nextVisual))
       if (
         (next === 'ready' || next === 'failed') &&
@@ -281,7 +298,7 @@ export function ScannerPage() {
     return () => {
       clearInterval(interval)
     }
-  }, [controller])
+  }, [userId])
 
   // Tab hidden ⇒ release the hardware immediately. Returning lands on the start screen with the
   // batch intact; "Start camera" re-opens without a new permission prompt.
@@ -368,11 +385,12 @@ export function ScannerPage() {
   useEffect(() => {
     if (state.step !== 'confirm') return
     if (!state.confirmVariantsPending) return
-    if (controller === null) return
+    const activeController = controllerRef.current
+    if (activeController === null) return
     const candidateId = state.selectedCandidate?.candidateId
     if (candidateId === undefined || variantsInFlightRef.current === candidateId) return
     variantsInFlightRef.current = candidateId
-    void controller
+    void activeController
       .listVariantChoices(candidateId)
       .then((variants) => {
         // N-11 (P94): a fetch for a PREVIOUSLY-viewed candidate can resolve after the user has
@@ -397,7 +415,7 @@ export function ScannerPage() {
       .finally(() => {
         if (variantsInFlightRef.current === candidateId) variantsInFlightRef.current = null
       })
-  }, [state.step, state.confirmVariantsPending, state.selectedCandidate?.candidateId, controller])
+  }, [state.step, state.confirmVariantsPending, state.selectedCandidate?.candidateId, userId])
 
   function handleShutter(): void {
     if (capturingRef.current) return
@@ -839,7 +857,7 @@ export function ScannerPage() {
           diagnostics={diagnostics}
           debugImages={debugImages}
           getExpectedCardRank={(cardId) =>
-            controller?.getExpectedCardRank?.(cardId) ?? Promise.resolve(null)
+            controllerRef.current?.getExpectedCardRank?.(cardId) ?? Promise.resolve(null)
           }
         />
       ) : null}
