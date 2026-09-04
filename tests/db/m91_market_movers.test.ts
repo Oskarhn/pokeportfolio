@@ -101,6 +101,14 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
+  // The synthetic users' holdings must go FIRST: holdings.card_variant_id has no cascade
+  // (ON DELETE NO ACTION), so deleting the private variants while a holding still points at one
+  // fails silently on an unchecked client error and leaves the fixture card/variants behind —
+  // the next run in the same database then collides on cards_set_id_local_id_key (P104 finding,
+  // same defect class as the m9_valuation_resolver.test.ts fix it mirrors).
+  await deleteSyntheticUser(service, userA.id)
+  await deleteSyntheticUser(service, userB.id)
+
   // Catalog-level fixtures outlive the users — removed explicitly, private ids only.
   const variantIds = [vIncrease, vDecrease, vLeast, vZero, vNoHistory].filter((id) => id !== '')
   if (variantIds.length > 0) {
@@ -108,8 +116,6 @@ afterAll(async () => {
     await service.from('card_variants').delete().in('id', variantIds)
     await service.from('cards').delete().eq('local_id', 'm91-movers-fixture-card')
   }
-  await deleteSyntheticUser(service, userA.id)
-  await deleteSyntheticUser(service, userB.id)
 })
 
 async function insertHolding(
