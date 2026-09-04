@@ -178,10 +178,30 @@ export function SaleFormPage() {
   // actually completes (see `prefillReady`'s derivation above) rather than inheriting an earlier,
   // now-irrelevant "ready" state.
   const prefillGuardRef = useRef(new KeyedPrefillGuard())
+  // P106 residual fix (disclosed by P102): `prefillKey` changing to a DIFFERENT non-initial value
+  // means the route now names a different Sale Add target (e.g. browser back/forward between
+  // `/sales/new?holdingId=A` and `?holdingId=B`, no `remountDeps` on this route) — a genuine
+  // entity switch, not an unrelated re-render. `previousPrefillKeyRef` starts equal to the first
+  // render's own `prefillKey` so the very first effect run never counts as a "change" (items is
+  // already empty then). On a real change, `items` is cleared SYNCHRONOUSLY in the effect body —
+  // before the new key's fetch starts — so the OLD key's items never remain on screen while the
+  // NEW key's prefill is still loading, and a manually-picked item that was never part of any
+  // prefill does not survive an entity switch either (it belongs to the OLD sale being recorded,
+  // not the new one). This is a plain conditional setState in an effect body, not the unconditional
+  // per-render setState react-hooks/set-state-in-effect guards against.
+  const previousPrefillKeyRef = useRef(prefillKey)
   useEffect(() => {
-    if (holdingIds.length === 0) return // nothing to fetch; prefillReady already derives true
+    const keyChanged = previousPrefillKeyRef.current !== prefillKey
+    previousPrefillKeyRef.current = prefillKey
+    if (holdingIds.length === 0) {
+      // Route now names no holding at all (e.g. back to a bare `/sales/new`) — same entity-switch
+      // reasoning applies: whatever was on screen for the previous key does not belong here.
+      if (keyChanged) setItems([])
+      return // nothing to fetch; prefillReady already derives true
+    }
     const generation = prefillGuardRef.current.begin(prefillKey)
     if (generation === null) return // same key already started/completed
+    if (keyChanged) setItems([])
     listPortfolio({ sort: 'name_asc', limit: 100 })
       .then((page) => {
         if (!prefillGuardRef.current.isCurrent(generation)) return
@@ -197,7 +217,7 @@ export function SaleFormPage() {
       .catch(() => {
         // A failed prefill must not leave prefillReady stuck at false forever — that would mean
         // NO future edit is ever recognized as dirty either (N-14). Proceed with whatever items
-        // exist right now (unchanged) as the real baseline.
+        // exist right now (already cleared above if the key changed) as the real baseline.
       })
       .finally(() => {
         if (!prefillGuardRef.current.isCurrent(generation)) return
