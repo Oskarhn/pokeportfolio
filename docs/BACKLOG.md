@@ -80,8 +80,9 @@ Work not currently scheduled. Themes, not microtasks. Scheduled work lives in
 
 ## Technical debt
 
-Nothing yet — there is no code. Entries are added as they are incurred, with the reason they
-were accepted at the time.
+| Item | Why |
+|---|---|
+| `tests/db/m9_valuation_resolver.test.ts` cross-file `price_snapshots` collision (found P99) | Fails 3/17 with `duplicate key value violates unique constraint "price_snapshots_unique_per_day"` (and a downstream stale/missing mismatch) when run as part of the FULL `pnpm test:db` suite, but passes 17/17 in isolation on a fresh reset — confirmed via `git diff` that the file itself is byte-identical to the M15 P90 base, so this is pre-existing, not a P99 regression. Root-cause hypothesis (not confirmed against the specific colliding file, given the time cost of auditing every earlier-running DB test file): `insertSnapshot` inserts against the SHARED `seedCatalog.pikachuVariantId` at a `daysAgo(N)`-derived date; some other file running earlier in the same suite invocation plausibly inserts a `price_snapshots` row for the same `(card_variant_id, provider, price_kind, snapshot_date)` tuple first. `m91_market_movers` and the M9 pricing-fixture block in `tests/db/m16_openings.test.ts` were both already isolated onto PRIVATE synthetic variants for exactly this class of problem (see their own comments) — `m9_valuation_resolver.test.ts` was not. Likely fix, same pattern as those two: give this file its own private synthetic card/variant instead of the shared `seedCatalog` one, or scope its snapshot dates away from what other files use. Not fixed this session — out of scope (P99's assigned flake was `tests/db/m16_openings.test.ts`'s E13, fixed separately) and the exact colliding file was not identified. |
 
 ---
 
