@@ -79,7 +79,9 @@ describe('primary-button accent/foreground pair meets WCAG AA (4.5:1) in every t
   })
 
   it('system dark (@media prefers-color-scheme: dark)', () => {
-    const darkMediaBlock = /prefers-color-scheme:\s*dark\)\s*\{[\s\S]*?\n  \}\n\}/.exec(source)?.[0]
+    const darkMediaBlock = /prefers-color-scheme:\s*dark\)\s*\{[\s\S]*?\n {2}\}\n\}/.exec(
+      source,
+    )?.[0]
     if (!darkMediaBlock) throw new Error('system-dark media block not found')
     const accent = tokenHex(darkMediaBlock, 'pp-accent')
     const foreground = tokenHex(darkMediaBlock, 'pp-accent-foreground')
@@ -99,7 +101,9 @@ describe('primary-button accent/foreground pair meets WCAG AA (4.5:1) in every t
   })
 
   it('the two dark blocks (system + explicit override) agree exactly — no drift between them', () => {
-    const darkMediaBlock = /prefers-color-scheme:\s*dark\)\s*\{[\s\S]*?\n  \}\n\}/.exec(source)?.[0]
+    const darkMediaBlock = /prefers-color-scheme:\s*dark\)\s*\{[\s\S]*?\n {2}\}\n\}/.exec(
+      source,
+    )?.[0]
     const explicitDarkBlock = /:root\[data-theme='dark'\]\s*\{[\s\S]*?\n\}/.exec(source)?.[0]
     if (!darkMediaBlock || !explicitDarkBlock) throw new Error('dark blocks not found')
     expect(tokenHex(explicitDarkBlock, 'pp-accent-foreground')).toBe(
