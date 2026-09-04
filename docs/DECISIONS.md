@@ -4189,7 +4189,7 @@ either path.
 proven 99.7% TOP1); the committed 19,501-card visual index; any migration; any financial semantic.
 `docs/SCANNER_RESEARCH.md` §11 records the same evidence in narrative form.
 
-## D-108 — ScannerPage's controller is double-constructed by React StrictMode's render-purity check; the wrong instance gets disposed, permanently breaking OCR/visual analysis under `pnpm dev` (P96, NOT FIXED — disclosed)
+## D-108 — ScannerPage's controller is double-constructed by React StrictMode's render-purity check; the wrong instance gets disposed, permanently breaking OCR/visual analysis under `pnpm dev` (P96 disclosed, FIXED P99)
 
 **2026-09-03 · Accepted (finding disclosed; fix deferred)**
 
@@ -4270,3 +4270,101 @@ KB raw, byte-identical to pre-investigation).
 production (StrictMode-inert) code path, which was never affected by this bug in the first place;
 any other file. The DECISIONS.md entry originally written for the (disproven) timer-based fix has
 been fully replaced by this one rather than left alongside it as a second, contradictory record.
+
+**P99 update — FIXED, exactly along the lines this entry's own "Decision" section above
+prescribed.** Controller construction moved out of `useMemo` (a render-time side effect with no
+StrictMode double-invoke protection) into the mount effect itself, keyed on `userId` alone:
+
+```ts
+const controllerRef = useRef<ScannerUiController | null>(null)
+const [controller, setController] = useState<ScannerUiController | null>(null)
+useEffect(() => {
+  const instance = getScannerUiController(userId)
+  controllerRef.current = instance
+  setController(instance)
+  return () => {
+    /* camera/capture/analysis cleanup, then: */
+    if (controllerRef.current === instance) controllerRef.current = null
+    instance.dispose()
+  }
+}, [userId])
+```
+
+Effect bodies (unlike render bodies and `useMemo` factories) genuinely run once per REAL mount even
+under StrictMode — its synthetic effect-level double-invoke is mount → cleanup → remount, so the
+FIRST instance is always disposed by the SAME synthetic cycle that constructs the second, leaving
+exactly one live instance by the time any real interaction is possible; an account switch
+(`userId` change) disposes the outgoing user's instance before the new one exists, so a new user
+can never inherit the previous user's controller. `controllerRef` gives event handlers
+(`handleUsePhoto`/`handleSearchSubmit`/`handleCommit`) a synchronous, always-current reference and
+a `null`-guard against the brief pre-mount-effect window; `controller` (state) is what the
+prewarm/polling/variant-choices effects react to, each now starting with `if (controller === null)
+return`. The two `useState` lazy initializers (`fastScannerState`/`visualScannerState`) now default
+unconditionally to `'not-loaded'`, exactly as this entry's own "Decision" section anticipated.
+
+All ~9 read sites updated; full unit suite green (1148/1148, +6 from this session's own guard
+tests — see D-109); typecheck/lint/format/build clean, ScannerPage chunk size unaffected.
+`tests/e2e/authenticated/account-boundary.spec.ts`'s scanner-batch test's `test.fixme()` is removed
+— it now runs for real (see the P99 output record for the pass evidence).
+
+**Verification method:** the authenticated E2E test this same D-108 investigation produced
+(`tests/e2e/authenticated/account-boundary.spec.ts`) drives the real dev server (`pnpm exec vite`,
+where StrictMode is live — the same server the original diagnosis used) through a real
+`analyzeCapture()` call; that test's own pass/fail is the real, execution-level proof this fix
+works under StrictMode, not just that the diff reads correctly. See its result recorded in the P99
+output file rather than restated here.
+
+---
+
+## D-109 — `ScannerPage`'s exit-requested effect could resurrect a camera the user had just closed (P98, FIXED P99)
+
+**2026-09-04 · Accepted**
+
+**Context.** P98's adversarial audit (§10) traced a real, confirmed gap in P94's own camera
+token model (`camera-session.ts`'s `openSeq`/`liveGeneration`, D-096-adjacent — see that module's
+own doc comment): the PRIMITIVE itself is sound (P92's original N-10 finding stays fixed, proven
+across the full multi-call ordering matrix in `tests/ui/scanner-camera.test.ts`), but ONE caller
+site in `ScannerPage.tsx` used it incoherently. Every other place in the file that stops the
+camera also invalidates the page's OWN "do I still want a camera" generation counter — the
+camera-open effect's teardown, `handleShutter`, `handleFilePicked`, the D-108 controller-lifecycle
+effect's cleanup — except the `exitRequested` effect (fired by the "Close scanner" X button),
+which called `stopActiveScannerCamera()` but left the counter untouched.
+
+**Concrete failure sequence (P98's own repro, confirmed by code trace).** The camera step mounts
+and starts a real `acquire()` call (a real permission-prompt round trip on a device that hasn't
+granted camera access yet). The user taps "Close scanner" while that prompt is still pending —
+`state.exitRequested` becomes true; `state.step` does not change synchronously, so the camera-open
+effect's own `cancelled` flag is not yet set; `navigate()` is async, so real unmount can lag well
+behind this point. If the permission prompt is then granted, `acquire()` resolves; the camera-open
+effect's `.then()` handler checked only `cancelled || generation !== <the old, un-bumped counter>`
+— both false — so the stream attached and `CAMERA_STARTED` dispatched. **The camera the user had
+explicitly closed turned back on**, for a window bounded by router-transition latency.
+
+**Fix.** Extracted the page's per-mount "do I still want a camera" counter into its own small,
+directly-testable primitive, `CameraAcquisitionGuard`
+(`src/features/scanner/camera-acquisition-guard.ts` — distinct from, and layered on top of,
+`camera-session.ts`'s own module-level `openSeq`/`liveGeneration`, which answers a different
+question: "which overlapping `acquire()` call is authoritative for the shared stream slot," not
+"does the PAGE still want a camera at all"). Every call site that used to bump a bare
+`cameraGenerationRef.current` now calls the same guard's `begin()` (starting a new cycle, used when
+actually (re)opening the camera) or `invalidate()` (ending the current cycle without starting a new
+one, used by every close/exit/unmount path, `exitRequested`'s now included) — one consistent
+vocabulary instead of an ad hoc counter a future call site could as easily forget to bump again.
+
+**Not** a second, independent boolean/race model layered beside the existing architecture — this is
+the SAME generation-counter pattern the file already used everywhere else, now applied
+consistently, with the one previously-inconsistent call site brought in line.
+
+**Tests** (`tests/ui/scanner-camera-acquisition-guard.test.ts`, unit-level — no React
+component-rendering infrastructure exists in this project; see that file's own header comment):
+`CameraAcquisitionGuard`'s `begin()`/`invalidate()`/`isCurrent()` semantics pinned directly, plus
+three scenarios reproducing `ScannerPage.tsx`'s own camera-open `.then()`/`.catch()` guard clauses
+verbatim against the real `openEnvironmentCamera` primitive: (1) acquire pending → exit requested →
+acquire resolves ⇒ stream stopped immediately, camera stays closed; (2) acquire A pending → exit →
+explicit reopen B → A resolves late → B resolves ⇒ only B attaches (A's late arrival rejects via
+`camera-session.ts`'s own superseded-call guard, and the page's stale-generation check independently
+would have discarded it either way); (3) unmount while pending ⇒ no resurrection. All three pass
+against the real primitives, not a reimplementation.
+
+**Verified:** unit suite 1148/1148 (up from P96's 1142: +6 for this fix's own tests); typecheck/
+lint/format clean; no change to `camera-session.ts` itself (P94's primitive was already correct).
