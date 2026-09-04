@@ -4,6 +4,51 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
+## P101 — Launch readiness (branch `feat/p101-launch-readiness`, draft PR, NOT merged)
+
+Runs in parallel with P99/P100's M15 scanner work, on the same base (`feat/m15-p96-integrated` @
+`377460e`) — never touches scanner internals (matcher, visual index, `ScannerPage` controller
+lifecycle, `SaleForm` async-prefill logic). Full account: `ai_outputs/Claude_outputs/output_101.txt`,
+[docs/LAUNCH_CHECKLIST.md](docs/LAUNCH_CHECKLIST.md) (all 20 owner-required items, one row each).
+
+Adds the entire public-facing surface that did not exist before this session: `/privacy`, `/terms`,
+`/faq`, a custom 404 (`notFoundComponent`, previously unset), `robots.txt`/`sitemap.xml` (deny-by-
+default — D-109), per-route document title/meta/canonical (`src/ui/useDocumentMeta.ts`), static
+Open Graph metadata, Cloudflare Web Analytics wired but inactive until the owner sets
+`VITE_CF_ANALYTICS_TOKEN` (D-111), a cookie-consent audit concluding no banner is needed (D-110),
+`eslint-plugin-jsx-a11y` (found and fixed 4 real `label-has-associated-control` gaps in the
+Purchase/Sale "Notes" field; found and scoped-off 2 scanner-only findings left for whoever owns
+that code), a real WCAG contrast fix (`--pp-text-tertiary` light value, measured 4.41:1 -> ~4.95:1),
+and `scripts/check-links.mjs` (29/29 against a real build).
+
+**Two real findings surfaced, deliberately NOT fixed this session** (both documented with concrete
+evidence in `LAUNCH_CHECKLIST.md`'s "Other items resolved" section — read that before touching
+either): (1) the `index.html` theme-bootstrap inline `<script>` has no nonce/hash and the CSP
+grants no `'unsafe-inline'`, so it should be CSP-blocked on the real Cloudflare Pages deployment —
+the flash-of-wrong-theme fix it exists for likely silently no-ops in production; (2) primary
+buttons app-wide render at only 2.53:1 contrast in dark mode (`--pp-accent: #c99a66` with white
+text) — a real AA failure on the app's core accent color, too large a visual/design decision for
+this session's scope.
+
+One small production-safety fix landed in shared (non-scanner) code: `router.tsx`'s
+`AppErrorComponent` previously delegated every non-chunk-load error to TanStack Router's own
+`ErrorComponent`, which ships a "Show Error" toggle that renders the raw error/stack **in
+production**, not just development — gated to `import.meta.env.DEV` only; D-100's chunk-load split
+and the P89 unsaved-work logic are untouched.
+
+Verified this session: `pnpm check` clean (1142/1142 unit), full `pnpm test:e2e` 116/116 (one run
+showed 5 transient failures under full-suite parallel load, confirmed non-reproducible in
+isolation), `pnpm build` green (main entry 398.75 KB raw / 120.64 KB gzip, scanner assets confirmed
+still outside the precache manifest), Lighthouse against the 4 public pages (94-95 perf, 100 a11y/
+best-practices/SEO on privacy/terms/faq; `/login` scores lower on SEO by design — it is
+deliberately not indexed).
+
+Owner action required: set `VITE_CF_ANALYTICS_TOKEN` to activate analytics (D-111); the standing
+signed-in mobile/accessibility/forms walkthrough this session could not run (no-sign-in boundary);
+a design decision on the dark-mode button-contrast finding above.
+
+---
+
 **Last updated:** 2026-08-30 — **M15b visual-recognition hybrid scanner is still DRAFT PR #63
 (`feat/m15-scanner-integrated-p68`), NOT merged, NOT deployed.** A real-iPhone P82 retest returned
 an OLD diagnostics schema (none of P82's new `WORKER_BOOTED`/`FAST_SCANNER_STATE`/etc. fields) and

@@ -464,8 +464,11 @@ export function PurchaseFormPage() {
       ) : null}
 
       <div className="space-y-1.5">
-        <label className="block text-sm font-medium text-slate-300">Notes</label>
+        <label htmlFor="purchase-notes" className="block text-sm font-medium text-slate-300">
+          Notes
+        </label>
         <textarea
+          id="purchase-notes"
           value={notes}
           onChange={(event) => {
             setNotes(event.target.value)
