@@ -247,17 +247,13 @@ async function main() {
       )
     }
 
-    evalDisagreement((await embedImageBuffer(buf)) as Float32Array, 'clean')
-    const hardQueries = (await hardAugmentAll(buf, trueId, [
+    evalDisagreement(await embedImageBuffer(buf), 'clean')
+    // P100 brought in `augment/hard.d.mts` with a real, concretely-typed nominalRect — the
+    // manual any-shaped cast this file used before that declaration existed is no longer needed.
+    const hardQueries = await hardAugmentAll(buf, trueId, [
       'tilted-offcenter',
       'tilted-glare-shadow-blur',
-    ])) as {
-      profile: string
-      buffer: Buffer
-      nominalRect: unknown
-      canvasWidth: number
-      canvasHeight: number
-    }[]
+    ])
     for (const hq of hardQueries) {
       const cropped = await cropToNominalRect(
         hq.buffer,
@@ -265,7 +261,7 @@ async function main() {
         hq.canvasWidth,
         hq.canvasHeight,
       )
-      evalDisagreement((await embedImageBuffer(cropped)) as Float32Array, hq.profile)
+      evalDisagreement(await embedImageBuffer(cropped), hq.profile)
     }
 
     done += 1

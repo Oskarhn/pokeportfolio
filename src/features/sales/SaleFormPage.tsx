@@ -121,6 +121,12 @@ export function SaleFormPage() {
   const prefillReady = holdingIds.length === 0 || prefillCompletedKey === prefillKey
 
   // F-40 (P89): see PurchaseFormPage's identical registration for why.
+  // D-110 residual fix: `resetKey=prefillKey` so a same-instance navigation to a DIFFERENT
+  // holdingIds set discards the previous holding's dirty-diff baseline immediately (not just its
+  // `prefillReady` gate) — without this, a holding whose prefill had already completed BEFORE the
+  // navigation left its baseline locked in, and the next holding's own prefill would register as
+  // a false "unsaved changes" against stale data the user never edited. See
+  // useIsDirtyByDiff's own doc for the general mechanism.
   useUnsavedWorkSnapshot(
     'sale-form',
     {
@@ -136,6 +142,7 @@ export function SaleFormPage() {
       fxRate,
     },
     prefillReady,
+    prefillKey,
   )
 
   // Prefill from the route's holdingId(s) — a bounded direct lookup, not a search. Runs once per

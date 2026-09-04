@@ -4569,3 +4569,411 @@ defect — this benchmark's corpus images are tight card crops with no backgroun
 detector genuinely has no real margin to search (see the script's own header); the fallback path
 still exercises the identical bilinear-warp-then-nearest-neighbor-downsample resize chain under
 test, which is what this validation is actually checking.
+
+---
+
+## D-112 — dual-prototype reference index (`pristinePlus1Aux`), versioned multi-prototype format, backward-compatible with the shipped v1 index (P97)
+
+**2026-09-04 · Accepted**
+
+P91's recognition R&D (research/m15-p91-recognition-marathon) measured that reference-side
+multi-prototype augmentation — adding one auxiliary prototype per card, a centroid of 6
+deterministic photometric/geometric augmented views embedded and L2-normalized-averaged — closes
+most of the moderate-distortion accuracy gap at zero added query-time inference cost (one embed
+pass per scan, unchanged). P95 (research/m15-p95-recognition-phase2) independently re-confirmed the
+identical strategy (`pristinePlus1Aux`) in a full six-architecture head-to-head comparison: it wins
+or ties every non-catastrophic regime — including a NEW, more realistic "iPhone-like moderate"
+distortion profile P91 never tested — at the lowest complexity of any option that beats plain DINO,
+and explicitly REJECTED the alternatives a naive reading of the same evidence might suggest: image
+rerank (NCC/SSIM/histogram) is actively dangerous outside geometry-only distortion (a 68-69%
+false-confident rate on the realistic moderate regime); a general (non-blur) capture-quality gate
+has no viable precision/recall tradeoff; local-feature rerank is real but non-essential; a different
+backbone model has no evidence of being more photometric-robust than DINOv2-small. This session
+implements ONLY the recommended strategy — dual-prototype reference augmentation — deliberately not
+the rejected alternatives.
+
+**Format.** `VisualIndexManifest` gains three OPTIONAL fields — `prototypeCount`,
+`prototypeStrategy`, `prototypeStrategyVersion` — plus an optional `rowCount` cross-check, and
+`coverage` gains optional `cardsWithAuxPrototype`/`cardsAuxFallback`. Absent (every already-
+committed manifest) means implicitly `prototypeCount=1`, exactly today's shipped single-prototype
+shape — no regeneration required, no runtime behavior change for the existing index.
+`embeddings.bin` is card-major, prototype-minor (card0-proto0, card0-proto1, card1-proto0, ...);
+`decodeVisualIndex` validates the byte length against `cardCount * prototypeCount * embeddingDim`
+and rejects a mismatched `rowCount`, a non-positive/non-integer `prototypeCount`, or
+`prototypeCount > 1` without both strategy fields present. `searchVisualIndex` scores each card by
+the MAX dot product over its own prototype rows (P91/P95's own `searchMultiProto` reduction,
+reproduced exactly) and pushes exactly one hit per card — the matcher downstream (untouched, out of
+this session's scope) sees the identical "one similarity score per candidate" shape it always has.
+
+**Backward compatibility is load-bearing, not incidental — verified empirically, not just by
+design.** `buildIndexContentPayload`'s canonical hash object assigns the three new prototype fields
+WITHOUT `?? null` (unlike the existing `sourceProjectRef`/`sourceEnglishActiveCount` fields):
+`JSON.stringify` drops an `undefined`-valued key, so a v1 manifest (which never sets these fields)
+serializes to a BYTE-IDENTICAL payload to what this function produced before these fields existed —
+the content id of an already-published generation never shifts. This was proven, not assumed:
+`pnpm scanner:index:verify` was run against this repository's actual real, committed 19,501-card
+generation after every code change in this session, and it verifies to the exact same content id
+(`1a1df11a73c462d8`) P94 recorded. `CHECKPOINT_SCHEMA_VERSION` bumped 2 -> 3 and
+`CheckpointIdentity` gained required `prototypeCount`/`prototypeStrategy`/`prototypeStrategyVersion`
+fields, so a checkpoint from a prior (single-prototype) build session is automatically discarded and
+rebuilt from scratch — a single-prototype checkpoint can never silently resume into a dual-prototype
+build, and vice versa.
+
+**Auxiliary-prototype fallback (prompt §13).** A card whose pristine embedding succeeds but whose
+auxiliary (6-augmentation-centroid) computation fails is still indexed and fully searchable — its
+prototype-1 row is a deterministic DUPLICATE of prototype 0 (never a zero vector, which would make
+that prototype an artificially bad match instead of a neutral no-op) — `coverage.cardsAuxFallback`
+counts these; `coverage.cardsWithAuxPrototype` counts cards with a real auxiliary embedding. Unlike
+the (deliberately permanent, not-a-skip-gate) `auxFallback` checkpoint marker's role in earlier
+drafts of this session's own implementation, the SHIPPED behavior retries a failed auxiliary
+computation on every resumption until it actually succeeds — exactly mirroring how a failed
+PRISTINE embedding has always behaved (never persisted as "permanently given up"). `auxFallback` in
+the checkpoint is diagnostic-only, always overwritten fresh, and cleared on a later success.
+
+**Cost, measured against the real committed index, not estimated.** Real single-prototype generation:
+`embeddings.bin` 7,488,384 bytes (7.14 MB) + `card-ids.json` 760,540 bytes (0.73 MB) = 7.87 MB.
+Projected dual-prototype generation at the same real 19,501-card scale: `embeddings.bin`
+14,976,768 bytes (14.28 MB, exactly 2x) + the same `card-ids.json` = ~15.01 MB total — a ~7.14 MB
+delta, matching P95's own independent recomputation from this exact production format almost
+exactly. Decoded runtime memory (Float32, one generation held at a time, unchanged pattern from the
+single-prototype worker) roughly doubles in step: ~28.6 MB -> ~57.1 MB — an expected, disclosed
+consequence of dequantizing twice as many rows, not an accidental duplication; the worker never
+holds more than one decoded generation in memory at once, matching the existing single-prototype
+pattern exactly.
+
+**Not implemented this session, and why:** the real hosted 19,501-card dual-prototype rebuild, F-03
+against the real hosted catalog, the real-19,501-scale P95 reproduction, and the production name
+lexicon build all require `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`, which were not present in this
+environment (the same standing gap every M15 session since P75 has disclosed) — this session never
+fakes, estimates, or assumes those results; it ships CODE_READY_NEEDS_OWNER_BUILD with the exact
+commands recorded for the next session or the owner to run. The committed 19,501-card v1 index is
+untouched. No card was special-cased anywhere.
+
+---
+
+## D-113 — dual-prototype benchmark-leakage fix, fail-closed index schema v2, corrected re-run and quantization evidence (P100)
+
+**2026-09-04 · Accepted**
+
+P98's post-repair adversarial audit (output_98.txt §18-20) CONFIRMED a real methodology defect in
+P95's own two-stage architecture comparison (`experiments/17-two-stage-pipeline-search.mjs`): its
+"geometryOnly" query was constructed via `applyNamedProfile('perspective-rotate', buf, trueId)` —
+the exact same function, on the exact same source buffer, with the exact same deterministic
+per-card seed (`augment/photometric.mjs`'s `baseSeed + idx*97`) already used to build one of the
+six augmented views averaged into that card's own dual-prototype auxiliary embedding. The query
+was therefore byte-identical to one of the ingredients of its own reference — the reported 100%
+TOP1 on that regime measured near-tautological self-recall, not generalization. This decision
+records the fix, the corrected re-run, and the fail-closed index-format contract P98 additionally
+required before any real dual-prototype build.
+
+**1. Leakage fix.** `scripts/scanner-recognition-lab/augment/heldout.mjs` is a genuinely
+independent QUERY-side transform family for held-out validation — different `sharp` operations per
+effect than either `photometric.mjs` (reference augmentation) or `continuous.mjs` uses (raw affine
+matrices instead of `.rotate()`, a box/motion convolution kernel instead of Gaussian `.blur()`,
+`.tint()` color-temperature shift instead of `.modulate()`, a linear-band `'lighten'` glare instead
+of a radial `'screen'` one, and a crop/translation mechanic neither existing module has at all),
+plus an independently-salted seed derivation (`'heldout::'+cardId`, multiplier base 151). Eight
+named regimes: `clean` (pristine control), `heldoutGeometry`, `heldoutMildPerspective`,
+`heldoutCropTranslation`, `heldoutBlur`, `heldoutExposureWhiteBalance`, `heldoutGlare`,
+`mixedModerate`. `scripts/scanner-recognition-lab/retrieval/leakage-guard.mjs` is a permanent,
+runtime, hash-based (`sha256`) leakage detector: every corrected benchmark script hashes a card's
+full reference-ingredient set (pristine + 6 augmented views) and asserts every DISTORTED held-out
+query buffer differs from all of them, throwing (aborting the run) on any collision — `clean` is
+deliberately exempt (it IS the pristine buffer by definition, not a leak). Permanent regression
+coverage: `tests/scanner-research/leakage-guard.test.ts` (11 cases) proves this END TO END against
+a real, procedurally-generated image run through the REAL `augmentAll`/`buildAllHeldoutQueries`
+pipelines (no network/model dependency, part of the ordinary `pnpm test` gate via a new
+`tests/scanner-research/**/*.test.ts` include entry in `vite.config.ts`), plus structural
+disjointness assertions (`HELDOUT_REGIMES` shares no name with `AUGMENTATION_PROFILES`/`AXES`/
+`HARD_AUGMENTATION_PROFILES`).
+
+**2. Corrected re-run** (`experiments/18-corrected-two-stage-comparison.mjs`, real run against the
+P91/P95 4,296-card research corpus, n=300, card-id-separated 1,000-resample bootstrap 95% CIs,
+900/900 leakage-guard checks passed with zero collisions):
+
+| Regime | A (DINO) TOP1 | B (dual-proto) TOP1 | C (DINO+rerank) TOP1 | F (dual+local-feature) TOP1 |
+|---|---|---|---|---|
+| clean | 100% | 100% | 100% | 100% |
+| heldoutGeometry | 91.3% [88,94] | **99.7% [99,100]** | 97.0% [95,98.7] | 96.3% [94,98.3] |
+| mixedModerate | 81.3% [77,85.7] | **95.7% [93.3,97.7]** | 40.0% [34,45.7] (60% false-confident) | 96.3% [94,98.3] |
+| hardGlareShadowBlur | 0.3% | 0.3% | 0% | 0.3% (all ~100% abstained) |
+
+The corrected magnitude is smaller than P95's contaminated claim (which reported 100%/100% on
+geometry-only for both A and B at leaked-query self-recall) but the DIRECTION survives fully:
+dual-prototype alone gives a real, statistically clear gain over plain DINO on both non-trivial
+non-catastrophic regimes (95% CIs do not overlap), at the lowest complexity of any option tried.
+Image rerank (C) is independently RE-CONFIRMED actively dangerous outside geometry-only (60%
+false-confident on the realistic moderate regime) — not an artifact of the original leak, since
+this re-run never shared any construction with the reference side. Local-feature rerank (F) is
+real but does not clearly beat dual-prototype alone (essentially tied on both regimes) — reconfirms
+P95's own "optional, not required" conclusion. `DUAL_RECOMMENDED=yes` stands, now on
+non-contaminated evidence.
+
+A broader DINO-vs-dual sweep across all 8 `HELDOUT_REGIMES` (`experiments/
+19-full-heldout-regime-sweep.mjs`, n=250, 1,750/1,750 leakage-guard checks passed) shows the gain
+is real but NOT uniform — the honest, non-oversold picture:
+
+| Regime | DINO TOP1 | Dual TOP1 | Δ (dual − DINO) |
+|---|---|---|---|
+| clean | 100% | 100% | 0 |
+| heldoutGeometry | 92.8% [90,96] | 99.6% [98.8,100] | +6.8 |
+| heldoutMildPerspective | 96.0% [93.6,98.4] | 99.6% [98.8,100] | +3.6 |
+| heldoutCropTranslation | 94.8% [92,97.2] | 98.4% [96.8,99.6] | +3.6 |
+| heldoutBlur | 99.2% [98,100] | 100% | +0.8 |
+| heldoutExposureWhiteBalance | 96.4% [94,98.4] | 96.8% [94.4,98.8] | +0.4 (noise) |
+| heldoutGlare | 100% | 100% | 0 |
+| mixedModerate | 78.8% [74,83.6] | 96.0% [93.6,98.4] | **+17.2** |
+
+Dual-prototype's gain concentrates on GEOMETRIC distortion (rotation/perspective/crop-translation)
+and, most importantly, the realistic multi-axis composite (`mixedModerate`, independently
+corroborated by experiment 18's own +14.4pt at n=300) — plain DINO is already near-ceiling on
+isolated blur/exposure/glare, where dual-prototype adds little to nothing. This is the correct,
+defensible characterization: dual-prototype is recommended because it closes the single largest,
+most realistic gap (mixedModerate), not because it helps everywhere uniformly.
+
+**3. Fail-closed index schema v2.** P97's `VisualIndexManifest.prototypeCount` renamed to
+`prototypesPerCard` throughout (`src/data/scanner/visual-index.ts`, `src/domain/scanner/
+index-content-id.ts`, `checkpoint-identity.ts`, `scripts/scanner-visual-index/{build-index,
+verify-index}.ts`, the worker/client/controller/diagnostics-format chain, and every test) — one
+canonical name, not a duplicate synonym. Two new manifest fields, `schemaVersion: number` and
+`payloadFormat: string`, form an explicit discriminant DISTINCT from the free-text `version` string
+(which only ever names the embedding contract, never a binary-layout version) per P98's own
+finding: a future format doubling `embeddingDim` to concatenate prototypes would have passed every
+pre-P100 check silently. Contract: a manifest with NONE of `schemaVersion`/`payloadFormat`/
+`prototypesPerCard` is LEGACY_V1 (every already-committed generation, implicitly one prototype per
+card); a manifest setting ANY of the three must set ALL three together, and `schemaVersion` must be
+in a closed allow-list (`SUPPORTED_EXPLICIT_SCHEMA_VERSIONS`, currently `{2}`) — `decodeVisualIndex`
+throws (fails closed, never guesses) for a partial declaration or an unrecognized `schemaVersion`/
+`payloadFormat`. `visual-worker.ts` gained a symmetric pre-decode short-circuit (mirroring the
+existing `EXPECTED_MODEL_REVISION` pattern) so an unrecognized schema degrades to the existing
+graceful OCR-only fallback with a specific diagnostic reason, never a thrown exception surfacing to
+the UI. New diagnostics fields `indexSchemaVersion`/`indexPayloadFormat` (worker/client/controller/
+contract) and `INDEX_SCHEMA_VERSION=`/`INDEX_PAYLOAD_FORMAT=` lines (diagnostics-format.ts,
+build-index.ts, verify-index.ts). All five explicit-schema fields enter the content-id hash
+(index-content-id.ts) independently — regression tests pin that same bytes + different
+`schemaVersion` alone, different `payloadFormat` alone, different `prototypesPerCard` alone (with
+strategy/version held fixed), and different `prototypeStrategy` alone each mint a different content
+id. **Backward compatibility re-verified empirically after the rename+redesign**: `pnpm
+scanner:index:verify` against the real, unmodified, committed 19,501-card generation still reports
+content id `1a1df11a73c462d8` — byte-identical to before this change.
+
+**4. Quantization/search evidence** (throwaway scripts under `scripts/scanner-visual-index/`, not
+committed as permanent tooling — their JSON reports are gitignored like every other lab benchmark
+report): a 1,000+-query FP32-vs-INT8 retrieval-agreement test (the one P97 explicitly disclosed not
+running) against the full 4,296-card cached research corpus, using the PRODUCTION
+`quantizeEmbedding`/`VISUAL_INDEX_INT8_SCALE` functions directly — 100% TOP1 agreement, 95.7% mean
+TOP5 overlap, zero rank changes for any query's own TOP1 candidate, worst similarity error 0.0086
+(consistent with the existing V4 quantization-accuracy-bound unit test's <0.01 bound). A direct-
+int8 vs Float32-decoded search benchmark at the real 19,501-card scale (1/2/5 prototypes/card,
+against the REAL committed int8 bytes) found searching directly against the raw `Int8Array`
+(dequantizing each component inline at multiply time) is not just memory-saving but ALSO FASTER
+than the current decode-then-search shape at every prototype count tested (24ms vs 43ms at 1 proto,
+38ms vs 58ms at 2, 61ms vs 122ms at 5 — Node/CPU environment, not a device measurement), with
+byte-for-byte identical TOP-K rankings (7/7 queries at every scale). This is a genuine, low-risk
+future optimization for `searchVisualIndex`, disclosed but deliberately NOT implemented in
+production this session (the prompt's own scope is index format/evidence, not a matcher/search
+rewrite; a future session should make this change once a real dual-prototype index actually exists
+to benchmark it against end to end).
+
+**5. Real-capture validation tooling** (`scripts/scanner-recognition-lab/real-capture/
+validate-real-captures.ts`) — a ready CLI (owner supplies `--dir=`/`--mapping=`) that scores
+independently-captured real photos against any P87-shaped visual index (legacy or dual-prototype)
+through the exact production `decodeVisualIndex` fail-closed contract, reporting TOP1/3/5/20, true-
+card rank/similarity, which prototype won, capture quality (blur score) and the shipped abstention
+decision — no card-specific scoring anywhere. No independently-captured real photos exist in this
+repository or its caches (checked); `REAL_CAPTURE_RESULTS=pending owner sample`.
+
+No production matcher/scoring code (`src/domain/scanner/engine.ts`/`visual-evidence.ts`) touched.
+No hosted build run; `OWNER_BUILD_AUTHORIZED` gated on the full P100 output file's final verdict.
+
+---
+
+## D-114 — Direct-int8 visual search with bounded top-K selection, shipped to production (P102)
+
+**2026-09-04 · Accepted**
+
+P100 measured (but deliberately did not ship, out of that session's own scope discipline) that
+searching directly against the raw int8 index — dequantizing each component inline at multiply
+time — is both faster AND lighter than the shipped decode-whole-index-to-Float32-then-search
+shape, at every prototype count tested. This session ships that optimization in production, plus a
+bounded top-K selection structure the earlier measurement didn't cover, and closes a real
+tie-breaking bug the numerical verification surfaced along the way.
+
+**1. Direct-int8 search.** `decodeVisualIndex` (`src/data/scanner/visual-index.ts`) no longer
+materializes a Float32-decoded copy of the index at all — `DecodedVisualIndex.embeddingsInt8`
+(renamed from the old decoded `embeddings` field) keeps the raw `Int8Array` exactly as handed to
+it. `searchVisualIndex` dequantizes each component inline, accumulating the dot product as an
+integer sum and dividing once by `VISUAL_INDEX_INT8_SCALE` per prototype (not once per dimension).
+The old per-row `assertFinite` pass over the decoded Float32 copy is also gone, not replaced: an
+`Int8Array` component divided by a fixed nonzero scale can never produce `NaN`/`Infinity`, so that
+check was always vacuously true for this quantization scheme — it validated a conversion step that
+no longer happens, never the source bytes (whose shape the existing byte-length check already
+validates). Legacy v1 (`prototypesPerCard=1`) and schema-v2 (`prototypesPerCard>=2`) indexes share
+this one loop, parameterized by `prototypesPerCard` — never two independent search implementations
+that could drift apart.
+
+Real, measured consequence for the dual-prototype case P97/P100 already disclosed roughly doubling
+runtime memory (28.56MB -> 57.13MB) purely from dequantizing twice as many rows: that doubling no
+longer happens at all, for legacy OR dual-prototype indexes — decode is now just the existing
+shape/duplicate-id validation, no per-value conversion pass.
+
+**2. Bounded top-K (`BoundedTopK`).** Measured, not assumed, before deciding whether to build this:
+`Array.prototype.sort` over the full hit-object list is NOT a negligible cost next to the
+dot-product scan — at the real dual-prototype scale (39,002 rows) it measured ~13ms against a
+~24ms scan, a real ~36% addition, not the "two orders of magnitude smaller" an early draft of this
+session's own reasoning assumed before actually measuring it. The real production search path's
+`topK` is a small, fixed 30 (D-101/`controller.ts`) — far smaller than the index — so a
+capacity-`topK` binary min-heap (`BoundedTopK`, exported and unit-tested directly) replaces the
+full sort with O(n log topK) selection whenever `topK` is smaller than the index; a caller
+requesting a FULL ranking (`topK >= cardCount` — the diagnostics rank-lookup path only, never the
+hot per-scan path) falls back to the plain full sort instead, where a same-size heap would add
+overhead for no benefit.
+
+**3. Real bug found and fixed via numerical verification, not assumed correct from the algorithm
+looking right on paper.** The initial `BoundedTopK` implementation disagreed with the full-sort
+path on TOP1 for 3 of 4,296 real queries. Root cause: two DISTINCT cards in the real 19,501-card
+catalog can have float64-identical similarity to a query (real duplicate/near-duplicate reference
+embeddings — e.g. reprints sharing artwork). The full-sort path breaks such ties by ascending card
+index, because `Array.prototype.sort` is stable (ES2019+) and cards are pushed into that array in
+ascending index order; `BoundedTopK`'s own internal array order is sift-history order, not card
+index order, so its `drainSorted()` sorting by similarity alone let exact ties resolve by an
+arbitrary heap-internal order instead. The SET of kept top-K cards was already correct in every
+case — only which of two exactly-tied cards was reported as the winner could differ. Fixed with an
+explicit `similarity desc, then index asc` tie-break in `drainSorted()`, matching the full-sort
+path's own (previously implicit, now explicitly documented) rule; two new `BoundedTopK` unit tests
+pin both the top-of-ranking tie case that surfaced the bug and the eviction-boundary tie case that
+was already correct.
+
+**4. Numerical parity — real, not synthetic, and re-run after the tie-break fix, not before.**
+`scripts/scanner-visual-index/verify-int8-parity.ts` (throwaway verification tool, report
+gitignored like every other lab benchmark): every one of the real 4,296 cached DINOv2 embeddings
+from the P91/P95 recognition-lab corpus, used as a query against (a) the REAL committed
+19,501-card production index and (b) a synthetic 39,002-row (2 prototypes/card) index built from
+the real int8 bytes (P100's own technique, reused) — no real dual-prototype index exists yet to
+test against (owner build pending). Comparison is against a from-scratch reimplementation of the
+OLD (removed) decode-then-search shape, not the new code compared against itself.
+
+```
+INT8_FP32_TOP1_AGREEMENT (legacy-v1, real index)=4,296/4,296 (100.00%)
+INT8_FP32_TOP1_AGREEMENT (synthetic schema-v2)=4,296/4,296 (100.00%)
+TOP3/TOP5/TOP20 set overlap=100.00% (both passes)
+WORST_TOP1_SIMILARITY_ERROR=~1.8e-8 (both passes — floating-point noise, far under the existing
+  V4 quantization-accuracy-bound unit test's <0.01 per-component tolerance)
+WINNING_PROTOTYPE_IN_RANGE (dual-prototype pass)=4,296/4,296
+DISAGREEMENT_COUNT=0 (both passes, after the tie-break fix — was 3/4,296 before it)
+```
+
+**5. Measured search speed** (`scripts/scanner-visual-index/benchmark-int8-vs-float32-search.mjs`,
+P100's own script, actually re-run this session — not P100's old numbers restated — against the
+real committed int8 bytes, 7 repeats, Node/CPU environment on this session's own machine (under
+its own concurrent load from this session's other verification work, so the absolute numbers are
+higher than P100's own report on a different machine at a different time; only the RELATIVE
+comparison is the load-bearing claim, matching P100's own explicit framing for the identical
+caveat):
+
+```
+DIRECT_INT8_SEARCH_MS=37.11 (1 proto, 19,501 rows) / 67.72 (2 proto) / 115.34 (5 proto)
+FLOAT32_DECODED_SEARCH_MS=60.29 (1 proto) / 113.56 (2 proto) / 274.41 (5 proto)
+TOP1_IDENTITY / FULL_TOPK_IDENTITY=7/7 at every scale (byte-for-byte identical rankings)
+```
+
+Direct-int8 is faster at every scale tested (~38-58% depending on prototype count), on top of no
+longer allocating a decoded Float32 copy at all — a genuine memory-AND-speed win, not a tradeoff.
+
+**Verified:** unit suite 1229/1229 (84 files, +20 new/updated cases across `BoundedTopK`,
+`searchVisualIndex`'s two selection paths, and the `embeddingsInt8` rename). Typecheck/lint (0
+errors, 28 pre-existing warnings)/format clean. `pnpm scanner:index:verify` against the real,
+unmodified, committed 19,501-card generation still reports content id `1a1df11a73c462d8` —
+byte-identical, backward compatibility re-proven after this rewrite, not assumed. Real-browser
+regression check: `tests/e2e/visual-worker-real-browser.spec.ts` (the actual built worker chunk,
+real DINOv2 model, real ORT WASM, real committed index) passes on both `desktop-chromium` and
+`mobile-iphone` (WebKit) — a genuine embed+search round trip against the rewritten search path, in
+two real browser engines, not just Node unit tests.
+
+No production matcher/scoring code touched. No hosted build run.
+
+---
+
+## D-115 — Safari vs. Chromium ORT WASM byte contradiction resolved: P96 was right, P100's write-up had the labels swapped (P102)
+
+**2026-09-04 · Accepted**
+
+**Context.** P96's own report and P100's own report disagreed about which browser downloads which
+ONNX Runtime WASM binary: P96 said non-Safari gets the larger asyncify variant (~23.57 MB) and
+Safari gets the smaller non-asyncify variant (~12.94 MB); P100 said the opposite (Safari =
+asyncify/23.57 MB, non-Safari = non-asyncify/12.94 MB). Neither prior session traced this back to
+the actual source, so the contradiction stood unresolved into this session.
+
+**Resolution — traced to source, not re-guessed.** `src/features/scanner/visual/visual-worker.ts`
+(the `wasmPaths` assignment, immediately after `detectIsSafariUserAgent()` is called):
+
+```
+env.backends.onnx.wasm.wasmPaths = isSafari
+  ? { wasm: `${ASSET_BASE}/ort/ort-wasm-simd-threaded.wasm` }          // Safari
+  : { wasm: `${ASSET_BASE}/ort/ort-wasm-simd-threaded.asyncify.wasm` } // everyone else
+```
+
+`detectIsSafariUserAgent()` (`safari-detection.ts`) correctly identifies real Safari/WebKit (Apple
+vendor string, not a Chromium-based browser masquerading with one) — no inversion bug in the
+detection logic itself. The two physical files, measured directly from the installed
+`onnxruntime-web@1.26.0-dev.20260416` package (the exact same bytes `prepare-scanner-assets.mjs`
+stages into the build):
+
+| File | Real measured bytes | Served to |
+|---|---|---|
+| `ort-wasm-simd-threaded.wasm` | 12,942,611 (~12.94 MB) | **Safari** |
+| `ort-wasm-simd-threaded.asyncify.wasm` | 23,567,050 (~23.57 MB) | **non-Safari (Chromium etc.)** |
+
+**P96's report was correct.** **P100's write-up inverted the Safari/non-Safari labels** — a
+reporting error in that session's prose, not a code change (P100's diff never touched this section
+of `visual-worker.ts`; git history confirms the ternary above is unchanged since before P96).
+
+**Definitive matrix (real measured bytes, this session):**
+
+```
+SAFARI_WASM_FILE=ort-wasm-simd-threaded.wasm
+SAFARI_WASM_BYTES=12,942,611 (~12.94 MB)
+CHROMIUM_WASM_FILE=ort-wasm-simd-threaded.asyncify.wasm
+CHROMIUM_WASM_BYTES=23,567,050 (~23.57 MB)
+```
+
+Counter-intuitively, **Chromium downloads the LARGER ORT WASM binary, not Safari** — the opposite
+of the usual "Safari needs more polyfilling" assumption. `.mjs` glue files (paired with each
+`.wasm` binary, always fetched alongside it): Safari 24,180 bytes, Chromium 47,389 bytes — the
+same direction, so this does not change once the small glue file is included.
+
+**Full first-use byte totals**, recomputed from real measured bytes (model, OCR) plus the real
+committed v1 index (not the projected dual-prototype index, which does not exist yet — see the
+projected figure separately below):
+
+| Component | Bytes | Source |
+|---|---|---|
+| DINOv2-small model | 24,451,943 | `model-pin.mjs` pinned/verified constant |
+| ORT WASM + glue (Safari) | 12,966,791 | measured, this session |
+| ORT WASM + glue (Chromium) | 23,614,439 | measured, this session |
+| Visual index (real, committed, v1) | 8,249,572 | measured, this session (`embeddings.bin` + `card-ids.json` + `manifest.json`) |
+| OCR (Tesseract, SIMD path — the realistic path on both modern Safari and Chromium) | 9,821,253 | measured, this session (`worker.min.js` + `tesseract-core-simd-lstm.wasm(.js)` + `eng.traineddata.gz`); the two other core variants (`relaxedsimd`, non-SIMD fallback) are also shipped for feature-detected fallback but are NOT downloaded on a SIMD-capable browser, so they are excluded from this total, not silently dropped |
+
+```
+FIRST_USE_SAFARI_TOTAL_BYTES=55,489,559 (~55.49 MB) — current shipped v1 index
+FIRST_USE_CHROMIUM_TOTAL_BYTES=66,137,207 (~66.14 MB) — current shipped v1 index
+```
+
+Projected once the owner builds the real dual-prototype index (replacing the visual-index
+component above with P97/P100's own projected ~15,738,058-byte figure, unchanged arithmetic from
+those sessions — not re-derived here, since no real dual index exists yet to remeasure):
+
+```
+FIRST_USE_SAFARI_TOTAL_BYTES (projected, dual-prototype)=62,978,045 (~62.98 MB)
+FIRST_USE_CHROMIUM_TOTAL_BYTES (projected, dual-prototype)=73,625,693 (~73.63 MB)
+```
+
+No excluded component in either total — every prior session's report explicitly excluded OCR
+("not independently re-measured"); this session measured it directly instead.
+
+**Not done, disclosed:** this is a code+asset audit, not a live network capture — no real Safari or
+Chromium browser actually loaded the app to confirm requests match this list exactly (e.g. that a
+CDN/proxy doesn't recompress, or that HTTP range requests don't change effective bytes-on-wire).
+`_headers`' own `Content-Encoding`/compression behavior for these paths was not independently
+re-verified this session; the byte totals above are uncompressed (raw) file sizes, matching every
+prior session's own convention for this same table.

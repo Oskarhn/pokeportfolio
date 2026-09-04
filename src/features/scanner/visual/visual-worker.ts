@@ -33,6 +33,8 @@ import {
   searchVisualIndex,
   l2Normalize,
   VisualIndexError,
+  VISUAL_INDEX_SCHEMA_VERSION_LEGACY_V1,
+  SUPPORTED_EXPLICIT_SCHEMA_VERSIONS,
   type DecodedVisualIndex,
   type VisualIndexManifest,
   type VisualIndexPointer,
@@ -202,6 +204,19 @@ interface ReadyResponse extends BackendDiagnostics {
   indexEmbeddingsSha256: string | null
   /** P87 F-01: the content-addressed id of the generation actually loaded, or null if none. */
   indexContentId: string | null
+  /** P100 (D-1xx): the loaded manifest's fail-closed schema discriminant — null before the index
+   *  loads, `VISUAL_INDEX_SCHEMA_LABEL_LEGACY_V1`'s numeric equivalent (1) on a legacy manifest,
+   *  the real `schemaVersion`/`payloadFormat` otherwise. */
+  indexSchemaVersion: number | null
+  indexPayloadFormat: string | null
+  /** P97 (D-106): resolved prototype count of the loaded index (1 for a v1/pre-P97 generation),
+   *  the strategy name driving prototypes beyond the first (null on v1), and the total row count
+   *  (`cardCount * prototypesPerCard`) actually decoded. Diagnostics-only — never affects matching;
+   *  the matcher downstream still sees exactly one similarity score per canonical card either way
+   *  (searchVisualIndex's own per-card max-over-prototypes reduction). Null before the index loads. */
+  indexPrototypesPerCard: number | null
+  indexPrototypeStrategy: string | null
+  indexRowCount: number | null
   /** P87 F-22: this deployment's expected source project (null when unconfigured/local — nothing
    *  gated in that case), and whether the loaded index actually matched it. */
   indexSourceProjectExpected: string | null
@@ -517,6 +532,20 @@ async function loadIndex(): Promise<DecodedVisualIndex | null> {
   }
   if (manifest.modelRevision !== EXPECTED_MODEL_REVISION) {
     lastIndexUnavailableReason = `manifest modelRevision "${manifest.modelRevision}" != expected "${EXPECTED_MODEL_REVISION}"`
+    return null
+  }
+  // P100 (D-1xx): explicit runtime schema gate, mirroring EXPECTED_MODEL_REVISION's fail-fast
+  // shape — a manifest naming a schemaVersion this exact worker build was never taught is rejected
+  // HERE, with a specific diagnostic reason, before spending the checksum/decode work below on a
+  // format we already know we can't interpret. decodeVisualIndex enforces the identical rule as
+  // its own last line of defense (defense in depth: this short-circuit is a UX/perf nicety, not
+  // the only thing standing between an unknown format and a silent misdecode). A manifest with NO
+  // schemaVersion field at all (LEGACY_V1) always passes this check untouched.
+  if (
+    manifest.schemaVersion !== undefined &&
+    !SUPPORTED_EXPLICIT_SCHEMA_VERSIONS.has(manifest.schemaVersion)
+  ) {
+    lastIndexUnavailableReason = `manifest schemaVersion ${String(manifest.schemaVersion)} is not one this build recognizes — failing closed rather than guessing`
     return null
   }
   if (manifest.cardCount <= 0) {
@@ -844,6 +873,14 @@ async function init(message: InitMessage): Promise<void> {
     indexGeneratedAt: index?.manifest.generatedAt ?? null,
     indexEmbeddingsSha256: index?.manifest.embeddingsSha256 ?? null,
     indexContentId,
+    indexSchemaVersion:
+      index === null
+        ? null
+        : (index.manifest.schemaVersion ?? VISUAL_INDEX_SCHEMA_VERSION_LEGACY_V1),
+    indexPayloadFormat: index?.schemaLabel ?? null,
+    indexPrototypesPerCard: index?.prototypesPerCard ?? null,
+    indexPrototypeStrategy: index?.manifest.prototypeStrategy ?? null,
+    indexRowCount: index !== null ? index.cardIds.length * index.prototypesPerCard : null,
     indexSourceProjectExpected: EXPECTED_SOURCE_PROJECT_REF,
     indexSourceProjectMatch: lastIndexSourceProjectMatch,
     indexRuntimeChecksumVerified: lastIndexRuntimeChecksumVerified,

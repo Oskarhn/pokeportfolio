@@ -57,6 +57,15 @@ export interface VisualReadyInfo extends VisualBackendDiagnostics {
   readonly indexEmbeddingsSha256: string | null
   /** P87 F-01: the content-addressed id of the generation actually loaded, or null if none. */
   readonly indexContentId: string | null
+  /** P100 (D-1xx): the loaded manifest's fail-closed schema discriminant — diagnostics-only,
+   *  mirrors visual-worker.ts's own ReadyResponse fields exactly. */
+  readonly indexSchemaVersion: number | null
+  readonly indexPayloadFormat: string | null
+  /** P97 (D-106): the loaded index's resolved prototype count/strategy/total row count —
+   *  diagnostics-only, mirrors visual-worker.ts's own ReadyResponse fields exactly. */
+  readonly indexPrototypesPerCard: number | null
+  readonly indexPrototypeStrategy: string | null
+  readonly indexRowCount: number | null
   /** P87 F-22: this deployment's expected source project (null when unconfigured/local), and
    *  whether the loaded index matched it. */
   readonly indexSourceProjectExpected: string | null

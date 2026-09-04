@@ -153,17 +153,13 @@ async function main() {
     }
 
     // Embed the true card under three real conditions (P84/P91's own calibrated profiles).
-    evalQuery((await embedImageBuffer(buf)) as Float32Array, 'clean')
-    const hardQueries = (await hardAugmentAll(buf, trueId, [
+    evalQuery(await embedImageBuffer(buf), 'clean')
+    // P100 brought in `augment/hard.d.mts` with a real, concretely-typed nominalRect — the
+    // manual any-shaped cast this file used before that declaration existed is no longer needed.
+    const hardQueries = await hardAugmentAll(buf, trueId, [
       'tilted-offcenter',
       'tilted-glare-shadow-blur',
-    ])) as {
-      profile: string
-      buffer: Buffer
-      nominalRect: unknown
-      canvasWidth: number
-      canvasHeight: number
-    }[]
+    ])
     for (const hq of hardQueries) {
       const cropped = await cropToNominalRect(
         hq.buffer,
@@ -171,7 +167,7 @@ async function main() {
         hq.canvasWidth,
         hq.canvasHeight,
       )
-      evalQuery((await embedImageBuffer(cropped)) as Float32Array, hq.profile)
+      evalQuery(await embedImageBuffer(cropped), hq.profile)
     }
 
     done += 1

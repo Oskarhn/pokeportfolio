@@ -469,6 +469,12 @@ export default defineConfig({
       // caching rules, asserted at config level; dist artefacts are checked separately by
       // scripts/verify-scanner-platform-build.mjs after a real build.
       'tests/config/**/*.test.ts',
+      // P100: permanent regression coverage for the research-only recognition lab under
+      // scripts/scanner-recognition-lab/ (never shipped to production) — specifically the P95/P98
+      // benchmark-data-leakage guard and the held-out query regimes it protects. Runs entirely
+      // offline (a tiny procedurally-generated image, no network/model download), so it stays part
+      // of the ordinary `pnpm test` gate rather than needing the lab's own network-dependent corpus.
+      'tests/scanner-research/**/*.test.ts',
     ],
     coverage: {
       provider: 'v8',
