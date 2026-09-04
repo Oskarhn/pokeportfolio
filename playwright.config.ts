@@ -9,6 +9,12 @@ const AUTH_STATE_FILE = 'playwright/.auth/e2e-user.json'
 
 export default defineConfig({
   testDir: './tests/e2e',
+  // P106: aborts the whole run immediately, with one specific diagnostic, if the production-
+  // preview webServer's reuseExistingServer connected to a stale server from a different build
+  // (a different worktree, or an earlier build left running in this same directory) instead of
+  // this run's own fresh one — see global-setup.ts's own header for the real failure this
+  // reproduces and closes.
+  globalSetup: './tests/e2e/global-setup.ts',
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,

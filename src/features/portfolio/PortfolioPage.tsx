@@ -207,7 +207,7 @@ export function PortfolioPage() {
         />
         <Link
           to="/catalog"
-          className="hidden min-h-11 items-center rounded-full bg-sky-600 px-4 text-sm font-semibold text-white hover:bg-sky-500 sm:flex"
+          className="hidden min-h-11 items-center rounded-full bg-sky-600 px-4 text-sm font-semibold text-accent-foreground hover:bg-sky-500 sm:flex"
         >
           Add card
         </Link>

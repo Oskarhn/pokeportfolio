@@ -4,6 +4,177 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
+## P106 — Product-integrated non-DB base (branch `feat/p106-product-integrated-nondb`, draft PR
+base `feat/m15-p102-dual-integrated`, NOT merged, NOT deployed)
+
+Cleanly integrates P102's dual-prototype/direct-int8 scanner work with P103's launch-hardening
+delta into one tree — see both sections below for what each contributes. Ran alongside P105 (DB/
+private release-gate work, separate branch/worktree) and P107; **this session touched no
+database, no Docker, no local or hosted Supabase** — the instruction boundary held throughout.
+
+- **Integration method.** Worktree branched from P102's exact head (`8adb3e8`). The P99→P103 diff
+  (`git diff 341c40b..c136fe1a`) was applied as a plain patch (`git apply --3way`), never merging
+  P103's commit history — matching P103's own prior integration of P101 the same way. One real
+  conflict, in `docs/DECISIONS.md`: both P102 and P103 independently minted D-112 through D-115
+  from the same P99 base (P102: dual-prototype index, benchmark-leakage fix, direct-int8 search,
+  Safari/Chromium WASM matrix; P103/P101: robots/sitemap, no-cookie-banner, Cloudflare analytics).
+  P102's numbers were kept as authoritative (scanner/visual-index is its territory); P103/P101's
+  three decisions were renumbered to D-116/D-117/D-118 everywhere referenced — DECISIONS.md,
+  HANDOVER.md, LAUNCH_CHECKLIST.md, vite.config.ts, main.tsx, cloudflareWebAnalytics.ts,
+  launch-readiness.spec.ts, .env.example. `pnpm-lock.yaml` was regenerated from the integrated
+  `package.json` (P102 never touched package.json; P103's four devDependency additions —
+  `@axe-core/playwright`, `eslint-plugin-jsx-a11y`, `lighthouse` — are the only source of
+  difference) rather than carrying forward the binary-diff-patched lockfile; no duplicate/
+  incompatible versions resulted.
+- **SaleForm items-array residual — CLOSED.** P102 disclosed that `SaleFormPage.items` was never
+  cleared on a same-instance `prefillKey` change (browser back/forward between
+  `/sales/new?holdingId=A` and `?holdingId=B`, no `remountDeps` on this route): the prefill effect
+  only ever appended found holdings onto whatever items already existed, so A's items stayed
+  visible merged with B's, both while B's own prefill was loading and after it completed. Fixed by
+  tracking the previous `prefillKey` in a ref and clearing `items` synchronously in the effect body
+  the moment a real key change is detected, before the new key's fetch starts. Six scenarios
+  covered in `tests/ui/sale-form-keyed-prefill-guard.test.ts`: A completed → B, A slow → B,
+  A → B → A (confirms a return to an earlier key re-fetches fresh rather than reusing stale state),
+  old A resolves after B, B error, plus the original P98 late-rejection case.
+- **`cardCount=0` differential — RESOLVED, does not reproduce.** P102 reported
+  `visual-worker-real-browser.spec.ts` PASS; P103 reported `cardCount=0`. Investigated directly: a
+  genuinely clean build (`dist/` AND the gitignored `public/scanner-assets/` both removed first)
+  passes on both `desktop-chromium` and `mobile-iphone` (WebKit) in all three trees checked — P102's
+  own worktree, P103's own worktree, and this integrated one. The failure is not a code defect
+  anywhere; it does not reproduce. While reproducing it, this session hit a REAL live instance of
+  exactly the risk that made the original failure plausible: a `pnpm exec playwright test` run in
+  P102's own worktree once failed with "dist/assets not found" despite the webServer's readiness
+  probe finding something answering on port 4173, and — separately — a run in this worktree
+  connected straight through to the CONCURRENTLY-RUNNING P105 session's own build on the same
+  shared port (`reuseExistingServer` is local-only-true by design, for fast iteration). Confirmed:
+  unguarded, that silently points an entire E2E run at the wrong build with no indication why
+  dozens of unrelated assertions start failing.
+- **Build-isolation hardening, closing that gap.** `tests/e2e/global-setup.ts` (new) fetches
+  `/build-meta.json` after the webServer's readiness probe passes and before any test runs, and
+  compares it against `resolveBuildSha()` computed fresh from this worktree's own git state — the
+  same function `vite.config.ts` uses to stamp the build it just produced. A mismatch aborts the
+  whole run immediately with one specific, attributable diagnostic instead of a wall of "heading
+  not found"-shaped failures. Verified against two real mismatches this session (a manually-started
+  P103 server, and the live P105 session's own server) — both caught correctly. `stage-index-
+  assets.mjs` also now wipes its output directory before staging (was a plain additive `cpSync`,
+  which never removed a stale generation folder from an earlier build in the same directory).
+- **Full non-auth E2E: 130/130 GREEN**, both `desktop-chromium` and `mobile-iphone` (WebKit), zero
+  retries, run against a genuinely clean build (verified via the new build-identity guard). Includes
+  the real-browser visual-worker smoke test on both engines.
+- **Everything P103 shipped, re-verified against the integrated tree, not assumed carried over
+  correctly:** CSP theme-bootstrap hash present and matches the ACTUAL built `dist/index.html`
+  script (`verify-scanner-platform-build.mjs`, 27/27); no `bg-sky-600`/`bg-sky-700` + literal
+  `text-white` pairing anywhere in `src/` (zero instances; every solid accent background goes
+  through the `--pp-accent-foreground` token); scanner directory-wide a11y suppression stays
+  narrowed to the one documented inline exception; `robots.txt`/`sitemap.xml`/legal pages/link
+  checker all green (`check-links.mjs`, 29/29); analytics stays off by default (no
+  `cloudflareinsights` host in the built CSP with no token set) and grants the correct CSP hosts
+  when built with a dummy test token, never a real one committed. Scanner first-use byte totals
+  re-measured directly from this build's real staged assets and match D-115's own figures
+  byte-for-byte (model 24,451,943; Safari WASM+glue 12,966,791; Chromium WASM+glue 23,614,439;
+  v1 index 8,249,572; OCR 9,821,253 → Safari 55,489,559 / Chromium 66,137,207 total) — P103's
+  changes did not add any eager-loaded scanner weight (`verify-scanner-platform-build.mjs`
+  independently confirms 0 scanner entries in the precache manifest).
+- **Contact email left unchanged** (`oskarhn06@outlook.com`, inherited from P103/P101) per this
+  session's explicit instruction not to invent a replacement.
+  `OWNER_CONTACT_EMAIL_CONFIRMATION_REQUIRED=yes` — not resolved by any session, needs the owner.
+- **Gates run, this session, on this tree:** `pnpm typecheck`/`pnpm lint` (0 errors, 28
+  pre-existing warnings)/`pnpm format:check` all clean; `pnpm test` 1254/1254 (86 files);
+  `pnpm scanner:index:verify` OK (19,501 cards, content id `1a1df11a73c462d8`, unchanged);
+  `pnpm scanner:roi-fixture:smoke` PASS (0 failures); `pnpm scanner:preprocess:parity` ran clean
+  (diagnostic-only, no pass/fail gate — mean cosine similarity 0.978 across 720 evaluations);
+  `pnpm build` green; `node scripts/verify-scanner-platform-build.mjs` 27/27;
+  `node scripts/check-links.mjs` 29/29; full non-auth E2E 130/130 both engines.
+- **Not done, and why:** no hosted build, no dual-prototype index rebuild (needs
+  `SUPABASE_SERVICE_ROLE_KEY`, the same standing gap every M15 session since P75 has disclosed),
+  no merge to `main`, no deploy. This branch's own draft PR targets `feat/m15-p102-dual-integrated`,
+  not `main` — final release sequencing (this branch + P105's DB work + whatever P107 produces)
+  is a separate future decision.
+- **Full account:** `ai_outputs/Claude_outputs/output_106.txt`.
+
+## P103 — Final frontend launch hardening (branch `feat/p103-final-launch-ui`, draft PR base
+`feat/m15-p99-clean-final-base`, NOT merged)
+
+Applied the P101 delta (below) as a clean diff onto P99's base (never merged PR #77's history),
+resolving the one real conflict — P99 and P101 both minted D-109/D-110/D-111 independently; P99's
+scanner decisions keep those numbers, P101's are renumbered to D-112/D-113/D-114 everywhere they're
+referenced. (P106 later integrated this work alongside P102, which had independently minted its own
+D-112 through D-115 from the same P99 base; P101/P103's D-112/D-113/D-114 were renumbered a second
+time, to D-116/D-117/D-118, everywhere they're referenced — see the P106 section below.) Then closed
+BOTH items P101 explicitly left open, plus one it left too broad:
+
+1. **CSP-blocked theme bootstrap — CLOSED.** `THEME_BOOTSTRAP_SCRIPT` (`vite.config.ts`) is now the
+   one place the anti-FOUC inline script's source is authored; `themeBootstrapHtml()` injects that
+   exact string into index.html via `transformIndexHtml`, and `buildContentSecurityPolicy` hashes
+   the same string into `script-src` as `'sha256-…'` — never `'unsafe-inline'`. Verified against
+   real built artifacts: `scripts/verify-scanner-platform-build.mjs` recomputes the hash of the
+   ACTUAL `dist/index.html` script and asserts it matches the ACTUAL `dist/_headers` CSP (27/27).
+2. **Dark-mode primary-button contrast (2.53:1) — CLOSED.** New `--pp-accent-foreground` token
+   (`src/styles/index.css`): white in light mode (unchanged, ~5.44:1), `#101113` in dark mode
+   (~7.46:1). Fixed the shared `Button` component AND 14 independent call sites app-wide that had
+   hardcoded `text-white` instead of going through it. Verified three ways: a computational WCAG
+   contrast test against the real hex values, a live `@axe-core/playwright` dark-mode run against
+   the 404 page (zero violations), and re-measured Lighthouse (`/login` accessibility 92 → 100).
+3. **Scanner a11y directory-wide suppression — narrowed.** Removed P101's
+   `src/features/scanner/**` blanket `jsx-a11y/media-has-caption`/`img-redundant-alt` disable.
+   `media-has-caption` is now a single inline `eslint-disable-next-line` on the one live camera
+   `<video>` with its justification inline (genuine false positive — muted, no audio ever exists);
+   `img-redundant-alt` is fixed, not suppressed (`"Captured card photo"` → `"The card you
+   captured"`). `pnpm lint` unchanged: 0 errors, 28 warnings.
+
+Full account: `docs/LAUNCH_CHECKLIST.md` items 17/17a/20 and the CSP/scanner-a11y entries under
+"Other items resolved", `ai_outputs/Claude_outputs/output_103.txt`. `pnpm test` 1181/1181;
+`pnpm test:e2e` (non-authenticated) 128/130 — the 2 failures are the identical pre-existing
+`visual-worker-real-browser.spec.ts` `cardCount` assertion, confirmed to reproduce IDENTICALLY on
+the unmodified P99 base before any P101/P103 change (an environment/catalog-state issue in the
+visual-index staging pipeline, out of this session's scope). `main`, the hosted database and
+production are all unchanged; cost $0.
+
+## P101 — Launch readiness (branch `feat/p101-launch-readiness`, draft PR, NOT merged)
+
+Runs in parallel with P99/P100's M15 scanner work, on the same base (`feat/m15-p96-integrated` @
+`377460e`) — never touches scanner internals (matcher, visual index, `ScannerPage` controller
+lifecycle, `SaleForm` async-prefill logic). Full account: `ai_outputs/Claude_outputs/output_101.txt`,
+[docs/LAUNCH_CHECKLIST.md](docs/LAUNCH_CHECKLIST.md) (all 20 owner-required items, one row each).
+
+Adds the entire public-facing surface that did not exist before this session: `/privacy`, `/terms`,
+`/faq`, a custom 404 (`notFoundComponent`, previously unset), `robots.txt`/`sitemap.xml` (deny-by-
+default — D-116), per-route document title/meta/canonical (`src/ui/useDocumentMeta.ts`), static
+Open Graph metadata, Cloudflare Web Analytics wired but inactive until the owner sets
+`VITE_CF_ANALYTICS_TOKEN` (D-118), a cookie-consent audit concluding no banner is needed (D-117),
+`eslint-plugin-jsx-a11y` (found and fixed 4 real `label-has-associated-control` gaps in the
+Purchase/Sale "Notes" field; found and scoped-off 2 scanner-only findings left for whoever owns
+that code), a real WCAG contrast fix (`--pp-text-tertiary` light value, measured 4.41:1 -> ~4.95:1),
+and `scripts/check-links.mjs` (29/29 against a real build).
+
+**Two real findings surfaced, deliberately NOT fixed this session** (both documented with concrete
+evidence in `LAUNCH_CHECKLIST.md`'s "Other items resolved" section — read that before touching
+either): (1) the `index.html` theme-bootstrap inline `<script>` has no nonce/hash and the CSP
+grants no `'unsafe-inline'`, so it should be CSP-blocked on the real Cloudflare Pages deployment —
+the flash-of-wrong-theme fix it exists for likely silently no-ops in production; (2) primary
+buttons app-wide render at only 2.53:1 contrast in dark mode (`--pp-accent: #c99a66` with white
+text) — a real AA failure on the app's core accent color, too large a visual/design decision for
+this session's scope.
+
+One small production-safety fix landed in shared (non-scanner) code: `router.tsx`'s
+`AppErrorComponent` previously delegated every non-chunk-load error to TanStack Router's own
+`ErrorComponent`, which ships a "Show Error" toggle that renders the raw error/stack **in
+production**, not just development — gated to `import.meta.env.DEV` only; D-100's chunk-load split
+and the P89 unsaved-work logic are untouched.
+
+Verified this session: `pnpm check` clean (1142/1142 unit), full `pnpm test:e2e` 116/116 (one run
+showed 5 transient failures under full-suite parallel load, confirmed non-reproducible in
+isolation), `pnpm build` green (main entry 398.75 KB raw / 120.64 KB gzip, scanner assets confirmed
+still outside the precache manifest), Lighthouse against the 4 public pages (94-95 perf, 100 a11y/
+best-practices/SEO on privacy/terms/faq; `/login` scores lower on SEO by design — it is
+deliberately not indexed).
+
+Owner action required: set `VITE_CF_ANALYTICS_TOKEN` to activate analytics (D-118); the standing
+signed-in mobile/accessibility/forms walkthrough this session could not run (no-sign-in boundary);
+a design decision on the dark-mode button-contrast finding above.
+
+---
+
 **Last updated:** 2026-08-30 — **M15b visual-recognition hybrid scanner is still DRAFT PR #63
 (`feat/m15-scanner-integrated-p68`), NOT merged, NOT deployed.** A real-iPhone P82 retest returned
 an OLD diagnostics schema (none of P82's new `WORKER_BOOTED`/`FAST_SCANNER_STATE`/etc. fields) and

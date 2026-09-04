@@ -6,7 +6,12 @@ import { AuthProvider } from './auth/AuthProvider'
 import { router } from './router'
 import { checkForNewDeployment, initBuildFreshnessWatch } from './platform/build-freshness-runtime'
 import { cleanupObsoleteScannerCaches } from './platform/scanner-cache-cleanup'
+import { initCloudflareWebAnalytics } from './analytics/cloudflareWebAnalytics'
 import './styles/index.css'
+
+// P101/D-118: no-ops unless the owner has configured VITE_CF_ANALYTICS_TOKEN — see
+// src/analytics/cloudflareWebAnalytics.ts.
+initCloudflareWebAnalytics()
 
 // P83/D-100: subscribes to the zero-cost signals that a newer deployment than this bundle is
 // already live (a new Service Worker taking control, or a lazy-chunk import failing because this

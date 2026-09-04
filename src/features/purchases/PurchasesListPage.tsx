@@ -25,7 +25,7 @@ export function PurchasesListPage() {
         <h1 className="text-xl font-semibold tracking-tight text-slate-100">Purchases</h1>
         <Link
           to="/purchases/new"
-          className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-sky-600 px-4 text-sm font-semibold text-white hover:bg-sky-500"
+          className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-sky-600 px-4 text-sm font-semibold text-accent-foreground hover:bg-sky-500"
         >
           <PlusIcon className="size-4" />
           Record purchase
@@ -112,7 +112,7 @@ export function PurchasesListPage() {
           </p>
           <Link
             to="/purchases/new"
-            className="mt-4 inline-flex min-h-11 items-center justify-center rounded-lg bg-sky-600 px-4 text-sm font-semibold text-white hover:bg-sky-500"
+            className="mt-4 inline-flex min-h-11 items-center justify-center rounded-lg bg-sky-600 px-4 text-sm font-semibold text-accent-foreground hover:bg-sky-500"
           >
             Record purchase
           </Link>

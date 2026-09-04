@@ -186,7 +186,9 @@ export function Button({
     'transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 ' +
     'disabled:cursor-not-allowed disabled:opacity-60'
   const variants = {
-    primary: 'bg-sky-600 text-white hover:bg-sky-500',
+    // text-accent-foreground (not text-white): P103 — white-on-accent measured 2.53:1 in dark
+    // mode, a real WCAG AA failure. See src/styles/index.css's --pp-accent-foreground comment.
+    primary: 'bg-sky-600 text-accent-foreground hover:bg-sky-500',
     quiet: 'border border-slate-700 text-slate-200 hover:bg-slate-800',
   }
   return <button className={`${base} ${variants[variant]} ${className}`} {...props} />

@@ -61,7 +61,7 @@ export function GridTile({
             aria-hidden
             className={`absolute right-1 top-1 flex size-5 items-center justify-center rounded-full border-2 ${
               selected
-                ? 'border-sky-500 bg-sky-600 text-white'
+                ? 'border-sky-500 bg-sky-600 text-accent-foreground'
                 : 'border-slate-100/70 bg-slate-950/40'
             }`}
           >

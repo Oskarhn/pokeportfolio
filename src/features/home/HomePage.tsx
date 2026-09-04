@@ -387,7 +387,7 @@ export function HomePage() {
           </p>
           <Link
             to="/catalog"
-            className="inline-block min-h-11 rounded-xl bg-sky-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-sky-500"
+            className="inline-block min-h-11 rounded-xl bg-sky-600 px-5 py-2.5 text-sm font-semibold text-accent-foreground hover:bg-sky-500"
           >
             Search cards
           </Link>
@@ -492,7 +492,7 @@ export function HomePage() {
         </Link>
         <Link
           to="/portfolio"
-          className="min-h-11 flex-1 rounded-xl bg-sky-600 px-4 py-2 text-center text-sm font-semibold text-white hover:bg-sky-500"
+          className="min-h-11 flex-1 rounded-xl bg-sky-600 px-4 py-2 text-center text-sm font-semibold text-accent-foreground hover:bg-sky-500"
         >
           Open Portfolio
         </Link>
