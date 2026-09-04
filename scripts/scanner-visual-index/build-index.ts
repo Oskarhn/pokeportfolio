@@ -65,7 +65,7 @@ import {
   type Checkpoint,
   type CheckpointIdentity,
 } from '../../src/domain/scanner/checkpoint-identity'
-import { assertValidCoverage } from '../../src/domain/scanner/index-coverage'
+import { assertValidCoverage, logCoverageBreakdown } from '../../src/domain/scanner/index-coverage'
 import { drainAllCardPages, type PageFetchResult } from '../../src/domain/scanner/index-pagination'
 import {
   quantizeEmbedding,
@@ -82,6 +82,7 @@ import { embedImageBuffer, warmUpModel } from '../scanner-visual-benchmark/lib/e
 import { VISUAL_MODEL_REPO, VISUAL_MODEL_REVISION, VISUAL_EMBEDDING_DIM } from './lib/model-pin.mjs'
 import { verifyIndexGeneration } from './verify-index'
 import { publishGenerationAtomically, publishPointerAtomically } from './atomic-publish'
+import { pruneOldGenerations, readPreviousContentId } from './generation-retention'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const VISUAL_V1_DIR = join(here, 'generated', 'visual-v1')
@@ -412,6 +413,10 @@ async function main() {
     console.log(`[index] generation ${contentId} already published (byte-identical) — reusing it.`)
   }
 
+  // Captured BEFORE the pointer is overwritten (N-06): this is how pruning learns the
+  // "immediately previous" generation to retain, without needing a separate history log.
+  const previousContentId = readPreviousContentId(VISUAL_V1_DIR)
+
   // current.json updated LAST: if this process is killed before this point, current.json still
   // names the previous valid generation (or is absent, on a first-ever build) — never a torn
   // pointer (P87 F-24).
@@ -422,12 +427,24 @@ async function main() {
   }
   await publishPointerAtomically(VISUAL_V1_DIR, JSON.stringify(pointer, null, 2))
 
+  // Prune old generations ONLY now that the new pointer is safely published (N-06/P94 §3) — a
+  // build that fails or is killed before this point has pruned nothing, and the previous
+  // generation (still what current.json named until the line above) was never at risk.
+  const retain = new Set<string>([contentId])
+  if (previousContentId !== null) retain.add(previousContentId)
+  const { pruned } = pruneOldGenerations(GENERATIONS_DIR, retain)
+  if (pruned.length > 0) {
+    console.log(
+      `[index] pruned ${String(pruned.length)} old generation(s) beyond retention ` +
+        `(kept ${Array.from(retain).join(', ')}): ${pruned.join(', ')}`,
+    )
+  }
+
   console.log(
     `[index] wrote ${String(cardIds.length)} embeddings (${(int8Buffer.byteLength / 1024).toFixed(1)} KB) ` +
-      `as generation ${contentId}. Coverage: ${String(cardIds.length)}/${String(totalCanonicalCards)} canonical ` +
-      `cards (${((100 * cardIds.length) / Math.max(1, totalCanonicalCards)).toFixed(1)}%). ` +
-      `Source project: ${target === 'local' ? 'LOCAL dev stack' : url}.`,
+      `as generation ${contentId}. Source project: ${target === 'local' ? 'LOCAL dev stack' : url}.`,
   )
+  logCoverageBreakdown(coverage)
   if (target === 'local') {
     console.warn(
       '[index] WARNING: this index was built from the LOCAL database. Its card ids are LOCAL ' +

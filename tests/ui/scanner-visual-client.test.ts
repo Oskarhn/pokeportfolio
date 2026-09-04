@@ -311,6 +311,9 @@ describe('VisualRecognitionClient — getExpectedCardRank (P84, ported P87)', ()
       hybridScore: null,
       hybridTier: null,
       scoreComponents: [],
+      // N-08 (P94): same defer-to-controller.ts shape — this class has no catalog-enrichment
+      // concept at all, so it always answers 'not-in-index' here.
+      enrichmentStatus: 'not-in-index',
     })
   })
 
@@ -352,6 +355,7 @@ describe('VisualRecognitionClient — getExpectedCardRank (P84, ported P87)', ()
       hybridScore: null,
       hybridTier: null,
       scoreComponents: [],
+      enrichmentStatus: 'not-in-index',
     })
   })
 

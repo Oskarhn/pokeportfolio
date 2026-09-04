@@ -3940,3 +3940,333 @@ own instruction (overnight priority: integration, not ceremony).
 
 **Not changed:** any financial semantic; any migration (still 90); the committed 19,501-card DINO
 index's actual content. No card was special-cased anywhere.
+
+**P94 correction (2026-09-03):** Section 9's claim above — that the main-thread RGBA-conversion
+fallback restores "a REAL successful embed+search result" on an engine lacking `OffscreenCanvas`
+inside a Worker — is only PARTIALLY true and was never actually run to completion before this
+session; `tests/e2e/visual-worker-real-browser.spec.ts` deferred the E2E gates and the fallback's
+own real-search assertion was never exercised. Running it for real (P94 §24) against Playwright's
+WebKit build (which reports `OffscreenCanvas` undefined in Worker scope) showed the fallback
+converts the captured frame correctly — `visual-worker.ts` itself never constructs an
+`OffscreenCanvas` on this path — but `@huggingface/transformers`' OWN internal image-preprocessing
+step (resizing the input to the model's expected dimensions) unconditionally constructs its own
+`OffscreenCanvas`, with no fallback of its own, regardless of whether the caller supplied an
+`ImageBitmap` or raw RGBA bytes. The result on such an engine is still a well-formed, attributable
+failure (`Error: OffscreenCanvas not supported by this environment.`, thrown from inside the
+library's own minified code — confirmed by inspecting the built `visual-worker-*.js` chunk
+directly) rather than a working search. This is a real, currently open limitation: OCR-only
+matching remains fully available on such a device (D-105 §16's plain-language fallback note still
+applies), but visual recognition genuinely does not work there, and no session has fixed this yet —
+it would need patching or replacing `@huggingface/transformers`' own `RawImage` resize step, which
+is a materially larger change than this correction. Never confirmed against a real Mac/iPhone
+either way. The test now asserts this exact disclosed failure shape when
+`offscreenCanvasAvailableInWorker` is false, rather than a full search success it cannot actually
+prove on this engine.
+
+## D-106 — M15 matcher correctness rewrite: continuous scoring, reliability-weighted evidence, severe-blur abstention (P93)
+
+**2026-09-03 · Accepted**
+
+**Context.** A cross-branch adversarial audit (P92, `ai_outputs/Claude_outputs/output_92.txt`)
+re-derived D-103's F-02 fix by hand against the actual shipped code and found it structurally
+incomplete, not merely under-tuned: (1) the guard's escape hatch required a total-coverage text
+signal (`id + name + set + language`) production can never produce — `rawSetText` is hardcoded
+`null` at every call site, so the maximum reachable text score (80, with the language credit D-106
+itself now removes — see below) never reaches the escape hatch's 90-point threshold; (2) the
+guard's 0.82 activation threshold sat ABOVE P84's own measured MEAN genuine-match similarity
+(0.812, D-101 §2), so an entirely ordinary correct scan could land on the wrong side of the guard
+by sampling noise alone, reproducing F-02's exact failure mode at the threshold's own typical
+operating point; (3) the same absolute-threshold design meant a defect-driven false visual spike on
+a WRONG card could actively discount the TRUE card's text evidence with no escape route — strictly
+worse than having no guard at all. P92 also flagged N-04 (a 17-point scoring discontinuity exactly
+at 0.82), N-05 (the display-score clamp colliding with margin/tie logic, risking a UUID-decided
+rank #1), and N-09 (language-match agreement scoring points despite being guaranteed, not
+evidence, given the retrieval layer's own English-only filter).
+
+**Decision.** Redesigned the mechanism rather than re-tuning the constant, per three structural
+changes:
+
+1. **Continuous visual-evidence curve** (`src/domain/scanner/visual-evidence.ts`) — the old
+   three-band piecewise curve (weak/moderate/strong, meeting at hard threshold boundaries) is
+   replaced by a single continuous logistic curve, `points(s) = ceilingPoints / (1 + e^{-k(s-m)})`,
+   solved algebraically from two P84-calibrated anchors (`points(moderateMin=0.68) ≈ 25`,
+   `points(strongMin=0.82) ≈ 60`), giving `k ≈ 11.53`, `m ≈ 0.7655`. No jump anywhere; every ±0.01
+   similarity step changes points by only a few. `strongMin`/`moderateMin`/`weakMin` remain as
+   CLASSIFICATION boundaries (tier labels, reason codes) but no longer gate the point curve itself.
+2. **Visual-anchor reliability replaces the absolute dominance guard**
+   (`computeVisualAnchorReliability`/`applyVisualAnchorReliability`, `engine.ts`) — P88's
+   discount-the-competition guard is gone entirely. The new mechanism only ever ADDS a
+   corroboration boost to the single candidate the visual channel most confidently supports (the
+   "anchor" — highest finite similarity this scan), scaled by two continuous, non-negative signals:
+   how far into calibrated same-card territory the anchor's own similarity sits (reusing
+   `visualEvidencePoints`'s own curve, `strengthFactor = points/ceilingPoints` — no second
+   calibration to drift out of sync), and how much clearer the anchor is than the runner-up visual
+   candidate (`marginFactor`, saturating at 0.12 similarity units — P84's own geometry-regime mean
+   true-vs-nearest-wrong margin). A single visual candidate with nothing to compare against gets a
+   fixed neutral margin factor (0.7) rather than 0 (unprovably discriminative ≠ disproven) or 1 (an
+   unverified lone reading should not get full credit). Because no candidate's score is ever
+   REDUCED by this mechanism, it structurally cannot reproduce failure mode #3 above — the worst
+   case is simply "no boost," identical to the mechanism not existing. Under P84's catastrophic-
+   defect calibration (same-card mean 0.10-0.13, nearest-wrong mean 0.28-0.41 — wrong-card
+   similarity systematically HIGHER), `strengthFactor` for whichever candidate tops that regime is
+   already near zero, so the guard-equivalent mechanism stays structurally inert there without a
+   second, separate abstention check.
+3. **Rank score vs. display score** (`RankedScannerCandidate.rawRankScore`, N-05) —
+   ordering/margin/tier logic now reads a full-resolution, UNCLAMPED raw score exclusively; the
+   existing `score` field is a clamped-to-[0,100] DISPLAY value derived from it only at the very
+   end, never fed back into any decision. `cardId` is reduced to the final exact-identity-stability
+   tie-break, reached only when raw score AND own visual similarity are BOTH exactly equal — never
+   a meaningful signal. (P93 deliberately did NOT add "original retrieval-array position" as an
+   intermediate tie-break step, despite reading naturally as one: this module has always guaranteed
+   permutation-invariance of its input array, pinned by an existing property test, and plain array
+   position is not the same thing as a genuine retrieval rank a future data-layer field could
+   provide — see engine.ts's own doc for the full reasoning.)
+
+**N-09 — language-match no longer scores.** Audited via a full call-flow trace, not assumed:
+`controller.ts` derives `languageHint` from `scannerSessionStore`, whose `language` field's TYPE is
+the literal `'en'` (V1 is English-only by design, not convention), and BOTH
+`retrieveScannerCandidates` and the visual-shortlist enrichment path (`getCardsByIds`) pass that
+same `'en'` as an explicit server-side filter — every candidate that can reach the scorer in
+production already has `card.language === 'en'`. Agreement is guaranteed, not evidence, and was
+inflating every candidate's score UNIFORMLY (never changing relative ranking, but capable of
+pushing an absolute score across a tier boundary on a fabricated +5 that discriminated nothing). The
+`languageMatch` weight is removed from `SCORING_WEIGHTS`; the mismatch penalty (−12) is KEPT — a
+genuine disagreement remains real, if currently unreachable, evidence against a candidate. The
+'language-match' reason code is still pushed for diagnostic legibility even though it now moves
+zero points. **Real consequence, disclosed rather than silently absorbed:** pure two-signal
+(id-exact + name-exact) text convergence now tops out at 75 — below `highMinScore` (80) — where it
+previously could reach exactly 80 (HIGH) via the now-removed +5. Genuine HIGH confidence from text
+alone now requires the full id+name+set composition (rare in production, since `rawSetText` is
+never populated) or the visual channel's own corroboration boost — a deliberate tightening, not a
+regression: it closes the same "2.5-signal coincidence masquerading as 3-signal certainty" gap F-02
+itself was about, just for the language credit specifically.
+
+**N-19 — OCR-noise slack for the body-text-contamination penalty.** The old 26-character ceiling
+(`analyze.ts`'s `looksLikeBodyTextNotName`) equalled the longest known real card name with ZERO
+slack for OCR noise — a single stray inserted character on that exact name ate the full 60-point
+penalty. Length alone no longer disqualifies a candidate until a real, no-slack-needed hard ceiling
+(30); between the old and new ceilings, only the independent sentence-boundary and word-count checks
+can flag a candidate, and real multi-sentence rules prose reliably trips one of those regardless of
+its exact length, so no real rejection power is lost.
+
+**Severe-blur visual abstention (D-103's own capture-quality.ts, ported and WIRED).** P91 built and
+tested `src/domain/scanner/capture-quality.ts` (Laplacian-variance blur gate,
+`BLUR_ABSTAIN_THRESHOLD=378`) but deliberately shipped it unwired. P93 ports it unchanged and wires
+it below `ScannerPage` at the controller/`rectify-capture.ts` boundary (never touching
+`ScannerPage.tsx` itself, in scope-safety coordination with the parallel P94 session): the blur
+score is computed on the canonical rectified `RgbaImage` `rectify-capture.ts` already produces
+before encoding it to a blob (no extra decode), and when it falls below the threshold, ONLY the
+visual channel is skipped for that scan — OCR text recognition and manual search proceed
+unaffected. New diagnostics: `CAPTURE_BLUR_SCORE`, `CAPTURE_SEVERE_BLUR`, `VISUAL_ABSTAINED`,
+`VISUAL_ABSTAIN_REASON`. The threshold itself is NOT re-derived this session (see the continuous-
+severity benchmark below) — kept at P91's own calibrated value.
+
+**Real benchmark evidence (all actually run this session, not estimated):**
+
+- **240-card/6-set benchmark** (`pnpm scanner:visual:benchmark`, same methodology D-097/D-102
+  established): `NEW_HYBRID_TOP1=99.7%` (TOP3/TOP5 100%/100%, n=1440) — matches `VISUAL_ONLY_TOP1`
+  exactly (99.7%), closing the hybrid-vs-visual-alone gap the audit tracked from -3.9pts
+  (pre-D-103) to -0.3pts (D-103) to ~0pts here.
+- **Real corpus-scale adversarial benchmark** (new, `scripts/scanner-recognition-lab/experiments/
+  08-p93-hybrid-false-confidence.ts`, reusing P91's cached ~4,300-card corpus/reference index): the
+  F-02 adversarial construction (a different corpus card given the true card's own coincidental
+  id+name text match; the true card carries zero text evidence) run through the REAL production
+  matcher, n=300 cards × 3 conditions = 900 trials. Clean: 100% correct, 0% false-HIGH. Geometry-
+  only (`tilted-offcenter`, mean true similarity 0.7999 — essentially P84's own calibrated 0.812):
+  60.7% correct outright, only 1.33% false-HIGH — the true card frequently still wins this
+  worst-case-constructed adversarial matchup at the exact operating point the audit flagged as
+  broken, and even when it loses, it almost never does so at HIGH confidence. Catastrophic
+  (`tilted-glare-shadow-blur`, mean true similarity 0.1195): 0% correct (expected — the true card
+  has genuinely no evidence of its own in this construction) but ALSO 0% false-HIGH — the matcher
+  loses honestly (MEDIUM/LOW/NONE) rather than confidently wrong, in every one of 300 trials.
+- **Continuous blur-severity sweep** (new, `.../09-p93-continuous-blur-severity.ts`, n=80,
+  isolated Gaussian-blur-sigma dimension only — P91 already found its glare/shadow metrics have
+  ~zero discriminative power and neither is wired into production): real TOP1 retrieval accuracy on
+  pure blur alone stays high (96.3%+) at blur scores already below `BLUR_ABSTAIN_THRESHOLD`,
+  cratering steeply between sigma 8-10 (71.3% → 36.3%). The shipped threshold sits conservatively
+  on the safe side of that cliff — appropriate, since real captures rarely blur in total isolation
+  (P91's own calibration bundles blur with the co-occurring tilt/glare/shadow a phone photo
+  realistically has) — and is NOT changed based on this isolated-dimension evidence, per this
+  session's own instruction not to broaden the gate without evidence.
+
+**Explicitly not done, disclosed rather than silently skipped:** the real 19,501-card hosted-catalog
+confusable-group benchmark (F-03) remains open, unchanged since every M15 session since P75 — this
+session's adversarial/blur-severity benchmarks reuse P91's ~4,300-card public-corpus approximation,
+not the real catalog. The dual-prototype reference-index recommendation (P91) was not implemented
+(would require re-embedding the real 19,501-card index, an irreversible multi-hour operation not
+undertaken without a dedicated follow-up decision). No new DINO model was evaluated (D-098 stands
+unchanged — P91 already found no evidenced reason to switch).
+
+**Verified this session:** `pnpm typecheck`/`pnpm lint`/`pnpm format:check` clean; full unit suite
+green; the 240-card visual benchmark and both new real-corpus experiments above actually run, not
+estimated. Full E2E/DB/build gates run as part of this session's own closing verification (see
+`ai_outputs/Claude_outputs/output_93.txt`).
+
+**Not changed:** any financial semantic; any migration; the committed 19,501-card DINO index's
+actual content or the DINOv2-small model itself. No card was special-cased anywhere.
+
+## D-107 — Canvas-free DINOv2 preprocessing closes the real WebKit/OffscreenCanvas gap (P96)
+
+**2026-09-03 · Accepted**
+
+**Context.** P90's main-thread RGBA-conversion fallback (D-105) solved only half of the real
+OffscreenCanvas dependency: it stopped THIS worker from constructing an `OffscreenCanvas` itself
+when converting a captured `ImageBitmap` to RGBA, but `@huggingface/transformers` 4.2.0's own
+`AutoProcessor`-produced `BitImageProcessor` calls `RawImage.resize`/`.center_crop` internally
+during `processor(image)`, and those unconditionally construct their OWN `OffscreenCanvas`
+regardless of whether the caller already supplied raw RGBA bytes — confirmed by reading the
+installed bundle directly (`node_modules/@huggingface/transformers/dist/transformers.js`'s
+`src/utils/image.js` section: `createCanvasFunction`/`toCanvas`, gated only on
+`apis.IS_WEB_ENV`, no non-canvas branch exists). P94 found this for real (§24, D-105's own
+addendum): running the real WebKit E2E spec against Playwright's WebKit build (which genuinely
+reports `OffscreenCanvas === undefined` in Worker scope) produced a well-formed but real failure —
+`Error: OffscreenCanvas not supported by this environment.` — thrown from inside the library's own
+minified preprocessing code, not from any of this project's own worker logic.
+
+**Decision.** Rather than patching or forking `@huggingface/transformers` to remove one internal
+`OffscreenCanvas` call, this session reimplemented the exact preprocessing numerically —
+`src/domain/scanner/dino-preprocess.ts`'s `preprocessRgbaForDino`: RGBA → drop alpha → bilinear
+resize (shortest edge to 256, matching `preprocessor_config.json`'s `size.shortest_edge`) → center
+crop 224×224 → rescale (`1/255`) → normalize (ImageNet mean/std, both copied verbatim from the
+committed `public/scanner-assets/visual-v1/model/preprocessor_config.json`, never remembered
+defaults) → permute HWC→CHW. Pure typed-array arithmetic — no canvas, no DOM, no
+`OffscreenCanvas` anywhere in the file, so it runs identically on every JS engine.
+`visual-worker.ts`'s new `runModelOnRgba` branches on `OFFSCREEN_CANVAS_AVAILABLE_IN_WORKER`: when
+true, the existing AutoProcessor path is completely unchanged (zero risk to the already-proven
+99.7%-TOP1 Chromium path); when false, `processor(image)` is skipped entirely — never merely
+caught — in favor of the canvas-free path, which feeds the model directly via a hand-built
+`Tensor('float32', ..., [1,3,224,224])`.
+
+**RESAMPLE NOTE, disclosed rather than glossed over.** The preprocessor config's `resample: 3`
+(bicubic) label does NOT describe what the browser-path AutoProcessor has ever actually done in
+this project: `RawImage.resize`'s web-environment branch calls `ctx.drawImage(canvas, 0, 0, w, h)`
+unconditionally and never consults `resample` at all (that parameter is Node/`sharp`-only). So
+there is no existing browser-path pixel algorithm for this reimplementation to bit-match — the
+real target is RETRIEVAL-OUTCOME parity, not literal resample-algorithm parity, and this module
+uses plain bilinear resampling (half-pixel-center convention) as a simple, easy-to-verify choice.
+
+**Parity evidence (`scripts/scanner-preprocess-parity/`, `pnpm scanner:preprocess:parity`), run for
+real over 100 real card images × 6 shape variants (portrait-native, landscape-rotated,
+odd-dimensions, near-crop-size ~230px, large-iPhone-scale ~3024×4032, RGBA-semi-transparent) = 600
+evaluations, comparing this module's output against the library's own Node/`sharp`-backed
+AutoProcessor path (same pinned model, same input pixels, isolating the comparison to the
+preprocessing algorithm itself) — both queried against the real committed 19,501-card production
+index:**
+
+- `PREPROCESSOR_PARITY_IMAGES=100` (600 total evaluations across 6 shape variants)
+- `PREPROCESSOR_MEAN_COSINE=0.9762` (min 0.9202 across all 600 evaluations)
+- `PREPROCESSOR_TOP1_AGREEMENT=96.2%` overall — by variant: portrait-native 100%, RGBA-
+  semi-transparent 100% (confirms alpha is genuinely ignored, not merely untested),
+  odd-dimensions 99%, large-iPhone-scale 98%, near-crop-size 95%, landscape-rotated 85% (the one
+  weak spot — rotation changes which pixels land at the resize/crop boundary more than any other
+  variant; disclosed as a real, measured residual, not hidden)
+- `PREPROCESSOR_TOP5_AGREEMENT` (identical top-5 sets) `=32.3%`; mean top-5 SET OVERLAP `=79.6%`
+  (most disagreement is a swapped 4th/5th-place near-tie, not the true match falling out of
+  contention — the two paths' shortlists overlap substantially even when not byte-identical)
+
+**Verdict.** 96.2% TOP1 agreement and 0.976 mean cosine similarity are not literal 100% parity, but
+the evidence supports the substitution: DINOv2 embeddings are already known (P91/P93/P95) to be
+robust to small preprocessing perturbations at this similarity range, and this module is a
+fallback path — it activates ONLY on an engine that would otherwise have zero working visual
+recognition at all (an outright crash), so a small measured gap from a from-scratch bilinear
+resize against the library's own resize is a real improvement over the status quo, not a
+regression against any currently-shipping behavior. The landscape-rotated residual is flagged as a
+disclosed follow-up: a future session with more time could measure whether area-averaging
+downsampling (rather than plain bilinear) narrows that specific gap, but was not judged worth
+delaying this fix over given the fallback framing above.
+
+**iPhone memory (§9, not separately benchmarked on real hardware this session — reasoned from the
+implementation).** `preprocessRgbaForDino` allocates, at peak: one RGBA→RGB float buffer
+(`width×height×3×4` bytes), one resized buffer (`resizedWidth×resizedHeight×3×4` bytes, typically
+smaller since the source is downscaled to a ~256px short edge), and the final fixed 224×224×3×4
+(~600KB) tensor — each intermediate is a local variable eligible for GC the instant the next stage
+starts (no retained references), so this never holds more than roughly two full-resolution-scale
+buffers simultaneously, the same order of magnitude the existing OffscreenCanvas path already
+holds (a canvas backing store plus its `ImageData` buffer). No raw card image is ever persisted by
+either path.
+
+**Not changed:** the default OffscreenCanvas-available path (byte-for-byte the same code, same
+proven 99.7% TOP1); the committed 19,501-card visual index; any migration; any financial semantic.
+`docs/SCANNER_RESEARCH.md` §11 records the same evidence in narrative form.
+
+## D-108 — ScannerPage's controller is double-constructed by React StrictMode's render-purity check; the wrong instance gets disposed, permanently breaking OCR/visual analysis under `pnpm dev` (P96, NOT FIXED — disclosed)
+
+**2026-09-03 · Accepted (finding disclosed; fix deferred)**
+
+**Context.** Building the first-ever real, authenticated, camera-free (file-picker) scanner E2E
+test (P96 §15 — closing P94's own disclosed "real nonempty-scanner-batch authenticated E2E" gap)
+surfaced a genuine bug no prior session's E2E coverage had ever exercised: every real capture
+analysis failed with `ScannerEngineDisposedError` ("The card reader was closed"), thrown by
+`ocr-engine.ts`'s own disposal guard, visible in the page as `ReviewView` bouncing back to
+"Use photo"/"Retake" with that exact error text instead of reaching a result.
+
+**First hypothesis, tried and DISPROVEN.** The obvious suspect was `ScannerPage.tsx`'s route-exit
+cleanup effect (`useEffect(() => () => {..., controller.dispose()}, [controller])`) running under
+React StrictMode's well-known EFFECT double-invoke (mount → synchronous synthetic cleanup →
+synchronous synthetic remount, all for the same committed render). A fix deferring the dispose to a
+cancelable macrotask (`setTimeout(..., 0)`, cancelled by a same-tick StrictMode remount) was built
+and shipped — and the bug still reproduced identically. That disproof is what led to the real
+diagnosis below; the timer-based fix has been reverted (it added real complexity for zero benefit).
+
+**Actual root cause, confirmed by instance-tagged debug logging** (a monotonic counter plus
+`console.error` at construction/dispose/analyzeCapture, read back through Playwright's real
+browser console — not inferred from source reading alone):
+
+```
+controller #1 CREATED userId=<real-uuid>
+controller #2 CREATED userId=<same real-uuid>      <- SAME dependency, constructed AGAIN
+controller #1 DISPOSE (already disposed=false)      <- #1, not #2, gets torn down
+controller #1 analyzeCapture called, disposed=true  <- #1, not #2, is what the click handler uses
+```
+
+React 18/19 StrictMode has a SEPARATE, RENDER-level double-invoke (distinct from the effect one):
+for the initial mount, the component function body itself is called twice as part of React's
+"detect impure renders" check, and the FIRST call's rendered output is discarded in favor of the
+SECOND. But `useMemo(() => getScannerUiController(userId), [userId])`'s factory is not automatically
+"pure-checked" or deduplicated by React — it is a real side effect (constructs a `ScannerOcrEngine`
++ `VisualRecognitionClient`), and it genuinely runs on BOTH invocations, producing two independently
+alive controller instances for the identical `userId`. Empirically, the FIRST instance — not the
+second, and not whichever one a naive "first render is thrown away" mental model would predict — is
+the one that ends up wired into the actually-committed render's event handlers (`handleUsePhoto`
+closes over it), while the route-exit cleanup effect (keyed on `[controller]`, correctly following
+that same first instance through React's hook-identity bookkeeping) disposes it once StrictMode's
+effect-level double-invoke runs its synthetic cleanup/remount cycle. The deferred-timer fix could
+never have worked: the double CONSTRUCTION happens at the RENDER phase, before any effect (or its
+cleanup timing) is even in play — there is no effect-level signal available to distinguish "which of
+these two already-constructed instances is the real one."
+
+This was invisible to every prior M15 session because every existing scanner E2E spec drives the
+PRODUCTION preview server (`pnpm build && pnpm preview`, where StrictMode's entire double-invoke
+machinery — both the render-level and effect-level checks — is compiled out and inert; the real
+deployed PWA was NEVER affected). The `desktop-chromium-authenticated` project P94 built is the
+only one that drives Vite's DEV server (`pnpm exec vite`, where StrictMode is live), and nothing had
+ever navigated it to `/scan` before this session's new test.
+
+**Decision.** Disclose and defer, rather than ship a second unverified fix attempt. The correct fix
+requires moving controller construction OUT of `useMemo` and INTO the mount effect itself (stored in
+a ref that event handlers read), so React's render-level double-invoke can no longer produce two
+independently-alive instances in the first place — `useMemo`'s own factory has no such guarantee
+StrictMode respects, but effect bodies genuinely only run once per REAL mount. That restructuring
+touches every one of `controller`'s ~9 read sites in `ScannerPage.tsx`, several inside their own
+`[controller]`-keyed effects (prewarm, fast-baseline polling, `analyzeCapture`, `commitBatch`), plus
+two `useState` lazy initializers that currently read `controller` synchronously at first render
+(`getFastScannerState`/`getVisualPrewarmState` — safe to default to `'not-loaded'` unconditionally
+instead, since a truly fresh controller cannot report anything else at that exact instant, but still
+a change to verify). This is a materially larger, riskier change — in one of this project's most
+heavily adversarially-reviewed files — than this session could responsibly design AND re-validate
+end to end after two already-spent diagnostic attempts, for a bug with zero production impact.
+`tests/e2e/authenticated/account-boundary.spec.ts`'s scanner-batch test (P96 §15) is marked
+`test.fixme()` with this decision's own diagnosis inline, ready to un-skip the moment a future
+session lands the ref-based restructuring — the test itself is otherwise complete and correct.
+
+**Verified:** the full unit suite (1142/1142) and lint/format/build are all clean after reverting the
+ineffective timer fix and removing every debug log added during diagnosis (confirmed by
+`tests/ui/scanner-network-audit.test.ts`'s own static privacy audit, which caught the leftover
+`console.error` calls immediately — a real, useful catch of exactly the class of regression it
+exists to prevent). Production build/bundle size unaffected (ScannerPage chunk unchanged at 105.52
+KB raw, byte-identical to pre-investigation).
+
+**Not changed:** anything about the controller's own dispose()/analyzeCapture() contracts; the
+production (StrictMode-inert) code path, which was never affected by this bug in the first place;
+any other file. The DECISIONS.md entry originally written for the (disproven) timer-based fix has
+been fully replaced by this one rather than left alongside it as a second, contradictory record.

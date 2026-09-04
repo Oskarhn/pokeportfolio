@@ -253,6 +253,41 @@ describe('ScannerOcrEngine — dispose() (F-13/F-14)', () => {
     // not left calling into an already-terminated worker.
     await expect(second).rejects.toBeInstanceOf(ScannerEngineDisposedError)
   })
+
+  it('N-20: when disposedSignal wins the race, a LATE rejection from the underlying worker.recognize() never becomes an unhandled rejection', async () => {
+    const { ScannerOcrEngine } = await importEngine()
+    const engine = new ScannerOcrEngine()
+    const worker = fakeWorker()
+    let rejectRecognize!: (error: unknown) => void
+    worker.recognize.mockReturnValue(
+      new Promise((_resolve, reject) => {
+        rejectRecognize = reject
+      }),
+    )
+    createWorkerMock.mockResolvedValueOnce(worker)
+    await engine.prepare()
+
+    const unhandled: unknown[] = []
+    const onUnhandledRejection = (reason: unknown) => unhandled.push(reason)
+    process.on('unhandledRejection', onUnhandledRejection)
+    try {
+      const pending = engine.recognize({} as HTMLCanvasElement)
+      await flush()
+      engine.dispose() // disposedSignal wins the race inside recognizeOnce; `work` is still pending
+      await pending.catch(() => {}) // the caller's own promise settles via disposal, as before
+
+      // NOW the underlying worker call rejects — exactly the race F-20's sibling gap (N-20)
+      // describes: the worker was just terminated, so its own in-flight recognize() job rejects
+      // AFTER disposal already won. Without work.catch(() => {}) in ocr-engine.ts, this next line
+      // would produce a genuine unhandled rejection.
+      rejectRecognize(new Error('worker terminated mid-recognition'))
+      await flush()
+      await flush() // a second tick — unhandledRejection fires one microtask-queue-drain later
+    } finally {
+      process.off('unhandledRejection', onUnhandledRejection)
+    }
+    expect(unhandled).toEqual([])
+  })
 })
 
 describe('ScannerOcrEngine — recognize() concurrency lock (F-15)', () => {

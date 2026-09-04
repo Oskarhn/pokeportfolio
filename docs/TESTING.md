@@ -902,6 +902,73 @@ treat this list as part of its own review, every time.
 
 ---
 
+## 6b. Local authenticated E2E (P94)
+
+The standing gap §6's own table names ("Redeem invitation → sign in → session persists across
+reload | Against a live stack; manual or remote, not public CI") is now closeable LOCALLY and
+automated — not solved for public CI (no Supabase credential belongs there), but no longer an
+excuse for every signed-in form flow to go untested by anything but manual owner review.
+
+**What it is.** A THIRD Playwright project, `desktop-chromium-authenticated`
+(`playwright.config.ts`), driven against a real local Supabase stack:
+
+1. A `setup` project (`tests/e2e/authenticated/auth.setup.ts`) creates a synthetic user through
+   the exact invitation-issue → claim → `createUser` → finalize path `tests/db/setup.ts`'s
+   `createSyntheticUser` already uses for every DB/authorization fixture in this repo (never
+   `auth.admin.createUser` alone — the S2 signup-gate trigger refuses that by design), then signs
+   in through the REAL `/login` form (never a hand-constructed `localStorage` session — Supabase's
+   client-side session shape is an implementation detail no test should depend on) and saves the
+   resulting browser state to `playwright/.auth/e2e-user.json` (gitignored).
+2. `desktop-chromium-authenticated` specs (`tests/e2e/authenticated/*.spec.ts`) reuse that saved
+   state — signed in already when each spec starts.
+3. A `teardown` project (`auth.teardown.ts`) deletes the synthetic user afterward.
+4. A second `webServer` — Vite's own dev server on port 4174, not the placeholder-backend
+   production preview on 4173 — configured with the REAL local `VITE_SUPABASE_URL`/anon key, so
+   real sign-in and real data actually work. The existing placeholder-backend suite (§6, port
+   4173) is completely unaffected; the two never share a build or a port.
+
+**Why opt-in, not part of the default `pnpm test:e2e` run:** it needs a local Supabase stack
+already running and freshly migrated, which `pnpm test:e2e` alone must never require (a laptop
+with no Docker running still gets the full placeholder-backend suite). Gated behind
+`PLAYWRIGHT_AUTHENTICATED_E2E=1`, which is what registers the three extra projects at all.
+
+**How to run it:**
+
+```bash
+pnpm db:reset
+# then, in the same shell:
+eval "$(pnpm exec supabase status -o env | sed -n 's/^\(SUPABASE_URL\|SUPABASE_SERVICE_ROLE_KEY\|SUPABASE_ANON_KEY\)=/export &/p')"
+# (or export SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY / SUPABASE_ANON_KEY by hand from that output,
+# matching exactly what `pnpm test:db` already requires — see §5)
+PLAYWRIGHT_AUTHENTICATED_E2E=1 pnpm exec playwright test --project desktop-chromium-authenticated
+```
+
+**What it proves that nothing else in this repository does:** real, signed-in, UI-driven form
+behavior — not just routing/guards/layout against a placeholder backend (§6), not just RPC-level
+authorization (§4). In particular:
+
+- **Unsaved-work protection under a real stale-deployment trigger** (D-100, F-40): Purchase
+  Add/Edit, Sale Add/Edit and a nonempty scanner batch must each REFUSE the automatic reload
+  (`StaleDeploymentBanner` shows the blocking prompt instead) when the form/batch holds real
+  unsaved input; a genuinely clean route (dashboard) still auto-reloads. The trigger itself is
+  simulated exactly the way `tests/e2e/stale-deployment.spec.ts` already does —
+  `window.dispatchEvent(new Event('vite:preloadError'))` — no real stale build is needed.
+- **Sale Add's holding-prefill dirty-baseline fix (N-14, P94)** specifically needs a REAL signed-in
+  session with a REAL holding to prefill against — exactly the case no other suite could exercise
+  before this infrastructure existed. See `tests/e2e/authenticated/unsaved-work-protection.spec.ts`.
+- **Account-boundary privacy**: signing out one synthetic user and signing in a second must leave
+  no trace of the first's in-memory state (scanner batch, unsaved purchase) — see
+  `tests/e2e/authenticated/account-boundary.spec.ts`.
+
+**Scope actually covered by this session (P94) vs. left for a future one:** Purchase Add and Sale
+Add (with a real holding prefill) are covered end-to-end; Purchase Edit/Sale Edit and a real
+nonempty scanner batch (camera + OCR against a fake media stream) are NOT yet — they need,
+respectively, a pre-existing purchase/sale fixture and a `--use-fake-device-for-media-stream`
+Chromium launch flag this session did not wire up. The infrastructure (setup/teardown/webServer/
+project wiring) supports adding both without further scaffolding.
+
+---
+
 ## 7a. Privilege-convergence tests
 
 Three steps in `db-tests`, and the order is the point (SECURITY.md §5.9):

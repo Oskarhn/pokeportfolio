@@ -16,7 +16,8 @@
  * failure is attributable to one stage instead of one opaque message (prompt §11/§12).
  */
 /// <reference lib="webworker" />
-import { AutoModel, AutoProcessor, RawImage, env } from '@huggingface/transformers'
+import { AutoModel, AutoProcessor, RawImage, Tensor, env } from '@huggingface/transformers'
+import { preprocessRgbaForDino } from '../../../domain/scanner/dino-preprocess'
 import { assertValidCoverage, CoverageInvariantError } from '../../../domain/scanner/index-coverage'
 import {
   selectVisualBackend,
@@ -43,7 +44,8 @@ import {
 } from '../../../domain/scanner/index-content-id'
 import {
   deriveProjectIdentity,
-  LOCAL_SUPABASE_URL,
+  canonicalizeProjectIdentity,
+  LOCAL_PROJECT_IDENTITY_SENTINEL,
 } from '../../../domain/scanner/checkpoint-identity'
 import {
   classifyVisualAssetUrl,
@@ -73,16 +75,34 @@ const INDEX_BASE = `${ASSET_BASE}/index`
 const CONFIGURED_SUPABASE_URL: string | undefined = (
   import.meta as unknown as { env?: Record<string, string | undefined> }
 ).env?.VITE_SUPABASE_URL
+/** P94 N-13: an explicit, build-time override for the canonical project ref this deployment
+ *  expects, for the case a hosted Supabase project is ever fronted by a custom domain (where
+ *  deriving a ref from the URL's hostname would no longer work at all). Left unset in every build
+ *  today — the standard `*.supabase.co` derivation below covers the real deployment. */
+const CONFIGURED_PROJECT_REF: string | undefined = (
+  import.meta as unknown as { env?: Record<string, string | undefined> }
+).env?.VITE_SUPABASE_PROJECT_REF
 /** True when THIS deployment itself has no real hosted project configured — the local dev stack
- *  or CI's own placeholder build (both use the identical well-known URL, `LOCAL_SUPABASE_URL`).
- *  In that case there is nothing meaningful to gate the index's `sourceProjectRef` against, so the
- *  gate stays informational rather than rejecting (P87 §8's "do not destroy convenient local
- *  development" requirement). */
+ *  or CI's own placeholder build. Compares CANONICAL identities (P94 N-13), not raw strings: a
+ *  local Supabase CLI reached via `localhost:54321` or `127.0.0.1:54321` (or any port a developer
+ *  configured) must be recognized as local either way — the old exact-string comparison against
+ *  `LOCAL_SUPABASE_URL` alone would wrongly treat a `localhost`-spelled local stack as "a real
+ *  hosted deployment" and silently disable the visual channel. In that case there is nothing
+ *  meaningful to gate the index's `sourceProjectRef` against, so the gate stays informational
+ *  rather than rejecting (P87 §8's "do not destroy convenient local development" requirement). */
 const IS_LOCAL_OR_UNCONFIGURED_DEPLOYMENT =
-  CONFIGURED_SUPABASE_URL === undefined || CONFIGURED_SUPABASE_URL === LOCAL_SUPABASE_URL
+  CONFIGURED_SUPABASE_URL === undefined ||
+  canonicalizeProjectIdentity(CONFIGURED_SUPABASE_URL) === LOCAL_PROJECT_IDENTITY_SENTINEL
+/** The canonical ref this deployment expects the index's `sourceProjectRef` to resolve to (P94
+ *  N-13): `VITE_SUPABASE_PROJECT_REF` when explicitly configured (the custom-domain escape
+ *  hatch), otherwise derived from `VITE_SUPABASE_URL` and canonicalized — which strips the
+ *  `.supabase.co` suffix, so this matches an EXISTING committed manifest's raw host-string
+ *  `sourceProjectRef` (canonicalized the same way at comparison time below) without needing to
+ *  regenerate it. */
 const EXPECTED_SOURCE_PROJECT_REF = IS_LOCAL_OR_UNCONFIGURED_DEPLOYMENT
   ? null
-  : deriveProjectIdentity(CONFIGURED_SUPABASE_URL)
+  : (CONFIGURED_PROJECT_REF?.toLowerCase() ??
+    canonicalizeProjectIdentity(deriveProjectIdentity(CONFIGURED_SUPABASE_URL)))
 /** P81 §8: a Cache-Storage-API cache this worker owns and reads/writes directly, INDEPENDENT of
  *  whether the page's Service Worker actually intercepts fetches issued from inside a dedicated
  *  Worker — a real cross-browser gap (historically, WebKit did not route Worker-issued fetches
@@ -506,12 +526,21 @@ async function loadIndex(): Promise<DecodedVisualIndex | null> {
   // P87 F-22: source-project identity is now an enforceable gate at runtime, not just a logged
   // field — but ONLY when THIS deployment itself has a real hosted project configured (never in
   // local dev / CI's placeholder build, per EXPECTED_SOURCE_PROJECT_REF's own doc above).
+  // P94 N-13: the manifest's stored value is canonicalized at COMPARISON time (never rewritten in
+  // place — that would change the content-id hash of an already-published generation), so an
+  // existing manifest's raw host string (`"nopmkroeygmlvndzjjqs.supabase.co"`) still matches a
+  // canonical expectation (`"nopmkroeygmlvndzjjqs"`) without needing to regenerate the index.
   if (EXPECTED_SOURCE_PROJECT_REF !== null) {
-    lastIndexSourceProjectMatch = manifest.sourceProjectRef === EXPECTED_SOURCE_PROJECT_REF
+    const manifestProjectIdentity =
+      manifest.sourceProjectRef !== undefined
+        ? canonicalizeProjectIdentity(manifest.sourceProjectRef)
+        : undefined
+    lastIndexSourceProjectMatch = manifestProjectIdentity === EXPECTED_SOURCE_PROJECT_REF
     if (!lastIndexSourceProjectMatch) {
       lastIndexUnavailableReason =
-        `manifest sourceProjectRef "${String(manifest.sourceProjectRef)}" != expected ` +
-        `"${EXPECTED_SOURCE_PROJECT_REF}" — refusing an index built against the wrong Supabase project.`
+        `manifest sourceProjectRef "${String(manifest.sourceProjectRef)}" (canonical: ` +
+        `"${String(manifestProjectIdentity)}") != expected "${EXPECTED_SOURCE_PROJECT_REF}" — ` +
+        'refusing an index built against the wrong Supabase project.'
       return null
     }
   }
@@ -831,6 +860,43 @@ async function init(message: InitMessage): Promise<void> {
   })
 }
 
+/**
+ * P96/D-107: `@huggingface/transformers`' own AutoProcessor path (the `OFFSCREEN_CANVAS_AVAILABLE_
+ * IN_WORKER` branch below) unconditionally constructs an `OffscreenCanvas` internally during
+ * resize/center-crop, REGARDLESS of whether this worker already has plain RGBA bytes — confirmed
+ * by reading the installed bundle directly (`src/utils/image.js`'s `RawImage.resize`/
+ * `.center_crop`, both gated on `apis.IS_WEB_ENV` with no non-canvas branch). P90's own main-thread
+ * RGBA-conversion fallback (`capturedImageToRgba`, `visual-client.ts`) therefore only ever solved
+ * HALF the real gap: it kept THIS worker from constructing an OffscreenCanvas itself, but the
+ * library's own internal preprocessing still does, so `processor(image)` always throws
+ * `OffscreenCanvas not supported by this environment.` on an engine that lacks it (D-105's own
+ * correction, confirmed by running the real WebKit E2E spec — see docs/DECISIONS.md D-105/D-107).
+ *
+ * On such an engine, `processor(image)` is skipped entirely — never merely caught — in favor of
+ * `preprocessRgbaForDino` (`src/domain/scanner/dino-preprocess.ts`), a canvas-free reimplementation
+ * of the exact same pinned-model preprocessing that runs identically on every JS engine because it
+ * touches nothing but typed arrays. Numerically verified against this exact AutoProcessor path
+ * over a real card-image corpus — see `scripts/scanner-preprocess-parity/` and D-107 for the
+ * measured cosine-similarity/retrieval-agreement evidence this substitution was accepted on. The
+ * default, already-proven-at-scale OffscreenCanvas path is completely unchanged either way.
+ */
+async function runModelOnRgba(
+  buffer: Uint8ClampedArray,
+  width: number,
+  height: number,
+): Promise<{ last_hidden_state: { data: ArrayLike<number> } }> {
+  if (!model) throw new Error('Visual model not initialized.')
+  if (OFFSCREEN_CANVAS_AVAILABLE_IN_WORKER) {
+    if (!processor) throw new Error('Visual processor not initialized.')
+    const image = new RawImage(buffer, width, height, 4)
+    const inputs = (await processor(image)) as Record<string, unknown>
+    return (await model(inputs)) as { last_hidden_state: { data: ArrayLike<number> } }
+  }
+  const preprocessed = preprocessRgbaForDino({ data: buffer, width, height })
+  const pixel_values = new Tensor('float32', preprocessed.data, [1, ...preprocessed.dims])
+  return (await model({ pixel_values })) as { last_hidden_state: { data: ArrayLike<number> } }
+}
+
 async function embedAndSearch(message: EmbedAndSearchMessage): Promise<void> {
   if (!model || !processor) {
     post({ type: 'error', requestId: message.requestId, message: 'Visual model not initialized.' })
@@ -839,9 +905,7 @@ async function embedAndSearch(message: EmbedAndSearchMessage): Promise<void> {
   try {
     const embedStart = performance.now()
     const { buffer, width, height } = capturedImageToRgba(message.image)
-    const image = new RawImage(new Uint8ClampedArray(buffer), width, height, 4)
-    const inputs = (await processor(image)) as Record<string, unknown>
-    const output = (await model(inputs)) as { last_hidden_state: { data: ArrayLike<number> } }
+    const output = await runModelOnRgba(new Uint8ClampedArray(buffer), width, height)
     const raw = Float32Array.from(output.last_hidden_state.data).slice(0, EMBEDDING_DIM)
     // Norm of the RAW embedding, captured before l2Normalize mutates it in place — diagnostics
     // sanity signal only (prompt §40 EMBEDDING_NORM), never used in the actual search.

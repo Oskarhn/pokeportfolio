@@ -95,20 +95,6 @@ export function SaleFormPage() {
   const [error, setError] = useState<string | null>(null)
   const [idempotencyKey] = useState(() => crypto.randomUUID())
 
-  // F-40 (P89): see PurchaseFormPage's identical registration for why.
-  useUnsavedWorkSnapshot('sale-form', {
-    items,
-    soldOn,
-    marketplace,
-    currency,
-    feesInput,
-    shippingCostInput,
-    shippingChargedInput,
-    notes,
-    fxMode,
-    fxRate,
-  })
-
   const holdingIds = useMemo(() => {
     const ids = new Set<string>()
     if (search.holdingId) ids.add(search.holdingId)
@@ -118,27 +104,77 @@ export function SaleFormPage() {
     return [...ids]
   }, [search.holdingId, search.holdingIds])
 
+  // N-14 (P94): the dirty-by-diff baseline must not be captured until the async holdingId(s)
+  // prefill below has resolved (or there is none to wait for) — see useIsDirtyByDiff's own doc.
+  // Computed via a lazy initializer (never a synchronous setState-in-effect,
+  // react-hooks/set-state-in-effect) — when there is nothing to prefill, the render's OWN first
+  // pass already knows that from `holdingIds`, so there is no need to wait a tick for an effect.
+  const [prefillReady, setPrefillReady] = useState(() => holdingIds.length === 0)
+
+  // F-40 (P89): see PurchaseFormPage's identical registration for why.
+  useUnsavedWorkSnapshot(
+    'sale-form',
+    {
+      items,
+      soldOn,
+      marketplace,
+      currency,
+      feesInput,
+      shippingCostInput,
+      shippingChargedInput,
+      notes,
+      fxMode,
+      fxRate,
+    },
+    prefillReady,
+  )
+
   // One-time prefill from the route's holdingId(s) — a bounded direct lookup, not a search. The
   // "already started" flag lives in a ref (never a setState call in the effect body itself,
   // react-hooks/set-state-in-effect) — only the eventual async result calls setState, inside .then.
+  //
+  // P94 (found via the new authenticated-E2E infrastructure, docs/TESTING.md §6b): this effect
+  // used to ALSO track a per-instance `active` closure flag, set false by the effect's own
+  // cleanup, and discarded the fetch's result (and skipped `setPrefillReady(true)` entirely) once
+  // `active` was false. Under React StrictMode's real dev-mode double-invoke (mount, synthetic
+  // unmount, remount — src/main.tsx wraps the app in `<StrictMode>`), the sequence was: mount 1
+  // sets `prefillStarted.current = true` and starts the fetch; mount 1's OWN cleanup fires
+  // (StrictMode's synthetic unmount), setting mount 1's `active = false`; mount 2 sees
+  // `prefillStarted.current` already true and does nothing. Mount 1's fetch then resolves, sees
+  // its own `active` is false, and discards the result — items never populate, AND
+  // `prefillReady` never becomes true (so the N-14 dirty-baseline fix above never even engages).
+  // Two guards that were each independently correct fought each other. `prefillStarted.current`
+  // is already the right, StrictMode-safe "start the fetch exactly once" guard on its own — a
+  // fetch's result reaching an unmounted-for-real component is harmless in React 18+ (setState on
+  // an unmounted component is a silent no-op, not a warning), so the extra `active` cancellation
+  // bought nothing but this bug. Removed; the ref alone is sufficient and correct under both a
+  // real single mount and StrictMode's simulated double one.
   useEffect(() => {
-    if (prefillStarted.current || holdingIds.length === 0) return
+    if (prefillStarted.current) return
     prefillStarted.current = true
-    let active = true
-    void listPortfolio({ sort: 'name_asc', limit: 100 }).then((page) => {
-      if (!active) return
-      const byId = new Map(page.results.map((t) => [t.holdingId, t]))
-      const found = holdingIds.map((id) => byId.get(id)).filter((t): t is PortfolioTile => !!t)
-      setItems((current) => [
-        ...current,
-        ...found
-          .filter((tile) => !current.some((i) => i.holdingId === tile.holdingId))
-          .map((tile) => draftFromTile(tile)),
-      ])
-    })
-    return () => {
-      active = false
+    if (holdingIds.length === 0) {
+      // Nothing to prefill — prefillReady's own lazy initializer already accounted for this.
+      return
     }
+    listPortfolio({ sort: 'name_asc', limit: 100 })
+      .then((page) => {
+        const byId = new Map(page.results.map((t) => [t.holdingId, t]))
+        const found = holdingIds.map((id) => byId.get(id)).filter((t): t is PortfolioTile => !!t)
+        setItems((current) => [
+          ...current,
+          ...found
+            .filter((tile) => !current.some((i) => i.holdingId === tile.holdingId))
+            .map((tile) => draftFromTile(tile)),
+        ])
+      })
+      .catch(() => {
+        // A failed prefill must not leave prefillReady stuck at false forever — that would mean
+        // NO future edit is ever recognized as dirty either (N-14). Proceed with whatever items
+        // exist right now (unchanged) as the real baseline.
+      })
+      .finally(() => {
+        setPrefillReady(true)
+      })
   }, [holdingIds])
 
   const lotQueries = useQueries({
