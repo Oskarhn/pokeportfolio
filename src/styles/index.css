@@ -39,6 +39,11 @@
   --color-slate-100: var(--pp-text-primary);
   --color-slate-50: var(--pp-surface-2);
 
+  /* Text/icon color for content painted directly ON an accent-colored surface (primary buttons) —
+     see --pp-accent-foreground's own comment below for why this exists as its own token instead
+     of a hardcoded `text-white`. */
+  --color-accent-foreground: var(--pp-accent-foreground);
+
   /* Accent scale -> the bronze/copper accent. Interactive elements and focus rings only
      (DESIGN_SYSTEM.md §3) — never used for decoration or branding. */
   --color-sky-950: var(--pp-accent);
@@ -93,6 +98,11 @@
   --pp-accent: #8f5f35;
   --pp-accent-soft: #8f5f35;
   --pp-accent-wash: #f1e4d6;
+  /* P103: white on #8f5f35 measures ~5.44:1 — already AA (>=4.5:1) for normal-size button text,
+     so light mode is unchanged. Kept as its own token (not a hardcoded `text-white` in the
+     component) purely so light and dark can specify independently, the same reasoning as every
+     other --pp-* pair above. */
+  --pp-accent-foreground: #ffffff;
   --pp-negative-text: #b3261e;
   --pp-negative-wash: #fbeae9;
   --pp-negative-border: #f3c6c2;
@@ -116,6 +126,13 @@
     --pp-accent: #c99a66;
     --pp-accent-soft: #d9b489;
     --pp-accent-wash: #3a2e1f;
+    /* P103: white on #c99a66 (this token's own dark value) measured 2.53:1 — a real WCAG AA
+       failure on every primary button in dark mode. Rather than change the accent color itself
+       (DESIGN_SYSTEM.md's bronze/copper direction), the FOREGROUND painted on top of it changes:
+       #101113 (this same palette's own dark background hex) on #c99a66 measures ~7.46:1, well
+       past the 4.5:1 floor for normal-size text — same fix mechanism as --pp-text-tertiary above,
+       one token, every `bg-sky-*` consumer corrected in both hover and default states at once. */
+    --pp-accent-foreground: #101113;
     --pp-negative-text: #f2938c;
     --pp-negative-wash: #3a2220;
     --pp-negative-border: #6b3530;
@@ -139,6 +156,7 @@
   --pp-accent: #c99a66;
   --pp-accent-soft: #d9b489;
   --pp-accent-wash: #3a2e1f;
+  --pp-accent-foreground: #101113;
   --pp-negative-text: #f2938c;
   --pp-negative-wash: #3a2220;
   --pp-negative-border: #6b3530;
