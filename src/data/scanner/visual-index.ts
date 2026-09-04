@@ -377,13 +377,26 @@ export class BoundedTopK {
   }
 
   /** Drains the kept candidates as `{ index, similarity }`, best (highest similarity) first —
-   *  sorts only the `size` kept elements, never `n`. Consumes the heap (call once). */
+   *  sorts only the `size` kept elements, never `n`. Consumes the heap (call once).
+   *
+   * P102 real bug, found via numerical parity verification against 4,296 real queries (not
+   * assumed correct from the algorithm looking right on paper): two DISTINCT cards can have
+   * float64-identical (or effectively tied) similarity to a query — real duplicate/near-duplicate
+   * reference embeddings exist in the catalog (e.g. reprints sharing artwork). The full-sort
+   * fallback path below naturally breaks such ties by ascending card index, because
+   * `Array.prototype.sort` is stable and cards are pushed into that array in ascending index
+   * order. This heap's OWN internal array order is sift-history order, not card-index order, so
+   * sorting only by `similarity` here let ties resolve by an arbitrary heap-internal order instead
+   * — the SET of kept top-K cards was still correct, but which of two exactly-tied cards reported
+   * as the winner could differ from the full-sort path for the exact same query. The explicit
+   * `a.index - b.index` tie-break makes both paths deterministic and identical for a genuine tie,
+   * matching the full-sort path's own (previously implicit, now explicit there too) rule. */
   drainSorted(): { index: number; similarity: number }[] {
     const out: { index: number; similarity: number }[] = []
     for (let i = 0; i < this.size; i += 1) {
       out.push({ index: this.indices[i] ?? 0, similarity: this.sims[i] ?? 0 })
     }
-    out.sort((a, b) => b.similarity - a.similarity)
+    out.sort((a, b) => b.similarity - a.similarity || a.index - b.index)
     return out
   }
 }
@@ -497,6 +510,11 @@ export function searchVisualIndex(
     if (cardId === undefined) continue
     hits.push({ cardId, similarity: bestSimilarityForCard(cardIndex) })
   }
+  // Ties (two distinct cards with float64-identical similarity — see BoundedTopK.drainSorted's
+  // own doc for a real example) are broken by ascending card index here too, matching that path
+  // exactly: `hits` is pushed in ascending cardIndex order and `Array.prototype.sort` is
+  // guaranteed stable (ES2019+), so a tie's relative order is preserved as-pushed without needing
+  // an explicit secondary key on this path.
   hits.sort((a, b) => b.similarity - a.similarity)
   return hits.slice(0, boundedK)
 }

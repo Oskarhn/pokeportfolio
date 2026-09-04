@@ -488,6 +488,32 @@ describe('BoundedTopK (P102 §7 — bounded top-K selection)', () => {
     expect(() => new BoundedTopK(1.5)).toThrow(VisualIndexError)
   })
 
+  it('P102 real bug (found via 4,296-query numerical parity, fixed): an exact similarity tie between two distinct cards breaks by ascending index, not by heap-internal arrival order', () => {
+    const heap = new BoundedTopK(3)
+    // Pushed out of index order, and with OTHER non-tied candidates interleaved, so the heap's
+    // own internal (sift-history) array order does NOT coincide with ascending index — exactly
+    // the shape that exposed the original bug (drainSorted sorted by similarity only, so a tie's
+    // order depended on wherever sift operations happened to leave the two tied entries).
+    heap.push(9, 0.2)
+    heap.push(5, 0.9) // tied with index 2 below
+    heap.push(1, 0.5)
+    heap.push(2, 0.9) // tied with index 5 above — arrives LATER, has a LOWER index
+    heap.push(7, 0.1)
+    const drained = heap.drainSorted()
+    expect(drained[0]).toEqual({ index: 2, similarity: 0.9 }) // lower index wins the tie
+    expect(drained[1]).toEqual({ index: 5, similarity: 0.9 })
+    expect(drained[2]).toEqual({ index: 1, similarity: 0.5 })
+  })
+
+  it('a tie at the eviction boundary keeps the earlier-arrived (lower-index) candidate, matching a stable full sort', () => {
+    const heap = new BoundedTopK(2)
+    heap.push(0, 0.5) // first in, occupies the heap
+    heap.push(1, 0.9)
+    heap.push(2, 0.5) // ties the current minimum (index 0) — must NOT evict it
+    const drained = heap.drainSorted()
+    expect(drained.map((h) => h.index)).toEqual([1, 0])
+  })
+
   it('matches a full sort on a larger randomized set (cross-check against Array.sort)', () => {
     const n = 200
     const k = 17
