@@ -409,6 +409,32 @@ export default defineConfig({
     __APP_BUILD_SHA__: JSON.stringify(appBuildSha),
     __APP_BUILD_TIME__: JSON.stringify(appBuildTime),
   },
+  optimizeDeps: {
+    // P105: `ocr-engine.ts` reaches `tesseract.js` only via `await import('tesseract.js')`,
+    // fired the first time a scan actually runs OCR — never during the app's initial render, so
+    // Vite's dev-server dependency crawler (which scans reachable static/eager imports at
+    // startup) never discovers it on a cold `.vite/deps` cache. The FIRST real scan in a fresh
+    // dev-server session then triggers Vite's own "new dependency optimized, reloading page"
+    // recovery, which is a genuine full `location.reload()` — wiping the in-memory scanner
+    // controller/capture state mid-analysis. Production builds are unaffected (no dev
+    // optimizer/reload cycle exists there at all); this only ever showed up against the
+    // authenticated E2E project's Vite dev server (port 4174) on a cold cache — root-caused via
+    // a real trace capture showing two "[vite] connecting.../connected." cycles during a single
+    // scan, and confirmed by the same test passing once `.vite/deps` was already warm. Listing it
+    // here makes it part of the COLD pre-bundle so the mid-session reload can never happen.
+    //
+    // `visual-worker.ts` is a SECOND, independent case of the same class: it statically imports
+    // `@huggingface/transformers` (already in the main thread's own optimize scan — reachable
+    // from the app's eager module graph), but it runs inside a genuine `new Worker(new URL(...))`
+    // module — a separate module graph the default dependency crawl does not walk. On a cold
+    // cache this produced a SECOND reload immediately after the tesseract.js one (confirmed via
+    // the network trace: two separate top-level GET /scan document requests ~2s apart), and
+    // together the two cold-optimize-plus-reload cycles reliably exceeded even a 150s budget.
+    // `entries` makes Vite's crawler start from the worker file directly, in the SAME initial
+    // pass as the main entry, so nothing scanner-related is ever discovered mid-session.
+    include: ['tesseract.js'],
+    entries: ['src/features/scanner/visual/visual-worker.ts'],
+  },
   plugins: [
     react(),
     tailwindcss(),

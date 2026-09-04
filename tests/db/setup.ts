@@ -1,5 +1,5 @@
 /// <reference types="node" />
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { createClient } from '@supabase/supabase-js'
 
 /**
@@ -54,9 +54,22 @@ export interface SyntheticUser {
 
 let counter = 0
 
+/**
+ * P105: `counter` is module-local state — safe for uniqueness WITHIN one process, but Playwright
+ * (and Vitest's own worker pool) runs test files in SEPARATE processes under real parallelism,
+ * each with its own independent `counter` starting at 0. Two workers calling `nextEmail` with the
+ * same `label` in the same millisecond (routine once a fix elsewhere made several parallel
+ * workers finish in near-lockstep — see account-boundary.spec.ts's scanner-batch case) could
+ * previously produce the IDENTICAL email string across processes, which surfaced as a real
+ * `claim_invitation` failure (`invitation_pending`) under `--repeat-each` at default worker
+ * parallelism. A random component makes cross-process collision astronomically unlikely
+ * regardless of timing or process identity, without losing the human-readable label/counter for
+ * debugging failed fixture setup.
+ */
 function nextEmail(label: string): string {
   counter += 1
-  return `m4-test-${label}-${Date.now()}-${counter}@example.invalid`
+  const unique = randomUUID().slice(0, 8)
+  return `m4-test-${label}-${Date.now()}-${counter}-${unique}@example.invalid`
 }
 
 /** A password that always satisfies the policy in supabase/config.toml and never repeats. */
