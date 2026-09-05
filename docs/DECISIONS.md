@@ -5077,3 +5077,59 @@ code-complete but genuinely inactive, not merely "off by convention."
 **Verified:** `pnpm test` (security-headers.test.ts's CSP pins unchanged, 1142/1142 overall),
 `pnpm build` with no token set — `dist/_headers`' CSP `script-src`/`connect-src` unchanged from the
 pre-P101 shape.
+
+---
+
+## D-119 — Cloudflare Web Analytics route-gated to the public allowlist; SPA auto-tracking disabled (P110)
+
+**2026-09-05 · Accepted**
+
+**Problem.** P107's adversarial review (output_107.txt §11) confirmed a real gap in D-118's
+original design, not yet exploitable only because analytics ships off by default: `main.tsx` called
+`initCloudflareWebAnalytics()` unconditionally, and D-118's own chosen snippet shape (no
+`"spa": false"`) auto-tracks every SPA route change via the History API, reporting `location.href`
+for each one. Every authenticated route in this app embeds an entity id directly in its path
+(`/portfolio/$holdingId`, `/purchases/$purchaseId`, `/sales/$saleId`, `/openings/$openingId`,
+`/catalog/$cardId`, …) — the moment the owner sets `VITE_CF_ANALYTICS_TOKEN`, every such page load
+would be reported to Cloudflare, contradicting the "no custom events" framing D-118 relied on.
+
+**Fix, in two parts.**
+
+1. **Explicit allowlist** (`src/analytics/analyticsRoutePolicy.ts`, `isAnalyticsEligibleLocation`):
+   deliberately mirrors `public/robots.txt`/`public/sitemap.xml`/`scripts/check-links.mjs`'s own
+   `PUBLIC_ROUTES` (D-116) — exactly `/privacy`, `/terms`, `/faq`. `/login`, `/forgot-password`,
+   `/invite/$token` and `/reset-password` are public but excluded, for the same reason D-116
+   already excludes them from crawling: no discovery/analytics value, and the token routes carry a
+   live secret in the URL that must never leave the origin. A location carrying ANY query string is
+   also ineligible — this app's public pages never legitimately carry one, so a query string is
+   itself a signal something unexpected is happening, and Cloudflare's beacon has no supported way
+   to report a sanitized URL, so refusing to track it at all is the only way to guarantee query
+   parameters are never transmitted.
+2. **SPA auto-tracking disabled** (`src/analytics/cloudflareWebAnalytics.ts`): the beacon's
+   `data-cf-beacon` config now sets `"spa": false`, so Cloudflare's own script never attaches a
+   History-API hook — it can only ever report the ONE pageview it fires at its own injection time.
+   `initCloudflareWebAnalytics(location)` takes the location to evaluate explicitly (never reads
+   `window.location` itself) and injects the script AT MOST ONCE per session, only when that exact
+   location is eligible. `main.tsx` calls it once at startup with the initial location, and again
+   after every `router.subscribe('onResolved', …)` navigation — the second call is what lets a
+   session that starts on a private route (or `/login`) initialize analytics later, once it
+   genuinely reaches an eligible public page; the idempotent one-shot latch means it is a no-op
+   every other time.
+
+**Disclosed tradeoff.** Because the History hook is off and the script is never re-injected for a
+later navigation, at most ONE pageview is ever reported per browser session — even a visit to
+`/faq` followed by `/privacy` only counts the first. This undercounts genuine multi-page public
+browsing. The alternative (re-injecting a fresh `<script>` element on every eligible navigation to
+fire another pageview) was considered and rejected: Cloudflare's own documentation does not
+describe this as a supported manual-tracking mechanism, so relying on it would be an unverified
+assumption. A single, guaranteed-private-route-free pageview per session is the safe default;
+revisit only if Cloudflare documents a supported manual-pageview API.
+
+**Verified:** `tests/data/analytics-route-policy.test.ts` (allowlist correctness, deny-by-default,
+query-string refusal, cross-checked against `scripts/check-links.mjs`'s own `PUBLIC_ROUTES`),
+`tests/ui/cloudflare-web-analytics.test.ts` (dummy token only — public FAQ/privacy initialize;
+portfolio/holding/scan/invite/reset-password never do; a query string on an eligible page never
+initializes; public→private emits nothing further; private→public initializes once reached;
+idempotent against a second eligible call). No real Cloudflare token used anywhere. D-118's CSP
+gating (script-src/connect-src widened only when the token is present) is unchanged by this
+decision — only WHEN the already-gated script is allowed to load has changed.

@@ -165,7 +165,11 @@ used for Pages hosting), confirmed cookieless/no-fingerprinting against current 
 unless `VITE_CF_ANALYTICS_TOKEN` is set at build time. `vite.config.ts`'s CSP only grants the
 Cloudflare analytics hosts when that same token is present, so an unset token means both "script
 never loads" and "policy never widens" — the two cannot drift apart. Full reasoning:
-`docs/DECISIONS.md` D-118.
+`docs/DECISIONS.md` D-118. **Route-gated since P110 (D-119):** the script only ever loads while the
+current page is on the explicit public allowlist (`/privacy`, `/terms`, `/faq`) with no query
+string, and Cloudflare's own SPA history-tracking is disabled (`"spa": false`) so it can never
+auto-report a later private-route navigation — see D-119 for the full reasoning and the disclosed
+at-most-one-pageview-per-session tradeoff this introduces.
 
 **Test.** `tests/config/security-headers.test.ts` (CSP pins unchanged with the new parameter
 defaulted off); `pnpm build` with no token set, `dist/_headers` confirmed unchanged from the

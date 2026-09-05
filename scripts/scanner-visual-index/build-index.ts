@@ -50,8 +50,6 @@
  * generation (or is simply absent, on a first-ever build) — never a torn or half-written pointer.
  */
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync } from 'node:fs'
-import { readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
@@ -65,8 +63,15 @@ import {
   type Checkpoint,
   type CheckpointIdentity,
 } from '../../src/domain/scanner/checkpoint-identity'
-import { assertValidCoverage, logCoverageBreakdown } from '../../src/domain/scanner/index-coverage'
+import {
+  assertValidCoverage,
+  logCoverageBreakdown,
+  logFailureBudget,
+  type FailureBudget,
+} from '../../src/domain/scanner/index-coverage'
 import { drainAllCardPages, type PageFetchResult } from '../../src/domain/scanner/index-pagination'
+import { loadCheckpointFile, saveCheckpointAtomically } from './checkpoint-io'
+import { fetchWithRetry, type FetchWithRetryResult } from './fetch-with-retry'
 import {
   quantizeEmbedding,
   l2Normalize,
@@ -157,21 +162,8 @@ interface CardRow {
   is_active: boolean
 }
 
-async function loadCheckpointFile(): Promise<unknown> {
-  if (!existsSync(CHECKPOINT_PATH)) return null
-  return JSON.parse(await readFile(CHECKPOINT_PATH, 'utf-8')) as unknown
-}
 async function saveCheckpoint(checkpoint: Checkpoint & Partial<CheckpointIdentity>) {
-  mkdirSync(dirname(CHECKPOINT_PATH), { recursive: true })
-  await writeFile(CHECKPOINT_PATH, JSON.stringify(checkpoint))
-}
-
-/** Reference-image fetch/decode failures, classified (prompt §19) — never silently folded into a
- *  zero vector; every failure means the card is simply excluded from this index run. */
-interface ImageFailureCounts {
-  notFound: number // HTTP 404
-  otherHttp: number // any other non-OK HTTP status
-  decode: number // fetch succeeded but embedding/decoding threw
+  await saveCheckpointAtomically(CHECKPOINT_PATH, checkpoint)
 }
 
 async function exactActiveEnglishCount(supabase: SupabaseClient): Promise<number> {
@@ -258,12 +250,16 @@ async function main() {
     prototypeStrategy: PROTOTYPE_STRATEGY,
     prototypeStrategyVersion: PROTOTYPE_STRATEGY_VERSION,
   }
-  const loaded = await loadCheckpointFile()
+  // P110 (prompt §2-3): never crash on a corrupt checkpoint. `loaded.status` is 'absent' (first
+  // build), 'loaded' (parseable — identity is still checked below, same as before), or 'corrupt'
+  // (unparseable/malformed — quarantined by loadCheckpointFile itself, never silently deleted;
+  // this run starts fresh exactly as it would for a missing checkpoint).
+  const loaded = loadCheckpointFile(CHECKPOINT_PATH)
   let checkpoint: Checkpoint & Partial<CheckpointIdentity>
-  if (loaded === null) {
+  if (loaded.status === 'absent' || loaded.status === 'corrupt') {
     checkpoint = freshCheckpoint(expectedIdentity)
   } else {
-    const candidate = loaded as Checkpoint & Partial<CheckpointIdentity>
+    const candidate = loaded.checkpoint as Checkpoint & Partial<CheckpointIdentity>
     if (checkpointMatchesIdentity(candidate, expectedIdentity)) {
       checkpoint = candidate
       console.log(
@@ -282,14 +278,71 @@ async function main() {
       checkpoint = freshCheckpoint(expectedIdentity)
     }
   }
-  checkpoint = { ...checkpoint, totalCanonicalCards, cardsWithUsableImage: withImage.length }
+  // P110: a checkpoint loaded from an OLDER schema version (still possibly matching identity if
+  // this project ever adds a field without bumping the version — it currently always bumps, but
+  // this keeps `permanentFailures`/`transientFailures` safe against a hand-edited/foreign file)
+  // may be missing the two new maps entirely; default them rather than crashing on
+  // `Object.hasOwn(undefined, ...)` below. Not defensively `?? {}`-guarded here: a checkpoint that
+  // reached this branch already passed `checkpointMatchesIdentity` against the current
+  // `CHECKPOINT_SCHEMA_VERSION` (bumped for exactly this field addition — see checkpoint-identity
+  // .ts's P110 addendum), so both fields are guaranteed present by that gate, not merely hoped for.
+  checkpoint = {
+    ...checkpoint,
+    totalCanonicalCards,
+    cardsWithUsableImage: withImage.length,
+  }
 
   await warmUpModel()
 
-  const imageFailures: ImageFailureCounts = { notFound: 0, otherHttp: 0, decode: 0 }
+  const failureBudget: { -readonly [K in keyof FailureBudget]: number } = {
+    fetchFailure: 0,
+    http404: 0,
+    http429: 0,
+    http5xx: 0,
+    httpOther: 0,
+    decodeFailure: 0,
+    embedFailure: 0,
+  }
   let auxFailures = 0
   let processed = 0
+
+  /** Classifies a failed {@link fetchWithRetry} result into the failure budget and returns
+   *  whether it should be treated as PERMANENT (never retried on resume) or TRANSIENT (always
+   *  retried) — see checkpoint-identity.ts's P110 addendum for the resume-semantics reasoning. */
+  function recordFetchFailure(
+    result: Extract<FetchWithRetryResult, { ok: false }>,
+  ): 'permanent' | 'transient' {
+    switch (result.kind) {
+      case 'http_404':
+        failureBudget.http404 += 1
+        return 'permanent'
+      case 'http_429':
+        failureBudget.http429 += 1
+        return 'transient'
+      case 'http_5xx':
+        failureBudget.http5xx += 1
+        return 'transient'
+      case 'timeout':
+      case 'network':
+        failureBudget.fetchFailure += 1
+        return 'transient'
+      case 'http_other':
+        failureBudget.httpOther += 1
+        // A non-404/429/5xx status (401/403/etc.) is not going to resolve on retry either, but it
+        // is also not the well-understood "image genuinely doesn't exist" case — kept transient
+        // (retried) rather than permanent, deliberately conservative: an unexpected status is
+        // worth re-observing on the next resume rather than silently giving up on forever.
+        return 'transient'
+    }
+  }
+
   for (const card of withImage) {
+    // P110 (prompt §7-8): a card whose pristine fetch failed with a PERMANENT cause (404) this run
+    // — or an earlier resumed run — is skipped outright rather than re-fetched every resume. It
+    // still has zero pristine embedding, so it contributes nothing to `cardsIndexed` either way;
+    // this only saves the wasted request. `needsPristine`/`needsAux` below are still meaningful
+    // for every OTHER card exactly as before.
+    if (Object.hasOwn(checkpoint.permanentFailures, card.id)) continue
     const needsPristine = !Object.hasOwn(checkpoint.embeddings, card.id)
     // P97 (D-106): retried on EVERY resumption until it actually succeeds — deliberately NOT
     // gated on `auxFallback` (which is diagnostic-only, cleared on success). Mirrors exactly how
@@ -302,28 +355,40 @@ async function main() {
     let buffer: Buffer | null = null
     if (needsPristine) {
       try {
-        const response = await fetch(imageUrl)
-        if (!response.ok) {
-          if (response.status === 404) imageFailures.notFound += 1
-          else imageFailures.otherHttp += 1
-          throw new Error(`image fetch ${String(response.status)}`)
+        const result = await fetchWithRetry(imageUrl)
+        if (!result.ok) {
+          const disposition = recordFetchFailure(result)
+          const record = { reason: result.message, failedAt: new Date().toISOString() }
+          if (disposition === 'permanent') checkpoint.permanentFailures[card.id] = record
+          else checkpoint.transientFailures[card.id] = record
+          throw new Error(
+            `image fetch failed after ${String(result.attempts)} attempt(s): ${result.message}`,
+          )
         }
-        buffer = Buffer.from(await response.arrayBuffer())
+        buffer = Buffer.from(await result.response.arrayBuffer())
         let raw: Float32Array
         try {
           raw = await embedImageBuffer(buffer)
         } catch (decodeError) {
-          imageFailures.decode += 1
+          failureBudget.decodeFailure += 1
+          failureBudget.embedFailure += 1
+          checkpoint.transientFailures[card.id] = {
+            reason: (decodeError as Error).message,
+            failedAt: new Date().toISOString(),
+          }
           throw decodeError
         }
         const normalized = l2Normalize(new Float32Array(raw))
         checkpoint.embeddings[card.id] = Array.from(normalized)
+        // A card that just succeeded can never still be in either failure map from an earlier
+        // resumption — clear both so the checkpoint never lies about a card's current state.
+        Reflect.deleteProperty(checkpoint.permanentFailures, card.id)
+        Reflect.deleteProperty(checkpoint.transientFailures, card.id)
       } catch (err) {
-        // No persisted failure counter here (P78, §18): a card that keeps failing across resumed
-        // runs used to increment a checkpoint-carried total every attempt, double-counting the
-        // SAME card each time the build was resumed. `coverage.failures` below is derived fresh
-        // from cardsWithUsableImage - cardsIndexed at pack time instead — current-build-based,
-        // never cumulative.
+        // No persisted failure COUNTER here (P78, §18) — `coverage.failures` is still derived
+        // fresh from cardsWithUsableImage - cardsIndexed at pack time, never accumulated. The
+        // per-card permanent/transient RECORD above (P110) is a different thing: identity, not a
+        // count, overwritten fresh on every attempt for that specific card.
         console.warn(`[index] failed ${card.id} (${card.name}): ${(err as Error).message}`)
       }
     }
@@ -335,9 +400,14 @@ async function main() {
     if (needsAux && hasPristine) {
       try {
         if (buffer === null) {
-          const response = await fetch(imageUrl)
-          if (!response.ok) throw new Error(`image fetch ${String(response.status)} (aux re-fetch)`)
-          buffer = Buffer.from(await response.arrayBuffer())
+          const result = await fetchWithRetry(imageUrl)
+          if (!result.ok) {
+            recordFetchFailure(result)
+            throw new Error(
+              `image fetch failed after ${String(result.attempts)} attempt(s) (aux re-fetch): ${result.message}`,
+            )
+          }
+          buffer = Buffer.from(await result.response.arrayBuffer())
         }
         const augmentedResults = await augmentAll(buffer, card.id)
         const augmentedVecs: Float32Array[] = []
@@ -365,11 +435,8 @@ async function main() {
     }
   }
   await saveCheckpoint(checkpoint)
-  console.log(
-    `[index] image failures — 404: ${String(imageFailures.notFound)}, other HTTP: ` +
-      `${String(imageFailures.otherHttp)}, decode: ${String(imageFailures.decode)}, aux: ` +
-      `${String(auxFailures)}.`,
-  )
+  console.log(`[index] aux (dual-prototype) failures this run: ${String(auxFailures)}.`)
+  logFailureBudget(failureBudget)
 
   // ---- Pack: constrained to the CURRENT canonical fetch, in its deterministic id order ----
   // (prompt §7 index-membership defense-in-depth) — never `Object.keys(checkpoint.embeddings)`

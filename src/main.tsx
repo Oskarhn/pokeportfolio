@@ -9,9 +9,13 @@ import { cleanupObsoleteScannerCaches } from './platform/scanner-cache-cleanup'
 import { initCloudflareWebAnalytics } from './analytics/cloudflareWebAnalytics'
 import './styles/index.css'
 
-// P101/D-118: no-ops unless the owner has configured VITE_CF_ANALYTICS_TOKEN — see
-// src/analytics/cloudflareWebAnalytics.ts.
-initCloudflareWebAnalytics()
+// P101/D-118, route-gated since P110/D-119: no-ops unless the owner has configured
+// VITE_CF_ANALYTICS_TOKEN AND the current location is on the public analytics allowlist — see
+// src/analytics/cloudflareWebAnalytics.ts. Evaluated once now (covers a cold load landing directly
+// on an eligible public page) and again after every completed navigation via the router
+// subscription below (covers a session that starts on a private/public-but-ineligible route and
+// later navigates to an eligible one — analytics initializes only once that is genuinely safe).
+initCloudflareWebAnalytics(window.location)
 
 // P83/D-100: subscribes to the zero-cost signals that a newer deployment than this bundle is
 // already live (a new Service Worker taking control, or a lazy-chunk import failing because this
@@ -32,6 +36,15 @@ void cleanupObsoleteScannerCaches()
 // ≤1/60s internal rate limit is what actually bounds request volume, not how often this fires.
 router.subscribe('onResolved', () => {
   void checkForNewDeployment()
+})
+
+// P110/D-119: re-evaluates analytics eligibility after every completed client-side navigation —
+// `initCloudflareWebAnalytics` itself is idempotent (injects at most once per session) and
+// re-checks the CURRENT location, so this only ever has an effect the first time a session
+// reaches an eligible public route (private -> public). It never fires anything for a private
+// route, and never re-fires once the one-time injection has already happened.
+router.subscribe('onResolved', () => {
+  initCloudflareWebAnalytics(window.location)
 })
 
 const queryClient = new QueryClient()

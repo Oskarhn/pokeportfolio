@@ -8,6 +8,8 @@ import {
   assertValidCoverage,
   computeCoverageBreakdown,
   CoverageInvariantError,
+  logFailureBudget,
+  MIN_INDEXED_OF_USABLE_IMAGE_PERCENT,
 } from '../../../src/domain/scanner/index-coverage'
 
 function coverage(overrides: Partial<Parameters<typeof assertValidCoverage>[0]> = {}) {
@@ -173,7 +175,12 @@ describe('assertValidCoverage — P97 (D-106) auxiliary-prototype invariants', (
   it('accepts aux coverage that sums to exactly cardsIndexed', () => {
     expect(() => {
       assertValidCoverage(
-        coverage({ cardsWithAuxPrototype: 80, cardsAuxFallback: 5, cardsIndexed: 85 }),
+        coverage({
+          cardsWithUsableImage: 85, // P110: kept equal to cardsIndexed so the coverage-floor check (a different invariant) can't spuriously trip this aux-specific test.
+          cardsWithAuxPrototype: 80,
+          cardsAuxFallback: 5,
+          cardsIndexed: 85,
+        }),
         85,
         85,
       )
@@ -200,5 +207,95 @@ describe('assertValidCoverage — P97 (D-106) auxiliary-prototype invariants', (
     expect(() => {
       assertValidCoverage(coverage(), 985, 985)
     }).not.toThrow()
+  })
+})
+
+describe('assertValidCoverage — P110 coverage floor (prompt §4, §11)', () => {
+  it('hard-fails a 20%-complete run (1000 usable, only 200 succeeded)', () => {
+    expect(() => {
+      assertValidCoverage(
+        coverage({ totalCanonicalCards: 1000, cardsWithUsableImage: 1000, cardsIndexed: 200 }),
+        200,
+        200,
+      )
+    }).toThrow(/below the minimum acceptable coverage floor/)
+  })
+
+  it('accepts a 99.5%-complete run (1000 usable, 995 succeeded) — above the floor', () => {
+    expect(() => {
+      assertValidCoverage(
+        coverage({ totalCanonicalCards: 1000, cardsWithUsableImage: 1000, cardsIndexed: 995 }),
+        995,
+        995,
+      )
+    }).not.toThrow()
+  })
+
+  it(`rejects a run landing exactly one card below the floor (${String(MIN_INDEXED_OF_USABLE_IMAGE_PERCENT)}%)`, () => {
+    // 977/1000 = 97.7%, just under the 98% floor.
+    expect(() => {
+      assertValidCoverage(
+        coverage({ totalCanonicalCards: 1000, cardsWithUsableImage: 1000, cardsIndexed: 977 }),
+        977,
+        977,
+      )
+    }).toThrow(CoverageInvariantError)
+  })
+
+  it('accepts a run landing exactly at the floor', () => {
+    // 980/1000 = exactly 98%.
+    expect(() => {
+      assertValidCoverage(
+        coverage({ totalCanonicalCards: 1000, cardsWithUsableImage: 1000, cardsIndexed: 980 }),
+        980,
+        980,
+      )
+    }).not.toThrow()
+  })
+
+  it('real production baseline (19501/19508, 99.964%) clears the floor with margin', () => {
+    expect(() => {
+      assertValidCoverage(
+        coverage({ totalCanonicalCards: 20946, cardsWithUsableImage: 19508, cardsIndexed: 19501 }),
+        19501,
+        19501,
+      )
+    }).not.toThrow()
+  })
+
+  it('never divides by zero when cardsWithUsableImage is 0', () => {
+    expect(() => {
+      assertValidCoverage(
+        { totalCanonicalCards: 5, cardsWithUsableImage: 0, cardsIndexed: 0, failures: 0 },
+        0,
+        0,
+      )
+    }).not.toThrow()
+  })
+})
+
+describe('logFailureBudget (P110, prompt §5) — never collapses distinct failure causes into one number', () => {
+  it('logs every bucket by its own explicit name, with DECODE_FAILURE and EMBED_FAILURE reported equal and explained', () => {
+    const lines: string[] = []
+    logFailureBudget(
+      {
+        fetchFailure: 3,
+        http404: 7,
+        http429: 2,
+        http5xx: 1,
+        httpOther: 0,
+        decodeFailure: 4,
+        embedFailure: 4,
+      },
+      (line) => lines.push(line),
+    )
+    const joined = lines.join('\n')
+    expect(joined).toContain('FETCH_FAILURE=3')
+    expect(joined).toContain('HTTP_404=7')
+    expect(joined).toContain('HTTP_429=2')
+    expect(joined).toContain('HTTP_5XX=1')
+    expect(joined).toContain('HTTP_OTHER=0')
+    expect(joined).toContain('DECODE_FAILURE=4')
+    expect(joined).toContain('EMBED_FAILURE=4')
   })
 })

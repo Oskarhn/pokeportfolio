@@ -504,17 +504,21 @@ export function searchVisualIndex(
 
   // Full ranking requested (topK >= cardCount, e.g. the diagnostics rank-lookup path) — a
   // same-size heap has no selection advantage here, so this falls back to a plain sort.
-  const hits: VisualSearchHit[] = []
+  //
+  // P110 (prompt §22, P107's TOPK_VERDICT maintainability note): the tie-break is EXPLICIT here —
+  // `similarity desc, then cardIndex asc` — matching BoundedTopK.drainSorted's own comparator
+  // exactly, rather than relying on the implicit combination of "hits pushed in ascending
+  // cardIndex order" plus "Array.prototype.sort is stable (ES2019+)" to produce the same result.
+  // That implicit version was correct for the current code shape (proven by P102's own numerical
+  // verification) but fragile to a future refactor that changed push order without noticing the
+  // dependency; a shared, explicit rule removes the dependency entirely rather than merely
+  // re-verifying it once more.
+  const hits: (VisualSearchHit & { readonly index: number })[] = []
   for (let cardIndex = 0; cardIndex < cardCount; cardIndex += 1) {
     const cardId = index.cardIds[cardIndex]
     if (cardId === undefined) continue
-    hits.push({ cardId, similarity: bestSimilarityForCard(cardIndex) })
+    hits.push({ cardId, similarity: bestSimilarityForCard(cardIndex), index: cardIndex })
   }
-  // Ties (two distinct cards with float64-identical similarity — see BoundedTopK.drainSorted's
-  // own doc for a real example) are broken by ascending card index here too, matching that path
-  // exactly: `hits` is pushed in ascending cardIndex order and `Array.prototype.sort` is
-  // guaranteed stable (ES2019+), so a tie's relative order is preserved as-pushed without needing
-  // an explicit secondary key on this path.
-  hits.sort((a, b) => b.similarity - a.similarity)
-  return hits.slice(0, boundedK)
+  hits.sort((a, b) => b.similarity - a.similarity || a.index - b.index)
+  return hits.slice(0, boundedK).map(({ cardId, similarity }) => ({ cardId, similarity }))
 }

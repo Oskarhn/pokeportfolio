@@ -22,6 +22,7 @@
  * Reads nothing but public responses. No key, no session, no credential of any kind — so it can be
  * run against any environment by anyone, and there is no excuse for skipping it.
  */
+import { verifyLiveCspHash } from './lib/live-csp-hash-verify.mjs'
 
 const site = (process.env.DEPLOYMENT_URL ?? '').replace(/\/+$/, '')
 const supabaseUrl = process.env.SUPABASE_URL
@@ -258,6 +259,20 @@ const scannerCapable =
     connectSrc.join(' ') || '(none)',
   )
   record("frame-ancestors is 'none'", /frame-ancestors 'none'/.test(csp))
+
+  // P110 (prompt §18 — P107's CSP_HASH_VERDICT §10 gap): every OTHER CSP check above validates
+  // header TOKENS against the live site; this is the one check that proves the live HTML and the
+  // live CSP actually agree with EACH OTHER, on THIS host, right now — not just that the local
+  // build artifact was internally consistent (verify-scanner-platform-build.mjs already proves
+  // that, but says nothing about what Cloudflare/any host actually serves, which could differ due
+  // to an edge rewrite, a stale cache, or a hosting platform's own HTML minifier). Reuses the
+  // already-fetched `index.text`/`csp` rather than a second network round trip.
+  const liveCsp = verifyLiveCspHash({ html: index.text, cspHeader: csp })
+  record(
+    "the served inline bootstrap script's hash matches a source actually present in the served CSP",
+    liveCsp.pass,
+    liveCsp.reason,
+  )
   record(
     'Referrer-Policy is no-referrer, so an invitation path never leaves the origin',
     (h.get('referrer-policy') ?? '').toLowerCase() === 'no-referrer',

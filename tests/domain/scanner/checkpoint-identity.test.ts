@@ -215,4 +215,25 @@ describe('CP8 (P97, D-106) — a checkpoint built under one prototype strategy c
     expect(checkpoint.auxEmbeddings).toEqual({})
     expect(checkpoint.auxFallback).toEqual({})
   })
+
+  it('P110: freshCheckpoint always starts with empty permanentFailures/transientFailures maps', () => {
+    const checkpoint = freshCheckpoint(identity())
+    expect(checkpoint.permanentFailures).toEqual({})
+    expect(checkpoint.transientFailures).toEqual({})
+  })
+
+  it('P110: a checkpoint missing prototypesPerCard/permanentFailures entirely (pre-P97/pre-P110 shape) is rejected by the schema-version bump alone', () => {
+    const prePrior: Partial<CheckpointIdentity> = {
+      schemaVersion: 3,
+      sourceProjectIdentity: 'nopmkroeygmlvndzjjqs.supabase.co',
+      modelId: 'Xenova/dinov2-small',
+      modelRevision: 'c2bb04a51fab207c420665f1946016107bffc701',
+      embeddingDim: 384,
+      quantization: 'int8',
+      prototypesPerCard: 2,
+      prototypeStrategy: 'pristinePlus1Aux',
+      prototypeStrategyVersion: '1',
+    }
+    expect(checkpointMatchesIdentity(prePrior, identity())).toBe(false)
+  })
 })
