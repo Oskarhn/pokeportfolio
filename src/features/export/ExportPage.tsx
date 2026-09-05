@@ -325,12 +325,12 @@ function ReadyPanel({
 }) {
   return (
     <div className="space-y-3 rounded-lg border border-sky-900/60 bg-sky-950/30 p-3">
-      <p role="status" className="text-sm font-medium text-sky-100">
+      <p role="status" className="text-sm font-medium text-slate-200">
         Ready — {kind}
         {artifacts.length > 1 ? `, ${String(artifacts.length)} files` : ''}
       </p>
       {artifacts.map((artifact) => (
-        <p key={artifact.filename} className="break-all font-mono text-xs text-sky-200/90">
+        <p key={artifact.filename} className="break-all font-mono text-xs text-slate-300">
           {artifact.filename}
         </p>
       ))}

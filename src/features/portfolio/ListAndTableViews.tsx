@@ -285,7 +285,7 @@ export function PortfolioTableView({
                           <span className="truncate font-medium text-slate-100">
                             {portfolioDisplayName(tile)}
                           </span>
-                          {tile.isFavorite ? <span className="text-amber-400">★</span> : null}
+                          {tile.isFavorite ? <span className="text-slate-300">★</span> : null}
                           {tile.holdingKind === 'sealed' && tile.sealedIsCustom ? (
                             <span className="shrink-0 rounded bg-slate-800 px-1 py-0.5 text-[9px] font-medium text-slate-400">
                               Custom
@@ -301,7 +301,7 @@ export function PortfolioTableView({
                           <span className="truncate font-medium text-slate-100">
                             {portfolioDisplayName(tile)}
                           </span>
-                          {tile.isFavorite ? <span className="text-amber-400">★</span> : null}
+                          {tile.isFavorite ? <span className="text-slate-300">★</span> : null}
                           {tile.holdingKind === 'sealed' && tile.sealedIsCustom ? (
                             <span className="shrink-0 rounded bg-slate-800 px-1 py-0.5 text-[9px] font-medium text-slate-400">
                               Custom

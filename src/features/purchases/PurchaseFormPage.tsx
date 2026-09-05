@@ -348,7 +348,7 @@ export function PurchaseFormPage() {
                 setFxMode('norges_bank')
                 fxQuery.mutate()
               }}
-              className={`min-h-9 rounded-lg border px-3 text-xs font-medium ${fxMode === 'norges_bank' ? 'border-sky-500 bg-sky-600/20 text-sky-200' : 'border-slate-700 text-slate-300'}`}
+              className={`min-h-9 rounded-lg border px-3 text-xs font-medium ${fxMode === 'norges_bank' ? 'border-sky-500 bg-sky-600/20 text-slate-200' : 'border-slate-700 text-slate-300'}`}
             >
               Norges Bank
             </button>
@@ -357,7 +357,7 @@ export function PurchaseFormPage() {
               onClick={() => {
                 setFxMode('manual')
               }}
-              className={`min-h-9 rounded-lg border px-3 text-xs font-medium ${fxMode === 'manual' ? 'border-sky-500 bg-sky-600/20 text-sky-200' : 'border-slate-700 text-slate-300'}`}
+              className={`min-h-9 rounded-lg border px-3 text-xs font-medium ${fxMode === 'manual' ? 'border-sky-500 bg-sky-600/20 text-slate-200' : 'border-slate-700 text-slate-300'}`}
             >
               Manual rate
             </button>
