@@ -32,9 +32,22 @@
  * `coverage.failures` as `cardsWithUsableImage - cardsIndexed` at pack time — inherently
  * current-build/current-card based, self-correcting or self-consistent across a resume, never
  * cumulative across historical attempts.
+ *
+ * P110 addendum: `CHECKPOINT_SCHEMA_VERSION` bumped 3 -> 4 and `Checkpoint` gained
+ * `permanentFailures`/`transientFailures` (prompt §8) — resume semantics need to distinguish a
+ * card that will never succeed (its reference image genuinely 404s) from one that failed for a
+ * reason that might resolve on its own (a timeout, a 5xx, a rate limit). A card in
+ * `permanentFailures` is skipped on resume rather than re-fetched every single time the build is
+ * resumed (mirroring §7's "do not repeatedly hammer 404" guidance across resumes, not just within
+ * one run's own retry loop); a card in `transientFailures` is always retried on resume, exactly
+ * like the pre-P110 behavior for every failure. Both are diagnostic-and-gating, overwritten fresh
+ * each run (never accumulated across resumes), matching the established `auxFallback` pattern.
+ * The schema-version bump alone already invalidates every pre-P110 checkpoint (neither new field
+ * would be present), so no separate migration path is needed — a checkpoint from before this
+ * change is discarded and rebuilt from scratch, same as every prior schema-shape change here.
  */
 
-export const CHECKPOINT_SCHEMA_VERSION = 3
+export const CHECKPOINT_SCHEMA_VERSION = 4
 
 /** The well-known local/CI-placeholder Supabase URL (build-index.ts's own `LOCAL_DEFAULTS.url`,
  *  and CI's `build-and-test` job's `VITE_SUPABASE_URL`, are both exactly this value) — shared here
@@ -79,6 +92,17 @@ export interface Checkpoint {
    *  fallback — the packer (`build-index.ts`) always prefers a real `auxEmbeddings` entry over a
    *  fallback marker when both exist for the same id. */
   readonly auxFallback: Record<string, true>
+  /** P110 (prompt §8): ids whose PRISTINE fetch failed with a permanent cause (currently: HTTP 404
+   *  — the reference image genuinely does not exist) THIS run. Skipped on the next resume rather
+   *  than re-fetched — see this module's own P110 addendum above. Cleared for a card the moment
+   *  its pristine fetch succeeds (never left stale once the underlying cause is fixed, e.g. the
+   *  image is later published). */
+  readonly permanentFailures: Record<string, { readonly reason: string; readonly failedAt: string }>
+  /** P110 (prompt §8): ids whose PRISTINE fetch failed with a cause that might resolve on its own
+   *  (timeout, network error, 429, 5xx, or a decode/embed error) THIS run — always retried on the
+   *  next resume, exactly like every failure behaved before this field existed. Diagnostic only;
+   *  never gates a skip. */
+  readonly transientFailures: Record<string, { readonly reason: string; readonly failedAt: string }>
 }
 
 /** Never returns or logs the URL's credentials — Supabase project URLs carry none, but this
@@ -189,6 +213,8 @@ export function freshCheckpoint(identity: CheckpointIdentity): Checkpoint & Chec
     embeddings: {},
     auxEmbeddings: {},
     auxFallback: {},
+    permanentFailures: {},
+    transientFailures: {},
   }
 }
 

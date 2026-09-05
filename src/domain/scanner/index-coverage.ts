@@ -18,6 +18,21 @@ export class CoverageInvariantError extends Error {
   }
 }
 
+/**
+ * P110 (prompt §4, P107's DUAL_BUILD_RISK_VERDICT §19 "no coverage/failure-rate floor"): the
+ * generator's own real single-prototype baseline indexed 19,501 of 19,508 cards that had a usable
+ * reference image — 99.964% of the denominator that actually matters (see the module header:
+ * `cardsWithUsableImage`, never `totalCanonicalCards`, since a large legitimate share of the
+ * catalog has no image at all and was never a candidate for indexing). A run degraded by sustained
+ * rate-limiting or a source outage could previously still publish at, say, 20% coverage as a fully
+ * "valid" generation — nothing checked a LOWER bound at all, only that coverage could not exceed
+ * 100%. 98% leaves headroom for ordinary day-to-day image-availability churn (a few dozen cards
+ * with a genuinely broken CDN asset) while still catching an order-of-magnitude degradation
+ * (a 20%-complete run, or anything below "the vast majority of usable images actually made it in")
+ * well before it could ever reach {@link assertValidCoverage}'s caller.
+ */
+export const MIN_INDEXED_OF_USABLE_IMAGE_PERCENT = 98
+
 export interface IndexCoverage {
   readonly totalCanonicalCards: number
   readonly cardsWithUsableImage: number
@@ -90,6 +105,71 @@ export function assertValidCoverage(
         'cannot report more auxiliary-prototype outcomes than cards it actually indexed.',
     )
   }
+
+  // P110 (prompt §4): the lower-bound coverage floor. Denominator is deliberately
+  // `cardsWithUsableImage`, never `totalCanonicalCards` — see MIN_INDEXED_OF_USABLE_IMAGE_PERCENT's
+  // own doc comment for why. Skipped only when there are zero usable images to begin with (the
+  // "accepts zero-card coverage" case above already forces cardsIndexed to 0 too in that case —
+  // 0/0 is vacuously fine, not a degraded run).
+  if (cardsWithUsableImage > 0) {
+    const indexedOfUsableImagePercent = (100 * cardsIndexed) / cardsWithUsableImage
+    if (indexedOfUsableImagePercent < MIN_INDEXED_OF_USABLE_IMAGE_PERCENT) {
+      throw new CoverageInvariantError(
+        `cardsIndexed/cardsWithUsableImage = ${indexedOfUsableImagePercent.toFixed(2)}% ` +
+          `(${String(cardsIndexed)}/${String(cardsWithUsableImage)}) is below the minimum ` +
+          `acceptable coverage floor of ${String(MIN_INDEXED_OF_USABLE_IMAGE_PERCENT)}%. Refusing ` +
+          'to publish a degraded index — this shape matches a run interrupted by sustained ' +
+          'rate-limiting, a source outage, or a systemic fetch failure, not ordinary day-to-day ' +
+          'image-availability churn. Investigate the failure budget before re-running.',
+      )
+    }
+  }
+}
+
+/**
+ * Per-cause breakdown of everything that kept a usable-image card OUT of the published index
+ * (P110, prompt §5). Reported separately, never collapsed into one misleading "failures" number —
+ * a systemic 429 storm and a handful of permanently-404 images look identical in a single count
+ * but call for completely different owner action (wait and resume vs. nothing to do).
+ *
+ * `decodeFailure`/`embedFailure` are reported as the SAME count, deliberately, not two
+ * independently-tracked numbers: the underlying `embedImageBuffer` call this pipeline uses does
+ * not distinguish "the bytes fetched are not a decodable image" from "decoding succeeded but the
+ * model's own inference threw" — inventing a fake split between them would be exactly the kind of
+ * fabricated precision this project's honesty bar forbids. Both fields are exposed because the
+ * prompt names both explicitly; their equal value documents the real limitation rather than
+ * hiding it.
+ */
+export interface FailureBudget {
+  /** Network error or timeout — no HTTP response was ever received. */
+  readonly fetchFailure: number
+  readonly http404: number
+  readonly http429: number
+  readonly http5xx: number
+  /** Any other non-2xx HTTP status (401/403/etc.) — treated as permanent, never retried. */
+  readonly httpOther: number
+  readonly decodeFailure: number
+  readonly embedFailure: number
+}
+
+export function logFailureBudget(
+  budget: FailureBudget,
+  log: (line: string) => void = console.log,
+): void {
+  log(
+    `[failure-budget] FETCH_FAILURE=${String(budget.fetchFailure)} (network error or timeout — no HTTP response received)`,
+  )
+  log(`[failure-budget] HTTP_404=${String(budget.http404)}`)
+  log(`[failure-budget] HTTP_429=${String(budget.http429)}`)
+  log(`[failure-budget] HTTP_5XX=${String(budget.http5xx)}`)
+  log(
+    `[failure-budget] HTTP_OTHER=${String(budget.httpOther)} (non-2xx status other than 404/429/5xx)`,
+  )
+  log(
+    `[failure-budget] DECODE_FAILURE=${String(budget.decodeFailure)} / EMBED_FAILURE=${String(budget.embedFailure)} ` +
+      '(reported equal — the embed pipeline does not distinguish a decode-time error from a ' +
+      "model-inference error; see FailureBudget's own doc comment)",
+  )
 }
 
 /**

@@ -1037,7 +1037,15 @@ function ScannerDebugPanel({
   }
 
   return (
-    <div className="fixed inset-x-0 bottom-0 z-[60] max-h-[60svh] overflow-y-auto border-t border-amber-700/60 bg-slate-950/95 px-3 py-2 text-[11px] text-amber-100">
+    // P110 (prompt §20 — P107's A11Y_TOKEN_FINDINGS: a second, independent contrast bug in this
+    // file): this panel is a deliberately FIXED-DARK debug console — `bg-slate-950` is themed
+    // (remapped to `var(--pp-background)`, see src/styles/index.css's @theme block), so in light
+    // mode it rendered near-white while the literal (unthemed) amber-* foreground text stayed
+    // dark-console-appropriate, producing near-invisible text. `bg-neutral-950` is NOT part of
+    // this app's theme remap (only slate/sky/rose/emerald are) — it stays a real near-black in
+    // both light and dark mode, restoring the intended always-dark console against the existing
+    // amber foreground. Scoped to this debug-only overlay; ordinary scanner UI is untouched.
+    <div className="fixed inset-x-0 bottom-0 z-[60] max-h-[60svh] overflow-y-auto border-t border-amber-700/60 bg-neutral-950/95 px-3 py-2 text-[11px] text-amber-100">
       <div className="flex items-center justify-between gap-2">
         <span className="font-semibold uppercase tracking-wide text-amber-300">Scanner debug</span>
         <div className="flex items-center gap-2">
@@ -1215,7 +1223,7 @@ function ExpectedCardRankTool({
             }}
             placeholder="Search for the card that should have won…"
             aria-label="Search for the expected card"
-            className="w-full rounded border border-amber-800/60 bg-slate-900 px-2 py-1 text-[11px] text-amber-100 outline-none focus-visible:border-amber-500"
+            className="w-full rounded border border-amber-800/60 bg-neutral-900 px-2 py-1 text-[11px] text-amber-100 outline-none focus-visible:border-amber-500"
           />
           {loading ? (
             <p className="text-amber-300/70">Checking rank…</p>
@@ -1287,7 +1295,7 @@ function ScannerDebugImagePreviews({ debugImages }: { debugImages: ScannerDebugI
             <img
               src={tile.url}
               alt={tile.label}
-              className="h-20 w-full rounded border border-amber-800/50 object-contain bg-slate-900"
+              className="h-20 w-full rounded border border-amber-800/50 object-contain bg-neutral-900"
             />
           ) : (
             <div className="flex h-20 items-center justify-center rounded border border-amber-900/40 text-[9px] text-amber-300/50">
