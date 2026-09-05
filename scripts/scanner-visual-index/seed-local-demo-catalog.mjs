@@ -22,6 +22,7 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
+import { nativePsqlAvailable, findLocalSupabaseContainer } from '../lib/psql-exec.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const corpusPath = join(here, '..', 'scanner-visual-benchmark', '.benchmark-cache', 'corpus.json')
@@ -80,22 +81,32 @@ async function main() {
   await writeFile(sqlFile, statements.join('\n'))
   console.log(`seed-local-demo-catalog: wrote ${statements.length} statements to ${sqlFile}`)
 
-  execFileSync(
-    'docker',
-    [
-      'exec',
-      '-i',
-      'supabase_db_pokeportfolio',
-      'psql',
-      '-U',
-      'postgres',
-      '-d',
-      'postgres',
-      '-v',
-      'ON_ERROR_STOP=1',
-    ],
-    { stdio: ['pipe', 'inherit', 'inherit'], input: await readFile(sqlFile) },
-  )
+  // P105: was a hardcoded `docker exec supabase_db_pokeportfolio psql` — broke outright on a
+  // machine with no native psql AND a differently-named/absent container. Native psql first (this
+  // script is LOCAL-only per its own header, so `DB_URL` here is always the local stack), falling
+  // back to the running `supabase_db_*` container discovered by name pattern, never a fixed name
+  // or id.
+  const input = await readFile(sqlFile)
+  const psqlArgs = ['-v', 'ON_ERROR_STOP=1']
+  if (nativePsqlAvailable()) {
+    execFileSync('psql', ['postgresql://postgres:postgres@127.0.0.1:54322/postgres', ...psqlArgs], {
+      stdio: ['pipe', 'inherit', 'inherit'],
+      input,
+    })
+  } else {
+    const container = findLocalSupabaseContainer()
+    if (container === null) {
+      throw new Error(
+        'seed-local-demo-catalog: no native psql on PATH and no running supabase_db_* container ' +
+          'found — start the local stack first (`pnpm db:start`).',
+      )
+    }
+    execFileSync(
+      'docker',
+      ['exec', '-i', container, 'psql', '-U', 'postgres', '-d', 'postgres', ...psqlArgs],
+      { stdio: ['pipe', 'inherit', 'inherit'], input },
+    )
+  }
   console.log('seed-local-demo-catalog: done')
 }
 
