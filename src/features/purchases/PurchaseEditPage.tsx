@@ -72,7 +72,12 @@ export function PurchaseEditPage() {
     )
   }
 
-  return <PurchaseEditForm purchaseId={purchaseId} detail={detail.data} />
+  // P109: `PurchaseEditForm` seeds every field from `detail` via a lazy `useState` initializer,
+  // which only runs once per mount — a `key={purchaseId}` is required so a same-instance
+  // navigation between two different purchases' edit URLs (no `remountDeps` on this route) forces
+  // a genuine remount instead of reusing purchase A's stale local state against purchase B's id
+  // (mirrors `SaleEditPage`'s own `key={saleId}`, already correct).
+  return <PurchaseEditForm key={purchaseId} purchaseId={purchaseId} detail={detail.data} />
 }
 
 /** Mounted only once `detail` is loaded, so every field initializes from real data via a lazy
