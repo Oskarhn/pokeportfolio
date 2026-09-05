@@ -81,7 +81,7 @@ export function ProfilePage() {
           </p>
           <p className="truncate text-sm text-slate-400">{email}</p>
           {isAdmin ? (
-            <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-sky-600/20 px-2 py-0.5 text-[11px] font-medium text-sky-300">
+            <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-sky-600/20 px-2 py-0.5 text-[11px] font-medium text-slate-200">
               <ShieldIcon className="size-3" />
               Administrator
             </span>
@@ -288,7 +288,7 @@ function ProfileSettings({ profile, isAdmin }: { profile: Profile; isAdmin: bool
                 }}
                 className={`min-h-9 flex-1 rounded-lg border text-sm font-medium ${
                   profile.theme === option.value
-                    ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                    ? 'border-sky-500 bg-sky-600/20 text-slate-200'
                     : 'border-slate-700 text-slate-300 hover:bg-slate-800'
                 }`}
               >
@@ -311,7 +311,7 @@ function ProfileSettings({ profile, isAdmin }: { profile: Profile; isAdmin: bool
                 }}
                 className={`flex min-h-9 flex-1 items-center justify-center gap-1.5 rounded-lg border text-sm font-medium ${
                   profile.collectionDefaultView === option.value
-                    ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                    ? 'border-sky-500 bg-sky-600/20 text-slate-200'
                     : 'border-slate-700 text-slate-300 hover:bg-slate-800'
                 }`}
               >
@@ -335,7 +335,7 @@ function ProfileSettings({ profile, isAdmin }: { profile: Profile; isAdmin: bool
                 }}
                 className={`min-h-9 flex-1 rounded-lg border text-sm font-medium ${
                   profile.collectionGridDensity === value
-                    ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                    ? 'border-sky-500 bg-sky-600/20 text-slate-200'
                     : 'border-slate-700 text-slate-300 hover:bg-slate-800'
                 }`}
               >
@@ -358,7 +358,7 @@ function ProfileSettings({ profile, isAdmin }: { profile: Profile; isAdmin: bool
                 }}
                 className={`flex min-h-9 flex-1 items-center justify-center gap-1.5 rounded-lg border text-sm font-medium ${
                   profile.defaultLanguage === option.value
-                    ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                    ? 'border-sky-500 bg-sky-600/20 text-slate-200'
                     : 'border-slate-700 text-slate-300 hover:bg-slate-800'
                 }`}
               >

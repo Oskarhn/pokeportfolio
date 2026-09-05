@@ -71,7 +71,7 @@ export function FiltersSheet({
                 }}
                 className={`min-h-9 flex-1 rounded-lg border text-sm font-medium ${
                   draft.holdingKind === value
-                    ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                    ? 'border-sky-500 bg-sky-600/20 text-slate-200'
                     : 'border-slate-700 text-slate-300 hover:bg-slate-800'
                 }`}
               >
@@ -101,7 +101,7 @@ export function FiltersSheet({
                     }}
                     className={`min-h-9 rounded-lg border px-3 text-sm font-medium ${
                       draft.sealedProductType === t
-                        ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                        ? 'border-sky-500 bg-sky-600/20 text-slate-200'
                         : 'border-slate-700 text-slate-300 hover:bg-slate-800'
                     }`}
                   >
@@ -129,7 +129,7 @@ export function FiltersSheet({
                     }}
                     className={`min-h-9 rounded-lg border px-3 text-sm font-medium ${
                       draft.sealedIntent === intent
-                        ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                        ? 'border-sky-500 bg-sky-600/20 text-slate-200'
                         : 'border-slate-700 text-slate-300 hover:bg-slate-800'
                     }`}
                   >
@@ -166,7 +166,7 @@ export function FiltersSheet({
                     }}
                     className={`min-h-9 flex-1 rounded-lg border text-sm font-medium ${
                       draft.graded === value
-                        ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                        ? 'border-sky-500 bg-sky-600/20 text-slate-200'
                         : 'border-slate-700 text-slate-300 hover:bg-slate-800'
                     }`}
                   >
@@ -192,7 +192,7 @@ export function FiltersSheet({
                       }}
                       className={`min-h-9 rounded-lg border px-3 text-sm font-medium ${
                         draft.grader === g
-                          ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                          ? 'border-sky-500 bg-sky-600/20 text-slate-200'
                           : 'border-slate-700 text-slate-300 hover:bg-slate-800'
                       }`}
                     >
@@ -217,7 +217,7 @@ export function FiltersSheet({
                       }}
                       className={`min-h-9 rounded-lg border px-3 text-sm font-medium ${
                         draft.condition === c
-                          ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                          ? 'border-sky-500 bg-sky-600/20 text-slate-200'
                           : 'border-slate-700 text-slate-300 hover:bg-slate-800'
                       }`}
                     >
@@ -251,7 +251,7 @@ export function FiltersSheet({
               }}
               className={`min-h-9 rounded-lg border px-3 text-sm font-medium ${
                 draft.lowValue
-                  ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                  ? 'border-sky-500 bg-sky-600/20 text-slate-200'
                   : 'border-slate-700 text-slate-300 hover:bg-slate-800'
               }`}
             >
@@ -269,7 +269,7 @@ export function FiltersSheet({
               }}
               className={`min-h-9 rounded-lg border px-3 text-sm font-medium ${
                 draft.missingValue
-                  ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                  ? 'border-sky-500 bg-sky-600/20 text-slate-200'
                   : 'border-slate-700 text-slate-300 hover:bg-slate-800'
               }`}
             >
@@ -291,7 +291,7 @@ export function FiltersSheet({
               }}
               className={`min-h-9 rounded-lg border px-3 text-sm font-medium ${
                 draft.favorite
-                  ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                  ? 'border-sky-500 bg-sky-600/20 text-slate-200'
                   : 'border-slate-700 text-slate-300 hover:bg-slate-800'
               }`}
             >
@@ -305,7 +305,7 @@ export function FiltersSheet({
               }}
               className={`min-h-9 rounded-lg border px-3 text-sm font-medium ${
                 draft.manualOnly
-                  ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                  ? 'border-sky-500 bg-sky-600/20 text-slate-200'
                   : 'border-slate-700 text-slate-300 hover:bg-slate-800'
               }`}
             >

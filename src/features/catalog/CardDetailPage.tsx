@@ -172,7 +172,7 @@ export function CardDetailPage() {
                       }}
                       className={`min-h-8 rounded-full border px-3 text-xs font-medium transition-colors ${
                         v.id === selectedVariantId
-                          ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                          ? 'border-sky-500 bg-sky-600/20 text-slate-200'
                           : 'border-slate-700 text-slate-300 hover:bg-slate-800'
                       }`}
                     >

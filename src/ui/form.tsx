@@ -156,7 +156,7 @@ export function ChoiceGroup<T extends string>({
             }}
             className={`min-h-11 rounded-lg border px-3 text-sm font-medium transition-colors ${
               value === optionValue
-                ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                ? 'border-sky-500 bg-sky-600/20 text-slate-200'
                 : 'border-slate-700 text-slate-300 hover:bg-slate-800'
             }`}
           >
