@@ -75,7 +75,10 @@ export function GridTile({
               </span>
             ) : null}
             {tile.isFavorite ? (
-              <span aria-hidden className="absolute left-1 top-1 text-xs text-amber-400">
+              <span
+                aria-hidden
+                className="absolute left-1 top-1 rounded-full bg-slate-950/80 px-1 text-xs text-slate-100"
+              >
                 ★
               </span>
             ) : null}
@@ -162,7 +165,7 @@ function ValueLine({ tile, compact }: { tile: PortfolioTile; compact?: boolean }
     >
       {formatNokMinor(tile.holdingValueMinor)} NOK
       {tile.priceState === 'stale' ? (
-        <span className="size-1.5 rounded-full bg-amber-500" title="Price is a few days old" />
+        <span className="size-1.5 rounded-full bg-slate-400" title="Price is a few days old" />
       ) : null}
     </p>
   )

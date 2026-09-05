@@ -230,7 +230,7 @@ export function CatalogPage() {
           aria-label="Show only cards you have favourited"
           className={`flex size-11 shrink-0 items-center justify-center rounded-full border ${
             favoriteOnly
-              ? 'border-amber-400/60 bg-amber-400/10 text-amber-400'
+              ? 'border-sky-500 bg-sky-600/20 text-slate-200'
               : 'border-slate-700 text-slate-400 hover:bg-slate-800'
           }`}
         >

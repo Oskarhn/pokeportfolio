@@ -258,7 +258,7 @@ export function HoldingDetailPage() {
               onClick={() => {
                 favoriteMutation.mutate(!h.isFavorite)
               }}
-              className="text-xl text-amber-400 focus-visible:outline-2 focus-visible:outline-sky-500"
+              className="text-xl text-slate-300 focus-visible:outline-2 focus-visible:outline-sky-500"
             >
               {h.isFavorite ? '★' : '☆'}
             </button>
