@@ -16,7 +16,9 @@ const SYNTHETIC_CARD_IMAGE = fileURLToPath(
  */
 
 async function expectNoViolations(page: import('@playwright/test').Page) {
-  const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag22aa']).analyze()
+  const results = await new AxeBuilder({ page })
+    .withTags(['wcag2a', 'wcag2aa', 'wcag22aa'])
+    .analyze()
   expect(results.violations, JSON.stringify(results.violations, null, 2)).toEqual([])
 }
 

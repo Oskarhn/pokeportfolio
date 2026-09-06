@@ -958,6 +958,19 @@ concurrent fixture creation (`add_card_acquisition`/`create_purchase`/`create_op
 provisional`) for the same user under the default parallel workers hit a real Postgres deadlock
 this session, unrelated to whatever behavior the spec exists to prove.
 
+**Cross-file hazard, fixed: a real sign-out used to invalidate every other test's session (P112).**
+`supabase.auth.signOut()` defaults to GLOBAL scope (correct, intended product behavior — it revokes
+every session for the account, not just one tab), so `account-boundary.spec.ts`'s two specs
+clicking the real "Sign out" button used to kill the ONE shared `e2e-auth` session every other
+authenticated spec inherits via `auth.setup.ts`'s `storageState` — any test running afterward
+(same worker or a different one; the token was already revoked server-side, not merely raced)
+would suddenly find itself signed out, failing for a reason unrelated to what it actually checks.
+Fixed by giving `account-boundary.spec.ts` its own disposable "A" user
+(`test.use({ storageState: { cookies: [], origins: [] } })` plus a real UI sign-in in its own
+`beforeEach`), exactly like it already did for "B" — its sign-out now only ever touches a user
+nothing else depends on. The full authenticated project runs green under normal parallelism again;
+no `--workers=1` workaround needed.
+
 **How to run it:**
 
 ```bash

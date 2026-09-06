@@ -12,26 +12,51 @@ const SYNTHETIC_CARD_IMAGE = fileURLToPath(
  * boundary (SECURITY.md §9.1) but exercised through a real browser session rather than only unit
  * tests of the cache-clearing logic itself.
  *
- * The `desktop-chromium-authenticated` project's storageState already signs the page in as
- * synthetic user A (auth.setup.ts). This spec creates its OWN second synthetic user B — never a
- * production account — and cleans it up in its own `afterEach`, independent of the shared
- * `teardown` project (which only ever owns user A).
+ * P112: this file's two tests are the ONLY specs in the authenticated project that click the real
+ * "Sign out" button. `supabase.auth.signOut()` defaults to GLOBAL scope (correct, intended product
+ * behavior — revoking every session for the account, not just this browser tab), which means
+ * signing out the shared `e2e-auth` user every other authenticated spec inherits via
+ * `auth.setup.ts`'s `storageState` would permanently kill that session for the rest of the run —
+ * a real cross-test hazard found by running the full authenticated suite, not a product bug.
+ * Fixed by giving THIS file's own "A" role a dedicated, disposable user signed in fresh through the
+ * real login form (`test.use({ storageState: { cookies: [], origins: [] } })` opts out of the
+ * inherited session
+ * entirely), exactly mirroring how "B" was already created. No other spec's session is ever
+ * touched.
  */
 
+test.use({ storageState: { cookies: [], origins: [] } })
+
 test.describe('Account-switch privacy: unsaved purchase input does not leak across a sign-out', () => {
+  let userA: { id: string; email: string; password: string } | null = null
   let userB: { id: string; email: string; password: string } | null = null
 
-  test.afterEach(async () => {
-    if (userB === null) return
+  test.beforeEach(async ({ page }) => {
     const service = createServiceClient()
-    await deleteSyntheticUser(service, userB.id)
-    userB = null
+    userA = await createSyntheticUser(service, 'e2e-boundary-a')
+    await page.goto('/login')
+    await page.getByLabel('Email').fill(userA.email)
+    await page.getByLabel('Password').fill(userA.password)
+    await page.getByRole('button', { name: /sign in/i }).click()
+    await page.waitForURL((url) => !url.pathname.startsWith('/login'), { timeout: 15_000 })
+  })
+
+  test.afterEach(async () => {
+    const service = createServiceClient()
+    if (userA !== null) {
+      await deleteSyntheticUser(service, userA.id)
+      userA = null
+    }
+    if (userB !== null) {
+      await deleteSyntheticUser(service, userB.id)
+      userB = null
+    }
   })
 
   test("A types unsaved purchase input, signs out, B signs in — B sees an empty form, not A's text", async ({
     page,
   }) => {
-    // A (already signed in via storageState) types real unsaved input.
+    // A (signed in fresh in beforeEach, above) types real unsaved input.
     await page.goto('/purchases/new')
     await page.getByLabel('Shipping').fill('12345')
     await expect(page.getByLabel('Shipping')).toHaveValue('12345')
@@ -85,6 +110,12 @@ test.describe('Account-switch privacy: unsaved purchase input does not leak acro
    * mount effect itself (stored in a ref, not a state value — see D-108's own note on why): effect
    * bodies genuinely run once per REAL mount even under StrictMode, so exactly one live instance now
    * survives. This test is the real, execution-level proof of that fix — un-skipped below.
+   *
+   * P112: the searched card can resolve to a catalog entry with more than one trackable version
+   * (e.g. "Pikachu" Base Set #58, seeded with Normal/Reverse holo/an "Other" test finish) — the
+   * Confirm view correctly refuses to guess and shows an explicit, nothing-pre-selected "Version"
+   * picker until one is chosen. Selecting the first option when that picker appears is real,
+   * intended product validation this test must satisfy, not a bug to route around.
    */
   test('A scans a card into a nonempty batch (never committed); it blocks the stale-deployment reload and is gone for B after sign-out/sign-in', async ({
     page,

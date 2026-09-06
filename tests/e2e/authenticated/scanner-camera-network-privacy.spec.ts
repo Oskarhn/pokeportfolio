@@ -57,8 +57,12 @@ test.describe('Scanner real-capture network privacy (P112)', () => {
         const img = new Image()
         img.src = dataUrl
         await new Promise<void>((resolve, reject) => {
-          img.onload = () => resolve()
-          img.onerror = () => reject(new Error('fixture image failed to decode'))
+          img.onload = () => {
+            resolve()
+          }
+          img.onerror = () => {
+            reject(new Error('fixture image failed to decode'))
+          }
         })
         const canvas = document.createElement('canvas')
         canvas.width = img.naturalWidth
@@ -143,7 +147,9 @@ test.describe('Scanner real-capture network privacy (P112)', () => {
     // Every other body-bearing request is expected to be a small JSON RPC/API call — assert that
     // explicitly too, so a regression that adds a NEW mutating endpoint doesn't slip through
     // silently just because its body happens to be small.
-    const otherBodyBearing = requests.filter((r) => r.postDataLength > 0 && !imageBearing.includes(r))
+    const otherBodyBearing = requests.filter(
+      (r) => r.postDataLength > 0 && !imageBearing.includes(r),
+    )
     for (const r of otherBodyBearing) {
       expect(
         r.url,
@@ -168,7 +174,7 @@ test.describe('Scanner real-capture network privacy (P112)', () => {
     ).toHaveLength(0)
 
     const nonGet = requests.filter((r) => r.method !== 'GET' && r.method !== 'HEAD')
-    // eslint-disable-next-line no-console -- diagnostic summary, useful when re-running this by hand
+
     console.log(
       `SCANNER_CAPTURE_NETWORK_TRACE: ${requests.length} total requests, ` +
         `${nonGet.length} non-GET/HEAD, ${imageBearing.length} image-shaped, ${analytics.length} analytics`,

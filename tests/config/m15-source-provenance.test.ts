@@ -20,7 +20,7 @@ describe('M15 source provenance matrix stays accurate', () => {
   it.each([
     ['D-120', 'Dashboard-read index'],
     ['D-121', "create_purchase' gains an optional"],
-    ['D-122', "idempotent replay now preserves"],
+    ['D-122', 'idempotent replay now preserves'],
     ['D-123', '404-resume'],
   ])('renumbered/corrected decision %s is present in DECISIONS.md', (id) => {
     expect(decisions).toMatch(new RegExp(`^## ${id} —`, 'm'))
