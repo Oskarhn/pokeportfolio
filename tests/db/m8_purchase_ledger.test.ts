@@ -47,6 +47,7 @@ interface PurchaseRow {
   total_nok_minor: number
   fx_rate_to_nok: number
   voided_at: string | null
+  notes: string | null
 }
 
 async function callCreate(client: TestClient, args: Record<string, unknown>) {
