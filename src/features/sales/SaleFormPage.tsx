@@ -26,12 +26,11 @@ import {
   type SaleFormFields,
 } from './sale-form-state'
 import { useUnsavedWorkSnapshot } from '../../platform/unsaved-work-registry'
+import { localTodayIso } from '../../platform/local-date'
 
 const CURRENCIES: CurrencyCode[] = ['NOK', 'EUR', 'USD', 'GBP', 'JPY']
 
-function today(): string {
-  return new Date().toISOString().slice(0, 10)
-}
+const today = localTodayIso
 
 function parseAmount(raw: string, currency: CurrencyCode): bigint {
   const trimmed = raw.trim().replace(',', '.')

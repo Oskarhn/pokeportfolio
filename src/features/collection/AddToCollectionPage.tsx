@@ -13,6 +13,7 @@ import {
   type LotOrigin,
 } from '../../data/collection'
 import { getCardVariantWithCard, type CatalogVariantWithCard } from '../../data/catalog'
+import { localTodayIso } from '../../platform/local-date'
 import { CardImage } from '../catalog/CardImage'
 import {
   Button,
@@ -72,7 +73,7 @@ export function AddToCollectionPage() {
   const [origin, setOrigin] = useState<LotOrigin>('purchase')
   const [costKnown, setCostKnown] = useState(true)
   const [costPerCard, setCostPerCard] = useState('')
-  const [acquiredOn, setAcquiredOn] = useState(() => new Date().toISOString().slice(0, 10))
+  const [acquiredOn, setAcquiredOn] = useState(localTodayIso)
   const [storageLocationId, setStorageLocationId] = useState('')
   const [newLocationName, setNewLocationName] = useState('')
   const [isFavorite, setIsFavorite] = useState(false)

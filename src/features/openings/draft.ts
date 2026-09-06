@@ -6,6 +6,7 @@ import type {
   TrackingCompleteness,
 } from './contract'
 import { openingCostPreview } from './copy'
+import { localTodayIso } from '../../platform/local-date'
 
 /**
  * The opening wizard's pure state machine (prompt §6/§24). No React, no routing, no network —
@@ -79,9 +80,7 @@ export interface OpeningDraft {
   submittedOpeningId: string | null
 }
 
-function todayIso(): string {
-  return new Date().toISOString().slice(0, 10)
-}
+const todayIso = localTodayIso
 
 export function initialDraft(
   preselect?: { holdingId?: string; lotId?: string },

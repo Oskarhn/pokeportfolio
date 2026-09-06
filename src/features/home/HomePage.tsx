@@ -14,6 +14,7 @@ import { ScopeSelector } from '../../ui/ScopeSelector'
 import { CurrencySelector } from '../../ui/CurrencySelector'
 import { MoneyDisplay, ValuePrivacyToggle } from '../../ui/MoneyDisplay'
 import { formatNokMinor } from '../../ui/money-format'
+import { localTodayIso } from '../../platform/local-date'
 import {
   DASHBOARD_RANGES,
   accessibleHistorySummary,
@@ -65,9 +66,7 @@ import {
  * history (DECISIONS.md D-065, prompt §45/§89).
  */
 
-function todayIso(): string {
-  return new Date().toISOString().slice(0, 10)
-}
+const todayIso = localTodayIso
 
 export function HomePage() {
   const navigate = useNavigate()
