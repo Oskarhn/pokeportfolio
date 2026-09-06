@@ -349,4 +349,74 @@ describe('ScannerOcrEngine — recognize() concurrency lock (F-15)', () => {
     await expect(first).rejects.toThrow('first call failed')
     await expect(second).resolves.toEqual({ text: 'OK', confidence: 50 })
   })
+
+  /** P113 §11 (OCR mutex torture): a bulk-scale version of the two tests above — hundreds of
+   *  calls fired near-simultaneously with a genuine mix of outcomes, proving F-15's serialization
+   *  and the queue's self-healing-after-rejection property both hold at scale, not just for two
+   *  calls. Every call is issued in the SAME microtask (no `await` between them), the most
+   *  adversarial ordering the queue's `Promise.resolve()` chaining can face. */
+  it('300 recognize() calls fired near-simultaneously, mixed success/failure, all settle in FIFO order with no deadlock', async () => {
+    const { ScannerOcrEngine } = await importEngine()
+    const engine = new ScannerOcrEngine()
+    const worker = fakeWorker()
+    const CALL_COUNT = 300
+    const executionOrder: number[] = []
+    worker.recognize.mockImplementation((image: unknown) => {
+      const { index } = image as { index: number }
+      executionOrder.push(index)
+      // Every 7th call fails — a genuine, deterministic mix, not all-success.
+      if (index % 7 === 0) return Promise.reject(new Error(`synthetic failure ${String(index)}`))
+      return Promise.resolve({ data: { text: `RESULT-${String(index)}`, confidence: index % 100 } })
+    })
+    createWorkerMock.mockResolvedValueOnce(worker)
+    await engine.prepare()
+
+    const calls = Array.from({ length: CALL_COUNT }, (_, index) =>
+      engine.recognize({ index } as unknown as HTMLCanvasElement).then(
+        (result) => ({ ok: true as const, index, result }),
+        (error: unknown) => ({ ok: false as const, index, error }),
+      ),
+    )
+    const settled = await Promise.all(calls)
+
+    // Every call settled (no deadlock, no permanently-pending promise).
+    expect(settled).toHaveLength(CALL_COUNT)
+    // The queue serialized calls strictly in submission order — worker.recognize() was never
+    // invoked for call N+1 before call N's own turn, at 300-call scale, not merely 2.
+    expect(executionOrder).toEqual(Array.from({ length: CALL_COUNT }, (_, i) => i))
+    // Exactly the expected subset failed, and none of those failures affected any neighbor.
+    const failedIndices = settled.filter((s) => !s.ok).map((s) => s.index)
+    const expectedFailedIndices = Array.from({ length: CALL_COUNT }, (_, i) => i).filter(
+      (i) => i % 7 === 0,
+    )
+    expect(failedIndices).toEqual(expectedFailedIndices)
+    for (const s of settled) {
+      if (s.ok)
+        expect(s.result).toEqual({ text: `RESULT-${String(s.index)}`, confidence: s.index % 100 })
+    }
+  })
+
+  it('after dispose(), a genuinely FRESH engine instance prepares and recognizes normally (no cross-instance contamination)', async () => {
+    const { ScannerOcrEngine } = await importEngine()
+    const first = new ScannerOcrEngine()
+    const firstWorker = fakeWorker()
+    firstWorker.recognize.mockReturnValue(new Promise(() => {})) // never resolves
+    createWorkerMock.mockResolvedValueOnce(firstWorker)
+    await first.prepare()
+    const pending = first.recognize({} as HTMLCanvasElement)
+    await flush()
+    first.dispose()
+    await expect(pending).rejects.toThrow()
+
+    // A brand-new instance — the module has no shared/static state that disposal could have
+    // poisoned — must prepare and recognize cleanly, using its OWN fresh worker.
+    const second = new ScannerOcrEngine()
+    const secondWorker = fakeWorker()
+    createWorkerMock.mockResolvedValueOnce(secondWorker)
+    await second.prepare()
+    expect(second.getState()).toBe('ready')
+    const result = await second.recognize({} as HTMLCanvasElement)
+    expect(result).toEqual({ text: 'PIKACHU', confidence: 92 })
+    expect(secondWorker.recognize).toHaveBeenCalledTimes(1)
+  })
 })
