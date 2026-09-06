@@ -1,6 +1,8 @@
 -- P108 restates the complete privilege baseline (SECURITY.md §5.9). This milestone changes ONE
 -- function signature: create_purchase gains a 12th parameter (p_idempotency_key uuid DEFAULT NULL)
--- for optional purchase-write idempotency (DECISIONS.md D-117). The old 11-param signature is
+-- for optional purchase-write idempotency (DECISIONS.md D-121, renumbered from P108's own D-117
+-- during P111 integration — P106's D-117 already covers an unrelated cookie-consent decision).
+-- The old 11-param signature is
 -- replaced via DROP+CREATE (TESTING.md §6a/D-054); this baseline references the NEW 12-param
 -- signature exclusively.
 -- Everything else below is identical to `20260903120010_m15_privilege_baseline.sql`; only the

@@ -574,6 +574,28 @@ describe('searchVisualIndex — bounded top-K path vs. full-ranking fallback (P1
     expect(searchVisualIndex(decoded, new Float32Array([1, 0, 0, 0]), 0)).toEqual([])
   })
 
+  it('P110 (prompt §22): the full-sort fallback path breaks an exact similarity tie the SAME explicit way as the bounded-heap path — ascending card index, not push order', () => {
+    // Cards 1 and 3 are float64-identical in similarity to the query (both [127,0,0,0], a real
+    // near-duplicate-reference shape — see D-114's own reprint/shared-artwork example). topK ==
+    // cardCount, so this exercises the FULL-SORT path specifically, not BoundedTopK.
+    const rows = [
+      [0, 127, 0, 0], // card-0: lower similarity
+      [127, 0, 0, 0], // card-1: tied for highest
+      [0, 0, 127, 0], // card-2: lower similarity
+      [127, 0, 0, 0], // card-3: tied for highest
+    ]
+    const decoded = decodeVisualIndex(
+      manifest({ cardCount: 4 }),
+      ['card-0', 'card-1', 'card-2', 'card-3'],
+      packInt8(rows),
+    )
+    const hits = searchVisualIndex(decoded, new Float32Array([1, 0, 0, 0]), 4)
+    // The tied pair (card-1, card-3) must both rank ahead of the non-tied cards, and — the
+    // explicit tie-break under test — card-1 (the lower index) must rank ahead of card-3.
+    expect(hits.map((h) => h.cardId)).toEqual(['card-1', 'card-3', 'card-0', 'card-2'])
+    expect(hits[0]!.similarity).toBe(hits[1]!.similarity) // genuinely tied, not a coincidence of order
+  })
+
   it('the bounded-heap path and the full-sort path agree on real-shaped data (cross-check)', () => {
     const cardCount = 50
     const rows: number[][] = Array.from({ length: cardCount }, (_, i) => {

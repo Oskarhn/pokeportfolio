@@ -144,3 +144,74 @@ describe('no component hardcodes text-white on an accent surface any more', () =
     expect(violations).toEqual([])
   })
 })
+
+/**
+ * P110 (prompt §20 — P107's A11Y_TOKEN_FINDINGS: a second, independent contrast bug in
+ * ScannerPage.tsx beyond the nine P105 audited): the `?scannerDebug=1` overlay used `bg-slate-950`
+ * — themed (`--color-slate-950: var(--pp-background)` in index.css's @theme block) — as what its
+ * author clearly intended to be a permanently-dark debug console background, paired with literal
+ * (unthemed) `text-amber-100/200/300`. In light mode, `--pp-background` is `#faf9f6` (near-white),
+ * making the amber text nearly invisible. The fix switches the panel to `bg-neutral-950`, which is
+ * NOT part of this app's theme remap (only slate/sky/rose/emerald are — src/styles/index.css's
+ * @theme block) and therefore stays a real near-black in every theme.
+ *
+ * Tailwind v4 defines its palette in OKLCH, not hex (`node_modules/tailwindcss/theme.css`), so the
+ * hex constants below are not hand-converted (real OKLCH-to-sRGB conversion is easy to get subtly
+ * wrong) — they were measured directly from a real browser's `canvas.fillStyle` + `getImageData`
+ * round trip over Tailwind's own declared OKLCH values for `neutral-950`/`amber-100/200/300`,
+ * the same "measure the real value, never guess" bar this project applies everywhere else.
+ */
+describe('scanner debug overlay (?scannerDebug=1) contrast (P110)', () => {
+  // Real Tailwind v4 default-palette values, browser-measured (see this block's own header).
+  const NEUTRAL_950 = '#0a0a0a'
+  const AMBER_100 = '#fef3c6'
+  const AMBER_200 = '#fee685'
+  const AMBER_300 = '#ffd230'
+  // This app's own light-mode `--pp-background` (src/styles/index.css) — what `bg-slate-950`
+  // resolved to in light mode before the fix, i.e. the actual broken pairing.
+  const PP_BACKGROUND_LIGHT = '#faf9f6'
+
+  it('REGRESSION DOCUMENTED: the OLD themed pairing (amber text on light-mode --pp-background) failed WCAG AA badly', () => {
+    expect(contrastRatio(AMBER_100, PP_BACKGROUND_LIGHT)).toBeLessThan(AA_NORMAL_TEXT_MINIMUM)
+  })
+
+  it('the FIXED pairing (amber text on the literal, unthemed neutral-950) passes WCAG AA comfortably for every amber shade the panel uses', () => {
+    for (const amber of [AMBER_100, AMBER_200, AMBER_300]) {
+      expect(contrastRatio(amber, NEUTRAL_950)).toBeGreaterThanOrEqual(AA_NORMAL_TEXT_MINIMUM)
+    }
+  })
+
+  it("the fixed background is theme-INDEPENDENT by construction: neutral-950 is not part of this app's @theme remap", () => {
+    const themeBlock = /@theme\s*\{[\s\S]*?\n\}/.exec(cssSource())?.[0] ?? ''
+    expect(themeBlock).not.toMatch(/--color-neutral-950:/)
+  })
+
+  it("ScannerPage.tsx no longer pairs a themed slate-9xx/950 background with the debug panel's literal amber foreground", () => {
+    const source = readFileSync(
+      join(process.cwd(), 'src', 'features', 'scanner', 'ScannerPage.tsx'),
+      'utf-8',
+    )
+    // The debug-overlay-specific occurrences (container, the rank-lookup search input, and the
+    // debug image preview tiles) must all use the unthemed neutral-9xx family now.
+    expect(source).toContain('bg-neutral-950/95')
+    expect(source).toContain('bg-neutral-900')
+    // No remaining amber-foreground element is still paired with a themed slate-900/950
+    // background anywhere in this file (a plain string scan is sufficient here: this file's only
+    // amber-text usages ARE the debug overlay, confirmed by the surrounding describe blocks in
+    // this project's own broader amber-token audit).
+    expect(source).not.toMatch(/bg-slate-9(00|50)[^"]*text-amber/)
+  })
+
+  it('reports the measured contrast ratios so a future reader can see the actual before/after numbers, not just pass/fail', () => {
+    // Light-mode LIGHT_CONTRAST and dark-mode DARK_CONTRAST are now IDENTICAL by construction —
+    // the panel's background no longer depends on the app's theme at all (see the "theme
+    // INDEPENDENT" test above). amber-300 is the lowest-contrast of the three panel text shades
+    // against neutral-950 (measured ~13.68:1); amber-100 is the highest (~17.77:1) — both are
+    // reported here, and both are nowhere near the ~1.06:1 the old light-mode pairing produced.
+    const worstCase = contrastRatio(AMBER_300, NEUTRAL_950)
+    const bestCase = contrastRatio(AMBER_100, NEUTRAL_950)
+    expect(worstCase).toBeGreaterThanOrEqual(AA_NORMAL_TEXT_MINIMUM)
+    expect(worstCase).toBeGreaterThan(10)
+    expect(bestCase).toBeGreaterThan(worstCase)
+  })
+})

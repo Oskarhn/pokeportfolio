@@ -734,7 +734,7 @@ describe('idempotency — create_purchase never double-writes on retry (P108, P1
     expect(lots).toHaveLength(1)
   })
 
-  it('a third replay after editing an IRRELEVANT field (notes) still replays cleanly', async () => {
+  it('a third replay after editing notes still replays cleanly AND preserves the edit (D-122)', async () => {
     const key = crypto.randomUUID()
     const { data: first, error: firstError } = await callCreate(
       clientA,
@@ -750,6 +750,18 @@ describe('idempotency — create_purchase never double-writes on retry (P108, P1
     )
     expect(secondError).toBeNull()
     expect(second?.id).toBe(first?.id)
+
+    // D-122: a legitimate replay must not silently discard the caller's edited notes — the
+    // returned row AND the stored row must both reflect the LATEST submitted notes, not the
+    // first attempt's. Only the notes annotation may move; everything else about the purchase
+    // (financial rows) is untouched by the replay.
+    expect(second?.notes).toBe('edited after the fact')
+    const { data: stored } = await service
+      .from('purchases')
+      .select('notes')
+      .eq('id', first!.id)
+      .single()
+    expect(stored?.notes).toBe('edited after the fact')
   })
 
   it.each([
