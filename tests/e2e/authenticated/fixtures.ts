@@ -56,11 +56,13 @@ export async function signInAsE2eUser() {
  *  real holding id a spec can then navigate `/sales/new?holdingId=<id>` against, exactly the N-14
  *  scenario (SaleFormPage's async holding-prefill dirty-baseline fix) no other suite could
  *  exercise without a real signed-in session. */
-export async function createFixtureHolding(): Promise<{ holdingId: string; lotId: string }> {
+export async function createFixtureHolding(
+  overrides: { cardVariantId?: string } = {},
+): Promise<{ holdingId: string; lotId: string }> {
   const client = await signInAsE2eUser()
   const { data, error } = await client
     .rpc('add_card_acquisition', {
-      p_card_variant_id: seedCatalog.pikachuVariantId,
+      p_card_variant_id: overrides.cardVariantId ?? seedCatalog.pikachuVariantId,
       p_grading_state: 'raw',
       p_condition: 'NM',
       p_origin: 'pre_tracking',
@@ -75,10 +77,15 @@ export async function createFixtureHolding(): Promise<{ holdingId: string; lotId
   return { holdingId: data!.holding_id, lotId: data!.lot_id }
 }
 
-/** Creates one real Purchase (via the real `create_purchase` RPC, one Pikachu card line) for the
+/** Creates one real Purchase (via the real `create_purchase` RPC, one card line) for the
  *  signed-in E2E user — a real purchase id a spec can navigate `/purchases/$purchaseId/edit`
- *  against (P96 §16). */
-export async function createFixturePurchase(): Promise<{ purchaseId: string }> {
+ *  against (P96 §16). Defaults to a Pikachu card at 5000 minor; `overrides.cardVariantId` /
+ *  `overrides.unitPriceMinor` let a spec create two DISTINGUISHABLE fixture purchases (P111 §13 —
+ *  an entity-switch regression needs A and B to actually look different on screen, not just have
+ *  different ids). */
+export async function createFixturePurchase(
+  overrides: { cardVariantId?: string; unitPriceMinor?: number } = {},
+): Promise<{ purchaseId: string }> {
   const client = await signInAsE2eUser()
   const { data, error } = await client
     .rpc('create_purchase', {
@@ -87,10 +94,10 @@ export async function createFixturePurchase(): Promise<{ purchaseId: string }> {
       p_lines: [
         {
           line_type: 'card',
-          card_variant_id: seedCatalog.pikachuVariantId,
+          card_variant_id: overrides.cardVariantId ?? seedCatalog.pikachuVariantId,
           condition: 'NM',
           quantity: 1,
-          unit_price_minor: 5000,
+          unit_price_minor: overrides.unitPriceMinor ?? 5000,
         },
       ],
     })
