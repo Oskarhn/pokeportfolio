@@ -37,6 +37,7 @@ import {
   type ExpectedCardRank,
 } from './visual/visual-client'
 import { estimateAssetCacheStatus } from './visual/phase-timing'
+import { localTodayIso } from '../../platform/local-date'
 
 /**
  * P81 §5/§15: how long a scan will wait for the visual channel when it was NOT already warm at
@@ -861,7 +862,7 @@ export function createRealScannerController(
   async function commitBatch(items: ScannerCommitItem[]): Promise<ScannerCommitResult> {
     const defaults = scannerSessionStore.load(options.userId)
     const origin: ScannerOrigin = defaults?.origin ?? 'pre_tracking'
-    const acquiredOn = defaults?.acquiredOn ?? new Date().toISOString().slice(0, 10)
+    const acquiredOn = defaults?.acquiredOn ?? localTodayIso()
     const storageLocationId = defaults?.storageLocationId ?? undefined
 
     const outcomes: ScannerCommitOutcome[] = []
