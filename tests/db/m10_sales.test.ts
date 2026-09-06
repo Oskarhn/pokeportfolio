@@ -107,6 +107,31 @@ async function purchaseLinesFor(purchaseId: string): Promise<PurchaseLineRow[]> 
   return data
 }
 
+/**
+ * P108b finding: every line create_purchase writes for one call gets the IDENTICAL
+ * `created_at` (Postgres `now()`/`transaction_timestamp()` is frozen for the whole
+ * function invocation, confirmed directly — 4 lines inserted by one create_purchase call
+ * all carry the exact same timestamp to the microsecond). `purchaseLinesFor`'s
+ * `.order('created_at')` therefore has no way to break the tie among a purchase's own
+ * lines; Postgres's actual return order for tied rows is implementation-defined, not a
+ * documented guarantee, and empirically matches insertion order only "usually" (it
+ * flipped at least once during a 24-run full-suite stress test, causing a real, false
+ * financial-assertion failure in the E7 test below — not a timing race, not cron
+ * contention, a structural test bug). Any test that builds a multi-line purchase and then
+ * needs to name a SPECIFIC line back must find it by a field that actually distinguishes
+ * it (unit_price_minor, here always unique per line in this file's own fixtures) — never
+ * by array position after this helper.
+ */
+function lineByPrice(lines: PurchaseLineRow[], unitPriceMinor: number): PurchaseLineRow {
+  const found = lines.find((l) => l.unit_price_minor === unitPriceMinor)
+  if (!found) {
+    throw new Error(
+      `no purchase line with unit_price_minor=${unitPriceMinor} among [${lines.map((l) => l.unit_price_minor).join(', ')}]`,
+    )
+  }
+  return found
+}
+
 async function lotForPurchaseLine(lineId: string): Promise<LotRow> {
   const { data, error } = await service
     .from('acquisition_lots')
@@ -187,9 +212,9 @@ describe('E2 — multiple copies, one sold, reproduced exactly in the database',
     expect(purchaseError).toBeNull()
 
     const lines = await purchaseLinesFor(purchase!.id)
-    const l1 = await lotForPurchaseLine(lines[0]!.id) // 100
-    await lotForPurchaseLine(lines[1]!.id) // 150 (L2, untouched)
-    await lotForPurchaseLine(lines[2]!.id) // 200 (L3, untouched)
+    const l1 = await lotForPurchaseLine(lineByPrice(lines, 10000).id)
+    await lotForPurchaseLine(lineByPrice(lines, 15000).id) // L2, untouched
+    await lotForPurchaseLine(lineByPrice(lines, 20000).id) // L3, untouched
 
     const { data: sale, error } = await callCreateSale(clientA, {
       p_sold_on: today,
@@ -252,8 +277,8 @@ describe('E7 — partial sale from a multi-unit lot, reproduced exactly', () => 
       .single<{ id: string }>()
 
     const lines = await purchaseLinesFor(purchase!.id)
-    const l1 = await lotForPurchaseLine(lines[0]!.id)
-    const l4 = await lotForPurchaseLine(lines[3]!.id)
+    const l1 = await lotForPurchaseLine(lineByPrice(lines, 10000).id)
+    const l4 = await lotForPurchaseLine(lineByPrice(lines, 18000).id)
     expect(l4.quantity).toBe(2)
 
     const { data: sale, error } = await callCreateSale(clientA, {
@@ -471,8 +496,8 @@ describe('lot cost adjustments — exact minor-unit division across the lot (pro
       })
       .single<{ id: string }>()
     const lines = await purchaseLinesFor(purchase!.id)
-    const cardLine = lines[0]!
-    const feeLine = lines[1]!
+    const cardLine = lineByPrice(lines, 10000)
+    const feeLine = lineByPrice(lines, 101)
     const lot = await lotForPurchaseLine(cardLine.id)
     expect(lot.quantity).toBe(2)
 
