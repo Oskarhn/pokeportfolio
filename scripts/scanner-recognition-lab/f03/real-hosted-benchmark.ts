@@ -46,8 +46,15 @@ import {
   searchVisualIndex,
   type VisualIndexManifest,
 } from '../../../src/data/scanner/visual-index'
+import { env } from '@huggingface/transformers'
 import { embedImageBuffer, warmUpModel } from '../embedding/embed.mjs'
 import { buildConfusableGroups } from '../retrieval/confusable-groups.mjs'
+
+// P112: embed.mjs sets env.allowRemoteModels=true for ad-hoc lab convenience — this run must not
+// depend on reaching huggingface.co either (see build-index.ts's own identical fix and its commit
+// message for the real ConnectTimeoutError this exact class of dependency produced against the
+// real hosted build). The pinned model is already staged locally with verified SHA-256.
+env.allowRemoteModels = false
 import { composeContinuous, IPHONE_LIKE_LEVELS } from '../augment/continuous.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))

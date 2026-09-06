@@ -32,6 +32,7 @@ import {
 import { splitFullFrameCardText, cleanSignal } from '../../src/features/scanner/analyze'
 import { buildCorpus } from './lib/fetch-references.mjs'
 import { augmentAll, AUGMENTATION_PROFILES } from './lib/augment.mjs'
+import { env } from '@huggingface/transformers'
 import {
   embedImageBuffer,
   warmUpModel,
@@ -40,6 +41,12 @@ import {
 } from './lib/embed.mjs'
 import { ocrFullFrame, disposeOcr } from './lib/ocr.mjs'
 import sharp from 'sharp'
+
+// P112: embed.mjs sets env.allowRemoteModels=true for ad-hoc convenience on a machine with no
+// cache yet — this run must not depend on reaching huggingface.co either (build-index.ts's own
+// identical fix; see its commit for the real ConnectTimeoutError this class of dependency
+// produced against the real hosted build). The pinned model is already staged locally.
+env.allowRemoteModels = false
 
 const here = dirname(fileURLToPath(import.meta.url))
 const REPORT_DIR = join(here, 'reports')
