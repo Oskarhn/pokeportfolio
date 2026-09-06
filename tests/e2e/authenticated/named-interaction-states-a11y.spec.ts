@@ -1,10 +1,16 @@
 import { fileURLToPath } from 'node:url'
 import { test, expect } from '@playwright/test'
 import AxeBuilder from '@axe-core/playwright'
+import { createFixturePurchase, createFixtureSale } from './fixtures'
 
 const SYNTHETIC_CARD_IMAGE = fileURLToPath(
   new URL('../../fixtures/scanner/synthetic-card.png', import.meta.url),
 )
+
+// Purchase/Sale Edit fixtures create real rows for the ONE shared e2e-auth user via RPC —
+// concurrent fixture creation for that same user has previously hit a real Postgres deadlock under
+// parallel workers (see docs/TESTING.md's own note on private-routes-smoke-entity-detail.spec.ts).
+test.describe.configure({ mode: 'serial' })
 
 /**
  * P112 §9/§C — closes P111's disclosed gap: the standing per-route axe sweeps
@@ -113,6 +119,46 @@ test.describe('Named interaction-state accessibility (P112)', () => {
   test('Scanner debug panel: dark mode', async ({ page }) => {
     await page.emulateMedia({ colorScheme: 'dark' })
     await page.goto('/scan?scannerDebug=1')
+    await expectNoViolations(page)
+  })
+
+  test('Purchase Edit: loaded and edited (dirty) state', async ({ page }) => {
+    const { purchaseId } = await createFixturePurchase()
+    await page.goto(`/purchases/${purchaseId}/edit`)
+    const shipping = page.getByLabel('Shipping')
+    await shipping.fill('199')
+    await expect(shipping).toHaveValue('199')
+    await expectNoViolations(page)
+  })
+
+  test('Sale Edit: loaded and edited (dirty) state', async ({ page }) => {
+    const { saleId } = await createFixtureSale()
+    await page.goto(`/sales/${saleId}/edit`)
+    const fees = page.getByLabel('Fees')
+    await fees.fill('50')
+    await expect(fees).toHaveValue('50')
+    await expectNoViolations(page)
+  })
+
+  test('Keyboard navigation through the Portfolio Filters sheet', async ({ page }) => {
+    await page.goto('/portfolio')
+    await page.getByRole('button', { name: /^Filters/ }).click()
+    const sheet = page.getByRole('dialog')
+    await expect(sheet).toBeVisible()
+    // Tab through the whole sheet and confirm focus never leaves it (a real keyboard trap check,
+    // not just "the sheet has focusable children") and every stop carries a visible focus
+    // indicator, matching the login-form keyboard test's own pattern (tests/e2e/a11y.spec.ts).
+    const focusableCount = await sheet.getByRole('button').count()
+    for (let i = 0; i < focusableCount + 2; i += 1) {
+      await page.keyboard.press('Tab')
+      const stillInsideSheet = await sheet.evaluate(
+        (el, active) => el.contains(active),
+        await page.evaluateHandle(() => document.activeElement),
+      )
+      expect(stillInsideSheet, `focus escaped the sheet after ${String(i + 1)} Tab press(es)`).toBe(
+        true,
+      )
+    }
     await expectNoViolations(page)
   })
 })
