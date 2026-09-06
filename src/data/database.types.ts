@@ -1399,6 +1399,8 @@ export type Database = {
           fx_rate_to_nok: number
           fx_source: Database["public"]["Enums"]["fx_source"]
           id: string
+          idempotency_key: string | null
+          idempotency_request: Json | null
           notes: string | null
           origin: Database["public"]["Enums"]["purchase_origin"]
           purchased_on: string
@@ -1420,6 +1422,8 @@ export type Database = {
           fx_rate_to_nok?: number
           fx_source?: Database["public"]["Enums"]["fx_source"]
           id?: string
+          idempotency_key?: string | null
+          idempotency_request?: Json | null
           notes?: string | null
           origin?: Database["public"]["Enums"]["purchase_origin"]
           purchased_on: string
@@ -1441,6 +1445,8 @@ export type Database = {
           fx_rate_to_nok?: number
           fx_source?: Database["public"]["Enums"]["fx_source"]
           id?: string
+          idempotency_key?: string | null
+          idempotency_request?: Json | null
           notes?: string | null
           origin?: Database["public"]["Enums"]["purchase_origin"]
           purchased_on?: string
@@ -2003,6 +2009,7 @@ export type Database = {
           p_fx_rate_date?: string
           p_fx_rate_to_nok?: string
           p_fx_source?: Database["public"]["Enums"]["fx_source"]
+          p_idempotency_key?: string
           p_lines: Json
           p_notes?: string
           p_purchased_on: string
@@ -2018,6 +2025,8 @@ export type Database = {
           fx_rate_to_nok: number
           fx_source: Database["public"]["Enums"]["fx_source"]
           id: string
+          idempotency_key: string | null
+          idempotency_request: Json | null
           notes: string | null
           origin: Database["public"]["Enums"]["purchase_origin"]
           purchased_on: string
