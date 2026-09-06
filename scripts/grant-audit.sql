@@ -371,8 +371,10 @@ begin
     ('routine', 'natural_sort_key(text)', 'authenticated', 'EXECUTE'),
     -- M8: the largest-remainder allocator and the purchase-ledger write/void/summary surface.
     ('routine', 'allocate_largest_remainder(bigint, bigint[])', 'authenticated', 'EXECUTE'),
+    -- P108: gained a trailing optional p_idempotency_key uuid (DROP+CREATE, new signature —
+    -- TESTING.md §6a/D-054, not CREATE OR REPLACE).
     ('routine',
-     'create_purchase(date, text, jsonb, uuid, bigint, bigint, bigint, numeric, date, fx_source, text)',
+     'create_purchase(date, text, jsonb, uuid, bigint, bigint, bigint, numeric, date, fx_source, text, uuid)',
      'authenticated', 'EXECUTE'),
     ('routine',
      'update_purchase(uuid, date, text, jsonb, uuid, bigint, bigint, bigint, numeric, date, fx_source, text)',
