@@ -4977,3 +4977,88 @@ CDN/proxy doesn't recompress, or that HTTP range requests don't change effective
 `_headers`' own `Content-Encoding`/compression behavior for these paths was not independently
 re-verified this session; the byte totals above are uncompressed (raw) file sizes, matching every
 prior session's own convention for this same table.
+
+## D-116 — Dashboard-read index: replace `price_snapshots_variant_date_idx` with a three-column covering index (P108)
+
+**2026-09-05 · Accepted**
+
+**Context.** P105 root-caused `get_dashboard_summary` exceeding its 1500ms budget via a real
+`EXPLAIN (ANALYZE, BUFFERS, VERBOSE)`: 733 of 836ms (87.5%) is one `Function Scan` on
+`resolve_variant_market_values`, whose `latest_snapshot` CTE does
+`distinct on (card_variant_id, provider) ... order by card_variant_id, provider, snapshot_date desc`
+against `price_snapshots`. The only existing index, `price_snapshots_variant_date_idx
+(card_variant_id, snapshot_date desc)`, omits `provider` and cannot satisfy that ordering — Postgres
+re-sorts nearly the whole table instead of streaming one row per group. P107 independently reasoned
+the same root cause from the SQL text alone (no DB access that session).
+
+**Decision.** One forward migration
+(`20260905120000_p108_dashboard_price_index.sql`): add
+`price_snapshots_variant_provider_date_idx (card_variant_id, provider, snapshot_date desc) include
+(price_kind, source_currency, value_minor, provider_updated_at)`, matching the `DISTINCT ON`'s exact
+grouping/ordering; drop the now-redundant two-column index in the same migration, after confirming
+(not merely asserting) every other reader of `price_snapshots` remains served: `get_card_variant_
+price_history`'s single-variant range scan (leading-column prefix, unaffected),
+`select_price_sync_batch`'s unfiltered `card_variant_id`-grouped aggregate (full-index-scan either
+way, confirmed via EXPLAIN — no plan-shape regression), and `thin_price_snapshots`'/the M91
+retention window's own `partition by (card_variant_id, provider) order by snapshot_date desc`
+(the SAME grouping the new index leads with — a speedup, not a regression).
+
+**Financial invariants preserved, unchanged by this migration:** unknown market value stays NULL
+(the index changes access path only, not `resolve_variant_market_values`'s logic); FX remains
+as-of the snapshot date; the EU/TCGplayer provider preference and the raw-only exclusion of graded
+holdings are untouched; manual valuation composition still happens at the caller.
+
+**Real measurement, not asserted:** see the output_108 handoff for the actual before/after EXPLAIN
+plan shapes and the M12 snapshots-benchmark before/after timing this decision is based on.
+
+## D-117 — `create_purchase` gains an optional, DB-required-once-present idempotency key (P108)
+
+**2026-09-05 · Accepted**
+
+**Context.** P107 §17 found `create_purchase` was the only one of the four money-writing forms
+with no idempotency protection at all — a dropped response after the server has already committed
+has no mechanism preventing a resubmit from creating a second purchase, second holdings, and second
+acquisition lots.
+
+**Decision — the contract, not just the mechanism.** `create_purchase` gains
+`p_idempotency_key uuid default null` (a new parameter — TESTING.md §6a: this is DROP+CREATE, not
+CREATE OR REPLACE, since it changes the function's identity; every M10/M11 fix already in the body
+— residual_nok_minor, the sealed-product RLS existence check, per-line sealed_intent on the LOT,
+manual_value_minor for a sealed holding, the graded-card condition-null override — is preserved
+unchanged). Unlike `create_sale`'s key (required, no payload comparison at all) or
+`create_opening_from_provisional`'s key (required, named-field comparison), this key is:
+
+- **Optional at the database layer.** Dozens of existing `tests/db/**` call sites invoke
+  `create_purchase` with no key; forcing all of them to adopt one is disproportionate churn for a
+  purchase-specific reliability fix (CLAUDE.md: smallest complete solution, do not expand scope
+  as a side effect). A caller that omits the key gets exactly the pre-P108 behaviour.
+- **Required in practice at the product boundary.** `src/data/purchases.ts`'s `createPurchase` and
+  `PurchaseFormPage` always generate and send one (`useState(() => crypto.randomUUID())`, one key
+  per mount, resent unchanged across a retry, never regenerated merely because an error was shown —
+  the same lifecycle `SaleFormPage`'s own key already follows). Purchases structurally cannot suffer
+  `SaleFormPage`'s own P107-disclosed entity-switch leak (§5 of output_107): `/purchases/new` carries
+  no dynamic route param a same-tab navigation could silently swap under an unchanged component
+  instance, so a fresh key per genuine new-purchase visit falls out of ordinary React unmount/remount
+  rather than needing a `resetKey` mechanism of its own.
+- **Compares the FULL material request, not a named subset.** The exact jsonb the client submitted
+  (purchase-level fields plus every line, minus each line's `lot_notes`) is stored verbatim as
+  `idempotency_request` and compared via jsonb equality (`IS DISTINCT FROM`) on replay — deliberately
+  over-strict rather than under-strict: a genuine retry resends byte-identical values regardless of
+  JSON key order (jsonb equality is structural, not textual), so this never rejects a real retry, and
+  it never accidentally treats a financially different resubmission as a safe replay merely because
+  the comparison forgot a field. `p_notes` and each line's `lot_notes` are the only fields excluded
+  (cosmetic annotations, per the prompt's own "do not compare irrelevant operational metadata").
+- **Race-safe, not just sequentially safe.** Mirrors P94's `add_card_acquisition` fix exactly: all
+  mutations sit inside one outer `BEGIN/EXCEPTION WHEN unique_violation` block keyed on the new
+  partial unique index `purchases_user_idempotency_key_idx (user_id, idempotency_key) WHERE
+  idempotency_key IS NOT NULL`; a losing concurrent transaction's implicit savepoint rolls back its
+  purchase/lines/holdings/lots, and the handler re-reads the winner's row under the SAME
+  material-equivalence check the early path uses — a race between two genuinely different requests
+  sharing a key is still refused, not silently merged.
+
+**Verified:** `tests/db/m8_purchase_ledger.test.ts`'s new idempotency describe block — exact
+sequential replay (no duplicate rows), a non-material (notes-only) edit still replays, five
+distinct material-mismatch cases (quantity, unit price, card identity, purchase date, currency/FX)
+each refused with `idempotency-key-reuse`, a real concurrent `Promise.all` double-submit committing
+exactly one purchase/one line/one lot, and the no-key path behaving exactly as before (two calls,
+two purchases).

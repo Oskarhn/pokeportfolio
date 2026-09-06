@@ -680,3 +680,159 @@ describe('fx_rates: market data, service-role writes only', () => {
     expect(read).not.toBeNull()
   })
 })
+
+describe('idempotency — create_purchase never double-writes on retry (P108, P107 §17)', () => {
+  function sealedArgs(overrides: Record<string, unknown> = {}) {
+    return {
+      p_purchased_on: today,
+      p_currency: 'NOK',
+      p_lines: [
+        {
+          line_type: 'sealed',
+          sealed_product_id: seedCatalog.sealedProductId,
+          quantity: 2,
+          unit_price_minor: 5000,
+        },
+      ],
+      ...overrides,
+    }
+  }
+
+  async function lotsForPurchase(purchaseId: string) {
+    const lines = await linesFor(purchaseId)
+    if (lines.length === 0) return []
+    const { data, error } = await service
+      .from('acquisition_lots')
+      .select('id, purchase_line_id')
+      .in(
+        'purchase_line_id',
+        lines.map((l) => l.id),
+      )
+    if (error) throw new Error(error.message)
+    return data
+  }
+
+  it('exact sequential replay returns the same purchase, no duplicate rows anywhere', async () => {
+    const key = crypto.randomUUID()
+    const args = sealedArgs({ p_idempotency_key: key })
+
+    const { data: first, error: firstError } = await callCreate(clientA, args)
+    const { data: second, error: secondError } = await callCreate(clientA, args)
+    expect(firstError).toBeNull()
+    expect(secondError).toBeNull()
+    expect(second?.id).toBe(first?.id)
+
+    const { data: matching } = await service
+      .from('purchases')
+      .select('id')
+      .eq('idempotency_key', key)
+    expect(matching).toHaveLength(1)
+
+    const lines = await linesFor(first!.id)
+    expect(lines).toHaveLength(1) // not doubled
+    const lots = await lotsForPurchase(first!.id)
+    expect(lots).toHaveLength(1)
+  })
+
+  it('a third replay after editing an IRRELEVANT field (notes) still replays cleanly', async () => {
+    const key = crypto.randomUUID()
+    const { data: first, error: firstError } = await callCreate(
+      clientA,
+      sealedArgs({ p_idempotency_key: key, p_notes: 'first attempt' }),
+    )
+    expect(firstError).toBeNull()
+
+    // notes is deliberately NOT material (prompt §10: don't compare irrelevant operational
+    // metadata) — a retry that only changed the annotation text must still replay, not refuse.
+    const { data: second, error: secondError } = await callCreate(
+      clientA,
+      sealedArgs({ p_idempotency_key: key, p_notes: 'edited after the fact' }),
+    )
+    expect(secondError).toBeNull()
+    expect(second?.id).toBe(first?.id)
+  })
+
+  it.each([
+    ['quantity', { p_lines: [{ ...sealedArgs().p_lines[0], quantity: 3 }] }],
+    ['unit price / cost', { p_lines: [{ ...sealedArgs().p_lines[0], unit_price_minor: 6000 }] }],
+    [
+      'card identity',
+      {
+        p_lines: [
+          {
+            line_type: 'card',
+            card_variant_id: seedCatalog.charizardVariantId,
+            condition: 'NM',
+            quantity: 2,
+            unit_price_minor: 5000,
+          },
+        ],
+      },
+    ],
+    ['purchase date', { p_purchased_on: '2020-01-01' }],
+    [
+      'currency/FX',
+      {
+        p_currency: 'EUR',
+        p_fx_rate_to_nok: '11.00000000',
+        p_fx_rate_date: today,
+        p_fx_source: 'manual',
+      },
+    ],
+  ])(
+    'a same-key replay with a different %s is refused, not silently replayed',
+    async (_label, overrides) => {
+      const key = crypto.randomUUID()
+      const { error: firstError } = await callCreate(
+        clientA,
+        sealedArgs({ p_idempotency_key: key }),
+      )
+      expect(firstError).toBeNull()
+
+      const { data: second, error: secondError } = await callCreate(
+        clientA,
+        sealedArgs({ p_idempotency_key: key, ...overrides }),
+      )
+      expect(second).toBeNull()
+      expect(secondError).not.toBeNull()
+      expect(secondError?.message).toMatch(/idempotency-key-reuse/i)
+
+      // The refused replay must not have written anything of its own.
+      const { data: matching } = await service
+        .from('purchases')
+        .select('id')
+        .eq('idempotency_key', key)
+      expect(matching).toHaveLength(1)
+    },
+  )
+
+  it('same-key concurrent double-submit commits exactly one purchase (race-safe)', async () => {
+    const key = crypto.randomUUID()
+    const args = sealedArgs({ p_idempotency_key: key })
+
+    const [a, b] = await Promise.all([callCreate(clientA, args), callCreate(clientA, args)])
+    expect(a.error).toBeNull()
+    expect(b.error).toBeNull()
+    expect(a.data?.id).toBe(b.data?.id)
+
+    const { data: matching } = await service
+      .from('purchases')
+      .select('id')
+      .eq('idempotency_key', key)
+    expect(matching).toHaveLength(1)
+
+    const lines = await linesFor(a.data!.id)
+    expect(lines).toHaveLength(1)
+    const lots = await lotsForPurchase(a.data!.id)
+    expect(lots).toHaveLength(1)
+  })
+
+  it('omitting the key behaves exactly as before: two calls create two separate purchases', async () => {
+    const args = sealedArgs()
+    const { data: first, error: firstError } = await callCreate(clientA, args)
+    const { data: second, error: secondError } = await callCreate(clientA, args)
+    expect(firstError).toBeNull()
+    expect(secondError).toBeNull()
+    expect(second?.id).not.toBe(first?.id)
+  })
+})

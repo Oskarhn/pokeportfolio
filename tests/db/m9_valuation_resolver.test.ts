@@ -3,6 +3,7 @@ import {
   createServiceClient,
   createSyntheticUser,
   deleteSyntheticUser,
+  mustDelete,
   seedCatalog,
   signInAs,
   type SyntheticUser,
@@ -130,9 +131,18 @@ afterAll(async () => {
     (id) => id !== '',
   )
   if (variantIds.length > 0) {
-    await service.from('price_snapshots').delete().in('card_variant_id', variantIds)
-    await service.from('card_variants').delete().in('id', variantIds)
-    await service.from('cards').delete().eq('local_id', 'm9-resolver-fixture-card')
+    await mustDelete(
+      service.from('price_snapshots').delete().in('card_variant_id', variantIds),
+      'm9 fixture price_snapshots cleanup',
+    )
+    await mustDelete(
+      service.from('card_variants').delete().in('id', variantIds),
+      'm9 fixture card_variants cleanup',
+    )
+    await mustDelete(
+      service.from('cards').delete().eq('local_id', 'm9-resolver-fixture-card'),
+      'm9 fixture cards cleanup',
+    )
   }
 })
 

@@ -3,6 +3,7 @@ import {
   createServiceClient,
   createSyntheticUser,
   deleteSyntheticUser,
+  mustDelete,
   signInAs,
   type SyntheticUser,
   type TestClient,
@@ -112,9 +113,18 @@ afterAll(async () => {
   // Catalog-level fixtures outlive the users — removed explicitly, private ids only.
   const variantIds = [vIncrease, vDecrease, vLeast, vZero, vNoHistory].filter((id) => id !== '')
   if (variantIds.length > 0) {
-    await service.from('price_snapshots').delete().in('card_variant_id', variantIds)
-    await service.from('card_variants').delete().in('id', variantIds)
-    await service.from('cards').delete().eq('local_id', 'm91-movers-fixture-card')
+    await mustDelete(
+      service.from('price_snapshots').delete().in('card_variant_id', variantIds),
+      'm91 fixture price_snapshots cleanup',
+    )
+    await mustDelete(
+      service.from('card_variants').delete().in('id', variantIds),
+      'm91 fixture card_variants cleanup',
+    )
+    await mustDelete(
+      service.from('cards').delete().eq('local_id', 'm91-movers-fixture-card'),
+      'm91 fixture cards cleanup',
+    )
   }
 })
 
