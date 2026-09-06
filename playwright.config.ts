@@ -6,6 +6,10 @@ import { defineConfig, devices } from '@playwright/test'
 // the placeholder-backend suite exactly as before; nothing here changes unauthenticated behavior.
 const AUTHENTICATED_E2E_ENABLED = process.env.PLAYWRIGHT_AUTHENTICATED_E2E === '1'
 const AUTH_STATE_FILE = 'playwright/.auth/e2e-user.json'
+// P113: overridable so an isolated worktree (e.g. a parallel chaos-hardening session) never binds
+// the same port as another session's own preview server — see global-setup.ts. Defaults to 4173,
+// unchanged for every existing caller.
+const PREVIEW_PORT = process.env.PLAYWRIGHT_PREVIEW_PORT ?? '4173'
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -20,7 +24,7 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   reporter: 'html',
   use: {
-    baseURL: 'http://localhost:4173',
+    baseURL: `http://localhost:${PREVIEW_PORT}`,
     trace: 'on-first-retry',
   },
   projects: [
@@ -71,8 +75,8 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: 'pnpm build && pnpm preview --port 4173',
-      url: 'http://localhost:4173',
+      command: `pnpm build && pnpm preview --port ${PREVIEW_PORT}`,
+      url: `http://localhost:${PREVIEW_PORT}`,
       reuseExistingServer: !process.env.CI,
       timeout: 120_000,
       // The bundle needs *some* Supabase configuration to start — src/data/supabase-client.ts
