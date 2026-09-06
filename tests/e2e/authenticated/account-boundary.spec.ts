@@ -114,6 +114,18 @@ test.describe('Account-switch privacy: unsaved purchase input does not leak acro
       .first()
       .click()
 
+    // Confirm view: variants load asynchronously (a "Checking available versions…" skeleton shows
+    // first), and when the catalog card has more than one trackable version, the UI correctly
+    // refuses to guess — it shows an explicit "Version" picker with NOTHING pre-selected, and
+    // "Add to batch" surfaces "Choose which version of this card you have" until one is picked
+    // (real, intended product validation, not a bug this test should route around). A
+    // single-variant card instead shows plain text ("Version: <label>") and needs no click here.
+    await expect(page.getByText('Checking available versions…')).toHaveCount(0, { timeout: 15_000 })
+    const versionGroup = page.getByRole('group', { name: 'Version' })
+    if (await versionGroup.isVisible().catch(() => false)) {
+      await versionGroup.getByRole('button').first().click()
+    }
+
     await page.getByRole('button', { name: 'Add to batch' }).click()
 
     // (1) A genuinely has nonempty scanner state — asserted BEFORE anything else, per this
