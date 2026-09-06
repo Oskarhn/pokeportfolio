@@ -413,7 +413,7 @@ export function OpeningsWizardPage() {
       {reviewGateError ? (
         <p
           role="alert"
-          className="rounded-lg border border-amber-900/60 bg-amber-950/30 p-3 text-sm text-amber-200"
+          className="rounded-lg border border-rose-900/60 bg-rose-950/40 p-3 text-sm text-rose-200"
         >
           {reviewGateError}
         </p>

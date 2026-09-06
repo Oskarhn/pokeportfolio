@@ -60,6 +60,12 @@ export function PurchaseFormPage() {
   const [fxError, setFxError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  // P108 (P107 §17): one key per fresh mount of this form, resent unchanged across a retry of the
+  // same attempt (never regenerated merely because an error was shown), and naturally rotated by
+  // React unmounting/remounting this component on a genuine new navigation to /purchases/new after
+  // a successful submit — the same lifecycle SaleFormPage's own idempotencyKey already follows.
+  const [idempotencyKey] = useState(() => crypto.randomUUID())
+
   // F-40 (P89): registers this form's own dirty-by-diff state (see unsaved-work-registry.ts) so
   // an app-wide automatic reload (stale deployment / new chunk) never silently discards typed-
   // but-unsubmitted purchase input the way it used to for every route except Scanner.
@@ -233,19 +239,22 @@ export function PurchaseFormPage() {
         }
       }
 
-      return createPurchase({
-        purchasedOn,
-        currency,
-        lines: lineInputs,
-        retailerId: retailerId || undefined,
-        shippingMinor: parseAmount(shippingInput, currency),
-        customsMinor: parseAmount(customsInput, currency),
-        discountMinor: parseAmount(discountInput, currency),
-        fxRateToNok: resolvedFxRate,
-        fxRateDate: resolvedFxDate,
-        fxSource: currency === 'NOK' ? undefined : fxMode,
-        notes: notes || undefined,
-      })
+      return createPurchase(
+        {
+          purchasedOn,
+          currency,
+          lines: lineInputs,
+          retailerId: retailerId || undefined,
+          shippingMinor: parseAmount(shippingInput, currency),
+          customsMinor: parseAmount(customsInput, currency),
+          discountMinor: parseAmount(discountInput, currency),
+          fxRateToNok: resolvedFxRate,
+          fxRateDate: resolvedFxDate,
+          fxSource: currency === 'NOK' ? undefined : fxMode,
+          notes: notes || undefined,
+        },
+        idempotencyKey,
+      )
     },
     onSuccess: async (purchase) => {
       await queryClient.invalidateQueries({ queryKey: ['purchases'] })
@@ -348,7 +357,7 @@ export function PurchaseFormPage() {
                 setFxMode('norges_bank')
                 fxQuery.mutate()
               }}
-              className={`min-h-9 rounded-lg border px-3 text-xs font-medium ${fxMode === 'norges_bank' ? 'border-sky-500 bg-sky-600/20 text-sky-200' : 'border-slate-700 text-slate-300'}`}
+              className={`min-h-9 rounded-lg border px-3 text-xs font-medium ${fxMode === 'norges_bank' ? 'border-sky-500 bg-sky-600/20 text-slate-200' : 'border-slate-700 text-slate-300'}`}
             >
               Norges Bank
             </button>
@@ -357,7 +366,7 @@ export function PurchaseFormPage() {
               onClick={() => {
                 setFxMode('manual')
               }}
-              className={`min-h-9 rounded-lg border px-3 text-xs font-medium ${fxMode === 'manual' ? 'border-sky-500 bg-sky-600/20 text-sky-200' : 'border-slate-700 text-slate-300'}`}
+              className={`min-h-9 rounded-lg border px-3 text-xs font-medium ${fxMode === 'manual' ? 'border-sky-500 bg-sky-600/20 text-slate-200' : 'border-slate-700 text-slate-300'}`}
             >
               Manual rate
             </button>

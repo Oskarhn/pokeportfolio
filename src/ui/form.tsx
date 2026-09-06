@@ -6,6 +6,7 @@ import {
   type ReactNode,
   type SelectHTMLAttributes,
 } from 'react'
+import { twMerge } from 'tailwind-merge'
 
 /**
  * The small set of form primitives the auth screens need.
@@ -155,7 +156,7 @@ export function ChoiceGroup<T extends string>({
             }}
             className={`min-h-11 rounded-lg border px-3 text-sm font-medium transition-colors ${
               value === optionValue
-                ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                ? 'border-sky-500 bg-sky-600/20 text-slate-200'
                 : 'border-slate-700 text-slate-300 hover:bg-slate-800'
             }`}
           >
@@ -191,7 +192,12 @@ export function Button({
     primary: 'bg-sky-600 text-accent-foreground hover:bg-sky-500',
     quiet: 'border border-slate-700 text-slate-200 hover:bg-slate-800',
   }
-  return <button className={`${base} ${variants[variant]} ${className}`} {...props} />
+  // twMerge, not plain concatenation: a caller overriding a base utility (e.g. w-auto over the
+  // default w-full, used at 15 call sites across 10 features) must reliably win. Plain string
+  // concatenation left both classes in the DOM and let Tailwind's build-order — not the caller's
+  // intent — decide which one applied, which is what silently forced several forms' "Save"/action
+  // buttons back to full width (found P104, ProfilePage mobile overflow at 390px).
+  return <button className={twMerge(base, variants[variant], className)} {...props} />
 }
 
 /** `role="alert"` so a failed sign-in is announced, not only reddened. */

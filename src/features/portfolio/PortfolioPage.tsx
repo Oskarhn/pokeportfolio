@@ -190,7 +190,7 @@ export function PortfolioPage() {
           aria-label="Show only favourite holdings"
           className={`flex size-11 shrink-0 items-center justify-center rounded-full border ${
             search.favorite
-              ? 'border-amber-400/60 bg-amber-400/10 text-amber-400'
+              ? 'border-sky-500 bg-sky-600/20 text-slate-200'
               : 'border-slate-700 text-slate-400 hover:bg-slate-800'
           }`}
         >

@@ -3,6 +3,7 @@ import {
   createServiceClient,
   createSyntheticUser,
   deleteSyntheticUser,
+  mustDelete,
   seedCatalog,
   signInAs,
   type SyntheticUser,
@@ -27,6 +28,27 @@ beforeAll(async () => {
   service = createServiceClient()
   userA = await createSyntheticUser(service, 'm16-openings-a')
   clientA = await signInAs(userA)
+
+  // P108 (docs/BACKLOG.md "m16_openings.test.ts shares seedCatalog.charizardVariantId/
+  // grassEnergyVariantId ... across ~2000 lines", found P104, reproduces only under shuffled file
+  // order): price_snapshots is shared market data, not scoped to this file's synthetic user — a
+  // file that happens to run earlier in a shuffled order (e.g. tests/db/m9_valuation_resolver.test.ts,
+  // tests/db/m91_value_pagination.test.ts) may leave a snapshot for one of these SAME shared
+  // variants, which E4/E5's "this pull stays honestly unpriced" assertions would then silently
+  // read back as priced. Same "start from a clean slate" pattern m91_value_pagination.test.ts
+  // already uses for the identical reason, with the cleanup error actually checked this time
+  // (P107 finding: the pre-existing version of this pattern elsewhere never checked `.error`).
+  await mustDelete(
+    service
+      .from('price_snapshots')
+      .delete()
+      .in('card_variant_id', [
+        seedCatalog.charizardVariantId,
+        seedCatalog.grassEnergyVariantId,
+        seedCatalog.pikachuVariantId,
+      ]),
+    'm16_openings shared-variant price_snapshots clean slate',
+  )
 })
 
 afterAll(async () => {

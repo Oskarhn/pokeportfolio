@@ -230,7 +230,7 @@ export function CatalogPage() {
           aria-label="Show only cards you have favourited"
           className={`flex size-11 shrink-0 items-center justify-center rounded-full border ${
             favoriteOnly
-              ? 'border-amber-400/60 bg-amber-400/10 text-amber-400'
+              ? 'border-sky-500 bg-sky-600/20 text-slate-200'
               : 'border-slate-700 text-slate-400 hover:bg-slate-800'
           }`}
         >
@@ -266,7 +266,7 @@ export function CatalogPage() {
             }}
             className={`min-h-8 rounded-full border px-3 text-xs font-medium transition-colors ${
               mode === value
-                ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                ? 'border-sky-500 bg-sky-600/20 text-slate-200'
                 : 'border-slate-700 text-slate-300 hover:bg-slate-800'
             }`}
           >
@@ -292,7 +292,7 @@ export function CatalogPage() {
                 }}
                 className={`min-h-8 rounded-full border px-3 text-xs font-medium transition-colors ${
                   language === value
-                    ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                    ? 'border-sky-500 bg-sky-600/20 text-slate-200'
                     : 'border-slate-700 text-slate-300 hover:bg-slate-800'
                 }`}
               >

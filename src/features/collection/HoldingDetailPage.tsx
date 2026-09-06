@@ -258,7 +258,7 @@ export function HoldingDetailPage() {
               onClick={() => {
                 favoriteMutation.mutate(!h.isFavorite)
               }}
-              className="text-xl text-amber-400 focus-visible:outline-2 focus-visible:outline-sky-500"
+              className="text-xl text-slate-300 focus-visible:outline-2 focus-visible:outline-sky-500"
             >
               {h.isFavorite ? '★' : '☆'}
             </button>
@@ -597,7 +597,7 @@ export function HoldingDetailPage() {
                   aria-pressed={isMember}
                   className={`min-h-9 rounded-lg border px-3 text-xs font-medium ${
                     isMember
-                      ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                      ? 'border-sky-500 bg-sky-600/20 text-slate-200'
                       : 'border-slate-700 text-slate-300 hover:bg-slate-800'
                   }`}
                 >
