@@ -50,6 +50,13 @@ function tsxSources(): { file: string; text: string }[] {
 const SLATE_800_BG = /(?<!hover:)bg-slate-800\b/
 const TERTIARY_TEXT = /(?<!hover:)text-slate-500\b/
 
+// SCOPE LIMIT (adversarial review, P111): this only matches a plain string or template-literal
+// className — a class built via string concatenation (`className={'a ' + 'b'}`) or a `cn()`/
+// `clsx()` helper call would not be seen. No such pattern exists anywhere in `src/` today (checked
+// directly), so this is not currently masking a real bug — but if this codebase ever adopts
+// `cn()`/`clsx()` (a common Tailwind convention), this guard needs extending or it becomes a
+// silent hole for exactly the bug class it exists to catch.
+//
 // Extracts each `className="..."` / `className='...'` / `className={`...`}` attribute VALUE
 // (including a template literal's static text either side of a `${...}` interpolation) so both
 // utilities are only ever checked for co-occurrence WITHIN ONE element's own class list — never
