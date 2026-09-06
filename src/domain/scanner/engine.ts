@@ -415,6 +415,16 @@ function toDisplayScore(rawRankScore: number): number {
  * module's own private scoring/anchor-reliability logic so the debug tool cannot silently drift
  * from what production actually computes.
  */
+/** P113 fuzz finding: a poisoned/corrupted `visualSimilarity` (NaN/±Infinity — a real `number` by
+ *  typeof, so a plain `?? -Infinity` fallback never catches it) must never reach a sort
+ *  comparator, where it silently produces an implementation-defined ordering instead of the
+ *  intended deterministic tie-break. Fails closed to "no evidence" (`-Infinity`), matching
+ *  visual-evidence.ts's own non-finite handling. `typeof value === 'number'` narrows away `null`
+ *  before `Number.isFinite` runs, so no non-null assertion is needed. */
+function finiteSimilarityOrFloor(value: number | null): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : -Infinity
+}
+
 export function rankScannerCandidatesFull(
   signals: ParsedScannerSignals,
   candidates: readonly ScannerCandidateRecord[],
@@ -439,8 +449,11 @@ export function rankScannerCandidatesFull(
   return withReasons
     .sort((a, b) => {
       if (b.rawRankScore !== a.rawRankScore) return b.rawRankScore - a.rawRankScore
-      const aSim = a.entry.visualSimilarity ?? -Infinity
-      const bSim = b.entry.visualSimilarity ?? -Infinity
+      // P113 fuzz finding: see finiteSimilarityOrFloor's own doc — `?? -Infinity` alone let a
+      // poisoned NaN visualSimilarity reach this comparator and silently break the deterministic
+      // tie-break this function documents.
+      const aSim = finiteSimilarityOrFloor(a.entry.visualSimilarity)
+      const bSim = finiteSimilarityOrFloor(b.entry.visualSimilarity)
       if (bSim !== aSim) return bSim - aSim
       return a.entry.card.cardId < b.entry.card.cardId
         ? -1
