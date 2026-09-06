@@ -1,5 +1,6 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { draftStore } from '../features/openings/draft'
+import { scannerSessionStore } from '../features/scanner/session-store'
 
 /**
  * `undefined` until this tab has observed any authenticated identity at all (fresh page load);
@@ -50,6 +51,9 @@ export function applyAuthIdentityBoundary(
   queryClient.clear()
   // Idempotent belt-and-braces alongside AuthProvider.signOut's explicit call (P56 §9): private
   // draft intent must not outlive the identity that created it, whichever auth path ends it.
+  // The M15 scanner's session defaults join the same sweep (D-093 extension); its batch and any
+  // captured image live in component state, which dies with the route this boundary unmounts.
   draftStore.clearAll()
+  scannerSessionStore.clearAll()
   return true
 }

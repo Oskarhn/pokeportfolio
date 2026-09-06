@@ -55,16 +55,19 @@ const LANGUAGE_OPTIONS: { value: string | null; label: string }[] = [
  * unavailable or, for the picture, deliberately deferred (see the note below).
  */
 export function ProfilePage() {
-  const { email, isAdmin, signOut } = useAuth()
+  const { email, isAdmin, signOut, session } = useAuth()
   const profile = useQuery({ queryKey: ['my-profile'], queryFn: getMyProfile })
   const counts = useQuery({
     queryKey: ['portfolio-counts'],
     queryFn: () => getPortfolioCounts(),
   })
-  // Periodic export reminder (PRODUCT_SPEC §4.12, D-079). Local-only timestamp; no collection
-  // or financial data is ever read or stored here. Evaluated once per mount.
+  // Periodic export reminder (PRODUCT_SPEC §4.12, D-079). Local-only timestamp, namespaced by
+  // user id (P111 — a shared-browser cross-account leak otherwise); no collection or financial
+  // data is ever read or stored here. Evaluated once per mount.
   const [remindExport] = useState(() =>
-    shouldRemindExport(readLastReminderMark(window.localStorage), new Date()),
+    session
+      ? shouldRemindExport(readLastReminderMark(window.localStorage, session.user.id), new Date())
+      : false,
   )
 
   return (
@@ -81,7 +84,7 @@ export function ProfilePage() {
           </p>
           <p className="truncate text-sm text-slate-400">{email}</p>
           {isAdmin ? (
-            <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-sky-600/20 px-2 py-0.5 text-[11px] font-medium text-sky-300">
+            <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-sky-600/20 px-2 py-0.5 text-[11px] font-medium text-slate-200">
               <ShieldIcon className="size-3" />
               Administrator
             </span>
@@ -139,7 +142,7 @@ export function ProfilePage() {
         {remindExport ? (
           <p
             role="status"
-            className="rounded-lg border border-dashed border-amber-900/60 bg-amber-950/30 p-3 text-xs leading-relaxed text-amber-100/90"
+            className="rounded-lg border border-dashed border-slate-600 bg-slate-800/60 p-3 text-xs leading-relaxed text-slate-200"
           >
             It may be a while since your last export. A fresh backup keeps your ledger safe — see{' '}
             <Link to="/profile/export" className="underline underline-offset-2">
@@ -288,7 +291,7 @@ function ProfileSettings({ profile, isAdmin }: { profile: Profile; isAdmin: bool
                 }}
                 className={`min-h-9 flex-1 rounded-lg border text-sm font-medium ${
                   profile.theme === option.value
-                    ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                    ? 'border-sky-500 bg-sky-600/20 text-slate-200'
                     : 'border-slate-700 text-slate-300 hover:bg-slate-800'
                 }`}
               >
@@ -311,7 +314,7 @@ function ProfileSettings({ profile, isAdmin }: { profile: Profile; isAdmin: bool
                 }}
                 className={`flex min-h-9 flex-1 items-center justify-center gap-1.5 rounded-lg border text-sm font-medium ${
                   profile.collectionDefaultView === option.value
-                    ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                    ? 'border-sky-500 bg-sky-600/20 text-slate-200'
                     : 'border-slate-700 text-slate-300 hover:bg-slate-800'
                 }`}
               >
@@ -335,7 +338,7 @@ function ProfileSettings({ profile, isAdmin }: { profile: Profile; isAdmin: bool
                 }}
                 className={`min-h-9 flex-1 rounded-lg border text-sm font-medium ${
                   profile.collectionGridDensity === value
-                    ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                    ? 'border-sky-500 bg-sky-600/20 text-slate-200'
                     : 'border-slate-700 text-slate-300 hover:bg-slate-800'
                 }`}
               >
@@ -358,7 +361,7 @@ function ProfileSettings({ profile, isAdmin }: { profile: Profile; isAdmin: bool
                 }}
                 className={`flex min-h-9 flex-1 items-center justify-center gap-1.5 rounded-lg border text-sm font-medium ${
                   profile.defaultLanguage === option.value
-                    ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                    ? 'border-sky-500 bg-sky-600/20 text-slate-200'
                     : 'border-slate-700 text-slate-300 hover:bg-slate-800'
                 }`}
               >
@@ -552,7 +555,7 @@ function DangerZone() {
  */
 function Footer() {
   return (
-    <footer className="space-y-1 border-t border-slate-800 pt-4 text-xs text-slate-500">
+    <footer className="space-y-2 border-t border-slate-800 pt-4 text-xs text-slate-500">
       <p>
         Card data and images from TCGdex. Price data from Cardmarket and TCGplayer, via TCGdex.
         Exchange rates from Norges Bank.
@@ -560,6 +563,17 @@ function Footer() {
       <p>
         PokePortfolio is unofficial and unaffiliated with The Pokémon Company, Nintendo, Creatures
         or GAME FREAK.
+      </p>
+      <p className="flex flex-wrap gap-x-3">
+        <Link to="/privacy" className="hover:text-slate-300 hover:underline">
+          Privacy
+        </Link>
+        <Link to="/terms" className="hover:text-slate-300 hover:underline">
+          Terms
+        </Link>
+        <Link to="/faq" className="hover:text-slate-300 hover:underline">
+          FAQ
+        </Link>
       </p>
       <p>v{__APP_VERSION__}</p>
     </footer>

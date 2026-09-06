@@ -12,6 +12,7 @@ import { Button, FormMessage, SelectField, TextField } from '../../ui/form'
 import { LineEditorRow, newLineDraft, type LineDraft } from './LineEditor'
 import { LINE_TYPE_LABEL } from './labels'
 import { at } from './util'
+import { useUnsavedWorkSnapshot } from '../../platform/unsaved-work-registry'
 
 const CURRENCIES: CurrencyCode[] = ['NOK', 'EUR', 'USD', 'GBP', 'JPY']
 
@@ -58,6 +59,29 @@ export function PurchaseFormPage() {
   const [fxRateDate, setFxRateDate] = useState<string>('')
   const [fxError, setFxError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  // P108 (P107 §17): one key per fresh mount of this form, resent unchanged across a retry of the
+  // same attempt (never regenerated merely because an error was shown), and naturally rotated by
+  // React unmounting/remounting this component on a genuine new navigation to /purchases/new after
+  // a successful submit — the same lifecycle SaleFormPage's own idempotencyKey already follows.
+  const [idempotencyKey] = useState(() => crypto.randomUUID())
+
+  // F-40 (P89): registers this form's own dirty-by-diff state (see unsaved-work-registry.ts) so
+  // an app-wide automatic reload (stale deployment / new chunk) never silently discards typed-
+  // but-unsubmitted purchase input the way it used to for every route except Scanner.
+  useUnsavedWorkSnapshot('purchase-form', {
+    purchasedOn,
+    retailerId,
+    newRetailerName,
+    currency,
+    lines,
+    shippingInput,
+    customsInput,
+    discountInput,
+    notes,
+    fxMode,
+    fxRate,
+  })
 
   const retailers = useQuery({ queryKey: ['retailers'], queryFn: listRetailers })
 
@@ -215,19 +239,22 @@ export function PurchaseFormPage() {
         }
       }
 
-      return createPurchase({
-        purchasedOn,
-        currency,
-        lines: lineInputs,
-        retailerId: retailerId || undefined,
-        shippingMinor: parseAmount(shippingInput, currency),
-        customsMinor: parseAmount(customsInput, currency),
-        discountMinor: parseAmount(discountInput, currency),
-        fxRateToNok: resolvedFxRate,
-        fxRateDate: resolvedFxDate,
-        fxSource: currency === 'NOK' ? undefined : fxMode,
-        notes: notes || undefined,
-      })
+      return createPurchase(
+        {
+          purchasedOn,
+          currency,
+          lines: lineInputs,
+          retailerId: retailerId || undefined,
+          shippingMinor: parseAmount(shippingInput, currency),
+          customsMinor: parseAmount(customsInput, currency),
+          discountMinor: parseAmount(discountInput, currency),
+          fxRateToNok: resolvedFxRate,
+          fxRateDate: resolvedFxDate,
+          fxSource: currency === 'NOK' ? undefined : fxMode,
+          notes: notes || undefined,
+        },
+        idempotencyKey,
+      )
     },
     onSuccess: async (purchase) => {
       await queryClient.invalidateQueries({ queryKey: ['purchases'] })
@@ -305,6 +332,7 @@ export function PurchaseFormPage() {
               setNewRetailerName(event.target.value)
             }}
             placeholder="Add a new retailer"
+            aria-label="Add a new retailer"
             className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none focus-visible:border-sky-500"
           />
           <button
@@ -330,7 +358,7 @@ export function PurchaseFormPage() {
                 setFxMode('norges_bank')
                 fxQuery.mutate()
               }}
-              className={`min-h-9 rounded-lg border px-3 text-xs font-medium ${fxMode === 'norges_bank' ? 'border-sky-500 bg-sky-600/20 text-sky-200' : 'border-slate-700 text-slate-300'}`}
+              className={`min-h-9 rounded-lg border px-3 text-xs font-medium ${fxMode === 'norges_bank' ? 'border-sky-500 bg-sky-600/20 text-slate-200' : 'border-slate-700 text-slate-300'}`}
             >
               Norges Bank
             </button>
@@ -339,7 +367,7 @@ export function PurchaseFormPage() {
               onClick={() => {
                 setFxMode('manual')
               }}
-              className={`min-h-9 rounded-lg border px-3 text-xs font-medium ${fxMode === 'manual' ? 'border-sky-500 bg-sky-600/20 text-sky-200' : 'border-slate-700 text-slate-300'}`}
+              className={`min-h-9 rounded-lg border px-3 text-xs font-medium ${fxMode === 'manual' ? 'border-sky-500 bg-sky-600/20 text-slate-200' : 'border-slate-700 text-slate-300'}`}
             >
               Manual rate
             </button>
@@ -446,8 +474,11 @@ export function PurchaseFormPage() {
       ) : null}
 
       <div className="space-y-1.5">
-        <label className="block text-sm font-medium text-slate-300">Notes</label>
+        <label htmlFor="purchase-notes" className="block text-sm font-medium text-slate-300">
+          Notes
+        </label>
         <textarea
+          id="purchase-notes"
           value={notes}
           onChange={(event) => {
             setNotes(event.target.value)

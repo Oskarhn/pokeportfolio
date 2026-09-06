@@ -10,6 +10,329 @@ they were**.
 
 ## [Unreleased]
 
+### Fixed — 2026-09-02 — M15 scanner: evidence-aware matcher redesign closes the F-02 visual/text scoring gap; OCR confidence weighting; retrieval consistency (P88, D-102, isolated repair branch `fix/m15-p88-matcher-ocr-correctness` — draft PR #66 against PR #63's integration branch, NOT on PR #63 itself, not merged, not deployed)
+
+Redesigns `visual-evidence.ts`'s point curve (calibrated bands matching P84's real similarity
+distributions) and adds a new visual-dominance guard (`engine.ts`) that discounts a coincidentally
+text-matching WRONG candidate when a DIFFERENT candidate carries strong, dedicated visual evidence
+it lacks — closes the audited F-02 CRITICAL/P0 finding (a single OCR misread could always outrank
+a correct, strong visual match by construction). Re-running the project's own existing 240-card
+benchmark with the new matcher: hybrid TOP1 99.4% vs. the documented OLD hybrid's 95.8% (visual-
+alone stays 99.7%) — the hybrid-vs-visual-alone gap shrank from -3.9 to -0.3 points. Also fixes
+F-12 (OCR confidence now gates collector-number ROI selection and matcher text-evidence
+reliability), F-16 (recovers OCR separator noise in collector numbers), F-17 (adds a Basic-Energy
+name-ROI layout), F-26 (visual-text-disagreement now actually caps tier), F-27 (non-finite
+similarity fails closed), F-28/F-29 (the visual-shortlist enrichment channel now filters
+`is_active`/`language`, matching `search_cards`), F-34 (real-OCR fixtures + a real-Tesseract smoke
+test for every layout family), and a generic attack/rules body-text-contamination penalty (P88
+§13). Full account: `docs/DECISIONS.md` D-102, `docs/SCANNER_RESEARCH.md` §8,
+`ai_outputs/Claude_outputs/output_88.txt`.
+
+### Fixed — 2026-09-02 — M15 scanner: OCR forensics, a bounded multi-line collector-number recovery pass, name-lexicon/structured-parser tooling (P85, D-101, isolated research branch `feat/m15-p85-ocr-recognition` — NOT on PR #63, not merged, not deployed)
+
+Built this project's first real, ground-truthed OCR accuracy corpus (`scripts/scanner-ocr-benchmark/`,
+reusing the existing TCGdex fetcher and the P76/P79 augmentation modules for 9 realistic
+perturbation profiles/card) and used it to actually forensically test Tesseract.js 7's
+configuration space instead of reasoning from single real-device screenshots.
+
+- **PSM forensics**: the pre-existing PSM 7 (single-line) default was already correct for both
+  fields when a candidate crop genuinely is one line — measured directly against 4 alternative
+  modes, not assumed.
+- **Real bug found and fixed**: a correctly-cropped collector-number strip routinely contains TWO
+  visual lines (the id plus an adjacent illustrator-credit or copyright line) on both vintage and
+  modern layouts, confirmed by direct visual inspection of real crop images — PSM 7 cannot read a
+  two-line image at all. Fixed with a bounded THIRD pass (PSM 6, "uniform block") for the
+  collector-number field only, tried only when both existing single-line passes already found
+  nothing — zero added cost on an already-working scan.
+- **A second real bug found and fixed before shipping**: the naive fix let a copyright YEAR
+  ("© 1995") win as a fake collector number (a bare 4-digit token that structurally parses).
+  Closed with a stricter plausibility check used only by the new pass.
+- **`src/domain/scanner/name-lexicon.ts`** (fuzzy OCR-name resolution against a local unique-name
+  list) and **`src/domain/scanner/collector-parse.ts`** (structured collector-number parse with a
+  confidence band) ship as tested, available domain tooling — neither wired into production
+  retrieval/scoring this session (no real production-scale name lexicon exists yet; no Supabase
+  credentials available to generate one).
+- **`?scannerDebug=1` OCR debugger**: every considered ROI/preprocess/segmentation attempt is now
+  listed (`OCR_TRIALS`), winner flagged.
+
+Full account: D-101 in DECISIONS.md, SCANNER_RESEARCH.md §7f, `ai_outputs/Claude_outputs/output_85.txt`.
+Gates: typecheck/lint/format clean, build green, unit tests green (see output_85.txt for the exact
+count). DB not run (diff touches zero DB files). This branch is an isolated OCR-only research
+track (P85) run in parallel with P84/P86 — not integrated into PR #63 this session.
+
+### Fixed — 2026-08-30 — M15b scanner: live prewarm-stall diagnostics, FAST (OCR) baseline reprioritized, lightweight hash retrieval evaluated and rejected (P82, D-099, on PR #63, DRAFT — not merged, not deployed)
+
+P81's cold-start fixes did not close the gap: a real-iPhone retest still showed
+`VISUAL_MODEL_STATE=loading` for over a minute with every phase-timing field unreadable ("—"), and
+a Shieldon scan OCR also failed despite the debug screenshot showing the name clearly legible.
+
+- **Live worker-progress instrumentation**: the worker now posts a message at every phase boundary
+  (module-eval, processor/model load, backend attempts, index sub-steps) instead of only at a
+  terminal ready/unavailable message — a stalled init is now attributable to a specific phase WHILE
+  it is still loading. New debug fields: `WORKER_BOOTED`/`WORKER_BOOT_MS`/`VISUAL_CURRENT_PHASE`/
+  `DINO_CURRENT_PHASE`/`VISUAL_CURRENT_PHASE_ELAPSED_MS`/`VISUAL_LAST_PROGRESS_MS_AGO`.
+- **Lightweight perceptual-hash retrieval (dHash + new pHash) evaluated on REALISTIC capture noise
+  and REJECTED**: re-run against the same hard, off-center/tilted corpus P79's rectification
+  benchmark uses (not the easy corpus P76's original 86.7% TOP1 came from) shows same-card vs.
+  different-card similarity distributions overlapping almost completely — no usable threshold, an
+  order of magnitude worse than DINO's 93.3% TOP1 on the identical profile. Not wired into
+  scoring; ships as tested, unused domain tooling (`computePHash` etc.) only.
+- **FAST baseline reprioritized**: OCR + text search now starts warming BEFORE the heavyweight DINO
+  channel (reverses P81's own stagger order) — the only real signal that doesn't need DINO's ~45MB
+  cold start. The intro screen's loading copy now gates on OCR readiness
+  (`getFastScannerState()`), not the DINO channel, so it clears far sooner on a cold device.
+- **OCR preprocessing**: Otsu binarization (`roi.ts`) added as a bounded fallback retried only when
+  the existing contrast-stretch pass found nothing usable from any ROI candidate for a field —
+  zero added cost for an already-working scan.
+
+Full account: D-099 in DECISIONS.md, SCANNER_RESEARCH.md §7e, `ai_outputs/Claude_outputs/output_82.txt`.
+Gates: 845/845 unit tests, typecheck/lint/format clean, build green, 12/12 platform verifier,
+64/64 E2E. DB/M13/M16 not re-run (Docker unavailable — diff touches zero DB files).
+
+### Fixed — 2026-08-30 — M15b scanner: iPhone cold-start/reliability repair (P81, D-098, on PR #63, DRAFT — not merged, not deployed)
+
+Real-device evidence: cold visual-channel initialization took 106–388 seconds on repeated
+attempts, and one scan never produced a usable result after 6–7 minutes. A real-browser benchmark
+against the actual production worker chunk (new `pnpm scanner:visual:benchmark:cold-start`) showed
+localhost cold total time of ~1.5–2.1s — evidence the bottleneck is network transfer over the real
+device's connection, compounded by two confirmed configuration gaps, not WASM compile cost or
+model size.
+
+- **Cache-Control fixed**: scanner assets served `max-age=0, must-revalidate` (Cloudflare Pages'
+  default for non-hashed filenames) despite living under version-pinned, revision-verified paths.
+  `vite.config.ts` now emits `Cache-Control: public, max-age=31536000, immutable` for
+  `/scanner-assets/*`.
+- **Route-entry prewarm**: the visual worker now starts loading the instant `/scan` mounts
+  (`controller.prewarm()`), staggered ~1.5s ahead of the OCR engine's own cold start instead of
+  both contending for network/CPU from the same instant. The intro screen shows honest,
+  non-blocking "Preparing card recognition…" copy.
+- **Bounded visual wait**: a capture that starts before the visual channel is warm now waits at
+  most 8 seconds before degrading to OCR-only with an honest `VISUAL_ERROR` message, instead of
+  hanging on a multi-minute cold model load.
+- **New cold-start phase instrumentation** (`visual/phase-timing.ts`): per-asset fetch time/bytes,
+  decode time, worker-start time and a compile+session-create remainder, read via the Resource
+  Timing API (a `self.fetch` monkey-patch alone missed transformers.js/onnxruntime-web's internal
+  fetches — a real finding from this session's own benchmark run, documented in the code).
+- **Worker-owned Cache Storage layer** for the worker's own index fetches, independent of whether
+  the page's Service Worker intercepts fetches issued from inside a dedicated Worker.
+- `numThreads` explicitly set to 1 when not cross-origin-isolated (documents the existing
+  single-thread fallback instead of relying on internal auto-detection).
+- **Model replacement evaluated and rejected** (evidence-gated, same discipline as P80's photometric/
+  auxiliary-signal decisions): no benchmarked case for a smaller model, real risk of regressing
+  P80's still-open discriminative-power gap, and any swap forces an irreversible multi-hour
+  re-embedding of the 19,501-card index. See D-098.
+
+Zero database/migration/RPC files touched. Full account: `ai_outputs/Claude_outputs/output_81.txt`.
+
+### Fixed — 2026-08-28 — M15b scanner: exact-card matching, adaptive OCR ROI, candidate rescue (P80, D-097 addendum, on PR #63, DRAFT — not merged, not deployed)
+
+P79's camera-resolution and rectification fixes still left two concrete real-device misses: Mega
+Chandelure ex (absent from the top-20 visual candidates) and Shieldon (present at raw rank 6, never
+shown). Investigated and fixed the actual causes:
+
+- **Adaptive OCR ROI.** The fixed name/number ROI fractions encoded the vintage card layout (name
+  top-left, number bottom-right); modern SM/SWSH/SV-era cards print the name across the top edge
+  and the number bottom-left. `analyze.ts` now tries a bounded set of named layout candidates per
+  field, scores each by OCR confidence plus field-specific parseability, and keeps the winner, with
+  an early-exit once a candidate is confident (same one-call-per-field cost as before in the common
+  case). Closed a real permissiveness bug in `parseCollectorNumber` (a long garbage OCR string with
+  a stray digit run could structurally parse as an id) with a length guard.
+- **Candidate rescue.** The engine's own candidate retention bound (5) matched the UI's display
+  bound exactly, so a correct card at raw rank 6 was discarded before the UI could ever show it.
+  Retention raised to 10; the UI's display limit widens from 5 to 8 only when the ranking near the
+  cutoff is genuinely flat (within the engine's own ambiguity margin), never merely for low
+  confidence — a HIGH-tier match never expands.
+- **Photometric normalization** (`domain/scanner/photometric.ts`) built, tested, and evaluated via
+  a new bounded benchmark (`pnpm scanner:visual:benchmark:photometric`): a wash on the available
+  corpus, which cannot ground-truth-test the real foil/style-confusion hypothesis at full index
+  scale. Shipped as tested tooling; not wired into the default pipeline.
+- **Auxiliary visual signal** (second/inner-art embedding) evaluated and rejected again, with a
+  corrected rationale: the existing benchmarks measure robustness to capture noise, not
+  discriminative power at scale — genuinely untested, not disproven; rejected this session on
+  cost/risk (re-embedding all 19,501 cards is multi-hour and irreversible) pending real evidence.
+
+Full account: `ai_outputs/Claude_outputs/output_80.txt`. Unit 789/789 (+12 new); typecheck/lint/
+format clean; build/platform-verifier/E2E green. DB gates not run this session (no local
+Docker/Supabase available); zero DB/migration/RPC files touched.
+
+### Fixed — 2026-08-27 — M15b scanner: real-device recognition quality repair (P79, D-097 addendum, on PR #63, DRAFT — not merged, not deployed)
+
+The first real iPhone scan with a working runtime (P78) returned real candidates — all wrong, all
+LOW tier. Repairs the actual recognition-quality causes:
+
+- **Camera resolution was never requested.** `getUserMedia`'s `video` constraints carried only
+  `facingMode`; the diagnostic's `CAPTURE_CROP_DIMENSIONS=252x352` reproduces almost exactly by
+  hand against the unchanged guide-geometry math and a plausible unconstrained-default ~480×640
+  video track. Fixed: `{ width: { ideal: 1920 }, height: { ideal: 1920 } }` added to the same
+  constraints (never `exact`, so a capped device still opens exactly as before).
+- **Card rectification added.** New pure domain module `src/domain/scanner/rectify.ts` (Sobel
+  edge detection + outlier-rejected line fit + corner intersection + bilinear quadrilateral warp)
+  plus canvas glue `src/features/scanner/rectify-capture.ts`, wired into `controller.ts` as one
+  new step feeding OCR and the visual channel the same canonical, rectified card image. Falls
+  back to a plain crop (pixel-identical to before) whenever detection finds nothing plausible —
+  never a crash.
+- **Debug tooling gained real image previews** (raw crop, rectified image, both OCR ROI strips —
+  memory-only, never persisted) and a debug-only widened 50-candidate visual shortlist (up to 20
+  shown with thumbnails); production matching is unchanged. New `CAPTURE_FRAME_DIMENSIONS` /
+  `RECTIFICATION_USED` fields in the plain-text diagnostics.
+- **New harder local benchmark** (`pnpm scanner:visual:benchmark:hard`) composes an actual
+  off-center/tilted synthetic phone photo instead of P76's resize-in-place profiles. Results:
+  rectification lifts TOP3/TOP5 on the geometry-only distortion case without regressing TOP1;
+  combined glare+shadow+blur collapses every method to near-chance — a photometric-normalization
+  problem disclosed as out of this session's scope, not hidden.
+
+Full account: `ai_outputs/Claude_outputs/output_79.txt`. Unit 777/777 (+29 new); typecheck/lint/
+format clean; build/platform-verifier/E2E green. DB gates not run this session (no local
+Docker/Supabase available); zero DB/migration/RPC files touched.
+
+### Fixed — 2026-08-27 — M15b scanner: visual model never initialized on real iPhone (P78, D-097 addendum, on PR #63, DRAFT — not merged, not deployed)
+
+Repairs a real-device `VISUAL_MODEL_STATE=failed` report against the FULL hosted index (P77's
+pagination/checkpoint/crop fixes and the owner's real 19,501/20,946 hosted rebuild were both
+already in place). Two independent, confirmed root causes — both reproduced directly against the
+real production build in a real browser, not inferred:
+
+- **`env.allowLocalModels` was never set.** `@huggingface/transformers` defaults it to `false`
+  inside a Web Worker; combined with the (correct) `allowRemoteModels = false`, every model load
+  attempt threw before touching the ONNX runtime at all — on every browser, reproduced identically
+  on desktop Chromium with no COOP/COEP change. Fixed in `visual-worker.ts`.
+- **CSP `script-src` was missing `blob:`,** which onnxruntime-web's WASM factory needs for its own
+  dynamic-import glue-module loading — without it, model loading failed for both the `webgpu` and
+  `wasm` device paths. Fixed in `vite.config.ts`; verified end to end (real model load, real
+  embedding, real 19,501-card index search) with `crossOriginIsolated=false` throughout —
+  cross-origin isolation was never the blocker.
+- **WebGPU→WASM fallback added:** the worker used to pick exactly one backend up front and never
+  retried WASM if that choice failed. Now a pure, unit-tested module
+  (`src/domain/scanner/visual-backend-selection.ts`) tries WebGPU first under `auto` and falls
+  back to WASM on any failure/absence; an explicit `?visualBackend=wasm`/`webgpu` diagnostic
+  override skips backend guesswork entirely.
+- **Diagnostics used to drop the real failure reason** (`VISUAL_ERROR=—` even when the worker had
+  recorded one) — fixed in `controller.ts`, plus new phased
+  `PROCESSOR_LOAD`/`MODEL_LOAD`/`INDEX_LOAD` and per-backend attempt fields in the debug panel.
+- **Index failure-counter bug fixed:** `coverage.failures` used to accumulate across resumed
+  builds without deduplicating by card id (the owner's build logged "404: 6" while the shipped
+  manifest read "7 failures"); now derived fresh as `cardsWithUsableImage - cardsIndexed` at pack
+  time — no re-embedding required.
+
+Model, architecture and migration count unchanged. The committed hosted index (19,501/20,946) is
+untouched. No card was special-cased.
+
+### Fixed — 2026-08-27 — M15b scanner: full-catalog index pagination, checkpoint contamination, crop mismatch (P77, D-097 addendum, on PR #63, DRAFT — not merged, not deployed)
+
+Repairs the real-device failure ("Couldn't identify this card" on both a Shieldon and a Mega
+Chandelure ex) the P76 preview hit. Two independent bugs plus one preprocessing mismatch, all
+fixed:
+
+- **Full-catalog pagination:** `build-index.ts`'s unpaginated query was silently truncated at
+  1000 rows by Supabase's hosted API cap (the owner's rebuild logged exactly "1000 active English
+  cards"). Fixed with an exact-count-then-paginate walk (`src/domain/scanner/
+  index-pagination.ts`) reusing M13 export's proven completeness primitive; proven against real
+  local PostgREST with 1,203 seeded rows.
+- **Checkpoint contamination:** the resumable build checkpoint is now bound to
+  `{schemaVersion, sourceProjectIdentity, modelId, modelRevision, embeddingDim, quantization}`
+  (`src/domain/scanner/checkpoint-identity.ts`); a mismatched/pre-P77 checkpoint is discarded
+  loudly instead of silently mixed in (the exact class of bug behind P76's own 1224/1000 fix).
+  Packing is separately constrained to the current fetched canonical id set.
+- **Coverage invariants enforced,** not just logged: `src/domain/scanner/index-coverage.ts` is
+  asserted by the generator before writing, by `verify-index.ts` after reading, and by the browser
+  worker at runtime — cardsIndexed can never exceed totalCanonicalCards or cardsWithUsableImage.
+- **Crop mismatch fixed:** the visual channel was embedding the ENTIRE captured camera frame
+  instead of the card-only crop OCR already used (`capture.cardRect`) — a real preprocessing-parity
+  gap from the reference index's tight card-only images. `controller.ts`'s `analyzeVisualSafely`
+  now crops via `createImageBitmap`'s `(sx, sy, sw, sh)` overload.
+- **Diagnostic mode implemented:** `/scan?scannerDebug=1` — a debug-only panel with a "Copy
+  diagnostics" button, deferred in P76.
+
+Model, architecture and migration count unchanged. No card was special-cased.
+
+### Added — 2026-08-26 — M15b scanner: hybrid visual recognition (P76, D-097, on PR #63, DRAFT — not merged, not deployed)
+
+Replaces the OCR-only recognition bottleneck P75's real device test exposed ("Couldn't identify
+this card") with a hybrid on-device pipeline: a DINOv2-small visual embedding channel now scores
+alongside OCR text in the same `src/domain/scanner/engine.ts` matcher.
+
+- **Model:** `Xenova/dinov2-small` (converted from `facebook/dinov2-small`), pinned revision
+  `c2bb04a51fab207c420665f1946016107bffc701`, Apache-2.0, quantized INT8 ONNX (24.5 MB), vision-only
+  (no text encoder). MobileCLIP was evaluated and **rejected on licensing** — Apple's Machine
+  Learning Research Model License explicitly excludes "commercial exploitation, product
+  development or use in any commercial product or service."
+- **Benchmark:** 240 real TCGdex reference cards across 6 sets, 6 synthetic camera-distortion
+  profiles, 1,440 augmented queries, all four methods scored by the REAL production matcher.
+  OCR-first 30.5/39.7/42.1% (TOP1/3/5) vs. hybrid 95.8/99.9/100% — clears both product targets
+  (TOP5≥90%, TOP3≥85%) with wide margin. Perceptual hashing (dHash) evaluated, not wired into
+  production (measurably weaker once the embedding channel exists).
+- **Architecture:** LOCAL versioned INT8 index (384 bytes/card; full catalog ≈8.6 MB), not
+  pgvector — no new migration, no new RPC, no new user-facing DB privilege. Hosted migration
+  count unchanged at 90.
+- **Privacy/supply chain:** captured photos never leave the device; model + onnxruntime-web WASM
+  binaries staged same-origin under `/scanner-assets/visual-v1/`, pinned by SHA-256, remote model
+  loading explicitly disabled; the visual-recognition worker (~500 KB) is excluded from the
+  service-worker install-time precache, same as the OCR engine assets.
+- **Known gap:** the committed reference index was generated against the LOCAL dev stack (no
+  hosted-catalog read access was available to this session) — hosted-scale, hosted-ID-matching
+  index generation is one remaining owner-run command (`pnpm scanner:index:build` with a hosted
+  service-role key, never shared with an assistant). Until that runs, real physical-card scans
+  degrade gracefully to OCR-only behavior.
+- Full reasoning: DECISIONS.md D-097; full benchmark methodology and results:
+  docs/SCANNER_RESEARCH.md §7b.
+
+### Fixed — 2026-08-26 — M15 scanner: real-Postgres idempotency repair (P75, on PR #63, backend applied to hosted)
+
+The first end-to-end run of the M15 idempotency DB tests against actual Postgres (not just read
+against the source) exposed that the replay check in `add_card_acquisition` never fired for a
+non-voided lot: `v_replay is not null` is a row-wise NULL test that evaluates false for a
+`record` with a mixed-null shape, which every non-voided replay has. Execution silently fell
+through to a plain insert every time, relying on the coarser outer `unique_violation` handler —
+which has no material-mismatch or voided-lot check at all. Fixed by testing the NOT NULL
+`lot_id` column instead of the whole record. Two inverted null-safe comparisons in the
+material-mismatch predicate (`IS DISTINCT FROM` where `IS NOT DISTINCT FROM` was needed) were
+fixed in the same pass — they would have rejected every legitimate replay had the surrounding
+block ever run. All 21 idempotency DB tests (I1–I21) now pass against real Postgres, including
+both concurrent-race cases and every material-mismatch case. Full account: DECISIONS.md D-096
+point 11. The two M15 migrations are now applied to `pokeportfolio-dev` (backend-only; no
+frontend merged to main). Also fixed 10 pre-existing unit test failures (stale mocks and two
+intentional behavior changes the tests hadn't caught up with) and several fixture bugs in the
+new DB test suite.
+
+### Added — 2026-08-26 — M15 scanner: on-device recognition integrated candidate (P68, DRAFT PR #63 — backend applied, frontend not merged, no Cloudflare preview yet)
+
+The M15 integrated candidate combines three parallel source candidates deliberately (source
+PR #60 deterministic matcher + source PR #61 camera/batch UI + source PR #62 CSP/WASM security
+boundary) and adds the real recognition pipeline on top. DRAFT: still needs a Cloudflare preview
+(blocked on the project's Pages settings — preview deployments are off) and the owner's
+real-iPhone check before it can merge.
+
+- **On-device OCR (D-094)** — pinned `tesseract.js` 7.0.0 / `tesseract.js-core` 7.0.0 /
+  `@tesseract.js-data/eng` 1.0.0, LSTM-only English; assets staged same-origin under
+  `/scanner-assets/v7/` by a reproducible prebuild script (no CDN at runtime, nothing binary
+  committed); one worker per scanner session created lazily on first analysis and terminated on
+  exit; tesseract.js stays out of the main bundle entirely (entry delta +0.26 KB gzip).
+- **Shared guide geometry** — one pure model maps the rendered 5:7 framing guide through
+  object-fit: cover into captured pixels; every capture carries a trustworthy card rectangle;
+  picked files follow a deterministic full-image-or-centred-crop policy shown honestly in the
+  review step.
+- **Matcher integration** — OCR text becomes P67 observations, retrieval rides the existing
+  `search_cards` surface, confidence is P67's deterministic tier mapped to HIGH/MEDIUM/LOW/
+  NO_MATCH (≤5 shortlist; HIGH only ever preselects).
+- **Printing before batch** — active variants are fetched only after a candidate is chosen;
+  multi-printing cards require an explicit choice labelled from real finish/stamp/subtype/size.
+- **Session defaults** — user-scoped in-memory origin/condition/language/storage/date applied at
+  commit; standalone origins exclude Opening (M16 owns pulls), default pre_tracking "Existing
+  collection"; basis derived via the shared extracted origin-basis helper; cleared by both auth
+  exit paths (D-093 sweep extension).
+- **Honest batch commit** — sequential `add_card_acquisition` per confirmed item with per-item
+  outcomes: successes are never resubmitted on retry, definite server refusals stay editable,
+  and interrupted transports are flagged "may already have been added — check Portfolio" with
+  no automatic retry (no idempotency migration added).
+- **Entry points live** — Quick Add "Scan card" and Search's camera affordance open `/scan`
+  (the "not available yet" placeholders are gone). Privacy copy now states the literal truth:
+  photos are processed on this device and aren't uploaded or saved.
+- **Verification** — typecheck/lint/format clean; unit 637/637 (131 new integration tests incl.
+  I1–I20 mapping and a static network-privacy audit); build green with same-origin assets
+  deployed into dist and excluded from SW precache; E2E 64/64; real Tesseract smoke read the
+  synthetic fixture at confidence 93 (~106 ms warm, dev machine); local Docker DB gate green
+  (578/0/1 after fresh reset) plus grant-audit clean.
+
 ### Fixed — 2026-08-26 — M16 real-PostgreSQL repair: first full local DB gate green (P62; same child PR, DO NOT MERGE until P63/P64 integration)
 
 P60 executed the repository's entire db-tests CI job for the first time on a local

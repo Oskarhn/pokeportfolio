@@ -7,6 +7,7 @@ import type { ExportArtifact, ExportController, ExportKind } from './contract'
 import { reduceExportFlow, describeReady, type ExportFlowState } from './exportFlow'
 import { canShareFiles, deliverFiles, downloadOnly, type DeliveryOutcome } from './fileDelivery'
 import { markReminderSatisfied } from '../../domain/export/export-reminder'
+import { useAuth } from '../../auth/useAuth'
 
 /**
  * Profile › Export & backup (M13; UX_FLOWS.md F11's Settings › Export home).
@@ -36,6 +37,7 @@ export function ExportPage({
 }: {
   controller?: ExportController
 }) {
+  const { session } = useAuth()
   const [flow, dispatch] = useReducer(reduceExportFlow, { phase: 'idle' } as ExportFlowState)
   const [shareAvailable, setShareAvailable] = useState(true)
   const runningRef = useRef(false)
@@ -87,7 +89,8 @@ export function ExportPage({
     dispatch({ type: 'DELIVER' })
     try {
       const outcome = await deliverFiles(artifacts)
-      if (outcome.method !== 'cancelled') markReminderSatisfied(window.localStorage)
+      if (outcome.method !== 'cancelled' && session)
+        markReminderSatisfied(window.localStorage, session.user.id)
       dispatch({ type: 'DELIVERED', outcome })
     } catch (error) {
       dispatch({
@@ -105,7 +108,7 @@ export function ExportPage({
     dispatch({ type: 'DELIVER' })
     try {
       const outcome = await downloadOnly(artifacts)
-      markReminderSatisfied(window.localStorage)
+      if (session) markReminderSatisfied(window.localStorage, session.user.id)
       dispatch({ type: 'DELIVERED', outcome })
     } catch (error) {
       dispatch({
@@ -325,12 +328,12 @@ function ReadyPanel({
 }) {
   return (
     <div className="space-y-3 rounded-lg border border-sky-900/60 bg-sky-950/30 p-3">
-      <p role="status" className="text-sm font-medium text-sky-100">
+      <p role="status" className="text-sm font-medium text-slate-200">
         Ready — {kind}
         {artifacts.length > 1 ? `, ${String(artifacts.length)} files` : ''}
       </p>
       {artifacts.map((artifact) => (
-        <p key={artifact.filename} className="break-all font-mono text-xs text-sky-200/90">
+        <p key={artifact.filename} className="break-all font-mono text-xs text-slate-300">
           {artifact.filename}
         </p>
       ))}

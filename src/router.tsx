@@ -3,16 +3,25 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
+  ErrorComponent,
   Outlet,
   redirect,
+  type ErrorComponentProps,
 } from '@tanstack/react-router'
 import { AppShell } from './ui/AppShell'
+import { Button } from './ui/form'
+import { isChunkLoadFailure } from './platform/build-freshness'
+import { hasAnyUnsavedWork } from './platform/unsaved-work-registry'
 import { RedirectIfSignedIn, RequireAdmin, RequireSession } from './auth/guards'
 import { LoginPage } from './features/auth/LoginPage'
 import { InvitePage } from './features/auth/InvitePage'
 import { ForgotPasswordPage } from './features/auth/ForgotPasswordPage'
 import { ResetPasswordPage } from './features/auth/ResetPasswordPage'
 import { HomePage } from './features/home/HomePage'
+import { PrivacyPage } from './features/legal/PrivacyPage'
+import { TermsPage } from './features/legal/TermsPage'
+import { FaqPage } from './features/legal/FaqPage'
+import { NotFoundPage } from './features/legal/NotFoundPage'
 import { isDashboardRange, type DashboardRange } from './domain/dashboard'
 import { ProfilePage } from './features/profile/ProfilePage'
 import type { CardCondition, Grader, HoldingKind, SealedIntent } from './data/collection'
@@ -104,6 +113,13 @@ const OpeningDetailPage = lazy(() =>
     default: m.OpeningDetailPage,
   })),
 )
+// M15 scanner UI (P66). Route exists behind feature wiring so the flow is exercisable and E2E-
+// guardable; NO navigation entry advertises it yet — recognition is still the placeholder
+// controller until P68 integrates the real engine. P68 owns flipping Quick Add/Search entries
+// and any final route move.
+const ScannerPage = lazy(() =>
+  import('./features/scanner/ScannerPage').then((m) => ({ default: m.ScannerPage })),
+)
 
 /** Matches the layout these pages render into (AppShell's `<main>`) closely enough that arriving
  *  content doesn't jump — a skeleton rather than a spinner-over-blank-region, per
@@ -118,9 +134,81 @@ function RouteFallback() {
 }
 
 /**
+ * Root-level error fallback (P83 §3/§7, D-100). Before this session, ANY thrown render error —
+ * including a lazy-route `import()` rejecting because this deployment no longer has that chunk —
+ * fell through to TanStack Router's own generic default (the "Something went wrong!" screen the
+ * owner saw pressing the scanner's X button, P83 §0). A chunk-load failure now gets a distinct,
+ * honest message instead of a framework-generic one; every other render error still gets
+ * TanStack's own `ErrorComponent` unchanged, so this is additive, not a general error-UX rewrite.
+ *
+ * `initBuildFreshnessWatch()` (main.tsx) already tries to recover a chunk-load failure caught via
+ * `vite:preloadError`/`unhandledrejection` BEFORE it becomes a React render error at all; this is
+ * the backstop for whichever failure shape reaches React first — a route already reset by
+ * `main.tsx`'s reload will unmount this before it ever renders.
+ *
+ * P101 launch-readiness addendum: the non-chunk-load branch used TanStack's own `ErrorComponent`
+ * unmodified (D-100's deliberate scope limit, kept as-is here). That component ships a "Show
+ * Error" toggle that renders the raw error/stack on click **in every environment, including a
+ * production build** — a real "raw exception text" leak, not a hypothetical one. Gating it to
+ * `import.meta.env.DEV` closes that without touching D-100's chunk-load-vs-generic split or any
+ * of the P89 unsaved-work logic below.
+ */
+function AppErrorComponent(props: ErrorComponentProps) {
+  if (!isChunkLoadFailure(props.error)) {
+    if (import.meta.env.DEV) {
+      return <ErrorComponent {...props} />
+    }
+    return (
+      <div className="mx-auto flex w-full max-w-sm flex-col items-center gap-4 py-10 text-center">
+        <p className="text-lg font-semibold text-slate-100">Something went wrong</p>
+        <p className="text-sm text-slate-400">
+          This page hit an unexpected error. Reloading usually fixes it — nothing in your Portfolio
+          was affected.
+        </p>
+        <Button
+          type="button"
+          className="max-w-xs"
+          onClick={() => {
+            window.location.reload()
+          }}
+        >
+          Reload
+        </Button>
+      </div>
+    )
+  }
+  // F-40 (P89): the registry-wide check, not the scanner alone — any unsaved form on any route
+  // must block the automatic reload button exactly like an unsaved scan does.
+  const unsaved = hasAnyUnsavedWork()
+  return (
+    <div className="mx-auto flex w-full max-w-md flex-col items-center gap-4 py-10 text-center">
+      <p className="text-lg font-semibold text-slate-100">A new version is available</p>
+      <p className="text-sm text-slate-400">
+        {unsaved
+          ? 'This page belongs to an older version of the app. Save or cancel what you were doing, then reload.'
+          : 'This page belongs to an older version of the app. Reload to get the current one.'}
+      </p>
+      {unsaved ? null : (
+        <Button
+          type="button"
+          className="max-w-xs"
+          onClick={() => {
+            window.location.reload()
+          }}
+        >
+          Reload now
+        </Button>
+      )}
+    </div>
+  )
+}
+
+/**
  * Three route classes (docs/UX_FLOWS.md):
  *
- *   public     /login, /invite/$token, /forgot-password, /reset-password
+ *   public     /login, /invite/$token, /forgot-password, /reset-password, /privacy, /terms, /faq
+ *              (only /privacy, /terms, /faq are crawlable — public/robots.txt disallows the rest;
+ *              /invite/$token and /reset-password carry live tokens and must never be indexed)
  *   protected  /, /catalog, /catalog/$cardId, /catalog/sets/$setId,
  *              /catalog/sealed/$sealedProductId, /portfolio, /portfolio/$holdingId,
  *              /portfolio/manual/new, /portfolio/sealed/new, /add, /profile, /profile/export
@@ -148,6 +236,10 @@ const rootRoute = createRootRoute({
       </Suspense>
     </AppShell>
   ),
+  // P101: there was no custom 404 before this — an unmatched path fell through to TanStack
+  // Router's own bare default. Renders inside AppShell like every other route (so a signed-in
+  // person mistyping a path still sees their own nav chrome, not a bare page).
+  notFoundComponent: NotFoundPage,
 })
 
 const indexRoute = createRoute({
@@ -194,6 +286,27 @@ const resetPasswordRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/reset-password',
   component: ResetPasswordPage,
+})
+
+// P101: the only three routes genuinely meant to be public — reachable signed-out or signed-in,
+// listed in public/sitemap.xml and allowed in public/robots.txt. Not lazy: tiny, and above the
+// fold for whatever crawls them.
+const privacyRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/privacy',
+  component: PrivacyPage,
+})
+
+const termsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/terms',
+  component: TermsPage,
+})
+
+const faqRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/faq',
+  component: FaqPage,
 })
 
 const catalogRoute = createRoute({
@@ -593,12 +706,25 @@ const adminInvitationsRoute = createRoute({
   ),
 })
 
+const scannerRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/scan',
+  component: () => (
+    <RequireSession>
+      <ScannerPage />
+    </RequireSession>
+  ),
+})
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   loginRoute,
   inviteRoute,
   forgotPasswordRoute,
   resetPasswordRoute,
+  privacyRoute,
+  termsRoute,
+  faqRoute,
   catalogRoute,
   catalogCardRoute,
   catalogSetRoute,
@@ -624,11 +750,12 @@ const routeTree = rootRoute.addChildren([
   openingDetailRoute,
   profileRoute,
   profileExportRoute,
+  scannerRoute,
   legacyMoreRoute,
   adminInvitationsRoute,
 ])
 
-export const router = createRouter({ routeTree })
+export const router = createRouter({ routeTree, defaultErrorComponent: AppErrorComponent })
 
 declare module '@tanstack/react-router' {
   interface Register {

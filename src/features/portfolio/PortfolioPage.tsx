@@ -17,6 +17,7 @@ import { MoneyDisplay, ValuePrivacyToggle } from '../../ui/MoneyDisplay'
 import { formatNokMinor } from '../../ui/money-format'
 import { useDebouncedValue } from '../../ui/useDebouncedValue'
 import { SearchIcon, XIcon, StarIcon } from '../../ui/icons'
+import { useUnsavedWorkSource } from '../../platform/unsaved-work-registry'
 
 /**
  * Portfolio: the user's owned-card browser (M7.1 prompt §37-46, owner feedback pass). No generic
@@ -35,6 +36,10 @@ export function PortfolioPage() {
   const debouncedQuery = useDebouncedValue(queryInput, 250)
   const [selectMode, setSelectMode] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  // F-40 (P89): a live multi-select would otherwise be silently cleared by an app-wide automatic
+  // reload exactly like unsubmitted form input — only while there is an actual selection to lose,
+  // not merely while select mode is toggled on with nothing picked yet.
+  useUnsavedWorkSource('portfolio-bulk-selection', selectMode && selectedIds.size > 0)
 
   const profile = useQuery({ queryKey: ['my-profile'], queryFn: getMyProfile })
   const counts = useQuery({
@@ -185,7 +190,7 @@ export function PortfolioPage() {
           aria-label="Show only favourite holdings"
           className={`flex size-11 shrink-0 items-center justify-center rounded-full border ${
             search.favorite
-              ? 'border-amber-400/60 bg-amber-400/10 text-amber-400'
+              ? 'border-sky-500 bg-sky-600/20 text-slate-200'
               : 'border-slate-700 text-slate-400 hover:bg-slate-800'
           }`}
         >
@@ -202,7 +207,7 @@ export function PortfolioPage() {
         />
         <Link
           to="/catalog"
-          className="hidden min-h-11 items-center rounded-full bg-sky-600 px-4 text-sm font-semibold text-white hover:bg-sky-500 sm:flex"
+          className="hidden min-h-11 items-center rounded-full bg-sky-600 px-4 text-sm font-semibold text-accent-foreground hover:bg-sky-500 sm:flex"
         >
           Add card
         </Link>

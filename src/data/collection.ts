@@ -663,6 +663,9 @@ export interface AddCardAcquisitionInput {
   /** Required when sealedProductId is set — organisational only (prompt §20). Defaults to
    *  'undecided' server-side if omitted. */
   sealedIntent?: SealedIntent
+  /** Optional client-generated idempotency key for safe scanner retry (D-096). Same key on retry
+   *  returns the original holding/lot pair; NULL (existing callers) behaves exactly as before. */
+  clientRequestKey?: string
 }
 
 export interface AddCardAcquisitionResult {
@@ -696,6 +699,7 @@ export async function addCardAcquisition(
       p_manual_value_minor:
         input.manualValueMinor === undefined ? undefined : Number(input.manualValueMinor),
       p_sealed_intent: input.sealedIntent,
+      p_client_request_key: input.clientRequestKey ?? undefined,
     })
     .single()
   if (error) throw new Error(error.message)

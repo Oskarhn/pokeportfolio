@@ -9,6 +9,7 @@
   },
   "scripts": {
     "dev": "vite",
+    "prebuild": "node scripts/prepare-scanner-assets.mjs && node scripts/prepare-scanner-visual-assets.mjs && tsx scripts/scanner-visual-index/stage-index-assets.mjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
@@ -23,15 +24,32 @@
     "test:m13-adversarial": "vitest run --config test/m13-independent-adversarial/vitest.config.ts",
     "test:e2e": "playwright test",
     "check": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test",
+    "check:links": "node scripts/check-links.mjs",
     "db:start": "supabase start",
     "db:stop": "supabase stop",
     "db:migrate": "supabase migration up",
     "db:reset": "supabase db reset",
     "db:seed": "supabase db reset",
     "db:dump": "supabase db dump --linked -f supabase/dumps/pre-migration.sql",
-    "db:types": "supabase gen types typescript --local --schema public > src/data/database.types.ts"
+    "db:types": "supabase gen types typescript --local --schema public > src/data/database.types.ts",
+    "scanner:visual:benchmark": "tsx scripts/scanner-visual-benchmark/run-benchmark.ts",
+    "scanner:visual:benchmark:hard": "tsx scripts/scanner-visual-benchmark/run-hard-benchmark.ts",
+    "scanner:visual:benchmark:photometric": "tsx scripts/scanner-visual-benchmark/run-photometric-experiment.ts",
+    "scanner:visual:benchmark:cold-start": "node scripts/scanner-visual-benchmark/browser-cold-start.mjs",
+    "scanner:visual:benchmark:hash": "tsx scripts/scanner-visual-benchmark/run-hash-benchmark.ts",
+    "scanner:recognition-lab:p93-adversarial": "tsx scripts/scanner-recognition-lab/experiments/08-p93-hybrid-false-confidence.ts",
+    "scanner:recognition-lab:p93-blur-severity": "tsx scripts/scanner-recognition-lab/experiments/09-p93-continuous-blur-severity.ts",
+    "scanner:recognition-lab:p99-scoring-tiers-sweep": "tsx scripts/scanner-recognition-lab/experiments/10-p99-scoring-tiers-sweep.ts",
+    "scanner:index:build": "tsx scripts/scanner-visual-index/build-index.ts",
+    "scanner:index:verify": "tsx scripts/scanner-visual-index/verify-index.ts",
+    "scanner:preprocess:parity": "tsx scripts/scanner-preprocess-parity/run-parity.ts",
+    "scanner:ocr:benchmark:psm-forensics": "tsx scripts/scanner-ocr-benchmark/run-psm-forensics.ts",
+    "scanner:ocr:benchmark:recognition": "tsx scripts/scanner-ocr-benchmark/run-recognition-benchmark.ts",
+    "scanner:name-lexicon:build": "tsx scripts/scanner-name-lexicon/build-lexicon.ts",
+    "scanner:roi-fixture:smoke": "tsx scripts/scanner-roi-fixture-smoke.ts"
   },
   "dependencies": {
+    "@huggingface/transformers": "4.2.0",
     "@supabase/supabase-js": "^2.112.3",
     "@tailwindcss/vite": "^4.3.3",
     "@tanstack/react-query": "^5.101.4",
@@ -40,11 +58,15 @@
     "lightweight-charts": "5.2.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "tailwindcss": "^4.3.3"
+    "tailwind-merge": "^3.6.0",
+    "tailwindcss": "^4.3.3",
+    "tesseract.js": "7.0.0"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.62.1",
+    "@tesseract.js-data/eng": "1.0.0",
     "@types/node": "^26.2.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
@@ -52,16 +74,28 @@
     "@vitest/coverage-v8": "^4.1.10",
     "eslint": "^10.8.1",
     "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-jsx-a11y": "^6.10.2",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.4",
     "fast-check": "^4.9.0",
     "globals": "^17.11.0",
+    "lighthouse": "^13.4.1",
     "prettier": "^3.9.6",
+    "sharp": "0.34.5",
     "supabase": "^2.114.0",
+    "tesseract.js-core": "7.0.0",
+    "tsx": "4.23.12",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.67.0",
     "vite": "^8.2.1",
     "vite-plugin-pwa": "^1.3.0",
     "vitest": "^4.1.10"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "onnxruntime-node",
+      "sharp"
+    ]
   }
 }

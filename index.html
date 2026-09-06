@@ -10,23 +10,44 @@
       Referer header. Nothing in this application needs referrers. See docs/SECURITY.md §5.
     -->
     <meta name="referrer" content="no-referrer" />
-    <script>
-      // Applies a remembered theme override before first paint, so a returning user with an
-      // explicit light/dark preference (src/ui/theme.ts) never sees a flash of the wrong palette
-      // while the profile round-trips from Supabase. Reads localStorage only — no network, no
-      // React. `system` (or nothing stored yet) leaves the attribute unset and CSS's
-      // prefers-color-scheme block decides.
-      try {
-        var t = localStorage.getItem('pp-theme')
-        if (t === 'light' || t === 'dark') {
-          document.documentElement.setAttribute('data-theme', t)
-        }
-      } catch (e) {}
-    </script>
+    <!--
+      The anti-FOUC theme-bootstrap <script> is injected here by vite.config.ts's
+      themeBootstrapHtml() plugin (head-prepend), not hand-written — see THEME_BOOTSTRAP_SCRIPT's
+      own comment there for why: the exact same string is what buildContentSecurityPolicy hashes
+      into the CSP's script-src, so the script actually served and the CSP that permits it cannot
+      drift apart (P103; P101 shipped this as a static inline script the real Cloudflare Pages CSP
+      had no allowance for at all, silently blocking it in production).
+    -->
     <meta
       name="description"
       content="PokePortfolio — a private Pokémon TCG collection and financial tracker."
     />
+    <!--
+      Safe-by-default posture (P101): almost every route in this app is private
+      (docs/PRODUCT_SPEC.md §1.1 — "Not a public platform"), so the static default is noindex.
+      src/ui/useDocumentMeta.ts overrides this to "index, follow" only while one of the three
+      genuinely public pages (/privacy, /terms, /faq) is mounted, and reverts it on navigation
+      away — see that file for why a JS-owned default is needed even though it can't reach a
+      non-JS-executing crawler (see the comment there and docs/LAUNCH_CHECKLIST.md item 10-12).
+    -->
+    <meta name="robots" content="noindex, nofollow" />
+    <!--
+      Social-card metadata is static and app-level, not per-route. This SPA has no
+      server-side rendering or prerendering, so a JS-set per-page tag (useDocumentMeta) is
+      invisible to the non-JS-executing unfurlers most chat apps use (Slack, Discord, iMessage) —
+      only a real prerender build would fix that, and isn't warranted for an invite-only tool with
+      ~10 users. A single static, generic, non-user-specific card is the correct trade-off: it can
+      never leak portfolio values, holdings or auth state, unlike a dynamic one might by accident.
+    -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="PokePortfolio" />
+    <meta property="og:title" content="PokePortfolio" />
+    <meta
+      property="og:description"
+      content="A private Pokémon TCG collection and financial tracker."
+    />
+    <meta property="og:image" content="https://pokeportfolio-dev.pages.dev/icons/icon-512.png" />
+    <meta name="twitter:card" content="summary" />
     <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
     <title>PokePortfolio</title>

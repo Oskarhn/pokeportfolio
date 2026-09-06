@@ -84,7 +84,7 @@ export function MoneyDisplay({
       ) : null}
       {state === 'known' && stale && !hidden ? (
         <span
-          className="rounded-full border border-amber-800/60 bg-amber-950/40 px-1.5 py-0.5 text-[10px] font-medium text-amber-400"
+          className="rounded-full border border-slate-600 bg-slate-800/60 px-1.5 py-0.5 text-[10px] font-medium text-slate-200"
           title="This price hasn't refreshed in a few days — still used, just not brand new."
         >
           stale

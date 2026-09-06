@@ -172,7 +172,7 @@ export function CardDetailPage() {
                       }}
                       className={`min-h-8 rounded-full border px-3 text-xs font-medium transition-colors ${
                         v.id === selectedVariantId
-                          ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                          ? 'border-sky-500 bg-sky-600/20 text-slate-200'
                           : 'border-slate-700 text-slate-300 hover:bg-slate-800'
                       }`}
                     >
@@ -204,7 +204,7 @@ export function CardDetailPage() {
                         <Link
                           to="/add"
                           search={{ variantId: v.id }}
-                          className="min-h-9 rounded-full bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-500"
+                          className="min-h-9 rounded-full bg-sky-600 px-3 py-1.5 text-xs font-semibold text-accent-foreground hover:bg-sky-500"
                         >
                           Add to collection
                         </Link>
