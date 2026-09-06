@@ -5313,3 +5313,52 @@ cases re-probed, and a hand-edited/foreign checkpoint's unparseable `failedAt` f
 re-probing rather than permanent skip. Not re-proven against a real hosted 19k-card marathon run in
 P111 (prompt §17/§37 — no real hosted index build in this session); the fix is verified at the
 pure-function level the resume loop's own skip condition now calls directly.
+
+## D-124 — Matcher tie-break comparator now fails closed on a poisoned/non-finite visual similarity (P113)
+
+**2026-09-06 · Accepted**
+
+**Found by adversarial fuzz testing, not a failing hand-picked case.** P113 (a chaos/fault-
+injection hardening pass over the M15 scanner, run in isolation from P112's hosted work) built a
+new property-based fuzz suite (`tests/domain/scanner/engine-adversarial-fuzz.test.ts`, `fast-check`)
+feeding `rankScannerCandidates` thousands of random evidence matrices, including deliberately
+adversarial visual-similarity values (NaN, ±Infinity, out-of-range doubles) a corrupted worker
+message, a serialization bug, or a future refactor could hand the matcher — exactly the shape the
+matcher's OWN existing code already defends against in `visual-evidence.ts`'s
+`visualEvidencePoints`/`visualEvidenceTier` (explicit `!Number.isFinite` fail-closed guards).
+
+`engine.ts`'s `rankScannerCandidatesFull` final sort had ONE place that same discipline was missed:
+its tie-break comparator normalized a candidate's raw diagnostic `visualSimilarity` with
+`?? -Infinity`, which only replaces `null`/`undefined` — a poisoned `NaN` is a real `number` by
+`typeof`, so it passed through unguarded. `bSim - aSim` then evaluated to `NaN` (since
+`NaN !== anything` is always true, the `if (bSim !== aSim)` branch always fires for a poisoned
+candidate), handing `Array.prototype.sort` a comparator result with implementation-defined
+ordering — silently breaking this function's own documented "deterministic ordering" guarantee for
+every candidate TIED with the poisoned one on `rawRankScore`, whenever any single candidate in the
+result carried corrupted visual evidence. The SCORE itself was never affected (already proven
+finite by the same fuzz suite) — only which of several tied candidates sorts first/last became
+non-deterministic.
+
+**Severity:** real but narrow. It requires (a) a poisoned/corrupted similarity value reaching the
+matcher at all — `visual-client.ts`/`visual-worker.ts` never produce one in the shipped path today
+— AND (b) at least one other candidate genuinely tied on `rawRankScore`. Not reachable through any
+existing shipped code path; caught only by fuzzing the matcher's own public contract directly with
+adversarial input, which is exactly what a defense-in-depth boundary function should be robust
+against regardless of whether today's callers happen to avoid it.
+
+**Fix.** A new `finiteSimilarityOrFloor(value: number | null): number` helper (`engine.ts`) —
+`typeof value === 'number' && Number.isFinite(value) ? value : -Infinity` — replaces the bare
+`?? -Infinity` at both sides of the tie-break comparison. `typeof value === 'number'` narrows away
+`null` before `Number.isFinite` runs, so no non-null assertion is needed (this repository's ESLint
+config forbids `@typescript-eslint/no-non-null-assertion`). Matches the exact fail-closed contract
+`visual-evidence.ts` already documents for the identical input shape — one rule, applied
+consistently everywhere a similarity value crosses a decision boundary.
+
+**Verified:** the adversarial fuzz suite (20,000 runs for the finite/deterministic-ordering
+properties, 5,000 for the poisoned-vs-clean-evidence equivalence and zero-evidence-never-HIGH
+properties, 2,000 for the empty-map property) passes cleanly after the fix; failed with this exact
+counterexample before it (`{"...":"...", nameOcrConfidence:NaN}, Map([["fuzz-0", NaN]])` — the
+first shrunk failure fast-check found). Full existing `engine`/`engine-p93-redesign`/`engine-
+visual-dominance` suites (290 tests total in `tests/domain/scanner/`) re-run green after the fix —
+no behavioral change to any non-adversarial, already-tested case. `pnpm test` 1385/1385,
+typecheck/lint (0 errors)/format clean.
