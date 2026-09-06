@@ -932,6 +932,32 @@ already running and freshly migrated, which `pnpm test:e2e` alone must never req
 with no Docker running still gets the full placeholder-backend suite). Gated behind
 `PLAYWRIGHT_AUTHENTICATED_E2E=1`, which is what registers the three extra projects at all.
 
+**Testing a genuine SPA client-side transition, not a full page reload (P111).** A bug class this
+app has hit twice (D-110, D-121/P109) only reproduces when the SAME React component instance
+survives a route/search-param change — Playwright's `page.goto()` always performs a real top-level
+browser navigation, which tears down and rebuilds the whole document regardless of the target URL,
+so it would trivially "pass" either regression for the wrong reason. `entity-switch-regression
+.spec.ts` instead drives the exact mechanism the app's own router relies on for back/forward:
+
+```ts
+await page.evaluate((path) => {
+  window.history.pushState({}, '', path)
+  window.dispatchEvent(new PopStateEvent('popstate'))
+}, targetPath)
+```
+
+This changes the URL and fires the event TanStack Router's history adapter listens for, without
+any document reload — the same component instance re-renders with new `useSearch()`/route-param
+values, exactly like a real browser back/forward between two earlier client-side navigations
+would. Reach for this whenever a regression is specifically about state surviving (or correctly
+NOT surviving) a same-instance transition; an ordinary `page.goto()` is fine for everything else.
+
+Fixture-heavy specs sharing the ONE synthetic e2e user (`entity-switch-regression.spec.ts`,
+`private-routes-smoke-entity-detail.spec.ts`) run `test.describe.configure({ mode: 'serial' })` —
+concurrent fixture creation (`add_card_acquisition`/`create_purchase`/`create_opening_from_
+provisional`) for the same user under the default parallel workers hit a real Postgres deadlock
+this session, unrelated to whatever behavior the spec exists to prove.
+
 **How to run it:**
 
 ```bash

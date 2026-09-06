@@ -768,6 +768,17 @@ localStorage participates; in-flight queries cancelled at the boundary cannot re
 identity's cache, and an in-flight mutation can only complete under its own user's JWT (disclosed
 residual, D-093 §5). Regression suite: `tests/ui/auth-query-cache.test.ts`.
 
+**Related but separate finding (P111 adversarial review):** this section's own "no localStorage
+participates" claim is scoped to the query-cache boundary specifically — it never covered every
+localStorage write in the app. `src/domain/export/export-reminder.ts`'s "last exported" timestamp
+WAS a genuine unnamespaced localStorage key: user A exporting on a shared browser would satisfy
+(or misreport) user B's own reminder after a sign-out/sign-in, since the key carried no user id.
+Low severity (a UI nudge timestamp, never financial/collection data), but a real cross-account
+leak this section's scope didn't catch. Fixed by namespacing the key per user id
+(`exportReminderStorageKey(userId)`); `pp-theme` remains the one deliberately-shared, non-sensitive
+UI preference. No other unnamespaced localStorage/sessionStorage/IndexedDB write carrying anything
+user-specific was found in the same review pass.
+
 ---
 
 ## 10. Dependency and supply chain
