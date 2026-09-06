@@ -5,6 +5,7 @@ import { buildPortfolioCsv, downloadCsv } from '../../data/portfolioExport'
 import type { PortfolioFilters } from '../../data/portfolio'
 import { Sheet } from '../../ui/Sheet'
 import { DownloadIcon, CheckIcon, ChartIcon, SwapIcon } from '../../ui/icons'
+import { localTodayIso } from '../../platform/local-date'
 
 /**
  * The four Portfolio shortcuts the owner described (M7.1 prompt §46-49): Export and Bulk Actions
@@ -32,7 +33,7 @@ export function PortfolioActionShortcuts({
   const exportMutation = useMutation({
     mutationFn: async () => {
       const csv = await buildPortfolioCsv(filters)
-      downloadCsv(csv, `portfolio-export-${new Date().toISOString().slice(0, 10)}.csv`)
+      downloadCsv(csv, `portfolio-export-${localTodayIso()}.csv`)
     },
   })
 
