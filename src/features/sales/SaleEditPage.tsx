@@ -208,6 +208,7 @@ function SaleEditForm({ saleId, sale, lines }: { saleId: string; sale: Sale; lin
             </div>
             <input
               inputMode="decimal"
+              aria-label={`Sale price per unit for ${line.cardName ?? line.sealedProductName ?? line.manualCardName ?? 'this line'}`}
               value={lineInputs[line.id] ?? ''}
               onChange={(event) => {
                 setLineInputs((current) => ({ ...current, [line.id]: event.target.value }))

@@ -713,6 +713,7 @@ function ItemLotSelector({
                 inputMode="numeric"
                 min={0}
                 max={lot.quantityRemaining}
+                aria-label={`Quantity of ${item.displayName} from the lot acquired ${lot.acquiredOn}`}
                 value={item.selections[lot.id]?.quantity ?? 0}
                 onChange={(event) => {
                   const raw = Number.parseInt(event.target.value, 10)

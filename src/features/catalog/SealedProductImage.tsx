@@ -29,7 +29,7 @@ export function SealedProductImage({
       <div
         role="img"
         aria-label={alt}
-        className={`flex flex-col items-center justify-center gap-1 rounded-md border border-slate-700 bg-slate-800 p-2 text-center text-slate-500 ${className}`}
+        className={`flex flex-col items-center justify-center gap-1 rounded-md border border-slate-700 bg-slate-800 p-2 text-center text-slate-300 ${className}`}
       >
         <BoxIcon className="size-6 shrink-0" />
         <span className="text-[10px] leading-tight">{SEALED_PRODUCT_TYPE_LABEL[productType]}</span>
