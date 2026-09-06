@@ -1,5 +1,6 @@
 import type { AcquisitionLot } from '../../data/collection'
 import type { CurrencyCode } from '../../domain/currency'
+import { localTodayIso } from '../../platform/local-date'
 
 /**
  * P109 full-entity-isolation fix. The P106/P107 audits established that `SaleFormPage`'s
@@ -51,9 +52,7 @@ export interface SaleFormFields {
   idempotencyKey: string
 }
 
-function defaultToday(): string {
-  return new Date().toISOString().slice(0, 10)
-}
+const defaultToday = localTodayIso
 
 /** Fresh defaults for one brand-new Sale Add attempt, including a newly-minted idempotency key.
  *  Called at mount AND on every genuine entity change — the mount case and the entity-change case

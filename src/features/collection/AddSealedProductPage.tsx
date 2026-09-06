@@ -15,6 +15,7 @@ import {
   SEALED_PRODUCT_TYPE_LABEL,
 } from '../../data/sealedProducts'
 import { SealedProductImage } from '../catalog/SealedProductImage'
+import { localTodayIso } from '../../platform/local-date'
 import {
   Button,
   ChoiceGroup,
@@ -94,7 +95,7 @@ export function AddSealedProductPage() {
   const [origin, setOrigin] = useState<SealedOrigin>('purchase')
   const [costKnown, setCostKnown] = useState(true)
   const [costPerUnit, setCostPerUnit] = useState('')
-  const [acquiredOn, setAcquiredOn] = useState(() => new Date().toISOString().slice(0, 10))
+  const [acquiredOn, setAcquiredOn] = useState(localTodayIso)
   const [storageLocationId, setStorageLocationId] = useState('')
   const [newLocationName, setNewLocationName] = useState('')
   const [isFavorite, setIsFavorite] = useState(false)
