@@ -73,13 +73,13 @@ function SetRow({ set }: { set: CatalogSet }) {
 }
 
 export function CatalogPage() {
+  const navigate = useNavigate()
   const [mode, setMode] = useState<SearchMode>('cards')
   const [query, setQuery] = useState('')
   const [language, setLanguage] = useState<LanguageFilter>('all')
   const [favoriteOnly, setFavoriteOnly] = useState(false)
   const [sort, setSort] = useState<CardSort>('relevance')
   const [sortOpen, setSortOpen] = useState(false)
-  const [scanNotice, setScanNotice] = useState(false)
   const [customFormOpen, setCustomFormOpen] = useState(false)
   const debouncedQuery = useDebouncedValue(query, DEBOUNCE_MS)
   const trimmed = debouncedQuery.trim()
@@ -181,15 +181,15 @@ export function CatalogPage() {
       <h1 className="sr-only">Search</h1>
 
       {/* Top search bar (M7.1 prompt §22-23): the field is the primary control, no page title
-          above it. Camera establishes the scanner's future position without faking capture. */}
+          above it. The camera affordance opens the real M15 scanner route (D-006). */}
       <div className="flex items-center gap-2">
         <button
           type="button"
           onClick={() => {
-            setScanNotice(true)
+            void navigate({ to: '/scan' })
           }}
           aria-label="Scan a card"
-          title="Card scanner is not available yet"
+          title="Scan a card with your camera"
           className="flex size-11 shrink-0 items-center justify-center rounded-full border border-slate-700 text-slate-400 hover:bg-slate-800"
         >
           <CameraIcon className="size-5" />
@@ -230,7 +230,7 @@ export function CatalogPage() {
           aria-label="Show only cards you have favourited"
           className={`flex size-11 shrink-0 items-center justify-center rounded-full border ${
             favoriteOnly
-              ? 'border-amber-400/60 bg-amber-400/10 text-amber-400'
+              ? 'border-sky-500 bg-sky-600/20 text-slate-200'
               : 'border-slate-700 text-slate-400 hover:bg-slate-800'
           }`}
         >
@@ -266,7 +266,7 @@ export function CatalogPage() {
             }}
             className={`min-h-8 rounded-full border px-3 text-xs font-medium transition-colors ${
               mode === value
-                ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                ? 'border-sky-500 bg-sky-600/20 text-slate-200'
                 : 'border-slate-700 text-slate-300 hover:bg-slate-800'
             }`}
           >
@@ -292,7 +292,7 @@ export function CatalogPage() {
                 }}
                 className={`min-h-8 rounded-full border px-3 text-xs font-medium transition-colors ${
                   language === value
-                    ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+                    ? 'border-sky-500 bg-sky-600/20 text-slate-200'
                     : 'border-slate-700 text-slate-300 hover:bg-slate-800'
                 }`}
               >
@@ -501,16 +501,6 @@ export function CatalogPage() {
             </button>
           ))}
         </div>
-      </Sheet>
-
-      <Sheet
-        open={scanNotice}
-        onClose={() => {
-          setScanNotice(false)
-        }}
-        title="Scan card"
-      >
-        <p className="text-sm text-slate-300">Card scanner is not available yet.</p>
       </Sheet>
 
       <CustomSealedProductForm

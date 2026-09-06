@@ -2,6 +2,10 @@ import { MutationObserver, QueryClient } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { applyAuthIdentityBoundary } from '../../src/auth/query-cache-boundary'
 import { draftStore, initialDraft } from '../../src/features/openings/draft'
+import {
+  scannerSessionStore,
+  initialScannerDefaults,
+} from '../../src/features/scanner/session-store'
 
 /**
  * F-61-2 regression: the module-lifetime QueryClient carries no user identity in its keys, so an
@@ -47,11 +51,13 @@ beforeEach(() => {
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   })
   draftStore.clearAll()
+  scannerSessionStore.clearAll()
 })
 
 afterEach(() => {
   client.clear()
   draftStore.clearAll()
+  scannerSessionStore.clearAll()
 })
 
 describe('auth identity boundary — cross-account privacy (F-61-2)', () => {
@@ -177,5 +183,48 @@ describe('auth identity boundary — cross-account privacy (F-61-2)', () => {
     expect(draftStore.load(A)).toBeNull()
     expect(draftStore.load(B)).toBeNull()
     expect(draftStore.load(null)).toBeNull()
+  })
+
+  it('F-40/§24 (P89): drops every user-scoped scanner session default at the boundary — A signs out, then B signs in', () => {
+    scannerSessionStore.save(
+      A,
+      initialScannerDefaults({ condition: 'PO', storageLocationId: 'a-shelf' }),
+    )
+    scannerSessionStore.save(
+      B,
+      initialScannerDefaults({ condition: 'MT', storageLocationId: 'b-shelf' }),
+    )
+    expect(scannerSessionStore.load(A)?.condition).toBe('PO')
+
+    applyAuthIdentityBoundary(client, A, null)
+    expect(scannerSessionStore.load(A)).toBeNull()
+    expect(scannerSessionStore.load(B)).toBeNull()
+
+    // B signing in afterward starts from a genuinely clean slate — never inherits A's leftover
+    // condition/storage-location defaults, and B's own PRE-EXISTING entry (saved above, before
+    // the boundary fired) does not survive either: the boundary is a blanket clear, matching the
+    // query-cache/draft privacy guarantee exactly (D-093 extension).
+    const boundaryFiredForB = applyAuthIdentityBoundary(client, null, B)
+    expect(boundaryFiredForB).toBe(true)
+    expect(scannerSessionStore.load(B)).toBeNull()
+  })
+
+  it('F-40/§24 (P89): a DIRECT A -> B replacement (no intermediate signed-out) still drops both scanner sessions', () => {
+    // Verified separately (guards.tsx / AuthProvider.tsx inspection): RequireSession gates on
+    // coarse `status` ('signed-in'/'signed-out'), which never actually flips false across a
+    // direct A -> B replacement — Supabase only fires an intermediate SIGNED_OUT when the app
+    // explicitly signs out first, which RedirectIfSignedIn's guard on the login route makes the
+    // ONLY reachable path for a same-tab account switch in this app's actual UI (an already
+    // signed-in user cannot reach the sign-in form to become a different user without signing
+    // out first). This test pins the boundary's OWN behavior for the direct-replacement shape
+    // regardless of which UI path reaches it, since the underlying function makes no such
+    // assumption itself.
+    scannerSessionStore.save(A, initialScannerDefaults({ condition: 'PO' }))
+
+    const fired = applyAuthIdentityBoundary(client, A, B)
+
+    expect(fired).toBe(true)
+    expect(scannerSessionStore.load(A)).toBeNull()
+    expect(scannerSessionStore.load(B)).toBeNull()
   })
 })

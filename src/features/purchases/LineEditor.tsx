@@ -247,7 +247,7 @@ function CardLineFields({
       {draft.cardMode === 'catalog' ? (
         <div className="space-y-2">
           {draft.cardVariantId ? (
-            <div className="flex items-center justify-between rounded-lg border border-sky-800 bg-sky-950/30 px-3 py-2 text-sm text-sky-100">
+            <div className="flex items-center justify-between rounded-lg border border-sky-800 bg-sky-950/30 px-3 py-2 text-sm text-slate-200">
               <span>{draft.cardDisplayName}</span>
               <button
                 type="button"
@@ -435,7 +435,7 @@ function SealedLineFields({
   return (
     <div className="space-y-3">
       {draft.sealedProductId ? (
-        <div className="flex items-center justify-between rounded-lg border border-sky-800 bg-sky-950/30 px-3 py-2 text-sm text-sky-100">
+        <div className="flex items-center justify-between rounded-lg border border-sky-800 bg-sky-950/30 px-3 py-2 text-sm text-slate-200">
           <span>{draft.sealedProductDisplayName}</span>
           <button
             type="button"

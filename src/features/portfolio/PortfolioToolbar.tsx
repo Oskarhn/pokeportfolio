@@ -110,7 +110,9 @@ export function PortfolioToolbar({
                 setSortOpen(false)
               }}
               className={`min-h-11 rounded-lg px-3 text-left text-sm font-medium ${
-                sort === option ? 'bg-sky-600/20 text-sky-200' : 'text-slate-200 hover:bg-slate-800'
+                sort === option
+                  ? 'bg-sky-600/20 text-slate-200'
+                  : 'text-slate-200 hover:bg-slate-800'
               }`}
             >
               {SORT_LABEL[option]}
@@ -138,7 +140,7 @@ export function PortfolioToolbar({
               }}
               className={`flex min-h-11 flex-col rounded-lg px-3 py-1.5 text-left ${
                 density === option.value
-                  ? 'bg-sky-600/20 text-sky-200'
+                  ? 'bg-sky-600/20 text-slate-200'
                   : 'text-slate-200 hover:bg-slate-800'
               }`}
             >
@@ -168,7 +170,7 @@ export function PortfolioToolbar({
               }}
               className={`flex min-h-11 items-center gap-3 rounded-lg px-3 text-left text-sm font-medium ${
                 view === option.value
-                  ? 'bg-sky-600/20 text-sky-200'
+                  ? 'bg-sky-600/20 text-slate-200'
                   : 'text-slate-200 hover:bg-slate-800'
               }`}
             >

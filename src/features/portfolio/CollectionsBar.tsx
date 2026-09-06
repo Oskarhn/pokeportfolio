@@ -64,7 +64,7 @@ export function CollectionsBar({
         }}
         className={`min-h-9 shrink-0 rounded-full border px-3 text-xs font-medium ${
           activeId === undefined
-            ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+            ? 'border-sky-500 bg-sky-600/20 text-slate-200'
             : 'border-slate-700 text-slate-300 hover:bg-slate-800'
         }`}
       >
@@ -80,7 +80,7 @@ export function CollectionsBar({
           }}
           className={`min-h-9 shrink-0 rounded-full border px-3 text-xs font-medium ${
             activeId === c.id
-              ? 'border-sky-500 bg-sky-600/20 text-sky-200'
+              ? 'border-sky-500 bg-sky-600/20 text-slate-200'
               : 'border-slate-700 text-slate-300 hover:bg-slate-800'
           }`}
         >
@@ -135,6 +135,7 @@ export function CollectionsBar({
                       onChange={(event) => {
                         setRenameValue(event.target.value)
                       }}
+                      aria-label={`Rename collection "${c.name}"`}
                       className="min-h-9 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-2 text-sm text-slate-100"
                     />
                     <button

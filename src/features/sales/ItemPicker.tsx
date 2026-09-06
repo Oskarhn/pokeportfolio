@@ -45,6 +45,7 @@ export function ItemPicker({
             setQuery(event.target.value)
           }}
           placeholder="Search your Portfolio…"
+          aria-label="Search your Portfolio for an item to add to this sale"
           className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none focus-visible:border-sky-500"
         />
         <div className="max-h-96 space-y-1 overflow-y-auto">

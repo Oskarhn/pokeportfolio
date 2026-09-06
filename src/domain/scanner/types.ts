@@ -1,0 +1,183 @@
+/**
+ * Scanner matching types (M15, P67).
+ *
+ * The matcher sits between an OCR/visual observation layer (not built here) and the EXISTING
+ * canonical catalog identity (`cards.id` / `card_variants.id` — DATA_MODEL.md §3.1). It never
+ * creates a second card identity system: every candidate it returns IS a `cards` row already in
+ * the shared catalog.
+ *
+ * Layer boundary: this directory is pure domain. It knows nothing about OCR engines, cameras,
+ * Supabase or React — see docs/ARCHITECTURE.md §2. Raw observation strings are untrusted text
+ * and are treated as such: parsed conservatively, never executed, never rendered as HTML by
+ * anyone downstream (SECURITY rule; P67 §25).
+ */
+
+/** Catalog language, mirroring `card_sets.language` ('en' | 'ja'). Japanese sets are separate
+ *  rows with separate numbering (DATA_MODEL.md §3.2) — language is evidence, not identity. */
+export type ScannerLanguage = 'en' | 'ja'
+
+/**
+ * Structured noisy observation of one physical card. Every field is optional and untrusted:
+ * OCR text can be empty, misread or absent entirely. No image blobs cross this boundary —
+ * text signals only.
+ */
+export interface ScannerObservation {
+  /** Name as read off the card, e.g. "Pikachu", "Flabéb é", "P1kachu". May contain junk. */
+  readonly rawNameText?: string | null
+  /** Collector/local number region text, e.g. "123/198", "TG01", "SV0 01", "4/102". */
+  readonly rawCollectorNumberText?: string | null
+  /** Set name fragment if the capture produced one, e.g. "Surging Sparks". Weak evidence. */
+  readonly rawSetText?: string | null
+  /** Language hint: 'en' | 'ja' or a free-text form like "English"/"Japanese". */
+  readonly languageHint?: string | null
+  /**
+   * RESERVED extension seam for a future visual-evidence channel (P67 §23). V1 scoring ignores
+   * it entirely; its presence must never change a result. P65 decides whether M15 needs real
+   * perceptual evidence — this field exists so adding that channel later is not a rewrite.
+   */
+  readonly visualSimilarity?: number | null
+  /** Tesseract's own 0-100 mean-word confidence for the name-field OCR read (P88 §8/F-12).
+   *  `undefined`/`null` means unknown — treated as full reliability (backward-compatible with
+   *  every caller/test that predates this field). Never re-derived into a fake percentage. */
+  readonly nameOcrConfidence?: number | null
+  /** Same as {@link nameOcrConfidence} for the collector-number field. */
+  readonly collectorOcrConfidence?: number | null
+}
+
+/** One parsed collector/local number: prefix + digit run + suffix, plus the "/total" when one
+ *  was present and purely numeric. Mirrors how `cards.local_id` is actually stored
+ *  (DATA_MODEL.md §3.1: "SV049", "TG12", "H31", "001/165"). */
+export interface ParsedCollectorNumber {
+  /** Uppercase letters before the digit run, '' when none ("TG" for TG01). */
+  readonly prefix: string
+  /** Digit run's numeric value — leading zeros folded ("001" → 1). */
+  readonly numeric: number
+  /** Digit run exactly as observed ("001"), so zero-padding stays inspectable. */
+  readonly numericText: string
+  /** Letters after the digit run, '' when none. */
+  readonly suffix: string
+  /** Total from a trailing "/198" when present AND purely numeric; null otherwise
+   *  (e.g. "TG01/TG30" carries no parseable total — the right side is another local id). */
+  readonly total: number | null
+  /** Cleaned original text, kept for debuggability of rankings; never compared. */
+  readonly raw: string
+}
+
+export interface ParsedScannerSignals {
+  /** Normalized name used for comparison; null when too short/junk to be usable. */
+  readonly normalizedName: string | null
+  readonly collectorNumber: ParsedCollectorNumber | null
+  /** Normalized set-name hint for comparison; null when absent/too short. */
+  readonly setHint: string | null
+  readonly languageHint: ScannerLanguage | null
+  /** P88 §8/F-12: combined [0,1] reliability multiplier for name-field text evidence, derived
+   *  from `ScannerObservation.nameOcrConfidence`. 1 when the observation did not supply a
+   *  confidence (backward compatible). */
+  readonly nameReliability: number
+  /** Same as {@link nameReliability} for collector-number evidence — combines OCR confidence AND
+   *  the structural parse confidence (collector-parse.ts): a read that merely LOOKS like an id
+   *  is worth less than one that also has a real printed-id shape. */
+  readonly collectorReliability: number
+}
+
+/**
+ * One candidate row from the shared catalog — the printing identity a scan must resolve to.
+ * Shape mirrors what the existing `search_cards` RPC already returns via src/data/catalog.ts;
+ * the scanner data adapter owns that mapping, the domain never queries anything.
+ */
+export interface ScannerCandidateRecord {
+  readonly cardId: string
+  readonly name: string
+  /** Collector number as printed/stored, e.g. "4", "TG01", "001/165". */
+  readonly localId: string
+  readonly rarity: string | null
+  readonly category: string | null
+  readonly illustrator: string | null
+  readonly imageBaseUrl: string | null
+  readonly language: ScannerLanguage
+  readonly setId: string
+  readonly setName: string
+  /** Active variant rows on this card (informational only — see variantBoundary below). */
+  readonly variantCount: number
+}
+
+/** Stable machine-readable reason codes. UI may map them to copy; they exist primarily so a
+ *  wrong ranking can be debugged after the fact (P67 §15). */
+export type ScannerReasonCode =
+  | 'collector-number-exact'
+  | 'collector-number-ocr-folded'
+  | 'collector-number-numeric-only'
+  | 'name-exact'
+  | 'name-close'
+  | 'name-partial'
+  | 'set-exact'
+  | 'set-close'
+  | 'language-match'
+  | 'language-mismatch'
+  | 'no-number-signal'
+  | 'no-name-signal'
+  | 'insufficient-signal'
+  /** On-device visual embedding evidence (P76, D-097) — a separate channel from OCR text. */
+  | 'visual-strong'
+  | 'visual-moderate'
+  | 'visual-weak'
+  /** P93/D-106 (replaces P88's 'visual-dominance-guarded'): this candidate IS the visual channel's
+   *  best-supported pick (the highest finite similarity among this scan's candidates), and its own
+   *  evidence was reliable enough (high absolute similarity AND a real margin over the runner-up —
+   *  see engine.ts's `computeVisualAnchorReliability`) to earn a corroboration boost on top of the
+   *  plain similarity-to-points curve. Never applied to any OTHER candidate, and never SUBTRACTS
+   *  from anyone — see D-106 for why P88's discount-the-competition guard was replaced rather than
+   *  re-tuned (P92 finding N-01: an absolute-threshold discount can make a false visual spike
+   *  actively worse than having no guard at all; a pure, non-negative anchor boost cannot). */
+  | 'visual-anchor-corroborated'
+
+/** A ranked candidate: the canonical printing identity plus explainable evidence. */
+export interface RankedScannerCandidate {
+  readonly card: ScannerCandidateRecord
+  /** Deterministic 0–100 DISPLAY score — clamped for presentation only. Not a probability; see
+   *  engine.ts weight table. Never used for sorting/tie-break internally (P93/N-05) — see
+   *  {@link RankedScannerCandidate.rawRankScore}. */
+  readonly score: number
+  /** Full-resolution, UNCLAMPED score (P93/N-05): can exceed 100 (a well-corroborated visual
+   *  anchor) or dip below 0 (a language mismatch with no other evidence). This is what candidate
+   *  ORDERING and margin/tier-ambiguity logic actually use — clamping happens only when producing
+   *  the display `score` above, never before. Never displayed directly to a user. */
+  readonly rawRankScore: number
+  readonly reasons: readonly ScannerReasonCode[]
+  /** Raw cosine-similarity evidence for this candidate, when the visual channel ran (P76).
+   *  Informational/diagnostic only — never re-derived into a fake percentage in the UI. */
+  readonly visualSimilarity?: number | null
+  /** [0,1] visual-anchor reliability actually applied to THIS candidate (P93 §12) — nonzero only
+   *  for the single candidate that was this scan's visual anchor, 0 for every other candidate
+   *  (including one with its own strong similarity that simply wasn't the single best). Diagnostic
+   *  only; the score above already reflects it. */
+  readonly visualReliability: number
+}
+
+/** Per-candidate visual-embedding evidence keyed by `cards.id` (P76, D-097). Produced by the
+ *  on-device retrieval worker; consumed only by the domain ranker, which decides how much it is
+ *  worth — the worker itself makes no identity decision. */
+export type VisualEvidenceByCard = ReadonlyMap<string, number>
+
+/** Confidence tier. HIGH means "safe to preselect" — NEVER "already added": nothing in this
+ *  module mutates the Portfolio (P67 §16). Even at HIGH the user confirms in the review step
+ *  (UX_FLOWS F12). */
+export type ScannerConfidenceTier = 'high' | 'medium' | 'low' | 'none'
+
+export interface ScannerMatch {
+  readonly tier: ScannerConfidenceTier
+  /** Sorted by score desc then cardId asc — stable for equal input, deduplicated. Bounded. */
+  readonly candidates: readonly RankedScannerCandidate[]
+  readonly signals: ParsedScannerSignals
+  /** Match-level explanation codes (ambiguity demotions, insufficient signal). */
+  readonly notes: readonly ScannerNoteCode[]
+}
+
+export type ScannerNoteCode =
+  | 'runner-up-margin-small'
+  | 'single-candidate'
+  | 'insufficient-signal'
+  /** The text-only top candidate and the visual-only top candidate disagreed (P76 §33/§35):
+   *  same/similar artwork across printings, or a genuine misread. Surfaced for diagnostics; the
+   *  score/margin logic is what actually demotes confidence, not this flag by itself. */
+  | 'visual-text-disagreement'

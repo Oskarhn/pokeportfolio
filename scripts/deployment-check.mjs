@@ -22,6 +22,7 @@
  * Reads nothing but public responses. No key, no session, no credential of any kind — so it can be
  * run against any environment by anyone, and there is no excuse for skipping it.
  */
+import { verifyLiveCspHash } from './lib/live-csp-hash-verify.mjs'
 
 const site = (process.env.DEPLOYMENT_URL ?? '').replace(/\/+$/, '')
 const supabaseUrl = process.env.SUPABASE_URL
@@ -58,6 +59,21 @@ async function mapWithConcurrency(items, limit, fn) {
   }
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
   return results
+}
+
+/**
+ * Parses a serialized Content-Security-Policy into directive-name → token arrays. Token-level,
+ * because substring tests are meaningless here: `'wasm-unsafe-eval'` contains the substring
+ * `unsafe-eval`, so "does NOT include 'unsafe-eval'" can only be asserted per whole token.
+ */
+function cspDirectives(csp) {
+  const directives = new Map()
+  for (const part of csp.split(';')) {
+    const tokens = part.trim().split(/\s+/).filter(Boolean)
+    if (tokens.length === 0) continue
+    directives.set(tokens[0], tokens.slice(1))
+  }
+  return directives
 }
 
 console.log(`\n— ${site} —\n`)
@@ -176,6 +192,18 @@ for (const path of ['/login', '/invite/a-token-that-does-not-exist', '/admin/inv
 }
 
 // ── Security headers ─────────────────────────────────────────────────────────────────────────
+// The service worker already fetched above doubles as the capability probe: a deployment is
+// scanner-enabled exactly when its live SW registers the same-origin /scanner-assets/v7/
+// CacheFirst rule. That keeps the WASM requirement version-aware without extra plumbing —
+// current production (no scanner rule) is not failed for lacking the grant it does not need,
+// while any deployment that ships the scanner route MUST also carry the CSP grant that lets its
+// OCR engine compile. The generated route source embeds the escaped path `scanner-assets\/v7`,
+// hence the two spellings. Declared at module scope — both check blocks below read it.
+const swText = swForAssetList.text
+const scannerCapable =
+  (swText.includes('scanner-assets\\/v7') || swText.includes('/scanner-assets/v7/')) &&
+  swText.includes('CacheFirst')
+
 {
   const h = index.headers
   const csp = h.get('content-security-policy') ?? ''
@@ -185,17 +213,66 @@ for (const path of ['/login', '/invite/a-token-that-does-not-exist', '/admin/inv
     csp.length > 0,
     csp ? `${csp.length} chars` : '(none)',
   )
+
+  const directives = cspDirectives(csp)
+  const scriptSrc = directives.get('script-src') ?? []
+  const workerSrc = directives.get('worker-src') ?? []
+  const connectSrc = directives.get('connect-src') ?? []
+
+  // Regressions that are wrong on EVERY deployment, scanner or not.
   record(
-    "script-src is 'self' with no inline allowance",
-    /script-src 'self'(;|$)/.test(csp),
-    /script-src[^;]*/.exec(csp)?.[0] ?? '(none)',
+    'script-src grants no JavaScript eval, inline script or data: source',
+    !scriptSrc.some((t) => ["'unsafe-eval'", "'unsafe-inline'", 'data:'].includes(t)),
+    scriptSrc.join(' ') || '(none)',
+  )
+
+  if (scannerCapable) {
+    record(
+      "script-src grants 'wasm-unsafe-eval' so the deployed OCR engine can compile",
+      scriptSrc.includes("'wasm-unsafe-eval'"),
+      scriptSrc.join(' ') || '(none)',
+    )
+    record(
+      // P78, D-097 addendum: onnxruntime-web's WASM factory dynamically imports its own glue
+      // module from a blob: object URL — without this the visual model fails to load on every
+      // browser (confirmed by direct reproduction, not a threading/cross-origin-isolation issue).
+      "script-src grants 'blob:' for onnxruntime-web's dynamic-import WASM loader",
+      scriptSrc.includes('blob:'),
+      scriptSrc.join(' ') || '(none)',
+    )
+  } else {
+    console.log(
+      'INFO  deployment has no scanner runtime rule in its service worker; ' +
+        "'wasm-unsafe-eval' presence not required yet",
+    )
+  }
+
+  record(
+    "worker-src remains exactly 'self'",
+    workerSrc.length === 1 && workerSrc[0] === "'self'",
+    workerSrc.join(' ') || '(none)',
   )
   record(
-    'connect-src names this deployment’s Supabase project',
-    csp.includes(supabaseOrigin),
-    /connect-src[^;]*/.exec(csp)?.[0] ?? '(none)',
+    'connect-src is unchanged: self plus this deployment’s Supabase project and its realtime endpoint',
+    JSON.stringify(connectSrc) ===
+      JSON.stringify(["'self'", supabaseOrigin, supabaseOrigin.replace(/^http/, 'ws')]),
+    connectSrc.join(' ') || '(none)',
   )
   record("frame-ancestors is 'none'", /frame-ancestors 'none'/.test(csp))
+
+  // P110 (prompt §18 — P107's CSP_HASH_VERDICT §10 gap): every OTHER CSP check above validates
+  // header TOKENS against the live site; this is the one check that proves the live HTML and the
+  // live CSP actually agree with EACH OTHER, on THIS host, right now — not just that the local
+  // build artifact was internally consistent (verify-scanner-platform-build.mjs already proves
+  // that, but says nothing about what Cloudflare/any host actually serves, which could differ due
+  // to an edge rewrite, a stale cache, or a hosting platform's own HTML minifier). Reuses the
+  // already-fetched `index.text`/`csp` rather than a second network round trip.
+  const liveCsp = verifyLiveCspHash({ html: index.text, cspHeader: csp })
+  record(
+    "the served inline bootstrap script's hash matches a source actually present in the served CSP",
+    liveCsp.pass,
+    liveCsp.reason,
+  )
   record(
     'Referrer-Policy is no-referrer, so an invitation path never leaves the origin',
     (h.get('referrer-policy') ?? '').toLowerCase() === 'no-referrer',
@@ -252,22 +329,44 @@ for (const path of ['/login', '/invite/a-token-that-does-not-exist', '/admin/inv
   // Supabase response. Precaching the static shell is fine; a runtime cache over the Data API
   // would put someone's financial records on disk, and offline private data is not in scope
   // (ARCHITECTURE.md §6).
+  //
+  // M15 narrows this from "no runtime caching at all" to exactly one permitted rule: CacheFirst,
+  // scoped in the generated source to the same-origin /scanner-assets/v7/ engine prefix. The
+  // network-dependent strategies are still forbidden outright — they exist only to serve stale
+  // HTML/API responses, which is precisely what must never be cached here.
+  const dangerousStrategies = ['NetworkFirst', 'StaleWhileRevalidate', 'CacheOnly'].filter((s) =>
+    sw.text.includes(s),
+  )
   record(
-    'the service worker holds no runtime caching rule',
-    !/NetworkFirst|StaleWhileRevalidate|CacheFirst|runtimeCaching/.test(sw.text),
-    'checked for workbox runtime strategies',
+    'no network-first style runtime caching exists anywhere in the worker',
+    dangerousStrategies.length === 0,
+    dangerousStrategies.length ? dangerousStrategies.join(', ') : 'none',
+  )
+  record(
+    'the only CacheFirst rule is scoped to the same-origin /scanner-assets/v7/ engine assets',
+    !sw.text.includes('CacheFirst') || scannerCapable,
+    scannerCapable
+      ? '/scanner-assets/v7/ CacheFirst present'
+      : sw.text.includes('CacheFirst')
+        ? 'CacheFirst without scanner scope'
+        : 'no CacheFirst',
   )
   record(
     'and does not reference the Supabase host at all',
     !sw.text.includes(new URL(supabaseOrigin).hostname),
     new URL(supabaseOrigin).hostname,
   )
+
+  const precacheEntries = sw.text.match(/\{url:"[^"]+"/g) ?? []
   record(
     'precaches only static shell assets',
-    (sw.text.match(/\{url:"[^"]+"/g) ?? []).every((entry) =>
-      /\.(js|css|html|png|svg|ico|woff2|webmanifest)"/.test(entry),
-    ),
-    `${(sw.text.match(/\{url:"[^"]+"/g) ?? []).length} entries`,
+    precacheEntries.every((entry) => /\.(js|css|html|png|svg|ico|woff2|webmanifest)"/.test(entry)),
+    `${precacheEntries.length} entries`,
+  )
+  record(
+    'scanner OCR assets stay out of the precache manifest entirely',
+    !precacheEntries.some((entry) => entry.includes('scanner-assets')),
+    `${precacheEntries.filter((entry) => entry.includes('scanner-assets')).length} scanner entries`,
   )
 }
 

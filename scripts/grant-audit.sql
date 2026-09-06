@@ -348,10 +348,11 @@ begin
     -- M6: the atomic collection-writing surface.
     -- M11: gained p_sealed_product_id/p_sealed_intent (DROP+CREATE — an added parameter is a new
     -- signature for Postgres's own matching rules; the old 17-arg form no longer exists to grant).
+    -- M15: gained p_client_request_key for per-item idempotency (D-096); 20-param signature.
     ('routine',
      'add_card_acquisition(uuid, uuid, grading_state, card_condition, grader, numeric, text, ' ||
      'boolean, text, lot_origin, cost_basis_state, bigint, integer, date, uuid, text, bigint, ' ||
-     'uuid, sealed_intent)',
+     'uuid, sealed_intent, uuid)',
      'authenticated', 'EXECUTE'),
     ('routine', 'set_manual_valuation(uuid, bigint, text, date)',   'authenticated', 'EXECUTE'),
     ('routine', 'void_acquisition_lot(uuid, text)',                 'authenticated', 'EXECUTE'),
@@ -370,8 +371,10 @@ begin
     ('routine', 'natural_sort_key(text)', 'authenticated', 'EXECUTE'),
     -- M8: the largest-remainder allocator and the purchase-ledger write/void/summary surface.
     ('routine', 'allocate_largest_remainder(bigint, bigint[])', 'authenticated', 'EXECUTE'),
+    -- P108: gained a trailing optional p_idempotency_key uuid (DROP+CREATE, new signature —
+    -- TESTING.md §6a/D-054, not CREATE OR REPLACE).
     ('routine',
-     'create_purchase(date, text, jsonb, uuid, bigint, bigint, bigint, numeric, date, fx_source, text)',
+     'create_purchase(date, text, jsonb, uuid, bigint, bigint, bigint, numeric, date, fx_source, text, uuid)',
      'authenticated', 'EXECUTE'),
     ('routine',
      'update_purchase(uuid, date, text, jsonb, uuid, bigint, bigint, bigint, numeric, date, fx_source, text)',

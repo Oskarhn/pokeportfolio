@@ -138,7 +138,17 @@ const PURCHASE_COLUMNS =
   'customs_minor::text, discount_minor::text, total_minor::text, fx_rate_to_nok, fx_rate_date, ' +
   'fx_source, total_nok_minor::text, notes, voided_at'
 
-export async function createPurchase(input: PurchaseWriteInput): Promise<Purchase> {
+/**
+ * `idempotencyKey` mirrors createSale's contract (src/data/sales.ts): the caller generates one
+ * UUID per fresh form instance and resends the SAME value on any retry of that same attempt. A
+ * replay with a key that already produced a purchase returns that purchase unchanged; a same-key
+ * replay whose material fields differ is refused by the RPC (P107 §17 — create_purchase previously
+ * had no idempotency protection at all, the highest duplicate-write risk of the four money forms).
+ */
+export async function createPurchase(
+  input: PurchaseWriteInput,
+  idempotencyKey: string,
+): Promise<Purchase> {
   const { data, error } = await supabase
     .rpc('create_purchase', {
       p_purchased_on: input.purchasedOn,
@@ -152,6 +162,7 @@ export async function createPurchase(input: PurchaseWriteInput): Promise<Purchas
       p_fx_rate_date: input.fxRateDate,
       p_fx_source: input.fxSource,
       p_notes: input.notes,
+      p_idempotency_key: idempotencyKey,
     })
     .select(PURCHASE_COLUMNS)
     .single()

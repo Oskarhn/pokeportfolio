@@ -99,7 +99,7 @@ export function SealedProductDetailPage() {
           <Link
             to="/portfolio/sealed/new"
             search={{ sealedProductId: p.id }}
-            className="mt-2 flex min-h-11 w-fit items-center rounded-lg bg-sky-600 px-4 text-sm font-semibold text-white hover:bg-sky-500"
+            className="mt-2 flex min-h-11 w-fit items-center rounded-lg bg-sky-600 px-4 text-sm font-semibold text-accent-foreground hover:bg-sky-500"
           >
             Add to Portfolio
           </Link>

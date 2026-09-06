@@ -47,6 +47,7 @@ interface PurchaseRow {
   total_nok_minor: number
   fx_rate_to_nok: number
   voided_at: string | null
+  notes: string | null
 }
 
 async function callCreate(client: TestClient, args: Record<string, unknown>) {
@@ -678,5 +679,245 @@ describe('fx_rates: market data, service-role writes only', () => {
       .maybeSingle()
     expect(readError).toBeNull()
     expect(read).not.toBeNull()
+  })
+})
+
+describe('idempotency — create_purchase never double-writes on retry (P108, P107 §17)', () => {
+  function sealedArgs(overrides: Record<string, unknown> = {}) {
+    return {
+      p_purchased_on: today,
+      p_currency: 'NOK',
+      p_lines: [
+        {
+          line_type: 'sealed',
+          sealed_product_id: seedCatalog.sealedProductId,
+          quantity: 2,
+          unit_price_minor: 5000,
+        },
+      ],
+      ...overrides,
+    }
+  }
+
+  async function lotsForPurchase(purchaseId: string) {
+    const lines = await linesFor(purchaseId)
+    if (lines.length === 0) return []
+    const { data, error } = await service
+      .from('acquisition_lots')
+      .select('id, purchase_line_id')
+      .in(
+        'purchase_line_id',
+        lines.map((l) => l.id),
+      )
+    if (error) throw new Error(error.message)
+    return data
+  }
+
+  it('exact sequential replay returns the same purchase, no duplicate rows anywhere', async () => {
+    const key = crypto.randomUUID()
+    const args = sealedArgs({ p_idempotency_key: key })
+
+    const { data: first, error: firstError } = await callCreate(clientA, args)
+    const { data: second, error: secondError } = await callCreate(clientA, args)
+    expect(firstError).toBeNull()
+    expect(secondError).toBeNull()
+    expect(second?.id).toBe(first?.id)
+
+    const { data: matching } = await service
+      .from('purchases')
+      .select('id')
+      .eq('idempotency_key', key)
+    expect(matching).toHaveLength(1)
+
+    const lines = await linesFor(first!.id)
+    expect(lines).toHaveLength(1) // not doubled
+    const lots = await lotsForPurchase(first!.id)
+    expect(lots).toHaveLength(1)
+  })
+
+  it('a third replay after editing notes still replays cleanly AND preserves the edit (D-122)', async () => {
+    const key = crypto.randomUUID()
+    const { data: first, error: firstError } = await callCreate(
+      clientA,
+      sealedArgs({ p_idempotency_key: key, p_notes: 'first attempt' }),
+    )
+    expect(firstError).toBeNull()
+
+    // notes is deliberately NOT material (prompt §10: don't compare irrelevant operational
+    // metadata) — a retry that only changed the annotation text must still replay, not refuse.
+    const { data: second, error: secondError } = await callCreate(
+      clientA,
+      sealedArgs({ p_idempotency_key: key, p_notes: 'edited after the fact' }),
+    )
+    expect(secondError).toBeNull()
+    expect(second?.id).toBe(first?.id)
+
+    // D-122: a legitimate replay must not silently discard the caller's edited notes — the
+    // returned row AND the stored row must both reflect the LATEST submitted notes, not the
+    // first attempt's. Only the notes annotation may move; everything else about the purchase
+    // (financial rows) is untouched by the replay.
+    expect(second?.notes).toBe('edited after the fact')
+    const { data: stored } = await service
+      .from('purchases')
+      .select('notes')
+      .eq('id', first!.id)
+      .single()
+    expect(stored?.notes).toBe('edited after the fact')
+  })
+
+  it.each([
+    ['quantity', { p_lines: [{ ...sealedArgs().p_lines[0], quantity: 3 }] }],
+    ['unit price / cost', { p_lines: [{ ...sealedArgs().p_lines[0], unit_price_minor: 6000 }] }],
+    [
+      'card identity',
+      {
+        p_lines: [
+          {
+            line_type: 'card',
+            card_variant_id: seedCatalog.charizardVariantId,
+            condition: 'NM',
+            quantity: 2,
+            unit_price_minor: 5000,
+          },
+        ],
+      },
+    ],
+    ['purchase date', { p_purchased_on: '2020-01-01' }],
+    [
+      'currency/FX',
+      {
+        p_currency: 'EUR',
+        p_fx_rate_to_nok: '11.00000000',
+        p_fx_rate_date: today,
+        p_fx_source: 'manual',
+      },
+    ],
+  ])(
+    'a same-key replay with a different %s is refused, not silently replayed',
+    async (_label, overrides) => {
+      const key = crypto.randomUUID()
+      const { error: firstError } = await callCreate(
+        clientA,
+        sealedArgs({ p_idempotency_key: key }),
+      )
+      expect(firstError).toBeNull()
+
+      const { data: second, error: secondError } = await callCreate(
+        clientA,
+        sealedArgs({ p_idempotency_key: key, ...overrides }),
+      )
+      expect(second).toBeNull()
+      expect(secondError).not.toBeNull()
+      expect(secondError?.message).toMatch(/idempotency-key-reuse/i)
+
+      // The refused replay must not have written anything of its own.
+      const { data: matching } = await service
+        .from('purchases')
+        .select('id')
+        .eq('idempotency_key', key)
+      expect(matching).toHaveLength(1)
+    },
+  )
+
+  it('same-key concurrent double-submit commits exactly one purchase (race-safe)', async () => {
+    const key = crypto.randomUUID()
+    const args = sealedArgs({ p_idempotency_key: key })
+
+    const [a, b] = await Promise.all([callCreate(clientA, args), callCreate(clientA, args)])
+    expect(a.error).toBeNull()
+    expect(b.error).toBeNull()
+    expect(a.data?.id).toBe(b.data?.id)
+
+    const { data: matching } = await service
+      .from('purchases')
+      .select('id')
+      .eq('idempotency_key', key)
+    expect(matching).toHaveLength(1)
+
+    const lines = await linesFor(a.data!.id)
+    expect(lines).toHaveLength(1)
+    const lots = await lotsForPurchase(a.data!.id)
+    expect(lots).toHaveLength(1)
+  })
+
+  it('omitting the key behaves exactly as before: two calls create two separate purchases', async () => {
+    const args = sealedArgs()
+    const { data: first, error: firstError } = await callCreate(clientA, args)
+    const { data: second, error: secondError } = await callCreate(clientA, args)
+    expect(firstError).toBeNull()
+    expect(secondError).toBeNull()
+    expect(second?.id).not.toBe(first?.id)
+  })
+
+  it('P111 (prompt §10): an UNRELATED unique_violation with a key present is re-raised, never mistaken for an idempotency race', async () => {
+    // First purchase: a sealed line with a manual valuation. Creates a new sealed holding plus
+    // its one active `manual_valuations` row.
+    const firstKey = crypto.randomUUID()
+    const { data: first, error: firstError } = await callCreate(
+      clientA,
+      sealedArgs({
+        p_idempotency_key: firstKey,
+        p_lines: [
+          {
+            ...sealedArgs().p_lines[0],
+            manual_value_minor: 9000,
+          },
+        ],
+      }),
+    )
+    expect(firstError).toBeNull()
+
+    // Second purchase: the SAME sealed_product_id (holdings-dedup reuses the SAME holding, since
+    // condition/grading_state/grader/grade are all forced identical for a sealed line) and ALSO
+    // sets a manual_value_minor — its `manual_valuations` INSERT collides with
+    // `manual_valuations_one_active` (one active valuation per holding), a unique_violation with
+    // NOTHING to do with `purchases_user_idempotency_key_idx`. This second call uses its OWN
+    // fresh idempotency key, one that was never (and — because the whole transaction rolls back —
+    // never will be) stored on any purchases row.
+    const secondKey = crypto.randomUUID()
+    const { data: second, error: secondError } = await callCreate(
+      clientA,
+      sealedArgs({
+        p_idempotency_key: secondKey,
+        p_lines: [
+          {
+            ...sealedArgs().p_lines[0],
+            manual_value_minor: 15000,
+          },
+        ],
+      }),
+    )
+
+    // Must surface as a real error — NOT silently treated as a replay of `first`, and NOT
+    // silently swallowed. The handler can only conclude "this is a legitimate replay" by finding
+    // an existing purchases row under `secondKey`; since that INSERT rolled back with everything
+    // else in the same transaction, no such row exists, so it must re-raise the real error.
+    expect(second).toBeNull()
+    expect(secondError).not.toBeNull()
+    expect(secondError?.message).not.toMatch(/idempotency-key-reuse/i)
+    expect(secondError?.message).toMatch(/manual_valuations_one_active|duplicate key/i)
+
+    // The failed second attempt must not have committed a purchase under its own key, and must
+    // not have disturbed the first purchase's own valuation.
+    const { data: matchingSecond } = await service
+      .from('purchases')
+      .select('id')
+      .eq('idempotency_key', secondKey)
+    expect(matchingSecond).toHaveLength(0)
+
+    const firstLines = await linesFor(first!.id)
+    const { data: firstLots } = await service
+      .from('acquisition_lots')
+      .select('holding_id')
+      .in(
+        'purchase_line_id',
+        firstLines.map((l) => l.id),
+      )
+    const { data: valuations } = await service
+      .from('manual_valuations')
+      .select('value_minor')
+      .eq('holding_id', firstLots?.[0]?.holding_id ?? '')
+    expect(valuations).toHaveLength(1)
+    expect(valuations?.[0]?.value_minor).toBe(9000)
   })
 })

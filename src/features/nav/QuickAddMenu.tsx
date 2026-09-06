@@ -1,17 +1,12 @@
-import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { Sheet } from '../../ui/Sheet'
 import { SearchIcon, PlusIcon, CameraIcon, ChartIcon, TagIcon, BoxIcon } from '../../ui/icons'
 
 /**
- * The central + action (M7.1 prompt §24). Shows only what genuinely exists today. "Scan card"
- * establishes the layout the real scanner (M15) will occupy, but never requests camera
- * permission and never runs any capture code — tapping it shows an honest unavailable message
- * (UX_FLOWS.md F11.1, D-006's "scanner owns one route" still applies once it's built).
+ * The central + action. "Scan card" opens the real M15 scanner route (one dedicated /scan route,
+ * D-006): on-device recognition with explicit confirmation before anything is added.
  */
 export function QuickAddMenu({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [scanNotice, setScanNotice] = useState(false)
-
   return (
     <>
       <Sheet open={open} onClose={onClose} title="Add">
@@ -94,29 +89,20 @@ export function QuickAddMenu({ open, onClose }: { open: boolean; onClose: () => 
               </span>
             </span>
           </Link>
-          <button
-            type="button"
-            onClick={() => {
-              setScanNotice(true)
-            }}
-            className="flex min-h-14 items-center gap-3 rounded-xl border border-slate-800 px-4 text-left text-sm font-medium text-slate-300 hover:bg-slate-800/60"
+          <Link
+            to="/scan"
+            onClick={onClose}
+            className="flex min-h-14 items-center gap-3 rounded-xl border border-slate-800 px-4 text-sm font-medium text-slate-100 hover:bg-slate-800/60"
           >
-            <CameraIcon className="size-5 text-slate-500" />
+            <CameraIcon className="size-5 text-slate-400" />
             <span>
               Scan card
-              <span className="block text-xs font-normal text-slate-500">Coming later</span>
+              <span className="block text-xs font-normal text-slate-500">
+                Identify cards with your camera, then confirm
+              </span>
             </span>
-          </button>
+          </Link>
         </div>
-      </Sheet>
-      <Sheet
-        open={scanNotice}
-        onClose={() => {
-          setScanNotice(false)
-        }}
-        title="Scan card"
-      >
-        <p className="text-sm text-slate-300">Card scanner is not available yet.</p>
       </Sheet>
     </>
   )

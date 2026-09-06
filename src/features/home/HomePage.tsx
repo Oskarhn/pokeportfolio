@@ -273,7 +273,7 @@ export function HomePage() {
           {!scoped && historyStatusVisible(s?.pendingRecompute) ? (
             <p className="text-[11px] text-slate-500" role="status">
               <span
-                className="rounded-full border border-sky-800/60 bg-sky-950/40 px-1.5 py-0.5 font-medium text-sky-300"
+                className="rounded-full border border-sky-800/60 bg-sky-950/40 px-1.5 py-0.5 font-medium text-slate-200"
                 title="Your latest changes are already reflected in the figures above. The value history catches up automatically in about a minute."
               >
                 {PENDING_HISTORY_LABEL}
@@ -317,7 +317,7 @@ export function HomePage() {
                   aria-pressed={range === period}
                   className={`min-h-9 min-w-11 rounded-full border px-2 text-[11px] font-medium tabular-nums transition-colors ${
                     range === period
-                      ? 'border-sky-500/80 bg-sky-600/25 font-semibold text-sky-200'
+                      ? 'border-sky-500/80 bg-sky-600/25 font-semibold text-slate-200'
                       : 'border-transparent text-slate-400 hover:bg-slate-800 hover:text-slate-200'
                   }`}
                 >
@@ -387,7 +387,7 @@ export function HomePage() {
           </p>
           <Link
             to="/catalog"
-            className="inline-block min-h-11 rounded-xl bg-sky-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-sky-500"
+            className="inline-block min-h-11 rounded-xl bg-sky-600 px-5 py-2.5 text-sm font-semibold text-accent-foreground hover:bg-sky-500"
           >
             Search cards
           </Link>
@@ -492,7 +492,7 @@ export function HomePage() {
         </Link>
         <Link
           to="/portfolio"
-          className="min-h-11 flex-1 rounded-xl bg-sky-600 px-4 py-2 text-center text-sm font-semibold text-white hover:bg-sky-500"
+          className="min-h-11 flex-1 rounded-xl bg-sky-600 px-4 py-2 text-center text-sm font-semibold text-accent-foreground hover:bg-sky-500"
         >
           Open Portfolio
         </Link>

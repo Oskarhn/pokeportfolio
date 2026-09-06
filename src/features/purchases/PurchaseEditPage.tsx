@@ -15,6 +15,7 @@ import type { CurrencyCode } from '../../domain/currency'
 import { Button, FormMessage, SelectField, TextField } from '../../ui/form'
 import { LINE_TYPE_LABEL } from './labels'
 import { at } from './util'
+import { useUnsavedWorkSnapshot } from '../../platform/unsaved-work-registry'
 
 function parseAmount(raw: string, currency: CurrencyCode): bigint {
   const trimmed = raw.trim().replace(',', '.')
@@ -71,7 +72,12 @@ export function PurchaseEditPage() {
     )
   }
 
-  return <PurchaseEditForm purchaseId={purchaseId} detail={detail.data} />
+  // P109: `PurchaseEditForm` seeds every field from `detail` via a lazy `useState` initializer,
+  // which only runs once per mount — a `key={purchaseId}` is required so a same-instance
+  // navigation between two different purchases' edit URLs (no `remountDeps` on this route) forces
+  // a genuine remount instead of reusing purchase A's stale local state against purchase B's id
+  // (mirrors `SaleEditPage`'s own `key={saleId}`, already correct).
+  return <PurchaseEditForm key={purchaseId} purchaseId={purchaseId} detail={detail.data} />
 }
 
 /** Mounted only once `detail` is loaded, so every field initializes from real data via a lazy
@@ -97,6 +103,17 @@ function PurchaseEditForm({ purchaseId, detail }: { purchaseId: string; detail: 
   const [notes, setNotes] = useState(detail.purchase.notes ?? '')
   const [editLines, setEditLines] = useState<EditLineState[]>(() => linesFrom(detail))
   const [error, setError] = useState<string | null>(null)
+
+  // F-40 (P89): see PurchaseFormPage's identical registration for why.
+  useUnsavedWorkSnapshot('purchase-edit-form', {
+    purchasedOn,
+    retailerId,
+    shippingInput,
+    customsInput,
+    discountInput,
+    notes,
+    editLines,
+  })
 
   const preview = useMemo(() => {
     try {
@@ -302,8 +319,11 @@ function PurchaseEditForm({ purchaseId, detail }: { purchaseId: string; detail: 
       ) : null}
 
       <div className="space-y-1.5">
-        <label className="block text-sm font-medium text-slate-300">Notes</label>
+        <label htmlFor="purchase-edit-notes" className="block text-sm font-medium text-slate-300">
+          Notes
+        </label>
         <textarea
+          id="purchase-edit-notes"
           value={notes}
           onChange={(event) => {
             setNotes(event.target.value)

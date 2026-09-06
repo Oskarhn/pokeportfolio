@@ -21,6 +21,225 @@ that touches money or ownership is not complete until both pass.
 **Compilation is not evidence.** A feature is complete when its behaviour has been exercised,
 not when TypeScript accepts it.
 
+**M15 scanner suites (in `pnpm test`).** The scanner adds infrastructure-free Vitest coverage
+alongside the existing domain/data/ui splits: pure geometry/ROI/preprocessing math
+(`tests/ui/scanner-guide-geometry.test.ts`, `scanner-roi.test.ts`), the OCR pipeline against a
+fake engine + canvas pool (`scanner-analyze.test.ts`), controller-level matcher/acquisition
+integration with mocked data boundaries (`scanner-controller.test.ts`), session-defaults
+scoping and identity-boundary clearing (`scanner-session.test.ts`), and a static network-
+privacy audit over every scanner module (`scanner-network-audit.test.ts` — no Supabase/fetch/
+TCGdex/logging surface, tesseract.js dynamically imported in exactly one engine file). Two
+deliberate boundaries: REAL Tesseract execution is a manual smoke, not CI —
+`node scripts/scanner-ocr-smoke.mjs` runs the pinned engine against the committed synthetic
+fixtures (non-copyrighted programmatic renders under `tests/fixtures/scanner/`; regenerate via
+`scripts/generate-scanner-fixture.mjs`) — because deterministic OCR output is too environment-
+sensitive for required CI. And signed-in scanner UI on real iPhone hardware remains the §8
+owner gate; Chromium E2E covers the session-guarded `/scan` route only.
+
+**M15b visual recognition (P76, D-097, in `pnpm test`).** `tests/data/visual-index.test.ts`
+(decode/search/quantization-bound/duplicate-id/corruption rejection — pure, no I/O),
+`tests/domain/scanner/perceptual-hash.test.ts` (dHash math), `tests/domain/scanner/
+visual-hybrid.test.ts` (OCR-absent-visual-present shortlisting, agreement/disagreement scoring,
+near-equal ambiguity, same-art surfacing, no-auto-add, backward compatibility with the pre-P76
+text-only call shape), and extensions to `tests/ui/scanner-network-audit.test.ts` (recursive over
+the new `visual/` subdirectory; the visual worker's `fetch()` calls are the one exception to the
+"no fetch in scanner code" rule, itself asserted same-origin-literal-only) and `tests/config/
+security-headers.test.ts` (the `visual-v1` runtime-cache rule, and the precache-exclusion glob
+for both the OCR tree and the visual-worker's own Vite-emitted chunk). A REAL model smoke (not
+mocked) ran this session against real TCGdex images before the full benchmark, per the same
+"real execution over reading the source" discipline as Tesseract's smoke test above — see D-097.
+
+**M15b index-generation repair (P77, D-097 addendum, in `pnpm test`).**
+`tests/domain/scanner/index-pagination.test.ts` (PAG1–PAG8: full-catalog multi-page fetch beyond
+the 1000-row PostgREST cap, exact-boundary termination, deterministic ordering, cross-page
+duplicate rejection, page-level query error propagation, exact-count mismatch rejection, a
+pathological-loop guard), `tests/domain/scanner/checkpoint-identity.test.ts` (CP1–CP7: local vs.
+hosted / hosted-A vs. hosted-B / model-revision / embedding-dimension identity mismatches all
+invalidate a checkpoint, packing drops a stale id not in the current canonical fetch, a same-config
+restart resumes, the 1224/1000 historical shape is structurally rejected by packing alone),
+`tests/domain/scanner/index-coverage.test.ts` (the shared coverage-invariant assertion the
+generator/verifier/runtime worker all now share), and `tests/ui/scanner-diagnostics-format.test.ts`
+(the `/scan?scannerDebug=1` panel's plain-text "Copy diagnostics" output — every field present,
+honest placeholders for null/empty values, never anything resembling a secret field name).
+
+**M15b visual-runtime initialization repair (P78, D-097 addendum, in `pnpm test`).**
+`tests/domain/scanner/visual-backend-selection.test.ts` (R2–R9: auto tries WebGPU first and uses
+it on success; a successful WebGPU load never also triggers WASM; WebGPU unavailable falls
+straight to WASM; a WebGPU init failure retries on WASM and can still succeed; a WASM failure
+after WebGPU absence is a final attributable failure; both backends failing retains BOTH error
+reasons, never just the last one; `force wasm` never even probes for a WebGPU adapter; `force
+webgpu` failing — either by init error or no adapter — never silently substitutes WASM; an
+invalid `?visualBackend=` value normalizes to `auto`), `tests/ui/scanner-visual-client.test.ts`
+(R10–R13 against a fake `Worker` global: a processor-load failure is distinguishable from a
+model-load failure; an index-load failure is distinguishable from a model-load failure with the
+model still reporting ready; a full success reports the actual backend/card count, not a
+placeholder; a worker crash's `error` event surfaces a safe message/filename/lineno reason, never
+a secret), and an extension to `tests/ui/scanner-controller.test.ts` (R1: the worker's
+`unavailableReason` now survives into `VISUAL_ERROR` when `analyzeVisualSafely` never throws —
+exactly how a model-init failure behaves — reproducing the actual real-device bug this session
+found; a real `analyzeVisualSafely` exception still takes precedence when both exist). Two new
+real-world-scale cases in `tests/domain/scanner/index-coverage.test.ts` (R14/R15: the owner's real
+19,501/20,946 hosted rebuild is accepted; an impossible-coverage manifest at the same scale is
+still rejected). `tests/config/security-headers.test.ts` and
+`scripts/verify-scanner-platform-build.mjs`/`scripts/deployment-check.mjs` now assert `blob:` IS
+present in `script-src` (previously asserted absent) with the reasoning inline.
+
+A real-browser smoke (not part of automated CI — Chromium via the Browser pane, against the
+actual production `dist/` build with the actual generated `_headers`) proved model
+load→embed→search end to end for all three backend modes (`auto`, forced `wasm`, forced
+`webgpu`), each returning real candidates from the real 19,501-card hosted index, with
+`crossOriginIsolated=false` throughout — see D-097's P78 addendum for the exact reproduction.
+
+**M15b recognition-quality repair (P79, D-097 addendum, in `pnpm test`).** A confirmed real-iPhone
+diagnostic (model loaded, embedding created, index searched — every candidate LOW-tier and wrong)
+shifted the gate from "does the runtime work" to "is the crop/preprocessing good enough."
+`tests/domain/scanner/rectify.ts`'s own suite (`tests/domain/scanner/rectify.test.ts`) pins the new
+pure card-rectification math directly: greyscale conversion agrees with roi.ts's own weighting;
+bilinear quadrilateral warping is exact at the corners and uniform across a solid-color region for
+both axis-aligned and genuinely skewed quads; edge detection finds a card boundary sitting inside
+an over-generous nominal rect and a genuinely tilted one, returns null over a uniform image with no
+real edge (never a first-position-wins guess) and rejects a nonsense sliver rect; composed
+`rectifyCard` falls back to a plain crop+resize (pixel-equivalent, same code path) on detection
+failure and never throws on a degenerate input. `tests/ui/scanner-rectify-capture.test.ts` pins the
+canvas-glue's pure geometry decisions (expansion-with-clamping, never-upscale working scale,
+cardRect-to-working-space mapping, the detection-margin floor for zero-expansion inputs like file
+uploads) and the graceful-fallback contract when `createImageBitmap` is unavailable. Extended
+`tests/ui/scanner-camera.test.ts` pins the new resolution hint on `getUserMedia` (`{ideal: 1920}`
+on both width and height, never `exact`/`min` — a capped device must still open) — traced from the
+real diagnostic's `CAPTURE_CROP_DIMENSIONS=252x352`, which the guide-geometry math reproduces
+almost exactly against a plausible ~480×640 unconstrained-default video track. A new debug-mode
+suite in `tests/ui/scanner-controller.test.ts` pins the widened debug-only visual shortlist (50 vs
+production's 30), the up-to-20 `topVisualCandidatesExtended` list populated ONLY in debug mode, the
+memory-only debug image object URLs (`getLastDebugImages`) being revoked on the next scan and on
+`dispose()`, and that NONE of this debug collection happens outside `?scannerDebug=1` (privacy and
+performance floor in one assertion). `tests/ui/scanner-diagnostics-format.test.ts` gained the new
+`CAPTURE_FRAME_DIMENSIONS`/`RECTIFICATION_USED`/`TOP_20_VISUAL_CANDIDATES` lines.
+
+**M15b exact-card matching (P80, D-097 addendum, in `pnpm test`).** Real-device misses on Mega
+Chandelure ex (absent from the top-20 visual candidates) and Shieldon (present at raw rank 6, never
+shown) shifted the gate to exact-card matching. `tests/ui/scanner-roi.test.ts` gained a describe
+block pinning `NAME_ROI_CANDIDATES`/`NUMBER_ROI_CANDIDATES` (unique ids, every fraction rect stays
+inside the card, both a modern bottom-left and a vintage bottom-right number layout are present).
+`tests/ui/scanner-analyze.test.ts` gained: the P80 "falls through to the modern/vintage candidate
+by score/parseability" pair (R1/R2), the full-frame-fallback test rewritten for the new
+2-candidates-per-field call topology (R3 — every candidate for both fields exhausted before the
+fallback runs), and a pure-function describe block for `scoreNameRoiCandidate`/
+`scoreNumberRoiCandidate`/`isNameRoiConfident`/`isNumberRoiConfident`/`looksLikeCollectorNumberText`
+— including the specific regression case that caught a real bug while building this (a long OCR
+string with a stray digit run structurally parsing as a printed id; the length guard closes it).
+`tests/ui/scanner-controller.test.ts` gained a new describe block (R4/R5) proving candidate
+expansion actually fires for a flat/tied ranking (9 identically-scored candidates → 8 shown, a
+6th-ranked card becomes selectable) and does NOT fire for a clearly-settled HIGH-tier match even
+with many extra low-scoring candidates in the pool. `tests/domain/scanner/photometric.test.ts`
+(new file) pins the photometric-normalization utility directly: deterministic, a flat image is
+returned unchanged, a narrow luma histogram stretches toward the full range, alpha is preserved
+exactly, and the bounded desaturation term actually reduces channel spread (full desaturation
+collapses R=G=B; zero desaturation keeps the spread).
+
+**M15b iPhone cold-start repair (P81, D-098, in `pnpm test`).** Real-device evidence shifted the
+gate from recognition quality to cold-start latency/reliability (106–388s, one 6–7-minute scan with
+no usable result). `tests/ui/scanner-phase-timing.test.ts` (new file) covers the pure classification
+logic behind the new per-phase instrumentation: `classifyVisualAssetUrl` (every known asset path,
+absolute vs. relative URLs, query strings, an honest "other" fallback), `summarizeFetchLog`
+(per-phase sums, a phase fetched twice, a null-bytes response), `nonNetworkRemainder` (floors at 0
+under timer jitter) and `estimateAssetCacheStatus` (unknown/likely-cache/likely-network from a
+bytes-per-ms ratio). `tests/ui/scanner-visual-client.test.ts` gained a new describe block: prewarm()/
+ensureReady() share one in-flight/settled init and construct at most one Worker even under
+concurrent calls (P81-1/P81-6), prewarm() resolves independently of any capture (P81-2), a ready
+message's `phaseTimings` are relayed verbatim through `getDiagnosticsSnapshot()` (P81-9), and
+FIRST_EMBED_MS reports only the first successful `analyze()` round trip. `tests/ui/
+scanner-controller.test.ts` gained a P81 describe block: prewarm() is idempotent and callable
+without any capture; OCR prewarm is staggered behind visual prewarm; a capture that starts before
+the visual channel is ready degrades to OCR-only after the 8-second bound instead of hanging on a
+cold model load (the direct regression test for the 6–7-minute real-device report); a capture that
+starts after the channel is already warm is awaited normally with no bound applied; dispose()
+releases the visual client alongside the OCR engine/canvases. `tests/ui/
+scanner-diagnostics-format.test.ts` gained cases for the new debug-panel lines (prewarm state,
+OCR_PREPARE_MS, FIRST_EMBED_MS, ASSET_CACHE_STATUS, the full VISUAL_PHASE_TIMINGS block) and their
+honest-placeholder forms when nothing has run yet. `scripts/verify-scanner-platform-build.mjs`
+gained a check that a real production build's `dist/_headers` carries the new long-lived immutable
+Cache-Control block for `/scanner-assets/*`.
+
+**Real-browser cold-start benchmark (`scripts/scanner-visual-benchmark/browser-cold-start.mjs`,
+P81 §16, NOT part of `pnpm test` or CI — same exclusion reasoning as the other visual
+benchmarks).** `pnpm scanner:visual:benchmark:cold-start` starts its own `vite preview` instance and
+drives Chromium AND WebKit (via `@playwright/test`) against the ACTUAL built `visual-worker-*.js`
+production chunk — no mocks — measuring cold (fresh context, HTTP cache disabled) vs. warm (same
+context, reloaded) init, per-phase timings and first/second embed latency. Explicitly labeled
+DESKTOP/localhost throughout its own output and this doc: it isolates compile/instantiate/decode
+cost from network transfer under reproducible local conditions, and cannot itself prove a real
+iPhone number — see SCANNER_RESEARCH.md §7d and `ai_outputs/Claude_outputs/output_81.txt` for what
+it did and did not establish.
+
+**Photometric-normalization experiment (`scripts/scanner-visual-benchmark/
+run-photometric-experiment.ts`, P80 §5, NOT part of `pnpm test` or CI — same exclusion reasoning as
+the other visual benchmarks).** `pnpm scanner:visual:benchmark:photometric` reuses the SAME cached
+240-card corpus and real `rectify.ts`/`embed.mjs` pipeline as the P79 hard benchmark, comparing
+plain-rectified vs. rectified-then-photometric-normalized embeddings on the geometry-only
+`tilted-offcenter` profile (a non-regression check, since that profile is already near-ceiling).
+Result and its honest limitation (the corpus cannot ground-truth-test the real foil/style-confusion
+hypothesis at full 19,501-card index scale): SCANNER_RESEARCH.md §7c,
+`ai_outputs/Claude_outputs/output_80.txt`.
+
+**Lightweight-hash benchmark (`scripts/scanner-visual-benchmark/run-hash-benchmark.ts`, P82 §10, NOT
+part of `pnpm test` or CI — same exclusion reasoning as the other visual benchmarks).**
+`pnpm scanner:visual:benchmark:hash` runs dHash AND a newly-implemented DCT-based pHash through the
+SAME hard, off-center/tilted corpus (and the SAME real `rectify.ts` pipeline) the P79 hard benchmark
+uses — re-testing P76's original 86.7% TOP1 dHash figure, which came from an easy, already-tight-
+crop corpus, against realistic capture noise. Result: dHash 5.0%/pHash 23.3%/combined 18.8% TOP1,
+and same-card vs. different-card similarity distributions that overlap almost completely — an
+evidence-gated REJECTION of wiring hash similarity into production scoring (D-099,
+SCANNER_RESEARCH.md §7e). The hash functions themselves (`computePHash`,
+`tests/domain/scanner/perceptual-hash.test.ts`) remain unit-tested, unused domain tooling.
+
+**Harder visual benchmark (`scripts/scanner-visual-benchmark/run-hard-benchmark.ts`, P79 §7, NOT
+part of `pnpm test` or CI — same exclusion reasoning as the P76 harness below).**
+`pnpm scanner:visual:benchmark:hard` composes a genuinely harder query than the P76 benchmark's
+resize/rotate/blur-in-place profiles: the clean reference card is tilted, sheared and placed
+OFF-CENTER on a larger background canvas (`lib/hard-augment.mjs`), so a query actually needs
+cropping/rectification before it resembles the tight reference images the index was built from —
+the exact gap the real-device diagnostic exposed and the P76 corpus structurally could not
+exercise. Compares simple-crop / tightened-crop / the REAL `rectify.ts` detect+warp pipeline /
+rectified+OCR+rerank (the same real domain matcher) against the same real production embedding
+code. Report and full interpretation: `ai_outputs/Claude_outputs/output_79.txt`.
+
+**Visual benchmark harness (`scripts/scanner-visual-benchmark/`, NOT part of `pnpm test` or
+CI).** `pnpm scanner:visual:benchmark` — downloads a real, diverse TCGdex reference corpus,
+applies deterministic synthetic camera-distortion augmentations, and compares OCR-first/
+perceptual-hash/visual-embedding/hybrid recognition using the real production domain matcher.
+Excluded from CI deliberately: it needs live network access (TCGdex image downloads, a
+Hugging Face model fetch on first run) and takes minutes, not seconds — the same category as
+`remote-security-check.mjs`. `pnpm scanner:index:build` / `pnpm scanner:index:verify` are the
+offline index-generation/verification pair (D-097); `build` needs `SUPABASE_URL`/
+`SUPABASE_SERVICE_ROLE_KEY` (never `.env.local`, same posture as `portfolio-perf-benchmark.mjs`).
+
+**OCR benchmark harness (`scripts/scanner-ocr-benchmark/`, P85 §7f, NOT part of `pnpm test` or
+CI — same exclusion reasoning as the visual benchmarks above: live TCGdex network access, minutes
+not seconds).** Two entrypoints, no DINOv2/embedding dependency at all: `pnpm
+scanner:ocr:benchmark:psm-forensics` runs a bounded Tesseract PSM × preprocess grid search on a
+representative subset to find the winning configuration per field rather than assume one (result:
+the pre-existing PSM 7 default was already correct — see SCANNER_RESEARCH.md §7f);
+`pnpm scanner:ocr:benchmark:recognition` runs the REAL production adaptive-ROI pipeline functions
+(the exact exports `analyze.ts` calls) against a diverse, proportionally-sampled real corpus with
+9 realistic perturbation profiles per card, reporting BASELINE (P82/P83) vs. NEW (P85's bounded
+multi-line collector-number recovery pass) side by side. `pnpm scanner:name-lexicon:build`
+generates the fuzzy-name lexicon (`src/domain/scanner/name-lexicon.ts`) from either the real
+catalog (`SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`) or, absent credentials, this benchmark's own
+corpus as an honestly-labeled demo substitute.
+
+**M15 scanner idempotency (`tests/db/m15_scanner_idempotency.test.ts`, in `pnpm test:db`).**
+21 cases (I1–I21) against real Postgres pin D-096's per-item idempotency key on
+`add_card_acquisition`: sequential and concurrent replay (including a forced-overlap race for
+both known- and unknown-cost paths), response-loss late replay, cross-user key independence,
+different-key-same-holding, every material-mismatch dimension (identity, quantity, condition,
+origin, cost, date, storage) rejected as `idempotency-key-reuse`, a voided lot's key rejected
+rather than resurrecting inventory, NULL-key legacy behaviour unchanged, reset-then-reuse, and
+the manual-card/card-variant/sealed-product/manual-valuation paths. This suite exists
+specifically because the design had been reviewed multiple times on paper before it ever ran
+against a real database — see PROJECT_JOURNAL.md 2026-08-26 ("P75: a PL/pgSQL record-null trap
+silently disabled an idempotency check that every review had approved") for what that first real
+run actually found.
+
 ---
 
 ## 2. Financial suite — mandatory
@@ -683,6 +902,99 @@ treat this list as part of its own review, every time.
 
 ---
 
+## 6b. Local authenticated E2E (P94)
+
+The standing gap §6's own table names ("Redeem invitation → sign in → session persists across
+reload | Against a live stack; manual or remote, not public CI") is now closeable LOCALLY and
+automated — not solved for public CI (no Supabase credential belongs there), but no longer an
+excuse for every signed-in form flow to go untested by anything but manual owner review.
+
+**What it is.** A THIRD Playwright project, `desktop-chromium-authenticated`
+(`playwright.config.ts`), driven against a real local Supabase stack:
+
+1. A `setup` project (`tests/e2e/authenticated/auth.setup.ts`) creates a synthetic user through
+   the exact invitation-issue → claim → `createUser` → finalize path `tests/db/setup.ts`'s
+   `createSyntheticUser` already uses for every DB/authorization fixture in this repo (never
+   `auth.admin.createUser` alone — the S2 signup-gate trigger refuses that by design), then signs
+   in through the REAL `/login` form (never a hand-constructed `localStorage` session — Supabase's
+   client-side session shape is an implementation detail no test should depend on) and saves the
+   resulting browser state to `playwright/.auth/e2e-user.json` (gitignored).
+2. `desktop-chromium-authenticated` specs (`tests/e2e/authenticated/*.spec.ts`) reuse that saved
+   state — signed in already when each spec starts.
+3. A `teardown` project (`auth.teardown.ts`) deletes the synthetic user afterward.
+4. A second `webServer` — Vite's own dev server on port 4174, not the placeholder-backend
+   production preview on 4173 — configured with the REAL local `VITE_SUPABASE_URL`/anon key, so
+   real sign-in and real data actually work. The existing placeholder-backend suite (§6, port
+   4173) is completely unaffected; the two never share a build or a port.
+
+**Why opt-in, not part of the default `pnpm test:e2e` run:** it needs a local Supabase stack
+already running and freshly migrated, which `pnpm test:e2e` alone must never require (a laptop
+with no Docker running still gets the full placeholder-backend suite). Gated behind
+`PLAYWRIGHT_AUTHENTICATED_E2E=1`, which is what registers the three extra projects at all.
+
+**Testing a genuine SPA client-side transition, not a full page reload (P111).** A bug class this
+app has hit twice (D-110, D-121/P109) only reproduces when the SAME React component instance
+survives a route/search-param change — Playwright's `page.goto()` always performs a real top-level
+browser navigation, which tears down and rebuilds the whole document regardless of the target URL,
+so it would trivially "pass" either regression for the wrong reason. `entity-switch-regression
+.spec.ts` instead drives the exact mechanism the app's own router relies on for back/forward:
+
+```ts
+await page.evaluate((path) => {
+  window.history.pushState({}, '', path)
+  window.dispatchEvent(new PopStateEvent('popstate'))
+}, targetPath)
+```
+
+This changes the URL and fires the event TanStack Router's history adapter listens for, without
+any document reload — the same component instance re-renders with new `useSearch()`/route-param
+values, exactly like a real browser back/forward between two earlier client-side navigations
+would. Reach for this whenever a regression is specifically about state surviving (or correctly
+NOT surviving) a same-instance transition; an ordinary `page.goto()` is fine for everything else.
+
+Fixture-heavy specs sharing the ONE synthetic e2e user (`entity-switch-regression.spec.ts`,
+`private-routes-smoke-entity-detail.spec.ts`) run `test.describe.configure({ mode: 'serial' })` —
+concurrent fixture creation (`add_card_acquisition`/`create_purchase`/`create_opening_from_
+provisional`) for the same user under the default parallel workers hit a real Postgres deadlock
+this session, unrelated to whatever behavior the spec exists to prove.
+
+**How to run it:**
+
+```bash
+pnpm db:reset
+# then, in the same shell:
+eval "$(pnpm exec supabase status -o env | sed -n 's/^\(SUPABASE_URL\|SUPABASE_SERVICE_ROLE_KEY\|SUPABASE_ANON_KEY\)=/export &/p')"
+# (or export SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY / SUPABASE_ANON_KEY by hand from that output,
+# matching exactly what `pnpm test:db` already requires — see §5)
+PLAYWRIGHT_AUTHENTICATED_E2E=1 pnpm exec playwright test --project desktop-chromium-authenticated
+```
+
+**What it proves that nothing else in this repository does:** real, signed-in, UI-driven form
+behavior — not just routing/guards/layout against a placeholder backend (§6), not just RPC-level
+authorization (§4). In particular:
+
+- **Unsaved-work protection under a real stale-deployment trigger** (D-100, F-40): Purchase
+  Add/Edit, Sale Add/Edit and a nonempty scanner batch must each REFUSE the automatic reload
+  (`StaleDeploymentBanner` shows the blocking prompt instead) when the form/batch holds real
+  unsaved input; a genuinely clean route (dashboard) still auto-reloads. The trigger itself is
+  simulated exactly the way `tests/e2e/stale-deployment.spec.ts` already does —
+  `window.dispatchEvent(new Event('vite:preloadError'))` — no real stale build is needed.
+- **Sale Add's holding-prefill dirty-baseline fix (N-14, P94)** specifically needs a REAL signed-in
+  session with a REAL holding to prefill against — exactly the case no other suite could exercise
+  before this infrastructure existed. See `tests/e2e/authenticated/unsaved-work-protection.spec.ts`.
+- **Account-boundary privacy**: signing out one synthetic user and signing in a second must leave
+  no trace of the first's in-memory state (scanner batch, unsaved purchase) — see
+  `tests/e2e/authenticated/account-boundary.spec.ts`.
+
+**Scope actually covered by this session (P94) vs. left for a future one:** Purchase Add and Sale
+Add (with a real holding prefill) are covered end-to-end; Purchase Edit/Sale Edit and a real
+nonempty scanner batch (camera + OCR against a fake media stream) are NOT yet — they need,
+respectively, a pre-existing purchase/sale fixture and a `--use-fake-device-for-media-stream`
+Chromium launch flag this session did not wire up. The infrastructure (setup/teardown/webServer/
+project wiring) supports adding both without further scaffolding.
+
+---
+
 ## 7a. Privilege-convergence tests
 
 Three steps in `db-tests`, and the order is the point (SECURITY.md §5.9):
@@ -727,6 +1039,10 @@ Emulation is not Safari. A manual checklist, recorded with dates in
 - [ ] Sign in with the saved credential, without leaving the installed app
 - [ ] Password recovery email arrives and the link opens the reset screen
 - [ ] Camera permission persists through a scanner session (the R9 risk, when the scanner exists)
+- [ ] M15 scanner on installed iPhone PWA: one permission prompt per cold start; zero prompts
+      across a 20+ card in-route session; guide framing comfortable at arm's length; OCR reads
+      real cards end-to-end; no upward memory drift across a long session (the standing P68
+      IPHONE_DEVICE_GATE — Chromium cannot certify any of this)
 - [ ] Charts respond to touch; pinch and pan behave
 - [ ] Android: install, launch, core flows
 

@@ -71,7 +71,7 @@ function SetTile({
         ) : (
           <div
             aria-hidden
-            className="flex h-full w-full items-center justify-center rounded-xl bg-slate-800 text-sm font-semibold tracking-wide text-slate-500"
+            className="flex h-full w-full items-center justify-center rounded-xl bg-slate-800 text-sm font-semibold tracking-wide text-slate-300"
           >
             {fallbackLabel}
           </div>

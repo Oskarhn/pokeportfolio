@@ -2434,3 +2434,2882 @@ one, synchronously — before the new session becomes renderable state — cance
 
 Regression coverage: `tests/ui/auth-query-cache.test.ts` (8 cases against real QueryClient
 instances, including the in-flight race and pending-mutation cases).
+
+---
+
+## D-094 - Scanner V1: local Tesseract.js OCR over the existing catalog; images never leave the device
+
+**Status:** Accepted (M15, P68 integration). **Date:** 2026-08-26.
+
+M15's scanner identifies physical cards by reading two printed text strips on-device and
+resolving them against the app's OWN catalog. This decision records the engine choice and the
+boundaries that came with it.
+
+1. **Engine:** Tesseract.js, pinned exact (	esseract.js 7.0.0 / 	esseract.js-core 7.0.0 /
+   @tesseract.js-data/eng 1.0.0), LSTM-only OEM, English only in V1. The researched core pin
+   (6.1.2) was superseded by npm reality: tesseract.js 7.0.0 declares its own core dependency as
+   ^7.0.0 (relaxed-SIMD core selection), so 7.0.0 is the compatible exact version. All three are
+   Apache-2.0/MIT respectively; no new external runtime service exists (API_SOURCES unchanged).
+2. **Assets are same-origin and build-generated.** scripts/prepare-scanner-assets.mjs copies the
+   worker, the three LSTM cores (relaxedsimd/simd/plain) and eng.traineddata.gz from the pinned
+   npm packages into public/scanner-assets/v7/ during every build (prebuild). No CDN is ever
+   contacted at runtime; nothing binary is committed.
+3. **Images never leave the device.** OCR runs locally in a per-session Web Worker created from
+   a same-origin script URL; captured blobs exist only in component memory (CaptureStore) and
+   are disposed after analysis. Only TEXTUAL catalog queries (existing search_cards via
+   src/data/scanner/scanner-catalog.ts), printing-variant reads and ordinary thumbnail GETs
+   cross the network. A static audit test pins that no scanner module imports Supabase/fetch/
+   TCGdex or logs anything (tests/ui/scanner-network-audit.test.ts).
+4. **Identity vs financial variant.** Recognition resolves cards.id only; the committed identity
+   is always a card_variants.id chosen by the user from getCardVariants' ACTIVE variants with
+   real finish/stamp/subtype/size labels. Nothing visual is ever inferred about holo/reverse/
+   stamps/condition.
+5. **Batch before write, existing money semantics.** Nothing writes until the review step's
+   explicit save; every write is the existing add_card_acquisition with origin-derived cost
+   basis through the SHARED fixedCostBasisState helper extracted to
+   src/features/collection/origin-basis.ts. Standalone origin set excludes 'opening'
+   structurally; default pre_tracking ("Existing collection"); no amounts collected means no
+   zero fabricated.
+6. **Ambiguous transport failures are surfaced, not retried (updated by D-096).** Each scanner
+   batch item now carries a stable client-request-key (D-096), so a connection break after a
+   possible commit is safely retried — the server replays the original result for an already-
+   committed key. The UI message was updated accordingly ("retry safely — the card will not be
+   added twice"). Definite server refusals (evidence of a PostgREST answer: code/details/hint)
+   remain non-retryable without editing the item.
+7. **CSP and WASM security boundary (D-095):** P69 is now integrated. `script-src` adds ONLY
+   `'wasm-unsafe-eval'` — NOT `'unsafe-eval'` or `'unsafe-inline'`. `worker-src` is `'self'`.
+   `connect-src` is unchanged. OCR assets are same-origin only; scanner-assets are excluded from
+   install-time precache and served via narrow same-origin `CacheFirst` at `/scanner-assets/v7/`.
+   Captured user images never reach Cache Storage.
+
+## D-095 — Scanner WASM/CSP and static-asset security boundary
+
+**Status:** Accepted (M15, P69 integrated, P74). **Date:** 2026-08-26.
+
+This decision documents the Content Security Policy and service-worker boundaries that enable
+on-device WASM OCR without weakening the application's security posture. P69's architecture
+is now integrated into PR #63.
+
+1. **`script-src` adds ONLY `'wasm-unsafe-eval'`.** This is CSP3's distinct grant for
+   `WebAssembly.compile`/`WebAssembly.instantiate`. It does NOT grant JavaScript `eval()`.
+   `'unsafe-eval'` and `'unsafe-inline'` remain absent.
+2. **`worker-src` is `'self'`.** Tesseract's worker is created from a same-origin URL
+   (`/scanner-assets/v7/worker.min.js`) with `workerBlobURL: false`, so no `blob:` source
+   is needed.
+3. **`connect-src` is unchanged.** All OCR asset fetches are same-origin, already covered by
+   `'self'`. No new external endpoint is introduced.
+4. **OCR assets are same-origin only.** `workerPath`, `corePath`, and `langPath` all point to
+   `/scanner-assets/v7/`. The Tesseract CDN defaults are overwritten and never reached.
+5. **Scanner assets excluded from install-time precache.** `scannerAssetGlobIgnores:
+   ['scanner-assets/**']` keeps multi-MB WASM/binary assets out of the workbox precache
+   manifest. They are served through the runtime `CacheFirst` rule instead.
+6. **Runtime cache is narrow and versioned.** `CacheFirst` handler matches exactly
+   `/scanner-assets/v7/` with `.js|.wasm|.gz` extensions, 90-day expiry, dedicated cache name
+   `scanner-assets-v7`. The pattern starts with `/` so it structurally cannot match
+   cross-origin URLs.
+7. **Captured user images never reach Cache Storage.** Blobs live only in component memory
+   (CaptureStore object URLs) and are disposed after OCR analysis. No `localStorage`,
+   `sessionStorage`, or `IndexedDB` is used.
+
+## D-096 — Scanner per-item idempotency: client-request-key on add_card_acquisition
+
+**Status:** Accepted (M15, P71, P74 repair, P75 repair). **Date:** 2026-08-26.
+
+Scanner batch items now carry a stable, client-generated UUID (`client_request_key`) that travels
+through to `add_card_acquisition`. The server stores it on `acquisition_lots` with a partial
+unique index, so:
+
+1. **Same key on retry returns the original result.** A transport-interrupted commit can be
+   safely retried — no duplicate holdings. The UI message was updated from "check Portfolio
+   before retrying" to "retry safely — the card will not be added twice."
+2. **Concurrency race is caught atomically.** All mutations (purchase, purchase_line, holding
+   attempt, lot insert, manual valuation) run inside one outer `BEGIN/EXCEPTION` block. When the
+   lot INSERT fires `unique_violation` (a concurrent call committed first with the same key),
+   the implicit savepoint rolls back ALL changes from the losing transaction — including any
+   purchase/purchase_line rows it inserted. The handler re-reads the winner's committed lot and
+   returns it. Zero orphan financial rows.
+3. **Existing callers are unaffected.** The parameter defaults to NULL; callers that omit it
+   (all non-scanner acquisition paths) behave exactly as before. The partial unique index ignores
+   NULL values.
+4. **Key lifecycle.** Generated once per logical card at `CARD_CONFIRMED` time in the state
+   reducer. Survives editing condition/quantity, partial save retry, and transport retry. Changes
+   only if the user removes the item and scans a new one.
+5. **Design follows D-089.** The pattern mirrors openings' idempotency: replay check before
+   holding creation, unique_violation catch on lot insert, same AtomicPostgres isolation semantics.
+6. **Material mismatch rejection.** Before replaying an existing live lot, the function verifies
+   that all material facts (identity, grading, quantity, origin, cost, date, storage) still
+   match the request using `IS DISTINCT FROM` / null-safe comparisons. If material facts differ
+   (e.g. a key was reused with a different card), the function raises `idempotency-key-reuse`.
+   Display metadata (`is_favorite`, `holding_notes`, `lot_notes`, `manual_value_minor`,
+   `sealed_intent`) is deliberately NOT compared — they are mutable under the current model.
+7. **Voided lot rejection.** If the keyed acquisition exists but `voided_at IS NOT NULL`, the
+   early replay check rejects the stale retry with `idempotency-key-reuse`. A stale network
+   retry must never resurrect or falsely report removed inventory. A new logical acquisition
+   requires a new request key.
+8. **Constraint source safety.** The outer `unique_violation` handler only treats the error as
+   idempotent replay when `p_client_request_key IS NOT NULL` AND a row for
+   `(user_id, client_request_key)` actually exists after rollback. Unrelated uniqueness failures
+   are re-raised.
+9. **Backup exclusion.** `client_request_key` is operational retry metadata, not user financial
+   data. It is excluded from M13 backup/export (the `fetch-snapshot.ts` SELECT does not include
+   it). No backup schema version bump required.
+10. **Reset naturally clears keys.** `reset_my_portfolio_data()` deletes `acquisition_lots` at
+    step 7. The key dies with the lot. A fresh acquisition with the same UUID key succeeds
+    normally (early check finds nothing).
+11. **P75 repair — the early replay check never fired against real Postgres.** The first
+    end-to-end run of the 21 idempotency DB tests (this milestone's first real-Postgres
+    execution) exposed that `if v_replay is not null then ...` was silently skipped on every
+    non-voided replay, because `v_replay` is a `record` with a MIXED-null shape (`voided_at` is
+    NULL while `holding_id`/`lot_id` are not) — SQL's row-wise NULL test evaluates BOTH
+    `IS NULL` and `IS NOT NULL` false for a composite value with some-but-not-all-null fields.
+    Execution fell through to the mutation block every time, relying entirely on the coarser
+    outer `unique_violation` handler (item 8 above) to return the original lot — which has no
+    material-mismatch or voided-lot check at all. Point 7's voided-lot rejection only appeared to
+    work because a voided row happens to have every selected field non-null (a uniform record,
+    not a mixed one) — masking the defect in that one path. Fixed by testing the NOT NULL
+    `lot_id` column instead of the whole record (`if v_replay.lot_id is not null then`, in both
+    the early check and the outer handler). Point 6's material-mismatch predicate itself also had
+    two inverted null-safe comparisons (`IS DISTINCT FROM` used where `IS NOT DISTINCT FROM` was
+    needed, on `unit_cost_basis_minor` and `storage_location_id`), which would have rejected
+    every legitimate replay had the surrounding block ever executed. Both fixed in the same pass.
+    All 21 DB tests (I1–I21) pass against real Postgres after the fix, including the concurrent
+    known/unknown-cost races (I2/I3) and every material-mismatch case (I7–I13). General lesson
+    for any future `record`-typed "was a row found" check in this codebase: never test the whole
+    record for NULL when its columns can be independently null — test one column declared
+    NOT NULL in the schema.
+
+---
+
+## D-097 — Scanner visual recognition: DINOv2-small hybrid, local INT8 index
+
+**Motivated by:** the P75 preview's real device-gate result — physical-card scanning returned
+"Couldn't identify this card" on ordinary English cards. A synthetic OCR smoke test (P74/P75)
+was not sufficient release evidence; the OCR-first architecture itself needed a second, visual
+evidence channel (SCANNER_RESEARCH.md §3.2's "hybrid: embedding match, OCR to disambiguate" was
+the anticipated direction, never built before P76).
+
+### Model selection: MobileCLIP is licensing-disqualified; DINOv2-small chosen
+
+MobileCLIP (S0/S2, the SCANNER_RESEARCH.md §3.1 existence proof) was the leading candidate
+entering P76. Its pretrained weights are **not usable here**: `apple/ml-mobileclip`'s
+`LICENSE_MODELS` file (read directly, not inferred from a tag) is the "Apple Machine Learning
+Research Model License Agreement," which grants use "exclusively for Research Purposes" and
+explicitly states "Research Purposes does not include any commercial exploitation, product
+development or use in any commercial product or service." A portfolio/showcase application —
+even a private one, even non-commercial — is product development; committing converted MobileCLIP
+ONNX weights into this repository would violate that license outright. (The repo's separate code
+`LICENSE`, MIT, and a third, more permissive-looking `LICENSE_weights_data` file exist alongside
+it, but `LICENSE_MODELS` is the one that actually governs the pretrained checkpoint per the
+project's own `LICENSE` file, which says "The ML-MobileCLIP model weights and data copyright and
+license terms can be found in LICENSE_MODELS and LICENSE_DATA.")
+
+**Chosen instead: `Xenova/dinov2-small`** (an ONNX conversion, for Transformers.js, of
+`facebook/dinov2-small`), pinned to revision `c2bb04a51fab207c420665f1946016107bffc701`.
+
+- **License: Apache-2.0**, unambiguous, confirmed directly from `facebook/dinov2-small`'s Hugging
+  Face model card (`"license":"apache-2.0"`) — permits commercial use, modification and
+  redistribution, no ambiguity to disclose.
+- **Vision-only.** DINOv2 has no paired text encoder at all (unlike CLIP-family models), so there
+  is no dead-weight text tower to strip or accidentally ship.
+- **Embedding dimension 384** (ViT-S/14, `hidden_size: 384` per the model's `config.json`) — small
+  relative to a 512/768-dim CLIP embedding, which matters directly for index size (§below).
+  DINOv2 features are also architecturally suited to **instance-level** visual retrieval (the
+  self-supervised training objective and the model's established use in copy-detection/landmark
+  retrieval literature), which is a better match for "is this the exact printing" than a
+  CLIP-style embedding tuned for semantic/category zero-shot classification.
+- **Quantized (`q8`/dynamic INT8) ONNX file**, `onnx/model_quantized.onnx`, verified 24,451,943
+  bytes (23.3 MB), SHA-256 `3afdc8bc63b50558d6e5770f5b799bb82455c2311183a2de43803f343a29d917`.
+- **Smoke-tested against real images** before any benchmark: same-card-different-resolution
+  cosine similarity 0.94, different-card similarity 0.57–0.68 (base1 Charizard vs. Pikachu vs.
+  Blastoise, real TCGdex CDN images) — embedding dimension, normalization and same>different
+  separation all verified directly, not assumed (prompt §45).
+
+### Benchmark evidence (see docs/SCANNER_RESEARCH.md §7b for the full report)
+
+A real benchmark — 240 reference cards across 6 real TCGdex sets (base1, base2, neo1, swsh1,
+swsh7, sv01), 6 deterministic synthetic camera-distortion profiles each, 1,440 augmented queries
+— compared four methods using the REAL production domain matcher
+(`src/domain/scanner/engine.ts`), not a reimplementation:
+
+| Method | TOP1 | TOP3 | TOP5 |
+|---|---|---|---|
+| OCR-first (current production path) | 30.5% | 39.7% | 42.1% |
+| Perceptual hash (dHash) alone | 86.7% | 93.0% | 95.0% |
+| Visual embedding (DINOv2) alone | 99.7% | 100% | 100% |
+| **Hybrid (visual shortlist + domain matcher rerank)** | **95.8%** | **99.9%** | **100%** |
+
+The OCR-first number (30.5% TOP1) is close corroborating evidence for the actual device failure
+this milestone was created to fix — this benchmark's synthetic distortions independently
+reproduce the same order-of-magnitude weakness the owner saw on a real phone. The hybrid method
+clears both product-quality targets (§15 of the prompt: TOP5 ≥ 90%, TOP3 ≥ 85%) with wide margin.
+Perceptual hashing alone was evaluated and is **not** wired into production scoring: at this
+corpus scale it is measurably weaker than the embedding channel and adds no benefit once DINOv2
+is present (the pure functions remain in `src/domain/scanner/perceptual-hash.ts` for a future
+re-evaluation, per prompt §29, but nothing calls them from the scanner runtime).
+
+**Hybrid scoring calibration (`src/domain/scanner/visual-evidence.ts`):** visual similarity
+contributes a **continuous** point value (0 below a similarity floor of 0.55, scaling to a
+ceiling of 62 points at similarity 1.0), not a flat per-tier bonus. A flat-bonus first attempt
+(+35/+18/+6 for strong/moderate/weak) measurably regressed hybrid TOP1 to 84.4% (below
+visual-alone's 99.7%) because a single OCR misread that coincidentally produced an exact
+collector-number match on the WRONG card (worth 45 points alone) could outscore the
+visually-correct card's flat strong-tier bonus. Continuous scaling — so a near-perfect visual
+match earns close to the ceiling while a barely-strong one earns much less — recovered TOP1 to
+95.8% without weakening the ambiguity/disagreement behavior prompt §33/§35 require.
+
+### Architecture: LOCAL versioned index (Option A), not pgvector
+
+Decided quantitatively, not by preference (prompt §17):
+
+- 384-dim embeddings, INT8-quantized (each embedding is L2-normalized before storage, so every
+  component already lies in `[-1, 1]`, and INT8 uses a fixed symmetric scale — no per-vector
+  scale factor needed). Cost per card: 384 bytes.
+- At the FULL canonical catalog's ~23,400 English cards, the complete index would be
+  **~8.6 MB** — comfortably inside the ≤20–25 MB product budget with headroom for catalog growth.
+  This session's demonstration index (240 cards) is **89.6 KB**.
+- INT8 vs FP32 TOP1 agreement measured at **100%** across all 1,440 benchmark queries — the
+  quantization step costs nothing measurable at this embedding size.
+- A local index needs no new RPC surface, no new migration, no backfill mechanism, no additional
+  user-facing DB privilege — it is a static asset, exactly like the OCR engine files already
+  are. pgvector would have added all of that for a problem an 8.6 MB static file already solves.
+
+**Result: hosted migration count is unchanged at 90.** No `supabase/migrations/` file was added
+by this milestone.
+
+### Index coverage: a real, structural gap this session could not close
+
+The generation pipeline (`scripts/scanner-visual-index/build-index.ts`) is real and complete: it
+queries a Supabase project's `cards` table directly (via `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`
+env vars, exactly the credential posture `scripts/portfolio-perf-benchmark.mjs` already
+established — never `.env.local`, never committed), downloads each card's TCGdex image, embeds it
+with the pinned DINOv2 model, and writes the quantized index.
+
+This session has **no legitimate way to run it against the hosted `pokeportfolio-dev` project**:
+the hosted project's `anon` role has no grant on `cards` or `search_cards` (verified live —
+both return `permission denied`), and obtaining an `authenticated` session requires either the
+owner's real credentials or creating an account, both of which are outside this session's
+authority (CLAUDE.md prohibits creating accounts or signing in on the user's behalf). The
+committed index (`scripts/scanner-visual-index/generated/visual-v1/`) was therefore generated
+against the **LOCAL dev stack** after locally syncing the same 6 real TCGdex sets used for the
+benchmark (240 cards, real metadata, real embeddings) — proving the entire pipeline, format,
+staging, service-worker caching and browser search path end-to-end, but with **LOCAL
+`gen_random_uuid()` card ids that do not exist in the hosted catalog**.
+
+**Consequence, stated plainly:** in the current preview build (pointed at hosted Supabase), the
+visual worker's shortlisted card ids will not resolve via `getCardsByIds` against the hosted
+catalog, so the hybrid pipeline degrades gracefully to OCR-only behavior for the owner's real
+physical cards (safe — no wrong match, no crash — but not yet the improvement this milestone set
+out to prove on-device). **One remaining manual step** unblocks this permanently: the owner runs
+
+```
+SUPABASE_URL=https://nopmkroeygmlvndzjjqs.supabase.co SUPABASE_SERVICE_ROLE_KEY=<hosted service role key, own shell only> pnpm scanner:index:build
+```
+
+once, from their own machine (the key is never pasted to an assistant), commits the regenerated
+`scripts/scanner-visual-index/generated/visual-v1/{manifest.json,card-ids.json,embeddings.bin}`,
+and pushes — which then ships a hosted-valid index in the next preview build.
+
+### Privacy, supply chain, runtime policy
+
+- The captured card photo never leaves the device. Only the derived 384-float embedding (already
+  local-only, browser-to-worker via a transferred `ImageBitmap`) and, for shortlisted candidates
+  the text search didn't already find, a `cards.id` lookup cross the network — never the image.
+- Model weights are staged same-origin (`public/scanner-assets/visual-v1/model/`), fetched at
+  build time from a PINNED Hugging Face revision and verified by SHA-256 before staging
+  (`scripts/prepare-scanner-visual-assets.mjs`) — no runtime Hugging Face dependency.
+- `onnxruntime-web`'s WASM binaries are ALSO staged same-origin. Reading the installed package's
+  actual bundled source (`node_modules/@huggingface/transformers/dist/transformers.js`) showed it
+  defaults to `cdn.jsdelivr.net` for these files unless `env.backends.onnx.wasm.wasmPaths` is set
+  before the first model load — the visual worker sets this explicitly, first, to same-origin
+  paths. A dead (never-executed, override-shadowed) copy of that CDN-fallback string is still
+  present in the built JS bundle, exactly like `tesseract.js`'s own bundled CDN-fallback string
+  already was before this milestone (`ocr-engine.ts`'s `workerPath`/`corePath`/`langPath`
+  similarly shadow it) — verified present-but-unreachable in both cases via a real production
+  build grep, not assumed.
+- Runtime backend: WASM is the required baseline; WebGPU is used only when
+  `navigator.gpu.requestAdapter()` genuinely succeeds (not merely when `navigator.gpu` exists),
+  and Safari/non-Safari get different pinned `onnxruntime-web` WASM variants matching the
+  library's own internal Safari-detection logic (reproduced locally — this build's
+  `@huggingface/transformers` version does not re-export that helper).
+- No automatic add. Visual evidence is one more scored input to the SAME domain matcher; the
+  existing confirm-before-write batch flow, variant selection and condition entry are unchanged.
+
+### iPhone device gate: still owner-only
+
+Nothing in this milestone substitutes for a real device test. IPHONE_DEVICE_GATE remains
+`PENDING_OWNER_RETEST` — see output_76.txt for the 10-card protocol, and the coverage caveat
+above for why this round's retest may still show OCR-only behavior on the owner's physical cards
+until the hosted index is regenerated.
+
+### P77 addendum — real-device failure repair (Shieldon / Mega Chandelure ex both unrecognized)
+
+The owner's P76 hosted rebuild (`pnpm scanner:index:build` against `pokeportfolio-dev`) logged
+`1000 active English cards, 985 have image_base_url` — an exactly-round 1000 that is the
+signature of Supabase's default hosted API "Max Rows" setting silently truncating an unpaginated
+PostgREST query, not the real size of the catalog. Both real-device test cards (a basic Shieldon,
+a Mega Chandelure ex) failed to be recognized. Root-caused to **two independent bugs**, both
+fixed this session; a third real preprocessing bug was also found and fixed while investigating:
+
+1. **Unpaginated query truncation (primary).** `build-index.ts`'s original
+   `.from('cards').select(...).eq(...).eq(...)` had no `.range()`/count reconciliation at all —
+   PostgREST silently returns at most its configured row cap. Fixed by
+   `src/domain/scanner/index-pagination.ts`'s `drainAllCardPages`: an exact `count:'exact'` HEAD
+   query taken first, then `.order('id').range(...)` pages at 500 rows, reusing the SAME
+   completeness primitive M13's export pipeline already proved out
+   (`src/domain/export/pagination-integrity.ts`'s `createSectionWalk` — cross-page duplicate-id
+   detection plus a final received-vs-expected-count reconciliation that throws rather than ships
+   a silently truncated index). Proven against REAL local PostgREST, not just a mock: 1,203
+   synthetic English-active rows were seeded into the local dev stack (no images, so no embedding
+   cost) and the fixed generator correctly fetched all 1,203 across 3 pages
+   (`page 1: 500 rows … page 2: 500 rows … page 3: 203 rows, running total 1203`), while a
+   reproduction of the OLD unpaginated query against the SAME local data returned all 1,203 too —
+   confirming the local dev stack's own PostgREST does not itself enforce a 1000-row default (that
+   cap is a per-project Supabase Cloud API setting, not a PostgREST built-in), so the exact
+   truncation could not be reproduced locally byte-for-byte, but the pagination mechanics
+   themselves are proven correct against a real multi-page PostgREST round trip regardless of
+   which cap value a given project enforces. The seeded rows and their series/set were deleted
+   afterward; the owner's real cached hosted checkpoint and the committed index were backed up
+   before this proof and restored byte-identical afterward (verified by SHA-256).
+
+2. **Checkpoint contamination across project/model boundaries.** The resumable checkpoint
+   (`.visual-index-cache/build-checkpoint.json`, gitignored) carried no identity of what it was
+   built against — P76's own hosted regeneration already hit exactly this class of bug once
+   (1224/1000 "coverage" from mixed local+hosted embeddings). `src/domain/scanner/
+   checkpoint-identity.ts` binds every checkpoint to `{schemaVersion, sourceProjectIdentity
+   (derived from SUPABASE_URL's host only — never a key), modelId, modelRevision, embeddingDim,
+   quantization}`; a mismatched or pre-P77 checkpoint is discarded LOUDLY (logged, never silent)
+   and rebuilt from scratch rather than reused. Packing is additionally constrained
+   (`packCurrentCardIds`) to intersect the checkpoint's embeddings with the CURRENT run's fetched
+   canonical id set, in that set's own deterministic order — defense-in-depth even if identity
+   validation were ever bypassed, and what makes 1224/1000 structurally impossible to reproduce
+   again regardless of checkpoint state.
+
+3. **Coverage invariants now enforced, not just logged.** `src/domain/scanner/index-coverage.ts`'s
+   `assertValidCoverage` is a single shared check — `cardsIndexed` can never exceed
+   `totalCanonicalCards` or `cardsWithUsableImage`; the id-list length, `manifest.cardCount` and
+   `coverage.cardsIndexed` must all agree — run by the GENERATOR before it will write any output
+   file, by `verify-index.ts` after reading a committed index back, AND by the browser worker at
+   runtime before trusting a fetched manifest (defense-in-depth at all three points a corrupt
+   index could otherwise slip through). The previous verifier accepted 1224/1000 (122.4%)
+   because it checked checksum/model/dimension agreement only — never coverage arithmetic.
+
+4. **A real, independent crop bug in the visual pipeline.** Investigating whether the crop DINOv2
+   embeds actually contains the card (prompt §16) found that `controller.ts`'s visual channel
+   embedded the ENTIRE captured camera frame (`createImageBitmap(capture.blob)`), while OCR
+   already correctly crops to `capture.cardRect` before reading anything
+   (`analyze.ts`'s `runOcrAnalysis`). The reference index is built from tight, card-only TCGdex
+   images; feeding DINOv2 an uncropped photo (background, table, hands, whatever surrounds the
+   guide overlay) is a genuine preprocessing-parity mismatch from the reference distribution — a
+   plausible independent contributor to a real-device miss even against a complete, correctly
+   hosted index, and one the P76 benchmark could not have caught (it embeds canonical reference
+   images on both sides of every comparison). Fixed: `analyzeVisualSafely` now crops via
+   `createImageBitmap`'s own `(sx, sy, sw, sh)` overload to `capture.cardRect`, matching what OCR
+   already does, at no extra canvas-draw cost.
+
+5. **Manifest source identity.** `manifest.json` now carries `sourceProjectRef` (the same
+   non-secret host string the checkpoint binds to) and `sourceEnglishActiveCount` — so the owner,
+   or the new debug panel, can see at a glance which project an index was actually built against
+   without opening a file.
+
+6. **Diagnostic mode implemented** (`/scan?scannerDebug=1` — an explicit, preview-only,
+   user-invoked query param, never shown by default): a bottom panel showing the most recent
+   scan's `VISUAL_MODEL_STATE`/`VISUAL_BACKEND`/`MODEL_LOAD_MS`, the actual crop dimensions fed to
+   DINOv2, whether an embedding was created and its norm, the loaded index's version/card
+   count/source project/load time, top-5 raw visual candidates with similarity, the OCR text
+   signals, the final reranked candidates with reason codes, and any visual-channel error — plus a
+   "Copy diagnostics" button (`src/features/scanner/diagnostics-format.ts`) that copies exactly
+   those fields as plain text and nothing else (no photo, no tokens, no Supabase key, no email, no
+   user id). This was explicitly deferred in P76 and is the mechanism for making the NEXT
+   real-device failure, if any, diagnosable from one pasted block instead of opaque.
+
+**Not changed:** the model (still DINOv2-small, unmodified selection reasoning above), the
+architecture (still LOCAL_INDEX, no pgvector), any migration (still 90, unchanged), any financial
+semantic. `SHIELDON`/`MEGA_CHANDELURE_EX` were NOT special-cased anywhere — the fix is entirely
+architectural (full-catalog pagination, checkpoint binding, coverage invariants, correct crop).
+Whether those two specific cards exist in the hosted catalog and are covered by the (still
+unregenerated, since this session has no hosted credential) committed index remains unverified —
+see output_77.txt.
+
+### P78 addendum — runtime initialization repair (the model never even loaded on the real iPhone)
+
+The owner deployed the P77-repaired code AND a real full hosted rebuild (20,946 active English
+cards, 19,501 embedded, 93.1% coverage — the committed index this session preserved untouched) and
+retested on a real iPhone. `?scannerDebug=1` showed `VISUAL_MODEL_STATE=failed`,
+`VISUAL_EMBEDDING_CREATED=no`, every downstream field empty: the model failed BEFORE embedding,
+before index load — a runtime-initialization failure, not a recognition-quality question. Two
+independent, confirmed root causes, both reproduced directly (not inferred) via a real browser
+smoke harness serving the actual production `dist/` build with the actual generated `_headers`:
+
+1. **`env.allowLocalModels` was never set (primary, 100% of the failure).**
+   `@huggingface/transformers` 4.2.0's own `env.ts` defaults `allowLocalModels` to
+   `!(IS_BROWSER_ENV || IS_WEBWORKER_ENV || IS_DENO_WEB_RUNTIME)` — `false` inside a Web Worker
+   (confirmed by reading the installed package source, not assumed). `visual-worker.ts` set
+   `env.allowRemoteModels = false` (correct — no CDN, ever) but never set `env.allowLocalModels =
+   true`, so with BOTH flags false, `AutoModel.from_pretrained`/`AutoProcessor.from_pretrained`
+   threw "Invalid configuration detected: both local and remote models are disabled" on every
+   single load attempt, on every browser — reproduced identically on desktop Chromium, with no
+   COOP/COEP change, proving this was never a Safari/iOS-specific or threading/
+   cross-origin-isolation issue at all. One-line fix: `env.allowLocalModels = true` alongside the
+   existing `allowRemoteModels = false`.
+
+2. **CSP `script-src` was missing `blob:` (second, independently fatal bug found investigating
+   the same failure).** Once (1) was fixed, model loading still failed — `no available backend
+   found. ERR: [webgpu] TypeError: Failed to fetch dynamically imported module: blob:...` and the
+   identical error for `[wasm]`. onnxruntime-web 1.26.0-dev's WASM factory
+   (`web/lib/wasm/wasm-utils-import.ts`, read directly) dynamically `import()`s its own glue
+   module and, on its `preload()` path, re-imports it from a `blob:` object URL rather than the
+   original same-origin URL — a CSP3 `script-src` grant is required for that dynamic import to
+   succeed, and the existing policy (`'self' 'wasm-unsafe-eval'`) never granted `blob:`. Fixed:
+   `vite.config.ts`'s `buildContentSecurityPolicy` now grants `script-src 'self' 'wasm-unsafe-eval'
+   blob:'` — still no inline script, no remote script host, JavaScript `eval()` still refused.
+   Verified directly: a real Chromium page serving the actual `dist/` build with the actual
+   generated `_headers` (COOP `same-origin`, no COEP, `crossOriginIsolated=false` throughout)
+   loaded the model, embedded a real image and searched the real 19,501-card index successfully —
+   for BOTH the `wasm` and `webgpu` device paths — once `blob:` was granted and nowhere else.
+   `crossOriginIsolated`/threaded-WASM-memory was investigated as a candidate root cause first (a
+   `new WebAssembly.Memory({shared:true})` call does exist, unconditionally, in the shipped ORT
+   glue) but is NOT the blocker here — the real repro never required COOP/COEP.
+
+3. **A real, independent structural gap found investigating both bugs: no WebGPU→WASM fallback.**
+   `visual-worker.ts` picked exactly one backend up front
+   (`backend = useWebgpu ? 'webgpu' : 'wasm'`) and never retried on WASM if that one choice failed
+   to initialize for ANY reason (the blob: CSP bug above manifested identically on both paths,
+   proving this gap was real and not hypothetical). WASM is the required baseline (prior D-097
+   text); WebGPU is optional acceleration that must never take the whole channel down with it.
+   Fixed: the selection logic is now a pure, independently unit-tested module
+   (`src/domain/scanner/visual-backend-selection.ts`) — `auto` tries WebGPU first when an adapter
+   is genuinely available, releases any partial model reference and falls back to WASM on failure
+   or absence; an explicit `force wasm` never even probes for an adapter; an explicit `force
+   webgpu` failing stays a clean, attributable failure and never silently substitutes WASM. Both
+   attempted backends' error reasons are retained on failure, never just whichever ran last.
+
+4. **Diagnostics used to drop the real reason.** `controller.ts`'s `visualError` field was sourced
+   only from exceptions thrown inside `analyzeVisualSafely` (`createImageBitmap`/`client.analyze`
+   throwing) — a model-init failure never throws there (`VisualRecognitionClient.analyze()`
+   resolves `null` gracefully, by design), so `VISUAL_ERROR` showed `—` even when the worker had
+   recorded a perfectly good reason. Fixed to fall back to the diagnostics snapshot's own
+   `unavailableReason`. The closure-mutated-`let`-across-an-`await` pattern this replaced also
+   turned out to defeat TypeScript's own control-flow narrowing (confirmed via a minimal repro —
+   `@typescript-eslint/no-unnecessary-condition` flagged the read as provably `null` even though it
+   demonstrably wasn't at runtime); `analyzeVisualSafely` now returns its error through its return
+   value instead of a captured variable, which is both correct and analyzable.
+
+5. **Backend-attempt diagnostics and a debug backend override added.** The debug panel
+   (`?scannerDebug=1`) now shows `VISUAL_BACKEND_REQUESTED`, per-backend `VISUAL_BACKEND_ATTEMPTS`
+   (`success`/`failed`/`not-available`/`not-attempted`), `WEBGPU_ERROR`/`WASM_ERROR`, and phased
+   `PROCESSOR_LOAD`/`MODEL_LOAD`/`INDEX_LOAD` status — a real-device failure is now attributable to
+   one stage instead of one opaque message. A diagnostic-only `?scannerDebug=1&visualBackend=wasm`
+   (or `webgpu`) query param forces that backend; absent or invalid always means `auto`; the
+   override affects visual-inference backend selection ONLY — never matching, persistence, or
+   authentication.
+
+6. **The `checkpoint.failures` counter was cumulative across resumptions, not current-build-based**
+   (investigated per the owner's build report: console logged "404: 6" while the shipped
+   manifest's `coverage.failures` read 7). `Checkpoint.failures` was incremented every time a
+   card's image fetch/decode failed and persisted across a resumed run with no deduplication by
+   card id — a card that fails on every attempt (a permanently-404 image) inflated the count once
+   per resumption. Fixed: the field is gone; `build-index.ts` now derives `coverage.failures` as
+   `cardsWithUsableImage - cardsIndexed` at pack time — inherently current-build/current-card
+   based, counts each card at most once regardless of how many times its embedding attempt has
+   been retried across resumptions. Did not require re-embedding the 19,501 already-valid
+   embeddings to fix — a metadata-derivation change only.
+
+**Not changed:** the model, the architecture, any migration (still 90), any financial semantic,
+the committed hosted index (still the owner's own 19,501/20,946 rebuild, untouched by this
+session). No card was special-cased anywhere.
+
+### P79 addendum — recognition quality repair (the runtime works; the crop it fed the model didn't)
+
+The owner's next real-iPhone diagnostic (`/scan?scannerDebug=1&visualBackend=wasm`) proved the
+whole pipeline runs for real: model ready, a real embedding created, the full 19,501-card index
+searched, real candidates returned. Every candidate was still wrong, all tier LOW, similarities
+0.73–0.77 (above `weakMin`, below `moderateMin`). This is the FIRST session where the gate is
+genuinely recognition quality, not runtime. Investigated per the prompt's explicit hypothesis
+list rather than guessed at:
+
+1. **Camera resolution was never requested (the primary, highest-confidence finding).**
+   `camera-session.ts`'s `getUserMedia` call carried `{ video: { facingMode: { ideal: 'environment'
+   } } }` — no `width`/`height` constraint at all, ever, since M15 existed. The diagnostic's
+   `CAPTURE_CROP_DIMENSIONS=252x352` is reproduced almost exactly by hand from the existing,
+   UNCHANGED guide-geometry math against a plausible unconstrained-default video track resolution
+   (~480×640, a well-known browser fallback when no resolution hint is given) — not a guess: the
+   arithmetic (`cardRectFromVideo`'s cover-transform, the guide's 58%-height/86%-width-cap
+   fractions) lands within a few pixels of 252×352 for that exact source size. Fixed:
+   `{ width: { ideal: 1920 }, height: { ideal: 1920 } }` added to the SAME constraints object —
+   `ideal`, never `exact`/`min`, so a webcam or a lens genuinely capped below that ceiling still
+   opens exactly as before; this only raises the ceiling a capable phone camera was never being
+   asked to reach. This is the single highest-leverage, lowest-risk fix in this session: it does
+   not change any code path downstream, only the raw pixels every downstream stage receives.
+
+2. **No rectification existed at all — crop quality, background and mild tilt were fully
+   unaddressed (hypotheses B/C/D compounding).** `roi.ts`'s own header comment had explicitly
+   deferred this ("no OpenCV, no perspective warp, no rotation heuristics in V1") — now
+   superseded. New pure domain module `src/domain/scanner/rectify.ts` (platform-neutral: plain
+   RGBA/greyscale typed arrays, no DOM, so the exact same code runs in the browser AND the Node
+   benchmark, the same shared-implementation discipline the embedding pipeline itself already
+   holds):
+   - `detectCardQuadrilateral` — Sobel gradient magnitude, per-side edge-offset search within a
+     bounded margin around the guide's own nominal rectangle (16 sample lines per side, outlier-
+     rejected least-squares line fit, adjacent-line intersection into four corners), validated by
+     convexity/angle/size/aspect sanity checks. Returns null (never a guess) when nothing
+     plausible is found — a peak must beat the search band's own average score by 4x AND an
+     absolute floor before it counts as a real edge (an earlier draft of this function had a real
+     bug here: over a uniform image with zero contrast, "first position checked" was silently
+     returned as if it were a detected edge — caught by this session's own test suite before
+     landing, see TESTING.md).
+   - `warpPerspective` — resamples the detected quadrilateral onto a canonical 5:7 rectangle via
+     BILINEAR QUADRILATERAL INTERPOLATION, a deliberate simplification over a full 4-point DLT
+     projective homography (the REJECTED alternative): a true homography needs an 8x8 linear
+     system solved per capture and is meaningfully harder to get right and verify than direct
+     bilinear interpolation, which needs no matrix solve at all — the destination grid's own
+     normalized (u, v) position already IS the interpolation parameter. For the moderate
+     hand-held tilt this project's guide-overlay capture UX actually produces (not a document
+     scanner photographing a page from an arbitrary angle), the two approaches coincide closely;
+     documented as a self-contained future upgrade if evidence ever shows otherwise.
+   - `rectifyCard` composes both — on detection failure it warps the plain nominal rectangle
+     instead, which is PIXEL-EQUIVALENT to a crop+resize (bilinear-interpolating an axis-aligned
+     rectangle's own corners), so "rectification failed" and "rectification never attempted"
+     produce identical output through the exact same code path, never a second special case.
+   - `src/features/scanner/rectify-capture.ts` is the thin canvas glue: expands the guide's
+     cardRect by 18% on every side (clamped to the captured frame's own bounds, never upscaled
+     past the source resolution) so the detector has real background-adjacent pixels to search,
+     then always emits a fixed 700×980 canonical card image regardless of whether detection
+     succeeded. `controller.ts` now runs this ONCE per scan, before either OCR or the visual
+     channel sees a frame — both consume the SAME rectified image through their existing,
+     UNCHANGED code paths (the integration point is exactly one call site). Never throws: any
+     failure anywhere in the chain (decode, canvas, detection) resolves to the original,
+     unrectified capture — the scanner keeps working exactly as it did before this module
+     existed.
+
+3. **Debug tooling gained real image previews and a wider shortlist (prompt §4/§10), not just more
+   text.** `?scannerDebug=1` now shows, memory-only, never persisted, never uploaded: the raw
+   crop-to-guide-rect image BEFORE rectification, the canonical image actually fed to OCR/DINO,
+   both OCR ROI strips, and (debug-only) up to 20 raw visual neighbours with real thumbnails —
+   letting the owner see directly whether the correct card exists deeper in the shortlist than the
+   production top-5 ever surfaces (a debug session widens the visual search itself to 50
+   candidates; production stays at 30, unchanged). `CAPTURE_FRAME_DIMENSIONS` (the full captured
+   frame, before any crop) and `RECTIFICATION_USED` were added to the plain-text "Copy
+   diagnostics" output. `DebugImageUrlStore` mirrors `CaptureStore`'s own single-owner discipline
+   exactly — one set of object URLs alive at a time, revoked on every replacement and on
+   `dispose()`.
+
+4. **A harder, more honest local benchmark (prompt §7).** The P76 benchmark's queries are
+   resize/rotate/blur-in-place transforms of an ALREADY tight, card-only reference image — it
+   structurally cannot exercise "a captured frame with real background around an imperfectly
+   aligned, mildly tilted card," which is exactly the gap the real-device diagnostic exposed.
+   `scripts/scanner-visual-benchmark/run-hard-benchmark.ts` (new; the P76 harness and its report
+   are UNCHANGED, still exercised by its own `pnpm scanner:visual:benchmark`) instead COMPOSES a
+   synthetic phone-photo: the clean reference card tilted (±9°), sheared and placed off-center on
+   a 1.6x-larger background canvas, then compares four methods against the SAME real production
+   code: simple crop (the pre-P79 behavior), a crude 10%-inset tightened crop, the REAL
+   `rectify.ts` detect+warp pipeline, and rectified+OCR+rerank through the real domain matcher.
+   Full results and their honest interpretation — including a genuinely useful finding (geometry-
+   only distortion: rectification lifts TOP3/TOP5 meaningfully, 95.4%→98.3%/96.7%→98.8%, without
+   regressing TOP1) and a sobering one (combined glare+shadow+blur on an off-center, smaller-in-
+   frame card collapses EVERY method, including simple crop, to near-chance — a photometric-
+   normalization problem this session's crop/rectification work cannot and does not claim to
+   fix) — are in `ai_outputs/Claude_outputs/output_79.txt`, §"BENCHMARK RESULTS" and
+   §"METHOD COMPARISON".
+
+**Not changed:** the model (still DINOv2-small — nothing in this session's evidence points at
+model quality as the limiting factor for the geometry-only distortion case; the catastrophic
+glare/shadow result is a photometric problem no crop/rectification change could plausibly fix, not
+new evidence against the embedding model itself), the architecture (still LOCAL_INDEX, no
+pgvector), any migration (still 90), any financial semantic. No card was special-cased anywhere.
+Neither Shieldon nor Mega Chandelure ex was referenced in any changed source file.
+
+### P80 addendum — exact-card matching: adaptive OCR ROI, candidate rescue, photometric evaluation
+
+The owner's follow-up real-device facts (runtime/crop/rectification all confirmed working;
+Shieldon's true card sat at raw visual rank 6, never shown; Mega Chandelure ex absent from the top
+20 entirely; the debug image preview showed both OCR ROIs landing on the wrong card region) moved
+the gate to exact-card retrieval quality specifically. Full research: SCANNER_RESEARCH.md §7c.
+
+1. **Adaptive OCR ROI (`roi.ts`/`analyze.ts`).** The single fixed name/number ROI fractions encode
+   the VINTAGE Pokémon card layout (name top-left, number bottom-right) — correct research for that
+   layout, wrong layout for a modern SM/SWSH/SV-era card like Mega Chandelure ex, which prints the
+   name across most of the top edge and the number bottom-LEFT. `analyze.ts` now tries a bounded
+   set of named layout candidates per field, scores each OCR result (name: confidence + letter
+   ratio; number: confidence + whether the text actually PARSES as a short printed id — parseability
+   dominates raw confidence deliberately), and keeps the winner, with an early-exit once a candidate
+   is already confident so the common case costs the same one-call-per-field the original pipeline
+   had. `nameRoiId`/`numberRoiId` surface which candidate won in the debug diagnostics. A real
+   permissiveness bug in P67's own `parseCollectorNumber` (folds short OCR noise, but a long garbage
+   string with a stray digit run can still structurally parse) was found and closed with a length
+   guard (`looksLikeCollectorNumberText`) while building the number-field scorer — otherwise a
+   number-ROI candidate that happened to land on prose could still "win" by accident.
+
+2. **Candidate rescue — retrieval depth and display depth are now separate knobs.** The engine
+   previously bounded its OWN retained candidate array to 5, the SAME number the UI displayed — so
+   a correct card at raw rank 6 (Shieldon) was discarded by the engine itself before the UI had any
+   chance to show it, independent of any UI logic. `SCORING_TIERS.maxReturnedCandidates` raised to
+   10 (retention only; tier/margin math is unaffected, since it always reads the true top-2
+   regardless of how many the array retains). The UI's own 5-candidate display limit
+   (`SCANNER_UI_CANDIDATE_LIMIT`) widens to 8 (`SCANNER_UI_EXPANDED_CANDIDATE_LIMIT`) ONLY when the
+   score at the normal cutoff rank is still within the engine's own ambiguity margin
+   (`SCORING_TIERS.highMinMargin`) of the top score — a genuinely flat/undifferentiated ranking, not
+   merely "confidence is LOW." A HIGH-tier match never expands (it already has a ≥15-point margin
+   over its runner-up by construction, so the ranking is never flat at rank 5).
+
+3. **Photometric normalization — built, tested, evaluated, NOT wired into the default pipeline.**
+   `src/domain/scanner/photometric.ts` (luma-driven contrast stretch + a bounded 15% blend toward
+   greyscale) was investigated because the Chandelure miss's symptom (unrelated foil/full-art
+   neighbours) is consistent with the embedding weighting color/foil texture over structure for
+   highly reflective printings. A real bounded experiment (`pnpm scanner:visual:benchmark:
+   photometric`, new script, same cached 240-card corpus and real rectify/embed pipeline as the P79
+   hard benchmark) on the geometry-only `tilted-offcenter` profile showed a wash (plain 93.3%/98.3%/
+   98.8% vs. normalized 94.6%/97.5%/98.3% TOP1/3/5, n=240 — differences inside single-flip noise):
+   non-regression confirmed, no meaningful uplift on THIS corpus. Critically, this corpus cannot
+   test the actual hypothesis: it is keyed by TCGdex-style ids, not the real catalog's UUIDs the
+   hosted 19,501-card index uses, so there is no way to ground-truth whether normalization reduces
+   confusion among many visually-similar foil cards at REAL index scale — the failure class the
+   Chandelure miss actually represents. Decision: ship the tested, safe utility as available
+   tooling; do not enable it by default without evidence tied to the real failure mode.
+
+4. **Auxiliary visual signal (second/inner-art embedding) — REJECTED, with a corrected reason.**
+   P79 declined this based on the geometry-only benchmark (93–99% across methods) showing no
+   evidence of single-embedding brittleness. That conclusion was right about robustness to capture
+   noise but measures the wrong axis for Chandelure: TOP1/3/5 against a 240-card pool tests whether
+   a distorted query still resembles its OWN reference more than 239 others, not whether it gets
+   confused with a DIFFERENT similar-looking card among thousands — genuinely untested, not
+   disproven, by either session's benchmark (same id-mapping gap as point 3). The decision to not
+   build it THIS session rests on cost/risk under that uncertainty: re-embedding all 19,501 catalog
+   cards against a second crop is a multi-hour, irreversible regeneration of committed index assets,
+   doubles per-scan worker inference cost, and needs a new merge/rerank contract — not justified
+   without evidence it fixes the actual problem. The concrete prerequisite for revisiting this is a
+   real-index-scale diagnostic (map a handful of cached-corpus ids to real catalog UUIDs, search a
+   real query against the actual committed 19,501-embedding index, inspect true rank as the
+   candidate pool of visually-similar cards grows) — described but not built this session.
+
+**Not changed:** the model, the architecture, any migration (still 90), any financial semantic, the
+committed hosted index. No card was special-cased anywhere — every fix targets a layout FAMILY
+(vintage vs. modern) or a scoring/retrieval RULE, never a specific card id or name.
+
+---
+
+## D-098 — Scanner visual channel: cold-start architecture and evidence-gated model rejection (P81)
+
+**Motivated by:** real-device evidence that superseded D-097's recognition-quality focus. After
+P80's exact-card-matching fixes, the owner's real-iPhone retest reported cold visual-channel
+initialization taking 106–388 seconds across repeated attempts, and one scan producing no usable
+result after 6–7 minutes of waiting. "The visual pipeline can work" (VISUAL_MODEL_STATE=ready was
+achieved) is not the same claim as "the visual pipeline is usable" — this decision record is about
+making it usable, not about further recognition-quality work (deliberately out of scope this
+session per the prompt).
+
+### Root-cause finding, from a real measurement built this session
+
+A new real-browser benchmark (`pnpm scanner:visual:benchmark:cold-start`, Chromium + WebKit,
+driving the ACTUAL built `visual-worker-*.js` production chunk — no mocks) measured cold
+initialization on localhost at ~1.5–2.1 seconds total, of which ONNX-compile + WASM-instantiate +
+session-create is ~0.7–1.6 seconds. That is roughly two orders of magnitude below the real-device
+figures. Desktop-localhost network conditions are not iPhone-cellular conditions, so this does not
+prove the exact real-device number, but it is strong evidence against "the model/runtime is
+inherently slow to initialize" and strong evidence FOR "the real-device time is overwhelmingly
+network transfer plus configuration gaps" — because the compile/instantiate work that *is*
+architecture-dependent measures in the hundreds of milliseconds, not minutes, even cold.
+
+Two concrete, confirmed configuration gaps compound whatever the real network conditions are:
+
+1. **Cache-Control was wrong.** Every scanner asset — the 24.5MB ONNX model, up to 23.5MB ORT WASM,
+   7.5MB embeddings index — was served `Cache-Control: public, max-age=0, must-revalidate`
+   (Cloudflare Pages' own default for a non-content-hashed filename, confirmed live via `curl`),
+   despite living under version-pinned paths (`v7`, `visual-v1`) that the visual worker additionally
+   verifies by exact model revision before trusting anything loaded from them. There was never a
+   reason for these specific paths not to carry a long-lived immutable Cache-Control.
+2. **Nothing began loading the visual channel until after the user had already captured a photo.**
+   `VisualRecognitionClient.ensureReady()` was only ever invoked from inside `analyze()`, itself
+   only called from `analyzeCapture`. On a cold device, this means the multi-minute model/index load
+   happened WHILE the user was staring at "Analyzing card…", with no warning beforehand and no way
+   to know how long it would take.
+
+A third, investigated-but-not-conclusively-implicated factor: `env.backends.onnx.wasm.numThreads`
+was never set explicitly. Current official onnxruntime-web behaviour (verified via research this
+session) is to auto-detect the absence of `self.crossOriginIsolated` (this app sends COOP but not
+COEP) and fall back to single-threaded execution silently and correctly — so this was not a bug,
+but leaving it implicit meant the fallback depended on the library's own internal detection rather
+than being an explicit, disclosed, version-independent choice. Set explicitly to 1 in that
+condition; no behavioural change measured locally.
+
+### Decision: fix the architecture and the configuration, not the model
+
+1. **Route-entry prewarm.** `VisualRecognitionClient.prewarm()` (a thin, explicitly-named alias
+   over the existing idempotent `ensureReady()`) is called from `ScannerPage`'s mount effect via
+   `controller.prewarm()`, the instant `/scan` opens — before the camera is even requested, before
+   any photo exists. The OCR engine's own cold start is staggered ~1.5 seconds behind it
+   (`OCR_PREWARM_STAGGER_MS`), because the old `Promise.all([runOcrAnalysis(...),
+   analyzeVisualSafely(...)])` pattern in `analyzeCapture` started BOTH cold runtimes (visual ~45MB,
+   OCR ~10MB) at the exact same instant on every scan — fine once both are warm, but exactly the
+   "don't cold-start both blindly" failure mode on a genuinely cold device. The stagger amount is a
+   reasoned heuristic for this session (give the larger, slower download a network/CPU head start),
+   not benchmarked against a real device — the owner's retest is what validates it.
+2. **Bounded visual wait.** `analyzeVisualBounded` (controller.ts) races the visual channel against
+   an 8-second timeout (`VISUAL_COLD_ANALYSIS_TIMEOUT_MS`) ONLY when it was not already warm at the
+   moment analysis began; a warm channel is awaited normally, unbounded, matching every prior
+   session's tested behaviour exactly. A bound was chosen over either extreme in the prompt's own
+   §7 options (disable the shutter entirely vs. never bound the wait): disabling the shutter would
+   still leave a user stuck if prewarm itself is slow on a bad connection, and never bounding the
+   wait is the exact behaviour the owner's 6–7-minute report showed is unacceptable. A bounded wait
+   with an honest, labeled degradation (`VISUAL_ERROR="…still warming up…"`) is the only option that
+   is both never worse than a bare multi-minute hang and never silently pretends recognition
+   succeeded when it did not.
+3. **Cache-Control fix**, `Cache-Control: public, max-age=31536000, immutable` for
+   `/scanner-assets/*` (`vite.config.ts`) — safe specifically because these paths are both
+   version-segmented AND revision-verified at load time; a stale cached copy can never silently
+   masquerade as a different model/index revision.
+4. **Cold-start phase instrumentation** (`src/features/scanner/visual/phase-timing.ts`, new): a
+   real methodological finding surfaces here too — an initial `self.fetch` monkey-patch inside the
+   worker correctly timed the worker's OWN direct fetches (the index manifest/ids/embeddings) but
+   reported 0ms/null-bytes for every fetch transformers.js/onnxruntime-web issue internally for the
+   processor config, model config, ONNX weights and ORT WASM/glue — evidence those bundled libraries
+   hold their own reference to `fetch`, captured before the patch installs. Reading the Resource
+   Timing API (`performance.getEntriesByType('resource')`) instead — which the browser populates
+   from its network stack regardless of which JS reference initiated a request — fixed this cleanly
+   and is now the primary timing source, with the fetch-probe log kept only as a fallback for an
+   environment without Resource Timing support.
+5. **Worker-owned Cache Storage layer** (`WORKER_ASSET_CACHE_NAME`) wraps the worker's own
+   `self.fetch` reference with a cache-through read/write, independent of whether the page's Service
+   Worker actually intercepts fetches issued from inside a dedicated Worker — not guaranteed on
+   every engine (documented in the code with the specific reasoning). Given the fetch-reference
+   finding in point 4, its practical coverage in the current build is the index files; the model/
+   processor files already have transformers.js's own separate `env.useBrowserCache` Cache-Storage
+   layer (confirmed by reading the installed package source), unaffected either way.
+
+### Model replacement: researched, REJECTED — evidence-gated, same discipline as P80
+
+Current model (`Xenova/dinov2-small`, D-097) is 24.5MB quantized ONNX. Researched candidates for a
+smaller permissively-licensed alternative: DINOv3-ViT-S/16 is actually LARGER (~41MB in fp16, a
+different generation, not a straightforward drop-in); MobileNet/EfficientNet-class feature
+extractors are smaller but have materially different (generally weaker) fine-grained instance-level
+retrieval characteristics than a DINOv2-family backbone, which risks REGRESSING the already-open
+P80 finding (visual discriminative power at real index scale for foil/full-art cards is unresolved,
+not disproven — see D-097's P80 addendum) rather than helping it, with zero benchmarked evidence
+either way from this session. Given this session's own cold-start benchmark shows compile/session-
+create cost is a few hundred milliseconds to ~1.6s even cold — a small fraction of the reported
+real-device total — a smaller model would not address the measured bottleneck (network transfer
+and configuration) in any case. Re-embedding all 19,501 catalog cards against a different model is
+also a multi-hour, irreversible regeneration of committed index assets — not undertaken without
+compelling, benchmarked justification, per this session's own instruction and P80's established
+precedent for the identical class of decision (photometric normalization, auxiliary visual signal).
+
+**Not changed:** the model, the architecture beyond the prewarm/bounded-wait/instrumentation/cache
+additions above, any migration (still 90), any financial semantic, the committed hosted index, any
+P80 recognition-quality fix.
+
+## D-099 — Live worker-progress instrumentation; lightweight perceptual-hash retrieval evaluated and REJECTED; FAST (OCR) baseline reprioritized ahead of DINO (P82)
+
+**Motivated by:** P81's fixes did NOT close the gap. The owner's real-iPhone retest on the P81
+preview showed `VISUAL_MODEL_STATE=loading` persisting for over a minute with every
+`VISUAL_PHASE_TIMINGS` field reading "—", then a Shieldon scan that OCR also failed to identify
+despite the debug screenshot showing the printed name clearly legible inside the name ROI. P81's
+8-second bounded degradation worked exactly as designed; the underlying visual-channel prewarm
+performance did not improve enough, and the diagnostics that would explain WHY remained blind
+during an in-progress stall — P81 only ever reported per-phase timings inside the TERMINAL
+`ready`/`unavailable` worker message, so a genuinely stuck init left every phase field unobservable
+until it either finished or the owner gave up.
+
+### 1. Live progress instrumentation closes the P81 observability gap
+
+The worker now posts a `progress` message at every phase boundary (worker-module-evaluated,
+init-received, processor-load-started/finished, backend-selection-started, webgpu/wasm-attempt-
+started/finished, model-load-finished, index-load-started, index-manifest/ids/embeddings-loaded,
+index-decode-finished, ready) — see `src/features/scanner/visual/phase-timing.ts`'s
+`VisualWorkerProgressPhase` and `visual-worker.ts`'s `postProgress`. The worker-boot message
+(`worker-module-evaluated`) fires the INSTANT module evaluation reaches application code, before
+`AutoProcessor`/`AutoModel`/onnxruntime-web are touched at all — a worker that never even reaches
+this point points at script fetch/parse/module-graph-evaluation cost, not model/index loading, and
+is now distinguishable from one stuck in a later phase. `VisualRecognitionClient` keeps a live
+snapshot (`workerBooted`, `workerBootMs`, `currentPhase`, `currentPhaseElapsedMs`,
+`lastProgressMsAgo`) updated as these arrive, surfaced through the existing `?scannerDebug=1` panel
+as `WORKER_BOOTED`/`WORKER_BOOT_MS`/`VISUAL_CURRENT_PHASE`/`DINO_CURRENT_PHASE`/
+`VISUAL_CURRENT_PHASE_ELAPSED_MS`/`VISUAL_LAST_PROGRESS_MS_AGO` — all populated DURING loading, not
+only at a terminal message. Implemented by wrapping the two non-pure dependencies
+(`detectWebgpuAvailable`/`loadModelOnBackend`) inside `visual-worker.ts`'s own `init()`, so
+`domain/scanner/visual-backend-selection.ts`'s pure signature and its 14 existing tests are
+untouched.
+
+### 2. Lightweight perceptual-hash retrieval: evaluated on REALISTIC capture noise, REJECTED
+
+The prompt's premise — that P76's dHash benchmark (86.7%/93.0%/95.0% TOP1/3/5,
+docs/SCANNER_RESEARCH.md §7b) supports a hash-based fast path — was tested against the wrong
+corpus. That number came from EASY, resize/rotate-in-place distortions of an already-tight,
+card-only reference image, never a captured frame needing real cropping/rectification. This session
+built `pnpm scanner:visual:benchmark:hash` (new), running dHash AND a newly-implemented pHash
+(DCT-based, `computePHash`, `src/domain/scanner/perceptual-hash.ts`) through the SAME hard,
+realistic corpus P79's rectification benchmark uses (tilt + off-center placement composed onto a
+larger background, then the REAL `rectify.ts` detect+warp pipeline) — the honest stand-in for an
+actual phone photo. Result:
+
+| Method | TOP1 | TOP3 | TOP5 | (tilted-offcenter profile, n=240) |
+|---|---|---|---|---|
+| dHash | 5.0% | 10.0% | 12.1% | |
+| pHash | 23.3% | 30.8% | 36.3% | |
+| combined (average) | 18.8% | 27.9% | 32.9% | |
+
+Collapsing to 0-2% on the two profiles combining glare/shadow/blur, identically to DINO's own
+catastrophic-failure profiles (P79). Far more decisive: the SAME-card vs. DIFFERENT-card combined-
+hash similarity distributions **overlap almost completely** across the full 720-query hard corpus
+(same-card median 0.500, p10-p90 = 0.422-0.625; different-card median 0.492, p10-p90 =
+0.422-0.563) — there is no threshold that would separate a correct match from a wrong one reliably
+at this noise level. For comparison, DINO's rectified TOP1 on the identical geometry-only profile
+is 93.3% (P79) — a full order of magnitude better under the SAME realistic distortion. **Decision:
+do NOT wire perceptual-hash similarity into `engine.ts`'s scoring as a "fast visual" evidence
+channel.** Doing so would inject near-random noise into candidate ranking under exactly the capture
+conditions a real scan produces, risking false confidence rather than preventing it (a hash-based
+channel that cannot discriminate same-card from different-card is worse than no visual channel at
+all, not a cheaper approximation of one). `computePHash`/`packHashRow`/`unpackHashRow`/
+`combinedHashSimilarity` ship as tested, available domain-layer tooling (mirroring photometric.ts's
+own precedent) — not wired into any production matching path. No hash-index generator, browser
+client, or hosted asset was built; building any of that would be exactly the "blindly ship a
+complicated pipeline ungated by evidence" this project's discipline exists to prevent. If a future
+session finds a genuinely different hash family or a much larger reference-hash pool changes this
+picture, the benchmark script and evidence above are the concrete starting point — not a repeat of
+this session's own measurement.
+
+### 3. The FAST baseline is OCR + text search, reprioritized ahead of DINO
+
+Given (2), the only real, evidence-backed signal that does not require the ~45MB DINO cold start is
+OCR + P67's deterministic text matcher — already shipped since P68, unaffected by this session.
+Route-entry prewarm (`controller.ts`) now starts the OCR engine IMMEDIATELY and stages the
+heavyweight DINO channel `ENHANCED_VISUAL_PREWARM_STAGGER_MS` (1500ms, same value P81 used, now in
+the opposite direction) behind it — a reversal of P81's own ordering, which reasoned (also
+unbenchmarked) that the bigger download deserved the head start. OCR's ~10MB cold assets are a
+small fraction of DINO's ~45MB, and OCR now provides real signal from the moment it is ready rather
+than nothing until DINO finally loads. `ScannerOcrEngine.getState()` (new) reports the OCR engine's
+own `not-loaded`/`loading`/`ready`/`failed` state; `ScannerUiController.getFastScannerState()`
+(new) exposes it. The intro screen's "Preparing card recognition…" copy (`ScannerPage.tsx`) now
+gates on this FAST state instead of the heavyweight DINO channel's own `getVisualPrewarmState()` —
+it clears as soon as OCR is ready, not once DINO's cold ~45MB load finally finishes. Debug
+diagnostics distinguish both explicitly: `FAST_SCANNER_STATE`/`OCR_RUNTIME_STATE` (the OCR/fast
+baseline) vs. `ENHANCED_VISUAL_STATE` (the DINO channel, same value `VISUAL_MODEL_STATE` already
+reported). Neither this reordering nor the honest-loading-copy change is benchmarked against a real
+device this session (no iPhone available) — same disclosed-not-measured posture P81's own staggering
+used.
+
+### 4. OCR preprocessing: Otsu binarization added as a bounded fallback variant
+
+The Shieldon evidence (name ROI visually legible, OCR output garbage) pointed at preprocessing, not
+ROI geometry (already fixed by P80). `roi.ts` gains `otsuThreshold`/`binarizeGrayscale` — a
+self-calibrating (per-image) hard threshold, oriented so the minority pixel class (assumed to be
+text on a mostly-background strip) renders as dark-on-light. `analyze.ts`'s `readBestRoi` tries the
+existing `contrast` (percentile-stretch) pass first, UNCHANGED call-for-call from P78-P81 — a
+`binarize` retry over the same candidates only runs when `contrast` found NOTHING usable from ANY
+candidate for that field, so an already-working scan pays zero extra cost; only the already-failing
+case (full-frame fallback would otherwise be the only recourse) gets a second, differently-processed
+attempt first. Not benchmarked against a real device this session (no representative real-photo
+corpus with ground-truth OCR text available) — a bounded, evidence-motivated but real-device-
+unverified addition, disclosed as such.
+
+**Not changed:** `engine.ts`'s scoring model (no hash-evidence channel added), the committed 19,501-
+card DINO index, any migration (still 90), any financial semantic, P80's adaptive-ROI candidate
+selection logic itself (only a new preprocessing axis was added around it).
+
+## D-100 — Build identity, stale-deployment detection and chunk-load-failure recovery (P83)
+
+**Motivated by:** a real-iPhone P82 test returned an OLD diagnostics schema (missing every
+`WORKER_BOOTED`/`FAST_SCANNER_STATE`/etc. field P82 added) and OLD capture dimensions
+(`CAPTURE_CROP_DIMENSIONS=252x352` instead of P79's `746x1044`) — proof the phone was executing
+stale cached JavaScript, not current-code regression. After the scan, pressing the scanner's X
+button produced a full-page crash: `'text/html' is not a valid JavaScript MIME type`. Root cause,
+reproduced directly against the live PR #63 preview and this repo's own `vite preview` server: with
+no top-level `404.html`, Cloudflare Pages (and, separately, `vite preview`'s own dev-only SPA
+fallback) rewrites ANY request that doesn't match a real file to `index.html` at `200 text/html` —
+including a content-hashed chunk a redeploy already removed. The X button navigates to `/portfolio`
+(a lazy `React.lazy` route); a tab still running an OLDER page's module graph requests that OLD
+chunk hash, gets HTML back, and the browser's module loader rejects with the MIME-type error the
+owner saw. `curl` against PR #63's preview confirmed this directly: `GET
+/assets/PortfolioPage-<nonexistent-hash>.js` → `200 text/html`, `Content-Length` matching the
+index.html shell.
+
+### 1. Cloudflare nested `404.html`: asset directories get a real 404, navigation paths keep the SPA fallback
+
+**Final mechanism:** `vite.config.ts`'s `cloudflareAssetNotFoundPages()` emits a real
+`dist/assets/404.html` and `dist/scanner-assets/404.html` at build time — Cloudflare Pages' own
+documented directory-tree 404 lookup ("Pages will attempt to find the closest 404 page... ending
+in `/404.html`", developers.cloudflare.com/pages/configuration/serving-pages). A currently-deployed
+chunk is served as itself regardless (a real static file is always matched before any 404 handling
+is consulted); only a genuinely missing path under `/assets/` or `/scanner-assets/` now gets this
+real 404 page instead of the SPA shell.
+
+**Getting here took three attempts, each deployed and curled against the live PR #63 preview
+before being rejected — recorded in full because each one directly contradicted a reasonable
+starting assumption, and none of the three failures was ever reproducible locally:**
+
+1. **A top-level `public/404.html`.** The obvious first choice. Broke EVERY real navigation route
+   — `/login`, `/invite/...`, `/admin/invitations` all started returning a bare 404 instead of the
+   application shell (`deployment-check.mjs`'s own pre-existing checks caught all three
+   immediately). Cloudflare's own top-level-`404.html` file-presence detection is a PROJECT-WIDE
+   switch that disables the automatic SPA rewrite entirely for every unmatched path, not just
+   asset ones — `docs/ARCHITECTURE.md` already stated this exact fact ("Pages serves `index.html`
+   for unmatched paths when the output has no top-level `404.html`"), a sentence this session
+   should have re-read before ever placing a file there.
+2. **A `_redirects` rule** (`/assets/*  /missing-asset.html  404`, splat at the path's end,
+   confirmed via a live diagnostic to be the only splat placement Cloudflare actually matches —
+   an EARLIER `/*.js`-style mid-pattern splat was also tried and silently matched nothing at all).
+   Even with correct splat placement, the rule never fired: a missing asset kept returning the
+   `200 text/html` SPA shell exactly as before. Root cause, confirmed directly against Cloudflare's
+   own docs: `_redirects` does NOT support an arbitrary rewrite status code — "Rewrites (other
+   status codes) ❌" — only `200` (proxy) and the redirect codes `301/302/303/307/308` are valid.
+   A live diagnostic rule using the IDENTICAL splat pattern with a `302` destination matched
+   correctly, isolating the invalid `404` status as the actual defect, not the splat syntax.
+3. **The nested `404.html` above — WORKS.** Distinct from case 1 specifically because Cloudflare's
+   own docs describe the two as different mechanisms: a NESTED 404 page only answers requests
+   under its own directory (and further subdirectories), while the top-level one is what flips the
+   SPA-detection switch. Verified directly: a genuinely missing `/assets/*`/`/scanner-assets/*`
+   path 404s with real error content; an existing hashed asset is unaffected; `/login`, `/portfolio`
+   and `/invite/...` all still return the app shell at 200; `deployment-check.mjs` is fully green
+   again (33/33) after being red (3 failures) under attempt 1.
+
+Pinned by two regression tests so neither prior failure mode can silently ship again:
+`tests/config/asset-fallback-pages.test.ts` asserts every configured directory is a real
+subdirectory (never the project root) and the generated page is never the app shell;
+`scripts/verify-scanner-platform-build.mjs` asserts `dist/404.html` never exists at the root while
+both nested copies do. This whole class of bug — three attempts, three real regressions, zero of
+them visible to `pnpm build` or any unit test — is the concrete reason `deployment-check.mjs` and a
+live preview `curl` exist as a mandatory step for any change touching deployment routing: neither
+`_redirects` semantics nor Cloudflare's 404.html-presence behaviour can be observed any other way.
+
+### 2. Immutable build identity, exposed at the very top of scanner diagnostics
+
+`vite.config.ts` injects `__APP_BUILD_SHA__` (Cloudflare Pages' own `CF_PAGES_COMMIT_SHA` when
+building on Pages, else `git rev-parse HEAD` locally) and `__APP_BUILD_TIME__`, following the exact
+`__APP_VERSION__`/`define` pattern already established. `src/platform/build-info.ts` re-exports
+these plus `SCANNER_SCHEMA_VERSION`; `diagnostics-format.ts` prints `APP_BUILD_SHA`/`APP_BUILD_TIME`/
+`SCANNER_SCHEMA_VERSION` as the FIRST three lines of every copied scanner diagnostics dump — an
+owner test must verify `APP_BUILD_SHA` against the PR head before trusting anything else in the
+paste, closing exactly the gap the stale P82 diagnostics exposed.
+
+### 3. Stale-client detection: two zero/near-zero-cost signals, no polling
+
+`src/platform/build-freshness-runtime.ts`'s `initBuildFreshnessWatch()` (started unconditionally in
+`main.tsx`, before first render) subscribes to: (a) Vite's own `vite:preloadError` event — fired by
+the `__vitePreload` wrapper every real `React.lazy` chunk in `router.tsx` already goes through when
+a dynamic import fails, cross-browser by construction (vite.dev/guide/build.html), independent of
+native `unhandledrejection` propagation; (b) `navigator.serviceWorker`'s `controllerchange` event, a
+real newer deployment taking over an already-open tab, at zero network cost. A THIRD, defense-in-
+depth signal — a generic `unhandledrejection` matching `isChunkLoadFailure`'s message patterns — and
+a rate-limited (`checkForNewDeployment`, ≤1/60s) fetch of a tiny generated `build-meta.json`
+(`Cache-Control: no-store`, excluded from the Workbox precache glob) round out coverage for engines/
+paths that bypass Vite's own instrumentation.
+
+**Real bug caught and fixed before shipping:** the first `controllerchange` implementation reacted
+to EVERY controllerchange unconditionally — including the one Workbox's `clientsClaim()` fires the
+FIRST time a fresh page ever becomes controlled by a Service Worker (a transition from no controller
+to a controller, not an update replacing one). This is normal on every first install, not staleness,
+and reloading the page in response to it broke two unrelated E2E specs mid-test (`pnpm test:e2e`)
+before being caught. Fixed by tracking whether a controller already existed when the watch started;
+only a SUBSEQUENT controllerchange (a genuinely different Service Worker replacing one already
+active) triggers the recovery policy. Pinned by a dedicated regression test
+(`tests/ui/build-freshness-runtime.test.ts`).
+
+### 4. Recovery policy: one controlled reload, gated on unsaved scanner work, never a loop
+
+`src/platform/build-freshness.ts`'s `resolveStaleDeploymentAction` (pure, dependency-injected, same
+discipline as `domain/scanner/visual-backend-selection.ts`) reloads immediately when
+`hasUnsavedScannerWork()` (`src/features/scanner/unsaved-work.ts`, mirroring ScannerPage's
+in-memory batch — the app's only real "unsaved work" state) is false AND no automatic reload was
+attempted within the last 15 seconds (`RELOAD_LOOP_GUARD_MS` — no reload loops). Otherwise it
+surfaces `StaleDeploymentBanner.tsx` (mounted once in `AppShell`) with an explicit "save/cancel your
+scan, then reload" prompt and a manual retry button, rather than discarding a nonempty batch
+silently or looping forever against a persistently broken deployment. `router.tsx`'s
+`defaultErrorComponent` gives the SAME distinct message (instead of TanStack Router's generic
+"Something went wrong!" default — the screen the owner actually saw) for a chunk-load failure that
+reaches React as a render error rather than a window-level event, without changing the error UX for
+any other kind of error.
+
+**Not changed:** P80/P81/P82's scanner recognition logic, the committed 19,501-card DINO index, any
+migration (still 90), any financial semantic. Verified end-to-end with a real browser
+(`tests/e2e/stale-deployment.spec.ts`, Chromium AND WebKit): a genuinely missing chunk fails to
+import in both engines, and the app recovers (reload, never a raw MIME-type crash) via the SAME
+`vite:preloadError` production code path in both — chosen over a raw unhandled-rejection trigger
+after finding, and disclosing, that WebKit does not surface an `unhandledrejection` DOM event for a
+rejection from `page.evaluate()`-injected code the way Chromium does.
+
+### 5. Old hashed asset survival — measured, and less durable than assumed (P83 §9)
+
+Tested directly rather than assumed: a Cloudflare Pages deployment-specific preview URL
+(`https://<hash>.pokeportfolio-dev.pages.dev`) from earlier in this SAME session (~15 minutes and
+six redeploys prior) no longer served its own original hashed JS asset — a 404, the identical
+response its own current deployment gives for a genuinely missing file. The mutable branch alias
+(`https://feat-m15-scanner-integrated.pokeportfolio-dev.pages.dev`) obviously cannot preserve an
+old generation's assets either, by definition — it always serves whichever deployment is newest.
+**Do not treat a deployment-specific URL as a durable long-term reference for asset survival under
+rapid iteration** (this session pushed 7 deployments in roughly 15 minutes); the exact retention
+window Cloudflare Pages applies to a project's non-latest preview deployments was not independently
+documented and is not something this session's evidence pins down further. This finding argues
+FOR, not against, the stale-client detection this session built (§3 above): an old client cannot
+assume it has any particular grace period before its own assets stop resolving.
+
+---
+
+## D-101 — Content-addressed visual index publishing, runtime integrity gates and cache coherence (P87)
+
+**2026-09-02 · Accepted**
+
+**Context.** P86's independent adversarial audit (F-01, CRITICAL/P0) found that
+`/scanner-assets/visual-v1/{manifest.json,card-ids.json,embeddings.bin}` — the visual
+recognition reference INDEX (data, rebuilt at least three times: P76/P77/P79) — was served
+`Cache-Control: public, max-age=31536000, immutable` at a fixed literal path shared with the
+pinned model/engine binaries (which genuinely are content-stable per model revision). The only
+runtime check, `EXPECTED_MODEL_REVISION`, verifies the MODEL never the INDEX, so it cannot detect
+staleness across a rebuild: a device that already ran the scanner could silently keep using a
+stale or incomplete card index for up to a year, with every diagnostic field reporting healthy.
+The same audit found the index's declared source-project identity logged but never gated
+(F-22), the only committed-index verifier never wired into the actual build/staging path (F-23),
+non-atomic multi-file generation writes (F-24), OFFSET pagination not safe under concurrent
+catalog mutation (F-25), no proactive cleanup of obsolete Service-Worker runtime caches (F-42),
+and a local dirty-worktree build silently naming a stale commit sha (F-43).
+
+**Decision.**
+
+1. **Content-addressed publishing.** The three generation files move under
+   `.../visual-v1/index/generations/<contentId>/`, where `contentId` is the first 16 hex chars of
+   a SHA-256 over the manifest's semantic fields (excluding `generatedAt`) concatenated with the
+   raw `card-ids.json` and `embeddings.bin` bytes (`src/domain/scanner/index-content-id.ts`) —
+   deliberately NOT `cardCount` alone, `generatedAt` alone, or `modelRevision` alone, each of
+   which the prompt's own audit ruled insufficient. A new file, `.../visual-v1/index/current.json`
+   (`{indexVersion, contentId, manifestPath}`), is the one thing a client fetches first, always
+   with `Cache-Control: no-cache` server-side AND `cache: 'no-store'` client-side
+   (belt-and-suspenders, the same pattern `build-meta.json`/D-100 already established). Every
+   `generations/<id>/*` file is genuinely immutable — the URL itself changes when the content
+   does, so the directive is finally true rather than merely asserted. Model/engine binaries stay
+   at their existing `.../visual-v1/model/` and `.../visual-v1/ort/` paths, unaffected: they are
+   content-stable per `VISUAL_MODEL_REVISION`, a materially different lifecycle from the index.
+2. **Non-overlapping `_headers` rules.** Cloudflare Pages MERGES headers from every rule whose
+   path matches a request (values joined by comma, never one rule overriding another) — a single
+   catch-all `/scanner-assets/*` immutable rule is therefore structurally incompatible with also
+   serving a revalidating pointer underneath it. `vite.config.ts`'s generated `_headers` now uses
+   deliberately non-overlapping prefixes (`v7/*`, `visual-v1/model/*`, `visual-v1/ort/*`,
+   `visual-v1/index/generations/*`, `visual-v1/index/current.json`) instead of one blanket rule.
+3. **Split Workbox runtime caches.** `visualAssetRuntimeCache` (model/engine, cache name
+   `scanner-assets-visual-v1`, unchanged) and a new `visualIndexRuntimeCache` (content-addressed
+   generations only, cache name `scanner-assets-visual-v1-index`) — `current.json` matches NEITHER
+   pattern, so it is never interceptable by a CacheFirst route (which would silently defeat its
+   no-store contract by answering from Cache Storage before the request's own cache mode is ever
+   consulted).
+4. **Worker-owned cache-through respects `cache: 'no-store'`.** `visual-worker.ts`'s manual Cache
+   Storage cache-through (`installFetchProbe`, independent of Service Worker fetch interception —
+   not guaranteed for Worker-issued requests on every engine) previously ignored the caller's own
+   `cache` mode entirely; it now bypasses both read and write for any request marked `no-store`.
+5. **Runtime source-project gate (F-22).** `visual-worker.ts` derives
+   `EXPECTED_SOURCE_PROJECT_REF` from `import.meta.env.VITE_SUPABASE_URL` (via the same
+   `deriveProjectIdentity` the generator already used) and REJECTS an index whose
+   `manifest.sourceProjectRef` disagrees — but only when THIS deployment itself has a real hosted
+   project configured (`VITE_SUPABASE_URL` is not the well-known local/CI-placeholder URL). A
+   local dev build or CI's own placeholder-URL build has nothing meaningful to gate against and
+   stays informational, matching `build-index.ts`'s own local/hosted distinction. `verify-index.ts`
+   gained the same gate as an opt-in (`SCANNER_INDEX_EXPECTED_SOURCE_REF`), never derived
+   automatically from `VITE_SUPABASE_URL` at verify/build time — that variable is a placeholder in
+   CI's `build-and-test` job on purpose, and hard-gating on it there would fail every ordinary CI
+   run against the real, correctly-hosted committed index.
+6. **`verify-index.ts` is build-load-bearing (F-23).** `stage-index-assets.mjs` now imports and
+   calls `verifyCurrentGeneration` directly (via `tsx`, not plain `node` — the staging script now
+   runs the same way `scanner:index:build`/`scanner:index:verify` already did) BEFORE copying
+   anything into `public/`, failing `prebuild` (and therefore `pnpm build`, including CI's
+   `build-and-test` job) loudly on any corruption. The CLI entry point
+   (`pnpm scanner:index:verify`) is now a thin wrapper over the same exported function.
+7. **Atomic publish (F-24).** `scripts/scanner-visual-index/atomic-publish.ts` extracts
+   write-temp-verify-rename as reusable, independently-tested primitives.
+   `publishGenerationAtomically` never creates the final `generations/<id>/` directory until the
+   staged content passes the SAME checks `verify-index.ts` runs on a committed index;
+   `publishPointerAtomically` updates `current.json` LAST, itself via write-temp-then-rename. A
+   process killed at any point leaves `current.json` naming the previous valid generation (or
+   absent, on a first-ever build) — proven by a dedicated interruption-simulation test, not just
+   asserted from reading the script.
+8. **Keyset pagination (F-25).** `drainAllCardPages` (`src/domain/scanner/index-pagination.ts`)
+   changed from OFFSET (`.range(from, to)`) to keyset (id-cursor, `LIMIT pageSize`) — stable
+   under concurrent inserts/deletes anywhere in the table, unlike an ordinal offset walk.
+   `build-index.ts` additionally takes an exact count both BEFORE and AFTER the full drain and
+   refuses to certify the result if they disagree (no single transaction spans an hours-long
+   paginated walk, so this is detection of gross mutation, not true snapshot isolation — the same
+   honest scope `pagination-integrity.ts`/D-074 already discloses for the M13 export).
+9. **Explicit generator target (F-22, local-dev policy).** `build-index.ts` now requires
+   `--target=local` or `--target=hosted` explicitly (or `SCANNER_INDEX_TARGET`) — no silent
+   default. `--target=hosted` refuses to run without `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`
+   already exported (never falls back to the local demo stack for what must be a shippable index).
+10. **Bounded stale-cache cleanup (F-42).** `src/platform/scanner-cache-cleanup.ts` deletes any
+    Cache Storage entry matching a known scanner-cache prefix but absent from an explicit current
+    allowlist, run once at app boot from the MAIN THREAD (not a Service Worker `activate`
+    handler — this project's `generateSW` Workbox strategy has no seam for custom activate logic
+    without switching to `injectManifest`, a materially larger change; Cache Storage is
+    origin-scoped, reachable identically from `window`). Bounded and prefix-scoped: never touches
+    an unrelated cache name, never wipes everything.
+11. **Local dirty-worktree marker (F-43).** `vite.config.ts`'s `resolveBuildSha()` appends
+    `+dirty` to the local-fallback commit sha when `git status --porcelain` is non-empty.
+    `CF_PAGES_COMMIT_SHA` (the production path) is untouched — Cloudflare Pages always builds a
+    clean checkout, so `git status` is never consulted there.
+12. **Runtime checksum + expanded diagnostics.** `visual-worker.ts` independently re-hashes the
+    fetched `embeddings.bin` via `crypto.subtle.digest` and compares it to
+    `manifest.embeddingsSha256` once per newly loaded generation (never per scan); it also
+    cross-checks the fetched trio's own content actually hashes to the `contentId` its URL was
+    published under. `ScannerDiagnostics` gained `indexContentId`/`indexSourceProjectExpected`/
+    `indexSourceProjectMatch`/`indexRuntimeChecksumVerified`/`indexRuntimeChecksumMs`/
+    `indexModelRevision`/`indexGeneratedAt`/`indexEmbeddingsSha256` so a stale or wrong-project
+    index is impossible to hide in a debug-panel screenshot or copied diagnostics paste.
+13. **P84's debug-only rank-lookup tooling, ported.** P84 (`feat/m15-p84-visual-retrieval-
+    forensics`, a sibling branch off the same base commit, not merged) built
+    `getExpectedCardRank(cardId)` — re-ranks the last scan's cached query vector against the FULL
+    index without re-embedding, gated to resolve `null` outside `?scannerDebug=1` WITHOUT ever
+    calling the visual client — and raised the debug-only shortlist/candidate-list depth
+    (`VISUAL_DEBUG_SHORTLIST_SIZE` 50->200, `DEBUG_EXTENDED_CANDIDATE_LIMIT` 20->100; production's
+    own `VISUAL_SHORTLIST_SIZE` of 30 is untouched). Ported here by hand (not cherry-picked — this
+    branch's index-publishing changes touch overlapping worker/client surface) since P87 and P84
+    were developed in parallel from the same base and P84 was never merged into this branch's
+    history.
+14. **Existing 19,501-card index repackaged, not rebuilt.** A one-time migration script
+    (`scripts/scanner-visual-index/migrate-to-content-addressed.ts`) repackaged the already-valid,
+    already-hosted-sourced committed index under its correct content id, computed locally from the
+    committed bytes — zero DINO re-embedding, zero database access, zero owner multi-hour rebuild.
+
+**Alternatives considered.** Query-string cache-busting on the existing fixed path — rejected:
+the prompt explicitly disfavors it as the primary design, and it does not stop the Service
+Worker's own separate CacheFirst layer from serving a stale entry keyed by the un-versioned base
+URL depending on exact Workbox cache-key normalization. Dropping `immutable` and using a short
+`max-age` with revalidation instead of content-addressing — rejected as a first choice per the
+prompt's own preference for genuine immutability; would still cost a round-trip revalidation on
+every cold scanner load. A Service-Worker `activate`-handler cache cleanup — rejected for F-42
+specifically because of the `generateSW`-strategy constraint above; main-thread cleanup reaches
+the identical Cache Storage entries.
+
+**Consequences.** A rebuilt index (owner-run `pnpm scanner:index:build --target=hosted`) now
+mints a genuinely new URL automatically — no cache can ever serve mixed old/new generation data,
+and a client already open when a new generation ships picks it up on its next scanner session
+(pointer fetch bypasses every cache layer) without needing to wait out any TTL. `stage-index-
+assets.mjs` failing loudly on a corrupt index is a deliberate new build-time failure mode; a
+developer who edits a generated index file by hand (never expected in normal use) now sees an
+immediate, explicit build error instead of a silently-shipped corruption. The runtime
+source-project gate means a genuinely wrong-project index degrades gracefully to OCR-only
+exactly like a missing/corrupt one always has — never a crash, never a silent wrong-catalog
+resolution.
+## D-102 — OCR engine forensics; a bounded multi-line collector-number recovery pass; name-lexicon and structured collector-number parsing tooling shipped, NOT wired into production retrieval (P85)
+
+Full account in `docs/SCANNER_RESEARCH.md` §7g. Summary for a session that hasn't read that:
+
+1. **Built the project's first real, ground-truthed OCR accuracy corpus** —
+   `scripts/scanner-ocr-benchmark/`, reusing the existing TCGdex fetcher and BOTH existing
+   augmentation modules (P76's `augment.mjs`, P79's `hard-augment.mjs`) for 9 realistic
+   perturbation profiles per card. Ran actual Tesseract.js 7 PSM/preprocess forensics instead of
+   reasoning from single real-device screenshots the way every prior M15 session had to.
+
+2. **The pre-existing PSM 7 (single-line) default was already correct** for both name and number
+   fields when a candidate ROI genuinely contains one line — measured directly against 4 other
+   modes, not assumed. No PSM change was warranted for the existing single-line pass.
+
+3. **Real bug found and fixed:** a correctly-cropped collector-number strip routinely contains TWO
+   visual lines (the id plus an adjacent illustrator-credit or copyright line) on BOTH vintage and
+   modern layouts — confirmed by direct visual inspection of the actual crop images on two real
+   cards. PSM 7 cannot read a two-line image at all; it returns empty. Fixed with a bounded THIRD
+   pass (`analyze.ts`'s `readBestRoi`, new `multiLineExtract` parameter) using PSM 6 (uniform
+   block) ONLY for the collector-number field, ONLY when both existing single-line passes
+   (contrast, then binarize) already found nothing at all — never extra cost on an already-working
+   scan, at most 2 extra recognition calls in the worst case.
+
+4. **A second real bug found and fixed WHILE building the above, before it shipped:** the naive
+   version of this fix let a vintage card's copyright YEAR ("© 1995") win as a fake "collector
+   number" — a bare, prefix-less 4-digit token that structurally parses via the existing
+   `looksLikeCollectorNumberText` but is not a real printed id (this catalog's local ids never
+   reach 4 digits without a total attached). Closed with a stricter predicate
+   (`looksLikePlausibleMultiLineToken`) used ONLY by the new multi-line fallback — the existing,
+   already-tested `looksLikeCollectorNumberText` used everywhere else is untouched.
+
+5. **Full-corpus benchmark result (BASELINE P82/P83 vs. NEW P85):** see §7f's table for exact
+   numbers. The fix is real and directly confirmed on individual lightly-degraded images, but its
+   measured recovery rate across the full 9-profile perturbed corpus is small — most perturbation
+   profiles (blur/glare/shadow/tilt) degrade the small, often-stylized printed collector number
+   past what any page-segmentation mode can recover, consistent with §7c/P79's own "combined
+   photometric defects collapse every method" finding for the visual channel. Disclosed as a
+   genuine, still-open, hard sub-problem — not a claim that collector-number OCR is now solved.
+
+6. **Name-lexicon fuzzy resolution (`src/domain/scanner/name-lexicon.ts`) and structured
+   collector-number parsing (`src/domain/scanner/collector-parse.ts`) ship as tested, available
+   domain tooling — NEITHER is wired into the production retrieval/scoring path this session.**
+   The name lexicon needs a real production-scale unique-name list to be worth wiring in; no
+   Supabase credentials were available this session to generate one from the real ~20,946-card
+   catalog (the same standing gap every M15 session since P75 has disclosed) — the demo lexicon
+   this session generated from the 988-card OCR benchmark corpus (667 unique names, 8,021 bytes)
+   is a real, measured confirmation of the "far fewer unique names than printings" premise, but not
+   itself production-scale evidence. Wiring either module in ungated by real evidence would be
+   exactly the "blindly ship a complicated ensemble" this project's discipline exists to prevent —
+   same reasoning D-097/D-099 already applied to the auxiliary visual signal and the perceptual-
+   hash channel.
+
+**Not changed:** P80/P81/P82's name-field ROI logic or scoring (name recognition is byte-for-byte
+unchanged this session), the committed 19,501-card DINO index, `engine.ts`'s matching/scoring
+weights, any migration (still 90), any financial semantic. No card was special-cased anywhere.
+
+## D-103 — evidence-aware matcher redesign closes F-02; visual-dominance guard; OCR-confidence-weighted evidence reliability (P88)
+
+Full account: `ai_outputs/Claude_outputs/output_88.txt`. Responds to the independent adversarial
+audit (`ai_outputs/Claude_outputs/output_86.txt`, Opus 5/MAX effort) that BLOCKed release on two
+P0 findings — F-01 (stale visual-index caching, owned by a parallel P87 session) and F-02
+(visual-evidence scoring, this session).
+
+**F-02, the core problem:** `visualEvidencePoints`' 62-point ceiling at similarity==1.0 was
+structurally below a coincidental two-signal OCR text convergence on a WRONG card
+(`collector-number-exact` 45 + `name-exact` 30 [+ `language-match` 5] = 75-80) — a realistic
+strong visual match (similarity 0.85-0.90) scored only 41-48 points under the old linear curve,
+so a single OCR misread that happened to structurally match a different card's printed id/name
+could ALWAYS outrank a genuinely correct, strong visual match. This is the audit's identified
+mechanism behind the project's own measured 99.7% (visual-alone) -> 95.8% (hybrid) TOP1 regression
+(`docs/SCANNER_RESEARCH.md` §7b).
+
+**Fix, two parts, deliberately not just "raise the ceiling":**
+
+1. `visual-evidence.ts`'s point curve is now piecewise, banded to P84's own calibration
+   (D-102's sibling session): near-zero in the 'weak' band, a real but capped scale in 'moderate',
+   and a discrete jump into 'strong' territory (>= similarity 0.82, P84's own same-card floor)
+   reaching ~55-92 points. A realistic strong match now scores ~61-71 — genuinely competitive with,
+   though still not automatically dominant over, a coincidental text convergence.
+2. A new **visual-dominance guard** (`engine.ts`'s `applyVisualDominanceGuard`) is the actual
+   structural guarantee: when the visual channel produces a genuinely STRONG (>= 0.82) anchor for
+   one specific candidate, any OTHER candidate whose own visual similarity is none/weak has its
+   TEXT-only evidence discounted (halved) before ranking — unless that text evidence is itself
+   total-coverage-convergent (id + name + set + language all agreeing, score >= 90, an escape
+   hatch for a genuine multi-signal coincidence rather than a two-signal one). The guard never
+   fires when no candidate reaches the strong band (so P84's catastrophic ~0.18 regime, where
+   WRONG-card similarity is systematically higher than the true card's own, stays fully inert and
+   never punishes trustworthy OCR — the opposite failure mode the audit also warned against), and
+   never fires against a candidate whose own visual similarity is ALSO strong (two genuinely
+   similar prints/artworks — collector number should differentiate those, not a visual veto).
+
+**Verified against the exact pre-P88 formula, not just asserted:** the isolated pure repro (correct
+card carries zero text evidence at all; a different, wrong card coincidentally converges on
+id-exact + name-exact + language-match) scores, under the OLD formula, correct=48 / wrong=80 (wrong
+wins — reproduces the audit's finding exactly); under the NEW formula, correct=100 (clamped) /
+wrong=40 (guarded) — correct wins
+(`tests/domain/scanner/engine-visual-dominance.test.ts`).
+
+**Verified against the project's own existing benchmark methodology**, not just synthetic
+adversarial unit cases: re-ran `pnpm scanner:visual:benchmark` (P76's real 240-card/6-set/1,440-
+query corpus, real production matcher, real DINOv2 embeddings) with this session's NEW matcher.
+Hybrid TOP1 = **99.4%** (TOP3/TOP5 = 100%/100%), vs. the documented OLD hybrid TOP1 of 95.8%
+(`docs/SCANNER_RESEARCH.md` §7b) and visual-alone TOP1 of 99.7% (both figures reconfirmed by this
+same re-run). The hybrid-vs-visual-alone gap shrank from -3.9 points to -0.3 points on the
+project's own existing measurement — real, run, measured evidence, not merely reasoned.
+
+**F-26** (companion finding): `visual-text-disagreement` was pure unread telemetry (three non-test
+`git grep` hits, none of which changed behavior) — now caps tier below HIGH when the disagreement
+is meaningful (visual-only-best reaches at least the 'moderate' band), and is explicitly excluded
+for a 'weak'/catastrophic disagreement so it can never punish otherwise-trustworthy text (the
+opposite-direction requirement the audit's own prompt insisted on holding simultaneously).
+
+**F-27:** non-finite similarity (NaN/Infinity/-Infinity) now fails closed to zero evidence in both
+`visualEvidenceTier` and `visualEvidencePoints`, rather than propagating a corrupted number into
+diagnostics.
+
+**F-12 (scoring-layer half):** collector-number/name text evidence is now scaled by a new
+OCR-confidence reliability multiplier (`ocrTextReliability`) and, for the collector-number field,
+by `collector-parse.ts`'s structural confidence (`structuralReliability` — LOW-confidence shapes
+only, e.g. a stray single letter + digit or a bare 4+-digit run; the ordinary MEDIUM real-catalog
+shape, a bare 1-3-digit vintage id, is NOT discounted). Both are backward-compatible: an omitted
+confidence (every pre-P88 caller/test) resolves to full reliability. The ROI-selection-layer half
+of F-12 (OCR confidence never gated `isNumberRoiConfident`'s early-exit) is a separate, paired fix
+in `analyze.ts` — see `output_88.txt`.
+
+**Cherry-picked from P85** (reviewed, not blindly trusted — diffs read in full before applying):
+`name-lexicon.ts`, `collector-parse.ts`, the bounded multi-line collector-number OCR recovery pass,
+and the OCR forensics/benchmark tooling (commits `3c86999`/`56338ca`/`56e2757`/`f2ff180`). This
+session's own structural-confidence-based reliability weighting builds directly on
+`collector-parse.ts`'s bands.
+
+**Not changed:** the committed 19,501-card DINO index; the visual embedding pipeline (P84's own
+scope); scanner batch/UI save-state (P89's own scope); any migration (still 90); any financial
+semantic. No card was special-cased anywhere.
+
+**Not done, disclosed rather than silently skipped:** a scale-appropriate benchmark against the
+real 19,501-card hosted catalog (F-03) — blocked on hosted Supabase credentials, the same standing
+gap every M15 session since P75 has disclosed; production wiring of the name-lexicon (no real
+production-scale lexicon exists without those same credentials — the exact generator command is
+recorded in `output_88.txt` for whichever future session has them); real-device performance
+measurement.
+
+---
+
+## D-104 — Scanner UI state-machine concurrency, idempotency-reuse UX, and OCR-engine/worker test hardening (P89)
+
+**2026-09-02 · Accepted**
+
+**Context.** P86's independent adversarial audit found a cluster of real concurrency and UX gaps
+in the scanner's UI layer, all independent of the two P0 findings (F-01/F-02) P87/P88 owned:
+cancelling an in-flight analysis did not stop it from later clobbering a different, already-retaken
+capture (F-05); `openEnvironmentCamera`'s "stops any previous session" guarantee was false under
+concurrent invocation (F-06); the shutter and "Add cards" buttons had no synchronous in-flight lock
+(F-07/F-10); "Done" after a partial batch commit silently discarded not-yet-saved survivor items
+with no warning, unlike every other exit path in the same feature (F-09); a scanner
+idempotency-key-reuse rejection was mislabeled as a generic "failed, edit or remove" error, inviting
+a genuine duplicate (F-19); `ScannerOcrEngine`'s worker lifecycle/race-safety had zero dedicated
+tests and an unverified disposal-during-recognition claim (F-13/F-14/F-15); the visual-embedding
+crop fix (P77) and the visual worker's `init()` (where 3 of 4 confirmed real-device root causes
+lived) had no regression test that could actually catch a reintroduction (F-30/F-31); and the
+stale-deployment auto-reload (D-100) only ever consulted the scanner's own batch for "unsaved
+work," silently discarding in-progress purchase/sale form input on every other route (F-40), while
+the already-built `checkForNewDeployment()` polling path was never wired to any actual checkpoint
+(F-41).
+
+**Decision.** Fixed on its own branch/draft PR (`fix/m15-p89-ui-concurrency-release-hardening`,
+PR #68), touching only scanner UI/controller/state, the OCR engine, two small new platform modules,
+and the purchase/sale form pages — never `engine.ts`/`visual-evidence.ts` (P88's scope) or the
+visual-index cache path (P87's scope):
+
+1. **Cancellation is generation-ref guarded, matching the existing camera-open pattern.**
+   `ScannerPage.tsx` bumps `analysisGenerationRef` on cancel/retake/route-exit/unmount/controller
+   replacement; `analyzeCapture`'s `.then()`/`.catch()` no-ops when stale. A best-effort
+   `AbortSignal` additionally short-circuits `analyzeCapture` between pipeline stages (after
+   rectification, after the OCR/visual race, after candidate retrieval) so a cancelled analysis
+   skips remaining work — but this cannot interrupt an already-in-flight OCR/visual call; the
+   generation-ref no-op is what actually guarantees a stale result never reaches the UI, matching
+   the audit's own accepted minimum bar ("if full cancellation is not practical: stale results MUST
+   at minimum no-op").
+2. **Camera-open serialization moved into the primitive itself.** `camera-session.ts`'s
+   `openEnvironmentCamera` now serializes concurrent opens via its own generation counter, rather
+   than relying on caller discipline alone.
+3. **Synchronous locks for shutter and commit.** `capturingRef`/`committingRef`, set before any
+   `await`, gate `handleShutter`/`handleCommit` against a double-tap/multi-touch race a rendered
+   `disabled` attribute alone cannot close (React commits asynchronously).
+4. **"Done" after a partial commit routes through the same nonempty-batch guard every other exit
+   path already has** — the shared discard-confirmation sheet renders distinct copy for the
+   post-commit case ("Review remaining" / "Discard remaining and exit") so it can never read as an
+   ordinary acknowledgement that quietly means "discard."
+5. **Idempotency-key-reuse gets an honest, specific message.** `classifyAcquisitionFailure` gained
+   the same string-matching branch the sibling Openings feature already had, naming the possibility
+   of a pre-existing entry rather than inviting an edit-and-resubmit that creates a real duplicate.
+   A `needsVerification` batch item's quantity/condition edits are frozen (reducer no-ops the
+   mutation) until removed, with an explicit confirmation naming that removal only clears the local
+   session record.
+6. **App-wide unsaved-work registry** (`src/platform/unsaved-work-registry.ts`) replaces the
+   scanner-only flag `build-freshness.ts`/`StaleDeploymentBanner.tsx` consulted — the scanner batch,
+   Add/Edit Purchase, Add/Edit Sale (dirty-by-diff snapshots) and the Portfolio bulk-action
+   selection all register into one shared union, so a stale-deployment reload now prompts instead of
+   silently discarding typed-but-unsaved input on any of those routes. `checkForNewDeployment()` is
+   now actually invoked from two real checkpoints (`visibilitychange`-to-visible and every completed
+   router navigation), both bounded by its existing ≤1/60s rate limit — no new polling loop.
+7. **OCR engine gets dedicated tests and two real concurrency fixes found while writing them:**
+   `dispose()` now rejects every in-flight AND already-queued `recognize()` call's own disposal
+   signal (a queued-but-not-yet-running call had no signal registered before), and `recognize()`
+   itself serializes `setParameters`+`recognize` as one logical operation per instance. `CanvasPool`
+   (`analyze.ts`) gained the identical mutex shape, wrapping the ENTIRE per-capture OCR pipeline
+   (not just one `recognize()` call) — the shared `working` canvas draw happens before any `await`
+   the old code protected.
+8. **A real, built-worker browser smoke test** (`tests/e2e/visual-worker-real-browser.spec.ts`)
+   drives the actual `dist/assets/visual-worker-*.js` chunk through init + one embed-and-search
+   call. This is what actually FOUND that Playwright's Windows-hosted WebKit build (26.5) reports
+   `OffscreenCanvas` as undefined inside the worker — real Safari has shipped it in Worker scopes
+   since 16.4 (March 2023), so this is most likely a testing-environment gap, not a genuine
+   real-device regression, but was never confirmed against a real Mac/iPhone this session. Fixed
+   regardless of root cause with a structured, attributable error instead of a raw
+   `ReferenceError` (superseded by D-105's real fallback, below).
+
+**Disclosed gap, not fixed:** F-20/F-21 (a race-path idempotency SQL check, and grader/grade
+material-mismatch DB coverage) — Docker Desktop was unavailable this session, so no migration was
+written and no DB test was run; both remain real, if low-probability, open items for a session with
+a working local Postgres stack.
+
+**Not changed:** matcher/visual scoring (P88's scope); the visual-index cache path (P87's scope).
+
+---
+
+## D-105 — M15 mega-integration: P87 + P88 + P89 combined, worker fallback, expected-card debug UI, hosted build-safety hardening (P90)
+
+**2026-09-02/03 · Accepted**
+
+**Context.** P87 (D-101, content-addressed visual-index publishing), P88 (D-102/D-103, OCR
+forensics + matcher redesign) and P89 (D-104, UI concurrency + release hardening) were built in
+parallel, isolated worktrees against the identical base commit
+(`7d037e6db30296157a1d746a8844738767591d07`), each as its own draft PR against
+`feat/m15-scanner-integrated-p68` (PR #63). This session combined all three onto one integration
+branch (`feat/m15-p90-mega-integrated`) via real `git merge` (preserving each branch's own commit
+history, not squash/cherry-pick), resolved the resulting conflicts by hand, then closed the
+concrete gaps the combined branches still left open.
+
+**Merge conflicts and how they were resolved** (semantic reconstruction, never `--ours`/`--theirs`):
+
+1. **`docs/DECISIONS.md`/`docs/SCANNER_RESEARCH.md`** — P87 and P88 each independently used
+   `D-101`/section `7f` for unrelated content (P87: index publishing; P88, carrying P85's own work:
+   OCR forensics). Renumbered collision-free: D-101 (P87, index publishing) unchanged, P85's OCR
+   forensics section/decision moved to §7g/D-102, P88's own matcher redesign moved from D-102 to
+   D-103, with every internal cross-reference updated to match.
+2. **`package.json`** — kept every real script both sides added (P88's OCR-benchmark/name-lexicon/
+   ROI-fixture-smoke scripts), dropped only the one entry P89 correctly identified as dead
+   (`scanner:hash-index:build`, F-32 — pointed at a directory that was never created this
+   milestone).
+3. **`src/features/scanner/analyze.ts`** — the highest-risk conflict: P88's full OCR pipeline
+   (multi-line collector-number recovery, per-field confidence threading, the `OcrDebugTrial` trial
+   log) needed to end up wrapped in P89's `pool.withLock` mutex (F-15, serializing the whole
+   per-capture pipeline against concurrent callers) without losing either side's behavior. Resolved
+   by reconstructing the merged function from both branches' actual git history (not just the
+   conflict-marker diff, which interleaved partial statements confusingly) and verifying byte-exact
+   equivalence to P88's own logic via the full existing OCR test suite, unchanged.
+4. **`src/main.tsx`** — P87's `cleanupObsoleteScannerCaches()` call and P89's `router.subscribe`
+   deployment-freshness checkpoint are independent, unrelated fire-and-forget calls; both kept.
+
+**Section 9 — a real OffscreenCanvas fallback, not just a structured error.** P89's F-31 finding
+(above) left the worker unable to convert a captured frame to RGBA on any engine lacking
+`OffscreenCanvas` inside a Worker scope. Investigated whether a main-thread conversion could
+restore full functionality rather than degrading to OCR-only, against four criteria (must preserve
+privacy, never upload the image, never explode memory, never duplicate the encode/decode): the
+worker now reports `offscreenCanvasAvailableInWorker` in its 'ready' message; when false,
+`VisualRecognitionClient.analyze()` converts the bitmap to RGBA on the main thread itself (which
+always has a real canvas, `OffscreenCanvas` or `<canvas>`, regardless of Worker support) and
+transfers the raw buffer instead of the `ImageBitmap` — exactly one canvas draw happens either way,
+never a duplicate. `tests/e2e/visual-worker-real-browser.spec.ts` now exercises this fallback
+directly against the real built worker chunk whenever it detects the gap, proving a REAL successful
+embed+search result instead of merely tolerating the old structured error.
+
+**Section 10/12/21 — the expected-card debug UI P87 shipped plumbing for but never built.** Under
+`?scannerDebug=1`, "Check expected card rank" searches the catalog (reusing the same
+`searchCards`/`CardImage` pattern `PullPickerSheet.tsx` already established), and picking a card
+calls `getExpectedCardRank` without touching the batch or scanner candidate choice — memory-only,
+no persistence, no image involved. Extended beyond P87's visual-only rank with a real HYBRID rank:
+a new `rankScannerCandidatesFull` (engine.ts) reuses the exact scoring/visual-dominance-guard
+pipeline `matchScannerObservation` runs in production, minus the top-N truncation, so a named card
+gets a genuine rank position even outside the visible shortlist; `controller.ts` keeps the most
+recent scan's actual OCR/visual evidence (`lastMatchContext`) purely so this debug tool can score
+against it, never fed back into matching. A card never retrieved by the scan itself is fetched by
+id and scored as an honest what-if. The debug panel also gained a compact "at a glance" summary
+line (build SHA, index content id, visual/OCR state, top1, expected rank) above the existing raw
+diagnostics text, now behind a collapsible `<details>`.
+
+**Section 14/15 — the platform build verifier and the hosted missing-index policy are now
+mode-aware.** P87 disclosed `verify-scanner-platform-build.mjs` failing its own connect-src shape
+check (23/24) under the local/CI placeholder Supabase origin (`http://127.0.0.1:54321`), treating a
+structural impossibility (a local Supabase stack cannot present an `https://*.supabase.co` origin)
+as a security failure. The verifier now detects LOCAL/CI PLACEHOLDER vs HOSTED mode from the
+connect-src origin itself, reports which one it verified, and only relaxes the origin-shape
+requirement in local mode — a real hosted build still enforces the full `https://*.supabase.co`
+shape with no exception. Manually confirmed both branches: 24/24 in local mode, unchanged strict
+behavior in hosted mode. Separately, `stage-index-assets.mjs`'s missing-index handling was a
+blanket warn-and-skip regardless of build target — correct for local development (an OCR-only
+fallback is honest and expected) but wrong for a build Cloudflare Pages will actually deploy. It now
+hard-fails (`process.exit(1)`) when `CF_PAGES_COMMIT_SHA` is set (the same signal
+`vite.config.ts`'s own `resolveBuildSha` already uses to recognize a real Pages build) and the index
+is missing, while local/CI builds keep the original warn-and-skip. Verified directly by simulating
+both branches against the real committed index (temporarily renamed and restored).
+
+**Section 16 — a plain-language fallback note, not silence.** A confirmed terminal visual-channel
+failure already degraded matching to OCR-only silently (visual-worker.ts never crashes) with zero
+user-facing signal either way. Added one calm line to the scanner intro screen
+("Visual recognition unavailable on this device — text recognition is still available"), shown only
+on a genuine terminal `failed` state (never while still loading, never speculative), carrying none
+of the debug panel's own integrity vocabulary (content ids, checksums, source-project refs).
+
+**Sections 17/18/19/20/22/24 — verified already coherent by construction, no code change
+required** (each investigated directly against the merged tree, not assumed):
+
+- **Index update during an open session (§17).** A `VisualRecognitionClient`/Worker is constructed
+  once per `ScannerPage` mount (`useMemo` keyed on `userId`) and loads exactly one index generation
+  for its whole lifetime — so a scan mid-session never mixes generation A and B embeddings by
+  construction. A newly published generation becomes visible only on the NEXT worker construction
+  (route re-entry, or the existing stale-deployment reload), which always re-fetches `current.json`
+  fresh (`cache: 'no-store'`, both HTTP- and Cache-Storage-layer). This is exactly the prompt's own
+  preferred policy, achieved by the existing per-mount lifecycle with no dedicated
+  freshness-triggered worker-disposal code needed.
+- **Unsaved-work registry vs. index freshness (§18).** These are two independent, non-competing
+  mechanisms: the app-wide stale-deployment reload (D-104's unsaved-work registry) governs WHOLE-APP
+  reloads; the index pointer refetch (D-101) is a silent, lower-level worker-internal concern that
+  never prompts or reloads anything on its own. There is exactly one reload-trigger path, not two
+  racing ones.
+- **Abort vs. visual-worker state, and the OCR mutex vs. cancellation (§19/§20).** P89's own
+  disclosed scope decision (best-effort `AbortSignal` plus the generation-ref no-op guarantee, D-104
+  above) is unchanged by this integration — P87/P88 never touched `ScannerPage.tsx`/`camera-
+  session.ts`/`ocr-engine.ts` at all (confirmed: these files merged with zero conflicts), and this
+  session's own `analyze.ts` merge preserves P89's `pool.withLock` wrapping the whole OCR pipeline
+  exactly as designed, verified by the full existing concurrency test suite passing unchanged.
+- **F-02 post-integration sanity (§22).** `tests/domain/scanner/engine-visual-dominance.test.ts`
+  (P88's own adversarial suite pinning the exact pre/post-fix formula) and the full
+  `tests/domain/scanner/engine.test.ts` suite both pass unchanged post-merge — this session touched
+  `engine.ts` only to add `rankScannerCandidatesFull`, a pure additive wrapper reusing the exact same
+  private `scoreCandidate`/`applyVisualDominanceGuard` the production path already uses.
+- **Test-fixture consistency (§24).** P87's cache-coherence E2E and P89's real-worker E2E already
+  independently reference the identical content-addressed `/scanner-assets/visual-v1/index/...`
+  layout (one via mocked fixtures, one via the real committed data) — no flat/legacy layout
+  assumption survives anywhere in either suite.
+
+**Schema version.** `SCANNER_SCHEMA_VERSION` bumped 1 → 2 (`src/platform/build-info.ts`) — the
+diagnostics shape has grown materially since v1 across P87 (content-addressed index fields),
+P88 (OCR confidence/trial fields, hybrid score components), P89 (unchanged diagnostics shape) and
+this session (the expected-card hybrid-rank fields) without ever being bumped; a copy-diagnostics
+paste from a stale cached build is now distinguishable from the current shape by this field alone,
+same discipline `APP_BUILD_SHA` already established for build identity (D-100).
+
+**Verified this session (real, run, not assumed):** `pnpm typecheck`/`pnpm lint`/`pnpm format:check`
+clean; full unit suite green (1052+ tests, up from the pre-merge branches' own totals); a full
+production build succeeds and `verify-scanner-platform-build.mjs` passes 24/24 in local mode;
+`stage-index-assets.mjs`'s hosted/local missing-index branches both manually exercised against the
+real committed index. Full E2E/DB gates deliberately deferred to the next session per this prompt's
+own instruction (overnight priority: integration, not ceremony).
+
+**Not changed:** any financial semantic; any migration (still 90); the committed 19,501-card DINO
+index's actual content. No card was special-cased anywhere.
+
+**P94 correction (2026-09-03):** Section 9's claim above — that the main-thread RGBA-conversion
+fallback restores "a REAL successful embed+search result" on an engine lacking `OffscreenCanvas`
+inside a Worker — is only PARTIALLY true and was never actually run to completion before this
+session; `tests/e2e/visual-worker-real-browser.spec.ts` deferred the E2E gates and the fallback's
+own real-search assertion was never exercised. Running it for real (P94 §24) against Playwright's
+WebKit build (which reports `OffscreenCanvas` undefined in Worker scope) showed the fallback
+converts the captured frame correctly — `visual-worker.ts` itself never constructs an
+`OffscreenCanvas` on this path — but `@huggingface/transformers`' OWN internal image-preprocessing
+step (resizing the input to the model's expected dimensions) unconditionally constructs its own
+`OffscreenCanvas`, with no fallback of its own, regardless of whether the caller supplied an
+`ImageBitmap` or raw RGBA bytes. The result on such an engine is still a well-formed, attributable
+failure (`Error: OffscreenCanvas not supported by this environment.`, thrown from inside the
+library's own minified code — confirmed by inspecting the built `visual-worker-*.js` chunk
+directly) rather than a working search. This is a real, currently open limitation: OCR-only
+matching remains fully available on such a device (D-105 §16's plain-language fallback note still
+applies), but visual recognition genuinely does not work there, and no session has fixed this yet —
+it would need patching or replacing `@huggingface/transformers`' own `RawImage` resize step, which
+is a materially larger change than this correction. Never confirmed against a real Mac/iPhone
+either way. The test now asserts this exact disclosed failure shape when
+`offscreenCanvasAvailableInWorker` is false, rather than a full search success it cannot actually
+prove on this engine.
+
+## D-106 — M15 matcher correctness rewrite: continuous scoring, reliability-weighted evidence, severe-blur abstention (P93)
+
+**2026-09-03 · Accepted**
+
+**Context.** A cross-branch adversarial audit (P92, `ai_outputs/Claude_outputs/output_92.txt`)
+re-derived D-103's F-02 fix by hand against the actual shipped code and found it structurally
+incomplete, not merely under-tuned: (1) the guard's escape hatch required a total-coverage text
+signal (`id + name + set + language`) production can never produce — `rawSetText` is hardcoded
+`null` at every call site, so the maximum reachable text score (80, with the language credit D-106
+itself now removes — see below) never reaches the escape hatch's 90-point threshold; (2) the
+guard's 0.82 activation threshold sat ABOVE P84's own measured MEAN genuine-match similarity
+(0.812, D-101 §2), so an entirely ordinary correct scan could land on the wrong side of the guard
+by sampling noise alone, reproducing F-02's exact failure mode at the threshold's own typical
+operating point; (3) the same absolute-threshold design meant a defect-driven false visual spike on
+a WRONG card could actively discount the TRUE card's text evidence with no escape route — strictly
+worse than having no guard at all. P92 also flagged N-04 (a 17-point scoring discontinuity exactly
+at 0.82), N-05 (the display-score clamp colliding with margin/tie logic, risking a UUID-decided
+rank #1), and N-09 (language-match agreement scoring points despite being guaranteed, not
+evidence, given the retrieval layer's own English-only filter).
+
+**Decision.** Redesigned the mechanism rather than re-tuning the constant, per three structural
+changes:
+
+1. **Continuous visual-evidence curve** (`src/domain/scanner/visual-evidence.ts`) — the old
+   three-band piecewise curve (weak/moderate/strong, meeting at hard threshold boundaries) is
+   replaced by a single continuous logistic curve, `points(s) = ceilingPoints / (1 + e^{-k(s-m)})`,
+   solved algebraically from two P84-calibrated anchors (`points(moderateMin=0.68) ≈ 25`,
+   `points(strongMin=0.82) ≈ 60`), giving `k ≈ 11.53`, `m ≈ 0.7655`. No jump anywhere; every ±0.01
+   similarity step changes points by only a few. `strongMin`/`moderateMin`/`weakMin` remain as
+   CLASSIFICATION boundaries (tier labels, reason codes) but no longer gate the point curve itself.
+2. **Visual-anchor reliability replaces the absolute dominance guard**
+   (`computeVisualAnchorReliability`/`applyVisualAnchorReliability`, `engine.ts`) — P88's
+   discount-the-competition guard is gone entirely. The new mechanism only ever ADDS a
+   corroboration boost to the single candidate the visual channel most confidently supports (the
+   "anchor" — highest finite similarity this scan), scaled by two continuous, non-negative signals:
+   how far into calibrated same-card territory the anchor's own similarity sits (reusing
+   `visualEvidencePoints`'s own curve, `strengthFactor = points/ceilingPoints` — no second
+   calibration to drift out of sync), and how much clearer the anchor is than the runner-up visual
+   candidate (`marginFactor`, saturating at 0.12 similarity units — P84's own geometry-regime mean
+   true-vs-nearest-wrong margin). A single visual candidate with nothing to compare against gets a
+   fixed neutral margin factor (0.7) rather than 0 (unprovably discriminative ≠ disproven) or 1 (an
+   unverified lone reading should not get full credit). Because no candidate's score is ever
+   REDUCED by this mechanism, it structurally cannot reproduce failure mode #3 above — the worst
+   case is simply "no boost," identical to the mechanism not existing. Under P84's catastrophic-
+   defect calibration (same-card mean 0.10-0.13, nearest-wrong mean 0.28-0.41 — wrong-card
+   similarity systematically HIGHER), `strengthFactor` for whichever candidate tops that regime is
+   already near zero, so the guard-equivalent mechanism stays structurally inert there without a
+   second, separate abstention check.
+3. **Rank score vs. display score** (`RankedScannerCandidate.rawRankScore`, N-05) —
+   ordering/margin/tier logic now reads a full-resolution, UNCLAMPED raw score exclusively; the
+   existing `score` field is a clamped-to-[0,100] DISPLAY value derived from it only at the very
+   end, never fed back into any decision. `cardId` is reduced to the final exact-identity-stability
+   tie-break, reached only when raw score AND own visual similarity are BOTH exactly equal — never
+   a meaningful signal. (P93 deliberately did NOT add "original retrieval-array position" as an
+   intermediate tie-break step, despite reading naturally as one: this module has always guaranteed
+   permutation-invariance of its input array, pinned by an existing property test, and plain array
+   position is not the same thing as a genuine retrieval rank a future data-layer field could
+   provide — see engine.ts's own doc for the full reasoning.)
+
+**N-09 — language-match no longer scores.** Audited via a full call-flow trace, not assumed:
+`controller.ts` derives `languageHint` from `scannerSessionStore`, whose `language` field's TYPE is
+the literal `'en'` (V1 is English-only by design, not convention), and BOTH
+`retrieveScannerCandidates` and the visual-shortlist enrichment path (`getCardsByIds`) pass that
+same `'en'` as an explicit server-side filter — every candidate that can reach the scorer in
+production already has `card.language === 'en'`. Agreement is guaranteed, not evidence, and was
+inflating every candidate's score UNIFORMLY (never changing relative ranking, but capable of
+pushing an absolute score across a tier boundary on a fabricated +5 that discriminated nothing). The
+`languageMatch` weight is removed from `SCORING_WEIGHTS`; the mismatch penalty (−12) is KEPT — a
+genuine disagreement remains real, if currently unreachable, evidence against a candidate. The
+'language-match' reason code is still pushed for diagnostic legibility even though it now moves
+zero points. **Real consequence, disclosed rather than silently absorbed:** pure two-signal
+(id-exact + name-exact) text convergence now tops out at 75 — below `highMinScore` (80) — where it
+previously could reach exactly 80 (HIGH) via the now-removed +5. Genuine HIGH confidence from text
+alone now requires the full id+name+set composition (rare in production, since `rawSetText` is
+never populated) or the visual channel's own corroboration boost — a deliberate tightening, not a
+regression: it closes the same "2.5-signal coincidence masquerading as 3-signal certainty" gap F-02
+itself was about, just for the language credit specifically.
+
+**N-19 — OCR-noise slack for the body-text-contamination penalty.** The old 26-character ceiling
+(`analyze.ts`'s `looksLikeBodyTextNotName`) equalled the longest known real card name with ZERO
+slack for OCR noise — a single stray inserted character on that exact name ate the full 60-point
+penalty. Length alone no longer disqualifies a candidate until a real, no-slack-needed hard ceiling
+(30); between the old and new ceilings, only the independent sentence-boundary and word-count checks
+can flag a candidate, and real multi-sentence rules prose reliably trips one of those regardless of
+its exact length, so no real rejection power is lost.
+
+**Severe-blur visual abstention (D-103's own capture-quality.ts, ported and WIRED).** P91 built and
+tested `src/domain/scanner/capture-quality.ts` (Laplacian-variance blur gate,
+`BLUR_ABSTAIN_THRESHOLD=378`) but deliberately shipped it unwired. P93 ports it unchanged and wires
+it below `ScannerPage` at the controller/`rectify-capture.ts` boundary (never touching
+`ScannerPage.tsx` itself, in scope-safety coordination with the parallel P94 session): the blur
+score is computed on the canonical rectified `RgbaImage` `rectify-capture.ts` already produces
+before encoding it to a blob (no extra decode), and when it falls below the threshold, ONLY the
+visual channel is skipped for that scan — OCR text recognition and manual search proceed
+unaffected. New diagnostics: `CAPTURE_BLUR_SCORE`, `CAPTURE_SEVERE_BLUR`, `VISUAL_ABSTAINED`,
+`VISUAL_ABSTAIN_REASON`. The threshold itself is NOT re-derived this session (see the continuous-
+severity benchmark below) — kept at P91's own calibrated value.
+
+**Real benchmark evidence (all actually run this session, not estimated):**
+
+- **240-card/6-set benchmark** (`pnpm scanner:visual:benchmark`, same methodology D-097/D-102
+  established): `NEW_HYBRID_TOP1=99.7%` (TOP3/TOP5 100%/100%, n=1440) — matches `VISUAL_ONLY_TOP1`
+  exactly (99.7%), closing the hybrid-vs-visual-alone gap the audit tracked from -3.9pts
+  (pre-D-103) to -0.3pts (D-103) to ~0pts here.
+- **Real corpus-scale adversarial benchmark** (new, `scripts/scanner-recognition-lab/experiments/
+  08-p93-hybrid-false-confidence.ts`, reusing P91's cached ~4,300-card corpus/reference index): the
+  F-02 adversarial construction (a different corpus card given the true card's own coincidental
+  id+name text match; the true card carries zero text evidence) run through the REAL production
+  matcher, n=300 cards × 3 conditions = 900 trials. Clean: 100% correct, 0% false-HIGH. Geometry-
+  only (`tilted-offcenter`, mean true similarity 0.7999 — essentially P84's own calibrated 0.812):
+  60.7% correct outright, only 1.33% false-HIGH — the true card frequently still wins this
+  worst-case-constructed adversarial matchup at the exact operating point the audit flagged as
+  broken, and even when it loses, it almost never does so at HIGH confidence. Catastrophic
+  (`tilted-glare-shadow-blur`, mean true similarity 0.1195): 0% correct (expected — the true card
+  has genuinely no evidence of its own in this construction) but ALSO 0% false-HIGH — the matcher
+  loses honestly (MEDIUM/LOW/NONE) rather than confidently wrong, in every one of 300 trials.
+- **Continuous blur-severity sweep** (new, `.../09-p93-continuous-blur-severity.ts`, n=80,
+  isolated Gaussian-blur-sigma dimension only — P91 already found its glare/shadow metrics have
+  ~zero discriminative power and neither is wired into production): real TOP1 retrieval accuracy on
+  pure blur alone stays high (96.3%+) at blur scores already below `BLUR_ABSTAIN_THRESHOLD`,
+  cratering steeply between sigma 8-10 (71.3% → 36.3%). The shipped threshold sits conservatively
+  on the safe side of that cliff — appropriate, since real captures rarely blur in total isolation
+  (P91's own calibration bundles blur with the co-occurring tilt/glare/shadow a phone photo
+  realistically has) — and is NOT changed based on this isolated-dimension evidence, per this
+  session's own instruction not to broaden the gate without evidence.
+
+**Explicitly not done, disclosed rather than silently skipped:** the real 19,501-card hosted-catalog
+confusable-group benchmark (F-03) remains open, unchanged since every M15 session since P75 — this
+session's adversarial/blur-severity benchmarks reuse P91's ~4,300-card public-corpus approximation,
+not the real catalog. The dual-prototype reference-index recommendation (P91) was not implemented
+(would require re-embedding the real 19,501-card index, an irreversible multi-hour operation not
+undertaken without a dedicated follow-up decision). No new DINO model was evaluated (D-098 stands
+unchanged — P91 already found no evidenced reason to switch).
+
+**Verified this session:** `pnpm typecheck`/`pnpm lint`/`pnpm format:check` clean; full unit suite
+green; the 240-card visual benchmark and both new real-corpus experiments above actually run, not
+estimated. Full E2E/DB/build gates run as part of this session's own closing verification (see
+`ai_outputs/Claude_outputs/output_93.txt`).
+
+**Not changed:** any financial semantic; any migration; the committed 19,501-card DINO index's
+actual content or the DINOv2-small model itself. No card was special-cased anywhere.
+
+**P99 addendum — the anchor-reliability boost is QUADRATIC in the anchor's own similarity, not a
+fixed or externally-calibrated increment (P98 finding, honestly disclosed here as this decision's
+own follow-up instructed).** `applyVisualAnchorReliability`'s boost is
+`round(visualPoints * ANCHOR_BOOST_MAX * reliability)`, and `reliability`'s own `strengthFactor`
+term is `visualPoints / VISUAL_EVIDENCE_CURVE.ceilingPoints` — substituting back in gives
+`boost ≈ 0.008696 × visualPoints² × marginFactor`: the anchor's own visual reading is used TWICE,
+once linearly as `visualPoints`, once again to scale its own boost. Concretely, a well-separated
+single-evidenced candidate (`marginFactor` saturated to 1) with ZERO text evidence reaches the
+`highMinScore` threshold at similarity ≈0.817 — an entirely ORDINARY similarity, barely above P84's
+own 0.812 mean genuine-match value, not a rare tail event. This is monotonic, never negative, and
+never touches any candidate other than the anchor (the safety property this decision's own §5/§12
+already claimed and which still holds) — what was previously undisclosed is the MAGNITUDE: the
+addition grows quadratically in the anchor's own points, not linearly. The one manifestation where
+this could matter (a wrong visual anchor outranking a DIFFERENT card's genuine text evidence) is
+independently caught by the pre-existing `visual-text-disagreement` cap (unchanged by this
+decision, inherited from P88/F-26; M93-14 pins it). A single-evidenced-candidate shape — where
+text-best and visual-best trivially coincide because neither candidate has any text score, so the
+disagreement cap structurally cannot engage — is NOT independently dangerous either, since a HIGH
+tier there still requires the anchor to genuinely be the scanned card for the result to be correct;
+it is disclosed here because the magnitude itself was previously untested, not because a concrete
+false-positive path was found. Boundary pinned permanently: `tests/domain/scanner/
+engine-p93-redesign.test.ts`'s M93-17 (P99), a single well-separated zero-text anchor at similarity
+0.817 asserted to reach HIGH — a future re-tune of `ANCHOR_BOOST_MAX` or the visual-evidence curve
+that silently reopens this now has a test to fail. `SCORING_TIERS` itself was separately
+revalidated against this widened raw-score range (0-2198 real adversarial trials across four
+scenario categories via `scripts/scanner-recognition-lab/experiments/10-p99-scoring-tiers-sweep.ts`,
+`pnpm scanner:recognition-lab:p99-scoring-tiers-sweep`): the shipped constants produced ZERO false
+HIGH results across every trial and category, and no combination in a real parameter-grid sweep
+strictly dominates them (fewer false-HIGH with no worse false-medium-or-above and no worse
+true-card HIGH recall) — kept unchanged, with evidence, not by coincidence.
+
+## D-107 — Canvas-free DINOv2 preprocessing closes the real WebKit/OffscreenCanvas gap (P96)
+
+**2026-09-03 · Accepted**
+
+**Context.** P90's main-thread RGBA-conversion fallback (D-105) solved only half of the real
+OffscreenCanvas dependency: it stopped THIS worker from constructing an `OffscreenCanvas` itself
+when converting a captured `ImageBitmap` to RGBA, but `@huggingface/transformers` 4.2.0's own
+`AutoProcessor`-produced `BitImageProcessor` calls `RawImage.resize`/`.center_crop` internally
+during `processor(image)`, and those unconditionally construct their OWN `OffscreenCanvas`
+regardless of whether the caller already supplied raw RGBA bytes — confirmed by reading the
+installed bundle directly (`node_modules/@huggingface/transformers/dist/transformers.js`'s
+`src/utils/image.js` section: `createCanvasFunction`/`toCanvas`, gated only on
+`apis.IS_WEB_ENV`, no non-canvas branch exists). P94 found this for real (§24, D-105's own
+addendum): running the real WebKit E2E spec against Playwright's WebKit build (which genuinely
+reports `OffscreenCanvas === undefined` in Worker scope) produced a well-formed but real failure —
+`Error: OffscreenCanvas not supported by this environment.` — thrown from inside the library's own
+minified preprocessing code, not from any of this project's own worker logic.
+
+**Decision.** Rather than patching or forking `@huggingface/transformers` to remove one internal
+`OffscreenCanvas` call, this session reimplemented the exact preprocessing numerically —
+`src/domain/scanner/dino-preprocess.ts`'s `preprocessRgbaForDino`: RGBA → drop alpha → bilinear
+resize (shortest edge to 256, matching `preprocessor_config.json`'s `size.shortest_edge`) → center
+crop 224×224 → rescale (`1/255`) → normalize (ImageNet mean/std, both copied verbatim from the
+committed `public/scanner-assets/visual-v1/model/preprocessor_config.json`, never remembered
+defaults) → permute HWC→CHW. Pure typed-array arithmetic — no canvas, no DOM, no
+`OffscreenCanvas` anywhere in the file, so it runs identically on every JS engine.
+`visual-worker.ts`'s new `runModelOnRgba` branches on `OFFSCREEN_CANVAS_AVAILABLE_IN_WORKER`: when
+true, the existing AutoProcessor path is completely unchanged (zero risk to the already-proven
+99.7%-TOP1 Chromium path); when false, `processor(image)` is skipped entirely — never merely
+caught — in favor of the canvas-free path, which feeds the model directly via a hand-built
+`Tensor('float32', ..., [1,3,224,224])`.
+
+**RESAMPLE NOTE, disclosed rather than glossed over.** The preprocessor config's `resample: 3`
+(bicubic) label does NOT describe what the browser-path AutoProcessor has ever actually done in
+this project: `RawImage.resize`'s web-environment branch calls `ctx.drawImage(canvas, 0, 0, w, h)`
+unconditionally and never consults `resample` at all (that parameter is Node/`sharp`-only). So
+there is no existing browser-path pixel algorithm for this reimplementation to bit-match — the
+real target is RETRIEVAL-OUTCOME parity, not literal resample-algorithm parity, and this module
+uses plain bilinear resampling (half-pixel-center convention) as a simple, easy-to-verify choice.
+
+**Parity evidence (`scripts/scanner-preprocess-parity/`, `pnpm scanner:preprocess:parity`), run for
+real over 100 real card images × 6 shape variants (portrait-native, landscape-rotated,
+odd-dimensions, near-crop-size ~230px, large-iPhone-scale ~3024×4032, RGBA-semi-transparent) = 600
+evaluations, comparing this module's output against the library's own Node/`sharp`-backed
+AutoProcessor path (same pinned model, same input pixels, isolating the comparison to the
+preprocessing algorithm itself) — both queried against the real committed 19,501-card production
+index:**
+
+- `PREPROCESSOR_PARITY_IMAGES=100` (600 total evaluations across 6 shape variants)
+- `PREPROCESSOR_MEAN_COSINE=0.9762` (min 0.9202 across all 600 evaluations)
+- `PREPROCESSOR_TOP1_AGREEMENT=96.2%` overall — by variant: portrait-native 100%, RGBA-
+  semi-transparent 100% (confirms alpha is genuinely ignored, not merely untested),
+  odd-dimensions 99%, large-iPhone-scale 98%, near-crop-size 95%, landscape-rotated 85% (the one
+  weak spot — rotation changes which pixels land at the resize/crop boundary more than any other
+  variant; disclosed as a real, measured residual, not hidden)
+- `PREPROCESSOR_TOP5_AGREEMENT` (identical top-5 sets) `=32.3%`; mean top-5 SET OVERLAP `=79.6%`
+  (most disagreement is a swapped 4th/5th-place near-tie, not the true match falling out of
+  contention — the two paths' shortlists overlap substantially even when not byte-identical)
+
+**Verdict.** 96.2% TOP1 agreement and 0.976 mean cosine similarity are not literal 100% parity, but
+the evidence supports the substitution: DINOv2 embeddings are already known (P91/P93/P95) to be
+robust to small preprocessing perturbations at this similarity range, and this module is a
+fallback path — it activates ONLY on an engine that would otherwise have zero working visual
+recognition at all (an outright crash), so a small measured gap from a from-scratch bilinear
+resize against the library's own resize is a real improvement over the status quo, not a
+regression against any currently-shipping behavior. The landscape-rotated residual is flagged as a
+disclosed follow-up: a future session with more time could measure whether area-averaging
+downsampling (rather than plain bilinear) narrows that specific gap, but was not judged worth
+delaying this fix over given the fallback framing above.
+
+**iPhone memory (§9, not separately benchmarked on real hardware this session — reasoned from the
+implementation).** `preprocessRgbaForDino` allocates, at peak: one RGBA→RGB float buffer
+(`width×height×3×4` bytes), one resized buffer (`resizedWidth×resizedHeight×3×4` bytes, typically
+smaller since the source is downscaled to a ~256px short edge), and the final fixed 224×224×3×4
+(~600KB) tensor — each intermediate is a local variable eligible for GC the instant the next stage
+starts (no retained references), so this never holds more than roughly two full-resolution-scale
+buffers simultaneously, the same order of magnitude the existing OffscreenCanvas path already
+holds (a canvas backing store plus its `ImageData` buffer). No raw card image is ever persisted by
+either path.
+
+**Not changed:** the default OffscreenCanvas-available path (byte-for-byte the same code, same
+proven 99.7% TOP1); the committed 19,501-card visual index; any migration; any financial semantic.
+`docs/SCANNER_RESEARCH.md` §11 records the same evidence in narrative form.
+
+## D-108 — ScannerPage's controller is double-constructed by React StrictMode's render-purity check; the wrong instance gets disposed, permanently breaking OCR/visual analysis under `pnpm dev` (P96 disclosed, FIXED P99)
+
+**2026-09-03 · Accepted (finding disclosed; fix deferred)**
+
+**Context.** Building the first-ever real, authenticated, camera-free (file-picker) scanner E2E
+test (P96 §15 — closing P94's own disclosed "real nonempty-scanner-batch authenticated E2E" gap)
+surfaced a genuine bug no prior session's E2E coverage had ever exercised: every real capture
+analysis failed with `ScannerEngineDisposedError` ("The card reader was closed"), thrown by
+`ocr-engine.ts`'s own disposal guard, visible in the page as `ReviewView` bouncing back to
+"Use photo"/"Retake" with that exact error text instead of reaching a result.
+
+**First hypothesis, tried and DISPROVEN.** The obvious suspect was `ScannerPage.tsx`'s route-exit
+cleanup effect (`useEffect(() => () => {..., controller.dispose()}, [controller])`) running under
+React StrictMode's well-known EFFECT double-invoke (mount → synchronous synthetic cleanup →
+synchronous synthetic remount, all for the same committed render). A fix deferring the dispose to a
+cancelable macrotask (`setTimeout(..., 0)`, cancelled by a same-tick StrictMode remount) was built
+and shipped — and the bug still reproduced identically. That disproof is what led to the real
+diagnosis below; the timer-based fix has been reverted (it added real complexity for zero benefit).
+
+**Actual root cause, confirmed by instance-tagged debug logging** (a monotonic counter plus
+`console.error` at construction/dispose/analyzeCapture, read back through Playwright's real
+browser console — not inferred from source reading alone):
+
+```
+controller #1 CREATED userId=<real-uuid>
+controller #2 CREATED userId=<same real-uuid>      <- SAME dependency, constructed AGAIN
+controller #1 DISPOSE (already disposed=false)      <- #1, not #2, gets torn down
+controller #1 analyzeCapture called, disposed=true  <- #1, not #2, is what the click handler uses
+```
+
+React 18/19 StrictMode has a SEPARATE, RENDER-level double-invoke (distinct from the effect one):
+for the initial mount, the component function body itself is called twice as part of React's
+"detect impure renders" check, and the FIRST call's rendered output is discarded in favor of the
+SECOND. But `useMemo(() => getScannerUiController(userId), [userId])`'s factory is not automatically
+"pure-checked" or deduplicated by React — it is a real side effect (constructs a `ScannerOcrEngine`
++ `VisualRecognitionClient`), and it genuinely runs on BOTH invocations, producing two independently
+alive controller instances for the identical `userId`. Empirically, the FIRST instance — not the
+second, and not whichever one a naive "first render is thrown away" mental model would predict — is
+the one that ends up wired into the actually-committed render's event handlers (`handleUsePhoto`
+closes over it), while the route-exit cleanup effect (keyed on `[controller]`, correctly following
+that same first instance through React's hook-identity bookkeeping) disposes it once StrictMode's
+effect-level double-invoke runs its synthetic cleanup/remount cycle. The deferred-timer fix could
+never have worked: the double CONSTRUCTION happens at the RENDER phase, before any effect (or its
+cleanup timing) is even in play — there is no effect-level signal available to distinguish "which of
+these two already-constructed instances is the real one."
+
+This was invisible to every prior M15 session because every existing scanner E2E spec drives the
+PRODUCTION preview server (`pnpm build && pnpm preview`, where StrictMode's entire double-invoke
+machinery — both the render-level and effect-level checks — is compiled out and inert; the real
+deployed PWA was NEVER affected). The `desktop-chromium-authenticated` project P94 built is the
+only one that drives Vite's DEV server (`pnpm exec vite`, where StrictMode is live), and nothing had
+ever navigated it to `/scan` before this session's new test.
+
+**Decision.** Disclose and defer, rather than ship a second unverified fix attempt. The correct fix
+requires moving controller construction OUT of `useMemo` and INTO the mount effect itself (stored in
+a ref that event handlers read), so React's render-level double-invoke can no longer produce two
+independently-alive instances in the first place — `useMemo`'s own factory has no such guarantee
+StrictMode respects, but effect bodies genuinely only run once per REAL mount. That restructuring
+touches every one of `controller`'s ~9 read sites in `ScannerPage.tsx`, several inside their own
+`[controller]`-keyed effects (prewarm, fast-baseline polling, `analyzeCapture`, `commitBatch`), plus
+two `useState` lazy initializers that currently read `controller` synchronously at first render
+(`getFastScannerState`/`getVisualPrewarmState` — safe to default to `'not-loaded'` unconditionally
+instead, since a truly fresh controller cannot report anything else at that exact instant, but still
+a change to verify). This is a materially larger, riskier change — in one of this project's most
+heavily adversarially-reviewed files — than this session could responsibly design AND re-validate
+end to end after two already-spent diagnostic attempts, for a bug with zero production impact.
+`tests/e2e/authenticated/account-boundary.spec.ts`'s scanner-batch test (P96 §15) is marked
+`test.fixme()` with this decision's own diagnosis inline, ready to un-skip the moment a future
+session lands the ref-based restructuring — the test itself is otherwise complete and correct.
+
+**Verified:** the full unit suite (1142/1142) and lint/format/build are all clean after reverting the
+ineffective timer fix and removing every debug log added during diagnosis (confirmed by
+`tests/ui/scanner-network-audit.test.ts`'s own static privacy audit, which caught the leftover
+`console.error` calls immediately — a real, useful catch of exactly the class of regression it
+exists to prevent). Production build/bundle size unaffected (ScannerPage chunk unchanged at 105.52
+KB raw, byte-identical to pre-investigation).
+
+**Not changed:** anything about the controller's own dispose()/analyzeCapture() contracts; the
+production (StrictMode-inert) code path, which was never affected by this bug in the first place;
+any other file. The DECISIONS.md entry originally written for the (disproven) timer-based fix has
+been fully replaced by this one rather than left alongside it as a second, contradictory record.
+
+**P99 update — FIXED, exactly along the lines this entry's own "Decision" section above
+prescribed.** Controller construction moved out of `useMemo` (a render-time side effect with no
+StrictMode double-invoke protection) into the mount effect itself, keyed on `userId` alone:
+
+```ts
+const controllerRef = useRef<ScannerUiController | null>(null)
+useEffect(() => {
+  const instance = getScannerUiController(userId)
+  controllerRef.current = instance
+  return () => {
+    /* camera/capture/analysis cleanup, then: */
+    if (controllerRef.current === instance) controllerRef.current = null
+    instance.dispose()
+  }
+}, [userId])
+```
+
+Effect bodies (unlike render bodies and `useMemo` factories) genuinely run once per REAL mount even
+under StrictMode — its synthetic effect-level double-invoke is mount → cleanup → remount, so the
+FIRST instance is always disposed by the SAME synthetic cycle that constructs the second, leaving
+exactly one live instance by the time any real interaction is possible; an account switch
+(`userId` change) disposes the outgoing user's instance before the new one exists, so a new user
+can never inherit the previous user's controller.
+
+Deliberately NO mirrored `useState<ScannerUiController | null>` alongside the ref — an early draft
+of this fix had one (`setController(instance)` called synchronously inside the effect body) and
+`pnpm lint` correctly rejected it: `react-hooks/set-state-in-effect` (a real error in this
+project's ESLint config, not a warning) flags exactly that pattern. Removed rather than suppressed:
+`controllerRef` gives event handlers (`handleUsePhoto`/`handleSearchSubmit`/`handleCommit`) and the
+debug-panel JSX prop a synchronous, always-current reference; the prewarm/polling/variant-choices
+effects that used to depend on a `controller` state value are now keyed on `userId` instead and
+read `controllerRef.current` directly — correct because React always runs a component's effects in
+declaration order on every commit (StrictMode's double-invoke runs the full set, then all cleanups
+in reverse, then the full set again), so any effect declared AFTER the construction effect is
+guaranteed to see the ref already populated. The two `useState` lazy initializers
+(`fastScannerState`/`visualScannerState`) default unconditionally to `'not-loaded'`, exactly as
+this entry's own "Decision" section anticipated.
+
+All ~9 read sites updated; full unit suite green (1153/1153: P96's 1142 + 6 D-109 guard tests + 5
+D-110 sale-form guard tests); typecheck clean; lint 0 errors / 28 warnings (P96's own reported
+baseline, unchanged — two transient `react-hooks/exhaustive-deps` warnings from capturing
+`cameraGuardRef`/`captureStoreRef` were resolved by copying them to local consts before the
+cleanup closure, not suppressed); format clean; ScannerPage chunk size unaffected.
+`tests/e2e/authenticated/account-boundary.spec.ts`'s scanner-batch test's `test.fixme()` is removed
+— it now runs for real (see the P99 output record for the pass evidence).
+
+**Verification method:** the authenticated E2E test this same D-108 investigation produced
+(`tests/e2e/authenticated/account-boundary.spec.ts`) drives the real dev server (`pnpm exec vite`,
+where StrictMode is live — the same server the original diagnosis used) through a real
+`analyzeCapture()` call; that test's own pass/fail is the real, execution-level proof this fix
+works under StrictMode, not just that the diff reads correctly. See its result recorded in the P99
+output file rather than restated here.
+
+---
+
+## D-109 — `ScannerPage`'s exit-requested effect could resurrect a camera the user had just closed (P98, FIXED P99)
+
+**2026-09-04 · Accepted**
+
+**Context.** P98's adversarial audit (§10) traced a real, confirmed gap in P94's own camera
+token model (`camera-session.ts`'s `openSeq`/`liveGeneration`, D-096-adjacent — see that module's
+own doc comment): the PRIMITIVE itself is sound (P92's original N-10 finding stays fixed, proven
+across the full multi-call ordering matrix in `tests/ui/scanner-camera.test.ts`), but ONE caller
+site in `ScannerPage.tsx` used it incoherently. Every other place in the file that stops the
+camera also invalidates the page's OWN "do I still want a camera" generation counter — the
+camera-open effect's teardown, `handleShutter`, `handleFilePicked`, the D-108 controller-lifecycle
+effect's cleanup — except the `exitRequested` effect (fired by the "Close scanner" X button),
+which called `stopActiveScannerCamera()` but left the counter untouched.
+
+**Concrete failure sequence (P98's own repro, confirmed by code trace).** The camera step mounts
+and starts a real `acquire()` call (a real permission-prompt round trip on a device that hasn't
+granted camera access yet). The user taps "Close scanner" while that prompt is still pending —
+`state.exitRequested` becomes true; `state.step` does not change synchronously, so the camera-open
+effect's own `cancelled` flag is not yet set; `navigate()` is async, so real unmount can lag well
+behind this point. If the permission prompt is then granted, `acquire()` resolves; the camera-open
+effect's `.then()` handler checked only `cancelled || generation !== <the old, un-bumped counter>`
+— both false — so the stream attached and `CAMERA_STARTED` dispatched. **The camera the user had
+explicitly closed turned back on**, for a window bounded by router-transition latency.
+
+**Fix.** Extracted the page's per-mount "do I still want a camera" counter into its own small,
+directly-testable primitive, `CameraAcquisitionGuard`
+(`src/features/scanner/camera-acquisition-guard.ts` — distinct from, and layered on top of,
+`camera-session.ts`'s own module-level `openSeq`/`liveGeneration`, which answers a different
+question: "which overlapping `acquire()` call is authoritative for the shared stream slot," not
+"does the PAGE still want a camera at all"). Every call site that used to bump a bare
+`cameraGenerationRef.current` now calls the same guard's `begin()` (starting a new cycle, used when
+actually (re)opening the camera) or `invalidate()` (ending the current cycle without starting a new
+one, used by every close/exit/unmount path, `exitRequested`'s now included) — one consistent
+vocabulary instead of an ad hoc counter a future call site could as easily forget to bump again.
+
+**Not** a second, independent boolean/race model layered beside the existing architecture — this is
+the SAME generation-counter pattern the file already used everywhere else, now applied
+consistently, with the one previously-inconsistent call site brought in line.
+
+**Tests** (`tests/ui/scanner-camera-acquisition-guard.test.ts`, unit-level — no React
+component-rendering infrastructure exists in this project; see that file's own header comment):
+`CameraAcquisitionGuard`'s `begin()`/`invalidate()`/`isCurrent()` semantics pinned directly, plus
+three scenarios reproducing `ScannerPage.tsx`'s own camera-open `.then()`/`.catch()` guard clauses
+verbatim against the real `openEnvironmentCamera` primitive: (1) acquire pending → exit requested →
+acquire resolves ⇒ stream stopped immediately, camera stays closed; (2) acquire A pending → exit →
+explicit reopen B → A resolves late → B resolves ⇒ only B attaches (A's late arrival rejects via
+`camera-session.ts`'s own superseded-call guard, and the page's stale-generation check independently
+would have discarded it either way); (3) unmount while pending ⇒ no resurrection. All three pass
+against the real primitives, not a reimplementation.
+
+**Verified:** unit suite 1148/1148 (up from P96's 1142: +6 for this fix's own tests); typecheck/
+lint/format clean; no change to `camera-session.ts` itself (P94's primitive was already correct).
+
+---
+
+## D-110 — `SaleFormPage`'s permanent prefill latch could leak one holding's line items into a different holding's sale form (P98, FIXED P99)
+
+**2026-09-04 · Accepted**
+
+**Context.** P98's audit set out to confirm the StrictMode `setState`-after-real-unmount concern
+this prompt cycle originally raised about `SaleFormPage.tsx`'s holdingId(s) prefill effect, and
+found that concern is a non-issue in React 18 (`setState` on an unmounted component is a
+documented, silent no-op) — but investigating it surfaced a DIFFERENT, real, previously-untested
+bug: `prefillStarted` was a `useRef(false)` latch that flipped permanently true on the FIRST
+effect run and was never reset, keyed on nothing. `/sales/new` (reached from the central + menu,
+Portfolio's select mode, or Holding Detail's "Sell" button — all three via the same `holdingId(s)`
+search param, per this file's own header comment) has no `remountDeps` configured — so a
+same-component-instance navigation that changed `holdingIds` (e.g. browser back/forward landing on
+a different holding's sale-add URL) re-fired the effect, which then silently no-opped FOREVER: the
+NEW holding's own prefill never ran, and if the OLD holding's fetch was still in flight, its result
+landed later and unconditionally appended into whatever form was now on screen for the NEW holding
+— a genuine cross-entity data leak (one card's acquisition line silently injected into a different
+card's sale), with no existing test covering it.
+
+**Fix.** Replaced the permanent one-shot latch with `KeyedPrefillGuard`
+(`src/features/sales/keyed-prefill-guard.ts`) — the same identity/generation discipline
+`ScannerPage.tsx`'s `analyzeCapture` already used, and the same one D-109 (above) just applied to
+the camera-open path, extracted here as its own small class rather than re-derived inline so its
+semantics are directly unit-testable (no React component-rendering infrastructure exists in this
+project). `begin(key)` starts a fetch only for a genuinely NEW key (returning `null`, a no-op, for
+the SAME key StrictMode's synthetic double-invoke re-presents); `isCurrent(generation)` gates every
+`.then()`/`.catch()`/`.finally()` state update, so a stale result for a superseded key can never
+touch `items` or mark completion.
+
+`prefillReady` itself was also redesigned: instead of a boolean flipped true once by the effect
+(a synchronous `setState` in the effect body would itself violate `react-hooks/set-state-in-effect`
+— see D-108's own note on the identical trap), it is now DERIVED during render from comparing a
+`prefillCompletedKey` state value against the current `prefillKey`
+(`holdingIds.length === 0 || prefillCompletedKey === prefillKey`). This means a `holdingIds` change
+makes `prefillReady` false again immediately, with no effect tick needed — closing a second,
+related gap: `useIsDirtyByDiff` (`src/platform/unsaved-work-registry.ts`) captures its dirty-diff
+baseline on the FIRST render where `ready` is true and never re-captures it, so if `prefillReady`
+had gone true prematurely (before the new holding's own data arrived), the eventual real prefill
+would register as unsaved user edits against an empty/wrong baseline — a false "unsaved work"
+warning on a form the user never touched. The fix ensures the baseline is captured only once the
+CURRENT key's own prefill has genuinely completed.
+
+**Known residual (disclosed, not covered by this fix):** if the OLD holding's prefill had already
+completed successfully — populating `items` and capturing the dirty-diff baseline — BEFORE the user
+navigated to the NEW holding (as opposed to this fix's covered scenario, where the old fetch is
+still in flight at navigation time), `useIsDirtyByDiff`'s baseline stays locked to the old holding's
+data; the new holding's own prefill would then register as a dirty diff against that stale
+baseline. This is a narrower, lower-severity variant (the user actually saw the old holding's data
+render before navigating away, rather than a silent unseen leak) that the P98 audit's own named
+test scenarios do not cover and this session did not independently discover — flagged here for a
+future session rather than silently left undocumented.
+
+**Tests** (`tests/ui/sale-form-keyed-prefill-guard.test.ts`): `KeyedPrefillGuard`'s
+`begin()`/`isCurrent()` semantics pinned directly, plus two scenarios reproducing
+`SaleFormPage.tsx`'s own effect body verbatim against real controllable-timing async lookups: (1) A
+starts → navigate to B → A resolves late ⇒ A never appears in items, B's own prefill still
+completes correctly once it resolves; (2) A starts → navigate to B → A REJECTS late ⇒ no stale
+error/completion state leaks into B, B still completes normally afterward with the correct
+baseline-capture timing.
+
+**Verified:** unit suite 1153/1153 (+5 for this fix's own tests, on top of D-109's +6); typecheck/
+lint (0 errors, 28 warnings — P96's own reported baseline, unchanged)/format clean.
+`PurchaseFormPage.tsx` was checked and does NOT have an analogous async holdingId-keyed prefill (its
+own `useUnsavedWorkSnapshot` registration — referenced by this file's own F-40 comment — uses the
+default `ready=true`, no async prefill involved), so it is not affected and was not changed.
+
+---
+
+## D-111 — P99 follow-ups: landscape-preprocessor parity gap is a synthetic-only state; blur benchmark now routed through the real rectify pipeline
+
+**2026-09-04 · Accepted**
+
+**Landscape parity (P96's 85% weak spot, prompt §11).** Traced the full call chain from a real
+scan to the DINO preprocessing stage, code-verified rather than assumed:
+
+1. `controller.ts`'s `analyzeCapture` calls `rectifyCapture(capture, {debug})` — UNCONDITIONALLY,
+   before either the OCR or visual channel ever sees the frame (`rectify-capture.ts`'s own header:
+   "produces a canonical, card-only image that BOTH the OCR and visual channels then consume").
+2. `rectifyCapture` always returns a frame sized EXACTLY `RECTIFY_OUTPUT_WIDTH x
+   RECTIFY_OUTPUT_HEIGHT` = 700x980 — a fixed constant, never derived from the source capture's own
+   dimensions or orientation. This holds on BOTH branches: real corner detection warps the detected
+   quadrilateral to 700x980, and the `usedFallback: true` path (detection failed, or rectification
+   errored) still warps the plain nominal rectangle to the SAME fixed 700x980 via the identical
+   `warpPerspective` call — "rectification failed" and "no rectification requested" are
+   pixel-equivalent through the one code path, never a second special case (rectify.ts's own header
+   makes this explicit).
+3. `analyzeVisualSafely` (controller.ts) builds its `ImageBitmap` from `rectified.frame`'s blob
+   using `cardRect = {left:0, top:0, width:700, height:980}` (the full rectified image — no further
+   cropping), and hands that bitmap straight to `VisualRecognitionClient.analyze`.
+4. The bitmap's own `width`/`height` (read directly off the `ImageBitmap`, never recomputed) are
+   what eventually reach `visual-worker.ts`'s `runModelOnRgba`/`preprocessRgbaForDino` as the `rgba`
+   message payload.
+
+Conclusion: **a landscape-shaped (width > height) buffer can never reach
+`preprocessRgbaForDino`/`processor(image)` in the real production pipeline** — every real scan,
+regardless of camera orientation, device, file-upload EXIF orientation, or corner-detection success/
+failure, feeds the DINO preprocessing stage a fixed 700x980 PORTRAIT buffer. P96's own parity
+harness (`scripts/scanner-preprocess-parity/run-parity.ts`) tests a `landscape-rotated` variant by
+rotating a card image 90° and feeding the RAW (pre-rectify) buffer directly to both preprocessing
+paths — a deliberate stress test of the preprocessing ALGORITHM in isolation, which is a legitimate
+and useful thing to measure (it establishes a worst-case bound on `preprocessRgbaForDino`'s fidelity
+under an input shape the algorithm itself does not special-case for), but its 85% TOP1-agreement
+result describes a state this benchmark manufactures, not one the shipped call path can ever
+present to it. No preprocessing-orientation fix is needed or warranted — chasing this would tune
+against an input the production code structurally cannot produce (prompt §11's own instruction: "do
+not chase synthetic impossible states"). Recommend (documentation only, not code): the parity
+report's own summary should note this scope explicitly in future runs so a 85% number is never
+misread as a live production risk.
+
+**Blur benchmark full-pipeline validation (prompt §7/§8, P98's disclosed gap).**
+`scripts/scanner-recognition-lab/experiments/09-p93-continuous-blur-severity.ts` previously fed the
+blurred corpus image directly into `computeBlurScore`, skipping the real `rectifyCard` stage
+entirely — P98's audit confirmed this as a genuine calibration/production mismatch (nearest-neighbor
+downsample inflates Laplacian variance 2-5x over a filtered resize near the threshold boundary) that
+had never been closed. Fixed: the script now runs every query through the real `rectifyCard` (the
+identical platform-neutral function `rectify-capture.ts` calls) at the real 700x980 canonical size
+BEFORE computing the blur score, and embeds that SAME rectified image for retrieval (matching
+`rectify-capture.ts`'s own "both channels consume the same canonical image" contract) — see that
+script's own header for the full reasoning.
+
+**Real full-pipeline results** (`pnpm scanner:recognition-lab:p93-blur-severity`, 80-card sample,
+10-point Gaussian-sigma sweep, real production `rectifyCard` -> `computeBlurScore` -> real
+retrieval against the full 4,296-card benchmark corpus):
+
+| sigma | meanBlurScore | TOP1 acc | abstention rate | false-rejection rate | bad-capture catch rate |
+|---|---|---|---|---|---|
+| 0 (clean) | 8156.72 | 100% | 0% | 0% | n/a (0 bad captures) |
+| 1 | 4505.34 | 98.8% | 0% | 0% | 0% (n=1) |
+| 2 | 1149.70 | 97.5% | 1.3% | 1.3% | 0% (n=2) |
+| 3 | 330.82 | 95.0% | 81.3% | 81.6% | 75% (n=4) |
+| 4 | 128.58 | 90.0% | 100% | 100% | 100% (n=8) |
+| 6 | 37.97 | 86.3% | 100% | 100% | 100% (n=11) |
+| 8 | 14.88 | 72.5% | 100% | 100% | 100% (n=22) |
+| 10 | 8.90 | 37.5% | 100% | 100% | 100% (n=50) |
+| 14 | 4.66 | 6.3% | 100% | 100% | 100% (n=75) |
+| 20 | 3.36 | 3.8% | 100% | 100% | 100% (n=77) |
+
+**Disposition: KEEP 378, threshold now validated end-to-end.** The gate never misses a genuinely
+bad capture past the sigma=3 boundary (100% bad-capture catch rate from sigma=4 onward, holding
+through the most severe levels tested) — the safety property this project's own doctrine prioritizes
+("false confidence is worse than abstention," this module's own header). The real, disclosed cost
+sits exactly at the sigma=3 boundary: TOP1 accuracy is still 95% there, yet the gate already
+abstains on 81.3% of those captures — a real over-rejection this full-pipeline run newly quantifies
+precisely (the pre-P99 benchmark, which skipped the rectify stage, could only say the gate "trends
+conservative" without a number this sharp). This is DIRECTIONALLY consistent with, and now
+numerically confirms, P98's own finding from the un-rectified re-check (conservative, not
+dangerously loose) — it does not newly disqualify 378, it quantifies the safety margin's real cost.
+Per this prompt's own explicit instruction ("do not tune on the same cards used for validation"),
+no new threshold is derived from this 80-card sample; recalibrating narrower (to reduce the sigma=3
+false-rejection rate) would trade toward the riskier failure mode this project has repeatedly
+chosen not to accept, and is left as a properly holdout-separated follow-up, not attempted here.
+
+Note on `rectifyUsedFallbackRatePct` (85-100% across the sweep): expected and disclosed, not a
+defect — this benchmark's corpus images are tight card crops with no background, so the corner
+detector genuinely has no real margin to search (see the script's own header); the fallback path
+still exercises the identical bilinear-warp-then-nearest-neighbor-downsample resize chain under
+test, which is what this validation is actually checking.
+
+---
+
+## D-112 — dual-prototype reference index (`pristinePlus1Aux`), versioned multi-prototype format, backward-compatible with the shipped v1 index (P97)
+
+**2026-09-04 · Accepted**
+
+P91's recognition R&D (research/m15-p91-recognition-marathon) measured that reference-side
+multi-prototype augmentation — adding one auxiliary prototype per card, a centroid of 6
+deterministic photometric/geometric augmented views embedded and L2-normalized-averaged — closes
+most of the moderate-distortion accuracy gap at zero added query-time inference cost (one embed
+pass per scan, unchanged). P95 (research/m15-p95-recognition-phase2) independently re-confirmed the
+identical strategy (`pristinePlus1Aux`) in a full six-architecture head-to-head comparison: it wins
+or ties every non-catastrophic regime — including a NEW, more realistic "iPhone-like moderate"
+distortion profile P91 never tested — at the lowest complexity of any option that beats plain DINO,
+and explicitly REJECTED the alternatives a naive reading of the same evidence might suggest: image
+rerank (NCC/SSIM/histogram) is actively dangerous outside geometry-only distortion (a 68-69%
+false-confident rate on the realistic moderate regime); a general (non-blur) capture-quality gate
+has no viable precision/recall tradeoff; local-feature rerank is real but non-essential; a different
+backbone model has no evidence of being more photometric-robust than DINOv2-small. This session
+implements ONLY the recommended strategy — dual-prototype reference augmentation — deliberately not
+the rejected alternatives.
+
+**Format.** `VisualIndexManifest` gains three OPTIONAL fields — `prototypeCount`,
+`prototypeStrategy`, `prototypeStrategyVersion` — plus an optional `rowCount` cross-check, and
+`coverage` gains optional `cardsWithAuxPrototype`/`cardsAuxFallback`. Absent (every already-
+committed manifest) means implicitly `prototypeCount=1`, exactly today's shipped single-prototype
+shape — no regeneration required, no runtime behavior change for the existing index.
+`embeddings.bin` is card-major, prototype-minor (card0-proto0, card0-proto1, card1-proto0, ...);
+`decodeVisualIndex` validates the byte length against `cardCount * prototypeCount * embeddingDim`
+and rejects a mismatched `rowCount`, a non-positive/non-integer `prototypeCount`, or
+`prototypeCount > 1` without both strategy fields present. `searchVisualIndex` scores each card by
+the MAX dot product over its own prototype rows (P91/P95's own `searchMultiProto` reduction,
+reproduced exactly) and pushes exactly one hit per card — the matcher downstream (untouched, out of
+this session's scope) sees the identical "one similarity score per candidate" shape it always has.
+
+**Backward compatibility is load-bearing, not incidental — verified empirically, not just by
+design.** `buildIndexContentPayload`'s canonical hash object assigns the three new prototype fields
+WITHOUT `?? null` (unlike the existing `sourceProjectRef`/`sourceEnglishActiveCount` fields):
+`JSON.stringify` drops an `undefined`-valued key, so a v1 manifest (which never sets these fields)
+serializes to a BYTE-IDENTICAL payload to what this function produced before these fields existed —
+the content id of an already-published generation never shifts. This was proven, not assumed:
+`pnpm scanner:index:verify` was run against this repository's actual real, committed 19,501-card
+generation after every code change in this session, and it verifies to the exact same content id
+(`1a1df11a73c462d8`) P94 recorded. `CHECKPOINT_SCHEMA_VERSION` bumped 2 -> 3 and
+`CheckpointIdentity` gained required `prototypeCount`/`prototypeStrategy`/`prototypeStrategyVersion`
+fields, so a checkpoint from a prior (single-prototype) build session is automatically discarded and
+rebuilt from scratch — a single-prototype checkpoint can never silently resume into a dual-prototype
+build, and vice versa.
+
+**Auxiliary-prototype fallback (prompt §13).** A card whose pristine embedding succeeds but whose
+auxiliary (6-augmentation-centroid) computation fails is still indexed and fully searchable — its
+prototype-1 row is a deterministic DUPLICATE of prototype 0 (never a zero vector, which would make
+that prototype an artificially bad match instead of a neutral no-op) — `coverage.cardsAuxFallback`
+counts these; `coverage.cardsWithAuxPrototype` counts cards with a real auxiliary embedding. Unlike
+the (deliberately permanent, not-a-skip-gate) `auxFallback` checkpoint marker's role in earlier
+drafts of this session's own implementation, the SHIPPED behavior retries a failed auxiliary
+computation on every resumption until it actually succeeds — exactly mirroring how a failed
+PRISTINE embedding has always behaved (never persisted as "permanently given up"). `auxFallback` in
+the checkpoint is diagnostic-only, always overwritten fresh, and cleared on a later success.
+
+**Cost, measured against the real committed index, not estimated.** Real single-prototype generation:
+`embeddings.bin` 7,488,384 bytes (7.14 MB) + `card-ids.json` 760,540 bytes (0.73 MB) = 7.87 MB.
+Projected dual-prototype generation at the same real 19,501-card scale: `embeddings.bin`
+14,976,768 bytes (14.28 MB, exactly 2x) + the same `card-ids.json` = ~15.01 MB total — a ~7.14 MB
+delta, matching P95's own independent recomputation from this exact production format almost
+exactly. Decoded runtime memory (Float32, one generation held at a time, unchanged pattern from the
+single-prototype worker) roughly doubles in step: ~28.6 MB -> ~57.1 MB — an expected, disclosed
+consequence of dequantizing twice as many rows, not an accidental duplication; the worker never
+holds more than one decoded generation in memory at once, matching the existing single-prototype
+pattern exactly.
+
+**Not implemented this session, and why:** the real hosted 19,501-card dual-prototype rebuild, F-03
+against the real hosted catalog, the real-19,501-scale P95 reproduction, and the production name
+lexicon build all require `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`, which were not present in this
+environment (the same standing gap every M15 session since P75 has disclosed) — this session never
+fakes, estimates, or assumes those results; it ships CODE_READY_NEEDS_OWNER_BUILD with the exact
+commands recorded for the next session or the owner to run. The committed 19,501-card v1 index is
+untouched. No card was special-cased anywhere.
+
+---
+
+## D-113 — dual-prototype benchmark-leakage fix, fail-closed index schema v2, corrected re-run and quantization evidence (P100)
+
+**2026-09-04 · Accepted**
+
+P98's post-repair adversarial audit (output_98.txt §18-20) CONFIRMED a real methodology defect in
+P95's own two-stage architecture comparison (`experiments/17-two-stage-pipeline-search.mjs`): its
+"geometryOnly" query was constructed via `applyNamedProfile('perspective-rotate', buf, trueId)` —
+the exact same function, on the exact same source buffer, with the exact same deterministic
+per-card seed (`augment/photometric.mjs`'s `baseSeed + idx*97`) already used to build one of the
+six augmented views averaged into that card's own dual-prototype auxiliary embedding. The query
+was therefore byte-identical to one of the ingredients of its own reference — the reported 100%
+TOP1 on that regime measured near-tautological self-recall, not generalization. This decision
+records the fix, the corrected re-run, and the fail-closed index-format contract P98 additionally
+required before any real dual-prototype build.
+
+**1. Leakage fix.** `scripts/scanner-recognition-lab/augment/heldout.mjs` is a genuinely
+independent QUERY-side transform family for held-out validation — different `sharp` operations per
+effect than either `photometric.mjs` (reference augmentation) or `continuous.mjs` uses (raw affine
+matrices instead of `.rotate()`, a box/motion convolution kernel instead of Gaussian `.blur()`,
+`.tint()` color-temperature shift instead of `.modulate()`, a linear-band `'lighten'` glare instead
+of a radial `'screen'` one, and a crop/translation mechanic neither existing module has at all),
+plus an independently-salted seed derivation (`'heldout::'+cardId`, multiplier base 151). Eight
+named regimes: `clean` (pristine control), `heldoutGeometry`, `heldoutMildPerspective`,
+`heldoutCropTranslation`, `heldoutBlur`, `heldoutExposureWhiteBalance`, `heldoutGlare`,
+`mixedModerate`. `scripts/scanner-recognition-lab/retrieval/leakage-guard.mjs` is a permanent,
+runtime, hash-based (`sha256`) leakage detector: every corrected benchmark script hashes a card's
+full reference-ingredient set (pristine + 6 augmented views) and asserts every DISTORTED held-out
+query buffer differs from all of them, throwing (aborting the run) on any collision — `clean` is
+deliberately exempt (it IS the pristine buffer by definition, not a leak). Permanent regression
+coverage: `tests/scanner-research/leakage-guard.test.ts` (11 cases) proves this END TO END against
+a real, procedurally-generated image run through the REAL `augmentAll`/`buildAllHeldoutQueries`
+pipelines (no network/model dependency, part of the ordinary `pnpm test` gate via a new
+`tests/scanner-research/**/*.test.ts` include entry in `vite.config.ts`), plus structural
+disjointness assertions (`HELDOUT_REGIMES` shares no name with `AUGMENTATION_PROFILES`/`AXES`/
+`HARD_AUGMENTATION_PROFILES`).
+
+**2. Corrected re-run** (`experiments/18-corrected-two-stage-comparison.mjs`, real run against the
+P91/P95 4,296-card research corpus, n=300, card-id-separated 1,000-resample bootstrap 95% CIs,
+900/900 leakage-guard checks passed with zero collisions):
+
+| Regime | A (DINO) TOP1 | B (dual-proto) TOP1 | C (DINO+rerank) TOP1 | F (dual+local-feature) TOP1 |
+|---|---|---|---|---|
+| clean | 100% | 100% | 100% | 100% |
+| heldoutGeometry | 91.3% [88,94] | **99.7% [99,100]** | 97.0% [95,98.7] | 96.3% [94,98.3] |
+| mixedModerate | 81.3% [77,85.7] | **95.7% [93.3,97.7]** | 40.0% [34,45.7] (60% false-confident) | 96.3% [94,98.3] |
+| hardGlareShadowBlur | 0.3% | 0.3% | 0% | 0.3% (all ~100% abstained) |
+
+The corrected magnitude is smaller than P95's contaminated claim (which reported 100%/100% on
+geometry-only for both A and B at leaked-query self-recall) but the DIRECTION survives fully:
+dual-prototype alone gives a real, statistically clear gain over plain DINO on both non-trivial
+non-catastrophic regimes (95% CIs do not overlap), at the lowest complexity of any option tried.
+Image rerank (C) is independently RE-CONFIRMED actively dangerous outside geometry-only (60%
+false-confident on the realistic moderate regime) — not an artifact of the original leak, since
+this re-run never shared any construction with the reference side. Local-feature rerank (F) is
+real but does not clearly beat dual-prototype alone (essentially tied on both regimes) — reconfirms
+P95's own "optional, not required" conclusion. `DUAL_RECOMMENDED=yes` stands, now on
+non-contaminated evidence.
+
+A broader DINO-vs-dual sweep across all 8 `HELDOUT_REGIMES` (`experiments/
+19-full-heldout-regime-sweep.mjs`, n=250, 1,750/1,750 leakage-guard checks passed) shows the gain
+is real but NOT uniform — the honest, non-oversold picture:
+
+| Regime | DINO TOP1 | Dual TOP1 | Δ (dual − DINO) |
+|---|---|---|---|
+| clean | 100% | 100% | 0 |
+| heldoutGeometry | 92.8% [90,96] | 99.6% [98.8,100] | +6.8 |
+| heldoutMildPerspective | 96.0% [93.6,98.4] | 99.6% [98.8,100] | +3.6 |
+| heldoutCropTranslation | 94.8% [92,97.2] | 98.4% [96.8,99.6] | +3.6 |
+| heldoutBlur | 99.2% [98,100] | 100% | +0.8 |
+| heldoutExposureWhiteBalance | 96.4% [94,98.4] | 96.8% [94.4,98.8] | +0.4 (noise) |
+| heldoutGlare | 100% | 100% | 0 |
+| mixedModerate | 78.8% [74,83.6] | 96.0% [93.6,98.4] | **+17.2** |
+
+Dual-prototype's gain concentrates on GEOMETRIC distortion (rotation/perspective/crop-translation)
+and, most importantly, the realistic multi-axis composite (`mixedModerate`, independently
+corroborated by experiment 18's own +14.4pt at n=300) — plain DINO is already near-ceiling on
+isolated blur/exposure/glare, where dual-prototype adds little to nothing. This is the correct,
+defensible characterization: dual-prototype is recommended because it closes the single largest,
+most realistic gap (mixedModerate), not because it helps everywhere uniformly.
+
+**3. Fail-closed index schema v2.** P97's `VisualIndexManifest.prototypeCount` renamed to
+`prototypesPerCard` throughout (`src/data/scanner/visual-index.ts`, `src/domain/scanner/
+index-content-id.ts`, `checkpoint-identity.ts`, `scripts/scanner-visual-index/{build-index,
+verify-index}.ts`, the worker/client/controller/diagnostics-format chain, and every test) — one
+canonical name, not a duplicate synonym. Two new manifest fields, `schemaVersion: number` and
+`payloadFormat: string`, form an explicit discriminant DISTINCT from the free-text `version` string
+(which only ever names the embedding contract, never a binary-layout version) per P98's own
+finding: a future format doubling `embeddingDim` to concatenate prototypes would have passed every
+pre-P100 check silently. Contract: a manifest with NONE of `schemaVersion`/`payloadFormat`/
+`prototypesPerCard` is LEGACY_V1 (every already-committed generation, implicitly one prototype per
+card); a manifest setting ANY of the three must set ALL three together, and `schemaVersion` must be
+in a closed allow-list (`SUPPORTED_EXPLICIT_SCHEMA_VERSIONS`, currently `{2}`) — `decodeVisualIndex`
+throws (fails closed, never guesses) for a partial declaration or an unrecognized `schemaVersion`/
+`payloadFormat`. `visual-worker.ts` gained a symmetric pre-decode short-circuit (mirroring the
+existing `EXPECTED_MODEL_REVISION` pattern) so an unrecognized schema degrades to the existing
+graceful OCR-only fallback with a specific diagnostic reason, never a thrown exception surfacing to
+the UI. New diagnostics fields `indexSchemaVersion`/`indexPayloadFormat` (worker/client/controller/
+contract) and `INDEX_SCHEMA_VERSION=`/`INDEX_PAYLOAD_FORMAT=` lines (diagnostics-format.ts,
+build-index.ts, verify-index.ts). All five explicit-schema fields enter the content-id hash
+(index-content-id.ts) independently — regression tests pin that same bytes + different
+`schemaVersion` alone, different `payloadFormat` alone, different `prototypesPerCard` alone (with
+strategy/version held fixed), and different `prototypeStrategy` alone each mint a different content
+id. **Backward compatibility re-verified empirically after the rename+redesign**: `pnpm
+scanner:index:verify` against the real, unmodified, committed 19,501-card generation still reports
+content id `1a1df11a73c462d8` — byte-identical to before this change.
+
+**4. Quantization/search evidence** (throwaway scripts under `scripts/scanner-visual-index/`, not
+committed as permanent tooling — their JSON reports are gitignored like every other lab benchmark
+report): a 1,000+-query FP32-vs-INT8 retrieval-agreement test (the one P97 explicitly disclosed not
+running) against the full 4,296-card cached research corpus, using the PRODUCTION
+`quantizeEmbedding`/`VISUAL_INDEX_INT8_SCALE` functions directly — 100% TOP1 agreement, 95.7% mean
+TOP5 overlap, zero rank changes for any query's own TOP1 candidate, worst similarity error 0.0086
+(consistent with the existing V4 quantization-accuracy-bound unit test's <0.01 bound). A direct-
+int8 vs Float32-decoded search benchmark at the real 19,501-card scale (1/2/5 prototypes/card,
+against the REAL committed int8 bytes) found searching directly against the raw `Int8Array`
+(dequantizing each component inline at multiply time) is not just memory-saving but ALSO FASTER
+than the current decode-then-search shape at every prototype count tested (24ms vs 43ms at 1 proto,
+38ms vs 58ms at 2, 61ms vs 122ms at 5 — Node/CPU environment, not a device measurement), with
+byte-for-byte identical TOP-K rankings (7/7 queries at every scale). This is a genuine, low-risk
+future optimization for `searchVisualIndex`, disclosed but deliberately NOT implemented in
+production this session (the prompt's own scope is index format/evidence, not a matcher/search
+rewrite; a future session should make this change once a real dual-prototype index actually exists
+to benchmark it against end to end).
+
+**5. Real-capture validation tooling** (`scripts/scanner-recognition-lab/real-capture/
+validate-real-captures.ts`) — a ready CLI (owner supplies `--dir=`/`--mapping=`) that scores
+independently-captured real photos against any P87-shaped visual index (legacy or dual-prototype)
+through the exact production `decodeVisualIndex` fail-closed contract, reporting TOP1/3/5/20, true-
+card rank/similarity, which prototype won, capture quality (blur score) and the shipped abstention
+decision — no card-specific scoring anywhere. No independently-captured real photos exist in this
+repository or its caches (checked); `REAL_CAPTURE_RESULTS=pending owner sample`.
+
+No production matcher/scoring code (`src/domain/scanner/engine.ts`/`visual-evidence.ts`) touched.
+No hosted build run; `OWNER_BUILD_AUTHORIZED` gated on the full P100 output file's final verdict.
+
+---
+
+## D-114 — Direct-int8 visual search with bounded top-K selection, shipped to production (P102)
+
+**2026-09-04 · Accepted**
+
+P100 measured (but deliberately did not ship, out of that session's own scope discipline) that
+searching directly against the raw int8 index — dequantizing each component inline at multiply
+time — is both faster AND lighter than the shipped decode-whole-index-to-Float32-then-search
+shape, at every prototype count tested. This session ships that optimization in production, plus a
+bounded top-K selection structure the earlier measurement didn't cover, and closes a real
+tie-breaking bug the numerical verification surfaced along the way.
+
+**1. Direct-int8 search.** `decodeVisualIndex` (`src/data/scanner/visual-index.ts`) no longer
+materializes a Float32-decoded copy of the index at all — `DecodedVisualIndex.embeddingsInt8`
+(renamed from the old decoded `embeddings` field) keeps the raw `Int8Array` exactly as handed to
+it. `searchVisualIndex` dequantizes each component inline, accumulating the dot product as an
+integer sum and dividing once by `VISUAL_INDEX_INT8_SCALE` per prototype (not once per dimension).
+The old per-row `assertFinite` pass over the decoded Float32 copy is also gone, not replaced: an
+`Int8Array` component divided by a fixed nonzero scale can never produce `NaN`/`Infinity`, so that
+check was always vacuously true for this quantization scheme — it validated a conversion step that
+no longer happens, never the source bytes (whose shape the existing byte-length check already
+validates). Legacy v1 (`prototypesPerCard=1`) and schema-v2 (`prototypesPerCard>=2`) indexes share
+this one loop, parameterized by `prototypesPerCard` — never two independent search implementations
+that could drift apart.
+
+Real, measured consequence for the dual-prototype case P97/P100 already disclosed roughly doubling
+runtime memory (28.56MB -> 57.13MB) purely from dequantizing twice as many rows: that doubling no
+longer happens at all, for legacy OR dual-prototype indexes — decode is now just the existing
+shape/duplicate-id validation, no per-value conversion pass.
+
+**2. Bounded top-K (`BoundedTopK`).** Measured, not assumed, before deciding whether to build this:
+`Array.prototype.sort` over the full hit-object list is NOT a negligible cost next to the
+dot-product scan — at the real dual-prototype scale (39,002 rows) it measured ~13ms against a
+~24ms scan, a real ~36% addition, not the "two orders of magnitude smaller" an early draft of this
+session's own reasoning assumed before actually measuring it. The real production search path's
+`topK` is a small, fixed 30 (D-101/`controller.ts`) — far smaller than the index — so a
+capacity-`topK` binary min-heap (`BoundedTopK`, exported and unit-tested directly) replaces the
+full sort with O(n log topK) selection whenever `topK` is smaller than the index; a caller
+requesting a FULL ranking (`topK >= cardCount` — the diagnostics rank-lookup path only, never the
+hot per-scan path) falls back to the plain full sort instead, where a same-size heap would add
+overhead for no benefit.
+
+**3. Real bug found and fixed via numerical verification, not assumed correct from the algorithm
+looking right on paper.** The initial `BoundedTopK` implementation disagreed with the full-sort
+path on TOP1 for 3 of 4,296 real queries. Root cause: two DISTINCT cards in the real 19,501-card
+catalog can have float64-identical similarity to a query (real duplicate/near-duplicate reference
+embeddings — e.g. reprints sharing artwork). The full-sort path breaks such ties by ascending card
+index, because `Array.prototype.sort` is stable (ES2019+) and cards are pushed into that array in
+ascending index order; `BoundedTopK`'s own internal array order is sift-history order, not card
+index order, so its `drainSorted()` sorting by similarity alone let exact ties resolve by an
+arbitrary heap-internal order instead. The SET of kept top-K cards was already correct in every
+case — only which of two exactly-tied cards was reported as the winner could differ. Fixed with an
+explicit `similarity desc, then index asc` tie-break in `drainSorted()`, matching the full-sort
+path's own (previously implicit, now explicitly documented) rule; two new `BoundedTopK` unit tests
+pin both the top-of-ranking tie case that surfaced the bug and the eviction-boundary tie case that
+was already correct.
+
+**4. Numerical parity — real, not synthetic, and re-run after the tie-break fix, not before.**
+`scripts/scanner-visual-index/verify-int8-parity.ts` (throwaway verification tool, report
+gitignored like every other lab benchmark): every one of the real 4,296 cached DINOv2 embeddings
+from the P91/P95 recognition-lab corpus, used as a query against (a) the REAL committed
+19,501-card production index and (b) a synthetic 39,002-row (2 prototypes/card) index built from
+the real int8 bytes (P100's own technique, reused) — no real dual-prototype index exists yet to
+test against (owner build pending). Comparison is against a from-scratch reimplementation of the
+OLD (removed) decode-then-search shape, not the new code compared against itself.
+
+```
+INT8_FP32_TOP1_AGREEMENT (legacy-v1, real index)=4,296/4,296 (100.00%)
+INT8_FP32_TOP1_AGREEMENT (synthetic schema-v2)=4,296/4,296 (100.00%)
+TOP3/TOP5/TOP20 set overlap=100.00% (both passes)
+WORST_TOP1_SIMILARITY_ERROR=~1.8e-8 (both passes — floating-point noise, far under the existing
+  V4 quantization-accuracy-bound unit test's <0.01 per-component tolerance)
+WINNING_PROTOTYPE_IN_RANGE (dual-prototype pass)=4,296/4,296
+DISAGREEMENT_COUNT=0 (both passes, after the tie-break fix — was 3/4,296 before it)
+```
+
+**5. Measured search speed** (`scripts/scanner-visual-index/benchmark-int8-vs-float32-search.mjs`,
+P100's own script, actually re-run this session — not P100's old numbers restated — against the
+real committed int8 bytes, 7 repeats, Node/CPU environment on this session's own machine (under
+its own concurrent load from this session's other verification work, so the absolute numbers are
+higher than P100's own report on a different machine at a different time; only the RELATIVE
+comparison is the load-bearing claim, matching P100's own explicit framing for the identical
+caveat):
+
+```
+DIRECT_INT8_SEARCH_MS=37.11 (1 proto, 19,501 rows) / 67.72 (2 proto) / 115.34 (5 proto)
+FLOAT32_DECODED_SEARCH_MS=60.29 (1 proto) / 113.56 (2 proto) / 274.41 (5 proto)
+TOP1_IDENTITY / FULL_TOPK_IDENTITY=7/7 at every scale (byte-for-byte identical rankings)
+```
+
+Direct-int8 is faster at every scale tested (~38-58% depending on prototype count), on top of no
+longer allocating a decoded Float32 copy at all — a genuine memory-AND-speed win, not a tradeoff.
+
+**Verified:** unit suite 1229/1229 (84 files, +20 new/updated cases across `BoundedTopK`,
+`searchVisualIndex`'s two selection paths, and the `embeddingsInt8` rename). Typecheck/lint (0
+errors, 28 pre-existing warnings)/format clean. `pnpm scanner:index:verify` against the real,
+unmodified, committed 19,501-card generation still reports content id `1a1df11a73c462d8` —
+byte-identical, backward compatibility re-proven after this rewrite, not assumed. Real-browser
+regression check: `tests/e2e/visual-worker-real-browser.spec.ts` (the actual built worker chunk,
+real DINOv2 model, real ORT WASM, real committed index) passes on both `desktop-chromium` and
+`mobile-iphone` (WebKit) — a genuine embed+search round trip against the rewritten search path, in
+two real browser engines, not just Node unit tests.
+
+No production matcher/scoring code touched. No hosted build run.
+
+---
+
+## D-115 — Safari vs. Chromium ORT WASM byte contradiction resolved: P96 was right, P100's write-up had the labels swapped (P102)
+
+**2026-09-04 · Accepted**
+
+**Context.** P96's own report and P100's own report disagreed about which browser downloads which
+ONNX Runtime WASM binary: P96 said non-Safari gets the larger asyncify variant (~23.57 MB) and
+Safari gets the smaller non-asyncify variant (~12.94 MB); P100 said the opposite (Safari =
+asyncify/23.57 MB, non-Safari = non-asyncify/12.94 MB). Neither prior session traced this back to
+the actual source, so the contradiction stood unresolved into this session.
+
+**Resolution — traced to source, not re-guessed.** `src/features/scanner/visual/visual-worker.ts`
+(the `wasmPaths` assignment, immediately after `detectIsSafariUserAgent()` is called):
+
+```
+env.backends.onnx.wasm.wasmPaths = isSafari
+  ? { wasm: `${ASSET_BASE}/ort/ort-wasm-simd-threaded.wasm` }          // Safari
+  : { wasm: `${ASSET_BASE}/ort/ort-wasm-simd-threaded.asyncify.wasm` } // everyone else
+```
+
+`detectIsSafariUserAgent()` (`safari-detection.ts`) correctly identifies real Safari/WebKit (Apple
+vendor string, not a Chromium-based browser masquerading with one) — no inversion bug in the
+detection logic itself. The two physical files, measured directly from the installed
+`onnxruntime-web@1.26.0-dev.20260416` package (the exact same bytes `prepare-scanner-assets.mjs`
+stages into the build):
+
+| File | Real measured bytes | Served to |
+|---|---|---|
+| `ort-wasm-simd-threaded.wasm` | 12,942,611 (~12.94 MB) | **Safari** |
+| `ort-wasm-simd-threaded.asyncify.wasm` | 23,567,050 (~23.57 MB) | **non-Safari (Chromium etc.)** |
+
+**P96's report was correct.** **P100's write-up inverted the Safari/non-Safari labels** — a
+reporting error in that session's prose, not a code change (P100's diff never touched this section
+of `visual-worker.ts`; git history confirms the ternary above is unchanged since before P96).
+
+**Definitive matrix (real measured bytes, this session):**
+
+```
+SAFARI_WASM_FILE=ort-wasm-simd-threaded.wasm
+SAFARI_WASM_BYTES=12,942,611 (~12.94 MB)
+CHROMIUM_WASM_FILE=ort-wasm-simd-threaded.asyncify.wasm
+CHROMIUM_WASM_BYTES=23,567,050 (~23.57 MB)
+```
+
+Counter-intuitively, **Chromium downloads the LARGER ORT WASM binary, not Safari** — the opposite
+of the usual "Safari needs more polyfilling" assumption. `.mjs` glue files (paired with each
+`.wasm` binary, always fetched alongside it): Safari 24,180 bytes, Chromium 47,389 bytes — the
+same direction, so this does not change once the small glue file is included.
+
+**Full first-use byte totals**, recomputed from real measured bytes (model, OCR) plus the real
+committed v1 index (not the projected dual-prototype index, which does not exist yet — see the
+projected figure separately below):
+
+| Component | Bytes | Source |
+|---|---|---|
+| DINOv2-small model | 24,451,943 | `model-pin.mjs` pinned/verified constant |
+| ORT WASM + glue (Safari) | 12,966,791 | measured, this session |
+| ORT WASM + glue (Chromium) | 23,614,439 | measured, this session |
+| Visual index (real, committed, v1) | 8,249,572 | measured, this session (`embeddings.bin` + `card-ids.json` + `manifest.json`) |
+| OCR (Tesseract, SIMD path — the realistic path on both modern Safari and Chromium) | 9,821,253 | measured, this session (`worker.min.js` + `tesseract-core-simd-lstm.wasm(.js)` + `eng.traineddata.gz`); the two other core variants (`relaxedsimd`, non-SIMD fallback) are also shipped for feature-detected fallback but are NOT downloaded on a SIMD-capable browser, so they are excluded from this total, not silently dropped |
+
+```
+FIRST_USE_SAFARI_TOTAL_BYTES=55,489,559 (~55.49 MB) — current shipped v1 index
+FIRST_USE_CHROMIUM_TOTAL_BYTES=66,137,207 (~66.14 MB) — current shipped v1 index
+```
+
+Projected once the owner builds the real dual-prototype index (replacing the visual-index
+component above with P97/P100's own projected ~15,738,058-byte figure, unchanged arithmetic from
+those sessions — not re-derived here, since no real dual index exists yet to remeasure):
+
+```
+FIRST_USE_SAFARI_TOTAL_BYTES (projected, dual-prototype)=62,978,045 (~62.98 MB)
+FIRST_USE_CHROMIUM_TOTAL_BYTES (projected, dual-prototype)=73,625,693 (~73.63 MB)
+```
+
+No excluded component in either total — every prior session's report explicitly excluded OCR
+("not independently re-measured"); this session measured it directly instead.
+
+**Not done, disclosed:** this is a code+asset audit, not a live network capture — no real Safari or
+Chromium browser actually loaded the app to confirm requests match this list exactly (e.g. that a
+CDN/proxy doesn't recompress, or that HTTP range requests don't change effective bytes-on-wire).
+`_headers`' own `Content-Encoding`/compression behavior for these paths was not independently
+re-verified this session; the byte totals above are uncompressed (raw) file sizes, matching every
+prior session's own convention for this same table.
+## D-116 — robots.txt/sitemap default to "disallow everything, allow three pages" (P101)
+
+**Decision.** `public/robots.txt` disallows the entire site by default and explicitly allows only
+`/privacy`, `/terms`, `/faq`; `public/sitemap.xml` lists exactly those same three URLs.
+
+**Why not the conventional "allow everything, disallow the private paths" shape.** PokePortfolio is
+genuinely private (PRODUCT_SPEC.md §1.1: "Not a public platform. No social features... no public
+profiles," invite-only, no public signup). There is no organic-discovery value in indexing a closed
+tool's sign-in form, and doing so risks the app reading as a public consumer product it deliberately
+isn't. Deny-by-default also means a future route added to `router.tsx` is automatically excluded
+from crawling unless someone deliberately opens it up — the safer failure direction for an app whose
+private routes carry real financial/collection data.
+
+`/login` is deliberately NOT in the allow list, on the same reasoning — no discovery value, avoids
+looking like a public signup surface. `/invite/$token` and `/reset-password` are never eligible
+regardless of policy shape: both carry a live, single-use secret token in the URL, and indexing
+either would be an actual secret-leak vector, not just an SEO nit.
+
+**Enforcement.** `robots.txt`/`sitemap.xml` are a crawler *request*, not an access-control boundary
+— Postgres RLS and route guards remain the real boundary (SECURITY.md §2/§3), unchanged by this
+decision. `scripts/check-links.mjs` cross-checks `robots.txt`'s `Allow:` list against
+`sitemap.xml`'s URLs and against its own hardcoded `PUBLIC_ROUTES` constant, so the three can't
+silently drift — a route added to one and not the other two fails the check rather than shipping
+unnoticed.
+
+**Verified:** `node scripts/check-links.mjs` against a real production build, 29/29 checks passed,
+including the three-way consistency check and the never-allow-a-token-route check.
+
+---
+
+## D-117 — No cookie-consent banner; nothing non-essential is stored client-side (P101)
+
+**Decision.** No cookie/consent banner is shown anywhere in the app.
+
+**Why.** A real inventory of every client-side storage mechanism in use, done before deciding
+anything (`src/data/supabase-client.ts`, `src/ui/theme.ts`, grep across `src/` for
+`localStorage`/`sessionStorage`/`document.cookie`):
+
+- Supabase's own session token (`@supabase/supabase-js`'s default `persistSession`/`localStorage`
+  storage) — strictly necessary; the app cannot function signed-in without it.
+- `pp-theme` (`src/ui/theme.ts`) — a UI preference the user explicitly sets (Profile), not tracking.
+- Nothing else. No analytics storage exists yet (see D-118): Cloudflare Web Analytics is, per
+  Cloudflare's own documentation, cookieless and uses no client-side storage at all — confirmed
+  against current docs before this decision was written, not assumed from general reputation.
+- SECURITY.md §9.1's query-cache boundary already establishes the TanStack Query cache itself holds
+  nothing in `localStorage` (module-lifetime memory only, cleared on identity change).
+
+Every stored value is either strictly necessary (session) or a user-set preference with no tracking
+purpose (theme). Neither category requires consent under the ePrivacy "strictly necessary" /
+first-party-preference exemptions this reasoning relies on, and there is no non-essential or
+third-party tracking mechanism in the app to gate behind a banner. A banner would therefore be
+decorative — asking consent for something that collects nothing — which the P101 prompt explicitly
+warned against ("do not add a fake cookie banner simply because a checklist says so").
+
+**Revisit condition.** If a future session adds any cookie/storage mechanism that is NOT strictly
+necessary and NOT a plain first-party UI preference (a third-party script that sets cookies, a
+tracking pixel, a non-Cloudflare analytics tool), this decision no longer holds and a real
+consent/preferences UI must be built and gated in front of it — see COST_POLICY.md's service-vetting
+checklist for the same rule applied to the cost dimension.
+
+---
+
+## D-118 — Cloudflare Web Analytics adopted, opt-in via env var, off by default (P101)
+
+**Decision.** Cloudflare Web Analytics is wired into the app (`src/analytics/cloudflareWebAnalytics.ts`,
+loaded from `main.tsx`) but stays completely inactive — no script loads, no CSP allowance is
+granted — unless `VITE_CF_ANALYTICS_TOKEN` is set at build time.
+
+**Why this option.** Selection-order per COST_POLICY.md §3 (existing stack first): Cloudflare Pages
+is already the hosting provider and already the account in use, so its own analytics product is a
+capability the existing stack provides for $0, not a new vendor relationship. Confirmed against
+current official Cloudflare documentation (developers.cloudflare.com/web-analytics, 2026-09, not
+assumed from training data): free, no card/billing tier gate, and — the deciding factor over any
+alternative — "does not use any client-side state, such as cookies or localStorage... does not
+'fingerprint' individuals via IP address, User Agent, or any other data." That is what makes D-117's
+no-consent-banner decision hold.
+
+**Mechanism.** The official snippet
+(`<script defer src="https://static.cloudflareinsights.com/beacon.min.js" data-cf-beacon='{"token":"…"}'>`)
+is injected via a DOM-created `<script>` element rather than a static tag in `index.html`, so it
+stays governed by the ordinary CSP `script-src` allowance rather than needing an inline-script
+exception. The default snippet shape (no `"spa": false"`) auto-tracks route changes via the History
+API — confirmed against Cloudflare's SPA-specific docs — which is exactly right for this
+client-side-routed app and needed no custom per-navigation tracking code.
+
+`vite.config.ts`'s `buildContentSecurityPolicy(supabaseUrl, analyticsEnabled)` gained a second,
+default-`false` parameter: `script-src` gains `https://static.cloudflareinsights.com` and
+`connect-src` gains `https://cloudflareinsights.com` only when `VITE_CF_ANALYTICS_TOKEN` was present
+at build time, so the policy stays at its previous strict shape for every build until the owner
+configures it. `tests/config/security-headers.test.ts`'s existing pins are unchanged (they call the
+function with one argument, exercising the default-off shape).
+
+**Owner action required.** Add the site in the Cloudflare dashboard (Analytics & Logs → Web
+Analytics → Add a site — the existing Pages account, no new account) and set
+`VITE_CF_ANALYTICS_TOKEN` as a Cloudflare Pages build environment variable. Until then this ships
+code-complete but genuinely inactive, not merely "off by convention."
+
+**Verified:** `pnpm test` (security-headers.test.ts's CSP pins unchanged, 1142/1142 overall),
+`pnpm build` with no token set — `dist/_headers`' CSP `script-src`/`connect-src` unchanged from the
+pre-P101 shape.
+
+---
+
+## D-119 — Cloudflare Web Analytics route-gated to the public allowlist; SPA auto-tracking disabled (P110)
+
+**2026-09-05 · Accepted**
+
+**Problem.** P107's adversarial review (output_107.txt §11) confirmed a real gap in D-118's
+original design, not yet exploitable only because analytics ships off by default: `main.tsx` called
+`initCloudflareWebAnalytics()` unconditionally, and D-118's own chosen snippet shape (no
+`"spa": false"`) auto-tracks every SPA route change via the History API, reporting `location.href`
+for each one. Every authenticated route in this app embeds an entity id directly in its path
+(`/portfolio/$holdingId`, `/purchases/$purchaseId`, `/sales/$saleId`, `/openings/$openingId`,
+`/catalog/$cardId`, …) — the moment the owner sets `VITE_CF_ANALYTICS_TOKEN`, every such page load
+would be reported to Cloudflare, contradicting the "no custom events" framing D-118 relied on.
+
+**Fix, in two parts.**
+
+1. **Explicit allowlist** (`src/analytics/analyticsRoutePolicy.ts`, `isAnalyticsEligibleLocation`):
+   deliberately mirrors `public/robots.txt`/`public/sitemap.xml`/`scripts/check-links.mjs`'s own
+   `PUBLIC_ROUTES` (D-116) — exactly `/privacy`, `/terms`, `/faq`. `/login`, `/forgot-password`,
+   `/invite/$token` and `/reset-password` are public but excluded, for the same reason D-116
+   already excludes them from crawling: no discovery/analytics value, and the token routes carry a
+   live secret in the URL that must never leave the origin. A location carrying ANY query string is
+   also ineligible — this app's public pages never legitimately carry one, so a query string is
+   itself a signal something unexpected is happening, and Cloudflare's beacon has no supported way
+   to report a sanitized URL, so refusing to track it at all is the only way to guarantee query
+   parameters are never transmitted.
+2. **SPA auto-tracking disabled** (`src/analytics/cloudflareWebAnalytics.ts`): the beacon's
+   `data-cf-beacon` config now sets `"spa": false`, so Cloudflare's own script never attaches a
+   History-API hook — it can only ever report the ONE pageview it fires at its own injection time.
+   `initCloudflareWebAnalytics(location)` takes the location to evaluate explicitly (never reads
+   `window.location` itself) and injects the script AT MOST ONCE per session, only when that exact
+   location is eligible. `main.tsx` calls it once at startup with the initial location, and again
+   after every `router.subscribe('onResolved', …)` navigation — the second call is what lets a
+   session that starts on a private route (or `/login`) initialize analytics later, once it
+   genuinely reaches an eligible public page; the idempotent one-shot latch means it is a no-op
+   every other time.
+
+**Disclosed tradeoff.** Because the History hook is off and the script is never re-injected for a
+later navigation, at most ONE pageview is ever reported per browser session — even a visit to
+`/faq` followed by `/privacy` only counts the first. This undercounts genuine multi-page public
+browsing. The alternative (re-injecting a fresh `<script>` element on every eligible navigation to
+fire another pageview) was considered and rejected: Cloudflare's own documentation does not
+describe this as a supported manual-tracking mechanism, so relying on it would be an unverified
+assumption. A single, guaranteed-private-route-free pageview per session is the safe default;
+revisit only if Cloudflare documents a supported manual-pageview API.
+
+**Verified:** `tests/data/analytics-route-policy.test.ts` (allowlist correctness, deny-by-default,
+query-string refusal, cross-checked against `scripts/check-links.mjs`'s own `PUBLIC_ROUTES`),
+`tests/ui/cloudflare-web-analytics.test.ts` (dummy token only — public FAQ/privacy initialize;
+portfolio/holding/scan/invite/reset-password never do; a query string on an eligible page never
+initializes; public→private emits nothing further; private→public initializes once reached;
+idempotent against a second eligible call). No real Cloudflare token used anywhere. D-118's CSP
+gating (script-src/connect-src widened only when the token is present) is unchanged by this
+decision — only WHEN the already-gated script is allowed to load has changed.
+
+---
+
+## D-120 — Dashboard-read index: replace `price_snapshots_variant_date_idx` with a three-column covering index (P108)
+
+**2026-09-05 · Accepted**
+
+**Context.** P105 root-caused `get_dashboard_summary` exceeding its 1500ms budget via a real
+`EXPLAIN (ANALYZE, BUFFERS, VERBOSE)`: 733 of 836ms (87.5%) is one `Function Scan` on
+`resolve_variant_market_values`, whose `latest_snapshot` CTE does
+`distinct on (card_variant_id, provider) ... order by card_variant_id, provider, snapshot_date desc`
+against `price_snapshots`. The only existing index, `price_snapshots_variant_date_idx
+(card_variant_id, snapshot_date desc)`, omits `provider` and cannot satisfy that ordering — Postgres
+re-sorts nearly the whole table instead of streaming one row per group. P107 independently reasoned
+the same root cause from the SQL text alone (no DB access that session).
+
+**Decision.** One forward migration
+(`20260905120000_p108_dashboard_price_index.sql`): add
+`price_snapshots_variant_provider_date_idx (card_variant_id, provider, snapshot_date desc) include
+(price_kind, source_currency, value_minor, provider_updated_at)`, matching the `DISTINCT ON`'s exact
+grouping/ordering; drop the now-redundant two-column index in the same migration, after confirming
+(not merely asserting) every other reader of `price_snapshots` remains served: `get_card_variant_
+price_history`'s single-variant range scan (leading-column prefix, unaffected),
+`select_price_sync_batch`'s unfiltered `card_variant_id`-grouped aggregate (full-index-scan either
+way, confirmed via EXPLAIN — no plan-shape regression), and `thin_price_snapshots`'/the M91
+retention window's own `partition by (card_variant_id, provider) order by snapshot_date desc`
+(the SAME grouping the new index leads with — a speedup, not a regression).
+
+**Financial invariants preserved, unchanged by this migration:** unknown market value stays NULL
+(the index changes access path only, not `resolve_variant_market_values`'s logic); FX remains
+as-of the snapshot date; the EU/TCGplayer provider preference and the raw-only exclusion of graded
+holdings are untouched; manual valuation composition still happens at the caller.
+
+**Real measurement, not asserted:** see the output_108 handoff for the actual before/after EXPLAIN
+plan shapes and the M12 snapshots-benchmark before/after timing this decision is based on.
+
+## D-121 — `create_purchase` gains an optional, DB-required-once-present idempotency key (P108, renumbered P111; notes semantics corrected — see D-122)
+
+**2026-09-05 · Accepted**
+
+**Context.** P107 §17 found `create_purchase` was the only one of the four money-writing forms
+with no idempotency protection at all — a dropped response after the server has already committed
+has no mechanism preventing a resubmit from creating a second purchase, second holdings, and second
+acquisition lots.
+
+**Decision — the contract, not just the mechanism.** `create_purchase` gains
+`p_idempotency_key uuid default null` (a new parameter — TESTING.md §6a: this is DROP+CREATE, not
+CREATE OR REPLACE, since it changes the function's identity; every M10/M11 fix already in the body
+— residual_nok_minor, the sealed-product RLS existence check, per-line sealed_intent on the LOT,
+manual_value_minor for a sealed holding, the graded-card condition-null override — is preserved
+unchanged). Unlike `create_sale`'s key (required, no payload comparison at all) or
+`create_opening_from_provisional`'s key (required, named-field comparison), this key is:
+
+- **Optional at the database layer.** Dozens of existing `tests/db/**` call sites invoke
+  `create_purchase` with no key; forcing all of them to adopt one is disproportionate churn for a
+  purchase-specific reliability fix (CLAUDE.md: smallest complete solution, do not expand scope
+  as a side effect). A caller that omits the key gets exactly the pre-P108 behaviour.
+- **Required in practice at the product boundary.** `src/data/purchases.ts`'s `createPurchase` and
+  `PurchaseFormPage` always generate and send one (`useState(() => crypto.randomUUID())`, one key
+  per mount, resent unchanged across a retry, never regenerated merely because an error was shown —
+  the same lifecycle `SaleFormPage`'s own key already follows). Purchases structurally cannot suffer
+  `SaleFormPage`'s own P107-disclosed entity-switch leak (§5 of output_107): `/purchases/new` carries
+  no dynamic route param a same-tab navigation could silently swap under an unchanged component
+  instance, so a fresh key per genuine new-purchase visit falls out of ordinary React unmount/remount
+  rather than needing a `resetKey` mechanism of its own.
+- **Compares the FULL material request, not a named subset.** The exact jsonb the client submitted
+  (purchase-level fields plus every line, minus each line's `lot_notes`) is stored verbatim as
+  `idempotency_request` and compared via jsonb equality (`IS DISTINCT FROM`) on replay — deliberately
+  over-strict rather than under-strict: a genuine retry resends byte-identical values regardless of
+  JSON key order (jsonb equality is structural, not textual), so this never rejects a real retry, and
+  it never accidentally treats a financially different resubmission as a safe replay merely because
+  the comparison forgot a field. `p_notes` and each line's `lot_notes` are the only fields excluded
+  (cosmetic annotations, per the prompt's own "do not compare irrelevant operational metadata").
+- **Race-safe, not just sequentially safe.** Mirrors P94's `add_card_acquisition` fix exactly: all
+  mutations sit inside one outer `BEGIN/EXCEPTION WHEN unique_violation` block keyed on the new
+  partial unique index `purchases_user_idempotency_key_idx (user_id, idempotency_key) WHERE
+  idempotency_key IS NOT NULL`; a losing concurrent transaction's implicit savepoint rolls back its
+  purchase/lines/holdings/lots, and the handler re-reads the winner's row under the SAME
+  material-equivalence check the early path uses — a race between two genuinely different requests
+  sharing a key is still refused, not silently merged.
+
+**Verified:** `tests/db/m8_purchase_ledger.test.ts`'s new idempotency describe block — exact
+sequential replay (no duplicate rows), a non-material (notes-only) edit still replays, five
+distinct material-mismatch cases (quantity, unit price, card identity, purchase date, currency/FX)
+each refused with `idempotency-key-reuse`, a real concurrent `Promise.all` double-submit committing
+exactly one purchase/one line/one lot, and the no-key path behaving exactly as before (two calls,
+two purchases).
+
+---
+
+## D-122 — `create_purchase` idempotent replay now preserves an edited `p_notes`, correcting D-121's "operational metadata" framing (P111)
+
+**2026-09-05 · Accepted**
+
+**Problem, found during P111's independent audit of D-121's own contract (prompt's own §9), not
+discovered by a test.** D-121 (P108, originally its own D-117) excluded `p_notes` from
+`create_purchase`'s idempotency material-equivalence check, calling it "cosmetic annotation" and
+"operational metadata." Notes are neither: they are free text the USER typed, visible on every
+purchase detail view (`src/features/collection/HoldingDetailPage.tsx` and equivalent), no different
+in kind from a sale's or opening's own notes field. Under D-121's original body, the realistic
+failure case the prompt asked P111 to trace through: a purchase commits, the response is lost
+(network drop, tab suspended), the user sees no confirmation, edits the notes field to correct or
+add detail, and resubmits — the SAME idempotency key is sent (never regenerated merely because an
+error was shown, D-121's own documented lifecycle). The original body would silently return the
+FIRST commit's row, discarding the user's edit with no error, no warning, and no visible sign
+anything was lost. That is a silent-data-loss bug, not a cosmetic non-issue — CLAUDE.md's "Honesty
+in the product" bar exists exactly for cases like this.
+
+**Decision.** `p_notes` stays OUT of the material-equivalence comparison (a notes-only edit is
+still the same logical purchase attempt and must still replay rather than being refused as
+`idempotency-key-reuse` — rejecting it would be worse UX for no financial-safety benefit, since
+notes carry no monetary weight). Instead, both replay paths (the early sequential check and the
+concurrent-race exception handler) now UPDATE the existing row's `notes` to the caller's latest
+`p_notes` whenever it differs, before returning it. The financial rows this call produced
+originally — the purchase's totals, its lines, the holdings and acquisition lots — are still
+returned completely unchanged by a replay; only the free-text annotation can move. Notes are
+treated as separately mutable metadata riding alongside an idempotent financial write, not as
+immutable transaction history.
+
+**Explicitly NOT covered by this correction:** each line's `lot_notes` remains excluded from both
+the equivalence check and this update-on-replay behaviour. Matching a specific submitted line back
+to the specific `acquisition_lots` row it already produced, on a replay path that never re-runs the
+per-line insert loop, needs a stable line-ordering guarantee `purchase_lines` does not currently
+provide (no explicit sequence column) — building one is out of scope for this correction
+(CLAUDE.md: smallest complete solution, do not expand scope as a side effect). Tracked in
+docs/BACKLOG.md if a real product need for it ever surfaces.
+
+**Migration discipline.** D-121's migration (`20260905120010_p108_purchase_idempotency.sql`) is
+already a committed source artifact and is NOT edited — per CLAUDE.md, an applied/published
+migration is never rewritten for convenience. This decision ships as a new forward migration,
+`20260905130000_p111_purchase_notes_replay_semantics.sql`, a `CREATE OR REPLACE` of the same
+12-parameter function (the parameter list is unchanged, so this is not the DROP+CREATE identity
+change D-121 itself required over its own predecessor).
+
+**Verified:** `tests/db/m8_purchase_ledger.test.ts`'s idempotency block extended — a notes-only
+resubmit with the same key replays (no duplicate purchase) AND the returned/stored row reflects the
+NEW notes, not the original; every other material-mismatch case (quantity, unit price, card
+identity, purchase date, currency/FX) still refused unchanged; the concurrent-race path's own
+notes-preservation exercised via the existing `Promise.all` double-submit test, asserting the
+loser's notes (if different) win on the winner's row.
+
+---
+
+## D-123 — Fixed a real self-contradiction in P110's 404-resume design: a permanently-failed card could never actually recover (P111)
+
+**2026-09-05 · Accepted**
+
+**Found by tracing actual code, not by a failing test.** P110's own report (D-119's neighbor,
+`docs/DECISIONS.md`'s P110 addendum to checkpoint-identity.ts) claimed a `permanentFailures` entry
+"is cleared the moment its pristine fetch succeeds" — true of the success-path code itself, but
+`build-index.ts`'s resume loop skipped ANY card already present in `checkpoint.permanentFailures`
+unconditionally, before that fetch could ever run again. The two claims cannot both be true: a card
+that 404s once could never reach the success path that clears it, on any future resume, ever. An
+image temporarily missing at build time (then later uploaded) would stay permanently unindexed
+until the owner manually deleted the entire multi-hour checkpoint file — exactly the failure mode
+the prompt asked this session to prove or disprove, not accept on the strength of the prior
+write-up's own description.
+
+**Fix.** `src/domain/scanner/checkpoint-identity.ts` gains `shouldSkipPermanentFailure(record, now)`
+— a pure, independently unit-tested function — and `PERMANENT_FAILURE_REPROBE_MS` (24 hours): a
+permanent-failure record is skipped only while it is still within that window of its `failedAt`;
+once stale, `build-index.ts`'s resume loop gives the card exactly one fresh probe. A repeat 404
+just refreshes `failedAt` (renewing the quiet window, so a genuinely-dead reference image is still
+never hammered); a success clears the entry exactly as the original design intended. Chosen over
+the two other options the prompt offered: "re-probe once on a later resume/new run" is what this
+implements in substance; a distributed job system was explicitly out of scope and unnecessary for
+a single-machine, single-operator index-build tool.
+
+**Why 24 hours, not shorter/longer.** Short enough that the next day's resume (or the next
+scheduled hosted rebuild — index builds are not a multiple-times-per-day operation) always gets a
+fresh probe. Long enough that iterating on the SAME build session — several resumes while
+debugging an unrelated crash, all within hours — never re-requests a card that is genuinely still
+404ing, preserving §7's original "do not hammer a stable 404" guarantee.
+
+**Verified:** `tests/domain/scanner/checkpoint-identity.test.ts`'s new
+`shouldSkipPermanentFailure` describe block — fresh failure skipped, TTL-boundary and past-TTL
+cases re-probed, and a hand-edited/foreign checkpoint's unparseable `failedAt` fails safe toward
+re-probing rather than permanent skip. Not re-proven against a real hosted 19k-card marathon run in
+P111 (prompt §17/§37 — no real hosted index build in this session); the fix is verified at the
+pure-function level the resume loop's own skip condition now calls directly.

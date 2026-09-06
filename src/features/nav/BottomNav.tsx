@@ -43,7 +43,7 @@ export function BottomNav() {
               setAddOpen(true)
             }}
             aria-label="Add"
-            className="absolute left-1/2 top-0 flex size-14 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-sky-600 text-white shadow-lg ring-4 ring-slate-950/90 transition-transform hover:bg-sky-500 active:scale-95 active:bg-sky-700"
+            className="absolute left-1/2 top-0 flex size-14 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-sky-600 text-accent-foreground shadow-lg ring-4 ring-slate-950/90 transition-transform hover:bg-sky-500 active:scale-95 active:bg-sky-700"
           >
             <PlusIcon className="size-7" />
           </button>

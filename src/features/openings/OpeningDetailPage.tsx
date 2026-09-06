@@ -215,7 +215,7 @@ export function OpeningDetailPage() {
                 </span>
               ) : null}
               {result.incompleteMarker ? (
-                <span className="block text-xs text-amber-300">{result.incompleteMarker}</span>
+                <span className="block text-xs text-slate-400">{result.incompleteMarker}</span>
               ) : null}
             </span>
           </div>
@@ -356,7 +356,7 @@ function CompletenessLine({
       <span className="text-right">
         <span className="text-slate-300">{label}</span>
         {completeness !== 'all_cards' ? (
-          <span className="block text-xs text-amber-300">{INCOMPLETE_TRACKING_MARKER}</span>
+          <span className="block text-xs text-slate-400">{INCOMPLETE_TRACKING_MARKER}</span>
         ) : null}
       </span>
     </div>
@@ -394,7 +394,7 @@ function PullValueSection({ detail }: { detail: OpeningDetail }) {
             <span className="tabular-nums text-slate-100">{retainedDisplay}</span>
           </div>
           {hasCoverageInfo && unpricedCount > 0 ? (
-            <p className="text-xs text-amber-300">{UNPRICED_RETAINED_MARKER}</p>
+            <p className="text-xs text-slate-400">{UNPRICED_RETAINED_MARKER}</p>
           ) : null}
         </>
       ) : null}

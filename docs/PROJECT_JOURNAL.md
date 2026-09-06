@@ -8,6 +8,447 @@ here when there was a real problem with a non-obvious answer.
 
 ---
 
+## 2026-08-30 — M15b: a real-photo benchmark showed the lightweight fast-path idea was worse than no visual signal at all
+
+P81's cold-start fixes shipped, and the owner's real-iPhone retest still showed `VISUAL_MODEL_STATE
+=loading` for over a minute, with every phase-timing field reading "—" — P81 only reported per-
+phase timings inside the terminal ready/unavailable worker message, so a stall IN PROGRESS was
+invisible. That gap got fixed first (live progress messages posted at every phase boundary,
+starting with a boot message the instant the worker's module evaluates, before touching
+transformers.js at all).
+
+The more interesting problem was what to do about the stall itself. The obvious-looking move was a
+perceptual-hash (dHash/pHash) fast path: no ML runtime, computable in milliseconds, and P76's own
+benchmark had already reported dHash at 86.7% TOP1. Building the retrieval index, generator and
+browser client around that number would have been straightforward.
+
+**Checking which corpus that number came from first was the thing that mattered.** P76's benchmark
+distorted an already-tight, card-only reference image in place (resize, rotate, blur) — it never
+tested a query that needed real cropping or alignment correction, because the query started
+perfectly cropped. That is not what a phone photo looks like. P79 had already built the honest
+version of that corpus for exactly this reason (a card composed off-center and tilted onto a larger
+background, then run through the real rectification pipeline) to benchmark DINO — but nobody had
+ever pointed the hash functions at it.
+
+Running dHash and a newly-written DCT-based pHash against that harder corpus collapsed the numbers
+completely: dHash 5.0% TOP1, pHash 23.3%, a combined average 18.8% — against DINO's 93.3% on the
+identical distortion profile. The decisive number wasn't even the TOP1 percentage; it was that the
+same-card and different-card similarity distributions overlapped almost entirely (medians 0.500 vs.
+0.492, with heavily overlapping p10-p90 ranges across all 720 queries). A retrieval signal whose
+correct-match and wrong-match score distributions are indistinguishable isn't a cheaper, slightly-
+worse version of a real visual channel — it's noise with a similarity number attached to it. Wiring
+that into the scoring engine as a "fast visual" evidence channel would have made the scanner
+actively worse at exactly the moment (a cold DINO channel) it was supposed to help, by handing the
+matcher false corroboration for a wrong candidate as often as a right one.
+
+The lesson generalizes past this one decision: a benchmark result is only as trustworthy as the
+distortion profile it was measured against, and "this method scored well" is a claim about ONE
+corpus, not about the method in general — the corpus has to match the actual failure mode being
+addressed before the number means anything. The fallback that survived the check was the boring
+one: OCR + text search already existed, already worked without any ML runtime, and simply hadn't
+been given priority over the heavyweight channel during prewarm. Reversing that priority (OCR
+first, DINO staggered behind it) and gating the intro screen's loading copy on OCR's own readiness
+instead of DINO's took a fraction of the effort the hash pipeline would have, and rests on a signal
+that was already known to work.
+
+## 2026-08-30 — M15b iPhone cold start: the compile time wasn't the problem, and a fetch monkey-patch missed the fetches that mattered
+
+Real-device evidence after P80's recognition fixes: cold visual-channel init took 106–388 seconds
+across repeated real-iPhone attempts, and one scan produced no usable result after 6–7 minutes.
+The instinct going in was "the model is too big" or "WASM compile is slow on iOS" — neither held up
+against a real measurement.
+
+**Building a real-browser benchmark against the production code path changed the diagnosis.**
+`pnpm scanner:visual:benchmark:cold-start` drives Chromium and WebKit against the ACTUAL built
+`visual-worker-*.js` chunk (no mocks, no Node-side ONNX runtime substitute) and measured localhost
+cold init at ~1.5–2.1 seconds total, with ONNX-compile + WASM-instantiate + session-create
+accounting for ~0.7–1.6s of that. Localhost is not an iPhone's cellular connection, so this doesn't
+prove the exact real-device number — but it rules out "the runtime itself is inherently slow,"
+because the part of the pipeline that architecture/model choice actually controls measures in
+hundreds of milliseconds, not minutes, even from zero cache. What's left as the dominant real-
+device cost is network transfer of ~45MB (24.5MB ONNX model + up to 23.5MB ORT WASM + 7.5MB index)
+plus two confirmed configuration bugs: a wrong Cache-Control header (`max-age=0, must-revalidate`
+on version-pinned, revision-verified assets — Cloudflare Pages' default for non-hashed filenames,
+never overridden), and the visual channel never starting to load until AFTER the user had already
+captured a photo (no prewarm existed at all before this session).
+
+**Instrumenting the cold-start phases surfaced a second real finding, about the instrumentation
+itself.** The first attempt monkey-patched `self.fetch` inside the worker to time every request by
+URL. It worked perfectly for the worker's OWN direct fetches (the index manifest/ids/embeddings)
+and reported exactly 0ms/null-bytes for every fetch transformers.js/onnxruntime-web issue
+internally — the ONNX model, the ORT WASM binary, the processor/model config files. Every one of
+those bundled libraries apparently holds its own reference to `fetch`, captured when their module
+code first evaluates — which happens at Worker script load, before `installFetchProbe()` (called
+from inside `init()`, itself only reached after an 'init' message arrives) ever runs. Reassigning
+`self.fetch` afterward is powerless against a reference a library already captured. The fix:
+Resource Timing (`performance.getEntriesByType('resource')`), which the browser's network stack
+populates for every subresource load regardless of which JS reference initiated it — reading it
+once after init settles gave real numbers for every phase immediately. This is a durable lesson
+for any future in-worker instrumentation in this codebase: monkey-patching the global object is not
+a reliable interception point once bundled third-party code has already run its own module-level
+setup; reading what the platform actually recorded is.
+
+**The response was architectural, not a model swap.** Prewarming on route entry, a bounded wait so
+a still-cold scan degrades to OCR-only instead of hanging, and the Cache-Control fix address the
+measured bottleneck directly. A smaller model was researched and rejected: nothing smaller with a
+permissive license clearly beats DINOv2-small on the actual constraint (network/config, not compile
+cost), and a swap would risk regressing P80's still-unresolved discriminative-power gap while
+forcing an irreversible multi-hour re-embedding of the 19,501-card index — not justified without
+evidence the swap would even help the problem that was actually measured.
+
+## 2026-08-28 — M15b exact-card matching: a benchmark can prove robustness without proving discriminative power
+
+Two real-device misses remained after P79's rectification/resolution fixes: Mega Chandelure ex
+(absent from the top 20 visual candidates) and Shieldon (present at raw rank 6, never shown — the
+UI capped at 5). The owner's debug image preview additionally showed both OCR ROIs landing on the
+wrong region of a modern card.
+
+**The ROI fractions were not a bug in the original research — they were the WRONG layout family.**
+`NAME_ROI_FRACTIONS`/`NUMBER_ROI_FRACTIONS` correctly encode vintage WOTC/e-series cards (name
+top-left, number bottom-right — Base Set's "4/102"). Modern SM/SWSH/SV-era cards print the name
+across the top edge and moved the number bottom-left beside the set symbol. Nothing about the P67
+research was wrong; the assumption that one layout covers "a Pokémon card" was. Fix: try both
+layout families per field, score by OCR confidence plus field-specific parseability, keep the
+winner — with an early-exit once a candidate is already confident, so the common (already-correct)
+case costs the same one recognition call the fixed-ROI pipeline always did.
+
+**A real permissiveness bug surfaced while building the number-field scorer.** P67's
+`parseCollectorNumber` deliberately folds short OCR noise (its whole point is tolerating "SV0 01" →
+"SV001"), but that same tolerance means a LONG string containing a stray digit run can still
+structurally match `prefix+digits+suffix` — "TESTASAURUS 58/102 junk" parses as
+prefix="TESTASAURUS", numeric="58", total=102. This was invisible in isolation (the parser's own
+existing tests never fed it long prose containing a real-looking number), but became directly
+observable the moment "does this text parse?" became a scoring SIGNAL rather than just a
+downstream match filter: a test built to exercise "both ROI fields end up unusable, fall through to
+the full-card OCR pass" instead ended up with the fallback text winning the number field outright,
+because it happened to contain "58/102". The fix (`looksLikeCollectorNumberText`: require both a
+length bound AND a successful parse) is a two-line guard, but finding it required treating the
+parser's existing permissiveness as a fact to design AROUND, not a bug to "fix" — collector-number
+matching downstream genuinely needs that tolerance for real short OCR noise; a scoring signal built
+on top of it needs a narrower bar.
+
+**The bigger finding is methodological, not a code bug.** P79's hard benchmark reported
+rectification lifting TOP1 to 93.3% on the geometry-only distortion profile — genuinely true, and
+genuinely reassuring evidence that geometry/crop quality was fixed. But that number answers "does a
+distorted photo of card X still resemble the SAME card X's own clean reference more than 239 OTHER,
+mostly-dissimilar reference cards" — robustness to capture noise. It does not and structurally
+cannot answer "does card X get confused with a DIFFERENT but visually similar card (another
+rainbow-foil full-art EX, say) among the 19,501 cards the real hosted index actually holds" —
+discriminative power at scale. Those are different questions, and a benchmark answering the first
+one well provides zero evidence about the second. The Chandelure miss is much more naturally
+explained by the second question, and this session could not build a corpus to test it: the cached
+240-card benchmark corpus is keyed by TCGdex-style ids ("base1-1"), the real hosted index by
+Supabase UUIDs, and there is no session-available mapping between them. A photometric-normalization
+experiment run against the same 240-card corpus (contrast stretch + a bounded desaturation nudge,
+meant to reduce a foil card's color/rainbow-pattern dominance in the embedding) came back a wash —
+93.3%→94.6% TOP1, differences inside single-flip noise at n=240 — which is exactly what a
+non-regression check on the WRONG axis should look like: it neither confirms nor refutes the actual
+hypothesis, because the corpus was never able to contain the specific confusion being tested for.
+Recorded honestly (SCANNER_RESEARCH.md §7c) as "built, evaluated, evidence inconclusive for the
+question that matters" rather than either shipping it on a false positive or discarding the working,
+tested code because a benchmark run didn't show a dramatic win it was never positioned to show.
+
+---
+
+## 2026-08-27 — M15b visual runtime never initialized: two library-default gotchas, not a threading problem
+
+The owner deployed P77's pagination/checkpoint/crop fixes AND a real full hosted index rebuild
+(19,501/20,946 cards, verifier passed) and retested on a real iPhone. `VISUAL_MODEL_STATE=failed`,
+zero embedding created — before the model even loaded. Two findings, plus a lesson about not
+trusting a plausible-sounding theory over a real reproduction:
+
+1. **A library's own default value, set differently per execution environment, silently disabled
+   the feature entirely — and the code never noticed because it only set the flag it meant to
+   change, not the one that mattered.** `visual-worker.ts` set `env.allowRemoteModels = false`
+   (correct, deliberate) but never touched `env.allowLocalModels`, assuming its default was
+   permissive. `@huggingface/transformers`'s own source sets that default to `false` specifically
+   inside a Web Worker (`IS_WEBWORKER_ENV`) — a context-dependent default the code had no way to
+   notice was wrong without either reading the library source directly or reproducing the failure
+   and reading the real thrown message. Both flags false meant every load attempt failed before
+   touching the ONNX runtime, on every browser, not just iPhone — a fact only visible once the
+   real error message was actually surfaced (see finding 3). Lesson: a boolean you deliberately
+   set correctly can still combine badly with one you never set at all; check both sides of an
+   "allow X or Y" pair, especially when a library's docs describe the flag you touched but not the
+   one you didn't.
+
+2. **The plausible, well-precedented theory (cross-origin isolation) was wrong, and only a real
+   browser reproduction could tell.** onnxruntime-web's shipped WASM binary does unconditionally
+   allocate a `shared: true` `WebAssembly.Memory` at module init — a fact directly confirmed by
+   reading the compiled glue code — which is the textbook signature of a `crossOriginIsolated`
+   requirement (COOP+COEP), a well-known constraint with plenty of prior art to reach for. Chasing
+   that theory would have meant adding COEP `require-corp` (Safari doesn't support the friendlier
+   `credentialless` value), which would have broken every cross-origin TCGdex card image across
+   the whole app unless every `<img>` tag were individually reworked — a large, risky, cross-cutting
+   change for what turned out to be the wrong diagnosis. Building a minimal real-browser harness
+   (a fake static server reproducing the exact production `_headers`, driving the actual compiled
+   worker chunk) took a few minutes and definitively proved the model loads fine with
+   `crossOriginIsolated=false` — the actual blocker was a CSP `script-src` grant for a `blob:`
+   dynamic import, one directive, zero blast radius on anything else. Lesson: when a serious,
+   cross-cutting fix is about to be reached for on the strength of a mechanism that *looks*
+   textbook-correct, a 20-minute real reproduction is cheap insurance against solving the wrong
+   problem expensively.
+
+3. **The bug that made both of the above nearly invisible: the diagnostics panel built specifically
+   to make real-device failures diagnosable was itself dropping the one field that would have
+   named the actual error.** `controller.ts`'s `VISUAL_ERROR` field only ever read a value set
+   inside `analyzeVisualSafely`'s own `catch` block — but a model-init failure never throws there
+   by design (`VisualRecognitionClient.analyze()` resolves `null` gracefully, exactly the "no
+   crash, just unavailable" contract the debug panel exists to make legible). The result: the
+   owner's copied diagnostics showed `VISUAL_ERROR=—` on the exact failure this session needed
+   that field to explain. Investigating the fix surfaced a second, unrelated lesson: the pattern
+   being replaced (a closure-captured `let` reassigned inside an `await`ed call) also defeated
+   TypeScript's own control-flow narrowing — `@typescript-eslint/no-unnecessary-condition` flagged
+   the read as "provably null" even though a real reproduction proved it wasn't. Returning the
+   error through the function's own return value fixed both problems at once and is simply better
+   code. Lesson: a diagnostic surface is only as trustworthy as its narrowest code path — test the
+   failure case that never throws, not just the one that does.
+
+---
+
+## 2026-08-27 — M15b recognition quality: a mundane missing constraint, and two bugs the tests caught before either shipped
+
+With the runtime finally working (previous entry), the owner's next real iPhone diagnostic showed
+a full pipeline running correctly and still returning wrong candidates. Three things worth
+recording:
+
+1. **The highest-leverage bug was the least exotic one: nobody had ever asked the camera for a
+   resolution.** `camera-session.ts`'s `getUserMedia` call has looked the same since M15 existed —
+   `{ video: { facingMode: { ideal: 'environment' } } }`, no `width`/`height` at all. Nothing about
+   this is a bug in the sense of "wrong code that does something unintended" — it is simply an
+   omission that never mattered until a real device's default fallback resolution turned out to be
+   low. The diagnostic's `CAPTURE_CROP_DIMENSIONS=252x352` was the tell: hand-computing the
+   EXISTING, unchanged `cardRectFromVideo`/`computeGuideRect` cover-transform arithmetic against a
+   plausible unconstrained-default video track size (~480×640, a well-documented browser fallback)
+   reproduces that number almost exactly. No amount of downstream preprocessing cleverness — crop
+   tightening, rectification, OCR ROI tuning — can recover detail a 252×352 source frame never
+   captured in the first place. Lesson: when a real-device number looks suspiciously small, check
+   the INPUT constraint before reaching for output-side fixes; a missing `ideal` resolution hint is
+   an easy thing to never notice because it fails silently (the browser just picks *something*, and
+   that something usually works fine for a general-purpose webcam use case).
+
+2. **A coordinate-axis swap that the corner-intersection math couldn't have caught on its own.**
+   The new edge-detection function (`rectify.ts`'s `findEdgeOffset`) has two scan modes — "walk
+   candidate ROWS while jittering the column" (top/bottom sides) and "walk candidate COLUMNS while
+   jittering the row" (left/right sides) — and the first implementation had the `x`/`y` assignment
+   for BOTH modes transposed (assigning the jitter variable to the axis that should have held the
+   candidate-offset variable, and vice versa, in both branches at once). The bug was invisible by
+   inspection: the code still type-checked, still ran, still returned SOME quadrilateral for every
+   input — it just searched the wrong direction for three of the four sides' worth of signal,
+   producing a plausible-looking but wrong detected boundary (measured directly against a
+   synthetic fixture with a known true boundary: one corner landed 12px away from the truth, which
+   is exactly the kind of "close enough to not obviously be broken, wrong enough to matter" error
+   that survives casual review). The dedicated test suite's known-fixture assertions (draw a
+   quadrilateral at KNOWN coordinates, assert detection recovers coordinates close to those known
+   values) caught it on the very first run, before any browser integration. Lesson: for any
+   geometry code with more than one coordinate-axis convention active in the same function, a
+   fixture with a KNOWN, hand-verifiable answer is worth more than a dozen "does it run without
+   throwing" tests — the bug here would have shipped clean through type-checking, linting and
+   even a smoke test that only checked "a quadrilateral came back."
+
+3. **The edge detector's "no signal found" case initially had no floor, so a featureless region
+   silently reported "found an edge" at whatever position happened to be checked first.** The
+   original `findEdgeOffset` picked the position with the highest score via a strict `>` — over a
+   perfectly uniform test image (Sobel magnitude zero everywhere), every candidate position tied at
+   zero, and the FIRST one checked "won" by never being beaten, producing a fully plausible-looking
+   rectangle out of an image with no card in it at all. A dedicated test for exactly this case
+   (`detectCardQuadrilateral` over a uniform image must return null) caught it immediately. Fixed
+   by requiring a genuine peak — the winning score must beat the search band's own average by a
+   real multiple AND clear an absolute floor — before a position counts as a detected edge at all.
+   Lesson: "pick the best of N candidates" needs a companion "and is it actually good, not just
+   the best of a bad lot" check, or a tie-breaking rule silently becomes a false-positive generator
+   the moment every candidate is equally bad.
+
+Combined, these three findings shaped the fix priority: the camera-resolution change is cheap,
+low-risk, and addresses the input side directly; the rectification module addresses crop/alignment
+quality on the output side but — proven by this session's own harder benchmark — cannot compensate
+for genuinely severe photometric defects (glare/shadow/blur combined), which remains a real,
+disclosed, unsolved problem for a future session, not something crop geometry alone was ever going
+to fix.
+
+---
+
+## 2026-08-27 — M15b real-device repair: an "exactly 1000" log line was the whole clue
+
+The owner's first hosted index rebuild logged `1000 active English cards, 985 have
+image_base_url`, then both real-device test cards (a Shieldon, a Mega Chandelure ex) failed to be
+recognized. Three findings:
+
+1. **A suspiciously round number in a log line was the entire root-cause signal, and it was
+   almost missed as "the catalog just happens to be that size."** `build-index.ts`'s original
+   query had no `.range()` at all. PostgREST/Supabase's hosted API silently truncates an
+   unpaginated query at its configured row cap — never an error, never a warning, just a shorter
+   result set that looks like a legitimate count if you don't already know to suspect it. The
+   fix (`src/domain/scanner/index-pagination.ts`) reuses the exact completeness primitive M13's
+   export already proved out months earlier (`createSectionWalk`: exact count up front, ordered
+   range pages, cross-page duplicate detection, final reconciliation) — the pattern existed in the
+   codebase the whole time and simply hadn't been applied to this newer pipeline. Lesson: a round
+   number in a diagnostic log is itself evidence, worth treating with the same suspicion as an
+   error message.
+
+2. **The exact same contamination bug (checkpoint reuse across a project boundary) can recur even
+   after being fixed once operationally, if the fix was "delete the file" rather than "make the
+   file self-describing."** P76's session fixed a 1224/1000 checkpoint-mixing incident by having
+   the owner manually delete the cache file. That fix does not prevent a recurrence — it just
+   requires remembering to repeat the manual step. `checkpoint-identity.ts` closes it structurally
+   instead: the checkpoint carries its own source/model/revision/dimension identity, and a
+   mismatch causes automatic (loud) invalidation rather than depending on an operator noticing.
+   Lesson: an incident fixed by "the human did the right manual thing" is not yet fixed; it is
+   fixed once the system cannot silently accept the wrong thing.
+
+3. **A cropping bug in the actual capture pipeline was invisible to the P76 benchmark by
+   construction, because the benchmark's queries and references were both derived from the same
+   canonical images.** The benchmark applied synthetic distortions (rotation, blur, glare) to
+   canonical TCGdex card images to simulate a phone photo — but never tested "the query includes
+   background outside the card," because there was no code path yet that would do that on
+   purpose. The actual controller code, unrelated to the benchmark, embedded the whole captured
+   camera frame instead of cropping to the card rectangle OCR already used. No amount of
+   benchmark tuning would have caught this: the bug was in a code path the benchmark harness never
+   exercised at all, only in the real `analyzeVisualSafely` wiring. Lesson: a benchmark that
+   re-derives its own inputs synthetically can validate a model's discriminative power perfectly
+   while missing a wiring bug in the pipeline that actually calls it.
+
+## 2026-08-26 — M15b visual recognition: four findings from letting reality vote
+
+1. **The leading model candidate was licensing-disqualified, and only reading the actual license
+   file caught it.** MobileCLIP's Hugging Face mirror carries the non-committal tag `license:
+   other`. Reading `apple/ml-mobileclip`'s `LICENSE_MODELS` file directly (not the repo's
+   headline `LICENSE`, which is MIT and covers only the code) showed the pretrained weights are
+   under Apple's "Machine Learning Research Model License Agreement" — "Research Purposes does
+   not include any commercial exploitation, product development or use in any commercial product
+   or service." A portfolio/showcase app is product development regardless of whether it is
+   privately used. DINOv2-small (Apache-2.0, unambiguous) was the fallback and turned out
+   architecturally better-suited to the actual problem (instance retrieval, not semantic
+   classification) besides. Lesson: an HF license *tag* is not evidence; the actual license file
+   the model card points to is, and "other"/ambiguous tags are a hard stop until read.
+
+2. **A flat per-tier evidence bonus actively regressed accuracy versus the simpler baseline it
+   was meant to improve on.** The first hybrid-scoring attempt gave any "strong" visual match
+   (similarity ≥ 0.82) a flat +35 points. Benchmarked against 1,440 real augmented queries, this
+   measurably regressed TOP1 to 84.4% — BELOW the 99.7% the visual channel alone achieved —
+   because a single OCR misread that coincidentally produced an exact-collector-number match on
+   the WRONG card (worth 45 points alone) could outscore a genuinely-correct but only-just-strong
+   visual match. Switching to a continuous point function (scaling with the actual similarity
+   value, not a coarse bucket) recovered TOP1 to 95.8% without weakening the disagreement/
+   ambiguity behavior the coarse tiers were meant to express. The lesson generalizes: a discrete
+   confidence bucket discards exactly the information (how strong within the bucket) that
+   prevents this class of inversion, and finding it required a real benchmark, not code review —
+   the bug was invisible reading the scoring formula in isolation.
+
+3. **Vite silently bundles a heavy dependency's own asset reference even when application code
+   never touches it, and a plain lazy-import discipline does not exclude it from the
+   service-worker precache.** `@huggingface/transformers` constructs its onnxruntime-web WASM
+   path via `new URL('ort-wasm-simd-threaded.asyncify.wasm', import.meta.url)` internally; Vite's
+   static asset scanner bundles that reference into `dist/assets/` regardless of the fact that
+   this session's code overrides the resulting path before any load call. Separately, the
+   ~500 KB worker chunk that imports the library landed in the PWA plugin's default precache glob
+   (`**/*.js` matches ANY hashed chunk under `dist/assets/`, lazy-loaded or not) — meaning every
+   visitor's first load would have downloaded it whether or not they ever open the scanner. Found
+   only by inspecting the real built `dist/sw.js` precache manifest directly, not by reading
+   `vite.config.ts` and assuming the existing OCR-asset exclusion pattern automatically covered a
+   differently-shaped asset (a Vite worker chunk under `assets/`, not a staged file under
+   `scanner-assets/`). Fixed with an explicit `globIgnores` entry naming the chunk. Lesson: "lazy
+   `import()`" and "excluded from install-time precache" are two different, independently-checked
+   properties — verify both against the actual build output, not the source.
+
+4. **This session had no legitimate path to the data it needed to fully finish the job, and the
+   honest answer was to say so precisely rather than route around it.** Building a REAL,
+   hosted-valid reference index requires reading the hosted `cards` table; the hosted project's
+   `anon` role has zero grant on it or on `search_cards` (verified live, both return
+   `permission denied`), and the only way to get `authenticated`-level access is signing in or
+   creating an account — both explicitly outside this session's authority. Rather than skip the
+   requirement quietly or fabricate coverage, the session built the complete pipeline, proved it
+   end-to-end against the LOCAL stack (240 real cards, real embeddings, real service-worker
+   caching), and named the exact one-line, credential-free command the owner needs to run once to
+   close the gap. Lesson for future sessions hitting a similar wall: name the blocker precisely,
+   build everything that does NOT require the missing credential, and hand back a minimal,
+   copy-pasteable unblock — not a vague "owner should investigate."
+
+---
+
+## 2026-08-26 — M15 integration: three findings from letting reality vote
+
+1. **npm reality overrode the researched core pin.** The M15 architecture research pinned
+   `tesseract.js-core` 6.1.2 alongside tesseract.js 7.0.0. Installing revealed v7 declares its
+   own core dependency as `^7.0.0` and its worker feature-detects a relaxed-SIMD LSTM core that
+   only exists in core 7 — pairing the v7 worker with 6.x assets would have been a silent
+   version mismatch resolved only by runtime failure on device. Pinned 7.0.0 exactly and
+   recorded the supersession in D-094 and SCANNER_RESEARCH §7. Lesson restated: "pin exact
+   versions" must include verifying the dependency GRAPH the pin produces, not just that each
+   package exists at that version.
+
+2. **Staging >2 MB static assets under `public/` hard-fails `vite build`.** Workbox's default
+   precache ceiling (2 MiB per file) turns every ~3.9 MB OCR core into a fatal "won't be
+   precached" build error, so the branch could not even run its gates until an explicit
+   `globIgnores` exclusion existed. The exclusion is one line but it lives squarely in P69's
+   service-worker-policy territory; it is marked as such in vite.config.ts and flagged for P71
+   conflict review rather than silently absorbed. Practical rule: any future feature that
+   vendors large static files must plan its service-worker interaction at the same time as the
+   vendoring script.
+
+3. **The local DB suite is single-shot against a persistent stack.** Running `pnpm test:db` a
+   second time without an intervening reset produced 35 fixture collisions
+   (`cards_set_id_local_id_key`): several suites insert fixed-local_id catalog rows under the
+   shared seed set and never delete them, which is fine for CI's fresh ephemeral stack and for
+   ONE local run after a clean reset, but not for back-to-back runs. A clean
+   `supabase db reset` plus a single run reproduced the recorded 578/0/1 green gate exactly.
+   Not a product bug; recorded so the next session does not chase phantom regressions the way
+   this one briefly did.
+
+---
+
+## 2026-08-26 — P75: a PL/pgSQL record-null trap silently disabled an idempotency check that every review had approved
+
+**Problem.** D-096's per-item idempotency design for `add_card_acquisition` was written, reviewed
+across three prior sessions (P71/P74), and its 21-case DB test suite was written — but never
+actually executed against real Postgres until P75, because every earlier session lacked Docker.
+The very first run against a real ephemeral stack showed 12 of 21 tests failing, and reading the
+SQL in isolation gave no reason why: a standalone `SELECT exists(...)` reproducing the exact
+material-mismatch predicate against the exact rows returned the correct answer every time.
+
+**Root cause.** The early replay check opened with:
+```sql
+select al.holding_id, al.id as lot_id, al.voided_at, al.holding_id as r_holding_id
+  into v_replay from public.acquisition_lots al where ...;
+if v_replay is not null then ...
+```
+`v_replay` is declared `record`. SQL's row-wise NULL test is defined over the WHOLE row: `IS
+NULL` is true only if every column is null, `IS NOT NULL` is true only if every column is
+non-null. A non-voided lot produces a MIXED record — `voided_at` is NULL while `holding_id`/
+`lot_id` are not — so BOTH tests evaluate false. `if v_replay is not null then` silently skipped
+its entire body (the voided check, the material-mismatch check, the early return) on every
+non-voided replay, which is the overwhelming majority of real traffic. Execution fell through to
+the mutation block and inserted for real; the ONLY reason this didn't create visible duplicates
+is that the acquisition_lots partial unique index then fired `unique_violation`, caught by the
+coarser OUTER exception handler — which reads only `holding_id`/`lot_id` (both always non-null
+when found, so its own `is not null` test happened to work) and returns the winner with **no**
+material or voided check at all. The one test that accidentally passed anyway (I14, voided-lot
+rejection) did so because a voided row's selected columns are ALL non-null — a uniform record,
+not a mixed one, so its `is not null` test worked by coincidence and masked the defect on that
+one path.
+
+**Why review didn't catch it.** Nothing about the surrounding code is wrong PL/pgSQL — the
+`select ... into v_replay ... if v_replay is not null` pattern is common and correct when every
+selected column is declared NOT NULL. It becomes a trap specifically when one of the selected
+columns (here `voided_at`, deliberately included so its value could be inspected) is nullable in
+the common case. A close read of the predicate logic — which is what two prior sessions'
+reviews did — cannot find this: the bug is not in what the code checks, it's in whether the
+check ever runs at all, and that only shows up by tracing actual execution, which requires a
+live database. Two smaller bugs (inverted `IS DISTINCT FROM` on `unit_cost_basis_minor` and
+`storage_location_id` in the material predicate) were real but secondary — they would have
+rejected every legitimate replay had the outer `if` ever let them run, and were only found by
+reading the predicate text directly, not by execution.
+
+**Fix and general lesson.** Test the specific NOT NULL column (`v_replay.lot_id is not null`)
+instead of the whole record, in both places this pattern appeared. Recorded as a standing rule
+in DECISIONS.md D-096 point 11: never test a `record`-typed "was a row found" variable for NULL
+when its selected columns can be independently null; test one column the schema declares
+NOT NULL. This is the second time this project has learned that a design can survive multiple
+rounds of code review and only fail once it meets a real database (see 2026-08-24's M16 P60/P62
+entries below) — the DB-tests-require-Docker constraint that blocked P71/P74 from running this
+suite at all was not a formality.
+
+---
+
 ## 2026-08-24 — Three implementation-blind sources met for real: what first contact actually found
 
 **Problem.** M13 ran as three parallel sessions: an export core, a UI/delivery layer and an
@@ -1782,3 +2223,35 @@ was presentation ("Sold" / "1 of 2 remaining"), not new queries. The reconciliat
 followed the same grain: rather than a privileged definer read or N+1 lookups, three owner-only
 provenance columns on an existing bounded invoker read let the client mirror the server's target
 rule while the RPC stays the only authority.
+
+## 2026-09-02 (M15/P85) - A clean, legible crop still read as empty because the "single line" assumption was the actual bug
+
+Four prior M15 sessions (P78-P82) reasoned about collector-number OCR misses from real-device
+screenshots and confidence numbers alone - reasonable given no ground-truthed corpus existed yet
+to test against. This session built one and, for the first time, could look directly at the
+PREPROCESSED PIXELS Tesseract was actually receiving rather than only its output. On a real Base
+Set card and a real Scarlet & Violet card, the number ROI crop was unambiguously legible to a
+human eye ("1/102 star", "001/198") - and Tesseract still returned empty text or garbage under
+the existing PSM 7 ("single line") mode. The instinct at that point is to blame preprocessing
+(contrast, binarization, upscaling) or the crop coordinates - all three were investigated first
+and all three were fine. The actual defect was a structural mismatch nobody had named: these
+crops routinely contain TWO printed lines (the id sharing its strip with an illustrator credit or
+a copyright line), and PSM 7 does not degrade gracefully on a two-line image - it returns nothing,
+which looks identical to "the crop found no text at all" from the caller's side. The fix (PSM 6,
+"uniform block," retried only when the existing single-line passes have already fully failed)
+took minutes once the actual cause was visible; finding the cause took looking at images instead
+of only reading recognition() return values.
+
+Two more lessons stacked on top of that one. First, a benchmark's own sampling can silently
+encode the exact bias it exists to catch: the first grid-search run sliced a corpus cache's first
+N rows, and because that cache is built one real card set at a time, "40 cards" turned out to be
+100% vintage Base Set with zero modern representation - a sample that could only ever measure one
+of the two layout families this project has spent multiple sessions distinguishing (P80, D-097).
+Second, fixing the two-line problem immediately manufactured a new one: a bare, structurally
+valid 4-digit token ("1995") won as a fake collector number because it was, in fact, the
+copyright year sitting on the adjacent line PSM 6 now also reads. Structural parseability
+(`parseCollectorNumber` succeeds) and structural PLAUSIBILITY (does this look like a real printed
+id, versus a numerically-shaped fact that happens to sit nearby) are different questions, and a
+scorer that only asks the first one will eventually promote the second by accident. Neither bug
+was visible from confidence scores or pass/fail test counts alone; both were caught by actually
+looking at what the block-read text contained before trusting that it "found something."

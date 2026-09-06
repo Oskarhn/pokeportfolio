@@ -340,23 +340,32 @@ E2E suite across desktop and mobile viewports. Real-device iPhone pass. Performa
 
 ## Post-MVP
 
-### M15 — Scanner  · V1 priority 1
+### M15 — Scanner  · V1 priority 1 — INTEGRATED CANDIDATE BUILT (P68), release gated on P69 + iPhone
 
 Ahead of openings, deliberately: all-card tracking makes manual entry the primary usability
 bottleneck, and the scanner is what removes it.
 
-1. Re-research the recognition stack. Do not inherit the August 2026 model choices.
+1. Re-research the recognition stack. Do not inherit the August 2026 model choices. — DONE
+   (SCANNER_RESEARCH + output_65; engine pinned per D-094: Tesseract.js 7 LSTM-only, English.)
 2. Validate on real hardware that camera permission survives an in-route session (R9/S6) —
-   with a throwaway page, **before** building anything.
-3. Offline pipeline: catalog embeddings, index artefact, hosting strategy.
-4. Single-route camera session, one `MediaStream`, in-route overlay (D-006).
-5. Recognition with candidate list and confidence threshold.
+   still owed by the owner device gate after integration preview.
+3. Offline pipeline: catalog embeddings, index artefact, hosting strategy. — NOT NEEDED for V1:
+   text OCR over the synced catalog covers it; visual similarity stays M15c-conditional.
+4. Single-route camera session, one `MediaStream`, in-route overlay (D-006). — BUILT.
+5. Recognition with candidate list and confidence threshold. — BUILT (deterministic P67 tiers,
+   HIGH preselects only, ≤5 shortlist, manual fallback).
 6. Session defaults: origin, opening, condition, language, storage location, custom collection,
-   cost handling.
-7. Batch review before save; manual search fallback.
+   cost handling. — SHIPPED SHAPE: origin set excludes opening standalone (M16 owns pulls);
+   default pre_tracking; no collection/tag field (acquisition path takes none); language fixed
+   English in V1 with honest notice.
+7. Batch review before save; manual search fallback. — BUILT (batch-before-write; sequential
+   add_card_acquisition with per-item outcomes; ambiguous transport failures flagged
+   needs_verification, never auto-retried).
 
 **Gate:** measurably faster than manual search against a real stack of cards, verified with a
-timed comparison.
+timed comparison. — STILL OWED: requires the P69 CSP/security PR to be deployable at all
+(WASM needs 'wasm-unsafe-eval'), then the owner's real-iPhone run. The P68 branch is a DRAFT
+candidate; nothing merged or deployed.
 
 ### M16 — Openings · V1 priority 2 — EXECUTED AHEAD OF THE SCANNER (owner resequencing)
 
