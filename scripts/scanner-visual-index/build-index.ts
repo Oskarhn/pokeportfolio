@@ -58,6 +58,7 @@ import {
   deriveProjectIdentity,
   freshCheckpoint,
   packCurrentCardIds,
+  shouldSkipPermanentFailure,
   CHECKPOINT_SCHEMA_VERSION,
   LOCAL_SUPABASE_URL,
   type Checkpoint,
@@ -337,12 +338,16 @@ async function main() {
   }
 
   for (const card of withImage) {
-    // P110 (prompt §7-8): a card whose pristine fetch failed with a PERMANENT cause (404) this run
-    // — or an earlier resumed run — is skipped outright rather than re-fetched every resume. It
-    // still has zero pristine embedding, so it contributes nothing to `cardsIndexed` either way;
-    // this only saves the wasted request. `needsPristine`/`needsAux` below are still meaningful
-    // for every OTHER card exactly as before.
-    if (Object.hasOwn(checkpoint.permanentFailures, card.id)) continue
+    // P110 (prompt §7-8), corrected P111 (D-123): a card whose pristine fetch failed with a
+    // PERMANENT cause (404) this run — or an earlier resumed run — is skipped rather than
+    // re-fetched every resume, but only WHILE that record is still fresh
+    // (`shouldSkipPermanentFailure`) — P110's original unconditional skip meant a card could never
+    // reach the success path its own report claimed clears the entry. A stale record gets exactly
+    // one fresh probe this resume; still 404 just refreshes `failedAt` below. It still has zero
+    // pristine embedding until it succeeds, so it contributes nothing to `cardsIndexed` either
+    // way; `needsPristine`/`needsAux` below are still meaningful for every OTHER card as before.
+    const existingPermanentFailure = checkpoint.permanentFailures[card.id]
+    if (existingPermanentFailure && shouldSkipPermanentFailure(existingPermanentFailure)) continue
     const needsPristine = !Object.hasOwn(checkpoint.embeddings, card.id)
     // P97 (D-106): retried on EVERY resumption until it actually succeeds — deliberately NOT
     // gated on `auxFallback` (which is diagnostic-only, cleared on success). Mirrors exactly how

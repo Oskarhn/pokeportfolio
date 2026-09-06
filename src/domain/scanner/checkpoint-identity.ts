@@ -45,6 +45,21 @@
  * The schema-version bump alone already invalidates every pre-P110 checkpoint (neither new field
  * would be present), so no separate migration path is needed — a checkpoint from before this
  * change is discarded and rebuilt from scratch, same as every prior schema-shape change here.
+ *
+ * P111 addendum (D-123): P110's own report claimed a `permanentFailures` entry is "cleared the
+ * moment its pristine fetch succeeds" — true of the code that RUNS, but `build-index.ts`'s resume
+ * loop skipped any card already present in `permanentFailures` UNCONDITIONALLY, before that fetch
+ * could ever be attempted again. The two claims are contradictory: a card that 404s once could
+ * never be re-fetched by any later resume, so it could never reach the success path that clears
+ * it — an image published AFTER the first 404 (e.g. a temporarily-missing asset later uploaded)
+ * would stay permanently unindexed until the owner manually deleted the whole multi-hour
+ * checkpoint. {@link shouldSkipPermanentFailure} fixes this with a time-bounded negative cache: a
+ * permanent failure is skipped only while it is still "fresh" (within
+ * {@link PERMANENT_FAILURE_REPROBE_MS} of when it was recorded); once stale, `build-index.ts`
+ * re-probes it exactly once on that resume — a fresh 404 just refreshes `failedAt` (extending the
+ * quiet window), a success clears the entry as always. This preserves §7's "do not hammer a stable
+ * 404" guarantee WITHIN a run and across resumes inside the window, while guaranteeing an image
+ * that later becomes available is eventually re-discovered without any manual checkpoint surgery.
  */
 
 export const CHECKPOINT_SCHEMA_VERSION = 4
@@ -93,16 +108,46 @@ export interface Checkpoint {
    *  fallback marker when both exist for the same id. */
   readonly auxFallback: Record<string, true>
   /** P110 (prompt §8): ids whose PRISTINE fetch failed with a permanent cause (currently: HTTP 404
-   *  — the reference image genuinely does not exist) THIS run. Skipped on the next resume rather
-   *  than re-fetched — see this module's own P110 addendum above. Cleared for a card the moment
-   *  its pristine fetch succeeds (never left stale once the underlying cause is fixed, e.g. the
-   *  image is later published). */
+   *  — the reference image genuinely does not exist) THIS run or an earlier one. Skipped on resume
+   *  WHILE the record is still fresh (see {@link shouldSkipPermanentFailure}, P111/D-123) rather
+   *  than re-fetched every time; re-probed once a resume finds it stale. Cleared for a card the
+   *  moment its pristine fetch succeeds (never left stale once the underlying cause is fixed, e.g.
+   *  the image is later published). */
   readonly permanentFailures: Record<string, { readonly reason: string; readonly failedAt: string }>
   /** P110 (prompt §8): ids whose PRISTINE fetch failed with a cause that might resolve on its own
    *  (timeout, network error, 429, 5xx, or a decode/embed error) THIS run — always retried on the
    *  next resume, exactly like every failure behaved before this field existed. Diagnostic only;
    *  never gates a skip. */
   readonly transientFailures: Record<string, { readonly reason: string; readonly failedAt: string }>
+}
+
+/** P111 (D-123): how long a `permanentFailures` record stays "fresh" enough to skip re-fetching —
+ *  24 hours. Long enough that iterating on the SAME build (several resumes within one working
+ *  session, or while debugging an unrelated crash) never re-hammers a genuinely-404 image; short
+ *  enough that the next day's resume (or the next scheduled hosted rebuild) always gets one fresh
+ *  probe, so an image published after the original 404 is eventually discovered without manual
+ *  checkpoint surgery. */
+export const PERMANENT_FAILURE_REPROBE_MS = 24 * 60 * 60 * 1000
+
+/**
+ * Decides whether `build-index.ts`'s resume loop should skip a card already recorded in
+ * `permanentFailures` (`true`) or give it one fresh probe this resume (`false`) — see this
+ * module's own P111 addendum above for why this exists. Pure and independently unit-testable
+ * (no filesystem/network access), matching this codebase's established pattern for resume/replay
+ * decisions (`KeyedPrefillGuard`, `EntityKeyChangeTracker`).
+ *
+ * An unparseable `failedAt` (a hand-edited or foreign checkpoint) is treated as ALREADY STALE
+ * (returns `false`, re-probe) rather than as fresh-forever — the safer failure direction, since a
+ * card that's wrongly re-probed costs one wasted request, while a card wrongly skipped forever
+ * could never be recovered without manual intervention.
+ */
+export function shouldSkipPermanentFailure(
+  record: { readonly failedAt: string },
+  now: Date = new Date(),
+): boolean {
+  const failedAtMs = Date.parse(record.failedAt)
+  if (!Number.isFinite(failedAtMs)) return false
+  return now.getTime() - failedAtMs < PERMANENT_FAILURE_REPROBE_MS
 }
 
 /** Never returns or logs the URL's credentials — Supabase project URLs carry none, but this

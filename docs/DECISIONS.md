@@ -5273,3 +5273,43 @@ NEW notes, not the original; every other material-mismatch case (quantity, unit 
 identity, purchase date, currency/FX) still refused unchanged; the concurrent-race path's own
 notes-preservation exercised via the existing `Promise.all` double-submit test, asserting the
 loser's notes (if different) win on the winner's row.
+
+---
+
+## D-123 — Fixed a real self-contradiction in P110's 404-resume design: a permanently-failed card could never actually recover (P111)
+
+**2026-09-05 · Accepted**
+
+**Found by tracing actual code, not by a failing test.** P110's own report (D-119's neighbor,
+`docs/DECISIONS.md`'s P110 addendum to checkpoint-identity.ts) claimed a `permanentFailures` entry
+"is cleared the moment its pristine fetch succeeds" — true of the success-path code itself, but
+`build-index.ts`'s resume loop skipped ANY card already present in `checkpoint.permanentFailures`
+unconditionally, before that fetch could ever run again. The two claims cannot both be true: a card
+that 404s once could never reach the success path that clears it, on any future resume, ever. An
+image temporarily missing at build time (then later uploaded) would stay permanently unindexed
+until the owner manually deleted the entire multi-hour checkpoint file — exactly the failure mode
+the prompt asked this session to prove or disprove, not accept on the strength of the prior
+write-up's own description.
+
+**Fix.** `src/domain/scanner/checkpoint-identity.ts` gains `shouldSkipPermanentFailure(record, now)`
+— a pure, independently unit-tested function — and `PERMANENT_FAILURE_REPROBE_MS` (24 hours): a
+permanent-failure record is skipped only while it is still within that window of its `failedAt`;
+once stale, `build-index.ts`'s resume loop gives the card exactly one fresh probe. A repeat 404
+just refreshes `failedAt` (renewing the quiet window, so a genuinely-dead reference image is still
+never hammered); a success clears the entry exactly as the original design intended. Chosen over
+the two other options the prompt offered: "re-probe once on a later resume/new run" is what this
+implements in substance; a distributed job system was explicitly out of scope and unnecessary for
+a single-machine, single-operator index-build tool.
+
+**Why 24 hours, not shorter/longer.** Short enough that the next day's resume (or the next
+scheduled hosted rebuild — index builds are not a multiple-times-per-day operation) always gets a
+fresh probe. Long enough that iterating on the SAME build session — several resumes while
+debugging an unrelated crash, all within hours — never re-requests a card that is genuinely still
+404ing, preserving §7's original "do not hammer a stable 404" guarantee.
+
+**Verified:** `tests/domain/scanner/checkpoint-identity.test.ts`'s new
+`shouldSkipPermanentFailure` describe block — fresh failure skipped, TTL-boundary and past-TTL
+cases re-probed, and a hand-edited/foreign checkpoint's unparseable `failedAt` fails safe toward
+re-probing rather than permanent skip. Not re-proven against a real hosted 19k-card marathon run in
+P111 (prompt §17/§37 — no real hosted index build in this session); the fix is verified at the
+pure-function level the resume loop's own skip condition now calls directly.

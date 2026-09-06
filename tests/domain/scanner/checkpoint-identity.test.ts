@@ -7,12 +7,14 @@
 import { describe, expect, it } from 'vitest'
 import {
   CHECKPOINT_SCHEMA_VERSION,
+  PERMANENT_FAILURE_REPROBE_MS,
   canonicalizeProjectIdentity,
   checkpointMatchesIdentity,
   deriveProjectIdentity,
   freshCheckpoint,
   LOCAL_PROJECT_IDENTITY_SENTINEL,
   packCurrentCardIds,
+  shouldSkipPermanentFailure,
   type CheckpointIdentity,
 } from '../../../src/domain/scanner/checkpoint-identity'
 import {
@@ -235,5 +237,41 @@ describe('CP8 (P97, D-106) — a checkpoint built under one prototype strategy c
       prototypeStrategyVersion: '1',
     }
     expect(checkpointMatchesIdentity(prePrior, identity())).toBe(false)
+  })
+})
+
+describe('shouldSkipPermanentFailure (P111, D-123) — resolves the P110 404-resume contradiction', () => {
+  it('a permanent failure recorded moments ago is skipped (does not hammer a stable 404)', () => {
+    const now = new Date('2026-09-05T12:00:00.000Z')
+    const record = { reason: 'HTTP 404', failedAt: '2026-09-05T11:59:00.000Z' }
+    expect(shouldSkipPermanentFailure(record, now)).toBe(true)
+  })
+
+  it('a permanent failure right at the TTL boundary is no longer skipped', () => {
+    const failedAt = new Date('2026-09-05T00:00:00.000Z')
+    const exactlyAtTtl = new Date(failedAt.getTime() + PERMANENT_FAILURE_REPROBE_MS)
+    const record = { reason: 'HTTP 404', failedAt: failedAt.toISOString() }
+    // Strictly less-than in the implementation: age === TTL is already stale, matching the
+    // module doc's "within N of when it was recorded" (a half-open window, not inclusive).
+    expect(shouldSkipPermanentFailure(record, exactlyAtTtl)).toBe(false)
+  })
+
+  it('Run 1 -> 404 -> Run 2/resume the SAME day: still skipped, no repeated request', () => {
+    const failedAt = new Date('2026-09-05T09:00:00.000Z')
+    const resumeLaterSameDay = new Date('2026-09-05T15:00:00.000Z')
+    const record = { reason: 'HTTP 404', failedAt: failedAt.toISOString() }
+    expect(shouldSkipPermanentFailure(record, resumeLaterSameDay)).toBe(true)
+  })
+
+  it('Run 1 -> 404 -> a resume more than 24h later is re-probed (the image may now exist)', () => {
+    const failedAt = new Date('2026-09-05T09:00:00.000Z')
+    const resumeNextDay = new Date('2026-09-06T09:00:01.000Z')
+    const record = { reason: 'HTTP 404', failedAt: failedAt.toISOString() }
+    expect(shouldSkipPermanentFailure(record, resumeNextDay)).toBe(false)
+  })
+
+  it('an unparseable failedAt (hand-edited/foreign checkpoint) fails safe toward re-probing, not permanent skip', () => {
+    const record = { reason: 'HTTP 404', failedAt: 'not-a-real-timestamp' }
+    expect(shouldSkipPermanentFailure(record, new Date())).toBe(false)
   })
 })
