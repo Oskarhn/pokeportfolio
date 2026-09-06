@@ -87,6 +87,7 @@ import {
   buildIndexContentPayload,
   truncateDigestHex,
 } from '../../src/domain/scanner/index-content-id'
+import { env } from '@huggingface/transformers'
 import { embedImageBuffer, warmUpModel } from '../scanner-visual-benchmark/lib/embed.mjs'
 import {
   VISUAL_MODEL_REPO,
@@ -100,6 +101,17 @@ import { augmentAll } from './lib/prototype-augmentation.mjs'
 import { verifyIndexGeneration } from './verify-index'
 import { publishGenerationAtomically, publishPointerAtomically } from './atomic-publish'
 import { pruneOldGenerations, readPreviousContentId } from './generation-retention'
+
+// P112: `embed.mjs` is shared with the ad-hoc benchmark scripts and sets `env.allowRemoteModels =
+// true` for their convenience on a machine with no local cache yet. This is the REAL, unattended,
+// hours-long hosted build — it must never depend on reaching huggingface.co mid-run (a real
+// ConnectTimeoutError to cdn-lfs.huggingface.co killed the process outright on the first attempt,
+// unrelated to any card-image fetch or its retry/backoff, which only covers image downloads).
+// The pinned model is already staged locally with verified SHA-256 (prepare-scanner-visual-
+// assets.mjs, public/scanner-assets/visual-v1/model/) — forcing local-only here, after embed.mjs's
+// own import has already run, means a missing/incomplete benchmark cache fails loudly and
+// immediately instead of hanging on a network call this run has no business making.
+env.allowRemoteModels = false
 
 const here = dirname(fileURLToPath(import.meta.url))
 const VISUAL_V1_DIR = join(here, 'generated', 'visual-v1')
