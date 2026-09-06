@@ -4,6 +4,137 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
+## P111 — Final M15 pre-hosted integration candidate (branch `feat/p111-m15-final-prehosted`,
+draft PR base `main`, NOT merged, NOT deployed)
+
+**M15 is NOT released by this session.** This is a coherent, locally-gated candidate that
+supersedes the P105/P106/P108/P109/P110 source-branch chain (PRs #82-#86) — it does not close
+those PRs yet (owner gate pending), and it does not touch the hosted Supabase project, Cloudflare
+Production, or run a real dual-prototype index build. Full account, every gate's raw output, and
+the exact next-session hosted plan: `ai_outputs/Claude_outputs/output_111.txt`.
+
+- **Integration method.** Worktree branched from P106's exact head (`27e6241`). Rather than
+  merging P108/P109/P110's branch history (P110's own commits carry forbidden AI attribution —
+  see below), each branch's CONTENT delta was applied as a patch: `git diff 8adb3e8..da0a955`
+  (P102→P108) onto P106, then `git diff aca7c61..3c9f3aa` (P105→P109), then
+  `git diff 27e6241..f64a9c8` (P106→P110) — three commits, one per delta, each resolving its own
+  textual conflicts by hand rather than "ours/theirs." Every source SHA/PR/ancestry relationship
+  was verified against origin before touching anything; all matched the launch prompt exactly.
+- **Decision-ID collision, reconciled.** P106 had already minted D-116/D-117/D-118 (robots/
+  sitemap, no-cookie-banner, Cloudflare analytics) from its own P102 base; P108, independently
+  descended from P105, minted its OWN D-116 (dashboard index) and D-117 (purchase idempotency) —
+  a real collision once both trees merged. P110's D-119 landed first (its own clean append onto
+  P106), then P108's two decisions were appended renumbered as D-120/D-121. One stray migration
+  comment (`20260905120020_p108_privilege_baseline.sql`) referencing the old "D-117" was corrected
+  in-place — a comment fix, not a rewrite of the migration's DDL. Added a NEW decision, D-123, for
+  a defect found while integrating (see below). No duplicate `## D-NNN` anywhere in the file
+  (independently re-verified by adversarial review, D-001 through D-123, zero collisions).
+- **D-122 — corrected D-121's purchase-idempotency notes handling.** P108's own design excluded
+  `p_notes` from `create_purchase`'s replay material-equivalence check and called it "operational
+  metadata" — but it's user-typed, user-visible content. Traced the realistic failure: a dropped
+  response, the user edits notes, resubmits with the SAME key (never regenerated on error) → the
+  original design would silently return the FIRST commit, discarding the edit with no error. Fixed
+  via a NEW forward migration (`20260905130000_p111_purchase_notes_replay_semantics.sql` —
+  P108's own migration is untouched, never edited): a legitimate replay now updates the existing
+  row's `notes` to the caller's latest value before returning it; the financial material-
+  equivalence check (everything else) is unchanged, so a genuinely different resubmission is still
+  refused. `lot_notes` (per-line) stays out of scope — see `docs/BACKLOG.md`, matching-a-line-back-
+  to-its-lot on a replay path needs a sequence column this schema doesn't have.
+- **D-123 — fixed a real self-contradiction in P110's 404-resume design.** P110's own report
+  claimed a `permanentFailures` entry "is cleared the moment its pristine fetch succeeds" — but
+  `build-index.ts`'s resume loop skipped any such card unconditionally, so it could never reach
+  that success path on any future resume. Traced the actual code (not accepted the prior write-up
+  on faith) and found the contradiction is real: an image that 404s once would stay permanently
+  unindexed even after being published later, with no fix short of deleting the whole checkpoint.
+  Fixed with a 24h time-bounded re-probe (`shouldSkipPermanentFailure`,
+  `PERMANENT_FAILURE_REPROBE_MS`, `src/domain/scanner/checkpoint-identity.ts`) — a stable 404 is
+  still never hammered within a run or a same-day resume; a stale record gets one fresh probe.
+- **SaleForm/PurchaseEdit: P109 kept as semantic authority, verified with real browser tests, not
+  just P109's own unit matrix.** Added `entity-switch-regression.spec.ts` (authenticated,
+  serial — concurrent fixture creation for the one shared synthetic user hit a real Postgres
+  deadlock under default parallel workers): a genuine SPA client-side transition (via
+  `history.pushState` + `popstate`, the exact mechanism the code's own comments name — a plain
+  `page.goto()` would trivially "pass" either regression for the wrong reason by fully reloading)
+  proves PurchaseEditPage's `key={purchaseId}` remount, SaleFormPage's FULL fields reset (not just
+  items) on A→B→A, and that a slow A submit response never lands on a since-switched-to B.
+- **Purchase idempotency (P108) re-verified end to end, including a case P108 itself never
+  tested:** exact/concurrent replay, five material-mismatch refusals, AND (new) a genuinely
+  UNRELATED unique_violation (`manual_valuations_one_active`, nothing to do with the idempotency
+  index) while a key is present correctly re-raises rather than being mistaken for a replay.
+- **Adversarial self-review — four parallel read-only passes over the exact integrated tree**
+  (financial/DB/security; scanner/index/runtime privacy; React state/races/a11y/mobile; build/
+  CSP/analytics/test-quality). Findings, fixed this session unless noted:
+  - **P0, NOT fixed — flagged for the owner.** 10 commits reachable from this branch (none of
+    P111's OWN 8 commits — independently re-verified) carry `Co-Authored-By: Claude` in their
+    message bodies. All 10 are dated 2026-09-02, inherited from deep in the shared M15
+    scanner-matcher lineage (P87/P88-era work), predate P106/P102 entirely, and are NOT in `main`.
+    Every sibling M15 branch (P102, P105, P106, P108, P109, P110, and this one) carries the same
+    contamination — it is not something P111 introduced, and fixing it means rewriting a shared
+    ancestor history multiple open PRs depend on. Out of scope to fix unilaterally in this
+    session (repository git-safety rules: no history rewrites without explicit owner approval,
+    and §20's "do not rewrite source branch history for cosmetics" logically extends here too).
+    **This blocks ANY M15-lineage branch, including this one, from ever merging to `main` under
+    the repo's no-AI-attribution policy until the owner approves and runs a history-cleanup.**
+  - Two real, previously-unfound WCAG AA contrast failures (`SetGrid.tsx`, `SealedProductImage.
+    tsx` — `text-slate-500` on a `bg-slate-800` fallback badge measures 4.14:1 in light mode, just
+    under 4.5:1; the tertiary-text token was only ever verified against `--pp-background`, not
+    this step-1 surface) — fixed, permanent regression guard added
+    (`tests/ui/slate-800-tertiary-text-contrast.test.ts`).
+  - Five real missing-`aria-label` inputs (critical axe violations), all only reachable via an
+    extra interaction so no earlier sweep caught them: `SaleEditPage`/`SaleFormPage`'s per-line
+    price/quantity inputs (found by extending route smoke coverage), then `PurchaseFormPage`'s
+    retailer-add input, `CollectionsBar`'s rename input, `ItemPicker`'s search input (found by
+    the adversarial pass). All fixed.
+  - `export-reminder.ts`'s localStorage key was unnamespaced — user A exporting on a shared
+    browser would satisfy or misreport user B's own reminder after a sign-out/sign-in. Fixed
+    (namespaced per user id) with a regression test proving isolation.
+  - Route-coverage gap: Purchase/Sale/Opening DETAIL pages (structurally identical to the already-
+    covered Edit pages) were left out of the entity-detail smoke spec. Fixed — added
+    `createFixtureOpening` and all three routes.
+  - Two P2 nitpicks fixed: a stale `vite.config.ts` comment referencing a nonexistent "D-116
+    addendum," and a scope-limiting comment on the new contrast guard (its className-scoped regex
+    can't see a `cn()`/`clsx()`-built class string — no such usage exists in this codebase today).
+  - Everything else across all four tracks (CSP composition, analytics route-gating, live-CSP-hash
+    verifier, index-builder hardening, scanner network privacy, account isolation's core proof,
+    commit-diff secrets/PII, `.skip`/`.only` hygiene) reviewed with **no P0/P1 findings**.
+- **Gates run on the exact final tree, this session:** `pnpm typecheck`/`lint`/`format:check` all
+  clean (0 errors); `pnpm test` 1369/1369 (98 files); `pnpm build` green; `scanner:index:verify`
+  OK (19,501 cards, unchanged LEGACY_V1 content id `1a1df11a73c462d8` — the real dual-prototype
+  rebuild is P112's job); `scanner:roi-fixture:smoke` PASS; `scanner:preprocess:parity` clean;
+  `verify-scanner-platform-build.mjs` 27/27; `check-links.mjs` 29/29. Fresh `supabase db reset` +
+  `pnpm test:db` run clean 3 separate times (614/614, 1 skipped, after the final fix round) plus
+  additional targeted runs during development. Grant audit: clean on the fresh baseline, correctly
+  FAILS after a hand-applied hostile grant, converges clean again after reapplying the cumulative
+  privilege baseline — both directions proven, not asserted. `tests/db/m8_purchase_ledger.test.ts`
+  seed-20 file-shuffle flake from P108: does NOT reproduce (10/10 isolated `m10_sales` runs clean,
+  5/5 fresh-reset full-suite shuffle-seed-20 runs clean). Non-auth E2E 130/130 (desktop-chromium +
+  mobile-iphone/WebKit, one pre-existing UI-timing flake unrelated to this session's changes,
+  passed on retry). Authenticated E2E 61/61 (up from P108's 51/51 baseline — 3 entity-switch/
+  stale-response regressions, 4 entity-detail smoke routes added this session). Dashboard
+  performance re-verified on a real ~10k-lot/~2,468-variant seed WITH `ANALYZE` run
+  (D-059 discipline): `home/dashboard_summary` 1063ms, comfortably inside the 1500ms budget;
+  `price_snapshots_variant_provider_date_idx` confirmed present, redundant two-column index
+  confirmed absent. Private-perf harness: Home/Portfolio/Purchases all well inside the 5000ms
+  catastrophic-only threshold across multiple runs.
+- **Not done, and why — same standing gap as every M15 session since P75:** no hosted DB access,
+  no real dual-prototype index build (needs the owner's hosted `SUPABASE_SERVICE_ROLE_KEY`), no
+  F-03 hosted benchmark, no Cloudflare Production deploy, no owner iPhone gate. Additionally not
+  done THIS session, honestly: cold-Vite-scanner re-proof (only one genuinely-cold dev-server
+  start occurred, not the requested three separate ones); a full manual-browser account-isolation
+  walkthrough (attempted, the interactive browser tool's click targeting was unreliable against
+  this app's login form this session — relied instead on the already-passing automated
+  `account-boundary.spec.ts`/`tests/authorization/**` suites, which do prove the core claim);
+  scanner network-privacy was checked at the CODE level (adversarial review: no fetch/XHR/Blob/
+  FormData path anywhere in the scanner tree sends image bytes) plus one ad-hoc page-load network
+  capture, not a full live-camera-capture network trace; the full explicit a11y interaction-state
+  list (scanner debug panel light/dark, opening-wizard error state, export "backup ready" state)
+  was not separately exercised beyond what the route-level axe scans already cover.
+- **Blockers before `main`:** the pre-existing AI-attribution history contamination above (P0,
+  owner decision required) and the standing owner manual checklist. **Blockers before P112:**
+  none — P112 can proceed to the real hosted work once the owner has reviewed this candidate.
+  **Blockers before the iPhone gate:** hosted DB sync, the real dual-prototype index build, F-03,
+  a correct Cloudflare preview — all P112's job, per this prompt's own explicit sequencing.
+
 ## P106 — Product-integrated non-DB base (branch `feat/p106-product-integrated-nondb`, draft PR
 base `feat/m15-p102-dual-integrated`, NOT merged, NOT deployed)
 
