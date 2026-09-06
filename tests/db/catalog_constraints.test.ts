@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createServiceClient, seedCatalog, type TestClient } from './setup'
+import { createServiceClient, mustDelete, seedCatalog, type TestClient } from './setup'
 
 /**
  * M5 catalog schema corrections, exercised directly (docs/TESTING.md §5) — each test here
@@ -77,7 +77,10 @@ describe('provider ids are scoped per language, not globally unique', () => {
     })
     expect(error).toBeNull()
 
-    await service.from('card_sets').delete().eq('tcgdex_set_id', 'base1').eq('language', 'ja')
+    await mustDelete(
+      service.from('card_sets').delete().eq('tcgdex_set_id', 'base1').eq('language', 'ja'),
+      "card_sets 'base1'/ja cleanup",
+    )
   })
 
   it('rejects a genuine duplicate within the same language', async () => {
@@ -122,7 +125,10 @@ describe('cards.language must match its set (denormalization integrity trigger)'
       .eq('id', created!.id)
     expect(updateError).not.toBeNull()
 
-    await service.from('cards').delete().eq('id', created!.id)
+    await mustDelete(
+      service.from('cards').delete().eq('id', created!.id),
+      'cards cross-set cleanup',
+    )
   })
 })
 
@@ -137,6 +143,9 @@ describe('catalog_sync_runs is service-role only', () => {
       variants_upserted: 1,
     })
     expect(error).toBeNull()
-    await service.from('catalog_sync_runs').delete().eq('tcgdex_set_id', 'test-set')
+    await mustDelete(
+      service.from('catalog_sync_runs').delete().eq('tcgdex_set_id', 'test-set'),
+      "catalog_sync_runs 'test-set' cleanup",
+    )
   })
 })
