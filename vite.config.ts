@@ -43,7 +43,7 @@ const appBuildSha = resolveBuildSha()
 const appBuildTime = new Date().toISOString()
 
 /**
- * Anti-FOUC theme bootstrap (P103, D-116 addendum below): applies a remembered light/dark
+ * Anti-FOUC theme bootstrap (P103): applies a remembered light/dark
  * override (`src/ui/theme.ts`'s `pp-theme` localStorage key) before first paint, so a returning
  * user with an explicit preference never sees a flash of the wrong palette while the profile
  * round-trips from Supabase. `system` (or nothing stored yet) leaves the attribute unset and

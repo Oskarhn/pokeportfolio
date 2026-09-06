@@ -127,3 +127,23 @@ export async function createFixtureSale(): Promise<{ saleId: string }> {
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- Supabase does not narrow on error check
   return { saleId: data!.id }
 }
+
+/** Creates one real provisional opening (via the real `create_opening_from_provisional` RPC —
+ *  buys and opens a sealed product in one call, no separate holding fixture needed) for the
+ *  signed-in E2E user — a real opening id a spec can navigate `/openings/$openingId` against. */
+export async function createFixtureOpening(): Promise<{ openingId: string }> {
+  const client = await signInAsE2eUser()
+  const { data, error } = await client
+    .rpc('create_opening_from_provisional', {
+      p_sealed_product_id: seedCatalog.sealedProductId,
+      p_quantity: 1,
+      p_total_paid_minor: 29900,
+      p_purchased_on: new Date().toISOString().slice(0, 10),
+      p_opened_on: new Date().toISOString().slice(0, 10),
+      p_pulls: [{ card_variant_id: seedCatalog.pikachuVariantId, quantity: 1, condition: 'NM' }],
+    })
+    .single<{ id: string }>()
+  if (error) throw new Error(`failed to create fixture opening: ${error.message}`)
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- Supabase does not narrow on error check
+  return { openingId: data!.id }
+}

@@ -135,6 +135,7 @@ export function CollectionsBar({
                       onChange={(event) => {
                         setRenameValue(event.target.value)
                       }}
+                      aria-label={`Rename collection "${c.name}"`}
                       className="min-h-9 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-2 text-sm text-slate-100"
                     />
                     <button

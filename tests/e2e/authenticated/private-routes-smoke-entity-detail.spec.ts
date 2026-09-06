@@ -1,6 +1,11 @@
 import AxeBuilder from '@axe-core/playwright'
 import { test, expect, type Page } from '@playwright/test'
-import { createFixtureHolding, createFixturePurchase, createFixtureSale } from './fixtures'
+import {
+  createFixtureHolding,
+  createFixtureOpening,
+  createFixturePurchase,
+  createFixtureSale,
+} from './fixtures'
 
 /**
  * P111 §31 — companion to private-routes-smoke.spec.ts (P104), covering the entity-detail-shaped
@@ -73,5 +78,20 @@ test.describe('Private route smoke: entity-detail routes', () => {
   test('Sale Edit (/sales/$saleId/edit)', async ({ page }) => {
     const { saleId } = await createFixtureSale()
     await checkRoute(page, `/sales/${saleId}/edit`)
+  })
+
+  test('Purchase detail (/purchases/$purchaseId)', async ({ page }) => {
+    const { purchaseId } = await createFixturePurchase()
+    await checkRoute(page, `/purchases/${purchaseId}`)
+  })
+
+  test('Sale detail (/sales/$saleId)', async ({ page }) => {
+    const { saleId } = await createFixtureSale()
+    await checkRoute(page, `/sales/${saleId}`)
+  })
+
+  test('Opening detail (/openings/$openingId)', async ({ page }) => {
+    const { openingId } = await createFixtureOpening()
+    await checkRoute(page, `/openings/${openingId}`)
   })
 })

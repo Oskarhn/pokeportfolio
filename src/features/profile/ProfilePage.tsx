@@ -55,16 +55,19 @@ const LANGUAGE_OPTIONS: { value: string | null; label: string }[] = [
  * unavailable or, for the picture, deliberately deferred (see the note below).
  */
 export function ProfilePage() {
-  const { email, isAdmin, signOut } = useAuth()
+  const { email, isAdmin, signOut, session } = useAuth()
   const profile = useQuery({ queryKey: ['my-profile'], queryFn: getMyProfile })
   const counts = useQuery({
     queryKey: ['portfolio-counts'],
     queryFn: () => getPortfolioCounts(),
   })
-  // Periodic export reminder (PRODUCT_SPEC §4.12, D-079). Local-only timestamp; no collection
-  // or financial data is ever read or stored here. Evaluated once per mount.
+  // Periodic export reminder (PRODUCT_SPEC §4.12, D-079). Local-only timestamp, namespaced by
+  // user id (P111 — a shared-browser cross-account leak otherwise); no collection or financial
+  // data is ever read or stored here. Evaluated once per mount.
   const [remindExport] = useState(() =>
-    shouldRemindExport(readLastReminderMark(window.localStorage), new Date()),
+    session
+      ? shouldRemindExport(readLastReminderMark(window.localStorage, session.user.id), new Date())
+      : false,
   )
 
   return (

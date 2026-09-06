@@ -12,7 +12,16 @@
 
 export const EXPORT_REMINDER_INTERVAL_DAYS = 30
 
-export const EXPORT_REMINDER_STORAGE_KEY = 'pokeportfolio.export.reminder-marked-at'
+/**
+ * P111 fix: this used to be one bare, unnamespaced key shared by every account that ever signs in
+ * on the same browser — user A exporting would silently satisfy (or A's stale timestamp would
+ * silently misreport) user B's own reminder after a sign-out/sign-in on a shared machine. Every
+ * call site now namespaces by the signed-in user's id, matching how every other piece of
+ * per-user client state in this app already behaves.
+ */
+export function exportReminderStorageKey(userId: string): string {
+  return `pokeportfolio.export.reminder-marked-at.${userId}`
+}
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
@@ -32,18 +41,22 @@ export interface ReminderStore {
   setItem(key: string, value: string): void
 }
 
-export function readLastReminderMark(store: ReminderStore): string | null {
+export function readLastReminderMark(store: ReminderStore, userId: string): string | null {
   try {
-    return store.getItem(EXPORT_REMINDER_STORAGE_KEY)
+    return store.getItem(exportReminderStorageKey(userId))
   } catch {
     return null // private-mode storage failures must never break Profile rendering
   }
 }
 
 /** Marks the reminder satisfied — on a completed export or when the user dismisses it. */
-export function markReminderSatisfied(store: ReminderStore, now: Date = new Date()): void {
+export function markReminderSatisfied(
+  store: ReminderStore,
+  userId: string,
+  now: Date = new Date(),
+): void {
   try {
-    store.setItem(EXPORT_REMINDER_STORAGE_KEY, now.toISOString())
+    store.setItem(exportReminderStorageKey(userId), now.toISOString())
   } catch {
     // Same privacy-safe degradation as above.
   }
