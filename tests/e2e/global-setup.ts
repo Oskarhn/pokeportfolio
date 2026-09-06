@@ -1,6 +1,11 @@
 import { resolveBuildSha } from '../../vite.config'
 
-const PREVIEW_BASE_URL = 'http://localhost:4173'
+// P113: parametrized so an isolated worktree can run its own E2E suite on a non-default port
+// without ever reaching a concurrently-running session's server on the default port — the exact
+// stale-server risk this file's own guard exists to catch, just avoided proactively instead of
+// only detected after the fact. Defaults to 4173 (unchanged behavior for every existing caller).
+const PREVIEW_PORT = process.env.PLAYWRIGHT_PREVIEW_PORT ?? '4173'
+const PREVIEW_BASE_URL = `http://localhost:${PREVIEW_PORT}`
 
 /**
  * P106 build-isolation hardening. `playwright.config.ts`'s production-preview webServer sets
