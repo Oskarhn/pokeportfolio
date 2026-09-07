@@ -118,11 +118,19 @@ async function fetchCatalogMetadata(url: string, key: string): Promise<CardRow[]
  *  `decodeVisualIndex` the shipped worker uses, so this tool gets the identical fail-closed
  *  schema/prototype-shape validation for free and can never misalign a dual-prototype (or future)
  *  format the way a hand-rolled one-row-per-card decode would. */
-async function loadProductionIndex() {
-  const pointer = JSON.parse(await readFile(join(VISUAL_INDEX_DIR, 'current.json'), 'utf-8')) as {
-    contentId: string
-  }
-  const generationDir = join(VISUAL_INDEX_DIR, 'generations', pointer.contentId)
+/** P112 §23/L: an optional explicit `contentId` lets a control run load the RETAINED legacy
+ *  generation directly by its content-addressed directory — never by touching `current.json`,
+ *  which stays pointed at the real production generation throughout. Omit it (the normal/only
+ *  path every other caller uses) to follow the real pointer exactly as before. */
+async function loadProductionIndex(contentIdOverride?: string) {
+  const contentId =
+    contentIdOverride ??
+    (
+      JSON.parse(await readFile(join(VISUAL_INDEX_DIR, 'current.json'), 'utf-8')) as {
+        contentId: string
+      }
+    ).contentId
+  const generationDir = join(VISUAL_INDEX_DIR, 'generations', contentId)
   const manifest = JSON.parse(
     await readFile(join(generationDir, 'manifest.json'), 'utf-8'),
   ) as VisualIndexManifest
@@ -163,6 +171,10 @@ async function main() {
   }
 
   const queryN = Number(process.argv.find((a) => a.startsWith('--n='))?.split('=')[1] ?? 400)
+  // P112 §23/L legacy-vs-dual control: `--generation=<contentId>` loads that generation directly
+  // instead of following current.json — used ONLY to benchmark the retained legacy single-
+  // prototype generation as a control, current.json itself is never touched.
+  const generationOverride = process.argv.find((a) => a.startsWith('--generation='))?.split('=')[1]
 
   console.log(
     '[f03] fetching real catalog metadata (id, set_id, local_id, name, image_base_url, language) — no user/cost data...',
@@ -173,7 +185,7 @@ async function main() {
   console.log(
     '[f03] loading production visual index (scripts/scanner-visual-index/generated/visual-v1/)...',
   )
-  const { manifest, decoded } = await loadProductionIndex()
+  const { manifest, decoded } = await loadProductionIndex(generationOverride)
   const cardIdSet = new Set(decoded.cardIds)
   console.log(
     `[f03] production index: ${String(decoded.cardIds.length)} cards, ` +
