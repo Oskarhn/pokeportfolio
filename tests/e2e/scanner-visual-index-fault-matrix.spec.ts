@@ -84,6 +84,17 @@ interface FixtureOptions {
    *  at publish time (independent of any manifest field mutation). */
   corruptServedEmbeddingsAfterHashing?: boolean
   coverageOverride?: CoverageOverride
+  /** P115 §7 — the ACTUAL number of embedding rows generated/served/hashed, when it must differ
+   *  from the manifest's own `cardCount * (prototypesPerCard ?? 1)` implication (a self-consistent
+   *  fixture whose declared shape and served bytes disagree — the real-world "truncated/odd row
+   *  count" fault, distinct from `corruptServedEmbeddingsAfterHashing`'s post-hash byte flip which
+   *  never changes length). Defaults to the natural `cardCount * (prototypesPerCard ?? 1)`. */
+  embeddingsRowCountOverride?: number
+  /** P115 §7 — sets the manifest's own optional `rowCount` field directly, independent of the
+   *  actual served embeddings length, isolating decodeVisualIndex's dedicated
+   *  `rowCount !== cardCount * prototypesPerCard` cross-check (this field is excluded from the
+   *  content-id hash, so setting it alone cannot also trip the content-id/checksum gates). */
+  manifestRowCountOverride?: number
 }
 
 interface Fixture {
@@ -98,7 +109,7 @@ function buildFixture(opts: FixtureOptions = {}): Fixture {
   const cardCount = opts.cardCount ?? 3
   const embeddingDim = opts.embeddingDim ?? EMBEDDING_DIM
   const prototypesPerCard = opts.prototypesPerCard
-  const rowCount = cardCount * (prototypesPerCard ?? 1)
+  const rowCount = opts.embeddingsRowCountOverride ?? cardCount * (prototypesPerCard ?? 1)
 
   const cardIds = Array.from({ length: cardCount }, (_, i) => `p113-synthetic-card-${String(i)}`)
   const cardIdsText = JSON.stringify(cardIds)
@@ -147,6 +158,12 @@ function buildFixture(opts: FixtureOptions = {}): Fixture {
     ...manifestFieldsForHash,
     embeddingsSha256: opts.wrongDeclaredChecksum ? 'f'.repeat(64) : actualEmbeddingsSha256,
     generatedAt: '2026-01-01T00:00:00.000Z',
+    // Excluded from the content-id hash by production design (index-content-id.ts's
+    // IndexContentIdManifestFields carries no rowCount) — added here, after hashing, so setting it
+    // cannot also perturb the content-id/checksum gates under test elsewhere in this file.
+    ...(opts.manifestRowCountOverride === undefined
+      ? {}
+      : { rowCount: opts.manifestRowCountOverride }),
   }
 
   const pointerBody = JSON.stringify({
@@ -179,6 +196,13 @@ interface ReadyResult {
   cardCount?: number
   reason?: string
   message?: string
+  /** P115 §7 — exposed so the v2 control case can confirm the schema actually loaded is v2/dual-
+   *  prototype, not merely that SOME index loaded (mirrors visual-worker.ts's own `ready` message
+   *  fields verbatim). */
+  indexSchemaVersion?: number | null
+  indexPayloadFormat?: string | null
+  indexPrototypesPerCard?: number | null
+  indexRowCount?: number | null
 }
 
 /** Serves a fixture's four files through realistic route interception, drives the REAL worker
@@ -464,7 +488,7 @@ test.describe('visual index fault matrix (P113 §4) — real worker, synthetic g
     expectIndexUnavailable(result, 'impossible coverage')
   })
 
-  test('a genuinely valid synthetic generation loads successfully end to end (control case)', async ({
+  test('a genuinely valid LEGACY_V1 synthetic generation loads successfully end to end (legacy control case)', async ({
     page,
   }) => {
     const fixture = buildFixture({ cardCount: 4 })
@@ -474,5 +498,118 @@ test.describe('visual index fault matrix (P113 §4) — real worker, synthetic g
     expect(result.indexLoad).toBe('success')
     expect(result.cardCount).toBe(4)
     expect(result.indexUnavailableReason ?? null).toBeNull()
+    expect(result.indexSchemaVersion).toBe(1)
+    expect(result.indexPrototypesPerCard).toBe(1)
+  })
+
+  // P115 §7 — this file was originally written against P113's own base checkpoint, before the
+  // hosted-final P112 dual-prototype (schemaVersion=2/multi-prototype-v2/prototypesPerCard=2)
+  // index shipped. The scenarios above already exercise several v2-shaped manifests (partial
+  // schema, missing prototypeStrategy) but the file had NO fault case isolating a bad
+  // prototypesPerCard value or a declared-vs-served row-count disagreement, and no control case
+  // proving a genuinely valid v2/dual-prototype generation (matching the real shipped shape, not
+  // just LEGACY_V1) loads successfully. Both matrices now exist side by side so this file cannot
+  // regress into legacy-only coverage as the shipped index format moves on.
+  test.describe('v2 (multi-prototype) fault matrix — same real worker, current shipped schema shape', () => {
+    test('missing prototypesPerCard — schemaVersion/payloadFormat present, prototypesPerCard absent', async ({
+      page,
+    }) => {
+      const fixture = buildFixture({ schemaVersion: 2, payloadFormat: 'multi-prototype-v2' })
+      const result = await loadWorkerAgainstFixture(page, fixture)
+      expectIndexUnavailable(result, 'not all three')
+    })
+
+    test('wrong prototypesPerCard — declared as a non-positive value', async ({ page }) => {
+      const fixture = buildFixture({
+        schemaVersion: 2,
+        payloadFormat: 'multi-prototype-v2',
+        prototypesPerCard: 0,
+      })
+      const result = await loadWorkerAgainstFixture(page, fixture)
+      expectIndexUnavailable(result, 'invalid prototypesPerCard')
+    })
+
+    test('wrong payloadFormat — recognized schemaVersion, unrecognized payloadFormat string', async ({
+      page,
+    }) => {
+      const fixture = buildFixture({
+        schemaVersion: 2,
+        payloadFormat: 'from-a-different-future-v3',
+        prototypesPerCard: 1,
+      })
+      const result = await loadWorkerAgainstFixture(page, fixture)
+      expectIndexUnavailable(result, 'unrecognized payloadformat')
+    })
+
+    test('odd prototype row count — embeddings.bin has one row fewer than cardCount x prototypesPerCard implies', async ({
+      page,
+    }) => {
+      const fixture = buildFixture({
+        cardCount: 3,
+        schemaVersion: 2,
+        payloadFormat: 'multi-prototype-v2',
+        prototypesPerCard: 2,
+        prototypeStrategy: 'pristinePlus1Aux',
+        prototypeStrategyVersion: 'v1',
+        embeddingsRowCountOverride: 5, // natural = 3 * 2 = 6
+      })
+      const result = await loadWorkerAgainstFixture(page, fixture)
+      expectIndexUnavailable(result, 'embeddings buffer has')
+    })
+
+    test('card count vs prototype count mismatch — manifest.rowCount disagrees with cardCount x prototypesPerCard', async ({
+      page,
+    }) => {
+      const fixture = buildFixture({
+        cardCount: 4,
+        schemaVersion: 2,
+        payloadFormat: 'multi-prototype-v2',
+        prototypesPerCard: 2,
+        prototypeStrategy: 'pristinePlus1Aux',
+        prototypeStrategyVersion: 'v1',
+        manifestRowCountOverride: 7, // natural = 4 * 2 = 8, embeddings buffer itself IS 8 rows
+      })
+      const result = await loadWorkerAgainstFixture(page, fixture)
+      expectIndexUnavailable(result, 'declares rowcount=7')
+    })
+
+    test('truncated second prototype — a genuinely dual-prototype generation missing exactly one card worth of trailing rows', async ({
+      page,
+    }) => {
+      const fixture = buildFixture({
+        cardCount: 2,
+        schemaVersion: 2,
+        payloadFormat: 'multi-prototype-v2',
+        prototypesPerCard: 2,
+        prototypeStrategy: 'pristinePlus1Aux',
+        prototypeStrategyVersion: 'v1',
+        embeddingsRowCountOverride: 3, // natural = 2 * 2 = 4 — second card's aux prototype missing
+      })
+      const result = await loadWorkerAgainstFixture(page, fixture)
+      expectIndexUnavailable(result, 'embeddings buffer has')
+    })
+
+    test('a genuinely valid v2/dual-prototype synthetic generation loads successfully end to end (v2 control case, matches the real shipped shape)', async ({
+      page,
+    }) => {
+      const fixture = buildFixture({
+        cardCount: 5,
+        schemaVersion: 2,
+        payloadFormat: 'multi-prototype-v2',
+        prototypesPerCard: 2,
+        prototypeStrategy: 'pristinePlus1Aux',
+        prototypeStrategyVersion: 'v1',
+      })
+      const result = await loadWorkerAgainstFixture(page, fixture)
+      expect(result.type).toBe('ready')
+      expect(result.indexAvailable).toBe(true)
+      expect(result.indexLoad).toBe('success')
+      expect(result.cardCount).toBe(5)
+      expect(result.indexUnavailableReason ?? null).toBeNull()
+      expect(result.indexSchemaVersion).toBe(2)
+      expect(result.indexPayloadFormat).toBe('multi-prototype-v2')
+      expect(result.indexPrototypesPerCard).toBe(2)
+      expect(result.indexRowCount).toBe(10)
+    })
   })
 })
