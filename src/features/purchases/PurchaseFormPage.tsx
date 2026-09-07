@@ -13,12 +13,11 @@ import { LineEditorRow, newLineDraft, type LineDraft } from './LineEditor'
 import { LINE_TYPE_LABEL } from './labels'
 import { at } from './util'
 import { useUnsavedWorkSnapshot } from '../../platform/unsaved-work-registry'
+import { localTodayIso } from '../../platform/local-date'
 
 const CURRENCIES: CurrencyCode[] = ['NOK', 'EUR', 'USD', 'GBP', 'JPY']
 
-function today(): string {
-  return new Date().toISOString().slice(0, 10)
-}
+const today = localTodayIso
 
 /** Parses a decimal charge/price field; blank means zero, never a fabricated amount. */
 function parseAmount(raw: string, currency: CurrencyCode): bigint {

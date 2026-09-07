@@ -17,6 +17,7 @@ import {
 import type { ExportSnapshot } from '../../domain/export/snapshot-types'
 import { supabase } from '../supabase-client'
 import { fetchExportSnapshot, type ExportFetchOptions } from './fetch-snapshot'
+import { localTodayIso } from '../../platform/local-date'
 
 /** One finished, downloadable file. No streams, no partial state, no server round trips. */
 export interface ExportArtifact {
@@ -30,9 +31,7 @@ export type ExportOptions = ExportFetchOptions
 export const JSON_BACKUP_MIME_TYPE = 'application/json'
 export const CSV_MIME_TYPE = 'text/csv;charset=utf-8'
 
-function todayStamp(): string {
-  return new Date().toISOString().slice(0, 10)
-}
+const todayStamp = localTodayIso
 
 export function jsonBackupFilename(stamp: string = todayStamp()): string {
   return `pokeportfolio-backup-${stamp}.json`

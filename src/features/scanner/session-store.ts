@@ -17,6 +17,7 @@
 
 import type { CardCondition, CostBasisState, LotOrigin } from '../../data/collection'
 import { fixedCostBasisState as sharedFixedCostBasisState } from '../collection/origin-basis'
+import { localTodayIso } from '../../platform/local-date'
 
 /** Origins the STANDALONE scanner may offer. `opening` deliberately absent (see above). */
 export type ScannerOrigin = Exclude<LotOrigin, 'opening'>
@@ -40,9 +41,7 @@ export function scannerCostBasisState(origin: ScannerOrigin): CostBasisState {
   return sharedFixedCostBasisState(origin) ?? 'unknown'
 }
 
-export function todayIso(): string {
-  return new Date().toISOString().slice(0, 10)
-}
+export const todayIso = localTodayIso
 
 export interface ScannerSessionDefaults {
   origin: ScannerOrigin
