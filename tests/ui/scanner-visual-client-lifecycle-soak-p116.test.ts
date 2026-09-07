@@ -110,7 +110,7 @@ function readyMessage(overrides: Record<string, unknown> = {}) {
 }
 
 function fakeBitmap(): ImageBitmap {
-  return { close: vi.fn(), width: 300, height: 400 } as unknown as ImageBitmap
+  return { close: vi.fn(), width: 300, height: 400 }
 }
 
 const originalWorker = globalThis.Worker
@@ -222,7 +222,11 @@ describe('finding: dispose() abandons in-flight analyze()/getExpectedCardRank() 
     // (a real, reportable finding) rather than asserting it as desired.
     const raceResult = await Promise.race([
       analyzePromise.then(() => 'settled' as const).catch(() => 'settled' as const),
-      new Promise<'timed-out'>((resolve) => setTimeout(() => resolve('timed-out'), 50)),
+      new Promise<'timed-out'>((resolve) => {
+        setTimeout(() => {
+          resolve('timed-out')
+        }, 50)
+      }),
     ])
     expect(raceResult).toBe('timed-out')
   })

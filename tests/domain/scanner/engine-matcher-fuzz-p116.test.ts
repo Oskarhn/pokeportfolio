@@ -23,7 +23,12 @@ import {
  * §6's own "smaller CI run count... heavy command for soak mode" allowance.
  */
 
-function card(cardId: string, name: string, localId: string, setName: string): ScannerCandidateRecord {
+function card(
+  cardId: string,
+  name: string,
+  localId: string,
+  setName: string,
+): ScannerCandidateRecord {
   return {
     cardId,
     name,
@@ -64,10 +69,7 @@ const arbSimilarity = fc.oneof(
 /** Ties: every populated candidate gets the SAME similarity value — the exact shape the sort
  *  contract's "then cardId asc" tie-break exists for. */
 const arbTiedVisualScores = fc
-  .tuple(
-    fc.subarray(CANDIDATE_IDS, { minLength: 0 }),
-    fc.double({ min: 0, max: 1, noNaN: true }),
-  )
+  .tuple(fc.subarray(CANDIDATE_IDS, { minLength: 0 }), fc.double({ min: 0, max: 1, noNaN: true }))
   .map(([ids, sharedScore]): VisualEvidenceByCard => new Map(ids.map((id) => [id, sharedScore])))
 
 const arbVisualScores = fc

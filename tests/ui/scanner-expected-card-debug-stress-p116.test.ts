@@ -88,7 +88,7 @@ function defaultVisualDiagnostics() {
 }
 function catalogRow(cardId: string, localId: string) {
   return {
-    id: cardId,
+    cardId,
     name: `Card ${cardId}`,
     localId,
     rarity: 'Basic',
@@ -173,7 +173,10 @@ describe('expected-card debug stress — never affects ranking/batch (P116 §14)
         if (scenario.kind === 'inactive' || scenario.kind === 'language-filtered') {
           mockedClassify.mockResolvedValueOnce(
             new Map([
-              [scenario.cardId, scenario.kind === 'inactive' ? 'inactive-filtered' : 'language-filtered'],
+              [
+                scenario.cardId,
+                scenario.kind === 'inactive' ? 'inactive-filtered' : 'language-filtered',
+              ],
             ]),
           )
         } else if (scenario.kind === 'missing-catalog') {
