@@ -42,12 +42,14 @@ function formatExactDecimal(minorUnits: bigint, currency: CurrencyCode, locale: 
   const groupedWhole = new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }).format(
     BigInt(wholeDigits),
   )
-  const decimalSeparator =
-    new Intl.NumberFormat(locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 })
-      .formatToParts(0)
-      .find((part) => part.type === 'decimal')?.value ?? '.'
-  const body =
-    fractionDigits === '' ? groupedWhole : `${groupedWhole}${decimalSeparator}${fractionDigits}`
+  let body = groupedWhole
+  if (fractionDigits !== '') {
+    const decimalSeparator =
+      new Intl.NumberFormat(locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+        .formatToParts(0)
+        .find((part) => part.type === 'decimal')?.value ?? '.'
+    body = `${groupedWhole}${decimalSeparator}${fractionDigits}`
+  }
   if (!negative) return body
   const minusSign =
     new Intl.NumberFormat(locale).formatToParts(-1).find((part) => part.type === 'minusSign')
