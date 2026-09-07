@@ -20,6 +20,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:db": "vitest run --config vitest.db.config.ts",
+    "test:soak": "vitest run --config vitest.soak.config.ts",
     "test:m12-adversarial": "vitest run --config test/m12-independent-adversarial/vitest.config.ts",
     "test:m13-adversarial": "vitest run --config test/m13-independent-adversarial/vitest.config.ts",
     "test:e2e": "playwright test",
