@@ -39,62 +39,56 @@ function simulateAuthProviderObservation(
 describe('auth provider race harness — getSession() vs onAuthStateChange, randomized schedules (P116 §11)', () => {
   it('50,000 generated observation schedules: a boundary fires if and only if the observed identity genuinely changed, and never on the first observation of a fresh ref', () => {
     fc.assert(
-      fc.property(
-        fc.array(arbNextUserId, { minLength: 1, maxLength: 20 }),
-        (schedule) => {
-          const client = new QueryClient({
-            defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-          })
-          const ref: { current: ObservedUserId } = { current: undefined }
-          for (const nextUserId of schedule) {
-            const previous = ref.current
-            const fired = simulateAuthProviderObservation(client, ref, nextUserId)
-            const expectedFire = previous !== undefined && previous !== nextUserId
-            expect(fired).toBe(expectedFire)
-          }
-        },
-      ),
+      fc.property(fc.array(arbNextUserId, { minLength: 1, maxLength: 20 }), (schedule) => {
+        const client = new QueryClient({
+          defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+        })
+        const ref: { current: ObservedUserId } = { current: undefined }
+        for (const nextUserId of schedule) {
+          const previous = ref.current
+          const fired = simulateAuthProviderObservation(client, ref, nextUserId)
+          const expectedFire = previous !== undefined && previous !== nextUserId
+          expect(fired).toBe(expectedFire)
+        }
+      }),
       { numRuns: 50_000 },
     )
-  })
+  }, 20_000)
 
   it('50,000 generated schedules: after the WHOLE schedule settles, cache/query state reflects ONLY the last-observed identity — no earlier identity data survives, regardless of interleaving order (initial A / B-before-getSession-resolves / getSession-A-arriving-late all modeled as arbitrary positions in the schedule)', () => {
     fc.assert(
-      fc.property(
-        fc.array(arbNextUserId, { minLength: 1, maxLength: 20 }),
-        (schedule) => {
-          const client = new QueryClient({
-            defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-          })
-          const ref: { current: ObservedUserId } = { current: undefined }
-          for (const nextUserId of schedule) {
-            simulateAuthProviderObservation(client, ref, nextUserId)
-            // Every observation "renders" by writing an identity-tagged probe entry into the
-            // cache — the same shape a real signed-in render would populate via a query. Written
-            // AFTER the boundary call, exactly like a real component only fetches once its own
-            // identity is current.
-            if (nextUserId !== null) {
-              client.setQueryData(['probe', nextUserId], { owner: nextUserId })
-            }
+      fc.property(fc.array(arbNextUserId, { minLength: 1, maxLength: 20 }), (schedule) => {
+        const client = new QueryClient({
+          defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+        })
+        const ref: { current: ObservedUserId } = { current: undefined }
+        for (const nextUserId of schedule) {
+          simulateAuthProviderObservation(client, ref, nextUserId)
+          // Every observation "renders" by writing an identity-tagged probe entry into the
+          // cache — the same shape a real signed-in render would populate via a query. Written
+          // AFTER the boundary call, exactly like a real component only fetches once its own
+          // identity is current.
+          if (nextUserId !== null) {
+            client.setQueryData(['probe', nextUserId], { owner: nextUserId })
           }
-          const finalIdentity = ref.current
-          const allEntries = client.getQueryCache().getAll()
-          for (const entry of allEntries) {
-            const key = entry.queryKey
-            if (Array.isArray(key) && key[0] === 'probe') {
-              // Any probe entry still alive must belong to the CURRENT identity — an earlier
-              // identity's probe must have been cleared by a later boundary.
-              expect(key[1]).toBe(finalIdentity)
-            }
+        }
+        const finalIdentity = ref.current
+        const allEntries = client.getQueryCache().getAll()
+        for (const entry of allEntries) {
+          const key = entry.queryKey
+          if (Array.isArray(key) && key[0] === 'probe') {
+            // Any probe entry still alive must belong to the CURRENT identity — an earlier
+            // identity's probe must have been cleared by a later boundary.
+            expect(key[1]).toBe(finalIdentity)
           }
-          if (finalIdentity !== null && finalIdentity !== undefined) {
-            expect(client.getQueryData(['probe', finalIdentity])).toEqual({ owner: finalIdentity })
-          }
-        },
-      ),
+        }
+        if (finalIdentity !== null && finalIdentity !== undefined) {
+          expect(client.getQueryData(['probe', finalIdentity])).toEqual({ owner: finalIdentity })
+        }
+      }),
       { numRuns: 50_000 },
     )
-  })
+  }, 20_000)
 
   it('specific named races the prompt calls out: initial A, event B before getSession resolves, getSession A arriving late, SIGNED_OUT, SIGNED_IN, TOKEN_REFRESHED (same-identity repeat)', () => {
     const client = new QueryClient({

@@ -82,37 +82,40 @@ describe('real dual-index search stress (P116 §5) — generation f25fc05d569b7c
   const SOAK_ENABLED = process.env.SCANNER_INDEX_SEARCH_SOAK === '1'
   const TOTAL = SOAK_ENABLED ? SOAK_TOTAL : PERMANENT_TOTAL
 
-  it(`${String(PERMANENT_TOTAL)} searches over random finite unit vectors (SCANNER_INDEX_SEARCH_SOAK=1 for the full 250,000): deterministic, finite, correct topK, stable ties, index never mutated`, () => {
-    const beforeSnapshot = Array.from(REAL_INDEX.embeddingsInt8.slice(0, 4096))
-    const topKs = [1, 5, 20, 100]
-    let performed = 0
-    const rng = mulberry32(20260907)
-    for (let i = 0; i < TOTAL; i += 1) {
-      const topK = topKs[i % topKs.length] ?? 5
-      const vector = randomVector(rng)
-      const hits = searchVisualIndex(REAL_INDEX, vector, topK)
-      performed += 1
-      expect(hits.length).toBe(Math.min(topK, CARD_COUNT))
-      for (const hit of hits) {
-        expect(Number.isFinite(hit.similarity)).toBe(true)
-        expect(typeof hit.cardId).toBe('string')
+  it(
+    `${String(PERMANENT_TOTAL)} searches over random finite unit vectors (SCANNER_INDEX_SEARCH_SOAK=1 for the full 250,000): deterministic, finite, correct topK, stable ties, index never mutated`,
+    () => {
+      const beforeSnapshot = Array.from(REAL_INDEX.embeddingsInt8.slice(0, 4096))
+      const topKs = [1, 5, 20, 100]
+      let performed = 0
+      const rng = mulberry32(20260907)
+      for (let i = 0; i < TOTAL; i += 1) {
+        const topK = topKs[i % topKs.length] ?? 5
+        const vector = randomVector(rng)
+        const hits = searchVisualIndex(REAL_INDEX, vector, topK)
+        performed += 1
+        expect(hits.length).toBe(Math.min(topK, CARD_COUNT))
+        for (const hit of hits) {
+          expect(Number.isFinite(hit.similarity)).toBe(true)
+          expect(typeof hit.cardId).toBe('string')
+        }
+        // Sorted similarity desc across the returned page (BoundedTopK/full-sort contract).
+        for (let h = 1; h < hits.length; h += 1) {
+          const prev = hits[h - 1]
+          const curr = hits[h]
+          if (!prev || !curr) continue
+          expect(prev.similarity).toBeGreaterThanOrEqual(curr.similarity)
+        }
+        // No duplicate cardId within one result page.
+        expect(new Set(hits.map((h) => h.cardId)).size).toBe(hits.length)
       }
-      // Sorted similarity desc across the returned page (BoundedTopK/full-sort contract).
-      for (let h = 1; h < hits.length; h += 1) {
-        const prev = hits[h - 1]
-        const curr = hits[h]
-        if (!prev || !curr) continue
-        expect(prev.similarity).toBeGreaterThanOrEqual(curr.similarity)
-      }
-      // No duplicate cardId within one result page.
-      expect(new Set(hits.map((h) => h.cardId)).size).toBe(hits.length)
-    }
-    expect(performed).toBe(TOTAL)
-    // The underlying int8 buffer is read-only from this module's perspective — a search must
-    // never write back into the shared decoded index.
-    expect(Array.from(REAL_INDEX.embeddingsInt8.slice(0, 4096))).toEqual(beforeSnapshot)
-  },
-  SOAK_ENABLED ? 20 * 60_000 : 100_000)
+      expect(performed).toBe(TOTAL)
+      // The underlying int8 buffer is read-only from this module's perspective — a search must
+      // never write back into the shared decoded index.
+      expect(Array.from(REAL_INDEX.embeddingsInt8.slice(0, 4096))).toEqual(beforeSnapshot)
+    },
+    SOAK_ENABLED ? 20 * 60_000 : 100_000,
+  )
 
   it('adversarial query vectors (zero, near-zero, all-ones, all-minus-ones) never throw and stay finite', () => {
     const adversarial: Float32Array[] = [
@@ -148,30 +151,26 @@ describe('real dual-index search stress (P116 §5) — generation f25fc05d569b7c
     }
   })
 
-  it(
-    'property: 300 random topK/vector pairs never mutate cardIds order or count',
-    () => {
-      // Each run performs one full brute-force search over the real ~19,500-card index (~15M
-      // multiply-adds) — kept small deliberately; the bulk-volume assertions above already cover
-      // the high-iteration-count ground this property would otherwise duplicate at prohibitive cost.
-      const beforeIds = [...REAL_INDEX.cardIds]
-      fc.assert(
-        fc.property(
-          fc.integer({ min: 0, max: Math.min(CARD_COUNT, 500) }),
-          fc.array(fc.double({ min: -1, max: 1, noNaN: true }), {
-            minLength: DIM,
-            maxLength: DIM,
-          }),
-          (topK, vectorArray) => {
-            const vector = l2Normalize(Float32Array.from(vectorArray))
-            const hits = searchVisualIndex(REAL_INDEX, vector, topK)
-            expect(hits.length).toBe(Math.min(topK, CARD_COUNT))
-          },
-        ),
-        { numRuns: 300 },
-      )
-      expect(REAL_INDEX.cardIds).toEqual(beforeIds)
-    },
-    60_000,
-  )
+  it('property: 300 random topK/vector pairs never mutate cardIds order or count', () => {
+    // Each run performs one full brute-force search over the real ~19,500-card index (~15M
+    // multiply-adds) — kept small deliberately; the bulk-volume assertions above already cover
+    // the high-iteration-count ground this property would otherwise duplicate at prohibitive cost.
+    const beforeIds = [...REAL_INDEX.cardIds]
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 0, max: Math.min(CARD_COUNT, 500) }),
+        fc.array(fc.double({ min: -1, max: 1, noNaN: true }), {
+          minLength: DIM,
+          maxLength: DIM,
+        }),
+        (topK, vectorArray) => {
+          const vector = l2Normalize(Float32Array.from(vectorArray))
+          const hits = searchVisualIndex(REAL_INDEX, vector, topK)
+          expect(hits.length).toBe(Math.min(topK, CARD_COUNT))
+        },
+      ),
+      { numRuns: 300 },
+    )
+    expect(REAL_INDEX.cardIds).toEqual(beforeIds)
+  }, 60_000)
 })

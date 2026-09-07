@@ -160,11 +160,12 @@ function startCapture(
   const settled = controller
     .analyzeCapture(capture(), abort.signal)
     .then((): { kind: 'applied' } | { kind: 'resolved-but-superseded' } =>
-      myGeneration === generationRef.current ? { kind: 'applied' } : { kind: 'resolved-but-superseded' },
+      myGeneration === generationRef.current
+        ? { kind: 'applied' }
+        : { kind: 'resolved-but-superseded' },
     )
-    .catch(
-      (error: unknown): { kind: 'aborted' } | { kind: 'other-error' } =>
-        error instanceof ScannerAnalysisAbortedError ? { kind: 'aborted' } : { kind: 'other-error' },
+    .catch((error: unknown): { kind: 'aborted' } | { kind: 'other-error' } =>
+      error instanceof ScannerAnalysisAbortedError ? { kind: 'aborted' } : { kind: 'other-error' },
     )
   return { label, abort, ocr, catalog, myGeneration, settled }
 }
@@ -179,83 +180,79 @@ const arbReplaceTiming = fc.constantFrom<'immediately' | 'after-ocr' | 'after-ca
 )
 
 describe('analysis A/B/C race matrix (P116 §3)', () => {
-  it(
-    '50,000 generated three-way replacement schedules (A starts, B replaces A, C replaces B, at every meaningful stage timing): a replaced generation is NEVER applied as current state, exactly one generation ever wins, C always outlives every replacement',
-    async () => {
-      await fc.assert(
-        fc.asyncProperty(
-          arbReplaceTiming,
-          arbReplaceTiming,
-          arbResolveOrder,
-          async (bReplaceTiming, cReplaceTiming, resolveOrder) => {
-            const controller = createRealScannerController({ userId: 'user-a' })
-            const generationRef = { current: 0 }
-            const a = startCapture(controller, 'A', generationRef)
+  it('50,000 generated three-way replacement schedules (A starts, B replaces A, C replaces B, at every meaningful stage timing): a replaced generation is NEVER applied as current state, exactly one generation ever wins, C always outlives every replacement', async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        arbReplaceTiming,
+        arbReplaceTiming,
+        arbResolveOrder,
+        async (bReplaceTiming, cReplaceTiming, resolveOrder) => {
+          const controller = createRealScannerController({ userId: 'user-a' })
+          const generationRef = { current: 0 }
+          const a = startCapture(controller, 'A', generationRef)
 
-            async function advanceTo(
-              capture: InFlightCapture,
-              timing: 'immediately' | 'after-ocr' | 'after-catalog',
-            ): Promise<void> {
-              if (timing === 'immediately') return
-              capture.ocr.resolve(ocrResult(capture.label))
+          async function advanceTo(
+            capture: InFlightCapture,
+            timing: 'immediately' | 'after-ocr' | 'after-catalog',
+          ): Promise<void> {
+            if (timing === 'immediately') return
+            capture.ocr.resolve(ocrResult(capture.label))
+            await Promise.resolve()
+            await Promise.resolve()
+            if (timing === 'after-catalog') {
+              capture.catalog.resolve({ results: [], totalCount: 0 })
               await Promise.resolve()
               await Promise.resolve()
-              if (timing === 'after-catalog') {
-                capture.catalog.resolve({ results: [], totalCount: 0 })
-                await Promise.resolve()
-                await Promise.resolve()
-              }
             }
+          }
 
-            // B replaces A — the real ScannerPage sequence: bump generation, new
-            // AbortController, abort the old one.
-            await advanceTo(a, bReplaceTiming)
-            a.abort.abort()
-            const b = startCapture(controller, 'B', generationRef)
+          // B replaces A — the real ScannerPage sequence: bump generation, new
+          // AbortController, abort the old one.
+          await advanceTo(a, bReplaceTiming)
+          a.abort.abort()
+          const b = startCapture(controller, 'B', generationRef)
 
-            await advanceTo(b, cReplaceTiming)
-            b.abort.abort()
-            const c = startCapture(controller, 'C', generationRef)
+          await advanceTo(b, cReplaceTiming)
+          b.abort.abort()
+          const c = startCapture(controller, 'C', generationRef)
 
-            // C is the sole survivor: let its own pipeline complete for real, in the order the
-            // property picked (OCR then catalog, or catalog "started" first — Promise.all means
-            // both were issued together regardless; this only changes which resolves FIRST).
-            if (resolveOrder === 'AthenB') {
-              c.ocr.resolve(ocrResult('C'))
-              c.catalog.resolve({ results: [], totalCount: 0 })
-            } else {
-              c.catalog.resolve({ results: [], totalCount: 0 })
-              c.ocr.resolve(ocrResult('C'))
-            }
-            // Unblock anything still pending on A/B's own deferreds too (a real stale network
-            // response DOES eventually arrive) — must never affect anything at this point.
-            a.ocr.resolve(ocrResult('A'))
-            a.catalog.resolve({ results: [], totalCount: 0 })
-            b.ocr.resolve(ocrResult('B'))
-            b.catalog.resolve({ results: [], totalCount: 0 })
+          // C is the sole survivor: let its own pipeline complete for real, in the order the
+          // property picked (OCR then catalog, or catalog "started" first — Promise.all means
+          // both were issued together regardless; this only changes which resolves FIRST).
+          if (resolveOrder === 'AthenB') {
+            c.ocr.resolve(ocrResult('C'))
+            c.catalog.resolve({ results: [], totalCount: 0 })
+          } else {
+            c.catalog.resolve({ results: [], totalCount: 0 })
+            c.ocr.resolve(ocrResult('C'))
+          }
+          // Unblock anything still pending on A/B's own deferreds too (a real stale network
+          // response DOES eventually arrive) — must never affect anything at this point.
+          a.ocr.resolve(ocrResult('A'))
+          a.catalog.resolve({ results: [], totalCount: 0 })
+          b.ocr.resolve(ocrResult('B'))
+          b.catalog.resolve({ results: [], totalCount: 0 })
 
-            const [aOutcome, bOutcome, cOutcome] = await Promise.all([
-              a.settled,
-              b.settled,
-              c.settled,
-            ])
+          const [aOutcome, bOutcome, cOutcome] = await Promise.all([
+            a.settled,
+            b.settled,
+            c.settled,
+          ])
 
-            // The two-layer guarantee (F-05/P89): A and B were both superseded before C started —
-            // whichever way their own pipeline actually settled (a real ScannerAnalysisAbortedError
-            // when the abort landed before their last checkpoint, or a legitimately-completed
-            // result when it landed after), NEITHER may ever be treated as the caller's "current"
-            // state. C — the sole generation nothing ever supersedes in this schedule — must
-            // always settle as genuinely applied, never merely aborted or superseded.
-            expect(aOutcome.kind).not.toBe('applied')
-            expect(bOutcome.kind).not.toBe('applied')
-            expect(cOutcome.kind).toBe('applied')
+          // The two-layer guarantee (F-05/P89): A and B were both superseded before C started —
+          // whichever way their own pipeline actually settled (a real ScannerAnalysisAbortedError
+          // when the abort landed before their last checkpoint, or a legitimately-completed
+          // result when it landed after), NEITHER may ever be treated as the caller's "current"
+          // state. C — the sole generation nothing ever supersedes in this schedule — must
+          // always settle as genuinely applied, never merely aborted or superseded.
+          expect(aOutcome.kind).not.toBe('applied')
+          expect(bOutcome.kind).not.toBe('applied')
+          expect(cOutcome.kind).toBe('applied')
 
-            controller.dispose()
-          },
-        ),
-        { numRuns: 50_000 },
-      )
-    },
-    120_000,
-  )
+          controller.dispose()
+        },
+      ),
+      { numRuns: 50_000 },
+    )
+  }, 120_000)
 })

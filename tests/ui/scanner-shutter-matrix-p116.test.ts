@@ -116,9 +116,11 @@ describe('shutter re-entrancy lock pattern under rapid-tap torture (P116 §2, pa
   it('2/3/10/100 synchronous rapid taps, at various resolve-timing offsets, always accept EXACTLY ONE in-flight action', async () => {
     for (const tapCount of [2, 3, 10, 100]) {
       const action = new ReentrancyLockedAsyncAction<string>()
-      let resolveWork: (() => void) | null = null
+      const box: { resolveWork: (() => void) | null } = { resolveWork: null }
       const workPromise = new Promise<string>((resolve) => {
-        resolveWork = () => resolve('captured')
+        box.resolveWork = () => {
+          resolve('captured')
+        }
       })
       const results: (Promise<string> | null)[] = []
       // All taps fire SYNCHRONOUSLY, before any microtask can flip the lock back — exactly what a
@@ -129,7 +131,7 @@ describe('shutter re-entrancy lock pattern under rapid-tap torture (P116 §2, pa
       expect(action.attempts).toBe(tapCount)
       expect(action.accepted).toBe(1)
       expect(results.filter((r) => r !== null)).toHaveLength(1)
-      resolveWork?.()
+      box.resolveWork?.()
       await results.find((r) => r !== null)
       expect(action.completed).toBe(1)
       // Once the in-flight action settles, a NEW tap is accepted again (the lock is not sticky).
@@ -148,14 +150,16 @@ describe('shutter re-entrancy lock pattern under rapid-tap torture (P116 §2, pa
           const action = new ReentrancyLockedAsyncAction<number>()
           let cycles = 0
           for (const burst of burstSizes) {
-            let resolveWork: (() => void) | null = null
+            const box: { resolveWork: (() => void) | null } = { resolveWork: null }
             const workPromise = new Promise<number>((resolve) => {
-              resolveWork = () => resolve(cycles)
+              box.resolveWork = () => {
+                resolve(cycles)
+              }
             })
             const acceptedBefore = action.accepted
-            for (let i = 0; i < burst; i += 1) action.trigger(() => workPromise)
+            for (let i = 0; i < burst; i += 1) void action.trigger(() => workPromise)
             expect(action.accepted - acceptedBefore).toBeLessThanOrEqual(1)
-            resolveWork?.()
+            box.resolveWork?.()
             await workPromise
             cycles += 1
           }
