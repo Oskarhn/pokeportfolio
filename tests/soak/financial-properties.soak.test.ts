@@ -284,15 +284,17 @@ describe('TTEP soak — structurally independent of opening cost (F8)', () => {
         fc.bigInt({ min: -(10n ** 12n), max: 10n ** 12n }),
         fc.bigInt({ min: -(10n ** 12n), max: 10n ** 12n }),
         fc.bigInt({ min: 0n, max: 10n ** 12n }), // an opening cost that has no parameter to enter through
-        (currency, cmvMinor, nspMinor, csMinor, _unrelatedOpeningCostMinor) => {
+        (currency, cmvMinor, nspMinor, csMinor, unrelatedOpeningCostMinor) => {
+          // Generated and discarded on purpose: totalTrackedEconomicPosition's signature has no
+          // parameter for an opening cost at all, so no value of this variable can ever reach the
+          // computation -- the generator exists to document that fact, not to feed it in.
+          void unrelatedOpeningCostMinor
           runs++
           const cmv = Money.fromMinorUnits(cmvMinor, currency)
           const nsp = Money.fromMinorUnits(nspMinor, currency)
           const cs = Money.fromMinorUnits(csMinor, currency)
           const ttep = totalTrackedEconomicPosition(cmv, nsp, cs)
           expect(Money.equals(ttep, Money.subtract(Money.add(cmv, nsp), cs))).toBe(true)
-          // totalTrackedEconomicPosition's signature has no opening-cost parameter at all --
-          // this run varies one anyway and confirms the result formula never references it.
         },
       ),
       { numRuns: 100_000 },

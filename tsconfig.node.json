@@ -20,5 +20,11 @@
     "strict": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["vite.config.ts", "vitest.db.config.ts", "playwright.config.ts", "eslint.config.js"]
+  "include": [
+    "vite.config.ts",
+    "vitest.db.config.ts",
+    "vitest.soak.config.ts",
+    "playwright.config.ts",
+    "eslint.config.js"
+  ]
 }
