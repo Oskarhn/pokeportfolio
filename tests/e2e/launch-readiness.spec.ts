@@ -114,6 +114,15 @@ test.describe('sign-in form: keyboard submit and double-submit guard', () => {
     await page.getByLabel('Email').fill('nobody@example.invalid')
     await page.getByLabel('Password').fill('not-the-right-password')
     const submit = page.getByRole('button', { name: /Sign in|Signing in/ })
+    // Against a local/CI Supabase instance the real sign-in round trip can resolve faster than
+    // Playwright's assertion polling interval, so the disabled window can open and close entirely
+    // between polls (observed flake: CI run 34119058670). Delaying the auth response — the app
+    // never sees anything different about the request or response — gives that window a duration
+    // long enough to reliably observe.
+    await page.route('**/auth/v1/token*', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      await route.continue()
+    })
     await submit.click()
     // Busy state disables the button and relabels it — a second click cannot fire a second
     // request while the first is still in flight.
