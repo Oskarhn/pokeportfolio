@@ -244,9 +244,12 @@ export async function signInAs(user: SyntheticUser): Promise<TestClient> {
  * in one of these tables; a single unbounded `DELETE ... WHERE column = value` over that many rows
  * has hit Postgres' `statement_timeout` on CI's shared runners (observed on `holdings`, non-
  * deterministically — the exact table that trips it depends on runner load). Batching by id keeps
- * every individual DELETE small regardless of total row count.
+ * every individual DELETE small regardless of total row count. Matches the project's existing
+ * PostgREST URL-length-safety chunk size (src/data/export/fetch-snapshot.ts's
+ * MANIFEST_CHUNK_SIZE) — 1000 ids in a `.in()` filter blew the URL length limit outright
+ * ("cleanup failed: URI too long", CI run 34533936324) before this was reduced to 100.
  */
-const CLEANUP_BATCH_SIZE = 1000
+const CLEANUP_BATCH_SIZE = 100
 
 async function deleteByColumnInBatches(
   service: TestClient,
