@@ -239,9 +239,66 @@ export async function signInAs(user: SyntheticUser): Promise<TestClient> {
  * a user's own products by design); test cleanup does not have that constraint and removes them too,
  * appended after everything that references them is already gone.
  */
+/**
+ * A scale test (tests/db/m13_export_perf.test.ts) can leave a synthetic user owning 10,000+ rows
+ * in one of these tables; a single unbounded `DELETE ... WHERE column = value` over that many rows
+ * has hit Postgres' `statement_timeout` on CI's shared runners (observed on `holdings`, non-
+ * deterministically — the exact table that trips it depends on runner load). Batching by id keeps
+ * every individual DELETE small regardless of total row count. Matches the project's existing
+ * PostgREST URL-length-safety chunk size (src/data/export/fetch-snapshot.ts's
+ * MANIFEST_CHUNK_SIZE) — 1000 ids in a `.in()` filter blew the URL length limit outright
+ * ("cleanup failed: URI too long", CI run 34533936324) before this was reduced to 100.
+ */
+const CLEANUP_BATCH_SIZE = 100
+
+async function deleteByColumnInBatches(
+  service: TestClient,
+  table: string,
+  column: string,
+  value: string,
+  context: string,
+): Promise<void> {
+  for (;;) {
+    const { data, error: selectError } = await service
+      .from(table)
+      .select('id')
+      .eq(column, value)
+      .limit(CLEANUP_BATCH_SIZE)
+    if (selectError) {
+      throw new Error(`cleanup failed (${context} select): ${selectError.message}`)
+    }
+    const ids = data.map((row) => row.id)
+    if (ids.length === 0) return
+    await mustDelete(service.from(table).delete().in('id', ids), context)
+    if (ids.length < CLEANUP_BATCH_SIZE) return
+  }
+}
+
+async function deleteAcquisitionLotsWithOpeningInBatches(
+  service: TestClient,
+  userId: string,
+): Promise<void> {
+  const context = 'acquisition_lots.opening_id cycle-break cleanup'
+  for (;;) {
+    const { data, error: selectError } = await service
+      .from('acquisition_lots')
+      .select('id')
+      .eq('user_id', userId)
+      .not('opening_id', 'is', null)
+      .limit(CLEANUP_BATCH_SIZE)
+    if (selectError) {
+      throw new Error(`cleanup failed (${context} select): ${selectError.message}`)
+    }
+    const ids = data.map((row) => row.id)
+    if (ids.length === 0) return
+    await mustDelete(service.from('acquisition_lots').delete().in('id', ids), context)
+    if (ids.length < CLEANUP_BATCH_SIZE) return
+  }
+}
+
 async function deleteNonCascadingUserRows(service: TestClient, userId: string): Promise<void> {
   const byUserId = async (table: string) =>
-    mustDelete(service.from(table).delete().eq('user_id', userId), `${table}.user_id cleanup`)
+    deleteByColumnInBatches(service, table, 'user_id', userId, `${table}.user_id cleanup`)
 
   await byUserId('lot_disposals')
   await byUserId('sale_lines')
@@ -249,16 +306,16 @@ async function deleteNonCascadingUserRows(service: TestClient, userId: string): 
   await byUserId('lot_cost_adjustments')
   await byUserId('manual_valuations')
   // Break the acquisition_lots <-> openings cycle before either can be deleted outright.
-  await mustDelete(
-    service.from('acquisition_lots').delete().eq('user_id', userId).not('opening_id', 'is', null),
-    'acquisition_lots.opening_id cycle-break cleanup',
-  )
+  await deleteAcquisitionLotsWithOpeningInBatches(service, userId)
   await byUserId('openings')
   await byUserId('acquisition_lots')
   await byUserId('purchase_lines')
   await byUserId('holdings')
-  await mustDelete(
-    service.from('sealed_products').delete().eq('created_by_user_id', userId),
+  await deleteByColumnInBatches(
+    service,
+    'sealed_products',
+    'created_by_user_id',
+    userId,
     'sealed_products.created_by_user_id cleanup',
   )
 }
