@@ -197,8 +197,8 @@ describe('VisualRecognitionClient lifecycle soak — protocol level (P116 §4)',
   })
 })
 
-describe('finding: dispose() abandons in-flight analyze()/getExpectedCardRank() promises instead of rejecting them (P116 §4)', () => {
-  it('an analyze() call still pending when dispose() runs never settles — the caller hangs forever', async () => {
+describe('fixed: dispose() settles in-flight analyze()/getExpectedCardRank() promises instead of abandoning them (P116 §4 finding, closed by P116 Phase Q)', () => {
+  it('an analyze() call still pending when dispose() runs resolves to null immediately — the caller never hangs', async () => {
     vi.stubGlobal('Worker', FakeWorker)
     const client = new VisualRecognitionClient()
     const readyPromise = client.ensureReady()
@@ -217,17 +217,11 @@ describe('finding: dispose() abandons in-flight analyze()/getExpectedCardRank() 
     )
     client.dispose() // route exit / account switch / retake mid-scan
 
-    // Race the pending analyze() against a short timer: if it were rejected/resolved by
-    // dispose(), 'settled' would win; today it never does — this documents the CURRENT behavior
-    // (a real, reportable finding) rather than asserting it as desired.
-    const raceResult = await Promise.race([
-      analyzePromise.then(() => 'settled' as const).catch(() => 'settled' as const),
-      new Promise<'timed-out'>((resolve) => {
-        setTimeout(() => {
-          resolve('timed-out')
-        }, 50)
-      }),
-    ])
-    expect(raceResult).toBe('timed-out')
+    // This session's original P116 §4 run found dispose() left this pending forever (proven by
+    // racing against a short timer, which always won). visual-client.ts's dispose() now rejects
+    // every stored `{ resolve, reject }` BEFORE clearing the pending map — analyze()'s own
+    // try/catch turns that rejection into its documented `null` result — so the real assertion is
+    // just "this resolves", no race needed any more.
+    await expect(analyzePromise).resolves.toBeNull()
   })
 })

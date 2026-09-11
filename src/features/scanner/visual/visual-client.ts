@@ -174,6 +174,39 @@ function bitmapToRgbaOnMainThread(bitmap: ImageBitmap): {
   return { buffer, width: bitmap.width, height: bitmap.height }
 }
 
+/** Thrown internally to settle an `analyze()` call whose worker was terminated by `dispose()`
+ *  before the round trip completed (P116 Phase Q finding: `dispose()` used to call
+ *  `this.pending.clear()` without ever resolving/rejecting the promises stored there, leaving any
+ *  in-flight `analyze()` — and its caller's `Promise.all` in controller.ts — pending forever).
+ *  Never observed by `analyze()`'s own caller: `analyze()`'s try/catch already converts ANY
+ *  rejection into its documented `null` "visual channel unavailable" result, exactly mirroring how
+ *  `ScannerEngineDisposedError` is used in `ocr-engine.ts`. */
+class VisualClientDisposedError extends Error {
+  constructor() {
+    super('The visual recognition worker was disposed before this request completed.')
+    this.name = 'VisualClientDisposedError'
+  }
+}
+
+/** A safe "no answer" {@link ExpectedCardRank} used to settle a pending debug-only rank lookup on
+ *  `dispose()` — this method's contract is "never rejects" (see its own docstring), so a pending
+ *  request is resolved with the same shape the worker itself would send for "not in index" rather
+ *  than left to hang forever. */
+const DISPOSED_EXPECTED_CARD_RANK: ExpectedCardRank = {
+  found: false,
+  rank: null,
+  similarity: null,
+  totalCards: 0,
+  inTop20: false,
+  inTop100: false,
+  indexContentId: null,
+  hybridRank: null,
+  hybridScore: null,
+  hybridTier: null,
+  scoreComponents: [],
+  enrichmentStatus: 'not-in-index',
+}
+
 /** Reads the diagnostic-only `?visualBackend=` override (prompt §5) exactly once per client
  *  instance — the value the worker actually used for THIS session, not re-read per scan. Absent
  *  or invalid always means `auto`; this never affects matching, persistence or authentication. */
@@ -257,6 +290,15 @@ export class VisualRecognitionClient {
               ? ` at ${event.filename}:${String(event.lineno)}:${String(event.colno)}`
               : ''
           this.unavailableReason = `Visual recognition worker crashed: ${event.message || 'unknown error'}${location}`
+          // P116 Phase Q: a crash arriving AFTER `ready` already resolved (mid-scan, not during
+          // init) makes `resolve(null)` below a no-op on an already-settled readyPromise — without
+          // this, any `analyze()`/`getExpectedCardRank()` call still awaiting THIS now-dead worker
+          // would hang forever, identically to the dispose() gap `VisualClientDisposedError` closes.
+          for (const { reject } of this.pending.values()) reject(new VisualClientDisposedError())
+          for (const resolveRank of this.pendingRankRequests.values())
+            resolveRank(DISPOSED_EXPECTED_CARD_RANK)
+          this.pending.clear()
+          this.pendingRankRequests.clear()
           resolve(null)
         })
         worker.postMessage({
@@ -450,6 +492,12 @@ export class VisualRecognitionClient {
   }
 
   dispose(): void {
+    // P116 Phase Q: settle every in-flight request BEFORE clearing the maps — an `analyze()` or
+    // `getExpectedCardRank()` call already awaiting a response must never be left permanently
+    // pending just because the worker backing it was torn down (see VisualClientDisposedError's
+    // own doc comment for the exact reachable hang this closes).
+    for (const { reject } of this.pending.values()) reject(new VisualClientDisposedError())
+    for (const resolve of this.pendingRankRequests.values()) resolve(DISPOSED_EXPECTED_CARD_RANK)
     this.worker?.terminate()
     this.worker = null
     this.readyInfo = null
