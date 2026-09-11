@@ -5423,3 +5423,57 @@ result shares all stay under 2^53, so the assertions themselves are never confou
 above) and a new end-to-end `create_purchase` regression reproducing the exact EUR scenario. Full
 `pnpm test:db` (614/615, unchanged), M13 adversarial (55/62 + 7 opt-in skipped, unchanged) and
 `tests/m16-independent` (53/53, unchanged) all re-run green after the migration.
+
+## D-126 — `allocate_largest_remainder` gets two more independent bigint-domain fixes: an unbounded weight-sum, and a numeric-division precision bug D-125 did not touch (P120)
+
+**2026-09-11 · Accepted**
+
+P120 built the large-scale property campaign D-125 (P117) disclosed as not yet done: 100,000+
+randomly generated `(total, weights)` cases compared against an independent BigInt reference
+(`src/domain/allocation.ts`'s `allocate()` — a from-scratch TypeScript port of the documented
+largest-remainder-method contract, not a copy of the plpgsql source; its native BigInt arithmetic
+has no intermediate-overflow path to share a bug with) via one batched SQL statement per run rather
+than one RPC call per case, making 100,000 cases a ~10-second local run instead of the ~30-80
+minutes per-case HTTP round trips would take. Two distinct real bugs surfaced, neither reachable by
+D-125's own boundary probe (which tested specific values on `create_purchase`, not this function's
+full declared domain directly):
+
+1. **Weight-sum overflow.** `v_sum_weights := v_sum_weights + p_weights[i]` was still plain bigint
+   arithmetic after D-125 — summing multiple near-bigint-max weights overflows even though D-125
+   already widened the multiplication step. Reproduced directly:
+   `allocate_largest_remainder(100, ARRAY[9223372036854775807, 9223372036854775807])` raised
+   `bigint out of range`. **Reachable through the public RPC surface**: `create_purchase` places no
+   upper bound on a line's `unit_price_minor` before it becomes a shipping/customs/discount
+   allocation weight, so two extreme-but-otherwise-ordinary purchase lines would crash with this
+   opaque error instead of a clean rejection (no data corruption either way — the transaction still
+   aborts atomically). Fixed: `v_sum_weights` (and `v_effective_sum`) become `numeric`.
+2. **Numeric-division precision (the more serious one).** Postgres's `numeric` `/` operator does
+   NOT always return the mathematically exact quotient for large operands — it rounds to a computed
+   display scale — so `floor(a::numeric / b::numeric)` was floor-ing an already-wrong, rounded-up
+   value. Reproduced directly:
+   `(219581130708100988383099213597811148::numeric / 1215407149863084914::numeric)` returns
+   `180664669228609283`, while `div(...)` (Postgres's exact truncating integer division for
+   numeric) returns the correct `180664669228609282`, confirmed against the independent BigInt
+   oracle. This was present in D-125's own fix from the start, not introduced by fix 1 above — the
+   property sweep is what finally exercised operands large enough to expose it. Consequence: not
+   just a misallocated line, but **invariant F6 itself broke** in 17 of an initial 5,000-case run
+   (`sum(shares) <> total`) — large enough rounding drift pushed the sum of floors past the true
+   total, making the "distribute the remaining units" step run backward. Fixed: `div()` replaces
+   `/` + `floor()`; `v_remainders` becomes `numeric[]` (a remainder is bounded by the — now
+   unbounded — weight sum, not by `total`, so it needed the same widening fix 1 gave the sum
+   itself; it is only ever used to rank lines for the tie-break, never returned to the caller).
+   `v_floors` stays `bigint[]`: `floor(total*w_i/sum) <= total` always, and `total` is
+   bigint-bounded by the function's own signature, so that direction was never at risk.
+
+Both fixes land in one migration (`20260911130000_p120_allocate_largest_remainder_weight_sum_
+overflow_fix.sql`), `CREATE OR REPLACE` — the signature is unchanged, so every caller
+(`allocate_largest_remainder_signed`, `create_purchase`, `create_sale`) picks up both fixes with no
+call-site change. No behavior change for any input that previously computed a correct result.
+
+**Verified:** two new regression cases in `tests/db/m8_purchase_ledger.test.ts` reproducing each
+bug exactly against the live database; the 100,000-case property campaign re-run twice (different
+seeds, 200,000 cases total) at zero mismatches / zero `wrong_sum` / zero function errors / zero
+negative shares after the fix, versus 486 mismatches, 17 `wrong_sum` violations and 1,049 function
+errors in the first 5,000-case run before it. Full `pnpm test:db` (618/619, unchanged), M13
+adversarial (55/62 + 7 opt-in skipped, unchanged) and `tests/m16-independent` (53/53, unchanged)
+all re-run green after the migration.
