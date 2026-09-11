@@ -141,30 +141,47 @@ function installInPage(options: Required<CameraMockOptions>): void {
     state.createdStreamCount += 1
     state.activeStreamCount += 1
     let streamRetired = false
+    function retireStream(): void {
+      // captureStream() streams in this mock are always single-track (one canvas -> one video
+      // track), so the one track ending IS the whole stream retiring — decremented exactly once
+      // per stream via this guard, not once per track, in case a future caller ever widens this.
+      if (streamRetired) return
+      streamRetired = true
+      state.activeStreamCount = Math.max(0, state.activeStreamCount - 1)
+      stopDrawLoop(canvas)
+    }
     const tracksInThisStream = stream.getTracks()
     for (const track of tracksInThisStream) {
       state.activeTrackCount += 1
       state.activeTracks.add(track)
-      track.addEventListener('ended', () => {
+      let trackRetired = false
+      function retireTrack(): void {
+        // A per-track guard alongside the per-stream one: this fires from BOTH the wrapped
+        // stop() below AND the 'ended' listener, and a real disconnect (endActiveTracks,
+        // dispatching a synthetic 'ended') is very likely to be followed by the app's own
+        // session.stop() calling the SAME track's real .stop() a moment later — both must count
+        // as exactly one retirement, not two.
+        if (trackRetired) return
+        trackRetired = true
         state.stoppedTrackCount += 1
         state.activeTrackCount = Math.max(0, state.activeTrackCount - 1)
         state.activeTracks.delete(track)
-        stopDrawLoop(canvas)
-        // captureStream() streams in this mock are always single-track (one canvas -> one video
-        // track), so the one track ending IS the whole stream retiring — decremented exactly once
-        // per stream via the guard, not once per track, in case a future caller ever widens this.
-        if (!streamRetired) {
-          streamRetired = true
-          state.activeStreamCount = Math.max(0, state.activeStreamCount - 1)
-        }
-      })
-      // Wrap stop() so a test-triggered OR app-triggered stop is counted identically — this is
-      // the mock's only deviation from a totally-untouched real MediaStreamTrack, and it changes
-      // no observable behavior (readyState/ended still transition exactly as the native impl
-      // does; this purely observes).
+        retireStream()
+      }
+      track.addEventListener('ended', retireTrack)
+      // Per the MediaStreamTrack spec (confirmed empirically against this exact browser this
+      // session), calling `.stop()` directly NEVER fires the track's own 'ended' event — 'ended'
+      // is reserved for the track stopping for a reason OUTSIDE the caller's control (a real
+      // disconnect). `camera-session.ts`'s NORMAL exit paths (route leave, tab hidden, closing
+      // the scanner) all call the real `.stop()` directly, not a synthetic disconnect — without
+      // this wrapper ALSO retiring the mock's own accounting, every ordinary stop would be
+      // invisible to diagnostics and activeStreamCount would never return to 0 after a normal,
+      // successful teardown (caught by this session's own visibility-soak test failing on
+      // exactly that gap before this fix).
       const originalStop = track.stop.bind(track)
       track.stop = () => {
         originalStop()
+        retireTrack()
       }
     }
     return stream
