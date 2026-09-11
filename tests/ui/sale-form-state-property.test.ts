@@ -133,6 +133,55 @@ describe('createInitialSaleFormFields — property: every call is fully independ
   })
 })
 
+/**
+ * P118 §9 — closes a real coverage hole found in the original version of this property (disclosed
+ * by P115 and independently reproduced here, see `sale-form-property-gap-demo` evidence in
+ * ai_outputs/Claude_outputs/output_118.txt): the original third property asserted only 3 of
+ * SaleFormFields' 13 mutable fields (marketplace, notes, items), each gated behind
+ * `if (field !== '')` — so (a) any generated run with zero `mutate: true` steps executed no
+ * meaningful assertion at all, and (b) EVERY run, regardless of mutation, never checked whether
+ * currency/feesInput/shippingCostInput/shippingChargedInput/fxMode/fxRate/fxRateDate/fxError/
+ * error/soldOn leaked across an entity switch — exactly the field set the real P106/P107 bug this
+ * module fixed actually corrupted. Reproduced concretely: a hand-rolled "reset" that mirrors that
+ * historical bug shape (clears only items/marketplace/notes on a genuine entity change, silently
+ * carrying every other field over) passed the OLD assertion 5000/5000 with zero failures, then
+ * failed the NEW assertion below on the very first shrunk counterexample.
+ *
+ * Fix strategy: track, out-of-band, which entity tag last WROTE each tracked field (cleared
+ * whenever a genuine entity change is observed), and assert — unconditionally, every step, for
+ * every field mutateAllFields touches — that a field currently NOT at its entity-fresh default is
+ * owned by the currently observed entity. A field sitting at its fresh default is definitionally
+ * safe (nothing to check); every other case is asserted, so no generated run can execute zero
+ * meaningful checks the way the old `if (x !== '')`-gated version could.
+ */
+const TRACKED_FIELDS = [
+  'items',
+  'soldOn',
+  'marketplace',
+  'currency',
+  'feesInput',
+  'shippingCostInput',
+  'shippingChargedInput',
+  'notes',
+  'fxMode',
+  'fxRate',
+  'fxRateDate',
+  'fxError',
+  'error',
+] as const satisfies readonly (keyof SaleFormFields)[]
+type TrackedField = (typeof TRACKED_FIELDS)[number]
+
+const WALK_TODAY = '2026-01-01'
+// Computed once — `createInitialSaleFormFields` mints a fresh idempotencyKey (crypto.randomUUID())
+// on every call, so calling it per-field-per-step across thousands of property runs would be both
+// wasteful and pointless (idempotencyKey is deliberately excluded from TRACKED_FIELDS).
+const FRESH_FIELDS = createInitialSaleFormFields(() => WALK_TODAY)
+
+function isAtFreshDefault(field: TrackedField, fields: SaleFormFields): boolean {
+  if (field === 'items') return fields.items.length === 0
+  return fields[field] === FRESH_FIELDS[field]
+}
+
 describe('simulated Sale Add form over a random entity-transition walk — no cross-entity leakage', () => {
   /**
    * Models exactly the reset rule SaleFormPage implements (and this module documents as its own
@@ -145,44 +194,54 @@ describe('simulated Sale Add form over a random entity-transition walk — no cr
     const entityKeys = ['holding-A', 'holding-B', 'holding-C', 'holding-D']
     fc.assert(
       fc.property(
-        fc.array(
-          fc.record({
-            key: fc.constantFrom(...entityKeys),
-            mutate: fc.boolean(),
-          }),
-          { minLength: 1, maxLength: 300 },
-        ),
+        fc
+          .array(
+            fc.record({
+              key: fc.constantFrom(...entityKeys),
+              // biased 5:1 toward mutating so a walk overwhelmingly exercises the
+              // mutate-then-switch interleaving the invariant actually guards, rather than
+              // spending generated budget on runs that never touch a non-fresh field.
+              mutate: fc.integer({ min: 0, max: 5 }).map((n) => n > 0),
+            }),
+            { minLength: 2, maxLength: 300 },
+          )
+          .filter((steps) => steps.some((s) => s.mutate)),
         (steps) => {
           const tracker = new EntityKeyChangeTracker()
-          let fields: SaleFormFields = createInitialSaleFormFields(() => '2026-01-01')
+          let fields: SaleFormFields = createInitialSaleFormFields(() => WALK_TODAY)
           let currentEntityTag = steps[0]!.key
+          let ownerOf: Partial<Record<TrackedField, string>> = {}
+          let assertionsExecuted = 0
 
           for (const [i, step] of steps.entries()) {
             const changed = tracker.observe(step.key)
             if (changed) {
               // A genuine entity change: the real component discards `fields` entirely.
-              fields = createInitialSaleFormFields(() => '2026-01-01')
+              fields = createInitialSaleFormFields(() => WALK_TODAY)
               currentEntityTag = step.key
+              ownerOf = {}
             }
             if (step.mutate) {
               fields = mutateAllFields(fields, `${currentEntityTag}-${String(i)}`)
+              for (const field of TRACKED_FIELDS) ownerOf[field] = currentEntityTag
             }
-            // Whatever the current field values are, they must never reference an entity OTHER
-            // than the one currently observed — the concrete leakage class P109 fixed (a stale
-            // marketplace/currency/notes/FX value from a previous holdingId surviving a switch).
-            if (fields.marketplace !== '') {
-              expect(fields.marketplace.startsWith(`marketplace-${currentEntityTag}`)).toBe(true)
-            }
-            if (fields.notes !== '') {
-              expect(fields.notes.startsWith(`notes-${currentEntityTag}`)).toBe(true)
-            }
-            for (const item of fields.items) {
-              expect(item.holdingId.startsWith(`mutated-holding-${currentEntityTag}`)).toBe(true)
+            // Unconditional, every field, every step: whatever is NOT at its fresh default must
+            // be owned by the entity currently in view — the leakage class P109 fixed (a stale
+            // marketplace/currency/fees/shipping/notes/FX/error value from a previous holdingId
+            // surviving a switch).
+            for (const field of TRACKED_FIELDS) {
+              if (!isAtFreshDefault(field, fields)) {
+                assertionsExecuted += 1
+                expect(ownerOf[field]).toBe(currentEntityTag)
+              }
             }
           }
+          // The precondition (`.filter`) guarantees at least one mutation occurred, so this run
+          // must have executed at least one real (non-vacuous) assertion above.
+          expect(assertionsExecuted).toBeGreaterThan(0)
         },
       ),
-      { numRuns: 3000 },
+      { numRuns: 5000 },
     )
-  })
+  }, 20000)
 })
