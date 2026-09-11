@@ -135,8 +135,7 @@ describe('createInitialSaleFormFields — property: every call is fully independ
 
 /**
  * P118 §9 — closes a real coverage hole found in the original version of this property (disclosed
- * by P115 and independently reproduced here, see `sale-form-property-gap-demo` evidence in
- * ai_outputs/Claude_outputs/output_118.txt): the original third property asserted only 3 of
+ * by P115 and independently reproduced here): the original third property asserted only 3 of
  * SaleFormFields' 13 mutable fields (marketplace, notes, items), each gated behind
  * `if (field !== '')` — so (a) any generated run with zero `mutate: true` steps executed no
  * meaningful assertion at all, and (b) EVERY run, regardless of mutation, never checked whether
