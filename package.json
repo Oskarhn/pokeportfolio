@@ -96,6 +96,9 @@
       "esbuild",
       "onnxruntime-node",
       "sharp"
-    ]
+    ],
+    "overrides": {
+      "adm-zip": "^0.6.1"
+    }
   }
 }

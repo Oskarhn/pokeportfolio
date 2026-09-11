@@ -57,6 +57,7 @@ import {
   type VisualPhaseTimings,
   type VisualWorkerProgressPhase,
 } from './phase-timing'
+import { createCacheThroughFetch, type CacheThroughFetch } from './worker-asset-cache-through'
 
 export type {
   VisualBackend,
@@ -330,86 +331,41 @@ postProgress('worker-module-evaluated')
 // Never touches the response BODY (only headers), so streaming WASM compilation
 // (`WebAssembly.instantiateStreaming`) downstream is completely unaffected.
 // ---------------------------------------------------------------------------------------------
-let fetchLog: RecordedFetch[] = []
 let originalFetch: typeof fetch | null = null
-let workerAssetCache: Cache | null = null
+let cacheThrough: CacheThroughFetch | null = null
 
-async function getWorkerAssetCache(): Promise<Cache | null> {
-  if (workerAssetCache !== null) return workerAssetCache
-  if (typeof caches === 'undefined') return null
-  try {
-    workerAssetCache = await caches.open(WORKER_ASSET_CACHE_NAME)
-    return workerAssetCache
-  } catch {
-    // Cache Storage can be unavailable (private-mode quirks, quota) — fetch still works normally,
-    // this worker just loses the extra cache-through layer for that session (prompt §36 posture:
-    // a missing optimization is never a hard failure).
-    return null
-  }
-}
-
-function requestUrl(input: RequestInfo | URL): string {
-  if (typeof input === 'string') return input
-  if (input instanceof URL) return input.href
-  return input.url
-}
-
+/**
+ * P119 §17: the actual cache-through decision logic (open/match/put, no-store bypass,
+ * classification) now lives in `worker-asset-cache-through.ts` as a small, dependency-injected
+ * module — unit-testable with fake `fetch`/`caches` primitives, with no real Worker needed. What
+ * stays here is only what MUST stay here: `self.fetch` itself has to be reassigned globally,
+ * because transformers.js/onnxruntime-web issue their own fetches internally (their own call
+ * sites), and a global monkeypatch is the only way to intercept those too, not just this worker's
+ * own explicit `loadIndex()` calls.
+ */
 function installFetchProbe(): void {
-  fetchLog = []
-  if (originalFetch !== null) return
-  originalFetch = self.fetch.bind(self)
-  const realFetch = originalFetch
-  ;(self as unknown as { fetch: typeof fetch }).fetch = async (input, init) => {
-    const url = requestUrl(input)
-    const start = performance.now()
-    // P87 F-01/§4: a caller that explicitly asked for `cache: 'no-store'` (the index pointer,
-    // `current.json`) must actually bypass BOTH the browser HTTP cache AND this worker's own
-    // manual Cache-Storage cache-through — honoring only the former and silently serving a
-    // previously cached copy from `workerAssetCache` here would defeat the whole point of the
-    // no-store request. Every other fetch (model/engine files, and content-addressed generation
-    // files, both genuinely immutable) keeps the existing cache-through behavior unchanged.
-    const bypassCache = init?.cache === 'no-store'
-    const cache = bypassCache ? null : await getWorkerAssetCache()
-    if (
-      cache !== null &&
-      (init === undefined || init.method === undefined || init.method === 'GET')
-    ) {
-      const cached = await cache.match(input)
-      if (cached !== undefined) {
-        const ms = performance.now() - start
-        const bytesHeader = cached.headers.get('content-length')
-        fetchLog.push({
-          phase: classifyVisualAssetUrl(url),
-          ms,
-          bytes: bytesHeader !== null ? Number(bytesHeader) : null,
-        })
-        return cached
-      }
-    }
-    const response = await realFetch(input, init)
-    const ms = performance.now() - start
-    const bytesHeader = response.headers.get('content-length')
-    fetchLog.push({
-      phase: classifyVisualAssetUrl(url),
-      ms,
-      bytes: bytesHeader !== null ? Number(bytesHeader) : null,
-    })
-    if (!bypassCache && cache !== null && response.ok && response.status === 200) {
-      const toCache = response.clone()
-      void cache.put(input, toCache).catch(() => {
-        // Quota/opaque-response failures never block the real response reaching the caller.
-      })
-    }
-    return response
+  if (originalFetch !== null) {
+    cacheThrough?.resetLog()
+    return
   }
+  originalFetch = self.fetch.bind(self)
+  cacheThrough = createCacheThroughFetch({
+    realFetch: originalFetch,
+    cachesOpen: typeof caches === 'undefined' ? undefined : caches.open.bind(caches),
+    cacheName: WORKER_ASSET_CACHE_NAME,
+  })
+  const instance = cacheThrough
+  ;(self as unknown as { fetch: typeof fetch }).fetch = (input, init) => instance.fetch(input, init)
 }
 
 function uninstallFetchProbe(): RecordedFetch[] {
+  const log = cacheThrough?.getLog() ?? []
   if (originalFetch !== null) {
     ;(self as unknown as { fetch: typeof fetch }).fetch = originalFetch
     originalFetch = null
   }
-  return fetchLog
+  cacheThrough = null
+  return log
 }
 
 /**

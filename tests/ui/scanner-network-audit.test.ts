@@ -22,6 +22,14 @@ import { describe, expect, it } from 'vitest'
 const SCANNER_DIR = join(process.cwd(), 'src', 'features', 'scanner')
 /** The one module family allowed to call fetch() — and only for same-origin scanner assets. */
 const VISUAL_ASSET_FETCHERS = ['visual/visual-worker.ts']
+/** P119 §17: `worker-asset-cache-through.ts` is a generic, dependency-injected fetch wrapper —
+ *  it forwards whatever `input` its caller passes (`deps.realFetch(input, init)`), never
+ *  embedding a URL of its own, so it has no literal argument for the same-origin-literal check
+ *  below to inspect at all. The literal-URL discipline that check enforces still lives entirely
+ *  in `visual-worker.ts` (the only place any literal `/scanner-assets/...` path is constructed);
+ *  this module is exempted from the "no fetch outside the visual asset fetcher" ban ONLY, not
+ *  from the stricter literal-path check, which does not apply to it structurally. */
+const GENERIC_FETCH_PASSTHROUGH_MODULES = ['visual/worker-asset-cache-through.ts']
 
 function scannerSources(): { file: string; text: string }[] {
   const out: { file: string; text: string }[] = []
@@ -69,7 +77,11 @@ describe('I8 static network-privacy audit', () => {
       for (const { pattern, why } of FORBIDDEN_PATTERNS) {
         if (pattern.test(code)) violations.push(`${file}: ${why}`)
       }
-      if (!VISUAL_ASSET_FETCHERS.includes(file) && /\bfetch\s*\(/.test(code)) {
+      if (
+        !VISUAL_ASSET_FETCHERS.includes(file) &&
+        !GENERIC_FETCH_PASSTHROUGH_MODULES.includes(file) &&
+        /\bfetch\s*\(/.test(code)
+      ) {
         violations.push(`${file}: no direct fetch outside the visual asset fetcher`)
       }
     }

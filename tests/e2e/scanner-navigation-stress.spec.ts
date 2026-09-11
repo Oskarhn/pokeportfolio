@@ -16,7 +16,24 @@ import { test, expect } from '@playwright/test'
  * (tests/ui/scanner-camera.test.ts, tests/ui/scanner-state.test.ts) for the mechanism-level proof
  * that a session's resources are released deterministically; this spec proves the SURROUNDING
  * navigation shell survives repetition, not the camera lifecycle inside it.
+ *
+ * P119 §15 root-cause finding: this spec's own back-to-back `page.goto()` calls can cancel the
+ * Service Worker registration `dist/registerSW.js` fires (fire-and-forget, on `window.load`)
+ * mid-flight, producing a benign `TypeError: Script .../sw.js load failed` — reproduced directly
+ * this session with instrumented evidence (tests/e2e/sw-load-flake-repro.spec.ts): the SAME
+ * `/sw.js` URL, when a navigation doesn't interrupt it, serves a normal 200 with
+ * `content-type: text/javascript`; the failing case shows the underlying request's own
+ * `requestfailed` reason as literally "Load request cancelled". This is a navigation-SPEED
+ * artifact only Playwright's scripted, immediate-succession navigation can trigger (no real user
+ * navigates at this cadence) — not a preview-server race, not a genuine WebKit defect, not a
+ * production defect. Filtered out of this spec's console-error assertions by name below, rather
+ * than either silently tolerating IT or every future genuine error alongside it.
  */
+const KNOWN_BENIGN_SW_REGISTRATION_RACE = /Script .*\/sw\.js load failed/
+
+function isUnexpectedConsoleError(text: string): boolean {
+  return !KNOWN_BENIGN_SW_REGISTRATION_RACE.test(text)
+}
 
 test.describe('scanner navigation stress (§14, P83 real bug shape)', () => {
   test('scan -> exit -> scan, repeated 8x rapidly: no console errors, no stale state, correct screen every time', async ({
@@ -47,7 +64,7 @@ test.describe('scanner navigation stress (§14, P83 real bug shape)', () => {
     // No error accumulated across 8 full navigation cycles (16 route transitions) — a stale
     // module graph, a leaked listener throwing on a later navigation, or a MIME-type mismatch
     // would show up here regardless of which specific cycle triggered it.
-    expect(consoleErrors).toEqual([])
+    expect(consoleErrors.filter(isUnexpectedConsoleError)).toEqual([])
   })
 
   test('browser back/forward across the scan route settles on the correct screen every time', async ({
@@ -73,7 +90,7 @@ test.describe('scanner navigation stress (§14, P83 real bug shape)', () => {
       await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
     }
 
-    expect(consoleErrors).toEqual([])
+    expect(consoleErrors.filter(isUnexpectedConsoleError)).toEqual([])
   })
 
   test('backgrounding (tab hidden) then foregrounding mid-navigation-cycle causes no error', async ({
@@ -105,6 +122,6 @@ test.describe('scanner navigation stress (§14, P83 real bug shape)', () => {
     const response = await page.goto('/')
     expect(response?.ok()).toBe(true)
     await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
-    expect(consoleErrors).toEqual([])
+    expect(consoleErrors.filter(isUnexpectedConsoleError)).toEqual([])
   })
 })

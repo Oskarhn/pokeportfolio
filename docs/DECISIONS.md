@@ -5363,7 +5363,7 @@ visual-dominance` suites (290 tests total in `tests/domain/scanner/`) re-run gre
 no behavioral change to any non-adversarial, already-tested case. `pnpm test` 1385/1385,
 typecheck/lint (0 errors)/format clean.
 
-## D-125 — `VisualRecognitionClient.dispose()`/worker-crash now settle in-flight requests instead of abandoning them (P116)
+## D-126 — `VisualRecognitionClient.dispose()`/worker-crash now settle in-flight requests instead of abandoning them (P116)
 
 **2026-09-11 · Accepted**
 

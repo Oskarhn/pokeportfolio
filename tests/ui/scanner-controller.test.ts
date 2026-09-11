@@ -414,6 +414,42 @@ describe('P81/P82: route-entry prewarm and bounded visual wait (iPhone cold-star
       }
     })
 
+    it('P119: the bound timer is cleared (not left dangling) when the visual channel answers before the timeout, even though it started cold', async () => {
+      vi.useFakeTimers()
+      try {
+        visualMocks.getDiagnosticsSnapshot.mockReturnValue({
+          modelState: 'loading',
+          unavailableReason: null,
+          readyInfo: null,
+          backendDiagnostics: null,
+          firstEmbedMs: null,
+          liveProgress: defaultLiveProgress(),
+        })
+        // Cold (readyBefore === false, so analyzeVisualBounded DOES enter the race), but resolves
+        // well inside the 8s bound — the exact case the losing setTimeout used to keep running
+        // for up to 8s after it no longer mattered (P116 Phase Q's disclosed-but-unfixed finding).
+        visualMocks.analyze.mockResolvedValue({
+          hits: [{ cardId: 'card-a', similarity: 0.9 }],
+          backend: 'wasm',
+          embedMs: 12,
+          searchMs: 2,
+          embeddingNorm: 5,
+        })
+
+        const controller = createRealScannerController({ userId: 'user-a' })
+        await controller.analyzeCapture(capture())
+        const diagnostics = controller.getLastDiagnostics?.()
+        // The real result won the race (proves the fix didn't change WHICH outcome is returned).
+        expect(diagnostics?.visualEmbeddingCreated).toBe(true)
+        expect(diagnostics?.visualPrewarmReadyBeforeCapture).toBe(false)
+        // No timer left pending — before the fix this was 1 (the losing setTimeout, still
+        // scheduled to fire up to 8s later on an already-settled race).
+        expect(vi.getTimerCount()).toBe(0)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
     it('P81-4: a capture that starts AFTER the visual channel is already ready is awaited normally, with no bound applied', async () => {
       visualMocks.getDiagnosticsSnapshot.mockReturnValue({
         modelState: 'ready',

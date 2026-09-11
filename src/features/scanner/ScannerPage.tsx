@@ -1016,6 +1016,19 @@ function ScannerDebugPanel({
     card: { id: string; name: string; setName: string; localId: string }
     rank: ExpectedCardRank
   } | null>(null)
+  // P119 (P116 Phase Q's disclosed-but-unfixed finding, re-examined): an uncleared reset timer,
+  // one per copy click. Harmless as a leak (React 18+ silently no-ops a post-unmount setState;
+  // the closure holds nothing but a state setter), but a genuine, fixable correctness bug on
+  // rapid repeat clicks — an OLDER click's 2s timer could fire after a NEWER click already set a
+  // different status, snapping "Copy failed" (or a second "Copied") back to idle before its own
+  // full 2s had elapsed. Tracking and clearing the previous timer fixes both at once.
+  const copyStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (copyStatusTimerRef.current !== null) clearTimeout(copyStatusTimerRef.current)
+    }
+  }, [])
 
   async function handleCopy(): Promise<void> {
     if (diagnostics === null) return
@@ -1031,7 +1044,9 @@ function ScannerDebugPanel({
     } catch {
       setCopyStatus('failed')
     }
-    setTimeout(() => {
+    if (copyStatusTimerRef.current !== null) clearTimeout(copyStatusTimerRef.current)
+    copyStatusTimerRef.current = setTimeout(() => {
+      copyStatusTimerRef.current = null
       setCopyStatus('idle')
     }, 2000)
   }
