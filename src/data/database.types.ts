@@ -2139,6 +2139,7 @@ export type Database = {
           auto_priced_holding_count: string
           collectible_spend_to_date_nok_minor: string | null
           cost_basis_nok_minor: string | null
+          cs_nok_minor: string
           first_tracked_date: string | null
           graded_holding_count: string
           graded_value_nok_minor: string
@@ -2566,6 +2567,7 @@ export type Database = {
           holding_id: string
           id: string
           notes: string | null
+          opening_id: string | null
           origin: Database["public"]["Enums"]["lot_origin"]
           purchase_line_id: string | null
           quantity: number
@@ -2610,6 +2612,8 @@ export type Database = {
           fx_rate_to_nok: number
           fx_source: Database["public"]["Enums"]["fx_source"]
           id: string
+          idempotency_key: string | null
+          idempotency_request: Json | null
           notes: string | null
           origin: Database["public"]["Enums"]["purchase_origin"]
           purchased_on: string
