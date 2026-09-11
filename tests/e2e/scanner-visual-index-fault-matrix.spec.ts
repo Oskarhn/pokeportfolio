@@ -351,6 +351,9 @@ test.describe('visual index fault matrix (P113 §4) — real worker, synthetic g
   // out. This meta-test runs unconditionally (no skip) in EVERY project and inspects the full,
   // static project list Playwright resolved the run from, so it fails loudly — in every project,
   // impossible to miss — the day no project resolves to Chromium any more.
+  // Playwright requires this exact destructuring shape to recognize a fixtures-callback
+  // signature; no fixture is actually used, only testInfo.
+  // eslint-disable-next-line no-empty-pattern
   test('meta: at least one configured project resolves to Chromium (so this matrix cannot go silently skip-only)', ({}, testInfo) => {
     const chromiumProjects = testInfo.config.projects.filter(
       (project) => project.use.defaultBrowserType === 'chromium',
