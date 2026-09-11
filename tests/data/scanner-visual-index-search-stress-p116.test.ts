@@ -89,10 +89,16 @@ describe('real dual-index search stress (P116 §5) — generation f25fc05d569b7c
       const topKs = [1, 5, 20, 100]
       let performed = 0
       const rng = mulberry32(20260907)
+      // Diagnostics-only (P116 Phase G asks for p50/p95/p99/worst) — never asserted against a
+      // threshold here, purely reported at the end so a soak run's own console output is
+      // self-sufficient evidence instead of needing a separate manual timing pass.
+      const durationsMs = new Float64Array(TOTAL)
       for (let i = 0; i < TOTAL; i += 1) {
         const topK = topKs[i % topKs.length] ?? 5
         const vector = randomVector(rng)
+        const opStart = performance.now()
         const hits = searchVisualIndex(REAL_INDEX, vector, topK)
+        durationsMs[i] = performance.now() - opStart
         performed += 1
         expect(hits.length).toBe(Math.min(topK, CARD_COUNT))
         for (const hit of hits) {
@@ -113,8 +119,24 @@ describe('real dual-index search stress (P116 §5) — generation f25fc05d569b7c
       // The underlying int8 buffer is read-only from this module's perspective — a search must
       // never write back into the shared decoded index.
       expect(Array.from(REAL_INDEX.embeddingsInt8.slice(0, 4096))).toEqual(beforeSnapshot)
+
+      const sorted = [...durationsMs].sort((a, b) => a - b)
+      const at = (p: number): number =>
+        sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))] ?? 0
+      console.log(
+        `[search-stress] ops=${String(TOTAL)} p50=${at(0.5).toFixed(2)}ms p95=${at(0.95).toFixed(2)}ms ` +
+          `p99=${at(0.99).toFixed(2)}ms max=${(sorted[sorted.length - 1] ?? 0).toFixed(2)}ms`,
+      )
     },
-    SOAK_ENABLED ? 20 * 60_000 : 100_000,
+    // P116 Phase G: a real, uncontended 250,000-op soak run on this machine took ~84 minutes
+    // (measured directly — the search loop is fully synchronous, so vitest's own timeout cannot
+    // preempt it mid-run; it can only mark the test failed AFTER the loop has already finished
+    // computing, which is exactly what happened at the previous 20-minute budget: every assertion
+    // inside the loop had already passed by the time vitest gave up). 120 minutes leaves real
+    // headroom above the measured wall-clock cost, including on a machine under load from other
+    // concurrent work, while this soak mode's own opt-in gate (SCANNER_INDEX_SEARCH_SOAK=1) keeps
+    // every normal `pnpm test` run at the cheap 100,000ms PERMANENT_TOTAL budget, unaffected.
+    SOAK_ENABLED ? 120 * 60_000 : 100_000,
   )
 
   it('adversarial query vectors (zero, near-zero, all-ones, all-minus-ones) never throw and stay finite', () => {
