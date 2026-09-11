@@ -1,9 +1,18 @@
-import { createServiceClient, createSyntheticUser, deleteSyntheticUser, seedCatalog, signInAs } from '../tests/db/setup'
+import {
+  createServiceClient,
+  createSyntheticUser,
+  deleteSyntheticUser,
+  seedCatalog,
+  signInAs,
+} from '../tests/db/setup'
 
 const today = new Date().toISOString().slice(0, 10)
 const BOUNDARY_VALUES = [
-  0n, 1n, -1n,
-  2147483647n, 2147483648n, // 2^31 boundary
+  0n,
+  1n,
+  -1n,
+  2147483647n,
+  2147483648n, // 2^31 boundary
   9007199254740991n, // 2^53 - 1
   9007199254740992n, // 2^53
   9007199254740993n, // 2^53 + 1
@@ -32,10 +41,14 @@ async function main() {
           ],
         })
         .single<{ id: string; total_minor: string; total_nok_minor: string }>()
-      console.log(`unit_price_minor=${v} -> error=${error?.message ?? 'none'} total_minor=${data?.total_minor} total_nok_minor=${data?.total_nok_minor}`)
+      console.log(
+        `unit_price_minor=${v} -> error=${error?.message ?? 'none'} total_minor=${data?.total_minor} total_nok_minor=${data?.total_nok_minor}`,
+      )
     }
 
-    console.log('\n=== EUR currency with manual FX 11.54 (forces the v_fx_rate numeric(18,8) path) ===')
+    console.log(
+      '\n=== EUR currency with manual FX 11.54 (forces the v_fx_rate numeric(18,8) path) ===',
+    )
     for (const v of BOUNDARY_VALUES) {
       const { data, error } = await clientA
         .rpc('create_purchase', {
@@ -55,11 +68,16 @@ async function main() {
           ],
         })
         .single<{ id: string; total_minor: string; total_nok_minor: string }>()
-      console.log(`unit_price_minor=${v} -> error=${error?.message ?? 'none'} total_minor=${data?.total_minor} total_nok_minor=${data?.total_nok_minor}`)
+      console.log(
+        `unit_price_minor=${v} -> error=${error?.message ?? 'none'} total_minor=${data?.total_minor} total_nok_minor=${data?.total_nok_minor}`,
+      )
     }
   } finally {
     await deleteSyntheticUser(service, userA.id)
   }
 }
 
-main().catch((e) => { console.error(e); process.exit(1) })
+main().catch((e: unknown) => {
+  console.error(e)
+  process.exit(1)
+})

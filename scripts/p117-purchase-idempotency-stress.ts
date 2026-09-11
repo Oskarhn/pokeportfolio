@@ -43,9 +43,7 @@ async function runWaves<T>(total: number, concurrency: number, fn: (i: number) =
   const results: T[] = []
   for (let start = 0; start < total; start += concurrency) {
     const batch = Math.min(concurrency, total - start)
-    const wave = await Promise.all(
-      Array.from({ length: batch }, (_, j) => fn(start + j)),
-    )
+    const wave = await Promise.all(Array.from({ length: batch }, (_, j) => fn(start + j)))
     results.push(...wave)
   }
   return results
@@ -62,7 +60,11 @@ async function exactReplayLadder(service: TestClient, clientA: TestClient) {
     const results = await runWaves(total, waveSize, () => callCreate(clientA, args))
     const elapsed = Date.now() - t0
     const errors = results.filter((r) => r.error)
-    const ids = new Set(results.filter((r) => !r.error).map((r) => r.data!.id))
+    const ids = new Set(
+      results
+        .filter((r): r is typeof r & { data: { id: string } } => !r.error)
+        .map((r) => r.data.id),
+    )
     const { data: rows } = await service.from('purchases').select('id').eq('idempotency_key', key)
     const { data: lines } = await service
       .from('purchase_lines')
@@ -71,13 +73,18 @@ async function exactReplayLadder(service: TestClient, clientA: TestClient) {
     const { data: lots } = await service
       .from('acquisition_lots')
       .select('id')
-      .in('purchase_line_id', (lines ?? []).map((l) => l.id))
+      .in(
+        'purchase_line_id',
+        (lines ?? []).map((l: { id: string }) => l.id),
+      )
+    const firstErrorMessage = errors[0]?.error?.message
     console.log(
       `total=${total} wave=${waveSize} elapsed=${elapsed}ms errors=${errors.length} ` +
         `distinct_ids_returned=${ids.size} purchase_rows=${rows?.length} lines=${lines?.length} lots=${lots?.length}` +
-        (errors.length ? ` first_error=${errors[0]!.error!.message}` : ''),
+        (firstErrorMessage ? ` first_error=${firstErrorMessage}` : ''),
     )
-    if (rows?.length !== 1) console.log(`  !! ANOMALY: expected exactly 1 purchase row, got ${rows?.length}`)
+    if (rows?.length !== 1)
+      console.log(`  !! ANOMALY: expected exactly 1 purchase row, got ${rows?.length}`)
     if (ids.size > 1) console.log(`  !! ANOMALY: divergent returned ids: ${[...ids].join(',')}`)
   }
 }
@@ -100,10 +107,13 @@ async function trueSimultaneousSaturation(service: TestClient, clientA: TestClie
       if (s.status === 'rejected') {
         transportRejections++
       } else if (s.value.error) {
-        errorMessages.set(s.value.error.message, (errorMessages.get(s.value.error.message) ?? 0) + 1)
+        errorMessages.set(
+          s.value.error.message,
+          (errorMessages.get(s.value.error.message) ?? 0) + 1,
+        )
       } else {
         ok++
-        distinctIds.add(s.value.data!.id)
+        distinctIds.add(s.value.data.id)
       }
     }
     const { data: rows, count } = await service
@@ -114,11 +124,15 @@ async function trueSimultaneousSaturation(service: TestClient, clientA: TestClie
       `total=${total} elapsed=${elapsed}ms ok=${ok} transport_rejections=${transportRejections} ` +
         `distinct_ids_returned=${distinctIds.size} purchase_rows_in_db=${count}`,
     )
-    if (rows?.length !== 1) console.log(`  !! ANOMALY: expected exactly 1 purchase row, got ${rows?.length}`)
-    if (distinctIds.size > 1) console.log(`  !! ANOMALY: divergent returned ids: ${[...distinctIds].join(',')}`)
+    if (rows?.length !== 1)
+      console.log(`  !! ANOMALY: expected exactly 1 purchase row, got ${rows?.length}`)
+    if (distinctIds.size > 1)
+      console.log(`  !! ANOMALY: divergent returned ids: ${[...distinctIds].join(',')}`)
     for (const [msg, n] of errorMessages) console.log(`  error x${n}: ${msg}`)
     if (transportRejections > total * 0.5) {
-      console.log(`  local transport ceiling reached around total=${total}; stopping saturation ladder`)
+      console.log(
+        `  local transport ceiling reached around total=${total}; stopping saturation ladder`,
+      )
       break
     }
   }
@@ -128,7 +142,11 @@ async function materialMismatchMatrix(clientA: TestClient) {
   console.log('\n=== C. Changed-payload reuse (material vs non-material) ===')
   const cases: { label: string; overrides: Record<string, unknown>; expectRejected: boolean }[] = [
     { label: 'identical (control)', overrides: {}, expectRejected: false },
-    { label: 'different notes (non-material)', overrides: { p_notes: 'edited' }, expectRejected: false },
+    {
+      label: 'different notes (non-material)',
+      overrides: { p_notes: 'edited' },
+      expectRejected: false,
+    },
     {
       label: 'different amount (material)',
       overrides: {
@@ -143,8 +161,21 @@ async function materialMismatchMatrix(clientA: TestClient) {
       },
       expectRejected: true,
     },
-    { label: 'different date (material)', overrides: { p_purchased_on: '2020-01-01' }, expectRejected: true },
-    { label: 'different currency (material)', overrides: { p_currency: 'EUR', p_fx_rate_to_nok: '11.5', p_fx_rate_date: today, p_fx_source: 'manual' }, expectRejected: true },
+    {
+      label: 'different date (material)',
+      overrides: { p_purchased_on: '2020-01-01' },
+      expectRejected: true,
+    },
+    {
+      label: 'different currency (material)',
+      overrides: {
+        p_currency: 'EUR',
+        p_fx_rate_to_nok: '11.5',
+        p_fx_rate_date: today,
+        p_fx_source: 'manual',
+      },
+      expectRejected: true,
+    },
     {
       label: 'different quantity (material)',
       overrides: {
@@ -172,7 +203,7 @@ async function materialMismatchMatrix(clientA: TestClient) {
     const match = rejected === c.expectRejected
     console.log(
       `  ${c.label}: expected_rejected=${c.expectRejected} actual_rejected=${rejected} ` +
-        `${match ? 'OK' : '!! MISMATCH'} ${error ? `(${error.message})` : `(id=${data?.id})`}`,
+        `${match ? 'OK' : '!! MISMATCH'} ${error ? `(${error.message})` : `(id=${data.id})`}`,
     )
   }
 }
@@ -182,13 +213,17 @@ async function abortedRequestRetry(service: TestClient, clientA: TestClient) {
   const {
     data: { session },
   } = await clientA.auth.getSession()
+  if (!session) throw new Error('no active session for the aborted-request-retry check')
   const url = `${process.env.SUPABASE_URL}/rest/v1/rpc/create_purchase`
-  const anonKey = process.env.SUPABASE_ANON_KEY!
+  const anonKey = process.env.SUPABASE_ANON_KEY
+  if (!anonKey) throw new Error('SUPABASE_ANON_KEY is not set')
   for (const abortAfterMs of [0, 5, 15, 40]) {
     const key = crypto.randomUUID()
     const args = sealedArgs(key)
     const controller = new AbortController()
-    setTimeout(() => controller.abort(), abortAfterMs)
+    setTimeout(() => {
+      controller.abort()
+    }, abortAfterMs)
     let aborted = false
     try {
       await fetch(url, {
@@ -197,7 +232,7 @@ async function abortedRequestRetry(service: TestClient, clientA: TestClient) {
         headers: {
           'Content-Type': 'application/json',
           apikey: anonKey,
-          Authorization: `Bearer ${session!.access_token}`,
+          Authorization: `Bearer ${session.access_token}`,
         },
         body: JSON.stringify(args),
       })
@@ -216,7 +251,8 @@ async function abortedRequestRetry(service: TestClient, clientA: TestClient) {
       `abortAfterMs=${abortAfterMs} clientSawAbort=${aborted} retryError=${retryError?.message ?? 'none'} ` +
         `retryReturnedId=${retry?.id ?? 'n/a'} purchase_rows_in_db=${count}`,
     )
-    if (count !== 1) console.log(`  !! ANOMALY: expected exactly 1 purchase row after abort+retry, got ${count}`)
+    if (count !== 1)
+      console.log(`  !! ANOMALY: expected exactly 1 purchase row after abort+retry, got ${count}`)
   }
 }
 
@@ -234,7 +270,7 @@ async function main() {
   }
 }
 
-main().catch((err) => {
+main().catch((err: unknown) => {
   console.error(err)
   process.exit(1)
 })

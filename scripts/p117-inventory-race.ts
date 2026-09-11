@@ -37,19 +37,24 @@ async function makeLot(clientA: TestClient, quantity: number) {
   const { data: line, error: lineError } = await createServiceClient()
     .from('purchase_lines')
     .select('id')
-    .eq('purchase_id', data!.id)
+    .eq('purchase_id', data.id)
     .single<{ id: string }>()
   if (lineError) throw new Error(lineError.message)
   const { data: lot, error: lotError } = await createServiceClient()
     .from('acquisition_lots')
     .select('id, quantity, quantity_remaining')
-    .eq('purchase_line_id', line!.id)
+    .eq('purchase_line_id', line.id)
     .single<{ id: string; quantity: number; quantity_remaining: number }>()
   if (lotError) throw new Error(lotError.message)
   return lot
 }
 
-async function sellRace(clientA: TestClient, service: TestClient, lotQuantity: number, concurrency: number) {
+async function sellRace(
+  clientA: TestClient,
+  service: TestClient,
+  lotQuantity: number,
+  concurrency: number,
+) {
   const lot = await makeLot(clientA, lotQuantity)
   const attempts = await Promise.allSettled(
     Array.from({ length: concurrency }, () =>
@@ -92,13 +97,21 @@ async function sellRace(clientA: TestClient, service: TestClient, lotQuantity: n
     `lotQty=${lotQuantity} concurrency=${concurrency} succeeded=${ok} insufficient=${insufficientErrors} ` +
       `other_errors=${otherErrors} quantity_remaining_after=${after?.quantity_remaining} live_disposals=${disposalCount}`,
   )
-  if (ok !== lotQuantity) console.log(`  !! ANOMALY: expected exactly ${lotQuantity} successful sales, got ${ok}`)
-  if (after?.quantity_remaining !== 0) console.log(`  !! ANOMALY: expected quantity_remaining=0, got ${after?.quantity_remaining}`)
+  if (ok !== lotQuantity)
+    console.log(`  !! ANOMALY: expected exactly ${lotQuantity} successful sales, got ${ok}`)
+  if (after?.quantity_remaining !== 0)
+    console.log(`  !! ANOMALY: expected quantity_remaining=0, got ${after?.quantity_remaining}`)
   if ((after?.quantity_remaining ?? 0) < 0) console.log('  !! CRITICAL: NEGATIVE INVENTORY')
-  if (disposalCount !== lotQuantity) console.log(`  !! ANOMALY: expected ${lotQuantity} live disposal rows, got ${disposalCount}`)
+  if (disposalCount !== lotQuantity)
+    console.log(`  !! ANOMALY: expected ${lotQuantity} live disposal rows, got ${disposalCount}`)
 }
 
-async function openingRace(clientA: TestClient, service: TestClient, sealedQuantity: number, concurrency: number) {
+async function openingRace(
+  clientA: TestClient,
+  service: TestClient,
+  sealedQuantity: number,
+  concurrency: number,
+) {
   const { data: purchase, error } = await clientA
     .rpc('create_purchase', {
       p_purchased_on: today,
@@ -114,17 +127,23 @@ async function openingRace(clientA: TestClient, service: TestClient, sealedQuant
     })
     .single<{ id: string }>()
   if (error) throw new Error(`opening race purchase failed: ${error.message}`)
-  const { data: line } = await service.from('purchase_lines').select('id').eq('purchase_id', purchase!.id).single<{ id: string }>()
-  const { data: lot } = await service
+  const { data: line, error: lineError } = await service
+    .from('purchase_lines')
+    .select('id')
+    .eq('purchase_id', purchase.id)
+    .single<{ id: string }>()
+  if (lineError) throw new Error(`opening race line lookup failed: ${lineError.message}`)
+  const { data: lot, error: lotError } = await service
     .from('acquisition_lots')
     .select('id')
-    .eq('purchase_line_id', line!.id)
+    .eq('purchase_line_id', line.id)
     .single<{ id: string }>()
+  if (lotError) throw new Error(`opening race lot lookup failed: ${lotError.message}`)
 
   const attempts = await Promise.allSettled(
     Array.from({ length: concurrency }, () =>
       clientA.rpc('create_opening', {
-        p_source_lot_id: lot!.id,
+        p_source_lot_id: lot.id,
         p_quantity: 1,
         p_opened_on: today,
         p_tracking_completeness: 'unknown',
@@ -146,13 +165,14 @@ async function openingRace(clientA: TestClient, service: TestClient, sealedQuant
   const { data: after } = await service
     .from('acquisition_lots')
     .select('quantity_remaining')
-    .eq('id', lot!.id)
+    .eq('id', lot.id)
     .single<{ quantity_remaining: number }>()
   console.log(
     `sealedQty=${sealedQuantity} concurrency=${concurrency} succeeded=${ok} insufficient=${insufficient} ` +
       `other_errors=${other} quantity_remaining_after=${after?.quantity_remaining}`,
   )
-  if (ok !== sealedQuantity) console.log(`  !! ANOMALY: expected exactly ${sealedQuantity} successful opens, got ${ok}`)
+  if (ok !== sealedQuantity)
+    console.log(`  !! ANOMALY: expected exactly ${sealedQuantity} successful opens, got ${ok}`)
   if ((after?.quantity_remaining ?? 0) < 0) console.log('  !! CRITICAL: NEGATIVE INVENTORY')
 }
 
@@ -162,11 +182,21 @@ async function main() {
   const clientA = await signInAs(userA)
   try {
     console.log('=== Concurrent sale of the same lot (N workers race M available units) ===')
-    for (const [qty, conc] of [[1, 2], [3, 10], [5, 50], [10, 100]] as const) {
+    for (const [qty, conc] of [
+      [1, 2],
+      [3, 10],
+      [5, 50],
+      [10, 100],
+    ] as const) {
       await sellRace(clientA, service, qty, conc)
     }
     console.log('\n=== Concurrent opening of the same sealed lot ===')
-    for (const [qty, conc] of [[1, 2], [3, 10], [5, 50], [10, 100]] as const) {
+    for (const [qty, conc] of [
+      [1, 2],
+      [3, 10],
+      [5, 50],
+      [10, 100],
+    ] as const) {
       await openingRace(clientA, service, qty, conc)
     }
   } finally {
@@ -174,7 +204,7 @@ async function main() {
   }
 }
 
-main().catch((err) => {
+main().catch((err: unknown) => {
   console.error(err)
   process.exit(1)
 })

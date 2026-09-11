@@ -64,7 +64,10 @@ describe.skipIf(!hasSupabaseEnv())('M16 economic oracle — opening does not cre
     // `pnpm test:db` suite, with no reset before this file runs) it survives and makes this file's
     // "genuinely unpriced" precondition false — a shared-catalog test-isolation gap, not a product
     // defect. Same convention m91 itself already uses for the variants its own fixture depends on.
-    await service.from('price_snapshots').delete().eq('card_variant_id', seedCatalog.japaneseVariantId)
+    await service
+      .from('price_snapshots')
+      .delete()
+      .eq('card_variant_id', seedCatalog.japaneseVariantId)
   }, 120_000)
 
   afterAll(async () => {
