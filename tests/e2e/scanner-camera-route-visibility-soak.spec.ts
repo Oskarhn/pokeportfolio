@@ -36,6 +36,12 @@ test.describe('scanner camera route + visibility soak (P119 §10/§11)', () => {
   test('route cycle soak: enter -> acquire -> leave -> re-enter, repeated, no orphan stream growth', async ({
     page,
   }) => {
+    // 200 real page.goto() + acquire + navigate-away cycles comfortably exceeds Playwright's
+    // default 30s test timeout even in isolation, let alone as one of 212 tests in the full suite
+    // (observed failing on exactly that default when run as part of the whole non-auth E2E gate,
+    // not when run alone with an explicit --timeout override) — an explicit, generous timeout here
+    // makes this test's own real cost independent of whatever timeout the invoking command used.
+    test.setTimeout(180_000)
     const CYCLES = 200
     await installFakeSession(page)
     await installCameraMock(page, { behavior: 'success' })
@@ -101,6 +107,8 @@ test.describe('scanner camera route + visibility soak (P119 §10/§11)', () => {
   test('route cycle with a full capture in the loop: enter -> acquire -> capture -> use photo -> leave -> re-enter', async ({
     page,
   }) => {
+    // 5 cycles of a real cold-ish OCR + visual-worker pipeline can exceed the 30s default too.
+    test.setTimeout(180_000)
     // Deliberately much smaller than the pure navigation loop above: each cycle triggers the REAL
     // OCR + visual-worker pipeline (a fresh controller/worker pair per remount, per controller.ts's
     // own dispose-on-unmount contract) — a genuinely expensive cold-ish load every time, not
