@@ -74,7 +74,7 @@ jobs:
       - name: Secret scan (gitleaks, open source, no license key)
         run: |
           docker run --rm -v "${{ github.workspace }}:/repo" \
-            zricethezav/gitleaks:latest detect --source=/repo -v --redact
+            zricethezav/gitleaks:latest detect --source=/repo --config=/repo/.gitleaks.toml -v --redact
 
   # Migrations, RLS and the two-client authorization suite (docs/TESTING.md §4-5), against an
   # ephemeral local Supabase/Postgres stack — ubuntu-latest ships Docker, so this needs nothing
