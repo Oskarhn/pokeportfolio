@@ -5362,3 +5362,64 @@ first shrunk failure fast-check found). Full existing `engine`/`engine-p93-redes
 visual-dominance` suites (290 tests total in `tests/domain/scanner/`) re-run green after the fix —
 no behavioral change to any non-adversarial, already-tested case. `pnpm test` 1385/1385,
 typecheck/lint (0 errors)/format clean.
+
+## D-125 — `allocate_largest_remainder` fixed a bigint*bigint overflow that violated F6 within its own declared domain (P117)
+
+**2026-09-11 · Accepted**
+
+**Found by adversarial money-boundary testing, then traced to an exact cause.** The function's
+signature (`p_total bigint, p_weights bigint[]`) claims to support the full bigint domain for both
+arguments, and FINANCIAL_MODEL.md §4.2/invariant F6 requires shares to sum exactly to the total
+"for any input." The original body computed `p_total * v_effective[i]` in plain bigint arithmetic
+before dividing by the weight sum; once that intermediate product exceeded bigint's ~9.22e18
+ceiling, Postgres raised `bigint out of range` — even though `p_total`, every individual weight and
+the eventual per-line share are all comfortably inside bigint's range. Reproduced directly: a
+single-line EUR purchase with `unit_price_minor = 2_147_483_647` (2^31-1) and a manual FX rate of
+11.54 computes `total_nok_minor = 24_781_961_286`, and `create_purchase` calls
+`allocate_largest_remainder(24_781_961_286, ARRAY[2_147_483_647])` to attribute that NOK total back
+to the purchase's one line — the product of those two operands (~5.3e19) overflows bigint. The
+equivalent NOK-only purchase (no FX multiplier) only hits the same overflow once `unit_price_minor`
+exceeds roughly sqrt(bigint max) ≈ 3.03e9, which is why the failure threshold looked
+currency-dependent when a prior session (P115, `BIGINT_CHROMIUM` note in `output_115.txt`) first
+brushed against it while seeding a boundary-value fixture and disclosed it as unpursued, out of
+scope for that session.
+
+**Severity:** real, but requires a single purchase line's minor-unit amount (or its NOK-converted
+total) to exceed roughly two billion — many orders of magnitude past any plausible collectible
+purchase. No realistic user data could ever trigger it. Fixed anyway because the function's own
+type signature and F6 both promise correctness across the full bigint domain, and a general-purpose
+allocator silently failing partway through its declared input range is exactly the kind of
+"unrealistic input, still worth being right about" finding this hardening pass exists to catch — see
+also the two immediately adjacent, deliberately NOT-fixed findings below.
+
+**Fix.** New forward-only migration
+`20260911120000_p117_allocate_largest_remainder_overflow_fix.sql`, `CREATE OR REPLACE` (signature
+unchanged, so existing grants survive): the multiplication and division are now done in `numeric`
+(arbitrary precision) before casting back to `bigint`, `floor()` standing in for bigint integer
+division (both operands are always non-negative here, so floor and truncate agree) and numeric's
+`%` operator giving the same exact remainder integer division would. No behavior changes for any
+input that already succeeded — the fix only widens the domain the function can actually honor to
+match what its `bigint` signature already promised. The original migration
+(`20260824120010_m8_purchase_ledger.sql`) is untouched, per this project's own migration discipline.
+
+**Two adjacent findings, deliberately NOT fixed — different, unrelated limitations:**
+
+1. PostgREST serializes a `bigint`/`bigint[]` column or return value as a plain JSON *number*, not
+   a string. Any such value at or above 2^53 silently loses precision the moment a JS client (this
+   project's own frontend, or a test) runs the response through ordinary `JSON.parse` — a real
+   "hidden JS Number conversion," but only reachable at magnitudes (single-digit quadrillions+ of
+   minor units) FINANCIAL_MODEL.md's domain never approaches. Fixing it would mean re-typing every
+   bigint-returning RPC response app-wide for no reachable benefit; not done.
+2. Once the NOK-converted total of a foreign-currency purchase itself would exceed bigint's actual
+   ~9.22e18 ceiling (roughly 92 quadrillion NOK for an 11.54 EUR/NOK rate), `create_purchase`
+   correctly still rejects with `bigint out of range` — the real, correct ceiling of the
+   `total_nok_minor bigint` column, not a bug. Confirmed by testing one order of magnitude beyond
+   the fixed overflow and observing the SAME error re-appear at that much larger, genuinely
+   unrepresentable value.
+
+**Verified:** `tests/db/m8_purchase_ledger.test.ts`'s new "no bigint*bigint overflow at scale"
+block (the SQL/TypeScript parity suite extended with three large-input cases whose individual
+result shares all stay under 2^53, so the assertions themselves are never confounded by finding 1
+above) and a new end-to-end `create_purchase` regression reproducing the exact EUR scenario. Full
+`pnpm test:db` (614/615, unchanged), M13 adversarial (55/62 + 7 opt-in skipped, unchanged) and
+`tests/m16-independent` (53/53, unchanged) all re-run green after the migration.

@@ -104,6 +104,47 @@ describe('allocate_largest_remainder: SQL/TypeScript parity', () => {
   }
 })
 
+describe('allocate_largest_remainder: no bigint*bigint overflow at scale (P117)', () => {
+  // The original body computed `p_total * v_effective[i]` in plain bigint arithmetic before
+  // dividing — once that intermediate product exceeded bigint's ~9.22e18 ceiling, Postgres
+  // raised "bigint out of range" even though p_total, every weight and the eventual result are
+  // all well inside bigint's range. Reproduced for real via a single-line EUR purchase with a
+  // manual FX rate (unit_price_minor 2_147_483_647 -> total_nok_minor ~24.78e9, allocated across
+  // one line whose weight is 2_147_483_647 — the product of those two is ~5.3e19). Values are
+  // passed as strings so the JS test client's own JSON encoding never rounds them on the way in.
+  // Every case here is chosen so each individual RESULT share stays under 2^53-1: PostgREST
+  // serializes a `bigint[]` return as plain JSON numbers, so a share at or above 2^53 would
+  // silently round on the way back through this JS test client's own JSON.parse — a real, but
+  // separate and unrelated, response-side "hidden JS Number conversion" limitation (confirmed by
+  // hand: allocate_largest_remainder('922337203685477500', [3,7]) computes the correct shares
+  // server-side but the JS client observes them off by a few units). Out of scope here: fixing it
+  // would mean re-typing every bigint RPC response app-wide, for a magnitude (single-digit
+  // quintillions of minor units) FINANCIAL_MODEL.md's domain never approaches.
+  const bigCases: { total: bigint; weights: bigint[] }[] = [
+    { total: 24_781_961_286n, weights: [2_147_483_647n] }, // the exact reproduction above
+    { total: 9_007_199_254_740_991n, weights: [9_007_199_254_740_991n] }, // 2^53-1, single weight
+    {
+      total: 9_007_199_254_740_991n,
+      weights: [9_007_199_254_740_991n, 9_007_199_254_740_991n],
+    }, // two large equal weights: exercises the tie-break path at scale, not just a single-weight passthrough
+  ]
+
+  for (const { total, weights } of bigCases) {
+    it(`matches allocate(${total}, [${weights.join(',')}]) without overflowing`, async () => {
+      const expected = allocate(total, weights).map(String)
+      const { data, error } = await clientA.rpc('allocate_largest_remainder', {
+        p_total: total.toString(),
+        p_weights: weights.map(String),
+      })
+      expect(error).toBeNull()
+      expect((data as string[]).map(String)).toEqual(expected)
+      // Invariant F6: the shares sum exactly back to the total, even at this scale.
+      const sum = (data as string[]).reduce((acc, v) => acc + BigInt(v), 0n)
+      expect(sum).toBe(total)
+    })
+  }
+})
+
 describe('E3 — mixed receipt with shipping, reproduced exactly in the database', () => {
   it('GPO = CS + HS and every allocated share matches FINANCIAL_MODEL.md §8 to the øre', async () => {
     const { data: purchase, error } = await callCreate(clientA, {
@@ -200,6 +241,40 @@ describe('E10 — foreign-currency purchase, frozen NOK conversion', () => {
     const lines = await linesFor(purchase!.id)
     expect(lines[0]?.attributable_cost_minor).toBe(4950)
     expect(lines[0]?.attributable_cost_nok_minor).toBe(57123)
+  })
+})
+
+describe('P117: a large foreign-currency single-line purchase does not overflow the allocator', () => {
+  it('unit_price_minor near 2^31 with a real FX rate used to raise "bigint out of range"', async () => {
+    // Before the P117 fix, allocate_largest_remainder computed total_nok_minor * weight in plain
+    // bigint arithmetic (~5.3e19 here) before dividing, which overflows bigint (~9.22e18 max)
+    // even though every actual input and output value is well inside bigint's range. Both values
+    // below stay under 2^53, so this is a plain end-to-end assertion, no string/BigInt plumbing
+    // needed to dodge JSON precision loss.
+    const { data: purchase, error } = await callCreate(clientA, {
+      p_purchased_on: today,
+      p_currency: 'EUR',
+      p_fx_rate_to_nok: '11.54000000',
+      p_fx_rate_date: today,
+      p_fx_source: 'manual',
+      p_lines: [
+        {
+          line_type: 'card',
+          card_variant_id: seedCatalog.pikachuVariantId,
+          condition: 'NM',
+          quantity: 1,
+          unit_price_minor: 2147483647,
+        },
+      ],
+    })
+    expect(error).toBeNull()
+    expect(purchase?.total_minor).toBe(2147483647)
+    // round(2147483647 * 11.54) = round(24781961286.38) = 24781961286.
+    expect(purchase?.total_nok_minor).toBe(24781961286)
+
+    const lines = await linesFor(purchase!.id)
+    // Single line, no shipping/customs/discount: the whole NOK total is attributed to it exactly.
+    expect(lines[0]?.attributable_cost_nok_minor).toBe(24781961286)
   })
 })
 
