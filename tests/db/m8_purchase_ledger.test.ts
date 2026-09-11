@@ -57,6 +57,7 @@ async function callCreate(client: TestClient, args: Record<string, unknown>) {
 interface PurchaseLineRow {
   id: string
   line_type: string
+  description: string | null
   spend_class: string
   quantity: number
   unit_price_minor: number
@@ -72,7 +73,7 @@ async function linesFor(purchaseId: string): Promise<PurchaseLineRow[]> {
   const { data, error } = await service
     .from('purchase_lines')
     .select(
-      'id, line_type, spend_class, quantity, unit_price_minor, line_total_minor, allocated_shipping_minor, allocated_customs_minor, allocated_discount_minor, attributable_cost_minor, attributable_cost_nok_minor',
+      'id, line_type, description, spend_class, quantity, unit_price_minor, line_total_minor, allocated_shipping_minor, allocated_customs_minor, allocated_discount_minor, attributable_cost_minor, attributable_cost_nok_minor',
     )
     .eq('purchase_id', purchaseId)
     .order('created_at')
@@ -130,8 +131,16 @@ describe('E3 — mixed receipt with shipping, reproduced exactly in the database
     expect(purchase?.total_minor).toBe(140000)
     expect(purchase?.total_nok_minor).toBe(140000)
 
+    // Matched by line_type, never by array position: all three lines are created inside one
+    // create_purchase transaction and therefore share one identical created_at (Postgres now()
+    // is transaction-scoped) — `.order('created_at')` has no tiebreaker among them, so which
+    // physical row a query returns first is a query-plan detail, not a guarantee. It flips
+    // under enough surrounding data (proven: this exact assertion failed when run inside the
+    // full test:db suite and passed in isolation, both against the identical fixture).
     const lines = await linesFor(purchase!.id)
-    const [etb, card, sleeves] = lines
+    const etb = lines.find((l) => l.line_type === 'sealed')
+    const card = lines.find((l) => l.line_type === 'card')
+    const sleeves = lines.find((l) => l.line_type === 'accessory')
     expect(etb?.allocated_shipping_minor).toBe(5385)
     expect(card?.allocated_shipping_minor).toBe(3846)
     expect(sleeves?.allocated_shipping_minor).toBe(769)
@@ -225,8 +234,15 @@ describe('zero-subtotal edge: a shipping-only purchase splits equally', () => {
       ],
     })
     expect(error).toBeNull()
+    // Matched by description, never by array position (see the E3 test above for why
+    // `.order('created_at')` cannot recover input order among lines from one transaction).
+    // allocate_largest_remainder's tie-break is by array index (FINANCIAL_MODEL.md §4.2): the
+    // first line in p_lines wins ties, so "Free sample A" (index 0) gets the extra øre.
     const lines = await linesFor(purchase!.id)
-    expect(lines.map((l) => l.allocated_shipping_minor)).toEqual([500, 499])
+    const sampleA = lines.find((l) => l.description === 'Free sample A')
+    const sampleB = lines.find((l) => l.description === 'Free sample B')
+    expect(sampleA?.allocated_shipping_minor).toBe(500)
+    expect(sampleB?.allocated_shipping_minor).toBe(499)
     expect(purchase?.total_minor).toBe(999)
   })
 })
