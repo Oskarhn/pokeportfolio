@@ -419,6 +419,12 @@ export function createRealScannerController(
   // must survive across scans (prewarm runs once per session), not reset per capture.
   let visualPrewarmStarted = false
   let ocrPrepareMs: number | null = null
+  /** P116 Phase Q: the staggered visual-prewarm timer's own id, so `dispose()` can cancel it. Left
+   *  running, a dispose() inside the stagger window (route exit/account-switch within
+   *  ENHANCED_VISUAL_PREWARM_STAGGER_MS of mount) let the timer fire on a controller nothing
+   *  references any more, constructing a brand-new, never-terminated visual Worker that silently
+   *  downloads the full model/index in the background. */
+  let visualPrewarmTimer: ReturnType<typeof setTimeout> | null = null
 
   function prewarmOcr(): void {
     const start = performance.now()
@@ -444,7 +450,8 @@ export function createRealScannerController(
     if (visualPrewarmStarted) return
     visualPrewarmStarted = true
     prewarmOcr()
-    setTimeout(() => {
+    visualPrewarmTimer = setTimeout(() => {
+      visualPrewarmTimer = null
       visualClient.prewarm().catch(() => {
         // Unavailability is a normal, already-diagnosed outcome
         // (visualClient.getDiagnosticsSnapshot reports it) — prewarm() itself never needs to react.
@@ -899,6 +906,10 @@ export function createRealScannerController(
 
   function dispose(): void {
     disposed = true
+    if (visualPrewarmTimer !== null) {
+      clearTimeout(visualPrewarmTimer)
+      visualPrewarmTimer = null
+    }
     engine.dispose()
     releaseOcrCanvases()
     visualClient.dispose()

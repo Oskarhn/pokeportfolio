@@ -598,3 +598,92 @@ describe('VisualRecognitionClient — P82 live progress instrumentation', () => 
     expect(snapshot.liveProgress.currentPhase).toBeNull()
   })
 })
+
+describe('P116 Phase Q — dispose()/crash must settle every in-flight request, never hang', () => {
+  async function readyClient(): Promise<{ client: VisualRecognitionClient; worker: FakeWorker }> {
+    vi.stubGlobal('Worker', FakeWorker)
+    const client = new VisualRecognitionClient()
+    const readyPromise = client.ensureReady()
+    const worker = latestWorker()
+    worker.emit('message', { data: readyMessage() })
+    await readyPromise
+    return { client, worker }
+  }
+
+  it('dispose() while analyze() is in-flight resolves it to null instead of leaving it pending forever', async () => {
+    const { client } = await readyClient()
+    const bitmap = { close: vi.fn() } as unknown as ImageBitmap
+    const analyzePromise = client.analyze(bitmap, 30)
+    await new Promise((resolve) => setTimeout(resolve, 0)) // let analyze() reach postMessage/pending.set
+    client.dispose()
+    await expect(analyzePromise).resolves.toBeNull()
+  })
+
+  it("a worker 'error' event arriving AFTER ready (mid-scan crash, not init failure) also resolves an in-flight analyze() to null", async () => {
+    const { client, worker } = await readyClient()
+    const bitmap = { close: vi.fn() } as unknown as ImageBitmap
+    const analyzePromise = client.analyze(bitmap, 30)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    worker.emit('error', { message: 'worker crashed mid-scan', filename: '', lineno: 0, colno: 0 })
+    await expect(analyzePromise).resolves.toBeNull()
+  })
+
+  it('dispose() while getExpectedCardRank() is in-flight resolves it with a safe not-in-index result instead of hanging', async () => {
+    const { client } = await readyClient()
+    const rankPromise = client.getExpectedCardRank('base1-4')
+    client.dispose()
+    await expect(rankPromise).resolves.toEqual({
+      found: false,
+      rank: null,
+      similarity: null,
+      totalCards: 0,
+      inTop20: false,
+      inTop100: false,
+      indexContentId: null,
+      hybridRank: null,
+      hybridScore: null,
+      hybridTier: null,
+      scoreComponents: [],
+      enrichmentStatus: 'not-in-index',
+    })
+  })
+
+  it('a second, fresh analyze() call after dispose() behaves exactly as documented (no cross-generation contamination from the settled pending map)', async () => {
+    const { client } = await readyClient()
+    const firstBitmap = { close: vi.fn() } as unknown as ImageBitmap
+    const firstAnalyze = client.analyze(firstBitmap, 30)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    client.dispose()
+    await expect(firstAnalyze).resolves.toBeNull()
+
+    // analyze() re-runs ensureReady() internally; a fresh worker is constructed for this call.
+    const secondBitmap = { close: vi.fn() } as unknown as ImageBitmap
+    const secondAnalyzePromise = client.analyze(secondBitmap, 30)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const worker = latestWorker()
+    worker.emit('message', { data: readyMessage() })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const lastCall = worker.postMessage.mock.calls.at(-1)?.[0] as {
+      type: string
+      requestId: number
+    }
+    expect(lastCall.type).toBe('embed-and-search')
+    worker.emit('message', {
+      data: {
+        type: 'result',
+        requestId: lastCall.requestId,
+        hits: [],
+        embedMs: 1,
+        searchMs: 1,
+        embeddingNorm: 1,
+      },
+    })
+    await expect(secondAnalyzePromise).resolves.toEqual({
+      hits: [],
+      backend: 'wasm',
+      embedMs: 1,
+      searchMs: 1,
+      embeddingNorm: 1,
+    })
+  })
+})

@@ -329,11 +329,39 @@ test.describe('visual index fault matrix (P113 §4) — real worker, synthetic g
     // that Playwright's non-macOS WebKit build is for cross-engine CI coverage, not guaranteed
     // Apple-Safari fidelity), not a product defect — the production `loadIndex()` fail-closed
     // behavior this file verifies is engine-agnostic code with no WebKit-specific branch.
+    //
+    // P116 §23 hardening: the original check compared `testInfo.project.name` against the literal
+    // string 'desktop-chromium' — a silent 100%-skip trap if that project were ever renamed
+    // (flagged as an open fragility by both P115's self-review and the P116 brief). Selecting on
+    // `testInfo.project.use.defaultBrowserType` instead derives the decision from the actual
+    // browser engine a project resolves to (set by the `devices[...]` preset every project here is
+    // built from — 'chromium' for Desktop Chrome, 'webkit' for iPhone 14), so a project rename
+    // cannot silently defeat this gate. The companion meta-test below guards the remaining case a
+    // per-project check cannot see itself: every chromium project being removed from the config
+    // entirely.
     test.skip(
-      testInfo.project.name !== 'desktop-chromium',
-      'Route interception for a SECOND+ dedicated-Worker fetch is unreliable on this Playwright ' +
-        'WebKit build (see this describe block’s own comment) — Chromium only for this spec.',
+      testInfo.project.use.defaultBrowserType !== 'chromium',
+      'Route interception for a SECOND+ dedicated-Worker fetch is unreliable on non-Chromium ' +
+        'engines (see this describe block’s own comment) — Chromium projects only for this spec.',
     )
+  })
+
+  // P116 §23: a per-project `test.skip` can never detect "every project this could have run under
+  // was removed" — that failure mode is invisible from inside the block it would silently empty
+  // out. This meta-test runs unconditionally (no skip) in EVERY project and inspects the full,
+  // static project list Playwright resolved the run from, so it fails loudly — in every project,
+  // impossible to miss — the day no project resolves to Chromium any more.
+  // Playwright requires this exact destructuring shape to recognize a fixtures-callback
+  // signature; no fixture is actually used, only testInfo.
+  // eslint-disable-next-line no-empty-pattern
+  test('meta: at least one configured project resolves to Chromium (so this matrix cannot go silently skip-only)', ({}, testInfo) => {
+    const chromiumProjects = testInfo.config.projects.filter(
+      (project) => project.use.defaultBrowserType === 'chromium',
+    )
+    expect(
+      chromiumProjects.length,
+      `expected at least one Chromium-engine project in playwright.config.ts; found: ${testInfo.config.projects.map((p) => `${p.name}(${String(p.use.defaultBrowserType)})`).join(', ')}`,
+    ).toBeGreaterThan(0)
   })
 
   test('current.json 404 — pointer missing entirely', async ({ page }) => {

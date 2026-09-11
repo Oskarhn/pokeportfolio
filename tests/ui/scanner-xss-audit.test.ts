@@ -22,8 +22,25 @@ const FORBIDDEN_SINK_PATTERNS: readonly { pattern: RegExp; why: string }[] = [
   { pattern: /dangerouslySetInnerHTML/, why: "React's own escaping must never be bypassed" },
   { pattern: /\.innerHTML\s*=/, why: 'direct innerHTML write bypasses React entirely' },
   { pattern: /insertAdjacentHTML/, why: 'insertAdjacentHTML bypasses React entirely' },
-  { pattern: /document\.write/, why: 'document.write is never used' },
+  { pattern: /document\.write(?:ln)?/, why: 'document.write/writeln is never used' },
+  // P116 §22 (Phase N): broadened past the original four sinks — these bypass React just as
+  // completely and are equally reachable by an OCR-read or catalog-derived string reaching a
+  // careless render path in the future.
+  { pattern: /\.outerHTML\s*=/, why: 'direct outerHTML write bypasses React entirely' },
+  {
+    pattern: /\bsrcdoc\s*=/,
+    why: 'iframe srcdoc is an HTML-injection sink identical to innerHTML',
+  },
+  { pattern: /\beval\s*\(/, why: 'eval() must never run untrusted (OCR/catalog-derived) text' },
+  { pattern: /new\s+Function\s*\(/, why: 'the Function constructor must never run untrusted text' },
 ]
+
+/** P116 §22: candidate/catalog/OCR text also reaches plain `href`/`src`-style props in a few
+ *  scanner components — a `javascript:` URL there executes on click even though it never touches
+ *  an HTML-injection sink above. Checked separately (word-boundary on the literal scheme, not a
+ *  structural sink) because a legitimate scanner module may reasonably contain the SUBSTRING
+ *  "javascript" in a comment or identifier without it ever being a live URL scheme. */
+const JAVASCRIPT_URL_PATTERN = /javascript:/i
 
 function scannerTsxSources(): { file: string; text: string }[] {
   const out: { file: string; text: string }[] = []
@@ -46,7 +63,7 @@ function scannerTsxSources(): { file: string; text: string }[] {
 }
 
 describe('scanner XSS/injection static audit (P113 §34)', () => {
-  it('no scanner module contains any HTML-injection sink (dangerouslySetInnerHTML, innerHTML=, insertAdjacentHTML, document.write)', () => {
+  it('no scanner module contains any HTML-injection sink (dangerouslySetInnerHTML, innerHTML=, insertAdjacentHTML, document.write, outerHTML=, srcdoc=, eval, new Function)', () => {
     const sources = scannerTsxSources()
     expect(sources.length).toBeGreaterThan(5)
     const violations: string[] = []
@@ -55,6 +72,16 @@ describe('scanner XSS/injection static audit (P113 §34)', () => {
       for (const { pattern, why } of FORBIDDEN_SINK_PATTERNS) {
         if (pattern.test(code)) violations.push(`${file}: ${why}`)
       }
+    }
+    expect(violations).toEqual([])
+  })
+
+  it('no scanner module ever assembles a javascript: URL (P116 §22)', () => {
+    const sources = scannerTsxSources()
+    const violations: string[] = []
+    for (const { file, text } of sources) {
+      const code = text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+      if (JAVASCRIPT_URL_PATTERN.test(code)) violations.push(file)
     }
     expect(violations).toEqual([])
   })
