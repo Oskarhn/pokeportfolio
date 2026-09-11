@@ -471,7 +471,13 @@ export function createRealScannerController(
 
   /** Bounds how long one scan waits on the visual channel when it was NOT already warm (P81 §5):
    *  never the multi-minute cold-load itself. A warm channel is awaited normally — no bound is
-   *  needed or applied, matching every existing test's fast-resolving mocked behaviour exactly. */
+   *  needed or applied, matching every existing test's fast-resolving mocked behaviour exactly.
+   *
+   *  P119 (P116 Phase Q's disclosed-but-unfixed finding, re-examined): when `work` wins the race,
+   *  the losing timeout used to keep running for up to VISUAL_COLD_ANALYSIS_TIMEOUT_MS regardless
+   *  — harmless (its closure holds nothing but string literals, and resolving an
+   *  already-settled promise is a no-op), but there is no reason to leave it dangling once the
+   *  race has a winner. `finally` clears it the instant either side settles. */
   async function analyzeVisualBounded(
     capture: { blob: Blob; cardRect: PixelRect },
     topK: number,
@@ -479,18 +485,21 @@ export function createRealScannerController(
     const readyBefore = getVisualPrewarmState() === 'ready'
     const work = analyzeVisualSafely(capture, topK)
     if (readyBefore) return work
-    return Promise.race([
-      work,
-      new Promise<{ result: null; errorMessage: string }>((resolve) => {
-        setTimeout(() => {
-          resolve({
-            result: null,
-            errorMessage:
-              'Visual recognition is still warming up on this device — used text search only for this scan.',
-          })
-        }, VISUAL_COLD_ANALYSIS_TIMEOUT_MS)
-      }),
-    ])
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
+    const timedOut = new Promise<{ result: null; errorMessage: string }>((resolve) => {
+      timeoutId = setTimeout(() => {
+        resolve({
+          result: null,
+          errorMessage:
+            'Visual recognition is still warming up on this device — used text search only for this scan.',
+        })
+      }, VISUAL_COLD_ANALYSIS_TIMEOUT_MS)
+    })
+    try {
+      return await Promise.race([work, timedOut])
+    } finally {
+      if (timeoutId !== undefined) clearTimeout(timeoutId)
+    }
   }
 
   /** Returns its own error message rather than mutating shared state (P78): a closure-captured
