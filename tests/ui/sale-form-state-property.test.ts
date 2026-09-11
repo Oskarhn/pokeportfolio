@@ -189,6 +189,8 @@ describe('simulated Sale Add form over a random entity-transition walk — no cr
    * entity changes, arbitrary field mutations (what a person typing into the form produces) must
    * survive re-renders with the SAME key untouched.
    */
+  // P121 §8: numRuns raised 5000 -> 50000 (the requested "50,000+ steps/runs" scale), verified
+  // clean at this scale (~40s locally).
   it('a long random walk of entity switches and field edits never lets one entity leak into another', () => {
     const entityKeys = ['holding-A', 'holding-B', 'holding-C', 'holding-D']
     fc.assert(
@@ -240,7 +242,7 @@ describe('simulated Sale Add form over a random entity-transition walk — no cr
           expect(assertionsExecuted).toBeGreaterThan(0)
         },
       ),
-      { numRuns: 5000 },
+      { numRuns: 50000 },
     )
-  }, 20000)
+  }, 120000)
 })
