@@ -5424,7 +5424,14 @@ above) and a new end-to-end `create_purchase` regression reproducing the exact E
 `pnpm test:db` (614/615, unchanged), M13 adversarial (55/62 + 7 opt-in skipped, unchanged) and
 `tests/m16-independent` (53/53, unchanged) all re-run green after the migration.
 
-## D-126 — `allocate_largest_remainder` gets two more independent bigint-domain fixes: an unbounded weight-sum, and a numeric-division precision bug D-125 did not touch (P120)
+## D-127 — `allocate_largest_remainder` gets two more independent bigint-domain fixes: an unbounded weight-sum, and a numeric-division precision bug D-125 did not touch (P120)
+
+> Renumbered from D-126 by P123 (2026-09-12): D-126 was already taken by
+> `docs/DECISIONS.md` on `fix/p119-scanner-browser-chaos-phase3` (PR #100,
+> opened 2026-09-11T21:59:54Z) for the `VisualRecognitionClient.dispose()`/worker-crash decision
+> (P116) — that PR predates this one (PR #101, opened 2026-09-12T00:40:22Z), so the scanner ID is
+> preserved and this financial decision moves to the next globally-free ID, D-127. See
+> `docs/DECISIONS.md`'s note under D-125 and HANDOVER.md for the collision record.
 
 **2026-09-11 · Accepted**
 
