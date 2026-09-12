@@ -439,8 +439,11 @@ describe('E4/E5 — pull tracking: commons, energy, manual fallback, completenes
       .eq('opening_id', opening.id)
       .order('created_at')
     expect(pulls).toHaveLength(3)
-    // Basic Energy is ordinary first-class inventory: twelve copies, one lot, never aggregated away.
-    expect(pulls![1]!.quantity).toBe(12)
+    // Basic Energy is ordinary first-class inventory: twelve copies, one lot, never aggregated
+    // away. Matched by quantity, never by array position: all three pull lots are created inside
+    // one create_opening transaction and share one identical created_at (Postgres now() is
+    // transaction-scoped) — `.order('created_at')` has no tiebreaker among them.
+    expect(pulls!.find((p) => p.quantity === 12)).toBeDefined()
 
     const { data: detail } = await clientA.rpc('get_opening', { p_opening_id: opening.id }).single<{
       tracking_completeness: string

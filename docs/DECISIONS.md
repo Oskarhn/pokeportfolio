@@ -5363,6 +5363,67 @@ visual-dominance` suites (290 tests total in `tests/domain/scanner/`) re-run gre
 no behavioral change to any non-adversarial, already-tested case. `pnpm test` 1385/1385,
 typecheck/lint (0 errors)/format clean.
 
+## D-125 — `allocate_largest_remainder` fixed a bigint*bigint overflow that violated F6 within its own declared domain (P117)
+
+**2026-09-11 · Accepted**
+
+**Found by adversarial money-boundary testing, then traced to an exact cause.** The function's
+signature (`p_total bigint, p_weights bigint[]`) claims to support the full bigint domain for both
+arguments, and FINANCIAL_MODEL.md §4.2/invariant F6 requires shares to sum exactly to the total
+"for any input." The original body computed `p_total * v_effective[i]` in plain bigint arithmetic
+before dividing by the weight sum; once that intermediate product exceeded bigint's ~9.22e18
+ceiling, Postgres raised `bigint out of range` — even though `p_total`, every individual weight and
+the eventual per-line share are all comfortably inside bigint's range. Reproduced directly: a
+single-line EUR purchase with `unit_price_minor = 2_147_483_647` (2^31-1) and a manual FX rate of
+11.54 computes `total_nok_minor = 24_781_961_286`, and `create_purchase` calls
+`allocate_largest_remainder(24_781_961_286, ARRAY[2_147_483_647])` to attribute that NOK total back
+to the purchase's one line — the product of those two operands (~5.3e19) overflows bigint. The
+equivalent NOK-only purchase (no FX multiplier) only hits the same overflow once `unit_price_minor`
+exceeds roughly sqrt(bigint max) ≈ 3.03e9, which is why the failure threshold looked
+currency-dependent when a prior session (P115, `BIGINT_CHROMIUM` note in `output_115.txt`) first
+brushed against it while seeding a boundary-value fixture and disclosed it as unpursued, out of
+scope for that session.
+
+**Severity:** real, but requires a single purchase line's minor-unit amount (or its NOK-converted
+total) to exceed roughly two billion — many orders of magnitude past any plausible collectible
+purchase. No realistic user data could ever trigger it. Fixed anyway because the function's own
+type signature and F6 both promise correctness across the full bigint domain, and a general-purpose
+allocator silently failing partway through its declared input range is exactly the kind of
+"unrealistic input, still worth being right about" finding this hardening pass exists to catch — see
+also the two immediately adjacent, deliberately NOT-fixed findings below.
+
+**Fix.** New forward-only migration
+`20260911120000_p117_allocate_largest_remainder_overflow_fix.sql`, `CREATE OR REPLACE` (signature
+unchanged, so existing grants survive): the multiplication and division are now done in `numeric`
+(arbitrary precision) before casting back to `bigint`, `floor()` standing in for bigint integer
+division (both operands are always non-negative here, so floor and truncate agree) and numeric's
+`%` operator giving the same exact remainder integer division would. No behavior changes for any
+input that already succeeded — the fix only widens the domain the function can actually honor to
+match what its `bigint` signature already promised. The original migration
+(`20260824120010_m8_purchase_ledger.sql`) is untouched, per this project's own migration discipline.
+
+**Two adjacent findings, deliberately NOT fixed — different, unrelated limitations:**
+
+1. PostgREST serializes a `bigint`/`bigint[]` column or return value as a plain JSON *number*, not
+   a string. Any such value at or above 2^53 silently loses precision the moment a JS client (this
+   project's own frontend, or a test) runs the response through ordinary `JSON.parse` — a real
+   "hidden JS Number conversion," but only reachable at magnitudes (single-digit quadrillions+ of
+   minor units) FINANCIAL_MODEL.md's domain never approaches. Fixing it would mean re-typing every
+   bigint-returning RPC response app-wide for no reachable benefit; not done.
+2. Once the NOK-converted total of a foreign-currency purchase itself would exceed bigint's actual
+   ~9.22e18 ceiling (roughly 92 quadrillion NOK for an 11.54 EUR/NOK rate), `create_purchase`
+   correctly still rejects with `bigint out of range` — the real, correct ceiling of the
+   `total_nok_minor bigint` column, not a bug. Confirmed by testing one order of magnitude beyond
+   the fixed overflow and observing the SAME error re-appear at that much larger, genuinely
+   unrepresentable value.
+
+**Verified:** `tests/db/m8_purchase_ledger.test.ts`'s new "no bigint*bigint overflow at scale"
+block (the SQL/TypeScript parity suite extended with three large-input cases whose individual
+result shares all stay under 2^53, so the assertions themselves are never confounded by finding 1
+above) and a new end-to-end `create_purchase` regression reproducing the exact EUR scenario. Full
+`pnpm test:db` (614/615, unchanged), M13 adversarial (55/62 + 7 opt-in skipped, unchanged) and
+`tests/m16-independent` (53/53, unchanged) all re-run green after the migration.
+
 ## D-126 — `VisualRecognitionClient.dispose()`/worker-crash now settle in-flight requests instead of abandoning them (P116)
 
 **2026-09-11 · Accepted**
@@ -5411,3 +5472,64 @@ dispose() still works normally (no cross-generation contamination from the settl
 carried-forward lifecycle-soak test's "finding" block now asserts the corrected behavior directly
 instead of racing a timer. Full suite re-run green: `pnpm test` 1480/1481 (1 pre-existing skip),
 typecheck/lint (0 errors)/format clean.
+
+## D-127 — `allocate_largest_remainder` gets two more independent bigint-domain fixes: an unbounded weight-sum, and a numeric-division precision bug D-125 did not touch (P120)
+
+> Renumbered from D-126 by P123 (2026-09-12): D-126 was already taken by
+> `docs/DECISIONS.md` on `fix/p119-scanner-browser-chaos-phase3` (PR #100,
+> opened 2026-09-11T21:59:54Z) for the `VisualRecognitionClient.dispose()`/worker-crash decision
+> (P116) — that PR predates this one (PR #101, opened 2026-09-12T00:40:22Z), so the scanner ID is
+> preserved and this financial decision moves to the next globally-free ID, D-127. See
+> `docs/DECISIONS.md`'s note under D-125 and HANDOVER.md for the collision record.
+
+**2026-09-11 · Accepted**
+
+P120 built the large-scale property campaign D-125 (P117) disclosed as not yet done: 100,000+
+randomly generated `(total, weights)` cases compared against an independent BigInt reference
+(`src/domain/allocation.ts`'s `allocate()` — a from-scratch TypeScript port of the documented
+largest-remainder-method contract, not a copy of the plpgsql source; its native BigInt arithmetic
+has no intermediate-overflow path to share a bug with) via one batched SQL statement per run rather
+than one RPC call per case, making 100,000 cases a ~10-second local run instead of the ~30-80
+minutes per-case HTTP round trips would take. Two distinct real bugs surfaced, neither reachable by
+D-125's own boundary probe (which tested specific values on `create_purchase`, not this function's
+full declared domain directly):
+
+1. **Weight-sum overflow.** `v_sum_weights := v_sum_weights + p_weights[i]` was still plain bigint
+   arithmetic after D-125 — summing multiple near-bigint-max weights overflows even though D-125
+   already widened the multiplication step. Reproduced directly:
+   `allocate_largest_remainder(100, ARRAY[9223372036854775807, 9223372036854775807])` raised
+   `bigint out of range`. **Reachable through the public RPC surface**: `create_purchase` places no
+   upper bound on a line's `unit_price_minor` before it becomes a shipping/customs/discount
+   allocation weight, so two extreme-but-otherwise-ordinary purchase lines would crash with this
+   opaque error instead of a clean rejection (no data corruption either way — the transaction still
+   aborts atomically). Fixed: `v_sum_weights` (and `v_effective_sum`) become `numeric`.
+2. **Numeric-division precision (the more serious one).** Postgres's `numeric` `/` operator does
+   NOT always return the mathematically exact quotient for large operands — it rounds to a computed
+   display scale — so `floor(a::numeric / b::numeric)` was floor-ing an already-wrong, rounded-up
+   value. Reproduced directly:
+   `(219581130708100988383099213597811148::numeric / 1215407149863084914::numeric)` returns
+   `180664669228609283`, while `div(...)` (Postgres's exact truncating integer division for
+   numeric) returns the correct `180664669228609282`, confirmed against the independent BigInt
+   oracle. This was present in D-125's own fix from the start, not introduced by fix 1 above — the
+   property sweep is what finally exercised operands large enough to expose it. Consequence: not
+   just a misallocated line, but **invariant F6 itself broke** in 17 of an initial 5,000-case run
+   (`sum(shares) <> total`) — large enough rounding drift pushed the sum of floors past the true
+   total, making the "distribute the remaining units" step run backward. Fixed: `div()` replaces
+   `/` + `floor()`; `v_remainders` becomes `numeric[]` (a remainder is bounded by the — now
+   unbounded — weight sum, not by `total`, so it needed the same widening fix 1 gave the sum
+   itself; it is only ever used to rank lines for the tie-break, never returned to the caller).
+   `v_floors` stays `bigint[]`: `floor(total*w_i/sum) <= total` always, and `total` is
+   bigint-bounded by the function's own signature, so that direction was never at risk.
+
+Both fixes land in one migration (`20260911130000_p120_allocate_largest_remainder_weight_sum_
+overflow_fix.sql`), `CREATE OR REPLACE` — the signature is unchanged, so every caller
+(`allocate_largest_remainder_signed`, `create_purchase`, `create_sale`) picks up both fixes with no
+call-site change. No behavior change for any input that previously computed a correct result.
+
+**Verified:** two new regression cases in `tests/db/m8_purchase_ledger.test.ts` reproducing each
+bug exactly against the live database; the 100,000-case property campaign re-run twice (different
+seeds, 200,000 cases total) at zero mismatches / zero `wrong_sum` / zero function errors / zero
+negative shares after the fix, versus 486 mismatches, 17 `wrong_sum` violations and 1,049 function
+errors in the first 5,000-case run before it. Full `pnpm test:db` (618/619, unchanged), M13
+adversarial (55/62 + 7 opt-in skipped, unchanged) and `tests/m16-independent` (53/53, unchanged)
+all re-run green after the migration.

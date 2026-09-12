@@ -323,13 +323,33 @@ async function deleteNonCascadingUserRows(service: TestClient, userId: string): 
 export async function deleteSyntheticUser(service: TestClient, userId: string): Promise<void> {
   await deleteNonCascadingUserRows(service, userId)
 
-  const { error } = await service.auth.admin.deleteUser(userId)
-  // Idempotent by design (an afterAll can legitimately run more than once against a user already
-  // gone) — only a REAL failure (permission, a blocking FK the list above missed) should fail the
-  // suite, per P107's finding that this call discarded its result entirely.
-  if (error && error.status !== 404) {
-    throw new Error(`failed to delete synthetic user ${userId}: ${error.message}`)
+  // P120: the admin DELETE cascades through every remaining FK to auth.users (including
+  // portfolio_recompute_queue), and this project's own M12 cron worker
+  // (drain_portfolio_recompute_queue) can be mid-transaction against the SAME synthetic user's
+  // queue row at the exact moment a test's afterAll runs this delete — reproduced for real
+  // locally (`ERROR: deadlock detected (SQLSTATE 40P01)`, Postgres log: "Process ... DELETE FROM
+  // users ... blocked by process ...  select public.drain_portfolio_recompute_queue(20)").
+  // Postgres's own deadlock detector always aborts one side cleanly (no corruption either way) —
+  // a deadlock is by definition transient, so a bounded retry is the correct, standard handling,
+  // not a workaround for a logic bug. Every other error path (403 permission, a genuinely
+  // blocking FK the list above missed) still fails fast and is never retried.
+  const maxAttempts = 3
+  let lastError: { status?: number; message: string } | null = null
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const { error } = await service.auth.admin.deleteUser(userId)
+    // Idempotent by design (an afterAll can legitimately run more than once against a user
+    // already gone) — only a REAL failure (permission, a blocking FK the list above missed)
+    // should fail the suite, per P107's finding that this call discarded its result entirely.
+    if (!error || error.status === 404) {
+      return
+    }
+    lastError = error
+    if (error.status !== 500 || attempt === maxAttempts) {
+      break
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100 * attempt))
   }
+  throw new Error(`failed to delete synthetic user ${userId}: ${lastError?.message}`)
 }
 
 /**

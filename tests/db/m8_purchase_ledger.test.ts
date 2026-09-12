@@ -57,6 +57,7 @@ async function callCreate(client: TestClient, args: Record<string, unknown>) {
 interface PurchaseLineRow {
   id: string
   line_type: string
+  description: string | null
   spend_class: string
   quantity: number
   unit_price_minor: number
@@ -72,7 +73,7 @@ async function linesFor(purchaseId: string): Promise<PurchaseLineRow[]> {
   const { data, error } = await service
     .from('purchase_lines')
     .select(
-      'id, line_type, spend_class, quantity, unit_price_minor, line_total_minor, allocated_shipping_minor, allocated_customs_minor, allocated_discount_minor, attributable_cost_minor, attributable_cost_nok_minor',
+      'id, line_type, description, spend_class, quantity, unit_price_minor, line_total_minor, allocated_shipping_minor, allocated_customs_minor, allocated_discount_minor, attributable_cost_minor, attributable_cost_nok_minor',
     )
     .eq('purchase_id', purchaseId)
     .order('created_at')
@@ -103,6 +104,93 @@ describe('allocate_largest_remainder: SQL/TypeScript parity', () => {
   }
 })
 
+describe('allocate_largest_remainder: no bigint*bigint overflow at scale (P117)', () => {
+  // The original body computed `p_total * v_effective[i]` in plain bigint arithmetic before
+  // dividing — once that intermediate product exceeded bigint's ~9.22e18 ceiling, Postgres
+  // raised "bigint out of range" even though p_total, every weight and the eventual result are
+  // all well inside bigint's range. Reproduced for real via a single-line EUR purchase with a
+  // manual FX rate (unit_price_minor 2_147_483_647 -> total_nok_minor ~24.78e9, allocated across
+  // one line whose weight is 2_147_483_647 — the product of those two is ~5.3e19). Values are
+  // passed as strings so the JS test client's own JSON encoding never rounds them on the way in.
+  // Every case here is chosen so each individual RESULT share stays under 2^53-1: PostgREST
+  // serializes a `bigint[]` return as plain JSON numbers, so a share at or above 2^53 would
+  // silently round on the way back through this JS test client's own JSON.parse — a real, but
+  // separate and unrelated, response-side "hidden JS Number conversion" limitation (confirmed by
+  // hand: allocate_largest_remainder('922337203685477500', [3,7]) computes the correct shares
+  // server-side but the JS client observes them off by a few units). Out of scope here: fixing it
+  // would mean re-typing every bigint RPC response app-wide, for a magnitude (single-digit
+  // quintillions of minor units) FINANCIAL_MODEL.md's domain never approaches.
+  const bigCases: { total: bigint; weights: bigint[] }[] = [
+    { total: 24_781_961_286n, weights: [2_147_483_647n] }, // the exact reproduction above
+    { total: 9_007_199_254_740_991n, weights: [9_007_199_254_740_991n] }, // 2^53-1, single weight
+    {
+      total: 9_007_199_254_740_991n,
+      weights: [9_007_199_254_740_991n, 9_007_199_254_740_991n],
+    }, // two large equal weights: exercises the tie-break path at scale, not just a single-weight passthrough
+  ]
+
+  for (const { total, weights } of bigCases) {
+    it(`matches allocate(${total}, [${weights.join(',')}]) without overflowing`, async () => {
+      const expected = allocate(total, weights).map(String)
+      const { data, error } = await clientA.rpc('allocate_largest_remainder', {
+        p_total: total.toString(),
+        p_weights: weights.map(String),
+      })
+      expect(error).toBeNull()
+      expect((data as string[]).map(String)).toEqual(expected)
+      // Invariant F6: the shares sum exactly back to the total, even at this scale.
+      const sum = (data as string[]).reduce((acc, v) => acc + BigInt(v), 0n)
+      expect(sum).toBe(total)
+    })
+  }
+})
+
+describe('allocate_largest_remainder: weight-sum overflow and numeric-division precision (P120)', () => {
+  // D-127 (renumbered from D-126 by P123 to resolve a collision with PR #100's scanner D-126):
+  // two DISTINCT bugs found by a 100,000-case random property sweep against the
+  // independent BigInt oracle (src/domain/allocation.ts's `allocate()`), neither caught by
+  // P117's own boundary probe because both need operands this specific combination of large.
+  it('sums many near-bigint-max weights without overflowing (v_sum_weights was plain bigint)', async () => {
+    // Reachable through the real RPC surface, not just synthetic fuzz: create_purchase places no
+    // upper bound on a line's unit_price_minor before it becomes a shipping/customs/discount
+    // allocation weight, so two lines each near bigint max would have crashed this with an opaque
+    // "bigint out of range" instead of a clean rejection.
+    const total = 100n
+    const weights = [9_223_372_036_854_775_807n, 9_223_372_036_854_775_807n]
+    const expected = allocate(total, weights).map(String)
+    const { data, error } = await clientA.rpc('allocate_largest_remainder', {
+      p_total: total.toString(),
+      p_weights: weights.map(String),
+    })
+    expect(error).toBeNull()
+    expect((data as string[]).map(String)).toEqual(expected)
+  })
+
+  it('combined weight-sum + floor-precision case: crashed before this fix, matches the oracle after it', async () => {
+    // Before this fix, this exact input crashed with "bigint out of range" inside the v_remainders
+    // cast (weight sum ~1.8e19 exceeds plain bigint) — confirmed directly against a pg_temp copy
+    // of the pre-fix function body. Also independently confirms Postgres's numeric `/` returns a
+    // rounded (not exact) quotient at this magnitude: `floor(123456789012345::numeric *
+    // 9000000000009768606::numeric / 18000000000009768625::numeric)` alone returns 61728394506206,
+    // one more than the true `div()` value of 61728394506205 — though for this specific pair the
+    // largest-remainder redistribution step happens to reach the same final answer either way, so
+    // this case's real regression value is the crash-vs-succeeds difference, not a differing
+    // final allocation. `total` is kept under 2^53 so every resulting share is too — clear of the
+    // SEPARATE, deliberately-not-fixed PostgREST bigint JSON precision limit (D-125 finding 1).
+    const total = 123_456_789_012_345n
+    const weights = [9_000_000_000_009_768_606n, 9_000_000_000_000_000_019n]
+    const expected = allocate(total, weights).map(String)
+    const { data, error } = await clientA.rpc('allocate_largest_remainder', {
+      p_total: total.toString(),
+      p_weights: weights.map(String),
+    })
+    expect(error).toBeNull()
+    expect((data as string[]).map(String)).toEqual(expected)
+    const sum = (data as string[]).reduce((acc, v) => acc + BigInt(v), 0n)
+    expect(sum).toBe(total) // invariant F6
+  })
+})
+
 describe('E3 — mixed receipt with shipping, reproduced exactly in the database', () => {
   it('GPO = CS + HS and every allocated share matches FINANCIAL_MODEL.md §8 to the øre', async () => {
     const { data: purchase, error } = await callCreate(clientA, {
@@ -130,8 +218,16 @@ describe('E3 — mixed receipt with shipping, reproduced exactly in the database
     expect(purchase?.total_minor).toBe(140000)
     expect(purchase?.total_nok_minor).toBe(140000)
 
+    // Matched by line_type, never by array position: all three lines are created inside one
+    // create_purchase transaction and therefore share one identical created_at (Postgres now()
+    // is transaction-scoped) — `.order('created_at')` has no tiebreaker among them, so which
+    // physical row a query returns first is a query-plan detail, not a guarantee. It flips
+    // under enough surrounding data (proven: this exact assertion failed when run inside the
+    // full test:db suite and passed in isolation, both against the identical fixture).
     const lines = await linesFor(purchase!.id)
-    const [etb, card, sleeves] = lines
+    const etb = lines.find((l) => l.line_type === 'sealed')
+    const card = lines.find((l) => l.line_type === 'card')
+    const sleeves = lines.find((l) => l.line_type === 'accessory')
     expect(etb?.allocated_shipping_minor).toBe(5385)
     expect(card?.allocated_shipping_minor).toBe(3846)
     expect(sleeves?.allocated_shipping_minor).toBe(769)
@@ -194,6 +290,40 @@ describe('E10 — foreign-currency purchase, frozen NOK conversion', () => {
   })
 })
 
+describe('P117: a large foreign-currency single-line purchase does not overflow the allocator', () => {
+  it('unit_price_minor near 2^31 with a real FX rate used to raise "bigint out of range"', async () => {
+    // Before the P117 fix, allocate_largest_remainder computed total_nok_minor * weight in plain
+    // bigint arithmetic (~5.3e19 here) before dividing, which overflows bigint (~9.22e18 max)
+    // even though every actual input and output value is well inside bigint's range. Both values
+    // below stay under 2^53, so this is a plain end-to-end assertion, no string/BigInt plumbing
+    // needed to dodge JSON precision loss.
+    const { data: purchase, error } = await callCreate(clientA, {
+      p_purchased_on: today,
+      p_currency: 'EUR',
+      p_fx_rate_to_nok: '11.54000000',
+      p_fx_rate_date: today,
+      p_fx_source: 'manual',
+      p_lines: [
+        {
+          line_type: 'card',
+          card_variant_id: seedCatalog.pikachuVariantId,
+          condition: 'NM',
+          quantity: 1,
+          unit_price_minor: 2147483647,
+        },
+      ],
+    })
+    expect(error).toBeNull()
+    expect(purchase?.total_minor).toBe(2147483647)
+    // round(2147483647 * 11.54) = round(24781961286.38) = 24781961286.
+    expect(purchase?.total_nok_minor).toBe(24781961286)
+
+    const lines = await linesFor(purchase!.id)
+    // Single line, no shipping/customs/discount: the whole NOK total is attributed to it exactly.
+    expect(lines[0]?.attributable_cost_nok_minor).toBe(24781961286)
+  })
+})
+
 describe('a zero-decimal currency (JPY) is never treated as if it had cents', () => {
   it('stores exact JPY minor units, not ×100', async () => {
     const { data: purchase, error } = await callCreate(clientA, {
@@ -225,8 +355,15 @@ describe('zero-subtotal edge: a shipping-only purchase splits equally', () => {
       ],
     })
     expect(error).toBeNull()
+    // Matched by description, never by array position (see the E3 test above for why
+    // `.order('created_at')` cannot recover input order among lines from one transaction).
+    // allocate_largest_remainder's tie-break is by array index (FINANCIAL_MODEL.md §4.2): the
+    // first line in p_lines wins ties, so "Free sample A" (index 0) gets the extra øre.
     const lines = await linesFor(purchase!.id)
-    expect(lines.map((l) => l.allocated_shipping_minor)).toEqual([500, 499])
+    const sampleA = lines.find((l) => l.description === 'Free sample A')
+    const sampleB = lines.find((l) => l.description === 'Free sample B')
+    expect(sampleA?.allocated_shipping_minor).toBe(500)
+    expect(sampleB?.allocated_shipping_minor).toBe(499)
     expect(purchase?.total_minor).toBe(999)
   })
 })
