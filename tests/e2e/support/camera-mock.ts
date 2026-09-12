@@ -108,24 +108,39 @@ function installInPage(options: Required<CameraMockOptions>): void {
     let hue = 0
     const intervalMs = 1000 / options.fps
     let lastDraw = 0
+    function paint(): void {
+      hue = (hue + 5) % 360
+      ctx!.fillStyle = `hsl(${String(hue)}, 60%, 45%)`
+      ctx!.fillRect(0, 0, canvas.width, canvas.height)
+      ctx!.fillStyle = 'white'
+      ctx!.fillRect(
+        canvas.width * 0.1,
+        canvas.height * 0.1,
+        canvas.width * 0.8,
+        canvas.height * 0.8,
+      )
+    }
     function tick(now: number): void {
       if (!state.canvases.has(canvas)) return
       if (now - lastDraw >= intervalMs) {
         lastDraw = now
-        hue = (hue + 5) % 360
-        ctx!.fillStyle = `hsl(${String(hue)}, 60%, 45%)`
-        ctx!.fillRect(0, 0, canvas.width, canvas.height)
-        ctx!.fillStyle = 'white'
-        ctx!.fillRect(
-          canvas.width * 0.1,
-          canvas.height * 0.1,
-          canvas.width * 0.8,
-          canvas.height * 0.8,
-        )
+        paint()
       }
       const handle = requestAnimationFrame(tick)
       state.rafHandles.set(canvas, handle)
     }
+    // Painted SYNCHRONOUSLY before `captureStream()` is ever called (see `createFakeStream`
+    // below) rather than waiting for the first `requestAnimationFrame` tick. A real camera's
+    // first frame never depends on this PAGE's own rAF budget; this mock's did, and
+    // `requestAnimationFrame` callbacks are exactly the kind of work a browser deprioritizes
+    // under heavy main-thread/CPU contention (observed for real on GitHub Actions CI, late in the
+    // full 336-test non-auth E2E gate with 6 parallel workers: `openEnvironmentCamera()` resolved
+    // promptly, but the video element's `loadeddata` event — which needs the FIRST captured
+    // stream frame to have real pixel data — did not fire within a generous 15s budget). Painting
+    // once here means `captureStream()`'s very first frame already has real content no matter how
+    // delayed the first rAF tick is; the ongoing loop below still runs for anything that cares
+    // about visible motion (nothing in this pipeline does — see this file's own header).
+    paint()
     const handle = requestAnimationFrame(tick)
     state.rafHandles.set(canvas, handle)
   }
