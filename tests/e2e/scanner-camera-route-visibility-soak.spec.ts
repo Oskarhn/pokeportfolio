@@ -155,14 +155,19 @@ test.describe('scanner camera route + visibility soak (P119 §10/§11)', () => {
       await page.getByRole('button', { name: 'Start camera' }).click()
       const shutter = page.getByRole('button', { name: 'Capture card' })
       // Corrected diagnosis (P126): this button is NOT gated by DINOv2/OCR analysis — it enables
-      // as soon as the reducer reaches the 'camera' step (ScannerPage.tsx: `disabled={state.step
-      // !== 'camera'}`), which happens the instant openEnvironmentCamera() resolves. The real
-      // WebKit-only failures here (P125) were `openEnvironmentCamera()` itself never resolving,
-      // because it used to `await video.play()` before returning — and on GitHub Actions'
-      // Linux-hosted WebKit against Playwright's mocked canvas.captureStream() source, that
-      // Promise could render live frames while never settling at all. camera-session.ts no longer
-      // awaits play() before establishing session ownership (see its own comment), so this wait is
-      // back to a plain acquisition-latency budget, not an ML-inference one.
+      // once the reducer reaches the 'camera' step AND the preview video's own `loadeddata` event
+      // has fired (ScannerPage.tsx: `disabled={state.step !== 'camera' || !previewFrameReady}`).
+      // The real WebKit-only failures here (P125) were `openEnvironmentCamera()` itself never
+      // resolving, because it used to `await video.play()` before returning — and on GitHub
+      // Actions' Linux-hosted WebKit against Playwright's mocked canvas.captureStream() source,
+      // that Promise could render live frames while never settling at all. camera-session.ts no
+      // longer awaits play() before establishing session ownership (see its own comment and
+      // D-128), so this wait is back to a plain acquisition-plus-first-frame budget, not an
+      // ML-inference one. `previewFrameReady` (not just the reducer step) is what closed a second,
+      // narrower race this same fix introduced: without it, the shutter could enable and be
+      // tapped before the video element had ANY decoded frame, making `captureVideoFrame()`
+      // refuse with "The camera preview is not ready yet." — observed for real on mobile-iphone
+      // once the first race was fixed (`Capture failed. The photo could not be captured.` alert).
       await expect(shutter).toBeEnabled({ timeout: 15_000 })
       await shutter.click()
       await page.getByRole('button', { name: 'Use photo' }).click()

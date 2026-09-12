@@ -205,6 +205,21 @@ export function ScannerPage() {
     }
     const video = videoRef.current
     if (video === null || sessionRef.current !== null) return
+    // P126: session ownership (camera-session.ts) is deliberately established without waiting for
+    // `video.play()` to settle — that Promise can, on some engines, never settle at all even while
+    // frames are genuinely rendering (see camera-session.ts's own comment and D-128). That means
+    // `CAMERA_STARTED` alone is no longer proof that the preview has a usable pixel to capture, so
+    // the shutter's readiness is tracked as its own reducer field (`previewFrameReady`) instead of
+    // riding on `state.step` alone — reset to false by every action that (re)enters
+    // 'starting-camera' (a fresh acquisition attempt), and flipped true only by the video
+    // element's own `loadeddata` event below, which fires once real frame data exists regardless
+    // of whether `play()`'s Promise ever settles. Dispatched from a DOM event callback, not
+    // synchronously in this effect's body, so this is an ordinary event-driven dispatch like any
+    // other in this file — not the react-hooks/set-state-in-effect shape.
+    const handleLoadedData = () => {
+      dispatch({ type: 'PREVIEW_FRAME_READY' })
+    }
+    video.addEventListener('loadeddata', handleLoadedData)
     const generation = cameraGuardRef.current.begin()
     let cancelled = false
     void openEnvironmentCamera(video, undefined, () => {
@@ -227,6 +242,7 @@ export function ScannerPage() {
       })
     return () => {
       cancelled = true
+      video.removeEventListener('loadeddata', handleLoadedData)
     }
   }, [cameraWanted])
 
@@ -726,7 +742,7 @@ export function ScannerPage() {
             <button
               type="button"
               onClick={handleShutter}
-              disabled={state.step !== 'camera'}
+              disabled={state.step !== 'camera' || !state.previewFrameReady}
               aria-label="Capture card"
               className="flex size-16 items-center justify-center rounded-full border-4 border-slate-950 bg-white shadow-lg transition-transform active:scale-95 motion-reduce:transition-none disabled:opacity-50"
             >

@@ -111,6 +111,58 @@ describe('scanner state machine — camera start discipline', () => {
     expect(exited.step).toBe('intro')
     expect(exited.batch).toHaveLength(1)
   })
+
+  describe('previewFrameReady (P126/D-128): the shutter is gated on an actual decoded frame, not merely on step === "camera"', () => {
+    it('starts false, and CAMERA_STARTED alone does not make it true', () => {
+      expect(initialScannerState.previewFrameReady).toBe(false)
+      const started = reduce(reduce(initialScannerState, { type: 'START_CAMERA_PRESSED' }), {
+        type: 'CAMERA_STARTED',
+      })
+      expect(started.step).toBe('camera')
+      expect(started.previewFrameReady).toBe(false)
+    })
+
+    it('PREVIEW_FRAME_READY flips it true, in either order relative to CAMERA_STARTED', () => {
+      const readyBeforeStarted = reduce(
+        reduce(reduce(initialScannerState, { type: 'START_CAMERA_PRESSED' }), {
+          type: 'PREVIEW_FRAME_READY',
+        }),
+        { type: 'CAMERA_STARTED' },
+      )
+      expect(readyBeforeStarted.previewFrameReady).toBe(true)
+
+      const readyAfterStarted = reduce(
+        reduce(reduce(initialScannerState, { type: 'START_CAMERA_PRESSED' }), {
+          type: 'CAMERA_STARTED',
+        }),
+        { type: 'PREVIEW_FRAME_READY' },
+      )
+      expect(readyAfterStarted.previewFrameReady).toBe(true)
+    })
+
+    it('a fresh acquisition (START_CAMERA_PRESSED, RETAKE_PRESSED, SCAN_NEXT_PRESSED) resets it to false, even if the previous session had reached ready', () => {
+      const ready = reduce(
+        reduce(reduce(initialScannerState, { type: 'START_CAMERA_PRESSED' }), {
+          type: 'CAMERA_STARTED',
+        }),
+        { type: 'PREVIEW_FRAME_READY' },
+      )
+      expect(ready.previewFrameReady).toBe(true)
+
+      expect(reduce(ready, { type: 'START_CAMERA_PRESSED' }).previewFrameReady).toBe(false)
+
+      const readyThenCaptured = reduce(ready, { type: 'CAPTURE_SUCCEEDED' })
+      expect(reduce(readyThenCaptured, { type: 'RETAKE_PRESSED' }).previewFrameReady).toBe(false)
+
+      const scannedState = atScanned()
+      expect(scannedState.previewFrameReady).toBe(false)
+      const readyAtScanned = reduce(reduce(scannedState, { type: 'SCAN_NEXT_PRESSED' }), {
+        type: 'CAMERA_STARTED',
+      })
+      const readyThenNext = reduce(readyAtScanned, { type: 'PREVIEW_FRAME_READY' })
+      expect(reduce(readyThenNext, { type: 'SCAN_NEXT_PRESSED' }).previewFrameReady).toBe(false)
+    })
+  })
 })
 
 describe('scanner state machine — capture and analysis honesty', () => {

@@ -5565,30 +5565,46 @@ and this call has won any open-generation race — strictly BEFORE playback is e
 rejected `play()` Promise remains non-fatal (unchanged from before); a synchronously-thrown
 `play()` is now equally non-fatal (`try`/`catch` around the call); and a `play()` that never
 settles at all no longer blocks anything, because nothing downstream of it depends on its
-resolution. `captureVideoFrame()` (`capture.ts`) already refuses a frame while
-`video.videoWidth === 0`/`videoHeight === 0`, so an unusually fast shutter tap before the first
-real frame renders was already a handled, recoverable `CAPTURE_FAILED` case rather than a black
-photo — session readiness and preview-frame readiness are deliberately kept as two separate
-concerns (prompt's own §31 "narrowest defensible design"): no new reducer state, no new readiness
-timer.
+resolution.
+
+This deliberately decouples THREE previously-conflated events (prompt's own §12): stream
+ownership, playback initiation, and usable pixels being available. The first real GitHub Actions
+run against this fix (34721557413) proved that decoupling had a real second-order consequence:
+`CAMERA_STARTED` (and therefore the shutter's `disabled` state) now flips the instant ownership is
+established, which on mobile-iphone (WebKit) can genuinely be BEFORE the video element has decoded
+its first frame — `captureVideoFrame()`'s existing `videoWidth === 0`/`videoHeight === 0` guard
+caught this honestly (`Capture failed. The photo could not be captured. Try again.`) rather than
+producing a black photo, but a shutter a real user can tap and immediately have refused is still a
+regression, not an acceptable one. `ScannerPage.tsx` therefore gates the shutter on a SECOND,
+separate boolean, `previewFrameReady` — plain local UI state, not folded into the reducer — set by
+the video element's own `loadeddata` event (fired once real frame data exists, independent of
+whether `play()`'s Promise ever settles). Session/hardware-disconnect readiness and
+preview-pixel readiness are two genuinely different questions with two genuinely different
+answers; keeping them as two small, separately-owned booleans (an internal generation counter in
+`camera-session.ts`; one `useState` in `ScannerPage.tsx`) is the narrowest fix for each, rather
+than force-fitting both through one signal that was never right for either.
 
 **Alternatives considered.** Racing `play()` against a bounded timeout
 (`Promise.race([video.play(), sleep(N)])`) was rejected outright — it converts an infinite hang
 into a long, arbitrary one and still delays session ownership (and the `ended` listener) for no
-reason tied to actual readiness. Waiting for a `loadeddata`/`canplay` media event instead of
-`play()`'s own Promise was considered and rejected as unnecessary complexity: the existing
-`videoWidth`/`videoHeight` guard in `captureVideoFrame()` already provides the only readiness
-guarantee capture actually needs, so gating session ownership on a second readiness signal would
-just be two mechanisms proving the same thing.
+reason tied to actual readiness. Trusting `captureVideoFrame()`'s existing `videoWidth`/
+`videoHeight` guard alone (this decision's own first draft) was tried and disproven by real CI
+within the same session: it turns an unready tap into a correctly-labelled but still user-visible
+failure instead of preventing it, which is strictly worse than gating the button in the first
+place once a cheap, real readiness signal (`loadeddata`) exists.
 
 **Consequences.** Ownership and hardware-disconnect recovery are now provably independent of
 whatever a given browser engine's autoplay implementation does — this is the durable rule future
 scanner lifecycle changes must preserve: `HTMLMediaElement.play()`'s Promise is a playback-start
-signal only, never a readiness gate for anything else. The two previously-inflated E2E timeouts
-this decision makes obsolete (45s shutter-enable, 30s hardware-disconnect recovery) are reduced
-back to 15s/10s respectively — see the corrected comments in
-`tests/e2e/scanner-camera-route-visibility-soak.spec.ts` and
-`tests/e2e/scanner-camera-permission-matrix.spec.ts`.
+signal only, never a readiness gate for anything else, and NEITHER is `state.step === 'camera'`
+alone a proof of usable pixels — that is `previewFrameReady`'s job specifically. The two
+previously-inflated E2E timeouts this decision makes obsolete (45s shutter-enable, 30s
+hardware-disconnect recovery) are reduced back to 15s/10s respectively — see the corrected
+comments in `tests/e2e/scanner-camera-route-visibility-soak.spec.ts` and
+`tests/e2e/scanner-camera-permission-matrix.spec.ts`. `ScannerState` gained one field
+(`previewFrameReady`) and one action (`PREVIEW_FRAME_READY`); every existing transition into
+`starting-camera` was reviewed and updated to reset it, so a future new entry point into that step
+that forgets the reset is the one thing worth checking first if this regresses again.
 
 **Verified:** a never-settling `play()` reproduced the exact hang against the pre-fix code (`tests
 /ui/scanner-camera.test.ts`'s new "P126" describe block — 6 new cases, each timing out at 3s under
@@ -5596,10 +5612,26 @@ the OLD implementation via a temporary mutation, all passing promptly post-fix):
 longer blocked, the `ended` listener still fires exactly once and stops every track, `stop()`
 during a still-pending `play()` detaches cleanly with no later resurrection, a synchronous
 `play()` throw is non-fatal, and a superseded call's own pending `play()` settling late (resolve
-or reject) never disturbs whichever session actually won. Full local gate re-run green:
-typecheck/lint (0 errors)/format clean, `pnpm test` 1508/1509 (1 pre-existing skip, up from
-1502/1503 — the 6 new cases), production build green (scanner index unchanged,
-`f25fc05d569b7cca`). Both previously-failing E2E cases plus the full non-auth desktop-chromium
-suite (16/16 in the two affected spec files, including the previously serial-blocked 1000-cycle
-visibility soak actually running to completion) pass locally; the authoritative mobile-iphone
-(WebKit) result is GitHub Actions CI — see this branch's final CI run for the confirmed outcome.
+or reject) never disturbs whichever session actually won. New reducer cases in
+`tests/ui/scanner-state.test.ts` pin `previewFrameReady`'s own contract: false until
+`PREVIEW_FRAME_READY`, settable in either order relative to `CAMERA_STARTED`, and reset to false
+by every fresh-acquisition transition (`START_CAMERA_PRESSED`/`RETAKE_PRESSED`/
+`SCAN_NEXT_PRESSED`) even after a previous session had already reached ready.
+
+This decision went through two real rounds against actual GitHub Actions CI, not one — the first
+push (removing the `await video.play()` block alone) fixed both ORIGINAL P125 failures on
+mobile-iphone but immediately exposed a second, narrower race in the very next CI run
+(34721557413): the shutter could now enable and be tapped before the video element had decoded
+ANY frame, which `captureVideoFrame()`'s existing `videoWidth`/`videoHeight` guard caught
+correctly but only as a user-visible "Capture failed. The photo could not be captured. Try again."
+— confirmed via that run's own `playwright-report` trace, not guessed. The `previewFrameReady`
+mechanism above closes that second race. Full local gate re-run green after both rounds:
+typecheck/lint (0 errors)/format clean, `pnpm test` up to 1509/1512 (1508/1509 after round one,
++3 reducer cases in round two; 2 unrelated pre-existing failures in `tests/ui/opening-draft.test.ts`
+were observed and diagnosed as a genuine local/UTC date-boundary mismatch in that file's OWN test
+helper — nothing to do with this branch's camera code, not touched here), production build green
+throughout (scanner index unchanged, `f25fc05d569b7cca`). Both previously-failing E2E cases plus
+the full non-auth desktop-chromium suite pass locally after each round, including the previously
+serial-blocked 1000-cycle visibility soak actually running to completion; the authoritative
+mobile-iphone (WebKit) result is GitHub Actions CI — see this branch's final CI run for the
+confirmed outcome.

@@ -45,6 +45,13 @@ export interface ScannerState {
    *  starts only after explicit action". Never set by anything else. */
   cameraRequested: boolean
   cameraError: { title: string; message: string } | null
+  /** P126/D-128: true once the live preview has an actual decoded frame (the video element's own
+   *  `loadeddata` event), independent of whether `openEnvironmentCamera()`'s internal
+   *  `video.play()` call has settled — that Promise can, on some engines, never settle even while
+   *  frames genuinely render. The shutter is gated on this in ADDITION to `step === 'camera'`, not
+   *  in place of it — session-live and frame-ready are separate questions. Reset to false by every
+   *  transition into 'starting-camera' (a fresh acquisition attempt begins). */
+  previewFrameReady: boolean
   captureError: { title: string; message: string } | null
   analysisError: { title: string; message: string } | null
   analysis: ScannerAnalysis | null
@@ -82,6 +89,7 @@ export const initialScannerState: ScannerState = {
   step: 'intro',
   cameraRequested: false,
   cameraError: null,
+  previewFrameReady: false,
   captureError: null,
   analysisError: null,
   analysis: null,
@@ -110,6 +118,7 @@ export type ScannerAction =
   | { type: 'CAMERA_STARTED' }
   | { type: 'CAMERA_FAILED'; error: { title: string; message: string } }
   | { type: 'CAMERA_EXITED' }
+  | { type: 'PREVIEW_FRAME_READY' }
   | { type: 'CAPTURE_SUCCEEDED' }
   | { type: 'CAPTURE_FAILED'; error: { title: string; message: string } }
   | { type: 'RETAKE_PRESSED' }
@@ -160,6 +169,7 @@ export function scannerReducer(state: ScannerState, action: ScannerAction): Scan
         step: 'starting-camera',
         cameraRequested: true,
         cameraError: null,
+        previewFrameReady: false,
       }
     case 'CAMERA_STARTED':
       return { ...state, step: 'camera', cameraError: null, captureError: null }
@@ -167,6 +177,8 @@ export function scannerReducer(state: ScannerState, action: ScannerAction): Scan
       return { ...state, step: 'intro', cameraError: action.error }
     case 'CAMERA_EXITED':
       return { ...state, step: 'intro' }
+    case 'PREVIEW_FRAME_READY':
+      return { ...state, previewFrameReady: true }
     case 'CAPTURE_SUCCEEDED':
       return { ...state, step: 'review', captureError: null }
     case 'CAPTURE_FAILED':
@@ -174,7 +186,7 @@ export function scannerReducer(state: ScannerState, action: ScannerAction): Scan
     case 'RETAKE_PRESSED':
       // Restarting the camera is the retake path; the old capture was already disposed by the
       // page before dispatching this.
-      return { ...state, step: 'starting-camera', analysisError: null }
+      return { ...state, step: 'starting-camera', analysisError: null, previewFrameReady: false }
     case 'USE_PHOTO_PRESSED':
       return { ...state, step: 'analyzing', analysisError: null }
     case 'ANALYSIS_COMPLETED': {
@@ -303,7 +315,7 @@ export function scannerReducer(state: ScannerState, action: ScannerAction): Scan
         confirmVariantId: null,
       }
     case 'SCAN_NEXT_PRESSED':
-      return { ...state, step: 'starting-camera', cameraRequested: true }
+      return { ...state, step: 'starting-camera', cameraRequested: true, previewFrameReady: false }
     case 'REVIEW_BATCH_PRESSED':
       return { ...state, step: 'batch-review', commitError: null }
     case 'BATCH_ITEM_QUANTITY_CHANGED': {
