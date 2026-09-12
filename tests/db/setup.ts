@@ -333,7 +333,14 @@ export async function deleteSyntheticUser(service: TestClient, userId: string): 
   // a deadlock is by definition transient, so a bounded retry is the correct, standard handling,
   // not a workaround for a logic bug. Every other error path (403 permission, a genuinely
   // blocking FK the list above missed) still fails fast and is never retried.
-  const maxAttempts = 3
+  //
+  // P125: the ~10k-lot export scale audit's own teardown hit a DIFFERENT transient shape twice in
+  // real GitHub Actions CI — "Processing this request timed out, please retry after a moment" —
+  // which is GoTrue's own generic slow-request message, not the deadlock's SQLSTATE 40P01 path,
+  // and can outlast the original 100-200ms backoff when the cascade genuinely has ~10k rows to
+  // remove under CI's own resource variance. Retries now also cover any error whose message
+  // names this timeout shape (not just status 500), with a longer, still-bounded backoff.
+  const maxAttempts = 5
   let lastError: { status?: number; message: string } | null = null
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const { error } = await service.auth.admin.deleteUser(userId)
@@ -344,10 +351,11 @@ export async function deleteSyntheticUser(service: TestClient, userId: string): 
       return
     }
     lastError = error
-    if (error.status !== 500 || attempt === maxAttempts) {
+    const isRetryable = error.status === 500 || /timed out/i.test(error.message)
+    if (!isRetryable || attempt === maxAttempts) {
       break
     }
-    await new Promise((resolve) => setTimeout(resolve, 100 * attempt))
+    await new Promise((resolve) => setTimeout(resolve, 500 * attempt))
   }
   throw new Error(`failed to delete synthetic user ${userId}: ${lastError?.message}`)
 }
