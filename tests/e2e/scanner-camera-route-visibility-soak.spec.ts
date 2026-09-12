@@ -100,9 +100,23 @@ test.describe('scanner camera route + visibility soak (P119 §10/§11)', () => {
       }
     }
 
+    // P125: this test's own repeated page.goto() against the fake-session-authenticated /scan
+    // route means every cycle attempts a real profile fetch against this suite's deliberately
+    // placeholder Supabase backend (127.0.0.1:54321, nothing listening there — see this file's own
+    // "route cycle with a full capture" test below, which already learned this and filters
+    // ERR_CONNECTION_REFUSED for the identical reason). A single navigation (smoke.spec.ts) never
+    // surfaces it, but 200 of them reliably do — confirmed for real on GitHub Actions once this
+    // test's timeout was widened enough to let it actually run to completion for the first time.
+    // Placeholder-backend connectivity noise, not evidence of an app defect.
+    const unexpectedErrors = consoleErrors.filter(
+      (text) =>
+        !/ERR_CONNECTION_REFUSED|Could not connect to .*: Connection refused|due to access control checks/i.test(
+          text,
+        ),
+    )
     expect(
-      consoleErrors,
-      `console/page errors across ${CYCLES} cycles: ${JSON.stringify(consoleErrors)}`,
+      unexpectedErrors,
+      `unexpected console/page errors across ${CYCLES} cycles: ${JSON.stringify(unexpectedErrors)}`,
     ).toEqual([])
     console.log(
       `SCANNER_ROUTE_CYCLES_EXECUTED=${String(CYCLES)} MAX_OBSERVED_ACTIVE_STREAMS=${String(maxObservedActiveStreams)}`,
