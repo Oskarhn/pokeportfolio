@@ -419,6 +419,12 @@ export function createRealScannerController(
   // must survive across scans (prewarm runs once per session), not reset per capture.
   let visualPrewarmStarted = false
   let ocrPrepareMs: number | null = null
+  /** P116 Phase Q: the staggered visual-prewarm timer's own id, so `dispose()` can cancel it. Left
+   *  running, a dispose() inside the stagger window (route exit/account-switch within
+   *  ENHANCED_VISUAL_PREWARM_STAGGER_MS of mount) let the timer fire on a controller nothing
+   *  references any more, constructing a brand-new, never-terminated visual Worker that silently
+   *  downloads the full model/index in the background. */
+  let visualPrewarmTimer: ReturnType<typeof setTimeout> | null = null
 
   function prewarmOcr(): void {
     const start = performance.now()
@@ -444,7 +450,8 @@ export function createRealScannerController(
     if (visualPrewarmStarted) return
     visualPrewarmStarted = true
     prewarmOcr()
-    setTimeout(() => {
+    visualPrewarmTimer = setTimeout(() => {
+      visualPrewarmTimer = null
       visualClient.prewarm().catch(() => {
         // Unavailability is a normal, already-diagnosed outcome
         // (visualClient.getDiagnosticsSnapshot reports it) — prewarm() itself never needs to react.
@@ -464,7 +471,13 @@ export function createRealScannerController(
 
   /** Bounds how long one scan waits on the visual channel when it was NOT already warm (P81 §5):
    *  never the multi-minute cold-load itself. A warm channel is awaited normally — no bound is
-   *  needed or applied, matching every existing test's fast-resolving mocked behaviour exactly. */
+   *  needed or applied, matching every existing test's fast-resolving mocked behaviour exactly.
+   *
+   *  P119 (P116 Phase Q's disclosed-but-unfixed finding, re-examined): when `work` wins the race,
+   *  the losing timeout used to keep running for up to VISUAL_COLD_ANALYSIS_TIMEOUT_MS regardless
+   *  — harmless (its closure holds nothing but string literals, and resolving an
+   *  already-settled promise is a no-op), but there is no reason to leave it dangling once the
+   *  race has a winner. `finally` clears it the instant either side settles. */
   async function analyzeVisualBounded(
     capture: { blob: Blob; cardRect: PixelRect },
     topK: number,
@@ -472,18 +485,21 @@ export function createRealScannerController(
     const readyBefore = getVisualPrewarmState() === 'ready'
     const work = analyzeVisualSafely(capture, topK)
     if (readyBefore) return work
-    return Promise.race([
-      work,
-      new Promise<{ result: null; errorMessage: string }>((resolve) => {
-        setTimeout(() => {
-          resolve({
-            result: null,
-            errorMessage:
-              'Visual recognition is still warming up on this device — used text search only for this scan.',
-          })
-        }, VISUAL_COLD_ANALYSIS_TIMEOUT_MS)
-      }),
-    ])
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
+    const timedOut = new Promise<{ result: null; errorMessage: string }>((resolve) => {
+      timeoutId = setTimeout(() => {
+        resolve({
+          result: null,
+          errorMessage:
+            'Visual recognition is still warming up on this device — used text search only for this scan.',
+        })
+      }, VISUAL_COLD_ANALYSIS_TIMEOUT_MS)
+    })
+    try {
+      return await Promise.race([work, timedOut])
+    } finally {
+      if (timeoutId !== undefined) clearTimeout(timeoutId)
+    }
   }
 
   /** Returns its own error message rather than mutating shared state (P78): a closure-captured
@@ -899,6 +915,10 @@ export function createRealScannerController(
 
   function dispose(): void {
     disposed = true
+    if (visualPrewarmTimer !== null) {
+      clearTimeout(visualPrewarmTimer)
+      visualPrewarmTimer = null
+    }
     engine.dispose()
     releaseOcrCanvases()
     visualClient.dispose()

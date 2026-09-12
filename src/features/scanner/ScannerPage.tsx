@@ -302,12 +302,37 @@ export function ScannerPage() {
 
   // Tab hidden ⇒ release the hardware immediately. Returning lands on the start screen with the
   // batch intact; "Start camera" re-opens without a new permission prompt.
+  //
+  // P122 visibility-race fix: every OTHER camera-exit call site in this file (handleShutter,
+  // handleFilePicked, the exitRequested effect, the controller-unmount cleanup) invalidates
+  // `cameraGuardRef` and releases the hardware SYNCHRONOUSLY, in the same handler that decides to
+  // exit — this was the one exception, which only dispatched `CAMERA_EXITED` and relied entirely
+  // on the SEPARATE `cameraWanted` effect above (keyed on a derived boolean) to notice the
+  // resulting state change on a LATER render and perform the actual teardown then. Root cause of
+  // the P119 §11 finding: React 18's automatic batching can coalesce a hide's `CAMERA_EXITED` and
+  // a fast-following reopen's `START_CAMERA_PRESSED` into ONE render — `cameraWanted` is true
+  // both before and after that batch (only the intermediate 'intro' step, which nothing else in
+  // this effect's dependency reads, is skipped), so the effect never re-runs and never invalidates
+  // the guard or releases `sessionRef.current` for that cycle. The ORIGINAL still-in-flight
+  // acquire from before the hide then remains "current" and eventually resolves successfully,
+  // racing an independent new acquire the next click already started — confirmed reproducible via
+  // a real-browser instrumented trace (tests/e2e/scanner-visibility-race-diagnostic.spec.ts): from
+  // exactly the cycle this first happens onward, `activeStreamCount` stops returning to 0 across a
+  // hide, and a `getUserMedia` call keeps firing once per cycle regardless, eventually leaving
+  // `sessionRef.current` permanently non-null with no camera actually visible — the effect's own
+  // `sessionRef.current !== null` short-circuit (this file, camera-open effect above) then
+  // silently no-ops every future "Start camera" click forever, exactly matching the hang. Doing
+  // the release here, unconditionally and immediately, removes the dependency on React ever
+  // "noticing" the transition through a possibly-collapsed render.
   useEffect(() => {
     const onVisibilityChange = () => {
       if (
         visibilityChangeAction(document.visibilityState) === 'stop' &&
         (state.step === 'starting-camera' || state.step === 'camera')
       ) {
+        cameraGuardRef.current.invalidate()
+        stopActiveScannerCamera()
+        sessionRef.current = null
         dispatch({ type: 'CAMERA_EXITED' })
       }
     }
@@ -1016,6 +1041,19 @@ function ScannerDebugPanel({
     card: { id: string; name: string; setName: string; localId: string }
     rank: ExpectedCardRank
   } | null>(null)
+  // P119 (P116 Phase Q's disclosed-but-unfixed finding, re-examined): an uncleared reset timer,
+  // one per copy click. Harmless as a leak (React 18+ silently no-ops a post-unmount setState;
+  // the closure holds nothing but a state setter), but a genuine, fixable correctness bug on
+  // rapid repeat clicks — an OLDER click's 2s timer could fire after a NEWER click already set a
+  // different status, snapping "Copy failed" (or a second "Copied") back to idle before its own
+  // full 2s had elapsed. Tracking and clearing the previous timer fixes both at once.
+  const copyStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (copyStatusTimerRef.current !== null) clearTimeout(copyStatusTimerRef.current)
+    }
+  }, [])
 
   async function handleCopy(): Promise<void> {
     if (diagnostics === null) return
@@ -1031,7 +1069,9 @@ function ScannerDebugPanel({
     } catch {
       setCopyStatus('failed')
     }
-    setTimeout(() => {
+    if (copyStatusTimerRef.current !== null) clearTimeout(copyStatusTimerRef.current)
+    copyStatusTimerRef.current = setTimeout(() => {
+      copyStatusTimerRef.current = null
       setCopyStatus('idle')
     }, 2000)
   }

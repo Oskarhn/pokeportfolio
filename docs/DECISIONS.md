@@ -5362,3 +5362,52 @@ first shrunk failure fast-check found). Full existing `engine`/`engine-p93-redes
 visual-dominance` suites (290 tests total in `tests/domain/scanner/`) re-run green after the fix —
 no behavioral change to any non-adversarial, already-tested case. `pnpm test` 1385/1385,
 typecheck/lint (0 errors)/format clean.
+
+## D-126 — `VisualRecognitionClient.dispose()`/worker-crash now settle in-flight requests instead of abandoning them (P116)
+
+**2026-09-11 · Accepted**
+
+**Found by a targeted leak/cleanup code audit** (P116 Phase Q), and independently rediscovered
+mid-session by this branch's own carried-forward visual-worker-lifecycle-soak test, which had
+already documented the same defect as a known, explicitly-unfixed finding
+(`tests/ui/scanner-visual-client-lifecycle-soak-p116.test.ts`'s original "finding:" describe block,
+proven by racing the hung promise against a timer rather than asserting the desired outcome).
+
+`analyze()` and `getExpectedCardRank()` (`visual-client.ts`) store their settle callbacks in
+`this.pending`/`this.pendingRankRequests` and return a promise that only those callbacks can
+settle. `dispose()` called `pending.clear()`/`pendingRankRequests.clear()` directly, without ever
+invoking a single stored callback. A route exit, account switch, or retake that disposed the
+client while a request was still in flight — or a genuine worker crash arriving AFTER `ready` had
+already resolved, which made the existing `worker.addEventListener('error', ...)` handler's
+`resolve(null)` on the (already-settled) ready promise a no-op — left that request's promise, and
+`controller.ts`'s `Promise.all` awaiting it inside `analyzeCapture()`, pending forever. This is the
+identical bug shape `ocr-engine.ts` had already found and fixed for OCR (`ScannerEngineDisposedError`,
+its own doc comment naming exactly this hazard); `visual-client.ts` never received the equivalent
+fix when that class was written.
+
+**Severity:** real and directly reachable through normal UI use — no adversarial input required,
+just an in-flight scan interrupted by navigation, an account switch, or a hardware/driver crash.
+The `Promise.all` shape in `controller.ts` means one stuck visual request could stall the whole
+`analyzeCapture()` call, not just the visual channel.
+
+**Fix.** `dispose()` now rejects every stored `{ resolve, reject }` in `pending` with a new
+`VisualClientDisposedError` (caught by `analyze()`'s own existing try/catch, surfacing as its
+already-documented `null` "visual channel unavailable" result — no caller-visible contract change)
+and resolves every stored `pendingRankRequests` callback with a fixed "not in index"
+`ExpectedCardRank` (matching that method's own "never rejects" contract), BEFORE clearing either
+map. The `worker.addEventListener('error', ...)` handler does the same before its
+already-existing `resolve(null)` on the ready promise, closing the post-ready-crash case the
+dispose-only fix would have missed. A related leak in the same `dispose()` path was fixed
+alongside it: `controller.ts`'s staggered visual-prewarm `setTimeout`
+(`ENHANCED_VISUAL_PREWARM_STAGGER_MS`) was never cancelled, so disposing within that window let the
+timer later fire on a controller nothing referenced any more and construct a brand-new,
+never-terminated visual `Worker` that silently downloaded the full model/index in the background.
+
+**Verified:** `tests/ui/scanner-visual-client.test.ts`'s new "P116 Phase Q" describe block —
+confirmed the exact hang reproduces on the pre-fix code (`git stash` the fix, re-run: genuine
+5-second test timeout, not a flake), then that dispose()-mid-flight, worker-crash-mid-flight, and
+dispose()-mid-rank-lookup all resolve promptly post-fix, and that a fresh `analyze()` call after
+dispose() still works normally (no cross-generation contamination from the settled maps). The
+carried-forward lifecycle-soak test's "finding" block now asserts the corrected behavior directly
+instead of racing a timer. Full suite re-run green: `pnpm test` 1480/1481 (1 pre-existing skip),
+typecheck/lint (0 errors)/format clean.
