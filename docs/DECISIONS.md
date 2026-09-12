@@ -5533,3 +5533,73 @@ negative shares after the fix, versus 486 mismatches, 17 `wrong_sum` violations 
 errors in the first 5,000-case run before it. Full `pnpm test:db` (618/619, unchanged), M13
 adversarial (55/62 + 7 opt-in skipped, unchanged) and `tests/m16-independent` (53/53, unchanged)
 all re-run green after the migration.
+
+---
+
+## D-128 — Camera session ownership and track-`ended` handling must never depend on `HTMLMediaElement.play()` Promise settlement (P126)
+
+**2026-09-12 · Accepted**
+
+**Found by** root-causing the two mobile-iphone (WebKit)-only Browser E2E failures P125 left
+unresolved after three rounds of blind timeout widening (5s→30s and 15s→45s), using the
+`playwright-report` trace artifact from the failing CI run (34705811971) rather than guessing
+again. Both failures were the same defect: `openEnvironmentCamera()` (`camera-session.ts`)
+constructed the `ManagedCameraSession`, defined `onTrackEnded`, attached every track's `ended`
+listener, and set `activeScannerSession` only AFTER `await video.play()` resolved. On GitHub
+Actions' Linux-hosted WebKit against Playwright's mocked `canvas.captureStream()` source, that
+Promise could render live preview frames while never settling — not slowly, genuinely never. No
+timeout, however large, could have fixed a Promise that never settles. Two independent, real
+symptoms followed directly: the shutter (`disabled={state.step !== 'camera'}` in
+`ScannerPage.tsx`) stayed disabled forever, because `CAMERA_STARTED` only dispatches once the
+promise this function returns resolves; and a hardware disconnect mid-session went unnoticed,
+because the `ended` listener that would have called `onEnded` was never attached in the first
+place. P125's own writeup wrongly attributed the first symptom to slow on-device DINOv2/OCR
+inference — traced and disproven here: the shutter's `disabled` state is set before capture and
+before `analyzeCapture()` ever runs; the corrected diagnosis is documented directly in the two
+affected E2E test files, replacing the incorrect one.
+
+**Decision.** `video.play()` is now initiated but never awaited inside `openEnvironmentCamera()`.
+Stream ownership (`video.srcObject`, the `ManagedCameraSession` object, its `stop()` closure, the
+`ended` listeners, `activeScannerSession`) is established immediately once the stream is acquired
+and this call has won any open-generation race — strictly BEFORE playback is even requested. A
+rejected `play()` Promise remains non-fatal (unchanged from before); a synchronously-thrown
+`play()` is now equally non-fatal (`try`/`catch` around the call); and a `play()` that never
+settles at all no longer blocks anything, because nothing downstream of it depends on its
+resolution. `captureVideoFrame()` (`capture.ts`) already refuses a frame while
+`video.videoWidth === 0`/`videoHeight === 0`, so an unusually fast shutter tap before the first
+real frame renders was already a handled, recoverable `CAPTURE_FAILED` case rather than a black
+photo — session readiness and preview-frame readiness are deliberately kept as two separate
+concerns (prompt's own §31 "narrowest defensible design"): no new reducer state, no new readiness
+timer.
+
+**Alternatives considered.** Racing `play()` against a bounded timeout
+(`Promise.race([video.play(), sleep(N)])`) was rejected outright — it converts an infinite hang
+into a long, arbitrary one and still delays session ownership (and the `ended` listener) for no
+reason tied to actual readiness. Waiting for a `loadeddata`/`canplay` media event instead of
+`play()`'s own Promise was considered and rejected as unnecessary complexity: the existing
+`videoWidth`/`videoHeight` guard in `captureVideoFrame()` already provides the only readiness
+guarantee capture actually needs, so gating session ownership on a second readiness signal would
+just be two mechanisms proving the same thing.
+
+**Consequences.** Ownership and hardware-disconnect recovery are now provably independent of
+whatever a given browser engine's autoplay implementation does — this is the durable rule future
+scanner lifecycle changes must preserve: `HTMLMediaElement.play()`'s Promise is a playback-start
+signal only, never a readiness gate for anything else. The two previously-inflated E2E timeouts
+this decision makes obsolete (45s shutter-enable, 30s hardware-disconnect recovery) are reduced
+back to 15s/10s respectively — see the corrected comments in
+`tests/e2e/scanner-camera-route-visibility-soak.spec.ts` and
+`tests/e2e/scanner-camera-permission-matrix.spec.ts`.
+
+**Verified:** a never-settling `play()` reproduced the exact hang against the pre-fix code (`tests
+/ui/scanner-camera.test.ts`'s new "P126" describe block — 6 new cases, each timing out at 3s under
+the OLD implementation via a temporary mutation, all passing promptly post-fix): resolution is no
+longer blocked, the `ended` listener still fires exactly once and stops every track, `stop()`
+during a still-pending `play()` detaches cleanly with no later resurrection, a synchronous
+`play()` throw is non-fatal, and a superseded call's own pending `play()` settling late (resolve
+or reject) never disturbs whichever session actually won. Full local gate re-run green:
+typecheck/lint (0 errors)/format clean, `pnpm test` 1508/1509 (1 pre-existing skip, up from
+1502/1503 — the 6 new cases), production build green (scanner index unchanged,
+`f25fc05d569b7cca`). Both previously-failing E2E cases plus the full non-auth desktop-chromium
+suite (16/16 in the two affected spec files, including the previously serial-blocked 1000-cycle
+visibility soak actually running to completion) pass locally; the authoritative mobile-iphone
+(WebKit) result is GitHub Actions CI — see this branch's final CI run for the confirmed outcome.

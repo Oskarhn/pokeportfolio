@@ -97,7 +97,7 @@ describe('camera start semantics', () => {
     expect(videoConstraints.width).not.toHaveProperty('min')
   })
 
-  it('attaches the live stream to the video element and awaits play', async () => {
+  it('attaches the live stream to the video element and initiates play() without blocking resolution', async () => {
     const { stream } = fakeStream()
     const { video, play } = fakeVideoElement()
     await openEnvironmentCamera(video, () => Promise.resolve(stream))
@@ -111,6 +111,9 @@ describe('camera start semantics', () => {
     const session = await openEnvironmentCamera(video, () => Promise.resolve(fakeStream().stream))
     expect(video.srcObject).not.toBeNull()
     session.stop()
+    // The rejection is attached with its own .catch() internally — nothing here should ever
+    // surface as an unhandled rejection. Flushing one more microtask turn is enough to prove it.
+    await Promise.resolve()
   })
 
   it('with no mediaDevices surface at all, the unsupported error is thrown for friendly mapping', async () => {
@@ -356,6 +359,111 @@ describe('unexpected track-ended handling (P70, prompt §13)', () => {
     tracks[0]?.fireEnded()
     expect(stops[0]).toHaveBeenCalledTimes(1)
     expect(onEnded).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('playback promise settlement is never load-bearing for session ownership (P126)', () => {
+  // Real-CI evidence (mobile-iphone / Linux-hosted WebKit against Playwright's mocked
+  // canvas.captureStream() source, GitHub Actions run 34705811971): the preview visibly rendered
+  // live frames while `video.play()`'s own Promise never settled at all — not slow, genuinely
+  // never. The old implementation `await`ed that Promise before constructing the session, its
+  // `stop()`, or attaching the 'ended' listener, so BOTH the shutter-enable transition and
+  // hardware-disconnect recovery hung forever behind it. These cases pin the fix: ownership and
+  // the ended listener must exist independently of whether/when play() ever settles.
+  function neverSettlingPlay(): StopFn {
+    return vi.fn(
+      () =>
+        new Promise<void>(() => {
+          /* intentionally never settles, never rejects */
+        }),
+    )
+  }
+
+  it('a never-settling play() does not block openEnvironmentCamera() from resolving', async () => {
+    const { stream } = fakeStream()
+    const video = { srcObject: null, play: neverSettlingPlay() } as unknown as HTMLVideoElement
+    const session = await openEnvironmentCamera(video, () => Promise.resolve(stream))
+    expect(video.srcObject).toBe(stream)
+    session.stop()
+  })
+
+  it('a never-settling play() does not block the ended-listener from being attached: a hardware disconnect mid-pending-play is still handled', async () => {
+    const { stream, stops, tracks } = fakeStream(1)
+    const video = { srcObject: null, play: neverSettlingPlay() } as unknown as HTMLVideoElement
+    const onEnded = vi.fn()
+    await openEnvironmentCamera(video, () => Promise.resolve(stream), onEnded)
+    tracks[0]?.fireEnded()
+    expect(stops[0]).toHaveBeenCalledTimes(1)
+    expect(video.srcObject).toBeNull()
+    expect(onEnded).toHaveBeenCalledTimes(1)
+    // A repeated ended event afterward is still a no-op — the fix changes WHEN the listener is
+    // attached, never its own idempotency.
+    tracks[0]?.fireEnded()
+    expect(stops[0]).toHaveBeenCalledTimes(1)
+    expect(onEnded).toHaveBeenCalledTimes(1)
+  })
+
+  it('a synchronously-throwing play() is non-fatal, exactly like a rejection', async () => {
+    const { stream } = fakeStream()
+    const play = vi.fn(() => {
+      throw new Error('play() threw synchronously')
+    })
+    const video = { srcObject: null, play } as unknown as HTMLVideoElement
+    const session = await openEnvironmentCamera(video, () => Promise.resolve(stream))
+    expect(video.srcObject).toBe(stream)
+    session.stop()
+  })
+
+  it('stopping while play() is still pending detaches the stream; play() settling afterward resurrects nothing', async () => {
+    const { stream, stops } = fakeStream(1)
+    let resolvePlay!: () => void
+    const play = vi.fn(() => new Promise<void>((resolve) => (resolvePlay = resolve)))
+    const video = { srcObject: null, play } as unknown as HTMLVideoElement
+    const session = await openEnvironmentCamera(video, () => Promise.resolve(stream))
+    session.stop()
+    expect(stops[0]).toHaveBeenCalledTimes(1)
+    expect(video.srcObject).toBeNull()
+    resolvePlay()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(video.srcObject).toBeNull()
+    expect(stops[0]).toHaveBeenCalledTimes(1)
+  })
+
+  it('A opens with play() still pending; B opens next (stopping A); the old pending play() settling afterward never disturbs B', async () => {
+    const a = fakeStream(1)
+    const b = fakeStream(1)
+    let rejectAPlay!: (error: unknown) => void
+    const playA = vi.fn(() => new Promise<void>((_resolve, reject) => (rejectAPlay = reject)))
+    const playB = vi.fn(() => Promise.resolve())
+    const video = { srcObject: null, play: playA } as unknown as HTMLVideoElement
+    const sessionA = await openEnvironmentCamera(video, () => Promise.resolve(a.stream))
+    video.play = playB
+    const sessionB = await openEnvironmentCamera(video, () => Promise.resolve(b.stream))
+    expect(video.srcObject).toBe(b.stream)
+    expect(a.stops[0]).toHaveBeenCalledTimes(1)
+    // A's own play() promise settling late (rejecting, here) must have zero effect on B.
+    rejectAPlay(new Error('stale playback rejection'))
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(video.srcObject).toBe(b.stream)
+    expect(b.stops[0]).not.toHaveBeenCalled()
+    void sessionA
+    sessionB.stop()
+  })
+
+  it('a play() that settles well after the session is already owned changes nothing and never surfaces as an unhandled rejection', async () => {
+    const { stream } = fakeStream()
+    let settlePlay!: () => void
+    const play = vi.fn(() => new Promise<void>((resolve) => (settlePlay = resolve)))
+    const video = { srcObject: null, play } as unknown as HTMLVideoElement
+    const session = await openEnvironmentCamera(video, () => Promise.resolve(stream))
+    expect(video.srcObject).toBe(stream)
+    settlePlay()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(video.srcObject).toBe(stream)
+    session.stop()
   })
 })
 

@@ -127,9 +127,9 @@ test.describe('scanner camera route + visibility soak (P119 §10/§11)', () => {
     page,
   }) => {
     // 5 cycles of a real cold-ish OCR + visual-worker pipeline can exceed the 30s default too.
-    // P125: raised 180s -> 300s after a real GitHub Actions run showed the per-cycle shutter-enable
-    // wait (below) genuinely needing more than 15s on mobile-iphone's Linux-hosted WebKit — real
-    // WASM-based ML inference measurably slower than Chromium's V8 for this workload, not a hang.
+    // The per-cycle budget below is dominated by the terminal-result wait (real OCR/visual-worker
+    // analysis, genuinely CPU-heavy), not by the shutter-enable wait — see the comment at the
+    // shutter wait itself for why that one no longer needs a large timeout.
     test.setTimeout(300_000)
     // Deliberately much smaller than the pure navigation loop above: each cycle triggers the REAL
     // OCR + visual-worker pipeline (a fresh controller/worker pair per remount, per controller.ts's
@@ -154,11 +154,16 @@ test.describe('scanner camera route + visibility soak (P119 §10/§11)', () => {
       await expect(page.getByRole('heading', { name: 'Scan cards' })).toBeVisible()
       await page.getByRole('button', { name: 'Start camera' }).click()
       const shutter = page.getByRole('button', { name: 'Capture card' })
-      // P125: widened 15s -> 45s after this specific wait timed out on mobile-iphone (Linux-hosted
-      // WebKit) in real GitHub Actions CI — this button enables only once the real DINOv2/OCR
-      // pipeline finishes analyzing the just-acquired frame, and WebKit's WASM performance for
-      // this workload is measurably slower than Chromium's under CI's own resource constraints.
-      await expect(shutter).toBeEnabled({ timeout: 45_000 })
+      // Corrected diagnosis (P126): this button is NOT gated by DINOv2/OCR analysis — it enables
+      // as soon as the reducer reaches the 'camera' step (ScannerPage.tsx: `disabled={state.step
+      // !== 'camera'}`), which happens the instant openEnvironmentCamera() resolves. The real
+      // WebKit-only failures here (P125) were `openEnvironmentCamera()` itself never resolving,
+      // because it used to `await video.play()` before returning — and on GitHub Actions'
+      // Linux-hosted WebKit against Playwright's mocked canvas.captureStream() source, that
+      // Promise could render live frames while never settling at all. camera-session.ts no longer
+      // awaits play() before establishing session ownership (see its own comment), so this wait is
+      // back to a plain acquisition-latency budget, not an ML-inference one.
+      await expect(shutter).toBeEnabled({ timeout: 15_000 })
       await shutter.click()
       await page.getByRole('button', { name: 'Use photo' }).click()
 

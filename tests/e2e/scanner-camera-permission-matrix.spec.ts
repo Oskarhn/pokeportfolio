@@ -158,15 +158,17 @@ test.describe('scanner camera permission matrix (P119 §9)', () => {
     expect(endedCount).toBe(1)
 
     // camera-session.ts's `onEnded` callback dispatches CAMERA_EXITED -> the reducer returns to
-    // 'intro' (state.ts). The user is not stranded on a dead preview. P125: widened 5s -> 10s ->
-    // 15s -> 30s across three real GitHub Actions runs, all on mobile-iphone specifically
-    // (desktop-chromium passes at 10s+). This is the Linux-hosted WebKit build Playwright bundles
-    // (unlike the Windows-hosted WebKit this file's header documents as missing captureStream
-    // entirely, this engine DOES support it, so the test genuinely runs rather than skipping) —
-    // if 30s still isn't enough, the next session should treat this as a real WebKit-specific
-    // MediaStreamTrack 'ended'-event delivery or mock-timing gap worth its own investigation,
-    // not another blind timeout increase.
-    await expect(page.getByRole('heading', { name: 'Scan cards' })).toBeVisible({ timeout: 30_000 })
+    // 'intro' (state.ts). The user is not stranded on a dead preview.
+    //
+    // Corrected diagnosis (P126): the repeated timeout widenings here (P125: 5s -> 10s -> 15s ->
+    // 30s, mobile-iphone only) were symptom-chasing a real bug, not CI slowness. camera-session.ts
+    // used to attach the 'ended' listener only AFTER `await video.play()` resolved — on GitHub
+    // Actions' Linux-hosted WebKit against Playwright's mocked canvas.captureStream() source, that
+    // Promise could render live frames while never settling at all, so the listener was never
+    // attached and this synthetic 'ended' event had nothing to notify. No timeout could have fixed
+    // that. The listener is now attached immediately once the stream is acquired, independent of
+    // playback — see camera-session.ts's own comment.
+    await expect(page.getByRole('heading', { name: 'Scan cards' })).toBeVisible({ timeout: 10_000 })
     await expect(page.getByRole('button', { name: 'Start camera' })).toBeEnabled()
 
     const diagnostics = await getCameraMockDiagnostics(page)

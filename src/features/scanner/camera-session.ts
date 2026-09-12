@@ -135,13 +135,6 @@ export async function openEnvironmentCamera(
     throw new ScannerCameraSupersededError()
   }
   video.srcObject = stream
-  try {
-    // Muted+playsInline makes this succeed on iOS; a rejected play() here must not fail the
-    // whole start — the stream is live either way and the user can tap to begin playback.
-    await video.play()
-  } catch {
-    /* play() rejection is non-fatal */
-  }
   let stopped = false
   const session: ManagedCameraSession = {
     stream,
@@ -161,10 +154,29 @@ export async function openEnvironmentCamera(
     session.stop()
     onEnded?.()
   }
+  // Ownership of the stream (this session object, the ended listeners, `activeScannerSession`)
+  // is established BEFORE playback is even requested. A hardware disconnect must be observable
+  // regardless of what `video.play()` is doing — see the playback note below for why that
+  // Promise cannot be allowed to gate any of this.
   for (const track of stream.getTracks()) {
     track.addEventListener('ended', onTrackEnded)
   }
   activeScannerSession = session
+  // Muted+playsInline makes this succeed on iOS. Deliberately NOT awaited: a rejected play() is
+  // non-fatal (the stream is live either way and the user can tap to begin playback), and on some
+  // engines (observed in GitHub Actions' Linux-hosted WebKit against a canvas.captureStream()
+  // mock) play() can render frames and advance currentTime while its own Promise never settles at
+  // all — awaiting it here used to block session ownership (and therefore the ended-listener
+  // attachment above) indefinitely, silently freezing the shutter forever and swallowing a
+  // simultaneous hardware disconnect. A synchronous throw is equally non-fatal (not guaranteed by
+  // the spec, but some implementations/mocks do it).
+  try {
+    video.play().catch(() => {
+      /* play() rejection is non-fatal — the stream is live either way */
+    })
+  } catch {
+    /* synchronous play() throw is equally non-fatal */
+  }
   return session
 }
 
