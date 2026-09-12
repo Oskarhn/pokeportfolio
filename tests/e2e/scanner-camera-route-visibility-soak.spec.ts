@@ -178,26 +178,38 @@ test.describe('scanner camera route + visibility soak (P119 §10/§11)', () => {
     console.log(`SCANNER_ROUTE_FULL_CAPTURE_CYCLES_EXECUTED=${String(CYCLES)}`)
   })
 
-  // P119 §11 FINDING, not a shortcut: a
-  // genuine, reproducible-but-unresolved race. Tight-loop, script-driven hidden/visible cycling
-  // against the live camera step (hide -> CAMERA_EXITED -> re-open -> hide -> ...) usually
-  // completes each cycle in under 100ms, but at a NON-deterministic cycle count (observed at
-  // cycle 1 in one run and cycle 14 in another, both fresh Chromium contexts, same code) the app
-  // never completes the hidden -> intro transition (or the app gets stuck in a state
-  // indistinguishable from it) and the next "Start camera" click hangs for the rest of the test's
-  // budget. Diagnostic evidence gathered this session (see the P119 output file, section 21/§11
-  // finding, for the full account): NOT explained by this test's own mock (the SAME mock's
-  // 'ended'-event and stop() accounting is independently unit-proven correct); NOT purely CPU
-  // contention (reproduced at both ~90% and ~62% measured host load, and the cycle number it
-  // fails at varies rather than correlating with a slowdown trend); NOT tied to a fixed iteration
-  // count (ruling out a simple counter/generation overflow). Root cause not isolated within this
-  // session's time budget — left explicitly skipped, not deleted or silently passing, so a future
-  // session has a concrete, real, checked-in reproduction to start from instead of rediscovering
-  // it from scratch.
-  test.skip('visibility soak: hidden/visible cycles while camera is live, no duplicate camera, no stale error — KNOWN UNRESOLVED RACE, see P119 output', async ({
+  // P119 §11 FOUND, P122 ROOT-CAUSED AND FIXED. Original P119 finding: tight-loop, script-driven
+  // hidden/visible cycling against the live camera step usually completed each cycle in well under
+  // 100ms, but at a non-deterministic cycle count the app never completed the hidden -> intro
+  // transition and the next "Start camera" click hung for the rest of the test's budget.
+  //
+  // ROOT CAUSE (P122, confirmed via an instrumented real-browser trace before this fix): every
+  // OTHER camera-exit call site in ScannerPage.tsx (handleShutter, handleFilePicked, the
+  // exitRequested effect, the controller-unmount cleanup) invalidates `cameraGuardRef` and
+  // releases the hardware SYNCHRONOUSLY, in the same handler that decides to exit. The
+  // visibilitychange handler was the one exception: it only dispatched `CAMERA_EXITED` and relied
+  // entirely on the SEPARATE `cameraWanted` effect (keyed on a derived boolean) to notice the
+  // resulting state change on a later render and perform the actual teardown then. React 18's
+  // automatic batching can coalesce a hide's `CAMERA_EXITED` and a fast-following reopen's
+  // `START_CAMERA_PRESSED` into ONE render — `cameraWanted` is true both before and after that
+  // batch, so the effect never re-ran and never invalidated the guard or released
+  // `sessionRef.current` for that cycle. The original still-in-flight acquire from before the hide
+  // then stayed "current" indefinitely, eventually racing an independent new acquire a later click
+  // already started, and drifting `sessionRef.current` permanently non-null with no camera actually
+  // visible — silently defeating the camera-open effect's own `sessionRef.current !== null`
+  // short-circuit forever, exactly matching the hang.
+  //
+  // FIX: the visibilitychange handler now performs the same direct invalidate/stop/null sequence
+  // every other exit path already used, before dispatching `CAMERA_EXITED` — removing the
+  // dependency on React ever "noticing" the transition through a possibly-collapsed render.
+  // Verified clean at 300 cycles via a temporary instrumented diagnostic before this fix landed
+  // (reproduced the hang by cycle 9-17 every run); this test now runs the brief's own 1000-cycle
+  // target as the permanent regression.
+  test('visibility soak: 1000 hidden/visible cycles while camera is live, no duplicate camera, no hang (P119 §11 / P122 fix)', async ({
     page,
   }) => {
-    const CYCLES = 50
+    test.setTimeout(300_000)
+    const CYCLES = 1000
     await installFakeSession(page)
     await installCameraMock(page, { behavior: 'success' })
     await page.goto('/scan')
