@@ -146,7 +146,8 @@ describe('allocate_largest_remainder: no bigint*bigint overflow at scale (P117)'
 })
 
 describe('allocate_largest_remainder: weight-sum overflow and numeric-division precision (P120)', () => {
-  // D-126: two DISTINCT bugs found by a 100,000-case random property sweep against the
+  // D-127 (renumbered from D-126 by P123 to resolve a collision with PR #100's scanner D-126):
+  // two DISTINCT bugs found by a 100,000-case random property sweep against the
   // independent BigInt oracle (src/domain/allocation.ts's `allocate()`), neither caught by
   // P117's own boundary probe because both need operands this specific combination of large.
   it('sums many near-bigint-max weights without overflowing (v_sum_weights was plain bigint)', async () => {
