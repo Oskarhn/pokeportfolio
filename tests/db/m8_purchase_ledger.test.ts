@@ -145,6 +145,51 @@ describe('allocate_largest_remainder: no bigint*bigint overflow at scale (P117)'
   }
 })
 
+describe('allocate_largest_remainder: weight-sum overflow and numeric-division precision (P120)', () => {
+  // D-126: two DISTINCT bugs found by a 100,000-case random property sweep against the
+  // independent BigInt oracle (src/domain/allocation.ts's `allocate()`), neither caught by
+  // P117's own boundary probe because both need operands this specific combination of large.
+  it('sums many near-bigint-max weights without overflowing (v_sum_weights was plain bigint)', async () => {
+    // Reachable through the real RPC surface, not just synthetic fuzz: create_purchase places no
+    // upper bound on a line's unit_price_minor before it becomes a shipping/customs/discount
+    // allocation weight, so two lines each near bigint max would have crashed this with an opaque
+    // "bigint out of range" instead of a clean rejection.
+    const total = 100n
+    const weights = [9_223_372_036_854_775_807n, 9_223_372_036_854_775_807n]
+    const expected = allocate(total, weights).map(String)
+    const { data, error } = await clientA.rpc('allocate_largest_remainder', {
+      p_total: total.toString(),
+      p_weights: weights.map(String),
+    })
+    expect(error).toBeNull()
+    expect((data as string[]).map(String)).toEqual(expected)
+  })
+
+  it('combined weight-sum + floor-precision case: crashed before this fix, matches the oracle after it', async () => {
+    // Before this fix, this exact input crashed with "bigint out of range" inside the v_remainders
+    // cast (weight sum ~1.8e19 exceeds plain bigint) — confirmed directly against a pg_temp copy
+    // of the pre-fix function body. Also independently confirms Postgres's numeric `/` returns a
+    // rounded (not exact) quotient at this magnitude: `floor(123456789012345::numeric *
+    // 9000000000009768606::numeric / 18000000000009768625::numeric)` alone returns 61728394506206,
+    // one more than the true `div()` value of 61728394506205 — though for this specific pair the
+    // largest-remainder redistribution step happens to reach the same final answer either way, so
+    // this case's real regression value is the crash-vs-succeeds difference, not a differing
+    // final allocation. `total` is kept under 2^53 so every resulting share is too — clear of the
+    // SEPARATE, deliberately-not-fixed PostgREST bigint JSON precision limit (D-125 finding 1).
+    const total = 123_456_789_012_345n
+    const weights = [9_000_000_000_009_768_606n, 9_000_000_000_000_000_019n]
+    const expected = allocate(total, weights).map(String)
+    const { data, error } = await clientA.rpc('allocate_largest_remainder', {
+      p_total: total.toString(),
+      p_weights: weights.map(String),
+    })
+    expect(error).toBeNull()
+    expect((data as string[]).map(String)).toEqual(expected)
+    const sum = (data as string[]).reduce((acc, v) => acc + BigInt(v), 0n)
+    expect(sum).toBe(total) // invariant F6
+  })
+})
+
 describe('E3 — mixed receipt with shipping, reproduced exactly in the database', () => {
   it('GPO = CS + HS and every allocated share matches FINANCIAL_MODEL.md §8 to the øre', async () => {
     const { data: purchase, error } = await callCreate(clientA, {

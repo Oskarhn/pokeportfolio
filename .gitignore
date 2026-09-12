@@ -94,6 +94,9 @@ scripts/scanner-visual-benchmark/reports/
 # itself reuses scripts/scanner-visual-benchmark/.benchmark-cache/ above — no second image cache.
 scripts/scanner-ocr-benchmark/reports/
 scripts/scanner-name-lexicon/generated/
+# P120: scripts/p120-largest-remainder-oracle.ts's own generated batch-SQL file (reproducible from
+# the script's seed each run; can reach tens of MB at 100k+ cases).
+scripts/.p120-lr-oracle.generated.sql
 # P91/P93/P95/P100 recognition R&D lab: the corpus manifest/reference-index cache, HF model cache
 # and every generated benchmark report are reproducible (re-buildable from TCGdex + the model
 # cache), never committed. The corpus's own imagePath fields may point at a sibling worktree's
