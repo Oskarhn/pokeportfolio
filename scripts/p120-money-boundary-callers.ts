@@ -68,16 +68,18 @@ async function main() {
       console.log(`  [setup failed] ${purchaseError.message}`)
       continue
     }
-    const { data: line } = await service
+    const { data: line, error: lineError } = await service
       .from('purchase_lines')
       .select('id')
-      .eq('purchase_id', purchase!.id)
-      .single()
-    const { data: lot } = await service
+      .eq('purchase_id', purchase.id)
+      .single<{ id: string }>()
+    if (lineError) throw new Error(`line fetch failed: ${lineError.message}`)
+    const { data: lot, error: lotError } = await service
       .from('acquisition_lots')
       .select('id')
-      .eq('purchase_line_id', line!.id)
-      .single()
+      .eq('purchase_line_id', line.id)
+      .single<{ id: string }>()
+    if (lotError) throw new Error(`lot fetch failed: ${lotError.message}`)
 
     const { data, error } = await clientA
       .rpc('create_sale', {
@@ -85,7 +87,7 @@ async function main() {
         p_sold_on: today,
         p_currency: 'NOK',
         p_fees_minor: v.toString(),
-        p_lines: [{ lot_id: lot!.id, quantity: 1, unit_gross_minor: v.toString() }],
+        p_lines: [{ lot_id: lot.id, quantity: 1, unit_gross_minor: v.toString() }],
       })
       .single<{ id: string; net_proceeds_minor: string }>()
     console.log(
@@ -94,7 +96,7 @@ async function main() {
   }
 
   console.log('\n=== set_manual_valuation boundary sweep ===')
-  const { data: purchase2 } = await clientA
+  const { data: purchase2, error: purchase2Error } = await clientA
     .rpc('create_purchase', {
       p_purchased_on: today,
       p_currency: 'NOK',
@@ -109,40 +111,56 @@ async function main() {
       ],
     })
     .single<{ id: string }>()
-  const { data: line2 } = await service
+  if (purchase2Error) throw new Error(`purchase2 setup failed: ${purchase2Error.message}`)
+  const { data: line2, error: line2Error } = await service
     .from('purchase_lines')
     .select('id')
-    .eq('purchase_id', purchase2!.id)
-    .single()
-  const { data: lot2 } = await service
+    .eq('purchase_id', purchase2.id)
+    .single<{ id: string }>()
+  if (line2Error) throw new Error(`line2 fetch failed: ${line2Error.message}`)
+  const { data: lot2, error: lot2Error } = await service
     .from('acquisition_lots')
     .select('holding_id')
-    .eq('purchase_line_id', line2!.id)
-    .single()
+    .eq('purchase_line_id', line2.id)
+    .single<{ holding_id: string }>()
+  if (lot2Error) throw new Error(`lot2 fetch failed: ${lot2Error.message}`)
 
   for (const v of BOUNDARY_VALUES) {
-    const { data, error } = await clientA.rpc('set_manual_valuation', {
-      p_holding_id: lot2!.holding_id,
-      p_value_minor: v.toString(),
-    })
-    console.log(`value_minor=${v} -> error=${error?.message ?? 'none'} result=${JSON.stringify(data)}`)
+    const { data, error } = await clientA
+      .rpc('set_manual_valuation', {
+        p_holding_id: lot2.holding_id,
+        p_value_minor: v.toString(),
+      })
+      .single<{ value_minor: string; value_nok_minor: string }>()
+    console.log(
+      `value_minor=${v} -> error=${error?.message ?? 'none'} result=${JSON.stringify(data)}`,
+    )
   }
 
   // Negative and malformed inputs — must be rejected cleanly, not crash.
   console.log('\n=== negative / malformed inputs ===')
-  const hostileValues = ['-1', '-9223372036854775808', 'not-a-number', '', '1.5', '9999999999999999999999']
+  const hostileValues = [
+    '-1',
+    '-9223372036854775808',
+    'not-a-number',
+    '',
+    '1.5',
+    '9999999999999999999999',
+  ]
   for (const v of hostileValues) {
     const { error } = await clientA.rpc('set_manual_valuation', {
-      p_holding_id: lot2!.holding_id,
+      p_holding_id: lot2.holding_id,
       p_value_minor: v,
     })
-    console.log(`p_value_minor=${JSON.stringify(v)} -> error=${error?.message ?? 'NONE (unexpected)'}`)
+    console.log(
+      `p_value_minor=${JSON.stringify(v)} -> error=${error?.message ?? 'NONE (unexpected)'}`,
+    )
   }
 
   await deleteSyntheticUser(service, userA.id)
 }
 
-main().catch((err) => {
+main().catch((err: unknown) => {
   console.error(err)
   process.exit(1)
 })

@@ -30,12 +30,12 @@ const originalFetch = globalThis.fetch
 function withRequestCounting<T>(fn: () => Promise<T>): Promise<T> {
   requestCount = 0
   maxUrlLength = 0
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     requestCount++
-    const url = typeof input === 'string' ? input : input.toString()
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
     maxUrlLength = Math.max(maxUrlLength, url.length)
     return originalFetch(input, init)
-  }) as typeof fetch
+  }
   return fn().finally(() => {
     globalThis.fetch = originalFetch
   })
@@ -125,6 +125,7 @@ async function main() {
     .select('id')
     .eq('created_by_user_id', userC.id)
     .limit(120)
+    .overrideTypes<{ id: string }[], { merge: false }>()
   if (someIdsError) throw new Error(someIdsError.message)
   await service
     .from('sealed_products')
@@ -160,7 +161,7 @@ async function main() {
   console.log(JSON.stringify(results, null, 2))
 }
 
-main().catch((err) => {
+main().catch((err: unknown) => {
   console.error(err)
   process.exit(1)
 })

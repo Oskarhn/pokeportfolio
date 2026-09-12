@@ -32,6 +32,17 @@ function note(label: string, leaked: boolean) {
   if (leaked) tally.leaks.push(label)
 }
 
+interface ErrorLike {
+  message: string
+}
+
+/** Unwraps a Supabase `.single<T>()` result, throwing on error (never on a legitimately-typed T). */
+function mustSingle<T>(context: string, result: { data: T | null; error: ErrorLike | null }): T {
+  if (result.error) throw new Error(`${context}: ${result.error.message}`)
+  if (result.data === null) throw new Error(`${context}: no row returned`)
+  return result.data
+}
+
 async function main() {
   const service = createServiceClient()
   const anon = createAnonClient()
@@ -39,149 +50,194 @@ async function main() {
   const userA = await createSyntheticUser(service, 'p120-rls-a')
   const userB = await createSyntheticUser(service, 'p120-rls-b')
   const clientA = await signInAs(userA)
+  const clientB = await signInAs(userB)
 
   // ---- Seed B's real rows in every user-owned table (service role — standard fixture pattern) ----
-  const tag = await service
-    .from('tags')
-    .insert({ user_id: userB.id, name: 'p120-b-tag' })
-    .select('id')
-    .single()
-  const retailer = await service
-    .from('retailers')
-    .insert({ user_id: userB.id, name: 'p120-b-retailer' })
-    .select('id')
-    .single()
-  const storageLocation = await service
-    .from('storage_locations')
-    .insert({ user_id: userB.id, name: 'p120-b-storage' })
-    .select('id')
-    .single()
-  const collection = await service
-    .from('custom_collections')
-    .insert({ user_id: userB.id, name: 'p120-b-collection' })
-    .select('id')
-    .single()
+  const tag = mustSingle(
+    'seed tag',
+    await service
+      .from('tags')
+      .insert({ user_id: userB.id, name: 'p120-b-tag' })
+      .select('id')
+      .single<{
+        id: string
+      }>(),
+  )
+  const retailer = mustSingle(
+    'seed retailer',
+    await service
+      .from('retailers')
+      .insert({ user_id: userB.id, name: 'p120-b-retailer' })
+      .select('id')
+      .single<{ id: string }>(),
+  )
+  const storageLocation = mustSingle(
+    'seed storage location',
+    await service
+      .from('storage_locations')
+      .insert({ user_id: userB.id, name: 'p120-b-storage' })
+      .select('id')
+      .single<{ id: string }>(),
+  )
+  const collection = mustSingle(
+    'seed custom collection',
+    await service
+      .from('custom_collections')
+      .insert({ user_id: userB.id, name: 'p120-b-collection' })
+      .select('id')
+      .single<{ id: string }>(),
+  )
 
-  const clientB = await signInAs(userB)
-  const purchase = await clientB
-    .rpc('create_purchase', {
-      p_purchased_on: today,
-      p_currency: 'NOK',
-      p_lines: [
-        {
-          line_type: 'card',
-          card_variant_id: seedCatalog.charizardVariantId,
-          condition: 'NM',
-          quantity: 2,
-          unit_price_minor: 10000,
-        },
-      ],
-    })
-    .single<{ id: string }>()
-  if (purchase.error) throw new Error(`seed purchase failed: ${purchase.error.message}`)
-  const purchaseLine = await service
-    .from('purchase_lines')
-    .select('id')
-    .eq('purchase_id', purchase.data!.id)
-    .single()
-  const lot = await service
-    .from('acquisition_lots')
-    .select('id, holding_id')
-    .eq('purchase_line_id', purchaseLine.data!.id)
-    .single()
-  const holding = await service
-    .from('holdings')
-    .select('id')
-    .eq('id', lot.data!.holding_id)
-    .single()
+  const purchase = mustSingle(
+    'seed purchase',
+    await clientB
+      .rpc('create_purchase', {
+        p_purchased_on: today,
+        p_currency: 'NOK',
+        p_lines: [
+          {
+            line_type: 'card',
+            card_variant_id: seedCatalog.charizardVariantId,
+            condition: 'NM',
+            quantity: 2,
+            unit_price_minor: 10000,
+          },
+        ],
+      })
+      .single<{ id: string }>(),
+  )
+  const purchaseLine = mustSingle(
+    'seed purchase line lookup',
+    await service
+      .from('purchase_lines')
+      .select('id')
+      .eq('purchase_id', purchase.id)
+      .single<{ id: string }>(),
+  )
+  const lot = mustSingle(
+    'seed lot lookup',
+    await service
+      .from('acquisition_lots')
+      .select('id, holding_id')
+      .eq('purchase_line_id', purchaseLine.id)
+      .single<{ id: string; holding_id: string }>(),
+  )
+  const holding = mustSingle(
+    'seed holding lookup',
+    await service.from('holdings').select('id').eq('id', lot.holding_id).single<{ id: string }>(),
+  )
 
-  const sale = await clientB
-    .rpc('create_sale', {
-      p_idempotency_key: crypto.randomUUID(),
-      p_sold_on: today,
-      p_currency: 'NOK',
-      p_lines: [{ lot_id: lot.data!.id, quantity: 1, unit_gross_minor: 15000 }],
-    })
-    .single<{ id: string }>()
-  if (sale.error) throw new Error(`seed sale failed: ${sale.error.message}`)
-  const saleLine = await service.from('sale_lines').select('id').eq('sale_id', sale.data!.id).single()
-  const disposal = await service
-    .from('lot_disposals')
-    .select('id')
-    .eq('lot_id', lot.data!.id)
-    .single()
+  const sale = mustSingle(
+    'seed sale',
+    await clientB
+      .rpc('create_sale', {
+        p_idempotency_key: crypto.randomUUID(),
+        p_sold_on: today,
+        p_currency: 'NOK',
+        p_lines: [{ lot_id: lot.id, quantity: 1, unit_gross_minor: 15000 }],
+      })
+      .single<{ id: string }>(),
+  )
+  const saleLine = mustSingle(
+    'seed sale line lookup',
+    await service.from('sale_lines').select('id').eq('sale_id', sale.id).single<{ id: string }>(),
+  )
+  const disposal = mustSingle(
+    'seed disposal lookup',
+    await service.from('lot_disposals').select('id').eq('lot_id', lot.id).single<{ id: string }>(),
+  )
 
-  const sealedPurchase = await clientB
-    .rpc('create_purchase', {
-      p_purchased_on: today,
-      p_currency: 'NOK',
-      p_lines: [
-        { line_type: 'sealed', sealed_product_id: seedCatalog.sealedProductId, quantity: 1, unit_price_minor: 70000 },
-      ],
-    })
-    .single<{ id: string }>()
-  if (sealedPurchase.error) throw new Error(`seed sealed purchase failed: ${sealedPurchase.error.message}`)
-  const sealedLine = await service
-    .from('purchase_lines')
-    .select('id')
-    .eq('purchase_id', sealedPurchase.data!.id)
-    .single()
-  const sealedLot = await service
-    .from('acquisition_lots')
-    .select('id')
-    .eq('purchase_line_id', sealedLine.data!.id)
-    .single()
-  const opening = await clientB
-    .rpc('create_opening', { p_source_lot_id: sealedLot.data!.id, p_quantity: 1 })
-    .single<{ id: string }>()
-  if (opening.error) throw new Error(`seed opening failed: ${opening.error.message}`)
+  const sealedPurchase = mustSingle(
+    'seed sealed purchase',
+    await clientB
+      .rpc('create_purchase', {
+        p_purchased_on: today,
+        p_currency: 'NOK',
+        p_lines: [
+          {
+            line_type: 'sealed',
+            sealed_product_id: seedCatalog.sealedProductId,
+            quantity: 1,
+            unit_price_minor: 70000,
+          },
+        ],
+      })
+      .single<{ id: string }>(),
+  )
+  const sealedLine = mustSingle(
+    'seed sealed line lookup',
+    await service
+      .from('purchase_lines')
+      .select('id')
+      .eq('purchase_id', sealedPurchase.id)
+      .single<{ id: string }>(),
+  )
+  const sealedLot = mustSingle(
+    'seed sealed lot lookup',
+    await service
+      .from('acquisition_lots')
+      .select('id')
+      .eq('purchase_line_id', sealedLine.id)
+      .single<{ id: string }>(),
+  )
+  const opening = mustSingle(
+    'seed opening',
+    await clientB.rpc('create_opening', { p_source_lot_id: sealedLot.id, p_quantity: 1 }).single<{
+      id: string
+    }>(),
+  )
 
-  const manualValuation = await service
+  const existingValuation = await service
     .from('manual_valuations')
     .select('id')
-    .eq('holding_id', holding.data!.id)
-    .maybeSingle()
-  let manualValuationId = manualValuation.data?.id
-  if (!manualValuationId) {
+    .eq('holding_id', holding.id)
+    .maybeSingle<{ id: string }>()
+  let manualValuationId = existingValuation.data?.id
+  if (manualValuationId === undefined) {
     const mv = await clientB.rpc('set_manual_valuation', {
-      p_holding_id: holding.data!.id,
+      p_holding_id: holding.id,
       p_value_minor: 99900,
     })
     if (mv.error) throw new Error(`seed manual valuation failed: ${mv.error.message}`)
-    const refetch = await service
-      .from('manual_valuations')
-      .select('id')
-      .eq('holding_id', holding.data!.id)
-      .single()
-    manualValuationId = refetch.data!.id
+    manualValuationId = mustSingle(
+      'seed manual valuation refetch',
+      await service
+        .from('manual_valuations')
+        .select('id')
+        .eq('holding_id', holding.id)
+        .single<{ id: string }>(),
+    ).id
   }
 
   const holdingTagResult = await service
     .from('holding_tags')
-    .insert({ user_id: userB.id, holding_id: holding.data!.id, tag_id: tag.data!.id })
+    .insert({ user_id: userB.id, holding_id: holding.id, tag_id: tag.id })
     .select('holding_id, tag_id')
     .single()
-  if (holdingTagResult.error) throw new Error(`seed holding_tags failed: ${holdingTagResult.error.message}`)
+  if (holdingTagResult.error)
+    throw new Error(`seed holding_tags failed: ${holdingTagResult.error.message}`)
 
   const targets: { table: string; id: string; idCol: string }[] = [
-    { table: 'tags', id: tag.data!.id, idCol: 'id' },
-    { table: 'retailers', id: retailer.data!.id, idCol: 'id' },
-    { table: 'storage_locations', id: storageLocation.data!.id, idCol: 'id' },
-    { table: 'custom_collections', id: collection.data!.id, idCol: 'id' },
-    { table: 'purchases', id: purchase.data!.id, idCol: 'id' },
-    { table: 'purchase_lines', id: purchaseLine.data!.id, idCol: 'id' },
-    { table: 'acquisition_lots', id: lot.data!.id, idCol: 'id' },
-    { table: 'holdings', id: holding.data!.id, idCol: 'id' },
-    { table: 'sales', id: sale.data!.id, idCol: 'id' },
-    { table: 'sale_lines', id: saleLine.data!.id, idCol: 'id' },
-    { table: 'lot_disposals', id: disposal.data!.id, idCol: 'id' },
-    { table: 'openings', id: opening.data!.id, idCol: 'id' },
-    { table: 'manual_valuations', id: manualValuationId!, idCol: 'id' },
-    { table: 'acquisition_lots', id: sealedLot.data!.id, idCol: 'id' },
-    { table: 'holding_tags', id: holding.data!.id, idCol: 'holding_id' },
+    { table: 'tags', id: tag.id, idCol: 'id' },
+    { table: 'retailers', id: retailer.id, idCol: 'id' },
+    { table: 'storage_locations', id: storageLocation.id, idCol: 'id' },
+    { table: 'custom_collections', id: collection.id, idCol: 'id' },
+    { table: 'purchases', id: purchase.id, idCol: 'id' },
+    { table: 'purchase_lines', id: purchaseLine.id, idCol: 'id' },
+    { table: 'acquisition_lots', id: lot.id, idCol: 'id' },
+    { table: 'holdings', id: holding.id, idCol: 'id' },
+    { table: 'sales', id: sale.id, idCol: 'id' },
+    { table: 'sale_lines', id: saleLine.id, idCol: 'id' },
+    { table: 'lot_disposals', id: disposal.id, idCol: 'id' },
+    { table: 'openings', id: opening.id, idCol: 'id' },
+    { table: 'manual_valuations', id: manualValuationId, idCol: 'id' },
+    { table: 'acquisition_lots', id: sealedLot.id, idCol: 'id' },
+    { table: 'holding_tags', id: holding.id, idCol: 'holding_id' },
   ]
 
-  console.log(`Seeded ${targets.length} real B-owned rows across ${new Set(targets.map((t) => t.table)).size} tables.`)
+  console.log(
+    `Seeded ${targets.length} real B-owned rows across ${new Set(targets.map((t) => t.table)).size} tables.`,
+  )
 
   // ---- Part 1: direct select/update/delete against every real B row, as A and as anon ----
   for (const { table, id, idCol } of targets) {
@@ -189,23 +245,42 @@ async function main() {
       const who = client === clientA ? 'A' : 'anon'
 
       const sel = await client.from(table).select('*').eq(idCol, id)
-      note(`${who} SELECT ${table}#${id}`, !sel.error && (sel.data?.length ?? 0) > 0)
+      note(`${who} SELECT ${table}#${id}`, !sel.error && sel.data.length > 0)
 
-      const upd = await client.from(table).update({ updated_at: new Date().toISOString() }).eq(idCol, id).select()
-      note(`${who} UPDATE ${table}#${id}`, !upd.error && (upd.data?.length ?? 0) > 0)
+      const upd = await client
+        .from(table)
+        .update({ updated_at: new Date().toISOString() })
+        .eq(idCol, id)
+        .select()
+      note(`${who} UPDATE ${table}#${id}`, !upd.error && upd.data.length > 0)
 
       const del = await client.from(table).delete().eq(idCol, id).select()
-      note(`${who} DELETE ${table}#${id}`, !del.error && (del.data?.length ?? 0) > 0)
+      note(`${who} DELETE ${table}#${id}`, !del.error && del.data.length > 0)
     }
   }
 
   // ---- Part 2: FK-spoofing inserts — A references B's real parent ids as a child row ----
-  const spoofAttempts: { label: string; run: () => PromiseLike<{ error: unknown; data: unknown }> }[] = [
+  const spoofAttempts: {
+    label: string
+    run: () => PromiseLike<{ error: ErrorLike | null; data: unknown[] | null }>
+  }[] = [
     {
       label: 'A inserts holding_tags under B holding + A tag',
       run: async () => {
-        const aTag = await service.from('tags').insert({ user_id: userA.id, name: 'p120-a-tag' }).select('id').single()
-        return clientA.from('holding_tags').insert({ holding_id: holding.data!.id, tag_id: aTag.data!.id }).select()
+        const aTag = mustSingle(
+          'seed A tag for spoof',
+          await service
+            .from('tags')
+            .insert({ user_id: userA.id, name: 'p120-a-tag' })
+            .select('id')
+            .single<{
+              id: string
+            }>(),
+        )
+        return clientA
+          .from('holding_tags')
+          .insert({ holding_id: holding.id, tag_id: aTag.id })
+          .select()
       },
     },
     {
@@ -215,7 +290,7 @@ async function main() {
           .from('manual_valuations')
           .insert({
             user_id: userA.id,
-            holding_id: holding.data!.id,
+            holding_id: holding.id,
             value_minor: 1,
             value_nok_minor: 1,
           })
@@ -228,7 +303,7 @@ async function main() {
           .from('purchase_lines')
           .insert({
             user_id: userA.id,
-            purchase_id: purchase.data!.id,
+            purchase_id: purchase.id,
             line_type: 'card',
             quantity: 1,
             unit_price_minor: 1,
@@ -244,8 +319,8 @@ async function main() {
           .from('sale_lines')
           .insert({
             user_id: userA.id,
-            sale_id: sale.data!.id,
-            lot_id: lot.data!.id,
+            sale_id: sale.id,
+            lot_id: lot.id,
             quantity: 1,
             unit_gross_minor: 1,
             line_gross_minor: 1,
@@ -255,28 +330,29 @@ async function main() {
   ]
   for (const { label, run } of spoofAttempts) {
     const { error, data } = await run()
-    note(label, !error && Array.isArray(data) && data.length > 0)
+    note(label, !error && data !== null && data.length > 0)
   }
 
   // ---- Part 3: cross-user RPC calls against B's real resource ids ----
   const rpcAttempts: {
     label: string
-    run: () => PromiseLike<{ error: { message: string } | null; data: unknown }>
+    run: () => PromiseLike<{ error: ErrorLike | null; data: unknown }>
   }[] = [
     {
       label: 'A calls set_manual_valuation on B holding',
-      run: () => clientA.rpc('set_manual_valuation', { p_holding_id: holding.data!.id, p_value_minor: 1 }),
+      run: () =>
+        clientA.rpc('set_manual_valuation', { p_holding_id: holding.id, p_value_minor: 1 }),
     },
     {
       label: 'A calls void_opening on B opening',
-      run: () => clientA.rpc('void_opening', { p_opening_id: opening.data!.id }),
+      run: () => clientA.rpc('void_opening', { p_opening_id: opening.id }),
     },
     {
       label: 'A calls reduce_holding_quantity on B holding',
       run: () =>
         clientA.rpc('reduce_holding_quantity', {
-          p_holding_id: holding.data!.id,
-          p_lot_reductions: [{ lot_id: lot.data!.id, remove_quantity: 1 }],
+          p_holding_id: holding.id,
+          p_lot_reductions: [{ lot_id: lot.id, remove_quantity: 1 }],
         }),
     },
     {
@@ -286,30 +362,35 @@ async function main() {
           p_idempotency_key: crypto.randomUUID(),
           p_sold_on: today,
           p_currency: 'NOK',
-          p_lines: [{ lot_id: lot.data!.id, quantity: 1, unit_gross_minor: 1 }],
+          p_lines: [{ lot_id: lot.id, quantity: 1, unit_gross_minor: 1 }],
         }),
     },
     {
       label: 'A calls create_opening against B sealed lot',
-      run: () => clientA.rpc('create_opening', { p_source_lot_id: sealedLot.data!.id, p_quantity: 1 }),
+      run: () => clientA.rpc('create_opening', { p_source_lot_id: sealedLot.id, p_quantity: 1 }),
     },
     {
       label: 'A calls get_opening for B opening (read-side info leak check)',
-      run: () => clientA.rpc('get_opening', { p_opening_id: opening.data!.id }),
+      run: () => clientA.rpc('get_opening', { p_opening_id: opening.id }),
     },
     {
       label: 'A calls reconcile_opening_cost on B opening',
-      run: () => clientA.rpc('reconcile_opening_cost', { p_opening_id: opening.data!.id, p_real_source_lot_id: lot.data!.id }),
+      run: () =>
+        clientA.rpc('reconcile_opening_cost', {
+          p_opening_id: opening.id,
+          p_real_source_lot_id: lot.id,
+        }),
     },
     {
       label: 'anon calls set_manual_valuation on B holding',
-      run: () => anon.rpc('set_manual_valuation', { p_holding_id: holding.data!.id, p_value_minor: 1 }),
+      run: () => anon.rpc('set_manual_valuation', { p_holding_id: holding.id, p_value_minor: 1 }),
     },
   ]
   const rpcResults: { label: string; error: string | null; leaked: boolean }[] = []
   for (const { label, run } of rpcAttempts) {
     const { error, data } = await run()
-    const gotData = data !== null && data !== undefined && !(Array.isArray(data) && data.length === 0)
+    const gotData =
+      data !== null && data !== undefined && !(Array.isArray(data) && data.length === 0)
     rpcResults.push({ label, error: error?.message ?? null, leaked: !error && gotData })
     note(label, !error && gotData)
   }
@@ -338,7 +419,7 @@ async function main() {
     for (let i = 0; i < GUESSES_PER_TABLE; i++) {
       const randomId = crypto.randomUUID()
       const { data, error } = await clientA.from(table).select('*').eq('id', randomId)
-      note(`A blind-guess SELECT ${table}#${randomId}`, !error && (data?.length ?? 0) > 0)
+      note(`A blind-guess SELECT ${table}#${randomId}`, !error && data.length > 0)
     }
   }
 
@@ -356,7 +437,7 @@ async function main() {
   await service.auth.admin.deleteUser(userB.id)
 }
 
-main().catch((err) => {
+main().catch((err: unknown) => {
   console.error(err)
   process.exit(1)
 })

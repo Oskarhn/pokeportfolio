@@ -51,9 +51,15 @@ const BOUNDARY_POOL: bigint[] = [
   BIGINT_MAX,
 ]
 
+function at<T>(arr: readonly T[], idx: number): T {
+  const v = arr[idx]
+  if (v === undefined) throw new Error(`index ${idx} out of bounds (length ${arr.length})`)
+  return v
+}
+
 function randomBigint(): bigint {
   // 40% boundary-pool value, 60% genuinely random magnitude (log-uniform-ish via random bit width).
-  if (rand() < 0.4) return BOUNDARY_POOL[randInt(BOUNDARY_POOL.length)]!
+  if (rand() < 0.4) return at(BOUNDARY_POOL, randInt(BOUNDARY_POOL.length))
   const bits = 1 + randInt(63) // 1..63 bits
   let v = 0n
   for (let i = 0; i < bits; i += 30) {
@@ -66,7 +72,7 @@ function randomWeights(n: number): bigint[] {
   const weights: bigint[] = []
   for (let i = 0; i < n; i++) weights.push(randomBigint())
   // Deliberately force ties in a slice of cases: duplicate one weight.
-  if (n >= 2 && rand() < 0.2) weights[randInt(n)] = weights[0]!
+  if (n >= 2 && rand() < 0.2) weights[randInt(n)] = at(weights, 0)
   return weights
 }
 
@@ -130,7 +136,10 @@ const BATCH = 2000
 for (let i = 0; i < cases.length; i += BATCH) {
   const chunk = cases.slice(i, i + BATCH)
   const values = chunk
-    .map((c) => `(${c.id}, ${c.total}, ${bigintArrayLiteral(c.weights)}, ${bigintArrayLiteral(c.expected)})`)
+    .map(
+      (c) =>
+        `(${c.id}, ${c.total}, ${bigintArrayLiteral(c.weights)}, ${bigintArrayLiteral(c.expected)})`,
+    )
     .join(',\n')
   sqlLines.push(`insert into p120_lr_cases (case_id, total, weights, expected) values\n${values};`)
 }
@@ -163,7 +172,7 @@ sqlLines.push(
 )
 sqlLines.push(
   'select ' +
-    "count(*) filter (where r.err is not null) as function_errors, " +
+    'count(*) filter (where r.err is not null) as function_errors, ' +
     'count(*) filter (where r.err is null and r.actual is distinct from c.expected) as mismatch_count, ' +
     'count(*) filter (where r.err is null and array_length(r.actual, 1) <> array_length(c.weights, 1)) as wrong_length, ' +
     'count(*) filter (where r.err is null and (select sum(x) from unnest(r.actual) x) <> c.total) as wrong_sum, ' +

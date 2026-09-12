@@ -127,12 +127,15 @@ async function runOneCase(
     currency: string
   }>()
 
-  if (error || !purchase) {
-    failures.push({ seed, case: sample, reason: `create_purchase errored: ${error?.message}` })
+  if (error) {
+    failures.push({ seed, case: sample, reason: `create_purchase errored: ${error.message}` })
     return
   }
 
-  const expectedSubtotal = lines.reduce((acc: number, l: LineSpec) => acc + l.unit_price_minor * l.quantity, 0)
+  const expectedSubtotal = lines.reduce(
+    (acc: number, l: LineSpec) => acc + l.unit_price_minor * l.quantity,
+    0,
+  )
   const expectedTotal = expectedSubtotal + shipping_minor + customs_minor - discount_minor
 
   if (purchase.subtotal_minor !== expectedSubtotal) {
@@ -153,14 +156,25 @@ async function runOneCase(
     failures.push({ seed, case: sample, reason: `currency mismatch: got ${purchase.currency}` })
   }
 
+  interface DbLine {
+    id: string
+    line_type: string
+    quantity: number
+    unit_price_minor: number
+    line_total_minor: number
+    allocated_shipping_minor: number
+    allocated_customs_minor: number
+    allocated_discount_minor: number
+  }
   const { data: dbLines, error: linesError } = await service
     .from('purchase_lines')
     .select(
       'id, line_type, quantity, unit_price_minor, line_total_minor, allocated_shipping_minor, allocated_customs_minor, allocated_discount_minor',
     )
     .eq('purchase_id', purchase.id)
-  if (linesError || !dbLines) {
-    failures.push({ seed, case: sample, reason: `lines fetch failed: ${linesError?.message}` })
+    .overrideTypes<DbLine[], { merge: false }>()
+  if (linesError) {
+    failures.push({ seed, case: sample, reason: `lines fetch failed: ${linesError.message}` })
     return
   }
   if (dbLines.length !== lines.length) {
@@ -176,20 +190,38 @@ async function runOneCase(
     }
   }
   // F6: allocations sum exactly back to their own totals.
-  const sumShip = dbLines.reduce((a: number, l: any) => a + l.allocated_shipping_minor, 0)
-  const sumCustoms = dbLines.reduce((a: number, l: any) => a + l.allocated_customs_minor, 0)
-  const sumDiscount = dbLines.reduce((a: number, l: any) => a + l.allocated_discount_minor, 0)
+  const sumShip = dbLines.reduce((a: number, l: DbLine) => a + l.allocated_shipping_minor, 0)
+  const sumCustoms = dbLines.reduce((a: number, l: DbLine) => a + l.allocated_customs_minor, 0)
+  const sumDiscount = dbLines.reduce((a: number, l: DbLine) => a + l.allocated_discount_minor, 0)
   if (sumShip !== shipping_minor) {
-    failures.push({ seed, case: sample, reason: `allocated_shipping sum ${sumShip} != ${shipping_minor}` })
+    failures.push({
+      seed,
+      case: sample,
+      reason: `allocated_shipping sum ${sumShip} != ${shipping_minor}`,
+    })
   }
   if (sumCustoms !== customs_minor) {
-    failures.push({ seed, case: sample, reason: `allocated_customs sum ${sumCustoms} != ${customs_minor}` })
+    failures.push({
+      seed,
+      case: sample,
+      reason: `allocated_customs sum ${sumCustoms} != ${customs_minor}`,
+    })
   }
   if (sumDiscount !== discount_minor) {
-    failures.push({ seed, case: sample, reason: `allocated_discount sum ${sumDiscount} != ${discount_minor}` })
+    failures.push({
+      seed,
+      case: sample,
+      reason: `allocated_discount sum ${sumDiscount} != ${discount_minor}`,
+    })
   }
 
   // Lots exist for card/sealed lines only, with matching quantity.
+  interface DbLot {
+    id: string
+    quantity: number
+    quantity_remaining: number
+    purchase_line_id: string
+  }
   const { data: lots, error: lotsError } = await service
     .from('acquisition_lots')
     .select('id, quantity, quantity_remaining, purchase_line_id')
@@ -197,20 +229,25 @@ async function runOneCase(
       'purchase_line_id',
       dbLines.map((l) => l.id),
     )
+    .overrideTypes<DbLot[], { merge: false }>()
   if (lotsError) {
     failures.push({ seed, case: sample, reason: `lots fetch failed: ${lotsError.message}` })
     return
   }
   const expectedLotCount = lines.filter((l) => l.line_type !== 'accessory').length
-  if (lots!.length !== expectedLotCount) {
+  if (lots.length !== expectedLotCount) {
     failures.push({
       seed,
       case: sample,
-      reason: `lot count mismatch: got ${lots!.length}, expected ${expectedLotCount}`,
+      reason: `lot count mismatch: got ${lots.length}, expected ${expectedLotCount}`,
     })
   }
-  for (const lot of lots!) {
-    const parentLine = dbLines.find((l) => l.id === lot.purchase_line_id)!
+  for (const lot of lots) {
+    const parentLine = dbLines.find((l) => l.id === lot.purchase_line_id)
+    if (!parentLine) {
+      failures.push({ seed, case: sample, reason: `lot ${lot.id} has no matching purchase line` })
+      continue
+    }
     if (lot.quantity !== parentLine.quantity || lot.quantity_remaining !== parentLine.quantity) {
       failures.push({ seed, case: sample, reason: `lot ${lot.id} quantity mismatch` })
     }
@@ -244,7 +281,7 @@ async function main() {
   if (failures.length > 0) process.exit(1)
 }
 
-main().catch((err) => {
+main().catch((err: unknown) => {
   console.error(err)
   process.exit(1)
 })
