@@ -6,6 +6,11 @@ import {
   buildIndexContentPayload,
   truncateDigestHex,
 } from '../../src/domain/scanner/index-content-id'
+import {
+  canonicalizeProjectIdentity,
+  deriveProjectIdentity,
+  LOCAL_PROJECT_IDENTITY_SENTINEL,
+} from '../../src/domain/scanner/checkpoint-identity'
 
 /**
  * P113 §4 — index pointer/generation fault matrix, driven against the REAL built visual-worker
@@ -41,6 +46,35 @@ import {
 const EXPECTED_MODEL_REVISION = 'c2bb04a51fab207c420665f1946016107bffc701'
 const EMBEDDING_DIM = 384
 const POINTER_PATH = '**/scanner-assets/visual-v1/index/current.json'
+
+/**
+ * P122 root cause (mirrors visual-worker.ts's own EXPECTED_SOURCE_PROJECT_REF derivation exactly,
+ * P87 F-22 / P94 N-13): the real worker chunk this file drives is built by the e2e webServer's own
+ * `pnpm build`, which bakes in whatever `VITE_SUPABASE_URL`/`VITE_SUPABASE_PROJECT_REF` this
+ * machine's `.env.local` happens to carry at that moment. On a dev machine configured against the
+ * real hosted project (as this repo has been since its M13 hosted release), that is NOT the
+ * "local/unconfigured" case the gate stays informational for — it is actively enforced, and EVERY
+ * fixture below that reaches this gate (i.e. survives the embeddingDim/modelRevision/schemaVersion/
+ * cardCount checks that run before it) needs a `sourceProjectRef` canonicalizing to a match, or the
+ * worker rejects it for "wrong Supabase project" instead of reaching whichever fault this file is
+ * actually trying to isolate. Every fixture in this file is meant to be self-consistent along every
+ * dimension EXCEPT the one deliberate fault each test names — this default keeps sourceProjectRef
+ * one of those "otherwise valid" dimensions regardless of which Supabase project a given developer's
+ * `.env.local` happens to point at, exactly like `EXPECTED_MODEL_REVISION` above is already kept in
+ * lockstep with the pinned model rather than left to drift.
+ */
+const TEST_CONFIGURED_SUPABASE_URL = process.env.VITE_SUPABASE_URL
+const TEST_IS_LOCAL_OR_UNCONFIGURED =
+  TEST_CONFIGURED_SUPABASE_URL === undefined ||
+  canonicalizeProjectIdentity(TEST_CONFIGURED_SUPABASE_URL) === LOCAL_PROJECT_IDENTITY_SENTINEL
+const TEST_EXPECTED_SOURCE_PROJECT_REF = TEST_IS_LOCAL_OR_UNCONFIGURED
+  ? null
+  : (process.env.VITE_SUPABASE_PROJECT_REF?.toLowerCase() ??
+    canonicalizeProjectIdentity(deriveProjectIdentity(TEST_CONFIGURED_SUPABASE_URL)))
+/** A fixture whose manifest carries this value canonicalizes to a match against whatever THIS
+ *  build actually expects (or is omitted entirely when the gate is informational — matching a
+ *  LEGACY_V1 manifest that predates this field, which the gate also accepts unconditionally). */
+const DEFAULT_TEST_SOURCE_PROJECT_REF = TEST_EXPECTED_SOURCE_PROJECT_REF ?? undefined
 
 function findVisualWorkerChunk(): string {
   const distAssets = fileURLToPath(new URL('../../dist/assets/', import.meta.url))
@@ -95,6 +129,10 @@ interface FixtureOptions {
    *  `rowCount !== cardCount * prototypesPerCard` cross-check (this field is excluded from the
    *  content-id hash, so setting it alone cannot also trip the content-id/checksum gates). */
   manifestRowCountOverride?: number
+  /** P122 — overrides the default (this build's own actually-expected ref, or omitted when the
+   *  gate is informational). Pass an explicit mismatched value to exercise the gate itself, or
+   *  `null` to force a genuinely absent field regardless of this build's own configuration. */
+  sourceProjectRef?: string | null
 }
 
 interface Fixture {
@@ -138,7 +176,10 @@ function buildFixture(opts: FixtureOptions = {}): Fixture {
     quantization: opts.quantization ?? 'int8',
     cardCount,
     coverage,
-    sourceProjectRef: undefined,
+    sourceProjectRef:
+      opts.sourceProjectRef === null
+        ? undefined
+        : (opts.sourceProjectRef ?? DEFAULT_TEST_SOURCE_PROJECT_REF),
     sourceEnglishActiveCount: undefined,
     schemaVersion: opts.schemaVersion,
     payloadFormat: opts.payloadFormat,
@@ -514,6 +555,24 @@ test.describe('visual index fault matrix (P113 §4) — real worker, synthetic g
     })
     const result = await loadWorkerAgainstFixture(page, fixture)
     expectIndexUnavailable(result, 'impossible coverage')
+  })
+
+  // P122 — this gate (P87 F-22/P94 N-13, visual-worker.ts's own EXPECTED_SOURCE_PROJECT_REF check)
+  // had zero dedicated coverage in this file despite being a genuine data-integrity control: every
+  // OTHER fixture here defaults sourceProjectRef to whatever this build actually expects (see
+  // DEFAULT_TEST_SOURCE_PROJECT_REF above), which is correct for isolating unrelated faults but
+  // means the mismatch path itself was never actually exercised. Only meaningful when this build
+  // has a real hosted project configured — skipped, not vacuously passed, when it does not.
+  test('manifest sourceProjectRef mismatch — refuses an index built for the wrong Supabase project', async ({
+    page,
+  }) => {
+    test.skip(
+      TEST_IS_LOCAL_OR_UNCONFIGURED,
+      'no real hosted project configured for this build — the gate is informational, not enforced, so a mismatch cannot be observed',
+    )
+    const fixture = buildFixture({ sourceProjectRef: 'someotherproject.supabase.co' })
+    const result = await loadWorkerAgainstFixture(page, fixture)
+    expectIndexUnavailable(result, 'wrong supabase project')
   })
 
   test('a genuinely valid LEGACY_V1 synthetic generation loads successfully end to end (legacy control case)', async ({

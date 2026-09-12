@@ -131,15 +131,12 @@ describe('worker-asset-cache-through fault matrix (P119 §18)', () => {
     expect(await response.text()).toBe('fresh')
   })
 
-  it('cache.match rejects on a GET: PROPAGATES rather than degrading to network — a real gap inherited unchanged from the pre-extraction code, not introduced by this refactor', async () => {
-    // This is the one case this fault matrix EXISTS to characterize honestly rather than assume:
-    // `caches.open` rejecting was already handled gracefully (try/catch in getCache()), but
-    // `cache.match` rejecting was never wrapped either before or after this extraction — proven
-    // here rather than asserted from reading the source alone. See this test file's own header
-    // and worker-asset-cache-through.ts's `cachedFetch` comment for the disposition: flagged as a
-    // real, disclosed gap (not silently patched over during what was meant to be a pure
-    // extraction), left for a follow-up decision rather than fixed in the same commit as the
-    // extraction itself.
+  it('P122: cache.match rejects on a GET — degrades to a plain network fetch, matching caches.open()’s own already-graceful behavior and this module’s own documented contract', async () => {
+    // P119 disclosed this as a gap (match rejecting propagated instead of degrading); P122
+    // resolved it as a real bug against this module's OWN interface doc (CacheThroughFetch.fetch
+    // already promised "any cache-layer failure ... degrades to a plain network fetch"), not a
+    // deliberate design choice — CacheStorage corruption/unavailability must never prevent a scan
+    // whose network path is healthy.
     const realFetch = vi.fn().mockResolvedValue(fakeResponse('network'))
     const putCalls: unknown[][] = []
     const instance = createCacheThroughFetch({
@@ -147,10 +144,12 @@ describe('worker-asset-cache-through fault matrix (P119 §18)', () => {
       cachesOpen: makeFakeCachesOpen({ matchRejects: true }, putCalls),
       cacheName: 'test-cache',
     })
-    await expect(instance.fetch('/scanner-assets/visual-v1/model/config.json')).rejects.toThrow(
-      'cache.match rejected (mock)',
-    )
-    expect(realFetch).not.toHaveBeenCalled()
+    const response = await instance.fetch('/scanner-assets/visual-v1/model/config.json')
+    expect(await response.text()).toBe('network')
+    expect(realFetch).toHaveBeenCalledTimes(1)
+    // The response still gets written back for next time — a rejecting match() must not also
+    // disable the write-back half of the cache-through contract.
+    expect(putCalls).toHaveLength(1)
   })
 
   it('no-store bypasses BOTH the cache lookup and the write-back, even on a cache hit that would otherwise have served', async () => {

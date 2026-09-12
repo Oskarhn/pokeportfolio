@@ -75,13 +75,22 @@ export function createCacheThroughFetch(deps: CacheThroughDeps): CacheThroughFet
       init === undefined || init.method === undefined || init.method === 'GET'
     const cache = bypassCache ? null : await getCache()
     if (cache !== null && isCacheableRequest) {
-      // FAITHFUL to the pre-extraction behavior (visual-worker.ts's original installFetchProbe):
-      // NOT wrapped in try/catch here. Whether a rejecting `cache.match` should degrade
-      // gracefully to a network fetch, like a rejecting `caches.open` already does, or whether
-      // that gap is itself a real bug, is exactly what P119's cache-fault-matrix tests against
-      // this module are for — deciding that by testing it, not by silently changing behavior
-      // during what is meant to be a pure extraction.
-      const cached = await cache.match(input)
+      // P122 (resolving the P119-disclosed gap): `cache.match()` rejecting degrades to a plain
+      // network fetch, exactly like `caches.open()` rejecting already does above — this module's
+      // own interface doc (`CacheThroughFetch.fetch`, this file) already promised "any cache-layer
+      // failure (open/match/put rejecting) degrades to a plain network fetch rather than ever
+      // failing the request itself"; leaving `match()` unwrapped was a gap against that stated
+      // contract, not a deliberate design choice — CacheStorage is an optimization layer here, and
+      // its corruption/unavailability must never prevent a scan whose network path is healthy
+      // (prompt §36 posture: "a missing optimization is never an error", already applied to
+      // `open()`/`put()` in this same function). A well-formed cache HIT still returns exactly as
+      // before; only a rejection changes behavior.
+      let cached: Response | undefined
+      try {
+        cached = await cache.match(input)
+      } catch {
+        cached = undefined
+      }
       if (cached !== undefined) {
         const ms = performance.now() - start
         const bytesHeader = cached.headers.get('content-length')
