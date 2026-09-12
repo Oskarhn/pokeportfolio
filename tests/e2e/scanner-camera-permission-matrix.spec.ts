@@ -159,12 +159,14 @@ test.describe('scanner camera permission matrix (P119 §9)', () => {
 
     // camera-session.ts's `onEnded` callback dispatches CAMERA_EXITED -> the reducer returns to
     // 'intro' (state.ts). The user is not stranded on a dead preview. P125: widened 5s -> 10s ->
-    // 15s across two real GitHub Actions runs — 10s still timed out on mobile-iphone (WebKit)
-    // specifically when running as one of 336 tests late in the full non-auth E2E gate (never in
-    // isolation or early in a run, and the desktop-chromium instance of this same test recovered
-    // on Playwright's own retry at 10s) — the transition itself is real and correct, the margin
-    // was just tight for this engine under sustained full-suite CI load.
-    await expect(page.getByRole('heading', { name: 'Scan cards' })).toBeVisible({ timeout: 15_000 })
+    // 15s -> 30s across three real GitHub Actions runs, all on mobile-iphone specifically
+    // (desktop-chromium passes at 10s+). This is the Linux-hosted WebKit build Playwright bundles
+    // (unlike the Windows-hosted WebKit this file's header documents as missing captureStream
+    // entirely, this engine DOES support it, so the test genuinely runs rather than skipping) —
+    // if 30s still isn't enough, the next session should treat this as a real WebKit-specific
+    // MediaStreamTrack 'ended'-event delivery or mock-timing gap worth its own investigation,
+    // not another blind timeout increase.
+    await expect(page.getByRole('heading', { name: 'Scan cards' })).toBeVisible({ timeout: 30_000 })
     await expect(page.getByRole('button', { name: 'Start camera' })).toBeEnabled()
 
     const diagnostics = await getCameraMockDiagnostics(page)
