@@ -1,6 +1,71 @@
 import type { CurrencyCode } from '../../domain/currency'
 import { localTodayIso } from '../../platform/local-date'
-import { newLineDraft, type LineDraft } from './LineEditor'
+import type { CardCondition, Grader, GradingState, SealedIntent } from '../../data/collection'
+import type { LineType, SpendClass } from '../../data/purchases'
+
+/**
+ * P125: `LineDraft`/`newLineDraft` moved here from `LineEditor.tsx` (originally defined there,
+ * imported back by this module). Both are pure — no data-layer or component dependency — but
+ * living inside a `.tsx` component file that itself imports `../../data/catalog` (which throws at
+ * module-eval time without `VITE_SUPABASE_URL`/`VITE_SUPABASE_PUBLISHABLE_KEY`) meant importing
+ * `newLineDraft` here pulled that whole chain into any test — including this file's own
+ * `purchase-form-state-property.test.ts` — that imports only this "pure state" module. CI's
+ * `pnpm test` step deliberately never sets those env vars (only the later `Build` step does; see
+ * `.github/workflows/ci.yml`), so this surfaced as a real Vitest module-load failure there. Moving
+ * the definitions into this already-pure module and having `LineEditor.tsx` import them back fixes
+ * the dependency direction: pure state no longer depends on a UI component file.
+ */
+export interface LineDraft {
+  id: string
+  lineType: LineType
+  cardMode: 'catalog' | 'manual'
+  cardVariantId: string | null
+  cardDisplayName: string
+  manualCardName: string
+  sealedProductId: string | null
+  sealedProductDisplayName: string
+  sealedIntent: SealedIntent
+  gradingState: GradingState
+  condition: CardCondition
+  grader: Grader
+  grade: string
+  certNumber: string
+  manualValue: string
+  description: string
+  quantity: string
+  unitPrice: string
+  spendClassOverride: SpendClass | ''
+  storageLocationId: string
+  isFavorite: boolean
+}
+
+let draftCounter = 0
+export function newLineDraft(lineType: LineType = 'card'): LineDraft {
+  draftCounter += 1
+  return {
+    id: `line-${Date.now()}-${draftCounter}`,
+    lineType,
+    cardMode: 'catalog',
+    cardVariantId: null,
+    cardDisplayName: '',
+    manualCardName: '',
+    sealedProductId: null,
+    sealedProductDisplayName: '',
+    sealedIntent: 'undecided',
+    gradingState: 'raw',
+    condition: 'NM',
+    grader: 'psa',
+    grade: '',
+    certNumber: '',
+    manualValue: '',
+    description: '',
+    quantity: '1',
+    unitPrice: '',
+    spendClassOverride: '',
+    storageLocationId: '',
+    isFavorite: false,
+  }
+}
 
 /**
  * P124: pure state extraction for `PurchaseFormPage`, mirroring `sale-form-state.ts`'s pattern —

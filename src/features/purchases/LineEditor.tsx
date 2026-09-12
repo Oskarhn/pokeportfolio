@@ -11,7 +11,6 @@ import {
   SEALED_INTENT_LABEL,
   type CardCondition,
   type Grader,
-  type GradingState,
   type SealedIntent,
 } from '../../data/collection'
 import { searchSealedProducts, SEALED_PRODUCT_TYPE_LABEL } from '../../data/sealedProducts'
@@ -19,61 +18,12 @@ import type { LineType, SpendClass } from '../../data/purchases'
 import { ChoiceGroup, SelectField, TextField } from '../../ui/form'
 import { useDebouncedValue } from '../../ui/useDebouncedValue'
 import { LINE_TYPE_OPTIONS, SPEND_ONLY_LINE_TYPES } from './labels'
+// P125: LineDraft/newLineDraft moved to purchase-form-state.ts (see that file's own comment) —
+// both are pure and belong with the rest of the extracted form state, not in a component file.
+import type { LineDraft } from './purchase-form-state'
 
 const CONDITIONS: CardCondition[] = ['MT', 'NM', 'EX', 'GD', 'LP', 'PL', 'PO']
 const GRADERS: Grader[] = ['psa', 'cgc', 'bgs', 'ace', 'sgc', 'tag', 'other']
-
-export interface LineDraft {
-  id: string
-  lineType: LineType
-  cardMode: 'catalog' | 'manual'
-  cardVariantId: string | null
-  cardDisplayName: string
-  manualCardName: string
-  sealedProductId: string | null
-  sealedProductDisplayName: string
-  sealedIntent: SealedIntent
-  gradingState: GradingState
-  condition: CardCondition
-  grader: Grader
-  grade: string
-  certNumber: string
-  manualValue: string
-  description: string
-  quantity: string
-  unitPrice: string
-  spendClassOverride: SpendClass | ''
-  storageLocationId: string
-  isFavorite: boolean
-}
-
-let draftCounter = 0
-export function newLineDraft(lineType: LineType = 'card'): LineDraft {
-  draftCounter += 1
-  return {
-    id: `line-${Date.now()}-${draftCounter}`,
-    lineType,
-    cardMode: 'catalog',
-    cardVariantId: null,
-    cardDisplayName: '',
-    manualCardName: '',
-    sealedProductId: null,
-    sealedProductDisplayName: '',
-    sealedIntent: 'undecided',
-    gradingState: 'raw',
-    condition: 'NM',
-    grader: 'psa',
-    grade: '',
-    certNumber: '',
-    manualValue: '',
-    description: '',
-    quantity: '1',
-    unitPrice: '',
-    spendClassOverride: '',
-    storageLocationId: '',
-    isFavorite: false,
-  }
-}
 
 /** One line of the new-purchase multi-line editor (M8 prompt §19-21). Card/sealed identity, raw
  *  vs graded configuration and spend-class override live here; quantity/price/allocation preview
