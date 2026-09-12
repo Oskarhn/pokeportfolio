@@ -37,11 +37,16 @@ test.describe('scanner camera route + visibility soak (P119 §10/§11)', () => {
     page,
   }) => {
     // 200 real page.goto() + acquire + navigate-away cycles comfortably exceeds Playwright's
-    // default 30s test timeout even in isolation, let alone as one of 212 tests in the full suite
+    // default 30s test timeout even in isolation, let alone as one of 336 tests in the full suite
     // (observed failing on exactly that default when run as part of the whole non-auth E2E gate,
     // not when run alone with an explicit --timeout override) — an explicit, generous timeout here
     // makes this test's own real cost independent of whatever timeout the invoking command used.
-    test.setTimeout(180_000)
+    // P125: 180s itself was observed timing out for real on GitHub Actions (and separately, under
+    // local host contention) specifically running as one of the last tests in the full 336-test
+    // non-auth E2E gate, never in isolation or early in a run — raised to 360s for real headroom
+    // without reducing CYCLES (coverage stays the same; only the budget for a genuinely slower,
+    // more-loaded point in a long serial run changes).
+    test.setTimeout(360_000)
     const CYCLES = 200
     await installFakeSession(page)
     await installCameraMock(page, { behavior: 'success' })

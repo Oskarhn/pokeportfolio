@@ -158,8 +158,12 @@ test.describe('scanner camera permission matrix (P119 §9)', () => {
     expect(endedCount).toBe(1)
 
     // camera-session.ts's `onEnded` callback dispatches CAMERA_EXITED -> the reducer returns to
-    // 'intro' (state.ts). The user is not stranded on a dead preview.
-    await expect(page.getByRole('heading', { name: 'Scan cards' })).toBeVisible({ timeout: 5_000 })
+    // 'intro' (state.ts). The user is not stranded on a dead preview. P125: widened from 5s to
+    // 10s (matching this file's own "Capture card" checks) after observing a real GitHub Actions
+    // timeout here specifically when running as one of 336 tests late in the full non-auth E2E
+    // gate, never in isolation or early in a run — the transition itself is real and correct, the
+    // margin was just tight under sustained full-suite CI load.
+    await expect(page.getByRole('heading', { name: 'Scan cards' })).toBeVisible({ timeout: 10_000 })
     await expect(page.getByRole('button', { name: 'Start camera' })).toBeEnabled()
 
     const diagnostics = await getCameraMockDiagnostics(page)
