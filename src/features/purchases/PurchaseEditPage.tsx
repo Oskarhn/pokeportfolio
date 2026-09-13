@@ -15,6 +15,8 @@ import type { CurrencyCode } from '../../domain/currency'
 import { Button, FormMessage, SelectField, TextField } from '../../ui/form'
 import { LINE_TYPE_LABEL } from './labels'
 import { at } from './util'
+import { useUnsavedWorkSnapshot } from '../../platform/unsaved-work-registry'
+import { useIsMountedRef } from '../../platform/use-mounted-ref'
 
 function parseAmount(raw: string, currency: CurrencyCode): bigint {
   const trimmed = raw.trim().replace(',', '.')
@@ -71,7 +73,12 @@ export function PurchaseEditPage() {
     )
   }
 
-  return <PurchaseEditForm purchaseId={purchaseId} detail={detail.data} />
+  // P109: `PurchaseEditForm` seeds every field from `detail` via a lazy `useState` initializer,
+  // which only runs once per mount — a `key={purchaseId}` is required so a same-instance
+  // navigation between two different purchases' edit URLs (no `remountDeps` on this route) forces
+  // a genuine remount instead of reusing purchase A's stale local state against purchase B's id
+  // (mirrors `SaleEditPage`'s own `key={saleId}`, already correct).
+  return <PurchaseEditForm key={purchaseId} purchaseId={purchaseId} detail={detail.data} />
 }
 
 /** Mounted only once `detail` is loaded, so every field initializes from real data via a lazy
@@ -97,6 +104,24 @@ function PurchaseEditForm({ purchaseId, detail }: { purchaseId: string; detail: 
   const [notes, setNotes] = useState(detail.purchase.notes ?? '')
   const [editLines, setEditLines] = useState<EditLineState[]>(() => linesFrom(detail))
   const [error, setError] = useState<string | null>(null)
+
+  // P124: this instance is remounted (not re-rendered) on every purchaseId change via the
+  // `key={purchaseId}` above — but `submit`'s onSuccess/onError below is a closure over THIS
+  // instance's purchaseId, and TanStack Query keeps calling it even after unmount if the network
+  // response arrives late. Guard every side effect in those callbacks so a slow save response for
+  // a purchase the user has already navigated away from can't invalidate/navigate on its behalf.
+  const isMountedRef = useIsMountedRef()
+
+  // F-40 (P89): see PurchaseFormPage's identical registration for why.
+  useUnsavedWorkSnapshot('purchase-edit-form', {
+    purchasedOn,
+    retailerId,
+    shippingInput,
+    customsInput,
+    discountInput,
+    notes,
+    editLines,
+  })
 
   const preview = useMemo(() => {
     try {
@@ -160,15 +185,22 @@ function PurchaseEditForm({ purchaseId, detail }: { purchaseId: string; detail: 
       })
     },
     onSuccess: async () => {
+      // Cache invalidation always runs, even for a stale instance: the edit genuinely happened on
+      // the server, so every cached view (including a later return to THIS purchase) must see it.
       await queryClient.invalidateQueries({ queryKey: ['purchase', purchaseId] })
       await queryClient.invalidateQueries({ queryKey: ['purchases'] })
       await queryClient.invalidateQueries({ queryKey: ['spending-summary'] })
       await queryClient.invalidateQueries({ queryKey: ['portfolio'] })
       // A correction can change amounts/lines behind Home's live ledger and value figures.
       await queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] })
+      // Only the navigation is guarded: a stale instance's success must not yank the user off
+      // whatever purchase/page they have since navigated to and back onto this one.
+      if (!isMountedRef.current) return
       await navigate({ to: '/purchases/$purchaseId', params: { purchaseId } })
     },
     onError: (err: Error) => {
+      // A stale instance's error has nowhere correct to render — the form it belongs to is gone.
+      if (!isMountedRef.current) return
       setError(err.message)
     },
   })
@@ -302,8 +334,11 @@ function PurchaseEditForm({ purchaseId, detail }: { purchaseId: string; detail: 
       ) : null}
 
       <div className="space-y-1.5">
-        <label className="block text-sm font-medium text-slate-300">Notes</label>
+        <label htmlFor="purchase-edit-notes" className="block text-sm font-medium text-slate-300">
+          Notes
+        </label>
         <textarea
+          id="purchase-edit-notes"
           value={notes}
           onChange={(event) => {
             setNotes(event.target.value)

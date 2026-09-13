@@ -7,3 +7,7 @@ pnpm-lock.yaml
 docs/
 *.md
 src/data/database.types.ts
+scripts/scanner-visual-index/.visual-index-cache/
+scripts/scanner-visual-index/generated/
+scripts/scanner-visual-benchmark/.benchmark-cache/
+scripts/scanner-visual-benchmark/reports/

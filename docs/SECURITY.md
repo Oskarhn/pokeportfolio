@@ -708,14 +708,26 @@ an `audit_event`.
 Confirmation dialogs name the concrete downstream impact — "this purchase is the source of an
 opening with 3 tracked pulls" — rather than asking a generic "are you sure?".
 
-**Account deletion** removes all user-private data by cascade and deletes the `auth.users` row.
-Catalog and market data are unaffected. The action requires re-authentication and is irreversible;
-the UI says so and offers an export first. No UI exists yet — the capability arrives with its own
-milestone — but the cascade behind it is real as of M4: every `user_id` foreign key to
-`auth.users` declares `ON DELETE CASCADE`, which M3 had left as the default `NO ACTION`,
-making deletion impossible for any user who owned a single row. `invitations.created_by` is the
-deliberate exception, using `ON DELETE SET NULL`, because an invitation is an audit record of an
-administrative action and outliving its issuer is the point.
+**Account deletion** is intended to remove all user-private data by cascade and delete the
+`auth.users` row. Catalog and market data are unaffected. The action requires re-authentication and
+is irreversible; the UI says so and offers an export first. No UI exists yet — the capability
+arrives with its own milestone. M4 made this real for the tables that existed at the time (every
+`user_id` foreign key to `auth.users` declared `ON DELETE CASCADE`, replacing M3's default
+`NO ACTION`, which had made deletion impossible for any user who owned a single row).
+`invitations.created_by` is the deliberate exception, using `ON DELETE SET NULL`, because an
+invitation is an audit record of an administrative action and outliving its issuer is the point.
+
+**This coverage is stale, not universal — corrected here after P108 verified it directly against
+`pg_constraint` rather than repeating the M4-era claim.** Five tables added after M4 still carry the
+default `NO ACTION` and are NOT reachable by `auth.users` cascade today: `sales`, `sale_lines`,
+`lot_disposals`, `lot_cost_adjustments` (M10), and `sealed_products.created_by_user_id` (M11).
+Every other user-private table — including `holding_tags`/`manual_valuations`/
+`custom_collections`/`custom_collection_members` (M6/M7), which a stale BACKLOG.md entry had also
+listed as gaps — does cascade correctly. `reset_my_portfolio_data()` is unaffected (it deletes this
+exact graph explicitly, in FK-respecting order, rather than relying on cascade); an actual "delete
+my account" RPC, when built, must either delete these five explicitly first or gain its own cascade
+migration — tracked in BACKLOG.md's "Later" table, not fixed here (P108's own scope was making test
+cleanup for this gap honest, not closing the gap itself).
 
 ---
 
@@ -755,6 +767,17 @@ structural isolation for a ≤10-user product is worth one catalog refetch per s
 localStorage participates; in-flight queries cancelled at the boundary cannot repopulate the new
 identity's cache, and an in-flight mutation can only complete under its own user's JWT (disclosed
 residual, D-093 §5). Regression suite: `tests/ui/auth-query-cache.test.ts`.
+
+**Related but separate finding (P111 adversarial review):** this section's own "no localStorage
+participates" claim is scoped to the query-cache boundary specifically — it never covered every
+localStorage write in the app. `src/domain/export/export-reminder.ts`'s "last exported" timestamp
+WAS a genuine unnamespaced localStorage key: user A exporting on a shared browser would satisfy
+(or misreport) user B's own reminder after a sign-out/sign-in, since the key carried no user id.
+Low severity (a UI nudge timestamp, never financial/collection data), but a real cross-account
+leak this section's scope didn't catch. Fixed by namespacing the key per user id
+(`exportReminderStorageKey(userId)`); `pp-theme` remains the one deliberately-shared, non-sensitive
+UI preference. No other unnamespaced localStorage/sessionStorage/IndexedDB write carrying anything
+user-specific was found in the same review pass.
 
 ---
 

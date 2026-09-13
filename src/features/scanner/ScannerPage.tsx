@@ -1,0 +1,2281 @@
+import {
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type ReactNode,
+  type SyntheticEvent,
+} from 'react'
+import { useBlocker, useNavigate } from '@tanstack/react-router'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import type {
+  ExpectedCardRank,
+  ScannerCandidate,
+  ScannerDebugImages,
+  ScannerDiagnostics,
+  ScannerUiController,
+} from './contract'
+import { CameraAcquisitionGuard } from './camera-acquisition-guard'
+import { getScannerUiController } from './controller'
+import { isScannerDebugEnabled } from './debug-flag'
+import { formatExpectedCardRankDiagnostics, formatScannerDiagnostics } from './diagnostics-format'
+import { APP_BUILD_SHA } from '../../platform/build-info'
+import {
+  CAMERA_VIDEO_PROPS,
+  openEnvironmentCamera,
+  stopActiveScannerCamera,
+  visibilityChangeAction,
+  type ManagedCameraSession,
+} from './camera-session'
+import { CaptureStore, captureVideoFrame, decodeImageFile } from './capture'
+import {
+  describeAnalysisError,
+  describeCameraError,
+  describeCaptureError,
+  describeCommitError,
+  describeSearchError,
+  hasMediaDevicesSupport,
+} from './errors'
+import { initialScannerState, scannerReducer } from './state'
+import { setScannerBatchSize } from './unsaved-work'
+import {
+  SCANNER_ORIGINS,
+  todayIso,
+  type ScannerSessionDefaults,
+  initialScannerDefaults,
+  scannerSessionStore,
+} from './session-store'
+import {
+  GUIDE_ASPECT_WIDTH,
+  GUIDE_ASPECT_HEIGHT,
+  GUIDE_HEIGHT_FRACTION,
+  GUIDE_MAX_WIDTH_FRACTION,
+} from './guide-geometry'
+import { getMyProfile, type Profile } from '../../data/profile'
+import { listStorageLocations } from '../../data/collection'
+import { searchCards, type CatalogSearchResult } from '../../data/catalog'
+import { useAuth } from '../../auth/useAuth'
+import { CardImage } from '../catalog/CardImage'
+import { CONDITION_LABEL, ORIGIN_LABEL } from '../collection/labels'
+import type { CardCondition } from '../../data/collection'
+import { Button, ChoiceGroup, FormMessage, TextField } from '../../ui/form'
+import { Sheet } from '../../ui/Sheet'
+import { CheckIcon, CameraIcon, SearchIcon, XIcon } from '../../ui/icons'
+
+/**
+ * M15 scanner — camera capture and confirmation UX (P66) integrated with the REAL recognition
+ * pipeline (P68): on-device Tesseract OCR through the controller seam, P67's deterministic
+ * matcher, printing selection over the existing variants surface and batch commit through the
+ * existing acquisition path.
+ *
+ * Layout: a fixed full-viewport overlay (z-[45]) that covers the app shell including the bottom
+ * navigation while scanning. D-006 governs the whole route — one MediaStream for the session,
+ * and nothing here navigates or touches the URL while a stream is live; exit stops the tracks
+ * first and only then leaves the route.
+ *
+ * Memory ownership (prompt §21/§28): the live camera stream exists ONLY during the preview
+ * steps; it is stopped the moment a frame is captured. The captured still lives solely in a
+ * CaptureStore which revokes its object URL on every replacement/clear; after analysis answers
+ * — and certainly once a card is confirmed into the batch — the photo is disposed. Batch items
+ * hold identity + variant/quantity/condition, never image data. Leaving the route disposes the
+ * OCR worker (controller.dispose) reliably (prompt §8).
+ */
+
+const CONDITIONS = ['MT', 'NM', 'EX', 'GD', 'LP', 'PL', 'PO'] as const
+
+export function ScannerPage() {
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  const { session } = useAuth()
+  const userId = session?.user.id ?? null
+  // D-108: construction MUST NOT be a render-time side effect. `useMemo`'s factory is not
+  // deduplicated by React — under StrictMode the component's render body genuinely runs twice for
+  // the initial mount, and a `useMemo(() => getScannerUiController(userId), [userId])` factory ran
+  // on BOTH invocations, producing two independently-alive controller instances (only one of which
+  // stayed wired into the committed render, while the OTHER's disposal — via the route-exit
+  // cleanup effect — tore down the live one instead). Effect bodies, unlike render bodies and
+  // `useMemo` factories, genuinely run only once per REAL mount even under StrictMode (its
+  // synthetic effect-level double-invoke is mount→cleanup→remount, always ending mounted) — so
+  // construction now happens inside the mount effect below, which stores the instance ONLY in this
+  // ref (no mirrored `useState`: setting one synchronously inside an effect body is exactly what
+  // react-hooks/set-state-in-effect exists to catch, and there is no real need for it here — every
+  // effect below that needs "the controller" is keyed on `userId` instead of a `controller` state
+  // value, and reads this ref directly. React always runs a component's effects in declaration
+  // order on every commit (StrictMode's synthetic double-invoke runs the full set, then all their
+  // cleanups in reverse, then the full set again), so by the time any LATER-declared effect in this
+  // component runs, this ref is guaranteed already populated — event handlers get the same
+  // guarantee for the same reason (no real user interaction is possible before mount effects have
+  // run). `null` only during the brief window before the mount effect has run at all; every reader
+  // below guards for it.
+  const controllerRef = useRef<ScannerUiController | null>(null)
+  const [state, dispatch] = useReducer(scannerReducer, initialScannerState)
+  const [searchName, setSearchName] = useState('')
+  const [searchCollectorNumber, setSearchCollectorNumber] = useState('')
+  // Render-time mirror of the capture store's preview URL. The store itself is the memory
+  // owner (revokes on every replacement/clear); this state only decides what to draw.
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  // Honest first-use copy (prompt §9): the FIRST analysis includes engine preparation, later
+  // ones do not. Derived from completed analyses, never fabricated progress percentages.
+  const [hasCompletedAnalysis, setHasCompletedAnalysis] = useState(false)
+  // Debug-only surface (P77 prompt §13): explicit, preview-only, user-invoked via a query
+  // param — never shown by default, never gated behind anything a real user could stumble into.
+  const debugEnabled = useMemo(() => isScannerDebugEnabled(), [])
+  const [diagnostics, setDiagnostics] = useState<ScannerDiagnostics | null>(null)
+  // P79 §4: memory-only image previews of the most recent scan — object URLs the CONTROLLER
+  // owns and revokes (DebugImageUrlStore); this state is only a render-time mirror, same
+  // discipline as `previewUrl` mirroring CaptureStore above.
+  const [debugImages, setDebugImages] = useState<ScannerDebugImages | null>(null)
+  // P82 §17-§19: the intro screen's honest loading copy now gates on the FAST (OCR) baseline, not
+  // the heavyweight DINO channel — a cold DINO load can still take a long time (P82 §0's real
+  // iPhone report), but the scanner is genuinely usable as soon as OCR text recognition is ready,
+  // which reaches 'ready' far sooner on a cold device (see ENHANCED_VISUAL_PREWARM_STAGGER_MS's
+  // doc in controller.ts). The debug panel's own diagnostics (ENHANCED_VISUAL_STATE) still read
+  // the DINO channel directly from `getLastDiagnostics()`, unaffected by this.
+  // D-108: the controller does not exist yet at first render (see above) — a truly fresh
+  // controller cannot report anything but 'not-loaded' at that exact instant anyway, so this no
+  // longer needs to read the controller synchronously; the polling effect below takes over the
+  // instant the controller exists.
+  const [fastScannerState, setFastScannerState] = useState<
+    'not-loaded' | 'loading' | 'ready' | 'failed'
+  >('not-loaded')
+  // P90 §16: tracked ONLY to show a concise, non-jargon fallback note once the visual (DINO)
+  // channel definitively fails — index pointer/checksum/source-project failures all already
+  // degrade the SCAN pipeline to OCR-only silently and honestly (visual-worker.ts never crashes);
+  // this is purely about telling the user why recognition might feel weaker than expected, without
+  // exposing any of the debug panel's own integrity jargon (content ids, checksums, source-project
+  // refs) to an ordinary user. Never shown while still 'loading' — only a genuine terminal failure.
+  const [visualScannerState, setVisualScannerState] = useState<
+    'not-loaded' | 'loading' | 'ready' | 'failed'
+  >('not-loaded')
+
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const sessionRef = useRef<ManagedCameraSession | null>(null)
+  const captureStoreRef = useRef<CaptureStore>(new CaptureStore())
+  // Tracks the desire to hold a live camera stream; an in-flight getUserMedia whose token has
+  // since stopped being current (P98: including exit-requested, not just a newer open) stops its
+  // stream on arrival instead of leaking it or resurrecting a camera the user already closed.
+  const cameraGuardRef = useRef(new CameraAcquisitionGuard())
+  // Guards double variant fetches for the same candidate across StrictMode-style re-runs.
+  const variantsInFlightRef = useRef<string | null>(null)
+  // F-05 (P89): bumped on every event that makes an in-flight analyzeCapture() result stale
+  // (cancel, retake, route exit, controller replacement/unmount) — its .then()/.catch() checks
+  // this before touching any state, so a late-resolving cancelled analysis can never clobber
+  // whatever photo/state the user has moved on to. abortAnalysisRef lets those same events also
+  // signal the controller to skip remaining pipeline work cooperatively (best-effort only).
+  const analysisGenerationRef = useRef(0)
+  const analysisAbortControllerRef = useRef<AbortController | null>(null)
+  function cancelInFlightAnalysis(): void {
+    analysisGenerationRef.current += 1
+    analysisAbortControllerRef.current?.abort()
+    analysisAbortControllerRef.current = null
+  }
+  // F-07 (P89): set SYNCHRONOUSLY at the top of handleShutter, before any await — the rendered
+  // `disabled` attribute alone cannot block a second pointerup dispatched before React commits
+  // the re-render, so a double-tap/multi-touch could otherwise fire captureVideoFrame() twice
+  // concurrently (CaptureStore's revoke-then-replace makes whichever encode lands second win
+  // nondeterministically). A ref read is synchronous and cannot race with the event dispatch.
+  const capturingRef = useRef(false)
+  // F-10 (P89): same synchronous-lock pattern for "Add cards" — server-side idempotency
+  // (client_request_key) already makes a duplicate commitBatch call harmless, but the UI layer
+  // should not depend on that alone.
+  const committingRef = useRef(false)
+  // N-15 (P94): the manual-search fallback had NO generation/identity guard at all — only React's
+  // own `pending` state (async, not synchronous) gated the submit button, so a double-tap before
+  // React commits `disabled=true` could fire `searchFallback` twice, and a stale older query's
+  // result could still land after a newer one and win. `searchPendingRef` is the same synchronous
+  // lock as `capturingRef`/`committingRef`; `searchGenerationRef` is bumped on every new submit AND
+  // whenever the query changes or the search sheet is closed, matching `analysisGenerationRef`'s
+  // pattern — a `.then()`/`.catch()` whose generation has since moved on no-ops instead of
+  // dispatching stale results over whatever the user is looking at now.
+  const searchPendingRef = useRef(false)
+  const searchGenerationRef = useRef(0)
+
+  const cameraWanted = state.step === 'starting-camera' || state.step === 'camera'
+
+  // Open/close the single MediaStream as the machine enters/leaves the preview steps.
+  useEffect(() => {
+    if (!cameraWanted) {
+      cameraGuardRef.current.invalidate()
+      stopActiveScannerCamera()
+      sessionRef.current = null
+      return
+    }
+    const video = videoRef.current
+    if (video === null || sessionRef.current !== null) return
+    // P126: session ownership (camera-session.ts) is deliberately established without waiting for
+    // `video.play()` to settle — that Promise can, on some engines, never settle at all even while
+    // frames are genuinely rendering (see camera-session.ts's own comment and D-128). That means
+    // `CAMERA_STARTED` alone is no longer proof that the preview has a usable pixel to capture, so
+    // the shutter's readiness is tracked as its own reducer field (`previewFrameReady`) instead of
+    // riding on `state.step` alone — reset to false by every action that (re)enters
+    // 'starting-camera' (a fresh acquisition attempt), and flipped true only by the video
+    // element's own `loadeddata` event below, which fires once real frame data exists regardless
+    // of whether `play()`'s Promise ever settles. Dispatched from a DOM event callback, not
+    // synchronously in this effect's body, so this is an ordinary event-driven dispatch like any
+    // other in this file — not the react-hooks/set-state-in-effect shape.
+    const handleLoadedData = () => {
+      dispatch({ type: 'PREVIEW_FRAME_READY' })
+    }
+    video.addEventListener('loadeddata', handleLoadedData)
+    const generation = cameraGuardRef.current.begin()
+    let cancelled = false
+    void openEnvironmentCamera(video, undefined, () => {
+      // L1 (P70): track ended unexpectedly — clean up and return to start screen.
+      if (cancelled || !cameraGuardRef.current.isCurrent(generation)) return
+      sessionRef.current = null
+      dispatch({ type: 'CAMERA_EXITED' })
+    })
+      .then((session) => {
+        if (cancelled || !cameraGuardRef.current.isCurrent(generation)) {
+          session.stop()
+          return
+        }
+        sessionRef.current = session
+        dispatch({ type: 'CAMERA_STARTED' })
+      })
+      .catch((error: unknown) => {
+        if (cancelled || !cameraGuardRef.current.isCurrent(generation)) return
+        dispatch({ type: 'CAMERA_FAILED', error: describeCameraError(error) })
+      })
+    return () => {
+      cancelled = true
+      video.removeEventListener('loadeddata', handleLoadedData)
+    }
+  }, [cameraWanted])
+
+  // D-108 fix: controller construction AND disposal now live in the same effect, keyed on
+  // `userId` alone. Effects run exactly once per REAL mount even under StrictMode
+  // (its synthetic double-invoke is mount→cleanup→remount, so this still constructs exactly one
+  // LIVE instance per real mount), and exactly once again whenever `userId` changes (account
+  // switch), disposing the outgoing instance first — so a new user can never inherit the previous
+  // user's controller. Leaving the route (real unmount) runs the same cleanup: every camera track
+  // stopped, capture store cleared, in-flight analysis cancelled, OCR worker terminated and
+  // canvases dropped (prompt §8/I16/I17).
+  useEffect(() => {
+    const instance = getScannerUiController(userId)
+    controllerRef.current = instance
+    // Captured here (not read fresh inside the cleanup) purely to satisfy exhaustive-deps' generic
+    // "this ref may have changed by cleanup time" check — both refs are `useRef(new X())` with no
+    // reassignment anywhere in this component, so `.current` is the same object throughout this
+    // component's life either way.
+    const cameraGuard = cameraGuardRef.current
+    const captureStore = captureStoreRef.current
+    return () => {
+      cameraGuard.invalidate()
+      stopActiveScannerCamera()
+      captureStore.clear()
+      // F-05: an account switch (userId change → new controller) or unmount both make any
+      // analysis still in flight against the OLD controller permanently stale.
+      cancelInFlightAnalysis()
+      if (controllerRef.current === instance) controllerRef.current = null
+      instance.dispose()
+    }
+  }, [userId])
+
+  // P81 §6: begin warming the visual (and, staggered, OCR) recognition runtime the instant this
+  // route mounts — BEFORE the camera opens, BEFORE any photo exists. Never blocks the camera UI
+  // (prompt §5): the user can start the camera, frame a card and even capture while this is still
+  // in flight — analyzeCapture's own bounded wait (controller.ts) is what keeps a still-cold
+  // visual channel from turning into a multi-minute stall on that first scan.
+  useEffect(() => {
+    // Keyed on `userId`, not a `controller` state value (there isn't one — see the construction
+    // effect's own doc above): this effect is declared AFTER it, so `controllerRef.current` is
+    // always populated by the time this runs, including on every re-run this component's own
+    // account-switch effect ordering guarantees.
+    const activeController = controllerRef.current
+    if (activeController === null) return
+    activeController.prewarm?.()
+  }, [userId])
+
+  // Poll the controller's own FAST-baseline readiness snapshot (P82 §17-§19) so the intro screen
+  // can show honest, non-blocking progress that clears as soon as OCR is ready — not once the
+  // heavyweight DINO channel finally finishes, which a real cold device can take far longer for
+  // (P82 §0). A plain interval (not a subscription) because the underlying clients expose only a
+  // point-in-time snapshot, matching the existing debug-panel/diagnostics read pattern elsewhere
+  // in this file — stops once a terminal state (ready/failed) is reached.
+  useEffect(() => {
+    const activeController = controllerRef.current
+    if (activeController === null) return
+    const interval = setInterval(() => {
+      const next = activeController.getFastScannerState?.() ?? 'not-loaded'
+      setFastScannerState((previous) => (previous === next ? previous : next))
+      const nextVisual = activeController.getVisualPrewarmState?.() ?? 'not-loaded'
+      setVisualScannerState((previous) => (previous === nextVisual ? previous : nextVisual))
+      if (
+        (next === 'ready' || next === 'failed') &&
+        (nextVisual === 'ready' || nextVisual === 'failed')
+      ) {
+        clearInterval(interval)
+      }
+    }, 500)
+    return () => {
+      clearInterval(interval)
+    }
+  }, [userId])
+
+  // Tab hidden ⇒ release the hardware immediately. Returning lands on the start screen with the
+  // batch intact; "Start camera" re-opens without a new permission prompt.
+  //
+  // P122 visibility-race fix: every OTHER camera-exit call site in this file (handleShutter,
+  // handleFilePicked, the exitRequested effect, the controller-unmount cleanup) invalidates
+  // `cameraGuardRef` and releases the hardware SYNCHRONOUSLY, in the same handler that decides to
+  // exit — this was the one exception, which only dispatched `CAMERA_EXITED` and relied entirely
+  // on the SEPARATE `cameraWanted` effect above (keyed on a derived boolean) to notice the
+  // resulting state change on a LATER render and perform the actual teardown then. Root cause of
+  // the P119 §11 finding: React 18's automatic batching can coalesce a hide's `CAMERA_EXITED` and
+  // a fast-following reopen's `START_CAMERA_PRESSED` into ONE render — `cameraWanted` is true
+  // both before and after that batch (only the intermediate 'intro' step, which nothing else in
+  // this effect's dependency reads, is skipped), so the effect never re-runs and never invalidates
+  // the guard or releases `sessionRef.current` for that cycle. The ORIGINAL still-in-flight
+  // acquire from before the hide then remains "current" and eventually resolves successfully,
+  // racing an independent new acquire the next click already started — confirmed reproducible via
+  // a real-browser instrumented trace (tests/e2e/scanner-visibility-race-diagnostic.spec.ts): from
+  // exactly the cycle this first happens onward, `activeStreamCount` stops returning to 0 across a
+  // hide, and a `getUserMedia` call keeps firing once per cycle regardless, eventually leaving
+  // `sessionRef.current` permanently non-null with no camera actually visible — the effect's own
+  // `sessionRef.current !== null` short-circuit (this file, camera-open effect above) then
+  // silently no-ops every future "Start camera" click forever, exactly matching the hang. Doing
+  // the release here, unconditionally and immediately, removes the dependency on React ever
+  // "noticing" the transition through a possibly-collapsed render.
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (
+        visibilityChangeAction(document.visibilityState) === 'stop' &&
+        (state.step === 'starting-camera' || state.step === 'camera')
+      ) {
+        cameraGuardRef.current.invalidate()
+        stopActiveScannerCamera()
+        sessionRef.current = null
+        dispatch({ type: 'CAMERA_EXITED' })
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+    }
+  }, [state.step])
+
+  // M4 (P70): Warn before navigating away when unsaved batch items exist.
+  useEffect(() => {
+    if (state.batch.length === 0) return
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => {
+      window.removeEventListener('beforeunload', onBeforeUnload)
+    }
+  }, [state.batch.length])
+
+  // P83/D-100: mirrors the batch size into a module-level flag build-freshness-runtime.ts reads
+  // before an automatic reload (a stale-deployment/chunk-load-failure signal must never discard an
+  // unsaved batch the way a plain reload's native beforeunload prompt cannot prevent
+  // programmatically). Cleared on unmount — leaving the route always disposes the batch either way.
+  useEffect(() => {
+    setScannerBatchSize(state.batch.length)
+    return () => {
+      setScannerBatchSize(0)
+    }
+  }, [state.batch.length])
+
+  // SPA navigation blocker: intercepts TanStack Router back/swipe navigation when
+  // an unsaved batch exists. The same discard-confirmation sheet handles both the
+  // X-button exit and SPA navigation — one consistent UX for "leave with unsaved work".
+  const navigationBlocker = useBlocker({
+    shouldBlockFn: () => state.batch.length > 0 && !state.exitRequested,
+    withResolver: true,
+  })
+  // Store the blocker resolver in a ref so we can call proceed()/reset() from event
+  // handlers without triggering cascading renders from a setState-in-effect.
+  const blockedNavigationRef = useRef(navigationBlocker)
+  useEffect(() => {
+    blockedNavigationRef.current = navigationBlocker
+  }, [navigationBlocker])
+  useEffect(() => {
+    if (navigationBlocker.status === 'blocked' && !state.exitWarningOpen) {
+      dispatch({ type: 'EXIT_PRESSED' })
+    }
+  }, [navigationBlocker.status, state.exitWarningOpen])
+
+  useEffect(() => {
+    if (!state.exitRequested) return
+    cancelInFlightAnalysis()
+    captureStoreRef.current.clear()
+    // P98 camera-resurrection fix: this used to be the ONE call site that stopped the camera
+    // without invalidating `cameraGuardRef` (every other stop/close site in this file pairs the
+    // two — see the camera-open effect above, handleShutter, handleFilePicked, the controller
+    // lifecycle effect). Without the invalidation, a pending `acquire()` started just before the
+    // user tapped "Close scanner" (e.g. mid permission-prompt) could still resolve after this
+    // point, see its own stale `myToken === liveGeneration` check in camera-session.ts pass, and
+    // reattach a stream to a camera the user explicitly closed — `state.step` does not change
+    // synchronously here, so the camera-open effect's own `cancelled` flag alone does not catch
+    // this; `navigate()` is async and StrictMode-inert timing means real unmount can lag well
+    // behind this point. Invalidating here closes that window regardless of how long the route
+    // transition that follows takes to actually unmount the component.
+    cameraGuardRef.current.invalidate()
+    stopActiveScannerCamera()
+    void navigate({ to: '/portfolio' })
+    // previewUrl state needs no manual reset here: navigating away unmounts the page.
+  }, [state.exitRequested, navigate])
+
+  // Printing choices load ONLY now that the user chose a candidate (prompt §22/I6): the effect
+  // runs exclusively while the confirm step is live for a specific candidate.
+  useEffect(() => {
+    if (state.step !== 'confirm') return
+    if (!state.confirmVariantsPending) return
+    const activeController = controllerRef.current
+    if (activeController === null) return
+    const candidateId = state.selectedCandidate?.candidateId
+    if (candidateId === undefined || variantsInFlightRef.current === candidateId) return
+    variantsInFlightRef.current = candidateId
+    void activeController
+      .listVariantChoices(candidateId)
+      .then((variants) => {
+        // N-11 (P94): a fetch for a PREVIOUSLY-viewed candidate can resolve after the user has
+        // already moved on to a different one — `variantsInFlightRef.current` is overwritten to
+        // the new candidate's id the instant its own effect run starts (line above), so by the
+        // time this stale `.then()` fires it no longer matches `candidateId` and must no-op
+        // instead of clobbering whichever candidate is actually showing now. Only `.finally()` was
+        // guarded before; a stale success/failure could still overwrite a newer candidate's state.
+        if (variantsInFlightRef.current !== candidateId) return
+        dispatch({ type: 'CONFIRM_VARIANTS_LOADED', variants })
+      })
+      .catch(() => {
+        if (variantsInFlightRef.current !== candidateId) return
+        dispatch({
+          type: 'CONFIRM_VARIANTS_FAILED',
+          error: {
+            title: 'Versions could not load',
+            message: 'Check your connection and try again.',
+          },
+        })
+      })
+      .finally(() => {
+        if (variantsInFlightRef.current === candidateId) variantsInFlightRef.current = null
+      })
+  }, [state.step, state.confirmVariantsPending, state.selectedCandidate?.candidateId, userId])
+
+  function handleShutter(): void {
+    if (capturingRef.current) return
+    const video = videoRef.current
+    if (video === null) return
+    capturingRef.current = true
+    void captureVideoFrame(video)
+      .then((frame) => {
+        // Stop the stream as soon as a frame is held — shortest possible camera lifetime.
+        cameraGuardRef.current.invalidate()
+        stopActiveScannerCamera()
+        sessionRef.current = null
+        const stored = captureStoreRef.current.set(frame)
+        setPreviewUrl(stored.previewUrl)
+        dispatch({ type: 'CAPTURE_SUCCEEDED' })
+      })
+      .catch((error: unknown) => {
+        dispatch({ type: 'CAPTURE_FAILED', error: describeCaptureError(error) })
+      })
+      .finally(() => {
+        capturingRef.current = false
+      })
+  }
+
+  function handleRetake(): void {
+    cancelInFlightAnalysis()
+    captureStoreRef.current.clear()
+    setPreviewUrl(null)
+    dispatch({ type: 'RETAKE_PRESSED' })
+  }
+
+  function handleFilePicked(event: ChangeEvent<HTMLInputElement>): void {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (file === undefined) return
+    void decodeImageFile(file)
+      .then((frame) => {
+        cameraGuardRef.current.invalidate()
+        stopActiveScannerCamera()
+        sessionRef.current = null
+        const stored = captureStoreRef.current.set(frame)
+        setPreviewUrl(stored.previewUrl)
+        dispatch({ type: 'CAPTURE_SUCCEEDED' })
+      })
+      .catch((error: unknown) => {
+        dispatch({ type: 'CAPTURE_FAILED', error: describeCaptureError(error) })
+      })
+  }
+
+  function handleUsePhoto(): void {
+    const activeController = controllerRef.current
+    if (activeController === null) return
+    const stored = captureStoreRef.current.get()
+    if (stored === null) return
+    const payload = {
+      blob: stored.blob,
+      width: stored.width,
+      height: stored.height,
+      cardRect: stored.cardRect,
+    }
+    dispatch({ type: 'USE_PHOTO_PRESSED' })
+    // F-05 (P89): this call's own generation is pinned at the moment it starts. Cancel/retake/
+    // route-exit/unmount/account-switch all bump analysisGenerationRef — if THIS call's
+    // generation no longer matches when the promise settles, the result is stale (the user has
+    // moved on to a different photo or left entirely) and must never touch state: not the
+    // capture store, not the preview URL, not the reducer. One explicit capture still leads to
+    // exactly one analysis REQUEST — never a continuous loop while framing (prompt §12) — but a
+    // late-arriving stale RESPONSE is now a guaranteed no-op instead of clobbering whatever the
+    // user is looking at next.
+    const generation = ++analysisGenerationRef.current
+    const abortController = new AbortController()
+    analysisAbortControllerRef.current = abortController
+    void activeController
+      .analyzeCapture(payload, abortController.signal)
+      .then((analysis) => {
+        if (generation !== analysisGenerationRef.current) return
+        setHasCompletedAnalysis(true)
+        if (debugEnabled) {
+          setDiagnostics(activeController.getLastDiagnostics?.() ?? null)
+          setDebugImages(activeController.getLastDebugImages?.() ?? null)
+        }
+        // The photo has served its purpose; candidates carry the identity from here.
+        captureStoreRef.current.clear()
+        setPreviewUrl(null)
+        dispatch({ type: 'ANALYSIS_COMPLETED', analysis })
+      })
+      .catch((error: unknown) => {
+        if (generation !== analysisGenerationRef.current) return
+        dispatch({ type: 'ANALYSIS_FAILED', error: describeAnalysisError(error) })
+      })
+      .finally(() => {
+        if (analysisAbortControllerRef.current === abortController) {
+          analysisAbortControllerRef.current = null
+        }
+      })
+  }
+
+  function handleSearchSubmit(event?: SyntheticEvent): void {
+    event?.preventDefault()
+    // N-15: synchronous lock — a double-tap before React commits `disabled=true` must still call
+    // searchFallback at most once, the same guarantee handleShutter/handleCommit already have.
+    if (searchPendingRef.current) return
+    const activeController = controllerRef.current
+    if (activeController === null) return
+    const name = searchName.trim()
+    if (name === '') return
+    const collectorNumber = searchCollectorNumber.trim()
+    searchPendingRef.current = true
+    const generation = ++searchGenerationRef.current
+    dispatch({ type: 'SEARCH_PENDING' })
+    void activeController
+      .searchFallback({
+        name,
+        collectorNumber: collectorNumber !== '' ? collectorNumber : undefined,
+      })
+      .then((candidates) => {
+        if (generation !== searchGenerationRef.current) return
+        dispatch({ type: 'SEARCH_RESULTS', candidates })
+      })
+      .catch((error: unknown) => {
+        if (generation !== searchGenerationRef.current) return
+        dispatch({ type: 'SEARCH_FAILED', error: describeSearchError(error) })
+      })
+      .finally(() => {
+        searchPendingRef.current = false
+      })
+  }
+
+  function handleSearchNameChange(value: string): void {
+    // N-15: a query edit invalidates whatever search is still in flight for the OLD query — its
+    // result, if it lands late, must never populate results for a query the user has since edited.
+    searchGenerationRef.current += 1
+    setSearchName(value)
+  }
+
+  function handleSearchCollectorNumberChange(value: string): void {
+    searchGenerationRef.current += 1
+    setSearchCollectorNumber(value)
+  }
+
+  function handleCommit(): void {
+    // F-10 (P89): synchronous lock, independent of the rendered `disabled` attribute — two
+    // pointerups dispatched before React commits the disabled state must still invoke
+    // commitBatch at most once. Server-side idempotency (client_request_key) is defense-in-
+    // depth, not the primary guard.
+    if (committingRef.current) return
+    if (state.batch.length === 0) return
+    const activeController = controllerRef.current
+    if (activeController === null) return
+    committingRef.current = true
+    dispatch({ type: 'ADD_CARDS_PRESSED' })
+    void activeController
+      .commitBatch(
+        state.batch.map((item) => ({
+          candidateId: item.candidate.candidateId,
+          variantId: item.variantId,
+          quantity: item.quantity,
+          condition: item.condition,
+          requestKey: item.requestKey,
+        })),
+      )
+      .then((result) => {
+        // Same targeted invalidation family every other acquisition consumer uses (prompt §31):
+        // portfolio, counts, dashboard summary, history feed and Home's recent activity.
+        void queryClient.invalidateQueries({ queryKey: ['portfolio'] })
+        void queryClient.invalidateQueries({ queryKey: ['portfolio-counts'] })
+        void queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] })
+        void queryClient.invalidateQueries({ queryKey: ['history-events'] })
+        void queryClient.invalidateQueries({ queryKey: ['recent-activity'] })
+        dispatch({
+          type: 'COMMIT_SUCCEEDED',
+          addedCount: result.addedCount,
+          outcomes: result.outcomes,
+        })
+      })
+      .catch((error: unknown) => {
+        dispatch({ type: 'COMMIT_FAILED', error: describeCommitError(error) })
+      })
+      .finally(() => {
+        committingRef.current = false
+      })
+  }
+
+  const scannedCount = state.batch.reduce((total, item) => total + item.quantity, 0)
+  // Narrowed once here: the render chain is too long for TS to carry property narrowing through
+  // every ternary arm, and ResultView must never receive a NO_MATCH analysis.
+  const resultAnalysis =
+    state.analysis !== null &&
+    state.analysis.confidence !== 'NO_MATCH' &&
+    state.analysis.candidates.length > 0
+      ? { confidence: state.analysis.confidence, candidates: state.analysis.candidates }
+      : null
+
+  return (
+    <div
+      className="fixed inset-0 z-[45] flex flex-col bg-slate-950 text-slate-100"
+      style={{ paddingTop: 'max(0rem, env(safe-area-inset-top))' }}
+    >
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="hidden"
+        tabIndex={-1}
+        aria-hidden="true"
+        onChange={handleFilePicked}
+      />
+
+      {/* Header: exit left, running batch count right. Exit always asks when work would be lost. */}
+      <div className="flex items-center justify-between px-4 py-3">
+        <button
+          type="button"
+          onClick={() => {
+            dispatch({ type: 'EXIT_PRESSED' })
+          }}
+          aria-label="Close scanner"
+          className="flex size-11 items-center justify-center rounded-full text-slate-300 hover:bg-slate-800"
+        >
+          <XIcon className="size-5" />
+        </button>
+        {state.batch.length > 0 ? (
+          <span className="rounded-full border border-slate-700 px-3 py-1 text-xs font-medium tabular-nums text-slate-300">
+            {state.batch.length} scanned
+          </span>
+        ) : null}
+      </div>
+
+      {state.step === 'intro' ? (
+        <SessionDefaultsGate userId={userId}>
+          {({ defaults, locations, onPatch, japaneseNotice }) => (
+            <IntroView
+              state={state}
+              defaults={defaults}
+              locations={locations}
+              japaneseNotice={japaneseNotice}
+              fastScannerState={fastScannerState}
+              visualScannerState={visualScannerState}
+              onStartCamera={() => {
+                dispatch({ type: 'START_CAMERA_PRESSED' })
+              }}
+              onChoosePhoto={() => {
+                fileInputRef.current?.click()
+              }}
+              onDefaultsPatch={onPatch}
+            />
+          )}
+        </SessionDefaultsGate>
+      ) : state.step === 'starting-camera' || state.step === 'camera' ? (
+        <>
+          <div className="relative flex-1 overflow-hidden">
+            {/* eslint-disable-next-line jsx-a11y/media-has-caption -- live self-view of the
+                device's own camera, muted by CAMERA_VIDEO_PROPS: there is no audio or dialogue
+                track at any point to caption, unlike prerecorded/broadcast media the rule targets. */}
+            <video
+              ref={videoRef}
+              {...CAMERA_VIDEO_PROPS}
+              className="absolute inset-0 size-full object-cover"
+            />
+            {/* Card-shaped guide: Pokémon cards are 63×88 mm ≈ 5:7. Geometry constants are imported
+                from guide-geometry.ts and applied via inline styles so there is exactly ONE source
+                of truth — the JS computation (computeGuideRect) and this visual overlay always
+                agree. Tailwind handles only pure visual utilities (rounded, border, shadow). */}
+            <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+              <div
+                className="rounded-xl border-2 border-white/85 shadow-[0_0_0_9999px_rgba(2,6,15,0.55)]"
+                style={{
+                  aspectRatio: `${GUIDE_ASPECT_WIDTH} / ${GUIDE_ASPECT_HEIGHT}`,
+                  height: `${GUIDE_HEIGHT_FRACTION * 100}%`,
+                  maxWidth: `${GUIDE_MAX_WIDTH_FRACTION * 100}%`,
+                }}
+                aria-hidden="true"
+              />
+              <p className="mt-4 rounded-full bg-slate-950/70 px-3 py-1.5 text-xs font-medium text-slate-200">
+                Fit the whole card inside the frame
+              </p>
+            </div>
+          </div>
+          <div
+            className="flex items-center justify-center py-5"
+            style={{ paddingBottom: 'max(1.25rem, env(safe-area-inset-bottom))' }}
+          >
+            <button
+              type="button"
+              onClick={handleShutter}
+              disabled={state.step !== 'camera' || !state.previewFrameReady}
+              aria-label="Capture card"
+              className="flex size-16 items-center justify-center rounded-full border-4 border-slate-950 bg-white shadow-lg transition-transform active:scale-95 motion-reduce:transition-none disabled:opacity-50"
+            >
+              <span className="sr-only">Capture</span>
+            </button>
+          </div>
+          {state.captureError ? (
+            <div
+              className="px-4 pb-4"
+              style={{ paddingBottom: 'max(1rem, env(safe-area-inset-bottom))' }}
+            >
+              <FormMessage tone="error">{`${state.captureError.title}. ${state.captureError.message}`}</FormMessage>
+            </div>
+          ) : null}
+        </>
+      ) : state.step === 'review' ? (
+        <ReviewView
+          previewUrl={previewUrl}
+          analysisError={state.analysisError}
+          onUsePhoto={handleUsePhoto}
+          onRetake={handleRetake}
+        />
+      ) : state.step === 'analyzing' ? (
+        <AnalyzingView
+          firstUse={!hasCompletedAnalysis}
+          onCancel={() => {
+            cancelInFlightAnalysis()
+            dispatch({ type: 'ANALYSIS_CANCELLED' })
+          }}
+        />
+      ) : state.step === 'result' && resultAnalysis !== null ? (
+        <ResultView
+          analysis={resultAnalysis}
+          selectedCandidate={state.selectedCandidate}
+          onSelect={(candidate) => {
+            dispatch({ type: 'CANDIDATE_SELECTED', candidate })
+          }}
+          onConfirm={(candidate) => {
+            dispatch({ type: 'CONFIRM_CARD_PRESSED', candidate })
+          }}
+          onSearchManually={() => {
+            dispatch({ type: 'SEARCH_OPENED', from: 'result' })
+          }}
+        />
+      ) : state.step === 'no-match' ? (
+        <NoMatchView
+          onSearchManually={() => {
+            dispatch({ type: 'SEARCH_OPENED', from: 'no-match' })
+          }}
+          onRetake={handleRetake}
+          onChoosePhoto={() => {
+            fileInputRef.current?.click()
+          }}
+        />
+      ) : state.step === 'manual-search' ? (
+        <ManualSearchView
+          searchName={searchName}
+          searchCollectorNumber={searchCollectorNumber}
+          results={state.searchResults}
+          pending={state.searchPending}
+          error={state.searchError}
+          onNameChange={handleSearchNameChange}
+          onCollectorNumberChange={handleSearchCollectorNumberChange}
+          onSubmit={() => {
+            handleSearchSubmit()
+          }}
+          onSelect={(candidate) => {
+            dispatch({ type: 'SEARCH_RESULT_SELECTED', candidate })
+          }}
+          onClose={() => {
+            // N-15: closing search invalidates whatever search is still in flight — a late result
+            // must never silently reopen/repopulate the sheet the user just dismissed.
+            searchGenerationRef.current += 1
+            dispatch({ type: 'SEARCH_CLOSED' })
+          }}
+        />
+      ) : state.step === 'confirm' && state.selectedCandidate !== null ? (
+        <ConfirmView
+          candidate={state.selectedCandidate}
+          variants={state.confirmVariants}
+          variantsPending={state.confirmVariantsPending}
+          variantsError={state.confirmVariantsError}
+          selectedVariantId={state.confirmVariantId}
+          quantity={state.confirmQuantity}
+          condition={state.confirmCondition}
+          validationError={state.confirmValidationError}
+          onQuantityChange={(value) => {
+            dispatch({ type: 'CONFIRM_QUANTITY_CHANGED', value })
+          }}
+          onConditionChange={(condition) => {
+            dispatch({ type: 'CONFIRM_CONDITION_CHANGED', condition })
+          }}
+          onVariantSelect={(variantId) => {
+            dispatch({ type: 'CONFIRM_VARIANT_CHANGED', variantId })
+          }}
+          onRetryVariants={() => {
+            dispatch({ type: 'CONFIRM_VARIANTS_PENDING' })
+          }}
+          onAddToBatch={() => {
+            dispatch({ type: 'CARD_CONFIRMED' })
+          }}
+          onCancel={() => {
+            dispatch({ type: 'CONFIRM_CANCELLED' })
+          }}
+        />
+      ) : state.step === 'scanned' ? (
+        <SessionDefaultsGate userId={userId}>
+          {({ defaults, locations, onPatch }) => (
+            <ScannedSummaryView
+              batchLength={state.batch.length}
+              scannedCount={scannedCount}
+              defaults={defaults}
+              locations={locations}
+              onDefaultsPatch={onPatch}
+              onScanNext={() => {
+                dispatch({ type: 'SCAN_NEXT_PRESSED' })
+              }}
+              onReviewBatch={() => {
+                dispatch({ type: 'REVIEW_BATCH_PRESSED' })
+              }}
+            />
+          )}
+        </SessionDefaultsGate>
+      ) : state.step === 'batch-review' || state.step === 'committing' ? (
+        <BatchReviewView
+          batch={state.batch}
+          committing={state.step === 'committing'}
+          commitError={state.commitError}
+          onQuantityChange={(index, value) => {
+            dispatch({ type: 'BATCH_ITEM_QUANTITY_CHANGED', index, value })
+          }}
+          onConditionChange={(index, condition) => {
+            dispatch({ type: 'BATCH_ITEM_CONDITION_CHANGED', index, condition })
+          }}
+          onRemove={(index) => {
+            dispatch({ type: 'BATCH_ITEM_REMOVED', index })
+          }}
+          onCommit={handleCommit}
+        />
+      ) : state.step === 'committed' ? (
+        <CommittedView
+          addedCount={state.addedCount ?? 0}
+          attentionCount={state.attentionCount}
+          remainingCount={state.batch.length}
+          onDone={() => {
+            dispatch({ type: 'COMMITTED_DONE_PRESSED' })
+          }}
+          onReviewRemaining={() => {
+            dispatch({ type: 'REVIEW_BATCH_PRESSED' })
+          }}
+        />
+      ) : null}
+
+      {debugEnabled ? (
+        <ScannerDebugPanel
+          diagnostics={diagnostics}
+          debugImages={debugImages}
+          getExpectedCardRank={(cardId) =>
+            controllerRef.current?.getExpectedCardRank?.(cardId) ?? Promise.resolve(null)
+          }
+        />
+      ) : null}
+
+      {/* F-09 (P89): this same sheet now also guards "Done" after a PARTIAL commit — distinguished
+          from the pre-save "nothing added yet" exit warning purely by state.step still being
+          'committed' when it opens (both COMMITTED_DONE_PRESSED and a nav-blocker EXIT_PRESSED
+          route here identically). The copy must never let "Done" quietly mean "discard": it names
+          what was already added and what still needs attention. */}
+      <Sheet
+        open={state.exitWarningOpen}
+        onClose={() => {
+          // Reset the SPA navigation blocker if the user dismisses the sheet.
+          if (blockedNavigationRef.current.status === 'blocked') {
+            blockedNavigationRef.current.reset()
+          }
+          dispatch({ type: 'EXIT_CANCELLED' })
+        }}
+        title={state.step === 'committed' ? 'Discard remaining cards?' : 'Discard scanned cards?'}
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-slate-300">
+            {state.step === 'committed'
+              ? `${state.addedCount ?? 0} card${(state.addedCount ?? 0) === 1 ? '' : 's'} ${(state.addedCount ?? 0) === 1 ? 'was' : 'were'} already added to your Portfolio. ${state.batch.length} still ${state.batch.length === 1 ? 'needs' : 'need'} attention and ${state.batch.length === 1 ? 'has' : 'have'} NOT been saved. Reviewing lets you retry or remove them; leaving now permanently drops the record of which cards still need attention.`
+              : 'Nothing has been added to your portfolio yet. Discarding clears this scanning session.'}
+          </p>
+          <div className="flex flex-col gap-2">
+            <Button
+              type="button"
+              onClick={() => {
+                if (state.step === 'committed') {
+                  dispatch({ type: 'REVIEW_BATCH_PRESSED' })
+                  return
+                }
+                // Keep scanning: cancel both the X-button exit and any SPA navigation blocker.
+                if (blockedNavigationRef.current.status === 'blocked') {
+                  blockedNavigationRef.current.reset()
+                }
+                dispatch({ type: 'EXIT_CANCELLED' })
+              }}
+            >
+              {state.step === 'committed' ? 'Review remaining' : 'Keep scanning'}
+            </Button>
+            <Button
+              type="button"
+              variant="quiet"
+              onClick={() => {
+                // Discard: clear scanner state and proceed with the originally blocked navigation
+                // (if any), or the X-button's default exit to /portfolio.
+                captureStoreRef.current.clear()
+                stopActiveScannerCamera()
+                dispatch({ type: 'DISCARD_CONFIRMED' })
+                if (blockedNavigationRef.current.status === 'blocked') {
+                  blockedNavigationRef.current.proceed()
+                }
+              }}
+            >
+              {state.step === 'committed' ? 'Discard remaining and exit' : 'Discard and exit'}
+            </Button>
+          </div>
+        </div>
+      </Sheet>
+    </div>
+  )
+}
+
+/**
+ * Loads and scopes the session defaults (§25/§27) exactly once per user, then hands them to the
+ * wrapped view. Profile capture-defaults seed the INITIAL condition/storage; everything lives in
+ * scannerSessionStore memory afterwards. Render-prop keeps the data flow explicit and testable.
+ */
+function SessionDefaultsGate({
+  userId,
+  children,
+}: {
+  userId: string | null
+  children: (args: {
+    defaults: ScannerSessionDefaults
+    locations: { id: string; label: string }[]
+    onPatch: (patch: Partial<ScannerSessionDefaults>) => void
+    japaneseNotice: boolean
+  }) => ReactNode
+}) {
+  const profileQuery = useQuery({
+    queryKey: ['my-profile'],
+    queryFn: getMyProfile,
+    staleTime: Infinity,
+  })
+  const locationsQuery = useQuery({
+    queryKey: ['storage-locations'],
+    queryFn: listStorageLocations,
+    staleTime: Infinity,
+  })
+
+  useEffect(() => {
+    if (userId === null) return
+    if (scannerSessionStore.load(userId) !== null) return
+    const profile: Profile | undefined = profileQuery.data
+    scannerSessionStore.save(
+      userId,
+      initialScannerDefaults({
+        condition: profile?.defaultCondition ?? undefined,
+        storageLocationId: profile?.defaultStorageLocationId ?? undefined,
+      }),
+    )
+  }, [userId, profileQuery.data])
+
+  const stored = userId !== null ? scannerSessionStore.load(userId) : null
+  if (stored === null) {
+    // One render while the profile read lands; nothing below pretends defaults are chosen.
+    return <div className="flex-1" />
+  }
+
+  return children({
+    defaults: stored,
+    locations: (locationsQuery.data ?? []).map((location) => ({
+      id: location.id,
+      label: location.name,
+    })),
+    onPatch: (patch) => {
+      if (userId === null) return
+      const current = scannerSessionStore.load(userId)
+      if (current === null) return
+      scannerSessionStore.save(userId, { ...current, ...patch })
+    },
+    japaneseNotice: profileQuery.data?.defaultLanguage === 'ja',
+  })
+}
+
+function ErrorAlert({ title, message }: { title: string; message: string }) {
+  return <FormMessage tone="error">{`${title}. ${message}`}</FormMessage>
+}
+
+/**
+ * Debug-only recognition diagnostics panel (P77 prompt §13/§14) — reachable ONLY via an explicit
+ * `?scannerDebug=1` query param, never shown by default. Shows the most recent scan's pipeline
+ * state so a real-device failure is diagnosable instead of opaque. Every value here is already
+ * on {@link ScannerDiagnostics}: no photo, no secrets, no auth identifiers, no persistence beyond
+ * this component's own render lifetime.
+ */
+function ScannerDebugPanel({
+  diagnostics,
+  debugImages,
+  getExpectedCardRank,
+}: {
+  diagnostics: ScannerDiagnostics | null
+  debugImages: ScannerDebugImages | null
+  getExpectedCardRank?: (cardId: string) => Promise<ExpectedCardRank | null>
+}) {
+  const [open, setOpen] = useState(true)
+  const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const [expectedCardResult, setExpectedCardResult] = useState<{
+    card: { id: string; name: string; setName: string; localId: string }
+    rank: ExpectedCardRank
+  } | null>(null)
+  // P119 (P116 Phase Q's disclosed-but-unfixed finding, re-examined): an uncleared reset timer,
+  // one per copy click. Harmless as a leak (React 18+ silently no-ops a post-unmount setState;
+  // the closure holds nothing but a state setter), but a genuine, fixable correctness bug on
+  // rapid repeat clicks — an OLDER click's 2s timer could fire after a NEWER click already set a
+  // different status, snapping "Copy failed" (or a second "Copied") back to idle before its own
+  // full 2s had elapsed. Tracking and clearing the previous timer fixes both at once.
+  const copyStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (copyStatusTimerRef.current !== null) clearTimeout(copyStatusTimerRef.current)
+    }
+  }, [])
+
+  async function handleCopy(): Promise<void> {
+    if (diagnostics === null) return
+    const parts = [formatScannerDiagnostics(diagnostics)]
+    if (expectedCardResult !== null) {
+      parts.push(
+        formatExpectedCardRankDiagnostics(expectedCardResult.card, expectedCardResult.rank),
+      )
+    }
+    try {
+      await navigator.clipboard.writeText(parts.join('\n\n'))
+      setCopyStatus('copied')
+    } catch {
+      setCopyStatus('failed')
+    }
+    if (copyStatusTimerRef.current !== null) clearTimeout(copyStatusTimerRef.current)
+    copyStatusTimerRef.current = setTimeout(() => {
+      copyStatusTimerRef.current = null
+      setCopyStatus('idle')
+    }, 2000)
+  }
+
+  return (
+    // P110 (prompt §20 — P107's A11Y_TOKEN_FINDINGS: a second, independent contrast bug in this
+    // file): this panel is a deliberately FIXED-DARK debug console — `bg-slate-950` is themed
+    // (remapped to `var(--pp-background)`, see src/styles/index.css's @theme block), so in light
+    // mode it rendered near-white while the literal (unthemed) amber-* foreground text stayed
+    // dark-console-appropriate, producing near-invisible text. `bg-neutral-950` is NOT part of
+    // this app's theme remap (only slate/sky/rose/emerald are) — it stays a real near-black in
+    // both light and dark mode, restoring the intended always-dark console against the existing
+    // amber foreground. Scoped to this debug-only overlay; ordinary scanner UI is untouched.
+    <div className="fixed inset-x-0 bottom-0 z-[60] max-h-[60svh] overflow-y-auto border-t border-amber-700/60 bg-neutral-950/95 px-3 py-2 text-[11px] text-amber-100">
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-semibold uppercase tracking-wide text-amber-300">Scanner debug</span>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            disabled={diagnostics === null}
+            onClick={() => {
+              void handleCopy()
+            }}
+            className="rounded border border-amber-700/60 px-2 py-1 text-[11px] text-amber-200 hover:bg-amber-900/40 disabled:opacity-40"
+          >
+            {copyStatus === 'copied'
+              ? 'Copied'
+              : copyStatus === 'failed'
+                ? 'Copy failed'
+                : 'Copy diagnostics'}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setOpen((v) => !v)
+            }}
+            className="rounded border border-amber-700/60 px-2 py-1 text-[11px] text-amber-200 hover:bg-amber-900/40"
+          >
+            {open ? 'Hide' : 'Show'}
+          </button>
+        </div>
+      </div>
+      {open ? (
+        diagnostics === null ? (
+          <p className="pt-2 text-amber-300/70">No scan analyzed yet this session.</p>
+        ) : (
+          <>
+            <ScannerDebugSummaryLine diagnostics={diagnostics} expectedRank={expectedCardResult} />
+            <ScannerDebugImagePreviews debugImages={debugImages} />
+            {diagnostics.topVisualCandidatesExtended.length > 0 ? (
+              <ScannerDebugRawCandidates candidates={diagnostics.topVisualCandidatesExtended} />
+            ) : null}
+            {getExpectedCardRank ? (
+              <ExpectedCardRankTool
+                getExpectedCardRank={getExpectedCardRank}
+                result={expectedCardResult}
+                onResult={setExpectedCardResult}
+              />
+            ) : null}
+            <details className="pt-2" open>
+              <summary className="cursor-pointer text-[10px] uppercase tracking-wide text-amber-300/70">
+                Raw diagnostics text
+              </summary>
+              <pre className="whitespace-pre-wrap break-words pt-2 font-mono leading-relaxed">
+                {formatScannerDiagnostics(diagnostics)}
+              </pre>
+            </details>
+          </>
+        )
+      ) : null}
+    </div>
+  )
+}
+
+/**
+ * P90 §12: an "at a glance" line above the full diagnostics dump — the handful of fields that
+ * answer "is this even the build I think it is, and did the last scan look healthy" without
+ * scrolling the raw text block. Never a substitute for it: the full copy-diagnostics text still
+ * carries everything, this is a reading aid only.
+ */
+function ScannerDebugSummaryLine({
+  diagnostics,
+  expectedRank,
+}: {
+  diagnostics: ScannerDiagnostics
+  expectedRank: { card: { name: string }; rank: ExpectedCardRank } | null
+}) {
+  const top1 = diagnostics.topVisualCandidates[0] ?? null
+  return (
+    <div className="flex flex-wrap gap-x-3 gap-y-1 border-b border-amber-900/40 pb-2 pt-1 text-[10px] text-amber-200/90">
+      <span>SHA {APP_BUILD_SHA.slice(0, 8)}</span>
+      <span>INDEX {diagnostics.indexContentId ?? '—'}</span>
+      <span>VISUAL {diagnostics.visualModelState}</span>
+      <span>OCR {diagnostics.ocrRuntimeState}</span>
+      <span>TOP1 {top1 ? `${top1.name ?? top1.cardId} ${top1.similarity.toFixed(2)}` : '—'}</span>
+      {expectedRank ? (
+        <span>
+          EXPECTED &quot;{expectedRank.card.name}&quot; visual #{expectedRank.rank.rank ?? '—'}
+          {expectedRank.rank.hybridRank !== null
+            ? ` · hybrid #${expectedRank.rank.hybridRank}`
+            : ''}
+        </span>
+      ) : null}
+    </div>
+  )
+}
+
+/**
+ * P90 §10: "check expected card rank" — an owner-facing affordance for a wrong-or-missing scan
+ * result. Search the catalog for the card that SHOULD have been recognized, pick it, and see
+ * exactly where it actually ranked (visual and hybrid) — without adding it to the batch, without
+ * mutating the scanner candidate choice, without persisting anything. Memory-only, `?scannerDebug=
+ * 1`-gated (the parent panel already restricts this component's very existence to debug mode).
+ */
+function ExpectedCardRankTool({
+  getExpectedCardRank,
+  result,
+  onResult,
+}: {
+  getExpectedCardRank: (cardId: string) => Promise<ExpectedCardRank | null>
+  result: {
+    card: { id: string; name: string; setName: string; localId: string }
+    rank: ExpectedCardRank
+  } | null
+  onResult: (
+    result: {
+      card: { id: string; name: string; setName: string; localId: string }
+      rank: ExpectedCardRank
+    } | null,
+  ) => void
+}) {
+  const [searching, setSearching] = useState(false)
+  const [query, setQuery] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const results = useQuery({
+    queryKey: ['scanner-debug-expected-card-search', query],
+    queryFn: () => searchCards({ query, language: null, limit: 10 }),
+    enabled: searching && query.trim().length > 0,
+  })
+
+  async function handlePick(card: CatalogSearchResult): Promise<void> {
+    setLoading(true)
+    try {
+      const rank = await getExpectedCardRank(card.cardId)
+      if (rank === null) {
+        onResult(null)
+        return
+      }
+      onResult({
+        card: {
+          id: card.cardId,
+          name: card.name,
+          setName: card.setName,
+          localId: card.localId,
+        },
+        rank,
+      })
+      setSearching(false)
+      setQuery('')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="border-t border-amber-900/40 pt-2">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10px] uppercase tracking-wide text-amber-300/70">
+          Expected card rank
+        </span>
+        <button
+          type="button"
+          onClick={() => {
+            setSearching((v) => !v)
+          }}
+          className="rounded border border-amber-700/60 px-2 py-0.5 text-[10px] text-amber-200 hover:bg-amber-900/40"
+        >
+          {searching ? 'Cancel' : 'Check expected card rank'}
+        </button>
+      </div>
+      {searching ? (
+        <div className="mt-2 space-y-2">
+          <input
+            autoFocus
+            value={query}
+            onChange={(event) => {
+              setQuery(event.target.value)
+            }}
+            placeholder="Search for the card that should have won…"
+            aria-label="Search for the expected card"
+            className="w-full rounded border border-amber-800/60 bg-neutral-900 px-2 py-1 text-[11px] text-amber-100 outline-none focus-visible:border-amber-500"
+          />
+          {loading ? (
+            <p className="text-amber-300/70">Checking rank…</p>
+          ) : query.trim() === '' ? null : results.isPending ? (
+            <p className="text-amber-300/70">Searching…</p>
+          ) : results.isError ? (
+            <p className="text-rose-300">The catalog could not be searched right now.</p>
+          ) : results.data.results.length === 0 ? (
+            <p className="text-amber-300/70">No catalog cards match.</p>
+          ) : (
+            <ul className="max-h-40 space-y-1 overflow-y-auto">
+              {results.data.results.map((card) => (
+                <li key={card.cardId}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void handlePick(card)
+                    }}
+                    className="flex w-full items-center gap-2 rounded border border-amber-900/40 px-2 py-1 text-left hover:bg-amber-900/30"
+                  >
+                    <CardImage
+                      imageBaseUrl={card.imageBaseUrl}
+                      alt={card.name}
+                      quality="low"
+                      className="h-8 w-6 shrink-0"
+                    />
+                    <span className="min-w-0 flex-1 truncate">
+                      {card.name} · {card.setName} #{card.localId}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ) : null}
+      {result ? (
+        <pre className="mt-2 whitespace-pre-wrap break-words border-t border-amber-900/40 pt-2 font-mono leading-relaxed">
+          {formatExpectedCardRankDiagnostics(result.card, result.rank)}
+        </pre>
+      ) : null}
+    </div>
+  )
+}
+
+/**
+ * "Is the model seeing the actual card cleanly?" (P79 §4): the raw crop-to-guide-rect image
+ * BEFORE rectification, the canonical image actually handed to OCR/DINO afterward, and the two
+ * OCR ROI strips — all memory-only object URLs the controller owns (never re-fetched, never
+ * uploaded). Any null slot simply renders nothing for that stage rather than a broken image.
+ */
+function ScannerDebugImagePreviews({ debugImages }: { debugImages: ScannerDebugImages | null }) {
+  if (debugImages === null) return null
+  const tiles: { label: string; url: string | null }[] = [
+    { label: 'Raw crop (pre-rectify)', url: debugImages.rawCropUrl },
+    { label: 'Rectified (fed to OCR/DINO)', url: debugImages.rectifiedUrl },
+    { label: 'Name ROI', url: debugImages.nameRoiUrl },
+    { label: 'Number ROI', url: debugImages.numberRoiUrl },
+  ]
+  if (tiles.every((tile) => tile.url === null)) return null
+  return (
+    <div className="grid grid-cols-4 gap-2 pt-2">
+      {tiles.map((tile) => (
+        <div key={tile.label} className="flex flex-col gap-1">
+          <span className="truncate text-[9px] uppercase tracking-wide text-amber-300/70">
+            {tile.label}
+          </span>
+          {tile.url !== null ? (
+            <img
+              src={tile.url}
+              alt={tile.label}
+              className="h-20 w-full rounded border border-amber-800/50 object-contain bg-neutral-900"
+            />
+          ) : (
+            <div className="flex h-20 items-center justify-center rounded border border-amber-900/40 text-[9px] text-amber-300/50">
+              —
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * Top-20 raw visual neighbours (P79 §10): lets the owner see whether the correct card exists
+ * deeper in the shortlist than the final top-5 the app ever shows. Thumbnails reuse the existing
+ * CardImage component (ordinary TCGdex thumbnail GETs, same as every other catalog image in this
+ * app) — debug-only inspection, never part of matching.
+ */
+function ScannerDebugRawCandidates({
+  candidates,
+}: {
+  candidates: {
+    cardId: string
+    similarity: number
+    name: string | null
+    imageBaseUrl: string | null
+  }[]
+}) {
+  return (
+    <div className="pt-2">
+      <p className="text-[10px] uppercase tracking-wide text-amber-300/70">
+        Top {candidates.length} raw visual candidates
+      </p>
+      <ul className="mt-1 flex gap-2 overflow-x-auto pb-1">
+        {candidates.map((candidate, index) => (
+          <li key={candidate.cardId} className="flex w-16 shrink-0 flex-col items-center gap-1">
+            <CardImage
+              imageBaseUrl={candidate.imageBaseUrl}
+              alt={candidate.name ?? candidate.cardId}
+              quality="low"
+              className="h-12 w-9"
+            />
+            <span className="text-[9px] tabular-nums text-amber-300/70">
+              #{index + 1} {candidate.similarity.toFixed(2)}
+            </span>
+            <span className="w-full truncate text-center text-[9px] text-amber-100">
+              {candidate.name ?? candidate.cardId.slice(0, 8)}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+/** P82 §17-§19: honest, non-blocking recognition-readiness copy for the intro screen — now gated
+ *  on the FAST (OCR) baseline rather than the heavyweight DINO channel (P81's original gate),
+ *  since DINO's own cold start can still take far longer on a real device (P82 §0) than the
+ *  scanner actually needs to become USABLE. Never a fake percentage (neither Tesseract nor
+ *  transformers.js expose a meaningful progress fraction) — a short phase label instead, and
+ *  nothing at all once ready/failed (failure degrades silently to manual search, exactly as it
+ *  always has — prompt §36). Debug mode shows the enhanced/DINO channel's own exact phase via the
+ *  existing diagnostics panel (ENHANCED_VISUAL_STATE/DINO_CURRENT_PHASE) — this label deliberately
+ *  never exposes that implementation detail to a normal user. */
+function fastScannerStatusLabel(
+  state: 'not-loaded' | 'loading' | 'ready' | 'failed',
+): string | null {
+  switch (state) {
+    case 'loading':
+      return 'Preparing card recognition… you can start scanning any time.'
+    case 'not-loaded':
+    case 'ready':
+    case 'failed':
+      return null
+  }
+}
+
+function IntroView({
+  state,
+  defaults,
+  locations,
+  japaneseNotice,
+  fastScannerState,
+  visualScannerState,
+  onStartCamera,
+  onChoosePhoto,
+  onDefaultsPatch,
+}: {
+  state: { cameraError: { title: string; message: string } | null }
+  defaults: ScannerSessionDefaults
+  locations: { id: string; label: string }[]
+  japaneseNotice: boolean
+  fastScannerState: 'not-loaded' | 'loading' | 'ready' | 'failed'
+  visualScannerState: 'not-loaded' | 'loading' | 'ready' | 'failed'
+  onStartCamera: () => void
+  onChoosePhoto: () => void
+  onDefaultsPatch: (patch: Partial<ScannerSessionDefaults>) => void
+}) {
+  const cameraSupported = hasMediaDevicesSupport(navigator)
+  const prewarmStatus = fastScannerStatusLabel(fastScannerState)
+  return (
+    <div className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center gap-5 overflow-y-auto px-5 pb-8">
+      <h1 className="text-2xl font-semibold tracking-tight">Scan cards</h1>
+      <p className="text-sm text-slate-400">
+        Use your camera or a photo to identify cards, then confirm before adding them.
+      </p>
+      {prewarmStatus !== null ? (
+        <p role="status" className="text-xs text-slate-500">
+          {prewarmStatus}
+        </p>
+      ) : null}
+      {/* P90 §16: a genuine, terminal visual-channel failure (missing/stale/corrupt index, no
+          WebGPU/WASM backend, etc.) degrades matching to OCR-only already — this note only
+          explains why, in plain language, never the debug panel's own integrity jargon. */}
+      {visualScannerState === 'failed' ? (
+        <p role="status" className="text-xs text-slate-500">
+          Visual recognition unavailable on this device — text recognition is still available.
+        </p>
+      ) : null}
+      {state.cameraError ? <ErrorAlert {...state.cameraError} /> : null}
+      <div className="mt-2 flex flex-col gap-2">
+        {cameraSupported ? (
+          <Button type="button" onClick={onStartCamera}>
+            Start camera
+          </Button>
+        ) : (
+          <p className="text-sm text-slate-500">
+            This browser cannot open the camera here. Choose an existing photo instead.
+          </p>
+        )}
+        <Button type="button" variant="quiet" onClick={onChoosePhoto}>
+          <span className="inline-flex items-center gap-2">
+            <CameraIcon className="size-4" />
+            Choose photo
+          </span>
+        </Button>
+      </div>
+      <SessionDefaultsBar defaults={defaults} locations={locations} onPatch={onDefaultsPatch} />
+      {japaneseNotice ? (
+        <p className="text-xs leading-relaxed text-slate-500">
+          Card reading currently recognises English cards. Japanese recognition is not supported yet
+          — you can still add Japanese cards through manual search.
+        </p>
+      ) : null}
+      <p className="text-xs leading-relaxed text-slate-500">
+        Card photos are processed on this device and aren't uploaded or saved.
+      </p>
+    </div>
+  )
+}
+
+/**
+ * The F12 session-defaults header (prompt §25): origin / condition / language / storage /
+ * acquired date, applied to every committed item. Deliberately minimal — no collection/tag
+ * field because the acquisition path behind commitBatch takes none, and NO opening origin
+ * anywhere (M16 owns pulled provenance; prompt §26).
+ */
+function SessionDefaultsBar({
+  defaults,
+  locations,
+  onPatch,
+}: {
+  defaults: ScannerSessionDefaults
+  locations: { id: string; label: string }[]
+  onPatch: (patch: Partial<ScannerSessionDefaults>) => void
+}) {
+  return (
+    <section
+      aria-label="Session settings applied to added cards"
+      className="rounded-xl border border-slate-800 p-3"
+    >
+      <h2 className="pb-2 text-xs font-medium uppercase tracking-wide text-slate-500">
+        Applied to added cards
+      </h2>
+      <div className="grid grid-cols-2 gap-2">
+        <label className="text-xs text-slate-400">
+          Origin
+          <select
+            value={defaults.origin}
+            onChange={(event) => {
+              onPatch({ origin: event.target.value as ScannerSessionDefaults['origin'] })
+            }}
+            className="mt-1 min-h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100 outline-none focus-visible:border-sky-500 focus-visible:ring-2 focus-visible:ring-sky-500/40"
+          >
+            {SCANNER_ORIGINS.map((origin) => (
+              <option key={origin} value={origin}>
+                {ORIGIN_LABEL[origin]}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="text-xs text-slate-400">
+          Condition
+          <select
+            value={defaults.condition}
+            onChange={(event) => {
+              onPatch({ condition: event.target.value as CardCondition })
+            }}
+            className="mt-1 min-h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100 outline-none focus-visible:border-sky-500 focus-visible:ring-2 focus-visible:ring-sky-500/40"
+          >
+            {CONDITIONS.map((value) => (
+              <option key={value} value={value}>
+                {CONDITION_LABEL[value]}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="text-xs text-slate-400">
+          Language
+          <input
+            value="English"
+            readOnly
+            aria-label="Recognition language: English"
+            className="mt-1 min-h-11 w-full cursor-not-allowed rounded-lg border border-slate-800 bg-slate-900/60 px-3 text-sm text-slate-500"
+          />
+        </label>
+        <label className="text-xs text-slate-400">
+          Storage
+          <select
+            value={defaults.storageLocationId ?? ''}
+            onChange={(event) => {
+              onPatch({ storageLocationId: event.target.value === '' ? null : event.target.value })
+            }}
+            className="mt-1 min-h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100 outline-none focus-visible:border-sky-500 focus-visible:ring-2 focus-visible:ring-sky-500/40"
+          >
+            <option value="">Not set</option>
+            {locations.map((location) => (
+              <option key={location.id} value={location.id}>
+                {location.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="col-span-2 text-xs text-slate-400">
+          Acquired date
+          <input
+            type="date"
+            value={defaults.acquiredOn}
+            max={todayIso()}
+            onChange={(event) => {
+              onPatch({ acquiredOn: event.target.value })
+            }}
+            className="mt-1 min-h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100 outline-none focus-visible:border-sky-500 focus-visible:ring-2 focus-visible:ring-sky-500/40"
+          />
+        </label>
+      </div>
+      {defaults.origin === 'purchase' ? (
+        <p className="pt-2 text-xs text-amber-300/90">
+          Cost isn't recorded here. Use Record purchase when you know the receipt price.
+        </p>
+      ) : null}
+    </section>
+  )
+}
+
+function ReviewView({
+  previewUrl,
+  analysisError,
+  onUsePhoto,
+  onRetake,
+}: {
+  previewUrl: string | null
+  analysisError: { title: string; message: string } | null
+  onUsePhoto: () => void
+  onRetake: () => void
+}) {
+  return (
+    <div className="mx-auto flex w-full max-w-md flex-1 flex-col gap-4 overflow-y-auto px-5 pb-6">
+      <h1 className="text-lg font-semibold tracking-tight">Check your photo</h1>
+      {previewUrl !== null ? (
+        <img
+          src={previewUrl}
+          alt="The card you captured"
+          className="mx-auto max-h-[52svh] w-auto rounded-xl border border-slate-700"
+        />
+      ) : null}
+      {analysisError ? <ErrorAlert {...analysisError} /> : null}
+      <div className="mt-auto flex flex-col gap-2 pt-2">
+        <Button type="button" onClick={onUsePhoto}>
+          Use photo
+        </Button>
+        <Button type="button" variant="quiet" onClick={onRetake}>
+          Retake
+        </Button>
+      </div>
+      <p className="text-xs text-slate-500">
+        Card photos are processed on this device and aren't uploaded or saved.
+      </p>
+    </div>
+  )
+}
+
+function AnalyzingView({ firstUse, onCancel }: { firstUse: boolean; onCancel: () => void }) {
+  return (
+    <div className="mx-auto flex w-full max-w-md flex-1 flex-col items-center justify-center gap-5 overflow-y-auto px-5 pb-8">
+      <div
+        aria-hidden="true"
+        className="aspect-[5/7] w-44 animate-pulse rounded-xl bg-slate-800/60"
+      />
+      <div className="space-y-1 text-center">
+        {/* Honest preparation copy (prompt §9): the first analysis may load several MB of local
+            OCR assets; Tesseract reports no meaningful percentage for this, so none is shown. */}
+        <p role="status" className="text-sm text-slate-300">
+          {firstUse ? 'Preparing scanner…' : 'Analyzing card…'}
+        </p>
+        {firstUse ? <p className="text-xs text-slate-500">First use may take a moment.</p> : null}
+      </div>
+      <Button type="button" variant="quiet" className="w-auto px-6" onClick={onCancel}>
+        Back
+      </Button>
+    </div>
+  )
+}
+
+function confidenceBadge(confidence: 'HIGH' | 'MEDIUM' | 'LOW'): string {
+  return confidence === 'HIGH'
+    ? 'Strong match'
+    : confidence === 'MEDIUM'
+      ? 'Possible match'
+      : 'Weak match'
+}
+
+function CandidateIdentity({ candidate }: { candidate: ScannerCandidate }) {
+  return (
+    <div className="min-w-0">
+      <p className="truncate text-sm font-medium">{candidate.name}</p>
+      <p className="truncate text-xs text-slate-400">
+        {[
+          candidate.setName,
+          candidate.collectorNumber !== undefined && candidate.collectorNumber !== null
+            ? `#${candidate.collectorNumber}`
+            : null,
+        ]
+          .filter(Boolean)
+          .join(' · ') || '—'}
+      </p>
+      <p className="truncate text-xs text-slate-500">
+        {[candidate.finishLabel, candidate.languageLabel].filter(Boolean).join(' · ') || '—'}
+      </p>
+    </div>
+  )
+}
+
+function ResultView({
+  analysis,
+  selectedCandidate,
+  onSelect,
+  onConfirm,
+  onSearchManually,
+}: {
+  analysis: { confidence: 'HIGH' | 'MEDIUM' | 'LOW'; candidates: ScannerCandidate[] }
+  selectedCandidate: ScannerCandidate | null
+  onSelect: (candidate: ScannerCandidate) => void
+  onConfirm: (candidate: ScannerCandidate) => void
+  onSearchManually: () => void
+}) {
+  const multiple = analysis.candidates.length > 1
+  return (
+    <div className="mx-auto flex w-full max-w-md flex-1 flex-col gap-4 overflow-y-auto px-5 pb-6">
+      <p role="status" aria-live="polite" className="text-sm text-slate-400">
+        {multiple ? 'Choose the card that matches' : 'Is this the card?'}
+      </p>
+      {multiple ? (
+        <ul className="flex flex-col divide-y divide-slate-800 rounded-xl border border-slate-800">
+          {analysis.candidates.map((candidate) => {
+            const selected =
+              selectedCandidate !== null && selectedCandidate.candidateId === candidate.candidateId
+            return (
+              <li key={candidate.candidateId}>
+                <button
+                  type="button"
+                  aria-pressed={selected}
+                  onClick={() => {
+                    onSelect(candidate)
+                  }}
+                  className={`flex w-full min-h-16 items-center gap-3 p-3 text-left hover:bg-slate-800/60 focus-visible:bg-slate-800/60 focus-visible:outline-none ${
+                    selected ? 'bg-sky-600/10' : ''
+                  }`}
+                >
+                  <CardImage
+                    imageBaseUrl={candidate.imageBaseUrl ?? null}
+                    alt={candidate.name}
+                    quality="low"
+                    className="h-14 w-10 shrink-0"
+                  />
+                  <CandidateIdentity candidate={candidate} />
+                  {selected ? <CheckIcon className="ml-auto size-5 shrink-0 text-sky-400" /> : null}
+                </button>
+              </li>
+            )
+          })}
+        </ul>
+      ) : (
+        <div className="flex items-start gap-4 rounded-xl border border-slate-800 p-3">
+          <CardImage
+            imageBaseUrl={analysis.candidates[0]?.imageBaseUrl ?? null}
+            alt={analysis.candidates[0]?.name ?? ''}
+            quality="high"
+            className="h-36 w-[6.2rem] shrink-0"
+          />
+          <div className="min-w-0 space-y-1">
+            <span
+              className={`inline-block rounded-full border px-2 py-0.5 text-[11px] font-medium ${
+                analysis.confidence === 'HIGH'
+                  ? 'border-emerald-800 text-emerald-300'
+                  : 'border-amber-700/70 text-amber-300'
+              }`}
+            >
+              {confidenceBadge(analysis.confidence)}
+            </span>
+            {analysis.candidates[0] !== undefined ? (
+              <CandidateIdentity candidate={analysis.candidates[0]} />
+            ) : null}
+          </div>
+        </div>
+      )}
+      <div className="mt-auto flex flex-col gap-2 pt-2">
+        <Button
+          type="button"
+          disabled={selectedCandidate === null}
+          onClick={() => {
+            if (selectedCandidate !== null) onConfirm(selectedCandidate)
+          }}
+        >
+          Confirm card
+        </Button>
+        <button
+          type="button"
+          onClick={onSearchManually}
+          className="mx-auto inline-flex min-h-11 items-center gap-2 text-sm text-sky-400 underline-offset-4 hover:underline"
+        >
+          <SearchIcon className="size-4" />
+          Not right? Search manually
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function NoMatchView({
+  onSearchManually,
+  onRetake,
+  onChoosePhoto,
+}: {
+  onSearchManually: () => void
+  onRetake: () => void
+  onChoosePhoto: () => void
+}) {
+  return (
+    <div className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center gap-5 overflow-y-auto px-5 pb-8">
+      <div role="status" aria-live="polite">
+        <h1 className="text-xl font-semibold tracking-tight">Couldn't identify this card.</h1>
+      </div>
+      <p className="text-sm text-slate-400">
+        Try another photo with the whole card inside the frame, or find it by name instead.
+      </p>
+      <div className="mt-2 flex flex-col gap-2">
+        <Button type="button" variant="quiet" onClick={onSearchManually}>
+          <span className="inline-flex items-center gap-2">
+            <SearchIcon className="size-4" />
+            Search manually
+          </span>
+        </Button>
+        <Button type="button" variant="quiet" onClick={onRetake}>
+          Retake
+        </Button>
+        <Button type="button" variant="quiet" onClick={onChoosePhoto}>
+          Choose another photo
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function ManualSearchView({
+  searchName,
+  searchCollectorNumber,
+  results,
+  pending,
+  error,
+  onNameChange,
+  onCollectorNumberChange,
+  onSubmit,
+  onSelect,
+  onClose,
+}: {
+  searchName: string
+  searchCollectorNumber: string
+  results: ScannerCandidate[]
+  pending: boolean
+  error: { title: string; message: string } | null
+  onNameChange: (value: string) => void
+  onCollectorNumberChange: (value: string) => void
+  onSubmit: () => void
+  onSelect: (candidate: ScannerCandidate) => void
+  onClose: () => void
+}) {
+  return (
+    <div className="mx-auto flex w-full max-w-md flex-1 flex-col gap-4 overflow-y-auto px-5 pb-6">
+      <div className="flex items-center justify-between">
+        <h1 className="text-lg font-semibold tracking-tight">Search manually</h1>
+        <button
+          type="button"
+          onClick={onClose}
+          className="min-h-11 rounded-lg px-3 text-sm text-slate-300 hover:bg-slate-800"
+        >
+          Cancel
+        </button>
+      </div>
+      <form
+        className="space-y-3"
+        onSubmit={(event) => {
+          event.preventDefault()
+          onSubmit()
+        }}
+        noValidate
+      >
+        <TextField
+          label="Card name"
+          value={searchName}
+          onChange={(event) => {
+            onNameChange(event.target.value)
+          }}
+          placeholder="e.g. Pikachu"
+          autoComplete="off"
+        />
+        <TextField
+          label="Collector number"
+          hint="Optional"
+          value={searchCollectorNumber}
+          onChange={(event) => {
+            onCollectorNumberChange(event.target.value)
+          }}
+          placeholder="e.g. 025 or SV049"
+          inputMode="text"
+          autoComplete="off"
+        />
+        <Button type="submit" disabled={searchName.trim() === '' || pending}>
+          {pending ? 'Searching…' : 'Search'}
+        </Button>
+      </form>
+      {error ? <ErrorAlert {...error} /> : null}
+      {!pending && results.length > 0 ? (
+        <p id="scanner-search-results-label" className="pt-2 text-xs text-slate-500">
+          Tap a card to confirm it
+        </p>
+      ) : null}
+      {pending ? (
+        <ul className="space-y-2" aria-busy="true">
+          {Array.from({ length: 4 }, (_, index) => (
+            <li key={index} className="h-16 animate-pulse rounded-xl bg-slate-800/60" />
+          ))}
+        </ul>
+      ) : results.length > 0 ? (
+        <ul className="flex flex-col divide-y divide-slate-800 rounded-xl border border-slate-800">
+          {results.map((candidate) => (
+            <li key={candidate.candidateId}>
+              <button
+                type="button"
+                onClick={() => {
+                  onSelect(candidate)
+                }}
+                className="flex w-full min-h-16 items-center gap-3 p-3 text-left hover:bg-slate-800/60 focus-visible:bg-slate-800/60 focus-visible:outline-none"
+              >
+                <CardImage
+                  imageBaseUrl={candidate.imageBaseUrl ?? null}
+                  alt={candidate.name}
+                  quality="low"
+                  className="h-14 w-10 shrink-0"
+                />
+                <CandidateIdentity candidate={candidate} />
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : !error ? (
+        <p className="pt-2 text-center text-sm text-slate-500">No cards match yet.</p>
+      ) : null}
+    </div>
+  )
+}
+
+function ConfirmView({
+  candidate,
+  variants,
+  variantsPending,
+  variantsError,
+  selectedVariantId,
+  quantity,
+  condition,
+  validationError,
+  onQuantityChange,
+  onConditionChange,
+  onVariantSelect,
+  onRetryVariants,
+  onAddToBatch,
+  onCancel,
+}: {
+  candidate: ScannerCandidate
+  variants: { id: string; label: string }[] | null
+  variantsPending: boolean
+  variantsError: { title: string; message: string } | null
+  selectedVariantId: string | null
+  quantity: string
+  condition: CardCondition
+  validationError: string | null
+  onQuantityChange: (value: string) => void
+  onConditionChange: (condition: CardCondition) => void
+  onVariantSelect: (variantId: string) => void
+  onRetryVariants: () => void
+  onAddToBatch: () => void
+  onCancel: () => void
+}) {
+  return (
+    <div className="mx-auto flex w-full max-w-md flex-1 flex-col gap-4 overflow-y-auto px-5 pb-6">
+      <h1 className="text-lg font-semibold tracking-tight">Confirm card</h1>
+      <div className="flex items-start gap-4 rounded-xl border border-slate-800 p-3">
+        <CardImage
+          imageBaseUrl={candidate.imageBaseUrl ?? null}
+          alt={candidate.name}
+          quality="high"
+          className="h-28 w-20 shrink-0"
+        />
+        <div className="min-w-0 space-y-1">
+          <p className="truncate text-sm font-medium">{candidate.name}</p>
+          <p className="truncate text-xs text-slate-400">
+            {[
+              candidate.setName,
+              candidate.collectorNumber !== undefined && candidate.collectorNumber !== null
+                ? `#${candidate.collectorNumber}`
+                : null,
+            ]
+              .filter(Boolean)
+              .join(' · ') || '—'}
+          </p>
+          <p className="truncate text-xs text-slate-500">{candidate.languageLabel ?? '—'}</p>
+        </div>
+      </div>
+      {/* Printing choice (prompt §22): fetched only after this candidate was chosen, showing the
+          card's ACTUAL finish/stamp/subtype/size attributes. Never inferred from the photo. */}
+      {variantsPending ? (
+        <div className="space-y-2" aria-busy="true">
+          <p className="text-xs text-slate-500">Checking available versions…</p>
+          <div className="h-11 animate-pulse rounded-lg bg-slate-800/60" />
+        </div>
+      ) : variantsError !== null ? (
+        <div className="space-y-2">
+          <ErrorAlert {...variantsError} />
+          <Button type="button" variant="quiet" onClick={onRetryVariants}>
+            Try again
+          </Button>
+        </div>
+      ) : variants !== null && variants.length > 0 ? (
+        variants.length === 1 ? (
+          <p className="text-xs text-slate-400">Version: {variants[0]?.label}</p>
+        ) : (
+          <ChoiceGroup
+            label="Version"
+            value={selectedVariantId ?? ''}
+            onChange={(value: string) => {
+              onVariantSelect(value)
+            }}
+            options={variants.map((variant) => [variant.id, variant.label] as const)}
+          />
+        )
+      ) : (
+        <p className="text-xs text-slate-400">This card has no trackable version in the catalog.</p>
+      )}
+      <TextField
+        label="Quantity"
+        type="number"
+        inputMode="numeric"
+        min={1}
+        value={quantity}
+        onChange={(event) => {
+          onQuantityChange(event.target.value)
+        }}
+      />
+      <ChoiceGroup
+        label="Condition"
+        value={condition}
+        onChange={onConditionChange}
+        options={CONDITIONS.map((value) => [value, CONDITION_LABEL[value]] as const)}
+      />
+      {validationError !== null ? (
+        <p role="alert" className="text-sm text-rose-300">
+          {validationError}
+        </p>
+      ) : null}
+      <div className="mt-auto flex flex-col gap-2 pt-2">
+        <Button
+          type="button"
+          disabled={
+            variantsPending ||
+            variantsError !== null ||
+            (variants !== null && variants.length === 0)
+          }
+          onClick={onAddToBatch}
+        >
+          Add to batch
+        </Button>
+        <Button type="button" variant="quiet" onClick={onCancel}>
+          Back
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function ScannedSummaryView({
+  batchLength,
+  scannedCount,
+  defaults,
+  locations,
+  onDefaultsPatch,
+  onScanNext,
+  onReviewBatch,
+}: {
+  batchLength: number
+  scannedCount: number
+  defaults: ScannerSessionDefaults
+  locations: { id: string; label: string }[]
+  onDefaultsPatch: (patch: Partial<ScannerSessionDefaults>) => void
+  onScanNext: () => void
+  onReviewBatch: () => void
+}) {
+  return (
+    <div className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center gap-5 overflow-y-auto px-5 pb-8">
+      <p role="status" aria-live="polite" className="text-xl font-semibold tracking-tight">
+        {batchLength === 1 ? '1 card scanned' : `${batchLength} cards scanned`}
+      </p>
+      {scannedCount !== batchLength ? (
+        <p className="text-sm text-slate-400">
+          {scannedCount} {scannedCount === 1 ? 'card' : 'cards'} in total.
+        </p>
+      ) : null}
+      <p className="text-sm text-slate-400">
+        Cards wait in this scanning session until you add them from the batch review.
+      </p>
+      <SessionDefaultsBar defaults={defaults} locations={locations} onPatch={onDefaultsPatch} />
+      <div className="mt-2 flex flex-col gap-2">
+        <Button type="button" onClick={onScanNext}>
+          Scan next
+        </Button>
+        <Button type="button" variant="quiet" onClick={onReviewBatch}>
+          Review batch
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function BatchReviewView({
+  batch,
+  committing,
+  commitError,
+  onQuantityChange,
+  onConditionChange,
+  onRemove,
+  onCommit,
+}: {
+  batch: {
+    candidate: ScannerCandidate
+    variantId: string
+    variantLabel: string
+    quantity: number
+    condition: CardCondition
+    needsVerification?: boolean
+  }[]
+  committing: boolean
+  commitError: { title: string; message: string } | null
+  onQuantityChange: (index: number, value: string) => void
+  onConditionChange: (index: number, condition: CardCondition) => void
+  onRemove: (index: number) => void
+  onCommit: () => void
+}) {
+  return (
+    <div className="mx-auto flex w-full max-w-md flex-1 flex-col gap-4 overflow-y-auto px-5 pb-6">
+      <h1 className="text-lg font-semibold tracking-tight">Review batch</h1>
+      {batch.length === 0 ? (
+        <p className="py-8 text-center text-sm text-slate-500">
+          Nothing scanned yet. Go back and scan a card first.
+        </p>
+      ) : (
+        <ul className="flex flex-col divide-y divide-slate-800 rounded-xl border border-slate-800">
+          {batch.map((item, index) => (
+            <li
+              key={`${item.candidate.candidateId}-${item.variantId}-${index}`}
+              className="space-y-2 p-3"
+            >
+              <div className="flex items-center gap-3">
+                <CardImage
+                  imageBaseUrl={item.candidate.imageBaseUrl ?? null}
+                  alt={item.candidate.name}
+                  quality="low"
+                  className="h-14 w-10 shrink-0"
+                />
+                <div className="min-w-0">
+                  <CandidateIdentity candidate={item.candidate} />
+                  <p className="truncate text-xs text-slate-500">{item.variantLabel}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    // F-19/§8 (P89): a needsVerification item may already have been saved by an
+                    // earlier attempt whose server answer was lost in transit — removing it here
+                    // only clears THIS scanning session's local record, never anything already in
+                    // the Portfolio. Warn explicitly before that record disappears silently.
+                    if (
+                      item.needsVerification &&
+                      !confirm(
+                        'This card may already be in your Portfolio from an earlier attempt. Removing it here only clears this scan — it does NOT undo anything already saved. Check Portfolio first if you are unsure. Remove anyway?',
+                      )
+                    ) {
+                      return
+                    }
+                    onRemove(index)
+                  }}
+                  aria-label={`Remove ${item.candidate.name}`}
+                  className="ml-auto flex size-11 shrink-0 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                >
+                  <XIcon className="size-4" />
+                </button>
+              </div>
+              {item.needsVerification ? (
+                <p
+                  role="status"
+                  className="rounded-lg bg-amber-900/30 px-3 py-2 text-xs leading-relaxed text-amber-200"
+                >
+                  Connection was interrupted. This card may already be in your Portfolio. Check
+                  Portfolio before retrying — quantity and condition are locked for this item since
+                  editing and resubmitting will not update an existing entry. Remove it (after
+                  checking Portfolio) to rescan as a new card instead.
+                </p>
+              ) : null}
+              <div className="flex items-end gap-2">
+                <label className="w-24 text-xs text-slate-400">
+                  Qty
+                  <input
+                    type="number"
+                    inputMode="numeric"
+                    min={1}
+                    value={item.quantity}
+                    disabled={item.needsVerification}
+                    onChange={(event) => {
+                      onQuantityChange(index, event.target.value)
+                    }}
+                    className="mt-1 min-h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-base tabular-nums text-slate-100 outline-none focus-visible:border-sky-500 focus-visible:ring-2 focus-visible:ring-sky-500/40 disabled:opacity-50"
+                  />
+                </label>
+                <label className="min-w-0 flex-1 text-xs text-slate-400">
+                  Condition
+                  <select
+                    value={item.condition}
+                    disabled={item.needsVerification}
+                    onChange={(event) => {
+                      onConditionChange(index, event.target.value as CardCondition)
+                    }}
+                    className="mt-1 min-h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-base text-slate-100 outline-none focus-visible:border-sky-500 focus-visible:ring-2 focus-visible:ring-sky-500/40 disabled:opacity-50"
+                  >
+                    {CONDITIONS.map((value) => (
+                      <option key={value} value={value}>
+                        {CONDITION_LABEL[value]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="text-sm font-medium tabular-nums text-slate-300">
+        Total: {batch.length} {batch.length === 1 ? 'card' : 'cards'}
+      </p>
+      {commitError ? <ErrorAlert {...commitError} /> : null}
+      <div className="mt-auto pt-2">
+        <Button type="button" disabled={batch.length === 0 || committing} onClick={onCommit}>
+          {committing ? 'Adding…' : 'Add cards'}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function CommittedView({
+  addedCount,
+  attentionCount,
+  remainingCount,
+  onDone,
+  onReviewRemaining,
+}: {
+  addedCount: number
+  attentionCount: number | null
+  remainingCount: number
+  onDone: () => void
+  onReviewRemaining: () => void
+}) {
+  const partial = attentionCount !== null && attentionCount > 0
+  return (
+    <div className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center gap-5 overflow-y-auto px-5 pb-8">
+      <p role="status" aria-live="polite" className="text-xl font-semibold tracking-tight">
+        Added {addedCount} {addedCount === 1 ? 'card' : 'cards'}.
+      </p>
+      {partial ? (
+        <p className="text-sm text-amber-200">
+          Added {addedCount}. {attentionCount} {attentionCount === 1 ? 'needs' : 'need'} attention.
+        </p>
+      ) : null}
+      <p className="text-sm text-slate-400">
+        {partial
+          ? 'The affected cards are still listed in this scan session.'
+          : 'The scanned cards are now in your portfolio.'}
+      </p>
+      <div className="flex flex-col gap-2">
+        {partial && remainingCount > 0 ? (
+          <Button type="button" onClick={onReviewRemaining}>
+            Review remaining
+          </Button>
+        ) : null}
+        <Button type="button" variant={partial ? 'quiet' : 'primary'} onClick={onDone}>
+          Done
+        </Button>
+      </div>
+    </div>
+  )
+}

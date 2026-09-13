@@ -9,15 +9,22 @@ import { fromDecimalString, toDecimalString } from '../../domain/money'
 import { allocate } from '../../domain/allocation'
 import type { CurrencyCode } from '../../domain/currency'
 import { Button, FormMessage, SelectField, TextField } from '../../ui/form'
-import { LineEditorRow, newLineDraft, type LineDraft } from './LineEditor'
+import { LineEditorRow } from './LineEditor'
 import { LINE_TYPE_LABEL } from './labels'
 import { at } from './util'
+import { useUnsavedWorkSnapshot } from '../../platform/unsaved-work-registry'
+import { localTodayIso } from '../../platform/local-date'
+import {
+  addPurchaseLine,
+  createInitialPurchaseFormFields,
+  patchPurchaseFormFields,
+  removePurchaseLine,
+  updatePurchaseLine,
+} from './purchase-form-state'
 
 const CURRENCIES: CurrencyCode[] = ['NOK', 'EUR', 'USD', 'GBP', 'JPY']
 
-function today(): string {
-  return new Date().toISOString().slice(0, 10)
-}
+const today = localTodayIso
 
 /** Parses a decimal charge/price field; blank means zero, never a fabricated amount. */
 function parseAmount(raw: string, currency: CurrencyCode): bigint {
@@ -44,20 +51,51 @@ export function PurchaseFormPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
-  const [purchasedOn, setPurchasedOn] = useState(today)
-  const [retailerId, setRetailerId] = useState('')
-  const [newRetailerName, setNewRetailerName] = useState('')
-  const [currency, setCurrency] = useState<CurrencyCode>('NOK')
-  const [lines, setLines] = useState<LineDraft[]>([newLineDraft()])
-  const [shippingInput, setShippingInput] = useState('')
-  const [customsInput, setCustomsInput] = useState('')
-  const [discountInput, setDiscountInput] = useState('')
-  const [notes, setNotes] = useState('')
-  const [fxMode, setFxMode] = useState<'norges_bank' | 'manual'>('norges_bank')
-  const [fxRate, setFxRate] = useState<string>('')
-  const [fxRateDate, setFxRateDate] = useState<string>('')
-  const [fxError, setFxError] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  // P124: every field that names one Purchase Add attempt now lives in `fields`, a single object
+  // produced and reset by purchase-form-state.ts — see that module's header for why Purchase Add
+  // (unlike Sale Add) has no EntityKeyChangeTracker: /purchases/new has no URL-driven entity
+  // identity to switch between mid-mount.
+  const [fields, setFields] = useState(() => createInitialPurchaseFormFields(today))
+  const {
+    purchasedOn,
+    retailerId,
+    newRetailerName,
+    currency,
+    lines,
+    shippingInput,
+    customsInput,
+    discountInput,
+    notes,
+    fxMode,
+    fxRate,
+    fxRateDate,
+    fxError,
+    error,
+    idempotencyKey,
+  } = fields
+
+  /** Shallow-merges `patch` into the current fields. Never used for `lines` (those go through
+   *  the dedicated line helpers, which need the current array to map/filter). */
+  function patch(update: Partial<typeof fields>) {
+    setFields((current) => patchPurchaseFormFields(current, update))
+  }
+
+  // F-40 (P89): registers this form's own dirty-by-diff state (see unsaved-work-registry.ts) so
+  // an app-wide automatic reload (stale deployment / new chunk) never silently discards typed-
+  // but-unsubmitted purchase input the way it used to for every route except Scanner.
+  useUnsavedWorkSnapshot('purchase-form', {
+    purchasedOn,
+    retailerId,
+    newRetailerName,
+    currency,
+    lines,
+    shippingInput,
+    customsInput,
+    discountInput,
+    notes,
+    fxMode,
+    fxRate,
+  })
 
   const retailers = useQuery({ queryKey: ['retailers'], queryFn: listRetailers })
 
@@ -65,30 +103,24 @@ export function PurchaseFormPage() {
     mutationFn: (name: string) => createRetailer(name),
     onSuccess: async (retailer) => {
       await queryClient.invalidateQueries({ queryKey: ['retailers'] })
-      setRetailerId(retailer.id)
-      setNewRetailerName('')
+      patch({ retailerId: retailer.id, newRetailerName: '' })
     },
   })
 
   const fxQuery = useMutation({
     mutationFn: () => fetchFxRate(currency as Exclude<CurrencyCode, 'NOK'>, purchasedOn),
     onSuccess: (result) => {
-      setFxRate(result.rate)
-      setFxRateDate(result.rateDate)
-      setFxError(null)
+      patch({ fxRate: result.rate, fxRateDate: result.rateDate, fxError: null })
     },
     onError: (err: Error) => {
-      setFxError(
-        err instanceof FxRateNotFoundError
-          ? err.message
-          : 'Could not reach Norges Bank. Enter a rate manually.',
-      )
+      patch({
+        fxError:
+          err instanceof FxRateNotFoundError
+            ? err.message
+            : 'Could not reach Norges Bank. Enter a rate manually.',
+      })
     },
   })
-
-  function updateLine(id: string, patch: Partial<LineDraft>) {
-    setLines((current) => current.map((line) => (line.id === id ? { ...line, ...patch } : line)))
-  }
 
   const preview = useMemo<{
     lines: LinePreview[]
@@ -204,8 +236,7 @@ export function PurchaseFormPage() {
         } else {
           if (!fxRate) {
             const result = await fetchFxRate(currency, purchasedOn)
-            setFxRate(result.rate)
-            setFxRateDate(result.rateDate)
+            patch({ fxRate: result.rate, fxRateDate: result.rateDate })
             resolvedFxRate = result.rate
             resolvedFxDate = result.rateDate
           } else {
@@ -215,19 +246,22 @@ export function PurchaseFormPage() {
         }
       }
 
-      return createPurchase({
-        purchasedOn,
-        currency,
-        lines: lineInputs,
-        retailerId: retailerId || undefined,
-        shippingMinor: parseAmount(shippingInput, currency),
-        customsMinor: parseAmount(customsInput, currency),
-        discountMinor: parseAmount(discountInput, currency),
-        fxRateToNok: resolvedFxRate,
-        fxRateDate: resolvedFxDate,
-        fxSource: currency === 'NOK' ? undefined : fxMode,
-        notes: notes || undefined,
-      })
+      return createPurchase(
+        {
+          purchasedOn,
+          currency,
+          lines: lineInputs,
+          retailerId: retailerId || undefined,
+          shippingMinor: parseAmount(shippingInput, currency),
+          customsMinor: parseAmount(customsInput, currency),
+          discountMinor: parseAmount(discountInput, currency),
+          fxRateToNok: resolvedFxRate,
+          fxRateDate: resolvedFxDate,
+          fxSource: currency === 'NOK' ? undefined : fxMode,
+          notes: notes || undefined,
+        },
+        idempotencyKey,
+      )
     },
     onSuccess: async (purchase) => {
       await queryClient.invalidateQueries({ queryKey: ['purchases'] })
@@ -242,7 +276,7 @@ export function PurchaseFormPage() {
       })
     },
     onError: (err: Error) => {
-      setError(err.message)
+      patch({ error: err.message })
     },
   })
 
@@ -263,16 +297,14 @@ export function PurchaseFormPage() {
           value={purchasedOn}
           max={today()}
           onChange={(event) => {
-            setPurchasedOn(event.target.value)
-            setFxRate('')
+            patch({ purchasedOn: event.target.value, fxRate: '' })
           }}
         />
         <SelectField
           label="Currency"
           value={currency}
           onChange={(event) => {
-            setCurrency(event.target.value as CurrencyCode)
-            setFxRate('')
+            patch({ currency: event.target.value as CurrencyCode, fxRate: '' })
           }}
         >
           {CURRENCIES.map((code) => (
@@ -288,7 +320,7 @@ export function PurchaseFormPage() {
           label="Retailer"
           value={retailerId}
           onChange={(event) => {
-            setRetailerId(event.target.value)
+            patch({ retailerId: event.target.value })
           }}
         >
           <option value="">No retailer</option>
@@ -302,9 +334,10 @@ export function PurchaseFormPage() {
           <input
             value={newRetailerName}
             onChange={(event) => {
-              setNewRetailerName(event.target.value)
+              patch({ newRetailerName: event.target.value })
             }}
             placeholder="Add a new retailer"
+            aria-label="Add a new retailer"
             className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none focus-visible:border-sky-500"
           />
           <button
@@ -327,19 +360,19 @@ export function PurchaseFormPage() {
             <button
               type="button"
               onClick={() => {
-                setFxMode('norges_bank')
+                patch({ fxMode: 'norges_bank' })
                 fxQuery.mutate()
               }}
-              className={`min-h-9 rounded-lg border px-3 text-xs font-medium ${fxMode === 'norges_bank' ? 'border-sky-500 bg-sky-600/20 text-sky-200' : 'border-slate-700 text-slate-300'}`}
+              className={`min-h-9 rounded-lg border px-3 text-xs font-medium ${fxMode === 'norges_bank' ? 'border-sky-500 bg-sky-600/20 text-slate-200' : 'border-slate-700 text-slate-300'}`}
             >
               Norges Bank
             </button>
             <button
               type="button"
               onClick={() => {
-                setFxMode('manual')
+                patch({ fxMode: 'manual' })
               }}
-              className={`min-h-9 rounded-lg border px-3 text-xs font-medium ${fxMode === 'manual' ? 'border-sky-500 bg-sky-600/20 text-sky-200' : 'border-slate-700 text-slate-300'}`}
+              className={`min-h-9 rounded-lg border px-3 text-xs font-medium ${fxMode === 'manual' ? 'border-sky-500 bg-sky-600/20 text-slate-200' : 'border-slate-700 text-slate-300'}`}
             >
               Manual rate
             </button>
@@ -358,7 +391,7 @@ export function PurchaseFormPage() {
               inputMode="decimal"
               value={fxRate}
               onChange={(event) => {
-                setFxRate(event.target.value)
+                patch({ fxRate: event.target.value })
               }}
               placeholder="11.5400"
             />
@@ -374,18 +407,18 @@ export function PurchaseFormPage() {
             draft={line}
             index={index}
             canRemove={lines.length > 1}
-            onChange={(patch) => {
-              updateLine(line.id, patch)
+            onChange={(linePatch) => {
+              setFields((current) => updatePurchaseLine(current, line.id, linePatch))
             }}
             onRemove={() => {
-              setLines((current) => current.filter((l) => l.id !== line.id))
+              setFields((current) => removePurchaseLine(current, line.id))
             }}
           />
         ))}
         <button
           type="button"
           onClick={() => {
-            setLines((current) => [...current, newLineDraft()])
+            setFields((current) => addPurchaseLine(current))
           }}
           className="min-h-11 w-full rounded-lg border border-dashed border-slate-700 text-sm font-medium text-slate-300 hover:bg-slate-800/40"
         >
@@ -399,7 +432,7 @@ export function PurchaseFormPage() {
           inputMode="decimal"
           value={shippingInput}
           onChange={(event) => {
-            setShippingInput(event.target.value)
+            patch({ shippingInput: event.target.value })
           }}
           placeholder="0.00"
         />
@@ -408,7 +441,7 @@ export function PurchaseFormPage() {
           inputMode="decimal"
           value={customsInput}
           onChange={(event) => {
-            setCustomsInput(event.target.value)
+            patch({ customsInput: event.target.value })
           }}
           placeholder="0.00"
         />
@@ -417,7 +450,7 @@ export function PurchaseFormPage() {
           inputMode="decimal"
           value={discountInput}
           onChange={(event) => {
-            setDiscountInput(event.target.value)
+            patch({ discountInput: event.target.value })
           }}
           placeholder="0.00"
         />
@@ -446,11 +479,14 @@ export function PurchaseFormPage() {
       ) : null}
 
       <div className="space-y-1.5">
-        <label className="block text-sm font-medium text-slate-300">Notes</label>
+        <label htmlFor="purchase-notes" className="block text-sm font-medium text-slate-300">
+          Notes
+        </label>
         <textarea
+          id="purchase-notes"
           value={notes}
           onChange={(event) => {
-            setNotes(event.target.value)
+            patch({ notes: event.target.value })
           }}
           rows={2}
           className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none focus-visible:border-sky-500"
@@ -462,7 +498,7 @@ export function PurchaseFormPage() {
       <Button
         disabled={submitMutation.isPending}
         onClick={() => {
-          setError(null)
+          patch({ error: null })
           submitMutation.mutate()
         }}
       >

@@ -186,10 +186,16 @@ describe('E2 — multiple copies, one sold, reproduced exactly in the database',
       .single<{ id: string }>()
     expect(purchaseError).toBeNull()
 
+    // Matched by unit_price_minor, never by array position: all three lines are created inside
+    // one create_purchase transaction and therefore share one identical created_at (Postgres
+    // now() is transaction-scoped) — `.order('created_at')` has no tiebreaker among them, so
+    // which physical row a query returns first is a query-plan detail that can flip once the
+    // table holds enough other data (the sibling bug in m8_purchase_ledger.test.ts's E3 case
+    // reproduced exactly this way inside the full test:db suite).
     const lines = await purchaseLinesFor(purchase!.id)
-    const l1 = await lotForPurchaseLine(lines[0]!.id) // 100
-    await lotForPurchaseLine(lines[1]!.id) // 150 (L2, untouched)
-    await lotForPurchaseLine(lines[2]!.id) // 200 (L3, untouched)
+    const l1 = await lotForPurchaseLine(lines.find((l) => l.unit_price_minor === 10000)!.id) // 100
+    await lotForPurchaseLine(lines.find((l) => l.unit_price_minor === 15000)!.id) // 150 (L2, untouched)
+    await lotForPurchaseLine(lines.find((l) => l.unit_price_minor === 20000)!.id) // 200 (L3, untouched)
 
     const { data: sale, error } = await callCreateSale(clientA, {
       p_sold_on: today,
@@ -251,9 +257,10 @@ describe('E7 — partial sale from a multi-unit lot, reproduced exactly', () => 
       })
       .single<{ id: string }>()
 
+    // Matched by unit_price_minor, never by array position — see the E2 test above.
     const lines = await purchaseLinesFor(purchase!.id)
-    const l1 = await lotForPurchaseLine(lines[0]!.id)
-    const l4 = await lotForPurchaseLine(lines[3]!.id)
+    const l1 = await lotForPurchaseLine(lines.find((l) => l.unit_price_minor === 10000)!.id)
+    const l4 = await lotForPurchaseLine(lines.find((l) => l.unit_price_minor === 18000)!.id)
     expect(l4.quantity).toBe(2)
 
     const { data: sale, error } = await callCreateSale(clientA, {
@@ -470,9 +477,10 @@ describe('lot cost adjustments — exact minor-unit division across the lot (pro
         ],
       })
       .single<{ id: string }>()
+    // Matched by unit_price_minor, never by array position — see the E2 test above.
     const lines = await purchaseLinesFor(purchase!.id)
-    const cardLine = lines[0]!
-    const feeLine = lines[1]!
+    const cardLine = lines.find((l) => l.unit_price_minor === 10000)!
+    const feeLine = lines.find((l) => l.unit_price_minor === 101)!
     const lot = await lotForPurchaseLine(cardLine.id)
     expect(lot.quantity).toBe(2)
 

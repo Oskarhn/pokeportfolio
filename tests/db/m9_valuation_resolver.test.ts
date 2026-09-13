@@ -3,6 +3,7 @@ import {
   createServiceClient,
   createSyntheticUser,
   deleteSyntheticUser,
+  mustDelete,
   seedCatalog,
   signInAs,
   type SyntheticUser,
@@ -17,6 +18,21 @@ import {
  * `resolve_variant_market_values` directly rather than only via the pure TS domain module
  * (tests/financial/market-value.test.ts already covers that), because the FX conversion, the
  * provider-preference branch and the graded exclusion only exist in the SQL layer.
+ *
+ * Fixture isolation (P104, root-caused against `tests/db/m91_value_pagination.test.ts`): the
+ * suite owns a PRIVATE card and five variants, the pattern already established by
+ * `m91_market_movers.test.ts` and `m16_openings.test.ts`'s own pricing fixture (the "M10
+ * shared-catalog collision class"). Previously this file inserted `price_snapshots` rows for the
+ * globally-shared `seedCatalog` variants (pikachu/charizard/japanese/grass energy/charizard
+ * shadowless); `m91_value_pagination.test.ts` seeds `price_snapshots` for those exact same
+ * variants at overlapping dates in its own `beforeAll`, and Vitest's file collection order is not
+ * guaranteed stable across runs (observed both orderings locally), so this file's plain `.insert()`
+ * calls nondeterministically collided with `price_snapshots_unique_per_day` — or worse, silently
+ * resolved against the OTHER file's snapshot instead of this file's own (the third, non-error
+ * failure mode: a snapshot meant to be 45 days old — "missing" — read back as "stale" because
+ * `m91_value_pagination.test.ts` had left a 6-day-old row for the same shared variant). Nothing
+ * here is shared with any other suite now, so results are identical alone and inside the full
+ * suite, regardless of file order.
  */
 
 let service: TestClient
@@ -30,10 +46,55 @@ function daysAgo(n: number): string {
   return d.toISOString().slice(0, 10)
 }
 
+/** Private fixture variant ids, resolved in beforeAll — replace the old shared `seedCatalog.*`
+ *  references one-for-one, keeping every existing test's role/meaning unchanged. */
+let vPikachu = ''
+let vCharizard = ''
+let vJapanese = ''
+let vGrassEnergy = ''
+let vCharizardShadowless = ''
+
 beforeAll(async () => {
   service = createServiceClient()
   user = await createSyntheticUser(service, 'm9-resolver')
   client = await signInAs(user)
+
+  // Private card + variants: nothing shared is touched, so neither this suite nor any other can
+  // pollute the other's price_snapshots rows.
+  const { data: card, error: cardError } = await service
+    .from('cards')
+    .insert({
+      set_id: seedCatalog.cardSetId,
+      local_id: 'm9-resolver-fixture-card',
+      name: 'M9 Resolver Fixture (private test card)',
+      language: 'en',
+    })
+    .select('id')
+    .single<{ id: string }>()
+  if (cardError) throw new Error(cardError.message)
+
+  const roles = ['pikachu', 'charizard', 'japanese', 'grass-energy', 'shadowless'] as const
+  const inserted = await service
+    .from('card_variants')
+    .insert(
+      roles.map((role) => ({
+        card_id: card.id,
+        finish: 'normal',
+        stamp: '',
+        subtype: role,
+        size: 'standard',
+      })),
+    )
+    .select('id, subtype')
+  if (inserted.error) throw new Error(inserted.error.message)
+  const bySubtype = new Map(
+    (inserted.data as { id: string; subtype: string }[]).map((r) => [r.subtype, r.id]),
+  )
+  vPikachu = bySubtype.get('pikachu')!
+  vCharizard = bySubtype.get('charizard')!
+  vJapanese = bySubtype.get('japanese')!
+  vGrassEnergy = bySubtype.get('grass-energy')!
+  vCharizardShadowless = bySubtype.get('shadowless')!
 
   // A deterministic EUR/NOK and USD/NOK rate, far enough in the past that every snapshot fixture
   // below (up to 40 days old) resolves against it, and never overwritten between tests.
@@ -59,7 +120,30 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
+  // The synthetic user's holdings must go FIRST: holdings.card_variant_id has no cascade
+  // (ON DELETE NO ACTION, confirmed against pg_constraint), so deleting the private variants
+  // while a holding still points at one fails silently on an unchecked client error and leaves
+  // the fixture card/variants behind — the next run then collides on
+  // cards_set_id_local_id_key. deleteSyntheticUser removes auth.users, which cascades holdings.
   await deleteSyntheticUser(service, user.id)
+
+  const variantIds = [vPikachu, vCharizard, vJapanese, vGrassEnergy, vCharizardShadowless].filter(
+    (id) => id !== '',
+  )
+  if (variantIds.length > 0) {
+    await mustDelete(
+      service.from('price_snapshots').delete().in('card_variant_id', variantIds),
+      'm9 fixture price_snapshots cleanup',
+    )
+    await mustDelete(
+      service.from('card_variants').delete().in('id', variantIds),
+      'm9 fixture card_variants cleanup',
+    )
+    await mustDelete(
+      service.from('cards').delete().eq('local_id', 'm9-resolver-fixture-card'),
+      'm9 fixture cards cleanup',
+    )
+  }
 })
 
 async function insertHolding(opts: {
@@ -135,11 +219,11 @@ describe('resolver priority — manual > fresh > stale > missing', () => {
   it('a fresh Cardmarket snapshot (EUR) resolves and converts to NOK', async () => {
     const holdingId = await insertHolding({
       holdingKind: 'raw_card',
-      cardVariantId: seedCatalog.pikachuVariantId,
+      cardVariantId: vPikachu,
       quantity: 1,
     })
     await insertSnapshot({
-      cardVariantId: seedCatalog.pikachuVariantId,
+      cardVariantId: vPikachu,
       provider: 'tcgdex_cardmarket',
       priceKind: 'cm_trend',
       currency: 'EUR',
@@ -155,11 +239,11 @@ describe('resolver priority — manual > fresh > stale > missing', () => {
   it('a manual valuation overrides a fresh provider snapshot', async () => {
     const holdingId = await insertHolding({
       holdingKind: 'raw_card',
-      cardVariantId: seedCatalog.charizardVariantId,
+      cardVariantId: vCharizard,
       quantity: 1,
     })
     await insertSnapshot({
-      cardVariantId: seedCatalog.charizardVariantId,
+      cardVariantId: vCharizard,
       provider: 'tcgdex_cardmarket',
       priceKind: 'cm_trend',
       currency: 'EUR',
@@ -179,11 +263,11 @@ describe('resolver priority — manual > fresh > stale > missing', () => {
   it('clear_manual_valuation returns to the automatic provider price', async () => {
     const holdingId = await insertHolding({
       holdingKind: 'raw_card',
-      cardVariantId: seedCatalog.japaneseVariantId,
+      cardVariantId: vJapanese,
       quantity: 1,
     })
     await insertSnapshot({
-      cardVariantId: seedCatalog.japaneseVariantId,
+      cardVariantId: vJapanese,
       provider: 'tcgdex_tcgplayer',
       priceKind: 'tp_market',
       currency: 'USD',
@@ -203,11 +287,11 @@ describe('resolver priority — manual > fresh > stale > missing', () => {
   it('a snapshot 4-30 days old is stale but still used', async () => {
     const holdingId = await insertHolding({
       holdingKind: 'raw_card',
-      cardVariantId: seedCatalog.grassEnergyVariantId,
+      cardVariantId: vGrassEnergy,
       quantity: 1,
     })
     await insertSnapshot({
-      cardVariantId: seedCatalog.grassEnergyVariantId,
+      cardVariantId: vGrassEnergy,
       provider: 'tcgdex_cardmarket',
       priceKind: 'cm_trend',
       currency: 'EUR',
@@ -225,7 +309,7 @@ describe('resolver priority — manual > fresh > stale > missing', () => {
       .insert({
         user_id: user.id,
         holding_kind: 'raw_card',
-        card_variant_id: seedCatalog.charizardShadowlessFirstEditionVariantId,
+        card_variant_id: vCharizardShadowless,
         condition: 'NM',
       })
       .select('id')
@@ -240,7 +324,7 @@ describe('resolver priority — manual > fresh > stale > missing', () => {
       quantity_remaining: 1,
     })
     await insertSnapshot({
-      cardVariantId: seedCatalog.charizardShadowlessFirstEditionVariantId,
+      cardVariantId: vCharizardShadowless,
       provider: 'tcgdex_cardmarket',
       priceKind: 'cm_trend',
       currency: 'EUR',
@@ -256,16 +340,13 @@ describe('resolver priority — manual > fresh > stale > missing', () => {
     // A prior test in this file already gave this variant a fresh snapshot — price_snapshots is
     // per-variant, shared across every holding, so it must be cleared first to exercise the
     // genuinely-no-observation case rather than accidentally reusing an earlier fixture's rows.
-    await service
-      .from('price_snapshots')
-      .delete()
-      .eq('card_variant_id', seedCatalog.japaneseVariantId)
+    await service.from('price_snapshots').delete().eq('card_variant_id', vJapanese)
     const { data: holding } = await service
       .from('holdings')
       .insert({
         user_id: user.id,
         holding_kind: 'raw_card',
-        card_variant_id: seedCatalog.japaneseVariantId,
+        card_variant_id: vJapanese,
         condition: 'LP',
       })
       .select('id')
@@ -287,7 +368,7 @@ describe('resolver priority — manual > fresh > stale > missing', () => {
 describe('F10 — a raw price never values a graded holding', () => {
   it('resolves missing for a graded holding even though its printing has a fresh raw price', async () => {
     await insertSnapshot({
-      cardVariantId: seedCatalog.pikachuVariantId,
+      cardVariantId: vPikachu,
       provider: 'tcgdex_cardmarket',
       priceKind: 'cm_trend',
       currency: 'EUR',
@@ -296,7 +377,7 @@ describe('F10 — a raw price never values a graded holding', () => {
     })
     const holdingId = await insertHolding({
       holdingKind: 'graded_card',
-      cardVariantId: seedCatalog.pikachuVariantId,
+      cardVariantId: vPikachu,
       quantity: 1,
       grade: 10,
     })
@@ -308,7 +389,7 @@ describe('F10 — a raw price never values a graded holding', () => {
   it('a manual valuation still works for a graded holding', async () => {
     const holdingId = await insertHolding({
       holdingKind: 'graded_card',
-      cardVariantId: seedCatalog.pikachuVariantId,
+      cardVariantId: vPikachu,
       quantity: 1,
       grade: 9,
     })
@@ -326,7 +407,7 @@ describe('a genuine zero observation is distinct from missing (F14)', () => {
       .insert({
         user_id: user.id,
         holding_kind: 'raw_card',
-        card_variant_id: seedCatalog.charizardVariantId,
+        card_variant_id: vCharizard,
         condition: 'PO',
       })
       .select('id')
@@ -344,7 +425,7 @@ describe('a genuine zero observation is distinct from missing (F14)', () => {
     // avoid the unique-per-day conflict — reuse grass energy's sibling.
     await service.from('price_snapshots').upsert(
       {
-        card_variant_id: seedCatalog.charizardShadowlessFirstEditionVariantId,
+        card_variant_id: vCharizardShadowless,
         provider: 'tcgdex_cardmarket',
         price_kind: 'cm_trend',
         source_currency: 'EUR',
@@ -356,7 +437,7 @@ describe('a genuine zero observation is distinct from missing (F14)', () => {
     )
     const { data: r, error } = await client
       .rpc('resolve_variant_market_values', {
-        p_card_variant_ids: [seedCatalog.charizardShadowlessFirstEditionVariantId],
+        p_card_variant_ids: [vCharizardShadowless],
       })
       .single<{ price_state: string; value_nok_minor: string }>()
     expect(error).toBeNull()
@@ -369,7 +450,7 @@ describe('quantity multiplication — holding total value (§44)', () => {
   it('3 copies at a resolved unit value of 100 NOK contribute 300 NOK', async () => {
     const holdingId = await insertHolding({
       holdingKind: 'raw_card',
-      cardVariantId: seedCatalog.grassEnergyVariantId,
+      cardVariantId: vGrassEnergy,
       quantity: 3,
       // A distinct condition from the earlier "stale" test's NM holding of the same variant —
       // holdings_identity is keyed on (variant, condition, ...), so reusing NM here would collide
@@ -386,7 +467,7 @@ describe('quantity multiplication — holding total value (§44)', () => {
 
 describe('provider outage — F9, never zero, ages fresh → stale → missing', () => {
   it('the last known snapshot is retained; a simulated outage only ages it, never zeroes it', async () => {
-    const cardVariantId = seedCatalog.japaneseVariantId
+    const cardVariantId = vJapanese
     // Clean slate for this variant within this test (other tests may already have snapshots).
     await service.from('price_snapshots').delete().eq('card_variant_id', cardVariantId)
     await insertSnapshot({
@@ -432,7 +513,7 @@ describe('provider outage — F9, never zero, ages fresh → stale → missing',
 
 describe('use_eu_pricing provider preference (D-052)', () => {
   it('prefers Cardmarket when eu pricing is on and both providers have a fresh price', async () => {
-    const cardVariantId = seedCatalog.pikachuVariantId
+    const cardVariantId = vPikachu
     await service.from('price_snapshots').delete().eq('card_variant_id', cardVariantId)
     await insertSnapshot({
       cardVariantId,
@@ -468,7 +549,7 @@ describe('use_eu_pricing provider preference (D-052)', () => {
   })
 
   it('falls back to the other provider when the preferred one has no valid price', async () => {
-    const cardVariantId = seedCatalog.grassEnergyVariantId
+    const cardVariantId = vGrassEnergy
     await service.from('price_snapshots').delete().eq('card_variant_id', cardVariantId)
     await insertSnapshot({
       cardVariantId,
@@ -505,7 +586,7 @@ describe('portfolio_counts — priced/unpriced counts and portfolio value', () =
 
 describe('get_card_variant_price_history — real snapshots only', () => {
   it('returns no points for a variant with no history', async () => {
-    const cardVariantId = seedCatalog.charizardShadowlessFirstEditionVariantId
+    const cardVariantId = vCharizardShadowless
     await service.from('price_snapshots').delete().eq('card_variant_id', cardVariantId)
     const { data, error } = await client.rpc('get_card_variant_price_history', {
       p_card_variant_id: cardVariantId,
@@ -515,7 +596,7 @@ describe('get_card_variant_price_history — real snapshots only', () => {
   })
 
   it('returns real ascending points converted to NOK, one per day', async () => {
-    const cardVariantId = seedCatalog.charizardShadowlessFirstEditionVariantId
+    const cardVariantId = vCharizardShadowless
     await service.from('price_snapshots').delete().eq('card_variant_id', cardVariantId)
     await insertSnapshot({
       cardVariantId,

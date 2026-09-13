@@ -12,6 +12,8 @@ import { fetchFxRate } from '../../data/fx'
 import { fromDecimalString, toDecimalString } from '../../domain/money'
 import type { CurrencyCode } from '../../domain/currency'
 import { Button, FormMessage, TextField } from '../../ui/form'
+import { useUnsavedWorkSnapshot } from '../../platform/unsaved-work-registry'
+import { useIsMountedRef } from '../../platform/use-mounted-ref'
 
 function parseAmount(raw: string, currency: CurrencyCode): bigint {
   const trimmed = raw.trim().replace(',', '.')
@@ -95,6 +97,23 @@ function SaleEditForm({ saleId, sale, lines }: { saleId: string; sale: Sale; lin
   )
   const [error, setError] = useState<string | null>(null)
 
+  // P124: see PurchaseEditPage's identical guard for why — this instance is remounted (not
+  // re-rendered) on every saleId change, but submitMutation's callbacks are a closure over THIS
+  // instance's saleId and keep firing after unmount if the response arrives late.
+  const isMountedRef = useIsMountedRef()
+
+  // F-40 (P89): see PurchaseFormPage's identical registration for why.
+  useUnsavedWorkSnapshot('sale-edit-form', {
+    soldOn,
+    marketplace,
+    feesInput,
+    shippingCostInput,
+    shippingChargedInput,
+    notes,
+    fxRate,
+    lineInputs,
+  })
+
   const preview = useMemo(() => {
     try {
       const gross = lines.reduce(
@@ -139,14 +158,21 @@ function SaleEditForm({ saleId, sale, lines }: { saleId: string; sale: Sale; lin
       })
     },
     onSuccess: async () => {
+      // Cache invalidation always runs, even for a stale instance: the edit genuinely happened on
+      // the server, so every cached view (including a later return to THIS sale) must see it.
       await queryClient.invalidateQueries({ queryKey: ['sale', saleId] })
       await queryClient.invalidateQueries({ queryKey: ['sales'] })
       await queryClient.invalidateQueries({ queryKey: ['sales-summary'] })
       // A price/fee correction changes NSP behind Home's live TTEP and spend figures.
       await queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] })
+      // Only the navigation is guarded: a stale instance's success must not yank the user off
+      // whatever sale/page they have since navigated to and back onto this one.
+      if (!isMountedRef.current) return
       await navigate({ to: '/sales/$saleId', params: { saleId } })
     },
     onError: (err: Error) => {
+      // A stale instance's error has nowhere correct to render — the form it belongs to is gone.
+      if (!isMountedRef.current) return
       setError(err.message)
     },
   })
@@ -195,6 +221,7 @@ function SaleEditForm({ saleId, sale, lines }: { saleId: string; sale: Sale; lin
             </div>
             <input
               inputMode="decimal"
+              aria-label={`Sale price per unit for ${line.cardName ?? line.sealedProductName ?? line.manualCardName ?? 'this line'}`}
               value={lineInputs[line.id] ?? ''}
               onChange={(event) => {
                 setLineInputs((current) => ({ ...current, [line.id]: event.target.value }))
@@ -250,8 +277,11 @@ function SaleEditForm({ saleId, sale, lines }: { saleId: string; sale: Sale; lin
       ) : null}
 
       <div className="space-y-1.5">
-        <label className="block text-sm font-medium text-slate-300">Notes</label>
+        <label htmlFor="sale-edit-notes" className="block text-sm font-medium text-slate-300">
+          Notes
+        </label>
         <textarea
+          id="sale-edit-notes"
           value={notes}
           onChange={(event) => {
             setNotes(event.target.value)

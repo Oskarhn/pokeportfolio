@@ -1,5 +1,6 @@
 import { supabase } from './supabase-client'
 import { parseMinorUnits } from './money'
+import type { CardCondition } from './collection'
 import type { Database } from './database.types'
 
 /**
@@ -24,6 +25,11 @@ export interface Profile {
   hideLowValueByDefault: boolean
   displayCurrency: string
   defaultLanguage: string | null
+  /** Capture default (DATA_MODEL §capture): the add-flow's and the scanner's initial condition.
+   *  Null means "no preference stored" — consumers fall back to their own canonical default. */
+  defaultCondition: CardCondition | null
+  /** Capture default: preselected storage location for new acquisitions. */
+  defaultStorageLocationId: string | null
   /** M7.1 §19: the Home/Portfolio value-privacy "eye" preference. Display-only — never changes
    *  what is computed, only whether an honest figure or its mask is rendered. */
   hideValues: boolean
@@ -44,6 +50,8 @@ interface ProfileRow {
   hide_low_value_by_default: boolean
   display_currency: string
   default_language: string | null
+  default_condition: CardCondition | null
+  default_storage_location_id: string | null
   hide_values: boolean
   use_eu_pricing: boolean
 }
@@ -51,7 +59,8 @@ interface ProfileRow {
 const SELECT_COLUMNS =
   'id, display_name, is_admin, theme, collection_grid_density, collection_default_view, ' +
   'collection_default_sort, low_value_threshold_minor::text, hide_low_value_by_default, ' +
-  'display_currency, default_language, hide_values, use_eu_pricing'
+  'display_currency, default_language, default_condition, default_storage_location_id, ' +
+  'hide_values, use_eu_pricing'
 
 function mapProfile(row: ProfileRow): Profile {
   return {
@@ -66,6 +75,8 @@ function mapProfile(row: ProfileRow): Profile {
     hideLowValueByDefault: row.hide_low_value_by_default,
     displayCurrency: row.display_currency,
     defaultLanguage: row.default_language,
+    defaultCondition: row.default_condition,
+    defaultStorageLocationId: row.default_storage_location_id,
     hideValues: row.hide_values,
     useEuPricing: row.use_eu_pricing,
   }

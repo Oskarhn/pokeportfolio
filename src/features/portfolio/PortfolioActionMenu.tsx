@@ -84,7 +84,9 @@ export function PortfolioActionMenu({
                 setSortOpen(false)
               }}
               className={`flex min-h-11 items-center justify-between rounded-lg px-3 text-left text-sm font-medium ${
-                sort === option ? 'bg-sky-600/20 text-sky-200' : 'text-slate-200 hover:bg-slate-800'
+                sort === option
+                  ? 'bg-sky-600/20 text-slate-200'
+                  : 'text-slate-200 hover:bg-slate-800'
               }`}
             >
               {SORT_LABEL[option]}

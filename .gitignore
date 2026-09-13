@@ -57,6 +57,9 @@ playwright-report/
 test-results/
 blob-report/
 .playwright/
+# P94: local-authenticated-E2E synthetic-user session state — a real, if throwaway, JWT for a
+# local-only synthetic account. Never committed, same discipline as .env.local.
+playwright/.auth/
 
 # ── Scanner artefacts ──────────────────────────────────────────────────────
 # Models and card-image corpora are downloaded at build time, never committed.
@@ -67,6 +70,45 @@ card-images/
 *.tflite
 embeddings.bin
 scanner-index*/
+# Generated OCR + visual runtime assets (scripts/prepare-scanner-assets.mjs,
+# scripts/scanner-visual-index/build-index.mjs) — never committed.
+/public/scanner-assets/
+# M15b visual index pipeline: downloaded reference images, HF model cache and
+# benchmark reports/query images are reproducible, never committed.
+scripts/scanner-visual-index/.visual-index-cache/
+scripts/scanner-visual-benchmark/.benchmark-cache/
+scripts/scanner-visual-benchmark/reports/
+# tesseract.js (Node worker, scripts/scanner-visual-benchmark/lib/ocr.mjs) decompresses its
+# traineddata cache into whatever the current working directory happens to be when a benchmark
+# script runs from the repo root — a reproducible runtime artifact, never committed (P79).
+/eng.traineddata
+# EXCEPTION (D-097): the generated reference index IS committed — small, binary,
+# derived numeric data with no card images, versioned like any other build input.
+# The blanket `embeddings.bin`/`*.onnx` rules above are for ad-hoc local files,
+# not this one deliberate, reviewed, checked-in artifact.
+!scripts/scanner-visual-index/generated/
+!scripts/scanner-visual-index/generated/**
+# P85 OCR benchmark reports and the name-lexicon generator's output — reproducible, never
+# committed (this session's lexicon is a small DEMO dataset, not the real catalog — see
+# scripts/scanner-name-lexicon/build-lexicon.ts's own header for why). The OCR benchmark corpus
+# itself reuses scripts/scanner-visual-benchmark/.benchmark-cache/ above — no second image cache.
+scripts/scanner-ocr-benchmark/reports/
+scripts/scanner-name-lexicon/generated/
+# P120: scripts/p120-largest-remainder-oracle.ts's own generated batch-SQL file (reproducible from
+# the script's seed each run; can reach tens of MB at 100k+ cases).
+scripts/.p120-lr-oracle.generated.sql
+# P91/P93/P95/P100 recognition R&D lab: the corpus manifest/reference-index cache, HF model cache
+# and every generated benchmark report are reproducible (re-buildable from TCGdex + the model
+# cache), never committed. The corpus's own imagePath fields may point at a sibling worktree's
+# images directory rather than a local copy — see the P93 adversarial experiment's own header
+# comment. SCOREBOARD.md and the scoreboard generator ARE committed (reviewed, hand-authored/
+# summary content, not raw run output).
+scripts/scanner-recognition-lab/.cache/
+scripts/scanner-recognition-lab/.runs/
+scripts/scanner-recognition-lab/reports/*.json
+# P96 preprocessor-parity harness: reproducible from the committed index + benchmark corpus cache
+# above, never committed.
+scripts/scanner-preprocess-parity/reports/
 
 # ── Editor and OS ──────────────────────────────────────────────────────────
 .vscode/*

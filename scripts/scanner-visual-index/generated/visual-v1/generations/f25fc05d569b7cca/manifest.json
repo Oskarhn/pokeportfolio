@@ -1,0 +1,27 @@
+{
+  "version": "visual-v1",
+  "modelId": "Xenova/dinov2-small",
+  "modelRevision": "c2bb04a51fab207c420665f1946016107bffc701",
+  "modelSha256": "3afdc8bc63b50558d6e5770f5b799bb82455c2311183a2de43803f343a29d917",
+  "embeddingDim": 384,
+  "quantization": "int8",
+  "cardCount": 19500,
+  "embeddingsSha256": "eaec748d2713cd2b2a1f4a900b7bdeeb06435b8d15d28869a9dbd163f9a5540e",
+  "generatedAt": "2026-09-06T23:39:46.623Z",
+  "coverage": {
+    "totalCanonicalCards": 20946,
+    "cardsWithUsableImage": 19508,
+    "cardsIndexed": 19500,
+    "failures": 8,
+    "cardsWithAuxPrototype": 19500,
+    "cardsAuxFallback": 0
+  },
+  "sourceProjectRef": "nopmkroeygmlvndzjjqs.supabase.co",
+  "sourceEnglishActiveCount": 20946,
+  "schemaVersion": 2,
+  "payloadFormat": "multi-prototype-v2",
+  "prototypesPerCard": 2,
+  "prototypeStrategy": "pristinePlus1Aux",
+  "prototypeStrategyVersion": "1",
+  "rowCount": 39000
+}

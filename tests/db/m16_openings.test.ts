@@ -3,6 +3,7 @@ import {
   createServiceClient,
   createSyntheticUser,
   deleteSyntheticUser,
+  mustDelete,
   seedCatalog,
   signInAs,
   type SyntheticUser,
@@ -27,6 +28,27 @@ beforeAll(async () => {
   service = createServiceClient()
   userA = await createSyntheticUser(service, 'm16-openings-a')
   clientA = await signInAs(userA)
+
+  // P108 (docs/BACKLOG.md "m16_openings.test.ts shares seedCatalog.charizardVariantId/
+  // grassEnergyVariantId ... across ~2000 lines", found P104, reproduces only under shuffled file
+  // order): price_snapshots is shared market data, not scoped to this file's synthetic user — a
+  // file that happens to run earlier in a shuffled order (e.g. tests/db/m9_valuation_resolver.test.ts,
+  // tests/db/m91_value_pagination.test.ts) may leave a snapshot for one of these SAME shared
+  // variants, which E4/E5's "this pull stays honestly unpriced" assertions would then silently
+  // read back as priced. Same "start from a clean slate" pattern m91_value_pagination.test.ts
+  // already uses for the identical reason, with the cleanup error actually checked this time
+  // (P107 finding: the pre-existing version of this pattern elsewhere never checked `.error`).
+  await mustDelete(
+    service
+      .from('price_snapshots')
+      .delete()
+      .in('card_variant_id', [
+        seedCatalog.charizardVariantId,
+        seedCatalog.grassEnergyVariantId,
+        seedCatalog.pikachuVariantId,
+      ]),
+    'm16_openings shared-variant price_snapshots clean slate',
+  )
 })
 
 afterAll(async () => {
@@ -417,8 +439,11 @@ describe('E4/E5 — pull tracking: commons, energy, manual fallback, completenes
       .eq('opening_id', opening.id)
       .order('created_at')
     expect(pulls).toHaveLength(3)
-    // Basic Energy is ordinary first-class inventory: twelve copies, one lot, never aggregated away.
-    expect(pulls![1]!.quantity).toBe(12)
+    // Basic Energy is ordinary first-class inventory: twelve copies, one lot, never aggregated
+    // away. Matched by quantity, never by array position: all three pull lots are created inside
+    // one create_opening transaction and share one identical created_at (Postgres now() is
+    // transaction-scoped) — `.order('created_at')` has no tiebreaker among them.
+    expect(pulls!.find((p) => p.quantity === 12)).toBeDefined()
 
     const { data: detail } = await clientA.rpc('get_opening', { p_opening_id: opening.id }).single<{
       tracking_completeness: string
@@ -1486,42 +1511,65 @@ describe('P56 §12 — widened purchase_lines CHECK: global envelope audit (D-09
 })
 
 describe('E13 — backdated opening dirties M12 history from the correct date', () => {
+  // P99: runs on a DEDICATED throwaway user (same reasoning as E15's own comment above this one) —
+  // NOT the file-shared userA. `portfolio_recompute_queue` is a per-user singleton whose
+  // `dirty_from` only ever moves EARLIER (`least(old,new)`, m12_fx_rate_enq_insert and friends in
+  // 20260830120020_m12_invalidation_triggers.sql), and this file also seeds a guarded/conditional
+  // 400-day-back EUR->NOK fx_rates row elsewhere (only inserted if none exists yet) whose own
+  // insert trigger dirties every user with a raw-card holding at THAT rate's date — userA
+  // accumulates raw-card holdings across dozens of earlier cases in this file, so whether that
+  // guarded insert fires before this test runs (which depends on unrelated fixture/ordering state,
+  // and on whatever ran in EARLIER files in a full `pnpm test:db` invocation, since files are not
+  // reset between each other) nondeterministically pins userA's dirty_from to that far-past date
+  // and this test's exact-equality assertion on it fails — reproduced deterministically 3/3 runs
+  // in isolation before this fix (the guarded insert always fires in an isolated single-file run),
+  // and intermittently in the full suite depending on what ran first (matching the previously
+  // reported "1-2 failing assertions, different specific assertions across runs" symptom). A fresh
+  // dedicated user's queue starts empty, making the assertion deterministic regardless of what any
+  // other test in this file or an earlier file did.
   it('sealed owned until opened_on; pulls enter same day; dirty_from = earliest touched date', async () => {
-    // Purchase AFTER the (older) opening date, so the opening is what moves the boundary.
-    const purchasedOn = dateOffset(-5)
-    const openedOn = dateOffset(-10)
+    const user = await createSyntheticUser(service, 'm16-backdate-e13')
+    try {
+      const client = await signInAs(user)
 
-    const { lotId } = await buySealed(clientA, {
-      quantity: 2,
-      unitPriceMinor: 4000,
-      purchasedOn,
-    })
-    // Purchase already dirtied the queue at its own date.
-    const { data: beforeQueue } = await service
-      .from('portfolio_recompute_queue')
-      .select('dirty_from')
-      .eq('user_id', userA.id)
-      .maybeSingle<{ dirty_from: string }>()
+      // Purchase AFTER the (older) opening date, so the opening is what moves the boundary.
+      const purchasedOn = dateOffset(-5)
+      const openedOn = dateOffset(-10)
 
-    await callCreateOpening(clientA, {
-      p_source_lot_id: lotId,
-      p_quantity: 1,
-      p_opened_on: openedOn,
-      p_pulls: [
-        { card_variant_id: seedCatalog.grassEnergyVariantId, quantity: 3, condition: 'NM' },
-      ],
-    })
+      const { lotId } = await buySealed(client, {
+        quantity: 2,
+        unitPriceMinor: 4000,
+        purchasedOn,
+      })
+      // Purchase already dirtied the queue at its own date.
+      const { data: beforeQueue } = await service
+        .from('portfolio_recompute_queue')
+        .select('dirty_from')
+        .eq('user_id', user.id)
+        .maybeSingle<{ dirty_from: string }>()
 
-    const { data: queue } = await service
-      .from('portfolio_recompute_queue')
-      .select('dirty_from')
-      .eq('user_id', userA.id)
-      .maybeSingle<{ dirty_from: string }>()
-    expect(queue).not.toBeNull()
-    expect(queue!.dirty_from).toBe(openedOn)
-    expect(new Date(queue!.dirty_from).getTime()).toBeLessThan(
-      new Date(beforeQueue?.dirty_from ?? purchasedOn).getTime(),
-    )
+      await callCreateOpening(client, {
+        p_source_lot_id: lotId,
+        p_quantity: 1,
+        p_opened_on: openedOn,
+        p_pulls: [
+          { card_variant_id: seedCatalog.grassEnergyVariantId, quantity: 3, condition: 'NM' },
+        ],
+      })
+
+      const { data: queue } = await service
+        .from('portfolio_recompute_queue')
+        .select('dirty_from')
+        .eq('user_id', user.id)
+        .maybeSingle<{ dirty_from: string }>()
+      expect(queue).not.toBeNull()
+      expect(queue!.dirty_from).toBe(openedOn)
+      expect(new Date(queue!.dirty_from).getTime()).toBeLessThan(
+        new Date(beforeQueue?.dirty_from ?? purchasedOn).getTime(),
+      )
+    } finally {
+      await deleteSyntheticUser(service, user.id)
+    }
   })
 })
 

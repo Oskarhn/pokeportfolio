@@ -30,9 +30,9 @@
 
 import { createClient } from '@supabase/supabase-js'
 import { createHash, randomUUID } from 'node:crypto'
-import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
+import { runPsql as execPsql } from './lib/psql-exec.mjs'
 
 const url = process.env.SUPABASE_URL
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -79,8 +79,13 @@ const ANALYZE_TABLES = [
   'price_snapshots',
 ]
 
+// P105: `argsList[0]` is always DB_URL by this file's own established call-site convention —
+// delegated to the shared native-psql-or-docker-exec resolver (scripts/lib/psql-exec.mjs) rather
+// than calling `psql` directly, so this script keeps working on a machine with no native psql
+// client (this one included) as long as the local Supabase Docker stack is running.
 function runPsql(argsList) {
-  return execFileSync('psql', argsList, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+  const [dbUrl, ...rest] = argsList
+  return execPsql(dbUrl, rest, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
 }
 
 // Since P42's every-minute recompute drain is active wherever the M12 migrations are applied

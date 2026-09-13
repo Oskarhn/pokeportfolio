@@ -6,6 +6,8 @@ import { supabase } from '../data/supabase-client'
 // draft — private financial intent never outlives the session that created it. (The store is
 // additionally keyed by user id, so account switches are isolated even without this.)
 import { draftStore } from '../features/openings/draft'
+// M15 (D-093 sweep extension): scanner session defaults are private collection intent too.
+import { scannerSessionStore } from '../features/scanner/session-store'
 import { applyAuthIdentityBoundary, type ObservedUserId } from './query-cache-boundary'
 import { AuthContext, type AuthState } from './auth-context'
 
@@ -104,6 +106,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signOut = useCallback(async () => {
     await supabase.auth.signOut()
     draftStore.clearAll()
+    scannerSessionStore.clearAll()
   }, [])
 
   const value = useMemo<AuthState>(

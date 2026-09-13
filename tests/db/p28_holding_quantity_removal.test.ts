@@ -551,12 +551,17 @@ describe('purchased lots route through the receipt (update_purchase), never a si
     )
     const originalLines = await purchaseLinesFor(purchase.id)
     expect(originalLines).toHaveLength(2)
+    // Matched by line_type, never by array position: both lines are created inside one
+    // create_purchase transaction and share one identical created_at (Postgres now() is
+    // transaction-scoped) — `.order('created_at')` has no tiebreaker between them.
+    const cardLine = originalLines.find((l) => l.line_type === 'card')!
+    const accessoryLine = originalLines.find((l) => l.line_type === 'accessory')!
 
     const updateError = await updatePurchase(
       purchase.id,
       [
-        { line_id: originalLines[0]!.id, quantity: 1, unit_price_minor: 1000 },
-        { line_id: originalLines[1]!.id, quantity: 1, unit_price_minor: 500 },
+        { line_id: cardLine.id, quantity: 1, unit_price_minor: 1000 },
+        { line_id: accessoryLine.id, quantity: 1, unit_price_minor: 500 },
       ],
       300,
     )

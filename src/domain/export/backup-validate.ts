@@ -18,6 +18,19 @@ import { MANIFEST_COUNT_KEY_PREFIX } from './backup-format'
 /** Identity-manifest section names, in canonical order. */
 const MANIFEST_SECTIONS = ['card_variants', 'curated_sealed_products', 'card_sets'] as const
 
+/** The envelope's own fixed top-level shape (BackupEnvelope in backup-format.ts) — closed the
+ *  same way `data` and `identity_manifest` are closed (D-076's "refuses what it cannot name"),
+ *  so a hostile or corrupted file cannot smuggle an unrecognized top-level key past this reader. */
+const ENVELOPE_TOP_LEVEL_KEYS = [
+  'format',
+  'schema_version',
+  'exported_at',
+  'app',
+  'counts',
+  'data',
+  'identity_manifest',
+] as const
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -54,9 +67,15 @@ function fail(path: string, problem: string): EnvelopeValidationResult {
  * - every section, profiles included (0 or 1 rows), is an array of objects
  * - `identity_manifest` carries its three arrays of objects and nothing else
  * - no unexpected top-level `data` keys (a v1 reader refuses what it cannot name)
+ * - no unexpected top-level envelope keys (same rule, applied to the envelope's own shape)
  */
 export function validateBackupEnvelope(input: unknown): EnvelopeValidationResult {
   if (!isPlainObject(input)) return fail('', 'envelope must be a JSON object')
+  for (const key of Object.keys(input)) {
+    if (!(ENVELOPE_TOP_LEVEL_KEYS as readonly string[]).includes(key)) {
+      return fail(key, 'unknown top-level envelope key')
+    }
+  }
   if (input['format'] !== BACKUP_FORMAT_ID) return fail('format', `must be "${BACKUP_FORMAT_ID}"`)
   if (input['schema_version'] !== BACKUP_SCHEMA_VERSION) {
     return fail(

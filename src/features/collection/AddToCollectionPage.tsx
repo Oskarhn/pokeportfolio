@@ -13,6 +13,7 @@ import {
   type LotOrigin,
 } from '../../data/collection'
 import { getCardVariantWithCard, type CatalogVariantWithCard } from '../../data/catalog'
+import { localTodayIso } from '../../platform/local-date'
 import { CardImage } from '../catalog/CardImage'
 import {
   Button,
@@ -24,6 +25,7 @@ import {
 } from '../../ui/form'
 import { parseNokInput } from '../../ui/money-format'
 import { CONDITION_LABEL, FINISH_LABEL, GRADER_LABEL, ORIGIN_LABEL } from './labels'
+import { fixedCostBasisState } from './origin-basis'
 
 const CONDITIONS: CardCondition[] = ['MT', 'NM', 'EX', 'GD', 'LP', 'PL', 'PO']
 const GRADERS: Grader[] = ['psa', 'cgc', 'bgs', 'ace', 'sgc', 'tag', 'other']
@@ -33,21 +35,6 @@ const ORIGINS: LotOrigin[] = ['purchase', 'opening', 'gift', 'trade_in', 'pre_tr
  *  a cost field (FINANCIAL_MODEL.md §5.2/E12; M6 prompt §56). */
 function costIsApplicable(origin: LotOrigin): boolean {
   return origin === 'purchase' || origin === 'other'
-}
-
-function fixedCostBasisState(origin: LotOrigin): CostBasisState | null {
-  switch (origin) {
-    case 'opening':
-      return 'unallocated_opening'
-    case 'gift':
-      return 'not_paid'
-    case 'trade_in':
-      return 'trade_in'
-    case 'pre_tracking':
-      return 'unknown'
-    default:
-      return null // purchase / other: the user chooses known vs unknown
-  }
 }
 
 interface CardIdentity {
@@ -86,7 +73,7 @@ export function AddToCollectionPage() {
   const [origin, setOrigin] = useState<LotOrigin>('purchase')
   const [costKnown, setCostKnown] = useState(true)
   const [costPerCard, setCostPerCard] = useState('')
-  const [acquiredOn, setAcquiredOn] = useState(() => new Date().toISOString().slice(0, 10))
+  const [acquiredOn, setAcquiredOn] = useState(localTodayIso)
   const [storageLocationId, setStorageLocationId] = useState('')
   const [newLocationName, setNewLocationName] = useState('')
   const [isFavorite, setIsFavorite] = useState(false)

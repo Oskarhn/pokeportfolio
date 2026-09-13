@@ -54,6 +54,20 @@ describe.skipIf(!hasSupabaseEnv())('M16 economic oracle — opening does not cre
     service = createServiceClient()
     userA = await createSyntheticUser(service, 'm16adv-eco')
     clientA = await signInAs(userA)
+
+    // price_snapshots is shared market data keyed on the fixed seedCatalog variant id, not
+    // scoped to this file's synthetic user — it is not reset between test files within one
+    // database lifetime. Two cases below (P56 §16-C, §20) depend on seedCatalog.japaneseVariantId
+    // genuinely having NO price observation, which is only guaranteed on a pristine database:
+    // tests/db/m91_value_pagination.test.ts plants a real (zero-value) snapshot for this exact
+    // variant, and when that file runs earlier in the same database (e.g. as part of the full
+    // `pnpm test:db` suite, with no reset before this file runs) it survives and makes this file's
+    // "genuinely unpriced" precondition false — a shared-catalog test-isolation gap, not a product
+    // defect. Same convention m91 itself already uses for the variants its own fixture depends on.
+    await service
+      .from('price_snapshots')
+      .delete()
+      .eq('card_variant_id', seedCatalog.japaneseVariantId)
   }, 120_000)
 
   afterAll(async () => {

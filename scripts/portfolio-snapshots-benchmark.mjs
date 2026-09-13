@@ -30,7 +30,7 @@
 
 import { createClient } from '@supabase/supabase-js'
 import { createHash, randomUUID } from 'node:crypto'
-import { execFileSync } from 'node:child_process'
+import { runPsql as execPsql } from './lib/psql-exec.mjs'
 
 const url = process.env.SUPABASE_URL
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -324,7 +324,7 @@ function analyzeSeededTables() {
   ]
     .map((t) => `analyze public.${t};`)
     .join(' ')
-  execFileSync('psql', [DB_URL, '-v', 'ON_ERROR_STOP=1', '-c', sql], { encoding: 'utf8' })
+  execPsql(DB_URL, ['-v', 'ON_ERROR_STOP=1', '-c', sql], { encoding: 'utf8' })
   console.log('ANALYZE complete.')
 }
 
@@ -332,7 +332,7 @@ function psqlScalar(sqlText) {
   const DB_URL = process.env.DB_URL
   if (!DB_URL) return null
   try {
-    return execFileSync('psql', [DB_URL, '-tAc', sqlText], { encoding: 'utf8' }).trim()
+    return execPsql(DB_URL, ['-tAc', sqlText], { encoding: 'utf8' }).trim()
   } catch {
     return null
   }
@@ -351,13 +351,13 @@ function pauseRecomputeDrain() {
   const DB_URL = process.env.DB_URL
   if (!DB_URL) return
   try {
-    pausedRecomputeJobCommand = execFileSync(
-      'psql',
-      [DB_URL, '-tAc', `select command from cron.job where jobname = '${RECOMPUTE_JOB}'`],
+    pausedRecomputeJobCommand = execPsql(
+      DB_URL,
+      ['-tAc', `select command from cron.job where jobname = '${RECOMPUTE_JOB}'`],
       { encoding: 'utf8' },
     ).trim()
     if (pausedRecomputeJobCommand) {
-      execFileSync('psql', [DB_URL, '-tAc', `select cron.unschedule('${RECOMPUTE_JOB}')`], {
+      execPsql(DB_URL, ['-tAc', `select cron.unschedule('${RECOMPUTE_JOB}')`], {
         encoding: 'utf8',
       })
       console.log('Paused the every-minute recompute drain for the duration of this benchmark.')
@@ -379,9 +379,9 @@ function resumeRecomputeDrain() {
   if (!DB_URL || !command) return
   try {
     const literal = command.replaceAll("'", "''")
-    execFileSync(
-      'psql',
-      [DB_URL, '-tAc', `select cron.schedule('${RECOMPUTE_JOB}', '* * * * *', '${literal}')`],
+    execPsql(
+      DB_URL,
+      ['-tAc', `select cron.schedule('${RECOMPUTE_JOB}', '* * * * *', '${literal}')`],
       { encoding: 'utf8' },
     )
     console.log('Restored the every-minute recompute drain.')

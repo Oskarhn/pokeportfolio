@@ -130,6 +130,99 @@ export async function getCard(cardId: string): Promise<CatalogCard | null> {
   }
 }
 
+/** Bounded bulk fetch of card metadata by id (P76, M15 visual scanner): the on-device visual
+ *  retrieval worker returns a shortlist of `cards.id`s that never went through `search_cards`'
+ *  text match, so the hybrid pipeline needs their identity/metadata in one round trip rather than
+ *  one `getCard` call per candidate. Same table, same RLS, no new RPC. Silently drops ids the
+ *  catalog no longer has, or that fail the filters below, rather than failing the whole shortlist.
+ *
+ *  F-28/P88 §16: filters `is_active = true`, mirroring `search_cards`' own `and c.is_active`
+ *  clause — the visual index is built at a point in time from active cards, but by the time a
+ *  scan runs against a (possibly weeks-old) index, some of those ids may have since been
+ *  deactivated; without this filter they resolved and ranked anyway, through a code path ordinary
+ *  catalog search would never surface them through.
+ *  F-29/P88 §16: filters `language`, mirroring `search_cards`' `p_language` parameter — defense
+ *  in depth for the day the visual index is ever built without the current English-only
+ *  restriction (`build-index.ts` only embeds `language='en'` cards today), or if a
+ *  contaminated id ever enters the visual shortlist. Optional so a caller with no language
+ *  preference gets every language, same default as `search_cards`. */
+export async function getCardsByIds(
+  cardIds: readonly string[],
+  language?: CatalogLanguage,
+): Promise<CatalogCard[]> {
+  if (cardIds.length === 0) return []
+  let query = supabase
+    .from('cards')
+    .select(
+      'id, name, local_id, rarity, category, illustrator, image_base_url, language, set_id, card_sets(name)',
+    )
+    .in('id', cardIds)
+    .eq('is_active', true)
+  if (language !== undefined) {
+    query = query.eq('language', language)
+  }
+  const { data, error } = await query
+  if (error) throw new Error(error.message)
+
+  return data.map((row) => ({
+    id: row.id,
+    name: row.name,
+    localId: row.local_id,
+    rarity: row.rarity,
+    category: row.category,
+    illustrator: row.illustrator,
+    imageBaseUrl: row.image_base_url,
+    language: row.language as CatalogLanguage,
+    setId: row.set_id,
+    setName: row.card_sets.name,
+  }))
+}
+
+/** Why a card id did NOT resolve through {@link getCardsByIds}'s filtered path (N-08, P94) — or
+ *  that it did. Distinguishes three previously-indistinguishable outcomes the scanner's own
+ *  diagnostics could never tell apart: a card the visual index found that `getCardsByIds` then
+ *  silently dropped (inactive, wrong language) reads identically to "the visual index never found
+ *  it at all" everywhere downstream, unless something classifies the gap explicitly. */
+export type CardCatalogPresence =
+  'resolved' | 'inactive-filtered' | 'language-filtered' | 'missing-catalog-row'
+
+/**
+ * Debug/diagnostic-only companion to {@link getCardsByIds} (N-08, P94): classifies each requested
+ * id against the catalog WITHOUT the `is_active`/`language` filters, so a caller that already
+ * knows an id came back empty from `getCardsByIds` can tell WHY — the row exists but is inactive,
+ * the row exists but is the wrong language, or there is no row for this id at all (a stale or
+ * corrupted visual-index entry). Deliberately NOT used on the production scan path: an extra
+ * unfiltered query per scan would cost a real round trip for information ordinary matching never
+ * needs — this exists for the scanner debug tool (`getExpectedCardRank`) and any future targeted
+ * diagnostics, never invoked unconditionally per scan.
+ */
+export async function classifyCardIdsAgainstCatalog(
+  cardIds: readonly string[],
+  language?: CatalogLanguage,
+): Promise<Map<string, CardCatalogPresence>> {
+  const result = new Map<string, CardCatalogPresence>()
+  if (cardIds.length === 0) return result
+  const { data, error } = await supabase
+    .from('cards')
+    .select('id, is_active, language')
+    .in('id', cardIds)
+  if (error) throw new Error(error.message)
+  const byId = new Map(data.map((row) => [row.id, row]))
+  for (const id of cardIds) {
+    const row = byId.get(id)
+    if (row === undefined) {
+      result.set(id, 'missing-catalog-row')
+    } else if (!row.is_active) {
+      result.set(id, 'inactive-filtered')
+    } else if (language !== undefined && row.language !== language) {
+      result.set(id, 'language-filtered')
+    } else {
+      result.set(id, 'resolved')
+    }
+  }
+  return result
+}
+
 export async function getCardVariants(cardId: string): Promise<CatalogVariant[]> {
   const { data, error } = await supabase
     .from('card_variants')
