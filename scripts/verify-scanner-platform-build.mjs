@@ -18,6 +18,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { extractInlineScripts } from './lib/live-csp-hash-verify.mjs'
 
 const dist = fileURLToPath(new URL('../dist/', import.meta.url))
 
@@ -202,8 +203,8 @@ function cspDirectives(csp) {
 // ── dist/index.html theme-bootstrap <-> dist/_headers CSP hash (P103) ────────────────────────────
 {
   const indexHtml = readFileSync(join(dist, 'index.html'), 'utf8')
-  const scriptMatch = /<script>([\s\S]*?)<\/script>/.exec(indexHtml)
-  const inlineScript = scriptMatch?.[1] ?? null
+  const inlineScripts = extractInlineScripts(indexHtml)
+  const inlineScript = inlineScripts.length === 1 ? inlineScripts[0] : null
 
   const cspLine = headersFile
     .split('\n')
@@ -215,8 +216,8 @@ function cspDirectives(csp) {
 
   record(
     'dist/index.html carries exactly one inline <script> (the theme bootstrap)',
-    inlineScript !== null,
-    inlineScript === null ? '(none found)' : `${inlineScript.length} chars`,
+    inlineScripts.length === 1,
+    `found ${String(inlineScripts.length)} inline script(s)`,
   )
 
   if (inlineScript !== null) {

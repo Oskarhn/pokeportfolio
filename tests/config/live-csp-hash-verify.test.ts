@@ -122,6 +122,73 @@ describe('verifyLiveCspHash (pure)', () => {
   })
 })
 
+describe('extractInlineScripts — HTML comment awareness (P128, false-positive fix)', () => {
+  it('ignores an HTML comment containing the literal text "<script>", reproducing the exact deployed shape', () => {
+    const deployedShape =
+      '<script>REAL_THEME_BOOTSTRAP</script>\n\n' +
+      '<!--\n' +
+      '  theme-bootstrap <script> is injected here by some build plugin...\n' +
+      '-->\n\n' +
+      '<script type="module" src="/assets/index-example.js"></script>'
+
+    const scripts = extractInlineScripts(deployedShape)
+    expect(scripts).toEqual(['REAL_THEME_BOOTSTRAP'])
+  })
+
+  it('the OLD raw regex reproduces the false positive on that same fixture (mutation proof)', () => {
+    const deployedShape =
+      '<script>REAL_THEME_BOOTSTRAP</script>\n\n' +
+      '<!--\n' +
+      '  theme-bootstrap <script> is injected here by some build plugin...\n' +
+      '-->\n\n' +
+      '<script type="module" src="/assets/index-example.js"></script>'
+
+    const oldRegexExtract = (html: string) =>
+      [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1])
+
+    const oldResult = oldRegexExtract(deployedShape)
+    expect(oldResult.length).toBe(2)
+    expect(oldResult[1]).not.toBe('REAL_THEME_BOOTSTRAP')
+  })
+
+  it('a complete fake script entirely inside an HTML comment is not extracted', () => {
+    const html = '<!-- <script>evil-looking-but-not-executable</script> -->'
+    expect(extractInlineScripts(html)).toEqual([])
+  })
+
+  it('verification fails closed with "no inline script found" when the only script-looking text is inside a comment', () => {
+    const html = '<!-- <script>evil-looking-but-not-executable</script> -->'
+    const result = verifyLiveCspHash({ html, cspHeader: "script-src 'self'" })
+    expect(result.pass).toBe(false)
+    expect(result.reason).toMatch(/no inline <script>/)
+  })
+
+  it('preserves comment-like bytes INSIDE a genuine inline script verbatim (guards against a naive global comment-strip)', () => {
+    const scriptBody = 'const marker = "<!-- not an HTML comment here -->";'
+    const html = `<script>${scriptBody}</script>`
+    const scripts = extractInlineScripts(html)
+    expect(scripts).toEqual([scriptBody])
+    const computedHash = hashScriptForCsp(scriptBody)
+    const independentHash = `'sha256-${createHash('sha256').update(scriptBody, 'utf8').digest('base64')}'`
+    expect(computedHash).toBe(independentHash)
+  })
+
+  it('external and module scripts are never treated as inline (no attributes = inline, any attribute = external)', () => {
+    const html = '<script src="/foo.js"></script>\n<script type="module" src="/bar.js"></script>'
+    expect(extractInlineScripts(html)).toEqual([])
+  })
+
+  it('an unterminated HTML comment fails closed: nothing past the ambiguous point is fabricated', () => {
+    const malformed = `<script>${SCRIPT_TEXT}</script>\n<!-- unterminated comment with <script>fake</script> inside`
+    expect(extractInlineScripts(malformed)).toEqual([SCRIPT_TEXT])
+  })
+
+  it('an unterminated script tag fails closed: no phantom content is invented', () => {
+    const html = '<!-- comment --><script>never closed'
+    expect(extractInlineScripts(html)).toEqual([])
+  })
+})
+
 describe('fetchAndVerifyLiveCspHash — real local HTTP fixture (P110 prompt §19)', () => {
   it('matching CSP served by a real HTTP server: passes', async () => {
     await serve((_req, res) => {

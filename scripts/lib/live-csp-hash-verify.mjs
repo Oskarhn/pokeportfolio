@@ -26,11 +26,59 @@ import { createHash } from 'node:crypto'
  * bare `<script>` tag with no attributes, exactly as `transformIndexHtml` injects it. A `<script
  * src="...">` tag is governed by a HOST source expression in script-src, not a hash, and is
  * deliberately not matched here — mirrors the exact pattern `verify-scanner-platform-build.mjs`
- * already uses for the local build artifact, so both checks can never disagree on what counts as
- * "the inline script."
+ * reuses from this same function, so both checks can never disagree on what counts as "the inline
+ * script."
+ *
+ * This is a small lexical scan, not a general HTML parser: it only needs to tell an HTML comment
+ * apart from a real `<script>` element, because `index.html` deliberately documents the bootstrap
+ * script in a comment that itself contains the literal text `<script>` (see index.html's own
+ * comment above the theme-bootstrap injection point). A regex applied to the raw HTML cannot make
+ * that distinction — it greedily matches from that literal text through to the next real
+ * `</script>` closing tag, fabricating a phantom second "inline script" whose content is actually
+ * HTML markup, which of course never hashes to anything in the CSP (the false positive this
+ * function exists to avoid).
+ *
+ * Rules, applied outside-in:
+ *  - `<!-- ... -->` is skipped whole; nothing inside a comment is ever treated as a tag, so a
+ *    literal "<script>" in comment prose can never masquerade as script content.
+ *  - A `<script ...>` tag with any attributes (`src`, `type="module"`, etc.) is skipped: it is
+ *    governed by a host/type source expression in script-src, not a hash.
+ *  - A bare `<script>` tag (no attributes) is inline-executed content: everything up to the next
+ *    literal `</script>` closing tag is returned VERBATIM (no trimming, no normalization) because
+ *    the CSP hash is computed over the exact bytes a browser executes.
+ *  - An unterminated comment or an unterminated script tag makes everything after that point
+ *    ambiguous; scanning stops there rather than guessing, so this never fabricates content that
+ *    was never actually delimited (fail closed — a real script hidden past that point simply is
+ *    not found, which surfaces as "no inline script found" rather than a false PASS).
  */
 export function extractInlineScripts(html) {
-  return [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1])
+  const scripts = []
+  const length = html.length
+  let index = 0
+  while (index < length) {
+    if (html.startsWith('<!--', index)) {
+      const commentEnd = html.indexOf('-->', index + 4)
+      if (commentEnd === -1) break
+      index = commentEnd + 3
+      continue
+    }
+
+    const openTag = /^<script(\s[^>]*)?>/i.exec(html.slice(index))
+    if (openTag) {
+      const attrs = (openTag[1] ?? '').trim()
+      const contentStart = index + openTag[0].length
+      const closeTag = /<\/script\s*>/i.exec(html.slice(contentStart))
+      if (!closeTag) break
+      const content = html.slice(contentStart, contentStart + closeTag.index)
+      if (attrs === '') scripts.push(content)
+      index = contentStart + closeTag.index + closeTag[0].length
+      continue
+    }
+
+    const nextLt = html.indexOf('<', index + 1)
+    index = nextLt === -1 ? length : nextLt
+  }
+  return scripts
 }
 
 /** The exact `'sha256-…'` CSP source-expression token a browser computes for `scriptText`. */
