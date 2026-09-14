@@ -554,7 +554,10 @@ A purchase in a non-NOK currency stores:
 > A purchase made at 11.54 NOK/EUR stays at 11.54 forever.
 
 Manual FX override exists because a card statement's effective rate differs from the reference
-rate. Overriding sets `fx_source = 'manual'`.
+rate. Overriding sets `fx_source = 'manual'`. `fx_rate_to_nok` means the same thing regardless of
+source: NOK per one major unit of the source currency — never a per-100-units rate, not even for a
+zero-exponent currency like JPY (D-132). Every SQL site that converts a transaction amount to NOK
+goes through one canonical, exponent-aware helper, `money_minor_to_nok_minor` — see D-132.
 
 **Historical market value** uses the FX rate for the snapshot date, not today's rate:
 
@@ -776,6 +779,28 @@ EUR/NOK for the purchase date: **11.5400**.
 
 Line attributable cost in NOK: 45.00 × 11.54 + 4.50 × 11.54 = 571.23. Cost basis 571.23,
 frozen. If EUR/NOK moves to 12.00 tomorrow, this purchase still reads 571.23. (F11)
+
+EUR's minor-unit exponent (2) matches NOK's, so `round(total_minor × rate)` and the exponent-aware
+formula below give the same number here — this example alone cannot prove the exponent is honoured.
+
+### E10b — Foreign-currency purchase, zero-exponent source currency (D-132)
+
+Buy an accessory for **10 000 JPY**, no shipping. Manually-entered rate (matching what Norges Bank
+would publish as NOK per one JPY, D-132): **0.06037500**.
+
+| Field | Stored |
+|---|---|
+| `currency` | `JPY` |
+| `total_minor` | 10000 (JPY has exponent 0 — this is 10 000 whole yen, not 100.00) |
+| `fx_rate_to_nok` | 0.06037500 |
+| `fx_rate_date` | purchase date |
+| `fx_source` | `manual` |
+| `total_nok_minor` | `money_minor_to_nok_minor(10000, 'JPY', 0.060375)` = round(10000 × 0.060375 × 10^(2−0)) = **60375** (603.75 NOK) |
+
+The naive `round(total_minor × rate)` (what every SQL site computed before D-132) gives
+round(10000 × 0.060375) = **604** (6.04 NOK) — short by a factor of 100, because it silently
+assumes JPY's minor unit is 1⁄100 of a yen the way øre is 1⁄100 of a krone. This is the P130-02
+defect; `tests/db/p133_currency_exponent_fx.test.ts` pins the corrected figure.
 
 ### E11 — Purchased long ago, cost not recoverable
 

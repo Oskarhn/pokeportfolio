@@ -339,7 +339,12 @@ describe('a zero-decimal currency (JPY) is never treated as if it had cents', ()
     expect(error).toBeNull()
     expect(purchase?.currency).toBe('JPY')
     expect(purchase?.total_minor).toBe(1500)
-    expect(purchase?.total_nok_minor).toBe(135) // round(1500 * 0.09)
+    // P130-02/D-132: JPY's minor-unit exponent is 0 (1500 here means 1500 whole yen, not 15.00),
+    // so the NOK conversion needs an extra ×10^2 that this exponent-2-currency-shaped total does
+    // not. round(1500 * 0.09 * 100) = 13500 (135.00 NOK). This test used to assert 135 — the exact
+    // P130-02 bug (100x too small) — before money_minor_to_nok_minor (D-132) replaced the
+    // exponent-naive round(1500 * 0.09) every SQL FX site used to compute.
+    expect(purchase?.total_nok_minor).toBe(13500)
   })
 })
 

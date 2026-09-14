@@ -1361,7 +1361,9 @@ existing M3/M6 schema with a real multi-line write path over the same tables, ex
 already anticipated ("M8 adds the ability to build a richer multi-line purchase over the same
 tables; it does not introduce a different *kind* of purchase"). Two new CHECK constraints state
 invariants the RPC layer already had to keep: `purchases_total_nok_matches_rate`
-(`total_nok_minor = round(total_minor * fx_rate_to_nok)`) and
+(`total_nok_minor = round(total_minor * fx_rate_to_nok)` at M8; made exponent-aware by P133/D-132 —
+`total_nok_minor = money_minor_to_nok_minor(total_minor, currency, fx_rate_to_nok)`, byte-identical
+for every currency this product stored before P133) and
 `purchase_lines_attributable_cost_matches_allocation` (`attributable_cost_minor = line_total_minor +
 allocated_shipping_minor + allocated_customs_minor - allocated_discount_minor`) — both validated
 cleanly against every row M6's `add_card_acquisition` had ever written, including real purchases on
