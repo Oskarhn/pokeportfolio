@@ -105,7 +105,12 @@ purchases or valuations.
 
 **Migrations.** Every schema change is a timestamped SQL file in `supabase/migrations/`. Never
 edit an applied migration. Never change the schema through the Supabase dashboard. Run
-`pnpm db:dump` before applying anything to a database holding real data.
+`pnpm db:backup` before applying anything — migration or data repair — to a database holding real
+data, and do not proceed unless it prints `BACKUP COMPLETE`. It writes roles, schema, data and
+migration history with a SHA-256 manifest to a private directory **outside every git checkout**
+(docs/DEVELOPMENT.md §4 "Backups"). The old `db:dump` script was schema-only (no rows) and has
+been removed. Backup is validated; **restore is not** — never restore those files with a plain
+psql replay (P130-07), only through a dedicated, validated restore runbook.
 
 **Completion.** A feature is complete when its behaviour has been exercised, not when TypeScript
 accepts it. Compilation is not evidence. Browser-test UI work; run the financial and

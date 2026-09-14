@@ -16,6 +16,9 @@ secrets.json
 *.backup
 backups/
 dumps/
+# Defence in depth only: `pnpm db:backup` refuses any output root inside a git work tree.
+private_backups/
+*-private-backups/
 supabase/.temp/
 supabase/.branches/
 
