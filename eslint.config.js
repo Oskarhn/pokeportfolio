@@ -143,6 +143,18 @@ export default tseslint.config(
     },
   },
   {
+    // The independent P132-C finance regression package (test/p132c-finance-regressions/README.md)
+    // is self-contained like the M12/M13 packages above. Fixture ids come back from SQL as JSON,
+    // so indexed access into rows the test itself just created is asserted rather than re-checked.
+    files: ['test/p132c-finance-regressions/**/*.ts'],
+    languageOptions: {
+      globals: globals.node,
+    },
+    rules: {
+      '@typescript-eslint/no-non-null-assertion': 'off',
+    },
+  },
+  {
     // The independent M16 adversarial package (tests/m16-independent/README.md) lives under
     // tests/ so the root typecheck covers it, but it talks to the same untyped Supabase client
     // as tests/db and gates whole suites on runtime probes, so it needs the same relaxations.
