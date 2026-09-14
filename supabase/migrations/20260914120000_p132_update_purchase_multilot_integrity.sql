@@ -31,11 +31,16 @@
 --
 -- THE FIX, multi-lot (MULTILOT_RULE, output_132_a.txt). update_purchase now handles EVERY live
 -- lot of a line, not one arbitrary row:
---   * Zero live lots (a line whose sole lot was voided while another, unaccounted-for line on the
---     same purchase keeps the purchase itself live — D-051): unchanged from before, nothing to
---     write for that line's lots.
---   * Exactly one live lot: unchanged in shape from the pre-P132-A code — the whole line's
---     attributable cost lands on that lot, quantity is free to change.
+--   * Zero live lots (every lot of the line was removed while another, unaccounted-for line on
+--     the same purchase keeps the purchase itself live — D-051): nothing to write for that line's
+--     lots, and a QUANTITY change is refused (D-130): the new units would be neither inventory
+--     nor a recorded removal.
+--   * Exactly one live lot and no removed sibling: unchanged in shape from the pre-P132-A code —
+--     the whole line's attributable cost lands on that lot, quantity is free to change.
+--   * Live lot(s) plus removed (voided) sibling lots (a split line one of whose siblings was
+--     removed from inventory): handled like the split case below, with the allocation weighted
+--     over every lot of the line but written only to live lots and a quantity change refused —
+--     removed units are never resurrected (D-130).
 --   * More than one live lot (a split): quantity and quantity_remaining are NEVER touched on any
 --     sibling by this function -- see QUANTITY_CHANGE_RULE below for why. What DOES change (a
 --     price/shipping/customs/discount/FX correction) is the line's attributable cost, in both
@@ -88,6 +93,17 @@
 -- Both orderings proven with a held-lock two-session harness (UPDATE_PURCHASE_RACE_TEST,
 -- tests/db/p132a_multilot_purchase_integrity.test.ts).
 --
+-- INTEGRATION (P132). Refinements made after the independent P132-C package ran against the first
+-- candidate of this file, before it was ever applied to a hosted database: (1) the write loop
+-- reused the validation loop's sibling-quantity array, so a split line that was not the last line
+-- was allocated with another line's quantities (wrong basis, or a raw NOT NULL violation on
+-- residual_minor); every per-line array is now read inside the write loop for that line. (2) A
+-- line with removed sibling lots no longer resurrects the removed units, and a zero-live-lot line
+-- refuses a quantity change (D-130). (3) The purchase's voided state and the live-lot membership
+-- are re-read once the locks are held (MEMBERSHIP_RULE): a concurrent void_purchase makes the edit
+-- refuse, and a sibling lot created by a concurrent set_sealed_lot_intent while this call waited
+-- makes it refuse with SQLSTATE 40001 instead of editing a lot it does not hold.
+--
 -- CREATE OR REPLACE, not DROP + CREATE: the signature is unchanged from
 -- 20260828110000_m10_lot_residual_nok_fix.sql, so no privilege re-grant is required for this
 -- function specifically (still restated as a whole in the next milestone's own
@@ -139,7 +155,6 @@ declare
   v_lock_lot_ids uuid[];
   v_lock_lot_id uuid;
   v_sib_ids uuid[];
-  v_sib_qty bigint[];
   v_sib_count int;
   v_sib_qty_sum bigint;
   v_sib_lot public.acquisition_lots;
@@ -152,6 +167,12 @@ declare
   v_unit_cost_basis_nok bigint;
   v_residual_nok bigint;
   v_j int;
+  -- P132 integration additions: removed-sibling accounting (D-130).
+  v_removed_qty bigint;
+  v_current_line_qty int;
+  v_all_ids uuid[];
+  v_all_qty bigint[];
+  v_all_live boolean[];
 begin
   if v_user_id is null then
     raise exception 'not authenticated';
@@ -177,6 +198,25 @@ begin
   foreach v_lock_lot_id in array v_lock_lot_ids loop
     perform 1 from public.acquisition_lots where id = v_lock_lot_id for update;
   end loop;
+
+  -- MEMBERSHIP_RULE (P132 integration): the set above was read before any lock was held. A
+  -- concurrent void_purchase that committed while this call waited has voided the purchase; a
+  -- concurrent set_sealed_lot_intent that committed while this call waited may have added a live
+  -- sibling lot that is not locked here. Re-read both now. A lot that has since been voided is
+  -- harmless (every later statement sees it voided); a new, unlocked live lot is not, so the call
+  -- refuses with a retryable serialization failure instead of editing unlocked inventory.
+  if exists (select 1 from public.purchases where id = p_purchase_id and voided_at is not null) then
+    raise exception 'purchase % is voided and cannot be edited', p_purchase_id;
+  end if;
+  if exists (
+    select 1 from public.acquisition_lots
+    where purchase_line_id = any(v_expected_ids) and voided_at is null
+      and id <> all(v_lock_lot_ids)
+  ) then
+    raise exception using
+      errcode = '40001',
+      message = format('concurrent-inventory-change: purchase %s gained a lot while this edit was waiting; retry the edit', p_purchase_id);
+  end if;
 
   -- Disposal blocker, re-checked now that every live lot on this purchase is locked (P130-03):
   -- a concurrent create_sale either committed before this point (and is now visible) or is
@@ -255,15 +295,29 @@ begin
     v_line_id := (v_line ->> 'line_id')::uuid;
     v_quantity := (v_line ->> 'quantity')::int;
 
-    select coalesce(array_agg(quantity::bigint order by id), '{}') into v_sib_qty
+    select count(*) filter (where voided_at is null),
+           coalesce(sum(quantity) filter (where voided_at is null), 0),
+           coalesce(sum(quantity) filter (where voided_at is not null), 0)
+      into v_sib_count, v_sib_qty_sum, v_removed_qty
       from public.acquisition_lots
-      where purchase_line_id = v_line_id and voided_at is null;
-    v_sib_count := coalesce(array_length(v_sib_qty, 1), 0);
-    if v_sib_count > 1 then
-      select coalesce(sum(q), 0) into v_sib_qty_sum from unnest(v_sib_qty) q;
-      if v_quantity <> v_sib_qty_sum then
-        raise exception 'multi-lot-quantity-ambiguous: purchase line % has % live split lots totalling % units; changing its quantity to % is refused because it is ambiguous which lot would gain or lose units. Void this purchase and record a new one instead, or leave this line''s quantity at % while editing other fields.',
-          v_line_id, v_sib_count, v_sib_qty_sum, v_quantity, v_sib_qty_sum;
+      where purchase_line_id = v_line_id;
+    select quantity into v_current_line_qty from public.purchase_lines where id = v_line_id;
+
+    if v_sib_count = 0 then
+      -- ZERO_LIVE_LOT_RULE (D-130, P132 X-4): every lot of this line was removed from inventory.
+      -- Changing the line's quantity now would record units that are neither inventory nor a
+      -- recorded removal; nothing can be resurrected or fabricated to back them.
+      if v_quantity <> v_current_line_qty then
+        raise exception 'purchase-line-quantity-without-inventory: purchase line % has no live lot (all % unit(s) were removed from inventory); its quantity cannot be changed to %. Leave the quantity at % while editing other fields, or void this purchase and record a new one.',
+          v_line_id, v_current_line_qty, v_quantity, v_current_line_qty;
+      end if;
+    elsif v_sib_count > 1 or v_removed_qty > 0 then
+      -- QUANTITY_CHANGE_RULE (D-129), extended by D-130 to a line that still has live lots but
+      -- also has removed (voided) sibling lots: the line quantity is the live units plus the
+      -- removed units, and nothing in the request says which pile a change belongs to.
+      if v_quantity <> v_sib_qty_sum + v_removed_qty then
+        raise exception 'multi-lot-quantity-ambiguous: purchase line % has % live lot(s) totalling % units and % removed unit(s); changing its quantity to % is refused because it is ambiguous which lot would gain or lose units. Void this purchase and record a new one instead, or leave this line''s quantity at % while editing other fields.',
+          v_line_id, v_sib_count, v_sib_qty_sum, v_removed_qty, v_quantity, v_sib_qty_sum + v_removed_qty;
       end if;
     end if;
   end loop;
@@ -321,12 +375,27 @@ begin
     where id = v_line_id;
 
     -- MULTILOT_RULE: handle every live sibling lot of this line, not one arbitrary row (P130-01).
+    -- Every per-line array is read HERE, for THIS line: nothing computed for another line in an
+    -- earlier loop is reused (an integration-time defect reused the validation loop's last
+    -- sibling-quantity array and mis-allocated any split line that was not the last line).
+    select coalesce(array_agg(id order by id), '{}'),
+           coalesce(array_agg(quantity::bigint order by id), '{}'),
+           coalesce(array_agg(voided_at is null order by id), '{}')
+      into v_all_ids, v_all_qty, v_all_live
+      from public.acquisition_lots
+      where purchase_line_id = v_line_id;
     select coalesce(array_agg(id order by id), '{}') into v_sib_ids
       from public.acquisition_lots
       where purchase_line_id = v_line_id and voided_at is null;
     v_sib_count := coalesce(array_length(v_sib_ids, 1), 0);
+    v_removed_qty := 0;
+    for v_j in 1 .. coalesce(array_length(v_all_ids, 1), 0) loop
+      if not v_all_live[v_j] then
+        v_removed_qty := v_removed_qty + v_all_qty[v_j];
+      end if;
+    end loop;
 
-    if v_sib_count = 1 then
+    if v_sib_count = 1 and v_removed_qty = 0 then
       -- The common case, unchanged in shape from the pre-P132-A code: one lot, the whole line's
       -- attributable cost, quantity free to change (already proven unambiguous above — a single
       -- lot has no sibling to conflict with).
@@ -356,11 +425,14 @@ begin
         where id = v_sib_lot.id;
       end if;
 
-    elsif v_sib_count > 1 then
-      -- Split siblings. QUANTITY_CHANGE_RULE already proved v_quantity equals the siblings'
-      -- existing quantity sum, so every sibling's own quantity/quantity_remaining stays exactly
-      -- as it is (D1 untouched, sealed_intent untouched, purchase_line_id untouched) -- only the
-      -- line's attributable cost is redistributed across the UNCHANGED sibling quantities.
+    elsif v_sib_count >= 1 then
+      -- Split siblings and/or removed siblings. QUANTITY_CHANGE_RULE already proved v_quantity
+      -- equals live units + removed units, so every live sibling's own quantity/quantity_remaining
+      -- stays exactly as it is (D1 untouched, sealed_intent untouched, purchase_line_id untouched,
+      -- removed units never resurrected -- D-130) -- only the line's attributable cost is
+      -- redistributed. The allocation is weighted over EVERY lot of the line, live and removed,
+      -- so each unit of the receipt line carries the same cost; only live lots are written. With
+      -- no removed lot this is exactly D-129's live-sibling allocation.
       if exists (
         select 1 from public.acquisition_lots where id = any(v_sib_ids) and cost_basis_state <> 'known'
       ) then
@@ -373,16 +445,17 @@ begin
         end if;
         update public.acquisition_lots set acquired_on = p_purchased_on where id = any(v_sib_ids);
       else
-        v_shares := public.allocate_largest_remainder(v_attributable[v_idx + 1], v_sib_qty);
-        v_shares_nok := public.allocate_largest_remainder(v_attributable_nok[v_idx + 1], v_sib_qty);
+        v_shares := public.allocate_largest_remainder(v_attributable[v_idx + 1], v_all_qty);
+        v_shares_nok := public.allocate_largest_remainder(v_attributable_nok[v_idx + 1], v_all_qty);
 
-        for v_j in 1 .. v_sib_count loop
+        for v_j in 1 .. array_length(v_all_ids, 1) loop
+          continue when not v_all_live[v_j];
           v_share := v_shares[v_j];
           v_share_nok := v_shares_nok[v_j];
-          v_unit_cost_basis := v_share / v_sib_qty[v_j];
-          v_residual := (v_share - v_unit_cost_basis * v_sib_qty[v_j])::int;
-          v_unit_cost_basis_nok := v_share_nok / v_sib_qty[v_j];
-          v_residual_nok := v_share_nok - v_unit_cost_basis_nok * v_sib_qty[v_j];
+          v_unit_cost_basis := v_share / v_all_qty[v_j];
+          v_residual := (v_share - v_unit_cost_basis * v_all_qty[v_j])::int;
+          v_unit_cost_basis_nok := v_share_nok / v_all_qty[v_j];
+          v_residual_nok := v_share_nok - v_unit_cost_basis_nok * v_all_qty[v_j];
           update public.acquisition_lots set
             acquired_on = p_purchased_on,
             unit_cost_basis_minor = v_unit_cost_basis,
@@ -390,13 +463,13 @@ begin
             unit_cost_basis_nok_minor = v_unit_cost_basis_nok,
             residual_minor = v_residual,
             residual_nok_minor = v_residual_nok
-          where id = v_sib_ids[v_j];
+          where id = v_all_ids[v_j];
         end loop;
       end if;
     end if;
-    -- v_sib_count = 0: no live lot for this line (its sole lot was voided while another,
-    -- unaccounted-for line kept the purchase itself live — D-051); nothing to update, matching
-    -- the pre-P132-A behaviour of silently skipping a line with no lot.
+    -- v_sib_count = 0: no live lot for this line (every lot was removed while another,
+    -- unaccounted-for line kept the purchase itself live — D-051); nothing to update on any lot.
+    -- ZERO_LIVE_LOT_RULE above has already refused a quantity change for such a line (D-130).
   end loop;
 
   select * into v_existing from public.purchases where id = p_purchase_id;
@@ -407,4 +480,4 @@ $$;
 comment on function public.update_purchase(
   uuid, date, text, jsonb, uuid, bigint, bigint, bigint, numeric, date, public.fx_source, text
 ) is
-  'Recomputes a purchase''s allocations and every existing line''s attributable cost/cost basis atomically. Cannot add or remove lines. Locks every live lot on the purchase (ascending id order) before validating or writing, refuses if any is partially disposed elsewhere. A line with more than one live sibling lot (a sealed-intent split) preserves each sibling''s quantity and redistributes the line''s attributable cost across them exactly; changing such a line''s quantity is refused as ambiguous. P132-A (20260914120000) fixed P130-01 (multi-lot fabrication) and this function''s P130-03 slice (unlocked disposal check) together.';
+  'Recomputes a purchase''s allocations and every existing line''s attributable cost/cost basis atomically. Cannot add or remove lines. Locks every live lot on the purchase (ascending id order) before validating or writing, refuses if any is partially disposed elsewhere. A line with more than one live sibling lot (a sealed-intent split) preserves each sibling''s quantity and redistributes the line''s attributable cost across them exactly; changing such a line''s quantity is refused as ambiguous, as is changing the quantity of a line with removed sibling lots or with no live lot at all (removed units are never resurrected, D-130). P132 (20260914120000) fixed P130-01 (multi-lot fabrication) and this function''s P130-03 slice (unlocked disposal check) together.';

@@ -762,6 +762,20 @@ acquired once and never interleaved), so no new deadlock class is introduced; ge
 serializes on the row lock and the loser fails its live re-check. Behavioural burst oracles
 cover this in tests; no pg_locks transcript is claimed.
 
+**Ledger lock order (P132, P130-03).** Every RPC that can consume, void, restore, split or re-cost
+inventory — `create_sale`, `update_purchase`, `void_purchase`, `void_acquisition_lot`,
+`remove_holdings_from_portfolio`, `void_opening`, `void_sale`, `set_sealed_lot_intent`,
+`reduce_holding_quantity` — follows one order: (1) at most one named parent row locked first
+(`openings`, for `void_opening`/`reconcile_opening_cost`); (2) the full set of `acquisition_lots`
+rows the call can affect locked `FOR UPDATE` in ascending id, including an opening's source lot
+whose units the D1 trigger restores; (3) validation from the locked rows; (4) only then any
+trigger-firing ledger write (which also takes the owner's `portfolio_recompute_queue` row). A write
+before step 2 lets the queue row and a lot lock be taken in opposite orders (40P01), and lets the D1
+recompute trigger read a disposal set that a concurrent sale has not yet committed. Where the lot
+set is read before its locks are held and a concurrent split can add a lot to it
+(`update_purchase`, `void_purchase`), the call re-reads the set after locking and refuses with
+SQLSTATE `40001` if it grew.
+
 Pulls are not a separate table. A pull **is** an `acquisition_lot` with `origin = 'opening'`
 and `opening_id` set. This is why a sold pull remains attributable to its opening forever.
 Manual-card pulls are ordinary pulls over `manual_card_definitions` rows; the wizard resolves
@@ -1088,6 +1102,10 @@ Guard rules:
 
 - A purchase cannot be voided while any lot from it has a non-voided disposal. The user must
   void the sale or opening first. The error names the blocking record.
+- Voiding one lot auto-voids its purchase only when every lot of every line on that purchase is
+  voided — a live split sibling on the same line keeps the purchase live (D-051, D-131).
+- A purchase edit never changes the quantity of a line that has several live split siblings,
+  removed sibling lots, or no live lot at all; removed units are never resurrected (D-129, D-130).
 - Voiding an opening restores the source lot's `quantity_remaining` and voids the pull lots.
   Blocked if any pull has been sold.
 - Voiding a sale restores `quantity_remaining` on each referenced lot.

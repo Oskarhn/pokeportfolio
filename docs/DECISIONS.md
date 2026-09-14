@@ -5715,3 +5715,79 @@ already-documented correction path, D-047) for that one case. P131's read-only
 zero affected hosted rows before this fix was written (`output_131.txt` §4); re-running it after
 this migration deploys is the intended way to re-verify the invariant against hosted data going
 forward.
+
+## D-130 — Removed sibling lots stay removed through a purchase edit; a line with removed or no live lots cannot change quantity (P132)
+
+**2026-09-14 · Accepted**
+
+**Context.** D-129 covered a purchase line with several *live* lots. An independent regression
+package written without reading the implementation (P132-C) found two further states the first
+integrated candidate mishandled. (1) A split line one of whose siblings was removed from inventory
+(`void_acquisition_lot` / `remove_holdings_from_portfolio`, purchase kept live by another line):
+with one live lot left, `update_purchase` took the single-lot path and set that lot's quantity to
+the full line quantity, turning the removed units back into inventory. (2) A line whose every lot
+was removed: `update_purchase` accepted a quantity change, recording units that were neither
+inventory nor a recorded removal. Neither state is reachable without first splitting or removing,
+and hosted data held neither at P131.
+
+A purchase-linked lot's `quantity` changes only through `update_purchase` (single lot) and
+`set_sealed_lot_intent` (which conserves the line total); `reduce_holding_quantity` refuses
+purchased lots, and `reconcile_opening_cost` voids a provisional lot together with its purchase.
+So for a live purchase, `line quantity = Σ quantity of all the line's lots, live and voided`, and
+the voided lots' quantity is exactly the removed units.
+
+**Decision.**
+- A line with live lots and removed (voided) sibling lots is edited like a split line: every live
+  lot keeps its quantity; the line's attributable cost, in both currencies, is allocated across
+  **all** lots of the line (live and removed) weighted by quantity with `allocate_largest_remainder`,
+  and written only to the live lots. Each unit of the receipt line keeps the same cost; removed
+  units are never resurrected. With no removed lot this is exactly D-129.
+- A quantity change on such a line is refused (`multi-lot-quantity-ambiguous`), as for several live
+  siblings: nothing says whether the change belongs to the live or the removed units.
+- A line with no live lot refuses a quantity change
+  (`purchase-line-quantity-without-inventory`); an edit that leaves its quantity unchanged
+  (price, shipping, notes) still succeeds and writes no lot.
+- Recourse in both refusals is D-047's: void the purchase and record a new one.
+
+**Alternatives.** *Let the live lot absorb a quantity change when removed siblings exist* —
+rejected: it guesses provenance, the same objection D-129 records. *Refuse every edit of a line
+that has ever had a lot removed* — rejected: price and shipping corrections on such a line are
+unambiguous once quantity is fixed. *Write re-costed basis to the voided lots too* — rejected:
+voided rows are history and nothing reads their basis; the allocation only uses their quantity.
+
+**Consequences.** Reading the P131 diagnostics (`scripts/finance-integrity-diagnostics.sql`): a
+split line with a removed sibling is legitimate and is counted by `lines_with_live_and_voided_lots`
+and by the broad `lot_quantity_mismatch_lines` (live units < line quantity). The counters that can
+only mean corruption are `lot_quantity_mismatch_lines_no_voided_lots`,
+`lot_quantity_mismatch_lines_excess`, the basis mismatch counters (which already skip lines with a
+voided lot) and `voided_purchases_with_live_lots`. A non-zero broad counter therefore needs a look at
+the voided siblings before it is called damage. Regressions:
+`tests/db/p132_integration_regressions.test.ts`; independent coverage:
+`test/p132c-finance-regressions` (`LINE_LOT_QUANTITY`, `LINE_QUANTITY_WITHOUT_LIVE_LOTS`).
+
+## D-131 — Parent-purchase auto-void requires every lot of every line voided, including split siblings of the voided lot's own line (P132)
+
+**2026-09-14 · Accepted**
+
+**Context.** D-051 auto-voids a purchase when the last inventory it recorded is removed, counting
+*other lines*. It predates sealed-intent splits (M11). After a split, voiding one sibling skipped
+its own line entirely, saw every other line accounted for, and voided the purchase while the other
+sibling was still live inventory — spend removed from CS while its units stayed in the portfolio.
+Found by P132-C (`VOIDED_PURCHASE_LIVE_LOT`), independently noted by the P132 correction-locking
+work, and reproduced on the integrated candidate.
+
+**Decision.** A line is *accounted for* when it has at least one lot and all of its lots are
+voided. `void_acquisition_lot` auto-voids the purchase only when every line on it is accounted for
+— the voided lot's own line included. A line that never produces a lot (accessory, shipping, …)
+is never accounted for, exactly as in D-051. `remove_holdings_from_portfolio` inherits the rule
+through `void_acquisition_lot`.
+
+**Alternatives.** *Count other live lots anywhere on the purchase instead of lines* — rejected: that
+reintroduces the D-051 defect for non-inventory lines. *Auto-void under the purchase row lock* —
+not needed for integrity: concurrent removal of the last two siblings can at worst leave the
+purchase live with every lot removed (spend still counted, the owner can void it), never a voided
+purchase with live inventory, because a new live lot can only come from splitting a lot the check
+already sees as live.
+
+**Consequences.** A single-line purchase now auto-voids only when its last sibling is removed.
+Regression: `tests/db/p132_integration_regressions.test.ts`.

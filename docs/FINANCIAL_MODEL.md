@@ -231,6 +231,13 @@ by the identical single-lot rule above. `Σ allocated_i = total` (invariant F6) 
 regardless of how many siblings a line has. An edit that would change such a line's *quantity* is
 refused outright rather than guessed — see D-129 for why guessing is unsafe here.
 
+If some of a line's lots were removed from inventory (voided while the purchase stayed live), the
+line quantity is the live units plus the removed units. An attributable-cost edit is then
+allocated across every lot of the line, live and removed, weighted by quantity, and written only
+to the live lots: each unit keeps the same per-unit cost, and removed units are never turned back
+into inventory. A quantity change on such a line, or on a line with no live lot left, is refused
+(D-130).
+
 ### 4.4 Grading costs
 
 A grading fee purchased later attaches to a specific lot as a `lot_cost_adjustment`:

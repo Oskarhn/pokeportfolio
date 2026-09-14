@@ -40,6 +40,17 @@
 -- columns from the ALREADY-frozen cost basis; void_sale only flips sale_lines/lot_disposals rows
 -- it owns, and the D1 trigger it fires only ever RESTORES a lot the sale itself is retreating
 -- from) -- see the audit result in output_132_b_finance.txt. Neither is modified here.
+--
+-- INTEGRATION (P132). Refinements made after the independent P132-C package ran against the first
+-- candidate of this file, before it was ever applied to a hosted database:
+--   * void_acquisition_lot's parent-purchase auto-void counted only OTHER lines, so voiding one
+--     sibling of a split line voided the purchase while the other sibling was live inventory.
+--     It now requires every lot of every line -- the own line included -- to be voided (D-131).
+--   * void_opening now also locks the opened SOURCE lot in the same ascending pass. Its restore
+--     runs through the D1 recompute trigger, which reads the live disposals before it updates the
+--     lot; an unlocked source lot let a concurrent sale's disposal be missed and D1 written stale.
+--   * void_purchase re-reads the purchase's voided state and its live-lot membership once the
+--     locks are held, refusing (40001) if a concurrent split added a lot it does not hold.
 
 -- ── 1. void_purchase — lock every live lot the purchase produced before checking disposal state ──
 create or replace function public.void_purchase(p_purchase_id uuid, p_reason text default null)
@@ -78,6 +89,27 @@ begin
     perform 1 from public.acquisition_lots where id = v_lot_id for update;
   end loop;
 
+  -- Membership re-check (P132 integration): the purchase row and the lot set above were read
+  -- before any lock was held. A concurrent void (this function, or void_acquisition_lot's parent
+  -- auto-void) that committed while this call waited is a named refusal. A live lot created by a
+  -- concurrent set_sealed_lot_intent split while this call waited is not locked and would survive
+  -- the void below as live inventory under a voided purchase, so the call refuses with a retryable
+  -- serialization failure instead.
+  if exists (select 1 from public.purchases where id = p_purchase_id and voided_at is not null) then
+    raise exception 'purchase % is already voided', p_purchase_id;
+  end if;
+  if exists (
+    select 1
+      from public.acquisition_lots al
+      join public.purchase_lines pl on pl.id = al.purchase_line_id
+     where pl.purchase_id = p_purchase_id and al.voided_at is null
+       and al.id <> all(v_lot_ids)
+  ) then
+    raise exception using
+      errcode = '40001',
+      message = format('concurrent-inventory-change: purchase %s gained a lot while this void was waiting; retry the void', p_purchase_id);
+  end if;
+
   -- Re-validate against the now-locked, live rows -- never a value read before the lock above.
   select pl.description, pl.line_type, al.quantity, al.quantity_remaining
     into v_blocker
@@ -99,7 +131,7 @@ begin
 
   update public.acquisition_lots
     set voided_at = now()
-    where id = any(v_lot_ids);
+    where id = any(v_lot_ids) and voided_at is null;
 end;
 $$;
 
@@ -145,15 +177,24 @@ begin
     select purchase_id into v_purchase_id
       from public.purchase_lines where id = v_lot.purchase_line_id;
 
-    -- Unchanged from M8.1 (D-051): every *other* line on this purchase must already be accounted
-    -- for. Not part of the P130-03 lot-locking fix -- this reads only voided_at on OTHER lots'
-    -- rows, never quantity_remaining, and never restores anything a disposal depends on.
+    -- D-051, made sibling-aware (D-131, P132 X-1): the purchase auto-voids only when EVERY line on
+    -- it is accounted for -- a line is accounted for when it has at least one lot and all of its
+    -- lots are voided. The M8.1 query skipped this lot's OWN line entirely, which was right only
+    -- while a line could hold one lot: after a set_sealed_lot_intent split, voiding one sibling
+    -- auto-voided the purchase while another sibling on the same line was still live inventory.
+    -- This lot's own void above is already visible to this statement, so the own line counts as
+    -- unaccounted exactly when another sibling of it is still live. A line that can never produce
+    -- a lot (accessory, shipping, ...) still always counts as unaccounted, as in D-051.
     select count(*) into v_unaccounted_lines
       from public.purchase_lines pl
-      left join public.acquisition_lots al on al.purchase_line_id = pl.id
       where pl.purchase_id = v_purchase_id
-        and pl.id <> v_lot.purchase_line_id
-        and (al.id is null or al.voided_at is null);
+        and (
+          not exists (select 1 from public.acquisition_lots al where al.purchase_line_id = pl.id)
+          or exists (
+            select 1 from public.acquisition_lots al
+            where al.purchase_line_id = pl.id and al.voided_at is null
+          )
+        );
 
     if v_unaccounted_lines = 0 then
       update public.purchases
@@ -165,7 +206,7 @@ end;
 $$;
 
 comment on function public.void_acquisition_lot(uuid, text) is
-  'Correction path for one acquisition lot. Locks the lot FOR UPDATE before reading its quantity_remaining, so a concurrent create_sale on the same lot always serializes against this instead of racing it (P130-03 / P132-B). Auto-voids its parent purchase only when every other line on the receipt is already accounted for (a voided lot, or no other line at all) — never when a non-inventory line (accessory, shipping, etc.) still represents live spend. Refuses to void a lot that has already been partially disposed elsewhere. See DECISIONS.md D-051.';
+  'Correction path for one acquisition lot. Locks the lot FOR UPDATE before reading its quantity_remaining, so a concurrent create_sale on the same lot always serializes against this instead of racing it (P130-03 / P132-B). Auto-voids its parent purchase only when every line on the receipt is accounted for (all of its lots voided, including every split sibling of this lot''s own line) — never while a sibling lot of the same line is still live inventory (D-131), and never when a non-inventory line (accessory, shipping, etc.) still represents live spend. Refuses to void a lot that has already been partially disposed elsewhere. See DECISIONS.md D-051.';
 
 -- ── 3. remove_holdings_from_portfolio — lock every candidate lot before the blocked-status pass ──
 create or replace function public.remove_holdings_from_portfolio(p_holding_ids uuid[])
@@ -280,7 +321,7 @@ declare
   v_user_id uuid := auth.uid();
   v_opening public.openings;
   v_blocker record;
-  v_pull_lot_ids uuid[];
+  v_lock_lot_ids uuid[];
   v_lot_id uuid;
 begin
   if v_user_id is null then
@@ -298,17 +339,27 @@ begin
     raise exception 'opening % is already voided', p_opening_id;
   end if;
 
-  -- Lock every still-live pull lot this opening produced, ascending id order, BEFORE checking for
-  -- a downstream disposal (P130-03 / P132-B) -- the exact rows create_sale locks when it sells a
-  -- pulled card. A concurrent sale already holding one of them is waited on here, so the blocker
-  -- check below can never run against a lot whose disposal hasn't committed yet. The source lot
-  -- (this opening's own consumption) is not in this set and needs no extra lock here: its restore
-  -- is an unconditional D1 recompute, not a check-then-act decision.
-  select coalesce(array_agg(al.id order by al.id), '{}') into v_pull_lot_ids
-    from public.acquisition_lots al
-    where al.opening_id = v_opening.id and al.voided_at is null;
+  -- Lock every still-live pull lot this opening produced AND the source lot whose units the void
+  -- restores, in ONE ascending id pass, BEFORE checking for a downstream disposal (P130-03 /
+  -- P132-B) -- the exact rows create_sale locks when it sells a pulled card or a unit of the
+  -- source lot. A concurrent sale already holding one of them is waited on here, so the blocker
+  -- check below can never run against a lot whose disposal hasn't committed yet.
+  -- The source lot is locked too (P132 integration, X-2): its restore is the D1 recompute
+  -- trigger, which reads Σ live disposals and only THEN updates the lot. Without this lock, a sale
+  -- on the source lot that was still uncommitted when the trigger read the disposals made the
+  -- trigger's UPDATE wait for the sale and then write the stale sum -- a sold unit counted as
+  -- available again (D1 broken, oversell possible). Holding the lock first means every trigger
+  -- statement below starts after that sale has committed and reads its disposal.
+  select coalesce(array_agg(x.id order by x.id), '{}') into v_lock_lot_ids
+    from (
+      select al.id from public.acquisition_lots al
+        where al.opening_id = v_opening.id and al.voided_at is null
+      union
+      select v_opening.source_lot_id
+    ) x
+    where x.id is not null;
 
-  foreach v_lot_id in array v_pull_lot_ids loop
+  foreach v_lot_id in array v_lock_lot_ids loop
     perform 1 from public.acquisition_lots where id = v_lot_id for update;
   end loop;
 
