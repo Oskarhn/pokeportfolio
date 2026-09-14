@@ -4,7 +4,7 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-## Current state (P132, 2026-09-14) — M15 RELEASED; P130-01/P130-03 fixed; P130-02 (JPY) open
+## Current state (P134, 2026-09-14) — M15 RELEASED; P130-01/P130-03 fixed; P130-02 (JPY) split across parallel P133/P134/P135 workstreams, not yet integrated
 
 **This section is the authoritative current state.** Every section below it is historical and
 describes the state at the time it was written — in particular the P111 section's "M15 is NOT
@@ -112,6 +112,31 @@ before writing any further fix.
   Restore remains unvalidated until P130-12 and P130-07 are done. Before applying any migration to
   the hosted project: `pnpm db:backup --out-root <private root> --expect-migrations <n>` and stop
   unless it reports `BACKUP COMPLETE`.
+
+**P133/P134/P135 — P130-02 (JPY FX), split across three parallel single-owner sessions from
+`cff3bbd` (the P132 merge commit), not yet integrated.** P134 (this branch,
+`fix/p134-norges-bank-fx-normalization`, LOCAL ONLY, not pushed) owns the provider/ingestion half:
+
+- **Root cause confirmed live 2026-09-14** against `B.EUR.NOK.SP`/`B.USD.NOK.SP`/`B.JPY.NOK.SP`:
+  Norges Bank's series-level `UNIT_MULT` attribute is `0` ("Units") for EUR and USD but `2`
+  ("Hundreds") for JPY — a printed `6.0375` is NOK per **100** JPY, not per 1 JPY.
+  `supabase/functions/_shared/norges-bank.ts` ignored this attribute entirely.
+- **Fix:** `norges-bank.ts` now resolves `UNIT_MULT` from `structure.attributes.series` (by
+  attribute `id`, not a fixed position) and divides every observation by `10^UNIT_MULT` with exact
+  decimal-string arithmetic (never `Number` division) before returning it, so `fetchNorgesBankRates`
+  — shared by both `fetch-fx-rate` (on-demand/historical) and `ingest-fx` (scheduled EUR/USD) —
+  always returns the canonical NOK-per-1-unit rate. Fails closed (`NorgesBankError`) on a malformed
+  or missing `UNIT_MULT` rather than assuming 0. See D-132.
+- **No SQL or client change.** P133 owns the SQL currency-exponent fix this pairs with; P135 owns
+  the client/data-migration audit. **Deploying only one half is unsafe** — see D-132's Consequences
+  and `output_134.txt`'s `SAFE_DEPLOYMENT_ORDER_OPTIONS` for the coordinated-release requirement
+  P136 must follow.
+- **Tests:** `tests/data/norges-bank.test.ts` — real captured EUR/USD/JPY fixtures (JPY confirms
+  `6.0375` → `0.060375`), a fabricated-currency generic-multiplier case (catches a JPY-keyed special
+  case instead of reading provider metadata), malformed/missing-`UNIT_MULT` fail-closed cases, and
+  decimal-precision cases proving no float-induced rounding. Full detail, mutation-testing evidence
+  and the P136 hosted-diagnostic plan for existing `fx_rates` JPY rows:
+  `ai_outputs/Claude_outputs/output_134.txt`.
 
 ## P111 — Final M15 pre-hosted integration candidate (branch `feat/p111-m15-final-prehosted`,
 draft PR base `main`, NOT merged, NOT deployed) — HISTORICAL, superseded by the section above

@@ -5794,64 +5794,148 @@ Regression: `tests/db/p132_integration_regressions.test.ts`.
 
 ---
 
-## D-132 — Every SQL-to-NOK conversion becomes exponent-aware through one canonical helper; `fx_rate_to_nok` stays "per one major unit" for every currency, no JPY exception (P130-02/P133)
+## D-132 — `fx_rate_to_nok` is NOK-per-one-major-unit everywhere, for every source; SQL becomes currency-exponent-aware and the Norges Bank ingestion layer normalizes its own `UNIT_MULT` (P130-02/P133/P134)
 
 **2026-09-15 · Accepted**
 
-**Context.** FINANCIAL_MODEL.md §1/§7 and D-007 already state the rule — minor-unit exponent read
-per currency, never assumed to be 2 — and `src/domain/fx.ts` already implements it. Every SQL
-conversion site (`create_purchase`, `update_purchase`, `create_sale`, `update_sale`,
-`sales_summary`, and the two frozen-rate CHECK constraints) instead used
-`round(amount_minor::numeric * fx_rate_to_nok)::bigint`, which is only correct when the source
-currency shares NOK's exponent (2). For JPY (exponent 0) this understates `total_nok_minor`/
-`net_proceeds_nok_minor` by a factor of 100 whenever a manually-entered, semantically correct rate
-is used. Found by the independent post-release audit as P130-02
-(`ai_outputs/Claude_outputs/output_130.txt`); the automatic (Norges Bank) path happened to land on
-the right NOK figure only because a separate, independent bug in the ingestion parser
-(`UNIT_MULT` not applied) stored an already-100x-too-small rate — two defects cancelling for
-auto-sourced JPY rows only. Hosted diagnostics at P131 and P132 (`output_131.txt`,
-`output_132_i.txt`) both found zero JPY purchase or sale rows, so no existing data needed repair.
+**Context.** P130-02 (`ai_outputs/Claude_outputs/output_130.txt`) found TWO independent defects
+that together corrupt JPY FX conversion:
 
-**Decision.** `fx_rate_to_nok` means exactly one thing everywhere it appears, automatic or manual,
-for every currency this product supports: NOK per one MAJOR unit of the source currency. There is
-no per-currency exception, no "rate per 100 units" input, and no separate JPY convention anywhere
-in the schema, the RPCs or the client. Conversion into NOK is centralized in one new SQL function,
-`money_minor_to_nok_minor(amount_minor, currency, fx_rate_to_nok)`, built on a small
-`currency_minor_unit_exponent(currency)` lookup that mirrors `src/domain/currency.ts` exactly
-(NOK/EUR/USD/GBP = 2, JPY = 0) and raises for anything else — unsupported currencies fail closed
-rather than silently assuming exponent 2. Every SQL site that used to inline the old formula now
-calls this helper instead, including both CHECK constraints that pin the frozen NOK amount to the
-rate (`purchases_total_nok_matches_rate`, `sales_net_proceeds_nok_matches_rate`). Rounding is
-unchanged: `round(numeric)`, half-away-from-zero, applied exactly once per conversion, the same
-rule every site already used and the same rule `src/domain/fx.ts`'s `divideRoundHalfUp` already
-implements client-side — this decision does not touch rounding, only the exponent.
+1. Every SQL conversion site (`create_purchase`, `update_purchase`, `create_sale`, `update_sale`,
+   `sales_summary`, and the two frozen-rate CHECK constraints) computed
+   `round(amount_minor::numeric * fx_rate_to_nok)::bigint`, which is only correct when the source
+   currency shares NOK's minor-unit exponent (2). FINANCIAL_MODEL.md §1/§7 and D-007 already state
+   the opposite rule — the exponent is read per currency, never assumed to be 2 — and
+   `src/domain/fx.ts` already implements it client-side; only the SQL layer disagreed with its own
+   project's documented contract.
+2. Independently, `supabase/functions/_shared/norges-bank.ts` returned Norges Bank's raw SDMX
+   observation unchanged, ignoring the series-level `UNIT_MULT` attribute. Live-verified twice
+   (2026-09-13 and 2026-09-14): EUR and USD both carry `UNIT_MULT: 0` ("Units" — the printed number
+   already is NOK per 1 unit); JPY alone carries `UNIT_MULT: 2` ("Hundreds") — a printed `6.0375`
+   means NOK per **100** JPY, not per 1 JPY.
 
-**Alternatives.** *Fix only the ingestion parser's `UNIT_MULT` handling* — rejected: the migration
-header and the audit both call this out explicitly as the trap. The two bugs currently cancel for
-auto-sourced JPY rows; fixing only the parser (in isolation, by a separate workstream) would silently
-turn every future auto-sourced JPY row 100x too large. Both layers must agree on the same per-unit
-semantic, which is why this decision states the contract explicitly rather than leaving it implicit.
-*Special-case JPY at each call site with a hardcoded `× 100`* — rejected: the prompt's own mutation
-test (restore a per-call-site hardcoded JPY multiplier instead of the canonical helper) is designed
-to catch exactly this, because it silently stops working the moment a second zero-exponent or
-three-exponent currency is ever added — the bug is generic (source exponent vs. NOK exponent), not
-JPY-specific, and the fix must be too. *A currency metadata table instead of a lookup function* —
-rejected for this change: no SQL currency table exists today (D-007's "currency table" describes
-`src/domain/currency.ts`, not a database table), and introducing one is a larger schema decision
-this fix does not need — a five-branch `case` is complete, exact and trivially extended later.
+For every currency this product has ever offered except JPY (NOK/EUR/USD/GBP, all exponent 2 and
+all UNIT_MULT 0) both defects are numerically invisible. For JPY they happen to **cancel** on the
+automatic (Norges Bank) path only: the parser hands SQL a rate 100x too large (raw per-100 instead
+of per-1), and the SQL layer's missing exponent shift is also a factor of 100 in the direction that
+compensates — so an auto-sourced JPY purchase or sale landed on the numerically correct
+`total_nok_minor` by accident. A **manually-entered** JPY rate (which never passes through the
+Norges Bank parser) hits only defect 1 and is stored ~100x too **low** with no compensation. This
+is why the bug survived: the released test suite has EUR/USD/GBP fixtures only, every one of which
+has a zero exponent gap and a zero UNIT_MULT, so neither defect nor their interaction was ever
+exercised. Hosted diagnostics at P131 and P132 (`output_131.txt`, `output_132_i.txt`) both found
+zero JPY purchase or sale rows on the hosted database at the time of those checks, so no existing
+transaction data needed repair as of those reads; P136 re-verifies this immediately before release
+(§9 below) rather than trusting a stale snapshot.
 
-**Consequences.** NOK/EUR/USD/GBP transactions are numerically unaffected — the exponent shift is
-zero, so the new formula is byte-identical to the old one for every currency this product has ever
-stored other than JPY (proven by a parity property test against `src/domain/fx.ts`'s independent
-`convert()`, `tests/db/p133_currency_exponent_fx.test.ts`). A manually-entered JPY rate now produces
-the correct NOK amount instead of one 100x too small. The automatic Norges Bank path for JPY is
-UNCHANGED by this decision alone: until the ingestion workstream normalizes the SDMX `UNIT_MULT`
-observation into a true per-unit rate before it reaches SQL, an auto-sourced JPY rate will convert
-to a NOK amount 100x too LARGE (the cancellation this decision removes). The two layers must ship
-together, or the ingestion fix must land first with SQL already correct — never SQL fixed alone
-against an unfixed parser, and never the parser fixed alone against unfixed SQL. `total_nok_minor`
-for a currency outside the five this product supports today now fails closed with an explicit
-`unsupported currency code` error instead of silently computing a wrong number under the old
-exponent-2 assumption — a side effect of making the fix generic, not a separate feature; P130-18's
-broader "server accepts any 3-letter code" finding for dates is unaffected and remains open.
-Regression: `tests/db/p133_currency_exponent_fx.test.ts`.
+**Decision.**
+
+1. **Canonical contract, unchanged, now actually enforced everywhere.** `fx_rate_to_nok` (and
+   `fx_rates.rate`) means exactly one thing, automatic or manual, for every currency this product
+   supports: NOK per **one MAJOR unit** of the source currency, `numeric(18,8)`. There is no
+   per-currency exception, no "rate per 100 units" input, and no separate JPY convention anywhere
+   in the schema, the RPCs, the ingestion layer or the client. Manual entry (the purchase/sale
+   form's "NOK per 1 {currency}" field) already satisfied this; the fix brings both the automatic
+   ingestion path and the SQL conversion path into agreement with the same rule, rather than
+   introducing a new one.
+2. **SQL becomes currency-exponent-aware (P133).** One new canonical function,
+   `money_minor_to_nok_minor(amount_minor, currency, fx_rate_to_nok)`, built on a small
+   `currency_minor_unit_exponent(currency)` lookup mirroring `src/domain/currency.ts` exactly
+   (NOK/EUR/USD/GBP = 2, JPY = 0; raises for anything else — unsupported currencies fail closed
+   rather than silently assuming exponent 2), replaces every inline
+   `round(amount_minor::numeric * fx_rate_to_nok)::bigint` site: both purchase RPCs, both sale
+   RPCs, `sales_summary`'s four per-row NOK aggregates, and both frozen-rate CHECK constraints
+   (`purchases_total_nok_matches_rate`, `sales_net_proceeds_nok_matches_rate`). Rounding is
+   unchanged — `round(numeric)`, half-away-from-zero, applied exactly once per conversion, the same
+   rule every site already used and the same rule `src/domain/fx.ts`'s `divideRoundHalfUp` already
+   implements client-side. For every currency other than JPY the exponent shift is zero, so the new
+   formula is byte-identical to the old one (proven by a parity property test against
+   `src/domain/fx.ts`'s independent `convert()`).
+3. **Norges Bank ingestion normalizes its own `UNIT_MULT` (P134).** `_shared/norges-bank.ts` is the
+   only place in the system permitted to know Norges Bank's SDMX attribute shapes. It resolves
+   `UNIT_MULT` from `structure.attributes.series` by attribute `id` (never by assuming a fixed
+   array position) and divides every observation by `10^UNIT_MULT` using exact decimal-string
+   arithmetic — never `Number` division, since FINANCIAL_MODEL.md §7's invariant F11 freezes this
+   value forever and a binary-floating-point artifact here would be permanent — before the value is
+   ever cached into `fx_rates` or returned to a caller. `fetch-fx-rate` and `ingest-fx` both call
+   this one shared function and therefore both normalize identically with no per-caller change. A
+   series whose `UNIT_MULT` cannot be resolved to a plain integer (malformed value, or the
+   attribute missing entirely) is refused (`NorgesBankError`), never defaulted to 0 — assuming
+   "Units" for a series that actually needed a real multiplier would silently store a rate wrong by
+   a power of ten with no signal anywhere it happened. SQL, `src/domain`, and every other consumer
+   of `fx_rate_to_nok` never learn Norges Bank or `UNIT_MULT` exist; the two fixes are independent
+   corrections at independent layers that happen to both be required for the same currency today.
+
+**Alternatives.** *Fix only one layer* — rejected outright; see Consequences: the two defects
+currently cancel for the automatic path, so fixing exactly one of them (in isolation, by an
+uncoordinated deploy) does not merely leave a bug unfixed, it actively **introduces a fresh 100x
+error in the opposite direction** for every new auto-sourced JPY row written while only one half is
+live. *Special-case JPY at each call site or in the parser with a hardcoded `× 100` / `/ 100`* —
+rejected at both layers: brittle (silently wrong the moment a second zero-exponent currency, or a
+currency Norges Bank rescales differently, is ever added) and exactly the kind of currency-keyed
+branch this project avoids elsewhere (`src/domain/currency.ts`'s per-currency metadata table, not
+an `if (code === 'JPY')`). The fix must be generic (source exponent vs. NOK exponent; provider
+`UNIT_MULT` vs. assumed 1), not JPY-specific, and both P133's and P134's mutation campaigns
+specifically prove a JPY-keyed special case is killed. *A SQL currency-metadata table instead of a
+lookup function* — rejected for this change: no SQL currency table exists today (D-007's "currency
+table" describes `src/domain/currency.ts`, not a database table); a five-branch `case` is complete,
+exact and trivially extended later. *Apply the `UNIT_MULT` correction in SQL alongside the exponent
+fix* — rejected: SQL has no way to see SDMX metadata at all; the correction must happen in the
+ingestion layer, before a rate is ever cached or frozen onto a transaction row. *Default an
+unresolvable `UNIT_MULT` to 0* — rejected: fails open on exactly the class of provider-format
+change (Norges Bank rescaling a series, or a hostile/corrupted response) this decision exists to
+catch.
+
+**Consequences.**
+
+- NOK/EUR/USD/GBP transactions are numerically unaffected by the SQL fix (exponent shift zero) and
+  unaffected by the parser fix (`UNIT_MULT` zero) — both proven by parity/property tests and by the
+  full pre-existing test suite passing unchanged.
+- A manually-entered JPY rate now produces the correct NOK amount instead of one ~100x too small.
+- **Old automatic JPY correctness was accidental cancellation, not a sign either layer was right.**
+  Before this decision, an auto-sourced JPY purchase/sale landed on the numerically correct
+  `total_nok_minor` only because the parser's raw-per-100 rate and SQL's missing exponent shift
+  happened to cancel for this one currency pair's specific numbers. That was never a property to
+  preserve.
+- **Partial deployment of only one half is unsafe and strictly worse than doing nothing.** New SQL
+  + old parser: auto JPY becomes ~100x TOO HIGH (SQL now applies the correct ×100 shift to a rate
+  that is still itself ×100 too large). Old SQL + new parser: auto JPY becomes ~100x TOO LOW (the
+  parser now hands SQL a correct per-unit rate, but SQL still fails to apply the ×100 shift). Both
+  of these partial states are worse than the pre-fix state for any JPY row written during the gap —
+  never deploy the SQL migration and the edge-function redeploy as separable, independently-timed
+  releases; they land in the same coordinated window (P136 §30).
+- **Stored transaction NOK values are frozen and must never be casually recomputed.** Per
+  FINANCIAL_MODEL.md §7 invariant F11, a purchase or sale's `total_nok_minor` /
+  `net_proceeds_nok_minor` is written once at transaction time and never recomputed from its stored
+  `fx_rate_to_nok` merely because the conversion CODE later changed — including by this decision.
+  If any pre-fix JPY transaction row is ever found (hosted diagnostics found none as of P131/P132;
+  P136 re-verifies immediately before release), its frozen NOK amount is a historical artifact of
+  whatever code wrote it and is a financial-data question for the owner, not something a migration
+  silently rewrites.
+- **Legacy automatic `fx_rates` cache rows are rebuildable cache, not ledger.** Unlike a
+  purchase/sale row, `fx_rates` is a stateless resolution cache (no FK from any transaction; a
+  transaction freezes its own copy of the rate at write time) written only by service-role
+  infrastructure. A cache row with `source = 'norges_bank'` and `base_currency = 'JPY'` is provably
+  machine-ingested under the pre-fix parser and may be safely deleted (forcing a fresh, correctly-
+  normalized fetch on next use) or normalized — never treated as financial history requiring
+  owner sign-off.
+- **Ambiguous historical manual JPY rows require owner review, never a silent rewrite.** A
+  manually-entered JPY row's stored rate alone cannot distinguish a user who correctly followed the
+  UI's own "NOK per 1 JPY" label from one who pasted a raw provider figure under the old (wrong)
+  convention, from a genuinely mistaken entry. Any such row found must be listed for the owner,
+  never automatically corrected.
+- `total_nok_minor` for a currency outside the five this product supports today now fails closed
+  with an explicit `unsupported currency code` error instead of silently computing a wrong number
+  under the old exponent-2 assumption — a side effect of making the SQL fix generic, not a separate
+  feature; P130-18's broader "server accepts any 3-letter code" finding for dates is unaffected and
+  remains open.
+
+Worked example (JPY, both halves live): a 10,000 JPY purchase with the Norges Bank raw observation
+6.0375 (NOK per 100 JPY, `UNIT_MULT=2`) normalizes in the ingestion layer to `fx_rate_to_nok =
+0.06037500` (NOK per 1 JPY), then converts in SQL to
+`money_minor_to_nok_minor(10000, 'JPY', 0.06037500) = round(10000 × 0.06037500 × 10^(2-0)) =
+60375` minor units, i.e. NOK 603.75 — consistent with the raw provider figure read as "6.0375 NOK
+per 100 JPY": 10,000 JPY is 100 × 100 JPY, so 100 × 6.0375 NOK = NOK 603.75. Regression tests:
+`tests/db/p133_currency_exponent_fx.test.ts` (SQL/exponent), `tests/data/norges-bank.test.ts`
+(parser/`UNIT_MULT`), `tests/data/p135/reference/fx-oracle.test.ts` (independent second oracle,
+derived without reading either fix's implementation).
