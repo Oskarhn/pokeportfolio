@@ -5635,3 +5635,159 @@ the full non-auth desktop-chromium suite pass locally after each round, includin
 serial-blocked 1000-cycle visibility soak actually running to completion; the authoritative
 mobile-iphone (WebKit) result is GitHub Actions CI — see this branch's final CI run for the
 confirmed outcome.
+
+---
+
+## D-129 — A purchase line's live sibling lots (a sealed-intent split) share an edit's attributable cost by quantity-weighted exact allocation; a quantity change across siblings is refused, not guessed (P132-A / P130-01)
+
+**2026-09-14 · Accepted**
+
+**Context.** `set_sealed_lot_intent`'s partial split (D-051's neighbour, 20260829120000) can leave
+more than one live `acquisition_lots` row on a single `purchase_lines` row — one physical lot per
+sealed_intent the owner has split the quantity into. `update_purchase` was never designed for
+this: it read one arbitrary live lot per line (no STRICT, no loop) and overwrote it with the
+WHOLE line's new quantity and basis, leaving the other siblings' quantity and basis exactly as
+they were before the edit. An independent post-release audit (P130, `output_130.txt`, finding
+P130-01) reproduced this: 5 sealed units split 2/3, then an ordinary unit-price correction,
+produced 8 live units summing to 90000 øre against a real line quantity of 5 and attributable
+60000 øre — three phantom, sellable units and an inflated Portfolio value. A follow-up safety
+session (P131) ran the read-only diagnostic this decision's fix ships with
+(`scripts/finance-integrity-diagnostics.sql`) against the hosted project before any code changed:
+zero purchase lines currently hold more than one live lot, so no hosted data repair was required
+before implementing this fix (`output_131.txt` §4).
+
+**Decision.** `update_purchase` now handles every live lot of a line, not one arbitrary row:
+  - **Quantity unchanged, N ≥ 1 live siblings.** Every sibling's own quantity is left exactly as
+    it is. The line's (possibly changed) attributable cost — in both the purchase currency and
+    NOK — is redistributed across the UNCHANGED sibling quantities using
+    `allocate_largest_remainder` (the same allocator FINANCIAL_MODEL.md §4.2/invariant F6 already
+    proves exact for any input), weighted by each sibling's own quantity. Each sibling's own share
+    is then split into `unit_cost_basis_minor` + `residual_minor` by the identical floor+residual
+    rule §4.3 already uses for a single lot. Because F6 guarantees `Σ shares = total` and each
+    sibling's floor+residual split exactly reconstructs its own share, `Σ live sibling lot basis =
+    purchase_line attributable basis` holds exactly, in both currencies, for any number of
+    siblings. `sealed_intent` and `purchase_line_id` are never touched by this path.
+  - **Quantity changed, exactly one live lot.** Unchanged from the pre-existing behaviour — the
+    only case that existed before this decision, and the overwhelming majority of real lines.
+  - **Quantity changed, more than one live sibling.** Refused outright, before anything is
+    written, naming the reason (`multi-lot-quantity-ambiguous`, matching this codebase's existing
+    `idempotency-key-reuse` naming convention for a caller/test-recognisable domain error). A
+    split lot's existence is the owner's own record of a real difference between those units
+    (different sealed_intent); nothing in the edit request says which pile a quantity change is
+    meant to add to or take from, and guessing would silently misattribute units between two
+    organisationally distinct groups. The documented recourse is D-047's existing one for "this
+    purchase can no longer represent what happened": void it and record a new one.
+  - A lot whose `cost_basis_state` is not `'known'` has its basis columns left untouched entirely
+    (FINANCIAL_MODEL.md §1.1's "never fabricate a number" rule) rather than fabricating a share
+    for it; the pre-existing code would have hit `acquisition_lots_cost_basis_state_consistency`'s
+    CHECK constraint outright if this case had ever been exercised in practice, an unreachable
+    combination now handled by omission instead of a raw constraint failure.
+  - `update_purchase`'s own P130-03 locking slice is fixed in the same migration, since the
+    multi-lot rewrite above is only safe under it: every live lot on the whole purchase is locked
+    `SELECT ... FOR UPDATE` in ascending id order — the identical global-ascending-order
+    convention `create_sale` and `reduce_holding_quantity` already use, so this function can never
+    deadlock against either — BEFORE the "no partially disposed lot" blocker is (re-)checked and
+    before anything is written. A concurrent `create_sale` that locks first is safely observed
+    (the edit then refuses, citing the live disposal); one that locks second safely observes the
+    committed edit instead of a stale basis. Proven with a held-lock two-session harness in both
+    orderings (`tests/db/p132a_multilot_purchase_integrity.test.ts`).
+
+**Alternatives.** *Refuse the edit outright whenever a line has more than one live lot* (the
+"smallest safe fix" P130 itself suggested) — rejected as unnecessarily punitive: a metadata-only
+correction (retailer, notes, a price fix that leaves quantity alone) is both the common case and
+completely unambiguous once quantity is held fixed, and refusing it would push owners toward
+void-and-re-enter for corrections that carry no real ambiguity. *Collapse the siblings back into
+one lot on edit* — rejected outright per the launch prompt and DATA_MODEL.md's own treatment of a
+split as organisationally meaningful, not a formatting detail to discard on the next unrelated
+edit. *Silently pick an allocation rule for a quantity change across siblings (e.g. always grow/
+shrink the largest sibling)* — rejected: any such rule invents provenance the system does not
+have, exactly the class of fabrication FINANCIAL_MODEL.md's core quality bar forbids elsewhere
+(missing cost is never `0`; the same principle extends to "which pile these units belong to" not
+being knowable from a bare quantity change).
+
+**Consequences.** An ordinary, never-split purchase line (near-total majority of real receipts) is
+completely unaffected — same shape, same behaviour as before this decision. A split line's owner
+who wants to change its total quantity gets a clear, actionable refusal instead of either silent
+corruption or an opaque Postgres constraint error, and must void-and-re-enter (an existing,
+already-documented correction path, D-047) for that one case. P131's read-only
+`scripts/finance-integrity-diagnostics.sql` already counts exactly this invariant
+(`multi_live_lot_lines`, `lot_quantity_mismatch_lines`, `lot_basis_mismatch_lines`) and confirmed
+zero affected hosted rows before this fix was written (`output_131.txt` §4); re-running it after
+this migration deploys is the intended way to re-verify the invariant against hosted data going
+forward.
+
+## D-130 — Removed sibling lots stay removed through a purchase edit; a line with removed or no live lots cannot change quantity (P132)
+
+**2026-09-14 · Accepted**
+
+**Context.** D-129 covered a purchase line with several *live* lots. An independent regression
+package written without reading the implementation (P132-C) found two further states the first
+integrated candidate mishandled. (1) A split line one of whose siblings was removed from inventory
+(`void_acquisition_lot` / `remove_holdings_from_portfolio`, purchase kept live by another line):
+with one live lot left, `update_purchase` took the single-lot path and set that lot's quantity to
+the full line quantity, turning the removed units back into inventory. (2) A line whose every lot
+was removed: `update_purchase` accepted a quantity change, recording units that were neither
+inventory nor a recorded removal. Neither state is reachable without first splitting or removing,
+and hosted data held neither at P131.
+
+A purchase-linked lot's `quantity` changes only through `update_purchase` (single lot) and
+`set_sealed_lot_intent` (which conserves the line total); `reduce_holding_quantity` refuses
+purchased lots, and `reconcile_opening_cost` voids a provisional lot together with its purchase.
+So for a live purchase, `line quantity = Σ quantity of all the line's lots, live and voided`, and
+the voided lots' quantity is exactly the removed units.
+
+**Decision.**
+- A line with live lots and removed (voided) sibling lots is edited like a split line: every live
+  lot keeps its quantity; the line's attributable cost, in both currencies, is allocated across
+  **all** lots of the line (live and removed) weighted by quantity with `allocate_largest_remainder`,
+  and written only to the live lots. Each unit of the receipt line keeps the same cost; removed
+  units are never resurrected. With no removed lot this is exactly D-129.
+- A quantity change on such a line is refused (`multi-lot-quantity-ambiguous`), as for several live
+  siblings: nothing says whether the change belongs to the live or the removed units.
+- A line with no live lot refuses a quantity change
+  (`purchase-line-quantity-without-inventory`); an edit that leaves its quantity unchanged
+  (price, shipping, notes) still succeeds and writes no lot.
+- Recourse in both refusals is D-047's: void the purchase and record a new one.
+
+**Alternatives.** *Let the live lot absorb a quantity change when removed siblings exist* —
+rejected: it guesses provenance, the same objection D-129 records. *Refuse every edit of a line
+that has ever had a lot removed* — rejected: price and shipping corrections on such a line are
+unambiguous once quantity is fixed. *Write re-costed basis to the voided lots too* — rejected:
+voided rows are history and nothing reads their basis; the allocation only uses their quantity.
+
+**Consequences.** Reading the P131 diagnostics (`scripts/finance-integrity-diagnostics.sql`): a
+split line with a removed sibling is legitimate and is counted by `lines_with_live_and_voided_lots`
+and by the broad `lot_quantity_mismatch_lines` (live units < line quantity). The counters that can
+only mean corruption are `lot_quantity_mismatch_lines_no_voided_lots`,
+`lot_quantity_mismatch_lines_excess`, the basis mismatch counters (which already skip lines with a
+voided lot) and `voided_purchases_with_live_lots`. A non-zero broad counter therefore needs a look at
+the voided siblings before it is called damage. Regressions:
+`tests/db/p132_integration_regressions.test.ts`; independent coverage:
+`test/p132c-finance-regressions` (`LINE_LOT_QUANTITY`, `LINE_QUANTITY_WITHOUT_LIVE_LOTS`).
+
+## D-131 — Parent-purchase auto-void requires every lot of every line voided, including split siblings of the voided lot's own line (P132)
+
+**2026-09-14 · Accepted**
+
+**Context.** D-051 auto-voids a purchase when the last inventory it recorded is removed, counting
+*other lines*. It predates sealed-intent splits (M11). After a split, voiding one sibling skipped
+its own line entirely, saw every other line accounted for, and voided the purchase while the other
+sibling was still live inventory — spend removed from CS while its units stayed in the portfolio.
+Found by P132-C (`VOIDED_PURCHASE_LIVE_LOT`), independently noted by the P132 correction-locking
+work, and reproduced on the integrated candidate.
+
+**Decision.** A line is *accounted for* when it has at least one lot and all of its lots are
+voided. `void_acquisition_lot` auto-voids the purchase only when every line on it is accounted for
+— the voided lot's own line included. A line that never produces a lot (accessory, shipping, …)
+is never accounted for, exactly as in D-051. `remove_holdings_from_portfolio` inherits the rule
+through `void_acquisition_lot`.
+
+**Alternatives.** *Count other live lots anywhere on the purchase instead of lines* — rejected: that
+reintroduces the D-051 defect for non-inventory lines. *Auto-void under the purchase row lock* —
+not needed for integrity: concurrent removal of the last two siblings can at worst leave the
+purchase live with every lot removed (spend still counted, the owner can void it), never a voided
+purchase with live inventory, because a new live lot can only come from splitting a lot the check
+already sees as live.
+
+**Consequences.** A single-line purchase now auto-voids only when its last sibling is removed.
+Regression: `tests/db/p132_integration_regressions.test.ts`.

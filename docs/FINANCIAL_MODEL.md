@@ -219,6 +219,25 @@ double credit), so summing every disposal's frozen basis reproduces the lot's ex
 exactly. The identical rule applies to a lot's `lot_cost_adjustments` division (§4.4) when a
 partial disposal must freeze its per-unit share. Full derivation: DATA_MODEL.md §5.7, D-060.
 
+**What if a line has more than one live lot?** (D-129.) A sealed-intent split
+(`set_sealed_lot_intent`, DATA_MODEL.md §5.4) can leave several live `acquisition_lots` rows
+pointing at the same purchase line — one per sealed_intent the owner has split the quantity into.
+An edit that changes the line's attributable cost (price/shipping/customs/discount/FX) splits it
+across those siblings in two steps, both using the exact largest-remainder allocator (§4.2):
+first the line's attributable cost is divided across the siblings weighted by each sibling's own
+(unchanged) quantity, then each sibling's own share is divided into `unit_cost_basis` + residual
+by the identical single-lot rule above. `Σ allocated_i = total` (invariant F6) at both steps, so
+`Σ live sibling lot basis = purchase_line attributable basis` holds exactly, in both currencies,
+regardless of how many siblings a line has. An edit that would change such a line's *quantity* is
+refused outright rather than guessed — see D-129 for why guessing is unsafe here.
+
+If some of a line's lots were removed from inventory (voided while the purchase stayed live), the
+line quantity is the live units plus the removed units. An attributable-cost edit is then
+allocated across every lot of the line, live and removed, weighted by quantity, and written only
+to the live lots: each unit keeps the same per-unit cost, and removed units are never turned back
+into inventory. A quantity change on such a line, or on a line with no live lot left, is refused
+(D-130).
+
 ### 4.4 Grading costs
 
 A grading fee purchased later attaches to a specific lot as a `lot_cost_adjustment`:
