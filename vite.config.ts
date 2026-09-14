@@ -583,6 +583,9 @@ export default defineConfig({
       // offline (a tiny procedurally-generated image, no network/model download), so it stays part
       // of the ordinary `pnpm test` gate rather than needing the lab's own network-dependent corpus.
       'tests/scanner-research/**/*.test.ts',
+      // P131: operator tooling (full database backup) — fail-closed logic with an injected CLI
+      // runner; the real-CLI proof is `pnpm db:backup:regression` (needs Docker).
+      'tests/ops/**/*.test.ts',
     ],
     coverage: {
       provider: 'v8',

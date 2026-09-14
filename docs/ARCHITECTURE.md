@@ -95,7 +95,7 @@ Verified facts driving the choice (see [RESEARCH.md](RESEARCH.md) for sources an
 | Project pausing | Free projects pause after ~7 days without database activity; manual resume; restorable within 90 days |
 | EU regions | Planned `eu-north-1` (Stockholm), closest to Norway. The development project was actually created in **`eu-west-3` (Paris)** — still EU, so the GDPR posture is unchanged, and roughly 20 ms of latency did not justify recreating it. A future production project should choose deliberately rather than inherit this. |
 | Scheduling | `pg_cron` enabled on all plans including Free; `pg_net` for HTTP from SQL |
-| Backups | **No automated backups on Free.** Manual `supabase db dump` required. |
+| Backups | **No automated backups on Free.** Manual full backup (`pnpm db:backup`) required. |
 | Auth: email + password | Stable. Built-in email limited to 2/hour project-wide, so login must not depend on it. |
 | Auth: passkeys | Experimental, requires opt-in flag — not an MVP dependency |
 
@@ -113,7 +113,13 @@ and RLS would need JWT plumbing built by hand. Rejected for this scale.
 
 Free-tier reality is that nobody is backing this up for us. The mitigation is layered:
 
-1. `supabase db dump` run manually before every migration and after significant data entry.
+1. `pnpm db:backup` run manually before every migration or data repair and after significant data
+   entry. It produces the full logical set — roles, schema, data, migration-history schema and
+   data — with a SHA-256 manifest, in a private directory outside git, and fails closed on any
+   missing, empty or schema-only artifact. A bare `supabase db dump` is **schema-only** and is
+   not a data backup (P130-06). This layer is backup only: restoring it safely needs a dedicated
+   restore runbook that re-establishes grants, auth triggers, cron, Vault and the auth hook
+   (P130-07); until that exists and is validated, restore is an unsolved step, not a routine one.
 2. In-app versioned JSON export, **in MVP**, as the user-facing escape hatch. It carries a schema
    version and export timestamp so an export taken today survives future migrations.
 3. A periodic in-app reminder to export, because a manual routine nobody performs is not a backup.

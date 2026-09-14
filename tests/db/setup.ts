@@ -296,10 +296,40 @@ async function deleteAcquisitionLotsWithOpeningInBatches(
   }
 }
 
-async function deleteNonCascadingUserRows(service: TestClient, userId: string): Promise<void> {
+/**
+ * P132-B: the high-volume tables whose `user_id` FK DOES cascade are deleted here too, so the final
+ * `auth.admin.deleteUser` is left with only small auth/profile rows. Leaving them to the cascade put
+ * the whole cascade inside ONE GoTrue request, which GoTrue abandons after 10 s ("Processing this
+ * request timed out", HTTP 504) and rolls back, so every retry repeats the same work and fails the
+ * same way. The expensive part is `manual_card_definitions`. Its only reference,
+ * `holdings.manual_card_id`, has no index, so each deleted card seq-scans all of `holdings`,
+ * including every other user's rows and dead tuples. At M13 scale (10,000 cards) that is 10,000
+ * full scans in a single statement. `purchases` (openings' two purchase references, also unindexed)
+ * and `storage_locations` (acquisition_lots, unindexed) have the same shape at lower volume.
+ * Batching keeps each scan-heavy DELETE small and moves it out of GoTrue's request budget.
+ *
+ * The rest of the cascade (profiles, invitation rows, auth.* rows, portfolio_snapshots, and the
+ * unseeded-at-volume retailers/tags/collections tables) stays on `deleteUser`: none has an unindexed
+ * child FK, and together they cost milliseconds. `invitations` (`created_by` SET NULL) and the
+ * global catalog are shared data and are never deleted here.
+ *
+ * Exported so tests/db/synthetic_user_cleanup.test.ts can check the pre-`deleteUser` state directly.
+ */
+export async function deleteSyntheticUserRows(service: TestClient, userId: string): Promise<void> {
   const byUserId = async (table: string) =>
     deleteByColumnInBatches(service, table, 'user_id', userId, `${table}.user_id cleanup`)
 
+  // First, take the user out of the M12 recompute queue. The every-minute drain rebuilds a queued
+  // user over lots x days in one statement, holding the queue row FOR UPDATE and (through its
+  // snapshot inserts) a key-share lock on the auth.users row until it commits. A drain that starts
+  // while a 10k-lot user is half torn down can run for minutes (observed locally: 240+ s), and
+  // deleteUser waits on those locks until GoTrue gives up. Nothing below re-enqueues the user: the
+  // enqueue triggers fire on INSERT/UPDATE only, and the one SET NULL that updates a ledger row
+  // (storage_locations -> acquisition_lots) runs after the lots are gone.
+  await mustDelete(
+    service.from('portfolio_recompute_queue').delete().eq('user_id', userId),
+    'portfolio_recompute_queue.user_id cleanup',
+  )
   await byUserId('lot_disposals')
   await byUserId('sale_lines')
   await byUserId('sales')
@@ -310,7 +340,13 @@ async function deleteNonCascadingUserRows(service: TestClient, userId: string): 
   await byUserId('openings')
   await byUserId('acquisition_lots')
   await byUserId('purchase_lines')
+  // After purchase_lines and openings, the only rows that reference a purchase.
+  await byUserId('purchases')
   await byUserId('holdings')
+  // After holdings, the only table that references a manual card.
+  await byUserId('manual_card_definitions')
+  // After acquisition_lots. A profile default pointing here is SET NULL by the FK.
+  await byUserId('storage_locations')
   await deleteByColumnInBatches(
     service,
     'sealed_products',
@@ -321,7 +357,7 @@ async function deleteNonCascadingUserRows(service: TestClient, userId: string): 
 }
 
 export async function deleteSyntheticUser(service: TestClient, userId: string): Promise<void> {
-  await deleteNonCascadingUserRows(service, userId)
+  await deleteSyntheticUserRows(service, userId)
 
   // P120: the admin DELETE cascades through every remaining FK to auth.users (including
   // portfolio_recompute_queue), and this project's own M12 cron worker

@@ -113,7 +113,9 @@ Live since M3 (database):
 | `pnpm db:migrate` | Apply pending migrations to an already-running local database |
 | `pnpm db:reset` | Reset local database to current migrations and re-seed from `supabase/seed/` |
 | `pnpm db:seed` | Currently an alias for `db:reset` — the CLI has no standalone "just seed" command distinct from a full reset; see §4 |
-| `pnpm db:dump` | Logical backup of the **linked remote** project — run before applying anything there |
+| `pnpm db:backup` | Full private backup of the **linked remote** project (roles, schema, data, migration history, SHA-256 manifest) outside git — run before applying anything there. §4 "Backups" |
+| `pnpm db:backup --verify <dir>` | Re-verify an existing backup directory (sizes, hashes, content checks) |
+| `pnpm db:backup:regression` | Proves the backup captures real rows: disposable Docker database, synthetic ledger, real CLI, fail-closed checks |
 | `pnpm db:types` | Regenerate `src/data/database.types.ts` from the local schema |
 
 Live since M4 (auth), all through `pnpm exec supabase …` rather than a package script, because
@@ -198,14 +200,17 @@ database; the isolation suite passes"), independent of this machine's local setu
 
 **Local (optional, needs Docker).** `pnpm db:start` runs the same stack locally. Fast, offline,
 destructible, and the most convenient way to iterate on a migration before pushing. Requires
-Docker Desktop, which is **not currently installed on this development machine** — installing it
-is a reasonable future convenience but was never a blocker, since CI covers the gate without it.
+Docker Desktop, which is installed on the development machine. `pnpm db:backup` also needs it:
+the CLI runs `pg_dump` in a container even against the linked remote. Any database with every
+migration applied — local stack, CI stack, disposable container — runs the M9 cron jobs that POST
+to the hosted edge functions every 15 minutes (P130-12); deactivate those two jobs locally
+(`cron.alter_job(jobid, active := false)`) on any stack that stays up.
 
 **Remote dev project (for manual/interactive work, once linked).** A second free Supabase
 project, separate from any project holding real data — see the Supabase environment note in
 HANDOVER.md for whether one is linked yet. Useful for `pnpm dev` against real persisted data and
 for the owner to poke around in Studio. Not what CI depends on. A bad migration here affects a
-shared resource, so `pnpm db:dump` first, always, and never treat Dashboard-applied SQL as
+shared resource, so `pnpm db:backup` first, always, and never treat Dashboard-applied SQL as
 canonical — capture it into a migration immediately or it does not count as done (§ migration
 rules below).
 
@@ -214,7 +219,8 @@ rules below).
 - Every schema change is a timestamped SQL file in `supabase/migrations/`. No exceptions.
 - Never edit a migration that has been applied anywhere. Write a new one.
 - Never change the schema through the Supabase dashboard. The repository is the source of truth.
-- `pnpm db:dump` before applying anything, on any environment holding real data.
+- `pnpm db:backup` before applying anything, on any environment holding real data — and stop
+  unless it reports `BACKUP COMPLETE`.
 - Every migration must apply cleanly to both an empty database and a seeded one — asserted by test.
 - Regenerate types (`pnpm db:types`) in the same commit as the migration, so the schema and its
   TypeScript view never disagree.
@@ -223,11 +229,59 @@ rules below).
 
 Supabase's free plan provides **no automated backups**. The discipline that replaces them:
 
-1. `pnpm db:dump` before every migration and after significant data entry.
-2. Dumps go to a gitignored local directory and are copied off-machine.
+1. `pnpm db:backup` before every migration or data repair and after significant data entry.
+2. Backups stay private and outside every git checkout, and are copied off-machine.
 3. In-app JSON export (V1) as the user-facing escape hatch.
 
 Nothing in the product may imply that backups happen automatically.
+
+**What `pnpm db:backup` does** (`scripts/db-backup/`, P131). `supabase db dump` with no flags is
+schema-only — the former `db:dump` script produced zero data rows (P130-06) and was removed.
+The replacement runs the repository's pinned Supabase CLI five times against the linked project
+(authenticated through the CLI's own login role; no database password on the command line):
+
+| File | Dump |
+|---|---|
+| `roles.sql` | `--role-only` |
+| `schema.sql` | default (application schema) |
+| `data.sql` | `--data-only --use-copy`, excluding `storage.buckets_vectors` / `storage.vector_indexes` data |
+| `migration_history_schema.sql` | `--schema supabase_migrations` |
+| `migration_history_data.sql` | `--data-only --use-copy --schema supabase_migrations` |
+
+Files are written to `<root>/<UTC stamp>.incomplete/`. The backup **fails closed** — non-zero exit,
+nothing marked complete, directory renamed `<stamp>.FAILED` — on a CLI error, a missing or
+zero-byte file, a `data.sql` without COPY blocks (a schema-only dump), a required table
+(`auth.users`, `public.purchases`, `public.acquisition_lots`, …) absent from the data or schema
+dump, a truncated COPY block, an empty migration history, an unestablished project identity, or
+an output root inside any git work tree. Only after every check passes does it write
+`manifest.json` (UTC times, project fingerprint, CLI version, per-file bytes and SHA-256, row
+counts for required tables, migration-history rows — no credentials), `README.txt` and a
+`BACKUP_COMPLETE` marker holding the manifest's SHA-256, rename the directory to `<stamp>/`, and
+re-verify it from disk.
+
+Location: `--out-root <dir>`, else `PP_BACKUP_ROOT`, else
+`<parent of the main checkout>/pokeportfolio-private-backups/supabase/`. The owner's hosted
+backups so far live in `Pokemonapp-private-backups/supabase/` next to the checkout (P127, P131);
+pass that as `--out-root` to keep them together. Add `--expect-migrations <n>` when the hosted
+migration count is known (e.g. from `supabase migration list --linked`). The data dumps are each a
+single consistent snapshot, but the five dumps are not one transaction: do not run migrations or
+bulk writes while a backup is in progress (scheduled price/FX ingestion writing a few rows is
+tolerable; the migration history and ledger are what matter).
+
+`pnpm db:backup:regression` is the proof that this captures data: it starts a disposable
+`supabase/postgres` container (every `*.supabase.co` host hardcoded in a migration pinned to
+127.0.0.1, and the two cron jobs that call the hosted ingest functions deactivated right after
+the migration that schedules them — P130-12), applies all migrations, seeds a synthetic ledger
+through `create_purchase`, runs the real backup, and asserts that `data.sql`'s COPY row counts
+for `public.acquisition_lots`, `public.purchases` and `auth.users` equal the database's own counts.
+Run it after changing anything under `scripts/db-backup/`.
+
+**Restore is NOT covered.** Replaying these files with psql into a fresh project yields an
+insecure database — invite-gate triggers on `auth.users` gone, broad default grants including
+anon EXECUTE on SECURITY DEFINER functions, cron jobs, Vault secrets and the auth hook missing
+(P130-07). A secured restore runbook with its own validation gates (grant audit, invite-gate
+probe, `remote-security-check.mjs`) is required and does not exist yet; it follows the fix for
+the hardcoded cron destination (P130-12).
 
 ---
 

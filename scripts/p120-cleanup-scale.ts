@@ -2,7 +2,7 @@
  * P120 §8/§9/§10 (Gap A): cleanup at scale — dedicated stress that P117 explicitly did not build.
  *
  * Exercises the REAL teardown path (`deleteSyntheticUser`, which calls
- * `deleteNonCascadingUserRows`) against `sealed_products.created_by_user_id` — one of its five
+ * `deleteSyntheticUserRows`) against `sealed_products.created_by_user_id` — one of its
  * batched targets — at increasing row counts, with a sentinel user B present throughout to prove
  * cross-user isolation, plus a fault-injection resume case.
  *

@@ -4,8 +4,80 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
+## Current state (P131, 2026-09-14) — M15 RELEASED; post-release remediation underway
+
+**This section is the authoritative current state.** Every section below it is historical and
+describes the state at the time it was written — in particular the P111 section's "M15 is NOT
+released" is superseded.
+
+**Released.**
+
+- **M15 (scanner) is released.** PR #105 (`release/p125-m15-integrated-candidate`) merged to
+  `main` as merge commit `208eb89bd72df28c7871cd60ca49fac4c11164fa` (tree
+  `28d3d7e403c12171d354eb2fc6216c0a800165cc`, identical to the green candidate; CI run
+  34751154034). Note: merged as a merge commit, not squash, contrary to GIT_WORKFLOW.md — no
+  content impact, 42 branch commits entered `main` history (P130-35).
+- **Production** `https://pokeportfolio-dev.pages.dev` serves `208eb89` (`/build-meta.json`,
+  re-verified 2026-09-14). Scanner visual index content id **`f25fc05d569b7cca`**
+  (`/scanner-assets/visual-v1/index/current.json`).
+- **Hosted Supabase:** **97 migrations applied, 0 pending** (`supabase migration list --linked`,
+  re-verified read-only 2026-09-14: 97 local / 97 remote / 0 mismatches).
+
+**Still deferred by the owner — do not mark as passed.**
+
+- `PHYSICAL_IPHONE_GATE=DEFERRED_BY_OWNER` — physical iPhone scanner validation has not happened
+  and is still required. P130 adds scenarios it must cover: repeated enter/exit of `/scan` on a
+  cold slow network (OCR worker leak, P130-10), Safari storage after first scan (double caching,
+  P130-11), correctness of a HIGH preselection when name OCR failed (P130-24).
+- `PRODUCTION_AUTH_SMOKE=OWNER_DEFERRED` — no authenticated flow has been exercised against
+  Production since M7.1 (also `remote-security-check.mjs` phase 2, which needs `INVITE_TOKEN`).
+
+**P130 independent post-release audit — complete.** P0 = 0, **P1 = 2**, **P2 = 8**, P3 = 27,
+info 12; no emergency external exploit, no cross-user leak, no leaked credential. Full findings
+live in the private audit record (not in this repository). The ones that gate further work:
+
+- **P130-01 (P1)** sealed lot split followed by a receipt edit (`update_purchase`) fabricates
+  units and cost basis. **P130-02 (P1)** JPY FX: SQL ignores the minor-unit exponent and the
+  Norges Bank parser ignores `UNIT_MULT`; a manual JPY rate stores NOK 100× too low (the automatic
+  path is numerically right only because the two errors cancel — fix both together or neither).
+  **P130-03 (P2)** correction RPCs take no lot locks and can race `create_sale`.
+- **P130-06 (P2)** the documented backup (`db:dump`) was schema-only. **Fixed in P131** — see below.
+- **P130-07 (P2)** restoring a dump with the documented psql replay yields an insecure database;
+  no restore runbook exists. **Open.** Blocked on **P130-12** (the M9 cron migration hardcodes the
+  Production edge-function URL, so every migrated local/CI/restored database POSTs there every
+  15 minutes — deactivate the two ingest jobs on any local stack that stays up).
+- Owner precaution until P130-01/02 are fixed: do not edit a sealed purchase after splitting its
+  intent; do not enter manual FX rates for JPY.
+
+**P131 — safety foundation (branch `fix/p131-backup-impact-foundation`, draft PR, not merged).**
+
+- `pnpm db:backup` replaces the removed schema-only `db:dump`: roles, schema, data,
+  migration-history schema and data, SHA-256 manifest, `BACKUP_COMPLETE` marker, private root
+  outside every git checkout, fail-closed on every missing/empty/schema-only artifact
+  (docs/DEVELOPMENT.md §4 "Backups"). `pnpm db:backup:regression` proves against a disposable
+  database and the real CLI that `data.sql` row counts equal the database's own counts; a mutant
+  using the old schema-only flags is refused.
+- **Fresh hosted full backup taken and verified** before any remediation:
+  `Pokemonapp-private-backups/supabase/20260914T065915Z/` next to the main checkout (outside git),
+  97 migration-history rows, row counts of the ledger tables equal the live hosted counts.
+- **Hosted finance impact, measured read-only** (`scripts/finance-integrity-diagnostics.sql`,
+  run in a `READ ONLY` transaction, aggregate counts only; detectors validated first against a
+  disposable database where the real P130-01 path, a manual JPY purchase, a D1 break and a voided
+  lot with a live disposal each produced a non-zero count, and a legitimate split did not):
+  every P130-01 / P130-03 invariant count is **0**, and there are **no JPY purchases or sales**.
+  The hosted ledger currently holds no live lots, disposals, sales or openings (every purchase
+  and lot in it is voided), so **no hosted data repair is required** for P130-01/02/03. The
+  code defects remain and must still be fixed before the ledger is used in earnest.
+- Nothing was changed in finance RPCs, FX logic, migrations, the hosted database or Production.
+
+**Next (P132).** Finance remediation for P130-01 and P130-03 (`update_purchase` multi-lot
+handling + lot locking across correction RPCs), then P130-02 as one coordinated
+edge-function + SQL + client change with a DECISIONS entry. Before applying any migration to the
+hosted project: `pnpm db:backup --out-root <private root> --expect-migrations <n>` and stop unless
+it reports `BACKUP COMPLETE`. Restore remains unvalidated until P130-12 and P130-07 are done.
+
 ## P111 — Final M15 pre-hosted integration candidate (branch `feat/p111-m15-final-prehosted`,
-draft PR base `main`, NOT merged, NOT deployed)
+draft PR base `main`, NOT merged, NOT deployed) — HISTORICAL, superseded by the section above
 
 **M15 is NOT released by this session.** This is a coherent, locally-gated candidate that
 supersedes the P105/P106/P108/P109/P110 source-branch chain (PRs #82-#86) — it does not close
