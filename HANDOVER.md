@@ -4,7 +4,7 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-## Current state (P132-A, 2026-09-14) — M15 RELEASED; post-release remediation underway
+## Current state (P132, 2026-09-14) — M15 RELEASED; P130-01/P130-03 fixed; P130-02 (JPY) open
 
 **This section is the authoritative current state.** Every section below it is historical and
 describes the state at the time it was written — in particular the P111 section's "M15 is NOT
@@ -19,14 +19,17 @@ released" is superseded.
   content impact, 42 branch commits entered `main` history (P130-35).
 - **P131 (backup + read-only finance diagnostics) is released.** PR #106 squash-merged to `main`
   as `cb588c434d7975748954ad855a4d0cb05a17c82c` (tree `e34516878b7a3bc29d9ccb3957ae281fbc822fbe`,
-  identical to the green PR head; CI run 34827563743). This is the current tip of `main` and the
-  base every P132 workstream branches from (`output_132_0.txt` `PARALLEL_BASE_SHA`).
-- **Production** `https://pokeportfolio-dev.pages.dev` serves `cb588c4` (`/build-meta.json`,
-  re-verified after the P131 deploy; `deployment-check.mjs` 34/34). Scanner visual index content
-  id **`f25fc05d569b7cca`** (`/scanner-assets/visual-v1/index/current.json`, unchanged by P131 —
-  no scanner change in that release).
-- **Hosted Supabase:** **97 migrations applied, 0 pending** (`supabase migration list --linked`,
-  re-verified read-only after the P131 merge: 97 local / 97 remote / 0 mismatches).
+  identical to the green PR head; CI run 34827563743; push CI run 34832288029 green). It was the
+  base of every P132 workstream.
+- **Before P132:** Production `https://pokeportfolio-dev.pages.dev` served `cb588c4`
+  (`/build-meta.json`; `deployment-check.mjs` 34/34); scanner visual index content id
+  **`f25fc05d569b7cca`** (`/scanner-assets/visual-v1/index/current.json`); hosted Supabase **97
+  migrations applied, 0 pending**.
+- **P132** (below) adds three migrations (hosted target **100**) and no scanner or client change.
+  Its release order is: green CI on the PR head → fresh verified `pnpm db:backup` → read-only
+  diagnostics all zero → `supabase db push` (exactly the three P132 files) → merge → Production
+  deploy check. Verify the live state with `supabase migration list --linked` and
+  `/build-meta.json` rather than trusting this paragraph.
 
 **Still deferred by the owner — do not mark as passed.**
 
@@ -51,8 +54,8 @@ live in the private audit record (not in this repository). The ones that gate fu
   no restore runbook exists. **Open.** Blocked on **P130-12** (the M9 cron migration hardcodes the
   Production edge-function URL, so every migrated local/CI/restored database POSTs there every
   15 minutes — deactivate the two ingest jobs on any local stack that stays up).
-- Owner precaution until P130-01/02 are fixed: do not edit a sealed purchase after splitting its
-  intent; do not enter manual FX rates for JPY.
+- Owner precaution until P130-02 is fixed: do not enter manual FX rates for JPY. (The P130-01
+  precaution — no receipt edit after a sealed split — is lifted once P132's migrations are live.)
 
 **P131 — safety foundation (branch `fix/p131-backup-impact-foundation`, PR #106, merged as
 `cb588c4`).**
@@ -76,32 +79,39 @@ live in the private audit record (not in this repository). The ones that gate fu
   code defects remain and must still be fixed before the ledger is used in earnest.
 - Nothing was changed in finance RPCs, FX logic, migrations, the hosted database or Production.
 
-**P132 — finance remediation, split across parallel single-owner sessions from `cb588c4`
-(`output_132_0.txt`).** Session A owns `update_purchase` (P130-01 + this function's own P130-03
-slice); a separate session owns the other correction RPCs' P130-03 locking. Neither pushes,
-merges or touches the hosted database — local branches only, reconciled by a later integration
-pass. P130-02 (JPY FX) is not started by either — still open, still requires the coordinated
-edge-function + SQL + client change a DECISIONS entry described in P130's findings.
+**P132 — P130-01 and P130-03 fixed (branch `fix/p132-integrated-finance-integrity`, one PR).**
+Three workstreams ran in parallel from `cb588c4`: A (`update_purchase` multi-lot integrity), B
+(lot locking in the other correction RPCs), and C — an independent adversarial test package
+written without reading A or B. The integration combined A and B, then ran C against the result
+before writing any further fix.
 
-**P132-A (this branch, `fix/p132a-multilot-integrity`, LOCAL ONLY, not pushed, not merged) —
-`update_purchase` multi-lot integrity, done.** Reproduced P130-01 exactly against a fresh local
-stack before touching any SQL (identical numbers to the original audit: 8 live units / 90000 øre
-against a real line of 5 / 60000). Fix and full detail: D-129
-(`docs/DECISIONS.md`), FINANCIAL_MODEL.md §4.3, migration
-`supabase/migrations/20260914120000_p132_update_purchase_multilot_integrity.sql`. Short version:
-`update_purchase` now handles every live sibling lot of a line (not one arbitrary row), locks
-every live lot on the whole purchase `FOR UPDATE` in ascending id order before validating or
-writing (closing this function's P130-03 gap, proven both lock orderings with a held-lock
-two-session test), preserves each sibling's quantity and redistributes an edited line's
-attributable cost across them exactly when quantity is unchanged, and refuses a quantity change
-across multiple live siblings outright (`multi-lot-quantity-ambiguous`) rather than guessing which
-sibling it belongs to. Full verification detail, including the mutation-testing proof, is in
-`ai_outputs/Claude_outputs/output_132_a.txt`. Not yet reviewed, not yet integrated with the
-sibling P130-03 session's own branch, not yet applied to any hosted or Production database.
-
-**Before applying any migration to the hosted project** (once P132's branches are reviewed and
-integrated): `pnpm db:backup --out-root <private root> --expect-migrations <n>` and stop unless it
-reports `BACKUP COMPLETE`. Restore remains unvalidated until P130-12 and P130-07 are done.
+- **Raw A+B against C: 76/85.** Two core P130-01 cases still failed (a split line that was not the
+  purchase's last line was re-costed with another line's sibling quantities — also a raw NOT NULL
+  error — and a removed split sibling was resurrected by a price edit), plus C's extended findings.
+- **Extended findings, all reproduced and fixed:** X-1 voiding one split sibling auto-voided the
+  purchase under a live sibling (D-131); X-2 `void_opening` restored the source lot through the D1
+  trigger without locking it (stale D1 under a concurrent sale); X-3 `set_sealed_lot_intent`
+  validated stale quantity (raw 23514) and wrote before locking; X-4 a quantity edit on a line with
+  no live lot (D-130); X-5 remaining 40P01 deadlocks, from `set_sealed_lot_intent` and `void_sale`
+  writing before locking lots. `update_purchase` and `void_purchase` also re-read purchase state
+  and lot membership after locking (40001 if a concurrent split added a lot).
+- **Rules:** D-129 (live split siblings), D-130 (removed siblings stay removed; no quantity change
+  on lines with split/removed/no live lots), D-131 (sibling-aware parent auto-void); lock order in
+  DATA_MODEL.md "Ledger lock order"; FINANCIAL_MODEL.md §4.3.
+- **Migrations:** `20260914120000_p132_update_purchase_multilot_integrity.sql`,
+  `20260914121000_p132_correction_lot_locking.sql`,
+  `20260914122000_p132_additional_inventory_race_guards.sql`. All `CREATE OR REPLACE` with unchanged
+  signatures and grants; no data repair (hosted held no affected rows at P131).
+- **Tests:** permanent DB suites `tests/db/p132a_multilot_purchase_integrity.test.ts`,
+  `p132b_correction_locking.test.ts`, `p132_integration_regressions.test.ts` (CI db-tests). The
+  independent package `test/p132c-finance-regressions` (Docker, not in CI) is the adversarial gate
+  for any future change to these RPCs: default 85 tests, then `P132C_SM_COUNT=100 P132C_SM_STRICT=1`
+  and `P132C_DL_ITERATIONS=500 P132C_DL_STRICT=1`. `scripts/p132b/deadlock-campaign.ts` is a second,
+  manual concurrency campaign.
+- **Still open:** P130-02 (JPY FX) — the coordinated edge-function + SQL + client change, next.
+  Restore remains unvalidated until P130-12 and P130-07 are done. Before applying any migration to
+  the hosted project: `pnpm db:backup --out-root <private root> --expect-migrations <n>` and stop
+  unless it reports `BACKUP COMPLETE`.
 
 ## P111 — Final M15 pre-hosted integration candidate (branch `feat/p111-m15-final-prehosted`,
 draft PR base `main`, NOT merged, NOT deployed) — HISTORICAL, superseded by the section above

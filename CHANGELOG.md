@@ -10,6 +10,18 @@ they were**.
 
 ## [Unreleased]
 
+### Fixed — 2026-09-14 — Ledger integrity: split purchase lines and correction races (P132, P130-01, P130-03, D-129–D-131)
+
+- A receipt edit after a sealed-intent split no longer fabricates units or cost basis: every live
+  sibling keeps its quantity and shares the line's cost exactly; removed siblings stay removed; a
+  quantity change on a split line, a line with removed lots or a line with no live lot is refused.
+- Voiding one split sibling no longer voids the purchase while another sibling is live.
+- `update_purchase`, `void_purchase`, `void_acquisition_lot`, `remove_holdings_from_portfolio`,
+  `void_opening`, `void_sale` and `set_sealed_lot_intent` lock the lots they affect (ascending id)
+  before validating or writing: no voided lot with a live sale, no stale D1 restore, no raw
+  constraint error or deadlock under a concurrent sale.
+- Three migrations (`20260914120000`, `20260914121000`, `20260914122000`); RPC signatures unchanged.
+
 ### Fixed — 2026-09-02 — M15 scanner: evidence-aware matcher redesign closes the F-02 visual/text scoring gap; OCR confidence weighting; retrieval consistency (P88, D-102, isolated repair branch `fix/m15-p88-matcher-ocr-correctness` — draft PR #66 against PR #63's integration branch, NOT on PR #63 itself, not merged, not deployed)
 
 Redesigns `visual-evidence.ts`'s point curve (calibrated bands matching P84's real similarity
