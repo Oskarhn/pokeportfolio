@@ -165,13 +165,17 @@ abstraction (ARCHITECTURE §5) and by owning our own price history.
 | Format | SDMX-JSON or CSV |
 | Manual contract check | `node scripts/verify-norges-bank-contract.mjs` — never run in CI (M8 prompt §93); `tests/data/norges-bank.test.ts` is the deterministic regression that does run there |
 | Publication | ~16:00 CET, business days only |
-| Verified | 2026-08-16 — live request returned EUR/NOK `10.986` (2026-08-13), `10.9325` (2026-08-14). Re-verified 2026-08-24 (M8): identical values for the same dates, requested with `format=sdmx-json&startPeriod=2026-08-10&endPeriod=2026-08-14&locale=en`. Confirmed from the real response structure — not assumed — that `BASE_CUR` is the first currency in the pair and the returned number is NOK per one unit of it (`fx_rate_to_nok` directly), and that a date with no trading (weekend/holiday) simply has no observation in the series rather than a null value; the fixed captured payload and this reasoning are pinned as a regression test in `tests/data/norges-bank.test.ts`. |
+| Verified | 2026-08-16 — live request returned EUR/NOK `10.986` (2026-08-13), `10.9325` (2026-08-14). Re-verified 2026-08-24 (M8): identical values for the same dates, requested with `format=sdmx-json&startPeriod=2026-08-10&endPeriod=2026-08-14&locale=en`. Confirmed from the real response structure — not assumed — that `BASE_CUR` is the first currency in the pair, and that a date with no trading (weekend/holiday) simply has no observation in the series rather than a null value; the fixed captured payload and this reasoning are pinned as a regression test in `tests/data/norges-bank.test.ts`. |
+| UNIT_MULT (P130-02 / P134) | Re-verified live 2026-09-14: the returned number is **not** always NOK per one unit of `BASE_CUR` — it is NOK per `10^UNIT_MULT` units. Confirmed by fetching `B.EUR.NOK.SP`, `B.USD.NOK.SP` and `B.JPY.NOK.SP` directly: EUR and USD both carry the series-level attribute `UNIT_MULT: 0` ("Units" — the printed value already is NOK per 1 unit), while **JPY carries `UNIT_MULT: 2` ("Hundreds")** — a printed `6.0375` means NOK per **100** JPY, i.e. `0.060375` NOK per 1 JPY. `supabase/functions/_shared/norges-bank.ts` resolves `UNIT_MULT` from `structure.attributes.series` (by attribute `id`, not by array position) and divides every observation by `10^UNIT_MULT` before returning it, so every caller and `fx_rates.rate` always hold the canonical per-unit `fx_rate_to_nok` shape (FINANCIAL_MODEL.md §7) regardless of which currency Norges Bank happens to rescale. See `tests/data/norges-bank.test.ts` for the EUR/USD/JPY fixtures and the generic-multiplier/malformed/missing-metadata regression tests. |
 
 Official central-bank reference rates. Business-day only, so the resolver falls back to the most
 recent prior date and records which date was used. Manual per-purchase override supported
 because a card statement's effective rate differs from the reference rate.
 
-Ingested daily for EUR, USD, GBP → NOK.
+Ingested daily for EUR, USD → NOK (on demand for any other supported currency, incl. JPY and GBP,
+via `fetch-fx-rate` when a purchase/sale actually uses it — `ingest-fx`'s scheduled currency list
+is narrower than this sentence previously implied; not changed by P134, noted here only because it
+was found stale while re-verifying this section).
 
 ---
 

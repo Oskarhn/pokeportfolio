@@ -434,7 +434,15 @@ begin
     ('routine', 'void_opening(uuid, text)', 'authenticated', 'EXECUTE'),
     ('routine', 'reconcile_opening_cost(uuid, uuid)', 'authenticated', 'EXECUTE'),
     ('routine', 'get_opening(uuid)', 'authenticated', 'EXECUTE'),
-    ('routine', 'list_opening_sources(uuid)', 'authenticated', 'EXECUTE')
+    ('routine', 'list_opening_sources(uuid)', 'authenticated', 'EXECUTE'),
+    -- P133 (20260915120000, P130-02/D-132): the currency-exponent lookup and the canonical
+    -- exponent-aware NOK-conversion helper. Granted to authenticated because create_purchase/
+    -- update_purchase are SECURITY INVOKER and reach these as the caller's own role, and because
+    -- the two frozen-rate CHECK constraints on purchases/sales evaluate under whichever role
+    -- performs the write. Also granted to service_role (not checked by this audit, which covers
+    -- only anon/authenticated) for the same CHECK-constraint reason on a direct service-role write.
+    ('routine', 'currency_minor_unit_exponent(text)', 'authenticated', 'EXECUTE'),
+    ('routine', 'money_minor_to_nok_minor(bigint, text, numeric)', 'authenticated', 'EXECUTE')
   ),
 
   -- M7: the expected PUBLIC-EXECUTE surface for every routine in `public` is empty. No project
