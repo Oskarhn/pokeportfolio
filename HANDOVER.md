@@ -4,7 +4,7 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-## Current state (P134, 2026-09-14) — M15 RELEASED; P130-01/P130-03 fixed; P130-02 (JPY) split across parallel P133/P134/P135 workstreams, not yet integrated
+## Current state (P136, 2026-09-15) — M15 RELEASED; P130-01/P130-03 fixed; P130-02 (JPY) integrated, local gates green, hosted release pending
 
 **This section is the authoritative current state.** Every section below it is historical and
 describes the state at the time it was written — in particular the P111 section's "M15 is NOT
@@ -54,8 +54,10 @@ live in the private audit record (not in this repository). The ones that gate fu
   no restore runbook exists. **Open.** Blocked on **P130-12** (the M9 cron migration hardcodes the
   Production edge-function URL, so every migrated local/CI/restored database POSTs there every
   15 minutes — deactivate the two ingest jobs on any local stack that stays up).
-- Owner precaution until P130-02 is fixed: do not enter manual FX rates for JPY. (The P130-01
-  precaution — no receipt edit after a sealed split — is lifted once P132's migrations are live.)
+- Owner precaution until P130-02's fix is actually LIVE on hosted/Production (fixed in the P136
+  candidate below, not yet released): do not enter a JPY purchase or sale, manual or automatic. (The
+  P130-01 precaution — no receipt edit after a sealed split — is lifted once P132's migrations are
+  live.)
 
 **P131 — safety foundation (branch `fix/p131-backup-impact-foundation`, PR #106, merged as
 `cb588c4`).**
@@ -113,30 +115,64 @@ before writing any further fix.
   the hosted project: `pnpm db:backup --out-root <private root> --expect-migrations <n>` and stop
   unless it reports `BACKUP COMPLETE`.
 
-**P133/P134/P135 — P130-02 (JPY FX), split across three parallel single-owner sessions from
-`cff3bbd` (the P132 merge commit), not yet integrated.** P134 (this branch,
-`fix/p134-norges-bank-fx-normalization`, LOCAL ONLY, not pushed) owns the provider/ingestion half:
+**P136 — P130-02 (JPY FX) integrated (branch `fix/p136-integrated-jpy-fx-semantics`, from
+`cff3bbd`).** Combines three independent parallel workstreams — P133 (SQL currency-exponent fix),
+P134 (Norges Bank `UNIT_MULT` normalization), P135 (independent adversarial audit and oracle) —
+each built and locally verified in isolation without reading the others' code, then integrated and
+cross-checked here. See D-132 (docs/DECISIONS.md) for the single, reconciled decision covering both
+fixes; `ai_outputs/Claude_outputs/output_133.txt`/`output_134.txt`/`output_135.txt` for each
+workstream's own full account.
 
-- **Root cause confirmed live 2026-09-14** against `B.EUR.NOK.SP`/`B.USD.NOK.SP`/`B.JPY.NOK.SP`:
-  Norges Bank's series-level `UNIT_MULT` attribute is `0` ("Units") for EUR and USD but `2`
-  ("Hundreds") for JPY — a printed `6.0375` is NOK per **100** JPY, not per 1 JPY.
-  `supabase/functions/_shared/norges-bank.ts` ignored this attribute entirely.
-- **Fix:** `norges-bank.ts` now resolves `UNIT_MULT` from `structure.attributes.series` (by
-  attribute `id`, not a fixed position) and divides every observation by `10^UNIT_MULT` with exact
-  decimal-string arithmetic (never `Number` division) before returning it, so `fetchNorgesBankRates`
-  — shared by both `fetch-fx-rate` (on-demand/historical) and `ingest-fx` (scheduled EUR/USD) —
-  always returns the canonical NOK-per-1-unit rate. Fails closed (`NorgesBankError`) on a malformed
-  or missing `UNIT_MULT` rather than assuming 0. See D-132.
-- **No SQL or client change.** P133 owns the SQL currency-exponent fix this pairs with; P135 owns
-  the client/data-migration audit. **Deploying only one half is unsafe** — see D-132's Consequences
-  and `output_134.txt`'s `SAFE_DEPLOYMENT_ORDER_OPTIONS` for the coordinated-release requirement
-  P136 must follow.
-- **Tests:** `tests/data/norges-bank.test.ts` — real captured EUR/USD/JPY fixtures (JPY confirms
-  `6.0375` → `0.060375`), a fabricated-currency generic-multiplier case (catches a JPY-keyed special
-  case instead of reading provider metadata), malformed/missing-`UNIT_MULT` fail-closed cases, and
-  decimal-precision cases proving no float-induced rounding. Full detail, mutation-testing evidence
-  and the P136 hosted-diagnostic plan for existing `fx_rates` JPY rows:
-  `ai_outputs/Claude_outputs/output_134.txt`.
+- **The bug, and why it hid.** Two independent defects: (1) every SQL conversion to NOK
+  (`create_purchase`/`update_purchase`/`create_sale`/`update_sale`/`sales_summary`/both frozen-rate
+  CHECK constraints) assumed the source currency shared NOK's minor-unit exponent (2) — wrong for
+  JPY (exponent 0); (2) the Norges Bank parser (`supabase/functions/_shared/norges-bank.ts`) ignored
+  the SDMX `UNIT_MULT` series attribute (JPY: 2, "Hundreds" — a printed `6.0375` is NOK per **100**
+  JPY, not per 1). For every other currency this product has used (NOK/EUR/USD/GBP, all exponent 2
+  and `UNIT_MULT` 0) both defects are numerically invisible. For JPY the two defects **cancelled on
+  the automatic path only** (accidentally correct `total_nok_minor`, but a semantically wrong stored
+  rate); a manual JPY rate hit only the SQL defect and was stored ~100x too low.
+- **The fix.** (1) One canonical SQL helper, `money_minor_to_nok_minor`, built on a
+  `currency_minor_unit_exponent` lookup mirroring `src/domain/currency.ts`, replaces every inline
+  conversion; unsupported currencies now fail closed instead of assuming exponent 2 (incidentally
+  closes P130-18's currency dimension). (2) `norges-bank.ts` resolves `UNIT_MULT` from
+  `structure.attributes.series` by attribute id (never a fixed position) and normalizes every
+  observation by exact decimal-string arithmetic before it is ever cached or returned — the one
+  place in the system permitted to know Norges Bank's wire format. Both fixes are numerically
+  byte-identical to the pre-fix behaviour for every currency except JPY.
+- **Partial deployment of only one half is unsafe and was proven so, not just asserted:** with the
+  parser fixed and SQL left old, an auto-sourced JPY conversion becomes ~100x too LOW; with SQL
+  fixed and the parser left old, ~100x too HIGH. Both directions were reproduced live against the
+  actual integrated tree (temporarily reverting one half at a time, confirming the exact wrong
+  value, then restoring) — this is why the two fixes ship as one migration + one edge-function
+  redeploy in the same coordinated window, never separately.
+- **P135's independent contribution, kept:** a from-scratch reference oracle
+  (`tests/data/p135/reference/fx-oracle.ts`, zero imports from `src/`/`supabase/`) and its own test
+  suite, plus SQL reproduction/deploy-matrix/hosted-diagnostic scripts
+  (`scripts/p135/*.sql`) — used as a SECOND, fully independent check alongside P133's own parity
+  test against `src/domain/fx.ts`. P135's one baseline-reproduction test that pinned the OLD
+  (buggy) parser's raw output was deliberately dropped during integration, since it would fail once
+  P134's real fix landed; P134's own fixture tests already cover the fixed-parser JPY case.
+- **New integration test** (`tests/db/p136_jpy_fx_integration.test.ts`): the REAL Norges Bank parser
+  output (mocked network only) feeds the REAL `create_purchase`/`create_sale` RPCs, asserted against
+  P135's independent oracle — proving the two independently-built fixes actually agree once wired
+  together, not just each own their own unit tests.
+- **Local gates, this session, fresh reset:** `pnpm typecheck`/`lint` (0 errors)/`format:check` all
+  clean; `pnpm test` 1567/1568 (1 pre-existing skip); `pnpm test:db` 687/688 (1 pre-existing skip,
+  102 migrations); M12 independent 44/2 skipped; M13 independent 62/62; `tests/m16-independent`
+  53/53; grant-audit clean, hostile-grant convergence proven both directions; finance diagnostics
+  all-zero (READ ONLY); `pnpm build` green; Browser E2E 240 passed/96 skipped. Mutation evidence:
+  P133's own campaign (exponent-2 special case, lock-loop removal, rounding-direction flip — all
+  killed) and P134's own campaign (ignore `UNIT_MULT`, JPY-keyed special case, wrong shift direction
+  — all killed) independently re-verified by diff review; this session additionally proved the two
+  partial-deploy directions above.
+- **Migrations:** `20260915120000_p133_currency_exponent_fx_conversion.sql`,
+  `20260915120010_p133_privilege_baseline.sql` (102 local migrations total). RPC signatures
+  unchanged; two new internal helper functions granted to `authenticated`/`service_role` only.
+- **Not yet done:** pushed branch, PR, CI, or ANY hosted/Production action. Hosted diagnostics must
+  be re-run fresh (read-only) before relying on P131/P132's "zero JPY rows" snapshot. See
+  `ai_outputs/Claude_outputs/output_136.txt` for the full session account and the coordinated
+  release plan once the owner authorizes proceeding past this point.
 
 ## P111 — Final M15 pre-hosted integration candidate (branch `feat/p111-m15-final-prehosted`,
 draft PR base `main`, NOT merged, NOT deployed) — HISTORICAL, superseded by the section above

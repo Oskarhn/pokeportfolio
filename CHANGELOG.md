@@ -10,6 +10,26 @@ they were**.
 
 ## [Unreleased]
 
+### Fixed — 2026-09-15 — JPY FX conversion: SQL currency-exponent awareness and Norges Bank UNIT_MULT normalization (P136, integrating P133/P134/P135, P130-02, D-132)
+
+- `fx_rate_to_nok` means NOK per one MAJOR unit of the source currency everywhere it is used —
+  automatic or manual, for every currency — with no JPY exception. Two independent defects that
+  happened to cancel for automatic JPY conversions are both fixed together (deploying only one is
+  unsafe — see D-132):
+  - SQL: every conversion to NOK (`create_purchase`, `update_purchase`, `create_sale`,
+    `update_sale`, `sales_summary`, and both frozen-rate CHECK constraints) now goes through one
+    canonical, currency-exponent-aware helper (`money_minor_to_nok_minor`) instead of assuming
+    every currency shares NOK's two-decimal minor unit. NOK/EUR/USD/GBP are numerically unchanged;
+    a JPY conversion is no longer ~100x too small.
+  - Norges Bank ingestion (`supabase/functions/_shared/norges-bank.ts`, shared by `fetch-fx-rate`
+    and `ingest-fx`) now resolves the SDMX `UNIT_MULT` series attribute and normalizes every
+    observation to a true per-unit rate before it is cached or returned, instead of passing through
+    Norges Bank's raw per-`10^UNIT_MULT` figure unchanged.
+  - An unsupported currency code now fails closed with a clear error instead of silently converting
+    under the wrong exponent (incidentally closes P130-18's currency dimension; its date-range
+    dimension is unrelated and remains open).
+- Two migrations (`20260915120000`, `20260915120010`); RPC signatures unchanged.
+
 ### Fixed — 2026-09-14 — Ledger integrity: split purchase lines and correction races (P132, P130-01, P130-03, D-129–D-131)
 
 - A receipt edit after a sealed-intent split no longer fabricates units or cost basis: every live
