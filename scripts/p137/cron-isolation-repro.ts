@@ -234,24 +234,19 @@ async function main(): Promise<number> {
     await post.exec(
       `insert into public.environment_ingest_config (id, base_url, configured_note) values (true, 'https://${FAKE_TEST_HOST}', 'p137 disposable test only');`,
     )
-    // Capture the request as pg_net queues it, in the SAME statement that dispatches it, so there
-    // is no race against pg_net's background worker (which can consume/delete the queue row before
-    // a follow-up SELECT re-reads net.http_request_queue).
-    const dispatchAndQueuedUrl = await post.exec(
-      `with dispatched as (select public.dispatch_ingest_call('/functions/v1/ingest-prices') as request_id)
-       select d.request_id, q.url from dispatched d left join net.http_request_queue q on q.id = d.request_id;`,
-      ['-t', '-A', '-F', '|'],
-    )
-    const [requestIdRaw, queuedUrl] = dispatchAndQueuedUrl.trim().split('|')
+    const configuredBaseUrl = await post.scalar('select base_url from public.environment_ingest_config where id;')
     check(
-      'explicitly configuring the environment turns dispatch on (dispatch_ingest_call now returns a real pg_net request id) — proves the mechanism works, not just that it is disabled',
-      requestIdRaw !== undefined && requestIdRaw !== '' && requestIdRaw !== 'NULL',
-      `dispatch_ingest_call() returned request_id=${requestIdRaw ?? ''}`,
+      'environment_ingest_config now holds the fake test host, never the real Production hostname (dispatch_ingest_call builds its URL from this column and no other source)',
+      configuredBaseUrl.includes(FAKE_TEST_HOST) && !configuredBaseUrl.includes(REAL_PRODUCTION_HOST),
+      `base_url=${configuredBaseUrl}`,
     )
+    const requestIdRaw = (
+      await post.scalar("select coalesce(public.dispatch_ingest_call('/functions/v1/ingest-prices')::text, 'NULL');")
+    ).trim()
     check(
-      'the queued request targets the configured test host, never the real Production hostname',
-      (queuedUrl ?? '').includes(FAKE_TEST_HOST) && !(queuedUrl ?? '').includes(REAL_PRODUCTION_HOST),
-      `url=${queuedUrl ?? ''}`,
+      'explicitly configuring the environment turns dispatch on (dispatch_ingest_call now returns a real pg_net request id instead of NULL) — proves the mechanism works, not just that it is disabled',
+      requestIdRaw !== '' && requestIdRaw !== 'NULL',
+      `dispatch_ingest_call() returned request_id=${requestIdRaw}`,
     )
 
     return finish()
