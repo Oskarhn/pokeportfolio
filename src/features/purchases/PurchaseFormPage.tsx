@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createManualCard } from '../../data/collection'
@@ -97,6 +97,18 @@ export function PurchaseFormPage() {
     fxRate,
   })
 
+  // P130-05: a manual card line's definition must be created AT MOST ONCE per logical purchase
+  // attempt, not once per submit attempt. Before this cache existed, a retry after a lost response
+  // (the same failure mode idempotencyKey exists to survive) called createManualCard again with a
+  // fresh row before ever reaching create_purchase's idempotent boundary — the second attempt's
+  // p_idempotency_key matched the first, but its manual_card_id didn't, so the server correctly
+  // refused it as idempotency-key-reuse, leaving the first manual card orphaned from any purchase
+  // still visible to the user as a raw error. Keyed by `${line.id}:${name}` (not by line id alone)
+  // so a genuine identity change — the user editing the manual card's name before retrying — still
+  // resolves a new id rather than silently reusing a stale one; mirrors
+  // OpeningsWizardPage's `resolvedManualCards` (P56 §10).
+  const resolvedManualCards = useRef(new Map<string, string>())
+
   const retailers = useQuery({ queryKey: ['retailers'], queryFn: listRetailers })
 
   const createRetailerMutation = useMutation({
@@ -182,9 +194,17 @@ export function PurchaseFormPage() {
 
         let manualCardId: string | undefined
         if (draft.lineType === 'card' && draft.cardMode === 'manual') {
-          if (!draft.manualCardName.trim()) throw new Error('Enter a name for the manual card.')
-          const created = await createManualCard({ name: draft.manualCardName.trim() })
-          manualCardId = created.id
+          const trimmedName = draft.manualCardName.trim()
+          if (!trimmedName) throw new Error('Enter a name for the manual card.')
+          const cacheKey = `${draft.id}:${trimmedName}`
+          const cached = resolvedManualCards.current.get(cacheKey)
+          if (cached) {
+            manualCardId = cached
+          } else {
+            const created = await createManualCard({ name: trimmedName })
+            manualCardId = created.id
+            resolvedManualCards.current.set(cacheKey, manualCardId)
+          }
         }
         if (draft.lineType === 'card' && draft.cardMode === 'catalog' && !draft.cardVariantId) {
           throw new Error('Choose a card from the catalog, or switch to manual entry.')

@@ -1576,6 +1576,7 @@ export type Database = {
           gross_minor: number
           id: string
           idempotency_key: string
+          idempotency_request: Json | null
           marketplace: string | null
           net_proceeds_minor: number
           net_proceeds_nok_minor: number
@@ -1599,6 +1600,7 @@ export type Database = {
           gross_minor: number
           id?: string
           idempotency_key: string
+          idempotency_request?: Json | null
           marketplace?: string | null
           net_proceeds_minor: number
           net_proceeds_nok_minor: number
@@ -1622,6 +1624,7 @@ export type Database = {
           gross_minor?: number
           id?: string
           idempotency_key?: string
+          idempotency_request?: Json | null
           marketplace?: string | null
           net_proceeds_minor?: number
           net_proceeds_nok_minor?: number
@@ -2071,6 +2074,7 @@ export type Database = {
           gross_minor: number
           id: string
           idempotency_key: string
+          idempotency_request: Json | null
           marketplace: string | null
           net_proceeds_minor: number
           net_proceeds_nok_minor: number
@@ -2658,6 +2662,7 @@ export type Database = {
           gross_minor: number
           id: string
           idempotency_key: string
+          idempotency_request: Json | null
           marketplace: string | null
           net_proceeds_minor: number
           net_proceeds_nok_minor: number

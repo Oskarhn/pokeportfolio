@@ -102,6 +102,10 @@ export function AddSealedProductPage() {
   const [notes, setNotes] = useState('')
   const [error, setError] = useState<string | null>(null)
 
+  // P130-04: same fixed-per-mount, retry-stable idempotency key as AddToCollectionPage's own fix —
+  // see that page's comment for the full rationale.
+  const [clientRequestKey] = useState(() => crypto.randomUUID())
+
   const addMutation = useMutation({
     mutationFn: addCardAcquisition,
     onSuccess: async () => {
@@ -238,6 +242,7 @@ export function AddSealedProductPage() {
         storageLocationId: storageLocationId !== '' ? storageLocationId : undefined,
         isFavorite,
         holdingNotes: notes.trim() !== '' ? notes.trim() : undefined,
+        clientRequestKey,
       })
     } catch (mutationError) {
       setError(

@@ -80,6 +80,13 @@ export function AddToCollectionPage() {
   const [notes, setNotes] = useState('')
   const [error, setError] = useState<string | null>(null)
 
+  // P130-04: minted once per mount and reused for every retry of this same logical submission
+  // (never regenerated merely because an error was shown) — identical contract to
+  // PurchaseFormPage/SaleFormPage's own idempotencyKey (P108/P107 §17). add_card_acquisition
+  // already accepts and honours clientRequestKey server-side (D-096); this page just never sent
+  // one, so a retry after a lost response had no way to be recognised as the same request.
+  const [clientRequestKey] = useState(() => crypto.randomUUID())
+
   const addMutation = useMutation({
     mutationFn: addCardAcquisition,
     onSuccess: async () => {
@@ -210,6 +217,7 @@ export function AddToCollectionPage() {
         acquiredOn,
         storageLocationId: storageLocationId !== '' ? storageLocationId : undefined,
         manualValueMinor,
+        clientRequestKey,
       })
     } catch (mutationError) {
       setError(mutationError instanceof Error ? mutationError.message : 'Could not save this card.')
