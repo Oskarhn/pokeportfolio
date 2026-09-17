@@ -101,29 +101,33 @@ grant select, insert, update on public.environment_ingest_config to service_role
 -- ── 2. The only place the ingest base URL is ever assembled ──────────────────────────────────
 
 create function public.dispatch_ingest_call(p_function_path text)
-returns void
+returns bigint
 language plpgsql
 set search_path = ''
 as $$
 declare
   v_base_url text;
   v_secret text;
+  v_request_id bigint;
 begin
   select c.base_url into v_base_url from public.environment_ingest_config c where c.id;
 
   if v_base_url is null then
     -- Fail closed: no configured target in this environment (the default for every fresh,
     -- restored, CI or local database). No net.http_post, no queued request, nothing to redirect.
+    -- Returns null (never a request id) so a caller can tell "disabled" from "dispatched" without
+    -- racing pg_net's background worker, which can consume a queued row before a caller re-reads
+    -- net.http_request_queue.
     raise log 'dispatch_ingest_call: no environment_ingest_config.base_url set — % not dispatched',
       p_function_path;
-    return;
+    return null;
   end if;
 
   select decrypted_secret into v_secret
   from vault.decrypted_secrets
   where name = 'price_sync_secret';
 
-  perform net.http_post(
+  select net.http_post(
     url := v_base_url || p_function_path,
     headers := jsonb_build_object(
       'Content-Type', 'application/json',
@@ -131,7 +135,9 @@ begin
     ),
     body := '{}'::jsonb,
     timeout_milliseconds := 55000
-  );
+  ) into v_request_id;
+
+  return v_request_id;
 end;
 $$;
 

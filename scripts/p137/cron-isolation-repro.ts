@@ -223,30 +223,35 @@ async function main(): Promise<number> {
       postConfigRows === 0,
       `rows=${postConfigRows}`,
     )
-    await post.exec('select public.dispatch_ingest_call(\'/functions/v1/ingest-prices\');')
-    const postQueueAfterUnconfigured = Number(await post.scalar('select count(*) from net.http_request_queue;'))
+    const unconfiguredResult = (await post.scalar("select coalesce(public.dispatch_ingest_call('/functions/v1/ingest-prices')::text, 'NULL');")).trim()
     check(
-      'unconfigured environment: calling the dispatcher queues NOTHING (fails closed before net.http_post)',
-      postQueueAfterUnconfigured === 0,
-      `net.http_request_queue rows=${postQueueAfterUnconfigured}`,
+      'unconfigured environment: calling the dispatcher returns NULL — no net.http_post call was ever made (fails closed)',
+      unconfiguredResult === 'NULL',
+      `dispatch_ingest_call() returned ${unconfiguredResult}`,
     )
 
     console.log('\n=== PHASE 3: post-fix, environment explicitly configured (non-production, non-existent test host) ===')
     await post.exec(
       `insert into public.environment_ingest_config (id, base_url, configured_note) values (true, 'https://${FAKE_TEST_HOST}', 'p137 disposable test only');`,
     )
-    await post.exec("select public.dispatch_ingest_call('/functions/v1/ingest-prices');")
-    const postQueueAfterConfigured = Number(await post.scalar('select count(*) from net.http_request_queue;'))
-    check(
-      'explicitly configuring the environment turns dispatch on (a request is now queued) — proves the mechanism works, not just that it is disabled',
-      postQueueAfterConfigured === 1,
-      `net.http_request_queue rows=${postQueueAfterConfigured}`,
+    // Capture the request as pg_net queues it, in the SAME statement that dispatches it, so there
+    // is no race against pg_net's background worker (which can consume/delete the queue row before
+    // a follow-up SELECT re-reads net.http_request_queue).
+    const dispatchAndQueuedUrl = await post.exec(
+      `with dispatched as (select public.dispatch_ingest_call('/functions/v1/ingest-prices') as request_id)
+       select d.request_id, q.url from dispatched d left join net.http_request_queue q on q.id = d.request_id;`,
+      ['-t', '-A', '-F', '|'],
     )
-    const queuedUrl = await post.scalar('select url from net.http_request_queue limit 1;')
+    const [requestIdRaw, queuedUrl] = dispatchAndQueuedUrl.trim().split('|')
+    check(
+      'explicitly configuring the environment turns dispatch on (dispatch_ingest_call now returns a real pg_net request id) — proves the mechanism works, not just that it is disabled',
+      requestIdRaw !== undefined && requestIdRaw !== '' && requestIdRaw !== 'NULL',
+      `dispatch_ingest_call() returned request_id=${requestIdRaw ?? ''}`,
+    )
     check(
       'the queued request targets the configured test host, never the real Production hostname',
-      queuedUrl.includes(FAKE_TEST_HOST) && !queuedUrl.includes(REAL_PRODUCTION_HOST),
-      `url=${queuedUrl}`,
+      (queuedUrl ?? '').includes(FAKE_TEST_HOST) && !(queuedUrl ?? '').includes(REAL_PRODUCTION_HOST),
+      `url=${queuedUrl ?? ''}`,
     )
 
     return finish()
