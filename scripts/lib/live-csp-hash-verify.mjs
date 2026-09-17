@@ -86,14 +86,31 @@ export function hashScriptForCsp(scriptText) {
   return `'sha256-${createHash('sha256').update(scriptText, 'utf8').digest('base64')}'`
 }
 
-/** Parses a serialized CSP into directive-name -> source-expression-token arrays (token-level,
- *  matching deployment-check.mjs's own parser — substring checks are meaningless here). */
+/**
+ * Parses a serialized CSP into directive-name -> source-expression-token arrays (token-level:
+ * substring checks are meaningless here, e.g. `'wasm-unsafe-eval'` contains the substring
+ * `unsafe-eval`).
+ *
+ * FIRST occurrence of a duplicated directive name wins (P130-27, P139 fail-closed contract).
+ * Per the CSP3 spec, when a directive is serialized more than once in a single policy, a
+ * browser enforces only the FIRST instance and silently ignores every later one — this is
+ * CSP's actual security-relevant behaviour, not an edge case. A naive `Map.set()` per token
+ * group keeps whichever occurrence is LAST in the string, which is backwards: a policy with a
+ * safe first `script-src` and a broken/permissive second one (attacker-injected duplicate,
+ * build-tool bug, or a header-merge artifact — Cloudflare Pages merges header rules from every
+ * matching path pattern, vite.config.ts's own _headers comment) is enforced SAFELY by every
+ * real browser but would be verified against the unsafe SECOND directive by a last-wins parser,
+ * reporting a false PASS for a live vulnerability. Keeping the first occurrence and ignoring
+ * later ones makes this verifier agree with what a browser actually does.
+ */
 export function parseCspDirectives(csp) {
   const directives = new Map()
   for (const part of csp.split(';')) {
     const tokens = part.trim().split(/\s+/).filter(Boolean)
     if (tokens.length === 0) continue
-    directives.set(tokens[0], tokens.slice(1))
+    const name = tokens[0]
+    if (directives.has(name)) continue // first occurrence wins — see doc comment above
+    directives.set(name, tokens.slice(1))
   }
   return directives
 }

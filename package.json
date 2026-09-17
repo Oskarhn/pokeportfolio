@@ -22,6 +22,7 @@
     "test:db": "vitest run --config vitest.db.config.ts",
     "test:m12-adversarial": "vitest run --config test/m12-independent-adversarial/vitest.config.ts",
     "test:m13-adversarial": "vitest run --config test/m13-independent-adversarial/vitest.config.ts",
+    "test:m16-adversarial": "vitest run --config tests/m16-independent/vitest.config.ts",
     "test:e2e": "playwright test",
     "check": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test",
     "check:links": "node scripts/check-links.mjs",

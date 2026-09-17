@@ -54,6 +54,23 @@ jobs:
           VITE_SUPABASE_URL: http://127.0.0.1:54321
           VITE_SUPABASE_PUBLISHABLE_KEY: ci-placeholder-not-a-key
 
+      # P130-27/P130-28/P139: local-artifact release verifiers that were never wired into CI —
+      # both are pure filesystem checks against dist/ from the build above, no network, seconds
+      # to run. Static/local mode only (no DEPLOYMENT_URL/live SUPABASE_URL): the live-deployment
+      # half of each (Cloudflare header/CSP checks, robots.txt/sitemap.xml live fetch) stays a
+      # manual post-deploy step — see docs/DEVELOPMENT.md §9 and scripts/deployment-check.mjs's
+      # own header comment — because CI never has a real deployment or a real Supabase project to
+      # point at (docs/TESTING.md §10). SUPABASE_URL is set here to exactly the placeholder this
+      # job's own build used, so the platform verifier's structural connect-src check is exercised
+      # for real rather than skipped.
+      - name: Platform build verifier (dist/_headers, dist/sw.js artefact gate)
+        run: node scripts/verify-scanner-platform-build.mjs
+        env:
+          SUPABASE_URL: http://127.0.0.1:54321
+
+      - name: Link/route checker (robots.txt/sitemap.xml/PUBLIC_ROUTES three-way consistency, static mode)
+        run: node scripts/check-links.mjs
+
       - name: Install Playwright browsers
         run: pnpm exec playwright install --with-deps chromium webkit
 
@@ -177,6 +194,29 @@ jobs:
       - name: Database and authorization tests
         run: pnpm test:db
 
+      # P130-28/P139: real, signed-in, UI-driven authenticated form behavior (TESTING.md §6b, P94)
+      # never ran anywhere but by hand before this — the placeholder-backend suite in build-and-
+      # test deliberately never touches a real Supabase project (docs/TESTING.md §6). This job
+      # already has the one thing that infrastructure needs: a fresh, freshly-migrated local
+      # Supabase stack on Docker, with SUPABASE_URL/ANON_KEY/SERVICE_ROLE_KEY already exported
+      # above. Chromium only — the authenticated project only registers `desktop-chromium-
+      # authenticated` (playwright.config.ts), so webkit is never needed here.
+      - name: Install Playwright (chromium only, for authenticated E2E)
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Authenticated E2E (real sign-in, real data, real Supabase — TESTING.md §6b)
+        run: pnpm exec playwright test --project desktop-chromium-authenticated
+        env:
+          PLAYWRIGHT_AUTHENTICATED_E2E: '1'
+
+      - name: Upload authenticated-E2E Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-authenticated
+          path: playwright-report
+          retention-days: 7
+
       # The independently written M12 adversarial contract package (test/m12-independent-adversarial/,
       # authored implementation-blind on test/m12-independent-adversarial) judged against this same
       # ephemeral stack. Two steps, both mandatory: the standalone strict typecheck of the package,
@@ -242,6 +282,20 @@ jobs:
 
       - name: Independent M13 adversarial suite (DB-gated execution)
         run: pnpm test:m13-adversarial
+
+      # The independently written M16 (Openings) adversarial contract package
+      # (tests/m16-independent/, P52, authored implementation-blind against the canonical docs
+      # without reading the M16 implementation branch) — P130-28 found this suite existed but
+      # never ran anywhere except by hand. No separate typecheck step: unlike test/m12-/m13-
+      # independent-adversarial (which live under test/, outside every tsconfig's include list),
+      # tests/m16-independent/ is already covered by tsconfig.app.json's "tests" include, so the
+      # build-and-test job's own Typecheck step already gates it. Every DB-gated case here is
+      # IMPLEMENTATION_GATED (see the package's README "Case classification" table): it discovers
+      # the M16 surface at runtime through PostgREST's own OpenAPI description and fails loudly as
+      # "[M16 CONTRACT] ..." on a divergence rather than silently loosening an assertion — it does
+      # not silently skip just because M16 exists, only if the surface were ever removed.
+      - name: Independent M16 adversarial suite (DB-gated execution)
+        run: pnpm test:m16-adversarial
 
       # M13 export scale audit (prompt §24): seeds a ~10k-lot synthetic account and times the
       # real client-side export pipeline end to end under the owner JWT. Opt-in env gate; the

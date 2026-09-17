@@ -22,7 +22,8 @@
  * Reads nothing but public responses. No key, no session, no credential of any kind — so it can be
  * run against any environment by anyone, and there is no excuse for skipping it.
  */
-import { verifyLiveCspHash } from './lib/live-csp-hash-verify.mjs'
+import { verifyLiveCspHash, parseCspDirectives } from './lib/live-csp-hash-verify.mjs'
+import { summarizeResults } from './lib/verifier-summary.mjs'
 
 const site = (process.env.DEPLOYMENT_URL ?? '').replace(/\/+$/, '')
 const supabaseUrl = process.env.SUPABASE_URL
@@ -61,20 +62,10 @@ async function mapWithConcurrency(items, limit, fn) {
   return results
 }
 
-/**
- * Parses a serialized Content-Security-Policy into directive-name → token arrays. Token-level,
- * because substring tests are meaningless here: `'wasm-unsafe-eval'` contains the substring
- * `unsafe-eval`, so "does NOT include 'unsafe-eval'" can only be asserted per whole token.
- */
-function cspDirectives(csp) {
-  const directives = new Map()
-  for (const part of csp.split(';')) {
-    const tokens = part.trim().split(/\s+/).filter(Boolean)
-    if (tokens.length === 0) continue
-    directives.set(tokens[0], tokens.slice(1))
-  }
-  return directives
-}
+// CSP directive parsing lives in lib/live-csp-hash-verify.mjs (single source of truth, shared
+// with verify-scanner-platform-build.mjs — see that module's doc comment for the first-occurrence-
+// wins fail-closed contract, P130-27/P139).
+const cspDirectives = parseCspDirectives
 
 console.log(`\n— ${site} —\n`)
 
@@ -138,8 +129,16 @@ record(
   const deployed = found[0]
   if (deployed) {
     try {
-      const probe = await fetch(`${deployed}/rest/v1/`)
-      record('  …and that project resolves', probe.status > 0, `${deployed} → HTTP ${probe.status}`)
+      const probe = await fetch(`${deployed}/rest/v1/`, { signal: AbortSignal.timeout(15000) })
+      // A completed fetch() always carries a real HTTP status code (100-599) here — a network
+      // failure rejects the promise and is handled in the catch below, never resolves with
+      // status 0. `probe.status > 0` was therefore always true whenever this line ran at all
+      // (P130-27/P139: a check whose predicate cannot be false is a vacuous pass, the same
+      // failure class as counting status 0 as success). Asserting a well-formed HTTP status
+      // code is the actual, checkable claim "this origin answered like a real HTTP server."
+      const isRealHttpStatus =
+        Number.isInteger(probe.status) && probe.status >= 100 && probe.status < 600
+      record('  …and that project resolves', isRealHttpStatus, `${deployed} → HTTP ${probe.status}`)
     } catch (error) {
       record(
         '  …and that project resolves',
@@ -370,9 +369,21 @@ const scannerCapable =
   )
 }
 
-const failed = results.filter((r) => !r.pass)
-console.log(`\n${results.length - failed.length}/${results.length} checks passed`)
-if (failed.length) {
-  console.log(`FAILED: ${failed.map((r) => r.name).join(', ')}`)
-  process.exitCode = 1
+const summary = summarizeResults(results)
+if (summary.ranNothing) {
+  // Unreachable via any flag this script exposes today, but P130-27/P139's fail-closed contract
+  // applies to every verifier uniformly: a run that recorded zero checks must never report
+  // success just because there was nothing in `failed` to find.
+  console.log('\nFAIL: no checks were recorded — this run proves nothing')
+} else {
+  console.log(`\n${String(summary.passedCount)}/${String(summary.meaningfulCount)} checks passed`)
+  if (summary.failed.length) {
+    console.log(
+      `FAILED: ${results
+        .filter((r) => !r.pass)
+        .map((r) => r.name)
+        .join(', ')}`,
+    )
+  }
 }
+process.exitCode = summary.ok ? 0 : 1
