@@ -14,6 +14,8 @@ import { LINE_TYPE_LABEL } from './labels'
 import { at } from './util'
 import { useUnsavedWorkSnapshot } from '../../platform/unsaved-work-registry'
 import { localTodayIso } from '../../platform/local-date'
+import { useEntityKeyReset } from '../../platform/entity-key-change-tracker'
+import { useAuth } from '../../auth/useAuth'
 import {
   addPurchaseLine,
   createInitialPurchaseFormFields,
@@ -21,6 +23,7 @@ import {
   removePurchaseLine,
   updatePurchaseLine,
 } from './purchase-form-state'
+import { ManualCardResolutionCache, resolveManualCardId } from './manual-card-resolution'
 
 const CURRENCIES: CurrencyCode[] = ['NOK', 'EUR', 'USD', 'GBP', 'JPY']
 
@@ -50,11 +53,15 @@ interface LinePreview {
 export function PurchaseFormPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const { session } = useAuth()
+  const userId = session?.user.id ?? null
 
   // P124: every field that names one Purchase Add attempt now lives in `fields`, a single object
   // produced and reset by purchase-form-state.ts — see that module's header for why Purchase Add
-  // (unlike Sale Add) has no EntityKeyChangeTracker: /purchases/new has no URL-driven entity
-  // identity to switch between mid-mount.
+  // (unlike Sale Add) has no per-render EntityKeyChangeTracker of its own: /purchases/new has no
+  // URL-driven ENTITY identity to switch between mid-mount. It does, as of P140, use the same
+  // tracker keyed on the signed-in USER identity instead — see `resolvedManualCards`/
+  // `useEntityKeyReset` below.
   const [fields, setFields] = useState(() => createInitialPurchaseFormFields(today))
   const {
     purchasedOn,
@@ -103,11 +110,20 @@ export function PurchaseFormPage() {
   // fresh row before ever reaching create_purchase's idempotent boundary — the second attempt's
   // p_idempotency_key matched the first, but its manual_card_id didn't, so the server correctly
   // refused it as idempotency-key-reuse, leaving the first manual card orphaned from any purchase
-  // still visible to the user as a raw error. Keyed by `${line.id}:${name}` (not by line id alone)
-  // so a genuine identity change — the user editing the manual card's name before retrying — still
-  // resolves a new id rather than silently reusing a stale one; mirrors
-  // OpeningsWizardPage's `resolvedManualCards` (P56 §10).
-  const resolvedManualCards = useRef(new Map<string, string>())
+  // still visible to the user as a raw error. See manual-card-resolution.ts for the cache/resolve
+  // logic itself (P140: extracted so it's directly unit-testable) — mirrors OpeningsWizardPage's
+  // `resolvedManualCards` (P56 §10).
+  const resolvedManualCards = useRef(new ManualCardResolutionCache())
+
+  // P140 (extends P130-23 to P138's own state): PurchaseFormPage is reached behind `RequireSession`,
+  // which is not keyed by userId (see auth/guards.tsx), and this component never remounts on a
+  // same-tab account switch (another tab signing out A / signing in B — supabase-js broadcasts the
+  // new session to every tab, see AuthProvider.tsx). Without this, `idempotencyKey` and the manual-
+  // card resolution cache above would both survive from A into a submission that goes out under B.
+  useEntityKeyReset(userId ?? '', () => {
+    patch({ idempotencyKey: crypto.randomUUID() })
+    resolvedManualCards.current.clear()
+  })
 
   const retailers = useQuery({ queryKey: ['retailers'], queryFn: listRetailers })
 
@@ -196,15 +212,14 @@ export function PurchaseFormPage() {
         if (draft.lineType === 'card' && draft.cardMode === 'manual') {
           const trimmedName = draft.manualCardName.trim()
           if (!trimmedName) throw new Error('Enter a name for the manual card.')
-          const cacheKey = `${draft.id}:${trimmedName}`
-          const cached = resolvedManualCards.current.get(cacheKey)
-          if (cached) {
-            manualCardId = cached
-          } else {
-            const created = await createManualCard({ name: trimmedName })
-            manualCardId = created.id
-            resolvedManualCards.current.set(cacheKey, manualCardId)
-          }
+          manualCardId = await resolveManualCardId(
+            resolvedManualCards.current,
+            draft.id,
+            trimmedName,
+            {
+              createManualCard,
+            },
+          )
         }
         if (draft.lineType === 'card' && draft.cardMode === 'catalog' && !draft.cardVariantId) {
           throw new Error('Choose a card from the catalog, or switch to manual entry.')

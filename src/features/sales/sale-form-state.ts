@@ -78,49 +78,16 @@ export function createInitialSaleFormFields(today: () => string = defaultToday):
 }
 
 /**
- * Detects a genuine entity-identity change from a stream of per-render key observations, and
- * hands out a monotonically increasing generation number for the entity currently in view.
+ * `EntityKeyChangeTracker` mirrors `KeyedPrefillGuard`'s identity/generation discipline (this
+ * project's own established pattern for "same component instance, different logical target") but
+ * answers a different question: `KeyedPrefillGuard` guards one in-flight FETCH against a stale
+ * result; this guards the whole FORM against stale in-flight WORK of any kind (a fetch, but also
+ * a submission whose response arrives after the user has already moved on to a different entity —
+ * see `SaleFormPage`'s submit-generation guard, §11 of the P109 prompt).
  *
- * Mirrors `KeyedPrefillGuard`'s identity/generation discipline (this project's own established
- * pattern for "same component instance, different logical target") but answers a different
- * question: `KeyedPrefillGuard` guards one in-flight FETCH against a stale result; this guards the
- * whole FORM against stale in-flight WORK of any kind (a fetch, but also a submission whose
- * response arrives after the user has already moved on to a different entity — see
- * `SaleFormPage`'s submit-generation guard, §11 of the P109 prompt).
- *
- * Unlike `KeyedPrefillGuard.begin`, `observe` is side-effect-free with respect to "should I start
- * work" — it only reports identity, so it can be called every render/effect tick without
- * consuming anything.
+ * P140: moved to `platform/entity-key-change-tracker.ts` so `PurchaseFormPage`,
+ * `AddToCollectionPage` and `AddSealedProductPage` can reuse it for their own userId/entity
+ * boundary without an awkward cross-feature import into `sales/`; re-exported here unchanged so
+ * this module's existing consumers (`SaleFormPage.tsx`, this file's own tests) are unaffected.
  */
-export class EntityKeyChangeTracker {
-  private lastKey: string | null = null
-  private seenFirst = false
-  private currentGeneration = 0
-
-  /**
-   * Call once per render (or once per effect tick keyed on the same dependency) with the
-   * current entity key. Returns `true` exactly when `key` differs from the previously observed
-   * key — a genuine entity change the caller must reset its own state for. Never `true` on the
-   * very first observation: a component's initial state (from {@link createInitialSaleFormFields})
-   * is already fresh for whatever key it first renders with, so there is nothing to reset yet.
-   */
-  observe(key: string): boolean {
-    if (!this.seenFirst) {
-      this.seenFirst = true
-      this.lastKey = key
-      return false
-    }
-    if (this.lastKey === key) return false
-    this.lastKey = key
-    this.currentGeneration += 1
-    return true
-  }
-
-  /** The generation number of the entity most recently observed. Capture this at the moment a
-   *  submission begins; compare again when its response arrives. A mismatch means the user has
-   *  since switched to a different entity, and the response must not mutate what is now on
-   *  screen — the server-side effect already happened (or didn't) and is not undone by this. */
-  generation(): number {
-    return this.currentGeneration
-  }
-}
+export { EntityKeyChangeTracker } from '../../platform/entity-key-change-tracker'

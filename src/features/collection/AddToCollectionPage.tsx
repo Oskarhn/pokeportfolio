@@ -14,6 +14,8 @@ import {
 } from '../../data/collection'
 import { getCardVariantWithCard, type CatalogVariantWithCard } from '../../data/catalog'
 import { localTodayIso } from '../../platform/local-date'
+import { useEntityKeyReset } from '../../platform/entity-key-change-tracker'
+import { useAuth } from '../../auth/useAuth'
 import { CardImage } from '../catalog/CardImage'
 import {
   Button,
@@ -47,6 +49,8 @@ export function AddToCollectionPage() {
   const search = useSearch({ from: '/add' })
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const { session } = useAuth()
+  const userId = session?.user.id ?? null
 
   const variantId = search.variantId
   const manualCardId = search.manualCardId
@@ -85,7 +89,17 @@ export function AddToCollectionPage() {
   // PurchaseFormPage/SaleFormPage's own idempotencyKey (P108/P107 §17). add_card_acquisition
   // already accepts and honours clientRequestKey server-side (D-096); this page just never sent
   // one, so a retry after a lost response had no way to be recognised as the same request.
-  const [clientRequestKey] = useState(() => crypto.randomUUID())
+  const [clientRequestKey, setClientRequestKey] = useState(() => crypto.randomUUID())
+
+  // P140: this route is reached behind `RequireSession` (not keyed by userId — see
+  // auth/guards.tsx) and never remounts on a same-tab account switch (P130-23), so the key above
+  // must be rotated explicitly rather than relying on unmount. Also covers a same-mount "new
+  // logical intent": `/add?variantId=X` -> `/add?variantId=Y` (or the manual-card equivalent)
+  // reuses this same component instance (no `remountDeps` on this route, matching SaleFormPage's
+  // own holdingId precedent) — a genuinely different card must never submit under the old key.
+  useEntityKeyReset(`${userId ?? ''}|${variantId ?? ''}|${manualCardId ?? ''}`, () => {
+    setClientRequestKey(crypto.randomUUID())
+  })
 
   const addMutation = useMutation({
     mutationFn: addCardAcquisition,
