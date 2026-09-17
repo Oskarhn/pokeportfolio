@@ -308,13 +308,22 @@ async function main(): Promise<number> {
     )
     if (mutation === 'B') {
       check('MUTATION_B: restore without migration-history data is DETECTED (history rows = 0, not the expected count)', historyRows === 0, `history rows=${historyRows}`)
+      // Without migration history, there is no reliable way to know which migrations are already
+      // applied, so the roll-forward step below (and everything after it) cannot safely proceed —
+      // exactly why P130-07/the runbook treats migration-history restoration as required, not
+      // optional. The validator stops here rather than guessing.
+      return finish()
     }
 
     // ── Step 4.5: roll forward any migration created AFTER this backup was taken ──
     // A real backup is a point-in-time snapshot; migrations added since then (here: P133's currency-
     // exponent fix and P137's own cron-isolation fix) are not in schema.sql at all and must be
     // replayed the same way `supabase migration up` would after any restore, backup age aside.
-    if (mutation !== 'B') {
+    // MUTATION A skips this step entirely (not just the later explicit baseline re-apply) to
+    // reproduce P130-07's original scenario as closely as possible: a restore that stops at
+    // roles+schema+data with NO migration catch-up of any kind, which is exactly the shape that
+    // produced the original "690 unexpected grants" finding.
+    if (mutation !== 'A') {
       const restoredVersions = new Set(
         (await db.scalar('select string_agg(version, \',\') from supabase_migrations.schema_migrations;')).split(',').filter(Boolean),
       )
@@ -405,25 +414,46 @@ async function main(): Promise<number> {
     // simulates exactly this) must be cleared. Otherwise restoring Production's own data onto a
     // disposable/staging/local target would silently carry the enabled config over and reintroduce
     // the P130-12 hazard for that target.
-    if (mutation === 'C') {
+    const configTableExists = (await db.scalar("select count(*) from information_schema.tables where table_schema='public' and table_name='environment_ingest_config';")) === '1'
+    if (mutation === 'C' && configTableExists) {
       await db.exec(
         "insert into public.environment_ingest_config (id, base_url, configured_note) values (true, 'https://nopmkroeygmlvndzjjqs.supabase.co', 'p137 mutation C: simulates a Production backup restored elsewhere') on conflict (id) do update set base_url = excluded.base_url;",
       )
     }
-    const configuredBefore = Number(await db.scalar('select count(*) from public.environment_ingest_config where base_url is not null;'))
-    await db.exec('delete from public.environment_ingest_config;')
-    const configuredAfter = Number(await db.scalar('select count(*) from public.environment_ingest_config where base_url is not null;'))
+    let configuredBefore = 0
+    let configuredAfter = 0
+    if (configTableExists) {
+      configuredBefore = Number(await db.scalar('select count(*) from public.environment_ingest_config where base_url is not null;'))
+      await db.exec('delete from public.environment_ingest_config;')
+      configuredAfter = Number(await db.scalar('select count(*) from public.environment_ingest_config where base_url is not null;'))
+    }
     const cronActiveIngest = Number(
       await db.scalar("select count(*) from cron.job where active and command ~ '/functions/v1/ingest-(prices|fx)';"),
     )
     const cronHostnameOccurrences = Number(await db.scalar("select count(*) from cron.job where command ~ '\\.supabase\\.co';"))
-    check(
-      mutation === 'C'
-        ? 'MUTATION_C: an accidentally-configured Production ingest row IS present after data restore, and the neutralisation step clears it — restored DB ends with zero production-targeting dispatch capability'
-        : 'POST_RESTORE_CRON_PRODUCTION_CALLS: non-Production restore target ends with zero configured ingest base URLs and zero hostname-bearing active cron commands',
-      configuredAfter === 0 && cronActiveIngest === 2 /* jobs exist, generic, active — but unconfigured */ && cronHostnameOccurrences === 0,
-      `configured-before-neutralise=${configuredBefore}, configured-after=${configuredAfter}, active ingest jobs=${cronActiveIngest}, hostname occurrences in cron.job.command=${cronHostnameOccurrences}`,
-    )
+    if (!configTableExists) {
+      // MUTATION A's whole point: skipping migration roll-forward reproduces P130-07's ORIGINAL
+      // finding exactly — `cron.job` lives in the pg_cron extension's own schema, which schema.sql
+      // never captures (same filtering that excludes auth/storage). Restoring roles+schema+data with
+      // no migration replay therefore leaves cron.job completely EMPTY, not "old jobs with the
+      // hardcoded URL" as might be assumed — scheduled ingestion simply stops existing, silently.
+      // That is itself the P130-07 "cron jobs 0" finding (an availability gap, not a P130-12-shaped
+      // security hole, since nothing is scheduled at all) and is exactly why roll-forward is REQUIRED.
+      const totalCronJobs = Number(await db.scalar('select count(*) from cron.job;'))
+      check(
+        'MUTATION_A (compounding): without migration roll-forward, cron.job is completely empty (P130-07\'s original "cron jobs 0" finding) — confirms roll-forward is required, not optional, for a functioning restore',
+        totalCronJobs === 0 && cronHostnameOccurrences === 0,
+        `environment_ingest_config table absent (P137 migration not rolled forward); total cron.job rows=${totalCronJobs}`,
+      )
+    } else {
+      check(
+        mutation === 'C'
+          ? 'MUTATION_C: an accidentally-configured Production ingest row IS present after data restore, and the neutralisation step clears it — restored DB ends with zero production-targeting dispatch capability'
+          : 'POST_RESTORE_CRON_PRODUCTION_CALLS: non-Production restore target ends with zero configured ingest base URLs and zero hostname-bearing active cron commands',
+        configuredAfter === 0 && cronActiveIngest === 2 /* jobs exist, generic, active — but unconfigured */ && cronHostnameOccurrences === 0,
+        `configured-before-neutralise=${configuredBefore}, configured-after=${configuredAfter}, active ingest jobs=${cronActiveIngest}, hostname occurrences in cron.job.command=${cronHostnameOccurrences}`,
+      )
+    }
 
     // ── Step 8: privilege baseline convergence (mutation A skips this) ──
     if (mutation !== 'A') {
