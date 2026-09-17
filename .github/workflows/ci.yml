@@ -140,6 +140,18 @@ jobs:
           fi
           psql --version
 
+      # Every local dev/test session already does this before running any suite (P130-12
+      # workaround, restated in every P137/P138/P139/P140 session's own INTEGRATION_NOTES) —
+      # CI never did. m12-recompute-snapshots reschedules itself every single minute
+      # (20260901120000_p42_cron_cadence.sql); left active for this job's ~15+ minutes, it can
+      # race a test's own direct call to the same drain_portfolio_recompute_queue RPC for a lock
+      # and trip Postgres' statement_timeout under CI's shared-runner load — the same documented
+      # class of runner-load-dependent flake tests/db/setup.ts already names for unrelated bulk
+      # deletes. The jobs stay defined (schema/definition tests still see them); only their CI-run
+      # activity is suppressed, matching what every local run already does.
+      - name: Deactivate recurring cron jobs for the test run
+        run: psql "$DB_URL" -v ON_ERROR_STOP=1 -c "select cron.alter_job(jobid, active := false) from cron.job;"
+
       # What the catalog actually grants `anon` and `authenticated`, asserted against the intended
       # surface rather than inferred from behaviour. docs/SECURITY.md §5.9.
       - name: Privilege surface matches the baseline
