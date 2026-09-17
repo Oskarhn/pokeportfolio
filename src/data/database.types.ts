@@ -448,6 +448,27 @@ export type Database = {
         }
         Relationships: []
       }
+      environment_ingest_config: {
+        Row: {
+          base_url: string | null
+          configured_at: string | null
+          configured_note: string | null
+          id: boolean
+        }
+        Insert: {
+          base_url?: string | null
+          configured_at?: string | null
+          configured_note?: string | null
+          id?: boolean
+        }
+        Update: {
+          base_url?: string | null
+          configured_at?: string | null
+          configured_note?: string | null
+          id?: boolean
+        }
+        Relationships: []
+      }
       fx_rates: {
         Row: {
           base_currency: string
