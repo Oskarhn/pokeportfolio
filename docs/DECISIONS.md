@@ -5939,3 +5939,73 @@ per 100 JPY": 10,000 JPY is 100 × 100 JPY, so 100 × 6.0375 NOK = NOK 603.75. R
 `tests/db/p133_currency_exponent_fx.test.ts` (SQL/exponent), `tests/data/norges-bank.test.ts`
 (parser/`UNIT_MULT`), `tests/data/p135/reference/fx-oracle.test.ts` (independent second oracle,
 derived without reading either fix's implementation).
+
+## D-133 — Ingest cron dispatch is environment-scoped: no migration ever hardcodes a Production hostname, and dispatch fails closed absent explicit out-of-band configuration (P130-12/P137)
+
+**2026-09-16 · Accepted**
+
+**Context.** P130-12 (`ai_outputs/Claude_outputs/output_130.txt`) found that
+`20260826120050_m9_cron_schedule.sql` hardcodes Production's edge-function hostname
+(`nopmkroeygmlvndzjjqs.supabase.co`) inside the two `cron.schedule(...)` command bodies it
+creates. Because a database receives its cron jobs by having migrations replayed against it —
+`supabase db reset`, a CI ephemeral stack, or a restored database rolling forward to the current
+migration set (`docs/RESTORE_RUNBOOK.md` §3 step 7) — every such database ends up with an ACTIVE,
+hardcoded-URL cron job firing every 15 minutes, with no per-environment opt-in. The only reason
+this has never produced a real Production side effect is that `vault.decrypted_secrets` has no
+`price_sync_secret` row outside the real Production project, so the bearer is always empty and the
+target function's own check answers 401 before touching the database (P130 AUDIT_SIDE_EFFECTS §1)
+— an incidental backstop (an empty secret), not a designed one. P131's local/CI harnesses worked
+around this by manually calling `cron.alter_job(active := false)` immediately after the migration
+runs, every time (output_131.txt W-8); this decision replaces that workaround with a structural
+fix, per the P137 prompt's explicit instruction not to accept "start DB then immediately disable
+cron" as the permanent answer.
+
+**Decision.** `20260826120050_m9_cron_schedule.sql` is never edited (already applied hosted; this
+project never edits an applied migration). A new migration
+(`20260916120000_p137_environment_scoped_ingest_dispatch.sql`) re-schedules the same two job names
+— `cron.schedule` with an existing name updates in place, exactly as m9's own comment documents —
+to call a generic `public.dispatch_ingest_call(p_function_path text)` wrapper instead of embedding
+a URL. That function reads the target base URL from `public.environment_ingest_config`, a
+service-role-only singleton table no migration ever populates (`RLS enabled, zero policies`, same
+posture as `price_sync_runs`). Absent a configured `base_url`, the function returns `null` and
+performs no `net.http_post` call at all — not "scheduled but disabled", genuinely never dispatched.
+Enabling real dispatch is a one-time, out-of-band `INSERT` against the real Production project
+only, provisioned the same way `price_sync_secret` already is.
+
+**Alternatives considered and rejected** (see the migration file's own header for the fuller
+version):
+- **A — migrations create the jobs disabled; Production enables them explicitly.** Rejected: a
+  boolean (`active`) anyone can flip back is not a missing fact that fails closed by itself; an
+  operator or future migration that flips it without also restoring the URL/secret reintroduces
+  today's exact bug.
+- **B — a generic Vault-configured base URL, absent locally.** Vault is documented and used for
+  *secrets*; the base URL is explicitly non-secret (m9's own comment: "public identifying
+  information"). Reusing Vault for a non-secret adds no safety over a plain table and blurs why the
+  actual secret lives there.
+- **D — environment-specific scheduling entirely outside `supabase/migrations/`.** Rejected as
+  more complex for this project's scale: it would need a second deployment mechanism purely to
+  schedule two `pg_cron` jobs, losing "every environment gets the same reproducible migration set"
+  for no extra safety over C.
+- **Chosen: C — a wrapper function that refuses execution unless the target is explicitly
+  configured** — combined with A's shape only for keeping the same two job *names* re-scheduled in
+  place, so the schedule itself stays fully reproducible and auditable from migrations alone.
+
+**Consequence for the eventual hosted rollout (not performed by P137).** The moment this migration
+reaches Production, the two ingest jobs stop calling out — the config table starts empty there too
+— until an operator runs, once, directly against Production and never commits, the `INSERT`
+described above. This is a coordinated-deploy concern of the same shape D-132/P136 already handled
+for the JPY FX change (ingestion pauses until the row is set), and must be planned for explicitly,
+not performed as a side effect of an unrelated migration deploy.
+
+**Proof.** `scripts/p137/cron-isolation-repro.ts`: a `--network none` disposable database built
+from the migrations at `72e4660c4331a201ff8ff29ebcbada09088dc851` (pre-fix) reproduces the
+hardcoded, active, dispatching job (`P130_12_PRE_FIX_REPRO`); the same script's post-fix phase,
+against the working tree, shows zero `*.supabase.co` occurrences in any cron command, zero rows in
+`environment_ingest_config` on a fresh database, a `null` return (no `net.http_post` call at all)
+from the unconfigured dispatcher, and a real `pg_net` request id once a (non-Production, test-only)
+base URL is explicitly configured — proving both the fail-closed default and that the mechanism
+itself works, not just that it is disabled. `docs/RESTORE_RUNBOOK.md` §9 additionally requires
+every non-Production restore target to clear `environment_ingest_config` unconditionally after
+restoring data, closing the one way a backup taken from an already-configured Production could
+otherwise carry the live configuration onto a disposable/local/staging restore target
+(`restore-drill.ts --mutation C`).

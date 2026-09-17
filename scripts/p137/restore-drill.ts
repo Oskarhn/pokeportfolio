@@ -34,10 +34,23 @@
  */
 import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { BackupError, DEFAULT_REQUIRED_TABLES, parseCopyBlocks, verifyBackupDirectory } from '../db-backup/backup-core'
+import {
+  BackupError,
+  DEFAULT_REQUIRED_TABLES,
+  parseCopyBlocks,
+  verifyBackupDirectory,
+} from '../db-backup/backup-core'
 import { REPO_ROOT } from '../db-backup/supabase-cli'
 
 const IMAGE = process.env.P137_REPRO_IMAGE ?? 'public.ecr.aws/supabase/postgres:17.6.1.158'
@@ -55,15 +68,23 @@ function parseArgs(argv: readonly string[]): { backup: string; mutation: Mutatio
   return { backup, mutation }
 }
 
-function run(command: string, args: readonly string[], input?: string): Promise<{ code: number; stdout: string; stderr: string }> {
+function run(
+  command: string,
+  args: readonly string[],
+  input?: string,
+): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolvePromise) => {
     const child = spawn(command, [...args], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
     let stdout = ''
     let stderr = ''
     child.stdout.setEncoding('utf8').on('data', (c: string) => (stdout += c))
     child.stderr.setEncoding('utf8').on('data', (c: string) => (stderr += c))
-    child.on('error', (error) => resolvePromise({ code: 127, stdout, stderr: error.message }))
-    child.on('close', (code) => resolvePromise({ code: code ?? 1, stdout, stderr }))
+    child.on('error', (error) => {
+      resolvePromise({ code: 127, stdout, stderr: error.message })
+    })
+    child.on('close', (code) => {
+      resolvePromise({ code: code ?? 1, stdout, stderr })
+    })
     // A large stdin write (data.sql can be tens of MB) can outlive a psql process that has already
     // exited on its own error — without this handler, that raises an unhandled 'error' event on
     // the socket and crashes the whole script instead of surfacing as a normal non-zero exit code.
@@ -72,10 +93,17 @@ function run(command: string, args: readonly string[], input?: string): Promise<
   })
 }
 
-async function must(command: string, args: readonly string[], input?: string, allowFail = false): Promise<{ code: number; stdout: string; stderr: string }> {
+async function must(
+  command: string,
+  args: readonly string[],
+  input?: string,
+  allowFail = false,
+): Promise<{ code: number; stdout: string; stderr: string }> {
   const result = await run(command, args, input)
   if (result.code !== 0 && !allowFail) {
-    throw new Error(`${command} ${args.slice(0, 4).join(' ')} failed (${result.code}): ${(result.stderr || result.stdout).trim().slice(-2000)}`)
+    throw new Error(
+      `${command} ${args.slice(0, 4).join(' ')} failed (${result.code}): ${(result.stderr || result.stdout).trim().slice(-2000)}`,
+    )
   }
   return result
 }
@@ -93,7 +121,17 @@ function check(name: string, pass: boolean, detail: string): void {
 async function waitReady(container: string): Promise<void> {
   let streak = 0
   for (let attempt = 0; attempt < 180 && streak < 3; attempt += 1) {
-    const probe = await run('docker', ['exec', container, 'psql', '-U', 'postgres', '-d', 'postgres', '-tAc', "select 1 from pg_roles where rolname = 'authenticated'"])
+    const probe = await run('docker', [
+      'exec',
+      container,
+      'psql',
+      '-U',
+      'postgres',
+      '-d',
+      'postgres',
+      '-tAc',
+      "select 1 from pg_roles where rolname = 'authenticated'",
+    ])
     streak = probe.code === 0 && probe.stdout.trim() === '1' ? streak + 1 : 0
     await sleep(1000)
   }
@@ -102,10 +140,48 @@ async function waitReady(container: string): Promise<void> {
 
 function psqlOf(container: string) {
   const exec = (sql: string, extra: readonly string[] = [], allowFail = false) =>
-    must('docker', ['exec', '-i', container, 'psql', '-X', '-q', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', 'postgres', ...extra], sql, allowFail)
-  const scalar = async (sql: string): Promise<string> => (await exec(sql, ['-t', '-A'])).stdout.trim()
+    must(
+      'docker',
+      [
+        'exec',
+        '-i',
+        container,
+        'psql',
+        '-X',
+        '-q',
+        '-v',
+        'ON_ERROR_STOP=1',
+        '-U',
+        'postgres',
+        '-d',
+        'postgres',
+        ...extra,
+      ],
+      sql,
+      allowFail,
+    )
+  const scalar = async (sql: string): Promise<string> =>
+    (await exec(sql, ['-t', '-A'])).stdout.trim()
   const execFile = (path: string, allowFail = false) =>
-    must('docker', ['exec', '-i', container, 'psql', '-X', '-q', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', 'postgres'], readFileSync(path, 'utf8'), allowFail)
+    must(
+      'docker',
+      [
+        'exec',
+        '-i',
+        container,
+        'psql',
+        '-X',
+        '-q',
+        '-v',
+        'ON_ERROR_STOP=1',
+        '-U',
+        'postgres',
+        '-d',
+        'postgres',
+      ],
+      readFileSync(path, 'utf8'),
+      allowFail,
+    )
   return { exec, scalar, execFile }
 }
 
@@ -122,7 +198,9 @@ function extractAuthUsersTriggerDdl(): { source: string; sql: string }[] {
   // trigger, failing the drill. Each match is exactly one statement, table-qualified by group 4.
   const re =
     /create trigger\s+(\S+)\s+(before|after)\s+(insert|update|delete)\s+on\s+(\S+)\s+for each row execute function\s+([\w.]+\([^)]*\))\s*;/gi
-  for (const file of readdirSync(dir).filter((f) => /^\d{14}_.+\.sql$/.test(f)).sort()) {
+  for (const file of readdirSync(dir)
+    .filter((f) => /^\d{14}_.+\.sql$/.test(f))
+    .sort()) {
     const text = readFileSync(join(dir, file), 'utf8')
     for (const m of text.matchAll(re)) {
       if ((m[4] ?? '').toLowerCase() === 'auth.users') out.push({ source: file, sql: m[0] })
@@ -133,7 +211,9 @@ function extractAuthUsersTriggerDdl(): { source: string; sql: string }[] {
 
 function latestPrivilegeBaseline(): string {
   const dir = join(REPO_ROOT, 'supabase', 'migrations')
-  const files = readdirSync(dir).filter((f) => f.endsWith('_privilege_baseline.sql')).sort()
+  const files = readdirSync(dir)
+    .filter((f) => f.endsWith('_privilege_baseline.sql'))
+    .sort()
   const last = files[files.length - 1]
   if (last === undefined) throw new Error('no *_privilege_baseline.sql migration found')
   return join(dir, last)
@@ -184,7 +264,11 @@ async function main(): Promise<number> {
       )
       return finish()
     }
-    check('backup verified before restore (hashes, required tables, COPY content all re-checked from disk)', verified, verifyError || backupDir)
+    check(
+      'backup verified before restore (hashes, required tables, COPY content all re-checked from disk)',
+      verified,
+      verifyError || backupDir,
+    )
     if (!verified) return finish()
 
     // ── Step 1: fresh disposable target on a Docker `--internal` network ──
@@ -196,8 +280,22 @@ async function main(): Promise<number> {
     // `--internal` keeps that one path open while keeping every path to Production and to the real
     // internet closed — network isolation, not process isolation, is what is actually required.
     await must('docker', ['network', 'create', '--internal', network])
-    await must('docker', ['run', '-d', '--name', container, '--network', network, '-e', 'POSTGRES_PASSWORD=p137-disposable', IMAGE])
-    check('RESTORE_TARGET / RESTORE_NETWORK_ISOLATED: disposable target started on a Docker --internal network (no route to Production or the real internet; verified separately)', true, `${container} on ${network}`)
+    await must('docker', [
+      'run',
+      '-d',
+      '--name',
+      container,
+      '--network',
+      network,
+      '-e',
+      'POSTGRES_PASSWORD=p137-disposable',
+      IMAGE,
+    ])
+    check(
+      'RESTORE_TARGET / RESTORE_NETWORK_ISOLATED: disposable target started on a Docker --internal network (no route to Production or the real internet; verified separately)',
+      true,
+      `${container} on ${network}`,
+    )
     await waitReady(container)
     const db = psqlOf(container)
 
@@ -216,24 +314,53 @@ async function main(): Promise<number> {
     // project.
     await must(
       'docker',
-      ['exec', '-i', container, 'psql', '-X', '-q', '-v', 'ON_ERROR_STOP=1', '-U', 'supabase_admin', '-d', 'postgres'],
+      [
+        'exec',
+        '-i',
+        container,
+        'psql',
+        '-X',
+        '-q',
+        '-v',
+        'ON_ERROR_STOP=1',
+        '-U',
+        'supabase_admin',
+        '-d',
+        'postgres',
+      ],
       `alter role supabase_auth_admin with password 'p137-disposable' login;`,
     )
     const gotrueStart = await must(
       'docker',
       [
-        'run', '-d', '--name', gotrueContainer, '--network', network,
-        '-e', 'GOTRUE_DB_DRIVER=postgres',
-        '-e', `DATABASE_URL=postgres://supabase_auth_admin:p137-disposable@${container}:5432/postgres?search_path=auth`,
-        '-e', 'GOTRUE_SITE_URL=http://localhost:3000',
-        '-e', 'GOTRUE_URI_ALLOW_LIST=*',
-        '-e', 'GOTRUE_DISABLE_SIGNUP=false',
-        '-e', 'GOTRUE_JWT_SECRET=p137-disposable-restore-drill-secret-not-real',
-        '-e', 'GOTRUE_JWT_ADMIN_ROLES=service_role',
-        '-e', 'GOTRUE_JWT_AUD=authenticated',
-        '-e', 'API_EXTERNAL_URL=http://localhost:8000',
-        '-e', 'GOTRUE_MAILER_AUTOCONFIRM=true',
-        '-e', 'PORT=9999',
+        'run',
+        '-d',
+        '--name',
+        gotrueContainer,
+        '--network',
+        network,
+        '-e',
+        'GOTRUE_DB_DRIVER=postgres',
+        '-e',
+        `DATABASE_URL=postgres://supabase_auth_admin:p137-disposable@${container}:5432/postgres?search_path=auth`,
+        '-e',
+        'GOTRUE_SITE_URL=http://localhost:3000',
+        '-e',
+        'GOTRUE_URI_ALLOW_LIST=*',
+        '-e',
+        'GOTRUE_DISABLE_SIGNUP=false',
+        '-e',
+        'GOTRUE_JWT_SECRET=p137-disposable-restore-drill-secret-not-real',
+        '-e',
+        'GOTRUE_JWT_ADMIN_ROLES=service_role',
+        '-e',
+        'GOTRUE_JWT_AUD=authenticated',
+        '-e',
+        'API_EXTERNAL_URL=http://localhost:8000',
+        '-e',
+        'GOTRUE_MAILER_AUTOCONFIRM=true',
+        '-e',
+        'PORT=9999',
         'public.ecr.aws/supabase/gotrue:v2.196.0',
       ],
       undefined,
@@ -247,7 +374,10 @@ async function main(): Promise<number> {
         const logs = await run('docker', ['logs', gotrueContainer])
         if (/GoTrue migrations applied successfully/.test(logs.stdout + logs.stderr)) {
           authMigrationsApplied = true
-          authMigrationDetail = (logs.stdout + logs.stderr).split('\n').find((l) => l.includes('migrations applied successfully')) ?? ''
+          authMigrationDetail =
+            (logs.stdout + logs.stderr)
+              .split('\n')
+              .find((l) => l.includes('migrations applied successfully')) ?? ''
         }
       }
     }
@@ -275,8 +405,18 @@ async function main(): Promise<number> {
     // classification in output_137.txt §8). What matters here is that the roles THIS application
     // actually depends on converge correctly; a missing unrelated platform role must not abort the
     // whole statement-by-statement replay the way ON_ERROR_STOP=1 would.
-    const rolesResult = await db.exec(readFileSync(join(backupDir, 'roles.sql'), 'utf8'), ['-v', 'ON_ERROR_STOP=0'], true)
-    const criticalRoles = ['postgres', 'anon', 'authenticated', 'service_role', 'supabase_auth_admin']
+    await db.exec(
+      readFileSync(join(backupDir, 'roles.sql'), 'utf8'),
+      ['-v', 'ON_ERROR_STOP=0'],
+      true,
+    )
+    const criticalRoles = [
+      'postgres',
+      'anon',
+      'authenticated',
+      'service_role',
+      'supabase_auth_admin',
+    ]
     let criticalRolesPresent = true
     for (const role of criticalRoles) {
       const present = await db.scalar(`select count(*) from pg_roles where rolname = '${role}';`)
@@ -292,22 +432,40 @@ async function main(): Promise<number> {
     await db.execFile(join(backupDir, 'schema.sql'))
     const extCron = await db.scalar("select count(*) from pg_extension where extname = 'pg_cron';")
     const extNet = await db.scalar("select count(*) from pg_extension where extname = 'pg_net';")
-    check('RESTORE_SCHEMA: schema.sql applied; pg_cron and pg_net extensions present', extCron === '1' && extNet === '1', `pg_cron=${extCron} pg_net=${extNet}`)
+    check(
+      'RESTORE_SCHEMA: schema.sql applied; pg_cron and pg_net extensions present',
+      extCron === '1' && extNet === '1',
+      `pg_cron=${extCron} pg_net=${extNet}`,
+    )
 
     // ── Step 4: migration history (mutation B skips this) ──
     if (mutation !== 'B') {
       await db.execFile(join(backupDir, 'migration_history_schema.sql'))
       await db.execFile(join(backupDir, 'migration_history_data.sql'))
     }
-    const historyRows = Number((await db.exec("select count(*) from supabase_migrations.schema_migrations;", ['-t', '-A'], true)).stdout.trim() || '0')
-    const manifest = JSON.parse(readFileSync(join(backupDir, 'manifest.json'), 'utf8')) as { migrationHistoryRows: number }
+    const historyRows = Number(
+      (
+        await db.exec(
+          'select count(*) from supabase_migrations.schema_migrations;',
+          ['-t', '-A'],
+          true,
+        )
+      ).stdout.trim() || '0',
+    )
+    const manifest = JSON.parse(readFileSync(join(backupDir, 'manifest.json'), 'utf8')) as {
+      migrationHistoryRows: number
+    }
     check(
       'RESTORE_MIGRATION_HISTORY: restored history row count matches the backup manifest',
       mutation === 'B' ? historyRows === 0 : historyRows === manifest.migrationHistoryRows,
       `restored=${historyRows}, manifest=${manifest.migrationHistoryRows}, mutation=${mutation ?? 'none'}`,
     )
     if (mutation === 'B') {
-      check('MUTATION_B: restore without migration-history data is DETECTED (history rows = 0, not the expected count)', historyRows === 0, `history rows=${historyRows}`)
+      check(
+        'MUTATION_B: restore without migration-history data is DETECTED (history rows = 0, not the expected count)',
+        historyRows === 0,
+        `history rows=${historyRows}`,
+      )
       // Without migration history, there is no reliable way to know which migrations are already
       // applied, so the roll-forward step below (and everything after it) cannot safely proceed —
       // exactly why P130-07/the runbook treats migration-history restoration as required, not
@@ -325,9 +483,17 @@ async function main(): Promise<number> {
     // produced the original "690 unexpected grants" finding.
     if (mutation !== 'A') {
       const restoredVersions = new Set(
-        (await db.scalar('select string_agg(version, \',\') from supabase_migrations.schema_migrations;')).split(',').filter(Boolean),
+        (
+          await db.scalar(
+            "select string_agg(version, ',') from supabase_migrations.schema_migrations;",
+          )
+        )
+          .split(',')
+          .filter(Boolean),
       )
-      const allMigrations = readdirSync(join(REPO_ROOT, 'supabase', 'migrations')).filter((f) => /^\d{14}_.+\.sql$/.test(f)).sort()
+      const allMigrations = readdirSync(join(REPO_ROOT, 'supabase', 'migrations'))
+        .filter((f) => /^\d{14}_.+\.sql$/.test(f))
+        .sort()
       const pending = allMigrations.filter((f) => !restoredVersions.has(f.slice(0, 14)))
       for (const file of pending) {
         await db.exec(readFileSync(join(REPO_ROOT, 'supabase', 'migrations', file), 'utf8'))
@@ -338,14 +504,20 @@ async function main(): Promise<number> {
       check(
         'roll-forward: migrations created after this backup was taken are replayed (ordinary post-restore migration catch-up, not specific to P137)',
         true,
-        pending.length > 0 ? `${pending.length} pending migration(s) applied: ${pending.join(', ')}` : 'backup was already current, nothing pending',
+        pending.length > 0
+          ? `${pending.length} pending migration(s) applied: ${pending.join(', ')}`
+          : 'backup was already current, nothing pending',
       )
     }
 
     // ── Step 5: reattach auth.users triggers (P130-07's "auth.users triggers 2 -> 0" gap) ──
     const authTriggers = extractAuthUsersTriggerDdl()
     for (const t of authTriggers) await db.exec(t.sql)
-    const authTriggerCount = Number(await db.scalar("select count(*) from pg_trigger where tgrelid = 'auth.users'::regclass and not tgisinternal;"))
+    const authTriggerCount = Number(
+      await db.scalar(
+        "select count(*) from pg_trigger where tgrelid = 'auth.users'::regclass and not tgisinternal;",
+      ),
+    )
     check(
       'auth.users triggers reattached (dynamically extracted from the current migration set, not hardcoded)',
       authTriggerCount === authTriggers.length && authTriggerCount > 0,
@@ -366,7 +538,9 @@ async function main(): Promise<number> {
     // auth.users itself) — the exact set `pnpm db:backup` itself treats as required.
     const dataText = readFileSync(join(backupDir, 'data.sql'), 'utf8')
     const dataApply = await db.exec(
-      'set session_replication_role = replica;\n' + dataText + '\nset session_replication_role = origin;\n',
+      'set session_replication_role = replica;\n' +
+        dataText +
+        '\nset session_replication_role = origin;\n',
       ['-v', 'ON_ERROR_STOP=0'],
       true,
     )
@@ -386,9 +560,13 @@ async function main(): Promise<number> {
       const matches = actual === expectedRows
       if (!matches && requiredTables.has(table)) {
         dataOk = false
-        mismatches.push(`${table} expected=${expectedRows} actual=${result.code === 0 ? actual : `ERROR: ${result.stderr.trim().split('\n')[0] ?? ''}`}`)
+        mismatches.push(
+          `${table} expected=${expectedRows} actual=${result.code === 0 ? actual : `ERROR: ${result.stderr.trim().split('\n')[0] ?? ''}`}`,
+        )
       } else if (!matches) {
-        tolerated.push(`${table} expected=${expectedRows} actual=${result.code === 0 ? actual : 'relation error (GoTrue-internal schema-version gap)'}`)
+        tolerated.push(
+          `${table} expected=${expectedRows} actual=${result.code === 0 ? actual : 'relation error (GoTrue-internal schema-version gap)'}`,
+        )
       } else if (requiredTables.has(table)) {
         checkedCount += 1
       }
@@ -414,7 +592,10 @@ async function main(): Promise<number> {
     // simulates exactly this) must be cleared. Otherwise restoring Production's own data onto a
     // disposable/staging/local target would silently carry the enabled config over and reintroduce
     // the P130-12 hazard for that target.
-    const configTableExists = (await db.scalar("select count(*) from information_schema.tables where table_schema='public' and table_name='environment_ingest_config';")) === '1'
+    const configTableExists =
+      (await db.scalar(
+        "select count(*) from information_schema.tables where table_schema='public' and table_name='environment_ingest_config';",
+      )) === '1'
     if (mutation === 'C' && configTableExists) {
       await db.exec(
         "insert into public.environment_ingest_config (id, base_url, configured_note) values (true, 'https://nopmkroeygmlvndzjjqs.supabase.co', 'p137 mutation C: simulates a Production backup restored elsewhere') on conflict (id) do update set base_url = excluded.base_url;",
@@ -423,14 +604,26 @@ async function main(): Promise<number> {
     let configuredBefore = 0
     let configuredAfter = 0
     if (configTableExists) {
-      configuredBefore = Number(await db.scalar('select count(*) from public.environment_ingest_config where base_url is not null;'))
+      configuredBefore = Number(
+        await db.scalar(
+          'select count(*) from public.environment_ingest_config where base_url is not null;',
+        ),
+      )
       await db.exec('delete from public.environment_ingest_config;')
-      configuredAfter = Number(await db.scalar('select count(*) from public.environment_ingest_config where base_url is not null;'))
+      configuredAfter = Number(
+        await db.scalar(
+          'select count(*) from public.environment_ingest_config where base_url is not null;',
+        ),
+      )
     }
     const cronActiveIngest = Number(
-      await db.scalar("select count(*) from cron.job where active and command ~ '/functions/v1/ingest-(prices|fx)';"),
+      await db.scalar(
+        "select count(*) from cron.job where active and command ~ '/functions/v1/ingest-(prices|fx)';",
+      ),
     )
-    const cronHostnameOccurrences = Number(await db.scalar("select count(*) from cron.job where command ~ '\\.supabase\\.co';"))
+    const cronHostnameOccurrences = Number(
+      await db.scalar("select count(*) from cron.job where command ~ '\\.supabase\\.co';"),
+    )
     if (!configTableExists) {
       // MUTATION A's whole point: skipping migration roll-forward reproduces P130-07's ORIGINAL
       // finding exactly — `cron.job` lives in the pg_cron extension's own schema, which schema.sql
@@ -450,7 +643,9 @@ async function main(): Promise<number> {
         mutation === 'C'
           ? 'MUTATION_C: an accidentally-configured Production ingest row IS present after data restore, and the neutralisation step clears it — restored DB ends with zero production-targeting dispatch capability'
           : 'POST_RESTORE_CRON_PRODUCTION_CALLS: non-Production restore target ends with zero configured ingest base URLs and zero hostname-bearing active cron commands',
-        configuredAfter === 0 && cronActiveIngest === 2 /* jobs exist, generic, active — but unconfigured */ && cronHostnameOccurrences === 0,
+        configuredAfter === 0 &&
+          cronActiveIngest === 2 /* jobs exist, generic, active — but unconfigured */ &&
+          cronHostnameOccurrences === 0,
         `configured-before-neutralise=${configuredBefore}, configured-after=${configuredAfter}, active ingest jobs=${cronActiveIngest}, hostname occurrences in cron.job.command=${cronHostnameOccurrences}`,
       )
     }
@@ -481,7 +676,7 @@ async function main(): Promise<number> {
     const anonSecdefFns = (
       await db.scalar(
         "select coalesce(string_agg(p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')', ', ' order by p.proname), '') " +
-          "from pg_proc p join pg_namespace n on n.oid = p.pronamespace " +
+          'from pg_proc p join pg_namespace n on n.oid = p.pronamespace ' +
           "cross join lateral aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a " +
           "where n.nspname = 'public' and p.prosecdef and a.grantee::regrole::text = 'anon' and a.privilege_type = 'EXECUTE';",
       )
@@ -496,7 +691,11 @@ async function main(): Promise<number> {
     const diagPath = join(REPO_ROOT, 'scripts', 'finance-integrity-diagnostics.sql')
     if (existsSync(diagPath)) {
       const diag = await db.execFile(diagPath, true)
-      check('POST_RESTORE_FINANCE_DIAGNOSTICS: read-only diagnostics ran against the restored data', diag.code === 0, diag.code === 0 ? 'ran clean' : diag.stderr.trim().slice(-300))
+      check(
+        'POST_RESTORE_FINANCE_DIAGNOSTICS: read-only diagnostics ran against the restored data',
+        diag.code === 0,
+        diag.code === 0 ? 'ran clean' : diag.stderr.trim().slice(-300),
+      )
     }
 
     // ── Step 12: app-compatibility surface (schema/RPC presence, not a live client) ──
@@ -506,10 +705,24 @@ async function main(): Promise<number> {
       const exists = await db.scalar(`select count(*) from pg_proc where proname = '${fn}';`)
       if (exists === '0') rpcOk = false
     }
-    const rlsTableCount = Number(await db.scalar("select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relkind = 'r' and c.relrowsecurity;"))
-    const policyCount = Number(await db.scalar("select count(*) from pg_policies where schemaname = 'public';"))
-    check('APP_COMPATIBILITY: core finance RPCs resolve in the restored schema', rpcOk, coreRpcs.join(', '))
-    check('APP_COMPATIBILITY: RLS is enabled on restored public tables with policies present', rlsTableCount > 0 && policyCount > 0, `${rlsTableCount} RLS-enabled tables, ${policyCount} policies`)
+    const rlsTableCount = Number(
+      await db.scalar(
+        "select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relkind = 'r' and c.relrowsecurity;",
+      ),
+    )
+    const policyCount = Number(
+      await db.scalar("select count(*) from pg_policies where schemaname = 'public';"),
+    )
+    check(
+      'APP_COMPATIBILITY: core finance RPCs resolve in the restored schema',
+      rpcOk,
+      coreRpcs.join(', '),
+    )
+    check(
+      'APP_COMPATIBILITY: RLS is enabled on restored public tables with policies present',
+      rlsTableCount > 0 && policyCount > 0,
+      `${rlsTableCount} RLS-enabled tables, ${policyCount} policies`,
+    )
 
     return finish()
   } finally {
@@ -521,7 +734,11 @@ async function main(): Promise<number> {
 
 function finish(): number {
   const failed = checks.filter((c) => !c.pass)
-  console.log(failed.length === 0 ? `\nP137 RESTORE DRILL: PASS (${checks.length} checks)` : `\nP137 RESTORE DRILL: FAIL (${failed.length} of ${checks.length})`)
+  console.log(
+    failed.length === 0
+      ? `\nP137 RESTORE DRILL: PASS (${checks.length} checks)`
+      : `\nP137 RESTORE DRILL: FAIL (${failed.length} of ${checks.length})`,
+  )
   return failed.length === 0 ? 0 : 1
 }
 
@@ -530,7 +747,9 @@ main().then(
     process.exitCode = code
   },
   (error: unknown) => {
-    console.error(`P137 RESTORE DRILL: ERROR — ${error instanceof Error ? error.message : String(error)}`)
+    console.error(
+      `P137 RESTORE DRILL: ERROR — ${error instanceof Error ? error.message : String(error)}`,
+    )
     process.exitCode = 1
   },
 )

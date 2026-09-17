@@ -269,19 +269,32 @@ bulk writes while a backup is in progress (scheduled price/FX ingestion writing 
 tolerable; the migration history and ledger are what matter).
 
 `pnpm db:backup:regression` is the proof that this captures data: it starts a disposable
-`supabase/postgres` container (every `*.supabase.co` host hardcoded in a migration pinned to
-127.0.0.1, and the two cron jobs that call the hosted ingest functions deactivated right after
-the migration that schedules them — P130-12), applies all migrations, seeds a synthetic ledger
-through `create_purchase`, runs the real backup, and asserts that `data.sql`'s COPY row counts
-for `public.acquisition_lots`, `public.purchases` and `auth.users` equal the database's own counts.
-Run it after changing anything under `scripts/db-backup/`.
+`supabase/postgres` container (every `*.supabase.co` host hardcoded in the pre-P137 migration
+pinned to 127.0.0.1 as defence in depth, and the two ingest cron jobs asserted inactive), applies
+all migrations, seeds a synthetic ledger through `create_purchase`, runs the real backup, and
+asserts that `data.sql`'s COPY row counts for `public.acquisition_lots`, `public.purchases` and
+`auth.users` equal the database's own counts. Run it after changing anything under
+`scripts/db-backup/`.
 
-**Restore is NOT covered.** Replaying these files with psql into a fresh project yields an
-insecure database — invite-gate triggers on `auth.users` gone, broad default grants including
-anon EXECUTE on SECURITY DEFINER functions, cron jobs, Vault secrets and the auth hook missing
-(P130-07). A secured restore runbook with its own validation gates (grant audit, invite-gate
-probe, `remote-security-check.mjs`) is required and does not exist yet; it follows the fix for
-the hardcoded cron destination (P130-12).
+**Cron dispatch is environment-scoped (P137, closing P130-12).** The two ingest cron jobs no
+longer hardcode Production's edge-function hostname; they call a generic
+`public.dispatch_ingest_call()` wrapper that reads the target base URL from
+`public.environment_ingest_config`, a table no migration ever populates. A fresh local/CI/restored
+database therefore has outbound ingest dispatch disabled by construction — no manual
+`cron.alter_job(active := false)` workaround needed. Enabling real dispatch is a one-time,
+out-of-band `INSERT` against the real Production project only, mirroring how `price_sync_secret`
+is already provisioned. See the migration
+`supabase/migrations/20260916120000_p137_environment_scoped_ingest_dispatch.sql` for the full
+rationale and rejected alternatives, and `scripts/p137/cron-isolation-repro.ts` for the pre/post-fix
+proof (fresh, `--network none` disposable databases; no request ever reaches Production).
+
+**Restore**: see **[docs/RESTORE_RUNBOOK.md](RESTORE_RUNBOOK.md)** (P137). Replaying these files
+with a plain `psql` and stopping there still yields an insecure, incomplete database — that is
+what the runbook's ordered procedure and validation gates exist to prevent. The runbook is
+validated for disposable recovery (local/CI/drill targets); full Production disaster recovery
+additionally depends on Supabase platform steps (a new project's Auth/Storage bootstrap, the
+Before User Created hook wiring, Vault, edge function deploys) that no local tooling can exercise —
+see the runbook's §8 for exactly what remains.
 
 ---
 

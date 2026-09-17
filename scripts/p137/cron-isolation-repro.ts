@@ -24,7 +24,6 @@
  */
 import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { join } from 'node:path'
 
 const IMAGE = process.env.P137_REPRO_IMAGE ?? 'public.ecr.aws/supabase/postgres:17.6.1.158'
 const BASE_SHA = process.env.P137_BASE_SHA ?? '72e4660c4331a201ff8ff29ebcbada09088dc851'
@@ -43,8 +42,12 @@ function run(
     let stderr = ''
     child.stdout.setEncoding('utf8').on('data', (chunk: string) => (stdout += chunk))
     child.stderr.setEncoding('utf8').on('data', (chunk: string) => (stderr += chunk))
-    child.on('error', (error) => resolvePromise({ code: 127, stdout, stderr: error.message }))
-    child.on('close', (code) => resolvePromise({ code: code ?? 1, stdout, stderr }))
+    child.on('error', (error) => {
+      resolvePromise({ code: 127, stdout, stderr: error.message })
+    })
+    child.on('close', (code) => {
+      resolvePromise({ code: code ?? 1, stdout, stderr })
+    })
     child.stdin.end(input ?? '')
   })
 }
@@ -75,7 +78,14 @@ interface MigrationFile {
 }
 
 async function migrationsAtGitRef(ref: string): Promise<MigrationFile[]> {
-  const listing = await must('git', ['ls-tree', '-r', '--name-only', ref, '--', 'supabase/migrations'])
+  const listing = await must('git', [
+    'ls-tree',
+    '-r',
+    '--name-only',
+    ref,
+    '--',
+    'supabase/migrations',
+  ])
   const files = listing
     .split(/\r?\n/)
     .filter((line) => /supabase\/migrations\/\d{14}_.+\.sql$/.test(line))
@@ -88,7 +98,10 @@ async function migrationsAtGitRef(ref: string): Promise<MigrationFile[]> {
   return out
 }
 
-async function startDisposableDb(containerName: string, pinnedHosts: readonly string[]): Promise<string> {
+async function startDisposableDb(
+  containerName: string,
+  pinnedHosts: readonly string[],
+): Promise<string> {
   const password = randomBytes(18).toString('hex')
   await must('docker', [
     'run',
@@ -126,14 +139,31 @@ function psqlOf(containerName: string) {
   const exec = (sql: string, extra: readonly string[] = []) =>
     must(
       'docker',
-      ['exec', '-i', containerName, 'psql', '-X', '-q', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', 'postgres', ...extra],
+      [
+        'exec',
+        '-i',
+        containerName,
+        'psql',
+        '-X',
+        '-q',
+        '-v',
+        'ON_ERROR_STOP=1',
+        '-U',
+        'postgres',
+        '-d',
+        'postgres',
+        ...extra,
+      ],
       sql,
     )
   const scalar = async (sql: string): Promise<string> => (await exec(sql, ['-t', '-A'])).trim()
   return { exec, scalar }
 }
 
-async function applyMigrations(containerName: string, migrations: readonly MigrationFile[]): Promise<void> {
+async function applyMigrations(
+  containerName: string,
+  migrations: readonly MigrationFile[],
+): Promise<void> {
   const { exec } = psqlOf(containerName)
   await exec(
     'create schema if not exists supabase_migrations;\n' +
@@ -143,7 +173,9 @@ async function applyMigrations(containerName: string, migrations: readonly Migra
     await exec(file.sql)
     const version = file.name.slice(0, 14)
     const name = file.name.slice(15, -4).replace(/'/g, "''")
-    await exec(`insert into supabase_migrations.schema_migrations (version, name) values ('${version}', '${name}');\n`)
+    await exec(
+      `insert into supabase_migrations.schema_migrations (version, name) values ('${version}', '${name}');\n`,
+    )
   }
 }
 
@@ -157,7 +189,11 @@ async function main(): Promise<number> {
     console.log(`\n=== PHASE 1: pre-fix repro at ${BASE_SHA} (--network none) ===`)
     await startDisposableDb(preContainer, [REAL_PRODUCTION_HOST])
     const preMigrations = await migrationsAtGitRef(BASE_SHA)
-    check('pre-fix migration set read from git', preMigrations.length > 0, `${preMigrations.length} files at ${BASE_SHA}`)
+    check(
+      'pre-fix migration set read from git',
+      preMigrations.length > 0,
+      `${preMigrations.length} files at ${BASE_SHA}`,
+    )
     await applyMigrations(preContainer, preMigrations)
     const pre = psqlOf(preContainer)
 
@@ -166,12 +202,18 @@ async function main(): Promise<number> {
     )
     console.log(preIngestJobs)
     const preHostnameOccurrences = Number(
-      await pre.scalar(`select count(*) from cron.job where command ~ '${REAL_PRODUCTION_HOST.replace('.', '\\.')}';`),
+      await pre.scalar(
+        `select count(*) from cron.job where command ~ '${REAL_PRODUCTION_HOST.replace('.', '\\.')}';`,
+      ),
     )
     const preActiveIngest = Number(
-      await pre.scalar(`select count(*) from cron.job where active and ${HOSTED_INGEST_JOB_FILTER};`),
+      await pre.scalar(
+        `select count(*) from cron.job where active and ${HOSTED_INGEST_JOB_FILTER};`,
+      ),
     )
-    const preTotalIngest = Number(await pre.scalar(`select count(*) from cron.job where ${HOSTED_INGEST_JOB_FILTER};`))
+    const preTotalIngest = Number(
+      await pre.scalar(`select count(*) from cron.job where ${HOSTED_INGEST_JOB_FILTER};`),
+    )
     check(
       'P130_12_PRE_FIX_REPRO: released migrations create an ACTIVE cron job whose command contains the real Production hostname',
       preHostnameOccurrences >= 2 && preActiveIngest === 2 && preTotalIngest === 2,
@@ -191,7 +233,7 @@ async function main(): Promise<number> {
     )
     await sleep(2000)
     const preResponseStatuses = await pre.exec(
-      "select status_code, error_msg from net._http_response order by id desc limit 3;",
+      'select status_code, error_msg from net._http_response order by id desc limit 3;',
     )
     console.log(preResponseStatuses)
     check(
@@ -204,15 +246,30 @@ async function main(): Promise<number> {
     console.log('\n=== PHASE 2: post-fix, working-tree migrations (--network none) ===')
     await startDisposableDb(postContainer, [REAL_PRODUCTION_HOST, FAKE_TEST_HOST])
     const postMigrations = await migrationsAtGitRef('HEAD')
-    check('post-fix migration set read from git HEAD', postMigrations.length > 0, `${postMigrations.length} files`)
+    check(
+      'post-fix migration set read from git HEAD',
+      postMigrations.length > 0,
+      `${postMigrations.length} files`,
+    )
     await applyMigrations(postContainer, postMigrations)
     const post = psqlOf(postContainer)
 
-    const postHostnameOccurrences = Number(await post.scalar("select count(*) from cron.job where command ~ '\\.supabase\\.co';"))
-    const postActiveIngest = Number(
-      await post.scalar(`select count(*) from cron.job where active and ${HOSTED_INGEST_JOB_FILTER};`),
+    const postHostnameOccurrences = Number(
+      await post.scalar("select count(*) from cron.job where command ~ '\\.supabase\\.co';"),
     )
-    const postConfigRows = Number(await post.scalar('select count(*) from public.environment_ingest_config;'))
+    const postActiveIngest = Number(
+      await post.scalar(
+        `select count(*) from cron.job where active and ${HOSTED_INGEST_JOB_FILTER};`,
+      ),
+    )
+    const postConfigRows = Number(
+      await post.scalar('select count(*) from public.environment_ingest_config;'),
+    )
+    check(
+      'post-fix: the two ingest jobs still exist and are active (schedule itself stays reproducible from migrations, not deleted)',
+      postActiveIngest === 2,
+      `active ingest jobs=${postActiveIngest}`,
+    )
     check(
       'PRODUCTION_HOST_HARDCODE_REMOVED: no *.supabase.co literal in any cron.job.command',
       postHostnameOccurrences === 0,
@@ -223,25 +280,36 @@ async function main(): Promise<number> {
       postConfigRows === 0,
       `rows=${postConfigRows}`,
     )
-    const unconfiguredResult = (await post.scalar("select coalesce(public.dispatch_ingest_call('/functions/v1/ingest-prices')::text, 'NULL');")).trim()
+    const unconfiguredResult = (
+      await post.scalar(
+        "select coalesce(public.dispatch_ingest_call('/functions/v1/ingest-prices')::text, 'NULL');",
+      )
+    ).trim()
     check(
       'unconfigured environment: calling the dispatcher returns NULL — no net.http_post call was ever made (fails closed)',
       unconfiguredResult === 'NULL',
       `dispatch_ingest_call() returned ${unconfiguredResult}`,
     )
 
-    console.log('\n=== PHASE 3: post-fix, environment explicitly configured (non-production, non-existent test host) ===')
+    console.log(
+      '\n=== PHASE 3: post-fix, environment explicitly configured (non-production, non-existent test host) ===',
+    )
     await post.exec(
       `insert into public.environment_ingest_config (id, base_url, configured_note) values (true, 'https://${FAKE_TEST_HOST}', 'p137 disposable test only');`,
     )
-    const configuredBaseUrl = await post.scalar('select base_url from public.environment_ingest_config where id;')
+    const configuredBaseUrl = await post.scalar(
+      'select base_url from public.environment_ingest_config where id;',
+    )
     check(
       'environment_ingest_config now holds the fake test host, never the real Production hostname (dispatch_ingest_call builds its URL from this column and no other source)',
-      configuredBaseUrl.includes(FAKE_TEST_HOST) && !configuredBaseUrl.includes(REAL_PRODUCTION_HOST),
+      configuredBaseUrl.includes(FAKE_TEST_HOST) &&
+        !configuredBaseUrl.includes(REAL_PRODUCTION_HOST),
       `base_url=${configuredBaseUrl}`,
     )
     const requestIdRaw = (
-      await post.scalar("select coalesce(public.dispatch_ingest_call('/functions/v1/ingest-prices')::text, 'NULL');")
+      await post.scalar(
+        "select coalesce(public.dispatch_ingest_call('/functions/v1/ingest-prices')::text, 'NULL');",
+      )
     ).trim()
     check(
       'explicitly configuring the environment turns dispatch on (dispatch_ingest_call now returns a real pg_net request id instead of NULL) — proves the mechanism works, not just that it is disabled',
@@ -271,7 +339,9 @@ main().then(
     process.exitCode = code
   },
   (error: unknown) => {
-    console.error(`P137 CRON ISOLATION REPRO: ERROR — ${error instanceof Error ? error.message : String(error)}`)
+    console.error(
+      `P137 CRON ISOLATION REPRO: ERROR — ${error instanceof Error ? error.message : String(error)}`,
+    )
     process.exitCode = 1
   },
 )
