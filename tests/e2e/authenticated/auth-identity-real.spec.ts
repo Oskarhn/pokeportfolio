@@ -199,6 +199,47 @@ const SHAPES: StateShape[] = [
   },
 ]
 
+interface StorageSnapshot {
+  local: [string, string][]
+  session: [string, string][]
+  indexedDbNames: string[]
+  cacheNames: string[]
+}
+
+/** Everything the browser persists for this origin, as plain strings. */
+async function snapshotBrowserStorage(page: Page): Promise<StorageSnapshot> {
+  return page.evaluate(async () => {
+    const entries = (store: Storage): [string, string][] =>
+      Array.from({ length: store.length }, (_, i) => {
+        const key = store.key(i) ?? ''
+        return [key, store.getItem(key) ?? ''] as [string, string]
+      })
+    const databases = 'databases' in indexedDB ? await indexedDB.databases() : []
+    return {
+      local: entries(window.localStorage),
+      session: entries(window.sessionStorage),
+      indexedDbNames: databases.map((d) => d.name ?? ''),
+      cacheNames: 'caches' in window ? await caches.keys() : [],
+    }
+  })
+}
+
+/** The only localStorage keys this app is documented to write (tests/e2e/client-storage-privacy.spec.ts). */
+const KNOWN_LOCAL_KEY = [
+  /^pp-theme$/,
+  /^pokeportfolio.export.reminder-marked-at./,
+  /^sb-.*-auth-token$/,
+]
+
+function everyString(snapshot: StorageSnapshot): string[] {
+  return [
+    ...snapshot.local.flat(),
+    ...snapshot.session.flat(),
+    ...snapshot.indexedDbNames,
+    ...snapshot.cacheNames,
+  ]
+}
+
 test.describe('P143 — real two-page identity switch (shared browser auth state)', () => {
   let pair: Pair | null = null
 
@@ -334,6 +375,44 @@ test.describe('P143 — real two-page identity switch (shared browser auth state
     expect(
       await page.evaluate(() => (window as unknown as { __p143Leak: boolean }).__p143Leak),
     ).toBe(false)
+  })
+
+  test("persisted browser state: A's typed input never reaches any storage, and nothing of A remains after A -> B", async ({
+    context,
+    page,
+  }) => {
+    pair = await createPair('p143-storage')
+    await signInThroughForm(page, pair.a)
+    await page.goto('/purchases/new')
+    await page.getByLabel('Notes').fill(MARKER_A)
+    await page.getByLabel('Add a new retailer').fill(MARKER_A)
+    await page.goto('/profile')
+    await page.getByRole('button', { name: 'Add a display name' }).click()
+    await page.getByLabel('Display name').fill(MARKER_A)
+    await armBroadcastCounter(page)
+
+    // While A is signed in: typed-but-unsaved input is component state only.
+    const whileA = await snapshotBrowserStorage(page)
+    expect(everyString(whileA).some((v) => v.includes(MARKER_A))).toBe(false)
+    for (const [key] of whileA.local) {
+      expect(
+        KNOWN_LOCAL_KEY.some((pattern) => pattern.test(key)),
+        `unexpected localStorage key ${key}`,
+      ).toBe(true)
+    }
+    expect(whileA.session.every(([key]) => key === 'pp-stale-reload-last-at')).toBe(true)
+    expect(whileA.indexedDbNames).toEqual([])
+
+    const other = await openOtherTab(context)
+    await switchAndSettle(page, other, { kind: 'sign-in', user: pair.b })
+
+    // After A -> B: the ONLY account-specific persisted thing is B's own session.
+    const afterSwitch = await snapshotBrowserStorage(page)
+    const strings = everyString(afterSwitch)
+    expect(strings.some((v) => v.includes(MARKER_A))).toBe(false)
+    expect(strings.some((v) => v.includes(pair!.a.id))).toBe(false)
+    expect(strings.some((v) => v.includes(pair!.a.email))).toBe(false)
+    expect(strings.some((v) => v.includes(pair!.b.id))).toBe(true) // B's own session, as expected
   })
 
   test('same-user refresh / user update / repeated sign-in do NOT destroy unsaved input', async ({
