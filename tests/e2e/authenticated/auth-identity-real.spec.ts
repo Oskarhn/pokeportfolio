@@ -219,6 +219,10 @@ test.describe('P143 — real two-page identity switch (shared browser auth state
 
       await switchAndSettle(page, other, { kind: 'sign-in', user: pair.b })
 
+      // Some of these pages render their form under a data-gated branch: a cache clear can flash a
+      // skeleton for a moment, during which "no fields contain the marker" would hold trivially.
+      // Wait for the form to be back (a new tree, or — on a defective build — never gone) first.
+      await shape.ready(page).catch(() => undefined)
       // Positive control: page 1 really acts as B now (its next SPA navigation shows B's email).
       // `expect.soft` so a survival failure is reported alongside the control at the reproduction.
       expect.soft((await allFieldValues(page)).some((v) => v.includes(MARKER_A))).toBe(false)
@@ -246,34 +250,50 @@ test.describe('P143 — real two-page identity switch (shared browser auth state
     expect.soft((await allFieldValues(page)).some((v) => v.includes('ONLY'))).toBe(false)
   })
 
-  test("the consequence: A's typed profile name is never written to B's account", async ({
+  test("the consequence: A's typed purchase is never recorded in B's account", async ({
     context,
     page,
   }) => {
     pair = await createPair('p143-consequence')
+    const manualName = 'A-ONLY-p143-manual-card'
     await signInThroughForm(page, pair.a)
-    await page.goto('/profile')
-    await page.getByRole('button', { name: 'Add a display name' }).click()
-    await page.getByLabel('Display name').fill(MARKER_A)
+    await page.goto('/purchases/new')
+    await page.getByRole('button', { name: "Catalog doesn't have it" }).click()
+    await page.getByLabel('Card name').fill(manualName)
+    await page.getByLabel('Unit price').fill('10')
+    await page.getByLabel('Notes').fill(MARKER_A)
     await armBroadcastCounter(page)
     const other = await openOtherTab(context)
 
     await switchAndSettle(page, other, { kind: 'sign-in', user: pair.b })
 
-    // A form that survived is still there to be submitted — under B's session. On a correct
-    // build there is nothing left to press.
-    if ((await page.getByLabel('Display name').count()) > 0) {
-      await page.getByRole('button', { name: 'Save' }).click()
-      await page.waitForTimeout(1_000)
+    // A form that survived is still there to be submitted — under B's session (the original
+    // P130-23 repro: "A's typed manual card submitted with B's bearer"). On a correct build there
+    // is nothing left to press, so nothing is submitted.
+    if (
+      (await page
+        .getByLabel('Notes')
+        .inputValue()
+        .catch(() => '')) === MARKER_A
+    ) {
+      await page.getByRole('button', { name: 'Save purchase' }).click()
+      await page.waitForTimeout(2_000)
     }
     const service = createServiceClient()
-    const { data, error } = await service
-      .from('profiles')
-      .select('display_name')
-      .eq('id', pair.b.id)
-      .single()
-    expect(error).toBeNull()
-    expect(data?.display_name).not.toBe(MARKER_A)
+    const purchases = await service
+      .from('purchases')
+      .select('id')
+      .eq('user_id', pair.b.id)
+      .eq('notes', MARKER_A)
+    expect(purchases.error).toBeNull()
+    expect(purchases.data).toEqual([])
+    const cards = await service
+      .from('manual_card_definitions')
+      .select('id')
+      .eq('user_id', pair.b.id)
+      .eq('name', manualName)
+    expect(cards.error).toBeNull()
+    expect(cards.data).toEqual([])
   })
 
   test("A's cached server data is never rendered under B (query cache cleared BEFORE the new tree mounts)", async ({
