@@ -10,7 +10,7 @@ import { PublicFooter } from '../legal/LegalLayout'
  * be a control, so the absence of one here is presentation, not security.
  */
 export function LoginPage() {
-  const { signIn } = useAuth()
+  const { signIn, signOutNotice } = useAuth()
   const navigate = useNavigate()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -31,6 +31,16 @@ export function LoginPage() {
 
   return (
     <AuthLayout title="Sign in" description="PokePortfolio is private and invite-only.">
+      {/* P143: set only after a sign-out whose server-side revocation could not be confirmed.
+          A status, not an alert — the sign-out itself succeeded on this device. */}
+      {signOutNotice ? (
+        <p
+          role="status"
+          className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200"
+        >
+          {signOutNotice}
+        </p>
+      ) : null}
       <form
         className="space-y-4"
         onSubmit={(event) => {

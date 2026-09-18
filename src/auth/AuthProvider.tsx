@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import type { Session } from '@supabase/supabase-js'
-import { supabase } from '../data/supabase-client'
+import { supabase, authSessionStorage, AUTH_STORAGE_KEY } from '../data/supabase-client'
 // P56 §9: ending authentication must deterministically drop every user's in-memory opening
 // draft — private financial intent never outlives the session that created it. (The store is
 // additionally keyed by user id, so account switches are isolated even without this.)
@@ -9,6 +9,7 @@ import { draftStore } from '../features/openings/draft'
 // M15 (D-093 sweep extension): scanner session defaults are private collection intent too.
 import { scannerSessionStore } from '../features/scanner/session-store'
 import { applyAuthIdentityBoundary, type ObservedUserId } from './query-cache-boundary'
+import { describeSessionEnd, endAuthenticatedSession } from './end-session'
 import { AuthContext, type AuthState } from './auth-context'
 
 /**
@@ -16,7 +17,13 @@ import { AuthContext, type AuthState } from './auth-context'
  *
  * Storage and refresh are left to supabase-js: it keeps the session in localStorage with refresh
  * token rotation, which is the trade the SPA model implies (docs/SECURITY.md §9). Re-implementing
- * that on top of a custom store would add an XSS-reachable copy of the same token and buy nothing.
+ * that on top of a custom store would add an XSS-reachable copy of the same token and buy nothing —
+ * the adapter in auth/session-storage.ts wraps the SAME localStorage entry, it does not duplicate
+ * it; it exists only so a deliberate sign-out can prove that entry is gone (P130-22).
+ *
+ * Identity isolation (P130-23) has two halves that must stay together: `AuthIdentityBoundary`
+ * remounts the authenticated React subtree when the user id changes, and `observeIdentity` below
+ * clears the state that lives outside React (query cache, stores) in the same auth callback.
  *
  * `isAdmin` is read from the user's own `profiles` row, and is a UI affordance only. Every admin
  * capability is gated in Postgres — the invitation RPCs check `is_admin()` themselves and the
@@ -30,6 +37,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // cleared on sign-out. Deriving both `isAdmin` and `profileLoading` from it means the effect
   // below never writes state synchronously, only from its own async result.
   const [adminFor, setAdminFor] = useState<{ userId: string; isAdmin: boolean } | null>(null)
+  const [signOutNotice, setSignOutNotice] = useState<string | null>(null)
   const queryClient = useQueryClient()
   // F-61-2: the module-lifetime QueryClient is user-blind (no key carries a user id), so a
   // same-tab account switch must clear it between identities or B renders A's cached financial
@@ -63,6 +71,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       observeIdentity(nextSession)
       setSession(nextSession)
       setStatus(nextSession ? 'signed-in' : 'signed-out')
+      // A new session means whatever the last sign-out reported no longer applies.
+      if (nextSession) setSignOutNotice(null)
     })
 
     return () => {
@@ -104,10 +114,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const signOut = useCallback(async () => {
-    await supabase.auth.signOut()
+    const outcome = await endAuthenticatedSession({
+      auth: supabase.auth,
+      storage: authSessionStorage,
+      storageKey: AUTH_STORAGE_KEY,
+    })
+    // From here on THIS tab is signed out, whichever events did or did not fire on the way (the
+    // library emits nothing when it declines to remove an expired session, P130-22). These are
+    // idempotent with the SIGNED_OUT path: the boundary only fires when the identity changed.
+    observeIdentity(null)
+    setSession(null)
+    setStatus('signed-out')
     draftStore.clearAll()
     scannerSessionStore.clearAll()
-  }, [])
+    setSignOutNotice(describeSessionEnd(outcome))
+    return outcome
+  }, [observeIdentity])
 
   const value = useMemo<AuthState>(
     () => ({
@@ -118,8 +140,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       profileLoading,
       signIn,
       signOut,
+      signOutNotice,
     }),
-    [status, session, isAdmin, profileLoading, signIn, signOut],
+    [status, session, isAdmin, profileLoading, signIn, signOut, signOutNotice],
   )
 
   return <AuthContext value={value}>{children}</AuthContext>
