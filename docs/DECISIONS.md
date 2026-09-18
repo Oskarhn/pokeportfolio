@@ -6087,7 +6087,7 @@ browser before any change (see Proof):
   a dead connection, not something this design can remove.
 - The deadline means a revocation that would have succeeded after 3 s is reported unconfirmed
   (conservative).
-- **Not addressed:** a multi-step submission already IN FLIGHT when the identity changes in another
+- **Not addressed here (closed by D-136, P145):** a multi-step submission already IN FLIGHT when the identity changes in another
   tab (e.g. `PurchaseFormPage` creates a manual card, then `create_purchase`). The remount cannot
   stop an async continuation, and a later step reads the CURRENT session, i.e. B's. Every RPC still
   binds to its caller's `auth.uid()` (no cross-user data access), and the window is one submit's
@@ -6108,3 +6108,103 @@ regression fail, at unit and browser level. Unit level:
 tests) and `tests/ui/auth-end-session.test.ts`, which runs the real installed `AuthClient` against
 a stub `fetch` and carries a CANARY that fails loudly if a future supabase-js starts removing the
 expired session itself, so the compensation is reconsidered rather than left to rot.
+
+## D-136 — A running authenticated operation belongs to one identity lease and cannot continue under another (P130-23 in-flight residual / P145)
+
+**2026-09-19 · Accepted**
+
+**Context.** D-134 keyed the authenticated React subtree by the auth user id, which destroys a stale
+*form*. It named one residual and did not claim it closed: a multi-step submission that had already
+started under A survives the remount, because a remount cannot cancel an async continuation, and
+every later step reads the CURRENT session. Reproduced first, at the D-134 code, in a real browser
+with two pages of one context and the service role as witness: A submits a purchase (exchange-rate
+step, then `create_purchase`), the other tab signs in as B while the first step is pending, the step
+is released — and a purchase carrying A's marker is inserted in B's account. The same window exists
+without any earlier step: between "the person pressed Save" and "supabase-js has chosen the bearer
+token for the request", `getSession()` may refresh a token over the network and reads whatever the
+shared browser storage holds, which another tab may already have rewritten ahead of the
+BroadcastChannel event that tells this tab. Reproduced for a plain single write as well, and for
+sales, purchase and sale edits, the openings wizard, add-to-collection, and — the sharpest — the
+Profile "reset my portfolio data" confirmation, which names no owner and therefore deleted **B's**
+whole portfolio when it ran under B.
+
+**Decision.** Every write to user data is a *leased* operation.
+
+- **Authority.** `IdentityAuthority` (`src/auth/identity-lease.ts`) records the identity the auth
+  callback reports: the user id plus a monotonic epoch, incremented on every real change — A → B,
+  A → signed out, signed out → A — and never on TOKEN_REFRESHED / USER_UPDATED / a repeated
+  SIGNED_IN. It is created once by `AuthProvider`, so it outlives the page that took a lease, and it
+  is fed by `observeIdentity` in the same synchronous step as the cache boundary. It is not a second
+  source of truth about the session, and no token string is ever consulted: an A → B → A round trip
+  does not revive a lease from the first A session, which the user id alone could not tell apart.
+  A tab that starts signing out calls `retire()` before the network call (the revocation may take up
+  to its 3 s deadline, and no operation may start another step in that time).
+- **Lease.** Taken in `mutate()` (`useLeasedMutation` / `useLeasedAction`, `src/auth/
+  useLeasedMutation.ts`) for the user the component was RENDERED under, not for the authority's own
+  current user: if the identity already changed but React has not committed the remount, a click on
+  the stale form gets a lease that is dead from the start.
+- **Request layer.** A lease owns a Supabase client (`createLeasedDb`, `src/data/leased-client.ts`)
+  built with the documented `accessToken` client option. Its provider asserts the lease is current,
+  asks the live `supabase.auth.getSession()`, and returns that session's access token **only if the
+  session's user is the lease's user** (asserting again after the await); otherwise it revokes the
+  lease and throws `AuthIdentityChangedError` (`auth-identity-changed`), so no request is sent. Every
+  write function in `src/data` takes `db: LeasedDb`; the compiler rejects the shared client there.
+- **What the caller sees.** `runWithLease` turns any failure that surfaces after the lease ended into
+  the fixed domain outcome (no server text, no data of A), and the hook does not call `onSuccess` /
+  `onError` for an ended lease: nothing is navigated, invalidated or shown to the identity that is on
+  screen now. A result that comes back from a request that was already dispatched is returned as it
+  is — it happened as the user the operation belongs to.
+- **Reads that assemble a file** (backup, CSV) run under a lease too: an export begun under A that
+  continued under B would put B's rows in A's file. The owner named in a leased profile write, custom
+  sealed product or export is the lease's user, not the answer of an `auth.getUser()` round trip.
+
+**The check-to-dispatch window, precisely.** A step-by-step `assertCurrent()` between awaits cannot
+close it, because the token is chosen later by other code. Here the token is chosen by the code that
+verified it: the provider returns a specific user's access token, checked synchronously after its
+last await, and supabase-js attaches exactly that value; between the provider's return and `fetch()`
+there are only promise continuations, no task boundary, so no auth-event handler can run in between.
+Whatever the identity does afterwards, the request authenticates as the user it belongs to. The one
+thing a still-later switch can change is whether the *next* step starts — and that is refused by the
+next provider call. Consequently a request can never present a token of a different user than its
+lease, whether the difference was already visible to this tab (epoch) or not yet (the browser storage
+already holds B, the event has not arrived): the second case is refused from the credentials alone
+and revokes the lease.
+
+**Partial side effects.** An operation of several writes may leave what was already dispatched: a
+manual-card definition created for A before the switch stays A's (owned by A through `auth.uid()`,
+referenced by nothing, visible only to A); nothing is created for B and nothing of A's can become
+B-owned. No cleanup is attempted under another identity, and no workflow was turned into a single
+transaction. A's next attempt starts a fresh form and may therefore create a second, identical
+definition next to the orphan; that is bounded clutter, not an integrity issue.
+
+**Alternatives considered and rejected.**
+
+- *Assert the lease between steps and nowhere else.* Leaves the window between the assertion and the
+  bearer choice open; the request layer closes it, the assertions are kept only where a non-request
+  side effect (a draft write, a form patch) follows an await.
+- *Store the token and replay it under A.* Writes could continue after a sign-out or revocation, and
+  a token would be held where it should not be. The behaviour on a change is to stop, not to finish
+  under stale credentials.
+- *Abort in-flight requests when the identity changes.* Dropping a request client-side does not tell
+  the person, or the code, whether the server had already committed it (a disconnect may or may not
+  cancel the statement), so the outcome of A's write becomes ambiguous. "An already-dispatched request
+  completes as its caller" is the unambiguous outcome.
+- *A tab-wide guard that refuses any request whose bearer differs from the observed identity.* It
+  cannot tell a continuation of A's operation from B's own fresh action once the identity has moved
+  on, and it would put every request of the app behind a new failure mode.
+- *An expected-user argument on every RPC.* Server-side, would need a migration per function and
+  materially changes the integration with the concurrent database work; not needed for closure.
+
+**Consequences and residuals (stated, not hidden).**
+
+- The Norges Bank preview button in the purchase form is the one `useMutation` left: it reads a
+  public rate into the form and writes nothing. `tests/ui/identity-lease-coverage.test.ts` fails on
+  any other raw `useMutation`, on a write function without `LeasedDb`, on a write body that touches
+  the shared client, and on missing wiring in `AuthProvider`/the hook/the provider.
+- Signed-out flows (recovery mail, invitation status and redemption, new password) have no identity
+  to lease.
+- Reliance on documented supabase-js behaviour: the `accessToken` option decides the `Authorization`
+  header of `from`/`rpc`/`functions`, and `client.auth` is absent on such a client. A test pins that
+  the provider's token is the header on the wire, so an upgrade that changes it fails loudly.
+- Idempotency (P138/P140) is unchanged: a same-identity retry re-sends the same key; an aborted
+  attempt sent nothing, so no key is consumed on anyone's behalf.

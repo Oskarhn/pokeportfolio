@@ -807,11 +807,23 @@ fixed text — never a raw error — only when revocation could not be confirmed
 connection the server-side refresh token cannot be revoked; it stays valid until it rotates or
 expires, and signing in and out again while online revokes it.
 
-**Not covered:** a multi-step submission already in flight when the identity changes in another
-tab (D-134 "Consequences and residuals"). Regression suites: `tests/ui/auth-identity-boundary.test.ts`,
-`tests/ui/auth-end-session.test.ts`, `tests/e2e/auth-identity-lifecycle.spec.ts`,
-`tests/e2e/auth-signout.spec.ts`, and the real-GoTrue `tests/e2e/authenticated/auth-identity-
-real.spec.ts` / `auth-signout-real.spec.ts`.
+**Operations already in flight** are covered by the identity lease (§9.3, D-136). Regression suites:
+`tests/ui/auth-identity-boundary.test.ts`, `tests/ui/auth-end-session.test.ts`,
+`tests/e2e/auth-identity-lifecycle.spec.ts`, `tests/e2e/auth-signout.spec.ts`, and the real-GoTrue
+`tests/e2e/authenticated/auth-identity-real.spec.ts` / `auth-signout-real.spec.ts`.
+
+### 9.3 A running operation never continues under another identity (D-136, P145)
+
+Remounting (§9.2) cannot stop an async continuation that already started. Every user-data write is
+therefore a *leased* operation: `mutate()` takes an identity lease for the user the screen was
+rendered under (`IdentityAuthority`, owned by `AuthProvider`: user id plus a monotonic epoch that
+changes on A → B, sign-out and sign-in, never on token refresh), and every request of the operation
+is sent by a per-lease client (`src/data/leased-client.ts`) whose bearer-token provider hands out a
+token only if the lease is still current **and** the session the browser holds right now belongs to
+the lease's user. Otherwise the operation stops (`auth-identity-changed`), nothing is sent, and no
+result or error is shown to the identity that is on screen now. A request that was already on its way
+completes as the user it began under; no token is stored or replayed. Ledger of what is covered and
+what cannot rot silently: `tests/ui/identity-lease-coverage.test.ts`.
 
 ---
 
