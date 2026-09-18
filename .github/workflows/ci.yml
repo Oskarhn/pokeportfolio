@@ -12,6 +12,13 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Least-privilege default for every job below (P142 §14): checkout only. `deploy-production`
+# needs nothing more than this either — it authenticates to Cloudflare with its own scoped API
+# token (a repository secret, never a GITHUB_TOKEN permission), not with any GitHub API write
+# scope, so there is no job-specific permission to add for it.
+permissions:
+  contents: read
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
@@ -357,3 +364,128 @@ jobs:
       - name: Stop local Supabase stack
         if: always()
         run: pnpm exec supabase stop
+
+  # Explicit, CI-gated Production deploy (P130-08, P142) — the target architecture
+  # GIT_WORKFLOW.md §11 already documents, implemented here. Replaces Cloudflare's automatic
+  # Git-integrated deploy, which today races GitHub CI on the same push webhook with no ordering
+  # primitive between them (§11's own measured evidence: Production updates 30-45s after a push,
+  # long before db-tests alone finishes). This job only BECOMES the live deploy path once the
+  # owner has done the three things §11 lists in order: (1) Cloudflare dashboard — turn OFF
+  # automatic Production deploys for `main`; (2) Cloudflare dashboard — create an API token scoped
+  # to Pages:Edit for this one project; (3) GitHub repository settings — add that token as secret
+  # CLOUDFLARE_API_TOKEN, the account id as secret CLOUDFLARE_ACCOUNT_ID, and the three build
+  # variables (none of them a secret — DEVELOPMENT.md §9) as repository variables VITE_SUPABASE_URL
+  # / VITE_SUPABASE_PUBLISHABLE_KEY. Until all three are done, this job fails closed the moment it
+  # tries to build or deploy (a missing repository variable/secret is an explicit error, never a
+  # silent no-op deploy) — landing this job before step (1) is done is deliberately safe: it simply
+  # cannot succeed yet, and does not create a second deploy path racing Cloudflare's still-enabled
+  # automatic one, because it never reaches the deploy step without real credentials.
+  deploy-production:
+    needs: [build-and-test, db-tests]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    # A dedicated group, deliberately NOT the workflow-level `ci-${{ github.ref }}` group above:
+    # that group's `cancel-in-progress: true` is correct for build-and-test/db-tests (a newer push
+    # should cancel an old, now-superseded CI run) but wrong here — cancelling this job mid-upload
+    # could leave Cloudflare in an ambiguous half-deployed state. `cancel-in-progress: false`
+    # serialises Production deploys instead: at most one upload in flight, a later one queues
+    # rather than interrupts an earlier one. "Latest eligible main wins" is enforced by the
+    # exact-SHA guard below, not by cancellation — a queued run for an already-superseded SHA
+    # checks origin/main again immediately before it would deploy and skips itself if main moved on.
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Enable Corepack and activate the pinned pnpm
+        run: |
+          corepack enable
+          corepack prepare --activate
+
+      # Stale-run refusal: build-and-test + db-tests together take several minutes (db-tests'
+      # own steps above run a full ephemeral-database suite), so origin/main may have advanced
+      # past the SHA this run was triggered for by the time this job starts. Never fails the job
+      # on a mismatch — a stale run losing to a newer one is the intended, safe outcome, not a
+      # defect (scripts/lib/deploy-guards.mjs, tests/config/deploy-guards.test.ts).
+      - name: Check that origin/main is still exactly this commit
+        id: guard-main
+        run: node scripts/release-guard.mjs remote-main-current --github-sha "$GITHUB_SHA"
+
+      - name: Install dependencies
+        if: steps.guard-main.outputs.current == 'true'
+        run: pnpm install --frozen-lockfile
+
+      # A SEPARATE production build, not a reuse of build-and-test's artifact: that job builds
+      # against a placeholder Supabase URL on purpose (playwright.config.ts), which is the wrong
+      # artifact to ship. Only three build-time variables exist and none is a secret
+      # (DEVELOPMENT.md §9) — ordinary repository variables, not GitHub Actions secrets.
+      - name: Build for Production
+        if: steps.guard-main.outputs.current == 'true'
+        run: pnpm build
+        env:
+          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.VITE_SUPABASE_PUBLISHABLE_KEY }}
+
+      # The artifact about to be uploaded must declare exactly this commit, not a `+dirty` build
+      # or (by construction, impossible in a clean CI checkout, but checked anyway — defence in
+      # depth matters more than an assumption about how this job is invoked) any other SHA. Hard
+      # failure, never skipped — unlike the guard above, a mismatch here is a real build defect,
+      # not a benign race.
+      - name: Verify build identity before upload
+        if: steps.guard-main.outputs.current == 'true'
+        run: node scripts/release-guard.mjs build-identity --github-sha "$GITHUB_SHA" --build-meta dist/build-meta.json
+
+      # The exact-SHA deploy: `--commit-hash` ties this upload to the commit CI just validated,
+      # not "whatever main currently is" — the race a generic Cloudflare deploy hook would still
+      # have. No `|| true`: an upload failure fails this job, and Production stays on whatever it
+      # was already serving.
+      - name: Deploy to Cloudflare Pages (Production)
+        if: steps.guard-main.outputs.current == 'true'
+        run: |
+          pnpm exec wrangler pages deploy dist \
+            --project-name=pokeportfolio-dev \
+            --branch=main \
+            --commit-hash="$GITHUB_SHA" \
+            --commit-dirty=false
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      # Post-deploy verification: the same bounded-retry idiom db-tests already uses above for
+      # "wait for a real service to come up" (its "Verify the redeem-invitation function is
+      # served" step) — CDN propagation is the only reason for a retry here, never a substitute
+      # for the checks themselves. Runs the two existing, independent release verifiers
+      # (scripts/preview-verify.mjs owns build-identity-vs-URL + the scanner index;
+      # scripts/deployment-check.mjs owns CSP/security headers/PWA — see each script's own header
+      # comment for why they are not merged) against the live Production URL with the exact commit
+      # just deployed. A verification failure fails this job; it does not roll back or redeploy
+      # anything — rollback stays a manual, documented decision (docs/GIT_WORKFLOW.md §11).
+      - name: Verify Production actually serves this exact commit
+        if: steps.guard-main.outputs.current == 'true'
+        run: |
+          for attempt in $(seq 1 15); do
+            if node scripts/preview-verify.mjs --url https://pokeportfolio-dev.pages.dev --sha "$GITHUB_SHA"; then
+              echo "preview-verify passed on attempt $attempt"
+              break
+            fi
+            if [ "$attempt" = "15" ]; then
+              echo "::error::Production never reached exact SHA $GITHUB_SHA after 15 attempts"
+              exit 1
+            fi
+            echo "attempt $attempt: Production not yet at $GITHUB_SHA — retrying"
+            sleep 10
+          done
+          node scripts/deployment-check.mjs
+        env:
+          DEPLOYMENT_URL: https://pokeportfolio-dev.pages.dev
+          SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}

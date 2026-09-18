@@ -4,6 +4,70 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
+## Current state (P142, 2026-09-18) — CI-gated Production deploy IMPLEMENTED, not yet live; P130-08 still OPEN, blocked on owner Cloudflare credentials
+
+**This section is the authoritative current state.** Every section below it, including the P141
+section immediately following, is historical and describes the state at the time it was written.
+
+**Scope: release infrastructure only.** No application feature work, no database migration, no
+finance change. Hosted Supabase re-confirmed at 104 migrations / 0 pending (read-only
+`supabase migration list --linked`); not touched.
+
+**Verified before anything else, honestly re-checked rather than assumed from P141:** current
+GitHub `main` (`d8682e047b757f63673a63ac8185a4806d68cb98`, the P141 HANDOVER-closeout commit) and
+current Production (`/build-meta.json`) were the SAME SHA — Cloudflare's automatic deploy had
+already fired for that docs-only commit, exactly the race §11 describes, before this session
+touched anything. Production was healthy at that SHA: `deployment-check.mjs` 34/34,
+scanner content id unchanged (`f25fc05d569b7cca`), CSP/security headers correct.
+`CLOUDFLARE_AUTH_AVAILABLE=no` — no `wrangler login`, no `CLOUDFLARE_*` env var, no `.wrangler`
+config anywhere in this environment; `gh secret list` and `gh variable list` both returned
+genuinely empty (checked twice). Per this project's own action-authorization rules (external
+account-setting changes need the owner, not standing session authority) and the prompt's own
+credential-unavailable branch, **no Cloudflare mutation was attempted** — no disabling automatic
+deploy, no deleting the stale M15 preview. Branch protection on `main` remains unavailable on the
+current GitHub plan (403, re-confirmed, matches P139).
+
+**What WAS built and verified, entirely repo-side:** `.github/workflows/ci.yml` gained a
+`deploy-production` job — gated by `needs: [build-and-test, db-tests]` plus
+`if: github.event_name == 'push' && github.ref == 'refs/heads/main'`, re-checks `origin/main` is
+still current immediately before deploying (refuses a stale SHA safely, never fails the job for
+it), verifies its own Production build declares the exact triggering SHA (hard failure otherwise),
+deploys via a newly pinned exact-version `wrangler` devDependency (`4.134.0`) with
+`--commit-hash="$GITHUB_SHA"`, and re-verifies the live result with the existing
+`preview-verify.mjs --sha` / `deployment-check.mjs` scripts under a bounded retry. Full design
+rationale and the exact remaining owner steps: `docs/GIT_WORKFLOW.md` §11 (rewritten this session)
+and §12 (P142 re-check note added, preview still live and untouched). New:
+`scripts/lib/deploy-guards.mjs` + `scripts/release-guard.mjs` (the pure gating logic and its CI
+wrapper) and two regression-test files (`tests/config/deploy-guards.test.ts`,
+`tests/config/workflow-deploy-gate.test.ts`, 30 tests total, all passing, all with an explicit
+mutation-proof case per finding class — a naive prefix/substring check would wrongly accept a
+stale SHA or a dirty build; the real one does not). Full local suite re-run clean on this branch:
+typecheck, lint (0 errors, the same 27 pre-existing warnings), format, `pnpm test` 1666 passed/1
+skipped (1636 + 30 new, exact arithmetic match), a real production-style build (placeholder env,
+matching `build-and-test`'s own convention).
+
+**Why P130-08 is still OPEN.** The new job is safe to merge as-is — it cannot run on a PR or a
+feature branch (proven structurally, not just documented), and it fails closed the moment it tries
+to build or deploy without credentials that simply do not exist in this repository yet, so it
+creates no race with Cloudflare's still-enabled automatic deploy. But "safe to merge" is not "closes
+the finding": until the owner adds `VITE_SUPABASE_URL`/`VITE_SUPABASE_PUBLISHABLE_KEY` as repository
+variables, creates a scoped Cloudflare API token, adds it plus the account id as
+`CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID`, proves the job green end to end on a real push, and
+THEN turns off Cloudflare's automatic Production deploy in the dashboard, Production still ships on
+Cloudflare's original ungated path exactly as before. `docs/GIT_WORKFLOW.md` §11 lists all four
+steps in the required order.
+
+**Not done, by design — owned by a later session once the owner has completed the four steps
+above:** merging the `fix/p142-ci-gated-production-deploy` PR (not opened as part of writing this
+document — see the session's own output file for its final state); the actual Cloudflare cutover;
+deleting the stale `preview-m15-8a470db` preview; disabling automatic preview deployments.
+
+**Status changes this session produced:** none of P130-04/05/07/12/15/22/23/27/28's statuses
+changed (P142 is infrastructure-only). P130-08 remains OPEN with
+`P130_08_REPO_PREPARED=yes`, `P130_08_EXTERNAL_CLOUDFLARE_ACTION_REQUIRED=yes`. Full detail, every
+command run and its actual output: `ai_outputs/Claude_outputs/output_142.txt` (gitignored, not
+part of this diff).
+
 ## Current state (P141, 2026-09-18) — P137/P138/P139/P140 RELEASED; hosted 104/0; Production live at `8eef187`; P130-04/05/07(DB)/12/15/27/28 closed
 
 **This section is the authoritative current state.** Every section below it, including the P136
