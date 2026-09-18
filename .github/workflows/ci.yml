@@ -152,6 +152,30 @@ jobs:
       - name: Deactivate recurring cron jobs for the test run
         run: psql "$DB_URL" -v ON_ERROR_STOP=1 -c "select cron.alter_job(jobid, active := false) from cron.job;"
 
+      # PostgREST always connects to Postgres as `authenticator` (its one DB login role) and uses
+      # `SET ROLE` to switch to whatever role a request's JWT claims (anon/authenticated/
+      # service_role) for privilege purposes only — `SET ROLE` does not re-apply the target role's
+      # own login-time GUC defaults, so every PostgREST-routed call (any `.rpc()`/REST call,
+      # regardless of claimed role) is actually capped by `authenticator`'s own platform-default
+      # `statement_timeout=8s` (`select rolconfig from pg_roles where rolname='authenticator'`),
+      # never by service_role's own (unset) timeout. A direct psql connection (grant-audit,
+      # restore-drill, this file's own steps above) never goes through authenticator and is
+      # unaffected. tests/m16-independent/db/lifecycle.test.ts's backdated-timeline case rebuilds
+      # one user's portfolio_snapshots from 2026-01-01 through today in a single
+      # drain_portfolio_recompute_queue() call — legitimately correct work, ~260 days' worth by
+      # now, that finishes well under a second on typical local hardware but can exceed CI's
+      # shared, slower runner within 8s. `ALTER ROLE ... SET` only changes the default for NEW
+      # connections — PostgREST keeps a small long-lived pool, so the two steps below both matter:
+      # raising the role default alone was verified locally to NOT reach already-open pooled
+      # connections; restarting the REST container forces it to reconnect under the new default.
+      # Neither ships to Production (this lives in neither a migration nor the app) and neither
+      # masks an incorrect result — it only gives a slow-but-correct query enough time to finish.
+      - name: Raise the PostgREST-routed statement timeout for this CI run
+        run: |
+          psql "$DB_URL" -v ON_ERROR_STOP=1 -c "alter role authenticator set statement_timeout = '2min';"
+          docker restart "$(docker ps --filter name=supabase_rest_ --format '{{.Names}}')"
+          sleep 3
+
       # What the catalog actually grants `anon` and `authenticated`, asserted against the intended
       # surface rather than inferred from behaviour. docs/SECURITY.md §5.9.
       - name: Privilege surface matches the baseline
