@@ -271,6 +271,22 @@ export function recordRequests(
   return seen
 }
 
+/**
+ * Console output of `page` that would betray a misbehaving second Supabase client: the leased client
+ * must not warn about GoTrue instances or fail to prime realtime (supabase-js does both on a client
+ * built with `accessToken` when the provider misbehaves).
+ */
+export function collectClientWarnings(page: Page): { messages: string[] } {
+  const seen: { messages: string[] } = { messages: [] }
+  page.on('console', (message) => {
+    const text = message.text()
+    if (/GoTrueClient|Multiple .*instances|Realtime auth token|accessToken option/i.test(text)) {
+      seen.messages.push(`${message.type()}: ${text.slice(0, 160)}`)
+    }
+  })
+  return seen
+}
+
 export async function expectNoFieldContains(page: Page, needle: string): Promise<void> {
   const values = await page.evaluate(() =>
     Array.from(document.querySelectorAll('input, textarea, select')).map(

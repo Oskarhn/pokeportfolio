@@ -4,6 +4,7 @@ import {
   AUTH_STORAGE_KEY,
   armBroadcastCounter,
   armSessionLookupGate,
+  collectClientWarnings,
   createPair,
   deletePair,
   holdRequest,
@@ -163,6 +164,7 @@ test.describe('P145 — in-flight PURCHASE CREATE across an identity change', ()
     pair = await createPair('p145-fx')
     await signInThroughForm(page, pair.a)
     await fillAccessoryPurchase(page, 'EUR')
+    const warnings = collectClientWarnings(page)
     await armBroadcastCounter(page)
     const other = await openOtherTab(context)
     const created = recordRequests(page, REQ.createPurchase)
@@ -180,6 +182,8 @@ test.describe('P145 — in-flight PURCHASE CREATE across an identity change', ()
     expect(await markerPurchases(pair.b.id)).toEqual([])
     expect(await markerPurchases(pair.a.id)).toEqual([])
     await expect(page.getByText(MARKER)).toHaveCount(0)
+    // An aborted operation is expected control flow: it must not surface as console noise either.
+    expect(warnings.messages).toEqual([])
   })
 
   test('A -> B while the session lookup for the FIRST request is parked: nothing is recorded in B (check-to-dispatch window)', async ({
@@ -261,6 +265,7 @@ test.describe('P145 — in-flight PURCHASE CREATE across an identity change', ()
     pair = await createPair('p145-control')
     await signInThroughForm(page, pair.a)
     await fillAccessoryPurchase(page, 'EUR')
+    const warnings = collectClientWarnings(page)
     const fx = await holdRequest(page, FX_URL, 'POST', { status: 200, body: FX_BODY })
 
     await page.getByRole('button', { name: 'Save purchase' }).click()
@@ -268,6 +273,7 @@ test.describe('P145 — in-flight PURCHASE CREATE across an identity change', ()
     fx.release()
 
     await page.waitForURL(/\/purchases\/[0-9a-f-]{36}/, { timeout: 15_000 })
+    expect(warnings.messages).toEqual([])
     expect(await markerPurchases(pair.a.id)).toHaveLength(1)
     expect(await markerPurchases(pair.b.id)).toEqual([])
   })
