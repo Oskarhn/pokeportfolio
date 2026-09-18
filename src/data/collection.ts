@@ -1,5 +1,5 @@
 import { supabase } from './supabase-client'
-import { parseMinorUnits } from './money'
+import { moneyArg, optionalMoneyArg, parseMinorUnits } from './money'
 import type { Database } from './database.types'
 
 /**
@@ -242,11 +242,15 @@ export async function setSealedLotIntent(params: {
   intent: SealedIntent
   quantity?: number
 }): Promise<void> {
-  const { error } = await supabase.rpc('set_sealed_lot_intent', {
-    p_lot_id: params.lotId,
-    p_intent: params.intent,
-    p_quantity: params.quantity,
-  })
+  const { error } = await supabase
+    .rpc('set_sealed_lot_intent', {
+      p_lot_id: params.lotId,
+      p_intent: params.intent,
+      p_quantity: params.quantity,
+    })
+    // Only the id: the function returns the whole lot row, whose cost columns are bigint and would
+    // cross the wire as JSON numbers (D-137). Nothing here reads them.
+    .select('id')
   if (error) throw new Error(error.message)
 }
 
@@ -288,12 +292,15 @@ export async function setManualValuation(params: {
   note?: string
   effectiveFrom?: string
 }): Promise<void> {
-  const { error } = await supabase.rpc('set_manual_valuation', {
-    p_holding_id: params.holdingId,
-    p_value_minor: Number(params.valueMinor),
-    p_note: params.note,
-    p_effective_from: params.effectiveFrom,
-  })
+  const { error } = await supabase
+    .rpc('set_manual_valuation', {
+      p_holding_id: params.holdingId,
+      p_value_minor: moneyArg(params.valueMinor),
+      p_note: params.note,
+      p_effective_from: params.effectiveFrom,
+    })
+    // Only the id: the function returns the whole manual_valuations row (value_minor is bigint).
+    .select('id')
   if (error) throw new Error(error.message)
 }
 
@@ -690,14 +697,12 @@ export async function addCardAcquisition(
       p_holding_notes: input.holdingNotes,
       p_origin: input.origin,
       p_cost_basis_state: input.costBasisState,
-      p_unit_cost_basis_minor:
-        input.unitCostBasisMinor === undefined ? undefined : Number(input.unitCostBasisMinor),
+      p_unit_cost_basis_minor: optionalMoneyArg(input.unitCostBasisMinor),
       p_quantity: input.quantity,
       p_acquired_on: input.acquiredOn,
       p_storage_location_id: input.storageLocationId,
       p_lot_notes: input.lotNotes,
-      p_manual_value_minor:
-        input.manualValueMinor === undefined ? undefined : Number(input.manualValueMinor),
+      p_manual_value_minor: optionalMoneyArg(input.manualValueMinor),
       p_sealed_intent: input.sealedIntent,
       p_client_request_key: input.clientRequestKey ?? undefined,
     })

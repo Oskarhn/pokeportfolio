@@ -47,8 +47,8 @@ test.describe('Purchase Add — blank vs explicit-zero unit price', () => {
     await page.getByRole('button', { name: 'Save purchase' }).click()
     await expect(page).toHaveURL(/\/purchases\/[0-9a-f-]{36}/)
     expect(calls).toHaveLength(1)
-    const lines = calls[0]!.body.p_lines as { unit_price_minor: number | string }[]
-    expect(Number(lines[0]!.unit_price_minor)).toBe(0)
+    const lines = calls[0]!.body.p_lines as { unit_price_minor: string }[]
+    expect(lines[0]!.unit_price_minor).toBe('0')
   })
 
   test('a whitespace-only unit price is refused like a blank one', async ({ page }) => {
@@ -89,8 +89,8 @@ test.describe('Purchase Edit — blank vs explicit-zero unit price', () => {
     await page.getByRole('button', { name: 'Save changes' }).click()
     await expect(page).toHaveURL(new RegExp(`/purchases/${purchaseId}$`))
     expect(calls).toHaveLength(1)
-    const lines = calls[0]!.body.p_lines as { unit_price_minor: number | string }[]
-    expect(Number(lines[0]!.unit_price_minor)).toBe(0)
+    const lines = calls[0]!.body.p_lines as { unit_price_minor: string }[]
+    expect(lines[0]!.unit_price_minor).toBe('0')
   })
 })
 
@@ -115,8 +115,8 @@ test.describe('Sale Add — blank vs explicit-zero sale price', () => {
     await page.getByRole('button', { name: 'Save sale' }).click()
     await expect(page).toHaveURL(/\/sales\/[0-9a-f-]{36}/)
     expect(calls).toHaveLength(1)
-    const lines = calls[0]!.body.p_lines as { unit_gross_minor: number | string }[]
-    expect(Number(lines[0]!.unit_gross_minor)).toBe(0)
+    const lines = calls[0]!.body.p_lines as { unit_gross_minor: string }[]
+    expect(lines[0]!.unit_gross_minor).toBe('0')
   })
 })
 
@@ -135,7 +135,7 @@ test.describe('Sale Edit — blank vs explicit-zero sale price', () => {
     await page.getByRole('button', { name: 'Save changes' }).click()
     await expect(page).toHaveURL(new RegExp(`/sales/${saleId}$`))
     expect(calls).toHaveLength(1)
-    const lines = calls[0]!.body.p_lines as { unit_gross_minor: number | string }[]
-    expect(Number(lines[0]!.unit_gross_minor)).toBe(0)
+    const lines = calls[0]!.body.p_lines as { unit_gross_minor: string }[]
+    expect(lines[0]!.unit_gross_minor).toBe('0')
   })
 })

@@ -115,3 +115,12 @@ export function formatCurrencyMinor(minorUnits: bigint, currency: CurrencyCode):
   const symbol = CURRENCY_SYMBOL[currency]
   return symbol ? `${symbol}${formatted}` : `${formatted} ${currency}`
 }
+
+/**
+ * Exact "12.34" for a provider price in a two-decimal source currency (EUR/USD — the only
+ * currencies the price providers quote, DATA_MODEL.md price_snapshots), no grouping. The
+ * provenance lines that used `(Number(minor) / 100).toFixed(2)` rounded through a double.
+ */
+export function formatSourcePriceMinor(minorUnits: bigint): string {
+  return toDecimalString({ minorUnits, currency: 'EUR' })
+}

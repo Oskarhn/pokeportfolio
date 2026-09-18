@@ -1,5 +1,5 @@
 import { supabase } from './supabase-client'
-import { parseMinorUnits } from './money'
+import { parseMinorUnits, parseNullableMinorUnits } from './money'
 import { summarizeCardPricing as summarizeCardPricingPure } from '../domain/pricing-summary'
 export { type CardPriceSummary } from '../domain/pricing-summary'
 
@@ -74,9 +74,8 @@ export async function searchPrices(
           priceState: r.priceState,
           provider: r.provider,
           sourceCurrency: r.sourceCurrency,
-          sourceValueMinor:
-            r.sourceValueMinor === null ? null : BigInt(Math.round(r.sourceValueMinor)),
-          valueNokMinor: r.valueNokMinor === null ? null : BigInt(r.valueNokMinor),
+          sourceValueMinor: parseNullableMinorUnits(r.sourceValueMinor),
+          valueNokMinor: parseNullableMinorUnits(r.valueNokMinor),
           providerUpdatedAt: r.providerUpdatedAt,
         },
       ]),

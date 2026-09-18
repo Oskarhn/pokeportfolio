@@ -1,6 +1,6 @@
 import type { OpeningDetail, OpeningSource, TrackingCompleteness } from './contract'
 import { computeOpeningCostPreview, openingRoiPercent } from '../../domain/opening'
-import { toDecimalString } from '../../domain/money'
+import { formatNokMinor } from '../../ui/money-format'
 
 /**
  * Every financial sentence the opening UI shows, in one testable place (DESIGN_SYSTEM.md §8:
@@ -184,15 +184,11 @@ export function pullRemainingCopy(
   return null
 }
 
-/** nb-NO formatting of an already-settled NOK minor-unit amount (no arithmetic) — the same
- *  domain-parser boundary `src/ui/money-format.ts` uses, kept local so this feature module stays
- *  self-contained for tests. */
+/** nb-NO formatting of an already-settled NOK minor-unit amount (no arithmetic), delegated to the
+ *  exact formatter in `src/ui/money-format.ts`: it never routes the amount through a JS `Number`
+ *  (P146 — the previous body did, which changed digits above 2^53 minor units). */
 export function formatNok(minorUnits: bigint): string {
-  const decimal = toDecimalString({ minorUnits, currency: 'NOK' })
-  return new Intl.NumberFormat('nb-NO', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(Number(decimal))
+  return formatNokMinor(minorUnits)
 }
 
 export const COMPLETENESS_QUESTION = 'How much of the opening did you record?'

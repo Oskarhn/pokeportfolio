@@ -1,5 +1,5 @@
 import { supabase } from './supabase-client'
-import { parseMinorUnits } from './money'
+import { optionalMoneyArg, parseMinorUnits } from './money'
 import type { Database } from './database.types'
 import type { CardCondition, GradingState, Grader, HoldingKind, SealedIntent } from './collection'
 
@@ -316,7 +316,7 @@ export async function listPortfolio(params: {
       p_cursor_quantity: cursor?.quantity,
       p_cursor_acquired_on: cursor?.acquiredOn ?? undefined,
       p_cursor_added_at: cursor?.addedAt,
-      p_cursor_value_minor: cursor?.valueMinor === null ? undefined : Number(cursor?.valueMinor),
+      p_cursor_value_minor: optionalMoneyArg(cursor?.valueMinor ?? undefined),
       p_cursor_has_value: cursor?.hasValue,
       p_cursor_number_key: cursor?.numberKey,
     })

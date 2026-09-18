@@ -1,5 +1,6 @@
 import { listPortfolio, portfolioDisplayName, type PortfolioFilters } from './portfolio'
 import { CONDITION_LABEL } from '../features/collection/labels'
+import { toDecimalString } from '../domain/money'
 
 /**
  * Minimal Portfolio CSV export (M7.1 prompt §46-47), pulled forward from M13 in the narrow sense
@@ -65,7 +66,9 @@ export async function buildPortfolioCsv(filters?: PortfolioFilters): Promise<str
           tile.holdingKind === 'graded_card' && tile.unitValueMinor === null
             ? 'No manual value set'
             : '',
-          tile.holdingValueMinor !== null ? (Number(tile.holdingValueMinor) / 100).toFixed(2) : '',
+          tile.holdingValueMinor !== null
+            ? toDecimalString({ minorUnits: tile.holdingValueMinor, currency: 'NOK' })
+            : '',
         ]
           .map(csvField)
           .join(','),
