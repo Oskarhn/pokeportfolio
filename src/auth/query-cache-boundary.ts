@@ -1,16 +1,15 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { draftStore } from '../features/openings/draft'
 import { scannerSessionStore } from '../features/scanner/session-store'
+import { setScannerBatchSize } from '../features/scanner/unsaved-work'
+import { classifyIdentityTransition, isIdentityChange, type ObservedUserId } from './identity'
+
+export type { ObservedUserId } from './identity'
 
 /**
- * `undefined` until this tab has observed any authenticated identity at all (fresh page load);
- * `null` once a signed-in user has been observed and then signed out; otherwise the last signed-in
- * user id. Only the step from one OBSERVED identity to a different one is an account switch.
- */
-export type ObservedUserId = string | null | undefined
-
-/**
- * The cross-account privacy boundary for the TanStack Query cache (F-61-2).
+ * The cross-account privacy boundary for everything user-scoped that lives OUTSIDE the React tree
+ * (F-61-2, extended by P143). Its React counterpart is `AuthIdentityBoundary`, which remounts the
+ * authenticated subtree under a user-id key; a remount cannot reach the state cleared here.
  *
  * The QueryClient lives for the whole tab (src/main.tsx creates it once) and no query key carries
  * a user id — keys like ['dashboard-summary'] or ['portfolio'] name the data, not its owner. On a
@@ -34,6 +33,17 @@ export type ObservedUserId = string | null | undefined
  * blanket clear makes "no A-data renders under B" structural. Same-user events (token refresh,
  * USER_UPDATED) compare equal and keep the cache intact.
  *
+ * Classification of the rest of this app's module/browser state (P143 audit):
+ *   cleared here      draftStore, scannerSessionStore (both keyed by user id AND swept, so a stale
+ *                     entry is unreachable even if a future caller forgets the key), the scanner
+ *                     batch-size mirror read by the stale-deployment reload guard
+ *   survives on purpose theme preference (`pp-theme`), build-freshness reload timestamp, scanner
+ *                     model/OCR assets (public), the analytics injection flag — none is derived
+ *                     from a person's account
+ *   already user-keyed the export-reminder timestamp in localStorage (`export-reminder.ts`)
+ *   unsaved-work registry holds getters registered by mounted components; the remount unregisters
+ *                     them through their own effect cleanups, so it needs no sweep here
+ *
  * Returns true when a boundary fired, so callers can update their own identity tracking.
  */
 export function applyAuthIdentityBoundary(
@@ -45,15 +55,19 @@ export function applyAuthIdentityBoundary(
   // empty application session) and none when the identity did not actually change. Every other
   // change between observed identity states — A→signed-out, signed-out→B, direct A→B — clears,
   // so a signing-in session never inherits pre-existing cache content regardless of history.
-  if (previousUserId === undefined || previousUserId === nextUserId) return false
+  if (!isIdentityChange(classifyIdentityTransition(previousUserId, nextUserId))) return false
 
   void queryClient.cancelQueries()
   queryClient.clear()
-  // Idempotent belt-and-braces alongside AuthProvider.signOut's explicit call (P56 §9): private
-  // draft intent must not outlive the identity that created it, whichever auth path ends it.
-  // The M15 scanner's session defaults join the same sweep (D-093 extension); its batch and any
-  // captured image live in component state, which dies with the route this boundary unmounts.
+  // Idempotent belt-and-braces alongside AuthProvider's own explicit end-of-session clear (P56 §9):
+  // private draft intent must not outlive the identity that created it, whichever auth path ends it.
+  // The M15 scanner's session defaults join the same sweep (D-093 extension). Its batch and any
+  // captured image live in component state, which the AuthIdentityBoundary remount now destroys on
+  // a direct A→B switch as well (before P143 only a route change did).
   draftStore.clearAll()
   scannerSessionStore.clearAll()
+  // The scanner page zeroes this mirror in its own unmount cleanup; doing it here too means the
+  // reload guard never sees a previous identity's batch in the moment before that cleanup runs.
+  setScannerBatchSize(0)
   return true
 }
