@@ -121,7 +121,7 @@ Internal names are canonical. UI labels may differ; the mapping is in §9.
 |---|---|---|
 | **Unrealized result on costed inventory** | `URC` | `ACMV − DCB`. The only figure in the app entitled to be called an unrealized gain/loss. |
 | **Realized result on costed disposals** | `RRC` | Σ over sale lines where `cost_basis_at_sale IS NOT NULL` of `(allocated_net_proceeds − cost_basis_at_sale)`. |
-| **Proceeds from uncosted disposals** | `PUD` | Σ over sale lines where `cost_basis_at_sale IS NULL` of `allocated_net_proceeds`. A pure inflow. **Not** a gain — there is no item-level cost to subtract. |
+| **Proceeds from uncosted disposals** | `PUD` | Σ over sale lines where `cost_basis_at_sale IS NULL` of `allocated_net_proceeds`. A signed net cash flow: an inflow when the sale nets money, an outflow when fees and shipping exceed the gross (D-135). **Not** a gain — there is no item-level cost to subtract. |
 | **Total tracked economic position** | `TTEP` | `CMV + NSP − CS` |
 | **Total hobby position** | `THP` | `CMV + NSP − GPO` = `TTEP − HS` |
 
@@ -159,6 +159,17 @@ Consequences, all intentional:
 - Backdating a purchase **does** change history — correctly, because the user did own it then.
 - A market price revision for day 40 changes day 40 forever after. Market history is a fact table, not an estimate.
 
+> **Invariant F16 — event-date contract (D-135).** The date of a completed ledger event —
+> `purchased_on`, `sold_on`, `acquired_on`, `disposed_on`, `opened_on`, a cost adjustment's
+> `occurred_on` — is a calendar date in `[1996-10-20, UTC today + 1 day]`. The lower bound is the
+> release date of the first Pokemon Trading Card Game product (nothing this ledger records can predate
+> it); every real past date, including backdated and pre-tracking acquisitions, stays valid. The upper
+> bound is the latest calendar date that exists anywhere on Earth right now, so "today" is accepted in
+> every timezone without the server knowing the user's. The check never converts through a timestamp.
+> An unknown date is never replaced by a placeholder. FX rate dates, price-snapshot dates, audit
+> timestamps and manual-valuation effective dates are observation dates, not completed events, and
+> are outside this contract.
+
 ---
 
 ## 4. Allocation rules
@@ -177,7 +188,17 @@ weight_i        = line_total_i / Σ line_total
 allocated_ship_i = round_largest_remainder(shipping_total, weights)
 ```
 
-Discounts are allocated identically and subtract. A line's **attributable cost** is:
+Discounts subtract, and are allocated in two tiers (D-135), each by the same largest-remainder
+method (§4.2):
+
+```
+goods_discount   = min(discount, Σ line_total)             allocated by line_total_i
+charge_discount  = discount − goods_discount               allocated by (allocated_shipping_i + allocated_customs_i)
+allocated_discount_i = goods_share_i + charge_share_i
+```
+
+The second tier is empty unless the discount also consumes shipping/customs — the common case is
+unchanged. A line's **attributable cost** is:
 
 ```
 attributable_cost_i = line_total_i
@@ -186,8 +207,18 @@ attributable_cost_i = line_total_i
                     − allocated_discount_i
 ```
 
+> **Invariant F15:** for every purchase whose discount does not exceed `Σ line_total + shipping +
+> customs`, `attributable_cost_i >= 0` for every line and `Σ attributable_cost_i = total`. (For
+> non-negative integer weights `w` summing to `W` and `0 <= T <= W`, `allocate(T, w)_i <= w_i`, so each
+> tier can take at most what its own weights carry.) A discount larger than the whole receipt would make
+> the total negative and is **refused** ("discount cannot exceed the purchase subtotal plus shipping and
+> customs"), never clipped. Before D-135 the discount was allocated by `line_total` alone, which
+> could push a line negative when the discount also consumed shipping/customs and refused a valid receipt.
+
 Edge case: if `Σ line_total = 0` (a purchase consisting only of shipping), the charge is
 allocated equally across lines; if there are no lines, the purchase is rejected at validation.
+The SQL `allocate_purchase_discount` and the TypeScript `allocatePurchaseDiscount` implement the
+discount rule and are property-tested against each other.
 
 ### 4.2 Largest-remainder rounding
 
@@ -1005,3 +1036,5 @@ Every invariant below has a corresponding automated test. See [TESTING.md](TESTI
 | F12 | An opening has at most one non-voided cost source |
 | F13 | Trades produce no realized P/L while the item-leg rule is undecided |
 | F14 | A holding with no resolvable market value is excluded from `CMV` and counted in `UHC` — never valued at zero |
+| F15 | Every purchase line's attributable cost is `>= 0` and the lines sum to the receipt total; a discount above the whole receipt is refused, never clipped |
+| F16 | The date of a completed ledger event lies in `[1996-10-20, UTC today + 1]`; an unknown date is never fabricated |

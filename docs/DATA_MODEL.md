@@ -431,7 +431,7 @@ A purchase is one receipt. It always has at least one line.
 |---|---|
 | `id uuid pk`, `user_id fk` | |
 | `origin` | enum `manual`, `provisional_opening`. See §5.8.1 |
-| `purchased_on date` | Business event date. Backdating fully supported. |
+| `purchased_on date` | Business event date. Backdating fully supported within the event-date contract (1996-10-20 .. UTC today + 1, enforced by trigger `purchases_event_date_contract`, D-135). |
 | `retailer_id fk nullable` | |
 | `currency` | ISO 4217 |
 | `subtotal_minor`, `shipping_minor`, `customs_minor`, `discount_minor`, `total_minor` | In `currency` |
@@ -883,6 +883,12 @@ sale's own lines (written by `create_sale`/`update_sale`/`void_sale`, never inde
 computed by a reader) — they exist so History's list view and the result-sort gate (never ranking
 an unknown-basis sale as +/-infinity) never need to fetch every `sale_lines` row per row shown.
 `realized_result_nok_minor` is `NULL` exactly when *no* line in the sale has a known cost basis.
+`proceeds_from_uncosted_nok_minor` is a signed net cash flow — it is negative when fees and shipping on
+uncosted lines exceed their gross — and is deliberately not constrained non-negative (D-135, P130-17);
+only `gross`, `fees`, `shipping_cost` and `shipping_charged` are individually `>= 0`
+(`sales_amounts_non_negative`). `sold_on` (and `purchases.purchased_on`, `acquisition_lots.acquired_on`,
+`lot_disposals.disposed_on`, `openings.opened_on`, `lot_cost_adjustments.occurred_on`) fall under the
+completed-event date contract enforced by the `*_event_date_contract` triggers (D-135).
 `idempotency_key` (unique per user) makes a retried `create_sale` call return the original sale
 rather than creating a duplicate.
 

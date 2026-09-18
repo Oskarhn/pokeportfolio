@@ -442,7 +442,11 @@ begin
     -- performs the write. Also granted to service_role (not checked by this audit, which covers
     -- only anon/authenticated) for the same CHECK-constraint reason on a direct service-role write.
     ('routine', 'currency_minor_unit_exponent(text)', 'authenticated', 'EXECUTE'),
-    ('routine', 'money_minor_to_nok_minor(bigint, text, numeric)', 'authenticated', 'EXECUTE')
+    ('routine', 'money_minor_to_nok_minor(bigint, text, numeric)', 'authenticated', 'EXECUTE'),
+    -- P144 (20260918120000, P130-16/D-135): the two-tier purchase discount allocator. Granted to
+    -- authenticated because create_purchase/update_purchase are SECURITY INVOKER and reach it as the
+    -- caller's own role. The completed-event-date trigger function holds no grant at all.
+    ('routine', 'allocate_purchase_discount(bigint, bigint[], bigint[], bigint[])', 'authenticated', 'EXECUTE')
   ),
 
   -- M7: the expected PUBLIC-EXECUTE surface for every routine in `public` is empty. No project

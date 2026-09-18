@@ -6009,3 +6009,112 @@ every non-Production restore target to clear `environment_ingest_config` uncondi
 restoring data, closing the one way a backup taken from an already-configured Production could
 otherwise carry the live configuration onto a disposable/local/staging restore target
 (`restore-drill.ts --mutation C`).
+
+## D-135 — Financial boundary semantics: a two-tier purchase discount, a signed uncosted-proceeds figure, a completed-event date contract, and blank is never a known zero (P130-16 / P130-17 / P130-18 date dimension / P130-25 / P144)
+
+**2026-09-18 · Accepted**
+
+**Context.** Four findings from the P130 audit (the P130 audit report (`output_130.txt`)) share one
+shape: the value a person types or a real transaction produces is legitimate, and a boundary either
+refuses it or quietly turns it into something else. All four were reproduced on the released code
+before any change (`tests/db/p144_financial_boundary.test.ts`, `tests/e2e/authenticated/
+blank-money-input.spec.ts`).
+
+- **P130-16.** `create_purchase`/`update_purchase` allocated shipping, customs and the discount each by
+  goods weight and set `attributable = line + ship + customs − discount`. While the discount does not
+  exceed the goods that is safe (each share is at most the line's own total). When the discount also
+  consumes shipping/customs — goods `[1,2]`, shipping 1, customs 1, discount 5, a free order — goods-
+  only weights take 2 from a line whose gross share is 1, the line goes to −1, and
+  `allocate_largest_remainder(total_nok, attributable)` raised "weights must be non-negative": a valid
+  receipt was refused. A second class (all-zero goods, shipping 3 + customs 7, discount 10) fails the same
+  way through the equal-split fallback's tie-breaking.
+- **P130-17.** `sales_amounts_non_negative` also constrained `proceeds_from_uncosted_nok_minor` (PUD) to
+  `>= 0`. PUD is the sum of the net proceeds of lines whose lot has no known cost basis, and net
+  proceeds are deliberately unclamped (§2.2), so an uncosted sale whose fees and shipping exceed its
+  gross failed with a raw 23514, while the identical sale on a known-basis lot was accepted. Whether a
+  real transaction could be recorded depended on an unrelated fact, the cost basis.
+- **P130-18 (date dimension).** No table or RPC checked a completed event's date beyond `NOT NULL`:
+  `0001-01-01`, `9999-12-31` and `2099-01-01` were accepted, and every ownership-timeline and history
+  read (§3) trusts these columns. (The currency dimension was closed by P133/D-132.)
+- **P130-25.** The four money forms that take a per-line price (Purchase Add/Edit, Sale Add/Edit)
+  substituted `'0'` for an empty field (`draft.unitPrice || '0'`), so a blank submitted a known zero.
+  Observed on the wire: `unit_price_minor: 0` / `unit_gross_minor: 0`.
+
+**Decision.**
+
+1. *Discount (P130-16).* The discount is allocated in two tiers, both the exact largest-remainder
+   allocator: `min(discount, subtotal)` by line total (the documented §4.1 rule, unchanged), then the
+   part of the discount that exceeds the goods by each line's already-allocated shipping + customs.
+   For non-negative integer weights `w` with sum `W` and `0 <= T <= W`, `allocate(T, w)[i] <= w[i]`;
+   applied per tier this gives `discount[i] <= line[i] + shipping[i] + customs[i]`, so no attributable
+   cost is negative and `Σ discount[i] = discount` exactly (F6 per tier). For `discount <= subtotal`
+   the second tier is empty and the result is byte-identical to the previous allocation, so no stored
+   or re-derived allocation of an existing purchase changes. A discount larger than subtotal +
+   shipping + customs still cannot be allocated and is still refused with the unchanged message
+   "discount cannot exceed the purchase subtotal plus shipping and customs". Implemented as SQL
+   `allocate_purchase_discount` (used by both RPCs) and its TypeScript twin `allocatePurchaseDiscount`/
+   `allocatePurchaseCharges` (used by the form previews); a 300-receipt parity test runs them against each
+   other across the full 2^58-scale domain.
+2. *Uncosted proceeds (P130-17).* PUD is a signed net cash flow. The `>= 0` clause is dropped; gross,
+   fees, shipping cost and shipping charged stay individually non-negative. An unknown basis still freezes
+   `cost_basis_at_sale`/`realized_result` as NULL — never a fabricated 0 — and F5
+   (`RRC + PUD = NSP − Σ cost basis`) holds for a negative PUD exactly as for a positive one. No RPC
+   changed; the sign of net proceeds no longer depends on whether the basis is known.
+3. *Event dates (P130-18).* A completed event's date is `1996-10-20 <= date <= (UTC today) + 1`.
+   The lower bound is the release date of the first Pokemon Trading Card Game product: no purchase,
+   sale, acquisition, opening or cost adjustment of a Pokemon card, sealed product or accessory can predate
+   it, so every real past date (including backdated and pre-tracking acquisitions) stays valid and
+   PRODUCT_SPEC §4.5 / UX_FLOWS "any past date" keep their meaning. The upper bound is the latest
+   calendar date that exists anywhere on Earth right now (UTC+14): the server does not know the user's
+   timezone, so it accepts "today" everywhere and refuses only dates no person is living in yet; the
+   released forms remain stricter (`max` = the user's local today). The check compares calendar dates and
+   never converts through a timestamp. It applies only to the user-supplied dates of completed ledger
+   events — `purchases.purchased_on`, `sales.sold_on`, `acquisition_lots.acquired_on`,
+   `lot_disposals.disposed_on`, `openings.opened_on`, `lot_cost_adjustments.occurred_on` — and not to audit
+   timestamps, FX/price observation dates, catalog dates or `manual_valuations.effective_from`. It is
+   enforced by one BEFORE trigger function shared by those six tables (a named domain error,
+   `invalid-event-date: …`, SQLSTATE 22008), which covers every writer including the client's direct
+   `acquired_on` column update, and validates only when the date is inserted or changed, so a row that
+   predates the contract stays editable. An unknown date is never fabricated as a placeholder; the columns
+   stay `NOT NULL`.
+4. *Blank money (P130-25).* One canonical parser, `parseNullableMoneyInput` (`src/ui/money-format.ts`),
+   answers `null` for blank or whitespace-only text and never `0n`; an explicit `0`/`0.00` is a known zero
+   for the currency's own exponent (JPY has none). Callers say what an absent amount means for their
+   field: a per-line price the server needs known is refused when blank (`requireKnownAmount` — the RPCs
+   have no representation for an unknown purchase or sale price, so the honest outcome is to ask, not to
+   send NULL or 0); an additive charge (shipping, customs, discount, fees) is `NOT NULL DEFAULT 0`
+   because an absent charge is zero, and says so by name (`parseOptionalChargeInput`, the only parser that
+   turns blank into `0n`). The allocation previews wait for a price instead of showing a fabricated 0.00
+   line. The acquisition flows that already model unknown cost explicitly (Add to collection, Add sealed,
+   scanner, openings) were audited and are unchanged.
+
+**Alternatives considered and rejected.**
+- *Take `abs()` of a negative weight, or clamp the line to 0 and push the difference elsewhere.* Hides an
+  inconsistency instead of removing it and breaks `Σ attributable = total`.
+- *Allocate the whole discount by gross attributable (line + ship + customs), single tier.* Also never
+  goes negative, but changes the rounding of existing receipts with both shipping and a discount and
+  contradicts the documented rule for every receipt, not only the ones that were broken.
+- *Keep PUD non-negative by refusing the sale, or by clamping PUD at 0.* Refusing a real transaction is the
+  bug; clamping falsifies F5.
+- *Date bounds as `CHECK` constraints or RPC-only checks.* CHECK yields a raw 23514 constraint name; RPC-only
+  leaves the direct column update and service-role writes open and requires restating a dozen RPC bodies.
+- *A rolling "N years back" or round-number lower bound (1970, 1900).* Arbitrary; the product's own first
+  release is a fact.
+- *Send NULL for a blank purchase price.* The ledger has no unknown-price purchase (an unknown cost is the
+  Add-to-collection flow's `cost_basis_state = unknown`); silently mapping a blank price to either 0 or NULL
+  would still fabricate a fact.
+
+**Consequences.** The released frontend keeps working against the migrated database — every server change
+accepts strictly more (P130-16, P130-17) or refuses only what the released forms already refuse
+(P130-18), so the two migrations and the frontend may deploy in either order
+(`COORDINATED_DEPLOYMENT_REQUIRED=no`). A read-only aggregate check of the hosted database before this
+change found 3 purchases, 4 lots and no sales/disposals/openings/adjustments, every date within
+2026-08-19..2026-08-25, no discount above goods, and no negative attributable or PUD row: no existing row
+violates the contract. P130-19 (bigint money through `Number()` on the client boundary) and P130-26
+(raw technical error messages) are unchanged and remain open.
+
+**Proof.** `tests/db/p144_financial_boundary.test.ts` (its reproductions fail on the pre-P144 schema),
+`tests/financial/purchase-charge-allocation.test.ts` (named cases and properties: conservation, non-
+negativity, determinism, equality with the single-tier rule inside the goods, bounded rounding, bounded
+effect of reordering), `tests/ui/money-input-parser.test.ts`, and `tests/e2e/authenticated/
+blank-money-input.spec.ts` (drives the real forms and asserts on the request that goes over the wire).

@@ -295,6 +295,8 @@ One test per entry in the FINANCIAL_MODEL invariant register:
 | F12 | An opening never has two live cost sources; reconciliation does not double-count spend |
 | F13 | No trade produces a realized P/L figure |
 | F14 | A holding with no resolvable value is excluded from `CMV` and counted, never zeroed |
+| F15 | Every purchase line's attributable cost is `>= 0` and the lines sum to the receipt total, over generated receipts whose discount reaches into shipping/customs (`tests/financial/purchase-charge-allocation.test.ts`, SQL parity in `tests/db/p144_financial_boundary.test.ts`); a discount above the whole receipt is refused |
+| F16 | A completed event's date outside `[1996-10-20, UTC today + 1]` is refused by every writer, at both edges, under every session timezone, without making a pre-contract row un-updatable (`tests/db/p144_financial_boundary.test.ts`) |
 
 ### 2.4 All-card tracking
 

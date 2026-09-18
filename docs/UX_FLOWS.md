@@ -728,7 +728,7 @@ as a dashboard glance; the dedicated screen is where period/sort actually apply.
 | Destructive confirmations name the concrete downstream impact | Every void and delete |
 | Uncertainty is marked where the number is displayed | Stale, manual, estimated, incomplete |
 | Money inputs use a numeric keypad on mobile and accept both `,` and `.` | Every amount field |
-| Dates default to today and allow any past date | Every date field |
+| Dates default to today and allow any real past date (from 1996-10-20, the first Pokemon TCG release; never a future date on a completed event — D-135) | Every date field |
 | Long lists are virtualised | Collection, purchases, sales |
 | Every destructive action is undoable, or blocked | Financial records |
 | Offline: reads work from cache, writes fail with a clear message | Whole app |
