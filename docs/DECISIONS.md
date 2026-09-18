@@ -6208,3 +6208,19 @@ definition next to the orphan; that is bounded clutter, not an integrity issue.
   the provider's token is the header on the wire, so an upgrade that changes it fails loudly.
 - Idempotency (P138/P140) is unchanged: a same-identity retry re-sends the same key; an aborted
   attempt sent nothing, so no key is consumed on anyone's behalf.
+
+**Proof.** Reproduced first at the D-134 code (`e9feab0`) with `tests/e2e/authenticated/
+auth-inflight-real.spec.ts` against an isolated local stack: of 17 scenarios, 14 fail there — a
+purchase carrying A's marker is inserted in B's account (both the exchange-rate-step and the
+parked-session-lookup cases), a purchase, sale, sale edit, opening, acquisition and export request is
+issued under B, and A's confirmed "reset my portfolio data" **deletes B's purchase**; the three that
+pass are the positive controls and the same-user refresh/update case. With the lease all 17 pass, and
+the whole authenticated project (114 tests, including every D-134 real-GoTrue spec) is green.
+Five mutations, each applied to the real production file and reverted: A, lease validity compares the
+user id only (4 unit + 1 browser failures, the A → B → A tests); B, the final purchase step bypasses
+the lease and the page-level assertions are removed (3 browser failures with a row in B; removing only
+the assertions leaves all three green, bypassing only the lease fails only the parked-lookup case —
+the two layers are independently effective); C, a same-user event starts a new epoch (9 unit + 1
+browser); D, sign-out does not end leases at the authority nor at the request layer (9 unit + 2
+browser; at the authority alone the request layer still refuses, which is the point of having both);
+E, the openings and sale flows run unguarded (2 browser failures plus the ledger test).
