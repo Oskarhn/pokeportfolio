@@ -25,6 +25,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { summarizeResults } from './lib/verifier-summary.mjs'
 
 /** Kept in sync BY THIS CHECK with public/robots.txt's Allow list and public/sitemap.xml's URLs —
  *  see router.tsx's "Three route classes" comment for the authoritative route-class list this is
@@ -134,9 +135,20 @@ if (site) {
   console.log('\n(DEPLOYMENT_URL not set — skipping live mode, static dist/ checks only)')
 }
 
-const failed = results.filter((r) => !r.pass)
-console.log(`\n${results.length - failed.length}/${results.length} checks passed`)
-if (failed.length) {
-  console.log(`FAILED: ${failed.map((r) => r.name).join(', ')}`)
-  process.exitCode = 1
+const summary = summarizeResults(results)
+if (summary.ranNothing) {
+  // P130-27/P139 fail-closed contract, applied uniformly across every verifier: zero recorded
+  // checks must never look identical to zero failures.
+  console.log('\nFAIL: no checks were recorded — this run proves nothing')
+} else {
+  console.log(`\n${String(summary.passedCount)}/${String(summary.meaningfulCount)} checks passed`)
+  if (summary.failed.length) {
+    console.log(
+      `FAILED: ${results
+        .filter((r) => !r.pass)
+        .map((r) => r.name)
+        .join(', ')}`,
+    )
+  }
 }
+process.exitCode = summary.ok ? 0 : 1

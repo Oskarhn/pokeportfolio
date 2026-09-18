@@ -54,6 +54,23 @@ jobs:
           VITE_SUPABASE_URL: http://127.0.0.1:54321
           VITE_SUPABASE_PUBLISHABLE_KEY: ci-placeholder-not-a-key
 
+      # P130-27/P130-28/P139: local-artifact release verifiers that were never wired into CI —
+      # both are pure filesystem checks against dist/ from the build above, no network, seconds
+      # to run. Static/local mode only (no DEPLOYMENT_URL/live SUPABASE_URL): the live-deployment
+      # half of each (Cloudflare header/CSP checks, robots.txt/sitemap.xml live fetch) stays a
+      # manual post-deploy step — see docs/DEVELOPMENT.md §9 and scripts/deployment-check.mjs's
+      # own header comment — because CI never has a real deployment or a real Supabase project to
+      # point at (docs/TESTING.md §10). SUPABASE_URL is set here to exactly the placeholder this
+      # job's own build used, so the platform verifier's structural connect-src check is exercised
+      # for real rather than skipped.
+      - name: Platform build verifier (dist/_headers, dist/sw.js artefact gate)
+        run: node scripts/verify-scanner-platform-build.mjs
+        env:
+          SUPABASE_URL: http://127.0.0.1:54321
+
+      - name: Link/route checker (robots.txt/sitemap.xml/PUBLIC_ROUTES three-way consistency, static mode)
+        run: node scripts/check-links.mjs
+
       - name: Install Playwright browsers
         run: pnpm exec playwright install --with-deps chromium webkit
 
@@ -123,6 +140,42 @@ jobs:
           fi
           psql --version
 
+      # Every local dev/test session already does this before running any suite (P130-12
+      # workaround, restated in every P137/P138/P139/P140 session's own INTEGRATION_NOTES) —
+      # CI never did. m12-recompute-snapshots reschedules itself every single minute
+      # (20260901120000_p42_cron_cadence.sql); left active for this job's ~15+ minutes, it can
+      # race a test's own direct call to the same drain_portfolio_recompute_queue RPC for a lock
+      # and trip Postgres' statement_timeout under CI's shared-runner load — the same documented
+      # class of runner-load-dependent flake tests/db/setup.ts already names for unrelated bulk
+      # deletes. The jobs stay defined (schema/definition tests still see them); only their CI-run
+      # activity is suppressed, matching what every local run already does.
+      - name: Deactivate recurring cron jobs for the test run
+        run: psql "$DB_URL" -v ON_ERROR_STOP=1 -c "select cron.alter_job(jobid, active := false) from cron.job;"
+
+      # PostgREST always connects to Postgres as `authenticator` (its one DB login role) and uses
+      # `SET ROLE` to switch to whatever role a request's JWT claims (anon/authenticated/
+      # service_role) for privilege purposes only — `SET ROLE` does not re-apply the target role's
+      # own login-time GUC defaults, so every PostgREST-routed call (any `.rpc()`/REST call,
+      # regardless of claimed role) is actually capped by `authenticator`'s own platform-default
+      # `statement_timeout=8s` (`select rolconfig from pg_roles where rolname='authenticator'`),
+      # never by service_role's own (unset) timeout. A direct psql connection (grant-audit,
+      # restore-drill, this file's own steps above) never goes through authenticator and is
+      # unaffected. tests/m16-independent/db/lifecycle.test.ts's backdated-timeline case rebuilds
+      # one user's portfolio_snapshots from 2026-01-01 through today in a single
+      # drain_portfolio_recompute_queue() call — legitimately correct work, ~260 days' worth by
+      # now, that finishes well under a second on typical local hardware but can exceed CI's
+      # shared, slower runner within 8s. `ALTER ROLE ... SET` only changes the default for NEW
+      # connections — PostgREST keeps a small long-lived pool, so the two steps below both matter:
+      # raising the role default alone was verified locally to NOT reach already-open pooled
+      # connections; restarting the REST container forces it to reconnect under the new default.
+      # Neither ships to Production (this lives in neither a migration nor the app) and neither
+      # masks an incorrect result — it only gives a slow-but-correct query enough time to finish.
+      - name: Raise the PostgREST-routed statement timeout for this CI run
+        run: |
+          psql "$DB_URL" -v ON_ERROR_STOP=1 -c "alter role authenticator set statement_timeout = '2min';"
+          docker restart "$(docker ps --filter name=supabase_rest_ --format '{{.Names}}')"
+          sleep 3
+
       # What the catalog actually grants `anon` and `authenticated`, asserted against the intended
       # surface rather than inferred from behaviour. docs/SECURITY.md §5.9.
       - name: Privilege surface matches the baseline
@@ -176,6 +229,29 @@ jobs:
 
       - name: Database and authorization tests
         run: pnpm test:db
+
+      # P130-28/P139: real, signed-in, UI-driven authenticated form behavior (TESTING.md §6b, P94)
+      # never ran anywhere but by hand before this — the placeholder-backend suite in build-and-
+      # test deliberately never touches a real Supabase project (docs/TESTING.md §6). This job
+      # already has the one thing that infrastructure needs: a fresh, freshly-migrated local
+      # Supabase stack on Docker, with SUPABASE_URL/ANON_KEY/SERVICE_ROLE_KEY already exported
+      # above. Chromium only — the authenticated project only registers `desktop-chromium-
+      # authenticated` (playwright.config.ts), so webkit is never needed here.
+      - name: Install Playwright (chromium only, for authenticated E2E)
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Authenticated E2E (real sign-in, real data, real Supabase — TESTING.md §6b)
+        run: pnpm exec playwright test --project desktop-chromium-authenticated
+        env:
+          PLAYWRIGHT_AUTHENTICATED_E2E: '1'
+
+      - name: Upload authenticated-E2E Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-authenticated
+          path: playwright-report
+          retention-days: 7
 
       # The independently written M12 adversarial contract package (test/m12-independent-adversarial/,
       # authored implementation-blind on test/m12-independent-adversarial) judged against this same
@@ -242,6 +318,20 @@ jobs:
 
       - name: Independent M13 adversarial suite (DB-gated execution)
         run: pnpm test:m13-adversarial
+
+      # The independently written M16 (Openings) adversarial contract package
+      # (tests/m16-independent/, P52, authored implementation-blind against the canonical docs
+      # without reading the M16 implementation branch) — P130-28 found this suite existed but
+      # never ran anywhere except by hand. No separate typecheck step: unlike test/m12-/m13-
+      # independent-adversarial (which live under test/, outside every tsconfig's include list),
+      # tests/m16-independent/ is already covered by tsconfig.app.json's "tests" include, so the
+      # build-and-test job's own Typecheck step already gates it. Every DB-gated case here is
+      # IMPLEMENTATION_GATED (see the package's README "Case classification" table): it discovers
+      # the M16 surface at runtime through PostgREST's own OpenAPI description and fails loudly as
+      # "[M16 CONTRACT] ..." on a divergence rather than silently loosening an assertion — it does
+      # not silently skip just because M16 exists, only if the surface were ever removed.
+      - name: Independent M16 adversarial suite (DB-gated execution)
+        run: pnpm test:m16-adversarial
 
       # M13 export scale audit (prompt §24): seeds a ~10k-lot synthetic account and times the
       # real client-side export pipeline end to end under the owner JWT. Opt-in env gate; the

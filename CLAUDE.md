@@ -48,6 +48,7 @@ a contradiction in place:
 | `docs/PLANNING_FREEZE.md` | The frozen scope and semantics implementation answers to. |
 | `docs/TESTING.md` | Test strategy and mandatory gates. |
 | `docs/DEVELOPMENT.md` | Environment, commands, migration rules. |
+| `docs/RESTORE_RUNBOOK.md` | Disaster-recovery restore procedure and its validation gates. |
 | `docs/GIT_WORKFLOW.md` | Branch/PR/CI/merge workflow, commit and release conventions. |
 | `docs/ROADMAP.md` | Phases and gates. |
 | `docs/DECISIONS.md` | Decisions that are expensive to reverse. |

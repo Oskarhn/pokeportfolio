@@ -30,6 +30,8 @@
  */
 import { writeFileSync } from 'node:fs'
 import { verifyLiveCspHash } from './lib/live-csp-hash-verify.mjs'
+import { bundleDeclaresExactSha } from './lib/build-identity.mjs'
+import { summarizeResults } from './lib/verifier-summary.mjs'
 
 const args = process.argv.slice(2)
 function argValue(name) {
@@ -148,12 +150,17 @@ if (!skipGroups.has('build-identity')) {
     )
 
     if (expectedSha) {
-      const found = bundleText.includes(expectedSha)
+      // Exact quoted-string match, not a substring search (P130-27/P139 fail-closed contract):
+      // a dirty local build embeds "<sha>+dirty" — a naive `bundleText.includes(expectedSha)`
+      // treats the clean 40-hex expected SHA as a substring match against that dirty value and
+      // passes, which is exactly the case this check exists to reject. See
+      // lib/build-identity.mjs for the full rationale.
+      const found = bundleDeclaresExactSha(bundleText, expectedSha)
       record(
         'build-identity',
-        'APP_BUILD_SHA embedded in the entry bundle matches --sha',
+        'APP_BUILD_SHA embedded in the entry bundle matches --sha exactly (rejects +dirty/prefix/suffix contamination)',
         found,
-        found ? 'match' : `expected SHA not found in bundle`,
+        found ? 'match' : `expected SHA not found in bundle as an exact quoted value`,
       )
     } else {
       skipRecord('build-identity', 'APP_BUILD_SHA matches --sha', 'no --sha given')
@@ -191,10 +198,12 @@ if (!skipGroups.has('build-identity')) {
         // The two independent build-identity mechanisms (P83's baked-in __APP_BUILD_SHA__ and the
         // separately-emitted build-meta.json) must never disagree with each other, regardless of
         // whether either matches --sha — a real desync here would mean this deployment's own two
-        // sources of truth about its own identity contradict each other. Plain substring search
-        // (never a RegExp built from `parsed.sha`) — the value can legitimately contain a literal
-        // `+dirty` suffix, which is regex-metacharacter-shaped and must be matched literally.
-        const agree = bundleText.includes(parsed.sha)
+        // sources of truth about its own identity contradict each other. Exact quoted-string
+        // match (lib/build-identity.mjs) rather than a plain substring search: `parsed.sha` can
+        // legitimately carry a literal `+dirty` suffix (handled literally, not as a regex
+        // metacharacter), and the exact-match form keeps this check as precise as the --sha one
+        // above rather than relying on `parsed.sha` happening to always be the longer string.
+        const agree = bundleDeclaresExactSha(bundleText, parsed.sha)
         record(
           'build-identity',
           'baked-in APP_BUILD_SHA and build-meta.json sha agree with each other',
@@ -513,30 +522,40 @@ if (!skipGroups.has('analytics')) {
 }
 
 // ── Summary ───────────────────────────────────────────────────────────────────────────────────
-const meaningful = results.filter((r) => !r.skipped)
-const failed = meaningful.filter((r) => !r.pass)
-console.log(
-  `\n${meaningful.length - failed.length}/${meaningful.length} checks passed` +
-    (results.length > meaningful.length ? ` (${results.length - meaningful.length} skipped)` : ''),
-)
-if (failed.length) {
-  console.log(`FAILED: ${failed.map((r) => `[${r.group}] ${r.name}`).join('; ')}`)
+// FAILS CLOSED (P130-27/P139, lib/verifier-summary.mjs): before this fix, `--skip` naming every
+// group left `meaningful` empty, so `failed` was also empty and `ok: failed.length === 0`
+// reported success for a run that checked nothing — the exact "all-skipped exits 0" false pass.
+const aggregate = summarizeResults(results)
+if (aggregate.ranNothing) {
+  console.log(
+    '\nFAIL: every check group was skipped (--skip named them all) — a verifier run that ' +
+      'skipped everything proves nothing and can never report success',
+  )
+} else {
+  console.log(
+    `\n${String(aggregate.passedCount)}/${String(aggregate.meaningfulCount)} checks passed` +
+      (aggregate.skippedCount > 0 ? ` (${String(aggregate.skippedCount)} skipped)` : ''),
+  )
+  if (aggregate.failed.length) {
+    console.log(`FAILED: ${aggregate.failed.map((r) => `[${r.group}] ${r.name}`).join('; ')}`)
+  }
 }
 
 const summary = {
   url: site,
   expectedSha: expectedSha ?? null,
   expectedContentId,
-  total: meaningful.length,
-  passed: meaningful.length - failed.length,
-  failed: failed.length,
-  skipped: results.length - meaningful.length,
+  total: aggregate.meaningfulCount,
+  passed: aggregate.passedCount,
+  failed: aggregate.failed.length,
+  skipped: aggregate.skippedCount,
+  ranNothing: aggregate.ranNothing,
   results,
-  ok: failed.length === 0,
+  ok: aggregate.ok,
 }
 console.log(`RESULT_JSON:${JSON.stringify(summary)}`)
 if (jsonOutPath) {
   writeFileSync(jsonOutPath, JSON.stringify(summary, null, 2))
 }
 
-process.exitCode = failed.length ? 1 : 0
+process.exitCode = aggregate.ok ? 0 : 1

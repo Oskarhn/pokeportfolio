@@ -1081,13 +1081,23 @@ three lines is worth more as a test than one of 90.
 Added when the application scaffold exists, not before — an empty pipeline in a docs-only
 repository is noise.
 
-Two jobs, on every push to `main` and every pull request.
+Two jobs, on every push to `main` and every pull request. This diagram names every mandatory
+step; see §11 below for which of the two release-only/manual scripts and campaigns mentioned
+elsewhere in this document are deliberately NOT here.
 
 ```
 build-and-test  install → typecheck → lint → format → domain + property tests → build
-                → browser E2E (desktop + iPhone) → secret scan
-db-tests        supabase start → db reset → assert redeem-invitation is reachable
-                → database + authorization suites → generate types
+                → platform build verifier (dist/_headers, dist/sw.js artefact gate, P139)
+                → link/route checker (static dist/ mode, P139)
+                → browser E2E (desktop + iPhone, placeholder backend) → secret scan
+db-tests        supabase start → db reset → grant-audit → hostile-grant convergence
+                → assert redeem-invitation is reachable → database + authorization suites
+                → authenticated E2E (real sign-in, real local Supabase, §6b, P139)
+                → independent M12 adversarial suite (typecheck + execution + perf audit)
+                → portfolio/snapshot/storage performance benchmarks
+                → independent M13 adversarial suite (typecheck + execution) → export perf audit
+                → independent M16 adversarial suite (execution, P139 — see §11)
+                → generate types
 ```
 
 `db-tests` runs a full ephemeral Supabase stack on the runner — migrations from empty, seed, then
@@ -1107,3 +1117,49 @@ refactor could make them vacuous. Asserting a nonsense token comes back `400` fr
 proves the thing under test is actually there.
 
 Migrations are applied deliberately through the Supabase CLI, never automatically from CI.
+
+## 11. CI coverage inventory (P130-28/P139)
+
+Every validation surface in this repository, classified by where it actually runs. "Documented but
+never run" does not count as covered — this table exists so that stops being true by omission.
+
+| Surface | Classification | Where |
+|---|---|---|
+| Typecheck / lint / format | `FAST_REQUIRED_CI` | build-and-test, every push/PR |
+| Domain + property tests (`pnpm test`) | `FAST_REQUIRED_CI` | build-and-test |
+| Build | `FAST_REQUIRED_CI` | build-and-test |
+| Platform build verifier (`verify-scanner-platform-build.mjs`) | `FAST_REQUIRED_CI` | build-and-test (P139; was `NOT_RUN`) |
+| Link/route checker, static mode (`check-links.mjs`) | `FAST_REQUIRED_CI` | build-and-test (P139; was `NOT_RUN`) |
+| Browser E2E (placeholder backend, desktop + iPhone) | `FAST_REQUIRED_CI` | build-and-test |
+| Secret scan (gitleaks) | `FAST_REQUIRED_CI` | build-and-test |
+| DB + authorization suites (`pnpm test:db`) | `FAST_REQUIRED_CI` | db-tests |
+| Grant-audit + hostile-grant convergence | `FAST_REQUIRED_CI` | db-tests |
+| Authenticated E2E (real sign-in, TESTING.md §6b) | `FAST_REQUIRED_CI` | db-tests (P139; was `MANUAL_ONLY`) |
+| Independent M12 adversarial suite (typecheck + execution) | `FAST_REQUIRED_CI` | db-tests |
+| Independent M12 adversarial scale audit | `FAST_REQUIRED_CI` (catastrophic-only threshold, D-059) | db-tests |
+| Portfolio/snapshot/storage performance benchmarks | `FAST_REQUIRED_CI` (catastrophic-only threshold) | db-tests |
+| Independent M13 adversarial suite (typecheck + execution) | `FAST_REQUIRED_CI` | db-tests |
+| M13 export scale audit | `FAST_REQUIRED_CI` (catastrophic-only threshold) | db-tests |
+| Independent M16 adversarial suite (tests/m16-independent) | `FAST_REQUIRED_CI` | db-tests (P139; was `NOT_RUN` — package existed, never wired in) |
+| `db:types` generation + diff-on-commit expectation | `FAST_REQUIRED_CI` | db-tests |
+| `scripts/deployment-check.mjs` (live Cloudflare headers/CSP/PWA) | `RELEASE_ONLY` | manual, after any deploy — needs a real `DEPLOYMENT_URL` + `SUPABASE_URL` CI never has |
+| `scripts/preview-verify.mjs` (live build-identity/scanner-index/model reachability) | `RELEASE_ONLY` | manual, same reason |
+| `check-links.mjs` live mode (`DEPLOYMENT_URL` set) | `RELEASE_ONLY` | manual, same reason — static mode above is the CI-safe half |
+| `scripts/remote-security-check.mjs` | `RELEASE_ONLY` | manual, needs a real publishable key; SECURITY.md §13 |
+| `pnpm db:backup` / `db:backup:regression` | `RELEASE_ONLY` (before any migration touching real data) | manual, ops |
+| `test/p132c-independent-finance-regressions` | `MANUAL_STRESS` | manual, Docker, adversarial gate for future changes to the P132 correction RPCs specifically (HANDOVER.md) — expensive (100+500-iteration strict modes), not every-PR material |
+| `scripts/p132b/deadlock-campaign.ts` | `MANUAL_STRESS` | manual concurrency campaign |
+| `scanner:visual:benchmark*` / `scanner:recognition-lab:*` / `scanner:ocr:benchmark:*` | `MANUAL_STRESS` | manual, offline research scripts against real image corpora, not correctness gates |
+| `scripts/verify-norges-bank-contract.mjs` | `MANUAL_STRESS` (external API contract) | manual — asserts a live third party's response shape; a CI-scheduled run would be a freshness check, not a PR gate |
+
+**Env-gated test policy (P130-28/P139):** every suite above that reads `SUPABASE_URL` /
+`SUPABASE_ANON_KEY` / `SUPABASE_SERVICE_ROLE_KEY` (`pnpm test:db`, the M12/M13/M16 independent
+packages, the authenticated E2E project) is required in CI, and CI explicitly supplies those
+variables (`db-tests`' "Export local Supabase connection details" step, run before any of them).
+Locally, absent that env, each one skips with an explicit stated reason — the intended developer
+convenience (docs/TESTING.md §6b, `tests/m16-independent/README.md`'s own "Case classification"
+table) — never a silent, unexplained pass. The two are not in tension: "required in CI because CI
+supplies the env" and "an optional local convenience skip when it doesn't" describe the same suite
+correctly in its two different contexts, per this file's own §8 instruction not to make a local
+convenience test universally fail just because an env var it can supply for itself is briefly
+absent mid-setup.

@@ -448,6 +448,27 @@ export type Database = {
         }
         Relationships: []
       }
+      environment_ingest_config: {
+        Row: {
+          base_url: string | null
+          configured_at: string | null
+          configured_note: string | null
+          id: boolean
+        }
+        Insert: {
+          base_url?: string | null
+          configured_at?: string | null
+          configured_note?: string | null
+          id?: boolean
+        }
+        Update: {
+          base_url?: string | null
+          configured_at?: string | null
+          configured_note?: string | null
+          id?: boolean
+        }
+        Relationships: []
+      }
       fx_rates: {
         Row: {
           base_currency: string
@@ -1576,6 +1597,7 @@ export type Database = {
           gross_minor: number
           id: string
           idempotency_key: string
+          idempotency_request: Json | null
           marketplace: string | null
           net_proceeds_minor: number
           net_proceeds_nok_minor: number
@@ -1599,6 +1621,7 @@ export type Database = {
           gross_minor: number
           id?: string
           idempotency_key: string
+          idempotency_request?: Json | null
           marketplace?: string | null
           net_proceeds_minor: number
           net_proceeds_nok_minor: number
@@ -1622,6 +1645,7 @@ export type Database = {
           gross_minor?: number
           id?: string
           idempotency_key?: string
+          idempotency_request?: Json | null
           marketplace?: string | null
           net_proceeds_minor?: number
           net_proceeds_nok_minor?: number
@@ -2071,6 +2095,7 @@ export type Database = {
           gross_minor: number
           id: string
           idempotency_key: string
+          idempotency_request: Json | null
           marketplace: string | null
           net_proceeds_minor: number
           net_proceeds_nok_minor: number
@@ -2658,6 +2683,7 @@ export type Database = {
           gross_minor: number
           id: string
           idempotency_key: string
+          idempotency_request: Json | null
           marketplace: string | null
           net_proceeds_minor: number
           net_proceeds_nok_minor: number

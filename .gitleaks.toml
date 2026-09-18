@@ -14,4 +14,8 @@ regexes = [
   # Supabase install on Earth, never valid against a hosted project. Not a secret; see the comment
   # at its use site.
   '''eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImV4cCI6MTk4MzgxMjk5Nn0\.EGIM96RAZx35lJzdJsyH-qQwv8Hdp7fsn3W0YpN81IU''',
+  # scripts/p137/restore-drill.ts: the POSTGRES_PASSWORD for a disposable, network-isolated
+  # Docker container the restore drill creates and destroys (docker rm -f -v) on every run. A
+  # fixed, self-descriptive, non-secret placeholder — never a credential for any real database.
+  '''p137-disposable''',
 ]

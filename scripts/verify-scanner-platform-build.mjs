@@ -18,7 +18,9 @@ import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { extractInlineScripts } from './lib/live-csp-hash-verify.mjs'
+import { extractInlineScripts, parseCspDirectives } from './lib/live-csp-hash-verify.mjs'
+import { cacheControlForBlock } from './lib/cache-control-block.mjs'
+import { summarizeResults } from './lib/verifier-summary.mjs'
 
 const dist = fileURLToPath(new URL('../dist/', import.meta.url))
 
@@ -49,17 +51,10 @@ const record = (name, pass, detail) => {
   console.log(`${pass ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`)
 }
 
-/** Token-level CSP parsing (see deployment-check.mjs — substring tests cannot distinguish
- * `'wasm-unsafe-eval'` from `'unsafe-eval'`). */
-function cspDirectives(csp) {
-  const directives = new Map()
-  for (const part of csp.split(';')) {
-    const tokens = part.trim().split(/\s+/).filter(Boolean)
-    if (tokens.length === 0) continue
-    directives.set(tokens[0], tokens.slice(1))
-  }
-  return directives
-}
+// CSP directive parsing lives in lib/live-csp-hash-verify.mjs (single source of truth, shared
+// with deployment-check.mjs — see that module's doc comment for the first-occurrence-wins
+// fail-closed contract, P130-27/P139).
+const cspDirectives = parseCspDirectives
 
 // ── dist/_headers ──────────────────────────────────────────────────────────────────────────────
 {
@@ -157,12 +152,11 @@ function cspDirectives(csp) {
   // version-pinned and content-stable — safe to cache aggressively, and Cloudflare Pages' own
   // default for non-content-hashed filenames (max-age=0, must-revalidate, confirmed live) is NOT
   // that, so each must be an explicit rule.
-  function cacheControlFor(blockPath) {
-    const blockIndex = headersFile.indexOf(blockPath)
-    return blockIndex === -1
-      ? null
-      : /Cache-Control:\s*(.+)/.exec(headersFile.slice(blockIndex))?.[1]?.trim()
-  }
+  //
+  // Block-scoped lookup lives in lib/cache-control-block.mjs (P130-27/P139 fail-closed contract:
+  // the naive version searched past the current block's end and could report a LATER block's
+  // Cache-Control value for a path that actually has none of its own).
+  const cacheControlFor = (blockPath) => cacheControlForBlock(headersFile, blockPath)
   const immutable = (cc) =>
     cc !== null && cc !== undefined && /max-age=31536000/.test(cc) && /immutable/.test(cc)
 
@@ -345,9 +339,18 @@ function cspDirectives(csp) {
   )
 }
 
-const failed = results.filter((r) => !r.pass)
-console.log(`\n${results.length - failed.length}/${results.length} checks passed`)
-if (failed.length) {
-  console.log(`FAILED: ${failed.map((r) => r.name).join(', ')}`)
-  process.exitCode = 1
+const summary = summarizeResults(results)
+if (summary.ranNothing) {
+  console.log('\nFAIL: no checks were recorded — this run proves nothing')
+} else {
+  console.log(`\n${String(summary.passedCount)}/${String(summary.meaningfulCount)} checks passed`)
+  if (summary.failed.length) {
+    console.log(
+      `FAILED: ${results
+        .filter((r) => !r.pass)
+        .map((r) => r.name)
+        .join(', ')}`,
+    )
+  }
 }
+process.exitCode = summary.ok ? 0 : 1

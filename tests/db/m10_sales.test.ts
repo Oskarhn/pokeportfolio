@@ -133,6 +133,14 @@ async function lotById(lotId: string): Promise<LotRow> {
 
 /** One card purchase line, quantity 1, NOK. Returns the lot it produced. */
 async function acquireLot(unitPriceMinor: number): Promise<LotRow> {
+  return acquireLotQty(unitPriceMinor, 1)
+}
+
+/** Same as acquireLot, with a configurable quantity — used by the P138 idempotency race tests
+ *  that need lot headroom left over after one disposal (isolating the idempotency-key INSERT
+ *  race on `sales` from the unrelated, pre-existing quantity-exhaustion check). Uses the Pikachu
+ *  variant (distinct from acquireLot's Charizard) so the two never collide on the same holding. */
+async function acquireLotQty(unitPriceMinor: number, quantity: number): Promise<LotRow> {
   const { data: purchase, error } = await clientA
     .rpc('create_purchase', {
       p_purchased_on: today,
@@ -140,9 +148,9 @@ async function acquireLot(unitPriceMinor: number): Promise<LotRow> {
       p_lines: [
         {
           line_type: 'card',
-          card_variant_id: seedCatalog.charizardVariantId,
+          card_variant_id: seedCatalog.pikachuVariantId,
           condition: 'NM',
-          quantity: 1,
+          quantity,
           unit_price_minor: unitPriceMinor,
         },
       ],
@@ -751,6 +759,145 @@ describe('idempotency — a retried create_sale call never creates a second sale
 
     const afterLot = await lotById(lot.id)
     expect(afterLot.quantity_remaining).toBe(0) // not double-disposed
+  })
+})
+
+describe('P138/P130-15 — create_sale payload-equivalence and race-safe idempotency', () => {
+  it('a same-key replay with an edited notes-only change still replays cleanly AND preserves the edit (D-122 parity)', async () => {
+    const lot = await acquireLot(10000)
+    const key = crypto.randomUUID()
+    const base = {
+      p_sold_on: today,
+      p_currency: 'NOK',
+      p_idempotency_key: key,
+      p_lines: [{ lot_id: lot.id, quantity: 1, unit_gross_minor: 12000 }],
+    }
+
+    const { data: first, error: firstError } = await clientA
+      .rpc('create_sale', { ...base, p_notes: 'first attempt' })
+      .single<SaleRow & { notes: string | null }>()
+    expect(firstError).toBeNull()
+
+    const { data: second, error: secondError } = await clientA
+      .rpc('create_sale', { ...base, p_notes: 'edited after the fact' })
+      .single<SaleRow & { notes: string | null }>()
+    expect(secondError).toBeNull()
+    expect(second?.id).toBe(first?.id)
+    expect(second?.notes).toBe('edited after the fact')
+
+    const { data: stored } = await service
+      .from('sales')
+      .select('notes')
+      .eq('id', first!.id)
+      .single()
+    expect(stored?.notes).toBe('edited after the fact')
+  })
+
+  it.each([
+    [
+      'unit_gross_minor',
+      (l: { id: string }) => [{ lot_id: l.id, quantity: 1, unit_gross_minor: 99900 }],
+    ],
+    ['quantity', (l: { id: string }) => [{ lot_id: l.id, quantity: 2, unit_gross_minor: 12000 }]],
+  ])(
+    'a same-key replay with a different %s is refused, not silently replayed (P130-15)',
+    async (_label, lines) => {
+      const lot = await acquireLotQty(10000, 2)
+      const key = crypto.randomUUID()
+
+      const { data: first, error: firstError } = await clientA
+        .rpc('create_sale', {
+          p_sold_on: today,
+          p_currency: 'NOK',
+          p_idempotency_key: key,
+          p_lines: [{ lot_id: lot.id, quantity: 1, unit_gross_minor: 12000 }],
+        })
+        .single<SaleRow>()
+      expect(firstError).toBeNull()
+
+      const { data: second, error: secondError } = await clientA
+        .rpc('create_sale', {
+          p_sold_on: today,
+          p_currency: 'NOK',
+          p_idempotency_key: key,
+          p_lines: lines(lot),
+        })
+        .single<SaleRow>()
+      expect(second).toBeNull()
+      expect(secondError).not.toBeNull()
+      expect(secondError?.message).toMatch(/idempotency-key-reuse/i)
+
+      // Before P138 this silently returned `first` unchanged — assert that never happens, and
+      // that the refused replay wrote nothing of its own.
+      const { data: matching } = await service.from('sales').select('id').eq('idempotency_key', key)
+      expect(matching).toHaveLength(1)
+      expect(matching![0]!.id).toBe(first!.id)
+    },
+  )
+
+  it('concurrent same key + DIFFERENT payload (different lots): exactly one sale, never a raw unique_violation (P130-15)', async () => {
+    const lotA = await acquireLot(10000)
+    const lotB = await acquireLot(20000)
+    const key = crypto.randomUUID()
+
+    const [a, b] = await Promise.all([
+      clientA
+        .rpc('create_sale', {
+          p_sold_on: today,
+          p_currency: 'NOK',
+          p_idempotency_key: key,
+          p_lines: [{ lot_id: lotA.id, quantity: 1, unit_gross_minor: 11111 }],
+        })
+        .single<SaleRow>(),
+      clientA
+        .rpc('create_sale', {
+          p_sold_on: today,
+          p_currency: 'NOK',
+          p_idempotency_key: key,
+          p_lines: [{ lot_id: lotB.id, quantity: 1, unit_gross_minor: 88888 }],
+        })
+        .single<SaleRow>(),
+    ])
+
+    const outcomes = [a, b]
+    const succeeded = outcomes.filter((o) => o.error === null)
+    const failed = outcomes.filter((o) => o.error !== null)
+    expect(succeeded).toHaveLength(1)
+    expect(failed).toHaveLength(1)
+    // The defining assertion: a named domain refusal, never a raw Postgres constraint message.
+    expect(failed[0]!.error.message).toMatch(/idempotency-key-reuse/i)
+    expect(failed[0]!.error.message).not.toMatch(/duplicate key value|unique constraint|23505/i)
+
+    const { data: matching } = await service.from('sales').select('id').eq('idempotency_key', key)
+    expect(matching).toHaveLength(1)
+  })
+
+  it('concurrent same key + IDENTICAL payload (same lot, quantity headroom): exactly one write-set, both callers succeed', async () => {
+    const lot = await acquireLotQty(10000, 2)
+    const key = crypto.randomUUID()
+    const args = {
+      p_sold_on: today,
+      p_currency: 'NOK',
+      p_idempotency_key: key,
+      p_lines: [{ lot_id: lot.id, quantity: 1, unit_gross_minor: 11111 }],
+    }
+
+    const [a, b] = await Promise.all([
+      clientA.rpc('create_sale', args).single<SaleRow>(),
+      clientA.rpc('create_sale', args).single<SaleRow>(),
+    ])
+    expect(a.error).toBeNull()
+    expect(b.error).toBeNull()
+    expect(a.data?.id).toBe(b.data?.id)
+
+    const { data: matching } = await service.from('sales').select('id').eq('idempotency_key', key)
+    expect(matching).toHaveLength(1)
+    const { data: disposals } = await service
+      .from('lot_disposals')
+      .select('id')
+      .eq('lot_id', lot.id)
+      .is('voided_at', null)
+    expect(disposals).toHaveLength(1)
   })
 })
 

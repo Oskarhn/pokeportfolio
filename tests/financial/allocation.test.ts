@@ -126,3 +126,78 @@ describe('allocate — property tests (invariant F6)', () => {
     )
   })
 })
+
+// P130-28/P139: the original generators above stop at 1e6 (weights) / 1e9 (total) — well inside
+// JS's Number.isSafeInteger range and nowhere near the actual domain this allocator runs over in
+// production (money/quantity columns are Postgres `bigint`/int8; P117/P120 found real overflow
+// defects specifically OUTSIDE that generated range, in ad hoc scripts run outside CI, never by
+// this suite). These blocks widen coverage to the real int8 boundary and add explicit negative-
+// domain property coverage (the two example-based "rejects a negative ___" tests above prove one
+// fixed input each; these prove the rejection holds across a whole generated magnitude range).
+describe('allocate — property tests, wide/extreme int8 domain (P130-28/P139)', () => {
+  const POSTGRES_BIGINT_MAX = 9_223_372_036_854_775_807n // int8 max — DATA_MODEL.md money/quantity columns
+
+  const wideWeightsArb = fc.array(fc.bigInt({ min: 0n, max: POSTGRES_BIGINT_MAX / 100n }), {
+    minLength: 1,
+    maxLength: 20,
+  })
+  const wideTotalArb = fc.bigInt({ min: 0n, max: POSTGRES_BIGINT_MAX })
+
+  it('the shares always sum exactly to the total, at the real int8 domain boundary', () => {
+    fc.assert(
+      fc.property(wideTotalArb, wideWeightsArb, (total, weights) => {
+        const shares = allocate(total, weights)
+        expect(shares.reduce((a, b) => a + b, 0n)).toBe(total)
+      }),
+    )
+  })
+
+  it('every share is non-negative at the wide domain', () => {
+    fc.assert(
+      fc.property(wideTotalArb, wideWeightsArb, (total, weights) => {
+        const shares = allocate(total, weights)
+        expect(shares.every((s) => s >= 0n)).toBe(true)
+      }),
+    )
+  })
+
+  it('the maximum representable int8 total allocates exactly across equal weights', () => {
+    const result = allocate(POSTGRES_BIGINT_MAX, [1n, 1n, 1n])
+    expect(result.reduce((a, b) => a + b, 0n)).toBe(POSTGRES_BIGINT_MAX)
+  })
+
+  it('the maximum representable int8 total with a single maximal weight allocates exactly', () => {
+    const result = allocate(POSTGRES_BIGINT_MAX, [POSTGRES_BIGINT_MAX])
+    expect(result).toEqual([POSTGRES_BIGINT_MAX])
+  })
+})
+
+describe('allocate — negative-domain property coverage (P130-28/P139)', () => {
+  it('any negative total, across a wide generated magnitude range, is always rejected', () => {
+    fc.assert(
+      fc.property(
+        fc.bigInt({ min: -9_223_372_036_854_775_807n, max: -1n }),
+        fc.array(fc.bigInt({ min: 0n, max: 1_000_000n }), { minLength: 1, maxLength: 10 }),
+        (negativeTotal, weights) => {
+          expect(() => allocate(negativeTotal, weights)).toThrow(AllocationError)
+        },
+      ),
+    )
+  })
+
+  it('any single negative weight anywhere in the array, across a wide generated magnitude range, is always rejected', () => {
+    fc.assert(
+      fc.property(
+        fc.bigInt({ min: 0n, max: 1_000_000n }),
+        fc.array(fc.bigInt({ min: 0n, max: 1_000_000n }), { minLength: 0, maxLength: 10 }),
+        fc.bigInt({ min: -9_223_372_036_854_775_807n, max: -1n }),
+        fc.array(fc.bigInt({ min: 0n, max: 1_000_000n }), { minLength: 0, maxLength: 10 }),
+        (total, before, negativeWeight, after) => {
+          expect(() => allocate(total, [...before, negativeWeight, ...after])).toThrow(
+            AllocationError,
+          )
+        },
+      ),
+    )
+  })
+})

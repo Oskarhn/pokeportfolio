@@ -74,13 +74,14 @@ export function newLineDraft(lineType: LineType = 'card'): LineDraft {
  * re-implementation of it.
  *
  * Unlike Sale Add (`/sales/new?holdingId=...`, same component instance re-rendered across a
- * `holdingId` change), Purchase Add has no URL-driven entity identity — `/purchases/new` is a
+ * `holdingId` change), Purchase Add has no URL-driven ENTITY identity — `/purchases/new` is a
  * single fresh mount every time, with no in-place "switch to a different purchase" transition to
- * guard against. `EntityKeyChangeTracker` therefore does not apply here; there is nothing playing
- * the role of `holdingId`. What this module DOES capture, matching P124 §7-8: the fresh-default
- * shape of one purchase attempt, the "start a new logical attempt" reset (currently reached only
- * by a full component remount after a successful submit — see `PurchaseFormPage`'s own comment on
- * `idempotencyKey`'s lifecycle, reproduced below), and a `patch`-style field updater so the
+ * guard against; nothing here plays the role of `holdingId`. What this module DOES capture,
+ * matching P124 §7-8: the fresh-default shape of one purchase attempt, the "start a new logical
+ * attempt" reset (reached by a full component remount after a successful submit, OR — as of P140
+ * — by an explicit reset when the signed-in USER identity changes mid-mount without unmounting
+ * the component; see `PurchaseFormPage`'s own comment on `idempotencyKey`'s lifecycle and its
+ * `useEntityKeyReset` call, both reproduced below), and a `patch`-style field updater so the
  * property test can drive the same shallow-merge shape the component uses.
  */
 

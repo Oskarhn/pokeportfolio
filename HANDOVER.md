@@ -4,11 +4,55 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-## Current state (P136, 2026-09-15) — M15 RELEASED; P130-01/P130-03 fixed; P130-02 (JPY) integrated, local gates green, hosted release pending
+## Current state (P141, 2026-09-17) — P137/P138/P139/P140 integrated on `fix/p141-integrated-security-reliability-wave`; local gates green; not yet merged, hosted, or Production-configured
 
-**This section is the authoritative current state.** Every section below it is historical and
-describes the state at the time it was written — in particular the P111 section's "M15 is NOT
-released" is superseded.
+**This section is the authoritative current state.** Every section below it, including the P136
+section immediately following, is historical and describes the state at the time it was written.
+
+**Integration candidate, PR pending — see PROMPT_NUMBER=141 output
+(`ai_outputs/Claude_outputs/output_141.txt`) for full detail.** Four independently-developed
+branches, all based on released `main` (`72e4660c`), were cherry-picked together with zero content
+conflicts (the branches touch disjoint files): P137 (disaster recovery + environment-scoped ingest
+cron, D-133), P138 (server-side sale idempotency payload-equivalence, P130-04/05/15), P140 (client
+identity-switch isolation for P138's idempotency/manual-card state, built on top of P138), and P139
+(fail-closed release verifiers + CI coverage expansion, P130-27/28). One real conflict existed:
+both P137 and P138 independently picked migration timestamp `20260916120000`; P138's file was
+renamed to `20260916121000` (never hosted, safe to rename) — the only change made to either
+migration's content is none; only the filename moved.
+
+**Locally verified on the integrated tree (104 migrations, up from the released 102):**
+typecheck/lint/format/build all clean; full unit suite 1636 passed/1 skipped (133 files); platform
+build verifier 28/28; check-links 29/29; `pnpm test:db` 692 passed/1 skipped (50 files); grant-audit
+clean including a real hostile-privilege-state convergence proof; finance diagnostics all-zero; M12
+adversarial 44/2-skipped, M13 adversarial 62/62, M16 adversarial 53/53; authenticated E2E 79/79;
+placeholder-backend browser E2E 240 passed/96 skipped (desktop+mobile). **P137's fail-closed cron
+design proven on the fully-integrated 104-migration database**, not just P137 in isolation: a fresh
+reset leaves both `m9-ingest-*` jobs ACTIVE with zero `*.supabase.co` literals in `cron.job.command`,
+`environment_ingest_config` empty, and `dispatch_ingest_call(...)` returns NULL / enqueues zero
+`pg_net` requests — proven without manually deactivating those two jobs first. **The P137 restore
+drill (backup `20260915T201947Z`, migration-history 100) passes 15/15 against the full integrated
+set**, rolling forward exactly 4 migrations (the two P133 files, then P137, then P138) to reach 104
+— derived from the actual pending-migration list, not hardcoded — and all five required-mutation
+fault-injection tests (A–E) still correctly fail. `src/data/database.types.ts` needed one hand-added
+table entry (`environment_ingest_config`) — P137 never regenerated it (local-only scope) and a full
+`pnpm db:types` regen was tried and reverted because it also pulled in pre-existing, unrelated
+schema-type drift (an `openings.id` field, an `fx_rates.id` widening, an extra `cards`/
+`holding_summaries` foreign key) that predates this integration and is out of scope for P141.
+
+**Not yet done (owned by the remainder of this session or a follow-up):** branch not yet pushed,
+no PR opened yet as of this HANDOVER edit; hosted Supabase still at the released 102/0; Production
+`environment_ingest_config` has no row yet, so ingest stays paused (expected fail-closed behaviour,
+not a bug) until the one-time out-of-band INSERT this migration's own design requires; Cloudflare's
+automatic Production-branch deploy is unchanged (P130-08 still open — see below); the stale
+Production-connected M15 preview (`preview-m15-8a470db`) is untouched.
+
+**Status changes this integration is expected to produce once hosted and merged** (do not treat as
+done until output_141.txt's own `STATUS=` line confirms it): P130-04, P130-05, P130-07 (database
+restore, not full platform DR), P130-12, P130-15, P130-27, P130-28 close. P130-08, P130-22, P130-23
+remain open — P140 proves the P130-23 lifecycle shape is real but only resets the specific
+idempotency/manual-card state it touches, not every form's state on an A→B identity switch.
+
+## Current state (P136, 2026-09-15) — M15 RELEASED; P130-01/P130-03 fixed; P130-02 (JPY) integrated, local gates green, hosted release pending
 
 **Released.**
 

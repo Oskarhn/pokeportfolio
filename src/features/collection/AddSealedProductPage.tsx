@@ -16,6 +16,8 @@ import {
 } from '../../data/sealedProducts'
 import { SealedProductImage } from '../catalog/SealedProductImage'
 import { localTodayIso } from '../../platform/local-date'
+import { useEntityKeyReset } from '../../platform/entity-key-change-tracker'
+import { useAuth } from '../../auth/useAuth'
 import {
   Button,
   ChoiceGroup,
@@ -71,6 +73,8 @@ export function AddSealedProductPage() {
   const search = useSearch({ from: '/portfolio/sealed/new' })
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const { session } = useAuth()
+  const userId = session?.user.id ?? null
 
   const [selectedProductId, setSelectedProductId] = useState<string | undefined>(
     search.sealedProductId,
@@ -101,6 +105,18 @@ export function AddSealedProductPage() {
   const [isFavorite, setIsFavorite] = useState(false)
   const [notes, setNotes] = useState('')
   const [error, setError] = useState<string | null>(null)
+
+  // P130-04: same fixed-per-mount, retry-stable idempotency key as AddToCollectionPage's own fix —
+  // see that page's comment for the full rationale.
+  const [clientRequestKey, setClientRequestKey] = useState(() => crypto.randomUUID())
+
+  // P140: same identity-switch reset as AddToCollectionPage (P130-23 extended to P138's state —
+  // see that page's comment). Also covers "Choose a different product" below, which changes what
+  // a submission would be FOR without unmounting this page — a genuinely different product must
+  // never submit under the key minted for the previous one.
+  useEntityKeyReset(`${userId ?? ''}|${selectedProductId ?? ''}`, () => {
+    setClientRequestKey(crypto.randomUUID())
+  })
 
   const addMutation = useMutation({
     mutationFn: addCardAcquisition,
@@ -238,6 +254,7 @@ export function AddSealedProductPage() {
         storageLocationId: storageLocationId !== '' ? storageLocationId : undefined,
         isFavorite,
         holdingNotes: notes.trim() !== '' ? notes.trim() : undefined,
+        clientRequestKey,
       })
     } catch (mutationError) {
       setError(
