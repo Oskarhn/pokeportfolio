@@ -157,11 +157,32 @@ test.describe('P143 — sign-out ends local access and never resurrects (mocked 
     })
 
     await page.reload()
+    // Settled = either the sign-in form (correct) or the signed-in Home (a resurrected session).
+    await Promise.race([
+      page.getByRole('button', { name: 'Sign in' }).waitFor({ timeout: 10_000 }),
+      page.waitForURL((url) => url.pathname === '/', { timeout: 10_000 }),
+    ]).catch(() => undefined)
 
+    expect.soft(refreshCalls, 'the old refresh token was presented to Auth after sign-out').toBe(0)
+    expect.soft(await storedSession(page)).toBeNull()
     await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
     await expect(page).toHaveURL(/\/login/, { timeout: 10_000 })
+  })
+
+  test('leaving the page while the sign-out is still waiting on Auth still removes the stored session (pagehide guard)', async ({
+    page,
+  }) => {
+    await seedSessionOnce(page, sessionJson(300))
+    // Auth accepts the connection and never answers: the request stays pending.
+    await page.route('**/auth/v1/**', () => new Promise<void>(() => undefined))
+    await signedInAt(page, '/purchases/new')
+    await expireStoredAccessToken(page)
+
+    await clickSignOut(page)
+    // Well inside the 3 s deadline: the person closes the tab / navigates away.
+    await page.goto('/robots.txt')
+
     expect(await storedSession(page)).toBeNull()
-    expect(refreshCalls).toBe(0)
   })
 
   test('Auth server error on logout (HTTP 500): local access ends and the person is told revocation is unconfirmed', async ({

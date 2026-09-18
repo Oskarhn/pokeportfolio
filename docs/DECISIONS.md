@@ -6102,7 +6102,8 @@ browser before any change (see Proof):
 real.spec.ts` / `auth-signout-real.spec.ts`): A's marker survives a direct A → B; with an expired
 token and Auth unreachable, Sign out does nothing and the session comes back on reload. After the
 change the same specs pass, and four mutations (remove the boundary; key on the token; skip the
-external clear; skip the forced local removal) each make a named regression fail. Unit level:
+external clear; skip the forced local removal; drop the `pagehide` guard) each make a named
+regression fail, at unit and browser level. Unit level:
 `tests/ui/auth-identity-boundary.test.ts` (the real component's key, the transition rules, property
 tests) and `tests/ui/auth-end-session.test.ts`, which runs the real installed `AuthClient` against
 a stub `fetch` and carries a CANARY that fails loudly if a future supabase-js starts removing the

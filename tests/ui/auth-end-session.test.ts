@@ -192,6 +192,58 @@ describe('endAuthenticatedSession — every failure shape still ends local acces
   })
 })
 
+describe('endAuthenticatedSession — the page going away mid sign-out', () => {
+  withFakeTimers()
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  function stubPageLifecycle() {
+    const listeners = new Map<string, () => void>()
+    vi.stubGlobal('addEventListener', (type: string, handler: () => void) => {
+      listeners.set(type, handler)
+    })
+    vi.stubGlobal('removeEventListener', (type: string) => {
+      listeners.delete(type)
+    })
+    return listeners
+  }
+
+  it('a pagehide while the request is still pending removes the stored session synchronously', async () => {
+    const listeners = stubPageLifecycle()
+    const storage = new FakeStorage()
+    storage.seed()
+    const pending = endAuthenticatedSession({
+      auth: scriptedAuth('never-answers', storage, []),
+      storage,
+      storageKey: KEY,
+    })
+    await vi.advanceTimersByTimeAsync(100)
+    expect(storage.map.size).toBe(2) // still waiting on the service
+
+    listeners.get('pagehide')?.() // the tab is closed / navigated away right now
+
+    expect(storage.map.size).toBe(0)
+    await vi.advanceTimersByTimeAsync(REMOTE_REVOCATION_DEADLINE_MS)
+    await pending
+  })
+
+  it('the listener is removed once the sign-out settles (no leak across sign-ins)', async () => {
+    const listeners = stubPageLifecycle()
+    const storage = new FakeStorage()
+    storage.seed()
+    const pending = endAuthenticatedSession({
+      auth: scriptedAuth('ok', storage, []),
+      storage,
+      storageKey: KEY,
+    })
+    await vi.advanceTimersByTimeAsync(10)
+    await pending
+    expect(listeners.has('pagehide')).toBe(false)
+  })
+})
+
 describe('endAuthenticatedSession — storage that misbehaves is reported, never thrown', () => {
   withFakeTimers()
   it('a storage that refuses removal yields local:incomplete (and never throws)', async () => {

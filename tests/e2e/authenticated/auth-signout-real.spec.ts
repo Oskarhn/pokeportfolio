@@ -120,10 +120,11 @@ test.describe('P143 — real sign-out semantics', () => {
 
     await page.getByRole('button', { name: 'Sign out' }).click()
 
-    await expect(page).toHaveURL(/\/login/, { timeout: 15_000 })
-    await expect(page.getByLabel('Notes')).toHaveCount(0)
-    await expect.poll(() => storedSession(page)).toBeNull()
-    await expect(page.getByText(SIGN_OUT_NOTICE)).toBeVisible()
+    // Soft: on the released base the button does nothing visible here; the reload below is what
+    // shows the resurrection, and both failures should be reported together.
+    await expect.soft(page).toHaveURL(/\/login/, { timeout: 15_000 })
+    await expect.soft(page.getByLabel('Notes')).toHaveCount(0)
+    await expect.soft(page.getByText(SIGN_OUT_NOTICE)).toBeVisible()
 
     // Auth is back. The refresh token was never revoked, so the server would happily accept it.
     await page.unroute('**/auth/v1/**')
@@ -133,11 +134,16 @@ test.describe('P143 — real sign-out semantics', () => {
     })
 
     await page.reload()
+    // Settled = either the sign-in form (correct) or the signed-in Home (a resurrected session).
+    await Promise.race([
+      page.getByRole('button', { name: 'Sign in' }).waitFor({ timeout: 10_000 }),
+      page.waitForURL((url) => url.pathname === '/', { timeout: 10_000 }),
+    ]).catch(() => undefined)
 
+    expect.soft(tokenRequests, 'the old refresh token was presented to Auth after sign-out').toBe(0)
+    expect.soft(await storedSession(page)).toBeNull()
     await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
     await expect(page).toHaveURL(/\/login/)
-    expect(await storedSession(page)).toBeNull()
-    expect(tokenRequests).toBe(0)
     // Premise check: it really was a live credential the whole time.
     expect(await serverStillAccepts(refreshToken)).toBe(true)
   })
