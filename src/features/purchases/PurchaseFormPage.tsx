@@ -6,9 +6,14 @@ import { createPurchase, type PurchaseLineInput } from '../../data/purchases'
 import { createRetailer, listRetailers } from '../../data/retailers'
 import { fetchFxRate, FxRateNotFoundError } from '../../data/fx'
 import { fromDecimalString, toDecimalString } from '../../domain/money'
-import { allocate } from '../../domain/allocation'
+import { allocatePurchaseCharges } from '../../domain/allocation'
 import type { CurrencyCode } from '../../domain/currency'
 import { Button, FormMessage, SelectField, TextField } from '../../ui/form'
+import {
+  parseNullableMoneyInput,
+  parseOptionalChargeInput,
+  requireKnownAmount,
+} from '../../ui/money-format'
 import { LineEditorRow } from './LineEditor'
 import { LINE_TYPE_LABEL } from './labels'
 import { at } from './util'
@@ -28,13 +33,6 @@ import { ManualCardResolutionCache, resolveManualCardId } from './manual-card-re
 const CURRENCIES: CurrencyCode[] = ['NOK', 'EUR', 'USD', 'GBP', 'JPY']
 
 const today = localTodayIso
-
-/** Parses a decimal charge/price field; blank means zero, never a fabricated amount. */
-function parseAmount(raw: string, currency: CurrencyCode): bigint {
-  const trimmed = raw.trim().replace(',', '.')
-  if (trimmed === '') return 0n
-  return fromDecimalString(trimmed, currency).minorUnits
-}
 
 interface LinePreview {
   label: string
@@ -158,23 +156,25 @@ export function PurchaseFormPage() {
     total: bigint
   } | null>(() => {
     try {
-      const shipping = parseAmount(shippingInput, currency)
-      const customs = parseAmount(customsInput, currency)
-      const discount = parseAmount(discountInput, currency)
-      const lineTotals = lines.map((line) => {
+      // Charges: blank means no charge (parseOptionalChargeInput). A line's unit price is different
+      // — a blank one is an unknown amount, not a free line — so the preview waits for a price
+      // rather than showing a fabricated 0.00 (P130-25).
+      const shipping = parseOptionalChargeInput(shippingInput, currency)
+      const customs = parseOptionalChargeInput(customsInput, currency)
+      const discount = parseOptionalChargeInput(discountInput, currency)
+      const lineTotals: bigint[] = []
+      for (const line of lines) {
         const qty = BigInt(Math.max(1, Number.parseInt(line.quantity || '1', 10)))
-        const unit = parseAmount(line.unitPrice, currency)
-        return unit * qty
-      })
-      const weights = lineTotals
-      const allocShip = allocate(shipping, weights)
-      const allocCustoms = allocate(customs, weights)
-      const allocDiscount = allocate(discount, weights)
+        const unit = parseNullableMoneyInput(line.unitPrice, currency)
+        if (unit === null) return null
+        lineTotals.push(unit * qty)
+      }
+      const charges = allocatePurchaseCharges(lineTotals, shipping, customs, discount)
       const previews = lines.map((line, index) => {
         const lineTotal = at(lineTotals, index)
-        const allocatedShipping = at(allocShip, index)
-        const allocatedCustoms = at(allocCustoms, index)
-        const allocatedDiscount = at(allocDiscount, index)
+        const allocatedShipping = at(charges.shipping, index)
+        const allocatedCustoms = at(charges.customs, index)
+        const allocatedDiscount = at(charges.discount, index)
         return {
           label:
             line.cardDisplayName ||
@@ -186,7 +186,7 @@ export function PurchaseFormPage() {
           allocatedShipping,
           allocatedCustoms,
           allocatedDiscount,
-          attributable: lineTotal + allocatedShipping + allocatedCustoms - allocatedDiscount,
+          attributable: at(charges.attributable, index),
         }
       })
       const subtotal = lineTotals.reduce((a, b) => a + b, 0n)
@@ -200,12 +200,18 @@ export function PurchaseFormPage() {
   const submitMutation = useMutation({
     mutationFn: async () => {
       const lineInputs: PurchaseLineInput[] = []
-      for (const draft of lines) {
+      for (const [lineIndex, draft] of lines.entries()) {
         const quantity = Number.parseInt(draft.quantity, 10)
         if (!Number.isFinite(quantity) || quantity <= 0) {
           throw new Error('Every line needs a positive quantity.')
         }
-        const unitPriceMinor = fromDecimalString(draft.unitPrice || '0', currency).minorUnits
+        // P130-25: a blank price is not a free item. The server requires a known unit price per line,
+        // so an empty field is refused here rather than silently submitted as 0.
+        const unitPriceMinor = requireKnownAmount(
+          draft.unitPrice,
+          currency,
+          `Enter a unit price for line ${String(lineIndex + 1)} — type 0 if it was free.`,
+        )
         if (unitPriceMinor < 0n) throw new Error('Unit price cannot be negative.')
 
         let manualCardId: string | undefined
@@ -287,9 +293,9 @@ export function PurchaseFormPage() {
           currency,
           lines: lineInputs,
           retailerId: retailerId || undefined,
-          shippingMinor: parseAmount(shippingInput, currency),
-          customsMinor: parseAmount(customsInput, currency),
-          discountMinor: parseAmount(discountInput, currency),
+          shippingMinor: parseOptionalChargeInput(shippingInput, currency),
+          customsMinor: parseOptionalChargeInput(customsInput, currency),
+          discountMinor: parseOptionalChargeInput(discountInput, currency),
           fxRateToNok: resolvedFxRate,
           fxRateDate: resolvedFxDate,
           fxSource: currency === 'NOK' ? undefined : fxMode,

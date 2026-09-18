@@ -10,14 +10,56 @@ import type { CurrencyCode } from '../domain/currency'
  * here; see the domain layer for that.
  */
 
-/** "100,50" and "100.50" both parse; a bare "100" is whole kroner. Never invents a value from an
- *  empty or whitespace-only string — the caller decides what "no amount entered" means. */
-export function parseNokInput(raw: string): bigint {
+/**
+ * The one place a typed money field becomes minor units (P130-25, D-135).
+ *
+ * A blank field and a typed zero are different financial facts (FINANCIAL_MODEL.md §1.1): `""`
+ * means "no amount was entered" — unknown, absent — while `"0"` is a real, known zero. So this
+ * parser answers `null` for an empty or whitespace-only string and never fabricates `0n`; a caller
+ * then decides deliberately what an absent amount means for ITS field:
+ *
+ *   - a value that may legitimately be unknown keeps the `null` (send it as NULL / omit it);
+ *   - a value the server requires to be known asks the person for it (`requireKnownAmount`);
+ *   - an additive charge whose blank means "no charge of this kind" says so by name
+ *     (`parseOptionalChargeInput`).
+ *
+ * Both `,` and `.` are accepted as the decimal separator. Digits are parsed exactly by
+ * `fromDecimalString` for the given currency's own exponent (JPY has none), which rejects surplus
+ * fractional digits instead of rounding them away. No `Number()`, no `||` defaulting, no floats.
+ */
+export function parseNullableMoneyInput(raw: string, currency: CurrencyCode): bigint | null {
   const normalized = raw.trim().replace(',', '.')
-  if (normalized === '') {
-    throw new InvalidMoneyInputError('Enter an amount')
-  }
-  return fromDecimalString(normalized, 'NOK').minorUnits
+  if (normalized === '') return null
+  return fromDecimalString(normalized, currency).minorUnits
+}
+
+/** A money field the server needs to be a KNOWN amount (e.g. a purchase line's unit price, a sale
+ *  line's price). Blank is refused with `missingMessage`; an explicit `0` is accepted as known 0. */
+export function requireKnownAmount(
+  raw: string,
+  currency: CurrencyCode,
+  missingMessage: string,
+): bigint {
+  const parsed = parseNullableMoneyInput(raw, currency)
+  if (parsed === null) throw new InvalidMoneyInputError(missingMessage)
+  return parsed
+}
+
+/**
+ * An optional additive charge — shipping, customs, a discount, marketplace fees. Blank means
+ * "no charge of this kind", which is the same fact as an explicit 0: the server columns are
+ * `NOT NULL DEFAULT 0` because the ABSENCE of a charge is not unknown, it is zero. This is the
+ * only money parser that turns blank into `0n`, and it does so by name so every such decision is
+ * visible and greppable — never as an incidental `|| '0'` on a price.
+ */
+export function parseOptionalChargeInput(raw: string, currency: CurrencyCode): bigint {
+  return parseNullableMoneyInput(raw, currency) ?? 0n
+}
+
+/** "100,50" and "100.50" both parse; a bare "100" is whole kroner. Never invents a value from an
+ *  empty or whitespace-only string — a blank field throws rather than becoming 0. */
+export function parseNokInput(raw: string): bigint {
+  return requireKnownAmount(raw, 'NOK', 'Enter an amount')
 }
 
 /**
