@@ -2280,3 +2280,34 @@ against the Vite dev server at all: `useIsMountedRef` set its ref to false on ef
 never back to true, so under StrictMode's mount-unmount-mount the form's error message and
 post-save navigation were silently skipped for the life of a live component - invisible in
 production (no double mount) and invisible to every existing test. A one-line re-arm fixed it.
+
+## 2026-09-19 (P146) - The number was exact until the moment something called it a number
+
+P144 had already shown the symptom by accident: an exact parity test at 2^58 scale failed by 2 minor units
+because PostgREST returns a `bigint[]` as JSON numbers. Reproducing P130-19 properly meant asking where the
+digits actually die, and the answer was not where the audit pointed. The audit named `Number(bigint)` on the
+write path, which is real, but on the read path the loss is earlier and invisible: Postgres holds the exact
+value, the PostgREST body carries every digit (`{"total_minor":9007199254740993}`), and it is `JSON.parse`,
+inside supabase-js, that hands the application 9007199254740992. By the time any of our code runs the value has
+already changed, so a `BigInt(number)` "fix" on the read side would have preserved the wrong amount with the right
+type. The existing habit (select every money column `::text`) was correct and mostly followed; the defects were
+the writes, three RPCs that return a whole row of which the caller reads nothing, and a handful of places that
+formatted money through a double.
+
+Two decisions were not obvious. First, whether to bound the money domain instead: it is attractive (a portfolio
+never reaches 90 trillion kroner) but every write, every product, every `numeric` sum and every FX multiplication
+would need its own proof, and one missed path is exactly the silent bug again, while the database already fails
+loudly rather than wrapping. Second, what the guard on the wire should do with a response it did not expect. The
+first version threw, and the very first real round trip showed why that is wrong: `set_manual_valuation` returns
+the whole row, its `value_minor` came back as an unsafe literal, and the guard reported an error for a write that
+had already committed - an invitation to retry and double-write. The guard now quotes the literal (the digits
+survive, as text), reports it, and the tests require the report to stay empty; the two RPCs were changed to select
+only `id`, which is the actual fix.
+
+The rest of the time went to making the wrong shape unmergeable. A catalog audit derives the client-callable
+function list from `pg_proc`; static rules fail on a money column without `::text` or a `Number(<money>)` that is
+not on a named display-only list; property tests sweep the whole signed range around 2^53 and 2^63. Mutations of
+each rule fail the suite that owns them. Two environmental notes for whoever runs this next: two full database
+suites started against one local stack interfere (a killed run left an orphan behind, and the resulting m12/m16
+failures vanished after a `supabase db reset` and a single run), and `tests/ui/opening-draft.test.ts` compares the
+local date with the UTC date, so it fails between local midnight and 02:00 in Norway on the untouched base as well.

@@ -21,10 +21,22 @@ Authoritative definition of every monetary term, formula and allocation rule in 
 | Percentages | Computed at read time from minor-unit integers. Never stored. |
 | Rounding | Half-up to the minor unit at every persistence boundary. Allocation uses largest-remainder (§4.2) so parts always sum exactly to the whole. |
 | Display currency | NOK. Every stored non-NOK amount carries a frozen NOK conversion (§7). |
+| Wire representation | Across the client/database boundary an amount is a **decimal integer string**, never a JSON number; inside the client it is a `bigint`. See invariant M3 and D-137. |
 
 **Invariant M1 —** no monetary column may be nullable *to mean zero*. `NULL` always means
 "not applicable / not known", never "0". This distinction is load-bearing for opening pulls (§5),
 gifts, and cards acquired before tracking began.
+
+**Invariant M3 —** an amount never crosses the client/database boundary as a JSON number. Postgres
+`bigint` is exact and PostgREST writes every digit, but a JSON number is a double: above
+2^53 − 1 (9007199254740991) `JSON.parse` and `Number()` return a different integer without an
+error. Reads therefore arrive as text (`col::text`, functions that return money declare `text`) and
+writes are sent as text; the client holds `bigint`. The supported range is the whole signed `bigint`
+(±9223372036854775807): a value outside it is refused, never wrapped or clamped, and an aggregate
+(`sum` is `numeric`) is returned as exact text. Sign, `NULL` and `0` survive the crossing unchanged
+(M1): `NULL` reads as `null`, a stored zero as `0n`. A `Number` of an amount exists only as a
+non-authoritative chart coordinate or a percentage shown to one decimal, and no ledger value is ever
+computed from it. FX rates (`numeric(18,8)`) are read and re-sent as text for the same reason.
 
 ### 1.1 Cost basis is a state, not just a nullable number
 
@@ -1022,6 +1034,7 @@ Every invariant below has a corresponding automated test. See [TESTING.md](TESTI
 |---|---|
 | M1 | `NULL` money never means zero |
 | M2 | `unit_cost_basis_minor IS NOT NULL` iff `cost_basis_state = 'known'` |
+| M3 | An amount crosses the client/database wire as a decimal string, never a JSON number; every value in the signed `bigint` range round-trips exactly, `NULL` stays `null` and `0` stays `0n` |
 | F1 | `GPO = CS + HS` |
 | F2 | Buyer-paid shipping only offsets seller shipping cost |
 | F3 | `CMV = ACMV + UMV` |

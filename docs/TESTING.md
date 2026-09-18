@@ -770,6 +770,28 @@ convergence via the M16 baseline ✓; m16-independent 53/53 with zero skips ✓;
 unchanged thresholds ✓. The hosted project is untouched; the first HOSTED execution remains the
 pre-merge gate when CI or a manual hosted window exists.
 
+**Exact money transport, P130-19 (`tests/db/p146_*.test.ts`, `tests/data/money*.test.ts`,
+`tests/data/exact-json-guard.test.ts`, `tests/data/money-wire-structure.test.ts`; D-137, invariant M3):**
+
+- `p146_transport_layers` — one exact bigint (2^53 − 1, 2^53, 2^53 + 1, 2^58 + 3, ~2^62) followed outward: Postgres,
+  the raw PostgREST body, `JSON.parse`, an unguarded supabase-js client, `Number()`. Documents that the wire is exact and
+  `JSON.parse` is the first layer to lose a value.
+- `p146_exact_money_roundtrip` — the real `src/data` functions against the real stack (only the Supabase client handle
+  is injected, and it is the app's own guarded client). Every money write and read above 2^53: purchase, edit, quantity
+  product, EUR/USD/JPY with the frozen NOK conversion compared with the domain twin, negative sale results below −2^53
+  (−(2^53 + 1), −2^58), a costed sale with F5 in bigint, aggregates whose *sum* exceeds 2^53 while every row is safe,
+  manual valuation, cost basis, threshold, opening, and a keyset cursor whose rounded value would repeat a row. A reporter
+  on the guard requires that no response ever needed its unsafe number quoted.
+- `p146_transport_guard` — request refusal (nothing written), response quoting of a forgotten `::text`, and NULL/0
+  through the data layer (unknown vs known-zero cost, uncosted vs break-even result).
+- `p146_wire_surface_audit` — `pg_proc` is the source: every `*_minor` result column of an exposed function is `text`,
+  a row-returning money RPC is always chained `.select(…)`, the raw-bigint helpers are never called by the client.
+- `money.test.ts` — strict parse/serialise (empty string, `+`, `-0`, exponent, hex, whitespace, full-width digits, unsafe
+  numbers rejected instead of `BigInt()`-ed), NULL vs 0, and property tests over the whole signed range with
+  0, ±1, ±MAX_SAFE ± 1, powers of two and ten and both bigint limits.
+- `money-wire-structure` — static rules: no `Number(<money>)` in the data layer, an explicit allowlist elsewhere, every
+  money column in a select list is `::text`, every `p_*_minor` argument is serialised, one guarded client.
+
 ---
 
 ## 6. E2E

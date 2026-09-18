@@ -1326,15 +1326,39 @@ joins `collection_grid_density`/`collection_default_view` as the third Portfolio
 preference. All three are read by the client and can be overridden per-request via URL search
 params (`src/router.tsx`'s `PortfolioSearch`) without changing the stored default.
 
-**Money serialization boundary.** `bigint` minor-unit columns are exact in Postgres, but
-PostgREST serializes `bigint` as a plain JSON number by default, and JSON/JS numbers only carry
-exact integer precision up to `Number.MAX_SAFE_INTEGER` (2^53 − 1). Every query that selects a
-money column must cast it to text in the select list (e.g. `total_minor::text`) and parse the
-result with `BigInt()` — see `src/data/money.ts` and the proof in
-`tests/db/money-boundary.test.ts`, which inserts a value one above that threshold and shows the
-cast path stays exact while the uncast path does not. Not a practical risk at this app's actual
-scale (collection values are nowhere near 2^53 øre), but the boundary is real and now tested
-rather than assumed.
+**Money serialization boundary (D-137).** `bigint` minor-unit columns are exact in Postgres, and
+PostgREST writes them onto the wire with every digit (`{"total_minor":9007199254740993}`), but
+`JSON.parse` — inside supabase-js, before any application code runs — turns that literal into the
+number 9007199254740992: JSON/JS numbers only carry exact integers up to `Number.MAX_SAFE_INTEGER`
+(2^53 − 1). The full stack was measured layer by layer in `tests/db/p146_transport_layers.test.ts`.
+The contract, in both directions, is a **decimal integer string on the wire and `bigint` in the
+client**:
+
+- *Output.* Every query that selects a money column casts it to text in the select list
+  (`total_minor::text`); every SQL function that returns money declares the column `text`; an RPC that
+  returns a whole money row (`create_purchase`, `set_manual_valuation`, …) is chained with an explicit
+  `.select('…::text')`. `parseMinorUnits` (`src/data/money.ts`) reads the exact digits.
+- *Input.* A `bigint` is written as its decimal string (`serializeMinorUnits`, `moneyArg`).
+  PostgREST casts a JSON string to a `bigint` parameter, and to a `->> '…'::bigint` field inside a `jsonb`
+  argument, exactly — verified against the installed PostgREST, not assumed. `Number(<bigint>)` never
+  appears on the write path.
+- *Range.* A stored amount is a Postgres `bigint` (±9223372036854775807); the client refuses anything
+  outside it before sending, the server refuses it too (`bigint out of range`). There is no smaller
+  product limit: every write RPC and every aggregate already either succeeds exactly or fails loudly, and
+  aggregates are returned as text (a `numeric` sum may even exceed the `bigint` range and still parse
+  exactly).
+- *Backstop.* The app's fetch (`src/data/exact-json-guard.ts`) refuses a request body carrying an integer
+  literal above 2^53 − 1 and quotes such a literal in a response body before it is parsed, so a column
+  someone forgets to cast arrives as exact text instead of a rounded number. The test suites require that
+  quoting never happens on any real path.
+- *Rates.* `fx_rate_to_nok` is `numeric(18,8)` — not money, but 18 significant digits do not fit in a
+  double either — and is read `::text` and re-sent as text.
+
+`tests/db/p146_wire_surface_audit.test.ts` derives the client-callable function list from `pg_proc`
+and fails when a new function returns money as `bigint`/`numeric`, or when a row-returning money RPC
+is called without a `.select(…)`. `tests/data/money-wire-structure.test.ts` fails when a select list
+names a money column without `::text`, when `Number(<money>)` reappears in the data layer, or when a
+`p_*_minor` argument is not serialised.
 
 ## 15. M7.1 implementation notes
 

@@ -6118,3 +6118,75 @@ violates the contract. P130-19 (bigint money through `Number()` on the client bo
 negativity, determinism, equality with the single-tier rule inside the goods, bounded rounding, bounded
 effect of reordering), `tests/ui/money-input-parser.test.ts`, and `tests/e2e/authenticated/
 blank-money-input.spec.ts` (drives the real forms and asserts on the request that goes over the wire).
+
+## D-137 — Money crosses the client/database wire as a decimal string; the supported range is the whole signed `bigint` (P130-19 / P146)
+
+**2026-09-19 · Accepted.** Decision number D-137 is tentative: P143 owns D-134, P144 D-135 and P145 may use D-136 — verify uniqueness at integration.
+
+**Context.** The P130 audit (P130-19) found the client serialising money with `Number()`. P144 then hit
+the read side: PostgREST returned a `bigint[]` as JSON numbers and JavaScript changed a 2^58-scale value by
+2 minor units in an RPC round trip. Measured layer by layer against the real local stack
+(`tests/db/p146_transport_layers.test.ts`): Postgres holds the exact value; PostgREST writes every digit onto the
+wire; **`JSON.parse` is the first layer that loses it** (the rounding happens inside supabase-js, before
+application code runs); on the write side the loss is `Number(bigint)` in the application. Before the fix,
+13 of 14 real-stack round trips through the actual data layer (`tests/db/p146_exact_money_roundtrip.test.ts`)
+returned or stored a different amount — an edited unit price, a shipping charge, a negative net proceeds figure, a
+manual valuation, the low-value threshold and a keyset-pagination cursor whose rounded value repeated a row.
+The read side was already mostly text (every table select and money-returning function since M3/M12 casts
+`::text`); the holes were the writes, three response bodies that carried a whole row, the FX rate, and a few
+display paths that formatted money through a double.
+
+**Decision.** Strategy A — exact, arbitrary signed `bigint` — with a small guard, not a bounded domain.
+
+- *Wire.* A money amount is a decimal integer string in both directions. Outputs: `col::text`, functions
+  return `text`. Inputs: `serializeMinorUnits` / `moneyArg` in `src/data/money.ts`; PostgREST casts a JSON
+  string to a `bigint` parameter and to a `->>'…'::bigint` field of a `jsonb` argument exactly (verified against
+  the installed PostgREST for scalar parameters, `jsonb` fields and direct table writes; no client code sends a `bigint[]`).
+- *Client.* `bigint` internally; one parser (`parseMinorUnits`: canonical decimal text of any length, or a JSON
+  number only if it is a safe integer — never `BigInt(number)`), a null-preserving variant, a serialiser that
+  refuses anything outside the ledger range. `NULL` stays `null`, `0` stays `0n`. `moneyArg` is the single
+  place the generated `Database` types (which model `bigint` parameters as `number`) are deliberately
+  contradicted; a test pins that it is a string at runtime.
+- *Guard.* The app's fetch (`src/data/exact-json-guard.ts`, installed by `createAppSupabaseClient`) refuses a
+  request body with an integer literal above 2^53 − 1 and quotes such a literal in a JSON response before
+  `JSON.parse` sees it. The test suites install a reporter and require that quoting never occurs: it exists so a
+  forgotten cast cannot become a wrong amount, not so paths can rely on it. A response is never thrown away
+  after its write committed.
+- *Rows.* RPCs that return a whole money row and whose result is unused (`set_manual_valuation`,
+  `set_sealed_lot_intent`) are chained `.select('id')`.
+- *Rates.* `fx_rate_to_nok` and `fx_rates.rate` (`numeric(18,8)`, 18 significant digits) are read `::text` and
+  re-sent as text; the P136 contract is untouched.
+- *Display.* Amounts are formatted from the exact `bigint` (`formatNokMinor`, `formatSourcePriceMinor`,
+  `toDecimalString`). `Number(<bigint>)` remains only for a chart coordinate and for percentages shown to one
+  decimal, listed by name in `tests/data/money-wire-structure.test.ts` (S2). `chartMajorUnits` replaces
+  `safeMajorUnits`: it no longer throws above 2^53, because a valid ledger of that size must still draw.
+- *Provider prices.* A provider price whose minor-unit integer is not a safe integer is treated as absent
+  (`asFiniteNumber` in the TCGdex adapter) rather than rounded; `ingest-prices`/`search-prices` still carry
+  `valueMinor` as a JSON number because that value is bounded by a third-party float.
+- *No migration.* The server already accepts strings and returns text; nothing about the schema changed.
+
+**Alternatives considered and rejected.**
+- *Strategy B — a bounded domain (e.g. 2^53 − 1 minor units, about 90 trillion NOK).* Plausible for a Pokémon
+  portfolio, and simpler on the client, but it would have to be enforced by CHECK/trigger on every one of the
+  money column, on every product `quantity × price`, on every `numeric` aggregate over many
+  individually valid rows and on every FX conversion (`amount × rate × 10^Δ` grows the value) — and a single
+  missed path is exactly a silent-rounding bug again. It also needs a migration and a coordinated deployment.
+  Strategy A needs none of that: the database already fails loudly (`bigint out of range`) rather than wrapping.
+- *A hybrid (safe-range writes, text reads).* Leaves the same enforcement burden on writes for no gain, since
+  strings are already accepted.
+- *Make the guard throw on responses.* A write that committed would report failure and invite a duplicate retry.
+- *Regenerate `database.types.ts`.* Thousands of unrelated lines of drift, and the generated types would still
+  say `number` for a `bigint` parameter; the contradiction is confined to `moneyArg` instead.
+
+**Consequences.** No schema or RPC change, so the two P144 migrations remain the newest (106 migrations) and there is
+no deployment ordering: the released client keeps working against the current database, and the new client works
+against both. The change is entirely in the client bundle (and a one-line tightening of the TCGdex adapter used by two
+edge functions). Money above 2^53 minor units is now exact in the ledger views; it is still refused by Postgres
+above ±9.2e18. Not addressed here: P130-21 (Quick Portfolio CSV formula injection, labels, immediate object-URL
+revoke — only its float rendering of a value was corrected) and P130-26 (raw error text) remain open.
+
+**Proof.** `tests/db/p146_transport_layers.test.ts`, `tests/db/p146_exact_money_roundtrip.test.ts` (real
+PostgREST, real Postgres, real data layer; includes JPY/EUR/USD, negative values below −2^53, sums above 2^53, a
+keyset cursor), `tests/db/p146_transport_guard.test.ts`, `tests/db/p146_wire_surface_audit.test.ts`,
+`tests/data/money.test.ts` (property tests over the whole signed range), `tests/data/exact-json-guard.test.ts`,
+`tests/data/money-wire-structure.test.ts`.
