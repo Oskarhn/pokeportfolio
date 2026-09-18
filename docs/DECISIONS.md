@@ -6009,3 +6009,101 @@ every non-Production restore target to clear `environment_ingest_config` uncondi
 restoring data, closing the one way a backup taken from an already-configured Production could
 otherwise carry the live configuration onto a disposable/local/staging restore target
 (`restore-drill.ts --mutation C`).
+
+---
+
+## D-134 — The authenticated React subtree is keyed by the auth user id, and a deliberate sign-out ends local access unconditionally (P130-22 / P130-23 / P143)
+
+**2026-09-18 · Accepted**
+
+**Context.** Two findings from `ai_outputs/Claude_outputs/output_130.txt`, both reproduced in a real
+browser before any change (see Proof):
+
+- **P130-23.** Every protected route renders inside `RequireSession`, which renders its children
+  for any signed-in status. supabase-js broadcasts auth events to every tab that shares the browser
+  profile's storage, so a second tab signing in as B delivers `SIGNED_IN(B)` to a tab that is
+  showing A's half-typed form while `status` stays `'signed-in'` throughout. React only unmounts a
+  component when its key or type changes, so A's `useState` values survived under B, and the next
+  submit went out under B's bearer. P140 added page-local resets for its own new state and
+  explicitly did not claim the class was closed.
+- **P130-22.** `signOut()`'s result was ignored. The installed auth-js (2.112.3) loads the stored
+  session first and, when the ACCESS token has expired, refreshes before revoking. A network
+  failure there is a retryable error that is retried with backoff for up to ~25 s and then
+  returned WITHOUT removing the stored session or emitting SIGNED_OUT. A tab left idle past token
+  expiry with the Auth service unreachable therefore had a Sign out button that did nothing
+  visible, and a session that the service would accept again the moment it came back.
+
+**Decision.**
+
+1. **The whole authenticated subtree is mounted under a key derived from the user id**
+   (`src/auth/AuthIdentityBoundary.tsx`, rendered by the ROOT route around `AppShell`). A different
+   user id remounts app shell, nav, portals and the routed page; the same user id — token refresh,
+   `USER_UPDATED`, a repeated `SIGNED_IN` — keeps every component's state. Signed-out and
+   still-restoring share one key. It sits in the root route, never around `RouterProvider`
+   (remounting the provider would rebuild router state).
+2. **State outside React is cleared in the same auth callback, before the new identity is
+   renderable** (`applyAuthIdentityBoundary`): query cache and mutation cache (after
+   `cancelQueries`), `draftStore`, `scannerSessionStore`, and the scanner unsaved-work mirror. The
+   classification of everything else the app holds is recorded in that file's header (theme,
+   build-freshness timestamp and public scanner assets survive on purpose; the export-reminder key
+   is already user-namespaced; the unsaved-work registry empties itself through the remount's effect
+   cleanups).
+3. **Sign-out is two independent facts** (`src/auth/end-session.ts`): `local` (the stored session is
+   gone and the client has been told) must always end; `remote` (the service confirmed) is reported
+   as `confirmed`/`unconfirmed`, never implied. The request to revoke gets a 3 s deadline; after
+   it answers or the deadline passes the stored session is verified gone and, if the library left
+   it, removed through the same storage adapter followed by the library's own `signOut({ scope:
+   'local' })`, which with nothing in storage needs no network and notifies every subscriber and
+   every other tab. A `pagehide` listener removes the stored session synchronously while a sign-out
+   is pending. The person is shown fixed text only after an unconfirmed revocation (or an
+   unverifiable local cleanup) — never a raw error.
+4. **The storage key and medium are explicit** (`src/auth/session-storage.ts`, passed to
+   `createClient`): both are documented client options; the key equals the one supabase-js derives
+   by default (pinned by a test), so browsers already signed in keep their session.
+
+**Alternatives rejected.**
+
+- *Reset each form's state on identity change* (the P140 pattern, applied to every form). A
+  maintained convention across ~20 forms that a future form silently misses; the central key makes
+  "A's component state cannot reach B" structural. P140's page-local resets stay as defence in depth
+  — they also cover same-mount entity changes the user-id key cannot see.
+- *Key on the session or access token.* Refresh would destroy unsaved work on every token rotation;
+  the boundary is the user, not the credential.
+- *Only set React state to signed-out after a failed remote sign-out.* A fake logout: the persisted
+  session would resurrect on the next load.
+- *Write to auth-js's private storage internals / corrupt-then-signOut tricks.* Depends on
+  undocumented behaviour; the explicit `storageKey` + `storage` options give the same control
+  through the supported surface.
+- *`signOut({ scope: 'local' })` as the primary call.* Not sufficient: it takes the same
+  load-and-refresh path first, so it fails identically for an expired token, and it would stop
+  revoking the account's other sessions, which the product intends (D-093 / D-110 era behaviour).
+- *Waiting for the library to give up.* ~25 s of a button that appears to do nothing.
+
+**Consequences and residuals (stated, not hidden).**
+
+- With the service unreachable, the server-side session/refresh token is NOT revoked; local access
+  ends and the person is told so. A stolen copy of that token remains valid until it rotates or
+  expires; signing in and out again while online revokes it. This is a limitation of revoking over
+  a dead connection, not something this design can remove.
+- The deadline means a revocation that would have succeeded after 3 s is reported unconfirmed
+  (conservative).
+- **Not addressed:** a multi-step submission already IN FLIGHT when the identity changes in another
+  tab (e.g. `PurchaseFormPage` creates a manual card, then `create_purchase`). The remount cannot
+  stop an async continuation, and a later step reads the CURRENT session, i.e. B's. Every RPC still
+  binds to its caller's `auth.uid()` (no cross-user data access), and the window is one submit's
+  duration during a concurrent switch, but it can mis-attribute A's already-typed inputs to B. The
+  fix would be an identity assertion between the steps of each multi-await `mutationFn`
+  (Purchase/Sale add + edit, Openings wizard); deliberately not done here.
+- The location (URL search params such as `?sealedProductId=`) is navigation state, not user state,
+  and is left as it is on a switch; every read/write it leads to is still RLS-bound.
+
+**Proof.** Reproduced first at the released base `d8682e0` (`tests/e2e/auth-identity-lifecycle.spec
+.ts`, `tests/e2e/auth-signout.spec.ts`, and the real-GoTrue `tests/e2e/authenticated/auth-identity-
+real.spec.ts` / `auth-signout-real.spec.ts`): A's marker survives a direct A → B; with an expired
+token and Auth unreachable, Sign out does nothing and the session comes back on reload. After the
+change the same specs pass, and four mutations (remove the boundary; key on the token; skip the
+external clear; skip the forced local removal) each make a named regression fail. Unit level:
+`tests/ui/auth-identity-boundary.test.ts` (the real component's key, the transition rules, property
+tests) and `tests/ui/auth-end-session.test.ts`, which runs the real installed `AuthClient` against
+a stub `fetch` and carries a CANARY that fails loudly if a future supabase-js starts removing the
+expired session itself, so the compensation is reconsidered rather than left to rot.

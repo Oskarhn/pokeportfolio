@@ -958,6 +958,29 @@ concurrent fixture creation (`add_card_acquisition`/`create_purchase`/`create_op
 provisional`) for the same user under the default parallel workers hit a real Postgres deadlock
 this session, unrelated to whatever behavior the spec exists to prove.
 
+**Two pages, one browser profile: identity switch and sign-out (P143, D-134).** Supabase auth state
+is shared between tabs through the same `localStorage` entry and a `BroadcastChannel` named after
+its storage key, so a cross-tab identity change can only be tested with two pages of ONE Playwright
+context. Two layers, deliberately:
+
+- `tests/e2e/auth-identity-lifecycle.spec.ts` and `tests/e2e/auth-signout.spec.ts` run in the
+  DEFAULT `desktop-chromium` project against the placeholder backend — no Supabase stack, so they
+  are part of the ordinary CI run. The "other tab" is played by `simulateOtherTabAuthChange`
+  (`support/fake-session.ts`), which writes the shared storage key and posts the very message
+  supabase-js would; every Auth endpoint is mocked with `page.route`, and the session is seeded ONCE
+  per tab (a plain `addInitScript` would re-seed on reload and hide a resurrected session).
+- `tests/e2e/authenticated/auth-identity-real.spec.ts` and `auth-signout-real.spec.ts` repeat the
+  scenarios against a real local GoTrue: page 2 imports the app's own client module from Vite's dev
+  server and performs a real `signInWithPassword` / `signOut` / `refreshSession`; the sign-out
+  file also asks the server whether the old refresh token is still accepted, which is what makes
+  "confirmed" and "unconfirmed" verifiable instead of asserted. Each test uses its own disposable
+  users (never the shared `e2e-auth` session — a sign-out is GLOBAL scope).
+
+Unit level: `tests/ui/auth-identity-boundary.test.ts` (the real component's key with `useAuth`
+mocked, transition rules, property tests) and `tests/ui/auth-end-session.test.ts` (scripted failure
+modes plus the REAL installed `AuthClient` over a stub `fetch`; its CANARY test fails if a future
+supabase-js starts removing an expired session on a failed sign-out by itself).
+
 **Cross-file hazard, fixed: a real sign-out used to invalidate every other test's session (P112).**
 `supabase.auth.signOut()` defaults to GLOBAL scope (correct, intended product behavior — it revokes
 every session for the account, not just one tab), so `account-boundary.spec.ts`'s two specs
