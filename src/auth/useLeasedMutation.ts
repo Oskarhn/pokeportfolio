@@ -47,6 +47,8 @@ export type LeasedMutationResult<TData, TVariables> = Omit<
   UseMutationResult<TData, Error, Leased<TVariables>>,
   'mutate' | 'mutateAsync' | 'variables'
 > & {
+  /** The variables of the most recent call, as the caller passed them. */
+  variables: TVariables | undefined
   mutate: (variables: TVariables, callbacks?: LeasedMutateCallbacks<TData, TVariables>) => void
   mutateAsync: (variables: TVariables) => Promise<TData>
 }
@@ -97,7 +99,7 @@ export function useLeasedMutation<TData, TVariables = void, TContext = unknown>(
   )
 
   return useMemo(
-    () => ({ ...inner, mutate, mutateAsync }),
+    () => ({ ...inner, variables: inner.variables?.variables, mutate, mutateAsync }),
     // `inner` changes identity on every state transition, which is exactly when the result must.
     [inner, mutate, mutateAsync],
   )

@@ -222,9 +222,9 @@ const integratedController: OpeningController = {
     }
   },
 
-  async voidOpening(openingId, reason): Promise<VoidOpeningOutcome> {
+  async voidOpening(openingId, lease, reason): Promise<VoidOpeningOutcome> {
     try {
-      await voidOpeningRecord(openingId, reason)
+      await voidOpeningRecord(openingId, leasedDb(lease), reason)
       return { blocked: false }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -237,9 +237,13 @@ const integratedController: OpeningController = {
     }
   },
 
-  async reconcileOpeningCost(openingId, realSourceLotId) {
+  async reconcileOpeningCost(openingId, realSourceLotId, lease) {
     try {
-      const reconciled = await reconcileOpeningCostRecord(openingId, realSourceLotId)
+      const reconciled = await reconcileOpeningCostRecord(
+        openingId,
+        realSourceLotId,
+        leasedDb(lease),
+      )
       return { openingId: reconciled.id }
     } catch (error) {
       throw toFriendlyError(error)

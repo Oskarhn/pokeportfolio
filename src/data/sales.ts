@@ -175,8 +175,8 @@ export async function updateSale(
   return mapSale(data)
 }
 
-export async function voidSale(saleId: string, reason?: string): Promise<void> {
-  const { error } = await supabase.rpc('void_sale', { p_sale_id: saleId, p_reason: reason })
+export async function voidSale(saleId: string, db: LeasedDb, reason?: string): Promise<void> {
+  const { error } = await db.rpc('void_sale', { p_sale_id: saleId, p_reason: reason })
   if (error) throw new Error(error.message)
 }
 

@@ -255,10 +255,16 @@ export async function holdRequest(
 }
 
 /** Records every request whose URL matches, so a test can assert one was (never) issued. */
-export function recordRequests(page: Page, urlPattern: RegExp): { urls: string[] } {
+export function recordRequests(
+  page: Page,
+  urlPattern: RegExp,
+  method?: string,
+): { urls: string[] } {
   const seen: { urls: string[] } = { urls: [] }
   page.on('request', (request) => {
-    if (urlPattern.test(request.url()) && request.method() !== 'OPTIONS') {
+    const methodMatches =
+      method === undefined ? request.method() !== 'OPTIONS' : request.method() === method
+    if (urlPattern.test(request.url()) && methodMatches) {
       seen.urls.push(`${request.method()} ${request.url()}`)
     }
   })

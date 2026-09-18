@@ -96,7 +96,7 @@ import {
   classifyCardIdsAgainstCatalog,
 } from '../../src/data/catalog'
 import { addCardAcquisition } from '../../src/data/collection'
-import { liveLease } from './lease-support'
+import { leaseFor, liveLease } from './lease-support'
 
 const mockedRunOcrAnalysis = vi.mocked(runOcrAnalysis)
 const mockedSearchCards = vi.mocked(searchCards)
@@ -754,6 +754,34 @@ describe('commitBatch - existing acquisition path, honest outcomes (I12/I13/I14)
     expect(calls).toBe(1)
     expect(result.addedCount).toBe(1)
     expect(result.outcomes).toEqual([{ index: 0, status: 'added', message: null }])
+  })
+
+  it('P145: commitBatch stops when the identity lease ends mid-batch, before the controller is disposed', async () => {
+    const controller = createRealScannerController({ userId: 'user-a' })
+    const { authority, lease } = leaseFor('user-a')
+    let calls = 0
+    mockedAddCardAcquisition.mockImplementation(() => {
+      calls += 1
+      // The other tab signs in as B while the first write is on its way. React has not remounted
+      // yet, so `disposed` is still false: only the lease knows.
+      if (calls === 1) authority.observe('user-b')
+      return Promise.resolve({ holdingId: `h${String(calls)}`, lotId: `l${String(calls)}` })
+    })
+    const result = await controller.commitBatch(items(3), lease)
+    expect(calls).toBe(1)
+    expect(result.addedCount).toBe(1)
+    expect(result.outcomes).toEqual([{ index: 0, status: 'added', message: null }])
+    // Every write was handed the LEASED client of that very lease.
+    expect(mockedAddCardAcquisition.mock.calls[0]?.[1]).toEqual({ identityLease: lease })
+  })
+
+  it('P145: a lease that is already dead performs no write at all', async () => {
+    const controller = createRealScannerController({ userId: 'user-a' })
+    const { authority, lease } = leaseFor('user-a')
+    authority.observe('user-b')
+    const result = await controller.commitBatch(items(2), lease)
+    expect(mockedAddCardAcquisition).not.toHaveBeenCalled()
+    expect(result).toEqual({ addedCount: 0, outcomes: [] })
   })
 
   it('classifyAcquisitionFailure keys on evidence of a server ANSWER, not message text', () => {

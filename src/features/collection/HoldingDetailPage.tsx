@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useLeasedAction, useLeasedMutation } from '../../auth/useLeasedMutation'
+import { leasedDb } from '../../data/leased-db'
 import {
   clearManualValuation,
   getHoldingLots,
@@ -84,8 +86,8 @@ export function HoldingDetailPage() {
     queryFn: () => getHoldingCollectionIds(holdingId),
   })
 
-  const favoriteMutation = useMutation({
-    mutationFn: (next: boolean) => toggleFavorite(holdingId, next),
+  const favoriteMutation = useLeasedMutation({
+    mutationFn: (next: boolean, lease) => toggleFavorite(holdingId, next, leasedDb(lease)),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['holding-summary', holdingId] })
       await queryClient.invalidateQueries({ queryKey: ['portfolio'] })
@@ -93,8 +95,8 @@ export function HoldingDetailPage() {
   })
 
   const [voidError, setVoidError] = useState<string | null>(null)
-  const voidMutation = useMutation({
-    mutationFn: (lotId: string) => voidAcquisitionLot(lotId),
+  const voidMutation = useLeasedMutation({
+    mutationFn: (lotId: string, lease) => voidAcquisitionLot(lotId, leasedDb(lease)),
     onSuccess: async () => {
       setVoidError(null)
       await queryClient.invalidateQueries({ queryKey: ['holding-lots', holdingId] })
@@ -115,8 +117,8 @@ export function HoldingDetailPage() {
   // needed). Reuses the M8.1 correction lifecycle unchanged: remove_holdings_from_portfolio voids
   // every live lot via void_acquisition_lot itself, so the same parent-purchase and
   // partially-disposed guards apply here as everywhere else.
-  const removeAllMutation = useMutation({
-    mutationFn: () => removeHoldingsFromPortfolio([holdingId]),
+  const removeAllMutation = useLeasedAction({
+    mutationFn: (lease) => removeHoldingsFromPortfolio([holdingId], leasedDb(lease)),
     onSuccess: async (results) => {
       const blocked = results.find((r) => r.blocked)
       if (blocked) {
@@ -140,8 +142,9 @@ export function HoldingDetailPage() {
     },
   })
 
-  const valuationMutation = useMutation({
-    mutationFn: (valueMinor: bigint) => setManualValuation({ holdingId, valueMinor }),
+  const valuationMutation = useLeasedMutation({
+    mutationFn: (valueMinor: bigint, lease) =>
+      setManualValuation({ holdingId, valueMinor }, leasedDb(lease)),
     onSuccess: async () => {
       setManualValueInput('')
       await queryClient.invalidateQueries({ queryKey: ['holding-value-provenance', holdingId] })
@@ -152,8 +155,8 @@ export function HoldingDetailPage() {
     },
   })
 
-  const clearValuationMutation = useMutation({
-    mutationFn: () => clearManualValuation(holdingId),
+  const clearValuationMutation = useLeasedAction({
+    mutationFn: (lease) => clearManualValuation(holdingId, leasedDb(lease)),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['holding-value-provenance', holdingId] })
       await queryClient.invalidateQueries({ queryKey: ['portfolio'] })
@@ -162,11 +165,11 @@ export function HoldingDetailPage() {
     },
   })
 
-  const membershipMutation = useMutation({
-    mutationFn: (input: { collectionId: string; member: boolean }) =>
+  const membershipMutation = useLeasedMutation({
+    mutationFn: (input: { collectionId: string; member: boolean }, lease) =>
       input.member
-        ? removeHoldingFromCollection(input.collectionId, holdingId)
-        : addHoldingToCollection(input.collectionId, holdingId),
+        ? removeHoldingFromCollection(input.collectionId, holdingId, leasedDb(lease))
+        : addHoldingToCollection(input.collectionId, holdingId, leasedDb(lease)),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['holding-collections', holdingId] })
     },

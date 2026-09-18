@@ -178,9 +178,13 @@ export interface OpeningController {
   /** Buy-and-open path (P53 §11): one purchase + one opening, atomically. */
   createBoughtAndOpened(input: BoughtAndOpenedInput, lease: IdentityLease): Promise<CreatedOpening>
   getOpening(openingId: string): Promise<OpeningDetail>
-  voidOpening(openingId: string, reason?: string): Promise<VoidOpeningOutcome>
+  voidOpening(openingId: string, lease: IdentityLease, reason?: string): Promise<VoidOpeningOutcome>
   /** Links a provisionally-costed opening to the real receipt's lot (FINANCIAL_MODEL §5.5).
    *  The server owns every legitimacy rule; the picker that chooses `realSourceLotId` only
    *  mirrors them for usability. */
-  reconcileOpeningCost(openingId: string, realSourceLotId: string): Promise<CreatedOpening>
+  reconcileOpeningCost(
+    openingId: string,
+    realSourceLotId: string,
+    lease: IdentityLease,
+  ): Promise<CreatedOpening>
 }

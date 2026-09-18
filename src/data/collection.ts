@@ -238,12 +238,15 @@ export async function getHoldingLots(holdingId: string): Promise<AcquisitionLot[
  *  server-side when `quantity` covers only part of what remains in it — see
  *  set_sealed_lot_intent (20260829120000_m11_sealed_intent_lot_level.sql) for why a plain UPDATE
  *  cannot do this atomically. Never touches cost basis, spend or market value. */
-export async function setSealedLotIntent(params: {
-  lotId: string
-  intent: SealedIntent
-  quantity?: number
-}): Promise<void> {
-  const { error } = await supabase.rpc('set_sealed_lot_intent', {
+export async function setSealedLotIntent(
+  params: {
+    lotId: string
+    intent: SealedIntent
+    quantity?: number
+  },
+  db: LeasedDb,
+): Promise<void> {
+  const { error } = await db.rpc('set_sealed_lot_intent', {
     p_lot_id: params.lotId,
     p_intent: params.intent,
     p_quantity: params.quantity,
@@ -283,13 +286,16 @@ export async function getActiveManualValuation(holdingId: string): Promise<Manua
   }
 }
 
-export async function setManualValuation(params: {
-  holdingId: string
-  valueMinor: bigint
-  note?: string
-  effectiveFrom?: string
-}): Promise<void> {
-  const { error } = await supabase.rpc('set_manual_valuation', {
+export async function setManualValuation(
+  params: {
+    holdingId: string
+    valueMinor: bigint
+    note?: string
+    effectiveFrom?: string
+  },
+  db: LeasedDb,
+): Promise<void> {
+  const { error } = await db.rpc('set_manual_valuation', {
     p_holding_id: params.holdingId,
     p_value_minor: Number(params.valueMinor),
     p_note: params.note,
@@ -300,8 +306,8 @@ export async function setManualValuation(params: {
 
 /** Returns a holding to its automatic resolved value (M9 prompt §37) — supersedes the active
  *  manual valuation without inserting a replacement. History is preserved, never deleted. */
-export async function clearManualValuation(holdingId: string): Promise<void> {
-  const { error } = await supabase.rpc('clear_manual_valuation', { p_holding_id: holdingId })
+export async function clearManualValuation(holdingId: string, db: LeasedDb): Promise<void> {
+  const { error } = await db.rpc('clear_manual_valuation', { p_holding_id: holdingId })
   if (error) throw new Error(error.message)
 }
 
@@ -475,8 +481,8 @@ export async function listTags(): Promise<Tag[]> {
   return data
 }
 
-export async function createTag(name: string): Promise<Tag> {
-  const { data, error } = await supabase.from('tags').insert({ name }).select('id, name').single()
+export async function createTag(name: string, db: LeasedDb): Promise<Tag> {
+  const { data, error } = await db.from('tags').insert({ name }).select('id, name').single()
   if (error) throw new Error(error.message)
   return data
 }
@@ -509,8 +515,12 @@ export async function setHoldingTags(
   if (insertError) throw new Error(insertError.message)
 }
 
-export async function toggleFavorite(holdingId: string, isFavorite: boolean): Promise<void> {
-  const { error } = await supabase
+export async function toggleFavorite(
+  holdingId: string,
+  isFavorite: boolean,
+  db: LeasedDb,
+): Promise<void> {
+  const { error } = await db
     .from('holdings')
     .update({ is_favorite: isFavorite })
     .eq('id', holdingId)
@@ -537,41 +547,58 @@ export async function getFavoritedCardIds(): Promise<Set<string>> {
 /** Bulk favourite/unfavourite for Portfolio select mode (M7.1 prompt §43). One statement, not a
  *  loop — `is_favorite` carries no financial consequence, so a plain `IN (...)` update under RLS
  *  is the correct shape (same reasoning as custom-collection membership, C1). */
-export async function bulkSetFavorite(holdingIds: string[], isFavorite: boolean): Promise<void> {
+export async function bulkSetFavorite(
+  holdingIds: string[],
+  isFavorite: boolean,
+  db: LeasedDb,
+): Promise<void> {
   if (holdingIds.length === 0) return
-  const { error } = await supabase
+  const { error } = await db
     .from('holdings')
     .update({ is_favorite: isFavorite })
     .in('id', holdingIds)
   if (error) throw new Error(error.message)
 }
 
-export async function updateHoldingNotes(holdingId: string, notes: string | null): Promise<void> {
-  const { error } = await supabase.from('holdings').update({ notes }).eq('id', holdingId)
+export async function updateHoldingNotes(
+  holdingId: string,
+  notes: string | null,
+  db: LeasedDb,
+): Promise<void> {
+  const { error } = await db.from('holdings').update({ notes }).eq('id', holdingId)
   if (error) throw new Error(error.message)
 }
 
 export async function updateLotStorageLocation(
   lotId: string,
   storageLocationId: string | null,
+  db: LeasedDb,
 ): Promise<void> {
-  const { error } = await supabase
+  const { error } = await db
     .from('acquisition_lots')
     .update({ storage_location_id: storageLocationId })
     .eq('id', lotId)
   if (error) throw new Error(error.message)
 }
 
-export async function updateLotAcquiredOn(lotId: string, acquiredOn: string): Promise<void> {
-  const { error } = await supabase
+export async function updateLotAcquiredOn(
+  lotId: string,
+  acquiredOn: string,
+  db: LeasedDb,
+): Promise<void> {
+  const { error } = await db
     .from('acquisition_lots')
     .update({ acquired_on: acquiredOn })
     .eq('id', lotId)
   if (error) throw new Error(error.message)
 }
 
-export async function voidAcquisitionLot(lotId: string, reason?: string): Promise<void> {
-  const { error } = await supabase.rpc('void_acquisition_lot', {
+export async function voidAcquisitionLot(
+  lotId: string,
+  db: LeasedDb,
+  reason?: string,
+): Promise<void> {
+  const { error } = await db.rpc('void_acquisition_lot', {
     p_lot_id: lotId,
     p_reason: reason,
   })
@@ -598,9 +625,10 @@ interface RemoveHoldingsRow {
  *  DECISIONS.md D-051. */
 export async function removeHoldingsFromPortfolio(
   holdingIds: string[],
+  db: LeasedDb,
 ): Promise<RemoveHoldingsResult[]> {
   if (holdingIds.length === 0) return []
-  const { data, error } = await supabase
+  const { data, error } = await db
     .rpc('remove_holdings_from_portfolio', { p_holding_ids: holdingIds })
     .overrideTypes<RemoveHoldingsRow[], { merge: false }>()
   if (error) throw new Error(error.message)
@@ -627,11 +655,14 @@ export interface LotReduction {
  *  stringified payload arrives at PostgREST as a jsonb *string* scalar and is rejected by the
  *  function's own array guard (the same convention as p_lines on create_purchase/update_purchase,
  *  which also pass arrays directly). */
-export async function reduceHoldingQuantity(params: {
-  holdingId: string
-  reductions: LotReduction[]
-}): Promise<number> {
-  const { data, error } = await supabase.rpc('reduce_holding_quantity', {
+export async function reduceHoldingQuantity(
+  params: {
+    holdingId: string
+    reductions: LotReduction[]
+  },
+  db: LeasedDb,
+): Promise<number> {
+  const { data, error } = await db.rpc('reduce_holding_quantity', {
     p_holding_id: params.holdingId,
     p_lot_reductions: params.reductions.map((r) => ({
       lot_id: r.lotId,

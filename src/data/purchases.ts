@@ -200,8 +200,12 @@ export async function updatePurchase(
   return mapPurchase(data)
 }
 
-export async function voidPurchase(purchaseId: string, reason?: string): Promise<void> {
-  const { error } = await supabase.rpc('void_purchase', {
+export async function voidPurchase(
+  purchaseId: string,
+  db: LeasedDb,
+  reason?: string,
+): Promise<void> {
+  const { error } = await db.rpc('void_purchase', {
     p_purchase_id: purchaseId,
     p_reason: reason,
   })

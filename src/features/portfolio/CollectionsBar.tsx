@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useLeasedMutation } from '../../auth/useLeasedMutation'
 import { leasedDb } from '../../data/leased-db'
 import {
@@ -40,16 +40,16 @@ export function CollectionsBar({
       await queryClient.invalidateQueries({ queryKey: ['custom-collections'] })
     },
   })
-  const renameMutation = useMutation({
-    mutationFn: (input: { id: string; name: string }) =>
-      renameCustomCollection(input.id, { name: input.name }),
+  const renameMutation = useLeasedMutation({
+    mutationFn: (input: { id: string; name: string }, lease) =>
+      renameCustomCollection(input.id, { name: input.name }, leasedDb(lease)),
     onSuccess: async () => {
       setRenamingId(null)
       await queryClient.invalidateQueries({ queryKey: ['custom-collections'] })
     },
   })
-  const deleteMutation = useMutation({
-    mutationFn: (id: string) => deleteCustomCollection(id),
+  const deleteMutation = useLeasedMutation({
+    mutationFn: (id: string, lease) => deleteCustomCollection(id, leasedDb(lease)),
     onSuccess: async (_void, id) => {
       if (activeId === id) onSelect(undefined)
       await queryClient.invalidateQueries({ queryKey: ['custom-collections'] })

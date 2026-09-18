@@ -211,10 +211,12 @@ describe('integrated opening controller (I1)', () => {
   it('reconcileOpeningCost delegates to the data layer and returns the opening id (P59 §12)', async () => {
     reconcileOpeningRecord.mockResolvedValue({ id: 'opening-1' })
     const controller = getOpeningController()
-    await expect(controller.reconcileOpeningCost('opening-1', 'lot-9')).resolves.toEqual({
+    await expect(
+      controller.reconcileOpeningCost('opening-1', 'lot-9', liveLease()),
+    ).resolves.toEqual({
       openingId: 'opening-1',
     })
-    expect(reconcileOpeningRecord).toHaveBeenCalledWith('opening-1', 'lot-9')
+    expect(reconcileOpeningRecord).toHaveBeenCalledWith('opening-1', 'lot-9', expect.anything())
   })
 
   it('reconciliation refusals map to safe sentences — no raw SQL, ids or internals (P59 §12)', async () => {
@@ -223,24 +225,24 @@ describe('integrated opening controller (I1)', () => {
     reconcileOpeningRecord.mockRejectedValue(
       new Error('only 1 of the target lot remain available, but 2 are needed'),
     )
-    await expect(controller.reconcileOpeningCost('opening-1', 'lot-x')).rejects.toThrow(
-      /Not enough unopened units left/,
-    )
+    await expect(
+      controller.reconcileOpeningCost('opening-1', 'lot-x', liveLease()),
+    ).rejects.toThrow(/Not enough unopened units left/)
 
     reconcileOpeningRecord.mockRejectedValue(new Error('opening x is already reconciled'))
-    await expect(controller.reconcileOpeningCost('opening-1', 'lot-x')).rejects.toThrow(
-      /already been linked/,
-    )
+    await expect(
+      controller.reconcileOpeningCost('opening-1', 'lot-x', liveLease()),
+    ).rejects.toThrow(/already been linked/)
 
     reconcileOpeningRecord.mockRejectedValue(new Error('source lot is unavailable'))
-    await expect(controller.reconcileOpeningCost('opening-1', 'lot-x')).rejects.toThrow(
-      /no longer available/,
-    )
+    await expect(
+      controller.reconcileOpeningCost('opening-1', 'lot-x', liveLease()),
+    ).rejects.toThrow(/no longer available/)
 
     reconcileOpeningRecord.mockRejectedValue(new Error('relation "openings" does not exist'))
-    await expect(controller.reconcileOpeningCost('opening-1', 'lot-x')).rejects.toThrow(
-      /Something went wrong/,
-    )
+    await expect(
+      controller.reconcileOpeningCost('opening-1', 'lot-x', liveLease()),
+    ).rejects.toThrow(/Something went wrong/)
   })
 
   it('a refused void becomes { blocked: true } with the concise reason — not a thrown error', async () => {
@@ -250,7 +252,7 @@ describe('integrated opening controller (I1)', () => {
       ),
     )
     const controller = getOpeningController()
-    const outcome = await controller.voidOpening('opening-1')
+    const outcome = await controller.voidOpening('opening-1', liveLease())
     expect(outcome.blocked).toBe(true)
     expect(outcome.blockedReason).toMatch(/has been sold/)
   })
@@ -258,7 +260,7 @@ describe('integrated opening controller (I1)', () => {
   it('already-voided is surfaced as a blocked outcome too', async () => {
     voidOpeningRecord.mockRejectedValue(new Error('opening x is already voided'))
     const controller = getOpeningController()
-    const outcome = await controller.voidOpening('opening-1')
+    const outcome = await controller.voidOpening('opening-1', liveLease())
     expect(outcome).toEqual({
       blocked: true,
       blockedReason: 'This opening has already been corrected.',

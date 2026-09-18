@@ -60,8 +60,9 @@ export async function createCustomCollection(
 export async function renameCustomCollection(
   id: string,
   input: { name: string; description?: string | null },
+  db: LeasedDb,
 ): Promise<void> {
-  const { error } = await supabase
+  const { error } = await db
     .from('custom_collections')
     .update({ name: input.name, description: input.description })
     .eq('id', id)
@@ -70,16 +71,17 @@ export async function renameCustomCollection(
 
 /** Removes the collection and, via `on delete cascade`, its membership rows only — invariant C1:
  *  no holding, lot or transaction is ever affected (DATA_MODEL.md §5.2.1). */
-export async function deleteCustomCollection(id: string): Promise<void> {
-  const { error } = await supabase.from('custom_collections').delete().eq('id', id)
+export async function deleteCustomCollection(id: string, db: LeasedDb): Promise<void> {
+  const { error } = await db.from('custom_collections').delete().eq('id', id)
   if (error) throw new Error(error.message)
 }
 
 export async function addHoldingToCollection(
   collectionId: string,
   holdingId: string,
+  db: LeasedDb,
 ): Promise<void> {
-  const { error } = await supabase
+  const { error } = await db
     .from('custom_collection_members')
     .insert({ collection_id: collectionId, holding_id: holdingId })
   if (error) throw new Error(error.message)
@@ -88,8 +90,9 @@ export async function addHoldingToCollection(
 export async function removeHoldingFromCollection(
   collectionId: string,
   holdingId: string,
+  db: LeasedDb,
 ): Promise<void> {
-  const { error } = await supabase
+  const { error } = await db
     .from('custom_collection_members')
     .delete()
     .eq('collection_id', collectionId)
@@ -104,9 +107,10 @@ export async function removeHoldingFromCollection(
 export async function addHoldingsToCollection(
   collectionId: string,
   holdingIds: string[],
+  db: LeasedDb,
 ): Promise<void> {
   if (holdingIds.length === 0) return
-  const { error } = await supabase.from('custom_collection_members').upsert(
+  const { error } = await db.from('custom_collection_members').upsert(
     holdingIds.map((holdingId) => ({ collection_id: collectionId, holding_id: holdingId })),
     { onConflict: 'collection_id,holding_id', ignoreDuplicates: true },
   )
@@ -116,9 +120,10 @@ export async function addHoldingsToCollection(
 export async function removeHoldingsFromCollection(
   collectionId: string,
   holdingIds: string[],
+  db: LeasedDb,
 ): Promise<void> {
   if (holdingIds.length === 0) return
-  const { error } = await supabase
+  const { error } = await db
     .from('custom_collection_members')
     .delete()
     .eq('collection_id', collectionId)
