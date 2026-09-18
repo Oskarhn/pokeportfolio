@@ -1,14 +1,17 @@
 import { useState } from 'react'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   addCardAcquisition,
   createStorageLocation,
   listStorageLocations,
   SEALED_INTENT_LABEL,
+  type AddCardAcquisitionInput,
   type CostBasisState,
   type SealedIntent,
 } from '../../data/collection'
+import { leasedDb } from '../../data/leased-db'
+import { useLeasedMutation } from '../../auth/useLeasedMutation'
 import {
   getSealedProduct,
   searchSealedProducts,
@@ -118,8 +121,9 @@ export function AddSealedProductPage() {
     setClientRequestKey(crypto.randomUUID())
   })
 
-  const addMutation = useMutation({
-    mutationFn: addCardAcquisition,
+  const addMutation = useLeasedMutation({
+    mutationFn: (input: AddCardAcquisitionInput, lease) =>
+      addCardAcquisition(input, leasedDb(lease)),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['portfolio'] })
       await queryClient.invalidateQueries({ queryKey: ['portfolio-counts'] })
@@ -129,8 +133,8 @@ export function AddSealedProductPage() {
     },
   })
 
-  const createLocationMutation = useMutation({
-    mutationFn: createStorageLocation,
+  const createLocationMutation = useLeasedMutation({
+    mutationFn: (name: string, lease) => createStorageLocation(name, leasedDb(lease)),
     onSuccess: async (location) => {
       await queryClient.invalidateQueries({ queryKey: ['storage-locations'] })
       setStorageLocationId(location.id)

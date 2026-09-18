@@ -1,4 +1,5 @@
 import { supabase } from './supabase-client'
+import type { LeasedDb } from './leased-client'
 import { parseMinorUnits } from './money'
 import type { Database, Json } from './database.types'
 
@@ -111,8 +112,9 @@ export async function createSale(
   lines: SaleLineInput[],
   input: SaleWriteInput,
   idempotencyKey: string,
+  db: LeasedDb,
 ): Promise<Sale> {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .rpc('create_sale', {
       p_sold_on: input.soldOn,
       p_currency: input.currency,
@@ -144,8 +146,9 @@ export async function updateSale(
   saleId: string,
   lines: SaleLineUpdateInput[],
   input: SaleWriteInput,
+  db: LeasedDb,
 ): Promise<Sale> {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .rpc('update_sale', {
       p_sale_id: saleId,
       p_sold_on: input.soldOn,

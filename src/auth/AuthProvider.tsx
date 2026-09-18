@@ -11,6 +11,7 @@ import { scannerSessionStore } from '../features/scanner/session-store'
 import { applyAuthIdentityBoundary, type ObservedUserId } from './query-cache-boundary'
 import { describeSessionEnd, endAuthenticatedSession } from './end-session'
 import { AuthContext, type AuthState } from './auth-context'
+import { IdentityAuthority } from './identity-lease'
 
 /**
  * Session state for the whole application.
@@ -39,6 +40,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [adminFor, setAdminFor] = useState<{ userId: string; isAdmin: boolean } | null>(null)
   const [signOutNotice, setSignOutNotice] = useState<string | null>(null)
   const queryClient = useQueryClient()
+  // P145: the tab's identity epoch. Created once and never replaced, so an operation that holds a
+  // lease from it can still ask 'am I current?' after the page that started it has been remounted.
+  const [identity] = useState(() => new IdentityAuthority())
   // F-61-2: the module-lifetime QueryClient is user-blind (no key carries a user id), so a
   // same-tab account switch must clear it between identities or B renders A's cached financial
   // data until refetches land. This ref tracks the last identity observed from Supabase auth;
@@ -49,12 +53,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const lastIdentityRef = useRef<ObservedUserId>(undefined)
   const observeIdentity = useCallback(
     (nextSession: Session | null) => {
+      // Leases die in the same synchronous step as the cache boundary, before anything can render
+      // or continue under the new identity. Same-user events compare equal and change nothing.
+      identity.observe(nextSession?.user.id ?? null)
       // The boundary runs BEFORE the new identity becomes renderable state, so no protected UI
       // can mount against a cache still holding the previous user's entries.
       applyAuthIdentityBoundary(queryClient, lastIdentityRef.current, nextSession?.user.id ?? null)
       lastIdentityRef.current = nextSession?.user.id ?? null
     },
-    [queryClient],
+    [queryClient, identity],
   )
 
   useEffect(() => {
@@ -114,6 +121,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const signOut = useCallback(async () => {
+    // No operation may start another step while the sign-out is still reaching the server (up to the
+    // revocation deadline): end every lease now. The auth event that follows finds nothing to do.
+    identity.retire()
     const outcome = await endAuthenticatedSession({
       auth: supabase.auth,
       storage: authSessionStorage,
@@ -129,7 +139,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     scannerSessionStore.clearAll()
     setSignOutNotice(describeSessionEnd(outcome))
     return outcome
-  }, [observeIdentity])
+  }, [observeIdentity, identity])
 
   const value = useMemo<AuthState>(
     () => ({
@@ -141,8 +151,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signIn,
       signOut,
       signOutNotice,
+      identity,
     }),
-    [status, session, isAdmin, profileLoading, signIn, signOut, signOutNotice],
+    [status, session, isAdmin, profileLoading, signIn, signOut, signOutNotice, identity],
   )
 
   return <AuthContext value={value}>{children}</AuthContext>

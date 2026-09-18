@@ -1,4 +1,5 @@
 import { supabase } from './supabase-client'
+import type { LeasedDb } from './leased-client'
 import { parseMinorUnits } from './money'
 import type { Database } from './database.types'
 
@@ -395,17 +396,20 @@ export async function getManualCard(id: string): Promise<ManualCardDefinition | 
   }
 }
 
-export async function createManualCard(input: {
-  name: string
-  setName?: string
-  collectorNumber?: string
-  language?: string
-  finish?: string
-  stamp?: string
-  subtype?: string
-  notes?: string
-}): Promise<ManualCardDefinition> {
-  const { data, error } = await supabase
+export async function createManualCard(
+  input: {
+    name: string
+    setName?: string
+    collectorNumber?: string
+    language?: string
+    finish?: string
+    stamp?: string
+    subtype?: string
+    notes?: string
+  },
+  db: LeasedDb,
+): Promise<ManualCardDefinition> {
+  const { data, error } = await db
     .from('manual_card_definitions')
     .insert({
       name: input.name,
@@ -450,8 +454,8 @@ export async function listStorageLocations(): Promise<StorageLocation[]> {
   return data
 }
 
-export async function createStorageLocation(name: string): Promise<StorageLocation> {
-  const { data, error } = await supabase
+export async function createStorageLocation(name: string, db: LeasedDb): Promise<StorageLocation> {
+  const { data, error } = await db
     .from('storage_locations')
     .insert({ name })
     .select('id, name, kind')
@@ -489,16 +493,17 @@ export async function getHoldingTagIds(holdingId: string): Promise<string[]> {
 /** Replaces a holding's tag set. Not atomic across the two statements — acceptable for a purely
  *  organisational join table with no financial consequence (DATA_MODEL.md §5.2.1's C1 reasoning
  *  applies here too: membership changes touch nothing else). */
-export async function setHoldingTags(holdingId: string, tagIds: string[]): Promise<void> {
-  const { error: deleteError } = await supabase
-    .from('holding_tags')
-    .delete()
-    .eq('holding_id', holdingId)
+export async function setHoldingTags(
+  holdingId: string,
+  tagIds: string[],
+  db: LeasedDb,
+): Promise<void> {
+  const { error: deleteError } = await db.from('holding_tags').delete().eq('holding_id', holdingId)
   if (deleteError) throw new Error(deleteError.message)
 
   if (tagIds.length === 0) return
 
-  const { error: insertError } = await supabase
+  const { error: insertError } = await db
     .from('holding_tags')
     .insert(tagIds.map((tagId) => ({ holding_id: holdingId, tag_id: tagId })))
   if (insertError) throw new Error(insertError.message)
@@ -675,8 +680,9 @@ export interface AddCardAcquisitionResult {
 
 export async function addCardAcquisition(
   input: AddCardAcquisitionInput,
+  db: LeasedDb,
 ): Promise<AddCardAcquisitionResult> {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .rpc('add_card_acquisition', {
       p_card_variant_id: input.cardVariantId,
       p_manual_card_id: input.manualCardId,

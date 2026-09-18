@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { useInfiniteQuery, useMutation, useQueries, useQuery } from '@tanstack/react-query'
+import { useInfiniteQuery, useQueries, useQuery } from '@tanstack/react-query'
+import { useLeasedMutation } from '../../auth/useLeasedMutation'
+import { leasedDb } from '../../data/leased-db'
 import {
   searchCards,
   searchSets,
@@ -536,8 +538,9 @@ function CustomSealedProductForm({
   const [packCount, setPackCount] = useState('')
   const [error, setError] = useState<string | null>(null)
 
-  const createMutation = useMutation({
-    mutationFn: createCustomSealedProduct,
+  const createMutation = useLeasedMutation({
+    mutationFn: (input: Parameters<typeof createCustomSealedProduct>[0], lease) =>
+      createCustomSealedProduct(input, leasedDb(lease)),
     onSuccess: async (product) => {
       onClose()
       await navigate({ to: '/portfolio/sealed/new', search: { sealedProductId: product.id } })

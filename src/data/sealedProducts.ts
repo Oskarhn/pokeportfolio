@@ -1,4 +1,5 @@
 import { supabase } from './supabase-client'
+import type { LeasedDb } from './leased-client'
 import { parseMinorUnits } from './money'
 import type { Database } from './database.types'
 
@@ -167,13 +168,11 @@ export interface CreateCustomSealedProductInput {
  *  generic per-type placeholder instead; real image upload is a later Images milestone. */
 export async function createCustomSealedProduct(
   input: CreateCustomSealedProductInput,
+  db: LeasedDb,
 ): Promise<SealedProductSummary> {
-  const { data: userData, error: userError } = await supabase.auth.getUser()
-  if (userError) throw new Error(userError.message)
-  const userId = userData.user.id
-  if (!userId) throw new Error('not authenticated')
-
-  const { data, error } = await supabase
+  // The creator is named by the lease (P145), not looked up: see updateMyProfile.
+  const userId = db.identityLease.userId
+  const { data, error } = await db
     .from('sealed_products')
     .insert({
       name: input.name,

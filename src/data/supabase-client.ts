@@ -25,6 +25,10 @@ if (!url || !publishableKey) {
   )
 }
 
+/** Exposed for leased clients (P145), which need the same project and key but not the shared auth. */
+export const supabaseUrl: string = url
+export const supabasePublishableKey: string = publishableKey
+
 /**
  * P143: the session's storage key and storage medium are stated explicitly instead of left to
  * supabase-js's defaults, so a deliberate sign-out can prove the stored session is gone (see

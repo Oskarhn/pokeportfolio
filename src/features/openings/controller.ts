@@ -7,6 +7,8 @@ import {
   reconcileOpeningCost as reconcileOpeningCostRecord,
   voidOpening as voidOpeningRecord,
 } from '../../data/opening'
+import { leasedDb } from '../../data/leased-db'
+import type { IdentityLease } from '../../auth/identity-lease'
 import type {
   BoughtAndOpenedInput,
   CreateOpeningInput,
@@ -152,50 +154,56 @@ const integratedController: OpeningController = {
     }
   },
 
-  async createOpening(input: CreateOpeningInput) {
+  async createOpening(input: CreateOpeningInput, lease: IdentityLease) {
     try {
-      const created = await createOpeningRecord({
-        sourceLotId: input.sourceLotId,
-        quantity: input.quantity,
-        openedOn: input.openedOn,
-        trackingCompleteness: input.trackingCompleteness,
-        pulls: input.pulls.map((pull) => ({
-          cardVariantId: pull.cardVariantId,
-          manualCardId: pull.manualCardId,
-          quantity: pull.quantity,
-          condition: pull.condition ?? 'NM',
-        })),
-        bulkRemainderEstimateNokMinor: input.bulkRemainderEstimateMinor,
-        bulkRemainderCount: input.bulkRemainderCount,
-        notes: input.notes,
-        idempotencyKey: input.idempotencyKey,
-      })
+      const created = await createOpeningRecord(
+        {
+          sourceLotId: input.sourceLotId,
+          quantity: input.quantity,
+          openedOn: input.openedOn,
+          trackingCompleteness: input.trackingCompleteness,
+          pulls: input.pulls.map((pull) => ({
+            cardVariantId: pull.cardVariantId,
+            manualCardId: pull.manualCardId,
+            quantity: pull.quantity,
+            condition: pull.condition ?? 'NM',
+          })),
+          bulkRemainderEstimateNokMinor: input.bulkRemainderEstimateMinor,
+          bulkRemainderCount: input.bulkRemainderCount,
+          notes: input.notes,
+          idempotencyKey: input.idempotencyKey,
+        },
+        leasedDb(lease),
+      )
       return { openingId: created.id }
     } catch (error) {
       throw toFriendlyError(error)
     }
   },
 
-  async createBoughtAndOpened(input: BoughtAndOpenedInput) {
+  async createBoughtAndOpened(input: BoughtAndOpenedInput, lease: IdentityLease) {
     try {
-      const created = await createProvisionalOpening({
-        sealedProductId: input.sealedProductId,
-        quantity: input.quantity,
-        totalPaidNokMinor: input.totalPaidNokMinor,
-        purchasedOn: input.purchasedOn,
-        openedOn: input.openedOn,
-        trackingCompleteness: input.trackingCompleteness,
-        pulls: input.pulls.map((pull) => ({
-          cardVariantId: pull.cardVariantId,
-          manualCardId: pull.manualCardId,
-          quantity: pull.quantity,
-          condition: pull.condition ?? 'NM',
-        })),
-        bulkRemainderEstimateNokMinor: input.bulkRemainderEstimateMinor,
-        bulkRemainderCount: input.bulkRemainderCount,
-        notes: input.notes,
-        idempotencyKey: input.idempotencyKey,
-      })
+      const created = await createProvisionalOpening(
+        {
+          sealedProductId: input.sealedProductId,
+          quantity: input.quantity,
+          totalPaidNokMinor: input.totalPaidNokMinor,
+          purchasedOn: input.purchasedOn,
+          openedOn: input.openedOn,
+          trackingCompleteness: input.trackingCompleteness,
+          pulls: input.pulls.map((pull) => ({
+            cardVariantId: pull.cardVariantId,
+            manualCardId: pull.manualCardId,
+            quantity: pull.quantity,
+            condition: pull.condition ?? 'NM',
+          })),
+          bulkRemainderEstimateNokMinor: input.bulkRemainderEstimateMinor,
+          bulkRemainderCount: input.bulkRemainderCount,
+          notes: input.notes,
+          idempotencyKey: input.idempotencyKey,
+        },
+        leasedDb(lease),
+      )
       return { openingId: created.id }
     } catch (error) {
       throw toFriendlyError(error)

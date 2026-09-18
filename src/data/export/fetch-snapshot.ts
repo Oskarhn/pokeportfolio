@@ -25,6 +25,7 @@
  * the multi-query export is not one PostgreSQL transaction (D-077).
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
+import type { IdentityLease } from '../../auth/identity-lease'
 import { createSectionWalk } from '../../domain/export/pagination-integrity'
 import type { Database } from '../database.types'
 import {
@@ -1106,6 +1107,24 @@ function collectReferencedIds(
 // ---------------------------------------------------------------------------
 
 /**
+ * The owner whose rows are being exported. A leased client (P145) names its owner itself and has no
+ * `auth` to ask; the shared client is asked, as before.
+ */
+async function resolveExportOwner(client: SupabaseClient<Database>): Promise<string> {
+  const lease = (client as { identityLease?: IdentityLease }).identityLease
+  if (lease !== undefined) {
+    lease.assertCurrent()
+    return lease.userId
+  }
+  const auth = await client.auth.getUser()
+  const sessionUserId: string | undefined = auth.data.user?.id
+  if (auth.error !== null || sessionUserId === undefined) {
+    throw new Error('Export requires an authenticated session')
+  }
+  return sessionUserId
+}
+
+/**
  * Fetches every canonical export section for the signed-in owner — sequentially, one bounded
  * page loop at a time (DB-friendly, deterministic progress ordering) — then resolves the
  * shared-catalog identity manifest. Throws AbortError as soon as `signal` is observed fired.
@@ -1114,12 +1133,7 @@ export async function fetchExportSnapshot(
   client: SupabaseClient<Database>,
   options: ExportFetchOptions = {},
 ): Promise<ExportSnapshot> {
-  const auth = await client.auth.getUser()
-  const sessionUserId: string | undefined = auth.data.user?.id
-  if (auth.error !== null || sessionUserId === undefined) {
-    throw new Error('Export requires an authenticated session')
-  }
-  const userId: string = sessionUserId
+  const userId: string = await resolveExportOwner(client)
 
   const profiles = await fetchProfiles(client, userId, options)
   const customCollections = await fetchCustomCollections(client, options)

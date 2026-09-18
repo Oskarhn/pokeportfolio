@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { liveLease } from './lease-support'
 
 import type {
   BoughtAndOpenedInput,
@@ -12,6 +13,11 @@ import type {
  * proving the mapping layer (typed optionality, error mapping, blocked-void outcomes) without a
  * live backend. The DB-gated suites (tests/db + tests/m16-independent) prove the backend itself.
  */
+
+// The data layer is mocked; the controller only forwards a leased client, so a stand-in is enough.
+vi.mock('../../src/data/leased-db', () => ({
+  leasedDb: (lease: unknown) => ({ identityLease: lease }),
+}))
 
 const createOpeningRecord = vi.fn<(...args: unknown[]) => Promise<unknown>>()
 const createProvisionalRecord = vi.fn<(...args: unknown[]) => Promise<unknown>>()
@@ -82,9 +88,12 @@ describe('integrated opening controller (I1)', () => {
       pulls: [{ cardVariantId: 'v-1', condition: 'NM', quantity: 1 }],
       trackingCompleteness: 'all_cards',
     }
-    await expect(controller.createOpening(input)).resolves.toEqual({ openingId: 'opening-1' })
+    await expect(controller.createOpening(input, liveLease())).resolves.toEqual({
+      openingId: 'opening-1',
+    })
     expect(createOpeningRecord).toHaveBeenCalledWith(
       expect.objectContaining({ idempotencyKey: 'key-1', sourceLotId: 'lot-1', quantity: 2 }),
+      expect.anything(),
     )
   })
 
@@ -100,11 +109,12 @@ describe('integrated opening controller (I1)', () => {
       pulls: [],
       trackingCompleteness: 'all_cards',
     }
-    await expect(controller.createBoughtAndOpened(input)).resolves.toEqual({
+    await expect(controller.createBoughtAndOpened(input, liveLease())).resolves.toEqual({
       openingId: 'opening-9',
     })
     expect(createProvisionalRecord).toHaveBeenCalledWith(
       expect.objectContaining({ totalPaidNokMinor: 29995n }),
+      expect.anything(),
     )
   })
 
@@ -261,14 +271,17 @@ describe('integrated opening controller (I1)', () => {
     )
     const controller = getOpeningController()
     await expect(
-      controller.createOpening({
-        idempotencyKey: 'k',
-        sourceLotId: 'lot-1',
-        quantity: 2,
-        openedOn: '2026-08-01',
-        pulls: [],
-        trackingCompleteness: 'all_cards',
-      }),
+      controller.createOpening(
+        {
+          idempotencyKey: 'k',
+          sourceLotId: 'lot-1',
+          quantity: 2,
+          openedOn: '2026-08-01',
+          pulls: [],
+          trackingCompleteness: 'all_cards',
+        },
+        liveLease(),
+      ),
     ).rejects.toThrow(/Not enough unopened units left/)
   })
 })

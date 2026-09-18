@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { useMutation } from '@tanstack/react-query'
+import { useLeasedAction } from '../../auth/useLeasedMutation'
+import { leasedDb } from '../../data/leased-db'
 import { useNavigate } from '@tanstack/react-router'
 import { buildPortfolioCsv, downloadCsv } from '../../data/portfolioExport'
 import type { PortfolioFilters } from '../../data/portfolio'
@@ -30,9 +31,10 @@ export function PortfolioActionShortcuts({
 }) {
   const navigate = useNavigate()
   const [futureNotice, setFutureNotice] = useState<'trade' | null>(null)
-  const exportMutation = useMutation({
-    mutationFn: async () => {
-      const csv = await buildPortfolioCsv(filters)
+  const exportMutation = useLeasedAction({
+    mutationFn: async (lease) => {
+      const csv = await buildPortfolioCsv(filters, leasedDb(lease))
+      lease.assertCurrent()
       downloadCsv(csv, `portfolio-export-${localTodayIso()}.csv`)
     },
   })

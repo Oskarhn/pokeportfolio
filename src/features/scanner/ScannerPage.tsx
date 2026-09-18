@@ -88,7 +88,7 @@ const CONDITIONS = ['MT', 'NM', 'EX', 'GD', 'LP', 'PL', 'PO'] as const
 export function ScannerPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const { session } = useAuth()
+  const { session, identity } = useAuth()
   const userId = session?.user.id ?? null
   // D-108: construction MUST NOT be a render-time side effect. `useMemo`'s factory is not
   // deduplicated by React — under StrictMode the component's render body genuinely runs twice for
@@ -608,6 +608,8 @@ export function ScannerPage() {
     if (activeController === null) return
     committingRef.current = true
     dispatch({ type: 'ADD_CARDS_PRESSED' })
+    // P145: the batch belongs to the identity this page was rendered under; see commitBatch.
+    const lease = identity.begin(userId)
     void activeController
       .commitBatch(
         state.batch.map((item) => ({
@@ -617,8 +619,10 @@ export function ScannerPage() {
           condition: item.condition,
           requestKey: item.requestKey,
         })),
+        lease,
       )
       .then((result) => {
+        if (!lease.isCurrent()) return
         // Same targeted invalidation family every other acquisition consumer uses (prompt §31):
         // portfolio, counts, dashboard summary, history feed and Home's recent activity.
         void queryClient.invalidateQueries({ queryKey: ['portfolio'] })
@@ -633,6 +637,7 @@ export function ScannerPage() {
         })
       })
       .catch((error: unknown) => {
+        if (!lease.isCurrent()) return
         dispatch({ type: 'COMMIT_FAILED', error: describeCommitError(error) })
       })
       .finally(() => {

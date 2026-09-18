@@ -1,4 +1,5 @@
 import type { CardCondition } from '../../data/collection'
+import type { IdentityLease } from '../../auth/identity-lease'
 import type { PixelRect } from './guide-geometry'
 import type { VisualPhaseTimings, AssetCacheStatusEstimate } from './visual/phase-timing'
 
@@ -457,8 +458,10 @@ export interface ScannerUiController {
    *  candidate — prompt §22/I6). Empty means the card has no active variant to add. */
   listVariantChoices(cardId: string): Promise<ScannerVariantChoice[]>
   /** Commits the whole reviewed batch through the real acquisition path. Nothing is written by
-   *  anything else in the scanner. Per-item isolation: one failure never aborts the rest. */
-  commitBatch(items: ScannerCommitItem[]): Promise<ScannerCommitResult>
+   *  anything else in the scanner. Per-item isolation: one failure never aborts the rest. The batch
+   *  is written under `lease` (P145): every write is a separate request, and when the identity the
+   *  batch was reviewed under ends, no further item is attempted. */
+  commitBatch(items: ScannerCommitItem[], lease: IdentityLease): Promise<ScannerCommitResult>
   /** Releases the session's OCR worker and any retained engine resources. Called reliably on
    *  route exit/unmount (prompt §8/I16). Idempotent. */
   dispose(): void

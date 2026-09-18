@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useLeasedMutation } from '../../auth/useLeasedMutation'
+import { leasedDb } from '../../data/leased-db'
 import {
   createCustomCollection,
   deleteCustomCollection,
@@ -31,8 +33,8 @@ export function CollectionsBar({
 
   const collections = useQuery({ queryKey: ['custom-collections'], queryFn: listCustomCollections })
 
-  const createMutation = useMutation({
-    mutationFn: (name: string) => createCustomCollection({ name }),
+  const createMutation = useLeasedMutation({
+    mutationFn: (name: string, lease) => createCustomCollection({ name }, leasedDb(lease)),
     onSuccess: async () => {
       setNewName('')
       await queryClient.invalidateQueries({ queryKey: ['custom-collections'] })

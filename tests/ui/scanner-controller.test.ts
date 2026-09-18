@@ -42,6 +42,11 @@ vi.mock('../../src/data/collection', () => ({
   addCardAcquisition: vi.fn(),
 }))
 
+// The controller forwards a leased client to the (mocked) data layer; a stand-in is enough.
+vi.mock('../../src/data/leased-db', () => ({
+  leasedDb: (lease: unknown) => ({ identityLease: lease }),
+}))
+
 // P78: a controllable stand-in for the visual channel so diagnostics-assembly logic (R1) can be
 // tested in isolation from the real Worker/transformers.js pipeline, which
 // scanner-visual-client.test.ts and visual-backend-selection.test.ts already cover directly.
@@ -91,6 +96,7 @@ import {
   classifyCardIdsAgainstCatalog,
 } from '../../src/data/catalog'
 import { addCardAcquisition } from '../../src/data/collection'
+import { liveLease } from './lease-support'
 
 const mockedRunOcrAnalysis = vi.mocked(runOcrAnalysis)
 const mockedSearchCards = vi.mocked(searchCards)
@@ -670,7 +676,7 @@ describe('commitBatch - existing acquisition path, honest outcomes (I12/I13/I14)
       origin: 'pre_tracking',
     })
     const controller = createRealScannerController({ userId: 'user-a' })
-    const result = await controller.commitBatch(items(3))
+    const result = await controller.commitBatch(items(3), liveLease())
     expect(result.addedCount).toBe(3)
     expect(result.outcomes.every((outcome) => outcome.status === 'added')).toBe(true)
     // Sequential: the three calls ran in batch order, one at a time.
@@ -687,6 +693,7 @@ describe('commitBatch - existing acquisition path, honest outcomes (I12/I13/I14)
         acquiredOn: '2026-08-20',
         storageLocationId: 'loc-1',
       }),
+      expect.anything(),
     )
     expect(mockedAddCardAcquisition.mock.calls).toHaveLength(3)
   })
@@ -699,7 +706,7 @@ describe('commitBatch - existing acquisition path, honest outcomes (I12/I13/I14)
       return Promise.resolve({ holdingId: 'h', lotId: 'l' })
     })
     const controller = createRealScannerController({ userId: 'user-a' })
-    const result = await controller.commitBatch(items(3))
+    const result = await controller.commitBatch(items(3), liveLease())
     expect(result.addedCount).toBe(2)
     expect(result.outcomes.map((outcome) => outcome.status)).toEqual(['added', 'failed', 'added'])
     expect(result.outcomes[1]?.message).toMatch(/did not accept/i)
@@ -717,7 +724,7 @@ describe('commitBatch - existing acquisition path, honest outcomes (I12/I13/I14)
       return Promise.reject(new Error('MUST NOT be retried automatically'))
     })
     const controller = createRealScannerController({ userId: 'user-a' })
-    const result = await controller.commitBatch(items(1))
+    const result = await controller.commitBatch(items(1), liveLease())
     expect(attempted).toBe(true)
     expect(mockedAddCardAcquisition).toHaveBeenCalledTimes(1)
     expect(result.addedCount).toBe(0)
@@ -741,7 +748,7 @@ describe('commitBatch - existing acquisition path, honest outcomes (I12/I13/I14)
       }
       return Promise.resolve({ holdingId: `h${String(calls)}`, lotId: `l${String(calls)}` })
     })
-    const result = await controller.commitBatch(items(3))
+    const result = await controller.commitBatch(items(3), liveLease())
     // Item 0's write was already in flight when dispose() ran — it still completes and counts.
     // Items 1 and 2 must never be attempted once disposed is observed at the top of the loop.
     expect(calls).toBe(1)
@@ -788,12 +795,13 @@ describe('commitBatch - existing acquisition path, honest outcomes (I12/I13/I14)
   it('falls back safely when no session defaults exist - never guessing financial values', async () => {
     mockedAddCardAcquisition.mockResolvedValue({ holdingId: 'h', lotId: 'l' })
     const controller = createRealScannerController({ userId: null })
-    await controller.commitBatch(items(1))
+    await controller.commitBatch(items(1), liveLease())
     expect(mockedAddCardAcquisition).toHaveBeenCalledWith(
       expect.objectContaining({
         origin: 'pre_tracking',
         costBasisState: 'unknown',
       }),
+      expect.anything(),
     )
   })
 

@@ -15,6 +15,8 @@
  *     (FINANCIAL_MODEL.md §5.3: return/ROI are undefined when cost is unknown).
  */
 
+import type { IdentityLease } from '../../auth/identity-lease'
+
 /** One sealed acquisition lot that can still be opened. Carries its ALREADY-DERIVED cost
  *  components (server-derived by `list_opening_sources`, P53 §7) — the UI never recomputes a
  *  cost it was not given, and never re-implements the consumption arithmetic. */
@@ -172,9 +174,9 @@ export interface OpeningController {
   /** Sealed lots with remaining units, derived preview components included. When
    *  `filter.holdingId` is given, only lots of that holding come back (Holding Detail entry). */
   getEligibleSealedSources(filter?: { holdingId?: string }): Promise<OpeningSource[]>
-  createOpening(input: CreateOpeningInput): Promise<CreatedOpening>
+  createOpening(input: CreateOpeningInput, lease: IdentityLease): Promise<CreatedOpening>
   /** Buy-and-open path (P53 §11): one purchase + one opening, atomically. */
-  createBoughtAndOpened(input: BoughtAndOpenedInput): Promise<CreatedOpening>
+  createBoughtAndOpened(input: BoughtAndOpenedInput, lease: IdentityLease): Promise<CreatedOpening>
   getOpening(openingId: string): Promise<OpeningDetail>
   voidOpening(openingId: string, reason?: string): Promise<VoidOpeningOutcome>
   /** Links a provisionally-costed opening to the real receipt's lot (FINANCIAL_MODEL §5.5).

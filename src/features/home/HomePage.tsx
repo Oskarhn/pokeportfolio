@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { leasedDb } from '../../data/leased-db'
+import { useLeasedMutation } from '../../auth/useLeasedMutation'
 import { listPortfolio, getPortfolioCounts } from '../../data/portfolio'
 import { getCollectionMemberCount } from '../../data/customCollections'
 import { getMyProfile, updateMyProfile } from '../../data/profile'
@@ -82,14 +84,15 @@ export function HomePage() {
   const profile = useQuery({ queryKey: ['my-profile'], queryFn: getMyProfile })
   const hideValues = profile.data?.hideValues ?? false
 
-  const toggleHideValues = useMutation({
-    mutationFn: (next: boolean) => updateMyProfile({ hideValues: next }),
+  const toggleHideValues = useLeasedMutation({
+    mutationFn: (next: boolean, lease) => updateMyProfile({ hideValues: next }, leasedDb(lease)),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['my-profile'] })
     },
   })
-  const setCurrency = useMutation({
-    mutationFn: (currency: string) => updateMyProfile({ displayCurrency: currency }),
+  const setCurrency = useLeasedMutation({
+    mutationFn: (currency: string, lease) =>
+      updateMyProfile({ displayCurrency: currency }, leasedDb(lease)),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['my-profile'] })
     },

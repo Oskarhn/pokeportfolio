@@ -9,6 +9,8 @@
  * (`controller.ts` next door).
  */
 
+import type { IdentityLease } from '../../auth/identity-lease'
+
 /** One generated file, ready for platform delivery. Filenames come from the engine (§10 of the
  *  M13 prompt: the UI presents what is being saved, never hardcodes names). */
 export interface ExportArtifact {
@@ -30,7 +32,13 @@ export type ExportProgressListener = (phase: ExportProgressPhase) => void
 
 export interface ExportController {
   /** Full versioned JSON backup (`pokeportfolio-backup-YYYY-MM-DD.json`, engine-owned name). */
-  createBackup(onProgress?: ExportProgressListener): Promise<ExportArtifact[]>
+  createBackup(
+    onProgress?: ExportProgressListener,
+    lease?: IdentityLease,
+  ): Promise<ExportArtifact[]>
   /** CSV suite — one artifact, or several (the UI delivers either without assuming a ZIP). */
-  createCsvExport(onProgress?: ExportProgressListener): Promise<ExportArtifact[]>
+  createCsvExport(
+    onProgress?: ExportProgressListener,
+    lease?: IdentityLease,
+  ): Promise<ExportArtifact[]>
 }

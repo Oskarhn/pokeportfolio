@@ -1,4 +1,5 @@
 import { supabase } from './supabase-client'
+import type { LeasedDb } from './leased-client'
 
 /**
  * Custom collections: user-defined, playlist-like groups (DATA_MODEL.md §5.2.1). Plain owner-RLS
@@ -33,11 +34,14 @@ export async function listCustomCollections(): Promise<CustomCollection[]> {
   }))
 }
 
-export async function createCustomCollection(input: {
-  name: string
-  description?: string
-}): Promise<CustomCollection> {
-  const { data, error } = await supabase
+export async function createCustomCollection(
+  input: {
+    name: string
+    description?: string
+  },
+  db: LeasedDb,
+): Promise<CustomCollection> {
+  const { data, error } = await db
     .from('custom_collections')
     .insert({ name: input.name, description: input.description ?? null })
     .select('id, name, description, sort_order, color, created_at')

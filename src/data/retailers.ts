@@ -1,4 +1,5 @@
 import { supabase } from './supabase-client'
+import type { LeasedDb } from './leased-client'
 
 /**
  * Retailers (DATA_MODEL.md §5.2): user-private, deliberately minimal — a name is enough to answer
@@ -17,8 +18,12 @@ export async function listRetailers(): Promise<Retailer[]> {
   return data
 }
 
-export async function createRetailer(name: string, notes?: string): Promise<Retailer> {
-  const { data, error } = await supabase
+export async function createRetailer(
+  name: string,
+  db: LeasedDb,
+  notes?: string,
+): Promise<Retailer> {
+  const { data, error } = await db
     .from('retailers')
     .insert({ name, notes: notes ?? null })
     .select('id, name, notes')
