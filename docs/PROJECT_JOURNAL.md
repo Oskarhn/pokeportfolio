@@ -2255,3 +2255,28 @@ id, versus a numerically-shaped fact that happens to sit nearby) are different q
 scorer that only asks the first one will eventually promote the second by accident. Neither bug
 was visible from confidence scores or pass/fail test counts alone; both were caught by actually
 looking at what the block-read text contained before trusting that it "found something."
+
+## 2026-09-18 (P144) - Four "the input was fine, the boundary was not" defects, and the two things testing them turned up
+
+Four separate audit findings (P130-16/17/18-date/25) turned out to be one shape: a legitimate value
+was either refused or quietly rewritten at a boundary. A free receipt (goods 1+2, shipping 1,
+customs 1, discount 5) was rejected because the discount was allocated by goods weight only and
+rounding pushed one line to -1; an uncosted sale that lost money could not be saved while the
+identical sale on a costed lot could, because a CHECK constrained a signed cash flow to be
+non-negative; any date, 0001-01-01 included, was accepted for a purchase; and a blank price field
+was submitted as a known 0. Each was reproduced against the released code first, and the pre-fix
+run is what shaped the fixes: the discount fix keeps the documented rule byte-identical whenever
+the discount fits inside the goods (only the previously-broken case changes), the sale fix removes a
+constraint instead of adding a workaround, and the date rule is a trigger rather than a CHECK so it
+produces a named domain error, covers the client's direct `acquired_on` column update, and never
+makes a pre-contract row un-updatable.
+
+Two things the tests exposed that the findings did not. First, an exact SQL-vs-TypeScript parity
+test at 2^58-scale amounts failed by 2 minor units - not because the SQL was wrong but because
+PostgREST returns `bigint[]` as JSON numbers that JavaScript silently rounds above 2^53. That is
+P130-19 (still open) showing up as a testing constraint, so the exact comparison runs through a
+single raw psql session that returns text. Second, the edit-form regression could not be exercised
+against the Vite dev server at all: `useIsMountedRef` set its ref to false on effect cleanup and
+never back to true, so under StrictMode's mount-unmount-mount the form's error message and
+post-save navigation were silently skipped for the life of a live component - invisible in
+production (no double mount) and invisible to every existing test. A one-line re-arm fixed it.
