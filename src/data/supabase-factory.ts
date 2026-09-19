@@ -1,4 +1,8 @@
-import { createClient, type SupabaseClient, type SupabaseClientOptions } from '@supabase/supabase-js'
+import {
+  createClient,
+  type SupabaseClient,
+  type SupabaseClientOptions,
+} from '@supabase/supabase-js'
 import type { Database } from './database.types'
 import { createExactTransportFetch, type ExactTransportOptions } from './exact-json-guard'
 

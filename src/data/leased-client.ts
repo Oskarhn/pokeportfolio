@@ -61,7 +61,7 @@ export function createLeasedDb(lease: IdentityLease, deps: LeasedClientDeps): Le
   // supabase-js calls the provider once, synchronously, while it is being constructed, to prime its
   // realtime client (which this app never uses on a leased client). Answering with the public
   // publishable key — not null — is what stops realtime from asking a second time, later. That call
-  // must neither touch the session nor throw. It is answered before `createClient` returns, so every
+  // must neither touch the session nor throw. It is answered before construction returns, so every
   // request that can ever be made is answered by the real check below.
   let constructing = true
 

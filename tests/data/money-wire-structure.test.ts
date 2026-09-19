@@ -182,19 +182,32 @@ describe('S4 — money leaves the client as text', () => {
   })
 })
 
-describe('S5 — the app has exactly one Supabase client, and it is the guarded one', () => {
+describe('S5 — every Supabase client the app builds is the guarded one', () => {
   it('createClient( is called only by src/data/supabase-factory.ts', () => {
     const users = findAll(ALL_SRC, /\bcreateClient\s*[<(]/).map((hit) => hit.split(':')[0])
     expect([...new Set(users)]).toEqual(['src/data/supabase-factory.ts'])
   })
 
-  it('the factory installs the exact-transport fetch', () => {
+  it('the factory installs the exact-transport fetch on EVERY client it builds', () => {
+    // P147 (D-138): the factory builds two kinds of client — the shared app client and the
+    // accessToken client of an identity lease. Each createClient call must be paired with the
+    // guarded fetch, so a third construction path cannot be added without the guard.
     const factory = ALL_SRC.find((f) => f.path === 'src/data/supabase-factory.ts')
-    expect(factory?.text).toMatch(/global:\s*\{\s*fetch:\s*createExactTransportFetch\(/)
+    const clients = factory?.text.match(/\bcreateClient\s*</g) ?? []
+    const guarded =
+      factory?.text.match(/global:\s*\{\s*fetch:\s*createExactTransportFetch\(/g) ?? []
+    expect(clients.length).toBe(2)
+    expect(guarded.length).toBe(clients.length)
   })
 
   it('the app client is built by the factory', () => {
     const client = ALL_SRC.find((f) => f.path === 'src/data/supabase-client.ts')
     expect(client?.text).toMatch(/createAppSupabaseClient\(/)
+  })
+
+  it('the identity-lease client is built by the factory, not by its own createClient', () => {
+    const leased = ALL_SRC.find((f) => f.path === 'src/data/leased-client.ts')
+    expect(leased?.text).toMatch(/createAccessTokenSupabaseClient\(/)
+    expect(leased?.text).not.toMatch(/\bcreateClient\b/)
   })
 })
