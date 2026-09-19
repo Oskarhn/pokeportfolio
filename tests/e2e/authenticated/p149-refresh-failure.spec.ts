@@ -137,13 +137,14 @@ async function expireAccessToken(page: Page): Promise<void> {
 }
 
 /** create_purchase requests as the browser sent them, with the key each carried. */
-function captureCreatePurchase(page: Page): { keys: (string | null)[] } {
-  const seen: { keys: (string | null)[] } = { keys: [] }
+function captureCreatePurchase(page: Page): { keys: (string | null)[]; bodies: string[] } {
+  const seen: { keys: (string | null)[]; bodies: string[] } = { keys: [], bodies: [] }
   page.on('request', (request) => {
     if (request.method() !== 'POST' || !CREATE_PURCHASE.test(request.url())) return
     const body = request.postData()
     const parsed = body === null ? null : (JSON.parse(body) as { p_idempotency_key?: string })
     seen.keys.push(parsed?.p_idempotency_key ?? null)
+    seen.bodies.push(body ?? '')
   })
   return seen
 }
@@ -268,6 +269,9 @@ test.describe('a failed credential refresh is not an identity change (P148-M2), 
     expect(rows.map((r) => [r.user_id, r.total_minor])).toEqual([[pair.a.id, EXACT_MINOR]])
     expect(await linesOfPurchase(rows[0]?.id ?? '')).toBe(1)
     expect(sent.keys).toEqual([keyBefore]) // one request, carrying the key the form held from the start
+    // the amount left the browser as decimal TEXT (the exact-money transport), never as a JSON number
+    expect(sent.bodies[0]).toContain('"unit_price_minor":"' + EXACT_MINOR + '"')
+    expect(sent.bodies[0]).not.toMatch(/"unit_price_minor":\d/)
     expect(rows[0]?.idempotency_key).toBe(keyBefore)
     await expect(page.getByText(EXACT_DISPLAY).first()).toBeVisible()
   })
