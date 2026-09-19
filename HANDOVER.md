@@ -4,10 +4,136 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
+## Current state (P147, 2026-09-19) — LOCAL_INTEGRATED_CANDIDATE: P143–P146 combined, 106 migrations, NOT pushed, NOT released; RELEASED_PRODUCTION is unchanged
+
+**Two states, kept apart on purpose.**
+
+- `RELEASED_PRODUCTION`: `origin/main` = `d8682e047b757f63673a63ac8185a4806d68cb98` (the P141 release plus its docs-only
+  closeout; P142 measured Production `/build-meta.json` at exactly this SHA on 2026-09-18, P147 made no Production
+  request). Hosted Supabase: 104 migrations, 0 pending (last verified by P142).
+- `LOCAL_INTEGRATED_CANDIDATE`: branch `fix/p147-integrated-auth-money-hardening` in
+  `C:\Users\Oskar\Documents\Pokemonapp-worktrees\p147`, local only. Nothing is pushed, no PR exists, no hosted database,
+  Edge Function or Cloudflare setting was touched.
+
+**What the candidate is.** The released base plus the complete history of P145 (which contains P143: identity
+boundary D-134, in-flight identity lease D-136) and of P146 (which contains P144: financial boundary semantics D-135,
+exact-money transport D-137), merged as two merge commits (`--no-ff`, no cherry-picks), then P147's own commits. Eleven
+files conflicted; all were reconciled by hand (each side's change kept; the list is in the merge commit message). The one
+problem Git could not see is D-138: the two tracks each built their own Supabase client, so a clean merge left every
+leased write without the exact-money guard. `src/data/supabase-factory.ts` is now the only place `createClient` is
+called and puts the guard on both the shared client and the lease client; tests prove the two protections together and
+that removing either one fails a test. Migrations: 104 + the two of P144 = **106**; P145, P146 and P147 add none.
+
+**Verified on the integrated tree** (real stack: isolated local Supabase, project `pokeportfolio-p147`, migrations
+applied from empty, 106/106; stopped afterwards):
+
+- `pnpm test:db` 817 passed / 1 skipped (58 files; the skip is the env-gated M13 performance audit, as before);
+  M12 44 / 2 skipped, M13 62, M16 53; grant audit clean, including a hostile-grant convergence run; finance
+  diagnostics all zero; cron isolation held (0 hostname literals, 0 `pg_net` requests). The P132, P136, P138, P144 and
+  P146 suites are inside that run.
+- Unit 1975 passed / 1 skipped (146 files), also under UTC+14, UTC−11, UTC and Oslo (timezone made real inside the
+  worker; see the journal). Typecheck, lint (0 errors, the 27 known react-refresh warnings), format, build, platform
+  build verifier 28/28 and static link check 30/30 all pass.
+- Browser E2E, default projects (desktop + mobile emulation): 251 passed, 107 skipped (the specs' own capability and
+  viewport guards; no spec file skipped entirely), 0 failed, on a single-instance run. Authenticated project (real stack, 122 tests incl. the real two-tab identity, in-flight and sign-out specs): 3 of 3 consecutive full
+  runs on the final committed tree, 122/122 each, with the served tree verified (nothing listening beforehand, the dev server
+  answered with this tree's factory), plus one full run against the 104-migration database (122/122). Earlier runs on earlier
+  states of the tree each had one failing test, all explained below.
+- New: composition scenarios (production + five mutants), a real-stack integration suite with real GoTrue sessions, a
+  seeded campaign (72 cases in the DB run; 600 more across four seeds run once, 0 failures), five production-file
+  mutations (all killed; results in the journal), and fixes for the midnight date test, the shared-fixture race and a
+  leaked test user.
+
+**Compatibility matrix** (real clients against real stacks; the frontend tree served by the test server was checked each
+time):
+
+| Frontend | Database | Result |
+|---|---|---|
+| Released P141 | Hosted 104 | Current production baseline. Not re-verified by P147 (no hosted access). |
+| Released P141 (`d8682e0`) | Candidate 106 (local) | Compatible: its own authenticated E2E 79/79 and its own database suite 692 passed / 1 skipped against the 106-migration stack. |
+| Integrated P147 | 104 (local, from the released base) | Compatible, with one expected exception: authenticated E2E 122/122; the real-stack database tests pass 73 of 76 — the three failures are an uncosted sale with negative net proceeds, which only P144's migration (`sales_amounts_non_negative` relaxed, P130-17) allows. Money transport and identity handling need nothing from the two new migrations. |
+| Integrated P147 | Candidate 106 (local) | Passes every gate in this section. |
+
+The hosted database itself was not queried; "104" above is the released base's own 104 migrations applied to a local stack.
+
+**Known flakes in the authenticated project (none caused by the candidate; each disclosed, none hidden).**
+(1) `auth-entry-flows-real` invitation redemption fails now and then with "This invitation link is not valid": the local
+Edge Runtime answers the `redeem-invitation` call with HTTP 546 `WORKER_LIMIT` under parallel load, and
+`InvitePage` shows that text for every failure. It fails on the P145 tree too (2 of 8 full runs there; 2 of 27 on
+the integrated tree). Root-caused, not fixed (P143 spec; a product decision about the error text is P130-26 territory).
+(2) `edit-form-async-race` "Saving…" / "55.00": FIXED, and it was not a flake of the candidate. Its route glob never matched the real
+`…?select=…` URL, at the released base too, so the specs held nothing and passed by luck (the RPC completed in 28 ms in a trace);
+they now hold the request for real, assert it (`expectHeld`), and pass in repeats — the product was right. The same defect was
+found and fixed in `entity-switch-regression` and is fenced by `tests/config/e2e-route-patterns.test.ts`.
+(3) One of the 27 runs lost the browser session ("Protocol error … session closed") in the export accessibility spec.
+Two other failures were real defects of the tests, found and fixed: a sign-out resurrection test that counted the old
+document's retry attempt, and an absurd-amount spec that polluted the shared ledger.
+
+**Closure tracking (local only — nothing below is released until P148 ships it).** `P130_16`, `P130_17`,
+`P130_18_DATE`, `P130_19`, `P130_22`, `P130_23`, `P130_25`, `P143_W1_INFLIGHT_IDENTITY_RACE`: `CLOSED_LOCAL`.
+`P130_08` stays **OPEN**: P142 (PR #112, open draft, head `7430f66…`) has not been merged and Cloudflare's automatic
+Production deploy is still the live path. `P130_21` and `P130_26` stay OPEN. Full-platform disaster recovery stays
+partial. Physical iPhone gate and authenticated Production smoke stay owner-deferred.
+
+**Do not:** push this branch, open a PR, run hosted migrations, deploy Edge Functions or Cloudflare, or merge to
+`main` while automatic Production deploy is active and CI capacity is unresolved.
+
+**Release plan for the integrated candidate (for P148 — a plan only; nothing in it has been executed).**
+
+Order matters because the candidate changes the schema (104 → 106), the frontend and (optionally) three
+Edge Function bundles, and the Production deploy path itself is unresolved (P142).
+
+1. **Resolve the deploy gate first (P142 / P130-08).** PR #112 (`fix/p142-ci-gated-production-deploy`, head
+   `7430f668a22c8ef50ad52be109b8ac5b9ff00eaf`) is an open draft. It is not merged, and Cloudflare's automatic
+   Production deploy is still the live path. While that is true, merging any PR to `main` deploys it to
+   Production before CI finishes. Do not merge P147 until either (a) the owner has completed the four
+   `docs/GIT_WORKFLOW.md` §11 steps and a real push has proven `deploy-production` green end to end, or (b) the
+   owner explicitly accepts the risk of a merge that deploys ahead of CI.
+2. **GitHub Actions capacity.** The last PR run (35346980760) was refused at the start of its rerun because the
+   monthly free-minute limit was exhausted; capacity for the current cycle is UNVERIFIED (the billing API needs a
+   token scope this session did not request). Exact-head CI on the P147 PR is required before merge; if a run
+   cannot start, stop — do not work around it (`docs/COST_POLICY.md`).
+3. **Hosted database 104 → 106.** Expected: exactly two pending migrations, `20260918120000_p144_financial_boundary_semantics`
+   and `20260918120010_p144_privilege_baseline`, and nothing else (P145 and P147 add none; P146 adds none).
+4. **Fresh verified full backup before any hosted migration:** `pnpm db:backup`, proceed only on `BACKUP COMPLETE`,
+   then `pnpm db:backup --verify`.
+5. **Hosted read-only preflight** (one aggregate SELECT, no row content, via `supabase db query --linked`): the P144
+   date-contract precheck (rows outside 1996-10-20 … UTC today + 1 in purchases, sales, acquisition_lots,
+   lot_disposals, openings, lot_cost_adjustments), purchases with discount above goods, negative attributable
+   purchase lines, negative-PUD sales, plus `scripts/finance-integrity-diagnostics.sql`. P144 measured 0 rows
+   outside the contract on 2026-09-18 with 3 purchases and 4 lots; re-measure, the number can only have grown.
+6. **Exact dry run:** `supabase db push --dry-run` must list exactly the two files above. Then the ordinary
+   `supabase db push` (no reset, no seed, no repair), then hosted grant audit and finance diagnostics.
+7. **Compatibility of the released frontend with the new database.** The released P141 frontend keeps working on
+   106 (matrix above: its authenticated E2E 79/79 and its database suite 692/1 against a 106-migration stack): P144
+   changes no RPC signature and only accepts more (discount, negative uncosted proceeds). One behaviour change is
+   visible to the OLD frontend: the date trigger refuses a completed-event date outside 1996-10-20 … UTC today + 1.
+   The released purchase, sale and scanner forms already cap at today, but the released add-to-collection and
+   add-sealed forms cap nothing, so a future date or a pre-1996 date typed there is now refused with the raw
+   `invalid-event-date` message (P130-26 territory) until the new frontend ships. Order: database first is safe;
+   ship the frontend soon after.
+8. **Edge Functions.** `supabase/functions/_shared/tcgdex.ts` changed (P146: a provider price whose minor-unit
+   integer exceeds 2^53 − 1 is treated as absent). Bundles that contain it: `ingest-prices`, `search-prices`, and
+   `sync-catalog` (which imports other exports of the same module). Only `ingest-prices` and `search-prices`
+   execute the changed function. A Cloudflare deploy does not update Supabase Edge Functions. P130-19 is closed by
+   the client/database transport work and does not depend on this change; it is a bounded-provider hardening that
+   can be deployed separately (`supabase functions deploy ingest-prices --use-api`, `search-prices`, `sync-catalog`
+   if consistency of bundles is wanted) after a read-only `supabase functions list` shows what is deployed.
+9. **Exact-head CI** of the integrated PR (both jobs: `build-and-test`, `db-tests` with the authenticated E2E and
+   the three adversarial suites), then squash merge only per `docs/GIT_WORKFLOW.md`.
+10. **Production verification after a merge:** `/build-meta.json` SHA equals the merge SHA and is not `+dirty`;
+    `scripts/deployment-check.mjs` against the Production URL; `scripts/check-links.mjs` live mode; scanner content
+    id unchanged; hosted migrations 106 / pending 0; hosted grant audit and finance diagnostics clean; the two
+    ingest cron commands still read `dispatch_ingest_call(...)` with no hostname literal.
+11. **Still owner-deferred unless actually performed:** the physical iPhone gate, and an authenticated Production
+    smoke. Recommended: one purchase above 90,071,992,547,409.91 kr on a preview against the hosted backend once,
+    and one two-tab account switch during a Save, on a real device.
+
 ## Current state (P141, 2026-09-18) — P137/P138/P139/P140 RELEASED; hosted 104/0; Production live at `8eef187`; P130-04/05/07(DB)/12/15/27/28 closed
 
-**This section is the authoritative current state.** Every section below it, including the P136
-section immediately following, is historical and describes the state at the time it was written.
+**This section is the authoritative description of the RELEASED state** (the P147 section above it describes an unreleased
+local candidate). Every section below it, including the P136 section immediately following, is historical and describes the
+state at the time it was written.
 
 **Released.** PR #109 (`fix/p141-integrated-security-reliability-wave`) squash-merged to `main` as
 `969c423c006766cf2fcf7fc5267f367a13623be1` (tree `472a86b66c9051a1c00f939a55b5ad8c8a6ae8b9`,

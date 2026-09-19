@@ -6403,3 +6403,61 @@ PostgREST, real Postgres, real data layer; includes JPY/EUR/USD, negative values
 keyset cursor), `tests/db/p146_transport_guard.test.ts`, `tests/db/p146_wire_surface_audit.test.ts`,
 `tests/data/money.test.ts` (property tests over the whole signed range), `tests/data/exact-json-guard.test.ts`,
 `tests/data/money-wire-structure.test.ts`.
+
+## D-138 — One client factory carries both the identity lease and the exact-money guard, and the two are proven together (P147)
+
+**2026-09-19 · Accepted**
+
+**Context.** D-136 (P145) binds every identity-bound write to a *leased* Supabase client whose bearer
+comes from the `accessToken` client option. D-137 (P146) installs the exact-transport guard — refuse a
+JSON integer a double cannot hold in a request, quote one in a response — through the app's client
+factory. The two tracks were built independently from the same base. Each was green on its own, and a
+textual merge would have compiled, because neither touches the other's client construction: P145's
+`createLeasedDb` called `createClient` itself, and P146's `createAppSupabaseClient` was the only place
+the guard was installed. The merged result would therefore have sent every leased write — which is
+every write to user data — through a client with **no guard**, while every P146 test kept passing (they
+used the shared client). The dangerous half of a combination is invisible to the suites of either half.
+
+**Decision.**
+
+1. `src/data/supabase-factory.ts` is the only file that calls `createClient`. It exposes
+   `createAppSupabaseClient` (the shared client, with the explicit auth storage of D-134) and
+   `createAccessTokenSupabaseClient` (the lease client). Both wrap the fetch that reaches the network in
+   `createExactTransportFetch`; a test requires that the number of `createClient` calls equals the
+   number of guarded fetches, so a third construction path cannot appear without the guard.
+2. `src/data/leased-client.ts` builds its client through the factory and keeps the D-136 provider
+   unchanged: lease current, live session's user equals the lease's user, then that session's token.
+   `auth` options are not accepted for an `accessToken` client — there is exactly one authentication
+   truth per client, and no token is read, stored or logged by the factory.
+3. The guard sits *beneath* supabase-js's authorization wrapper, so it sees the final request and
+   authentication stays entirely the provider's business. The ordinary app client does not require a
+   lease; only identity-bound operations do.
+4. Composition is tested as a property of the composition, not of its parts: the six scenarios of
+   `tests/data/p147-composition-scenarios.ts` (large amount, identity switch before dispatch with and
+   without the tab having heard, same-user refresh, A → B → A, sign-out, unsafe literal) run against
+   the production composition and must pass, and against five compositions each missing exactly one
+   protection and must fail. The same scenarios run against a real PostgREST/PostgreSQL/GoTrue stack
+   (`tests/db/p147_auth_money_integration.test.ts`) and in a seeded campaign
+   (`tests/db/p147_combined_stress.test.ts`).
+
+**Alternatives rejected.**
+
+- *Two factories with the same options.* Two nearly identical `createClient` configurations drift; the
+  drift is precisely the defect above.
+- *Guard only on the shared client; leased clients build their own.* The leased client is where every
+  write goes, so the guard would protect nothing that matters.
+- *A wrapper around the data functions instead of the transport.* A raw `db.rpc(...)` in a future page
+  bypasses it; the transport cannot be bypassed by a caller.
+- *Let the leased client read the shared client's session for its token.* A second, independent source
+  of authentication state, which is what the lease design exists to remove.
+- *Cache leased clients across leases.* A cache keyed by anything other than the lease object could
+  hand one identity's client to another. Construction costs ~25 µs (measured), so per-lease
+  memoisation (`leasedDb`, keyed by the lease object) is all that is kept.
+
+**Consequences.** A future change to how a client is built has one file to change and one test that
+fails if a construction path lacks the guard. The lease and the guard fail independently: removing the
+guard fails the unsafe-literal scenarios, removing the identity check fails the switch scenarios,
+`Number()` at a money argument fails the precision scenarios (each verified by editing the production
+file, see PROJECT_JOURNAL P147). The scenarios' "browser" is a model (a stub backend, or a
+`SimulatedTab` over real GoTrue sessions); the browser-level proof remains the real two-tab specs of
+D-134/D-136 and the exact-money spec of D-137.

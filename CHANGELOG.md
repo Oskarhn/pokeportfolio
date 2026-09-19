@@ -10,6 +10,54 @@ they were**.
 
 ## [Unreleased]
 
+### Fixed — 2026-09-19 — Local integrated candidate: sign-in identity protection and exact money on the same client (P147; integrates P143–P146)
+
+Not released. This is the local integration of the two hardening tracks (`LOCAL_INTEGRATED_CANDIDATE`); Production
+still runs the P141 build.
+
+- Every write to user data now goes through a client that is both bound to the identity that started it (D-136) and
+  guarded against inexact money (D-137). The two tracks had each been built on a client of their own; merging them
+  would have left writes unguarded, so one factory now builds both (D-138) and a test fails if a construction path
+  lacks the guard.
+- Tests prove the two protections together: a large amount survives a leased request digit for digit; a sign-in
+  switch, a sign-out or an A → B → A sequence during a running purchase sends nothing; a same-user token refresh does
+  not stop it; a replayed or retried purchase or sale is still recognised as the same request, and one minor unit of
+  difference above 2^53 is still a different one. Each protection was removed in turn to confirm a test fails.
+- Fixed a test that failed only between local midnight and 02:00 (it expected the UTC date; the product correctly uses
+  the local date) and now pins those hours with a fake clock.
+- Fixed a parallel-only failure in the authenticated browser suite: a test that sold a card from the shared fixture
+  inventory could sell a lot another test had just created. Selling tests now use their own inventory.
+- One database test no longer leaves a synthetic user behind after a run.
+- Two browser specs that claimed to hold a slow response held nothing (their route never matched the real URL) and passed by
+  luck; they now hold the request for real, prove it, and the product passes them. Two sign-out and account-entry
+  flakes were traced (one test race, one local Edge Runtime resource limit) and one absurd-amount spec no longer
+  pollutes the shared test ledger.
+- Database: 106 migrations (the two from P144 below); no migration of its own.
+
+### Fixed — 2026-09-19 — A running purchase, sale, opening or reset can no longer continue under another account (P145, D-136, P130-23)
+
+- Signing in as somebody else in another tab while a submission was in flight could record the first person's
+  entry in the second person's account — the sharpest case was a confirmed "Reset portfolio data" deleting the wrong
+  person's portfolio. Every write now carries an identity lease taken when the button is pressed; the request layer
+  refuses to send anything under a different identity, and a token refresh for the same person does not interrupt it.
+
+### Fixed — 2026-09-18 — The signed-in screen is keyed by the account; signing out always ends local access (P143, D-134, P130-22/23)
+
+- Switching account in another tab now clears the previous account's typed input, scanner batch and caches instead of
+  letting the next submit go out under the new account.
+- "Sign out" ends the session on this device even when the server cannot be reached (it says so, without technical
+  detail), and the old session cannot come back on reload.
+
+### Fixed — 2026-09-18 — Discounts, uncosted losses, dates and blank prices (P144, D-135, P130-16/17/18/25)
+
+- A discount that also consumes shipping and customs is now allocated instead of rejected; no line's cost goes
+  negative and totals stay exact.
+- A sale of a card with unknown cost whose fees exceed its price can now be recorded; its cash result is kept with
+  its sign and its realised result stays unknown.
+- Completed events must fall between 1996-10-20 and tomorrow (UTC) and are refused with a named error otherwise.
+- A blank price field is asked for instead of being saved as a known zero; a typed 0 is still a known zero.
+- Database: two migrations (`20260918120000_p144_financial_boundary_semantics`, `20260918120010_p144_privilege_baseline`).
+
 ### Fixed — 2026-09-19 — Money above 2^53 minor units no longer changes on the way to or from the database (P146, P130-19)
 
 - Every money write and read now crosses the client/database boundary as a decimal string; the client holds

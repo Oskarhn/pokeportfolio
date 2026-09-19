@@ -825,6 +825,14 @@ result or error is shown to the identity that is on screen now. A request that w
 completes as the user it began under; no token is stored or replayed. Ledger of what is covered and
 what cannot rot silently: `tests/ui/identity-lease-coverage.test.ts`.
 
+**The lease client and the money guard are one client (D-138, P147).** A leased client is built by the
+same factory as the shared client (`src/data/supabase-factory.ts`), so it carries the same
+exact-transport guard: a request body with an integer a JavaScript number cannot hold is refused before
+it leaves, and a response is repaired before it is parsed (D-137). The two protections are
+independent — the identity check decides whose token is sent, the guard decides what may be sent — and
+each is tested by removing it while keeping the other (`tests/data/p147-cross-track-mutations.test.ts`).
+The guard never reads, stores or logs a token.
+
 ---
 
 ## 10. Dependency and supply chain

@@ -792,6 +792,21 @@ pre-merge gate when CI or a manual hosted window exists.
 - `money-wire-structure` — static rules: no `Number(<money>)` in the data layer, an explicit allowlist elsewhere, every
   money column in a select list is `::text`, every `p_*_minor` argument is serialised, one guarded client.
 
+**Date-only defaults are local calendar dates — and the tests must be too (P147).** `initialDraft()`
+and the forms default a date to the person's LOCAL day (`src/platform/local-date.ts`, P114). Two
+assertions in `tests/ui/opening-draft.test.ts` expected the UTC day instead, so they failed only
+between local midnight and UTC midnight (00:00–02:00 in Norway) and passed the rest of the day; the
+product was right and the tests were wrong. They now build the expected date from the local getters,
+and a fake-clock block (`process.env.TZ` plus `vi.setSystemTime`, the pattern of
+`tests/ui/local-date.test.ts`) pins Oslo in summer and winter, UTC+14, UTC−11 and a control instant,
+including a check that the UTC/local mismatch the cases rely on really exists at those instants.
+
+**A suite must not leave its users behind (P147).** `tests/db/m12_dashboard_snapshots.test.ts` created
+a user in `beforeAll` that `beforeEach` immediately replaced, so its id was lost and it stayed in
+`auth.users` after every run (`deleteSyntheticUser` itself was correct). The user is no longer created,
+and the suite's `afterAll` fails if any `m12-snap` user remains — a cheap pattern for any suite that
+owns its fixtures.
+
 ---
 
 ## 6. E2E
@@ -1022,6 +1037,46 @@ edit, the openings wizard, add-to-collection, profile, reset and export. Unit le
 (the real data functions through the real supabase-js client against a stub backend that attributes
 every write to the bearer it received) and `tests/ui/identity-lease-coverage.test.ts` (the ledger:
 fails on a raw `useMutation`, a write function without `LeasedDb`, or missing wiring).
+
+**Both protections on one client (P147, D-138).** The identity lease (D-136) and the exact-money
+transport guard (D-137) were built and tested separately; a merge of the two would have left every
+leased write without the guard while every existing suite stayed green, so the combination has its
+own tests. `tests/data/p147-composition-scenarios.ts` holds six scenarios (a large amount through a
+leased client; an unsafe JSON number refused while a decimal string passes; an identity switch before
+dispatch, with and without this tab having heard about it; a same-user refresh; A → B → A; a sign-out)
+whose assertions read the BACKEND — what arrived, under whose bearer, what was stored — never what the
+client says it checked. `tests/data/p147-leased-transport-composition.test.ts` requires them to pass
+against the production composition and shows the guard is on the ordinary app client too;
+`tests/data/p147-cross-track-mutations.test.ts` runs the same scenarios against five compositions that
+each lack exactly one protection (no guard; no identity check; `Number()` at a money argument; a lease
+reactivated by A → B → A; a lease killed by a same-user refresh) and requires each to fail. The five
+were also applied to the production files one at a time (PROJECT_JOURNAL P147). Real stack:
+`tests/db/p147_auth_money_integration.test.ts` (real GoTrue sessions and a real `refreshSession()`,
+PostgREST, PostgreSQL; ledger read through the service role as `col::text`) and
+`tests/db/p147_combined_stress.test.ts`, a seeded campaign (`P147_STRESS_SEED`, `P147_STRESS_CASES`)
+that mixes switches, refreshes, sign-outs, large/zero/unsafe money, replays, ambiguous retries and
+concurrent duplicates with deterministic scheduling — every race is a parked session lookup released
+by the test, never a sleep. Both use `SimulatedTab` (`tests/db/leased.ts`), which hands out the
+production leased client.
+
+**A second cross-file hazard, fixed: selling through the UI from the shared pool (P147).** Every
+spec of the authenticated project shares one synthetic user, and the fixtures default to the same
+Pikachu holding, so their lots share a pool. The sale form pre-fills a holding's first lot; a test that
+saved a sale on that holding could sell a lot another worker had just created for its own edit test,
+which then failed with "card has already been partially disposed" — in a parallel run only, passing
+alone. The rule: the shared Pikachu pool is read-and-edit-only, and a spec that presses "Save sale"
+sells from `ISOLATED_SALE_VARIANT` (`tests/e2e/authenticated/fixtures.ts`), which no other shared-user
+spec touches. `tests/config/e2e-fixture-isolation.test.ts` enforces both halves statically, because the
+failure needs parallel workers and an unlucky order and a run that happens to pass proves nothing.
+Specs that create their own users (`auth-*-real`) have their own inventory and are out of scope.
+
+**Check which tree a local E2E run actually tested (P147).** The authenticated project serves the app with `pnpm exec vite --port 4174` and `reuseExistingServer: !process.env.CI`, and the placeholder project does the same on 4173: if anything already listens there, Playwright uses it. With several worktrees and other tools on one machine that can be another tree's dev server. Before trusting a local run, confirm nothing listens on the port beforehand and that the server answers with this tree's source (for the integrated tree: `curl http://localhost:4174/src/data/supabase-factory.ts` contains `createAccessTokenSupabaseClient`). Two runs also raced when started twice by mistake — both rebuild `dist/` — and produced blank-page a11y failures that were not a product defect.
+
+**A third one: an absurd amount in the shared ledger (P147).** `exact-money-input.spec.ts` used to type 90 071 992 547 409,93 kr into the shared user's ledger. The Purchases list, which every smoke test loads, then overflowed a 390 px viewport by 6 px, and `private-routes-smoke` failed in one combined run while passing alone — reproduced deterministically with `--workers=1`, exact-money first. The spec now creates and signs in its own user, and rule 3 of the isolation check rejects any 15+ digit amount in a shared-user spec. The overflow itself (a 16-digit amount in a narrow list row) is pre-existing and recorded in BACKLOG; it is a product decision (wrap, truncate or limit), not something a test should hide.
+
+**A route that matches nothing looks like a test that passes (P147).** `edit-form-async-race` and the sale case of `entity-switch-regression` routed `**/rest/v1/rpc/update_purchase` (and `create_sale`) to hold a slow response. The data layer calls its RPCs as `.rpc(...).select(<columns>)`, so the real URL is `…/update_purchase?select=…` and a glob that ends at the name does not match it (probed: it matches the bare path only). Nothing was ever held — in the trace of a failing run the RPC completed in 28 ms — so the specs passed or failed on whether a poll happened to catch a 30 ms `Saving…` state, while claiming to test a slow response arriving after an entity switch. That is the intermittent failure of four combined runs on the integrated tree, and it exists at the released base too. Routes now match with or without a query string, each test asserts the request really was held (`expectHeld`, `holdRequest(...).reached`), and `tests/config/e2e-route-patterns.test.ts` forbids a bare-path RPC glob in any spec. With a genuine hold all seven tests pass in repeats — the product was right, the tests were not looking — and putting the bare glob back fails them loudly. A green result that never depended on the thing it names is the worst kind of green: when a test's premise is an interception, assert that it happened.
+
+**Count what the reloaded page sends, not what the old one still does (P147).** The real sign-out test (`auth-signout-real.spec.ts`, and its mocked twin) reloads after a failed remote sign-out and asserts that the old refresh token is never presented to Auth. The old document is still running auth-js's retry loop for its failed refresh, and one attempt falls at about 3.15 s — exactly where the test reaches `unroute()` and `reload()`. An attempt in that gap was counted although nothing was stored and the sign-in form was shown; it failed one combined run in three and 2 of 48 runs under CPU load (0 of 32 on the P145 tree in the same conditions: the window is a few tens of milliseconds and the trees differ by that much). Both tests now count only requests after the main frame's navigation commit (`framenavigated`); making `ensureStoredSessionRemoved` a no-op still fails them, and the fixed real test passed 48 of 48 under the same load. `expect.soft` around a count is a smell worth remembering: the soft assertion made the test look like it had several independent checks when only one of them was racing.
 
 **Cross-file hazard, fixed: a real sign-out used to invalidate every other test's session (P112).**
 `supabase.auth.signOut()` defaults to GLOBAL scope (correct, intended product behavior — it revokes

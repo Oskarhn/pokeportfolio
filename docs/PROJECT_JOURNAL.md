@@ -2311,3 +2311,73 @@ each rule fail the suite that owns them. Two environmental notes for whoever run
 suites started against one local stack interfere (a killed run left an orphan behind, and the resulting m12/m16
 failures vanished after a `supabase db reset` and a single run), and `tests/ui/opening-draft.test.ts` compares the
 local date with the UTC date, so it fails between local midnight and 02:00 in Norway on the untouched base as well.
+
+## 2026-09-19 (P147) - Two correct halves, one unguarded client: what integrating the auth and money tracks actually had to prove
+
+P145 and P146 were each green on their own suites, and `git merge` reported ten textual conflicts, all in the data
+layer, all resolvable by keeping both sides. The dangerous part was the one Git could not see. P145 builds a small
+Supabase client per user action (`createLeasedDb`, authenticated through the documented `accessToken` option) and
+routes every write through it; P146 installs its exact-money guard in `createAppSupabaseClient`, which the
+leased clients never touch. After a clean resolution of every conflict the tree compiled, typechecked and passed
+1,938 unit tests, and every write to user data — that is, every write — travelled through a client with no guard
+at all. Nothing failed because P146's suites called the data layer through the shared client (the old signature)
+and P145's suites used stub amounts far below 2^53: each suite tested its own half through a client that did not
+have the other half. The defect was only findable by asking "which client does a write actually use, and what is
+on it", which is a question about the composition.
+
+The resolution was structural rather than a patch. `supabase-factory.ts` became the one place that calls
+`createClient`, with two constructors that both wrap the network `fetch` in the guard, and a test that counts
+`createClient` calls against guarded fetches so a third path cannot appear silently (D-138). The proof that the
+two protections coexist is a set of six scenarios whose assertions read the backend (bearer, body text, stored
+value), run against production and against five compositions that each lack one protection. All five mutants
+were also applied to the production files one at a time: no guard on the leased client (3 unit and 1 database test
+fail), no identity validation (17 and 5), `Number()` at a money argument (7 and 15), an A → B → A sequence that
+reactivates a lease (5 and 1), a same-user refresh that kills a lease (10 and 1). The first form of the `Number()`
+mutation did not compile (an unused import); it was redone in a compiling form, since a production build would
+have rejected the first. On the real stack the scenarios use real GoTrue sessions and a real `refreshSession()`; the
+seeded campaign (default 72 cases from seed 147; 4 further seeds of 150 cases were run once) mixes switches, refreshes,
+sign-outs, large/zero/unsafe amounts, replays, ambiguous retries and concurrent duplicates with parked-lookup
+scheduling instead of sleeps, and found nothing — which is the result, not an omission.
+
+Three smaller findings came from running the combined suites rather than from either track. The "midnight flake" both
+tracks noticed was a wrong test, not a wrong product: two assertions in `opening-draft.test.ts` expected the UTC
+date while the app deliberately uses the local one, so they failed only in the hours between local and UTC midnight.
+Reproducing it took a detour: on this Windows machine `TZ=... node` is ignored at process start and only an
+assignment to `process.env.TZ` at runtime takes effect, so a first round of "run the suite under other timezones"
+runs silently ran in Oslo time and proved nothing; a temporary setup file that assigns the variable inside the
+worker made the timezone real (the old test then failed exactly its two assertions under UTC+14, the new suite passed
+under UTC+14, UTC−11, UTC and Oslo). The E2E "fixture race" was one spec that sold from the shared Pikachu holding
+through the UI: the sale form pre-fills the first lot, which can be another worker's edit fixture. Serialising the
+project was not necessary; the rule is now "the shared pool is read-and-edit-only, and a spec that sells owns its
+own variant", enforced by a static check, because the failure needs parallel workers and a run that happens to pass
+proves nothing (a first version of the check let a mutant survive: it matched the import, not the use). The leaked
+synthetic user was a `beforeAll` user that `beforeEach` overwrote by reassigning the variable, losing its id; the
+delete helper was fine.
+
+The full authenticated project, run three times after the isolation work, turned up two more things that no single
+track's runs could have shown. The first: `exact-money-input` (P146) types a 16-digit amount into the shared user's
+ledger, and `private-routes-smoke` (older) loads the Purchases list at 390 px, where that amount widens the row by
+6 px — a failure that appeared in one combined run and vanished alone, and that reproduces every time with one worker
+and the right order. The test was moved to its own user; the layout limitation is pre-existing and went to the
+backlog rather than into an unrelated CSS change. The second: the real sign-out test failed one run in three, and a
+probe (the same test with each `/auth/v1/token` request labelled by whether it came before or after the reload call,
+run 16 to 48 times under CPU load) showed that the "old refresh token presented after sign-out" was the old
+document's own retry loop landing in the few tens of milliseconds between `unroute()` and `reload()`, with the stored
+session null and the sign-in form visible every time. A control run on the P145 tree in the same conditions produced
+0 in 32 and the integrated tree 2 in 48, and the distributions of when the test reached the reload differed by about
+the width of the window, so the honest reading is a race that the integration made a little more likely rather than
+a regression: nothing was resurrected, and no product code changed. Counting only requests after the main frame's
+navigation commit fixed it (48 of 48 under the same load), and removing the storage cleanup still fails the test —
+which is the property that matters, checked again in both the mocked and the real variant.
+
+The third failure had the longest way round. `edit-form-async-race` missed its "Saving…" state in three consecutive runs
+and then failed a different test of the same file, one that found "55.00" stored although the save was meant to be held.
+Stress runs under CPU load did not reproduce it (0 in 42), a control tree never failed it, and my first explanation (an
+unawaited `page.route()`) was a guess that a later failure disproved. The trace settled it: the `update_purchase` request
+completed in 28 ms, after the interception was in place. A five-line probe showed why — Playwright's glob
+`**/rest/v1/rpc/update_purchase` does not match `…/update_purchase?select=…`, and every data-layer RPC carries a
+`.select()`. The route had never matched, at any commit, so two specs written to prove that a slow response arriving
+after an entity switch changes nothing had never had a slow response; they passed by luck until timing shifted. Made real,
+all seven tests pass — the product (the P124 guard and the P145 leases) was right — and each now asserts that the
+request was held. The lesson is the one the mutation tests keep teaching: the question is not whether a test passes but
+whether it can fail for the reason it names.
