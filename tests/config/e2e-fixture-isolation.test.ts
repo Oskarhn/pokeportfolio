@@ -60,4 +60,14 @@ describe('E2E fixture isolation (shared-user authenticated specs)', () => {
     const direct = shared.filter((s) => /grassEnergyVariantId/.test(s.text)).map((s) => s.name)
     expect(direct).toEqual([])
   })
+
+  it('no shared-user spec writes an absurd amount (15+ digits) into the shared ledger', () => {
+    // Rule 3, found by the first combined run: exact-money-input typed 90 071 992 547 409,93 kr into
+    // the shared user's ledger, and the Purchases list — which every other spec's smoke test loads —
+    // then overflowed a 390 px viewport by 6 px. Such amounts belong to a spec that owns its user.
+    const offenders = shared.filter((s) => /\b\d{15,}\b/.test(s.text)).map((s) => s.name)
+    expect(offenders).toEqual([])
+    const owners = specs.filter((s) => !sharesProjectUser(s) && /\b\d{15,}\b/.test(s.text))
+    expect(owners.map((s) => s.name)).toContain('exact-money-input.spec.ts')
+  })
 })

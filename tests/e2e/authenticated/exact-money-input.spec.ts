@@ -1,5 +1,11 @@
 import { expect, test, type Page } from '@playwright/test'
-import { signInAsE2eUser } from './fixtures'
+import {
+  createServiceClient,
+  createSyntheticUser,
+  deleteSyntheticUser,
+  type SyntheticUser,
+} from '../../db/setup'
+import { signInThroughForm } from './support/two-tab'
 
 /**
  * P146 / P130-19 — a typed amount above 2^53 minor units is stored, and shown, exactly.
@@ -10,7 +16,31 @@ import { signInAsE2eUser } from './fixtures'
  * stored 9007199254740992. This drives the REAL purchase form in the real browser against the real
  * local database and checks three things independently: what went over the wire (a decimal string,
  * never a JSON number), what the ledger stored, and what the page shows.
+ *
+ * P147: this spec runs as its OWN synthetic user. It used to share the project's user, which left
+ * a purchase of 90 trillion kr in the ledger every other spec reads: the Purchases list then
+ * overflowed a 390 px viewport by 6 px and `private-routes-smoke` failed in a combined run while
+ * passing alone (reproduced deterministically with one worker, exact-money first). An absurd amount
+ * belongs in an account nothing else looks at; tests/config/e2e-fixture-isolation.test.ts keeps
+ * such amounts out of the shared user's specs.
  */
+
+// No inherited sign-in: the spec signs in as the user it creates below.
+test.use({ storageState: { cookies: [], origins: [] } })
+
+let owner: SyntheticUser
+
+test.beforeAll(async () => {
+  owner = await createSyntheticUser(createServiceClient(), 'e2e-exact-money')
+})
+
+test.afterAll(async () => {
+  await deleteSyntheticUser(createServiceClient(), owner.id)
+})
+
+test.beforeEach(async ({ page }) => {
+  await signInThroughForm(page, owner)
+})
 
 const TYPED = '90071992547409,93'
 const EXACT_MINOR = '9007199254740993'
@@ -27,9 +57,9 @@ function recordRpc(page: Page, rpcName: string): { body: Record<string, unknown>
   return calls
 }
 
+/** The ledger's own value, read through the service role as text (it cannot lose digits either). */
 async function storedTotalMinor(purchaseId: string): Promise<string> {
-  const client = await signInAsE2eUser()
-  const { data, error } = await client
+  const { data, error } = await createServiceClient()
     .from('purchases')
     .select('total_minor::text')
     .eq('id', purchaseId)
