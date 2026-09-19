@@ -10,6 +10,17 @@ they were**.
 
 ## [Unreleased]
 
+### Fixed — 2026-09-19 — Independent review of the integrated candidate (P148)
+
+Not released; local review of the P147 candidate.
+
+- The recovery-link password form no longer changes another account's password. A tab that had not heard another tab sign
+  in as B could submit A's new password while the browser held B's session; the change is now refused unless the browser's
+  session belongs to the form's user (D-139).
+- New independent tests: the exact-money transport guard against the platform JSON parser, a deterministic checkpoint
+  matrix of identity events x large amounts against a real database (purchase, negative uncosted sale, portfolio reset),
+  and real-browser runs of the same with 2^53-scale amounts.
+
 ### Fixed — 2026-09-19 — Local integrated candidate: sign-in identity protection and exact money on the same client (P147; integrates P143–P146)
 
 Not released. This is the local integration of the two hardening tracks (`LOCAL_INTEGRATED_CANDIDATE`); Production

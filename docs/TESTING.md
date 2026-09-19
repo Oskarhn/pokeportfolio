@@ -1059,6 +1059,21 @@ concurrent duplicates with deterministic scheduling — every race is a parked s
 by the test, never a sleep. Both use `SimulatedTab` (`tests/db/leased.ts`), which hands out the
 production leased client.
 
+**Independent review tests (P148).** Written to be a second opinion, not a copy: `tests/data/p148-guard-adversarial.test.ts`
+checks the exact-money transport guard against the platform's own JSON parser (`JSON.parse` reviver source text, an
+independent definition of "number token") over generated documents, plus response, failure, stream and abort handling;
+`tests/db/p148_independent_identity_money.test.ts` runs a deterministic checkpoint matrix — an identity action performed
+inline at four points of a request's path (before the session is read, after it was read, before dispatch, after the server
+committed) x six actions — for a purchase, a negative-net uncosted sale and a portfolio reset, all with amounts a JavaScript
+number cannot hold, against a real stack, with the expected outcome derived from the D-136 contract rather than from the
+implementation; it also covers several operations pending at once, the idempotency matrix (property order, representation,
+FX rate, currency, one minor unit above 2^53, NULL vs known zero) and the completed-event date contract.
+`tests/e2e/authenticated/p148-*.spec.ts` repeat the identity scenarios in a real browser with 2^53-scale amounts, audit
+390/430 px layout for large amounts, and reproduce the password-change case of D-139. Mutations that each fail at least one of
+them: leased client bypassed on a write, guard removed from the leased client, `Number()` at a money argument, a stale lease
+after A → B → A, NULL read as 0 (mapper and helper), the idempotency comparison disabled in the database, four guard defects
+(string escapes, the 2^53−1 boundary, negative numbers, failed responses treated like successes).
+
 **A second cross-file hazard, fixed: selling through the UI from the shared pool (P147).** Every
 spec of the authenticated project shares one synthetic user, and the fixtures default to the same
 Pikachu holding, so their lots share a pool. The sale form pre-fills a holding's first lot; a test that

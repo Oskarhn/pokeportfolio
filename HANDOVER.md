@@ -4,6 +4,29 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
+## Review state (P148, 2026-09-19) — independent review of the P147 candidate: one defect found and fixed locally; still NOT pushed, NOT released
+
+Branch `audit/p148-independent-release-review` = the exact P147 tree
+plus one narrow fix and independent tests. `RELEASED_PRODUCTION` is unchanged (`origin/main` = `d8682e0`; PR #112 (P142) is still an
+open draft). Nothing was pushed, deployed or migrated; hosted Supabase, Cloudflare and GitHub were only read.
+
+- **Found and fixed (D-139):** the recovery form's password change (`auth.updateUser`) was the one user-scoped write outside the
+  identity lease; a tab that had not heard another tab sign in as B could set B's password to the text typed for A (reproduced in a
+  real browser, fixed in `src/auth/update-password.ts` + `ResetPasswordPage.tsx`).
+- **Open, not a blocker (record for the next auth change):** a transient failure of the credential lookup (token refresh fails, `getSession`
+  answers `{ session: null, error }`) is treated as an identity change: the lease is revoked, nothing is sent (safe), but the
+  `onError`/`onSuccess` callbacks are skipped, so a Save pressed in that moment shows nothing. Recommended: give an errored lookup its own
+  non-identity error and leave the lease alone.
+- **Not fixed, UI backlog:** `/portfolio` overflows a 390 px viewport when a tile shows a 2^62-scale amount (46 quadrillion kr); no other page
+  overflows at 390/430 px with amounts up to 2^62, and 2^53+1 fits everywhere at 390 px. Product decision (an upper limit) belongs with the UI work.
+- **Compatibility (independently run):** integrated frontend on a 104-migration database: everything passes except the two things
+  migration 1 of P144 relaxes — an uncosted sale with negative net proceeds (`sales_amounts_non_negative`) and a receipt whose discount
+  exceeds its goods (`allocate_largest_remainder: weights must be non-negative`); both fail closed with a raw message and nothing is written.
+  During a staged rollout, apply the two migrations before shipping the frontend, or accept those two refusals until they are applied.
+- Gates on the final tree (isolated local stack `pokeportfolio-p148`, fresh `supabase db reset`, 106/106): unit 2026 passed / 1 skipped, DB 899 / 1
+  skipped, M12 44 / 2 skipped, M13 62, M16 53, grant audit and hostile convergence pass, finance diagnostics all 0, authenticated E2E 132/132
+  (twice), default browser projects 251 passed / 107 skipped, build, platform verifier 28/28, links 30/30.
+
 ## Current state (P147, 2026-09-19) — LOCAL_INTEGRATED_CANDIDATE: P143–P146 combined, 106 migrations, NOT pushed, NOT released; RELEASED_PRODUCTION is unchanged
 
 **Two states, kept apart on purpose.**
