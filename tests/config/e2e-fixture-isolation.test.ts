@@ -29,6 +29,10 @@ const specs = readdirSync(DIR)
 const sharesProjectUser = (spec: { text: string }) =>
   !/\b(?:createSyntheticUser|createPair)\(/.test(spec.text)
 
+// The variant must actually be USED as the inventory of a fixture, not merely imported.
+const usesIsolatedVariant = (spec: { text: string }) =>
+  /cardVariantId:\s*ISOLATED_SALE_VARIANT/.test(spec.text)
+
 // Only an exact "Save sale" button press SELLS. (A validation-only click on an empty form uses a
 // pattern like /^(Save sale|Record sale)$/ and records nothing.)
 const sellsThroughUi = (spec: { text: string }) => /name:\s*'Save sale'/.test(spec.text)
@@ -44,13 +48,13 @@ describe('E2E fixture isolation (shared-user authenticated specs)', () => {
   it('every shared-user spec that sells through the UI sells from its own variant', () => {
     const offenders = shared
       .filter(sellsThroughUi)
-      .filter((s) => !s.text.includes('ISOLATED_SALE_VARIANT'))
+      .filter((s) => !usesIsolatedVariant(s))
       .map((s) => s.name)
     expect(offenders).toEqual([])
   })
 
   it('no other shared-user spec touches that variant', () => {
-    const users = shared.filter((s) => s.text.includes('ISOLATED_SALE_VARIANT')).map((s) => s.name)
+    const users = shared.filter(usesIsolatedVariant).map((s) => s.name)
     expect(users).toEqual(['blank-money-input.spec.ts'])
     // ...including by naming the variant directly.
     const direct = shared.filter((s) => /grassEnergyVariantId/.test(s.text)).map((s) => s.name)
