@@ -27,7 +27,19 @@ function delayRpc(page: Page, rpcName: string) {
     release = resolve
   })
   let mode: 'continue' | { status: number; message: string } = 'continue'
-  const routePromise = page.route(`**/rest/v1/rpc/${rpcName}`, async (route) => {
+  let held = 0
+  let handledResolve: () => void = () => {}
+  const handled = new Promise<void>((resolve) => {
+    handledResolve = resolve
+  })
+  // The data layer calls these RPCs as `.rpc(...).select(<columns>)`, so the request URL carries a
+  // query string. A glob such as `**/rest/v1/rpc/update_purchase` does NOT match that URL
+  // (checked: it matches the bare path only), which is how these specs held nothing at all for
+  // three sessions and passed or failed on timing luck (P147). Match the path with or without a
+  // query, and make every test prove the request really was held (`expectHeld`).
+  const pattern = new RegExp(`/rest/v1/rpc/${rpcName}(?:\\?.*)?$`)
+  const routePromise = page.route(pattern, async (route) => {
+    held += 1
     await released
     if (mode === 'continue') {
       await route.continue()
@@ -38,6 +50,7 @@ function delayRpc(page: Page, rpcName: string) {
         body: JSON.stringify({ message: mode.message, code: 'P0001' }),
       })
     }
+    handledResolve()
   })
   return {
     routePromise,
@@ -45,8 +58,16 @@ function delayRpc(page: Page, rpcName: string) {
     failWith(status: number, message: string) {
       mode = { status, message }
     },
+    /** The request was intercepted and is being held. Without this a route that silently matches
+     *  nothing lets the save finish at once and the test asserts on a race it never created. */
+    async expectHeld() {
+      await expect.poll(() => held, { timeout: 5_000 }).toBe(1)
+    },
     async unroute() {
-      await page.unroute(`**/rest/v1/rpc/${rpcName}`)
+      // Let a held request finish being answered first: unrouting while the handler is still about to
+      // continue()/fulfill() the request makes Playwright treat the route as already handled.
+      if (held > 0) await handled
+      await page.unroute(pattern)
     },
   }
 }
@@ -71,8 +92,13 @@ test.describe('PurchaseEditPage — stale onSuccess/onError after an in-app enti
     await expect(page.getByText(/pikachu/i).first()).toBeVisible({ timeout: 10_000 })
 
     const rpc = delayRpc(page, 'update_purchase')
+    // The interception must be in place BEFORE the click: an unawaited page.route() is a latent race
+    // (P147) — a request that overtakes it is not held, the save finishes at once and the
+    // "Saving…" state these tests wait for is gone before it can be observed.
+    await rpc.routePromise
     await page.getByLabel('Shipping').fill('77')
     await page.getByRole('button', { name: /save changes/i }).click()
+    await rpc.expectHeld()
     await expect(page.getByRole('button', { name: /saving/i })).toBeVisible()
 
     // Switch away from A while its save is still in flight — the real regression trigger
@@ -111,8 +137,13 @@ test.describe('PurchaseEditPage — stale onSuccess/onError after an in-app enti
     await expect(page.getByText(/pikachu/i).first()).toBeVisible({ timeout: 10_000 })
 
     const rpc = delayRpc(page, 'update_purchase')
+    // The interception must be in place BEFORE the click: an unawaited page.route() is a latent race
+    // (P147) — a request that overtakes it is not held, the save finishes at once and the
+    // "Saving…" state these tests wait for is gone before it can be observed.
+    await rpc.routePromise
     rpc.failWith(400, 'a purchase line has already been disposed elsewhere')
     await page.getByRole('button', { name: /save changes/i }).click()
+    await rpc.expectHeld()
     await expect(page.getByRole('button', { name: /saving/i })).toBeVisible()
 
     await navigateWithinApp(page, `/purchases/${purchaseB}/edit`)
@@ -143,8 +174,13 @@ test.describe('PurchaseEditPage — stale onSuccess/onError after an in-app enti
     await expect(page.getByText(/pikachu/i).first()).toBeVisible({ timeout: 10_000 })
 
     const rpc = delayRpc(page, 'update_purchase')
+    // The interception must be in place BEFORE the click: an unawaited page.route() is a latent race
+    // (P147) — a request that overtakes it is not held, the save finishes at once and the
+    // "Saving…" state these tests wait for is gone before it can be observed.
+    await rpc.routePromise
     await page.getByLabel('Shipping').fill('55')
     await page.getByRole('button', { name: /save changes/i }).click()
+    await rpc.expectHeld()
 
     await navigateWithinApp(page, `/purchases/${purchaseB}/edit`)
     await expect(page.getByText(/charizard/i).first()).toBeVisible({ timeout: 10_000 })
@@ -180,9 +216,14 @@ test.describe('SaleEditPage — stale onSuccess/onError after an in-app entity s
     })
 
     const rpc = delayRpc(page, 'update_sale')
+    // The interception must be in place BEFORE the click: an unawaited page.route() is a latent race
+    // (P147) — a request that overtakes it is not held, the save finishes at once and the
+    // "Saving…" state these tests wait for is gone before it can be observed.
+    await rpc.routePromise
     const feesField = page.getByLabel('Fees')
     await feesField.fill('33')
     await page.getByRole('button', { name: /save changes/i }).click()
+    await rpc.expectHeld()
 
     await navigateWithinApp(page, `/sales/${saleB}/edit`)
     await expect(page).toHaveURL(new RegExp(`/sales/${saleB}/edit`))
@@ -208,8 +249,13 @@ test.describe('SaleEditPage — stale onSuccess/onError after an in-app entity s
     })
 
     const rpc = delayRpc(page, 'update_sale')
+    // The interception must be in place BEFORE the click: an unawaited page.route() is a latent race
+    // (P147) — a request that overtakes it is not held, the save finishes at once and the
+    // "Saving…" state these tests wait for is gone before it can be observed.
+    await rpc.routePromise
     rpc.failWith(400, 'sale line quantity exceeds the original disposal')
     await page.getByRole('button', { name: /save changes/i }).click()
+    await rpc.expectHeld()
 
     await navigateWithinApp(page, `/sales/${saleB}/edit`)
     await expect(page).toHaveURL(new RegExp(`/sales/${saleB}/edit`))
