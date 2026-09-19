@@ -833,6 +833,12 @@ independent — the identity check decides whose token is sent, the guard decide
 each is tested by removing it while keeping the other (`tests/data/p147-cross-track-mutations.test.ts`).
 The guard never reads, stores or logs a token.
 
+**The password change is covered too (D-139, P148).** `auth.updateUser` cannot be routed through a leased client, so
+`ResetPasswordPage` runs it through `updatePasswordForLease` (`src/auth/update-password.ts`): the lease must be current and
+the browser's live session must belong to the lease's user, otherwise nothing is sent. Not covered by design: the global
+sign-out of a tab that never heard an identity switch signs out the browser's current session (it ends a session, it does
+not take one over).
+
 ---
 
 ## 10. Dependency and supply chain

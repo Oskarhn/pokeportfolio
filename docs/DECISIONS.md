@@ -6461,3 +6461,41 @@ guard fails the unsafe-literal scenarios, removing the identity check fails the 
 file, see PROJECT_JOURNAL P147). The scenarios' "browser" is a model (a stub backend, or a
 `SimulatedTab` over real GoTrue sessions); the browser-level proof remains the real two-tab specs of
 D-134/D-136 and the exact-money spec of D-137.
+
+---
+
+## D-139 — A password change is an identity-bound write too: it is refused unless the browser's session belongs to the form's user (P148)
+
+**2026-09-19 · Accepted**
+
+**Context.** The independent review of the integrated candidate (P148) looked for user-scoped side effects
+that the identity lease of D-136 does not reach. One exists: the recovery form
+(`src/features/auth/ResetPasswordPage.tsx`) calls `supabase.auth.updateUser({ password })`. That is a write
+to the auth service, not to the data API, so it never went through a leased client, and supabase-js offers
+no per-request credential for it — it changes the password of whoever the browser's session belongs to
+*when the request is made*. Reproduced in a real browser against a real GoTrue: a tab that has not heard a
+cross-tab auth event (no `BroadcastChannel`, or an event still in flight) shows A's recovery form while the
+shared storage already holds B; submitting it set **B's** password to the text typed for A. The exposure is
+narrow (two accounts in one browser profile, a recovery form open, a tab that is deaf to or behind the other
+tab's sign-in) but it is exactly the class D-136 exists for, and `secure_password_change = false` (P130-20)
+means no re-authentication stands in the way.
+
+**Decision.** `src/auth/update-password.ts` (`updatePasswordForLease`) takes the lease the form was rendered
+under, refuses when the lease has ended, then looks up the browser's live session and refuses (revoking the
+lease) unless it belongs to the lease's user, and only then calls `updateUser`. The lookup and the call are
+adjacent awaits on one client with nothing but promise continuations between them, the same argument that
+makes the token provider of D-136 sound. Nothing is sent when it refuses; the form shows the fixed
+`auth-identity-changed` text. No token is read, stored or logged.
+
+**Not done / limits.** The check-to-call interval is not zero (auth-js re-reads storage inside
+`updateUser`); it contains no task boundary, so no auth event handler can run in it, but a storage write
+from another tab is not an event handler. A leased-client style guarantee (the credential chosen by the same
+code that verified it) would need the auth service's `PUT /auth/v1/user` called with an explicit bearer,
+which is a new code path around supabase-js and was judged out of scope for a review. Global sign-out
+(`AuthProvider.signOut`) has the mirror-image property — in a tab that never heard the switch it signs out the
+browser's current session — and is recorded rather than changed: it ends a session, it does not take one over.
+
+**Verification.** `tests/ui/update-password-lease.test.ts` (8 scenarios: same user, refresh, event gap, heard
+switch, sign-out, A → B → A, switch during the lookup, dead lease); `tests/e2e/authenticated/p148-reset-password-identity.spec.ts`
+(real browser: failed before the change with "B's password was changed by A's form", passes after; positive
+control included). The helper's user check was removed to confirm the event-gap unit test fails.
