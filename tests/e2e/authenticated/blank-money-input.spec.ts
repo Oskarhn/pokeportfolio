@@ -1,5 +1,10 @@
 import { expect, test, type Page } from '@playwright/test'
-import { createFixtureHolding, createFixturePurchase, createFixtureSale } from './fixtures'
+import {
+  createFixtureHolding,
+  createFixturePurchase,
+  createFixtureSale,
+  ISOLATED_SALE_VARIANT,
+} from './fixtures'
 
 /**
  * P144 / P130-25 — a blank price field is "no price entered", never a known 0. The same two
@@ -98,10 +103,11 @@ test.describe('Sale Add — blank vs explicit-zero sale price', () => {
   test('a blank sale price is refused before anything is sent; a typed 0 is submitted as known 0', async ({
     page,
   }) => {
-    const { holdingId } = await createFixtureHolding()
+    // Sells from its OWN inventory: the shared Pikachu pool must stay untouched (see fixtures.ts).
+    const { holdingId } = await createFixtureHolding({ cardVariantId: ISOLATED_SALE_VARIANT })
     const calls = recordRpc(page, 'create_sale')
     await page.goto(`/sales/new?holdingId=${holdingId}`)
-    await expect(page.getByText(/pikachu/i).first()).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByText(/grass energy/i).first()).toBeVisible({ timeout: 10_000 })
     await page
       .getByLabel(/^Quantity of .* from the lot acquired/)
       .first()

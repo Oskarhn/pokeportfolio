@@ -51,6 +51,23 @@ export async function signInAsE2eUser() {
   return client
 }
 
+/**
+ * The one card variant a spec may SELL from through the UI (P147).
+ *
+ * Every spec of the authenticated project shares ONE synthetic user, and the fixtures above default
+ * to the same Pikachu holding, so all their lots sit in one pool. The sale form pre-fills the first
+ * lot of the holding it is opened for. A test that pressed "Save sale" on the shared Pikachu holding
+ * therefore sold whichever lot happened to come first — sometimes the lot of a purchase another
+ * worker had just created for its own edit test, which then failed with "this purchase cannot be
+ * edited: card has already been partially disposed" (P146 saw exactly that in a parallel run, while
+ * the same test passed alone).
+ *
+ * The rule that removes the race instead of serialising the suite: the shared Pikachu pool is
+ * read-and-edit-only, and a spec that sells through the UI does so from THIS variant, which no other
+ * shared-user spec touches. tests/config/e2e-fixture-isolation.test.ts enforces both halves.
+ */
+export const ISOLATED_SALE_VARIANT = seedCatalog.grassEnergyVariantId
+
 /** Creates one real raw-card holding (via the real add_card_acquisition RPC) for the signed-in
  *  E2E user, seeded from the standard catalog fixture every fresh `pnpm db:reset` carries — a
  *  real holding id a spec can then navigate `/sales/new?holdingId=<id>` against, exactly the N-14
