@@ -1,6 +1,6 @@
 import { supabase } from './supabase-client'
 import type { LeasedDb } from './leased-client'
-import { parseMinorUnits } from './money'
+import { parseMinorUnits, serializeMinorUnits } from './money'
 import type { CardCondition } from './collection'
 import type { Database } from './database.types'
 
@@ -126,7 +126,7 @@ export async function updateMyProfile(update: ProfileUpdate, db: LeasedDb): Prom
     patch.collection_default_sort = update.collectionDefaultSort
   }
   if (update.lowValueThresholdMinor !== undefined) {
-    patch.low_value_threshold_minor = Number(update.lowValueThresholdMinor)
+    patch.low_value_threshold_minor = serializeMinorUnits(update.lowValueThresholdMinor)
   }
   if (update.hideLowValueByDefault !== undefined) {
     patch.hide_low_value_by_default = update.hideLowValueByDefault

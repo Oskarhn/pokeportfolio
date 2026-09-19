@@ -11,20 +11,19 @@ import {
   type SpendClass,
 } from '../../data/purchases'
 import { listRetailers } from '../../data/retailers'
-import { fromDecimalString, toDecimalString } from '../../domain/money'
-import { allocate } from '../../domain/allocation'
+import { toDecimalString } from '../../domain/money'
+import { allocatePurchaseCharges } from '../../domain/allocation'
 import type { CurrencyCode } from '../../domain/currency'
 import { Button, FormMessage, SelectField, TextField } from '../../ui/form'
+import {
+  parseNullableMoneyInput,
+  parseOptionalChargeInput,
+  requireKnownAmount,
+} from '../../ui/money-format'
 import { LINE_TYPE_LABEL } from './labels'
 import { at } from './util'
 import { useUnsavedWorkSnapshot } from '../../platform/unsaved-work-registry'
 import { useIsMountedRef } from '../../platform/use-mounted-ref'
-
-function parseAmount(raw: string, currency: CurrencyCode): bigint {
-  const trimmed = raw.trim().replace(',', '.')
-  if (trimmed === '') return 0n
-  return fromDecimalString(trimmed, currency).minorUnits
-}
 
 interface EditLineState {
   lineId: string
@@ -127,27 +126,27 @@ function PurchaseEditForm({ purchaseId, detail }: { purchaseId: string; detail: 
 
   const preview = useMemo(() => {
     try {
-      const shipping = parseAmount(shippingInput, currency)
-      const customs = parseAmount(customsInput, currency)
-      const discount = parseAmount(discountInput, currency)
-      const weights = editLines.map((line) => {
+      // Blank charge = no charge; a blank UNIT PRICE is an unknown amount, so the preview waits for
+      // a price instead of showing a fabricated 0.00 line (P130-25).
+      const shipping = parseOptionalChargeInput(shippingInput, currency)
+      const customs = parseOptionalChargeInput(customsInput, currency)
+      const discount = parseOptionalChargeInput(discountInput, currency)
+      const weights: bigint[] = []
+      for (const line of editLines) {
         const qty = BigInt(Math.max(1, Number.parseInt(line.quantity || '1', 10)))
-        return parseAmount(line.unitPrice, currency) * qty
-      })
+        const unit = parseNullableMoneyInput(line.unitPrice, currency)
+        if (unit === null) return null
+        weights.push(unit * qty)
+      }
       if (weights.length === 0) return null
-      const allocShip = allocate(shipping, weights)
-      const allocCustoms = allocate(customs, weights)
-      const allocDiscount = allocate(discount, weights)
+      const charges = allocatePurchaseCharges(weights, shipping, customs, discount)
       const total = weights.reduce((a, b) => a + b, 0n) + shipping + customs - discount
       return {
         total,
-        lines: editLines.map((line, i) => {
-          const weight = at(weights, i)
-          const ship = at(allocShip, i)
-          const cust = at(allocCustoms, i)
-          const disc = at(allocDiscount, i)
-          return { label: line.label, attributable: weight + ship + cust - disc }
-        }),
+        lines: editLines.map((line, i) => ({
+          label: line.label,
+          attributable: at(charges.attributable, i),
+        })),
       }
     } catch {
       return null
@@ -161,7 +160,12 @@ function PurchaseEditForm({ purchaseId, detail }: { purchaseId: string; detail: 
         if (!Number.isFinite(quantity) || quantity <= 0) {
           throw new Error(`${line.label}: quantity must be a positive number.`)
         }
-        const unitPriceMinor = fromDecimalString(line.unitPrice || '0', currency).minorUnits
+        // P130-25: a cleared price is not a free item — refuse it instead of submitting 0.
+        const unitPriceMinor = requireKnownAmount(
+          line.unitPrice,
+          currency,
+          `${line.label}: enter a unit price — type 0 if it was free.`,
+        )
         if (unitPriceMinor < 0n) throw new Error(`${line.label}: unit price cannot be negative.`)
         return {
           lineId: line.lineId,
@@ -179,9 +183,9 @@ function PurchaseEditForm({ purchaseId, detail }: { purchaseId: string; detail: 
           currency,
           lines: lineInputs,
           retailerId: retailerId || undefined,
-          shippingMinor: parseAmount(shippingInput, currency),
-          customsMinor: parseAmount(customsInput, currency),
-          discountMinor: parseAmount(discountInput, currency),
+          shippingMinor: parseOptionalChargeInput(shippingInput, currency),
+          customsMinor: parseOptionalChargeInput(customsInput, currency),
+          discountMinor: parseOptionalChargeInput(discountInput, currency),
           fxRateToNok: detail.purchase.fxRateToNok,
           fxRateDate: detail.purchase.fxRateDate,
           fxSource: detail.purchase.fxSource,

@@ -384,6 +384,7 @@ export function AddToCollectionPage() {
             label="Acquired on"
             type="date"
             value={acquiredOn}
+            max={localTodayIso()}
             onChange={(event) => {
               setAcquiredOn(event.target.value)
             }}

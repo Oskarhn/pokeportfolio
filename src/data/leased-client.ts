@@ -1,6 +1,8 @@
-import { createClient, type SupabaseClient } from '@supabase/supabase-js'
+import type { SupabaseClient } from '@supabase/supabase-js'
 import { AuthIdentityChangedError, type IdentityLease } from '../auth/identity-lease'
 import type { Database } from './database.types'
+import type { ExactTransportOptions } from './exact-json-guard'
+import { createAccessTokenSupabaseClient } from './supabase-factory'
 
 /**
  * The request layer of an identity lease (P145).
@@ -48,8 +50,11 @@ export interface LeasedClientDeps {
   getSession: () => Promise<{
     data: { session: { access_token: string; user: { id: string } } | null }
   }>
-  /** Transport override; tests use it to stand in for the network. The app uses the default. */
+  /** Transport override; tests use it to stand in for the network. The app uses the default. The
+   *  exact-transport guard wraps it either way (D-137): a leased client never bypasses it. */
   fetch?: typeof fetch
+  /** Reporting hook of the exact-transport guard; the database suites install one. */
+  transport?: ExactTransportOptions
 }
 
 export function createLeasedDb(lease: IdentityLease, deps: LeasedClientDeps): LeasedDb {
@@ -75,10 +80,15 @@ export function createLeasedDb(lease: IdentityLease, deps: LeasedClientDeps): Le
     return session.access_token
   }
 
-  const client = createClient<Database>(deps.url, deps.publishableKey, {
+  // One shared construction path with the app client (supabase-factory.ts): the same URL, key and
+  // exact-money transport guard, plus this lease's token provider as the ONLY authentication.
+  const client = createAccessTokenSupabaseClient(
+    deps.url,
+    deps.publishableKey,
     accessToken,
-    ...(deps.fetch ? { global: { fetch: deps.fetch } } : {}),
-  })
+    deps.transport,
+    deps.fetch ? { baseFetch: deps.fetch } : {},
+  )
   constructing = false
   Object.defineProperty(client, 'identityLease', { value: lease, enumerable: false })
   return client as LeasedDb

@@ -1,6 +1,6 @@
 import { supabase } from './supabase-client'
 import type { LeasedDb } from './leased-client'
-import { parseMinorUnits } from './money'
+import { moneyArg, optionalMoneyArg, parseMinorUnits } from './money'
 import type { Json } from './database.types'
 
 /**
@@ -143,10 +143,7 @@ export async function createOpening(input: CreateOpeningInput, db: LeasedDb): Pr
       p_opened_on: input.openedOn,
       p_tracking_completeness: input.trackingCompleteness ?? 'all_cards',
       p_pulls: toWirePulls(input.pulls),
-      p_bulk_remainder_estimate_nok_minor:
-        input.bulkRemainderEstimateNokMinor === undefined
-          ? undefined
-          : Number(input.bulkRemainderEstimateNokMinor),
+      p_bulk_remainder_estimate_nok_minor: optionalMoneyArg(input.bulkRemainderEstimateNokMinor),
       p_bulk_remainder_count: input.bulkRemainderCount,
       p_notes: input.notes,
       p_idempotency_key: input.idempotencyKey,
@@ -173,15 +170,12 @@ export async function createProvisionalOpening(
     .rpc('create_opening_from_provisional', {
       p_sealed_product_id: input.sealedProductId,
       p_quantity: input.quantity,
-      p_total_paid_minor: Number(input.totalPaidNokMinor),
+      p_total_paid_minor: moneyArg(input.totalPaidNokMinor),
       p_purchased_on: input.purchasedOn,
       p_opened_on: input.openedOn,
       p_tracking_completeness: input.trackingCompleteness ?? 'all_cards',
       p_pulls: toWirePulls(input.pulls),
-      p_bulk_remainder_estimate_nok_minor:
-        input.bulkRemainderEstimateNokMinor === undefined
-          ? undefined
-          : Number(input.bulkRemainderEstimateNokMinor),
+      p_bulk_remainder_estimate_nok_minor: optionalMoneyArg(input.bulkRemainderEstimateNokMinor),
       p_bulk_remainder_count: input.bulkRemainderCount,
       p_notes: input.notes,
       p_idempotency_key: input.idempotencyKey,

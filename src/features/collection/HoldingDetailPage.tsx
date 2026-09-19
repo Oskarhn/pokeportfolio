@@ -30,7 +30,7 @@ import { AdjustQuantitySheet } from './AdjustQuantitySheet'
 import { SealedIntentSheet } from './SealedIntentSheet'
 import { Sheet } from '../../ui/Sheet'
 import { Button, FormMessage, TextField } from '../../ui/form'
-import { formatNokMinor, parseNokInput } from '../../ui/money-format'
+import { formatNokMinor, formatSourcePriceMinor, parseNokInput } from '../../ui/money-format'
 import {
   CONDITION_LABEL,
   FINISH_LABEL,
@@ -417,7 +417,7 @@ export function HoldingDetailPage() {
                 {provenance.data.provider ? PROVIDER_LABEL[provenance.data.provider] : ''} ·{' '}
                 {provenance.data.priceKind ? PRICE_KIND_LABEL[provenance.data.priceKind] : ''}
                 {provenance.data.sourceValueMinor !== null && provenance.data.sourceCurrency
-                  ? ` · ${(Number(provenance.data.sourceValueMinor) / 100).toFixed(2)} ${provenance.data.sourceCurrency}`
+                  ? ` · ${formatSourcePriceMinor(provenance.data.sourceValueMinor)} ${provenance.data.sourceCurrency}`
                   : ''}
                 {provenance.data.snapshotDate ? ` · as of ${provenance.data.snapshotDate}` : ''}
                 {provenance.data.priceState === 'stale' ? ' · price hasn’t refreshed recently' : ''}

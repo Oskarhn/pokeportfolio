@@ -29,6 +29,9 @@ export function PriceHistoryChart({ points }: { points: PriceHistoryPoint[] }) {
     )
   }
 
+  // Plot geometry and the percentage label are NON-AUTHORITATIVE display values (D-137): `Number()`
+  // of a bigint is the nearest double, which only matters to a pixel position or a "%" shown to
+  // one decimal. Every amount on this component is formatted from the exact bigint.
   const values = points.map((p) => Number(p.valueNokMinor))
   const min = Math.min(...values)
   const max = Math.max(...values)

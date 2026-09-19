@@ -230,7 +230,7 @@ normally would. Four distinct concepts, deliberately not merged:
   grading fees and accessories.
 - Shipping, customs and discounts are entered once at purchase level and allocated across lines
   automatically. The allocation is visible and explained in the UI, not hidden.
-- Purchases may be backdated to any date.
+- Purchases may be backdated to any real date — from the first Pokemon TCG release (1996-10-20) up to today. The server refuses dates outside that range (D-135).
 - A purchase in EUR/USD/GBP stores the original amounts and a frozen NOK conversion. The FX rate
   is prefilled from Norges Bank for the purchase date and can be overridden.
 - Recording a purchase of a card or sealed product offers to create the corresponding holding

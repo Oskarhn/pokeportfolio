@@ -1,6 +1,7 @@
 import { supabase } from './supabase-client'
 import type { Db } from './leased-client'
 import type { CurrencyCode } from '../domain/currency'
+import { normalizeDecimalText } from './money'
 
 /**
  * Client for the fetch-fx-rate Edge Function (M8, FINANCIAL_MODEL.md §7). Resolves and caches a
@@ -42,7 +43,7 @@ const GENERIC_UNAVAILABLE_MESSAGE =
 export async function getLatestFxRatesToNok(): Promise<Partial<Record<'EUR' | 'USD', string>>> {
   const { data, error } = await supabase
     .from('fx_rates')
-    .select('base_currency, rate, rate_date')
+    .select('base_currency, rate::text, rate_date')
     .in('base_currency', ['EUR', 'USD'])
     .eq('quote_currency', 'NOK')
     .order('rate_date', { ascending: false })
@@ -51,7 +52,7 @@ export async function getLatestFxRatesToNok(): Promise<Partial<Record<'EUR' | 'U
   const result: Partial<Record<'EUR' | 'USD', string>> = {}
   for (const row of data) {
     const base = row.base_currency as 'EUR' | 'USD'
-    if (!(base in result)) result[base] = row.rate.toString()
+    if (!(base in result)) result[base] = normalizeDecimalText(row.rate)
   }
   return result
 }

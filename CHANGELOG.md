@@ -10,6 +10,23 @@ they were**.
 
 ## [Unreleased]
 
+### Fixed — 2026-09-19 — Money above 2^53 minor units no longer changes on the way to or from the database (P146, P130-19)
+
+- Every money write and read now crosses the client/database boundary as a decimal string; the client holds
+  `bigint` (D-137, invariant M3). Before, an amount above 9,007,199,254,740,991 minor units — a unit price, a
+  shipping charge, a manual valuation, the low-value threshold, an opening total, a portfolio pagination cursor —
+  was silently rounded by `Number()` on the way in, and any column not cast `::text` was rounded by `JSON.parse` on
+  the way out. Signed results below −2^53 and sums above 2^53 are exact end to end.
+- The app's Supabase client now refuses a request body carrying an integer a JavaScript number cannot hold, and
+  quotes such a number in a response before it is parsed (`src/data/exact-json-guard.ts`).
+- `fx_rate_to_nok` and cached FX rates are read as text (18 significant digits do not fit in a double).
+- Amounts on Card Detail, Holding Detail provenance, openings, the accessible chart text and the Quick Portfolio CSV are
+  formatted from the exact value instead of through a float. The Home chart no longer throws for a portfolio above
+  2^53 minor units; its coordinate is explicitly non-authoritative.
+- A provider price too large to convert exactly is treated as absent instead of rounded.
+- No migration and no deployment ordering: the change is entirely in the client bundle and one adapter helper.
+- Still open: P130-21 (Quick Portfolio CSV formula injection / labels / download timing) and P130-26.
+
 ### Fixed — 2026-09-15 — JPY FX conversion: SQL currency-exponent awareness and Norges Bank UNIT_MULT normalization (P136, integrating P133/P134/P135, P130-02, D-132)
 
 - `fx_rate_to_nok` means NOK per one MAJOR unit of the source currency everywhere it is used —
