@@ -1,4 +1,5 @@
 import { listPortfolio, portfolioDisplayName, type PortfolioFilters } from './portfolio'
+import type { LeasedDb } from './leased-client'
 import { CONDITION_LABEL } from '../features/collection/labels'
 
 /**
@@ -32,7 +33,15 @@ function csvField(value: string): string {
   return value
 }
 
-export async function buildPortfolioCsv(filters?: PortfolioFilters): Promise<string> {
+/**
+ * Every page is read through `db`, a leased client (P145): the file is assembled from many
+ * requests, and an identity change half way must end the export instead of appending the next
+ * person's holdings to the previous person's file.
+ */
+export async function buildPortfolioCsv(
+  filters: PortfolioFilters | undefined,
+  db: LeasedDb,
+): Promise<string> {
   const rows: string[] = [HEADERS.join(',')]
   let cursor = null
   const seenIds = new Set<string>()
@@ -41,7 +50,7 @@ export async function buildPortfolioCsv(filters?: PortfolioFilters): Promise<str
   // bug that never terminates) cannot hang the browser tab — 10 000+ lots is the documented scale
   // target (DATA_MODEL.md §10.1) and this is 500 pages of 30, i.e. 15 000 holdings.
   for (let page = 0; page < 500; page++) {
-    const result = await listPortfolio({ sort: 'name_asc', filters, cursor, limit: 100 })
+    const result = await listPortfolio({ sort: 'name_asc', filters, cursor, limit: 100 }, db)
     for (const tile of result.results) {
       if (seenIds.has(tile.holdingId)) continue
       seenIds.add(tile.holdingId)

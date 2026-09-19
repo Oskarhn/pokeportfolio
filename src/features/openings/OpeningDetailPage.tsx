@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link, useParams, useSearch } from '@tanstack/react-router'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useLeasedAction, useLeasedMutation } from '../../auth/useLeasedMutation'
 import type { OpeningDetail } from './contract'
 import { getOpeningController } from './controller'
 import {
@@ -68,8 +69,8 @@ export function OpeningDetailPage() {
 
   // The backend owns every blocking rule (a pull already sold names its sale); this client shows
   // that reason verbatim and offers no workaround — there is deliberately no hard delete here.
-  const voidMutation = useMutation({
-    mutationFn: () => controller.voidOpening(openingId),
+  const voidMutation = useLeasedAction({
+    mutationFn: (lease) => controller.voidOpening(openingId, lease),
     onSuccess: async (outcome) => {
       if (outcome.blocked) {
         setVoidError(outcome.blockedReason ?? 'This opening cannot be corrected right now.')
@@ -87,9 +88,9 @@ export function OpeningDetailPage() {
 
   // Linking a provisional opening to its real receipt (P59 §9). Hooks stay above every early
   // return so the component's hook order is stable while the query loads.
-  const reconcileMutation = useMutation({
-    mutationFn: (realSourceLotId: string) =>
-      controller.reconcileOpeningCost(openingId, realSourceLotId),
+  const reconcileMutation = useLeasedMutation({
+    mutationFn: (realSourceLotId: string, lease) =>
+      controller.reconcileOpeningCost(openingId, realSourceLotId, lease),
     onSuccess: async () => {
       setReconcileError(null)
       await invalidateAfterChange()

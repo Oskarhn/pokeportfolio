@@ -958,6 +958,47 @@ concurrent fixture creation (`add_card_acquisition`/`create_purchase`/`create_op
 provisional`) for the same user under the default parallel workers hit a real Postgres deadlock
 this session, unrelated to whatever behavior the spec exists to prove.
 
+**Two pages, one browser profile: identity switch and sign-out (P143, D-134).** Supabase auth state
+is shared between tabs through the same `localStorage` entry and a `BroadcastChannel` named after
+its storage key, so a cross-tab identity change can only be tested with two pages of ONE Playwright
+context. Two layers, deliberately:
+
+- `tests/e2e/auth-identity-lifecycle.spec.ts` and `tests/e2e/auth-signout.spec.ts` run in the
+  DEFAULT `desktop-chromium` project against the placeholder backend — no Supabase stack, so they
+  are part of the ordinary CI run. The "other tab" is played by `simulateOtherTabAuthChange`
+  (`support/fake-session.ts`), which writes the shared storage key and posts the very message
+  supabase-js would; every Auth endpoint is mocked with `page.route`, and the session is seeded ONCE
+  per tab (a plain `addInitScript` would re-seed on reload and hide a resurrected session).
+- `tests/e2e/authenticated/auth-identity-real.spec.ts` and `auth-signout-real.spec.ts` repeat the
+  scenarios against a real local GoTrue: page 2 imports the app's own client module from Vite's dev
+  server and performs a real `signInWithPassword` / `signOut` / `refreshSession`; the sign-out
+  file also asks the server whether the old refresh token is still accepted, which is what makes
+  "confirmed" and "unconfirmed" verifiable instead of asserted. Each test uses its own disposable
+  users (never the shared `e2e-auth` session — a sign-out is GLOBAL scope).
+
+Unit level: `tests/ui/auth-identity-boundary.test.ts` (the real component's key with `useAuth`
+mocked, transition rules, property tests) and `tests/ui/auth-end-session.test.ts` (scripted failure
+modes plus the REAL installed `AuthClient` over a stub `fetch`; its CANARY test fails if a future
+supabase-js starts removing an expired session on a failed sign-out by itself).
+
+**A running operation across an identity change (P145, D-136).** `tests/e2e/authenticated/auth-inflight-real.spec.ts`
+pauses a REAL submission of A's between its steps, switches the shared identity from the other tab,
+releases the pause, and asks the service role what reached the database. Two pauses, so the guarded
+window is named: `holdRequest` holds one request at the network layer (it already carries A's bearer;
+releasing it models "an already-dispatched request completes as A"), and `installSessionLookupGate`
+parks `supabase.auth.getSession()` — the call supabase-js makes to pick the token, in production a
+token-refresh round trip — so the operation has started but has no bearer yet. The helpers live in
+`tests/e2e/authenticated/support/two-tab.ts`. Every scenario has a positive control (the same
+operation with no switch is recorded for A), and the negative assertions also record that the guarded
+request was never ISSUED (`recordRequests`), because "nothing appeared in B" alone would pass if the
+continuation were merely slow. Covered: purchase create (multi-step, manual card, check-to-dispatch,
+same-user refresh/user update, other-tab and own sign-out, A -> B -> A), purchase edit, sale create and
+edit, the openings wizard, add-to-collection, profile, reset and export. Unit level:
+`tests/ui/identity-lease.test.ts` (rules and a model-based property), `tests/ui/leased-client-flows.test.ts`
+(the real data functions through the real supabase-js client against a stub backend that attributes
+every write to the bearer it received) and `tests/ui/identity-lease-coverage.test.ts` (the ledger:
+fails on a raw `useMutation`, a write function without `LeasedDb`, or missing wiring).
+
 **Cross-file hazard, fixed: a real sign-out used to invalidate every other test's session (P112).**
 `supabase.auth.signOut()` defaults to GLOBAL scope (correct, intended product behavior — it revokes
 every session for the account, not just one tab), so `account-boundary.spec.ts`'s two specs

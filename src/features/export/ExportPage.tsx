@@ -37,7 +37,7 @@ export function ExportPage({
 }: {
   controller?: ExportController
 }) {
-  const { session } = useAuth()
+  const { session, identity } = useAuth()
   const [flow, dispatch] = useReducer(reduceExportFlow, { phase: 'idle' } as ExportFlowState)
   const [shareAvailable, setShareAvailable] = useState(true)
   const runningRef = useRef(false)
@@ -53,9 +53,14 @@ export function ExportPage({
     if (runningRef.current) return
     runningRef.current = true
     dispatch({ type: 'PREPARE', kind })
+    // P145: the file is assembled from many requests. The lease belongs to the user this page was
+    // rendered for, and every request of the export runs under it.
+    const lease = identity.begin(session?.user.id ?? null)
     try {
       const artifacts =
-        kind === 'backup' ? await controller.createBackup() : await controller.createCsvExport()
+        kind === 'backup'
+          ? await controller.createBackup(undefined, lease)
+          : await controller.createCsvExport(undefined, lease)
       setShareAvailable(canShareFiles(artifacts))
       dispatch({ type: 'PREPARED', kind, artifacts })
     } catch (error) {

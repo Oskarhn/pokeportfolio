@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useLeasedAction } from '../../auth/useLeasedMutation'
+import { leasedDb } from '../../data/leased-db'
 import { getPurchase, voidPurchase } from '../../data/purchases'
 import { toDecimalString, type Money } from '../../domain/money'
 import { formatNokMinor } from '../../ui/money-format'
@@ -31,8 +33,8 @@ export function PurchaseDetailPage() {
     queryFn: () => getPurchase(purchaseId),
   })
 
-  const voidMutation = useMutation({
-    mutationFn: () => voidPurchase(purchaseId, voidReason || undefined),
+  const voidMutation = useLeasedAction({
+    mutationFn: (lease) => voidPurchase(purchaseId, leasedDb(lease), voidReason || undefined),
     onSuccess: async () => {
       setVoidSheetOpen(false)
       setVoidError(null)

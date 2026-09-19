@@ -1,5 +1,7 @@
 import { useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQueryClient } from '@tanstack/react-query'
+import { useLeasedMutation } from '../../auth/useLeasedMutation'
+import { leasedDb } from '../../data/leased-db'
 import {
   setSealedLotIntent,
   SEALED_INTENT_LABEL,
@@ -33,13 +35,16 @@ export function SealedIntentSheet({
   const [quantity, setQuantity] = useState(String(lot.quantityRemaining))
   const [error, setError] = useState<string | null>(null)
 
-  const mutation = useMutation({
-    mutationFn: (qty: number) =>
-      setSealedLotIntent({
-        lotId: lot.id,
-        intent,
-        quantity: qty === lot.quantityRemaining ? undefined : qty,
-      }),
+  const mutation = useLeasedMutation({
+    mutationFn: (qty: number, lease) =>
+      setSealedLotIntent(
+        {
+          lotId: lot.id,
+          intent,
+          quantity: qty === lot.quantityRemaining ? undefined : qty,
+        },
+        leasedDb(lease),
+      ),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['holding-lots', holdingId] })
       await queryClient.invalidateQueries({ queryKey: ['holding-summary', holdingId] })

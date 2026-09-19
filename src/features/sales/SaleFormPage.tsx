@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearch } from '@tanstack/react-router'
-import { useMutation, useQueries, useQueryClient } from '@tanstack/react-query'
+import { useQueries, useQueryClient } from '@tanstack/react-query'
 import { getHoldingLots, type AcquisitionLot } from '../../data/collection'
 import {
   listPortfolio,
@@ -10,6 +10,8 @@ import {
 } from '../../data/portfolio'
 import { createSale, type SaleLineInput } from '../../data/sales'
 import { fetchFxRate, FxRateNotFoundError } from '../../data/fx'
+import { leasedDb } from '../../data/leased-db'
+import { useLeasedMutation } from '../../auth/useLeasedMutation'
 import { fromDecimalString, toDecimalString } from '../../domain/money'
 import { allocate } from '../../domain/allocation'
 import { suggestFifoOrder } from '../../domain/sales'
@@ -320,8 +322,12 @@ export function SaleFormPage() {
   // server-side effect already happened (or didn't); this only guards the frontend's reaction to
   // it. Global cache invalidation still runs unconditionally on success — a real sale changing
   // Portfolio/Sales/Home figures is correct regardless of which local form is currently open.
-  const submitMutation = useMutation({
-    mutationFn: async (submissionGeneration: number) => {
+  // P145: fx lookup then create_sale, under one identity lease (see PurchaseFormPage). The
+  // idempotency key is unchanged: a retry by the SAME identity reuses it, and an aborted attempt
+  // never reached create_sale, so nothing is consumed for the next person's fresh form.
+  const submitMutation = useLeasedMutation({
+    mutationFn: async (submissionGeneration: number, lease) => {
+      const db = leasedDb(lease)
       if (activeLines.length === 0) {
         throw new Error('Choose at least one card and quantity to sell.')
       }
@@ -339,7 +345,8 @@ export function SaleFormPage() {
           resolvedFxRate = fields.fxRate.trim()
           resolvedFxDate = fields.soldOn
         } else if (!fields.fxRate) {
-          const result = await fetchFxRate(fields.currency, fields.soldOn)
+          const result = await fetchFxRate(fields.currency, fields.soldOn, db)
+          lease.assertCurrent()
           resolvedFxRate = result.rate
           resolvedFxDate = result.rateDate
           // Only reflect the fetched rate back into the visible form if the user is still on the
@@ -369,6 +376,7 @@ export function SaleFormPage() {
           notes: fields.notes || undefined,
         },
         fields.idempotencyKey,
+        db,
       )
       return { sale, submissionGeneration }
     },

@@ -1,11 +1,14 @@
 import { useState } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../../auth/useAuth'
+import { useLeasedAction, useLeasedMutation } from '../../auth/useLeasedMutation'
+import { leasedDb } from '../../data/leased-db'
 import {
   getMyProfile,
   updateMyProfile,
   type Profile,
+  type ProfileUpdate,
   type ThemePreference,
   type CollectionView,
 } from '../../data/profile'
@@ -214,8 +217,8 @@ function ProfileSettings({ profile, isAdmin }: { profile: Profile; isAdmin: bool
   )
   const [thresholdError, setThresholdError] = useState<string | null>(null)
 
-  const saveMutation = useMutation({
-    mutationFn: updateMyProfile,
+  const saveMutation = useLeasedMutation({
+    mutationFn: (update: ProfileUpdate, lease) => updateMyProfile(update, leasedDb(lease)),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['my-profile'] })
     },
@@ -456,8 +459,8 @@ function DangerZone() {
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const resetMutation = useMutation({
-    mutationFn: resetMyPortfolioData,
+  const resetMutation = useLeasedAction({
+    mutationFn: (lease) => resetMyPortfolioData(leasedDb(lease)),
     onSuccess: async () => {
       setConfirmOpen(false)
       // Every user-data query is now stale by definition — invalidate all of them.

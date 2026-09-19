@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { reduceHoldingQuantity } from '../../src/data/collection'
+import type { LeasedDb } from '../../src/data/leased-client'
 
 /**
  * Pins reduceHoldingQuantity's wire contract (P28 CI repair): `p_lot_reductions` is a jsonb
@@ -13,14 +14,15 @@ const harness = vi.hoisted(() => ({
   calls: [] as { name: string; args: Record<string, unknown> }[],
 }))
 
-vi.mock('../../src/data/supabase-client', () => ({
-  supabase: {
-    rpc: (name: string, args: Record<string, unknown>) => {
-      harness.calls.push({ name, args })
-      return Promise.resolve({ data: [{ owned_quantity: 2 }], error: null })
-    },
+vi.mock('../../src/data/supabase-client', () => ({ supabase: {} }))
+
+// reduceHoldingQuantity takes a leased client (P145); this stands in for its `rpc`.
+const leasedDb = {
+  rpc: (name: string, args: Record<string, unknown>) => {
+    harness.calls.push({ name, args })
+    return Promise.resolve({ data: [{ owned_quantity: 2 }], error: null })
   },
-}))
+} as unknown as LeasedDb
 
 const HOLDING_ID = '0b8f3d1e-1111-4111-8111-000000000001'
 const LOT_A = '0b8f3d1e-2222-4222-8222-00000000000a'
@@ -32,13 +34,16 @@ describe('reduceHoldingQuantity wire contract', () => {
   })
 
   it('sends p_lot_reductions as a JSON array — never a JSON.stringify’d string', async () => {
-    const owned = await reduceHoldingQuantity({
-      holdingId: HOLDING_ID,
-      reductions: [
-        { lotId: LOT_A, removeQuantity: 1 },
-        { lotId: LOT_B, removeQuantity: 2 },
-      ],
-    })
+    const owned = await reduceHoldingQuantity(
+      {
+        holdingId: HOLDING_ID,
+        reductions: [
+          { lotId: LOT_A, removeQuantity: 1 },
+          { lotId: LOT_B, removeQuantity: 2 },
+        ],
+      },
+      leasedDb,
+    )
 
     expect(owned).toBe(2)
     expect(harness.calls).toHaveLength(1)
@@ -56,10 +61,13 @@ describe('reduceHoldingQuantity wire contract', () => {
   })
 
   it('maps every LotReduction field onto the wire shape with nothing extra', async () => {
-    await reduceHoldingQuantity({
-      holdingId: HOLDING_ID,
-      reductions: [{ lotId: LOT_A, removeQuantity: 3 }],
-    })
+    await reduceHoldingQuantity(
+      {
+        holdingId: HOLDING_ID,
+        reductions: [{ lotId: LOT_A, removeQuantity: 3 }],
+      },
+      leasedDb,
+    )
 
     const payload = harness.calls[0]!.args.p_lot_reductions as Record<string, unknown>[]
     expect(payload).toHaveLength(1)

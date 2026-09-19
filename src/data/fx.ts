@@ -1,4 +1,5 @@
 import { supabase } from './supabase-client'
+import type { Db } from './leased-client'
 import type { CurrencyCode } from '../domain/currency'
 
 /**
@@ -55,11 +56,17 @@ export async function getLatestFxRatesToNok(): Promise<Partial<Record<'EUR' | 'U
   return result
 }
 
+/**
+ * Inside a mutation the caller MUST pass the mutation's leased client: this is the awaited step that
+ * sits between the user pressing Save and the final write, and the rate it returns is about to be
+ * recorded. Only the stand-alone "Norges Bank" preview button uses the shared client (default).
+ */
 export async function fetchFxRate(
   baseCurrency: Exclude<CurrencyCode, 'NOK'>,
   date: string,
+  db: Db = supabase,
 ): Promise<ResolvedFxRate> {
-  const invoked = await supabase.functions.invoke('fetch-fx-rate', {
+  const invoked = await db.functions.invoke('fetch-fx-rate', {
     body: { baseCurrency, date },
   })
   const body = invoked.data as FxFunctionBody | null

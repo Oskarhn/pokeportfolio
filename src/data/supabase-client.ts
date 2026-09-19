@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
+import { createAuthSessionStorage, deriveAuthStorageKey } from '../auth/session-storage'
 import type { Database } from './database.types'
 
 /**
@@ -24,4 +25,19 @@ if (!url || !publishableKey) {
   )
 }
 
-export const supabase = createClient<Database>(url, publishableKey)
+/** Exposed for leased clients (P145), which need the same project and key but not the shared auth. */
+export const supabaseUrl: string = url
+export const supabasePublishableKey: string = publishableKey
+
+/**
+ * P143: the session's storage key and storage medium are stated explicitly instead of left to
+ * supabase-js's defaults, so a deliberate sign-out can prove the stored session is gone (see
+ * src/auth/session-storage.ts). Both are documented client options; the key is exactly the one
+ * supabase-js derives by default, so browsers already signed in keep their session.
+ */
+export const AUTH_STORAGE_KEY = deriveAuthStorageKey(url)
+export const authSessionStorage = createAuthSessionStorage()
+
+export const supabase = createClient<Database>(url, publishableKey, {
+  auth: { storageKey: AUTH_STORAGE_KEY, storage: authSessionStorage },
+})

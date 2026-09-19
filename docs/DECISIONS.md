@@ -6009,3 +6009,218 @@ every non-Production restore target to clear `environment_ingest_config` uncondi
 restoring data, closing the one way a backup taken from an already-configured Production could
 otherwise carry the live configuration onto a disposable/local/staging restore target
 (`restore-drill.ts --mutation C`).
+
+---
+
+## D-134 — The authenticated React subtree is keyed by the auth user id, and a deliberate sign-out ends local access unconditionally (P130-22 / P130-23 / P143)
+
+**2026-09-18 · Accepted**
+
+**Context.** Two findings from `ai_outputs/Claude_outputs/output_130.txt`, both reproduced in a real
+browser before any change (see Proof):
+
+- **P130-23.** Every protected route renders inside `RequireSession`, which renders its children
+  for any signed-in status. supabase-js broadcasts auth events to every tab that shares the browser
+  profile's storage, so a second tab signing in as B delivers `SIGNED_IN(B)` to a tab that is
+  showing A's half-typed form while `status` stays `'signed-in'` throughout. React only unmounts a
+  component when its key or type changes, so A's `useState` values survived under B, and the next
+  submit went out under B's bearer. P140 added page-local resets for its own new state and
+  explicitly did not claim the class was closed.
+- **P130-22.** `signOut()`'s result was ignored. The installed auth-js (2.112.3) loads the stored
+  session first and, when the ACCESS token has expired, refreshes before revoking. A network
+  failure there is a retryable error that is retried with backoff for up to ~25 s and then
+  returned WITHOUT removing the stored session or emitting SIGNED_OUT. A tab left idle past token
+  expiry with the Auth service unreachable therefore had a Sign out button that did nothing
+  visible, and a session that the service would accept again the moment it came back.
+
+**Decision.**
+
+1. **The whole authenticated subtree is mounted under a key derived from the user id**
+   (`src/auth/AuthIdentityBoundary.tsx`, rendered by the ROOT route around `AppShell`). A different
+   user id remounts app shell, nav, portals and the routed page; the same user id — token refresh,
+   `USER_UPDATED`, a repeated `SIGNED_IN` — keeps every component's state. Signed-out and
+   still-restoring share one key. It sits in the root route, never around `RouterProvider`
+   (remounting the provider would rebuild router state).
+2. **State outside React is cleared in the same auth callback, before the new identity is
+   renderable** (`applyAuthIdentityBoundary`): query cache and mutation cache (after
+   `cancelQueries`), `draftStore`, `scannerSessionStore`, and the scanner unsaved-work mirror. The
+   classification of everything else the app holds is recorded in that file's header (theme,
+   build-freshness timestamp and public scanner assets survive on purpose; the export-reminder key
+   is already user-namespaced; the unsaved-work registry empties itself through the remount's effect
+   cleanups).
+3. **Sign-out is two independent facts** (`src/auth/end-session.ts`): `local` (the stored session is
+   gone and the client has been told) must always end; `remote` (the service confirmed) is reported
+   as `confirmed`/`unconfirmed`, never implied. The request to revoke gets a 3 s deadline; after
+   it answers or the deadline passes the stored session is verified gone and, if the library left
+   it, removed through the same storage adapter followed by the library's own `signOut({ scope:
+   'local' })`, which with nothing in storage needs no network and notifies every subscriber and
+   every other tab. A `pagehide` listener removes the stored session synchronously while a sign-out
+   is pending. The person is shown fixed text only after an unconfirmed revocation (or an
+   unverifiable local cleanup) — never a raw error.
+4. **The storage key and medium are explicit** (`src/auth/session-storage.ts`, passed to
+   `createClient`): both are documented client options; the key equals the one supabase-js derives
+   by default (pinned by a test), so browsers already signed in keep their session.
+
+**Alternatives rejected.**
+
+- *Reset each form's state on identity change* (the P140 pattern, applied to every form). A
+  maintained convention across ~20 forms that a future form silently misses; the central key makes
+  "A's component state cannot reach B" structural. P140's page-local resets stay as defence in depth
+  — they also cover same-mount entity changes the user-id key cannot see.
+- *Key on the session or access token.* Refresh would destroy unsaved work on every token rotation;
+  the boundary is the user, not the credential.
+- *Only set React state to signed-out after a failed remote sign-out.* A fake logout: the persisted
+  session would resurrect on the next load.
+- *Write to auth-js's private storage internals / corrupt-then-signOut tricks.* Depends on
+  undocumented behaviour; the explicit `storageKey` + `storage` options give the same control
+  through the supported surface.
+- *`signOut({ scope: 'local' })` as the primary call.* Not sufficient: it takes the same
+  load-and-refresh path first, so it fails identically for an expired token, and it would stop
+  revoking the account's other sessions, which the product intends (D-093 / D-110 era behaviour).
+- *Waiting for the library to give up.* ~25 s of a button that appears to do nothing.
+
+**Consequences and residuals (stated, not hidden).**
+
+- With the service unreachable, the server-side session/refresh token is NOT revoked; local access
+  ends and the person is told so. A stolen copy of that token remains valid until it rotates or
+  expires; signing in and out again while online revokes it. This is a limitation of revoking over
+  a dead connection, not something this design can remove.
+- The deadline means a revocation that would have succeeded after 3 s is reported unconfirmed
+  (conservative).
+- **Not addressed here (closed by D-136, P145):** a multi-step submission already IN FLIGHT when the identity changes in another
+  tab (e.g. `PurchaseFormPage` creates a manual card, then `create_purchase`). The remount cannot
+  stop an async continuation, and a later step reads the CURRENT session, i.e. B's. Every RPC still
+  binds to its caller's `auth.uid()` (no cross-user data access), and the window is one submit's
+  duration during a concurrent switch, but it can mis-attribute A's already-typed inputs to B. The
+  fix would be an identity assertion between the steps of each multi-await `mutationFn`
+  (Purchase/Sale add + edit, Openings wizard); deliberately not done here.
+- The location (URL search params such as `?sealedProductId=`) is navigation state, not user state,
+  and is left as it is on a switch; every read/write it leads to is still RLS-bound.
+
+**Proof.** Reproduced first at the released base `d8682e0` (`tests/e2e/auth-identity-lifecycle.spec
+.ts`, `tests/e2e/auth-signout.spec.ts`, and the real-GoTrue `tests/e2e/authenticated/auth-identity-
+real.spec.ts` / `auth-signout-real.spec.ts`): A's marker survives a direct A → B; with an expired
+token and Auth unreachable, Sign out does nothing and the session comes back on reload. After the
+change the same specs pass, and four mutations (remove the boundary; key on the token; skip the
+external clear; skip the forced local removal; drop the `pagehide` guard) each make a named
+regression fail, at unit and browser level. Unit level:
+`tests/ui/auth-identity-boundary.test.ts` (the real component's key, the transition rules, property
+tests) and `tests/ui/auth-end-session.test.ts`, which runs the real installed `AuthClient` against
+a stub `fetch` and carries a CANARY that fails loudly if a future supabase-js starts removing the
+expired session itself, so the compensation is reconsidered rather than left to rot.
+
+## D-136 — A running authenticated operation belongs to one identity lease and cannot continue under another (P130-23 in-flight residual / P145)
+
+**2026-09-19 · Accepted**
+
+**Context.** D-134 keyed the authenticated React subtree by the auth user id, which destroys a stale
+*form*. It named one residual and did not claim it closed: a multi-step submission that had already
+started under A survives the remount, because a remount cannot cancel an async continuation, and
+every later step reads the CURRENT session. Reproduced first, at the D-134 code, in a real browser
+with two pages of one context and the service role as witness: A submits a purchase (exchange-rate
+step, then `create_purchase`), the other tab signs in as B while the first step is pending, the step
+is released — and a purchase carrying A's marker is inserted in B's account. The same window exists
+without any earlier step: between "the person pressed Save" and "supabase-js has chosen the bearer
+token for the request", `getSession()` may refresh a token over the network and reads whatever the
+shared browser storage holds, which another tab may already have rewritten ahead of the
+BroadcastChannel event that tells this tab. Reproduced for a plain single write as well, and for
+sales, purchase and sale edits, the openings wizard, add-to-collection, and — the sharpest — the
+Profile "reset my portfolio data" confirmation, which names no owner and therefore deleted **B's**
+whole portfolio when it ran under B.
+
+**Decision.** Every write to user data is a *leased* operation.
+
+- **Authority.** `IdentityAuthority` (`src/auth/identity-lease.ts`) records the identity the auth
+  callback reports: the user id plus a monotonic epoch, incremented on every real change — A → B,
+  A → signed out, signed out → A — and never on TOKEN_REFRESHED / USER_UPDATED / a repeated
+  SIGNED_IN. It is created once by `AuthProvider`, so it outlives the page that took a lease, and it
+  is fed by `observeIdentity` in the same synchronous step as the cache boundary. It is not a second
+  source of truth about the session, and no token string is ever consulted: an A → B → A round trip
+  does not revive a lease from the first A session, which the user id alone could not tell apart.
+  A tab that starts signing out calls `retire()` before the network call (the revocation may take up
+  to its 3 s deadline, and no operation may start another step in that time).
+- **Lease.** Taken in `mutate()` (`useLeasedMutation` / `useLeasedAction`, `src/auth/
+  useLeasedMutation.ts`) for the user the component was RENDERED under, not for the authority's own
+  current user: if the identity already changed but React has not committed the remount, a click on
+  the stale form gets a lease that is dead from the start.
+- **Request layer.** A lease owns a Supabase client (`createLeasedDb`, `src/data/leased-client.ts`)
+  built with the documented `accessToken` client option. Its provider asserts the lease is current,
+  asks the live `supabase.auth.getSession()`, and returns that session's access token **only if the
+  session's user is the lease's user** (asserting again after the await); otherwise it revokes the
+  lease and throws `AuthIdentityChangedError` (`auth-identity-changed`), so no request is sent. Every
+  write function in `src/data` takes `db: LeasedDb`; the compiler rejects the shared client there.
+- **What the caller sees.** `runWithLease` turns any failure that surfaces after the lease ended into
+  the fixed domain outcome (no server text, no data of A), and the hook does not call `onSuccess` /
+  `onError` for an ended lease: nothing is navigated, invalidated or shown to the identity that is on
+  screen now. A result that comes back from a request that was already dispatched is returned as it
+  is — it happened as the user the operation belongs to.
+- **Reads that assemble a file** (backup, CSV) run under a lease too: an export begun under A that
+  continued under B would put B's rows in A's file. The owner named in a leased profile write, custom
+  sealed product or export is the lease's user, not the answer of an `auth.getUser()` round trip.
+
+**The check-to-dispatch window, precisely.** A step-by-step `assertCurrent()` between awaits cannot
+close it, because the token is chosen later by other code. Here the token is chosen by the code that
+verified it: the provider returns a specific user's access token, checked synchronously after its
+last await, and supabase-js attaches exactly that value; between the provider's return and `fetch()`
+there are only promise continuations, no task boundary, so no auth-event handler can run in between.
+Whatever the identity does afterwards, the request authenticates as the user it belongs to. The one
+thing a still-later switch can change is whether the *next* step starts — and that is refused by the
+next provider call. Consequently a request can never present a token of a different user than its
+lease, whether the difference was already visible to this tab (epoch) or not yet (the browser storage
+already holds B, the event has not arrived): the second case is refused from the credentials alone
+and revokes the lease.
+
+**Partial side effects.** An operation of several writes may leave what was already dispatched: a
+manual-card definition created for A before the switch stays A's (owned by A through `auth.uid()`,
+referenced by nothing, visible only to A); nothing is created for B and nothing of A's can become
+B-owned. No cleanup is attempted under another identity, and no workflow was turned into a single
+transaction. A's next attempt starts a fresh form and may therefore create a second, identical
+definition next to the orphan; that is bounded clutter, not an integrity issue.
+
+**Alternatives considered and rejected.**
+
+- *Assert the lease between steps and nowhere else.* Leaves the window between the assertion and the
+  bearer choice open; the request layer closes it, the assertions are kept only where a non-request
+  side effect (a draft write, a form patch) follows an await.
+- *Store the token and replay it under A.* Writes could continue after a sign-out or revocation, and
+  a token would be held where it should not be. The behaviour on a change is to stop, not to finish
+  under stale credentials.
+- *Abort in-flight requests when the identity changes.* Dropping a request client-side does not tell
+  the person, or the code, whether the server had already committed it (a disconnect may or may not
+  cancel the statement), so the outcome of A's write becomes ambiguous. "An already-dispatched request
+  completes as its caller" is the unambiguous outcome.
+- *A tab-wide guard that refuses any request whose bearer differs from the observed identity.* It
+  cannot tell a continuation of A's operation from B's own fresh action once the identity has moved
+  on, and it would put every request of the app behind a new failure mode.
+- *An expected-user argument on every RPC.* Server-side, would need a migration per function and
+  materially changes the integration with the concurrent database work; not needed for closure.
+
+**Consequences and residuals (stated, not hidden).**
+
+- The Norges Bank preview button in the purchase form is the one `useMutation` left: it reads a
+  public rate into the form and writes nothing. `tests/ui/identity-lease-coverage.test.ts` fails on
+  any other raw `useMutation`, on a write function without `LeasedDb`, on a write body that touches
+  the shared client, and on missing wiring in `AuthProvider`/the hook/the provider.
+- Signed-out flows (recovery mail, invitation status and redemption, new password) have no identity
+  to lease.
+- Reliance on documented supabase-js behaviour: the `accessToken` option decides the `Authorization`
+  header of `from`/`rpc`/`functions`, and `client.auth` is absent on such a client. A test pins that
+  the provider's token is the header on the wire, so an upgrade that changes it fails loudly.
+- Idempotency (P138/P140) is unchanged: a same-identity retry re-sends the same key; an aborted
+  attempt sent nothing, so no key is consumed on anyone's behalf.
+
+**Proof.** Reproduced first at the D-134 code (`e9feab0`) with `tests/e2e/authenticated/
+auth-inflight-real.spec.ts` against an isolated local stack: of 17 scenarios, 14 fail there — a
+purchase carrying A's marker is inserted in B's account (both the exchange-rate-step and the
+parked-session-lookup cases), a purchase, sale, sale edit, opening, acquisition and export request is
+issued under B, and A's confirmed "reset my portfolio data" **deletes B's purchase**; the three that
+pass are the positive controls and the same-user refresh/update case. With the lease all 17 pass, and
+the whole authenticated project (114 tests, including every D-134 real-GoTrue spec) is green.
+Five mutations, each applied to the real production file and reverted: A, lease validity compares the
+user id only (4 unit + 1 browser failures, the A → B → A tests); B, the final purchase step bypasses
+the lease and the page-level assertions are removed (3 browser failures with a row in B; removing only
+the assertions leaves all three green, bypassing only the lease fails only the parked-lookup case —
+the two layers are independently effective); C, a same-user event starts a new epoch (9 unit + 1
+browser); D, sign-out does not end leases at the authority nor at the request layer (9 unit + 2
+browser; at the authority alone the request layer still refuses, which is the point of having both);
+E, the openings and sale flows run unguarded (2 browser failures plus the ledger test).

@@ -7,6 +7,8 @@ import {
   type CardCatalogPresence,
 } from '../../data/catalog'
 import { addCardAcquisition } from '../../data/collection'
+import { leasedDb } from '../../data/leased-db'
+import type { IdentityLease } from '../../auth/identity-lease'
 import {
   shouldAbstainForBlurScore,
   matchScannerObservation,
@@ -875,7 +877,11 @@ export function createRealScannerController(
       .map((variant) => ({ id: variant.id, label: variantChoiceLabel(variant) }))
   }
 
-  async function commitBatch(items: ScannerCommitItem[]): Promise<ScannerCommitResult> {
+  async function commitBatch(
+    items: ScannerCommitItem[],
+    lease: IdentityLease,
+  ): Promise<ScannerCommitResult> {
+    const db = leasedDb(lease)
     const defaults = scannerSessionStore.load(options.userId)
     const origin: ScannerOrigin = defaults?.origin ?? 'pre_tracking'
     const acquiredOn = defaults?.acquiredOn ?? localTodayIso()
@@ -889,21 +895,28 @@ export function createRealScannerController(
       // N-21: stop issuing further writes the moment this controller has been disposed —
       // whatever items already committed above stay committed; anything from here on is simply
       // never attempted rather than potentially written under a since-changed signed-in identity.
-      if (disposed) break
+      // P145: `disposed` follows React's remount, which lags the auth event; the lease ends in the
+      // auth callback itself. Each write below additionally goes through `db`, whose bearer token is
+      // only ever the lease owner's, so even a write already on its way to the network cannot be
+      // authenticated as somebody else.
+      if (disposed || !lease.isCurrent()) break
       const item = items[index]
       if (item === undefined) continue
       try {
-        await addCardAcquisition({
-          cardVariantId: item.variantId,
-          gradingState: 'raw',
-          condition: item.condition,
-          origin,
-          costBasisState: scannerCostBasisState(origin),
-          quantity: item.quantity,
-          acquiredOn,
-          storageLocationId,
-          clientRequestKey: item.requestKey,
-        })
+        await addCardAcquisition(
+          {
+            cardVariantId: item.variantId,
+            gradingState: 'raw',
+            condition: item.condition,
+            origin,
+            costBasisState: scannerCostBasisState(origin),
+            quantity: item.quantity,
+            acquiredOn,
+            storageLocationId,
+            clientRequestKey: item.requestKey,
+          },
+          db,
+        )
         addedCount += 1
         outcomes.push({ index, status: 'added', message: null })
       } catch (error: unknown) {

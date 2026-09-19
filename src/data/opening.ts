@@ -1,4 +1,5 @@
 import { supabase } from './supabase-client'
+import type { LeasedDb } from './leased-client'
 import { parseMinorUnits } from './money'
 import type { Json } from './database.types'
 
@@ -134,8 +135,8 @@ const OPENING_COLUMNS =
   'notes, voided_at, created_at'
 
 /** One atomic opening over an already-owned sealed lot. Creates no spend. */
-export async function createOpening(input: CreateOpeningInput): Promise<Opening> {
-  const { data, error } = await supabase
+export async function createOpening(input: CreateOpeningInput, db: LeasedDb): Promise<Opening> {
+  const { data, error } = await db
     .rpc('create_opening', {
       p_source_lot_id: input.sourceLotId,
       p_quantity: input.quantity,
@@ -166,8 +167,9 @@ export async function createOpening(input: CreateOpeningInput): Promise<Opening>
  */
 export async function createProvisionalOpening(
   input: CreateProvisionalOpeningInput,
+  db: LeasedDb,
 ): Promise<Opening> {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .rpc('create_opening_from_provisional', {
       p_sealed_product_id: input.sealedProductId,
       p_quantity: input.quantity,
@@ -191,8 +193,8 @@ export async function createProvisionalOpening(
   return mapOpening(data)
 }
 
-export async function voidOpening(openingId: string, reason?: string): Promise<void> {
-  const { error } = await supabase.rpc('void_opening', {
+export async function voidOpening(openingId: string, db: LeasedDb, reason?: string): Promise<void> {
+  const { error } = await db.rpc('void_opening', {
     p_opening_id: openingId,
     p_reason: reason,
   })
@@ -203,8 +205,9 @@ export async function voidOpening(openingId: string, reason?: string): Promise<v
 export async function reconcileOpeningCost(
   openingId: string,
   realSourceLotId: string,
+  db: LeasedDb,
 ): Promise<Opening> {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .rpc('reconcile_opening_cost', {
       p_opening_id: openingId,
       p_real_source_lot_id: realSourceLotId,

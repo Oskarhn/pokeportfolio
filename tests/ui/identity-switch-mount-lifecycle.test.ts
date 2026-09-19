@@ -46,6 +46,13 @@ import { ManualCardResolutionCache } from '../../src/features/purchases/manual-c
  * `useEntityKeyReset` call sites are necessary rather than redundant.
  *
  * CONCLUSION recorded for output_140.txt: FORM_SURVIVES_IDENTITY_SWITCH=yes.
+ *
+ * P143 UPDATE: that conclusion described the app up to P141 and is what motivated the central fix.
+ * The root route now mounts the shell and routed page under a key derived from the user id
+ * (`auth/AuthIdentityBoundary.tsx`, tests/ui/auth-identity-boundary.test.ts, and the two-page
+ * browser specs), so the routes are still not keyed individually — which is all CHECK 1 below
+ * asserts, and it stays true. `useEntityKeyReset` remains as defence in depth: it also covers
+ * same-mount entity changes (a different card or product) that a user-id key cannot see.
  */
 
 const SRC_ROOT = resolve(__dirname, '../../src')

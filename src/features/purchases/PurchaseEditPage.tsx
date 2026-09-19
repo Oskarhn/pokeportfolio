@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { leasedDb } from '../../data/leased-db'
+import { useLeasedAction } from '../../auth/useLeasedMutation'
 import {
   getPurchase,
   updatePurchase,
@@ -152,8 +154,8 @@ function PurchaseEditForm({ purchaseId, detail }: { purchaseId: string; detail: 
     }
   }, [editLines, shippingInput, customsInput, discountInput, currency])
 
-  const submit = useMutation({
-    mutationFn: async () => {
+  const submit = useLeasedAction({
+    mutationFn: async (lease) => {
       const lineInputs: PurchaseLineInput[] = editLines.map((line) => {
         const quantity = Number.parseInt(line.quantity, 10)
         if (!Number.isFinite(quantity) || quantity <= 0) {
@@ -170,19 +172,23 @@ function PurchaseEditForm({ purchaseId, detail }: { purchaseId: string; detail: 
         }
       })
 
-      return updatePurchase(purchaseId, {
-        purchasedOn,
-        currency,
-        lines: lineInputs,
-        retailerId: retailerId || undefined,
-        shippingMinor: parseAmount(shippingInput, currency),
-        customsMinor: parseAmount(customsInput, currency),
-        discountMinor: parseAmount(discountInput, currency),
-        fxRateToNok: detail.purchase.fxRateToNok,
-        fxRateDate: detail.purchase.fxRateDate,
-        fxSource: detail.purchase.fxSource,
-        notes: notes || undefined,
-      })
+      return updatePurchase(
+        purchaseId,
+        {
+          purchasedOn,
+          currency,
+          lines: lineInputs,
+          retailerId: retailerId || undefined,
+          shippingMinor: parseAmount(shippingInput, currency),
+          customsMinor: parseAmount(customsInput, currency),
+          discountMinor: parseAmount(discountInput, currency),
+          fxRateToNok: detail.purchase.fxRateToNok,
+          fxRateDate: detail.purchase.fxRateDate,
+          fxSource: detail.purchase.fxSource,
+          notes: notes || undefined,
+        },
+        leasedDb(lease),
+      )
     },
     onSuccess: async () => {
       // Cache invalidation always runs, even for a stale instance: the edit genuinely happened on

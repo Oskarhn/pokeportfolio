@@ -3,6 +3,8 @@ import { useNavigate } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createManualCard } from '../../data/collection'
 import { createPurchase, type PurchaseLineInput } from '../../data/purchases'
+import { leasedDb } from '../../data/leased-db'
+import { useLeasedAction, useLeasedMutation } from '../../auth/useLeasedMutation'
 import { createRetailer, listRetailers } from '../../data/retailers'
 import { fetchFxRate, FxRateNotFoundError } from '../../data/fx'
 import { fromDecimalString, toDecimalString } from '../../domain/money'
@@ -127,8 +129,8 @@ export function PurchaseFormPage() {
 
   const retailers = useQuery({ queryKey: ['retailers'], queryFn: listRetailers })
 
-  const createRetailerMutation = useMutation({
-    mutationFn: (name: string) => createRetailer(name),
+  const createRetailerMutation = useLeasedMutation({
+    mutationFn: (name: string, lease) => createRetailer(name, leasedDb(lease)),
     onSuccess: async (retailer) => {
       await queryClient.invalidateQueries({ queryKey: ['retailers'] })
       patch({ retailerId: retailer.id, newRetailerName: '' })
@@ -197,8 +199,13 @@ export function PurchaseFormPage() {
     }
   }, [lines, shippingInput, customsInput, discountInput, currency])
 
-  const submitMutation = useMutation({
-    mutationFn: async () => {
+  // P145: this submission is several awaited steps (manual-card definitions, the exchange rate,
+  // then create_purchase). It runs under one identity lease and EVERY request of it goes through
+  // `db`, whose bearer token is only ever handed out to the user the submission began under — a
+  // remount cannot stop a running continuation, so the guard has to sit in the request itself.
+  const submitMutation = useLeasedAction({
+    mutationFn: async (lease) => {
+      const db = leasedDb(lease)
       const lineInputs: PurchaseLineInput[] = []
       for (const draft of lines) {
         const quantity = Number.parseInt(draft.quantity, 10)
@@ -217,9 +224,10 @@ export function PurchaseFormPage() {
             draft.id,
             trimmedName,
             {
-              createManualCard,
+              createManualCard: (input) => createManualCard(input, db),
             },
           )
+          lease.assertCurrent()
         }
         if (draft.lineType === 'card' && draft.cardMode === 'catalog' && !draft.cardVariantId) {
           throw new Error('Choose a card from the catalog, or switch to manual entry.')
@@ -270,7 +278,8 @@ export function PurchaseFormPage() {
           resolvedFxDate = purchasedOn
         } else {
           if (!fxRate) {
-            const result = await fetchFxRate(currency, purchasedOn)
+            const result = await fetchFxRate(currency, purchasedOn, db)
+            lease.assertCurrent()
             patch({ fxRate: result.rate, fxRateDate: result.rateDate })
             resolvedFxRate = result.rate
             resolvedFxDate = result.rateDate
@@ -296,6 +305,7 @@ export function PurchaseFormPage() {
           notes: notes || undefined,
         },
         idempotencyKey,
+        db,
       )
     },
     onSuccess: async (purchase) => {

@@ -1,4 +1,5 @@
 import { supabase } from './supabase-client'
+import type { Db } from './leased-client'
 import { parseMinorUnits } from './money'
 import type { Database } from './database.types'
 import type { CardCondition, GradingState, Grader, HoldingKind, SealedIntent } from './collection'
@@ -280,17 +281,20 @@ function mapRow(row: ListPortfolioRow): PortfolioTile {
 
 const PAGE_SIZE = 30
 
-export async function listPortfolio(params: {
-  sort: PortfolioSortOrder
-  filters?: PortfolioFilters
-  cursor?: PortfolioCursor | null
-  limit?: number
-}): Promise<PortfolioPage> {
+export async function listPortfolio(
+  params: {
+    sort: PortfolioSortOrder
+    filters?: PortfolioFilters
+    cursor?: PortfolioCursor | null
+    limit?: number
+  },
+  db: Db = supabase,
+): Promise<PortfolioPage> {
   const limit = params.limit ?? PAGE_SIZE
   const f = params.filters ?? {}
   const cursor = params.cursor ?? null
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .rpc('list_portfolio', {
       p_sort: params.sort,
       p_limit: limit,

@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react'
 import { Link } from '@tanstack/react-router'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQueryClient } from '@tanstack/react-query'
+import { useLeasedAction } from '../../auth/useLeasedMutation'
+import { leasedDb } from '../../data/leased-db'
 import { reduceHoldingQuantity, type AcquisitionLot } from '../../data/collection'
 import { ORIGIN_LABEL } from './labels'
 import { Sheet } from '../../ui/Sheet'
@@ -55,14 +57,17 @@ export function AdjustQuantitySheet({
   )
   const newQuantity = currentQuantity - removeTotal
 
-  const mutation = useMutation({
-    mutationFn: () =>
-      reduceHoldingQuantity({
-        holdingId,
-        reductions: liveLots
-          .filter((l) => (removals[l.id] ?? 0) > 0)
-          .map((l) => ({ lotId: l.id, removeQuantity: removals[l.id] ?? 0 })),
-      }),
+  const mutation = useLeasedAction({
+    mutationFn: (lease) =>
+      reduceHoldingQuantity(
+        {
+          holdingId,
+          reductions: liveLots
+            .filter((l) => (removals[l.id] ?? 0) > 0)
+            .map((l) => ({ lotId: l.id, removeQuantity: removals[l.id] ?? 0 })),
+        },
+        leasedDb(lease),
+      ),
     onSuccess: async () => {
       setError(null)
       await queryClient.invalidateQueries({ queryKey: ['holding-lots', holdingId] })

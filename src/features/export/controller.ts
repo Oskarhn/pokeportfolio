@@ -1,4 +1,6 @@
 import { exportCsvArtifacts, exportJsonBackup } from '../../data/export'
+import { leasedDb } from '../../data/leased-db'
+import { type IdentityLease } from '../../auth/identity-lease'
 import type { ExportArtifact, ExportController, ExportProgressListener } from './contract'
 
 /**
@@ -29,18 +31,33 @@ function progressFor(onProgress?: ExportProgressListener) {
   }
 }
 
+/** The lease is optional in the contract only so test doubles need not care; the wired controller
+ *  refuses to run without one (P145) rather than fall back to the shared client. */
+function requireLease(lease: IdentityLease | undefined): IdentityLease {
+  if (lease === undefined) throw new Error('An export needs an identity lease.')
+  return lease
+}
+
 const wiredExportController: ExportController = {
-  async createBackup(onProgress?: ExportProgressListener): Promise<ExportArtifact[]> {
+  async createBackup(
+    onProgress?: ExportProgressListener,
+    lease?: IdentityLease,
+  ): Promise<ExportArtifact[]> {
+    const db = leasedDb(requireLease(lease))
     onProgress?.('preparing')
     const onPage = progressFor(onProgress)
-    const artifact = await exportJsonBackup({ onPage })
+    const artifact = await exportJsonBackup({ onPage }, db)
     return toFeatureArtifacts([artifact])
   },
 
-  async createCsvExport(onProgress?: ExportProgressListener): Promise<ExportArtifact[]> {
+  async createCsvExport(
+    onProgress?: ExportProgressListener,
+    lease?: IdentityLease,
+  ): Promise<ExportArtifact[]> {
+    const db = leasedDb(requireLease(lease))
     onProgress?.('preparing')
     const onPage = progressFor(onProgress)
-    const artifacts = await exportCsvArtifacts({ onPage })
+    const artifacts = await exportCsvArtifacts({ onPage }, db)
     return toFeatureArtifacts(artifacts)
   },
 }

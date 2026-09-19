@@ -12,6 +12,7 @@ import { AppShell } from './ui/AppShell'
 import { Button } from './ui/form'
 import { isChunkLoadFailure } from './platform/build-freshness'
 import { hasAnyUnsavedWork } from './platform/unsaved-work-registry'
+import { AuthIdentityBoundary } from './auth/AuthIdentityBoundary'
 import { RedirectIfSignedIn, RequireAdmin, RequireSession } from './auth/guards'
 import { LoginPage } from './features/auth/LoginPage'
 import { InvitePage } from './features/auth/InvitePage'
@@ -229,12 +230,17 @@ function AppErrorComponent(props: ErrorComponentProps) {
  */
 
 const rootRoute = createRootRoute({
+  // P143: everything user-scoped (nav, portals, the routed page) mounts under the auth USER ID,
+  // so an A -> B identity change destroys A's component state instead of re-rendering it under B.
+  // See auth/AuthIdentityBoundary.tsx for why this is the root route and not each guard.
   component: () => (
-    <AppShell>
-      <Suspense fallback={<RouteFallback />}>
-        <Outlet />
-      </Suspense>
-    </AppShell>
+    <AuthIdentityBoundary>
+      <AppShell>
+        <Suspense fallback={<RouteFallback />}>
+          <Outlet />
+        </Suspense>
+      </AppShell>
+    </AuthIdentityBoundary>
   ),
   // P101: there was no custom 404 before this — an unmatched path fell through to TanStack
   // Router's own bare default. Renders inside AppShell like every other route (so a signed-in

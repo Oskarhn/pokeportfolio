@@ -779,6 +779,52 @@ leak this section's scope didn't catch. Fixed by namespacing the key per user id
 UI preference. No other unnamespaced localStorage/sessionStorage/IndexedDB write carrying anything
 user-specific was found in the same review pass.
 
+### 9.2 Identity boundary for React state, and what "Sign out" guarantees (D-134, P143)
+
+**Component state.** §9.1 clears state that lives outside React. State inside mounted components
+is a different problem: supabase-js broadcasts auth events across every tab sharing the browser
+profile's storage, so another tab signing in as B delivers `SIGNED_IN(B)` to a tab showing A's
+half-typed form while the app's status stays "signed in". `src/auth/AuthIdentityBoundary.tsx`
+(rendered by the root route) mounts the whole authenticated subtree under a key derived from the
+**user id** — a different id remounts it, the same id (token refresh, `USER_UPDATED`, repeated
+`SIGNED_IN`) keeps every component's state. `AuthProvider` clears the external state
+(`applyAuthIdentityBoundary`) in the same callback, before the new identity is renderable.
+
+| Event | React subtree | Query cache / stores |
+|---|---|---|
+| A → B (direct) | remounted | cleared |
+| A → signed-out, signed-out → A or B | remounted | cleared |
+| TOKEN_REFRESHED / USER_UPDATED / repeated SIGNED_IN, same user | kept | kept |
+| Initial session restore | one remount if it resolves to a user | not cleared (first observation) |
+
+**Sign-out.** A deliberate Sign out ends local access whatever the Auth service does, and
+separates that from remote revocation (`src/auth/end-session.ts`): the request to revoke gets a
+3 s deadline; the stored session is then verified gone and, if supabase-js left it behind (an
+expired access token with the service unreachable — the installed auth-js retries the refresh for
+~25 s and then returns without removing anything), removed through the explicit storage adapter
+(`src/auth/session-storage.ts`) and followed by the library's own local sign-out. The person sees
+fixed text — never a raw error — only when revocation could not be confirmed. **Limit:** over a dead
+connection the server-side refresh token cannot be revoked; it stays valid until it rotates or
+expires, and signing in and out again while online revokes it.
+
+**Operations already in flight** are covered by the identity lease (§9.3, D-136). Regression suites:
+`tests/ui/auth-identity-boundary.test.ts`, `tests/ui/auth-end-session.test.ts`,
+`tests/e2e/auth-identity-lifecycle.spec.ts`, `tests/e2e/auth-signout.spec.ts`, and the real-GoTrue
+`tests/e2e/authenticated/auth-identity-real.spec.ts` / `auth-signout-real.spec.ts`.
+
+### 9.3 A running operation never continues under another identity (D-136, P145)
+
+Remounting (§9.2) cannot stop an async continuation that already started. Every user-data write is
+therefore a *leased* operation: `mutate()` takes an identity lease for the user the screen was
+rendered under (`IdentityAuthority`, owned by `AuthProvider`: user id plus a monotonic epoch that
+changes on A → B, sign-out and sign-in, never on token refresh), and every request of the operation
+is sent by a per-lease client (`src/data/leased-client.ts`) whose bearer-token provider hands out a
+token only if the lease is still current **and** the session the browser holds right now belongs to
+the lease's user. Otherwise the operation stops (`auth-identity-changed`), nothing is sent, and no
+result or error is shown to the identity that is on screen now. A request that was already on its way
+completes as the user it began under; no token is stored or replayed. Ledger of what is covered and
+what cannot rot silently: `tests/ui/identity-lease-coverage.test.ts`.
+
 ---
 
 ## 10. Dependency and supply chain

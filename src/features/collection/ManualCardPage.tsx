@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { useMutation } from '@tanstack/react-query'
 import { createManualCard } from '../../data/collection'
+import { leasedDb } from '../../data/leased-db'
+import { useLeasedMutation } from '../../auth/useLeasedMutation'
 import { Button, FormMessage, TextField } from '../../ui/form'
 
 /** The honest fallback when the shared catalog does not (yet) have a physical card the owner
@@ -16,8 +17,9 @@ export function ManualCardPage() {
   const [notes, setNotes] = useState('')
   const [error, setError] = useState<string | null>(null)
 
-  const createMutation = useMutation({
-    mutationFn: createManualCard,
+  const createMutation = useLeasedMutation({
+    mutationFn: (input: Parameters<typeof createManualCard>[0], lease) =>
+      createManualCard(input, leasedDb(lease)),
     onSuccess: async (card) => {
       await navigate({ to: '/add', search: { manualCardId: card.id } })
     },

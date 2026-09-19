@@ -1,4 +1,5 @@
 import { supabase } from './supabase-client'
+import type { LeasedDb } from './leased-client'
 import { parseMinorUnits } from './money'
 import type { Database, Json } from './database.types'
 import type { CardCondition, Grader, GradingState, SealedIntent } from './collection'
@@ -148,8 +149,9 @@ const PURCHASE_COLUMNS =
 export async function createPurchase(
   input: PurchaseWriteInput,
   idempotencyKey: string,
+  db: LeasedDb,
 ): Promise<Purchase> {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .rpc('create_purchase', {
       p_purchased_on: input.purchasedOn,
       p_currency: input.currency,
@@ -174,8 +176,9 @@ export async function createPurchase(
 export async function updatePurchase(
   purchaseId: string,
   input: PurchaseWriteInput,
+  db: LeasedDb,
 ): Promise<Purchase> {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .rpc('update_purchase', {
       p_purchase_id: purchaseId,
       p_purchased_on: input.purchasedOn,
@@ -197,8 +200,12 @@ export async function updatePurchase(
   return mapPurchase(data)
 }
 
-export async function voidPurchase(purchaseId: string, reason?: string): Promise<void> {
-  const { error } = await supabase.rpc('void_purchase', {
+export async function voidPurchase(
+  purchaseId: string,
+  db: LeasedDb,
+  reason?: string,
+): Promise<void> {
+  const { error } = await db.rpc('void_purchase', {
     p_purchase_id: purchaseId,
     p_reason: reason,
   })
