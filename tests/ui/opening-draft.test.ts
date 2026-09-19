@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   INTERRUPTED_SUBMISSION_COPY,
@@ -136,12 +136,30 @@ describe('quantity range (prompt §8)', () => {
   })
 })
 
+/** The person's own calendar date for `date`, built from the LOCAL getters — deliberately not from
+ *  `toISOString()` (which is UTC) and not from the product helper the test is about. */
+function localIso(date: Date): string {
+  const y = String(date.getFullYear()).padStart(4, '0')
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
+}
+
+/** The next LOCAL calendar day (not "now + 24 h", which crosses a DST change wrongly). */
+function localTomorrowIso(): string {
+  const now = new Date()
+  return localIso(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1))
+}
+
 describe('opening date (prompt §9)', () => {
   const base = source()
 
   it('defaults to today', () => {
     const draft = initialDraft()
-    expect(draft.openedOn).toBe(new Date().toISOString().slice(0, 10))
+    // The app's date-only fields are LOCAL calendar dates (src/platform/local-date.ts, P114). An
+    // earlier version of this test expected the UTC date, which is a day behind between local
+    // midnight and UTC midnight (00:00-02:00 in Norway) and failed only in that window.
+    expect(draft.openedOn).toBe(localIso(new Date()))
   })
 
   it('backdating is accepted', () => {
@@ -150,7 +168,7 @@ describe('opening date (prompt §9)', () => {
   })
 
   it('a future date is refused', () => {
-    const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10)
+    const tomorrow = localTomorrowIso()
     expect(dateIsValidAndNotFuture(tomorrow)).toBe(false)
     const draft = draftWithSource(base, { openedOn: tomorrow })
     expect(stepError('quantity', draft, CTX_ONE_LOT())).toMatch(/today or earlier/)
@@ -159,6 +177,59 @@ describe('opening date (prompt §9)', () => {
   it('garbage dates are refused', () => {
     expect(dateIsValidAndNotFuture('15/01/2026')).toBe(false)
     expect(dateIsValidAndNotFuture('')).toBe(false)
+  })
+})
+
+describe('opening date around local midnight (P147: the UTC/local window is pinned, not left to the wall clock)', () => {
+  const base = source()
+  const originalTz = process.env.TZ
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    if (originalTz === undefined) delete process.env.TZ
+    else process.env.TZ = originalTz
+  })
+
+  /** [timezone, the instant, local calendar date at that instant, local tomorrow] */
+  const CASES: [string, string, string, string][] = [
+    // Local midnight has passed, UTC midnight has not (the 00:00-02:00 Norway window).
+    ['Europe/Oslo', '2026-09-19T22:30:00Z', '2026-09-20', '2026-09-21'], // CEST, UTC+2
+    ['Europe/Oslo', '2026-01-15T23:30:00Z', '2026-01-16', '2026-01-17'], // CET, UTC+1
+    ['Pacific/Kiritimati', '2026-01-01T23:00:00Z', '2026-01-02', '2026-01-03'], // UTC+14
+    // The opposite side: UTC midnight has passed, local midnight has not.
+    ['Pacific/Niue', '2026-01-02T01:00:00Z', '2026-01-01', '2026-01-02'], // UTC-11
+    // Not in the window at all: both calendars agree.
+    ['Europe/Oslo', '2026-09-19T12:00:00Z', '2026-09-19', '2026-09-20'],
+  ]
+
+  it.each(CASES)(
+    '%s at %s: today is the LOCAL date %s and tomorrow (%s) is refused',
+    (tz, instant, today, tomorrow) => {
+      process.env.TZ = tz
+      vi.setSystemTime(new Date(instant))
+      expect(localIso(new Date())).toBe(today) // the fixture itself is right
+      expect(initialDraft().openedOn).toBe(today)
+      expect(dateIsValidAndNotFuture(today)).toBe(true)
+      expect(dateIsValidAndNotFuture(tomorrow)).toBe(false)
+      expect(localTomorrowIso()).toBe(tomorrow)
+      const draft = draftWithSource(base, { openedOn: tomorrow })
+      expect(stepError('quantity', draft, CTX_ONE_LOT())).toMatch(/today or earlier/)
+      expect(
+        stepError('quantity', draftWithSource(base, { openedOn: today }), CTX_ONE_LOT()),
+      ).toBeNull()
+    },
+  )
+
+  it('the window really exists: in Oslo at 00:30 the UTC date is a day behind the local one', () => {
+    // Guards the guard: if this stops holding, the cases above no longer exercise the mismatch.
+    process.env.TZ = 'Europe/Oslo'
+    vi.setSystemTime(new Date('2026-09-19T22:30:00Z'))
+    expect(new Date().toISOString().slice(0, 10)).toBe('2026-09-19')
+    expect(localIso(new Date())).toBe('2026-09-20')
+    expect(initialDraft().openedOn).not.toBe(new Date().toISOString().slice(0, 10))
   })
 })
 
