@@ -146,9 +146,16 @@ test.describe('P143 — sign-out ends local access and never resurrects (mocked 
     // ACCEPT the old refresh token. That is exactly what would resurrect a session that only
     // React state pretended to end.
     await page.unroute('**/auth/v1/**')
+    // Count only what the RELOADED document sends (P147): the document that showed the failed
+    // sign-out is still running auth-js's retry loop, and an attempt of that old document landing
+    // between here and the reload is not a resurrection (see auth-signout-real.spec.ts).
+    let newDocument = false
+    page.on('framenavigated', (frame) => {
+      if (frame === page.mainFrame()) newDocument = true
+    })
     let refreshCalls = 0
     await page.route('**/auth/v1/token**', (route) => {
-      refreshCalls += 1
+      if (newDocument) refreshCalls += 1
       return route.fulfill({
         status: 200,
         contentType: 'application/json',

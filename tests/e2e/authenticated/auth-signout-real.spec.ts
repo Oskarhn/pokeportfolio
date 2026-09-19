@@ -128,9 +128,20 @@ test.describe('P143 — real sign-out semantics', () => {
 
     // Auth is back. The refresh token was never revoked, so the server would happily accept it.
     await page.unroute('**/auth/v1/**')
+    // Count only what the RELOADED document sends (P147). The document that was showing when Sign
+    // out was pressed is still running the retry loop of its failed refresh (auth-js backs off for
+    // up to ~25 s, and one of its attempts falls at ~3.15 s — right where this test reaches its
+    // reload); an attempt that lands between unroute() and the reload presents the old refresh token
+    // from the OLD document. That is not a resurrection (nothing is stored, the sign-in form is
+    // shown, and the checks below still say so), it was a race that failed roughly one combined run
+    // in three. The new document starts at the main frame's navigation commit.
+    let newDocument = false
     let tokenRequests = 0
+    page.on('framenavigated', (frame) => {
+      if (frame === page.mainFrame()) newDocument = true
+    })
     page.on('request', (request) => {
-      if (request.url().includes('/auth/v1/token')) tokenRequests += 1
+      if (newDocument && request.url().includes('/auth/v1/token')) tokenRequests += 1
     })
 
     await page.reload()
