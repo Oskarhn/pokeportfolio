@@ -210,6 +210,7 @@ describe('the wiring that gives a lease its meaning', () => {
   const leasedMutation = read(join(ROOT, 'src', 'auth', 'useLeasedMutation.ts'))
   const leasedClient = read(join(ROOT, 'src', 'data', 'leased-client.ts'))
   const lease = read(join(ROOT, 'src', 'auth', 'identity-lease.ts'))
+  const updatePassword = read(join(ROOT, 'src', 'auth', 'update-password.ts'))
 
   it('AuthProvider feeds the authority from the same callback as the cache boundary', () => {
     const observe = authProvider.slice(authProvider.indexOf('const observeIdentity'))
@@ -233,9 +234,31 @@ describe('the wiring that gives a lease its meaning', () => {
   })
 
   it('the token provider hands out a token only for the lease owner and revokes otherwise', () => {
+    // P149: the provider delegates the reading of a session lookup to the ONE function that owns the
+    // owner check, the revocation and the failed-lookup rule, and still re-checks the lease itself
+    // after that function's last await, immediately before returning the token.
+    expect(leasedClient).toContain('sessionForLease(lease, () => deps.getSession())')
     expect(leasedClient).toContain('lease.assertCurrent()')
-    expect(leasedClient).toContain('session.user.id !== lease.userId')
-    expect(leasedClient).toContain('lease.revoke()')
+    expect(lease).toContain('session.user.id !== lease.userId')
+    expect(lease).toContain('lease.revoke()')
+  })
+
+  it('a failed session lookup is not an identity change, and is not classified by the error class of the auth library (P149)', () => {
+    const from = lease.indexOf('function lookupFailed')
+    const lookupFailed = lease.slice(from, lease.indexOf('\n}', from))
+    expect(lookupFailed).toContain('AuthCredentialsUnavailableError')
+    expect(lookupFailed).not.toContain('revoke')
+    // auth-js's error class does not say whether the person is still signed in
+    // (tests/data/p149-auth-lookup-contract.test.ts), so no code that decides a lease's fate may read it
+    const decides = lease + leasedClient + updatePassword
+    expect(decides).not.toMatch(
+      /import\s*(?:type\s*)?\{[^}]*\b(?:is)?Auth\w*Error\b[^}]*\}\s*from\s*'@supabase\//,
+    )
+  })
+
+  it('the password change reads its session lookup through the same function (P149)', () => {
+    expect(updatePassword).toContain('sessionForLease(lease, () => auth.getSession())')
+    expect(updatePassword).not.toContain('lease.revoke()')
   })
 
   it('same-user events never change the identity epoch, and the epoch is not derived from a token', () => {

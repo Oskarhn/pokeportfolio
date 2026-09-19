@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { AuthIdentityChangedError, type IdentityLease } from '../auth/identity-lease'
+import { sessionForLease, type IdentityLease } from '../auth/identity-lease'
 import type { Database } from './database.types'
 import type { ExactTransportOptions } from './exact-json-guard'
 import { createAccessTokenSupabaseClient } from './supabase-factory'
@@ -15,6 +15,11 @@ import { createAccessTokenSupabaseClient } from './supabase-factory'
  *   - the session Supabase holds RIGHT NOW belongs to the lease's user.
  *
  * Otherwise it revokes the lease and throws {@link AuthIdentityChangedError}, so no request is made.
+ * The one exception is a session lookup that merely FAILED (P149, closes P148-M2): auth-js answers
+ * `{ session: null, error }` for an expired token it could not refresh, which says nothing about who
+ * is signed in. That throws {@link AuthCredentialsUnavailableError} instead, still without a request,
+ * and leaves the lease alone so the person can try again; `sessionForLease` (src/auth/identity-lease.ts)
+ * documents how the three outcomes are told apart.
  *
  * Why this closes the check-to-dispatch window instead of narrowing it. A step-by-step
  * `assertCurrent()` between awaits leaves the interval between the assertion and the moment
@@ -46,9 +51,11 @@ export type LeasedDb = Db & { readonly identityLease: IdentityLease }
 export interface LeasedClientDeps {
   url: string
   publishableKey: string
-  /** `supabase.auth.getSession`, looked up at call time. */
+  /** `supabase.auth.getSession`, looked up at call time. Its `error` is only ever tested for presence
+   *  (see `sessionForLease`): supabase-js answers `{ session: null, error }` rather than rejecting. */
   getSession: () => Promise<{
     data: { session: { access_token: string; user: { id: string } } | null }
+    error?: unknown
   }>
   /** Transport override; tests use it to stand in for the network. The app uses the default. The
    *  exact-transport guard wraps it either way (D-137): a leased client never bypasses it. */
@@ -67,15 +74,10 @@ export function createLeasedDb(lease: IdentityLease, deps: LeasedClientDeps): Le
 
   const accessToken = async (): Promise<string | null> => {
     if (constructing) return deps.publishableKey
-    lease.assertCurrent()
-    const { data } = await deps.getSession()
-    const session = data.session
-    if (session === null || session.user.id !== lease.userId) {
-      // Signed out, or the browser now holds somebody else's session (possibly before this tab
-      // has heard about it). Either way this operation is over.
-      lease.revoke()
-      throw new AuthIdentityChangedError()
-    }
+    // Signed out, somebody else's session or an already-ended lease end the operation; a lookup that
+    // merely FAILED (P149) is a distinct, retryable refusal that leaves the lease alone. Either way
+    // this throws instead of returning: a request is never made without the lease owner's token.
+    const session = await sessionForLease(lease, () => deps.getSession())
     lease.assertCurrent()
     return session.access_token
   }

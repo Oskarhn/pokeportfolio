@@ -837,7 +837,18 @@ The guard never reads, stores or logs a token.
 `ResetPasswordPage` runs it through `updatePasswordForLease` (`src/auth/update-password.ts`): the lease must be current and
 the browser's live session must belong to the lease's user, otherwise nothing is sent. Not covered by design: the global
 sign-out of a tab that never heard an identity switch signs out the browser's current session (it ends a session, it does
-not take one over).
+not take one over). The check and the call are two reads of the shared storage (`updateUser` takes no credential), so a write
+by another tab between them is not excluded; D-140 lists what was weighed and why nothing supported closes it.
+
+**A failed credential lookup is not an identity change (D-140, P149).** When the token refresh behind a write cannot complete
+(the auth service is unreachable, an expired access token cannot be renewed), the write is refused with "Could not verify your
+session. Check your connection and try again.", nothing is sent, and neither the lease nor the form's request key is touched,
+so a retry is one more click and cannot duplicate a record (P138). A lease ends only for what the auth state says ended it: an
+identity change or `SIGNED_OUT` that reached the tab, a lookup that finds nobody signed in, or another user's session — and that
+check takes precedence over a failed lookup, so no error about A's data appears in B's interface. The error class of the auth
+library is never consulted for this (it does not say whether the person is still signed in;
+`tests/data/p149-auth-lookup-contract.test.ts` pins what it does say). Two library behaviours the person can notice: a failing
+refresh takes about 25 s to be reported, and inside the next minute the same failure is answered from the library's cache.
 
 ---
 

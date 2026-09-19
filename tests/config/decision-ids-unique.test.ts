@@ -24,8 +24,8 @@ describe('docs/DECISIONS.md decision IDs are unique', () => {
     const duplicates = [...seen.entries()].filter(([, count]) => count > 1).map(([id]) => id)
     expect(duplicates, `duplicate D-${duplicates.join(', D-')}`).toEqual([])
   })
-  it('the P143-P148 decisions D-134 ... D-139 each appear exactly once', () => {
-    for (const id of [134, 135, 136, 137, 138, 139]) {
+  it('the P143-P149 decisions D-134 ... D-140 each appear exactly once', () => {
+    for (const id of [134, 135, 136, 137, 138, 139, 140]) {
       expect(
         ids.filter((n) => n === id),
         `D-${String(id)}`,

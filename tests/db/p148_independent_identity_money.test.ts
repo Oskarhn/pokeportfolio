@@ -8,7 +8,11 @@ import {
   type TestClient,
 } from './setup'
 import { createAppSupabaseClient } from '../../src/data/supabase-factory'
-import { IdentityAuthority, runWithLease } from '../../src/auth/identity-lease'
+import {
+  AuthCredentialsUnavailableError,
+  IdentityAuthority,
+  runWithLease,
+} from '../../src/auth/identity-lease'
 import { createLeasedDb, type LeasedDb } from '../../src/data/leased-client'
 
 /**
@@ -560,13 +564,22 @@ describe('failure paths of the credential lookup', () => {
       Promise.resolve({ data: { session: null }, error: new Error('network') })
     const lease = tab.leaseFor(A)
     const note = `p148-lookup-failure-${crypto.randomUUID()}`
+    const key = crypto.randomUUID()
+    // P149 (closes P148-M2): a failed lookup is reported as itself - not as an identity change - and
+    // the lease survives it, so the same operation can be repeated with the same key.
     await expect(
-      runWithLease(lease, () =>
-        createPurchase(purchaseInput(note), crypto.randomUUID(), tab.dbFor(lease)),
-      ),
-    ).rejects.toBeDefined()
+      runWithLease(lease, () => createPurchase(purchaseInput(note), key, tab.dbFor(lease))),
+    ).rejects.toBeInstanceOf(AuthCredentialsUnavailableError)
+    expect(lease.isCurrent()).toBe(true)
     expect(tab.wire).toEqual([])
     expect(await purchasesWithNote(note)).toEqual([])
+
+    tab.sessionOverride = null // the auth service is back
+    const purchase = await runWithLease(lease, () =>
+      createPurchase(purchaseInput(note), key, tab.dbFor(lease)),
+    )
+    expect(purchase.totalMinor.toString()).toBe(TOTAL)
+    expect(await purchasesWithNote(note)).toHaveLength(1) // exactly one write-set, for A
   })
 
   it('a lookup that throws sends nothing, writes nothing, and leaves the lease usable for the retry', async () => {
@@ -593,7 +606,9 @@ describe('failure paths of the credential lookup', () => {
     })
     const note = `p148-lookup-throws-${crypto.randomUUID()}`
     const key = crypto.randomUUID()
-    await expect(createPurchase(purchaseInput(note), key, db)).rejects.toThrow()
+    await expect(createPurchase(purchaseInput(note), key, db)).rejects.toThrow(
+      /Could not verify your session/,
+    )
     expect(await purchasesWithNote(note)).toEqual([])
     expect(lease.isCurrent()).toBe(true) // a network failure is not an identity change
     // the same lease, the same key: one row, exact

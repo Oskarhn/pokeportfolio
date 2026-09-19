@@ -1074,6 +1074,23 @@ them: leased client bypassed on a write, guard removed from the leased client, `
 after A → B → A, NULL read as 0 (mapper and helper), the idempotency comparison disabled in the database, four guard defects
 (string escapes, the 2^53−1 boundary, negative numbers, failed responses treated like successes).
 
+**Credential-lookup failure tests (P149, D-140).** A transient failure of the session lookup behind a write must neither end
+the identity lease nor be silent. `tests/data/p149-auth-lookup-contract.test.ts` pins what the installed auth-js does (session /
+`{ null, null }` / `{ null, error }` / rejection; retryable vs non-retryable errors; the backoff and the 60 s failure cache; the
+refresh race lost to another tab) with the real library and a scripted network under a fake clock, so an upgrade that changes it
+fails a test. `tests/ui/p149-credential-lookup.test.ts` scripts the lookup (every answer, identity precedence in both orders,
+retry with the same key), `tests/ui/p149-credential-lookup-real-auth.test.ts` produces the same answers with the real auth-js and
+an authority fed from its `onAuthStateChange` exactly like `AuthProvider`, and `tests/ui/p149-leased-mutation-hook.test.ts` drives
+the real `useLeasedAction` hook without a DOM (`react-dom/server` renders the component once; a mutation-level `onError` runs in
+TanStack Query's mutation cache whether or not anything is subscribed) to prove the form is told. `tests/e2e/authenticated/p149-refresh-failure.spec.ts`
+runs it in a real browser against the real local stack, making ONLY the refresh endpoint unreachable (the RPC is never blocked);
+its retry test waits out the library's one-minute failure cache, so the spec takes about three minutes. Do not edit files under
+the repository while it runs: the Vite dev server reloads the page on some changes and a test then fails for a reason that is not
+the product's. Mutations that each fail a test: a failed lookup revokes the lease again, a failed lookup returns an empty token,
+the hook swallows credential errors (the unit hook test and the browser test both fail), a failed lookup outranks an observed
+identity change, `runWithLease` stops replacing the surfaced error, and the form rotating its idempotency key after the failure
+(browser test only).
+
 **A second cross-file hazard, fixed: selling through the UI from the shared pool (P147).** Every
 spec of the authenticated project shares one synthetic user, and the fixtures default to the same
 Pikachu holding, so their lots share a pool. The sale form pre-fills a holding's first lot; a test that

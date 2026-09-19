@@ -6499,3 +6499,87 @@ browser's current session — and is recorded rather than changed: it ends a ses
 switch, sign-out, A → B → A, switch during the lookup, dead lease); `tests/e2e/authenticated/p148-reset-password-identity.spec.ts`
 (real browser: failed before the change with "B's password was changed by A's form", passes after; positive
 control included). The helper's user check was removed to confirm the event-gap unit test fails.
+
+## D-140 — A credential lookup that failed is not an identity change: the lease is kept, nothing is sent, and the person is told (P148-M2 / P149)
+
+**2026-09-19 · Accepted**
+
+**Context.** The token provider of the identity lease (D-136) treated `getSession()` answering `{ session: null }` as
+"signed out or somebody else": it revoked the lease and threw `AuthIdentityChangedError`. auth-js does not only answer
+that way when nobody is signed in — it also answers `{ session: null, error }` (it does not reject) when an expired access
+token could not be refreshed, for example because the auth service was unreachable. The P148 review found the consequence
+on a financial form: the identity had not changed (the authority still said user A, the stored session was still A's, no
+`SIGNED_OUT` had been heard), yet the lease was revoked, and because `useLeasedMutation` skips `onError` for a dead lease
+the Save button showed nothing at all. Reproduced before the fix against the real installed auth-js (network down, real
+backoff under a fake clock: `AuthIdentityChangedError`, `lease.isCurrent() === false`, authority user unchanged, no request
+sent, no message) and in a real browser (form intact, Save enabled, no message 90 s after the click).
+
+**What the installed auth-js (2.112.3) does** (pinned by `tests/data/p149-auth-lookup-contract.test.ts` against the real
+library with a scripted network — an upgrade that changes any of it fails a test):
+
+- `getSession()` returns the session when the access token is unexpired (no request) or was refreshed (`TOKEN_REFRESHED`);
+  `{ null, null }` when the storage holds no session; `{ null, error }` when an expired token could not be refreshed; and it
+  **rejects** on a storage failure or an expired stored session with an empty refresh token.
+- The class of the error does **not** say whether the person is still signed in. `AuthRetryableFetchError` (network failure,
+  5xx/52x) keeps the stored session and announces nothing. A non-retryable `AuthApiError` / `AuthSessionMissingError` from
+  the refresh endpoint makes the library remove the session and **await `SIGNED_OUT` before it answers**. But the same
+  non-retryable `AuthApiError` (`refresh_token_already_used`) is also what the caller gets that lost a refresh race to
+  another tab, whose fresh session is already stored: `{ null, AuthApiError }` with the person still signed in and no event.
+  `AuthRefreshDiscardedError` means another tab changed the storage under the refresh.
+- A retryable failure is retried with exponential backoff for about 25 s before it is reported, and the failure is cached
+  per refresh token for 60 s: a second lookup inside the minute answers from the cache without a request.
+
+**Decision.** One function, `sessionForLease` (`src/auth/identity-lease.ts`), reads a session lookup on behalf of a lease;
+the data client's token provider and the password change both use it. Three outcomes, told apart by what the *auth state*
+says and never by the error class:
+
+1. **Identity ended** — the lease was already over when the lookup answered (an auth event reached this tab, which is how a
+   confirmed sign-out arrives: the library announces `SIGNED_OUT` before it answers), or the lookup found nobody signed in
+   (`{ null, null }`), or somebody else's session: `AuthIdentityChangedError`, lease revoked, nothing sent. This check comes
+   *first*, so when the identity changed and the lookup also failed, the identity change is what is reported, and no error
+   about A's data appears in B's interface (A → B → A included: the epoch, not the user id, is what the lease holds).
+2. **Lookup failed** — the lookup rejected or answered `{ null, error }` while the lease is still current:
+   `AuthCredentialsUnavailableError` ("Could not verify your session. Check your connection and try again."), lease
+   untouched, nothing sent. The next attempt reads the storage again and gets the definitive answer: the session, B's
+   session (identity ended), or nothing (identity ended). Failing closed costs one more click; ending the lease would lose
+   the person's form, and an errored lookup is not evidence that anything ended.
+3. **Ok** — the session of the lease's user; the provider re-checks the lease after the last await and returns exactly that
+   token.
+
+`runWithLease` replaces an error that surfaces while the lease is current and whose latest credential lookup failed with the
+same fixed error, because the data layer rebuilds every request error from a message string and would otherwise show
+"AuthCredentialsUnavailableError: …". A later successful lookup clears the mark, so an unrelated error of the same operation
+is shown as itself. `useLeasedMutation` is unchanged: a current lease means `onError` runs and the form shows the message.
+The form keeps its input and its idempotency key (the key rotates only on an identity change, `useEntityKeyReset`), and a
+retry takes a fresh lease. No financial request is ever retried automatically, no token is cached, no second session source
+exists, and a repeat that follows an ambiguous commit is still made safe by the P138 key.
+
+**Not done / limits.**
+
+- A failing refresh is slow: auth-js backs off for about 25 s before it answers, so the person waits that long for the
+  message, and a retry inside the following minute is answered from the library's failure cache (the same message, at once).
+  Both are the library's; the app has no supported way to shorten them.
+- A stored session with an empty refresh token makes the lookup reject and stays "could not verify" until the person signs in
+  again. auth-js never writes such a session; it cannot be resolved into a sign-out without an event.
+- **Password change (review of D-139's limit, P149).** It shares the classification, so a failed lookup no longer shows
+  "your sign-in changed". Its residual limit is unchanged and exact: `updateUser` takes no credential and reads the shared
+  storage itself, so the identity verified by `updatePasswordForLease` and the identity the request is made as are two reads
+  of the same storage; another tab's storage write between them is not excluded. Nothing supported closes it without a
+  hand-made `PUT /auth/v1/user` with the stored access token (replaying a token), a re-authentication nonce (needs
+  `secure_password_change` — a hosted Auth setting — and a new user flow) or an undocumented parameter. So it stays a narrowed
+  window, not the guarantee of the data path.
+- Adjacent, not changed: on a cold start with an expired access token and no network, auth-js's initial `getSession()` and its
+  `INITIAL_SESSION` event both deliver a null session, so `AuthProvider` shows the sign-in page although the refresh token is
+  still stored; it recovers on the next load with a connection. No lease exists at that point.
+
+**Verification.** `tests/ui/p149-credential-lookup.test.ts` (scripted lookup: every answer, precedence in both orders,
+retry with the same key), `tests/ui/p149-credential-lookup-real-auth.test.ts` (the real auth-js: network down, 503, 400
+refresh token rejected → `SIGNED_OUT`, refresh race lost to another tab, same-user refresh, A → B → A during a failing
+refresh, retry after the cooldown), `tests/ui/p149-leased-mutation-hook.test.ts` (the real `useLeasedAction` driven through
+`react-dom/server`: the form's `onError` receives the message; it is not called for an ended identity),
+`tests/ui/update-password-lease.test.ts` (four new), `tests/ui/identity-lease-coverage.test.ts` (structural rules: a failed
+lookup never revokes, no auth-js error class decides a lease's fate) and `tests/e2e/authenticated/p149-refresh-failure.spec.ts`
+(real browser, real GoTrue: only the refresh endpoint is made unreachable; the message is shown, nothing is sent or written,
+form and key survive, the retry after the cooldown saves exactly one purchase of 2^53+1 minor units; A → B and A → B → A
+during the failing refresh; a definitively rejected refresh token signs the person out; an ordinary refresh still works).
+Each of these mutations fails at least one test: a failed lookup revokes the lease again (the old behaviour); a failed lookup hands the request layer an empty token; the hook swallows credential errors; a failed lookup outranks an identity change that was already observed; `runWithLease` stops replacing the surfaced error; the purchase form mints a new idempotency key after the failure (real browser only). The session lookup must be called as a method of the auth client, not handed over as a bare function: auth-js reads `this`, and a bare-function form rejects every time, which would turn every password change into "could not verify". The recovery-link browser test catches it, and `tests/ui/update-password-lease.test.ts` uses a receiver-bound client for the same reason.

@@ -43,6 +43,30 @@ export function isAuthIdentityChangedError(error: unknown): error is AuthIdentit
   return error instanceof AuthIdentityChangedError
 }
 
+/** Stable outcome code for "the credentials could not be looked up just now". */
+export const AUTH_CREDENTIALS_UNAVAILABLE = 'auth-credentials-unavailable'
+
+/**
+ * Thrown when the session lookup that precedes a request could not produce credentials and nothing
+ * says the identity changed: the classic case is an expired access token that could not be refreshed
+ * because the auth service was unreachable. Nothing was sent and the lease is left alone, so the
+ * person can simply try again. Like {@link AuthIdentityChangedError} the text is fixed: no HTTP
+ * detail, endpoint, token or library error class can reach the screen through it.
+ */
+export class AuthCredentialsUnavailableError extends Error {
+  readonly code = AUTH_CREDENTIALS_UNAVAILABLE
+  constructor() {
+    super('Could not verify your session. Check your connection and try again.')
+    this.name = 'AuthCredentialsUnavailableError'
+  }
+}
+
+export function isAuthCredentialsUnavailableError(
+  error: unknown,
+): error is AuthCredentialsUnavailableError {
+  return error instanceof AuthCredentialsUnavailableError
+}
+
 /**
  * A claim that one logical mutation belongs to one identity. Obtained from
  * {@link IdentityAuthority.begin} at the moment the user commits to the action, then carried through
@@ -145,6 +169,76 @@ export class IdentityAuthority {
   }
 }
 
+/** What a session lookup answers: `getSession()` of supabase-js returns `{ session: null, error }` (it
+ *  does not reject) when it cannot produce a session, and `{ session: null, error: null }` when
+ *  nobody is signed in. */
+export interface SessionLookup<S> {
+  data: { session: S | null }
+  error?: unknown
+}
+
+/** Leases whose most recent session lookup failed to produce credentials. */
+const failedLookups = new WeakSet<IdentityLease>()
+
+function lookupFailed(lease: IdentityLease): never {
+  failedLookups.add(lease)
+  throw new AuthCredentialsUnavailableError()
+}
+
+/**
+ * The session of the lease's own user, or a refusal that says which of three things happened. This
+ * is the one place that reads a session lookup on behalf of a lease (the data requests of
+ * src/data/leased-client.ts and the password change of src/auth/update-password.ts both use it).
+ *
+ *   identity ended   {@link AuthIdentityChangedError}, the lease revoked: the lease was already over
+ *                    (an auth event reached this tab), or the lookup found NOBODY signed in (no
+ *                    session, no error), or found SOMEBODY ELSE's session.
+ *   lookup failed    {@link AuthCredentialsUnavailableError}, the lease untouched: the lookup
+ *                    rejected, or answered `{ session: null, error }`.
+ *   ok               the session.
+ *
+ * Why a failed lookup does not end the lease, and why its error class is not consulted. auth-js
+ * answers `{ null, error }` for an expired access token it could not refresh, and the error class
+ * does not say whether the person is still signed in (tests/data/p149-auth-lookup-contract.test.ts):
+ * a network failure or a 5xx leaves the stored session in place and announces nothing, and even a
+ * definitive-looking AuthApiError is returned to the caller that lost a refresh race to another tab,
+ * whose fresh session is already stored. What auth-js does guarantee is the other direction: when it
+ * really removes a session it awaits `SIGNED_OUT` before answering. That event is what ends the
+ * lease, through {@link IdentityAuthority.observe}, so by the time such a lookup answers the lease
+ * is already dead and identity change takes precedence over whatever error came back (the first
+ * `assertCurrent` after the lookup). A lookup failure with the lease still current is therefore
+ * never proof of anything except that nothing can be sent right now: fail closed, say so, keep the
+ * lease, and let the next attempt read the storage again.
+ */
+export async function sessionForLease<S extends { user: { id: string } }>(
+  lease: IdentityLease,
+  lookup: () => Promise<SessionLookup<S>>,
+): Promise<S> {
+  lease.assertCurrent()
+  let answer: SessionLookup<S>
+  try {
+    answer = await lookup()
+  } catch {
+    lease.assertCurrent() // an identity change heard meanwhile is what the person must be told about
+    return lookupFailed(lease)
+  }
+  lease.assertCurrent()
+  const session = answer.data.session
+  if (session === null) {
+    if (answer.error !== undefined && answer.error !== null) return lookupFailed(lease)
+    // Nobody is signed in: this operation is over.
+    lease.revoke()
+    throw new AuthIdentityChangedError()
+  }
+  if (session.user.id !== lease.userId) {
+    // The browser now holds somebody else's session, possibly before this tab has heard about it.
+    lease.revoke()
+    throw new AuthIdentityChangedError()
+  }
+  failedLookups.delete(lease)
+  return session
+}
+
 /**
  * Runs one logical operation under `lease`. The operation is not started at all when the lease is
  * already dead, and any failure that surfaces once the lease has ended is REPLACED by
@@ -152,6 +246,11 @@ export class IdentityAuthority {
  * PostgREST message or a validation message about data that belongs to the previous identity.
  * A result that comes back from a step that was already dispatched is returned as it is — that
  * write happened as the user the operation belongs to.
+ *
+ * A failure that surfaces while the lease is STILL current, and whose most recent credential lookup
+ * failed, is replaced by {@link AuthCredentialsUnavailableError}: the data layer rebuilds every
+ * request error from a message string (`new Error(error.message)`), so the class thrown by the
+ * provider does not survive to here, and its text would arrive prefixed with the internal class name.
  */
 export async function runWithLease<T>(
   lease: IdentityLease,
@@ -162,6 +261,7 @@ export async function runWithLease<T>(
     return await operation()
   } catch (error) {
     if (!lease.isCurrent()) throw new AuthIdentityChangedError()
+    if (failedLookups.has(lease)) throw new AuthCredentialsUnavailableError()
     throw error
   }
 }

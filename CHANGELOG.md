@@ -10,6 +10,21 @@ they were**.
 
 ## [Unreleased]
 
+### Fixed — 2026-09-19 — A failed session refresh no longer makes Save do nothing (P149)
+
+Not released; local fix on top of the P148 candidate.
+
+- When the access token had expired and the auth service could not be reached, pressing Save on a financial form did nothing
+  and showed nothing: the sign-in was wrongly treated as changed and the result of the click was discarded. The write is
+  still refused (nothing is sent, nothing is saved), but the form now says "Could not verify your session. Check your
+  connection and try again.", keeps what was typed and its request key, and a later Save goes through once and only once
+  (D-140). A real sign-out or account switch is still detected and still stops the operation, and it takes precedence over
+  a failed refresh, so nothing about one account is shown in another's screen.
+- The same misreport is gone from the recovery-link password form.
+- New tests pin what the installed auth library does when a refresh fails, run the identity lease against the real library,
+  drive the form's submit hook without a DOM, and repeat it all in a real browser with only the refresh endpoint made
+  unreachable.
+
 ### Fixed — 2026-09-19 — Independent review of the integrated candidate (P148)
 
 Not released; local review of the P147 candidate.

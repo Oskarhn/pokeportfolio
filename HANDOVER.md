@@ -4,6 +4,35 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
+## Current state (P149, 2026-09-19) — the P148 candidate plus the credential-refresh fix (D-140): local only, NOT pushed, NOT released
+
+Branch `fix/p149-auth-refresh-failure-recovery` (a sibling worktree named `p149`) = the exact P148
+tree (`a72ed27`) plus the fix below, its tests and docs. **Migrations: 106, none added.** `RELEASED_PRODUCTION` is unchanged
+(`origin/main` = `d8682e0`); hosted Supabase and Cloudflare were not touched; P142 (PR #112) is still an open draft and remains
+an external prerequisite; GitHub Actions capacity is still unverified (no run was started).
+
+- **Fixed (D-140), closes P148-M2:** a failed credential refresh (expired access token, auth service unreachable) no longer ends the
+  identity lease. Before: the Save button did nothing and showed nothing. Now: nothing is sent, the form shows "Could not verify your
+  session. Check your connection and try again.", keeps its input and its idempotency key, and a later Save saves exactly once. A
+  real sign-out, account switch or A → B → A still ends the operation and takes precedence over a failed refresh.
+  Code: `sessionForLease` and `AuthCredentialsUnavailableError` in `src/auth/identity-lease.ts`; the token provider
+  (`src/data/leased-client.ts`) and the recovery-link password change (`src/auth/update-password.ts`) both use it.
+- **What the auth library does** is pinned by `tests/data/p149-auth-lookup-contract.test.ts` (real auth-js, scripted network): the
+  error class of a failed lookup does not say whether the person is still signed in, so it is deliberately never consulted; the lease
+  ends on what the auth state says (an event, no session, another user's session).
+- **Person-visible library behaviour, not changeable by the app:** a failing refresh is reported after about 25 s of backoff, and for the
+  next minute the same failure is answered from the library's cache (the retry test waits it out).
+- **Password change:** shares the fix; its residual limit (two reads of the shared storage, `updateUser` takes no credential) is
+  unchanged and stated exactly in D-140. Nothing supported closes it.
+- **Adjacent, not changed:** a cold start with an expired access token and no network shows the sign-in page (auth-js delivers a null
+  session to `getSession()` and `INITIAL_SESSION`); it recovers on the next load with a connection.
+- Gates on the final tree (isolated local stack, fresh `supabase db reset`, 106/106): unit 2084 passed / 1 skipped (152 files), DB
+  906 passed / 1 skipped (58 files), authenticated E2E 137/137 (the 132 of P148 + 5 new), typecheck, lint (0 errors, the 27 known
+  react-refresh warnings), format, build, platform verifier 28/28 and link check 30/30 pass. Not re-run: M12/M13/M16 adversarial
+  suites (no database code changed), the default browser projects (placeholder backend), GitHub Actions, hosted anything.
+- Working note for the authenticated E2E: do not edit files in the repository while it runs; the Vite dev server can reload the page and
+  a test then fails for a reason that is not the product's.
+
 ## Review state (P148, 2026-09-19) — independent review of the P147 candidate: one defect found and fixed locally; still NOT pushed, NOT released
 
 Branch `audit/p148-independent-release-review` = the exact P147 tree
@@ -13,10 +42,9 @@ open draft). Nothing was pushed, deployed or migrated; hosted Supabase, Cloudfla
 - **Found and fixed (D-139):** the recovery form's password change (`auth.updateUser`) was the one user-scoped write outside the
   identity lease; a tab that had not heard another tab sign in as B could set B's password to the text typed for A (reproduced in a
   real browser, fixed in `src/auth/update-password.ts` + `ResetPasswordPage.tsx`).
-- **Open, not a blocker (record for the next auth change):** a transient failure of the credential lookup (token refresh fails, `getSession`
-  answers `{ session: null, error }`) is treated as an identity change: the lease is revoked, nothing is sent (safe), but the
-  `onError`/`onSuccess` callbacks are skipped, so a Save pressed in that moment shows nothing. Recommended: give an errored lookup its own
-  non-identity error and leave the lease alone.
+- **Found here, closed by P149 (D-140):** a transient failure of the credential lookup (token refresh fails, `getSession`
+  answers `{ session: null, error }`) was treated as an identity change: the lease was revoked, nothing was sent (safe), but the
+  `onError`/`onSuccess` callbacks were skipped, so a Save pressed in that moment showed nothing.
 - **Not fixed, UI backlog:** `/portfolio` overflows a 390 px viewport when a tile shows a 2^62-scale amount (46 quadrillion kr); no other page
   overflows at 390/430 px with amounts up to 2^62, and 2^53+1 fits everywhere at 390 px. Product decision (an upper limit) belongs with the UI work.
 - **Compatibility (independently run):** integrated frontend on a 104-migration database: everything passes except the two things

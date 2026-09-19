@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { AuthIdentityChangedError, IdentityAuthority } from '../../src/auth/identity-lease'
+import {
+  AuthCredentialsUnavailableError,
+  AuthIdentityChangedError,
+  IdentityAuthority,
+} from '../../src/auth/identity-lease'
 import { updatePasswordForLease, type PasswordAuthClient } from '../../src/auth/update-password'
 
 /**
@@ -133,5 +137,92 @@ describe('updatePasswordForLease', () => {
       AuthIdentityChangedError,
     )
     expect(recorded.updates).toEqual([])
+  })
+})
+
+describe('updatePasswordForLease - a session lookup that FAILED (P149, the same defect as P148-M2)', () => {
+  const failed = { data: { session: null }, error: new Error('network') }
+
+  it('answers { null, error }: nothing is sent, the person is told to retry, and the lease is NOT revoked', async () => {
+    const authority = new IdentityAuthority()
+    authority.observe('a')
+    const lease = authority.begin('a')
+    const { auth, recorded } = browser('a')
+    auth.getSession = () => Promise.resolve(failed)
+    const thrown = await updatePasswordForLease(lease, 'x'.repeat(14), auth).catch(
+      (error: unknown) => error,
+    )
+    expect(thrown).toBeInstanceOf(AuthCredentialsUnavailableError)
+    expect(thrown).not.toBeInstanceOf(AuthIdentityChangedError)
+    expect(recorded.updates).toEqual([])
+    expect(lease.isCurrent()).toBe(true)
+  })
+
+  it('rejects: the same', async () => {
+    const authority = new IdentityAuthority()
+    authority.observe('a')
+    const lease = authority.begin('a')
+    const { auth, recorded } = browser('a')
+    auth.getSession = () => Promise.reject(new TypeError('Failed to fetch'))
+    await expect(updatePasswordForLease(lease, 'x'.repeat(14), auth)).rejects.toBeInstanceOf(
+      AuthCredentialsUnavailableError,
+    )
+    expect(recorded.updates).toEqual([])
+    expect(lease.isCurrent()).toBe(true)
+  })
+
+  it('then A -> B is announced during the lookup: the identity change is what is reported', async () => {
+    const authority = new IdentityAuthority()
+    authority.observe('a')
+    const lease = authority.begin('a')
+    const { auth, recorded } = browser('a')
+    auth.getSession = () => {
+      authority.observe('b')
+      return Promise.resolve(failed)
+    }
+    await expect(updatePasswordForLease(lease, 'x'.repeat(14), auth)).rejects.toBeInstanceOf(
+      AuthIdentityChangedError,
+    )
+    expect(recorded.updates).toEqual([])
+    expect(lease.isCurrent()).toBe(false)
+  })
+
+  it('a retry once the lookup works sends the password change exactly once, for A', async () => {
+    const authority = new IdentityAuthority()
+    authority.observe('a')
+    const lease = authority.begin('a')
+    const { auth, recorded } = browser('a')
+    const healthy = auth.getSession
+    auth.getSession = () => Promise.resolve(failed)
+    await expect(updatePasswordForLease(lease, 'x'.repeat(14), auth)).rejects.toBeInstanceOf(
+      AuthCredentialsUnavailableError,
+    )
+    auth.getSession = healthy
+    await updatePasswordForLease(lease, 'x'.repeat(14), auth)
+    expect(recorded.updates).toEqual([{ forUser: 'a', password: 'x'.repeat(14) }])
+  })
+})
+
+describe('updatePasswordForLease - the real auth client needs its receiver', () => {
+  // supabase-js's auth client reads \`this\` in getSession() and updateUser(); handing either over as a
+  // bare function rejects. P149's first version did exactly that and the recovery-link E2E caught it.
+  class ReceiverBoundAuth implements PasswordAuthClient {
+    readonly updates: string[] = []
+    private readonly user = 'a'
+    getSession() {
+      return Promise.resolve({ data: { session: { user: { id: this.user } } } })
+    }
+    updateUser({ password }: { password: string }) {
+      this.updates.push(password)
+      return Promise.resolve({ error: null })
+    }
+  }
+
+  it('looks the session up as a method of the client, and changes the password once', async () => {
+    const authority = new IdentityAuthority()
+    authority.observe('a')
+    const auth = new ReceiverBoundAuth()
+    await updatePasswordForLease(authority.begin('a'), 'x'.repeat(14), auth)
+    expect(auth.updates).toEqual(['x'.repeat(14)])
   })
 })

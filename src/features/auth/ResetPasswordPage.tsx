@@ -2,7 +2,10 @@ import { useState } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { supabase } from '../../data/supabase-client'
 import { useAuth } from '../../auth/useAuth'
-import { isAuthIdentityChangedError } from '../../auth/identity-lease'
+import {
+  isAuthCredentialsUnavailableError,
+  isAuthIdentityChangedError,
+} from '../../auth/identity-lease'
 import { updatePasswordForLease } from '../../auth/update-password'
 import { AuthLayout, Button, FormMessage, PasswordField } from '../../ui/form'
 
@@ -45,7 +48,7 @@ export function ResetPasswordPage() {
       ;({ error: updateError } = await updatePasswordForLease(lease, password, supabase.auth))
     } catch (caught) {
       setBusy(false)
-      if (isAuthIdentityChangedError(caught)) {
+      if (isAuthIdentityChangedError(caught) || isAuthCredentialsUnavailableError(caught)) {
         setError(caught.message)
         return
       }
