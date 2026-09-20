@@ -86,6 +86,9 @@ export function PriceCheckScanPage() {
   const userId = authSession?.user.id ?? null
   const navigate = useNavigate()
   const scanSessionRef = useRef<PriceCheckScanSession | null>(null)
+  // Resolves to the session once the scanner has loaded (null if it could not be). A photo chosen
+  // before that simply waits for it instead of failing.
+  const sessionReadyRef = useRef<Promise<PriceCheckScanSession | null>>(Promise.resolve(null))
   const mountedRef = useRef(false)
   const [step, setStep] = useState<Step>({ kind: 'idle', notice: null })
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -103,13 +106,14 @@ export function PriceCheckScanPage() {
   useEffect(() => {
     let cancelled = false
     let created: PriceCheckScanSession | null = null
-    void import('../scanner/controller')
+    sessionReadyRef.current = import('../scanner/controller')
       .then(({ getScannerUiController }) => {
-        if (cancelled) return
+        if (cancelled) return null
         const controller = getScannerUiController(userId)
         controller.prewarm?.()
         created = new PriceCheckScanSession(narrowScannerPort(controller))
         scanSessionRef.current = created
+        return created
       })
       .catch(() => {
         if (!cancelled) {
@@ -118,6 +122,7 @@ export function PriceCheckScanPage() {
             notice: 'The scanner could not be loaded. Search by name instead.',
           })
         }
+        return null
       })
     return () => {
       cancelled = true
@@ -134,6 +139,12 @@ export function PriceCheckScanPage() {
     }
   }, [previewUrl])
 
+  // A function, not an inline `.current` test: the flag flips across awaits, which the compiler
+  // would otherwise narrow away.
+  function isMounted(): boolean {
+    return mountedRef.current
+  }
+
   function reset(notice: string | null): void {
     scanSessionRef.current?.cancel()
     setSelectedId(null)
@@ -144,11 +155,6 @@ export function PriceCheckScanPage() {
     const file = event.target.files?.[0]
     event.target.value = ''
     if (file === undefined) return
-    const session = scanSessionRef.current
-    if (session === null) {
-      setStep({ kind: 'idle', notice: 'The scanner is still loading. Try again in a moment.' })
-      return
-    }
     void (async () => {
       let frame: CapturedFrame
       try {
@@ -159,7 +165,9 @@ export function PriceCheckScanPage() {
         return
       }
       // Left the page while the photo was decoding: create nothing that would need releasing.
-      if (!mountedRef.current) return
+      if (!isMounted()) return
+      const session = await sessionReadyRef.current
+      if (session === null || !isMounted()) return
       const url = URL.createObjectURL(frame.blob)
       setSelectedId(null)
       setStep({ kind: 'analyzing', previewUrl: url })
