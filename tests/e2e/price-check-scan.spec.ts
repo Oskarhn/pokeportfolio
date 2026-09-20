@@ -19,6 +19,11 @@ import {
 const fixture = (name: string) =>
   fileURLToPath(new URL(`../fixtures/scanner/${name}`, import.meta.url))
 
+// The app registers a service worker. With it active, WebKit sometimes lets a request skip
+// `page.route` and hit the (absent) placeholder backend, which made these tests flaky for reasons
+// unrelated to Price Check. Nothing here depends on the worker, so it is blocked.
+test.use({ serviceWorkers: 'block' })
+
 let backend: Backend
 
 test.beforeEach(async ({ page }) => {

@@ -22,6 +22,11 @@ const CHAR_SV3 = CARDS[2]!
 const PIKACHU = CARDS[3]!
 const LONG_NAME = CARDS[4]!
 
+// The app registers a service worker. With it active, WebKit sometimes lets a request skip
+// `page.route` and hit the (absent) placeholder backend, which made these tests flaky for reasons
+// unrelated to Price Check. Nothing here depends on the worker, so it is blocked.
+test.use({ serviceWorkers: 'block' })
+
 let backend: Backend
 
 test.beforeEach(async ({ page }) => {
