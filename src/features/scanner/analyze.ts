@@ -15,6 +15,7 @@
  */
 
 import type { ScannerCapture } from './contract'
+import { throwIfAnalysisAborted } from './analysis-abort'
 import {
   NAME_ROI_CANDIDATES,
   NUMBER_ROI_CANDIDATES,
@@ -424,19 +425,30 @@ export function splitFullFrameCardText(text: string): {
  * Runs the full OCR pipeline against one capture using the provided engine port. Throws on
  * engine/decode failure (mapped upstream to friendly copy); returns an honest observation even
  * when nothing was read (both fields null).
+ *
+ * `signal` (P151) makes the pipeline cancellable BETWEEN stages: it is checked before every
+ * recognition, after every recognition, and when a queued run finally obtains the canvas pool. A
+ * single `recognize` cannot be interrupted, but the pipeline is up to a dozen of them in the worst
+ * case (every ROI layout × contrast/binarize/multi-line passes, then the full-card fallback) — an
+ * abandoned scan used to run all of them while the next scan waited behind it. On abort this throws
+ * {@link ScannerAnalysisAbortedError} (analysis-abort.ts); the ImageBitmap is still closed.
  */
 export async function runOcrAnalysis(
   capture: ScannerCapture,
   engine: OcrEnginePort,
   pool: CanvasPool = sharedPool,
   debug = false,
+  signal?: AbortSignal,
 ): Promise<RawOcrObservation> {
+  throwIfAnalysisAborted(signal)
   await engine.prepare()
+  throwIfAnalysisAborted(signal)
   if (typeof createImageBitmap !== 'function') {
     throw new Error('This browser cannot analyse images here.')
   }
   const bitmap = await createImageBitmap(capture.blob)
   try {
+    throwIfAnalysisAborted(signal)
     // F-15 (P89): the ENTIRE pipeline below shares `pool`'s canvases (working + both ROI slots)
     // across possibly-concurrent runOcrAnalysis calls — not reachable through the shipped UI
     // today (the scanner state machine serializes analysis calls), but a latent hazard for any
@@ -446,6 +458,9 @@ export async function runOcrAnalysis(
     // recognize() call yields control) can never land on a canvas a first call's in-flight
     // recognize() is still reading from.
     return await pool.withLock(async () => {
+      // A run that queued behind another scan for the shared canvases may have been abandoned
+      // while it waited — do not start its (expensive) pipeline at all.
+      throwIfAnalysisAborted(signal)
       const workingSize = shrinkToLongEdge(
         capture.cardRect.width,
         capture.cardRect.height,
@@ -484,6 +499,9 @@ export async function runOcrAnalysis(
       ): Promise<{ rect: PixelRect; text: string; confidence: number } | null> {
         const rect = roiPixelRect(cardOnWorking, candidate.fractions)
         if (rect.width < 8 || rect.height < 8) return null
+        // Checkpoint BEFORE the crop/preprocess/recognize unit (the expensive part) and again
+        // after it — every recognition in the pipeline funnels through here.
+        throwIfAnalysisAborted(signal)
         const upscale = rect.height < ROI_UPSCALE_MIN_HEIGHT_PX ? ROI_UPSCALE_FACTOR : 1
         const roi = pool.take(slot, rect.width * upscale, rect.height * upscale)
         drawPreparedRegion(
@@ -497,6 +515,7 @@ export async function runOcrAnalysis(
           preprocess,
         )
         const result = await engine.recognize(roi.element, segmentation)
+        throwIfAnalysisAborted(signal)
         return { rect, text: result.text, confidence: result.confidence }
       }
 
@@ -746,7 +765,9 @@ export async function runOcrAnalysis(
       // per-field confidence fields above (P88 §8): the auto-mode text is a best-effort SPLIT of
       // one whole-card OCR read, not a field-specific recognition, so a per-field OCR-confidence
       // reliability weighting would misrepresent what was actually measured.
+      throwIfAnalysisAborted(signal)
       const fullResult = await engine.recognize(working.element, 'auto')
+      throwIfAnalysisAborted(signal)
       const split = splitFullFrameCardText(fullResult.text)
       return {
         rawNameText: split.name,

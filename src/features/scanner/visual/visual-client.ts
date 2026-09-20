@@ -216,8 +216,25 @@ function readBackendOverrideFromLocation(): VisualBackendOverride {
   return raw === 'wasm' || raw === 'webgpu' ? raw : 'auto'
 }
 
+/** Upper bound on ONE embed-and-search round trip against an already-ready worker (P151). A real
+ *  round trip is hundreds of milliseconds (a couple of seconds on a slow phone); the bound exists
+ *  because `analyze()` had no way out at all when a warm worker wedged — the scan spun until the user
+ *  cancelled, and every later scan wedged behind the same dead worker. On expiry the worker is
+ *  discarded and the channel is unavailable for the rest of the session (OCR-only, exactly like an
+ *  init failure) instead of hanging again. Cold init is NOT bounded here: it legitimately takes
+ *  minutes on a bad network and the controller already bounds how long one scan waits for it. */
+export const VISUAL_ANALYZE_TIMEOUT_MS = 30_000
+
 export class VisualRecognitionClient {
   private worker: Worker | null = null
+  /** P151: once true, this client is dead for good. It used to be reusable after `dispose()`:
+   *  `readyInfo`/`readyPromise` were merely nulled, so a stale in-flight scan (or a late `prewarm`)
+   *  reaching `ensureReady()` afterwards constructed a brand-new Worker that nothing referenced and
+   *  nothing would ever terminate — a leaked, model-loading worker per route exit. */
+  private disposed = false
+  /** Settles a still-pending `readyPromise` when `dispose()` lands mid-init; without it the promise
+   *  (and the `analyze()` awaiting it, and that caller's `Promise.all`) never settled. */
+  private settleReady: ((info: VisualReadyInfo | null) => void) | null = null
   private readyInfo: VisualReadyInfo | null = null
   private unavailableReason: string | null = null
   /** Backend-attempt diagnostics from whichever message (ready OR unavailable) arrived last —
@@ -262,11 +279,13 @@ export class VisualRecognitionClient {
   /** Lazily creates the worker and waits for it to report ready/unavailable. Safe to call
    *  repeatedly — subsequent calls return the same in-flight/settled promise. */
   async ensureReady(): Promise<VisualReadyInfo | null> {
+    if (this.disposed) return null
     if (this.unavailableReason !== null) return null
     if (this.readyInfo !== null) return this.readyInfo
     if (this.readyPromise !== null) return this.readyPromise
 
     this.readyPromise = new Promise((resolve) => {
+      this.settleReady = resolve
       try {
         // P81 §3: recorded in a form comparable to the worker's OWN `performance.timeOrigin +
         // performance.now()` (each context's `performance.now()` alone is relative to a
@@ -279,26 +298,24 @@ export class VisualRecognitionClient {
         })
         this.worker = worker
         worker.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
+          // P151: a message already queued from a worker that has since been disposed, crashed or
+          // timed out must not resurrect `readyInfo` (the snapshot would claim 'ready' with no
+          // worker behind it) or settle anything against the current state.
+          if (this.worker !== worker) return
           this.handleMessage(event.data, resolve)
         })
         // Only Worker-API-exposed fields (prompt §12): message/filename/lineno/colno. Never a
         // stack trace or anything from the event's error object, which can carry data this
         // worker never intentionally posted.
         worker.addEventListener('error', (event: ErrorEvent) => {
+          if (this.worker !== worker) return
           const location =
             event.filename !== ''
               ? ` at ${event.filename}:${String(event.lineno)}:${String(event.colno)}`
               : ''
-          this.unavailableReason = `Visual recognition worker crashed: ${event.message || 'unknown error'}${location}`
-          // P116 Phase Q: a crash arriving AFTER `ready` already resolved (mid-scan, not during
-          // init) makes `resolve(null)` below a no-op on an already-settled readyPromise — without
-          // this, any `analyze()`/`getExpectedCardRank()` call still awaiting THIS now-dead worker
-          // would hang forever, identically to the dispose() gap `VisualClientDisposedError` closes.
-          for (const { reject } of this.pending.values()) reject(new VisualClientDisposedError())
-          for (const resolveRank of this.pendingRankRequests.values())
-            resolveRank(DISPOSED_EXPECTED_CARD_RANK)
-          this.pending.clear()
-          this.pendingRankRequests.clear()
+          this.discardWorker(
+            `Visual recognition worker crashed: ${event.message || 'unknown error'}${location}`,
+          )
           resolve(null)
         })
         worker.postMessage({
@@ -384,8 +401,34 @@ export class VisualRecognitionClient {
     pending.reject(new Error(message.message))
   }
 
+  /** Terminates the current worker and marks the channel unavailable for the rest of this client's
+   *  life, settling everything still waiting on it. Used for a crash and for a request timeout: in
+   *  both cases the worker is known bad but was never terminated, so it kept its model and index
+   *  in memory (hundreds of MB) until route exit while answering nothing. */
+  private discardWorker(reason: string): void {
+    const worker = this.worker
+    this.worker = null
+    this.readyInfo = null
+    this.unavailableReason = reason
+    // P116 Phase Q: a crash arriving AFTER `ready` already resolved (mid-scan, not during init)
+    // leaves any `analyze()`/`getExpectedCardRank()` call still awaiting THIS now-dead worker
+    // pending forever unless it is settled here.
+    for (const { reject } of this.pending.values()) reject(new VisualClientDisposedError())
+    for (const resolveRank of this.pendingRankRequests.values())
+      resolveRank(DISPOSED_EXPECTED_CARD_RANK)
+    this.pending.clear()
+    this.pendingRankRequests.clear()
+    try {
+      worker?.terminate()
+    } catch {
+      // A worker that cannot even be terminated is already unusable; nothing more to release.
+    }
+  }
+
   /** Embeds one captured frame and returns the top-K visual matches, or null if the visual
-   *  channel is unavailable for any reason (no model, no index, worker crash) — never throws. */
+   *  channel is unavailable for any reason (no model, no index, worker crash, timeout, disposed
+   *  client) — never throws. Owns `bitmap` on EVERY path: it is transferred to the worker, closed
+   *  here after a main-thread conversion, or closed on the way out — never left open. */
   async analyze(bitmap: ImageBitmap, topK: number): Promise<VisualAnalysisResult | null> {
     const ready = await this.ensureReady()
     if (ready === null || !ready.indexAvailable || this.worker === null) {
@@ -396,6 +439,8 @@ export class VisualRecognitionClient {
     const requestId = this.nextRequestId
     this.nextRequestId += 1
     const embedCallStart = performance.now()
+    const bitmapOwner = { client: true }
+    let timer: ReturnType<typeof setTimeout> | undefined
     try {
       // P90 §9: the worker reports once, at 'ready' time, whether it can convert a captured frame
       // to RGBA itself. When it cannot, convert here instead (the main thread always has a real
@@ -403,14 +448,23 @@ export class VisualRecognitionClient {
       // single conversion, just done on whichever side actually supports it.
       const result = await new Promise<VisualAnalysisResult>((resolve, reject) => {
         this.pending.set(requestId, { resolve, reject })
+        timer = setTimeout(() => {
+          if (this.worker === worker) {
+            this.discardWorker(
+              `Visual recognition stopped answering (no result within ${String(VISUAL_ANALYZE_TIMEOUT_MS / 1000)}s) — disabled for this session.`,
+            )
+          }
+        }, VISUAL_ANALYZE_TIMEOUT_MS)
         if (ready.offscreenCanvasAvailableInWorker) {
           worker.postMessage(
             { type: 'embed-and-search', requestId, image: { kind: 'bitmap', bitmap }, topK },
             [bitmap],
           )
+          bitmapOwner.client = false
         } else {
           const { buffer, width, height } = bitmapToRgbaOnMainThread(bitmap)
           bitmap.close()
+          bitmapOwner.client = false
           worker.postMessage(
             {
               type: 'embed-and-search',
@@ -428,7 +482,13 @@ export class VisualRecognitionClient {
       if (this.firstEmbedMs === null) this.firstEmbedMs = performance.now() - embedCallStart
       return result
     } catch {
+      // A synchronous postMessage/conversion failure leaves the bookkeeping entry behind (nothing
+      // will ever answer it) and the bitmap still open.
+      this.pending.delete(requestId)
+      if (bitmapOwner.client) bitmap.close()
       return null
+    } finally {
+      clearTimeout(timer)
     }
   }
 
@@ -492,6 +552,14 @@ export class VisualRecognitionClient {
   }
 
   dispose(): void {
+    // P151: terminal. See `disposed`'s own doc — every later ensureReady()/analyze()/prewarm()
+    // resolves null without constructing anything.
+    this.disposed = true
+    // dispose() landing MID-INIT: the worker is terminated below, so no 'ready'/'unavailable'
+    // message will ever arrive — settle the pending readyPromise or `analyze()` (awaiting it) and
+    // whatever awaits that never resume.
+    this.settleReady?.(null)
+    this.settleReady = null
     // P116 Phase Q: settle every in-flight request BEFORE clearing the maps — an `analyze()` or
     // `getExpectedCardRank()` call already awaiting a response must never be left permanently
     // pending just because the worker backing it was torn down (see VisualClientDisposedError's
