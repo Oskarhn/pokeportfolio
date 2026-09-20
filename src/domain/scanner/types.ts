@@ -175,6 +175,11 @@ export interface ScannerMatch {
 
 export type ScannerNoteCode =
   | 'runner-up-margin-small'
+  /** P151: the ONLY evidence was visual (no readable name and no readable collector number), so a
+   *  would-be HIGH was held at MEDIUM. Artwork identifies a card's ART, not its PRINTING — reprints
+   *  and promos share art across sets, so the same picture is a different (differently priced) card.
+   *  Only printed text (the collector number above all) can tell those apart. */
+  | 'visual-only-uncorroborated'
   | 'single-candidate'
   | 'insufficient-signal'
   /** The text-only top candidate and the visual-only top candidate disagreed (P76 §33/§35):

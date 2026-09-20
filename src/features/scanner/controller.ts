@@ -19,6 +19,7 @@ import {
   type ScannerObservation,
   type ScannerCandidateRecord,
   type ScannerConfidenceTier,
+  type ScannerNoteCode,
   type VisualEvidenceByCard,
 } from '../../domain/scanner'
 import {
@@ -111,6 +112,7 @@ import type {
   ScannerDebugImages,
   ScannerDiagnostics,
   ScannerSearchQuery,
+  ScannerTierCapReason,
   ScannerUiController,
   ScannerVariantChoice,
 } from './contract'
@@ -171,6 +173,15 @@ export function resolveVisibleCandidateCount(
   return gap <= CANDIDATE_EXPANSION_SCORE_GAP
     ? SCANNER_UI_EXPANDED_CANDIDATE_LIMIT
     : SCANNER_UI_CANDIDATE_LIMIT
+}
+
+/** The single match-level reason a tier was capped, in priority order (P151 added the
+ *  visual-only case). Null when nothing capped it. */
+function resolveTierCapReason(notes: readonly ScannerNoteCode[]): ScannerTierCapReason | null {
+  if (notes.includes('visual-text-disagreement')) return 'visual-text-disagreement'
+  if (notes.includes('visual-only-uncorroborated')) return 'visual-only-uncorroborated'
+  if (notes.includes('runner-up-margin-small')) return 'runner-up-margin-small'
+  return null
 }
 
 /** Deterministic tier → coarse UI band. Pure mapping; no second scoring pass exists. */
@@ -712,11 +723,7 @@ export function createRealScannerController(
     // discounted a competing candidate's score is gone (D-106); the redesigned mechanism only ever
     // ADDS a corroboration boost to the visual anchor, so it can never by itself be the reason a
     // tier was capped BELOW what the raw score implies.
-    const tierCapReason = match.notes.includes('visual-text-disagreement')
-      ? ('visual-text-disagreement' as const)
-      : match.notes.includes('runner-up-margin-small')
-        ? ('runner-up-margin-small' as const)
-        : null
+    const tierCapReason = resolveTierCapReason(match.notes)
     lastDiagnostics = {
       visualModelState: visualSnapshot.modelState,
       visualBackend: visualResult?.backend ?? visualSnapshot.readyInfo?.backend ?? 'unknown',
@@ -797,11 +804,7 @@ export function createRealScannerController(
         ),
         visualReliability: ranked.visualReliability,
         finalTier: standaloneTierForScore(ranked.rawRankScore),
-        tierReason: match.notes.includes('visual-text-disagreement')
-          ? ('visual-text-disagreement' as const)
-          : match.notes.includes('runner-up-margin-small')
-            ? ('runner-up-margin-small' as const)
-            : null,
+        tierReason: tierCapReason,
       })),
       // P78 fix: `visualErrorMessage` only ever covers exceptions thrown INSIDE
       // analyzeVisualSafely (createImageBitmap/client.analyze throwing) — a model/backend
