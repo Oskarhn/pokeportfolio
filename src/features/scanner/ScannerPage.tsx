@@ -804,6 +804,7 @@ export function ScannerPage() {
         />
       ) : state.step === 'no-match' ? (
         <NoMatchView
+          captureError={state.captureError}
           onSearchManually={() => {
             dispatch({ type: 'SEARCH_OPENED', from: 'no-match' })
           }}
@@ -1455,7 +1456,12 @@ function IntroView({
   onChoosePhoto,
   onDefaultsPatch,
 }: {
-  state: { cameraError: { title: string; message: string } | null }
+  state: {
+    cameraError: { title: string; message: string } | null
+    /** A photo that could not be used (P151: previously rendered ONLY in the camera step, so a
+     *  corrupt / oversized / bomb file chosen from the start screen produced no feedback at all). */
+    captureError: { title: string; message: string } | null
+  }
   defaults: ScannerSessionDefaults
   locations: { id: string; label: string }[]
   japaneseNotice: boolean
@@ -1487,6 +1493,7 @@ function IntroView({
         </p>
       ) : null}
       {state.cameraError ? <ErrorAlert {...state.cameraError} /> : null}
+      {state.captureError ? <ErrorAlert {...state.captureError} /> : null}
       <div className="mt-2 flex flex-col gap-2">
         {cameraSupported ? (
           <Button type="button" onClick={onStartCamera}>
@@ -1807,10 +1814,12 @@ function ResultView({
 }
 
 function NoMatchView({
+  captureError,
   onSearchManually,
   onRetake,
   onChoosePhoto,
 }: {
+  captureError: { title: string; message: string } | null
   onSearchManually: () => void
   onRetake: () => void
   onChoosePhoto: () => void
@@ -1823,6 +1832,7 @@ function NoMatchView({
       <p className="text-sm text-slate-400">
         Try another photo with the whole card inside the frame, or find it by name instead.
       </p>
+      {captureError ? <ErrorAlert {...captureError} /> : null}
       <div className="mt-2 flex flex-col gap-2">
         <Button type="button" variant="quiet" onClick={onSearchManually}>
           <span className="inline-flex items-center gap-2">

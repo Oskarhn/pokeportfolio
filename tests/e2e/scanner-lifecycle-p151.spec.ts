@@ -56,6 +56,10 @@ async function openScanner(page: Page): Promise<void> {
 async function closeScanner(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'Close scanner' }).click()
   await page.waitForFunction(() => !window.location.pathname.startsWith('/scan'))
+  // Let the router finish committing /portfolio before a history traversal: going back while the
+  // exit navigation is still in flight wedges the NEXT navigation (generic router behaviour,
+  // reproduced on the untouched baseline build — not scanner code).
+  await page.waitForTimeout(1_000)
 }
 
 test.describe('P151 scanner lifecycle (real browser, real workers)', () => {
@@ -123,6 +127,7 @@ test.describe('P151 scanner lifecycle (real browser, real workers)', () => {
         live.delete(url)
         revoke(url)
       }
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- re-invoked below with the canvas as this
       const original = HTMLCanvasElement.prototype.toBlob
       const held: (() => void)[] = []
       w.__held = held
@@ -152,12 +157,15 @@ test.describe('P151 scanner lifecycle (real browser, real workers)', () => {
         release()
       })
     })
-    await page.waitForFunction(
-      () => (window as unknown as { __encoded: boolean }).__encoded === true,
-    )
+    await page.waitForFunction(() => (window as unknown as { __encoded: boolean }).__encoded)
     // One more task turn so the (now guarded) promise continuation has run.
     await page.evaluate(
-      () => new Promise((resolve) => requestAnimationFrame(() => resolve(undefined))),
+      () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => {
+            resolve(undefined)
+          }),
+        ),
     )
 
     expect(
@@ -210,7 +218,7 @@ test.describe('P151 scanner lifecycle (real browser, real workers)', () => {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       await page.getByRole('button', { name: 'Use photo' }).click()
       await expect(page.getByText(/Preparing scanner…|Analyzing card…/)).toBeVisible()
-      await page.getByRole('button', { name: 'Cancel' }).click()
+      await page.getByRole('button', { name: 'Back' }).click()
       // Back on review with the photo intact — cancelling never costs a recapture, never shows a result.
       await expect(page.getByRole('heading', { name: 'Check your photo' })).toBeVisible()
       await expect(page.getByRole('button', { name: 'Use photo' })).toBeEnabled()

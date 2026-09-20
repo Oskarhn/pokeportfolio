@@ -169,6 +169,8 @@ export function scannerReducer(state: ScannerState, action: ScannerAction): Scan
         step: 'starting-camera',
         cameraRequested: true,
         cameraError: null,
+        // A rejected photo from an earlier attempt must not sit next to the new attempt's outcome.
+        captureError: null,
         previewFrameReady: false,
       }
     case 'CAMERA_STARTED':
@@ -186,7 +188,13 @@ export function scannerReducer(state: ScannerState, action: ScannerAction): Scan
     case 'RETAKE_PRESSED':
       // Restarting the camera is the retake path; the old capture was already disposed by the
       // page before dispatching this.
-      return { ...state, step: 'starting-camera', analysisError: null, previewFrameReady: false }
+      return {
+        ...state,
+        step: 'starting-camera',
+        analysisError: null,
+        captureError: null,
+        previewFrameReady: false,
+      }
     case 'USE_PHOTO_PRESSED':
       return { ...state, step: 'analyzing', analysisError: null }
     case 'ANALYSIS_COMPLETED': {
@@ -315,7 +323,13 @@ export function scannerReducer(state: ScannerState, action: ScannerAction): Scan
         confirmVariantId: null,
       }
     case 'SCAN_NEXT_PRESSED':
-      return { ...state, step: 'starting-camera', cameraRequested: true, previewFrameReady: false }
+      return {
+        ...state,
+        step: 'starting-camera',
+        cameraRequested: true,
+        captureError: null,
+        previewFrameReady: false,
+      }
     case 'REVIEW_BATCH_PRESSED':
       return { ...state, step: 'batch-review', commitError: null }
     case 'BATCH_ITEM_QUANTITY_CHANGED': {
