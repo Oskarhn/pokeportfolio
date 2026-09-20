@@ -132,7 +132,9 @@ const MUTANTS = [
 ]
 
 const args = process.argv.slice(2)
-const only = (args[args.indexOf('--only') + 1] ?? '').split(',').filter(Boolean)
+const only = args.includes('--only')
+  ? (args[args.indexOf('--only') + 1] ?? '').split(',').filter(Boolean)
+  : []
 const outPath = args.includes('--out') ? args[args.indexOf('--out') + 1] : ''
 const selected = only.length > 0 ? MUTANTS.filter((m) => only.includes(m.id)) : MUTANTS
 
@@ -181,6 +183,16 @@ function classify(json) {
   if (failing.length > 0)
     return { verdict: 'INVALID', reason: 'failures were not assertion failures', failing }
   return { verdict: 'SURVIVED', reason: '', failing }
+}
+
+// Refuse to run over uncommitted edits: the restore step writes the bytes read at start-up, and a
+// clean tree is what makes 'restored byte-for-byte' verifiable with git as well.
+for (const file of new Set(selected.map((m) => m.file))) {
+  const dirty = spawnSync('git', ['diff', '--quiet', '--', file]).status !== 0
+  if (dirty) {
+    console.error(`refusing to run: ${file} has uncommitted changes`)
+    process.exit(2)
+  }
 }
 
 const originals = new Map()
