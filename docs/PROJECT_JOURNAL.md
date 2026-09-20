@@ -2255,3 +2255,30 @@ id, versus a numerically-shaped fact that happens to sit nearby) are different q
 scorer that only asks the first one will eventually promote the second by accident. Neither bug
 was visible from confidence scores or pass/fail test counts alone; both were caught by actually
 looking at what the block-read text contained before trusting that it "found something."
+
+## 2026-09-20 — Scanner hardening: leaks, hangs and one visible-only-in-a-browser bug (P151)
+
+**What the tests could not see.** The scanner's unit tests all stubbed the browser, so a class of
+lifecycle defects was invisible to them by construction. Driving the real production build of `/scan` in
+Chromium — real workers, real blob URLs — reproduced them on the untouched baseline: 7 Tesseract/visual
+workers alive after six enter/exit cycles (P130-10, and a sibling one: any scan reaching a disposed
+visual client built a fresh worker nobody owned), and a blob URL of a raw camera frame alive after the
+user had left the scanner. The same run found a bug no unit test was looking for: a rejected photo
+chosen from the start screen produced no message at all, because the error was rendered only in the
+camera step.
+
+**Measure before deciding.** The confidence change was chosen from numbers, not from the audit's
+recommendation alone: against the real 19,500-card index, 5.7–10.7% of scans whose true printing has no
+reference image preselected a same-artwork sibling as HIGH, and a stricter visual threshold did not
+remove that (the sibling sits at cosine ≥ 0.95). The fix is one extra tap on scans where OCR read
+nothing. No real captures exist, so the audit bounds the structure of the failure, not real accuracy.
+
+**Performance was a non-result, recorded as one.** Baseline and hardened builds measure the same within
+noise on this machine (warm scan 883 vs 885 ms); the work is reliability, not speed.
+
+**Test-tooling lessons.** Vitest's JSON reporter renders a test timeout as an opaque `STACK_TRACE_ERROR`
+(the mutation runner had to learn that a timeout is a legitimate kill for a hang defect); a
+`mockReturnValueOnce` queue is consumed in *call* order, not start order, so a scan that aborts early
+hands its barrier to the next scan (route by blob identity instead); and `history.back()` issued while an
+exit navigation is still in flight wedges the next navigation in the router (reproduced on the baseline;
+not scanner code).

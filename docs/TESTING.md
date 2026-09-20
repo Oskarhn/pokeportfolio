@@ -1008,6 +1008,55 @@ project wiring) supports adding both without further scaffolding.
 
 ---
 
+## 6c. Scanner hardening suite (P151)
+
+Deterministic regressions for the scanner's lifecycle, cancellation, input safety, cache and confidence
+rules. Every asynchronous ordering is driven by explicit deferred promises (no sleep is the only proof).
+
+| File | Proves |
+|---|---|
+| `tests/ui/scanner-p151-ocr-lifecycle.test.ts` | worker finishing after `dispose()` is terminated (P130-10); 100 open/close cycles across every dispose-vs-load ordering → 0 live workers; a hung `recognize()` times out, discards its worker and does not wedge the queue |
+| `tests/ui/scanner-p151-visual-client-lifecycle.test.ts` | `dispose()` is terminal (no worker resurrection); dispose during init settles; crash and 30 s wedge terminate the worker; bitmaps closed on every path; 100 randomized lifecycles |
+| `tests/ui/scanner-p151-ocr-pipeline-cancel.test.ts` | `runOcrAnalysis` stops within one recognition of an abort, including while queued behind another scan for the canvas pool |
+| `tests/ui/scanner-p151-controller-ordering.test.ts` | latest-scan-wins, stale scans never publish diagnostics / debug URLs, dispose aborts, 100-scan burst → 1 result, no collection write |
+| `tests/ui/scanner-p151-image-input.test.ts` | header sniffing (PNG/JPEG/GIF/WebP/BMP, 20,000 fuzzed inputs), limits, bombs refused **with the decoder never invoked**, hostile and degenerate files, recovery |
+| `tests/ui/scanner-p151-guarded-capture.test.ts` | a capture finishing after a reset never reaches the store; 200 randomized interleavings → 0 live URLs |
+| `tests/ui/scanner-p151-state.test.ts` | a rejected photo is recorded on the start / no-match screens and cleared by every new attempt |
+| `tests/ui/scanner-p151-worker-cache.test.ts` | HTML never cached and self-healed; 50 index generations keep the cache at one generation; integrity purge |
+| `tests/domain/scanner/p151-confidence-policy.test.ts`, `tests/data/scanner-p151-confidence-real-index.test.ts` | visual-only never HIGH (20,000-run property); the moderate-tier disagreement cap; variant never inferred; a fixed-seed slice on the real index |
+| `tests/ui/scanner-p151-identification.test.ts` | the read-only contract: mapping, no `commitBatch`, cancellation as a result |
+| `tests/ui/scanner-p151-stress.test.ts` | orchestration stress (below) |
+| `tests/e2e/scanner-lifecycle-p151.spec.ts` | real Chromium, real workers: 0 live workers after repeated cold-start exits; a late capture leaves 0 blob URLs; bomb file → message and recovery; cancel/restart |
+| `tests/e2e/scanner-mobile-p151.spec.ts` | iPhone-14 emulation matrix (portrait, landscape, rotation, denied camera, slow CPU/assets, background/foreground, leave mid-scan) — emulation, not a device |
+
+**Stress (`pnpm scanner:stress`).** Seven modes — repeated scans, mixed valid/invalid frames, open/close,
+cancel/restart, bounded concurrency (in `scanner-p151-stress.test.ts`), plus worker crash/recovery and
+cache eviction (the lifecycle and cache files above, which the runner also invokes). `pnpm test` runs a
+20-iteration smoke size; `pnpm scanner:stress` runs 100 per mode (~35 s); `--scale 10` multiplies it;
+`-t "mode 4"` selects one mode. Real controller, `runOcrAnalysis` and canvas pool over doubles for
+Tesseract, the visual worker, the catalog and the canvas surface — it proves orchestration (no leaked
+worker / URL / bitmap / timer, no stale publication, bounded work), **not** recognition quality or
+real-browser memory.
+
+**Real-browser benchmark.** `pnpm exec tsx scripts/scanner-p151/browser-bench.mjs --url http://localhost:4391
+--label <name> [--cpu 4]` against any `pnpm build && pnpm preview` copy (fake session, stubbed catalog,
+synthetic fixtures). Compare two builds back to back on one machine; the numbers are not device numbers.
+
+**Confidence audit.** `pnpm scanner:confidence:audit [--samples 1500] [--out f.json]` — real production
+index, real matcher, synthetic proxies (there is no real-capture set); prints before/after HIGH-correct,
+false-HIGH and manual counts per distortion regime.
+
+**Mutation checks.** `node scripts/scanner-p151/run-mutations.mjs [--only M3,M6]` re-introduces 13 old
+defects one at a time; it refuses to run over uncommitted edits, counts a kill only for a real assertion
+failure (or a timeout for a hang defect — vitest reports a timeout as an opaque `STACK_TRACE_ERROR`),
+never for a load/compile error, and verifies every file is restored byte-for-byte (SHA-256).
+
+**Running the e2e specs.** `playwright.config.ts` gives `pnpm build && pnpm preview` 120 s to come up and
+a full build can exceed that on a loaded machine. Build first with the placeholder env, start
+`pnpm preview --port 4391`, then `PLAYWRIGHT_PREVIEW_PORT=4391 pnpm exec playwright test <spec>
+--project=desktop-chromium` — the global setup requires the served build to match the current commit and
+a clean tree.
+
 ## 7a. Privilege-convergence tests
 
 Three steps in `db-tests`, and the order is the point (SECURITY.md §5.9):

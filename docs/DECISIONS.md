@@ -6009,3 +6009,64 @@ every non-Production restore target to clear `environment_ingest_config` uncondi
 restoring data, closing the one way a backup taken from an already-configured Production could
 otherwise carry the live configuration onto a disposable/local/staging restore target
 (`restore-drill.ts --mutation C`).
+
+
+## D-151 — Scanner hardening rules: latest-scan-wins cancellation, pre-decode image limits, a bounded and non-poisonable worker cache, visual-only evidence never HIGH, and a read-only result contract (P151)
+
+**2026-09-20 · Accepted**
+
+*(Numbered D-151 rather than the next free integer: parallel worktrees already use D-134 to D-140, so
+a sequential number would collide at integration. Renumber freely; nothing references it by number.)*
+
+**Context.** A hardening pass over the shipped scanner (docs/SCANNER_RESEARCH.md §12) reproduced, on
+the baseline build, defects that are expensive to leave: a leaked OCR worker per exit during cold start
+(P130-10: 7 live workers after 6 cycles in real Chromium), a visual worker resurrected by any scan
+reaching a disposed client, hung calls that wedge the serialized OCR queue for the session, stale scans
+overwriting the controller's shared state, a raw camera frame's blob URL surviving unmount, an unbounded
+and poisonable worker cache, a bomb file measured only after being decoded, no message for a rejected
+photo outside the camera step, and a visual-only HIGH that preselected a same-artwork sibling printing.
+
+**Decision.**
+
+1. **Latest scan wins.** Every `analyzeCapture` owns an `AbortController` fired by the caller, by a
+   newer scan, or by `dispose()`; OCR checks it before and after each recognition, the visual stage
+   before decode, and a publish gate precedes every write to controller state. A disposed
+   `VisualRecognitionClient` is terminal. A single recognition is bounded (60 s) and a single visual
+   round trip is bounded (30 s); on expiry the worker is discarded, never left wedged. Rejected
+   alternative: serialising scans in a queue — the UI never has two live scans, the useful behaviour on
+   a retake is to drop the abandoned one, and a queue would need its own bound.
+2. **Image limits are enforced before the decoder** whenever the header can be read: 10 MiB, 40 MP,
+   12,000 px longest edge, 32 px shortest edge, 6 : 1 aspect ratio; empty and SVG inputs refused.
+   Formats the sniffer cannot read (HEIC/AVIF) keep the post-decode check and the limitation is
+   documented, not hidden. Rejected: lowering the 40 MP ceiling without device evidence (it would
+   refuse legitimate large photos to guard a case the header check now covers).
+3. **Capture is latest-wins and cannot outlive its route.** Shutter and file-picker captures share one
+   guard invalidated at every camera-release site; a stale frame is dropped before it becomes an object
+   URL. A rejected photo is shown wherever the picker can be opened.
+4. **The worker cache is bounded and cannot be poisoned.** Only the current index generation is kept
+   after a verified load; a generation that fails integrity is purged; `text/html` is never stored and a
+   stored one is deleted on read. Rejected: disabling `env.useBrowserCache` / dropping the Service
+   Worker rule to remove the model double-copy — the consequence on Safari (a 48 MB re-download per
+   session, if worker fetches bypass the Service Worker) cannot be measured without the physical device;
+   deferred to that gate rather than guessed.
+5. **Visual-only evidence can never be HIGH.** A would-be HIGH with no readable name and no readable
+   collector number is held at MEDIUM (`visual-only-uncorroborated`); any printed-text signal lifts the
+   cap; thresholds, weights and the index are untouched (content id `f25fc05d569b7cca` unchanged).
+   Measured before/after counts are in SCANNER_RESEARCH §12e (false-HIGH 5.7–10.7% of unindexed-printing
+   scans → 0; visual-only correct-HIGH → 0, i.e. one extra tap). The scanner still never infers a
+   printing; the variant is the user's explicit choice unless the catalog has exactly one.
+6. **A read-only scanner result contract** (`scanner-identification.ts`): typed, provider-neutral, over
+   the existing controller, with no `commitBatch` member and no import path to the collection writer.
+   It is the only sanctioned way for a non-scanner consumer (Price Check) to use recognition.
+
+**Consequences.** One additional tap on scans where OCR read nothing at all; the visual-only HIGH badge
+no longer appears. `describeAnalysisError` is unchanged (a timeout maps to the generic "try the same
+photo again"). The P116 test that pinned "a fresh worker is constructed after dispose()" now pins the
+opposite, deliberately (documented in that test). No migration, no schema, no financial semantics.
+
+**Proof.** Reproduced on the baseline build in real Chromium (`tests/e2e/scanner-lifecycle-p151.spec.ts`:
+7 live workers → 0, 1 leaked blob URL → 0, no alert → alert) and by unit tests that fail on the old code;
+`scripts/scanner-p151/run-mutations.mjs` re-introduces 13 defects and the permanent tests kill all 13
+(files restored byte-for-byte); `pnpm scanner:stress` (seven modes, 100 iterations each);
+`pnpm scanner:confidence:audit` (real index, real matcher, synthetic proxies — **no real captures exist**).
+Emulated mobile only; the physical-iPhone gate remains deferred by the owner.
