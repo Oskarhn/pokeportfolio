@@ -5,7 +5,7 @@
  *   node scripts/scanner-p151/run-mutations.mjs [--only M3,M6] [--out report.json]
  *
  * A mutant counts as KILLED only when at least one real test assertion fails (an AssertionError, or
- * a "Test timed out" for a defect whose symptom is a hang). A compile/transform error that stops a
+ * a test timeout for a defect whose symptom is a hang). A compile/transform error that stops a
  * file from loading is NOT a kill — the mutant is reported as INVALID. Every mutated file is
  * restored from the exact original bytes and its SHA-256 is verified before the next mutant runs and
  * again at the end; the script refuses to start on a dirty file and exits non-zero on any mismatch.
@@ -166,9 +166,10 @@ function classify(json) {
     for (const t of file.assertionResults) {
       if (t.status !== 'failed') continue
       const message = (t.failureMessages ?? []).join('\n')
-      const meaningful = /AssertionError|expected |Test timed out|toBe|toEqual|toHave/i.test(
-        message,
-      )
+      // Vitest's JSON reporter renders a test-timeout as an opaque STACK_TRACE_ERROR whose duration
+      // equals the test timeout: that IS the symptom of a hang defect, so it counts.
+      const timedOut = /STACK_TRACE_ERROR|Test timed out/.test(message) && (t.duration ?? 0) >= 4500
+      const meaningful = timedOut || /AssertionError|expected |toBe|toEqual|toHave/i.test(message)
       failing.push({ name: t.fullName.slice(0, 120), meaningful })
     }
   }
