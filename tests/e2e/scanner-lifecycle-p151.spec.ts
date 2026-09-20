@@ -14,9 +14,8 @@ import { installFakeSession } from './support/fake-session'
  * Emulated desktop Chromium/WebKit, NOT a physical iPhone (PHYSICAL_IPHONE_GATE stays deferred).
  */
 
-const FIXTURE = readFileSync(
-  path.resolve(__dirname, '../fixtures/scanner/synthetic-card.png'),
-) as Buffer
+// Playwright runs from the repository root.
+const FIXTURE = readFileSync(path.resolve('tests/fixtures/scanner/synthetic-card.png'))
 
 function pngHeader(width: number, height: number): Buffer {
   const b = Buffer.alloc(33)
