@@ -90,13 +90,13 @@ describe('end to end with the real TCGdex variant mapper (fetch stubbed)', () =>
       },
     }
     const realFetch = globalThis.fetch
-    globalThis.fetch = (() =>
+    globalThis.fetch = () =>
       Promise.resolve(
         new Response(JSON.stringify(payload), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         }),
-      )) as typeof fetch
+      )
     try {
       const pricing = await fetchCardPricing('en', 'x-1')
       expect(pricing.variants.length).toBeGreaterThanOrEqual(2)
