@@ -75,8 +75,8 @@ async function noHorizontalOverflow(page: Page): Promise<boolean> {
 }
 
 test.describe('P151 scanner — mobile emulation (NOT a physical iPhone)', () => {
-  test.beforeEach((_fixtures, testInfo) => {
-    test.skip(testInfo.project.name !== 'desktop-chromium', 'CDP + Chromium emulation only')
+  test.beforeEach(({ browserName }) => {
+    test.skip(browserName !== 'chromium', 'CDP + Chromium emulation only')
   })
 
   test('narrow portrait: no horizontal overflow and touch targets are at least 44 px', async ({
