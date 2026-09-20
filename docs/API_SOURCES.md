@@ -290,6 +290,40 @@ user-entered text.
 
 ---
 
+## Graded price sources — status and integration plan (P153, verified 2026-09-20)
+
+**Status: NO authorized source exists. Price Check's graded section reports "not available".**
+
+Re-checked against the official pages on 2026-09-20 (no scraping, no authenticated access):
+
+| Source | Finding | URL |
+|---|---|---|
+| TCGdex | The FAQ does not mention graded prices. It says pricing is "matched to Cardmarket and TCGPlayer listings" without saying whether a figure is a sale or a listing, and publishes "no published hard rate limits" (be considerate; cache instead of refetching). | https://tcgdex.dev/faq |
+| PSA public API | Offers only Cert Verification by cert number. No prices, no population data. | https://www.psacard.com/publicapi/documentation |
+| PriceCharting API | Returns graded prices per company (PSA, BGS, CGC, SGC and others) and grade, but requires a paid subscription and is limited to 1 call per second. Rejected for cost above; adopting it needs the owner's explicit approval under COST_POLICY §1a. | https://www.pricecharting.com/api-documentation |
+
+**Consequences implemented in P153.**
+
+- Raw prices come only from the TCGdex relay (Cardmarket EUR, TCGplayer USD). Every relayed
+  metric is labelled an **index** — a provider-computed statistic — never "sold" or "listing",
+  because TCGdex documents neither. No per-condition breakdown exists, so "condition not
+  specified by source" is shown instead of an invented NM/LP.
+- Graded prices are modelled (company + grade + qualifier + price kind + currency + observed date)
+  and validated (`src/domain/price-check/graded.ts`), but no source is wired, so no graded number
+  is ever shown. A graded price is never derived from a raw price and one company's grade is
+  never treated as another's.
+
+**Integration plan if a graded source is later approved.** (1) An owner-approved provider whose
+terms allow display and caching. (2) A server-side adapter (an Edge Function; the provider token
+never reaches the client) returning `{ company, grade, qualifier?, kind, currency, valueMinor,
+observedAt }` rows — `kind` mandatory (`sold`, `listing` or `index`); a row without it is
+dropped, not defaulted. (3) Register it in the graded-source list consulted by the result page
+and add its own rate-limit handling (PriceCharting: 1 call/second). (4) Real fixtures captured
+from the provider replace the synthetic ones, and this section changes from "none" to the
+provider's verified terms. Until then graded data is `PARTIAL`, not `WORKING`.
+
+---
+
 ## Scrydex
 
 **Status: Rejected for now — cost**

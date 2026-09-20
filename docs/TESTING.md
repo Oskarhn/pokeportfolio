@@ -808,6 +808,26 @@ any of them.
 Console errors and failed network requests fail the test. A flow that renders correctly while
 throwing in the console is not passing.
 
+
+### Price Check (P153)
+
+- **Unit:** `tests/domain/price-check/`, `tests/data/price-check-fetch.test.ts`,
+  `tests/ui/price-check-*.test.ts` (structural read-only guard, scan-session adapter, SSR render of
+  every state). Expected values are literals, not the production helpers.
+- **Browser (placeholder backend, desktop + iPhone profile):** `tests/e2e/price-check.spec.ts`,
+  `price-check-scan.spec.ts` (real on-device scanner over a synthetic photo) and
+  `price-check-graded-layout.spec.ts` (the real `ResultView` with synthetic graded fixtures:
+  scroll, keyboard, axe in light and dark). The backend stand-in is
+  `tests/e2e/support/price-check-backend.ts` (network boundary only, synthetic data); it logs every
+  request.
+- **Ledger non-mutation proof (real local stack, opt-in):**
+  `tests/e2e/authenticated/price-check-ledger.spec.ts` — stack as in §6b. It needs `SUPABASE_URL`,
+  `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` and `P153_DB_URL` (the local `DB_URL`), refuses
+  anything but a loopback stack, seeds one scannable catalog card, drains the portfolio recompute
+  queue before each baseline (a pg_cron worker otherwise changes it mid-test) and compares every
+  `user_id` table. Two worktrees must not share a stack: give each its own `project_id` and ports
+  (local edit, never committed).
+
 ---
 
 ## 7. Performance

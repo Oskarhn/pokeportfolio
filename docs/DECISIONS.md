@@ -6009,3 +6009,58 @@ every non-Production restore target to clear `environment_ingest_config` uncondi
 restoring data, closing the one way a backup taken from an already-configured Production could
 otherwise carry the live configuration onto a disposable/local/staging restore target
 (`restore-drill.ts --mutation C`).
+
+## D-134 — Price Check is strictly read-only; a price belongs to one confirmed variant; graded prices are shown only from a real, authorized source (P153)
+
+**Status: accepted.**
+
+**Context.** Owners want to look a card's price up — by search or by scanning it — without
+creating a holding, purchase or sale. The existing scanner and search surfaces are add-flows, and
+the only price sources available are the TCGdex relay of Cardmarket (EUR) and TCGplayer (USD)
+statistics. No graded price source is authorized (docs/API_SOURCES.md, "Graded price sources").
+
+**Decisions.**
+
+1. **Read-only by construction, proven in layers.** Price Check code may call only the catalog
+   reads, the non-persisting `search-prices` function and a `SELECT` on `fx_rates`; it imports no
+   ledger data module and cannot reach the scanner's `commitBatch` (the scanner is consumed through
+   a two-member port). Proof: a static source guard, runtime scan-session tests, a browser network
+   log, and a database check that every `public` table with a `user_id` column — discovered from
+   `information_schema` — is byte-identical (row count + md5 of every row) after repeated searches,
+   lookups, variant switches, real scans and a click into the Add page. The request log and the
+   database check each fail on their own when an acquisition is injected (mutation evidence in
+   HANDOVER).
+2. **A price belongs to one exact variant.** A card with several variants gets no default: the
+   person chooses, and a scan (which identifies artwork, not finish) never decides. A variant id
+   that is not the card's is rejected, never replaced. A name alone is not identity: results always
+   show set, number, language, and flag same-name collisions.
+3. **Honest raw semantics.** Every relayed metric is an `index` (provider-computed statistic); it
+   is never labelled `sold` or `listing` because TCGdex documents neither. No per-condition
+   breakdown exists, so none is shown ("condition not specified by source"). A provider-reported
+   `0` is a value; a missing, malformed or failed lookup is a named state (`no_variant_price`,
+   `provider_error`, `rate_limited`, `network`, `malformed_response`) and never a number. Observed
+   date (from the provider) and fetched time (when this client received it) are shown separately;
+   freshness (`fresh` ≤ 3 days, `stale` ≤ 30, `outdated`, `unknown`) matches the portfolio
+   resolver's thresholds, and nothing is called "live".
+4. **FX.** The NOK figure is a labelled reference computed with the exact, exponent-aware
+   `convert` (P136 semantics: NOK per one major unit), showing the rate and its date; a rate older
+   than 7 days is flagged; with no usable rate only the source currency is shown.
+5. **Graded prices: modelled, not sourced.** The graded model (company + grade + qualifier + price
+   kind + currency + observed date, `kind` mandatory) and its validation exist, and the page shows
+   an explicit "no authorized source" state. No graded number is derived from a raw price, PSA 10
+   is never BGS 10, and a fixture is always rendered as "Synthetic test data". Graded capability
+   is **PARTIAL** until an owner-approved source is integrated (plan in API_SOURCES.md).
+6. **Access.** Catalog tables, `search_cards` and `search-prices` are `authenticated`-only
+   (`verify_jwt = true`), so Price Check needs a session like every private page. Public
+   signed-out reads would require relaxing RLS/grants and were not done.
+7. **Cache.** No new cache. The existing react-query cache (cleared on every identity change,
+   D-093) is used with keys built from stable ids and the provider/currency, never a card name;
+   `staleTime` 5 minutes, failures are never cached as a value, and a cached hit keeps its original
+   fetch time and is labelled "Cached".
+
+**Consequences.** `search-prices` gained an additive `observations[]` per variant (both providers,
+exact minor units as strings, provider timestamps); a client older than the function, or a function
+older than the client, degrades to the single headline value and says so. The function must be
+redeployed for Price Check to show both providers — P153 deployed nothing. `CardDetailPage` still
+formats source amounts with `Number(minor)/100`, wrong for exponent-0 currencies (none reach it
+today); left untouched as out of scope.
