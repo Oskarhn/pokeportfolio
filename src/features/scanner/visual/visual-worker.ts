@@ -57,7 +57,12 @@ import {
   type VisualPhaseTimings,
   type VisualWorkerProgressPhase,
 } from './phase-timing'
-import { createCacheThroughFetch, type CacheThroughFetch } from './worker-asset-cache-through'
+import {
+  createCacheThroughFetch,
+  isIndexGeneration,
+  isSupersededIndexGeneration,
+  type CacheThroughFetch,
+} from './worker-asset-cache-through'
 
 export type {
   VisualBackend,
@@ -442,6 +447,13 @@ let lastIndexDecodeMs: number | null = null
 let lastIndexRuntimeChecksumVerified: boolean | null = null
 let lastIndexRuntimeChecksumMs: number | null = null
 let lastIndexSourceProjectMatch: boolean | null = null
+/** P151: set by loadIndex() once it knows which generation it is loading, and when a failure looks
+ *  like CORRUPTED data (a content-id/checksum mismatch, undecodable payload) rather than a
+ *  deliberate rejection (wrong model revision / source project, HTTP error). init() purges that
+ *  generation's cached entries on an integrity failure so a bad response cached once cannot make
+ *  the visual channel unavailable on every later session. */
+let lastIndexGenerationId: string | null = null
+let lastIndexIntegrityFailure = false
 
 function bufferToHex(buffer: ArrayBuffer): string {
   return Array.from(new Uint8Array(buffer))
@@ -455,6 +467,8 @@ async function loadIndex(): Promise<DecodedVisualIndex | null> {
   lastIndexRuntimeChecksumVerified = null
   lastIndexRuntimeChecksumMs = null
   lastIndexSourceProjectMatch = null
+  lastIndexGenerationId = null
+  lastIndexIntegrityFailure = false
   indexContentId = null
   lastQueryVector = null
 
@@ -474,6 +488,7 @@ async function loadIndex(): Promise<DecodedVisualIndex | null> {
     return null
   }
   const contentId = pointer.contentId
+  lastIndexGenerationId = contentId
   const generationBase = `${INDEX_BASE}/generations/${contentId}`
 
   const manifestResponse = await fetch(`${generationBase}/manifest.json`)
@@ -560,6 +575,7 @@ async function loadIndex(): Promise<DecodedVisualIndex | null> {
     const digest = await crypto.subtle.digest('SHA-256', payload)
     const actualContentId = truncateDigestHex(bufferToHex(digest))
     if (actualContentId !== contentId) {
+      lastIndexIntegrityFailure = true
       lastIndexUnavailableReason =
         `content id mismatch: published as ${contentId}, actual content hashes to ` +
         `${actualContentId} — refusing a generation whose own files disagree with its URL.`
@@ -578,6 +594,7 @@ async function loadIndex(): Promise<DecodedVisualIndex | null> {
     const actualSha256 = bufferToHex(digest)
     lastIndexRuntimeChecksumVerified = actualSha256 === manifest.embeddingsSha256
     if (!lastIndexRuntimeChecksumVerified) {
+      lastIndexIntegrityFailure = true
       lastIndexUnavailableReason =
         `embeddings.bin runtime checksum mismatch: manifest says ${manifest.embeddingsSha256}, ` +
         `actual ${actualSha256}.`
@@ -596,8 +613,12 @@ async function loadIndex(): Promise<DecodedVisualIndex | null> {
     lastIndexDecodeMs = Math.round(performance.now() - decodeStart)
     indexContentId = contentId
     postProgress('index-decode-finished')
+    // P151: this generation verified, so every OTHER cached generation is dead weight (~15 MB
+    // each, kept forever before — the cache name never changes and nothing ever pruned it).
+    await cacheThrough?.evict((url) => isSupersededIndexGeneration(url, INDEX_BASE, contentId))
     return decoded
   } catch (error) {
+    lastIndexIntegrityFailure = true
     lastIndexUnavailableReason =
       error instanceof CoverageInvariantError || error instanceof VisualIndexError
         ? error.message
@@ -807,10 +828,16 @@ async function init(message: InitMessage): Promise<void> {
   postProgress('index-load-started')
   const indexLoadStart = performance.now()
   index = await loadIndex().catch((error: unknown) => {
+    // A thrown parse/network error mid-generation: treat the cached entries as suspect.
+    lastIndexIntegrityFailure = true
     lastIndexUnavailableReason = `index load threw: ${(error as Error).message}`
     return null
   })
   const indexLoadMs = Math.round(performance.now() - indexLoadStart)
+  if (index === null && lastIndexGenerationId !== null && lastIndexIntegrityFailure) {
+    const badGeneration = lastIndexGenerationId
+    await cacheThrough?.evict((url) => isIndexGeneration(url, INDEX_BASE, badGeneration))
+  }
   const log = finalizeFetchLog()
   postProgress('ready')
 
