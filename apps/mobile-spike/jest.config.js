@@ -29,6 +29,7 @@ const seam = (file) => ({ '^\\./supabase-client$': path.resolve(__dirname, file)
 
 const sharedBase = {
   rootDir: repoRoot,
+  setupFilesAfterEnv: [path.resolve(__dirname, 'tests/support/bigint-json.ts')],
   roots: [`${repoRoot}/tests/financial`, `${repoRoot}/tests/data`],
   testMatch: SHARED_TESTS,
   moduleNameMapper: {
@@ -53,7 +54,10 @@ module.exports = {
       testMatch: ['<rootDir>/tests/unit/**/*.test.{ts,tsx}'],
       moduleNameMapper: { ...seam('tests/support/unit-supabase-client.ts'), ...sharedAlias },
       moduleDirectories: appModules,
-      setupFilesAfterEnv: ['<rootDir>/tests/support/setup-rn.ts'],
+      setupFilesAfterEnv: [
+        '<rootDir>/tests/support/bigint-json.ts',
+        '<rootDir>/tests/support/setup-rn.ts',
+      ],
       transformIgnorePatterns: [
         'node_modules/(?!(?:.pnpm/)?((jest-)?react-native|@react-native(-community)?|expo(nent)?|@expo(nent)?/.*|@expo-google-fonts/.*|react-navigation|@react-navigation/.*|@unimodules/.*|unimodules|sentry-expo|native-base|react-native-svg))',
       ],
@@ -64,6 +68,7 @@ module.exports = {
       rootDir: __dirname,
       testEnvironment: 'node',
       testMatch: ['<rootDir>/tests/backend/**/*.test.ts'],
+      setupFilesAfterEnv: ['<rootDir>/tests/support/bigint-json.ts'],
       transform,
       moduleNameMapper: { ...seam('tests/support/backend-supabase-client.ts'), ...sharedAlias },
       moduleDirectories: appModules,
