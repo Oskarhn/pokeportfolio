@@ -92,8 +92,11 @@ describe('the run belongs to a lease from the button press to the last byte', ()
     expect(page).toContain('identity.begin(userId)')
     expect(page).toContain('artifactsLeaseRef')
     expect(page).toContain('isCurrent()')
-    expect(page).toMatch(/deliverFiles\(files, \{ canDeliver: deliverableNow \}\)/)
-    expect(page).toMatch(/downloadOnly\(files, \{ canDeliver: deliverableNow \}\)/)
+    // Every hand-over goes through the lease-gated delivery of the lease the files were built under.
+    expect(page).toContain('const lease = artifactsLeaseRef.current')
+    expect(page).toContain('deliverUnderLease(lease, (options) => send(artifacts, options))')
+    expect(page).toMatch(/deliverFiles\(files, options\)/)
+    expect(page).toMatch(/downloadOnly\(files, options\)/)
     // A user-id comparison is not an identity check (it cannot see A -> B -> A).
     expect(page).not.toMatch(/userIdRef|artifactsOwnerRef/)
   })

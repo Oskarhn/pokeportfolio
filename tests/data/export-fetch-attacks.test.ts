@@ -629,4 +629,41 @@ describe('P162 account switch during a multi-request export, leased client', () 
     expect(state.requestCounts.get('holdings')).toBe(2)
     expect(state.requestCounts.get('acquisition_lots') ?? 0).toBe(0)
   })
+
+  it('the lease is checked BEFORE each request too: a switch between two requests sends nothing', async () => {
+    const { authority, lease } = signedInAs(USER_A)
+    const state: FakeState = { tables: new Map(), requestCounts: new Map() }
+    registerStandardSections(state, { holdings: holdingRowsFor(USER_A, 7, 0) })
+    let holdingsAtSwitch = -1
+    await expect(
+      fetchExportSnapshot(leasedFakeClient(state, lease), {
+        pageSize: 3,
+        // Runs between two requests: after a page landed (and was checked), before the next is issued.
+        onPage: ({ section, totalRows }) => {
+          if (section === 'holdings' && totalRows >= 3 && holdingsAtSwitch < 0) {
+            holdingsAtSwitch = state.requestCounts.get('holdings') ?? 0
+            authority.observe(USER_B)
+          }
+        },
+      }),
+    ).rejects.toBeInstanceOf(AuthIdentityChangedError)
+    expect(holdingsAtSwitch).toBeGreaterThan(0)
+    expect(state.requestCounts.get('holdings')).toBe(holdingsAtSwitch) // the next page was never requested
+  })
+
+  it('the final gate catches a switch that lands after the last request was checked', async () => {
+    const { authority, lease } = signedInAs(USER_A)
+    const state: FakeState = { tables: new Map(), requestCounts: new Map() }
+    registerStandardSections(state, { holdings: holdingRowsFor(USER_A, 2, 0) })
+    await expect(
+      fetchExportSnapshot(leasedFakeClient(state, lease), {
+        pageSize: 3,
+        // openings is the last section and no catalog ids are referenced, so nothing is requested
+        // after it: only the gate at the end of the fetch can see this switch.
+        onPage: ({ section }) => {
+          if (section === 'openings') authority.observe(USER_B)
+        },
+      }),
+    ).rejects.toBeInstanceOf(AuthIdentityChangedError)
+  })
 })

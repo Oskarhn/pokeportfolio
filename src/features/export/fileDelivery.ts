@@ -243,6 +243,31 @@ export async function deliverFiles(
   return { method: 'download', filenames }
 }
 
+/** What ended up happening to a delivery that belongs to an identity lease. */
+export type LeasedDelivery =
+  | { status: 'delivered'; outcome: DeliveryOutcome }
+  /** The identity the files were built under had ended: nothing (more) was handed over. */
+  | { status: 'stale' }
+
+/**
+ * Runs one delivery for files that belong to an identity lease: refuses to start unless the lease is
+ * current, gives `send` the gate that every hand-over point checks, and reports a delivery stopped
+ * by that gate as `stale` (never as a failure to retry: the files are not the current identity's).
+ * Any other failure propagates unchanged. `lease` is structural so this module stays free of auth.
+ */
+export async function deliverUnderLease(
+  lease: { isCurrent(): boolean } | null,
+  send: (options: DeliveryOptions) => Promise<DeliveryOutcome>,
+): Promise<LeasedDelivery> {
+  if (lease === null || !lease.isCurrent()) return { status: 'stale' }
+  try {
+    return { status: 'delivered', outcome: await send({ canDeliver: () => lease.isCurrent() }) }
+  } catch (error) {
+    if (error instanceof DeliveryRefusedError) return { status: 'stale' }
+    throw error
+  }
+}
+
 /**
  * The explicit download fallback behind the UI's "Download instead" action. Same anchor
  * mechanics as the internal fallback; exists as a named export because choosing it is a user

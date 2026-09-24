@@ -6,10 +6,11 @@ import { getExportController } from './controller'
 import type { ExportArtifact, ExportController, ExportKind } from './contract'
 import { reduceExportFlow, describeReady, type ExportFlowState } from './exportFlow'
 import {
-  DeliveryRefusedError,
   canShareFiles,
   deliverFiles,
+  deliverUnderLease,
   downloadOnly,
+  type DeliveryOptions,
   type DeliveryOutcome,
 } from './fileDelivery'
 import { markReminderSatisfied } from '../../domain/export/export-reminder'
@@ -148,15 +149,6 @@ export function ExportPage({
     }
   }
 
-  /**
-   * Artifacts are deliverable only under the identity they were produced for — checked when the
-   * button is pressed and again by the delivery layer immediately before each file is handed to
-   * the browser, the save dialog or the share sheet.
-   */
-  function deliverableNow(): boolean {
-    return artifactsLeaseRef.current?.isCurrent() === true
-  }
-
   function readyArtifacts(flow: ExportFlowState): readonly ExportArtifact[] | null {
     return flow.phase === 'ready' || flow.phase === 'delivery-failed' || flow.phase === 'cancelled'
       ? flow.artifacts
@@ -172,32 +164,32 @@ export function ExportPage({
   const busy = flow.phase === 'preparing' || flow.phase === 'delivering'
 
   async function runDelivery(
-    send: (files: readonly ExportArtifact[]) => Promise<DeliveryOutcome>,
+    send: (files: readonly ExportArtifact[], options: DeliveryOptions) => Promise<DeliveryOutcome>,
     satisfiesReminder: (outcome: DeliveryOutcome) => boolean,
   ) {
     if (artifacts === null || readyKind === null || runningRef.current) return
-    if (!deliverableNow()) {
-      discardStale()
-      return
-    }
     runningRef.current = true
     dispatch({ type: 'DELIVER' })
     try {
-      const outcome = await send(artifacts)
-      if (satisfiesReminder(outcome) && session)
-        markReminderSatisfied(window.localStorage, session.user.id)
-      dispatch({ type: 'DELIVERED', outcome })
-    } catch (error) {
-      if (error instanceof DeliveryRefusedError) {
-        // The identity ended between the button press and the browser taking the file: the rest
-        // of the set is not delivered and the retained copies are dropped, not offered for retry.
+      // The lease the files were built under gates the delivery: checked before anything is handed
+      // over and again by the delivery layer right before each file, the save dialog or the share
+      // sheet (deliverUnderLease). A missing or ended lease means the files are stale.
+      const lease = artifactsLeaseRef.current
+      const delivery = await deliverUnderLease(lease, (options) => send(artifacts, options))
+      if (delivery.status === 'stale') {
+        // The identity ended between the button press and the browser taking the file: the rest of
+        // the set is not delivered and the retained copies are dropped, not offered for retry.
         discardStale()
-      } else {
-        dispatch({
-          type: 'DELIVERY_FAILED',
-          message: errorMessage(error, 'Something went wrong while saving your export.'),
-        })
+        return
       }
+      if (satisfiesReminder(delivery.outcome) && session)
+        markReminderSatisfied(window.localStorage, session.user.id)
+      dispatch({ type: 'DELIVERED', outcome: delivery.outcome })
+    } catch (error) {
+      dispatch({
+        type: 'DELIVERY_FAILED',
+        message: errorMessage(error, 'Something went wrong while saving your export.'),
+      })
     } finally {
       runningRef.current = false
     }
@@ -205,14 +197,14 @@ export function ExportPage({
 
   async function deliver() {
     await runDelivery(
-      (files) => deliverFiles(files, { canDeliver: deliverableNow }),
+      (files, options) => deliverFiles(files, options),
       (outcome) => outcome.method !== 'cancelled',
     )
   }
 
   async function deliverAsDownload() {
     await runDelivery(
-      (files) => downloadOnly(files, { canDeliver: deliverableNow }),
+      (files, options) => downloadOnly(files, options),
       () => true,
     )
   }

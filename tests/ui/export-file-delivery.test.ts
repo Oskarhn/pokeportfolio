@@ -1,6 +1,10 @@
+import { IdentityAuthority } from '../../src/auth/identity-lease'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   deliverFiles,
+  deliverUnderLease,
+  type DeliveryOptions,
+  type DeliveryOutcome,
   downloadOnly,
   DeliveryError,
   DeliveryRefusedError,
@@ -328,5 +332,80 @@ describe('P162 canDeliver: files are handed over only while their identity is cu
     await vi.runAllTimersAsync()
     expect(await pending).toEqual({ method: 'download', filenames: ['a.csv', 'b.csv'] })
     expect(anchors).toHaveLength(2)
+  })
+})
+
+describe('P162 deliverUnderLease: the final delivery gate', () => {
+  function tab() {
+    const authority = new IdentityAuthority()
+    authority.observe('user-a')
+    return { authority, lease: authority.begin('user-a') }
+  }
+
+  it('delivers while the lease is current', async () => {
+    const { lease } = tab()
+    const send = vi.fn((options: DeliveryOptions) => {
+      expect(options.canDeliver?.()).toBe(true)
+      return Promise.resolve<DeliveryOutcome>({ method: 'download', filenames: ['a.csv'] })
+    })
+    expect(await deliverUnderLease(lease, send)).toEqual({
+      status: 'delivered',
+      outcome: { method: 'download', filenames: ['a.csv'] },
+    })
+  })
+
+  it('a lease that ended after the files were built delivers nothing and never calls send', async () => {
+    const { authority, lease } = tab()
+    authority.observe('user-b')
+    const send = vi.fn<(o: DeliveryOptions) => Promise<DeliveryOutcome>>()
+    expect(await deliverUnderLease(lease, send)).toEqual({ status: 'stale' })
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it('A → B → A leaves the first generation stale although user-a is signed in again', async () => {
+    const { authority, lease } = tab()
+    authority.observe('user-b')
+    authority.observe('user-a')
+    expect(authority.userId).toBe('user-a')
+    const send = vi.fn<(o: DeliveryOptions) => Promise<DeliveryOutcome>>()
+    expect(await deliverUnderLease(lease, send)).toEqual({ status: 'stale' })
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it('no lease at all is stale', async () => {
+    expect(await deliverUnderLease(null, vi.fn())).toEqual({ status: 'stale' })
+  })
+
+  it('a lease that ends while the delivery is under way stops it at the next hand-over point', async () => {
+    stubNavigator({ share: null, canShare: null })
+    const { authority, lease } = tab()
+    const pending = deliverUnderLease(lease, (options) =>
+      downloadOnly([file('a.csv'), file('b.csv'), file('c.csv')], options),
+    )
+    await vi.advanceTimersByTimeAsync(0)
+    authority.observe(null) // signed out after the first file
+    await vi.runAllTimersAsync()
+    expect(await pending).toEqual({ status: 'stale' })
+    expect(anchors.map((a) => a.download)).toEqual(['a.csv'])
+  })
+
+  it('a same-user refresh event does not stop a delivery', async () => {
+    stubNavigator({ share: null, canShare: null })
+    const { authority, lease } = tab()
+    const pending = deliverUnderLease(lease, (options) =>
+      downloadOnly([file('a.csv'), file('b.csv')], options),
+    )
+    await vi.advanceTimersByTimeAsync(0)
+    authority.observe('user-a') // TOKEN_REFRESHED: same user, same epoch
+    await vi.runAllTimersAsync()
+    expect(await pending).toMatchObject({ status: 'delivered' })
+    expect(anchors).toHaveLength(2)
+  })
+
+  it('any other failure propagates unchanged', async () => {
+    const { lease } = tab()
+    await expect(
+      deliverUnderLease(lease, () => Promise.reject(new DeliveryError('disk full'))),
+    ).rejects.toThrow('disk full')
   })
 })
