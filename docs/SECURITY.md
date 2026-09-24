@@ -918,7 +918,7 @@ Stated explicitly rather than left implicit:
 | Traffic analysis, timing attacks, side channels | Out of scope for a ten-user hobby application. |
 | DDoS | Cloudflare's default protection; no further work. |
 | A spreadsheet product or version that treats an exported CSV cell as a formula despite the `'` prefix | No exporter can promise safety in every current and future spreadsheet. Observed (Excel 16.0.20326, nb-NO, P157): unprefixed `=1+1` and `-1+2` became formulas; prefixed cells and cells behind leading whitespace/NBSP/zero-width/control characters stayed text. Google Sheets and LibreOffice were not available and are untested. The threat model is a self-export: the data in a cell is the owner's own or public catalog text, and there is no attacker-controlled import path. |
-| A CSV opened by double-click in a locale whose list separator is `;` (nb-NO Excel) lands in one column | A usability limit of the comma dialect, not a safety one. The files import correctly through Data › From Text/CSV. The dialect is unchanged (D-141). |
+| A CSV opened by double-click in a locale whose list separator is `;` (nb-NO Excel) lands in one column | A usability limit of the comma dialect, not a safety one. The files import correctly through Data › From Text/CSV. The same locale also reads dot-decimal amounts (`-123.45`) as text on double-click (observed, P157) — money columns are deliberately locale-neutral, machine-readable dot decimals. The dialect is unchanged (D-141). |
 
 ---
 
