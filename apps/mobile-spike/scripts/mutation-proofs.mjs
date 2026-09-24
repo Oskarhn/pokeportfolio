@@ -185,7 +185,7 @@ function runJest(tests) {
 
 /** Names of tests that FAILED, from the verbose reporter ("  × name (12 ms)"). */
 function failedNames(output) {
-  return [...output.matchAll(/^s+×s+(.*?)(?:s+(d+ ms))?$/gm)].map((m) => m[1])
+  return [...output.matchAll(/^\s+×\s+(.*?)(?:\s+\(\d+ ms\))?\r?$/gm)].map((m) => m[1])
 }
 
 // Baseline: every mutant's test files must pass unmutated, or a "kill" would mean nothing.
