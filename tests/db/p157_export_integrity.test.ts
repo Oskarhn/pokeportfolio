@@ -535,6 +535,29 @@ describe('P157 failure, cancellation and side effects', () => {
     }
   }, 120_000)
 
+  it('a failing PAGE request (counts succeed) rejects — never a partial-success snapshot', async () => {
+    let pageRequests = 0
+    const baseFetch = globalThis.fetch
+    // A burst of data-page failures (GET with a row window; postgrest-js retries a failed GET, so
+    // several in a row are needed); counts and auth keep working, so the export gets as far as
+    // reading pages and must still refuse to finish.
+    const flakyPages = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const method = (init?.method ?? 'GET').toUpperCase()
+      if (
+        method === 'GET' &&
+        urlOf(input).includes('limit=') &&
+        ++pageRequests >= 2 &&
+        pageRequests <= 6
+      ) {
+        throw new TypeError('fetch failed (injected page outage)')
+      }
+      return baseFetch(input, init)
+    }) as typeof fetch
+    const client = await signInClient(userA, { fetchImpl: flakyPages })
+    await expect(fetchExportSnapshot(client, { pageSize: 2 })).rejects.toThrow()
+    expect(pageRequests).toBeGreaterThanOrEqual(2)
+  }, 120_000)
+
   it('a cancelled export stops issuing requests', async () => {
     const controller = new AbortController()
     let requests = 0
