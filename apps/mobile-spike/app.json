@@ -1,0 +1,22 @@
+{
+  "expo": {
+    "name": "PokePortfolio Spike",
+    "slug": "pokeportfolio-mobile-spike",
+    "version": "0.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "scheme": "pokeportfolio-spike",
+    "ios": { "bundleIdentifier": "invalid.pokeportfolio.spike", "supportsTablet": false },
+    "android": { "package": "invalid.pokeportfolio.spike" },
+    "plugins": [
+      "expo-secure-store",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Choose a card photo to preview. Photos stay on this device.",
+          "cameraPermission": "Take a card photo to preview. Photos stay on this device."
+        }
+      ]
+    ]
+  }
+}

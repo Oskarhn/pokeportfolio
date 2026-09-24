@@ -1,0 +1,187 @@
+import type { ReactNode } from 'react'
+import { ActivityIndicator, Pressable, StyleSheet, Text, View, type ViewStyle } from 'react-native'
+import type { Money } from '@shared/domain/money'
+import { formatMoney } from '../money/format-money'
+import type { Failure } from '../net/failure'
+import { MIN_TOUCH, SPACE, usePalette } from './theme'
+
+export function Button({
+  label,
+  onPress,
+  disabled,
+  variant = 'primary',
+  testID,
+  accessibilityHint,
+}: {
+  label: string
+  onPress: () => void
+  disabled?: boolean
+  variant?: 'primary' | 'secondary' | 'danger'
+  testID?: string
+  accessibilityHint?: string
+}) {
+  const p = usePalette()
+  const background = variant === 'primary' ? p.accent : 'transparent'
+  const color = variant === 'primary' ? p.onAccent : variant === 'danger' ? p.danger : p.accent
+  const style: ViewStyle = {
+    minHeight: MIN_TOUCH,
+    minWidth: MIN_TOUCH,
+    paddingHorizontal: SPACE.lg,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: background,
+    borderWidth: variant === 'primary' ? 0 : StyleSheet.hairlineWidth * 2,
+    borderColor: color,
+    opacity: disabled === true ? 0.5 : 1,
+  }
+  return (
+    <Pressable
+      testID={testID}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityHint={accessibilityHint}
+      accessibilityState={{ disabled: disabled === true }}
+      disabled={disabled}
+      onPress={onPress}
+      style={style}
+    >
+      <Text style={{ color, fontSize: 16, fontWeight: '600' }}>{label}</Text>
+    </Pressable>
+  )
+}
+
+export function Body({
+  children,
+  muted,
+  testID,
+}: {
+  children: ReactNode
+  muted?: boolean
+  testID?: string
+}) {
+  const p = usePalette()
+  return (
+    <Text testID={testID} style={{ color: muted === true ? p.muted : p.text, fontSize: 15 }}>
+      {children}
+    </Text>
+  )
+}
+
+export function Heading({ children }: { children: ReactNode }) {
+  const p = usePalette()
+  return (
+    <Text accessibilityRole="header" style={{ color: p.text, fontSize: 22, fontWeight: '700' }}>
+      {children}
+    </Text>
+  )
+}
+
+/** A money figure. Absent (null) renders the honest dash, never a zero (see format-money.ts). */
+export function MoneyText({
+  value,
+  testID,
+  emphasis,
+}: {
+  value: Money | null
+  testID?: string
+  emphasis?: boolean
+}) {
+  const p = usePalette()
+  const text = formatMoney(value)
+  return (
+    <Text
+      testID={testID}
+      accessibilityLabel={value === null ? 'No value' : text}
+      style={{
+        color: value === null ? p.muted : p.text,
+        fontSize: emphasis === true ? 20 : 15,
+        fontWeight: emphasis === true ? '700' : '500',
+        fontVariant: ['tabular-nums'],
+      }}
+    >
+      {text}
+    </Text>
+  )
+}
+
+export function Loading({ label }: { label: string }) {
+  const p = usePalette()
+  return (
+    <View
+      testID="loading"
+      accessibilityRole="progressbar"
+      accessibilityLabel={label}
+      style={{ padding: SPACE.xl, alignItems: 'center', gap: SPACE.md }}
+    >
+      <ActivityIndicator color={p.accent} />
+      <Body muted>{label}</Body>
+    </View>
+  )
+}
+
+/** A failure with its fixed text and, when it can help, a retry. Never shows server detail. */
+export function FailureView({ failure, onRetry }: { failure: Failure; onRetry?: () => void }) {
+  const p = usePalette()
+  return (
+    <View
+      testID={`failure-${failure.kind}`}
+      accessibilityRole="alert"
+      style={{ padding: SPACE.lg, gap: SPACE.md, alignItems: 'flex-start' }}
+    >
+      <Text style={{ color: p.danger, fontSize: 15, fontWeight: '600' }}>{failure.message}</Text>
+      {failure.retryable && onRetry !== undefined ? (
+        <Button label="Try again" variant="secondary" onPress={onRetry} />
+      ) : null}
+    </View>
+  )
+}
+
+export function EmptyView({ title, detail }: { title: string; detail?: string }) {
+  return (
+    <View testID="empty" style={{ padding: SPACE.xl, gap: SPACE.sm }}>
+      <Heading>{title}</Heading>
+      {detail !== undefined ? <Body muted>{detail}</Body> : null}
+    </View>
+  )
+}
+
+export function Card({ children, testID }: { children: ReactNode; testID?: string }) {
+  const p = usePalette()
+  return (
+    <View
+      testID={testID}
+      style={{
+        backgroundColor: p.surface,
+        borderRadius: 12,
+        padding: SPACE.lg,
+        gap: SPACE.sm,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderColor: p.border,
+      }}
+    >
+      {children}
+    </View>
+  )
+}
+
+export function Badge({ label }: { label: string }) {
+  const p = usePalette()
+  return (
+    <Text
+      style={{
+        alignSelf: 'flex-start',
+        color: p.warning,
+        borderColor: p.warning,
+        borderWidth: 1,
+        borderRadius: 6,
+        paddingHorizontal: 6,
+        paddingVertical: 2,
+        fontSize: 12,
+        fontWeight: '700',
+      }}
+    >
+      {label}
+    </Text>
+  )
+}

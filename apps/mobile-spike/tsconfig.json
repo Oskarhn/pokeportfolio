@@ -1,0 +1,31 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": false,
+    "types": ["jest", "node"],
+    "lib": ["ESNext"],
+    "allowImportingTsExtensions": false,
+    "baseUrl": ".",
+    "paths": {
+      "@shared/*": ["../../src/*"]
+    }
+  },
+  "include": [
+    "index.ts",
+    "App.tsx",
+    "src",
+    "tests",
+    "../../src/domain/*.ts",
+    "../../src/data/portfolio.ts",
+    "../../src/data/collection.ts",
+    "../../src/data/catalog.ts",
+    "../../src/data/pricing.ts",
+    "../../src/data/money.ts",
+    "../../src/data/auth-retry.ts",
+    "../../src/data/supabase-client.ts",
+    "../../src/data/database.types.ts"
+  ],
+  "exclude": ["node_modules", "babel.config.js", "metro.config.js", "jest.config.js"]
+}

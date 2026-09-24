@@ -1,0 +1,47 @@
+{
+  "name": "pokeportfolio-mobile-spike",
+  "version": "0.0.0",
+  "private": true,
+  "description": "P158 native mobile feasibility spike (provisional; not a product decision)",
+  "main": "index.ts",
+  "scripts": {
+    "start": "expo start",
+    "typecheck": "tsc --noEmit",
+    "lint": "pnpm --dir ../.. exec eslint --config apps/mobile-spike/eslint.config.js apps/mobile-spike/src apps/mobile-spike/tests apps/mobile-spike/App.tsx apps/mobile-spike/index.ts",
+    "test": "jest --selectProjects unit shared",
+    "test:backend": "node scripts/run-backend-tests.mjs",
+    "test:all": "jest",
+    "bundle:android": "expo export --platform android --output-dir .build/android",
+    "bundle:ios": "expo export --platform ios --output-dir .build/ios",
+    "hermes:compile": "node scripts/hermes-compile-check.mjs",
+    "backend:start": "node scripts/local-backend.mjs start",
+    "backend:stop": "node scripts/local-backend.mjs stop",
+    "backend:seed": "pnpm --dir ../.. exec tsx apps/mobile-spike/scripts/seed-local-backend.mts"
+  },
+  "dependencies": {
+    "@react-navigation/bottom-tabs": "7.19.2",
+    "@react-navigation/native": "7.4.1",
+    "@react-navigation/native-stack": "7.19.2",
+    "@supabase/supabase-js": "2.112.3",
+    "expo": "57.0.24",
+    "expo-file-system": "~57.0.7",
+    "expo-image-picker": "~57.0.19",
+    "expo-secure-store": "~57.0.4",
+    "expo-status-bar": "~57.0.1",
+    "react": "19.2.3",
+    "react-native": "0.86.3",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-screens": "~4.26.2",
+    "react-native-url-polyfill": "4.0.0"
+  },
+  "devDependencies": {
+    "@testing-library/react-native": "^14.0.1",
+    "@types/jest": "^29.5.14",
+    "@types/react": "~19.2.18",
+    "hermes-compiler": "^250829098.0.19",
+    "jest": "^29.7.0",
+    "jest-expo": "~57.0.5",
+    "react-test-renderer": "19.2.3",
+    "typescript": "~5.9.3"
+  }
+}

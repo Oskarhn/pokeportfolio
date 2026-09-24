@@ -23,6 +23,10 @@ export default tseslint.config(
       // Scratch state the Supabase CLI writes locally when `supabase start`/`db reset` runs
       // (gitignored, .gitignore:19) — not source, not part of any tsconfig project.
       'supabase/.temp',
+      // The P158 native spike is a separate, isolated package with its own tsconfig, dependencies and
+      // ESLint config (apps/mobile-spike/eslint.config.js); the web config and its typed-lint project
+      // do not apply to React Native code.
+      'apps/mobile-spike',
     ],
   },
   {
