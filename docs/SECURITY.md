@@ -670,8 +670,11 @@ and an error category only. Cloudflare Pages builds (`CF_PAGES=1`) and any job s
 `PP_REQUIRE_HOSTED_PUBLIC_ENV=1` must present `https://<ref>.supabase.co` and a
 `sb_publishable_…` key. Incident record and owner procedure:
 [security/P160_SECRET_INCIDENT_RUNBOOK.md](security/P160_SECRET_INCIDENT_RUNBOOK.md). Residual risk
-the guard cannot remove: GitHub prints resolved step `env:` values (variables are unmasked) into the
-job log, which is public while the repository is.
+the guard cannot remove: GitHub prints resolved step `env:` values into the job log before any step
+runs, unmasked for variables, and that log is public while the repository is. D-163 removes the cause
+for the deploy job — it reads the two build values from repository **secrets** (masked), and a test
+forbids `vars.*` and any `env:` above step level in the workflow. Masking matches the exact string
+only, and the values are public in the bundle either way.
 
 Three vocabulary layers, kept distinct so a future session does not conflate them: the **current
 hosted keys** above (what `pokeportfolio-dev` actually uses); the **local stack's legacy fixture

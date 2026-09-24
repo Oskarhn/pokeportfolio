@@ -28,7 +28,7 @@
     "check:links": "node scripts/check-links.mjs",
     "check:public-env": "node scripts/check-public-env.mjs",
     "check:dist-secrets": "node scripts/check-dist-secrets.mjs",
-    "check:github-vars": "node scripts/check-github-public-vars.mjs",
+    "check:github-config": "node scripts/check-github-release-config.mjs",
     "db:start": "supabase start",
     "db:stop": "supabase stop",
     "db:migrate": "supabase migration up",

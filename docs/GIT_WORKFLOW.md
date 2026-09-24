@@ -164,7 +164,28 @@ one job (asserted in the same test file). They are **repository** secrets: GitHu
 environment secrets cannot be configured for a private repository on the Free plan (GitHub Docs,
 "Managing environments for deployment"), so the job carries no `environment:` key (also P150).
 The post-deploy `preview-verify.mjs --sha` check matches the SHA as a `"`, `'` or backtick-quoted
-value — the production bundle embeds it as a template literal (P150).
+value (the same quote character on both sides) — the production bundle embeds it as a template
+literal (P150, tightened P163).
+
+**Step order inside `deploy-production` (P163, D-163).** (1) `check-public-env.mjs --require-hosted
+--process-env-only` — before dependencies are installed and before anything is built; (2) the
+stale-run check (a proven-stale run deploys nothing and ends green; an *unreadable* `origin` fails
+the job); (3) install; (4) `rm -rf dist`; (5) `pnpm build` in the deploy profile; (6)
+`check-dist-secrets.mjs`; (7) the build-identity check; (8) `wrangler pages deploy`; (9) live
+verification. Every step from (3) on is gated on the stale-run result and none may fail open
+(`continue-on-error`, `|| true`, `always()`). `tests/config/release-pipeline-integration.test.ts`
+proves the order, the gating and each mutation.
+
+**The two public build values are stored as repository secrets, not variables (P163).** Both are
+public in the browser bundle whichever way GitHub stores them. The reason is the job log: GitHub
+prints each step's resolved `env:` block before the step runs, redacts secrets there, and does **not**
+redact variables. A wrong value in a variable is printed — in a public repository — before any guard
+can object; in a secret it is masked. The secret names (`PRODUCTION_SUPABASE_URL`,
+`PRODUCTION_SUPABASE_PUBLISHABLE_KEY`) deliberately differ from the old `VITE_*` variable names so a
+stale variable can never be consumed by accident. No `vars.*` expression may appear in the
+workflow, and no `env:` block may exist above step level (both asserted). Cost of masking: the URL
+appears as `***` in the verifier output. Limit of masking: it matches the exact string, so a value
+that is transformed before printing is not masked — the guards print categories only for that reason.
 
 **Why this alone does not close P130-08 yet.** Landing this workflow is safe with Cloudflare's
 automatic deploy still enabled — it fails closed on the first missing secret/variable, never
@@ -174,14 +195,19 @@ succeed without credentials that do not exist in this repository. `gh secret lis
 session). **P130-08 remains OPEN, and the workflow above is not yet the live deploy path**, until
 the owner does the following, still in order — none of it can be done from a branch:
 
-1. **GitHub repository settings:** add the two ordinary (non-secret) build variables as
-   repository **variables** — Settings → Secrets and variables → Actions → Variables: `VITE_SUPABASE_URL` (the current Production value, already public in the
-   live CSP — `https://nopmkroeygmlvndzjjqs.supabase.co`), `VITE_SUPABASE_PUBLISHABLE_KEY` (the
-   current anon/publishable key — copy it from the Cloudflare dashboard's own build environment,
-   Settings → Environment variables; it is not a secret, DEVELOPMENT.md §9, but this document does
-   not restate its value). This step alone is harmless to do at any time — the deploy job cannot
-   run on a PR regardless, and even on a `main` push it will still fail closed at the next step
-   without the Cloudflare credentials.
+1. **GitHub repository settings:** add the two public build values as repository **secrets** —
+   Settings → Secrets and variables → Actions → Secrets: `PRODUCTION_SUPABASE_URL` (the project
+   origin, `https://<project-ref>.supabase.co`, nothing else) and
+   `PRODUCTION_SUPABASE_PUBLISHABLE_KEY` (the `sb_publishable_…` key from the Supabase dashboard;
+   it is public by design, DEVELOPMENT.md §9, but this document does not restate its value). Then
+   **delete** the old Actions variables `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY`
+   (the workflow does not read them; one held a secret-shaped value in the P159/P160 incident) —
+   but only after the key rotation in
+   [security/RELEASE_PREFLIGHT_P163.md](security/RELEASE_PREFLIGHT_P163.md). Enter secrets through
+   `gh secret set <NAME> --repo Oskarhn/pokeportfolio` (prompted, never on a command line) or the
+   GitHub UI. `node scripts/check-github-release-config.mjs` then confirms by **name** that all four
+   secrets exist and no legacy variable remains. The job's first guard judges the *shape* at run
+   time; nothing but the owner's dashboards establishes that a value is the right one.
 2. **Cloudflare dashboard — in the account that owns the `pokeportfolio-dev` Pages project:**
    create a custom API token (Manage Account → Account API Tokens → Create Token → Custom token)
    with the single permission **Account → Cloudflare Pages → Edit**, restricted to that one

@@ -8,8 +8,8 @@ none should be added to it. Written 2026-09-24. Governing rules: [SECURITY.md](.
 
 | Fact | Status | Evidence |
 |---|---|---|
-| The repository Actions variable `VITE_SUPABASE_URL` holds a value shaped like a Supabase **secret** key (`sb_secret_…`) instead of a URL | **Still true on 2026-09-24** (variable last updated 2026-09-19 23:16 UTC) | `node scripts/check-github-public-vars.mjs` → `VITE_SUPABASE_URL: url_is_secret_key_shaped`; the value never left that process |
-| `VITE_SUPABASE_PUBLISHABLE_KEY` is publishable-shaped | Shape only | same command, note `publishable_key_accepted_by_shape_only` |
+| The repository Actions variable `VITE_SUPABASE_URL` holds a value shaped like a Supabase **secret** key (`sb_secret_…`) instead of a URL | **Still true on 2026-09-24** (variable last updated 2026-09-19 23:16 UTC) | P160's value-classifying variable check (since replaced, P163) → `VITE_SUPABASE_URL: url_is_secret_key_shaped`; the value never left that process |
+| `VITE_SUPABASE_PUBLISHABLE_KEY` is publishable-shaped | Shape only | same check, note `publishable_key_accepted_by_shape_only` |
 | That value was printed into an AI-session transcript on 2026-09-19 (by `gh variable list`) | Reported by P159 | `output_159.txt` S-1 |
 | No workflow run has evaluated either variable | Verified | 0 runs created since 2026-09-19 23:16 UTC (GitHub API); the P142 deploy job has never executed |
 | The deployed public bundle (Production, commit `d8682e0`) contains no secret key or service-role JWT | Verified for that deployment | 65 served files scanned in memory: no `sb_secret_` key shape, no service-role JWT, one Supabase origin, a `sb_publishable_` shape present |
@@ -58,17 +58,21 @@ advice is not to rush: confirm what leaked and remediate the root cause first.
    (admin invitations page, an invitation redemption) and watch the function logs for 401 / invalid
    API key errors.
 7. **Delete the compromised key.** Irreversible ("gone forever" per the docs). Repeat the step-6 check.
-8. **Correct the GitHub variable.** `VITE_SUPABASE_URL` = the project **origin only**,
-   `https://<project-ref>.supabase.co` (Dashboard → Project Settings → General/API). No path, no
-   query, no trailing content. Confirm `VITE_SUPABASE_PUBLISHABLE_KEY` is the `sb_publishable_…`
-   key from the same page.
+8. **Move the two build values into repository secrets (P163) and delete the variables.** Create
+   the secret `PRODUCTION_SUPABASE_URL` = the project **origin only**,
+   `https://<project-ref>.supabase.co` (Dashboard → Project Settings → General/API; no path, no
+   query, no trailing content) and `PRODUCTION_SUPABASE_PUBLISHABLE_KEY` = the `sb_publishable_…`
+   key from the same page. Then delete the Actions variables `VITE_SUPABASE_URL` and
+   `VITE_SUPABASE_PUBLISHABLE_KEY`. Why secrets: §5.
 9. **Verify without exposing anything:**
 
    ```bash
-   node scripts/check-github-public-vars.mjs
+   node scripts/check-github-release-config.mjs
    ```
 
-   Expect `public-env-guard: OK (profile: hosted)`. This proves shape only.
+   Expect `check-github-release-config: OK`. This reads **names only** — it proves the four secrets
+   exist and no legacy variable remains, not that a value is correct. The value's shape is judged
+   by the deploy job's first guard at run time (`public-env-guard: OK (profile: hosted)`).
 10. **Check Cloudflare Pages** (Workers & Pages → project → Settings → Environment variables) holds
     the same URL and publishable key. From this change on, a Cloudflare Pages build refuses to run
     with anything else (§4).
@@ -101,7 +105,8 @@ That is an account-settings change and remains the owner's.
 Implementation: `scripts/lib/public-env-guard.mjs` (pure), `scripts/check-public-env.mjs` (first
 `prebuild` step), a `config`-hook plugin in `vite.config.ts` (first plugin; covers a direct
 `vite build`, `vite`, `vite preview`), `scripts/check-dist-secrets.mjs` (artefact scan, CI step
-right after the build), `scripts/check-github-public-vars.mjs` (GitHub-side shape check).
+right after the build), `scripts/check-github-release-config.mjs` (GitHub-side names-only check;
+replaced the P160 value-classifying variable check in P163).
 
 - Output is a **field name and a category**, nothing else — no value, prefix, length, query string,
   stack trace or `new URL` error text. Tests assert that no 10-character window of a synthetic
@@ -133,33 +138,42 @@ right after the build), `scripts/check-github-public-vars.mjs` (GitHub-side shap
 - Adding a new public variable is a deliberate act: add its name to `KNOWN_PUBLIC_VARS`, give it a
   validator, and the source-scan test (`tests/config/public-env-guard.test.ts`) will insist on it.
 
-## 5. Residual risk the guard cannot remove
+## 5. The step-header disclosure, and how P163 handles it
 
-GitHub prints each step's resolved `env:` block in the job log, and **variables are not masked**
-(confirmed on a real past run: the placeholder values appear in the `Build` step's header). In the
-P142 deploy job the expressions `${{ vars.VITE_SUPABASE_URL }}` are evaluated before any step runs,
-so a wrong value would be printed in that step's header — in a public repository, before the guard
-can object. The guard turns a silent leak into a loud failure; it cannot un-print. Options for the
-owner:
+GitHub prints each step's resolved `env:` block in the job log **before the step runs**, and it
+redacts secrets there but **not variables** (confirmed on a real past run: the placeholder values
+appeared in the `Build` step's header). With `${{ vars.VITE_SUPABASE_URL }}` in the P142 deploy job,
+a wrong value would have been printed in a public repository before any guard could object. A guard
+cannot fix that by itself: it runs after the header is written.
 
-1. Make the repository private (§3) — then the log audience is the owner alone.
-2. Store the two values as repository **secrets** instead of variables (masked as `***`, at the cost
-   of masking the URL in verifier output too). Changes the P142 setup instructions.
-3. Accept it, on the grounds that once §2 is done both values are public by design.
+P163 removes the cause instead of relying on the guard:
 
-Recommendation: 1, and 3 afterwards. Nothing has run against these variables, so nothing has leaked
-through this path yet.
+- The deploy job reads the two build values from repository **secrets** (`PRODUCTION_SUPABASE_URL`,
+  `PRODUCTION_SUPABASE_PUBLISHABLE_KEY`) — masked in the header. The names differ from the old
+  variables on purpose, so a stale variable cannot be consumed. No `vars.*` expression and no
+  above-step `env:` block may exist in the workflow (asserted by
+  `tests/config/release-pipeline-integration.test.ts`).
+- Both values are **public in the final browser bundle** whichever way GitHub stores them. Secrets
+  are used only for masking, not for confidentiality.
+- Masking matches the exact string. A transformed copy (base64, a substring, a reformatted URL) is
+  not masked, which is why every guard prints categories only.
+- Cost: the Supabase URL appears as `***` in the live-verification output.
+- The old variables must be **deleted** (runbook §2 step 8): they are unused, but one held a
+  secret-shaped value and variables stay readable.
+- Not covered: anything a step prints that is not a workflow-resolved value, and the exposure that
+  already happened (a value in a transcript, or in the variable's history). Rotation (§2) is the only
+  remedy for that; masking does not undo it.
 
-## 6. P142 integration
+## 6. P142 integration (done in P163)
 
-`docs/security/p160-p142-integration.patch` (unified diff, `git apply -p1`) adds to the P142
-`deploy-production` job: a guard step in the deploy profile before the build, the
-`PP_REQUIRE_HOSTED_PUBLIC_ENV` selector on the build step, and the artefact scan between build and
-identity check. It was checked to apply cleanly to both P142's committed `ci.yml` (`7430f66`) and
-its working tree including the uncommitted F1–F4 edits; the P142 worktree was not modified.
-`tests/config/public-env-guard.test.ts` ("any workflow that deploys to Pages…") fails on the
-un-patched P142 workflow and passes on the patched one — it is inert on `main` until P142 lands, and
-then it is the gate that stops a deploy path without these steps.
+The deploy job now contains, in this order: the input guard (`check-public-env.mjs --require-hosted
+--process-env-only`, before `pnpm install`), the stale-run check, install, `rm -rf dist`, a build in
+the deploy profile (`PP_REQUIRE_HOSTED_PUBLIC_ENV=1`), `check-dist-secrets.mjs`, the build-identity
+check, and only then `wrangler pages deploy`. The P160 hand-applied patch file was removed once
+integrated. `tests/config/public-env-guard.test.ts` ("any workflow that deploys to Pages…") and
+`tests/config/release-pipeline-integration.test.ts` fail any workflow that reaches an upload without
+these steps, in this order. See [RELEASE_PREFLIGHT_P163.md](RELEASE_PREFLIGHT_P163.md) for the owner
+checklist that gates the first real deploy.
 
 ## 7. Stitch
 

@@ -601,6 +601,9 @@ export default defineConfig({
   ],
   test: {
     environment: 'node',
+    // Several tests/config suites spawn real `node`/`vite` subprocesses; under a full-suite run on a
+    // loaded machine a single one can exceed Vitest's 5 s default without anything being wrong.
+    testTimeout: 30_000,
     // Infrastructure-free suites only. Database and authorization tests need a live Supabase
     // stack and run separately via `pnpm test:db` (vitest.db.config.ts) — see docs/TESTING.md §1.
     // tests/ui/ covers browser-platform logic that is pure enough to verify without a DOM

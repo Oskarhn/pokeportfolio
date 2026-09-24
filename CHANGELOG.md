@@ -10,6 +10,18 @@ they were**.
 
 ## [Unreleased]
 
+### Security — 2026-09-24 — CI-gated Production deploy integrated with the public-config guards (P163, D-163)
+
+- Integrates the P142 deploy job, the P150 corrections and the P160 guards on one local branch. Not
+  pushed, not run on GitHub; **P130-08 is still open**.
+- The deploy job reads its two public build values from repository **secrets** (masked in the step
+  header) instead of unmasked variables, runs the configuration guard first (before install), removes
+  `dist/` before building, scans `dist/`, checks the build identity, and only then uploads.
+- `release-guard remote-main-current` fails on an unreadable origin instead of ending green having
+  deployed nothing; the bundle SHA match needs the same quote on both sides.
+- New `pnpm check:github-config` (names only) replaces the value-reading `check:github-vars`.
+- Owner checklist: `docs/security/RELEASE_PREFLIGHT_P163.md`.
+
 ### Security — 2026-09-24 — Public build configuration guard (P160, D-160)
 
 - Every build now validates the public (`VITE_*`) configuration before doing anything else and

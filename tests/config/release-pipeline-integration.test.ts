@@ -487,129 +487,137 @@ function expectNoLeak(output: string, value: string) {
   }
 }
 
-describe('the workflow’s first guard, run exactly as the workflow runs it', () => {
-  const good = { VITE_SUPABASE_URL: hostedUrl(), VITE_SUPABASE_PUBLISHABLE_KEY: publishableKey() }
+describe(
+  'the workflow’s first guard, run exactly as the workflow runs it',
+  { timeout: 60_000 },
+  () => {
+    const good = { VITE_SUPABASE_URL: hostedUrl(), VITE_SUPABASE_PUBLISHABLE_KEY: publishableKey() }
 
-  it('accepts a well-formed hosted configuration', () => {
-    expect(guard(good).status).toBe(0)
-  })
+    it('accepts a well-formed hosted configuration', () => {
+      expect(guard(good).status).toBe(0)
+    })
 
-  it('refuses a raw secret-shaped value in the URL slot, without echoing it', () => {
-    const value = secretKey()
-    const r = guard({ ...good, VITE_SUPABASE_URL: value })
-    expect(r.status).toBe(1)
-    expect(`${r.stdout}${r.stderr}`).toContain('url_is_secret_key_shaped')
-    expectNoLeak(`${r.stdout}${r.stderr}`, value)
-  })
+    it('refuses a raw secret-shaped value in the URL slot, without echoing it', () => {
+      const value = secretKey()
+      const r = guard({ ...good, VITE_SUPABASE_URL: value })
+      expect(r.status).toBe(1)
+      expect(`${r.stdout}${r.stderr}`).toContain('url_is_secret_key_shaped')
+      expectNoLeak(`${r.stdout}${r.stderr}`, value)
+    })
 
-  it('refuses a secret hidden in the query of an otherwise valid URL', () => {
-    const value = `${hostedUrl()}/?apikey=${secretKey()}`
-    const r = guard({ ...good, VITE_SUPABASE_URL: value })
-    expect(r.status).toBe(1)
-    expectNoLeak(`${r.stdout}${r.stderr}`, value)
-  })
-
-  it('refuses a secret in userinfo and in the fragment', () => {
-    for (const value of [
-      `https://${secretKey()}@${REF}.supabase.co`,
-      `${hostedUrl()}/#${secretKey()}`,
-    ]) {
+    it('refuses a secret hidden in the query of an otherwise valid URL', () => {
+      const value = `${hostedUrl()}/?apikey=${secretKey()}`
       const r = guard({ ...good, VITE_SUPABASE_URL: value })
       expect(r.status).toBe(1)
       expectNoLeak(`${r.stdout}${r.stderr}`, value)
-    }
-  })
+    })
 
-  it('refuses a service_role JWT as the frontend key and an extra secret-valued VITE_ field', () => {
-    const jwtValue = serviceRoleJwt()
-    const a = guard({ ...good, VITE_SUPABASE_PUBLISHABLE_KEY: jwtValue })
-    expect(a.status).toBe(1)
-    expectNoLeak(`${a.stdout}${a.stderr}`, jwtValue)
-    const extra = secretKey()
-    const b = guard({ ...good, VITE_EXTRA_TOKEN: extra })
-    expect(b.status).toBe(1)
-    expectNoLeak(`${b.stdout}${b.stderr}`, extra)
-  })
+    it('refuses a secret in userinfo and in the fragment', () => {
+      for (const value of [
+        `https://${secretKey()}@${REF}.supabase.co`,
+        `${hostedUrl()}/#${secretKey()}`,
+      ]) {
+        const r = guard({ ...good, VITE_SUPABASE_URL: value })
+        expect(r.status).toBe(1)
+        expectNoLeak(`${r.stdout}${r.stderr}`, value)
+      }
+    })
 
-  it('refuses a missing value and a local/placeholder configuration (fail closed, not a skip)', () => {
-    expect(guard({}).status).toBe(1)
-    expect(
-      guard({
-        VITE_SUPABASE_URL: 'http://127.0.0.1:54321',
-        VITE_SUPABASE_PUBLISHABLE_KEY: 'ci-placeholder-not-a-key',
-      }).status,
-    ).toBe(1)
-  })
+    it('refuses a service_role JWT as the frontend key and an extra secret-valued VITE_ field', () => {
+      const jwtValue = serviceRoleJwt()
+      const a = guard({ ...good, VITE_SUPABASE_PUBLISHABLE_KEY: jwtValue })
+      expect(a.status).toBe(1)
+      expectNoLeak(`${a.stdout}${a.stderr}`, jwtValue)
+      const extra = secretKey()
+      const b = guard({ ...good, VITE_EXTRA_TOKEN: extra })
+      expect(b.status).toBe(1)
+      expectNoLeak(`${b.stdout}${b.stderr}`, extra)
+    })
 
-  it('--process-env-only needs no installed dependencies: the script has no static vite import', () => {
-    const source = readFileSync(join(REPO_ROOT, 'scripts', 'check-public-env.mjs'), 'utf8')
-    expect(source).not.toMatch(/^import[^\n]*from 'vite'/m)
-  })
+    it('refuses a missing value and a local/placeholder configuration (fail closed, not a skip)', () => {
+      expect(guard({}).status).toBe(1)
+      expect(
+        guard({
+          VITE_SUPABASE_URL: 'http://127.0.0.1:54321',
+          VITE_SUPABASE_PUBLISHABLE_KEY: 'ci-placeholder-not-a-key',
+        }).status,
+      ).toBe(1)
+    })
 
-  it('--process-env-only ignores .env files; the prebuild guard (without it) does not', () => {
-    const cwd = tmp('p163-envfile-')
-    writeFileSync(join(cwd, '.env.production'), `VITE_API_KEY=${secretKey()}\n`)
-    expect(guard(good, cwd).status).toBe(0)
-    const full = run('scripts/check-public-env.mjs', ['--require-hosted'], good, cwd)
-    expect(full.status).toBe(1)
-    expectNoLeak(`${full.stdout}${full.stderr}`, secretKey())
-  })
-})
+    it('--process-env-only needs no installed dependencies: the script has no static vite import', () => {
+      const source = readFileSync(join(REPO_ROOT, 'scripts', 'check-public-env.mjs'), 'utf8')
+      expect(source).not.toMatch(/^import[^\n]*from 'vite'/m)
+    })
 
-describe('stale or missing build output can never pass the identity gate', () => {
-  const NEW = 'a'.repeat(40)
-  const OLD = 'b'.repeat(40)
-  const identity = (metaPath: string) =>
-    run(
-      'scripts/release-guard.mjs',
-      ['build-identity', '--github-sha', NEW, '--build-meta', metaPath],
-      {},
-    )
+    it('--process-env-only ignores .env files; the prebuild guard (without it) does not', () => {
+      const cwd = tmp('p163-envfile-')
+      writeFileSync(join(cwd, '.env.production'), `VITE_API_KEY=${secretKey()}\n`)
+      expect(guard(good, cwd).status).toBe(0)
+      const full = run('scripts/check-public-env.mjs', ['--require-hosted'], good, cwd)
+      expect(full.status).toBe(1)
+      expectNoLeak(`${full.stdout}${full.stderr}`, secretKey())
+    })
+  },
+)
 
-  it('a complete-looking dist left over from another commit is refused', () => {
-    const dist = join(tmp('p163-stale-'), 'dist')
-    mkdirSync(dist)
-    writeFileSync(join(dist, 'build-meta.json'), JSON.stringify({ sha: OLD }))
-    expect(identity(join(dist, 'build-meta.json')).status).toBe(1)
-  })
+describe(
+  'stale or missing build output can never pass the identity gate',
+  { timeout: 60_000 },
+  () => {
+    const NEW = 'a'.repeat(40)
+    const OLD = 'b'.repeat(40)
+    const identity = (metaPath: string) =>
+      run(
+        'scripts/release-guard.mjs',
+        ['build-identity', '--github-sha', NEW, '--build-meta', metaPath],
+        {},
+      )
 
-  it('a dirty build of the same commit is refused', () => {
-    const dist = join(tmp('p163-dirty-'), 'dist')
-    mkdirSync(dist)
-    writeFileSync(join(dist, 'build-meta.json'), JSON.stringify({ sha: `${NEW}+dirty` }))
-    expect(identity(join(dist, 'build-meta.json')).status).toBe(1)
-  })
+    it('a complete-looking dist left over from another commit is refused', () => {
+      const dist = join(tmp('p163-stale-'), 'dist')
+      mkdirSync(dist)
+      writeFileSync(join(dist, 'build-meta.json'), JSON.stringify({ sha: OLD }))
+      expect(identity(join(dist, 'build-meta.json')).status).toBe(1)
+    })
 
-  it('after the clean step and a failed build there is no dist, and the identity gate fails', () => {
-    const dist = join(tmp('p163-gone-'), 'dist')
-    expect(identity(join(dist, 'build-meta.json')).status).toBe(1)
-  })
+    it('a dirty build of the same commit is refused', () => {
+      const dist = join(tmp('p163-dirty-'), 'dist')
+      mkdirSync(dist)
+      writeFileSync(join(dist, 'build-meta.json'), JSON.stringify({ sha: `${NEW}+dirty` }))
+      expect(identity(join(dist, 'build-meta.json')).status).toBe(1)
+    })
 
-  it('the artefact scan refuses a partial dist and a missing dist', () => {
-    const base = tmp('p163-partial-')
-    const partial = join(base, 'dist')
-    mkdirSync(partial)
-    writeFileSync(join(partial, 'sw.js'), '// aborted build')
-    expect(run('scripts/check-dist-secrets.mjs', [partial], {}).status).toBe(1)
-    expect(run('scripts/check-dist-secrets.mjs', [join(base, 'nope')], {}).status).toBe(1)
-  })
+    it('after the clean step and a failed build there is no dist, and the identity gate fails', () => {
+      const dist = join(tmp('p163-gone-'), 'dist')
+      expect(identity(join(dist, 'build-meta.json')).status).toBe(1)
+    })
 
-  it('the exact build identity is accepted', () => {
-    const dist = join(tmp('p163-ok-'), 'dist')
-    mkdirSync(dist)
-    writeFileSync(join(dist, 'build-meta.json'), JSON.stringify({ sha: NEW }))
-    expect(identity(join(dist, 'build-meta.json')).status).toBe(0)
-  })
+    it('the artefact scan refuses a partial dist and a missing dist', () => {
+      const base = tmp('p163-partial-')
+      const partial = join(base, 'dist')
+      mkdirSync(partial)
+      writeFileSync(join(partial, 'sw.js'), '// aborted build')
+      expect(run('scripts/check-dist-secrets.mjs', [partial], {}).status).toBe(1)
+      expect(run('scripts/check-dist-secrets.mjs', [join(base, 'nope')], {}).status).toBe(1)
+    })
 
-  it('a bundle SHA match needs the same quote on both sides', () => {
-    expect(bundleDeclaresExactSha(`x="${NEW}"`, NEW)).toBe(true)
-    expect(bundleDeclaresExactSha(`x=\`${NEW}\``, NEW)).toBe(true)
-    expect(bundleDeclaresExactSha(`x="${NEW}'`, NEW)).toBe(false)
-    expect(bundleDeclaresExactSha(`x="${NEW}+dirty"`, NEW)).toBe(false)
-  })
-})
+    it('the exact build identity is accepted', () => {
+      const dist = join(tmp('p163-ok-'), 'dist')
+      mkdirSync(dist)
+      writeFileSync(join(dist, 'build-meta.json'), JSON.stringify({ sha: NEW }))
+      expect(identity(join(dist, 'build-meta.json')).status).toBe(0)
+    })
 
-describe('stale-run refusal against a real (local) origin', () => {
+    it('a bundle SHA match needs the same quote on both sides', () => {
+      expect(bundleDeclaresExactSha(`x="${NEW}"`, NEW)).toBe(true)
+      expect(bundleDeclaresExactSha(`x=\`${NEW}\``, NEW)).toBe(true)
+      expect(bundleDeclaresExactSha(`x="${NEW}'`, NEW)).toBe(false)
+      expect(bundleDeclaresExactSha(`x="${NEW}+dirty"`, NEW)).toBe(false)
+    })
+  },
+)
+
+describe('stale-run refusal against a real (local) origin', { timeout: 60_000 }, () => {
   function gitOk(cwd: string, ...args: string[]) {
     const r = spawnSync(
       'git',

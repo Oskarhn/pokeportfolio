@@ -4,10 +4,59 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
+## Current state (P163, 2026-09-24) — integrated release-infrastructure candidate, LOCAL ONLY; P130-08 still OPEN
+
+**This section is the authoritative current state.** Every section below it is historical. Read
+[docs/security/RELEASE_PREFLIGHT_P163.md](docs/security/RELEASE_PREFLIGHT_P163.md) before anything
+that touches GitHub, Cloudflare or Production.
+
+**What exists.** Branch `fix/p163-integrated-ci-secret-gate` (local
+worktree `p163`), based on the released `main`
+(`d8682e0`), **local only — not pushed, no PR, nothing run on GitHub, no deployment**. It combines
+P142 (the CI-gated `deploy-production` job, `7430f66`), P150's five uncommitted corrections and
+P160's public-configuration guard (`5f4db93`), then hardens the integration (D-163). The three
+source worktrees were not touched.
+
+**What the pipeline now does** (`.github/workflows/ci.yml`, `deploy-production`): eligible only for
+a push to `main` after `build-and-test` **and** `db-tests`; first step is the public-configuration
+guard (before install); then the stale-run check (a proven-stale run deploys nothing, an unreadable
+origin fails); install; `rm -rf dist`; build in the deploy profile; `dist/` secret scan; exact
+build-identity check; only then `wrangler pages deploy … --commit-hash="$GITHUB_SHA"`; then live
+verification. Cloudflare credentials appear in the upload step only. The two public build values now
+come from repository **secrets** `PRODUCTION_SUPABASE_URL` / `PRODUCTION_SUPABASE_PUBLISHABLE_KEY`
+(masked in the job log) — never `vars.*`; a test forbids `vars.*` and any `env:` above step level.
+
+**What was proven, and what was not.** Proven locally: policy checker + GitHub step-semantics
+simulator + 17 mutation proofs, real guard-CLI runs against synthetic hostile values, a real
+local-origin stale-SHA test, five on-disk mutations (each caught, each restored byte-identically),
+`pnpm check` and a full build. **Not proven:** that GitHub accepts the edited YAML (prettier parses it;
+`actionlint` is not installed), any hosted run, that Cloudflare creates a Production deployment for
+`--branch=main` while automatic production deploys are off (P150 R1, undocumented), and any of the
+owner-side facts below.
+
+**Owner-unverified (do not mark done):** the exposed secret key is rotated
+(`S1_SECRET_ROTATED=OWNER_UNVERIFIED`); the four repository secrets exist and the two old `VITE_*`
+Actions variables are deleted (`GITHUB_VAR_CORRECTED=OWNER_UNVERIFIED`); the Cloudflare Pages
+configuration (`CLOUDFLARE_PAGES_CONFIG=OWNER_UNVERIFIED`); Actions minutes. **The repository was
+found PUBLIC** (P160) — decision pending. Treat the key as exposed and every Actions log as public.
+The installed Cloudflare connector has no Pages API; nothing here infers that automatic deploys or
+previews are off. The stale `preview-m15-…` preview still serves the Production Supabase project.
+
+**Do not, until the owner has finished Part A of the pre-flight:** push this branch (previews must be
+off first), open a PR, merge, deploy, or read a secret/variable value. Part B of the pre-flight is the
+separate session that does exact-head CI, the Cloudflare cutover, the merge and the first real gated
+deploy. `P130_08_STATUS=OPEN`.
+
+**Verification recorded for this branch:** typecheck, lint (0 errors, 27 pre-existing warnings),
+format, `pnpm test` 1753 passed / 1 skipped (138 files); local and synthetic-hosted builds;
+`check-dist-secrets` 76 files OK; platform verifier 28/28; `check-links` 29/29. No DB migration was
+added and no hosted database was touched. Full record: `ai_outputs/Claude_outputs/output_163.txt`
+(gitignored).
+
 ## Current state (P142, 2026-09-18) — CI-gated Production deploy IMPLEMENTED, not yet live; P130-08 still OPEN, blocked on owner Cloudflare credentials
 
-**This section is the authoritative current state.** Every section below it, including the P141
-section immediately following, is historical and describes the state at the time it was written.
+**Historical — superseded by the P163 section above.** Every section below it, including the P141
+section immediately following, describes the state at the time it was written.
 
 **Scope: release infrastructure only.** No application feature work, no database migration, no
 finance change. Hosted Supabase re-confirmed at 104 migrations / 0 pending (read-only
@@ -83,9 +132,8 @@ Branch `fix/p160-predeploy-secret-guard` (local, not pushed, based on `d8682e0`)
   (`scripts/check-public-env.mjs`, `vite.config.ts` plugin) and scans `dist/` afterwards
   (`scripts/check-dist-secrets.mjs`); failures print field + category only. Cloudflare Pages builds
   (`CF_PAGES=1`) now require `https://<ref>.supabase.co` and a `sb_publishable_…` key.
-- **P142** is untouched. Its deploy job needs `docs/security/p160-p142-integration.patch` (applies
-  cleanly to `7430f66` and to the working tree with F1–F4); a test in
-  `tests/config/public-env-guard.test.ts` fails any workflow that runs `wrangler pages deploy`
+- **P142 integration** was done in P163 (D-163); the hand-applied patch file was removed. A test in
+  `tests/config/public-env-guard.test.ts` still fails any workflow that runs `wrangler pages deploy`
   without those gates.
 - **Stitch** is still unauthenticated (`STITCH_DESIGNS_CREATED=0`); owner steps and the Home /
   Scanner-confirmation prompts are in `docs/design/p160/STITCH_ACCESS_AND_PROMPTS.md`.
