@@ -354,12 +354,21 @@ test.beforeAll(async () => {
   pgClient = new Client({ connectionString: DB_URL })
   await pgClient.connect()
   service = createServiceClient()
-  await pgClient.query(
-    `insert into public.cards (id, set_id, local_id, name, rarity, category, language, tcgdex_card_id)
-     values ($1, $2, '049', 'Fauxosaur EX', 'Double Rare', 'Pokemon', 'en', 'faux-049-p164')
-     on conflict (id) do nothing`,
-    [FAUX.cardId, seedCatalog.cardSetId],
-  )
+  try {
+    await pgClient.query(
+      `insert into public.cards (id, set_id, local_id, name, rarity, category, language, tcgdex_card_id)
+       values ($1, $2, '049', 'Fauxosaur EX', 'Double Rare', 'Pokemon', 'en', 'faux-049-p164')
+       on conflict (id) do nothing`,
+      [FAUX.cardId, seedCatalog.cardSetId],
+    )
+  } catch (error) {
+    // The scanner fixture PRINTS this identity, so the catalog row cannot differ, and it is unique
+    // per set: price-check-ledger.spec.ts uses the same printed card. Run the two one after the other.
+    throw new Error(
+      `fixture card 'Fauxosaur EX 049' already exists (price-check-ledger.spec.ts running at the same time?). Run the authenticated project with --workers=1.`,
+      { cause: error },
+    )
+  }
   await pgClient.query(
     `insert into public.card_variants (id, card_id, finish, stamp, subtype, size)
      values ($1, $3, 'normal', '', '', 'standard'), ($2, $3, 'reverse', '', '', 'standard')
@@ -1086,7 +1095,7 @@ test('G · /scan batch of two: A → B while the first write is in flight — th
   const holding = new Promise<void>((resolve) => {
     reached = resolve
   })
-  await page.route('**/rest/v1/rpc/add_card_acquisition', async (route) => {
+  await page.route('**/rest/v1/rpc/add_card_acquisition**', async (route) => {
     if (route.request().method() !== 'POST') {
       await route.fallback()
       return
