@@ -644,9 +644,11 @@ test('P161 · A → B while the scan of A is still being read: B starts empty, t
   await page.locator('input[type=file]').setInputFiles(SCAN_IMAGE)
   await expect(page.getByAltText('Card being scanned')).toBeVisible()
 
+  const endOfA = log.length
   await signOutViaUi(page)
   bodies.length = 0
   await signIn(page, userB)
+  const startOfB = log.length
   await page.goto('/price-check/scan')
   // A brand-new screen: none of A's photo, candidates or notices.
   await expect(page.getByText('Take or choose a photo')).toBeVisible()
@@ -667,13 +669,18 @@ test('P161 · A → B while the scan of A is still being read: B starts empty, t
   }
 
   // A → B → A: the second session of A is as empty as B's was.
+  const endOfB = log.length
   await signOutViaUi(page)
   await signIn(page, userA)
+  const startOfA2 = log.length
   await page.goto('/price-check/scan')
   await expect(page.getByText('Take or choose a photo')).toBeVisible()
   await expect(page.getByTestId('scan-candidate')).toHaveCount(0)
 
-  expect(writes(log.slice(phaseStart))).toEqual([])
+  // Only the Price Check phases are judged (sign-in/out and the Home page they land on are not).
+  expect(writes(log.slice(phaseStart, endOfA))).toEqual([])
+  expect(writes(log.slice(startOfB, endOfB))).toEqual([])
+  expect(writes(log.slice(startOfA2))).toEqual([])
   const afterA = await snapshot(userA.id, clientA)
   const afterB = await snapshot(userB.id, clientB)
   expect(afterA.tables).toEqual(beforeA.tables)
@@ -719,8 +726,10 @@ test('P161 · A → B during a HELD price lookup: the late answer of A never rep
   await page.getByTestId('price-check-result').first().click()
   await expect.poll(() => lookups).toBe(1) // the lookup of A is in flight and held
 
+  const endOfA = log.length
   await signOutViaUi(page)
   await signIn(page, userB)
+  const startOfB = log.length
   await page.goto('/price-check?q=Pikachu')
   await page.getByTestId('price-check-result').first().click()
   await expect(page.getByTestId('observation').first()).toContainText('€99.99')
@@ -730,7 +739,8 @@ test('P161 · A → B during a HELD price lookup: the late answer of A never rep
   await expect(page.getByTestId('observation').first()).toContainText('€99.99')
   await expect(page.getByText('€12.34')).toHaveCount(0)
 
-  expect(writes(log.slice(phaseStart))).toEqual([])
+  expect(writes(log.slice(phaseStart, endOfA))).toEqual([])
+  expect(writes(log.slice(startOfB))).toEqual([])
   expect((await snapshot(userA.id, clientA)).tables).toEqual(beforeA.tables)
   expect((await snapshot(userB.id, clientB)).tables).toEqual(beforeB.tables)
 })
