@@ -119,6 +119,17 @@ const CATALOG = [
   row(SIBLING, 'Pikachu', '58', 'Base Set 2'),
 ]
 
+/** A barrier: `await gate.promise` waits, `gate.resolve()` releases. */
+function gate() {
+  const inner = deferred<undefined>()
+  return {
+    promise: inner.promise,
+    resolve: () => {
+      inner.resolve(undefined)
+    },
+  }
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void
   let reject!: (error: unknown) => void
@@ -135,7 +146,7 @@ interface Script {
   number: string
   visual: { cardId: string; similarity: number } | null
   /** When set, OCR does not answer until the test releases it. */
-  gate?: ReturnType<typeof deferred<void>>
+  gate?: ReturnType<typeof gate>
   /** Injects a scanner failure at the OCR stage. */
   ocrFails?: 'engine'
   /** Set by the fake once this scan reached the OCR stage. */
@@ -166,7 +177,7 @@ function photo(script: Script) {
 }
 
 /** When set, catalog enrichment of visual hits (the controller's LAST await) waits for the test. */
-let enrichGate: ReturnType<typeof deferred<void>> | null = null
+let enrichGate: ReturnType<typeof gate> | null = null
 let bitmapsOpen = 0
 let liveUrls: Set<string>
 
@@ -237,11 +248,11 @@ beforeEach(() => {
       embeddingNorm: 1,
     }
   }
-  vi.mocked(searchCards).mockImplementation(((params: { query: string }) => {
+  vi.mocked(searchCards).mockImplementation((params: { query: string }) => {
     const q = params.query.toLowerCase()
     const results = CATALOG.filter((c) => q.includes(c.name.toLowerCase()))
     return Promise.resolve({ results, totalCount: results.length })
-  }) as never)
+  })
   vi.mocked(getCardsByIds).mockImplementation((async (ids: string[]) => {
     if (enrichGate !== null) await enrichGate.promise
     return CATALOG.filter((c) => ids.includes(c.cardId)).map((c) => ({
@@ -339,12 +350,12 @@ describe('scan → Price Check outcome through the real controller', () => {
 describe('latest request wins across the real controller and the Price Check session', () => {
   it('A started, B started, B finishes, A finishes: only B is delivered', async () => {
     const session = openSession()
-    const a = photo({ ...READABLE_HIGH, gate: deferred<void>() })
+    const a = photo({ ...READABLE_HIGH, gate: gate() })
     const b = photo({
       name: 'Charizard',
       number: '4/102',
       visual: { cardId: CHARIZARD, similarity: 0.9 },
-      gate: deferred<void>(),
+      gate: gate(),
     })
     const pa = session.analyze(a.capture)
     await untilOcr(a.script)
@@ -365,13 +376,13 @@ describe('latest request wins across the real controller and the Price Check ses
 
   it('A finishes first but B was started later: A is still not delivered', async () => {
     const session = openSession()
-    const a = photo({ ...READABLE_HIGH, gate: deferred<void>() })
+    const a = photo({ ...READABLE_HIGH, gate: gate() })
     const b = photo({
       ...READABLE_HIGH,
       name: 'Charizard',
       number: '4/102',
       visual: { cardId: CHARIZARD, similarity: 0.9 },
-      gate: deferred<void>(),
+      gate: gate(),
     })
     const pa = session.analyze(a.capture)
     await untilOcr(a.script)
@@ -387,7 +398,7 @@ describe('latest request wins across the real controller and the Price Check ses
   it('100 cancel/restart cycles: every abandoned scan stays abandoned, every restart succeeds', async () => {
     const session = openSession()
     for (let i = 0; i < 100; i += 1) {
-      const abandoned = photo({ ...READABLE_HIGH, gate: deferred<void>() })
+      const abandoned = photo({ ...READABLE_HIGH, gate: gate() })
       const pAbandoned = session.analyze(abandoned.capture)
       await untilOcr(abandoned.script)
       session.cancel()
@@ -406,7 +417,7 @@ describe('latest request wins across the real controller and the Price Check ses
 
   it('cancel mid-OCR then a successful scan on the same session (recovery)', async () => {
     const session = openSession()
-    const slow = photo({ ...READABLE_HIGH, gate: deferred<void>() })
+    const slow = photo({ ...READABLE_HIGH, gate: gate() })
     const p = session.analyze(slow.capture)
     await untilOcr(slow.script)
     session.cancel()
@@ -425,7 +436,7 @@ describe('the read-only port itself enforces latest-wins (independent of the ses
   // ownership, so a future consumer (or a regression in the session) cannot bring stale delivery back.
   it('a second identification on the same port supersedes the first, without any caller abort', async () => {
     const port = createReadOnlyScanner('user-a')
-    const a = photo({ ...READABLE_HIGH, gate: deferred<void>() })
+    const a = photo({ ...READABLE_HIGH, gate: gate() })
     const pa = identifyCapture(port, a.capture)
     await untilOcr(a.script)
     const b = photo(READABLE_HIGH)
@@ -439,7 +450,7 @@ describe('the read-only port itself enforces latest-wins (independent of the ses
 
   it('a scan superseded while its LAST await (catalog enrichment) is pending is still not delivered', async () => {
     const port = createReadOnlyScanner('user-a')
-    enrichGate = deferred<void>()
+    enrichGate = gate()
     // Visual-only: the candidate only exists through enrichment, so the scan parks in getCardsByIds.
     const a = photo(VISUAL_ONLY)
     const pa = identifyCapture(port, a.capture)
@@ -471,11 +482,11 @@ describe('failure recovery', () => {
     expect(result.status).toBe('error')
     expect(result.status === 'error' && result.message).toContain('catalog could not be reached')
     vi.mocked(searchCards).mockReset()
-    vi.mocked(searchCards).mockImplementation(((params: { query: string }) => {
+    vi.mocked(searchCards).mockImplementation((params: { query: string }) => {
       const q = params.query.toLowerCase()
       const results = CATALOG.filter((c) => q.includes(c.name.toLowerCase()))
       return Promise.resolve({ results, totalCount: results.length })
-    }) as never)
+    })
     expect(kindOf(await session.analyze(photo(READABLE_HIGH).capture))).toBe('outcome:high')
     session.dispose()
   })
@@ -484,7 +495,7 @@ describe('failure recovery', () => {
 describe('account switch: nothing of A survives into B', () => {
   it('A → B during OCR: A is abandoned, A’s workers are released, B gets only its own result', async () => {
     const sessionA = openSession('user-a')
-    const a = photo({ ...READABLE_HIGH, gate: deferred<void>() })
+    const a = photo({ ...READABLE_HIGH, gate: gate() })
     const pa = sessionA.analyze(a.capture)
     await untilOcr(a.script)
     expect(world.liveEngines.size).toBe(1)
@@ -516,7 +527,7 @@ describe('account switch: nothing of A survives into B', () => {
 
   it('A → B → A: the first A session can never deliver into the second A session', async () => {
     const a1 = openSession('user-a')
-    const slow = photo({ ...READABLE_HIGH, gate: deferred<void>() })
+    const slow = photo({ ...READABLE_HIGH, gate: gate() })
     const p1 = a1.analyze(slow.capture)
     await untilOcr(slow.script)
     a1.dispose()
@@ -539,7 +550,7 @@ describe('account switch: nothing of A survives into B', () => {
 
   it('same-user refresh (a NEW session for the same id) behaves like any remount: old one is dead', async () => {
     const first = openSession('user-a')
-    const slow = photo({ ...READABLE_HIGH, gate: deferred<void>() })
+    const slow = photo({ ...READABLE_HIGH, gate: gate() })
     const p = first.analyze(slow.capture)
     await untilOcr(slow.script)
     first.dispose()
@@ -598,7 +609,7 @@ describe('bounded mixed workload (100 scans, valid and invalid)', () => {
 })
 
 describe('the read-only boundary holds over the real controller', () => {
-  it('Price Check’s port has no commit path; the real collection writer is never reachable from it', async () => {
+  it('Price Check’s port has no commit path; the real collection writer is never reachable from it', () => {
     const port = createReadOnlyScanner('user-a')
     expect('commitBatch' in port).toBe(false)
     expect(Object.keys(port).sort()).toEqual([
