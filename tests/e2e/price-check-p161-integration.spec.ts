@@ -230,3 +230,60 @@ test.describe('P161 hostile and failing photos, then recovery', () => {
     await expect(page.getByRole('alert')).toContainText(/too large|large/i)
   })
 })
+
+test.describe('P161 narrow viewports and text-search timing', () => {
+  for (const width of [320, 360, 390, 430]) {
+    test(`the scan screen fits a ${String(width)} px wide phone at every step, with touch-sized controls`, async ({
+      page,
+    }) => {
+      test.setTimeout(150_000)
+      await page.setViewportSize({ width, height: 700 })
+      const noOverflow = () =>
+        page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
+      await page.goto('/price-check/scan')
+      await expect(page.getByText('Take or choose a photo')).toBeVisible()
+      expect(await noOverflow()).toBe(true)
+      const picker = page.locator('label', { hasText: 'Take or choose a photo' })
+      expect((await picker.boundingBox())!.height).toBeGreaterThanOrEqual(44)
+
+      await page.locator('input[type=file]').setInputFiles(fixture('synthetic-card-modern.png'))
+      await expect(page.getByAltText('Card being scanned')).toBeVisible()
+      expect(await noOverflow()).toBe(true)
+      await untilOutcome(page)
+      expect(await noOverflow()).toBe(true)
+      for (const control of await page.getByRole('button').all()) {
+        if (!(await control.isVisible())) continue
+        expect((await control.boundingBox())!.height, 'touch target').toBeGreaterThanOrEqual(44)
+      }
+    })
+  }
+
+  test('text search: cold first search vs warm repeat (recorded; only a generous ceiling is asserted)', async ({
+    page,
+  }, testInfo) => {
+    const scannerRequests: string[] = []
+    page.on('request', (r) => {
+      if (/scanner-assets|traineddata|visual-worker/i.test(r.url())) scannerRequests.push(r.url())
+    })
+    const search = async (text: string): Promise<number> => {
+      const started = Date.now()
+      await page.getByLabel('Card name, set or number').fill(text)
+      await expect(page.getByTestId('price-check-result').first()).toBeVisible({ timeout: 15_000 })
+      return Date.now() - started
+    }
+    await page.goto('/price-check')
+    const cold = await search('Charizard')
+    // Warm = the same query again after a different one: served from the query cache, no request.
+    await search('Pikachu')
+    const requestsBefore = backend.searchQueries.length
+    const warm = await search('Charizard')
+    const warmRequests = backend.searchQueries.length - requestsBefore
+    testInfo.annotations.push({
+      type: 'text-search-timing',
+      description: `cold ${String(cold)} ms, warm ${String(warm)} ms, extra search requests on the warm repeat: ${String(warmRequests)}`,
+    })
+    expect(cold).toBeLessThan(10_000)
+    expect(warm).toBeLessThan(10_000)
+    expect(scannerRequests).toEqual([])
+  })
+})
