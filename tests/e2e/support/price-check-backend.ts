@@ -255,22 +255,30 @@ export async function installBackend(
           (q !== '' && (c.name.toLowerCase().includes(q) || c.setName.toLowerCase().includes(q))) ||
           (state.scannerEcho && q !== ''),
       ).filter((c) => args.p_language == null || (c.language ?? 'en') === args.p_language)
-      const rows = (state.scannerEcho && matches.length === 0 ? CARDS.slice(0, 3) : matches).map(
-        (c) => ({
-          card_id: c.id,
-          name: c.name,
-          local_id: c.localId,
-          rarity: c.rarity ?? null,
-          category: 'Pokemon',
-          illustrator: c.illustrator ?? null,
-          image_base_url: null,
-          language: c.language ?? 'en',
-          set_id: c.setId,
-          set_name: c.setName,
-          variant_count: c.variants.length,
-          total_count: matches.length,
-        }),
-      )
+      // The synthetic scan fixture prints "FAUXOSAUR EX 049/197". A scan whose printed text matches
+      // NOTHING is an honest NO_MATCH (P151: a below-threshold guess is no candidate), so the echo
+      // must offer the one card that text really identifies — the multi-variant Evolutions card,
+      // under the fixture's printed name and number — for the confirm → variant → price path.
+      const printed =
+        state.scannerEcho && q.includes('fauxosaur')
+          ? [{ ...CARDS[2]!, name: 'Fauxosaur EX', localId: '049' }]
+          : null
+      const rows = (
+        printed ?? (state.scannerEcho && matches.length === 0 ? CARDS.slice(0, 3) : matches)
+      ).map((c) => ({
+        card_id: c.id,
+        name: c.name,
+        local_id: c.localId,
+        rarity: c.rarity ?? null,
+        category: 'Pokemon',
+        illustrator: c.illustrator ?? null,
+        image_base_url: null,
+        language: c.language ?? 'en',
+        set_id: c.setId,
+        set_name: c.setName,
+        variant_count: c.variants.length,
+        total_count: matches.length,
+      }))
       await json(route, 200, rows)
       return
     }
