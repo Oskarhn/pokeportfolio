@@ -4,6 +4,30 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
+## P153 (2026-09-20) — Price Check, LOCAL candidate on `feat/p153-card-price-check`; nothing pushed, merged or deployed
+
+Release state below (P141) is unchanged and still authoritative. P153 is an unmerged local branch
+from `d8682e0`. Decision: D-153. Flow: UX_FLOWS F17. Graded-source status: API_SOURCES.md.
+
+- **What it is.** `/price-check` (search), `/price-check/scan`, `/price-check/$cardId?variantId=`:
+  a strictly read-only price lookup. Raw prices from the TCGdex relay (Cardmarket EUR, TCGplayer
+  USD) with source, price type (`index`), observed date vs fetched time, freshness, and an exact
+  exponent-aware NOK reference. **Raw: ready.** **Graded: PARTIAL** — modelled and validated, but no
+  authorized source exists (TCGdex has none, PSA's API has no prices, PriceCharting-class sources
+  cost money), so the page says "not available" and never estimates.
+- **Needs before it shows both providers in Production:** redeploy the `search-prices` Edge
+  Function (additive `observations[]`; without it the page falls back to one headline value and says
+  so). P153 deployed nothing and needs no migration.
+- **Scanner coupling (for P151).** Price Check consumes `ScannerUiController.analyzeCapture` and
+  `dispose` only, through `src/features/price-check/scan-session.ts`; it assumes `candidateId` is the
+  catalog `cards.id` uuid and that the scanner never reports a variant. Capture is the device photo
+  picker (`decodeImageFile`), no live camera. If P151 renames those, `scan-session.ts` and
+  `PriceCheckScanPage.tsx` are the only files to adjust.
+- **Not touched:** navigation/app shell (one link added to Search — `CatalogPage.tsx` — for P154 to
+  relocate), scanner core, finance/FX SQL, migrations, hosted anything.
+- **Local stack note.** The ledger proof needs a local Supabase stack with its own `project_id` and
+  ports; that edit to `supabase/config.toml` is deliberately uncommitted.
+
 ## Current state (P141, 2026-09-18) — P137/P138/P139/P140 RELEASED; hosted 104/0; Production live at `8eef187`; P130-04/05/07(DB)/12/15/27/28 closed
 
 **This section is the authoritative current state.** Every section below it, including the P136

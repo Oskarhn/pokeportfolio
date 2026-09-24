@@ -721,6 +721,35 @@ as a dashboard glance; the dedicated screen is where period/sort actually apply.
 
 ---
 
+## F17 — Price Check (P153)
+
+A lookup, not an add flow: nothing done here creates a holding, purchase, sale or manual card
+(D-153). Entry: a "Check a price" link on Search, and `/price-check`.
+
+1. **Find the card.** `/price-check`: one field for name, set or collector number (shared catalog
+   search, optional language). Results always show set, number, language, rarity and illustrator;
+   results that share a name are flagged. The query lives in the URL, so Back returns to it. A newer
+   query can never be overwritten by a slower older response. Empty, error (with retry) and loading
+   states are announced.
+2. **Or scan it.** `/price-check/scan`: take/choose a photo (the device camera via the photo
+   picker), recognised on-device by the existing scanner. HIGH confidence pre-selects the best
+   candidate, MEDIUM/LOW select nothing, NO_MATCH offers "Search by name". The person confirms the
+   card; the scan never picks a variant. Cancel, retake and leaving the page abandon the scan and
+   discard any late result.
+3. **Confirm the variant.** `/price-check/$cardId?variantId=`. One active variant is confirmed
+   and says so; several variants require an explicit choice (availability per variant, never a
+   price, until chosen).
+4. **Read the prices.** Raw section: each provider's value in its source currency with metric,
+   price type ("Index price"), observed date, fetched time, freshness badge, condition ("not
+   specified by source") and a labelled NOK reference with rate and date. Graded section: a table
+   per company (never merged) when a source exists; today "no authorized source", never an
+   estimate. Unavailable, failed, rate-limited and malformed states are distinct and retryable where
+   sensible.
+5. **Optionally add.** "Add to collection…" is a plain link to `/add?variantId=` — the existing
+   add flow, with its own confirmation.
+
+---
+
 ## Cross-cutting rules
 
 | Rule | Applies to |
