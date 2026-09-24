@@ -62,6 +62,8 @@ interface FakeState {
   onRequest?: (table: string, requestIndex: number) => void
   /** Simulates a server-side row cap below the requested window size (db-max-rows class). */
   capResponsesAt?: number
+  /** Every abort signal a request was given (`.abortSignal(signal)`), in request order. */
+  abortSignals?: AbortSignal[]
   /** Shared per-table request counters (builders are fresh per page). */
   requestCounts: Map<string, number>
   /** The signed-in user at THIS instant (undefined = USER_A, null = signed out). Tests flip it to
@@ -108,9 +110,10 @@ class FakeBuilder {
     return this
   }
 
-  abortSignal(_signal: AbortSignal): this {
-    void _signal
-    // Cancellation is observed by the walker between pages; the transport itself succeeds.
+  abortSignal(signal: AbortSignal): this {
+    // Cancellation is observed by the walker between pages; the transport itself succeeds. The
+    // signal each request was handed is recorded so a test can see it reached the transport.
+    this.state.abortSignals?.push(signal)
     return this
   }
 
@@ -607,6 +610,21 @@ describe('P162 account switch during a multi-request export, leased client', () 
     const snapshot = await fetchExportSnapshot(leasedFakeClient(state, lease), { pageSize: 3 })
     expect(snapshot.holdings).toHaveLength(7)
     expect(events).toBeGreaterThan(5)
+  })
+
+  it('every request — counts and pages — is handed the abort signal, so Cancel tears it down', async () => {
+    const { lease } = signedInAs(USER_A)
+    const controller = new AbortController()
+    const state: FakeState = { tables: new Map(), requestCounts: new Map(), abortSignals: [] }
+    registerStandardSections(state, { holdings: holdingRowsFor(USER_A, 7, 0) })
+    await fetchExportSnapshot(leasedFakeClient(state, lease), {
+      pageSize: 3,
+      signal: controller.signal,
+    })
+    const requests = [...state.requestCounts.values()].reduce((a, b) => a + b, 0)
+    expect(requests).toBeGreaterThan(30) // 18 sections: a COUNT and at least one page each
+    expect(state.abortSignals).toHaveLength(requests)
+    expect(state.abortSignals?.every((signal) => signal === controller.signal)).toBe(true)
   })
 
   it('a cancelled export stops requesting', async () => {
