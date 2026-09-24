@@ -156,14 +156,6 @@ export const MUTANTS = [
     tests: [PAGE],
   },
   {
-    id: 'X11',
-    what: 'a newer pick that fails to decode no longer cancels the older photo’s analysis (it delivers over the error)',
-    file: 'src/features/price-check/PriceCheckScanPage.tsx',
-    find: '    scanSessionRef.current?.cancel()\n    void (async () => {',
-    replace: '    void (async () => {',
-    tests: [PAGE],
-  },
-  {
     id: 'X10',
     what: 'A→B leak: the scan screen is no longer keyed by identity, so A’s photo/candidates survive a switch',
     file: 'src/features/price-check/PriceCheckScanPage.tsx',

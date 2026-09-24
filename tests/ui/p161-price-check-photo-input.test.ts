@@ -113,12 +113,6 @@ describe('PriceCheckScanPage wiring (structural — the page cannot be mounted h
     expect(scanPage.indexOf('URL.createObjectURL')).toBeGreaterThan(lastCheck)
   })
 
-  it('a new pick cancels the analysis of the previous photo at once (even if the new pick then fails to decode)', () => {
-    const pick = scanPage.slice(scanPage.indexOf('function handleFilePicked'))
-    const beforeDecode = pick.slice(0, pick.indexOf('decodeImageFile'))
-    expect(beforeDecode).toMatch(/captureGuard.begin()[sS]*scanSessionRef.current?.cancel()/)
-  })
-
   it('Cancel/Retake and leaving the page invalidate every capture still decoding', () => {
     expect(scanPage.match(/captureGuard\.invalidate\(\)/g)?.length).toBeGreaterThanOrEqual(2)
   })

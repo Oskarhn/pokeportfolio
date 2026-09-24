@@ -180,9 +180,6 @@ function PriceCheckScanScreen({ userId }: { userId: string | null }) {
     // This pick is now the newest: every older pick still decoding (or waiting for the scanner to
     // load) becomes stale the moment it is issued.
     const token = captureGuard.begin()
-    // …and it owns the screen: an analysis of the previous photo still running must not deliver
-    // over it — least of all when this pick then FAILS to decode (nothing else would cancel it).
-    scanSessionRef.current?.cancel()
     void (async () => {
       let frame: CapturedFrame
       try {
