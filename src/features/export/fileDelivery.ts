@@ -45,6 +45,29 @@ export class DeliveryError extends Error {
   }
 }
 
+/**
+ * Raised when the caller's `canDeliver` check said no: the files belong to something that has
+ * ended (the identity they were built under), so they are not handed to the browser, the save
+ * dialog or the share sheet. A refusal always propagates — it is never converted into another
+ * delivery path — and files that were already handed over before it cannot be recalled.
+ */
+export class DeliveryRefusedError extends Error {
+  constructor() {
+    super('These files can no longer be delivered. Nothing more was saved.')
+    this.name = 'DeliveryRefusedError'
+  }
+}
+
+/** Optional gate the caller supplies; evaluated right before each hand-over point. */
+export interface DeliveryOptions {
+  /** Return false to stop: the delivery throws {@link DeliveryRefusedError}. */
+  readonly canDeliver?: () => boolean
+}
+
+function requireDeliverable(options: DeliveryOptions | undefined): void {
+  if (options?.canDeliver !== undefined && !options.canDeliver()) throw new DeliveryRefusedError()
+}
+
 /** How long a revoked-pending object URL is kept alive after its anchor click, milliseconds.
  *  Revoking immediately after `click()` can race the download manager in some engines; a bounded
  *  delay is the safe pattern (FileSaver.js keeps blobs far longer). */
@@ -108,10 +131,13 @@ async function shareTheseFiles(asFiles: readonly File[]): Promise<void> {
   await nav.share({ files: [...asFiles] })
 }
 
-async function saveWithPicker(file: DeliverableFile): Promise<void> {
+async function saveWithPicker(file: DeliverableFile, options?: DeliveryOptions): Promise<void> {
   const host = globalThis as SavePickerHost
   const handle = await host.showSaveFilePicker?.({ suggestedName: file.filename })
   if (!handle) throw new DeliveryError('Saving is not available.')
+  // The dialog can stay open for as long as the person likes; nothing is written unless the files
+  // still belong to the identity that is current when they choose a location.
+  requireDeliverable(options)
   const writable = await handle.createWritable()
   try {
     await writable.write(file.blob)
@@ -127,11 +153,17 @@ async function saveWithPicker(file: DeliverableFile): Promise<void> {
   await writable.close()
 }
 
-async function downloadViaAnchors(files: readonly DeliverableFile[]): Promise<void> {
+async function downloadViaAnchors(
+  files: readonly DeliverableFile[],
+  options?: DeliveryOptions,
+): Promise<void> {
   for (const [index, file] of files.entries()) {
     if (index > 0) {
       await new Promise((resolve) => setTimeout(resolve, INTER_DOWNLOAD_DELAY_MS))
     }
+    // Before EACH file, after the pause: an identity change part way through a multi-file download
+    // stops the remainder instead of finishing the set under another account.
+    requireDeliverable(options)
     const url = URL.createObjectURL(file.blob)
     // The revocation timer is scheduled BEFORE the click so that even a throwing click path
     // cannot strand an object URL until document death (P40 F5).
@@ -162,10 +194,14 @@ async function downloadViaAnchors(files: readonly DeliverableFile[]): Promise<vo
  * which after D-078 can no longer be blamed on generation time and is surfaced for the user
  * to answer with the explicit "Download instead" path (`downloadOnly`).
  */
-export async function deliverFiles(files: readonly DeliverableFile[]): Promise<DeliveryOutcome> {
+export async function deliverFiles(
+  files: readonly DeliverableFile[],
+  options?: DeliveryOptions,
+): Promise<DeliveryOutcome> {
   if (files.length === 0) {
     throw new DeliveryError('No files came back from the export. Nothing was saved.')
   }
+  requireDeliverable(options)
   const filenames = files.map((file) => file.filename)
   // Built ONCE and reused by the capability probe and the share call (P40 F5).
   const asFiles = toFiles(files)
@@ -192,9 +228,10 @@ export async function deliverFiles(files: readonly DeliverableFile[]): Promise<D
     const host = globalThis as SavePickerHost
     if (typeof host.showSaveFilePicker === 'function') {
       try {
-        await saveWithPicker(first)
+        await saveWithPicker(first, options)
         return { method: 'save-picker', filenames }
       } catch (error) {
+        if (error instanceof DeliveryRefusedError) throw error
         if (isAbortError(error)) return { method: 'cancelled' }
         // The picker is an enhancement; if writing through it fails, the ordinary download
         // still works, so fall through instead of failing the whole action.
@@ -202,7 +239,7 @@ export async function deliverFiles(files: readonly DeliverableFile[]): Promise<D
     }
   }
 
-  await downloadViaAnchors(files)
+  await downloadViaAnchors(files, options)
   return { method: 'download', filenames }
 }
 
@@ -211,11 +248,14 @@ export async function deliverFiles(files: readonly DeliverableFile[]): Promise<D
  * mechanics as the internal fallback; exists as a named export because choosing it is a user
  * decision, not a silent downgrade (D-079).
  */
-export async function downloadOnly(files: readonly DeliverableFile[]): Promise<DeliveryOutcome> {
+export async function downloadOnly(
+  files: readonly DeliverableFile[],
+  options?: DeliveryOptions,
+): Promise<DeliveryOutcome> {
   if (files.length === 0) {
     throw new DeliveryError('No files came back from the export. Nothing was saved.')
   }
   const filenames = files.map((file) => file.filename)
-  await downloadViaAnchors(files)
+  await downloadViaAnchors(files, options)
   return { method: 'download', filenames }
 }

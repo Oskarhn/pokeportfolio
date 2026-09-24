@@ -1,7 +1,12 @@
 import { exportCsvArtifacts, exportJsonBackup } from '../../data/export'
 import { leasedDb } from '../../data/leased-db'
-import { type IdentityLease } from '../../auth/identity-lease'
-import type { ExportArtifact, ExportController, ExportProgressListener } from './contract'
+import { runWithLease, type IdentityLease } from '../../auth/identity-lease'
+import type {
+  ExportArtifact,
+  ExportController,
+  ExportProgressListener,
+  ExportRunOptions,
+} from './contract'
 
 /**
  * The REAL P35↔P36 seam (M13 integration): the UI's ExportController contract satisfied by the
@@ -41,23 +46,32 @@ function requireLease(lease: IdentityLease | undefined): IdentityLease {
 const wiredExportController: ExportController = {
   async createBackup(
     onProgress?: ExportProgressListener,
-    lease?: IdentityLease,
+    options?: ExportRunOptions,
   ): Promise<ExportArtifact[]> {
-    const db = leasedDb(requireLease(lease))
+    const lease = requireLease(options?.lease)
+    const db = leasedDb(lease)
     onProgress?.('preparing')
     const onPage = progressFor(onProgress)
-    const artifact = await exportJsonBackup({ onPage }, db)
+    // runWithLease: an identity change ends the run with the fixed AuthIdentityChangedError instead
+    // of whatever transport or validation error the interrupted request produced, and a failed
+    // credential lookup surfaces as the fixed AuthCredentialsUnavailableError (P149).
+    const artifact = await runWithLease(lease, () =>
+      exportJsonBackup({ onPage, signal: options?.signal }, db),
+    )
     return toFeatureArtifacts([artifact])
   },
 
   async createCsvExport(
     onProgress?: ExportProgressListener,
-    lease?: IdentityLease,
+    options?: ExportRunOptions,
   ): Promise<ExportArtifact[]> {
-    const db = leasedDb(requireLease(lease))
+    const lease = requireLease(options?.lease)
+    const db = leasedDb(lease)
     onProgress?.('preparing')
     const onPage = progressFor(onProgress)
-    const artifacts = await exportCsvArtifacts({ onPage }, db)
+    const artifacts = await runWithLease(lease, () =>
+      exportCsvArtifacts({ onPage, signal: options?.signal }, db),
+    )
     return toFeatureArtifacts(artifacts)
   },
 }

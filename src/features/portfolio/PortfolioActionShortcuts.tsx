@@ -48,12 +48,15 @@ export function PortfolioActionShortcuts({
       exportAbortRef.current = controller
       const csv = await buildPortfolioCsv(filters, leasedDb(lease), { signal: controller.signal })
       lease.assertCurrent()
-      await downloadOnly([
-        {
-          filename: `portfolio-export-${localTodayIso()}.csv`,
-          blob: new Blob([csv], { type: 'text/csv;charset=utf-8' }),
-        },
-      ])
+      await downloadOnly(
+        [
+          {
+            filename: `portfolio-export-${localTodayIso()}.csv`,
+            blob: new Blob([csv], { type: 'text/csv;charset=utf-8' }),
+          },
+        ],
+        { canDeliver: () => lease.isCurrent() },
+      )
     },
   })
 

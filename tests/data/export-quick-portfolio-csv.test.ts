@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { ExportIdentityChangedError } from '../../src/data/export/identity-guard'
+import {
+  AuthIdentityChangedError,
+  IdentityAuthority,
+  type IdentityLease,
+} from '../../src/auth/identity-lease'
+import type { LeasedDb } from '../../src/data/leased-client'
 import { parseCsvRfc } from './csv-rfc-parser'
 
 /**
@@ -32,35 +37,15 @@ interface FakeTile {
 }
 
 interface World {
-  session: string | null
   listCalls: number
   onList: ((call: number) => void) | null
   listImpl: ((call: number) => unknown) | null
 }
 
 const world = vi.hoisted((): World => ({
-  session: 'aaaaaaaa-0000-4000-8000-00000000000a',
   listCalls: 0,
   onList: null,
   listImpl: null,
-}))
-
-vi.mock('../../src/data/supabase-client', () => ({
-  supabase: {
-    auth: {
-      getUser: () =>
-        Promise.resolve(
-          world.session === null
-            ? { data: { user: null }, error: { message: 'no session' } }
-            : { data: { user: { id: world.session } }, error: null },
-        ),
-      getSession: () =>
-        Promise.resolve({
-          data: { session: world.session === null ? null : { user: { id: world.session } } },
-          error: null,
-        }),
-    },
-  },
 }))
 
 vi.mock('../../src/data/portfolio', () => ({
@@ -105,13 +90,24 @@ function serve(pages: FakeTile[][]): void {
   }
 }
 
+// The tab's identity for these tests: the real authority and lease of the app, and a client that
+// carries only that lease (the export reads its identity from the client it is handed).
+let authority: IdentityAuthority
+let lease: IdentityLease
+
+function leasedStub(): LeasedDb {
+  return { identityLease: lease } as unknown as LeasedDb
+}
+
 async function build(signal?: AbortSignal): Promise<string> {
   const { buildPortfolioCsv } = await import('../../src/data/portfolioExport')
-  return buildPortfolioCsv(undefined, signal ? { signal } : {})
+  return buildPortfolioCsv(undefined, leasedStub(), signal ? { signal } : {})
 }
 
 beforeEach(() => {
-  world.session = USER_A
+  authority = new IdentityAuthority()
+  authority.observe(USER_A)
+  lease = authority.begin(USER_A)
   world.listCalls = 0
   world.onList = null
   world.listImpl = null
@@ -262,16 +258,16 @@ describe('Quick CSV — complete or nothing', () => {
   })
 })
 
-describe('Quick CSV — account isolation', () => {
+describe('Quick CSV — account isolation (identity lease)', () => {
   it('A→B during pagination discards the export (B rows never reach the file)', async () => {
     world.onList = (call) => {
-      if (call === 2) world.session = USER_B // the switch lands while page 2 is in flight
+      if (call === 2) authority.observe(USER_B) // the switch lands while page 2 is in flight
     }
     world.listImpl = (call) => ({
       results: [
         tile({
           holdingId: `h${String(call)}`,
-          cardName: world.session === USER_B ? 'B-PRIVATE-CARD' : 'A-card',
+          cardName: authority.userId === USER_B ? 'B-PRIVATE-CARD' : 'A-card',
         }),
       ],
       nextCursor: { holdingId: 'x' },
@@ -281,24 +277,61 @@ describe('Quick CSV — account isolation', () => {
       (error: unknown) => ({ error }),
     )
     expect('csv' in outcome).toBe(false)
-    expect((outcome as { error: unknown }).error).toBeInstanceOf(ExportIdentityChangedError)
+    expect((outcome as { error: unknown }).error).toBeInstanceOf(AuthIdentityChangedError)
+    expect(world.listCalls).toBe(2) // nothing was requested after the switch was observed
   })
 
-  it('sign-out mid-export fails instead of finishing anonymously', async () => {
+  it('A→B→A is an identity change although the old user id is back', async () => {
     world.onList = (call) => {
-      if (call === 2) world.session = null
+      if (call === 2) {
+        authority.observe(USER_B)
+        authority.observe(USER_A)
+      }
     }
     world.listImpl = (call) => ({
       results: [tile({ holdingId: `h${String(call)}` })],
       nextCursor: { holdingId: 'x' },
     })
-    await expect(build()).rejects.toBeInstanceOf(ExportIdentityChangedError)
+    expect(authority.userId).toBe(USER_A)
+    await expect(build()).rejects.toBeInstanceOf(AuthIdentityChangedError)
+    expect(world.listCalls).toBe(2)
   })
 
-  it('refuses to start without a session', async () => {
-    world.session = null
+  it('sign-out mid-export fails instead of finishing anonymously', async () => {
+    world.onList = (call) => {
+      if (call === 2) authority.observe(null)
+    }
+    world.listImpl = (call) => ({
+      results: [tile({ holdingId: `h${String(call)}` })],
+      nextCursor: { holdingId: 'x' },
+    })
+    await expect(build()).rejects.toBeInstanceOf(AuthIdentityChangedError)
+  })
+
+  it('same-user auth events (token refresh) do not end the export', async () => {
+    world.onList = () => {
+      expect(authority.observe(USER_A)).toBe(false) // TOKEN_REFRESHED / USER_UPDATED / SIGNED_IN
+    }
+    world.listImpl = (call) => ({
+      results: [tile({ holdingId: `h${String(call)}` })],
+      nextCursor: call < 3 ? { holdingId: 'x' } : null,
+    })
+    const csv = parseCsvRfc(await build())
+    expect(csv.records).toHaveLength(4) // header + three pages of one holding
+  })
+
+  it('a lease that is already dead issues no request', async () => {
+    authority.observe(USER_B)
     serve([[tile()]])
-    await expect(build()).rejects.toThrow(/requires an authenticated session/)
+    await expect(build()).rejects.toBeInstanceOf(AuthIdentityChangedError)
     expect(world.listCalls).toBe(0)
+  })
+
+  it('a page that returns after the lease ended is dropped, not kept', async () => {
+    world.listImpl = () => {
+      authority.observe(USER_B) // ends while the single page request is in flight
+      return { results: [tile({ cardName: 'A-card' })], nextCursor: null }
+    }
+    await expect(build()).rejects.toBeInstanceOf(AuthIdentityChangedError)
   })
 })

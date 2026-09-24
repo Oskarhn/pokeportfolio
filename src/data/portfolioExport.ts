@@ -1,5 +1,6 @@
 import { listPortfolio, portfolioDisplayName, type PortfolioFilters } from './portfolio'
 import type { LeasedDb } from './leased-client'
+import { exportIdentityFromLease } from './export/identity-guard'
 import { CONDITION_LABEL } from '../features/collection/labels'
 import {
   buildQuickPortfolioCsv,
@@ -42,7 +43,7 @@ export async function buildPortfolioCsv(
   db: LeasedDb,
   options: PortfolioCsvOptions = {},
 ): Promise<string> {
-  const lease = db.identityLease
+  const identity = exportIdentityFromLease(db.identityLease)
   const rows: QuickPortfolioRow[] = []
   let cursor = null
   const seenIds = new Set<string>()
@@ -55,10 +56,23 @@ export async function buildPortfolioCsv(
       )
     }
     abortIfRequested(options.signal)
-    lease.assertCurrent()
-    const result = await listPortfolio({ sort: 'name_asc', filters, cursor, limit: PAGE_LIMIT }, db)
+    await identity.assertUnchanged()
+    let result: Awaited<ReturnType<typeof listPortfolio>>
+    try {
+      result = await listPortfolio(
+        { sort: 'name_asc', filters, cursor, limit: PAGE_LIMIT, signal: options.signal },
+        db,
+      )
+    } catch (error) {
+      // A request torn down by Cancel is a cancellation, and a request that failed because the
+      // identity ended is an identity change — neither is reported as a read failure.
+      await identity.assertUnchanged()
+      abortIfRequested(options.signal)
+      throw error
+    }
     // A page read while the identity changed is dropped along with the whole export.
-    lease.assertCurrent()
+    await identity.assertUnchanged()
+    abortIfRequested(options.signal)
     for (const tile of result.results) {
       if (seenIds.has(tile.holdingId)) continue
       seenIds.add(tile.holdingId)

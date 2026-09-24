@@ -5,9 +5,20 @@ import { ArchiveIcon, CheckIcon, DownloadIcon } from '../../ui/icons'
 import { getExportController } from './controller'
 import type { ExportArtifact, ExportController, ExportKind } from './contract'
 import { reduceExportFlow, describeReady, type ExportFlowState } from './exportFlow'
-import { canShareFiles, deliverFiles, downloadOnly, type DeliveryOutcome } from './fileDelivery'
+import {
+  DeliveryRefusedError,
+  canShareFiles,
+  deliverFiles,
+  downloadOnly,
+  type DeliveryOutcome,
+} from './fileDelivery'
 import { markReminderSatisfied } from '../../domain/export/export-reminder'
 import { useAuth } from '../../auth/useAuth'
+import {
+  AuthIdentityChangedError,
+  isAuthIdentityChangedError,
+  type IdentityLease,
+} from '../../auth/identity-lease'
 
 /**
  * Profile › Export & backup (M13; UX_FLOWS.md F11's Settings › Export home).
@@ -19,7 +30,16 @@ import { useAuth } from '../../auth/useAuth'
  * iOS PWAs; this split removes that failure mode instead of catching it.
  *
  * Generated artifacts live in component state only — never localStorage or IndexedDB — and are
- * dropped on discard, replacement or unmount. Nothing about their contents is ever logged.
+ * dropped on discard, replacement, unmount and ANY change of the signed-in account. Nothing about
+ * their contents is ever logged.
+ *
+ * Identity: a run belongs to the identity LEASE (P145) taken when the button was pressed. The
+ * export's requests are made through a client bound to that lease and the fetch layer checks it
+ * before and after every request (data/export/identity-guard.ts); this component adds what only a
+ * UI can do — abort the run when the account changes, the page unmounts or the user cancels, and
+ * refuse to show or deliver artifacts whose lease has ended. The delivery layer re-checks it
+ * immediately before each file is handed to the browser, the save dialog or the share sheet.
+ * Leases end on A -> B, sign-out and A -> B -> A alike, and survive a same-user token refresh.
  */
 
 const DONE_VERB: Record<Exclude<DeliveryOutcome['method'], 'cancelled'>, string> = {
@@ -32,6 +52,14 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback
 }
 
+const STALE_IDENTITY_MESSAGE = 'The signed-in account changed during the export. Nothing was saved.'
+
+/** An identity change is described for what it means to an export; any other error keeps its own
+ *  (already user-safe, fixed or data-layer) message. */
+function exportErrorMessage(error: unknown, fallback: string): string {
+  return isAuthIdentityChangedError(error) ? STALE_IDENTITY_MESSAGE : errorMessage(error, fallback)
+}
+
 export function ExportPage({
   controller = getExportController(),
 }: {
@@ -40,38 +68,93 @@ export function ExportPage({
   const { session, identity } = useAuth()
   const [flow, dispatch] = useReducer(reduceExportFlow, { phase: 'idle' } as ExportFlowState)
   const [shareAvailable, setShareAvailable] = useState(true)
+  // Shown when files were dropped because the identity they were built under ended.
+  const [staleNotice, setStaleNotice] = useState<string | null>(null)
   const runningRef = useRef(false)
+  const userId = session?.user.id ?? null
+  // The identity lease (P145) the artifacts currently held in the flow were produced under. It
+  // ends on any real identity change — including A -> B -> A, which a user-id comparison misses.
+  const artifactsLeaseRef = useRef<IdentityLease | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
+  // Monotonic run id: a run that was cancelled or superseded must not touch the flow when it ends.
+  const runIdRef = useRef(0)
 
-  // Artifacts are memory-only for exactly as long as the flow needs them.
+  // Artifacts are memory-only for exactly as long as the flow needs them: this cleanup runs on
+  // unmount AND whenever the signed-in account changes, ending any run in flight and dropping
+  // whatever was built under the previous identity.
   useEffect(() => {
     return () => {
+      runIdRef.current += 1
+      abortRef.current?.abort()
+      abortRef.current = null
+      artifactsLeaseRef.current = null
+      runningRef.current = false
       dispatch({ type: 'DISCARD' })
     }
-  }, [])
+  }, [userId])
+
+  function cancelPreparing() {
+    runIdRef.current += 1
+    abortRef.current?.abort()
+    abortRef.current = null
+    runningRef.current = false
+    dispatch({ type: 'DISCARD' })
+  }
+
+  /** Drops files whose identity ended and says so; nothing about them is kept or delivered. */
+  function discardStale() {
+    artifactsLeaseRef.current = null
+    setStaleNotice(STALE_IDENTITY_MESSAGE)
+    dispatch({ type: 'DISCARD' })
+  }
 
   async function prepare(kind: ExportKind) {
     if (runningRef.current) return
     runningRef.current = true
+    const runId = ++runIdRef.current
+    const abortController = new AbortController()
+    abortRef.current = abortController
+    artifactsLeaseRef.current = null
+    setStaleNotice(null)
     dispatch({ type: 'PREPARE', kind })
     // P145: the file is assembled from many requests. The lease belongs to the user this page was
     // rendered for, and every request of the export runs under it.
-    const lease = identity.begin(session?.user.id ?? null)
+    const lease = identity.begin(userId)
     try {
+      const options = { signal: abortController.signal, lease }
       const artifacts =
         kind === 'backup'
-          ? await controller.createBackup(undefined, lease)
-          : await controller.createCsvExport(undefined, lease)
+          ? await controller.createBackup(undefined, options)
+          : await controller.createCsvExport(undefined, options)
+      // A cancelled or superseded run is silent. Files built under an identity that has ended are
+      // never shown, whichever account is on screen now.
+      if (runId !== runIdRef.current) return
+      if (!lease.isCurrent()) throw new AuthIdentityChangedError()
+      artifactsLeaseRef.current = lease
       setShareAvailable(canShareFiles(artifacts))
       dispatch({ type: 'PREPARED', kind, artifacts })
     } catch (error) {
+      if (runId !== runIdRef.current) return
       dispatch({
         type: 'PREPARE_FAILED',
         kind,
-        message: errorMessage(error, 'Something went wrong while creating your export.'),
+        message: exportErrorMessage(error, 'Something went wrong while creating your export.'),
       })
     } finally {
-      runningRef.current = false
+      if (runId === runIdRef.current) {
+        runningRef.current = false
+        abortRef.current = null
+      }
     }
+  }
+
+  /**
+   * Artifacts are deliverable only under the identity they were produced for — checked when the
+   * button is pressed and again by the delivery layer immediately before each file is handed to
+   * the browser, the save dialog or the share sheet.
+   */
+  function deliverableNow(): boolean {
+    return artifactsLeaseRef.current?.isCurrent() === true
   }
 
   function readyArtifacts(flow: ExportFlowState): readonly ExportArtifact[] | null {
@@ -88,41 +171,50 @@ export function ExportPage({
 
   const busy = flow.phase === 'preparing' || flow.phase === 'delivering'
 
-  async function deliver() {
+  async function runDelivery(
+    send: (files: readonly ExportArtifact[]) => Promise<DeliveryOutcome>,
+    satisfiesReminder: (outcome: DeliveryOutcome) => boolean,
+  ) {
     if (artifacts === null || readyKind === null || runningRef.current) return
+    if (!deliverableNow()) {
+      discardStale()
+      return
+    }
     runningRef.current = true
     dispatch({ type: 'DELIVER' })
     try {
-      const outcome = await deliverFiles(artifacts)
-      if (outcome.method !== 'cancelled' && session)
+      const outcome = await send(artifacts)
+      if (satisfiesReminder(outcome) && session)
         markReminderSatisfied(window.localStorage, session.user.id)
       dispatch({ type: 'DELIVERED', outcome })
     } catch (error) {
-      dispatch({
-        type: 'DELIVERY_FAILED',
-        message: errorMessage(error, 'Something went wrong while saving your export.'),
-      })
+      if (error instanceof DeliveryRefusedError) {
+        // The identity ended between the button press and the browser taking the file: the rest
+        // of the set is not delivered and the retained copies are dropped, not offered for retry.
+        discardStale()
+      } else {
+        dispatch({
+          type: 'DELIVERY_FAILED',
+          message: errorMessage(error, 'Something went wrong while saving your export.'),
+        })
+      }
     } finally {
       runningRef.current = false
     }
   }
 
+  async function deliver() {
+    await runDelivery(
+      (files) => deliverFiles(files, { canDeliver: deliverableNow }),
+      (outcome) => outcome.method !== 'cancelled',
+    )
+  }
+
   async function deliverAsDownload() {
-    if (artifacts === null || readyKind === null || runningRef.current) return
-    runningRef.current = true
-    dispatch({ type: 'DELIVER' })
-    try {
-      const outcome = await downloadOnly(artifacts)
-      if (session) markReminderSatisfied(window.localStorage, session.user.id)
-      dispatch({ type: 'DELIVERED', outcome })
-    } catch (error) {
-      dispatch({
-        type: 'DELIVERY_FAILED',
-        message: errorMessage(error, 'Something went wrong while saving your export.'),
-      })
-    } finally {
-      runningRef.current = false
-    }
+    await runDelivery(
+      (files) => downloadOnly(files, { canDeliver: deliverableNow }),
+      () => true,
+    )
   }
 
   return (
@@ -195,10 +287,19 @@ export function ExportPage({
       {/* One live region for every phase so screen readers hear progress, readiness, success,
           cancellation and failure alike — none conveyed by colour alone. */}
       <div aria-live="polite" aria-busy={busy}>
+        {staleNotice !== null && flow.phase === 'idle' ? (
+          <FormMessage tone="error">{staleNotice}</FormMessage>
+        ) : null}
+
         {flow.phase === 'preparing' ? (
-          <p role="status" className="text-sm text-slate-300">
-            Preparing…
-          </p>
+          <div className="flex items-center gap-3">
+            <p role="status" className="text-sm text-slate-300">
+              Preparing…
+            </p>
+            <Button type="button" variant="quiet" onClick={cancelPreparing}>
+              Cancel
+            </Button>
+          </div>
         ) : null}
 
         {flow.phase === 'delivering' ? (

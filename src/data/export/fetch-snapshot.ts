@@ -3,9 +3,10 @@
  *
  * Security posture: every query runs through the caller's own authenticated Supabase client —
  * RLS is the access-control boundary and nothing here bypasses, widens or re-implements it.
- * The exporting identity is resolved from the SESSION (`auth.getUser()`), never accepted as a
- * parameter, so UI code cannot nominate another user. No service role, no Edge Function, no
- * Storage bucket.
+ * The exporting identity is resolved from the client itself — the identity lease of the leased
+ * client the app hands in (P145), or, for a plain client, the verified session (`auth.getUser()`) —
+ * never accepted as a parameter, so UI code cannot nominate another user. No service role, no
+ * Edge Function, no Storage bucket.
  *
  * Exactness: every monetary column is selected with a `::text` cast (src/data/money.ts's
  * bigint boundary rule) and re-validated through `minorUnits()` when branded, so a column that
@@ -25,9 +26,9 @@
  * the multi-query export is not one PostgreSQL transaction (D-077).
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import type { IdentityLease } from '../../auth/identity-lease'
 import { createSectionWalk } from '../../domain/export/pagination-integrity'
 import type { Database } from '../database.types'
+import { beginExportIdentity, type ExportIdentityGuard } from './identity-guard'
 import {
   minorUnits,
   type BackupAcquisitionLotRow,
@@ -75,6 +76,18 @@ export interface ExportFetchOptions {
   readonly maxPages?: number
   /** Called after each page lands. P36 renders progress from this; core owns no UI. */
   readonly onPage?: (info: { section: string; totalRows: number }) => void
+  /**
+   * Pins the export to the identity it started under (identity-guard.ts). `fetchExportSnapshot`
+   * always installs its own; every request is bracketed by `assertUnchanged()`, so a page read
+   * while the signed-in account changed is discarded and the export fails instead of mixing
+   * accounts. Internal wiring — callers do not pass it.
+   */
+  readonly identity?: ExportIdentityGuard
+}
+
+/** Bracket for every request: the export must still be running as the account it began as. */
+async function assertIdentity(options: ExportFetchOptions): Promise<void> {
+  await options.identity?.assertUnchanged()
 }
 
 // ---------------------------------------------------------------------------
@@ -389,7 +402,13 @@ async function drainPages<TRow>(
 
   for (let page = 0; page < maxPages; page++) {
     abortIfRequested(options.signal)
+    await assertIdentity(options)
     const { data, error } = await buildPage(page * pageSize, (page + 1) * pageSize - 1)
+    // A page read while the account changed is dropped, not kept — checked before its rows are
+    // looked at, so even an error or an empty page cannot mask the switch.
+    await assertIdentity(options)
+    // A request torn down by the caller's own signal is a cancellation, not a read failure.
+    if (options.signal?.aborted === true) throw new DOMException('Export cancelled', 'AbortError')
     if (error !== null) {
       throw new Error(`Export failed reading ${section}: ${error.message}`)
     }
@@ -416,6 +435,7 @@ async function fetchSectionTotal(
     throw new Error(`Export failed counting ${section}: no identity key declared`)
   }
   abortIfRequested(options.signal)
+  await assertIdentity(options)
   // The COUNT must see exactly the rows the page reads: sections whose reader applies an
   // explicit predicate beyond RLS (sealed_products' owner-created subset) must scope the count
   // identically, or reconciliation would compare different row sets.
@@ -426,6 +446,7 @@ async function fetchSectionTotal(
   if (options.signal?.aborted === true) {
     throw new DOMException('Export cancelled', 'AbortError')
   }
+  await assertIdentity(options)
   if (error !== null || count === null) {
     throw new Error(`Export failed counting ${section}: ${error?.message ?? 'no count returned'}`)
   }
@@ -973,6 +994,7 @@ async function fetchCardVariantManifest(
   const entries: ManifestCardVariantEntry[] = []
   for (let start = 0; start < variantIds.length; start += MANIFEST_CHUNK_SIZE) {
     abortIfRequested(options.signal)
+    await assertIdentity(options)
     const chunk = variantIds.slice(start, start + MANIFEST_CHUNK_SIZE)
     const { data, error } = await client
       .from('card_variants')
@@ -983,6 +1005,7 @@ async function fetchCardVariantManifest(
       .in('id', [...chunk])
       .order('id', { ascending: true })
       .overrideTypes<VariantManifestWireRow[], { merge: false }>()
+    await assertIdentity(options)
     if (error !== null) {
       throw new Error(`Export failed reading catalog variants: ${error.message}`)
     }
@@ -1017,6 +1040,7 @@ async function fetchCuratedSealedManifest(
   const entries: ManifestCuratedSealedProductEntry[] = []
   for (let start = 0; start < curatedIds.length; start += MANIFEST_CHUNK_SIZE) {
     abortIfRequested(options.signal)
+    await assertIdentity(options)
     const chunk = curatedIds.slice(start, start + MANIFEST_CHUNK_SIZE)
     const { data, error } = await client
       .from('sealed_products')
@@ -1027,6 +1051,7 @@ async function fetchCuratedSealedManifest(
       .in('id', [...chunk])
       .order('id', { ascending: true })
       .overrideTypes<CuratedSealedWireRow[], { merge: false }>()
+    await assertIdentity(options)
     if (error !== null) {
       throw new Error(`Export failed reading curated sealed products: ${error.message}`)
     }
@@ -1060,6 +1085,7 @@ async function fetchReferencedCardSetManifest(
   const entries: ManifestCardSetEntry[] = []
   for (let start = 0; start < setIds.length; start += MANIFEST_CHUNK_SIZE) {
     abortIfRequested(options.signal)
+    await assertIdentity(options)
     const chunk = setIds.slice(start, start + MANIFEST_CHUNK_SIZE)
     const { data, error } = await client
       .from('card_sets')
@@ -1067,6 +1093,7 @@ async function fetchReferencedCardSetManifest(
       .in('id', [...chunk])
       .order('id', { ascending: true })
       .overrideTypes<CardSetWireRow[], { merge: false }>()
+    await assertIdentity(options)
     if (error !== null) {
       throw new Error(`Export failed reading referenced card sets: ${error.message}`)
     }
@@ -1107,33 +1134,21 @@ function collectReferencedIds(
 // ---------------------------------------------------------------------------
 
 /**
- * The owner whose rows are being exported. A leased client (P145) names its owner itself and has no
- * `auth` to ask; the shared client is asked, as before.
- */
-async function resolveExportOwner(client: SupabaseClient<Database>): Promise<string> {
-  const lease = (client as { identityLease?: IdentityLease }).identityLease
-  if (lease !== undefined) {
-    lease.assertCurrent()
-    return lease.userId
-  }
-  const auth = await client.auth.getUser()
-  const sessionUserId: string | undefined = auth.data.user?.id
-  if (auth.error !== null || sessionUserId === undefined) {
-    throw new Error('Export requires an authenticated session')
-  }
-  return sessionUserId
-}
-
-/**
  * Fetches every canonical export section for the signed-in owner — sequentially, one bounded
  * page loop at a time (DB-friendly, deterministic progress ordering) — then resolves the
  * shared-catalog identity manifest. Throws AbortError as soon as `signal` is observed fired.
  */
 export async function fetchExportSnapshot(
   client: SupabaseClient<Database>,
-  options: ExportFetchOptions = {},
+  callerOptions: ExportFetchOptions = {},
 ): Promise<ExportSnapshot> {
-  const userId: string = await resolveExportOwner(client)
+  // The exporting identity is pinned once and re-checked around every request below. On the leased
+  // client the app always passes (P145) that pin IS the identity lease, so an account switch
+  // mid-export — including A -> B -> A, which the user id alone cannot tell apart — fails the
+  // export instead of mixing accounts (identity-guard.ts).
+  const identity = await beginExportIdentity(client)
+  const userId = identity.userId
+  const options: ExportFetchOptions = { ...callerOptions, identity }
 
   const profiles = await fetchProfiles(client, userId, options)
   const customCollections = await fetchCustomCollections(client, options)
@@ -1196,5 +1211,7 @@ export async function fetchExportSnapshot(
     card_sets: await fetchReferencedCardSetManifest(client, userCreatedSetIds, options),
   }
 
+  // Last gate before the snapshot leaves this function: still the account it began as.
+  await assertIdentity(options)
   return { ...snapshot, identity_manifest }
 }
