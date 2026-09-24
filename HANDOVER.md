@@ -4,6 +4,36 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
+## Current state (P162, 2026-09-24) — the P149 candidate plus P157's export pipeline, composed with the identity lease (D-141): local only, NOT pushed, NOT released
+
+Branch `fix/p162-export-p149-integrated` (worktree `p162`) = the exact P149 tree (`7fb83c2`) plus P157's five commits cherry-picked
+(P149 is not applied twice) and the integration commits on top. **Migrations: 106, none added.** `RELEASED_PRODUCTION` is unchanged
+(`origin/main` = `d8682e0`); hosted Supabase, Cloudflare, P142 and GitHub were not touched.
+
+- **What the composition is (D-141).** Exports and the Portfolio Quick CSV run under the identity lease taken at the button press and
+  read every page through the leased client. `src/data/export/identity-guard.ts` keeps P157's seam but its body is the lease:
+  `assertUnchanged()` is `lease.assertCurrent()`, checked before and after every request and once more before the snapshot leaves the
+  fetch layer. A → B, sign-out and A → B → A end the export (the old user id coming back does not revive it); a same-user token refresh
+  does not. The application never uses the session-comparing fallback (plain clients are DB-harness only; a structural test pins it).
+- **Delivery.** The files are tied to their lease. `deliverUnderLease` (fileDelivery.ts) refuses to start on an ended lease and gates every
+  hand-over point: before each file, after the save dialog. A refusal is never turned into a download. Files already handed to the browser
+  before an identity change cannot be recalled (a multi-file download stops at the next file boundary).
+- **Cancel** now also tears down the Quick CSV's request in flight (`listPortfolio` takes a `signal`). A hung page has no built-in timeout:
+  only Cancel, unmount or an account change ends it (tested with a caller-imposed `AbortSignal.timeout`).
+- **Decision id.** P157 numbered its decision D-134, which P149's lineage already uses (P143 auth boundary); the export decision is **D-141**.
+  P152/P156/P151/P153 worktrees were not inspected: check for a further collision when they are integrated.
+- **Consistency is not snapshot isolation** (D-141): a same-count concurrent edit between two pages is not detected.
+- **Not covered by account deletion:** CSV/JSON files the user saved are user-held copies on their device.
+- Gates on the final tree (isolated local stack `pokeportfolio-p162`, fresh `supabase db reset`, 106/106, all pg_cron jobs deactivated locally —
+  the M12 recompute job races the queue tests, and m12_queue's fx test is not re-runnable on a used database): unit and DB counts are in
+  `output_162`; authenticated E2E 146/146 (137 + 5 P157 + 4 P162); M13 adversarial 62, M16 adversarial 53; build, platform verifier 28/28,
+  links 30/30; finance diagnostics all 0 (the database holds no live rows after the suites clean up, so this is a weak signal).
+  Export suites also pass against a 104-migration database (36 DB tests, 11 export browser tests); the full frontend against DB104 was not run.
+- Excel 16.0.20326 (nb-NO), legacy text import of production-writer output: no hostile cell became a formula, signed money stayed numeric,
+  NULL stayed empty. A quoted CR or LF inside a name still starts a new row in that import path (a limit of that importer; the file is
+  RFC 4180 and an independent parser reads it intact). Excel also shows only ~15 significant digits of a 2^53+ amount; the file holds all of them.
+  No claim is made for Google Sheets or LibreOffice (not available).
+
 ## Current state (P149, 2026-09-19) — the P148 candidate plus the credential-refresh fix (D-140): local only, NOT pushed, NOT released
 
 Branch `fix/p149-auth-refresh-failure-recovery` (a sibling worktree named `p149`) = the exact P148
