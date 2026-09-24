@@ -3,6 +3,7 @@ import {
   deliverFiles,
   downloadOnly,
   DeliveryError,
+  DeliveryRefusedError,
   type DeliverableFile,
 } from '../../src/features/export/fileDelivery'
 
@@ -255,5 +256,77 @@ describe('deliverFiles', () => {
     await expect(deliverFiles([])).rejects.toThrow(DeliveryError)
     await expect(deliverFiles([])).rejects.toThrow(/No files came back/)
     expect(createObjectURL).not.toHaveBeenCalled()
+  })
+})
+
+describe('P162 canDeliver: files are handed over only while their identity is current', () => {
+  it('refuses before anything is shared, saved or downloaded when the gate is already closed', async () => {
+    const share = vi.fn<ShareFn>().mockResolvedValue(undefined)
+    stubNavigator({ share, canShare: () => true })
+    await expect(deliverFiles([file('a.csv')], { canDeliver: () => false })).rejects.toThrow(
+      DeliveryRefusedError,
+    )
+    await expect(downloadOnly([file('a.csv')], { canDeliver: () => false })).rejects.toThrow(
+      DeliveryRefusedError,
+    )
+    expect(share).not.toHaveBeenCalled()
+    expect(createObjectURL).not.toHaveBeenCalled()
+    expect(anchors).toHaveLength(0)
+  })
+
+  it('stops a multi-file download at the file boundary when the gate closes part way', async () => {
+    stubNavigator({ share: null, canShare: null })
+    let open = true
+    // The gate is asked once per file; it closes while the second file is being awaited.
+    const canDeliver = vi.fn<() => boolean>(() => open)
+    const names = ['holdings.csv', 'purchases.csv', 'sales.csv']
+    const pending = downloadOnly(
+      names.map((name) => file(name)),
+      { canDeliver },
+    ).then(
+      (outcome) => ({ outcome }),
+      (error: unknown) => ({ error }),
+    )
+    await vi.advanceTimersByTimeAsync(0) // first file goes out at once
+    expect(anchors.map((a) => a.download)).toEqual(['holdings.csv'])
+    open = false
+    await vi.runAllTimersAsync()
+    const result = await pending
+    expect('error' in result && result.error).toBeInstanceOf(DeliveryRefusedError)
+    // Only the file handed over before the change was delivered; the rest never got an object URL.
+    expect(anchors.map((a) => a.download)).toEqual(['holdings.csv'])
+    expect(createObjectURL).toHaveBeenCalledTimes(1)
+    expect(revokeObjectURL).toHaveBeenCalledTimes(1) // that one URL is still revoked
+  })
+
+  it('checks again after the save dialog closes and writes nothing if the identity ended meanwhile', async () => {
+    stubNavigator({ share: null, canShare: null })
+    let open = true
+    const write = vi.fn<(data: Blob) => Promise<void>>().mockResolvedValue(undefined)
+    const picker = vi.fn<PickerFn>(() => {
+      open = false // the person switched account while the dialog was open
+      return Promise.resolve({
+        createWritable: () => Promise.resolve({ write, close: () => Promise.resolve(undefined) }),
+      })
+    })
+    ;(globalThis as { showSaveFilePicker?: PickerFn }).showSaveFilePicker = picker
+    const pending = deliverFiles([file('backup.json')], { canDeliver: () => open }).then(
+      (outcome) => ({ outcome }),
+      (error: unknown) => ({ error }),
+    )
+    await vi.runAllTimersAsync()
+    const result = await pending
+    expect('error' in result && result.error).toBeInstanceOf(DeliveryRefusedError)
+    expect(write).not.toHaveBeenCalled()
+    // A refusal is never converted into the download fallback.
+    expect(createObjectURL).not.toHaveBeenCalled()
+  })
+
+  it('an open gate changes nothing about a normal delivery', async () => {
+    stubNavigator({ share: null, canShare: null })
+    const pending = deliverFiles([file('a.csv'), file('b.csv')], { canDeliver: () => true })
+    await vi.runAllTimersAsync()
+    expect(await pending).toEqual({ method: 'download', filenames: ['a.csv', 'b.csv'] })
+    expect(anchors).toHaveLength(2)
   })
 })

@@ -37,12 +37,14 @@ interface FakeTile {
 }
 
 interface World {
+  lastParams: { signal?: AbortSignal } | null
   listCalls: number
   onList: ((call: number) => void) | null
   listImpl: ((call: number) => unknown) | null
 }
 
 const world = vi.hoisted((): World => ({
+  lastParams: null,
   listCalls: 0,
   onList: null,
   listImpl: null,
@@ -50,7 +52,8 @@ const world = vi.hoisted((): World => ({
 
 vi.mock('../../src/data/portfolio', () => ({
   portfolioDisplayName: (t: { cardName: string | null }) => t.cardName ?? 'Unknown item',
-  listPortfolio: () => {
+  listPortfolio: (params: { signal?: AbortSignal }) => {
+    world.lastParams = params
     world.listCalls++
     world.onList?.(world.listCalls)
     if (world.listImpl === null) throw new Error('listImpl not set')
@@ -247,6 +250,30 @@ describe('Quick CSV — complete or nothing', () => {
     })
     await expect(build(controller.signal)).rejects.toMatchObject({ name: 'AbortError' })
     expect(world.listCalls).toBe(2)
+  })
+
+  it('hands the signal to the page request so Cancel tears the request itself down', async () => {
+    const controller = new AbortController()
+    serve([[tile()]])
+    await build(controller.signal)
+    expect(world.lastParams?.signal).toBe(controller.signal)
+  })
+
+  it('a request that fails because Cancel tore it down is a cancellation, not a read failure', async () => {
+    const controller = new AbortController()
+    world.listImpl = () => {
+      controller.abort()
+      throw new Error('AbortError: signal is aborted without reason')
+    }
+    await expect(build(controller.signal)).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
+  it('a request that fails because the identity ended is reported as an identity change', async () => {
+    world.listImpl = () => {
+      authority.observe(USER_B)
+      throw new Error('AuthIdentityChangedError: your sign-in changed')
+    }
+    await expect(build()).rejects.toBeInstanceOf(AuthIdentityChangedError)
   })
 
   it('an already-aborted signal never issues a request', async () => {
