@@ -1253,6 +1253,32 @@ a full build can exceed that on a loaded machine. Build first with the placehold
 --project=desktop-chromium` — the global setup requires the served build to match the current commit and
 a clean tree.
 
+## 6d. Cross-track suite (P164)
+
+Everything here exercises two or three of the tracks at once. The witnesses are independent of the code under test: the account each
+request's bearer token belongs to (JWT `sub` read from the browser's own request log), the row count and md5 of **every** `user_id` table for
+**both** accounts (discovered from `information_schema`), and what the page shows.
+
+- `tests/data/p164-price-check-real-transport.test.ts` — raw JSON text through the real exact-transport guard and a real client into Price
+  Check: valid strings (18 digits) arrive exactly; an unsafe bare headline, an unsafe bare `valueMinor` and an unsafe literal anywhere else
+  are refused; the marker is absent for a conforming body.
+- `tests/data/p164-search-prices-skew.test.ts` — both skew directions of `search-prices` with the real mapper, wire builder and clients; a
+  legacy emission (`Number(bigint)`) is refused by Price Check and yields no price in the existing consumer. The rows are built by the function's
+  own expressions, pinned in its source text.
+- `tests/e2e/authenticated/p164-cross-track.spec.ts` — 12 scenarios: authenticated scan → explicit variant → price; direct A → B mid-scan;
+  A → B → A; same-user token refresh (in-progress scan and confirmed result); a held 620-line export (one line 2^53+1) while B signs in and prices;
+  the same export completing exactly; refresh outage during Price Check and during an export (recoverable error, identity untouched, retry works);
+  sign-out during scanner start-up; Add to Collection writes only on submit; a two-item `/scan` batch across an account switch.
+- `scripts/p164/mutants.mjs` — 16 mutants (`node scripts/scanner-p151/run-mutations.mjs --mutants scripts/p164/mutants.mjs`).
+
+**Run it.** Same as §6b, with two additions: export `P153_DB_URL="$DB_URL"` (the P161 ledger spec reads it) and run the authenticated project with
+`--workers=1`. `p164-cross-track.spec.ts` and `price-check-ledger.spec.ts` both need the card the scanner fixture prints ("Fauxosaur EX 049"), which is
+unique per set: run concurrently, the second `beforeAll` fails with a message saying so.
+
+**Local-stack hygiene learned here.** A `test:db` run that is killed midway leaves catalog fixtures behind (reset before re-running). After a *complete*
+DB run the catalog also keeps extra printings (e.g. the seed Pikachu has three variants), so E2E specs must choose a variant explicitly when the card has
+several. pg_cron jobs are deactivated on the local stack (`update cron.job set active=false` as `supabase_admin`).
+
 ## 7a. Privilege-convergence tests
 
 Three steps in `db-tests`, and the order is the point (SECURITY.md §5.9):

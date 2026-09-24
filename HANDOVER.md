@@ -4,6 +4,45 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
+## Current state (P164, 2026-09-25) — auth/export candidate (P149 + P162) + scanner/Price Check candidate (P161) INTEGRATED: local only, NOT pushed, NOT released
+
+Branch `feat/p164-integrated-auth-export-scanner-price` (worktree `p164`) starts exactly at P162 (`66eba62`, which contains P149 `7fb83c2`) and
+merges the complete P161 branch (`5f7e95f`, which contains P151 and P153) once. **Migrations: 106, none added** (P161 adds none).
+**Hosted database: still 104. Nothing here is released** — not P149, not P162, not P161. `origin/main` = `d8682e0` (verified at the start and
+the end of the session). Hosted Supabase, Cloudflare, GitHub Actions, P142 and every other worktree were not touched.
+Decisions: D-141 (exports, P162), D-151/D-153/D-161 (scanner, Price Check), **D-164** (this integration). Flow: UX_FLOWS F17.
+
+- **What the merge was.** Textual conflicts only in HANDOVER, DECISIONS and PROJECT_JOURNAL (append-append; both sides kept). The semantic
+  surface: the leased `commitBatch(items, lease)` broke three scanner suites (missing `leased-db` mock; one call without a lease). Production
+  stayed leased; the suites got the same stand-in the other scanner suites use and a **real** lease.
+- **One defect only the combination had (D-164).** The exact-transport guard quotes unsafe JSON integers in a response; for an Edge Function
+  those digits are a rounded double's, and the quoted string then passed Price Check's `valueMinor` grammar and the old pricing consumer as
+  an exact price. Fix: the guard marks a rewritten response (`x-exact-transport-rewritten`), Price Check refuses it whole, `searchPrices`
+  returns no prices. Missing price is still no price, never zero. Tests push raw JSON through the real guard and clients.
+- **Price Check is raw only.** Graded stays `PARTIAL_NO_AUTHORIZED_PROVIDER`; nothing derives a graded price. Multiple printings need an explicit
+  choice. Add to Collection is a link; the holding exists only after the explicit submit (browser-verified, as A, one write).
+- **Identity.** The scan screen's own key and `AuthIdentityBoundary` are two independent layers; the browser tests discriminate only when both
+  are removed. Direct A → B (another tab signs in; never signed-out), A → B → A, same-user refresh, refresh outage (Price Check and export),
+  sign-out during scanner start-up, a held large export while B signs in and prices, and the scanner's batch write across an account switch
+  are all in `tests/e2e/authenticated/p164-cross-track.spec.ts`.
+- **Limits, stated.** A Tesseract worker whose construction had begun when an account ended is terminated when its initialisation completes
+  (≈ 8 s with each asset delayed 4 s in the test; bounded, never permanent). `/scan` is a full-screen overlay: the test signs out through
+  another tab there. Physical iPhone: not done (`PHYSICAL_IPHONE_GATE` deferred). No real Edge Function ran against a provider (its provider URL
+  is fixed and external); the response row is built by the function's own expressions, pinned in the function's source.
+- **Gates on the final tree** (isolated stack `pokeportfolio-p164`, ports 581xx, fresh reset, 106/106, pg_cron off, `environment_ingest_config`
+  empty): DB suites 932 passed / 1 skipped (= P162); authenticated E2E 158 passed in the full project run plus the 7 P161 ledger tests re-run
+  alone (see TESTING 6d: the two specs share one printed fixture card and must not run concurrently); browser E2E desktop + iPhone emulation
+  390 passed / 114 skipped / 0 failed; M12 44 (+2 skipped), M13 62, M16 53; scanner stress 30; build, platform verifier 28/28, links 31/31;
+  scanner content id `f25fc05d569b7cca`; mutations 16/16 killed + 3 browser witnesses.
+- **Release order (owner actions marked ★).** ★ rotate the secret-shaped key (S-1) and fix the build variables → operational P142 gated deploy
+  (P142 is still OPEN, PR #112 draft) → **fresh `pnpm db:backup` (must print `BACKUP COMPLETE`), then apply P149's two migrations
+  (`20260918120000`, `20260918120010`), hosted 104 → 106, verify** → deploy the Edge Functions **`search-prices` and `ingest-prices`**
+  (`search-prices` before the frontend; a Cloudflare frontend deploy does NOT update Supabase functions) → the frontend from an exact-head green
+  CI → hosted diagnostics (grant audit, finance diagnostics), `/build-meta.json` sha. Account deletion (P152/P156, migration 107 from a different
+  base) is a separate later release with owner policy decisions. **P160's secret guard is not part of this branch** and must be integrated into the
+  P142/P150 release workflow independently (P163).
+- **Not verified:** the released frontend against DB 106 (P148 exception stands); a rollback drill; GitHub Actions capacity.
+
 ## Current state (P162, 2026-09-24) — the P149 candidate plus P157's export pipeline, composed with the identity lease (D-141): local only, NOT pushed, NOT released
 
 Branch `fix/p162-export-p149-integrated` (worktree `p162`) = the exact P149 tree (`7fb83c2`) plus P157's five commits cherry-picked

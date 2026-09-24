@@ -2430,3 +2430,27 @@ Mutation testing showed a second lesson: with the session aborting its own signa
 supersession and publish gate became invisible to every Price Check-level test (both survived until a
 test drove the read-only port directly with no caller signal). Overlapping ownership hides regressions in
 the layer that is doing less of the work.
+
+## 2026-09-25 — The guard that made a rounded number look exact (P164)
+
+Two candidates, each green alone, met: the auth/export line (identity leases, an exact-money transport guard,
+safe exports) and the scanner + Price Check line. Git had almost nothing to say — three append-only documents.
+The semantic surface was larger: the leased `commitBatch` signature broke the scanner suites' mocks (fixed by
+adapting the tests to the real lease, not by un-leasing the production call), and the two lines each carried
+an identity layer for the same screen.
+
+The real finding came from asking what the exact-money guard does to a *third party's* number. The guard quotes
+any bare JSON integer above 2^53 so that PostgREST money keeps its digits. An Edge Function is not PostgREST: it
+had already turned a bigint into a double, so the digits it sends are a rounded value's digits. Quoted, they are a
+16-digit string, and Price Check's own grammar — written to accept exact strings — accepted them. P161's tests
+replaced the Supabase client with a stub, so the guard had never been in the path. Pushing raw JSON text through
+the real client showed the old pricing consumer returning 9007199254740992n as a price. The fix is small (the
+guard tags a rewritten response; price consumers refuse it); the lesson is that a stub at the seam between two
+tracks removes exactly the layer that interacts with the other track.
+
+Testing lessons worth keeping: (a) two E2E specs that both need the scanner's printed fixture card cannot share
+one catalog unless run serially — the unique constraint says so; (b) a mutation that removes one of two
+independent identity layers survives, by design — the browser test only discriminates when both are removed;
+(c) "no orphan worker after sign-out" needs a bounded-window assertion, not an instantaneous zero: a worker whose
+construction had begun cannot be interrupted, only terminated on arrival; (d) a regex written through a shell
+heredoc lost its backslash and made an assertion vacuous — read the file back.

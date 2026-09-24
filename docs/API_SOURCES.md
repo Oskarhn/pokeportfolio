@@ -341,6 +341,25 @@ change); the hosted project is the Production project, so deploying is an owner 
 release gate. Graded prices remain `PARTIAL_NO_AUTHORIZED_PROVIDER`: no authorized source exists (see
 "Graded price sources" above); nothing derives a graded price from a raw one.
 
+### Release order for the integrated candidate (P164)
+
+Edge Functions that differ from the released base (`d8682e0`) in this candidate — every one is a separate hosted deploy, and a Cloudflare
+frontend deploy does not update any of them:
+
+| Function | Changed by | Why it matters |
+|---|---|---|
+| `search-prices` | P161 (`index.ts` +8, new `_shared/price-observations.ts`) and P149 (`_shared/tcgdex.ts`) | additive `observations[]`; an absurd provider price is absent instead of `Number()`-rounded |
+| `ingest-prices` | P149 (`_shared/tcgdex.ts`) | the same rule for `price_snapshots.value_minor` |
+| `sync-catalog` | bundles `tcgdex.ts`, calls none of the changed pricing code | no redeploy required (harmless if redeployed) |
+| `fetch-fx-rate`, `ingest-fx`, `redeem-invitation` | unchanged | — |
+
+Order: (1) fresh backup, then P149's two migrations (hosted 104 → 106); (2) deploy `search-prices` and `ingest-prices`; (3) the frontend.
+The functions do not depend on the migrations and the migrations do not depend on the functions; the frontend needs both. Skew, tested in
+`tests/data/p164-search-prices-skew.test.ts`: released client + new function reads the same headline (extra field ignored); new client + released
+function shows the single headline value, marked partial; a function that still emits an unsafe JSON number is refused by the new client (whole
+response) and produces no price in the existing pricing consumer. Rollback of a function: redeploy the previous version. Nothing is deployed by
+these sessions.
+
 ## Scrydex
 
 **Status: Rejected for now — cost**

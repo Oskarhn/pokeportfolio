@@ -10,6 +10,15 @@ they were**.
 
 ## [Unreleased]
 
+### Changed — 2026-09-25 — Scanner + Price Check integrated with the auth/export candidate (P164)
+
+Not released; local integration of two unreleased candidates (hosted database is still 104, this tree is 106).
+
+- A price response whose numbers the transport had to rewrite is now refused as a whole (Price Check: "malformed response"; the existing
+  pricing consumer: no prices) instead of showing a rounded number as an exact price (D-164). Missing price is still no price.
+- New cross-track browser suite (identity switches, refresh outages, large exports, scanner batches) and skew tests for `search-prices`.
+- No migration. Edge Functions to redeploy when released: `search-prices`, `ingest-prices` (see `docs/API_SOURCES.md`).
+
 ### Fixed — 2026-09-19 — A failed session refresh no longer makes Save do nothing (P149)
 
 Not released; local fix on top of the P148 candidate.

@@ -6815,3 +6815,70 @@ WebKit emulation), the A/B scenarios appended to
 `tests/e2e/authenticated/price-check-ledger.spec.ts` (real local stack, every `user_id` table
 compared by row hash), and `scripts/scanner-p161/mutants.mjs` (17 mutants, all killed by an assertion;
 run with `node scripts/scanner-p151/run-mutations.mjs --mutants scripts/scanner-p161/mutants.mjs`).
+
+## D-164 — A response the transport guard had to rewrite is not evidence of a price; the three integrated tracks keep one owner each (P164)
+
+**2026-09-25 · Accepted**
+
+*(Integration of the auth/export candidate (P149 → P162: D-136…D-141) with the scanner + Price Check
+candidate (P161: D-151, D-153, D-161). Ids stay unique: D-134…D-141, D-151, D-153, D-161, D-164;
+`tests/config/decision-ids-unique.test.ts` passes. P157's cherry-picked docs commit still carries the
+subject "D-134" in history; its content is D-141.)*
+
+**Context.** The two lines were each green alone and merged with conflicts only in three append-only
+documents. Running them together exposed one defect that neither could see, because each tested the
+other's interface through a stub.
+
+The exact-transport guard (D-137, `src/data/exact-json-guard.ts`) *quotes* every bare JSON integer a
+JavaScript number cannot hold before `JSON.parse` sees it, so a PostgREST `bigint` keeps its digits.
+That is right for PostgREST, whose digits are the database's. It is wrong for an Edge Function: the
+function has already run `Number(bigint)` (`search-prices`: `sourceValueMinor: Number(chosen.valueMinor)`),
+so the digits in the text are the digits of a *rounded* double. After the quote they are a decimal string —
+and a 16–18 digit decimal string is exactly what Price Check's `valueMinor` grammar (`^\d{1,18}$`,
+D-153) and the existing pricing consumer (`parseNullableMinorUnits`, P149) accept as exact. A legacy or
+non-conforming function response therefore turned into a plausible-looking, exact-looking price.
+P161 tested Price Check's parser with the Supabase client replaced by a stub, so the guard was never
+between the wire and the parser. Measured before the fix: `searchPrices` on `"sourceValueMinor":9007199254740992`
+returned `9007199254740992n` (€90 trillion), and a bare unsafe `valueMinor` inside `observations[]` reached the
+Price Check section as an available exact price.
+
+**Decision.**
+
+1. **The guard marks a response it rewrote.** The `Response` it hands on carries
+   `x-exact-transport-rewritten: <count>` (`EXACT_TRANSPORT_REWRITE_HEADER`). Client-side only; it never
+   existed on the network. Nothing else about the guard changes (requests are still refused, responses are
+   still quoted, `onResponseRewrite` still fires).
+2. **A price consumer refuses a marked response.** Price Check (`fetchCardPriceResponse`) throws
+   `PriceCheckError('malformed_response')` for the whole response — it does not choose which fields to
+   trust. The existing pricing consumer (`searchPrices`) returns an empty map, its documented failure
+   behaviour ("pricing is a secondary enhancement"). Rejected: narrowing Price Check's grammar to
+   ≤ 15 digits (legitimate exact strings above 2^53 exist and are tested); trusting the quoted digits
+   because the function "should" send strings (the function's own rounding is precisely the case).
+3. **Second layer stays.** The headline parser accepts only a safe integer *number*; a quoted string is a
+   dropped `malformed_price`. If the marker were ever absent, the quoted digits still do not become a price.
+   Missing source price is still no price, never zero.
+4. **One owner per concern, unchanged by the merge.** Identity: P149's lease authority for every write
+   (the scanner's `commitBatch(items, lease)` writes through `leasedDb(lease)`, and stops on `!lease.isCurrent()`);
+   the read-only Price Check port has no `commitBatch`. Ordering/cancellation of a scan: the scanner
+   controller (D-161). Exports: the lease-bound delivery gate (D-141). The scan screen keeps its own identity
+   key **and** the authenticated subtree is keyed by user id (D-134): two independent layers. Removing either
+   alone changes no browser behaviour; removing both makes A's photo survive into B (browser-verified).
+5. **Test adaptation policy.** Where the leased `commitBatch` signature broke P161's scanner suites, the
+   production API stayed leased; the suites gained the same `leased-db` stand-in the other scanner suites use
+   and a REAL `IdentityLease` (`tests/ui/lease-support.ts`), so the controller's own
+   `disposed || !lease.isCurrent()` decision is what they exercise.
+
+**Consequences.** No migration (local 106, hosted still 104). Edge Functions affected by this candidate,
+against the released base: `search-prices` (P161 additive `observations[]` + P149's shared `tcgdex.ts`),
+`ingest-prices` (P149's shared `tcgdex.ts`: an absurd provider price is absent instead of rounded into
+`price_snapshots.value_minor`). `sync-catalog` bundles `tcgdex.ts` but calls none of the changed pricing code;
+`fetch-fx-rate`, `ingest-fx`, `redeem-invitation` are unchanged. Release order is in `docs/API_SOURCES.md`.
+Residual, stated: a hung request in an export has no built-in timeout (D-141); the Tesseract worker whose
+construction had begun when an account ended cannot be interrupted and is terminated when its initialisation
+completes (bounded, measured ~8 s with each asset artificially delayed 4 s; never permanent).
+
+**Proof.** `tests/data/p164-price-check-real-transport.test.ts` and `tests/data/p164-search-prices-skew.test.ts`
+(raw JSON text through the real guard and real clients; both skew directions; a legacy emission),
+`tests/e2e/authenticated/p164-cross-track.spec.ts` (12 scenarios, every request judged by the account its
+token belongs to and every `user_id` table by row hash for both accounts), `scripts/p164/mutants.mjs`
+(16 mutants, all killed by an assertion; three more killed against the real browser by hand).

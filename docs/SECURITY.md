@@ -892,6 +892,14 @@ requests run as B: the file mixes accounts, or A's captured data becomes deliver
   export sends nothing anywhere and writes nothing to Storage or any third party; the fetch is
   read-only (no non-GET/HEAD request, asserted in `tests/db/p157_export_integrity.test.ts`).
 
+### 9.5 A rewritten response is not evidence of an amount (D-164, P164)
+
+The exact-transport guard (§9.3, D-137) quotes unsafe JSON integers in a response so PostgREST money keeps its digits. It cannot know whether a
+digit string was produced by the database (exact) or by a third party that had already rounded it (an Edge Function's `Number(bigint)`). The guard
+therefore marks a response it rewrote (`x-exact-transport-rewritten`, client-side only). Any consumer whose grammar accepts a quoted digit string as
+an exact amount — Price Check's `valueMinor`, the pricing consumer — refuses a marked response instead of choosing which fields to trust. A missing
+price is still no price, never zero, and no graded price is ever derived from a raw one.
+
 ---
 
 ## 10. Dependency and supply chain
