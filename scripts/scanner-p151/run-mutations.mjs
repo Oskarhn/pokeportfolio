@@ -177,7 +177,11 @@ function classify(json) {
       // Vitest's JSON reporter renders a test-timeout as an opaque STACK_TRACE_ERROR whose duration
       // equals the test timeout: that IS the symptom of a hang defect, so it counts.
       const timedOut = /STACK_TRACE_ERROR|Test timed out/.test(message) && (t.duration ?? 0) >= 4500
-      const meaningful = timedOut || /AssertionError|expected |toBe|toEqual|toHave/i.test(message)
+      const meaningful =
+        timedOut ||
+        /AssertionError|expected |toBe|toEqual|toHave|promise resolved|instead of rejecting/i.test(
+          message,
+        )
       failing.push({ name: t.fullName.slice(0, 120), meaningful })
     }
   }
