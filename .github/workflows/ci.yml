@@ -68,6 +68,12 @@ jobs:
           VITE_SUPABASE_URL: http://127.0.0.1:54321
           VITE_SUPABASE_PUBLISHABLE_KEY: ci-placeholder-not-a-key
 
+      # P160: `pnpm build` already refused a secret-shaped or misplaced public value (prebuild runs
+      # scripts/check-public-env.mjs first). This judges what was actually WRITTEN: dist/ must be
+      # complete and contain no secret-shaped string. Paths and categories only are printed.
+      - name: Built artefact secret scan (dist/)
+        run: node scripts/check-dist-secrets.mjs
+
       # P130-27/P130-28/P139: local-artifact release verifiers that were never wired into CI —
       # both are pure filesystem checks against dist/ from the build above, no network, seconds
       # to run. Static/local mode only (no DEPLOYMENT_URL/live SUPABASE_URL): the live-deployment

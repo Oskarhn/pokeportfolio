@@ -6009,3 +6009,40 @@ every non-Production restore target to clear `environment_ingest_config` uncondi
 restoring data, closing the one way a backup taken from an already-configured Production could
 otherwise carry the live configuration onto a disposable/local/staging restore target
 (`restore-drill.ts --mutation C`).
+
+---
+
+## D-160 — Public build configuration is validated fail-closed; the deploy profile requires a real Supabase origin and a publishable key (P160)
+
+**2026-09-24 · Accepted**
+
+**Context.** The repository Actions variable `VITE_SUPABASE_URL` was found holding a value shaped like
+a Supabase secret key (`output_159.txt` S-1). Measured against the unguarded build (Vite 8): a bare
+`sb_secret_…` in the URL slot failed only in `generateBundle`, after `public/` and `sw.js` had
+already been written to `dist/` (no `index.html`); a *valid* URL carrying `?apikey=sb_secret_…`
+built with exit 0 and inlined the value into two public chunks. Nothing in CI or the deploy path
+judged these inputs, and the deploy job would evaluate `vars.*` into a public job log.
+
+**Decision.** One pure validator (`scripts/lib/public-env-guard.mjs`) judges the effective `VITE_*`
+environment (`.env*` files overridden by the process environment, Vite's own precedence). It runs as
+the first `prebuild` step and as the first Vite plugin's `config` hook (before any write), and a
+second gate scans the finished `dist/` (`scripts/check-dist-secrets.mjs`). Output is a field name and a
+category only. The **deploy profile** — `CF_PAGES=1` or `PP_REQUIRE_HOSTED_PUBLIC_ENV=1` — requires
+`https://<20-character ref>.supabase.co` and a `sb_publishable_…` key; a legacy `anon` JWT is
+accepted for a local stack only and is reported as a note, because an opaque JWT is not safe by shape.
+
+**Alternatives rejected.** *Regex in CI only*: misses Cloudflare's own builds and local builds.
+*Guard in `generateBundle`*: already too late (partial output). *Accept any `https` host*: a
+lookalike or a custom domain would pass; a custom domain in front of Supabase is not supported by the
+deploy profile and would need its own decision. *Match the bare `sb_secret_` prefix in the artefact
+scan*: `@supabase/supabase-js` carries the literal itself, so it would fail every correct bundle.
+
+**Consequences.** From the merge that lands this, a Cloudflare Pages build with a localhost URL, a
+placeholder or a legacy key fails. The served Production bundle already carries a `sb_publishable_`
+key and one Supabase origin, so a correct Pages configuration is unaffected. A new public variable
+must be added to `KNOWN_PUBLIC_VARS` deliberately. Not solved here (runbook §5): GitHub prints
+resolved step `env:` values into the job log, unmasked for variables.
+
+**Proof.** `tests/config/public-env-guard.test.ts` (31 cases: accepted configurations, every refusal
+category, no-leak windows through the library, the CLI and a real `vite build`, no output directory
+on refusal, wiring, source scan); five deliberate mutants of the guard each fail it.

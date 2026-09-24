@@ -10,6 +10,19 @@ they were**.
 
 ## [Unreleased]
 
+### Security — 2026-09-24 — Public build configuration guard (P160, D-160)
+
+- Every build now validates the public (`VITE_*`) configuration before doing anything else and
+  refuses a secret-shaped value (`sb_secret_…`, service-role JWT), a key in the URL slot, a URL with
+  credentials/query/fragment/path, or a non-Supabase host. Output is a field name and an error
+  category — never a value. Cloudflare Pages builds and any job setting
+  `PP_REQUIRE_HOSTED_PUBLIC_ENV=1` additionally require `https://<ref>.supabase.co` and a
+  `sb_publishable_…` key.
+- Closes two measured holes: a bare secret in the URL slot failed late and left a partial `dist/`;
+  a *valid* URL carrying `?apikey=sb_secret_…` built successfully and inlined the value.
+- CI scans the built `dist/` (completeness + secret shapes) right after the build.
+- Owner runbook for the exposed-key incident: `docs/security/P160_SECRET_INCIDENT_RUNBOOK.md`.
+
 ### Fixed — 2026-09-15 — JPY FX conversion: SQL currency-exponent awareness and Norges Bank UNIT_MULT normalization (P136, integrating P133/P134/P135, P130-02, D-132)
 
 - `fx_rate_to_nok` means NOK per one MAJOR unit of the source currency everywhere it is used —

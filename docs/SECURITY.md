@@ -661,6 +661,18 @@ the new pair is verified working end to end — reversible if a missed client tu
 them, and does not invalidate any issued user session, since deactivating an API key and rotating
 the JWT signing secret are different operations.
 
+**Public build configuration is validated, not trusted (P160, D-160).** Everything `VITE_`-prefixed
+is inlined into the bundle, and a build once accepted a URL slot holding a secret-shaped value —
+and, worse, a *valid* URL carrying one in its query string (it built and shipped). Every build now
+runs `scripts/check-public-env.mjs` (first `prebuild` step) and a `config`-hook plugin in
+`vite.config.ts`, then `scripts/check-dist-secrets.mjs` over `dist/`. Failures print a field name
+and an error category only. Cloudflare Pages builds (`CF_PAGES=1`) and any job setting
+`PP_REQUIRE_HOSTED_PUBLIC_ENV=1` must present `https://<ref>.supabase.co` and a
+`sb_publishable_…` key. Incident record and owner procedure:
+[security/P160_SECRET_INCIDENT_RUNBOOK.md](security/P160_SECRET_INCIDENT_RUNBOOK.md). Residual risk
+the guard cannot remove: GitHub prints resolved step `env:` values (variables are unmasked) into the
+job log, which is public while the repository is.
+
 Three vocabulary layers, kept distinct so a future session does not conflate them: the **current
 hosted keys** above (what `pokeportfolio-dev` actually uses); the **local stack's legacy fixture
 variables** (`SUPABASE_ANON_KEY`/`SUPABASE_SERVICE_ROLE_KEY`, still emitted by `supabase start` and

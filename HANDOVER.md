@@ -68,6 +68,28 @@ changed (P142 is infrastructure-only). P130-08 remains OPEN with
 command run and its actual output: `ai_outputs/Claude_outputs/output_142.txt` (gitignored, not
 part of this diff).
 
+## P160 addendum (2026-09-24) — public-config guard; secret incident OPEN on the owner's side
+
+Branch `fix/p160-predeploy-secret-guard` (local, not pushed, based on `d8682e0`). Not deployed.
+
+- **Open incident.** The Actions variable `VITE_SUPABASE_URL` holds a secret-key-shaped value
+  (re-verified structurally 2026-09-24 with `pnpm check:github-vars`, which prints categories only).
+  Key rotation and variable correction are **owner actions, unverified** — procedure in
+  [docs/security/P160_SECRET_INCIDENT_RUNBOOK.md](docs/security/P160_SECRET_INCIDENT_RUNBOOK.md).
+  Do not deploy to Production until both are done and the deploy workflow has passed exact-head CI.
+- **The repository is PUBLIC** (unauthenticated HTTP 200), contradicting CLAUDE.md, DEVELOPMENT.md §9
+  and PUBLICATION_CHECKLIST.md. Nothing changed visibility. Owner decision pending (runbook §3).
+- **Guard (D-160).** Every build validates the public `VITE_*` config first
+  (`scripts/check-public-env.mjs`, `vite.config.ts` plugin) and scans `dist/` afterwards
+  (`scripts/check-dist-secrets.mjs`); failures print field + category only. Cloudflare Pages builds
+  (`CF_PAGES=1`) now require `https://<ref>.supabase.co` and a `sb_publishable_…` key.
+- **P142** is untouched. Its deploy job needs `docs/security/p160-p142-integration.patch` (applies
+  cleanly to `7430f66` and to the working tree with F1–F4); a test in
+  `tests/config/public-env-guard.test.ts` fails any workflow that runs `wrangler pages deploy`
+  without those gates.
+- **Stitch** is still unauthenticated (`STITCH_DESIGNS_CREATED=0`); owner steps and the Home /
+  Scanner-confirmation prompts are in `docs/design/p160/STITCH_ACCESS_AND_PROMPTS.md`.
+
 ## Current state (P141, 2026-09-18) — P137/P138/P139/P140 RELEASED; hosted 104/0; Production live at `8eef187`; P130-04/05/07(DB)/12/15/27/28 closed
 
 **This section is the authoritative current state.** Every section below it, including the P136

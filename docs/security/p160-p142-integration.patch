@@ -1,0 +1,38 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 8344e17..9ccac95 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -431,6 +431,18 @@ jobs:
+         if: steps.guard-main.outputs.current == 'true'
+         run: pnpm install --frozen-lockfile
+ 
++      # P160: judge the public build configuration BEFORE building. A secret-shaped value, a key in
++      # the URL slot, or a local/placeholder value fails here with a field name and a category —
++      # never a value. NOTE: GitHub prints a step's resolved `env:` values in the log (variables
++      # are not masked), so a wrong value is visible in THIS step's header regardless of this
++      # guard; see docs/security/P160_SECRET_INCIDENT_RUNBOOK.md §5 for the residual risk.
++      - name: Public configuration guard (deploy profile)
++        if: steps.guard-main.outputs.current == 'true'
++        run: node scripts/check-public-env.mjs --require-hosted
++        env:
++          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
++          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.VITE_SUPABASE_PUBLISHABLE_KEY }}
++
+       # A SEPARATE production build, not a reuse of build-and-test's artifact: that job builds
+       # against a placeholder Supabase URL on purpose (playwright.config.ts), which is the wrong
+       # artifact to ship. Only three build-time variables exist and none is a secret
+@@ -441,6 +453,14 @@ jobs:
+         env:
+           VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+           VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.VITE_SUPABASE_PUBLISHABLE_KEY }}
++          # Selects the deploy profile inside `prebuild` and vite.config.ts (P160).
++          PP_REQUIRE_HOSTED_PUBLIC_ENV: '1'
++
++      # P160: judge what was WRITTEN — dist/ must be complete and free of secret-shaped strings.
++      # Runs before the identity check and long before any upload.
++      - name: Built artefact secret scan (dist/)
++        if: steps.guard-main.outputs.current == 'true'
++        run: node scripts/check-dist-secrets.mjs
+ 
+       # The artifact about to be uploaded must declare exactly this commit, not a `+dirty` build
+       # or (by construction, impossible in a clean CI checkout, but checked anyway — defence in
