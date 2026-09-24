@@ -165,12 +165,15 @@ function photo(script: Script) {
   }
 }
 
+/** When set, catalog enrichment of visual hits (the controller's LAST await) waits for the test. */
+let enrichGate: ReturnType<typeof deferred<void>> | null = null
 let bitmapsOpen = 0
 let liveUrls: Set<string>
 
 beforeEach(() => {
   vi.clearAllMocks()
   debugState.on = false
+  enrichGate = null
   scripts.clear()
   world.liveEngines.clear()
   world.liveVisualClients.clear()
@@ -239,21 +242,21 @@ beforeEach(() => {
     const results = CATALOG.filter((c) => q.includes(c.name.toLowerCase()))
     return Promise.resolve({ results, totalCount: results.length })
   }) as never)
-  vi.mocked(getCardsByIds).mockImplementation(((ids: string[]) =>
-    Promise.resolve(
-      CATALOG.filter((c) => ids.includes(c.cardId)).map((c) => ({
-        id: c.cardId,
-        name: c.name,
-        localId: c.localId,
-        rarity: c.rarity,
-        category: c.category,
-        illustrator: c.illustrator,
-        imageBaseUrl: c.imageBaseUrl,
-        language: c.language,
-        setId: c.setId,
-        setName: c.setName,
-      })),
-    )) as never)
+  vi.mocked(getCardsByIds).mockImplementation((async (ids: string[]) => {
+    if (enrichGate !== null) await enrichGate.promise
+    return CATALOG.filter((c) => ids.includes(c.cardId)).map((c) => ({
+      id: c.cardId,
+      name: c.name,
+      localId: c.localId,
+      rarity: c.rarity,
+      category: c.category,
+      illustrator: c.illustrator,
+      imageBaseUrl: c.imageBaseUrl,
+      language: c.language,
+      setId: c.setId,
+      setName: c.setName,
+    }))
+  }) as never)
 })
 
 afterEach(() => {
@@ -413,6 +416,39 @@ describe('latest request wins across the real controller and the Price Check ses
     expect(await p).toEqual({ status: 'abandoned' })
     expect(kindOf(await session.analyze(photo(READABLE_HIGH).capture))).toBe('outcome:high')
     session.dispose()
+  })
+})
+
+describe('the read-only port itself enforces latest-wins (independent of the session)', () => {
+  // Price Check's session also aborts its own signal, so the two owners overlap today. These tests
+  // drive identifyCapture on the port with NO caller signal: they pin the scanner's half of the
+  // ownership, so a future consumer (or a regression in the session) cannot bring stale delivery back.
+  it('a second identification on the same port supersedes the first, without any caller abort', async () => {
+    const port = createReadOnlyScanner('user-a')
+    const a = photo({ ...READABLE_HIGH, gate: deferred<void>() })
+    const pa = identifyCapture(port, a.capture)
+    await untilOcr(a.script)
+    const b = photo(READABLE_HIGH)
+    const pb = identifyCapture(port, b.capture)
+    a.script.gate?.resolve()
+    expect(await pa).toMatchObject({ status: 'error', error: { code: 'aborted' } })
+    expect(await pb).toMatchObject({ status: 'identified', best: { catalogCardId: PIKACHU } })
+    port.dispose()
+    expectNothingWritten()
+  })
+
+  it('a scan superseded while its LAST await (catalog enrichment) is pending is still not delivered', async () => {
+    const port = createReadOnlyScanner('user-a')
+    enrichGate = deferred<void>()
+    // Visual-only: the candidate only exists through enrichment, so the scan parks in getCardsByIds.
+    const a = photo(VISUAL_ONLY)
+    const pa = identifyCapture(port, a.capture)
+    await untilOcr(a.script)
+    for (let i = 0; i < 50; i += 1) await flush()
+    expect(vi.mocked(getCardsByIds)).toHaveBeenCalledTimes(1)
+    port.dispose() // dispose = the same abort the publish gate observes
+    enrichGate.resolve()
+    expect(await pa).toMatchObject({ status: 'error', error: { code: 'aborted' }, best: null })
   })
 })
 
