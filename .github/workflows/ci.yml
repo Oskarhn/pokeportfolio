@@ -8,9 +8,16 @@ on:
 # GitHub Actions is free for this private repo up to 2,000 minutes/month, and
 # the account's default spending limit is $0 — a run simply fails to start
 # past that, it never bills. See docs/COST_POLICY.md.
+#
+# Only pull-request runs are cancelled when a newer commit arrives. A WORKFLOW-level
+# `cancel-in-progress: true` cancels the whole superseded run, including a `deploy-production` job
+# that is mid-upload — a job-level `concurrency` block does not shield a job from it (GitHub docs,
+# "Control the concurrency of workflows and jobs"). Runs on `main` therefore queue instead (at most
+# one pending; a newer pending run replaces an older pending one), and the exact-SHA guard in
+# `deploy-production` decides whether a queued run is still the one to deploy.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Least-privilege default for every job below (P142 §14): checkout only. `deploy-production`
 # needs nothing more than this either — it authenticates to Cloudflare with its own scoped API
@@ -370,29 +377,28 @@ jobs:
   # Git-integrated deploy, which today races GitHub CI on the same push webhook with no ordering
   # primitive between them (§11's own measured evidence: Production updates 30-45s after a push,
   # long before db-tests alone finishes). This job only BECOMES the live deploy path once the
-  # owner has done the three things §11 lists in order: (1) Cloudflare dashboard — turn OFF
-  # automatic Production deploys for `main`; (2) Cloudflare dashboard — create an API token scoped
-  # to Pages:Edit for this one project; (3) GitHub repository settings — add that token as secret
-  # CLOUDFLARE_API_TOKEN, the account id as secret CLOUDFLARE_ACCOUNT_ID, and the three build
-  # variables (none of them a secret — DEVELOPMENT.md §9) as repository variables VITE_SUPABASE_URL
-  # / VITE_SUPABASE_PUBLISHABLE_KEY. Until all three are done, this job fails closed the moment it
-  # tries to build or deploy (a missing repository variable/secret is an explicit error, never a
-  # silent no-op deploy) — landing this job before step (1) is done is deliberately safe: it simply
-  # cannot succeed yet, and does not create a second deploy path racing Cloudflare's still-enabled
-  # automatic one, because it never reaches the deploy step without real credentials.
+  # owner has done what GIT_WORKFLOW.md §11 lists, in order: (1) GitHub repository variables
+  # VITE_SUPABASE_URL / VITE_SUPABASE_PUBLISHABLE_KEY (build-time, neither is a secret —
+  # DEVELOPMENT.md §9); (2) a Cloudflare API token with the account-level permission "Cloudflare
+  # Pages: Edit" (Cloudflare cannot narrow it to one Pages project), stored as the REPOSITORY
+  # secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID — GitHub Environments and environment
+  # secrets are not available for a private repository on the Free plan, so this job carries no
+  # `environment:` key; the credentials are visible only to jobs that name them, and the test suite
+  # asserts that is this job alone; (3) turning OFF Cloudflare's automatic Git-based deploys before
+  # the merge that makes this the live path. Until (1) and (2) exist, this job fails closed the
+  # moment it tries to build or deploy (a missing variable/secret is an explicit error, never a
+  # silent no-op deploy).
   deploy-production:
     needs: [build-and-test, db-tests]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    environment: production
     permissions:
       contents: read
-    # A dedicated group, deliberately NOT the workflow-level `ci-${{ github.ref }}` group above:
-    # that group's `cancel-in-progress: true` is correct for build-and-test/db-tests (a newer push
-    # should cancel an old, now-superseded CI run) but wrong here — cancelling this job mid-upload
-    # could leave Cloudflare in an ambiguous half-deployed state. `cancel-in-progress: false`
-    # serialises Production deploys instead: at most one upload in flight, a later one queues
-    # rather than interrupts an earlier one. "Latest eligible main wins" is enforced by the
+    # A dedicated group that serialises Production deploys: at most one upload in flight, a later
+    # one queues rather than interrupts an earlier one (`cancel-in-progress: false`). It does NOT by
+    # itself protect the job from the workflow-level `ci-${{ github.ref }}` group above — that is
+    # why that group only cancels pull-request runs. Cancelling this job mid-upload could leave
+    # Cloudflare in an ambiguous half-deployed state. "Latest eligible main wins" is enforced by the
     # exact-SHA guard below, not by cancellation — a queued run for an already-superseded SHA
     # checks origin/main again immediately before it would deploy and skips itself if main moved on.
     concurrency:

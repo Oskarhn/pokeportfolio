@@ -187,4 +187,42 @@ describe('deploy-production job — concurrency never cancels an in-flight Cloud
     )
     expect(concurrencyBlockMatch?.[1]).toBe('false')
   })
+
+  // P150: the job-level group above is NOT enough on its own. A workflow-level
+  // `cancel-in-progress: true` cancels the entire superseded run — including a `deploy-production`
+  // job that is mid-upload — regardless of what the job's own concurrency block says.
+  /** The workflow-level `concurrency:` value: the text between the top-level key and `jobs:`. */
+  function workflowLevelCancelInProgress(text: string): string | undefined {
+    const header = text.slice(0, text.indexOf('\njobs:'))
+    return header.match(
+      /^concurrency:\s*\n\s*group:[^\n]*\n\s*cancel-in-progress:\s*([^\n]+)/m,
+    )?.[1]
+  }
+
+  /** True only if a push to main can never cancel an in-progress run of this workflow. */
+  function mainRunsAreNeverCancelled(text: string): boolean {
+    const value = workflowLevelCancelInProgress(text)?.trim()
+    if (value === undefined) return true // no cancellation configured at all
+    if (value === 'false') return true
+    // Only an expression that is true for pull requests alone is acceptable.
+    return /^\$\{\{\s*github\.event_name\s*==\s*'pull_request'\s*\}\}$/.test(value)
+  }
+
+  it('the workflow-level concurrency group cancels only pull-request runs, never a main run', () => {
+    expect(workflowLevelCancelInProgress(workflowText)).toBeDefined()
+    expect(mainRunsAreNeverCancelled(workflowText)).toBe(true)
+  })
+
+  it('Mutation (P150): an unconditional workflow-level cancel-in-progress:true is detected', () => {
+    const mutated = workflowText.replace(
+      "cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+      'cancel-in-progress: true',
+    )
+    expect(mutated).not.toBe(workflowText)
+    expect(mainRunsAreNeverCancelled(mutated)).toBe(false)
+  })
+
+  it('carries no `environment:` key — environments cannot be configured for a private Free-plan repository (P150)', () => {
+    expect(jobBlock).not.toMatch(/^\s{4}environment:/m)
+  })
 })

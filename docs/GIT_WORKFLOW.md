@@ -154,10 +154,17 @@ devDependency, `4.134.0` — not fetched ad hoc via `npx` on every run) and, on 
 the LIVE result with the existing `scripts/preview-verify.mjs --sha` and
 `scripts/deployment-check.mjs` (bounded retry for CDN propagation, the same idiom `db-tests` already
 uses for "wait for a real service to come up"). The job has its own `production-deploy` concurrency
-group with `cancel-in-progress: false` so a later push never cancels an in-flight Cloudflare
-upload — "latest eligible `main` wins" is enforced by the exact-SHA re-check, not by cancellation.
-Cloudflare credentials are referenced only inside this one job (asserted in the same test file) and
-scoped to a `production` GitHub Environment.
+group with `cancel-in-progress: false`, and the workflow-level `ci-<ref>` group cancels only
+**pull-request** runs (`cancel-in-progress: ${{ github.event_name == 'pull_request' }}`) — a
+workflow-level `true` would cancel the whole superseded run, including a `deploy-production` job
+that is mid-upload, whatever the job's own group says (corrected in P150; tested in
+`tests/config/workflow-deploy-gate.test.ts`). "Latest eligible `main` wins" is enforced by the
+exact-SHA re-check, not by cancellation. Cloudflare credentials are referenced only inside this
+one job (asserted in the same test file). They are **repository** secrets: GitHub Environments and
+environment secrets cannot be configured for a private repository on the Free plan (GitHub Docs,
+"Managing environments for deployment"), so the job carries no `environment:` key (also P150).
+The post-deploy `preview-verify.mjs --sha` check matches the SHA as a `"`, `'` or backtick-quoted
+value — the production bundle embeds it as a template literal (P150).
 
 **Why this alone does not close P130-08 yet.** Landing this workflow is safe with Cloudflare's
 automatic deploy still enabled — it fails closed on the first missing secret/variable, never
@@ -167,30 +174,32 @@ succeed without credentials that do not exist in this repository. `gh secret lis
 session). **P130-08 remains OPEN, and the workflow above is not yet the live deploy path**, until
 the owner does the following, still in order — none of it can be done from a branch:
 
-1. **GitHub repository settings:** add the three ordinary (non-secret) build variables as
-   repository or `production`-environment **variables** — Settings → Secrets and variables →
-   Actions → Variables: `VITE_SUPABASE_URL` (the current Production value, already public in the
+1. **GitHub repository settings:** add the two ordinary (non-secret) build variables as
+   repository **variables** — Settings → Secrets and variables → Actions → Variables: `VITE_SUPABASE_URL` (the current Production value, already public in the
    live CSP — `https://nopmkroeygmlvndzjjqs.supabase.co`), `VITE_SUPABASE_PUBLISHABLE_KEY` (the
    current anon/publishable key — copy it from the Cloudflare dashboard's own build environment,
    Settings → Environment variables; it is not a secret, DEVELOPMENT.md §9, but this document does
    not restate its value). This step alone is harmless to do at any time — the deploy job cannot
    run on a PR regardless, and even on a `main` push it will still fail closed at the next step
    without the Cloudflare credentials.
-2. **Cloudflare dashboard:** create an API token scoped to `Cloudflare Pages:Edit` for this one
-   project only (Account → API Tokens → Create Token → the Pages-editing template, narrowed to
-   this project if the UI offers it). Free on every plan; no billing surface. Note the account id
-   too (Account Home → right sidebar).
-3. **GitHub repository settings:** add that token as secret `CLOUDFLARE_API_TOKEN` and the account
-   id as secret `CLOUDFLARE_ACCOUNT_ID`, scoped to the `production` environment — Settings →
-   Environments → `production` → Environment secrets (this environment was created automatically
-   the first time the workflow referenced it; if it does not yet exist, an ordinary repository
-   secret under Settings → Secrets and variables → Actions works too, just without the extra
-   environment-scoping). **Never commit either value, never put it in `.env.example`, never paste
-   it into a session transcript or this document.**
-4. **Cloudflare dashboard, only after 1-3 are done and a push has proven `deploy-production` green
-   end to end:** Pages project → Settings → Builds & deployments → turn OFF automatic deployments
-   for the Production branch (`main`). This is the step that actually removes the race — doing it
-   before 1-3 are working would leave Production with no deploy path at all until they are.
+2. **Cloudflare dashboard — in the account that owns the `pokeportfolio-dev` Pages project:**
+   create a custom API token (Manage Account → Account API Tokens → Create Token → Custom token)
+   with the single permission **Account → Cloudflare Pages → Edit**, restricted to that one
+   account. Cloudflare cannot narrow this permission to one Pages project. Free on every plan; no
+   billing surface. Note the account id too (Workers & Pages overview, right sidebar).
+3. **GitHub repository settings:** add that token as **repository** secret `CLOUDFLARE_API_TOKEN`
+   and the account id as **repository** secret `CLOUDFLARE_ACCOUNT_ID` — Settings → Secrets and
+   variables → Actions → Secrets (environment secrets are not available on this plan, see above).
+   **Never commit either value, never put it in `.env.example`, never paste it into a session
+   transcript or this document.**
+4. **Cloudflare dashboard — after 1-3 are done and the PR's own CI is green, and BEFORE the merge
+   that makes the workflow the live path:** Pages project → Settings → Builds → Branch control →
+   turn OFF "Enable automatic production branch deployments" and set the preview branch to
+   "None (Disable automatic branch deployments)". The first push to `main` after the merge is then
+   the proof: it must be `deploy-production`, not Cloudflare's Git integration, that updates
+   `/build-meta.json`. Doing this step *after* a first push would leave both paths deploying the
+   same SHA and prove nothing about ordering. Rollback is the same toggle back on; while it is off,
+   Production simply keeps serving the last deployment (a static site — nothing degrades).
 
 **Status:** `P130_08_REPO_PREPARED=yes` (the workflow, its guard scripts and their regression tests
 now exist and pass CI on their own PR — see the P142 session record). `P130_08_STATUS=OPEN` —

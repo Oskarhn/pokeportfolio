@@ -11,8 +11,11 @@
  * PREFIX of some unrelated longer hex run elsewhere in the bundle (source map hashes, chunk
  * hashes, package lockfile-derived strings all look like hex).
  *
- * The fix: require the SHA to appear as a complete quoted JSON string value — bounded on both
- * sides by a quote character. `"<sha>"` matches only the exact clean value; `"<sha>+dirty"` does
+ * The fix: require the SHA to appear as a complete quoted string value — bounded on both sides by
+ * a quote character (double, single or backtick: the production minifier rewrites the `define`d
+ * JSON literal into a template literal, measured on the live Production entry bundle at P150,
+ * where a pattern accepting only double/single quotes rejected a correct build).
+ * `"<sha>"` matches only the exact clean value; `"<sha>+dirty"` does
  * not match the pattern for `<sha>` because the character immediately after the SHA is `+`, not
  * a closing quote. This mirrors exactly how the value is actually embedded (`JSON.stringify()`
  * via esbuild `define`, vite.config.ts), so it accepts exactly what a correct build produces and
@@ -32,6 +35,7 @@ function escapeRegExp(value) {
  */
 export function bundleDeclaresExactSha(bundleText, sha) {
   if (!sha) return false
-  const exactQuoted = new RegExp(`["']${escapeRegExp(sha)}["']`)
+  const quote = '["\'`]'
+  const exactQuoted = new RegExp(`${quote}${escapeRegExp(sha)}${quote}`)
   return exactQuoted.test(bundleText)
 }
