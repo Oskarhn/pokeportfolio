@@ -1,14 +1,20 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { buildBackupEnvelope, serializeBackupEnvelope } from '../../src/domain/export/build-backup'
 import {
   buildCsvSuite,
+  EXPORT_CSV_FILENAMES,
   EXPORT_CSV_SCHEMA,
   projectionInputFromSnapshot,
   type ExportCsvFilename,
 } from '../../src/domain/export/csv-projections'
 import { fetchExportSnapshot, type ExportFetchOptions } from '../../src/data/export/fetch-snapshot'
-import { AuthIdentityChangedError } from '../../src/auth/identity-lease'
+import { AuthIdentityChangedError, type IdentityLease } from '../../src/auth/identity-lease'
+import { exportCsvArtifacts, exportJsonBackup } from '../../src/data/export/artifacts'
+import { QUICK_PORTFOLIO_CSV_COLUMNS } from '../../src/domain/export/portfolio-quick-csv'
+import { createAppSupabaseClient } from '../../src/data/supabase-factory'
+import type { LeasedDb } from '../../src/data/leased-client'
+import { SimulatedTab } from './leased'
 import type { Database } from '../../src/data/database.types'
 import { parseCsvRfc } from '../data/csv-rfc-parser'
 import {
@@ -30,6 +36,11 @@ import {
  * CSV), an account switch mid-pagination, injected network failures and cancellation, and that
  * an export performs no backend write.
  */
+
+// buildPortfolioCsv reaches the shared client only as a default it never uses on this path; the
+// module needs an environment the node test process does not have, so the client is stubbed out.
+vi.mock('../../src/data/supabase-client', () => ({ supabase: {} }))
+import { buildPortfolioCsv } from '../../src/data/portfolioExport'
 
 let service: TestClient
 let userA: SyntheticUser
@@ -610,4 +621,252 @@ describe('P157 failure, cancellation and side effects', () => {
     const nonRest = wire.filter((r) => !r.url.includes('/rest/v1/'))
     expect(nonRest.every((r) => r.method === 'GET' && r.url.includes('/auth/v1/user'))).toBe(true)
   })
+})
+
+// ---------------------------------------------------------------------------------------------
+// P162 — the same seeded ledger, exported through the PRODUCTION path: an identity lease, the
+// leased client (real GoTrue session lookups, real PostgREST, the exact-transport guard) and the
+// production artifact builders. The identity is driven the way the app sees it: an
+// IdentityAuthority told (or not told) about a change, and a browser session that another tab can
+// rewrite. Every expected value below is an independent database read or a literal.
+// ---------------------------------------------------------------------------------------------
+
+async function appSignIn(user: SyntheticUser): Promise<AppClient> {
+  const client = createAppSupabaseClient(
+    process.env['SUPABASE_URL'] as string,
+    process.env['SUPABASE_ANON_KEY'] as string,
+    {},
+    { auth: { persistSession: false, autoRefreshToken: false } },
+  )
+  const { error } = await client.auth.signInWithPassword({
+    email: user.email,
+    password: user.password,
+  })
+  if (error) throw new Error(`sign-in failed for ${user.email}: ${error.message}`)
+  return client
+}
+
+type AppClient = ReturnType<typeof createAppSupabaseClient>
+
+interface LeasedRun {
+  tab: SimulatedTab
+  db: LeasedDb
+  lease: IdentityLease
+  a: AppClient
+}
+
+async function startLeasedRun(): Promise<LeasedRun> {
+  const a = await appSignIn(userA)
+  const tab = new SimulatedTab({ id: userA.id, client: a })
+  const lease = tab.leaseFor({ id: userA.id, client: a })
+  return { tab, db: tab.dbFor(lease), lease, a }
+}
+
+async function bTabUser(): Promise<{ id: string; client: AppClient }> {
+  return { id: userB.id, client: await appSignIn(userB) }
+}
+
+/** The bytes as delivered: Blob.text() silently drops a leading BOM, which is part of the contract. */
+async function rawText(blob: Blob): Promise<string> {
+  return new TextDecoder('utf-8', { ignoreBOM: true }).decode(await blob.arrayBuffer())
+}
+
+async function settle(ms = 250): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+describe('P162 the production export path (identity lease + leased client)', () => {
+  it('produces the same 11 CSV files and JSON backup as the plain client, as A only, read-only', async () => {
+    const { tab, db } = await startLeasedRun()
+    const artifacts = await exportCsvArtifacts({}, db)
+    expect(artifacts.map((f) => f.filename)).toEqual([...EXPORT_CSV_FILENAMES])
+    expect(artifacts).toHaveLength(11)
+    for (const artifact of artifacts) expect(artifact.mimeType).toBe('text/csv;charset=utf-8')
+    // The delivered BYTES: UTF-8 BOM first, CRLF-terminated (Blob.text() would hide the BOM).
+    for (const artifact of artifacts) {
+      const bytes = new Uint8Array(await artifact.blob.arrayBuffer())
+      expect([...bytes.slice(0, 3)]).toEqual([0xef, 0xbb, 0xbf])
+      expect([...bytes.slice(-2)]).toEqual([0x0d, 0x0a])
+    }
+
+    // The plain-client export of the same rows is the oracle for "the lease changes nothing".
+    const plain = await exportCsvAs(clientA)
+    expect(await Promise.all(artifacts.map((f) => rawText(f.blob)))).toEqual(
+      plain.map((f) => f.text),
+    )
+
+    const json = await exportJsonBackup({}, db)
+    expect(json.mimeType).toBe('application/json')
+    const jsonText = await rawText(json.blob)
+    expect(jsonText).not.toContain(B_MARKER)
+    expect(jsonText).not.toContain(userB.id)
+
+    // Wire: only GETs/HEADs, every request authenticated as A, nothing as anybody else.
+    expect(tab.wire.length).toBeGreaterThan(40)
+    expect(tab.wire.every((r) => ['GET', 'HEAD'].includes(r.method.toUpperCase()))).toBe(true)
+    expect(tab.requestsNotFrom(userA.id)).toEqual([])
+    for (const artifact of artifacts) expect(await rawText(artifact.blob)).not.toContain(B_MARKER)
+  }, 120_000)
+
+  it('writes 2^53+1 and 2^58 minor units digit for digit through the leased transport', async () => {
+    const { db } = await startLeasedRun()
+    const files = await exportCsvArtifacts({}, db)
+    const lots = files.find((f) => f.filename === 'acquisition_lots.csv')
+    const text = await rawText(lots!.blob)
+    // 9007199254740993 minor units (2 decimals) and 288230376151711744 — literals, not the writer.
+    expect(text).toContain('90071992547409.93')
+    expect(text).toContain('2882303761517117.44')
+    const json = JSON.parse(await rawText((await exportJsonBackup({}, db)).blob)) as {
+      data: { acquisition_lots: Loose[] }
+    }
+    expect(
+      json.data.acquisition_lots.some(
+        (l) =>
+          l['unit_cost_basis_minor'] === '9007199254740993' &&
+          l['unit_cost_basis_nok_minor'] === '288230376151711744',
+      ),
+    ).toBe(true)
+  }, 60_000)
+
+  it('A → B heard mid-export: rejected, nothing more is sent, nothing is authenticated as B', async () => {
+    const { tab, db } = await startLeasedRun()
+    const b = await bTabUser()
+    tab.beforeRequest = (index) => {
+      if (index === 7) tab.switchTo(b, { heard: true })
+    }
+    await expect(exportCsvArtifacts({ pageSize: 1 }, db)).rejects.toBeInstanceOf(
+      AuthIdentityChangedError,
+    )
+    await settle()
+    expect(tab.wire.length).toBe(7) // request 7 was already leaving; nothing after it
+    expect(tab.requestsNotFrom(userA.id)).toEqual([])
+  }, 60_000)
+
+  it('A → B → A: the old lease stays dead although the user id is back', async () => {
+    const { tab, db, a } = await startLeasedRun()
+    const b = await bTabUser()
+    tab.beforeRequest = (index) => {
+      if (index === 5) {
+        tab.switchTo(b, { heard: true })
+        tab.switchTo({ id: userA.id, client: a }, { heard: true })
+      }
+    }
+    await expect(exportJsonBackup({ pageSize: 1 }, db)).rejects.toBeInstanceOf(
+      AuthIdentityChangedError,
+    )
+    await settle()
+    expect(tab.wire.length).toBe(5)
+    expect(tab.requestsNotFrom(userA.id)).toEqual([])
+    // A fresh lease for the second A generation exports fine.
+    const second = tab.dbFor(tab.leaseFor({ id: userA.id, client: a }))
+    tab.beforeRequest = null
+    expect((await exportJsonBackup({}, second)).filename).toMatch(/^pokeportfolio-backup-/)
+  }, 60_000)
+
+  it('the storage was rewritten by another tab before this tab heard: no request leaves as B', async () => {
+    const { tab, db } = await startLeasedRun()
+    const b = await bTabUser()
+    tab.beforeRequest = (index) => {
+      if (index === 6) tab.switchTo(b, { heard: false })
+    }
+    await expect(exportCsvArtifacts({ pageSize: 1 }, db)).rejects.toBeInstanceOf(
+      AuthIdentityChangedError,
+    )
+    await settle()
+    expect(tab.requestsNotFrom(userA.id)).toEqual([])
+    expect(tab.wire.length).toBeLessThanOrEqual(7)
+  }, 60_000)
+
+  it('sign-out mid-export fails it and sends nothing more', async () => {
+    const { tab, db } = await startLeasedRun()
+    tab.beforeRequest = (index) => {
+      if (index === 6) tab.signOut()
+    }
+    await expect(exportCsvArtifacts({ pageSize: 1 }, db)).rejects.toBeInstanceOf(
+      AuthIdentityChangedError,
+    )
+    await settle()
+    expect(tab.wire.length).toBe(6)
+  }, 60_000)
+
+  it('a normal same-user token refresh mid-export does not abort it and changes nothing in the file', async () => {
+    const { tab, db, a } = await startLeasedRun()
+    const before = (await a.auth.getSession()).data.session!.access_token
+    const fresh = await appSignIn(userA) // a new session for A: a different access token
+    const after = (await fresh.auth.getSession()).data.session!.access_token
+    expect(after).not.toBe(before)
+    tab.beforeRequest = (index) => {
+      if (index === 9) tab.switchTo({ id: userA.id, client: fresh }, { heard: true })
+    }
+    const files = await exportCsvArtifacts({ pageSize: 2 }, db)
+    const plain = await exportCsvAs(clientA, { pageSize: 2 })
+    expect(await Promise.all(files.map((f) => rawText(f.blob)))).toEqual(plain.map((f) => f.text))
+    expect(tab.requestsNotFrom(userA.id)).toEqual([])
+  }, 120_000)
+
+  it('Cancel mid-export stops the requests', async () => {
+    const { tab, db } = await startLeasedRun()
+    const controller = new AbortController()
+    tab.beforeRequest = (index) => {
+      if (index === 5) controller.abort()
+    }
+    await expect(
+      exportCsvArtifacts({ pageSize: 1, signal: controller.signal }, db),
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    const atCancel = tab.wire.length
+    await settle()
+    expect(tab.wire.length).toBe(atCancel)
+    expect(atCancel).toBeLessThanOrEqual(6)
+  }, 60_000)
+
+  it('a page that hangs is ended by the caller’s timeout: rejected, no partial file, no more requests', async () => {
+    const { tab, db } = await startLeasedRun()
+    tab.beforeRequest = (index, init) => {
+      if (index !== 6) return undefined
+      // The server never answers this page; only the abort signal can end the wait.
+      return new Promise<void>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          reject(new DOMException('aborted', 'AbortError'))
+        })
+      })
+    }
+    const outcome = await exportCsvArtifacts({ pageSize: 1, signal: AbortSignal.timeout(500) }, db)
+      .then((files) => ({ files }))
+      .catch((error: unknown) => ({ error }))
+    expect('files' in outcome).toBe(false)
+    const atEnd = tab.wire.length
+    await settle()
+    expect(tab.wire.length).toBe(atEnd)
+  }, 60_000)
+
+  it('a sustained page outage rejects — no partial file', async () => {
+    const { tab, db } = await startLeasedRun()
+    tab.beforeRequest = (index) => {
+      if (index >= 8) throw new TypeError('fetch failed (injected)')
+    }
+    await expect(exportJsonBackup({ pageSize: 1 }, db)).rejects.toThrow()
+  }, 120_000)
+
+  it('the Quick CSV through the leased client is A-only, exact and well framed', async () => {
+    const { tab, db } = await startLeasedRun()
+    const csv = await buildPortfolioCsv(undefined, db)
+    expect(csv.startsWith('﻿')).toBe(true)
+    expect(csv.endsWith('\r\n')).toBe(true)
+    const { records } = parseCsvRfc(csv)
+    expect(records[0]).toEqual([...QUICK_PORTFOLIO_CSV_COLUMNS.map((c) => c.header)])
+    expect(records.length).toBeGreaterThan(1)
+    for (const record of records) expect(record).toHaveLength(10)
+    expect(csv).not.toContain(B_MARKER)
+    expect(tab.requestsNotFrom(userA.id)).toEqual([])
+  }, 60_000)
+
+  it('the Quick CSV: A → B while its page is in flight discards the file', async () => {
+    const { tab, db } = await startLeasedRun()
+    const b = await bTabUser()
+    tab.beforeRequest = (index) => {
+      if (index === 1) tab.switchTo(b, { heard: true })
+    }
+    await expect(buildPortfolioCsv(undefined, db)).rejects.toBeInstanceOf(AuthIdentityChangedError)
+    expect(tab.requestsNotFrom(userA.id)).toEqual([])
+  }, 60_000)
 })

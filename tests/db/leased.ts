@@ -82,6 +82,9 @@ export class SimulatedTab {
   private readonly transport: ExactTransportOptions
   private gate: Promise<void> | null = null
   private dropNextResponseOf: string | null = null
+  /** Runs after a request was recorded and before it is sent (1-based index): the point at which a
+   *  multi-request operation can be interleaved with an identity change, a failure or a hang. */
+  beforeRequest: ((index: number, init?: RequestInit) => void | Promise<void>) | null = null
 
   constructor(initial: TabUser | null, transport: ExactTransportOptions = {}) {
     this.transport = transport
@@ -122,6 +125,7 @@ export class SimulatedTab {
       bearerSub: subOf(headers.get('authorization')),
       body: typeof init?.body === 'string' ? init.body : '',
     })
+    await this.beforeRequest?.(this.wire.length, init)
     const response = await fetch(input, init)
     if (this.dropNextResponseOf !== null && url.pathname.endsWith(this.dropNextResponseOf)) {
       this.dropNextResponseOf = null
