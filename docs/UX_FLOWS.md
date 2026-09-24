@@ -600,6 +600,13 @@ minor-unit strings past 2^53; canonical timestamps stay verbatim wire strings
 ✓ NotAllowedError is surfaced with explicit "Try sharing again" / "Download instead" choices
 (D-079); a dismissed sheet is quiet cancellation, never styled as an error
 ✓ Generated artifacts live in memory only until delivered — nothing persisted, nothing uploaded
+✓ **Cancel** during "Preparing…" stops the run (no further requests, no files, no error). Leaving the
+page, or the signed-in account changing (this tab or another), also ends the run and drops any
+files already built — they are never shown or delivered under a different account (P157, D-141).
+An account change mid-run surfaces as an error ("The signed-in account changed during the export.
+Nothing was saved."), never as a file.
+✓ CSV cells that could be read as spreadsheet formulas are prefixed with an apostrophe (the JSON
+backup keeps the raw text); the Quick CSV reports failures instead of failing silently.
 Restore/import does NOT exist yet; copy says so. A periodic local-only export reminder nudge on
 Profile (D-080).
 

@@ -6583,3 +6583,57 @@ lookup never revokes, no auth-js error class decides a lease's fate) and `tests/
 form and key survive, the retry after the cooldown saves exactly one purchase of 2^53+1 minor units; A → B and A → B → A
 during the failing refresh; a definitively rejected refresh token signs the person out; an ordinary refresh still works).
 Each of these mutations fails at least one test: a failed lookup revokes the lease again (the old behaviour); a failed lookup hands the request layer an empty token; the hook swallows credential errors; a failed lookup outranks an identity change that was already observed; `runWithLease` stops replacing the surfaced error; the purchase form mints a new idempotency key after the failure (real browser only). The session lookup must be called as a method of the auth client, not handed over as a bare function: auth-js reads `this`, and a bare-function form rejects every time, which would turn every password change into "could not verify". The recovery-link browser test catches it, and `tests/ui/update-password-lease.test.ts` uses a receiver-bound client for the same reason.
+---
+
+## D-141 — Exports are written by declared column kind and run under the identity lease they started with; Quick CSV joins the shared writer (P130-21/P157/P162)
+
+**Context.** P130-21 found the Portfolio Quick CSV to be a second, hand-rolled writer: money through
+`Number()/100`, no formula defence, a bare CR left unquoted, no BOM, a mislabelled column, a silent
+truncation at the page ceiling and no failure surface. Reproduced against the released code in Excel
+16.0.20326 (nb-NO): `=1+1` and `-1+2` became formulas, a bare CR split a row in two, the missing BOM
+turned UTF-8 into mojibake, and 2^53+1 was written as …992. Independently, both export paths ran as
+plain async code after one `getUser()`: the D-093 boundary clears the query cache but cannot stop an
+in-flight export, so an A→B switch mid-run mixed accounts (or handed A's data to B's UI).
+
+**Decisions.**
+
+1. **One writer, kind-driven.** Every CSV cell is written according to its column's declared kind
+   (`text`, `id`, `date`, `timestamp`, `enum`, `boolean`, `integer`, `decimal`, `money`, `rate`). Text
+   is formula-sanitized (leading tab/CR/LF, or `= + - @`/full-width after any leading
+   whitespace/control/format characters → one leading `'`); canonical kinds are verbatim only when
+   they have the canonical shape, else treated as text (fail closed). Signed money stays numeric;
+   text that looks numeric does not. The prefix is CSV presentation — JSON and the database keep raw
+   text. A row whose width differs from the declared schema throws.
+2. **Schema v2, additive.** `purchase_lines.csv` and `sale_lines.csv` gain a trailing `Currency`
+   column (100× guard); the header list is pinned by a golden test. Quick CSV v2 renames
+   `Cost basis state` → `Value status` (the column never held a cost basis), renders the value from
+   exact minor units, adds BOM + terminating CRLF, and fails instead of truncating. JSON backup
+   `schema_version` (2) is unchanged.
+3. **Identity: the lease is the authority (D-136).** Exports and the Quick CSV run under the
+   identity lease taken at the button press and read through `leasedDb(lease)`.
+   `identity-guard.ts` keeps the seam P157 introduced but its body is the lease:
+   `assertUnchanged()` is `lease.assertCurrent()`, evaluated before and after every request and at
+   the end, throwing `AuthIdentityChangedError`. No user-id comparison decides anything on the
+   application path, so A → B → A is caught and a same-user refresh is not. `ExportPage` aborts on
+   Cancel, unmount and account change, ties the files to their lease and refuses to show or deliver
+   them once it has ended; the delivery layer re-checks before each file. No second auth framework.
+   (This entry was numbered D-134 in the P157 candidate; D-134 already names the P143 auth boundary,
+   so the export decision is D-141.)
+4. **No dialect change.** Comma delimiter stays (nb-NO Excel opens it in one column on double-click;
+   Data › From Text/CSV works). No `sep=` line, no semicolon variant — recorded as a known limit.
+
+**Consistency is not snapshot isolation.** The export is a paginated, fixed-ish-time view: many
+requests, not one transaction (D-077). COUNT and duplicate-key reconciliation catch a page that
+disappears, appears or repeats; an edit that keeps a section's row count unchanged while it is being
+paged (an update between two pages, or a delete plus an insert) is NOT detected. Never describe the
+files as a snapshot.
+
+**Alternatives rejected.** Prefixing every cell (corrupts negative money); sanitizing at call sites
+only (the defect class this fixes: a forgotten call site); reading identity from the React context or
+comparing user ids (a cross-tab switch is invisible to a stale closure, and A → B → A is invisible to
+a user-id comparison); a server-side export RPC (needs a migration for no exactness gain — the read
+path already uses `::text`).
+
+**Composition with the exact-money transport (D-137).** Export reads go through the leased client, so
+the exact-JSON guard sees them; every export money column is selected `::text` and the guard does
+not reject string amounts. The P130-19 write-path exactness is closed by the same P149 candidate.

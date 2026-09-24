@@ -1177,6 +1177,53 @@ lots per user**. Consequences already designed for:
 | Export | **Shipped in M13** (D-074): every section is fetched in bounded `.order(pk).range()` pages of 500 under stable ordering, with one exact COUNT per section up front, cross-page duplicate detection over each section's primary key and exact received-vs-expected reconciliation — offset-with-reconciliation (never labelled keyset), failing loudly rather than writing an incomplete backup. Implementation: `src/domain/export/` (pure) + `src/data/export/` (fetch). `lot_cost_adjustments` reaches exports via plain SELECT despite having no write RPC yet (its read authority is the point; the write path is M17's). |
 | Grouped display | The default list groups by holding, so 80 identical energies are one row with quantity 80 — a display concern, not a storage one. |
 
+### 10.2 Export schemas (P157, D-141)
+
+An export is a *representation* of stored data, never a recomputation: no formula, no rounding, no
+fallback value. Three artifacts exist; each has its own contract and they are not interchangeable.
+
+| Artifact | Where | Contract |
+|---|---|---|
+| **JSON backup** | `pokeportfolio-backup-YYYY-MM-DD.json` (`src/domain/export/backup-*.ts`) | Lossless and versioned (`schema_version`, currently 2, **unchanged** by P157). Money is a decimal *string* of integer minor units (`::text` on the wire, validated by `brandRow`); text is the raw stored value — never apostrophe-prefixed. No restore exists and none is promised. |
+| **CSV suite** (11 files) | `holdings.csv` … `custom_collections.csv` (`src/domain/export/csv-projections.ts`) | Analysis projection, schema **v2** (`EXPORT_CSV_SCHEMA_VERSION`). Spreadsheet-safe presentation of the same rows. Declared columns below. |
+| **Quick CSV** | `portfolio-export-YYYY-MM-DD.csv` (`src/domain/export/portfolio-quick-csv.ts`) | A report of the current filtered Portfolio view, one row per holding, schema **v2**. Not a backup. |
+
+**Column kinds** (`CsvColumnKind`; the *column*, never the call site, decides how a cell is written):
+
+| Kind | Cell content | Written verbatim when | Otherwise |
+|---|---|---|---|
+| `text` | names, notes, descriptions, retailer, marketplace, cert number, tags, storage, catalog card/set/number/variant | never | formula-sanitized (see below) |
+| `id` / `date` / `timestamp` / `enum` / `boolean` | uuid · `YYYY-MM-DD` (never time-zone shifted) · ISO 8601 as returned by PostgREST · lower-case enum · `true`/`false` | it has the kind's canonical shape | treated as `text` (fail closed) |
+| `integer` / `decimal` / `rate` | counts, grade, FX rate | canonical numeric | treated as `text` |
+| `money` | **major units**, exact, rendered from integer minor units with the currency's exponent (NOK/EUR/USD/GBP 2, JPY 0) — `571.23`, `-123.45`, `500` (yen) | canonical signed decimal | treated as `text` |
+
+- **Formula sanitization.** A text cell gets one leading `'` when its first character is tab/CR/LF,
+  or when the first character after any leading White_Space/Separator/Control/Format characters is
+  `=`, `+`, `-`, `@` or the full-width `＝＋－＠`. Idempotent. Negative *money* stays signed and
+  numeric; a text cell like `-5` becomes `'-5`. Presentation only — see SECURITY.md §9.4.
+- **Unknown ≠ zero.** `NULL` renders as an empty cell in every kind; a genuine zero renders `0.00`
+  (`0` for JPY). An unknown cost basis, an uncosted sale line's basis/result and an unresolved
+  Portfolio value are all empty cells, never `0.00`.
+- **100× guard.** Every original-currency amount has its currency in the same row. Schema v2
+  appends `Currency` to `purchase_lines.csv` and `sale_lines.csv` (their amounts are in the parent's
+  currency, which used to be only reachable by joining on the parent id) — additive, existing column
+  positions unchanged. Headers ending `NOK` are frozen NOK amounts.
+- **Framing.** UTF-8 with BOM, CRLF, terminating CRLF, RFC 4180 quoting (comma, quote, CR, LF).
+  A row whose width differs from the declared schema throws — cells can never shift silently.
+- **Quick CSV v2 changes** (from the released M7.1 file): the header `Cost basis state` is now
+  `Value status` (the column only ever held a value-state note, "No manual value set"); the value
+  is exact instead of `Number()/100`; a BOM and terminating CRLF are added; a CR/LF inside a name
+  is quoted; reaching the page ceiling with a cursor pending is an error, not a silent truncation.
+- **Completeness and consistency.** Every fetched section is reconciled against an exact COUNT and
+  duplicate keys fail the export (D-074). The multi-query fetch is *not* one transaction (D-077): a
+  concurrent edit between pages is detected when it changes counts or duplicates a key, but a
+  same-count edit is not — the file is a fixed-*ish* time view, never a database snapshot. An
+  export either completes or fails with an error; there is no partial-success file.
+- **Privacy.** Exports contain only the signed-in owner's rows (RLS is the boundary; the identity
+  is additionally bound to the identity lease and checked per request, SECURITY.md §9.4), no account e-mail, no tokens, no invite or
+  audit data and no privilege flags (the profile row goes through an allow-listed projection).
+  The CSV suite omits every idempotency key. New data collected or stored by P157: **none**.
+
 ---
 
 ## 11. Open modelling questions

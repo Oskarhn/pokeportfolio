@@ -100,6 +100,21 @@ still runs the P141 build.
 - A provider price too large to convert exactly is treated as absent instead of rounded.
 - No migration and no deployment ordering: the change is entirely in the client bundle and one adapter helper.
 - Still open: P130-21 (Quick Portfolio CSV formula injection / labels / download timing) and P130-26.
+### Fixed — 2026-09-24 — Safe, exact, lease-bound exports (P157, P162, P130-21, D-141)
+
+- **CSV formula injection.** All CSV files are written by declared column kind: free text starting
+  (after any whitespace/control/invisible characters) with `= + - @` or the full-width forms, or
+  starting with tab/CR/LF, gets a leading apostrophe; canonical kinds are written verbatim only when
+  canonical; signed money stays numeric. The JSON backup is unchanged and keeps raw text.
+- **Portfolio Quick CSV** now uses the same writer: exact money (a value past 2^53 is no longer
+  rounded), quoted CR/LF, UTF-8 BOM and terminating CRLF, honest `Value status` header (was
+  `Cost basis state`), an error instead of silent truncation at the page ceiling, a visible error
+  message, and the shared file-delivery path.
+- **Account isolation.** Exports run under the identity lease they started with and fail (never mix
+  accounts) if it ends mid-run — A → B, sign-out and A → B → A alike; a same-user token refresh does
+  not. The Export page gains Cancel, aborts on navigation or account change, and the files are not
+  shown or handed to the browser once their lease has ended.
+- CSV schema v2: `purchase_lines.csv` and `sale_lines.csv` gain a trailing `Currency` column.
 
 ### Fixed — 2026-09-15 — JPY FX conversion: SQL currency-exponent awareness and Norges Bank UNIT_MULT normalization (P136, integrating P133/P134/P135, P130-02, D-132)
 

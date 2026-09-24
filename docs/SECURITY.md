@@ -849,6 +849,48 @@ check takes precedence over a failed lookup, so no error about A's data appears 
 library is never consulted for this (it does not say whether the person is still signed in;
 `tests/data/p149-auth-lookup-contract.test.ts` pins what it does say). Two library behaviours the person can notice: a failing
 refresh takes about 25 s to be reported, and inside the next minute the same failure is answered from the library's cache.
+### 9.4 Exports: the identity lease, formula safety and what leaves the account (P157/P162, D-141)
+
+An export is many sequential requests, and the D-093 boundary only clears the TanStack Query cache
+and remounts the UI — an export is plain async code and outlives both. Without more, an A → B
+switch in this tab, or in another tab through the shared session storage, lets the remaining
+requests run as B: the file mixes accounts, or A's captured data becomes deliverable under B.
+
+- **The authority is the identity lease of §9.3** (D-136, P145). Both exports and the Quick CSV
+  run under the lease taken when the button is pressed and read every page through the leased
+  client (`leasedDb(lease)`), which attaches a bearer token only if the session in storage right
+  now belongs to the lease's user — a request cannot be sent as anyone else, and there is no
+  fallback to the shared client. `src/data/export/identity-guard.ts` is the seam: for a leased
+  client `assertUnchanged()` *is* `lease.assertCurrent()`, evaluated before and after every request
+  (count, page, catalog-manifest chunk, Quick CSV page) and once more before the snapshot leaves
+  the fetch layer, so a page that came back while the identity ended is dropped, not kept. Because
+  the lease is bound to the identity epoch, **A → B → A ends the export although the old user id is
+  back**, and a same-user token refresh, `USER_UPDATED` or repeated `SIGNED_IN` does not.
+  It is detection at request granularity, not isolation or an atomic snapshot (D-077; see
+  DATA_MODEL.md §10.1/§10.2): at most the request already in flight completes, and it is discarded.
+  A plain (unleased) client, used only by database harnesses, gets a session-based fallback that
+  compares user ids; the application never reaches it (`artifacts.ts` accepts only a leased client
+  and a structural test forbids handing the shared client to the export).
+- **The UI adds what only a UI can** (`ExportPage`): the run is aborted (`AbortSignal`, which also
+  tears down the request in flight) on Cancel, on unmount and on any change of the signed-in
+  user; the files are tied to their lease and are neither shown nor delivered once it has ended —
+  the delivery layer re-checks it immediately before every file is handed to the browser, the save
+  dialog (after the person picks a location) or the share sheet, so a multi-file download stops at
+  the file boundary if the identity changes. Files already handed to the browser before that point
+  cannot be recalled. A superseded or cancelled run cannot touch the flow when it ends. Artifacts
+  stay in component memory only: nothing is written to localStorage, IndexedDB, a service-worker
+  cache or analytics.
+- **CSV formula injection (CWE-1236).** Cells are written by declared column kind
+  (`src/domain/export/csv.ts`): free text is prefixed with `'` when its first character after any
+  leading whitespace/control/format characters is `= + - @` (or the full-width forms), or when it
+  starts with tab/CR/LF; canonical kinds are written verbatim only when they have their canonical
+  shape, so signed money stays numeric and attacker text that merely looks numeric does not. The
+  prefix is CSV presentation only — the JSON backup and the database keep the raw text.
+- **Files leave the account.** An export is a file the user chose to download. It is not encrypted,
+  not tracked, and not covered by server-side account deletion (P152's worksheet already lists
+  exports as user-held copies); the UI copy tells the user to store it somewhere they trust. The
+  export sends nothing anywhere and writes nothing to Storage or any third party; the fetch is
+  read-only (no non-GET/HEAD request, asserted in `tests/db/p157_export_integrity.test.ts`).
 
 ---
 
@@ -875,6 +917,8 @@ Stated explicitly rather than left implicit:
 | An invited user photographing their own screen | Not a technical problem. |
 | Traffic analysis, timing attacks, side channels | Out of scope for a ten-user hobby application. |
 | DDoS | Cloudflare's default protection; no further work. |
+| A spreadsheet product or version that treats an exported CSV cell as a formula despite the `'` prefix | No exporter can promise safety in every current and future spreadsheet. Observed (Excel 16.0.20326, nb-NO, P157): unprefixed `=1+1` and `-1+2` became formulas; prefixed cells and cells behind leading whitespace/NBSP/zero-width/control characters stayed text. Google Sheets and LibreOffice were not available and are untested. The threat model is a self-export: the data in a cell is the owner's own or public catalog text, and there is no attacker-controlled import path. |
+| A CSV opened by double-click in a locale whose list separator is `;` (nb-NO Excel) lands in one column | A usability limit of the comma dialect, not a safety one. The files import correctly through Data › From Text/CSV. The dialect is unchanged (D-141). |
 
 ---
 

@@ -1292,6 +1292,8 @@ never run" does not count as covered — this table exists so that stops being t
 | Portfolio/snapshot/storage performance benchmarks | `FAST_REQUIRED_CI` (catastrophic-only threshold) | db-tests |
 | Independent M13 adversarial suite (typecheck + execution) | `FAST_REQUIRED_CI` | db-tests |
 | M13 export scale audit | `FAST_REQUIRED_CI` (catastrophic-only threshold) | db-tests |
+| P157 export suites: CSV formula/structure/exactness/scale/Quick CSV (`tests/data/export-*`, `pnpm test`) and `tests/db/p157_export_integrity.test.ts` | `FAST_REQUIRED_CI` | build-and-test, db-tests |
+| P157 export browser spec (`tests/e2e/authenticated/export-integrity.spec.ts`, real download + file read-back) | `FAST_REQUIRED_CI` | db-tests (authenticated E2E) |
 | Independent M16 adversarial suite (tests/m16-independent) | `FAST_REQUIRED_CI` | db-tests (P139; was `NOT_RUN` — package existed, never wired in) |
 | `db:types` generation + diff-on-commit expectation | `FAST_REQUIRED_CI` | db-tests |
 | `scripts/deployment-check.mjs` (live Cloudflare headers/CSP/PWA) | `RELEASE_ONLY` | manual, after any deploy — needs a real `DEPLOYMENT_URL` + `SUPABASE_URL` CI never has |
