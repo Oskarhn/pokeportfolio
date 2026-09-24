@@ -365,7 +365,7 @@ describe('M93-17 (P99/P98 §4-6) — anchor-reliability boost boundary regressio
    * `ANCHOR_BOOST_MAX` or the visual-evidence curve cannot silently reopen it without a test
    * noticing, per P98's own explicit MUST_FIX_BEFORE_RELEASE recommendation.
    */
-  it('a single well-separated visual anchor with ZERO text evidence reaches HIGH purely from the boost, at an ordinary similarity', () => {
+  it('a single well-separated visual anchor with ZERO text evidence still reaches the HIGH SCORE band from the boost at an ordinary similarity — but P151 holds the tier at MEDIUM', () => {
     const trueCard = card('anchor', 'Pikachu', '58', 'Base Set')
     // A distant runner-up purely to saturate marginFactor to 1 (the "well-separated" shape P98's
     // own math assumed) — far enough below 0.817 that the gap exceeds the 0.12-similarity-unit
@@ -386,11 +386,16 @@ describe('M93-17 (P99/P98 §4-6) — anchor-reliability boost boundary regressio
 
     expect(top.card.cardId).toBe('anchor')
     expect(match.notes).not.toContain('visual-text-disagreement')
-    // The boundary itself: HIGH, reached with literally zero text evidence — pins the magnitude
-    // P98's audit disclosed rather than leaving it implicit. A future change to the curve/boost
-    // constants that moves this boundary will change `top.rawRankScore`'s value and fail this
-    // assertion, which is the point.
-    expect(match.tier).toBe('high')
+    // The SCORE boundary itself is unchanged: the raw score reaches the HIGH band with literally
+    // zero text evidence — this pins the magnitude P98's audit disclosed. A future change to the
+    // curve/boost constants that moves this boundary will change `top.rawRankScore`'s value and
+    // fail the score assertions below, which is the point.
+    //
+    // What P151 changed is the TIER: visual-only evidence identifies artwork, not a printing, so a
+    // would-be HIGH with no readable name or collector number is held at MEDIUM (measured on the
+    // real production index — see docs/SCANNER_RESEARCH.md P151). This test used to assert 'high'.
+    expect(match.tier).toBe('medium')
+    expect(match.notes).toContain('visual-only-uncorroborated')
     expect(top.rawRankScore).toBeGreaterThanOrEqual(SCORING_TIERS.highMinScore)
     expect(top.visualReliability).toBeGreaterThan(0.5)
   })

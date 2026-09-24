@@ -24,6 +24,7 @@
 import { createClient } from 'npm:@supabase/supabase-js@2.112.3'
 import { fetchCardPricing, TcgdexNotFoundError, type Language } from '../_shared/tcgdex.ts'
 import { resolveServiceRoleKey } from '../_shared/service-key.ts'
+import { observationsForVariant, type PriceObservationWire } from '../_shared/price-observations.ts'
 
 const MAX_CARD_IDS = 20
 const FETCH_CONCURRENCY = 5
@@ -163,9 +164,13 @@ Deno.serve(async (request: Request): Promise<Response> => {
     providerUpdatedAt: string | null
   }
   const perRowChosen = new Map<string, Chosen | null>()
+  // P153: every provider candidate the mapper found for the exact variant, not just the preferred
+  // headline — Price Check shows Cardmarket and TCGplayer values side by side.
+  const perRowObservations = new Map<string, PriceObservationWire[]>()
   for (const row of rows) {
     if (!row.cards?.tcgdex_card_id) {
       perRowChosen.set(row.id, null)
+      perRowObservations.set(row.id, [])
       continue
     }
     const key = cardKey(row.cards.language, row.cards.tcgdex_card_id)
@@ -182,6 +187,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
     const primary = useEuPricing ? match?.cardmarket : match?.tcgplayer
     const secondary = useEuPricing ? match?.tcgplayer : match?.cardmarket
     perRowChosen.set(row.id, primary ?? secondary ?? null)
+    perRowObservations.set(row.id, observationsForVariant(match))
   }
 
   // Search must show an honest NOK reference, not a raw EUR/USD figure the rest of the app never
@@ -237,6 +243,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
     sourceValueMinor: number | null
     valueNokMinor: string | null
     providerUpdatedAt: string | null
+    observations: PriceObservationWire[]
   }[] = []
 
   for (const row of rows) {
@@ -257,6 +264,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
       sourceValueMinor: chosen ? Number(chosen.valueMinor) : null,
       valueNokMinor: valueNokMinor !== null ? valueNokMinor.toString() : null,
       providerUpdatedAt: chosen?.providerUpdatedAt ?? null,
+      observations: perRowObservations.get(row.id) ?? [],
     })
   }
 

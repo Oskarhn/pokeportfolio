@@ -61,9 +61,30 @@ export class ScannerEngineDisposedError extends Error {
   }
 }
 
+/** Thrown when one recognition call never settled within {@link OCR_RECOGNIZE_TIMEOUT_MS}. The
+ *  worker that swallowed the call is discarded, so this is never followed by a second hang on the
+ *  same dead worker. Deliberately NOT one of `describeAnalysisError`'s sanitized names: the user
+ *  sees the generic "try the same photo again" copy. */
+export class ScannerEngineTimeoutError extends Error {
+  constructor() {
+    super('The card reader took too long to answer.')
+    this.name = 'ScannerEngineTimeoutError'
+  }
+}
+
+/** Upper bound on ONE recognition call. A real call is a few hundred milliseconds for a ROI strip
+ *  and single-digit seconds for the full-card fallback even on slow phones; nothing in the normal
+ *  path comes close. The bound exists because recognitions are SERIALIZED (`recognizeQueue`): one
+ *  call whose worker died without rejecting used to wedge every later scan behind it for the rest
+ *  of the session. */
+export const OCR_RECOGNIZE_TIMEOUT_MS = 60_000
+
 export class ScannerOcrEngine {
   private worker: TesseractWorker | null = null
-  private preparing: Promise<TesseractWorker> | null = null
+  /** The in-flight cold start as an OUTCOME promise: concurrent `prepare()` callers share the same
+   *  success or the same failure — including the disposed-while-loading rejection — instead of some
+   *  of them resolving against an engine that no longer owns a worker. */
+  private preparing: Promise<void> | null = null
   private disposed = false
   /** P82 §16-§19: set true only when a `prepare()` attempt actually threw — distinguishes a
    *  genuinely failed OCR cold start from "never attempted"/"still in flight", which `started`
@@ -109,18 +130,34 @@ export class ScannerOcrEngine {
   async prepare(): Promise<void> {
     if (this.disposed) throw new ScannerEngineDisposedError()
     if (this.worker !== null) return
-    if (this.preparing !== null) return this.preparing.then(() => undefined)
+    if (this.preparing !== null) return this.preparing
     this.lastPrepareFailed = false
-    const creating = this.createWorker()
-    this.preparing = creating
+    const attempt = this.prepareOnce()
+    this.preparing = attempt
     try {
-      this.worker = await creating
+      await attempt
+    } finally {
+      if (this.preparing === attempt) this.preparing = null
+    }
+  }
+
+  private async prepareOnce(): Promise<void> {
+    let worker: TesseractWorker
+    try {
+      worker = await this.createWorker()
     } catch (error) {
       this.lastPrepareFailed = true
       throw error instanceof ScannerEngineError ? error : new ScannerEngineError()
-    } finally {
-      if (this.preparing === creating) this.preparing = null
     }
+    if (this.disposed) {
+      // `dispose()` ran while this worker was still loading, so nothing owns it any more —
+      // `dispose()` itself can only terminate a worker that already exists. Without this the
+      // worker was stored, fully initialised, and lived until page reload: one leaked Tesseract
+      // wasm heap per route exit during a cold start (P130-10).
+      void worker.terminate().catch(() => {})
+      throw new ScannerEngineDisposedError()
+    }
+    this.worker = worker
   }
 
   private async createWorker(): Promise<TesseractWorker> {
@@ -163,6 +200,9 @@ export class ScannerOcrEngine {
       // into the already-terminated `worker` it captured before disposal and inherit whatever
       // unbounded-hang risk that carries.
       if (this.disposed) throw new ScannerEngineDisposedError()
+      // An earlier call timed out and discarded this worker — never hand a queued call to a worker
+      // that is already known dead.
+      if (this.worker !== worker) throw new ScannerEngineError()
       return this.recognizeOnce(worker, source, segmentation)
     })
     this.recognizeQueue = run.then(
@@ -200,7 +240,24 @@ export class ScannerOcrEngine {
       // solely to keep a post-disposal rejection from surfacing as a console warning/crash-reporter
       // noise once nothing is listening for it any more.
       work.catch(() => {})
-      return await Promise.race([work, disposedSignal])
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const timedOut = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          // The worker swallowed this call without ever settling. Discard it — only if it is still
+          // THE worker; a concurrent dispose() already handled it otherwise — so the next scan's
+          // prepare() builds a fresh one instead of queueing behind a corpse.
+          if (this.worker === worker) {
+            this.worker = null
+            void worker.terminate().catch(() => {})
+          }
+          reject(new ScannerEngineTimeoutError())
+        }, OCR_RECOGNIZE_TIMEOUT_MS)
+      })
+      try {
+        return await Promise.race([work, disposedSignal, timedOut])
+      } finally {
+        clearTimeout(timer)
+      }
     } finally {
       this.disposalRejecters.delete(rejectOnDispose)
     }

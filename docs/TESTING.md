@@ -847,6 +847,50 @@ any of them.
 Console errors and failed network requests fail the test. A flow that renders correctly while
 throwing in the console is not passing.
 
+
+### Price Check (P153)
+
+- **Unit:** `tests/domain/price-check/`, `tests/data/price-check-fetch.test.ts`,
+  `tests/ui/price-check-*.test.ts` (structural read-only guard, scan-session adapter, SSR render of
+  every state). Expected values are literals, not the production helpers.
+- **Browser (placeholder backend, desktop + iPhone profile):** `tests/e2e/price-check.spec.ts`,
+  `price-check-scan.spec.ts` (real on-device scanner over a synthetic photo) and
+  `price-check-graded-layout.spec.ts` (the real `ResultView` with synthetic graded fixtures:
+  scroll, keyboard, axe in light and dark). The backend stand-in is
+  `tests/e2e/support/price-check-backend.ts` (network boundary only, synthetic data); it logs every
+  request.
+- **Ledger non-mutation proof (real local stack, opt-in):**
+  `tests/e2e/authenticated/price-check-ledger.spec.ts` — stack as in §6b. It needs `SUPABASE_URL`,
+  `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` and `P153_DB_URL` (the local `DB_URL`), refuses
+  anything but a loopback stack, seeds one scannable catalog card, drains the portfolio recompute
+  queue before each baseline (a pg_cron worker otherwise changes it mid-test) and compares every
+  `user_id` table. Two worktrees must not share a stack: give each its own `project_id` and ports —
+  in a copy of `supabase/` used through `supabase start --workdir`, so the checkout stays clean.
+
+### Scanner + Price Check integration (P161)
+
+The parent suites never met: P151's tests did not use Price Check's session and P153's never ran over
+the real controller. These do.
+
+- **`tests/ui/p161-scanner-price-check-integration.test.ts`** — real controller, real read-only port,
+  real `PriceCheckScanSession`; doubles only for Tesseract, the visual worker (both counted), the
+  catalog and the collection writer. Covers HIGH / visual-only / no-match, latest-wins in both finishing
+  orders, 100 cancel/restart cycles with barriers, failure recovery, A→B during OCR, A→B→A, same-user
+  refresh, a 100-scan mixed valid/invalid workload, and "no write, no leaked engine/client/bitmap/URL".
+- **`tests/ui/p161-price-check-photo-input.test.ts`** — the shared decoder refuses pixel bombs before
+  decoding; structural wiring of the scan page (page cannot be mounted here); no derived prices.
+- **`tests/data/p161-search-prices-compat.test.ts`** — both skew directions of the function response.
+- **`tests/e2e/price-check-p161-integration.spec.ts`** (placeholder backend, desktop Chromium + iPhone
+  WebKit emulation, real workers): zero scanner workers after leaving, P130-10 through Price Check,
+  hostile / corrupt photos then recovery, Cancel during a slow read, latest pick wins, no camera / reader
+  / model for the text search, 320–430 px viewports, recorded cold-vs-warm text-search timing.
+- **A/B scenarios appended to `tests/e2e/authenticated/price-check-ledger.spec.ts`** (real local stack):
+  A→B during a scan, A→B→A, A→B during a held price lookup, same-user refresh mid-scan, overlapping
+  photos, provider failure — every `user_id` table compared before/after.
+- **Mutants:** `node scripts/scanner-p151/run-mutations.mjs --mutants scripts/scanner-p161/mutants.mjs`
+  (17; the P151 list of 13 still runs by default). Real-browser mutants were also run by hand (page
+  cleanup removed, pick guard removed): the browser specs failed for the intended reason.
+
 ---
 
 ## 7. Performance
@@ -1159,6 +1203,55 @@ Chromium launch flag this session did not wire up. The infrastructure (setup/tea
 project wiring) supports adding both without further scaffolding.
 
 ---
+
+## 6c. Scanner hardening suite (P151)
+
+Deterministic regressions for the scanner's lifecycle, cancellation, input safety, cache and confidence
+rules. Every asynchronous ordering is driven by explicit deferred promises (no sleep is the only proof).
+
+| File | Proves |
+|---|---|
+| `tests/ui/scanner-p151-ocr-lifecycle.test.ts` | worker finishing after `dispose()` is terminated (P130-10); 100 open/close cycles across every dispose-vs-load ordering → 0 live workers; a hung `recognize()` times out, discards its worker and does not wedge the queue |
+| `tests/ui/scanner-p151-visual-client-lifecycle.test.ts` | `dispose()` is terminal (no worker resurrection); dispose during init settles; crash and 30 s wedge terminate the worker; bitmaps closed on every path; 100 randomized lifecycles |
+| `tests/ui/scanner-p151-ocr-pipeline-cancel.test.ts` | `runOcrAnalysis` stops within one recognition of an abort, including while queued behind another scan for the canvas pool |
+| `tests/ui/scanner-p151-controller-ordering.test.ts` | latest-scan-wins, stale scans never publish diagnostics / debug URLs, dispose aborts, 100-scan burst → 1 result, no collection write |
+| `tests/ui/scanner-p151-image-input.test.ts` | header sniffing (PNG/JPEG/GIF/WebP/BMP, 20,000 fuzzed inputs), limits, bombs refused **with the decoder never invoked**, hostile and degenerate files, recovery |
+| `tests/ui/scanner-p151-guarded-capture.test.ts` | a capture finishing after a reset never reaches the store; 200 randomized interleavings → 0 live URLs |
+| `tests/ui/scanner-p151-state.test.ts` | a rejected photo is recorded on the start / no-match screens and cleared by every new attempt |
+| `tests/ui/scanner-p151-worker-cache.test.ts` | HTML never cached and self-healed; 50 index generations keep the cache at one generation; integrity purge |
+| `tests/domain/scanner/p151-confidence-policy.test.ts`, `tests/data/scanner-p151-confidence-real-index.test.ts` | visual-only never HIGH (20,000-run property); the moderate-tier disagreement cap; variant never inferred; a fixed-seed slice on the real index |
+| `tests/ui/scanner-p151-identification.test.ts` | the read-only contract: mapping, no `commitBatch`, cancellation as a result |
+| `tests/ui/scanner-p151-stress.test.ts` | orchestration stress (below) |
+| `tests/e2e/scanner-lifecycle-p151.spec.ts` | real Chromium, real workers: 0 live workers after repeated cold-start exits; a late capture leaves 0 blob URLs; bomb file → message and recovery; cancel/restart |
+| `tests/e2e/scanner-mobile-p151.spec.ts` | iPhone-14 emulation matrix (portrait, landscape, rotation, denied camera, slow CPU/assets, background/foreground, leave mid-scan) — emulation, not a device |
+
+**Stress (`pnpm scanner:stress`).** Seven modes — repeated scans, mixed valid/invalid frames, open/close,
+cancel/restart, bounded concurrency (in `scanner-p151-stress.test.ts`), plus worker crash/recovery and
+cache eviction (the lifecycle and cache files above, which the runner also invokes). `pnpm test` runs a
+20-iteration smoke size; `pnpm scanner:stress` runs 100 per mode (~35 s); `--scale 10` multiplies it;
+`-t "mode 4"` selects one mode. Real controller, `runOcrAnalysis` and canvas pool over doubles for
+Tesseract, the visual worker, the catalog and the canvas surface — it proves orchestration (no leaked
+worker / URL / bitmap / timer, no stale publication, bounded work), **not** recognition quality or
+real-browser memory.
+
+**Real-browser benchmark.** `pnpm exec tsx scripts/scanner-p151/browser-bench.mjs --url http://localhost:4391
+--label <name> [--cpu 4]` against any `pnpm build && pnpm preview` copy (fake session, stubbed catalog,
+synthetic fixtures). Compare two builds back to back on one machine; the numbers are not device numbers.
+
+**Confidence audit.** `pnpm scanner:confidence:audit [--samples 1500] [--out f.json]` — real production
+index, real matcher, synthetic proxies (there is no real-capture set); prints before/after HIGH-correct,
+false-HIGH and manual counts per distortion regime.
+
+**Mutation checks.** `node scripts/scanner-p151/run-mutations.mjs [--only M3,M6]` re-introduces 13 old
+defects one at a time; it refuses to run over uncommitted edits, counts a kill only for a real assertion
+failure (or a timeout for a hang defect — vitest reports a timeout as an opaque `STACK_TRACE_ERROR`),
+never for a load/compile error, and verifies every file is restored byte-for-byte (SHA-256).
+
+**Running the e2e specs.** `playwright.config.ts` gives `pnpm build && pnpm preview` 120 s to come up and
+a full build can exceed that on a loaded machine. Build first with the placeholder env, start
+`pnpm preview --port 4391`, then `PLAYWRIGHT_PREVIEW_PORT=4391 pnpm exec playwright test <spec>
+--project=desktop-chromium` — the global setup requires the served build to match the current commit and
+a clean tree.
 
 ## 7a. Privilege-convergence tests
 

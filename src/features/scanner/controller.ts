@@ -21,6 +21,7 @@ import {
   type ScannerObservation,
   type ScannerCandidateRecord,
   type ScannerConfidenceTier,
+  type ScannerNoteCode,
   type VisualEvidenceByCard,
 } from '../../domain/scanner'
 import {
@@ -28,6 +29,11 @@ import {
   ScannerCatalogUnavailableError,
 } from '../../data/scanner/scanner-catalog'
 import { runOcrAnalysis, releaseOcrCanvases } from './analyze'
+import {
+  isAnalysisAborted,
+  ScannerAnalysisAbortedError,
+  throwIfAnalysisAborted,
+} from './analysis-abort'
 import { isScannerDebugEnabled } from './debug-flag'
 import type { PixelRect } from './guide-geometry'
 import { ScannerOcrEngine } from './ocr-engine'
@@ -55,21 +61,11 @@ import { localTodayIso } from '../../platform/local-date'
  */
 export const VISUAL_COLD_ANALYSIS_TIMEOUT_MS = 8000
 
-/** F-05 (P89): thrown by {@link analyzeCapture} when its caller's `AbortSignal` fires between
- *  pipeline stages. Distinguishable from a real analysis failure so a caller can tell "this was
- *  cancelled" apart from "this genuinely failed" — the ScannerPage caller never surfaces either
- *  case to the user once the analysis has gone stale (its own generation-ref check already no-ops
- *  first), but the distinct name keeps that intent legible and testable. */
-export class ScannerAnalysisAbortedError extends Error {
-  constructor() {
-    super('Scan analysis was cancelled.')
-    this.name = 'ScannerAnalysisAbortedError'
-  }
-}
-
-function throwIfAnalysisAborted(signal?: AbortSignal): void {
-  if (signal?.aborted) throw new ScannerAnalysisAbortedError()
-}
+// F-05 (P89): `ScannerAnalysisAbortedError` — thrown by `analyzeCapture` when its caller's
+// `AbortSignal` fires between pipeline stages. Moved to analysis-abort.ts (P151) so the OCR stage can
+// observe the same signal without a circular import; re-exported here so every existing importer of
+// this module keeps working unchanged.
+export { ScannerAnalysisAbortedError }
 
 /**
  * P82 §16: REVERSES P81's own stagger order, evidence-gated (D-099 addendum). P81 started the
@@ -118,6 +114,7 @@ import type {
   ScannerDebugImages,
   ScannerDiagnostics,
   ScannerSearchQuery,
+  ScannerTierCapReason,
   ScannerUiController,
   ScannerVariantChoice,
 } from './contract'
@@ -178,6 +175,15 @@ export function resolveVisibleCandidateCount(
   return gap <= CANDIDATE_EXPANSION_SCORE_GAP
     ? SCANNER_UI_EXPANDED_CANDIDATE_LIMIT
     : SCANNER_UI_CANDIDATE_LIMIT
+}
+
+/** The single match-level reason a tier was capped, in priority order (P151 added the
+ *  visual-only case). Null when nothing capped it. */
+function resolveTierCapReason(notes: readonly ScannerNoteCode[]): ScannerTierCapReason | null {
+  if (notes.includes('visual-text-disagreement')) return 'visual-text-disagreement'
+  if (notes.includes('visual-only-uncorroborated')) return 'visual-only-uncorroborated'
+  if (notes.includes('runner-up-margin-small')) return 'runner-up-margin-small'
+  return null
 }
 
 /** Deterministic tier → coarse UI band. Pure mapping; no second scoring pass exists. */
@@ -449,7 +455,9 @@ export function createRealScannerController(
    *  device. Idempotent — a second call is a no-op; both underlying `prepare()`/`prewarm()` calls
    *  are already idempotent too, so this stays safe even if called from more than one render path. */
   function prewarm(): void {
-    if (visualPrewarmStarted) return
+    // P151: a late prewarm (e.g. a mount effect that runs after this controller was already
+    // disposed) must not arm a timer that would try to start a visual worker for a dead controller.
+    if (visualPrewarmStarted || disposed) return
     visualPrewarmStarted = true
     prewarmOcr()
     visualPrewarmTimer = setTimeout(() => {
@@ -483,9 +491,10 @@ export function createRealScannerController(
   async function analyzeVisualBounded(
     capture: { blob: Blob; cardRect: PixelRect },
     topK: number,
+    signal: AbortSignal,
   ): Promise<{ result: VisualAnalysisResult | null; errorMessage: string | null }> {
     const readyBefore = getVisualPrewarmState() === 'ready'
-    const work = analyzeVisualSafely(capture, topK)
+    const work = analyzeVisualSafely(capture, topK, signal)
     if (readyBefore) return work
     let timeoutId: ReturnType<typeof setTimeout> | undefined
     const timedOut = new Promise<{ result: null; errorMessage: string }>((resolve) => {
@@ -512,10 +521,14 @@ export function createRealScannerController(
   async function analyzeVisualSafely(
     capture: { blob: Blob; cardRect: PixelRect },
     topK: number,
+    signal: AbortSignal,
   ): Promise<{ result: VisualAnalysisResult | null; errorMessage: string | null }> {
     if (typeof createImageBitmap !== 'function') {
       return { result: null, errorMessage: 'createImageBitmap is unavailable in this browser.' }
     }
+    // P151: a scan that was cancelled, superseded or disposed before this stage began must not pay
+    // for a decode or an embed — the embed in particular is queued behind any other in the worker.
+    if (isAnalysisAborted(signal)) return { result: null, errorMessage: 'Scan cancelled.' }
     try {
       const { blob, cardRect } = capture
       const bitmap = await createImageBitmap(
@@ -525,6 +538,10 @@ export function createRealScannerController(
         cardRect.width,
         cardRect.height,
       )
+      if (isAnalysisAborted(signal)) {
+        bitmap.close()
+        return { result: null, errorMessage: 'Scan cancelled.' }
+      }
       const result = await visualClient.analyze(bitmap, topK)
       return { result, errorMessage: null }
     } catch (error) {
@@ -532,9 +549,52 @@ export function createRealScannerController(
     }
   }
 
+  /** The scan currently allowed to run (P151). Latest scan wins: starting a new one aborts this one,
+   *  and `dispose()` aborts it too. See {@link analyzeCapture}. */
+  let activeScan: { id: number; abort: AbortController } | null = null
+  let scanSequence = 0
+
+  /**
+   * One capture in, one analysis out — with LATEST-REQUEST-WINS semantics (P151).
+   *
+   * The scanner UI already discards a stale result by generation (ScannerPage), but that only stops
+   * the RESULT from being applied: the abandoned scan used to keep running every remaining stage
+   * (up to ~a dozen OCR passes, a worker embed, catalog round trips), the next scan then queued
+   * behind it in the serialized OCR engine, and — worse — when it finally finished it overwrote the
+   * controller's shared diagnostics / match-context / debug-image state with the STALE scan's data
+   * (and, after `dispose()`, re-created object URLs nothing would ever revoke).
+   *
+   * Now every scan owns an internal AbortController that fires when (a) the caller aborts, (b) a
+   * newer scan starts, or (c) the controller is disposed. All stages and the publish step observe
+   * it. At most one scan is ever doing work; a superseded one stops at its next checkpoint and
+   * rejects with {@link ScannerAnalysisAbortedError} without touching shared state.
+   */
   async function analyzeCapture(
     capture: Parameters<ScannerUiController['analyzeCapture']>[0],
-    signal?: AbortSignal,
+    callerSignal?: AbortSignal,
+  ) {
+    if (disposed) throw new ScannerAnalysisAbortedError()
+    const scanAbort = new AbortController()
+    const onCallerAbort = (): void => {
+      scanAbort.abort()
+    }
+    if (callerSignal?.aborted === true) scanAbort.abort()
+    else callerSignal?.addEventListener('abort', onCallerAbort, { once: true })
+    activeScan?.abort.abort()
+    scanSequence += 1
+    const scan = { id: scanSequence, abort: scanAbort }
+    activeScan = scan
+    try {
+      return await runAnalysis(capture, scanAbort.signal)
+    } finally {
+      callerSignal?.removeEventListener('abort', onCallerAbort)
+      if (activeScan === scan) activeScan = null
+    }
+  }
+
+  async function runAnalysis(
+    capture: Parameters<ScannerUiController['analyzeCapture']>[0],
+    signal: AbortSignal,
   ) {
     const debug = isScannerDebugEnabled()
 
@@ -568,7 +628,7 @@ export function createRealScannerController(
 
     const [ocrResult, { result: visualResult, errorMessage: visualErrorMessage }] =
       await Promise.all([
-        runOcrAnalysis(workingCapture, engine, undefined, debug),
+        runOcrAnalysis(workingCapture, engine, undefined, debug, signal),
         severeBlur
           ? Promise.resolve({
               result: null,
@@ -578,6 +638,7 @@ export function createRealScannerController(
           : analyzeVisualBounded(
               workingCapture,
               debug ? VISUAL_DEBUG_SHORTLIST_SIZE : VISUAL_SHORTLIST_SIZE,
+              signal,
             ),
       ])
 
@@ -633,6 +694,13 @@ export function createRealScannerController(
       }
     }
 
+    // P151 publish gate. Everything below is synchronous and ends in writes to controller-level
+    // state (`lastMatchContext`, `lastDiagnostics`, the debug image URLs). The `getCardsByIds`
+    // await above is the LAST suspension point, so a scan that was cancelled, superseded or
+    // disposed while it was in flight is stopped HERE, before it can overwrite the current scan's
+    // data or (after dispose) allocate object URLs nothing will ever revoke.
+    throwIfAnalysisAborted(signal)
+
     const match = matchScannerObservation(observation, mergedCandidates, visualScores)
     // P90 §21: snapshot for the debug-only expected-card-rank tool — see lastMatchContext's own
     // doc. Always overwritten, never merged with a previous scan's evidence.
@@ -657,11 +725,7 @@ export function createRealScannerController(
     // discounted a competing candidate's score is gone (D-106); the redesigned mechanism only ever
     // ADDS a corroboration boost to the visual anchor, so it can never by itself be the reason a
     // tier was capped BELOW what the raw score implies.
-    const tierCapReason = match.notes.includes('visual-text-disagreement')
-      ? ('visual-text-disagreement' as const)
-      : match.notes.includes('runner-up-margin-small')
-        ? ('runner-up-margin-small' as const)
-        : null
+    const tierCapReason = resolveTierCapReason(match.notes)
     lastDiagnostics = {
       visualModelState: visualSnapshot.modelState,
       visualBackend: visualResult?.backend ?? visualSnapshot.readyInfo?.backend ?? 'unknown',
@@ -742,11 +806,7 @@ export function createRealScannerController(
         ),
         visualReliability: ranked.visualReliability,
         finalTier: standaloneTierForScore(ranked.rawRankScore),
-        tierReason: match.notes.includes('visual-text-disagreement')
-          ? ('visual-text-disagreement' as const)
-          : match.notes.includes('runner-up-margin-small')
-            ? ('runner-up-margin-small' as const)
-            : null,
+        tierReason: tierCapReason,
       })),
       // P78 fix: `visualErrorMessage` only ever covers exceptions thrown INSIDE
       // analyzeVisualSafely (createImageBitmap/client.analyze throwing) — a model/backend
@@ -928,6 +988,9 @@ export function createRealScannerController(
 
   function dispose(): void {
     disposed = true
+    // Stops whatever scan is in flight at its next checkpoint (P151) — see analyzeCapture.
+    activeScan?.abort.abort()
+    activeScan = null
     if (visualPrewarmTimer !== null) {
       clearTimeout(visualPrewarmTimer)
       visualPrewarmTimer = null

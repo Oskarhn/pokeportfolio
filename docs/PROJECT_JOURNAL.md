@@ -2381,3 +2381,52 @@ after an entity switch changes nothing had never had a slow response; they passe
 all seven tests pass — the product (the P124 guard and the P145 leases) was right — and each now asserts that the
 request was held. The lesson is the one the mutation tests keep teaching: the question is not whether a test passes but
 whether it can fail for the reason it names.
+
+## 2026-09-20 — Scanner hardening: leaks, hangs and one visible-only-in-a-browser bug (P151)
+
+**What the tests could not see.** The scanner's unit tests all stubbed the browser, so a class of
+lifecycle defects was invisible to them by construction. Driving the real production build of `/scan` in
+Chromium — real workers, real blob URLs — reproduced them on the untouched baseline: 7 Tesseract/visual
+workers alive after six enter/exit cycles (P130-10, and a sibling one: any scan reaching a disposed
+visual client built a fresh worker nobody owned), and a blob URL of a raw camera frame alive after the
+user had left the scanner. The same run found a bug no unit test was looking for: a rejected photo
+chosen from the start screen produced no message at all, because the error was rendered only in the
+camera step.
+
+**Measure before deciding.** The confidence change was chosen from numbers, not from the audit's
+recommendation alone: against the real 19,500-card index, 5.7–10.7% of scans whose true printing has no
+reference image preselected a same-artwork sibling as HIGH, and a stricter visual threshold did not
+remove that (the sibling sits at cosine ≥ 0.95). The fix is one extra tap on scans where OCR read
+nothing. No real captures exist, so the audit bounds the structure of the failure, not real accuracy.
+
+**Performance was a non-result, recorded as one.** Baseline and hardened builds measure the same within
+noise on this machine (warm scan 883 vs 885 ms); the work is reliability, not speed.
+
+**Test-tooling lessons.** Vitest's JSON reporter renders a test timeout as an opaque `STACK_TRACE_ERROR`
+(the mutation runner had to learn that a timeout is a legitimate kill for a hang defect); a
+`mockReturnValueOnce` queue is consumed in *call* order, not start order, so a scan that aborts early
+hands its barrier to the next scan (route by blob identity instead); and `history.back()` issued while an
+exit navigation is still in flight wedges the next navigation in the router (reproduced on the baseline;
+not scanner code).
+
+## 2026-09-24 — Two green branches, one red combined run: integrating the scanner and Price Check (P161)
+
+The scanner hardening (P151) and the read-only Price Check (P153) merged without a textual conflict in
+any source file, and each was green alone. The interesting part was that neither suite had ever run the
+other's code: P153 wrapped the raw scanner controller in its own narrowing and its own stale-result
+counter; P151 had shipped a purpose-built read-only port for exactly this consumer.
+
+Integrating meant deciding who owns what, not resolving conflicts. Request ordering already had an owner
+(the controller, with a publish gate); Price Check's counter was a second, weaker one. The session now
+holds one abort signal shared with the controller and nothing else. Real code then paid for the decision
+three times: the older of two photo picks could finish decoding last and win; a HIGH whose own best card
+was filtered out pre-selected the runner-up; and — found only by the full browser run, on both browser
+projects, reproducibly in isolation — P153's confirm-and-price spec turned into "not recognised", because
+P151's contract returns no candidates for a below-threshold scan while P153's fixture backend had leaned
+on the old behaviour of showing them. The fixture, not the assertion, was what had to change: a scan
+that reads nothing identifiable should not offer three unrelated cards.
+
+Mutation testing showed a second lesson: with the session aborting its own signal, the controller's
+supersession and publish gate became invisible to every Price Check-level test (both survived until a
+test drove the read-only port directly with no caller signal). Overlapping ownership hides regressions in
+the layer that is doing less of the work.

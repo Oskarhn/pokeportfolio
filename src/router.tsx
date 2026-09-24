@@ -122,6 +122,22 @@ const ScannerPage = lazy(() =>
   import('./features/scanner/ScannerPage').then((m) => ({ default: m.ScannerPage })),
 )
 
+// P153 Price Check: a read-only lookup feature. Three separate chunks so the text search never
+// downloads the scanner, and the scan page loads the scanner controller only when it opens.
+const PriceCheckPage = lazy(() =>
+  import('./features/price-check/PriceCheckPage').then((m) => ({ default: m.PriceCheckPage })),
+)
+const PriceCheckScanPage = lazy(() =>
+  import('./features/price-check/PriceCheckScanPage').then((m) => ({
+    default: m.PriceCheckScanPage,
+  })),
+)
+const PriceCheckResultPage = lazy(() =>
+  import('./features/price-check/PriceCheckResultPage').then((m) => ({
+    default: m.PriceCheckResultPage,
+  })),
+)
+
 /** Matches the layout these pages render into (AppShell's `<main>`) closely enough that arriving
  *  content doesn't jump — a skeleton rather than a spinner-over-blank-region, per
  *  DESIGN_SYSTEM.md §7's loading-state rule. */
@@ -722,6 +738,46 @@ const scannerRoute = createRoute({
   ),
 })
 
+const priceCheckRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/price-check',
+  // The query and language live in the URL so Back from a result returns to the same search.
+  validateSearch: (search: Record<string, unknown>): { q?: string; language?: 'en' | 'ja' } => ({
+    q: str(search.q),
+    language: search.language === 'en' || search.language === 'ja' ? search.language : undefined,
+  }),
+  component: () => (
+    <RequireSession>
+      <PriceCheckPage />
+    </RequireSession>
+  ),
+})
+
+const priceCheckScanRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/price-check/scan',
+  component: () => (
+    <RequireSession>
+      <PriceCheckScanPage />
+    </RequireSession>
+  ),
+})
+
+const priceCheckResultRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/price-check/$cardId',
+  // The chosen variant lives in the URL (like Card Detail), so a refresh or shared link lands on
+  // the same variant — and a link WITHOUT one never silently picks a variant for a multi-variant card.
+  validateSearch: (search: Record<string, unknown>): { variantId?: string } => ({
+    variantId: str(search.variantId),
+  }),
+  component: () => (
+    <RequireSession>
+      <PriceCheckResultPage />
+    </RequireSession>
+  ),
+})
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   loginRoute,
@@ -757,6 +813,9 @@ const routeTree = rootRoute.addChildren([
   profileRoute,
   profileExportRoute,
   scannerRoute,
+  priceCheckRoute,
+  priceCheckScanRoute,
+  priceCheckResultRoute,
   legacyMoreRoute,
   adminInvitationsRoute,
 ])

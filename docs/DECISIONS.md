@@ -6637,3 +6637,181 @@ path already uses `::text`).
 **Composition with the exact-money transport (D-137).** Export reads go through the leased client, so
 the exact-JSON guard sees them; every export money column is selected `::text` and the guard does
 not reject string amounts. The P130-19 write-path exactness is closed by the same P149 candidate.
+
+
+## D-151 — Scanner hardening rules: latest-scan-wins cancellation, pre-decode image limits, a bounded and non-poisonable worker cache, visual-only evidence never HIGH, and a read-only result contract (P151)
+
+**2026-09-20 · Accepted**
+
+*(Numbered D-151 rather than the next free integer: parallel worktrees already use D-134 to D-140, so
+a sequential number would collide at integration. Renumber freely; nothing references it by number.)*
+
+**Context.** A hardening pass over the shipped scanner (docs/SCANNER_RESEARCH.md §12) reproduced, on
+the baseline build, defects that are expensive to leave: a leaked OCR worker per exit during cold start
+(P130-10: 7 live workers after 6 cycles in real Chromium), a visual worker resurrected by any scan
+reaching a disposed client, hung calls that wedge the serialized OCR queue for the session, stale scans
+overwriting the controller's shared state, a raw camera frame's blob URL surviving unmount, an unbounded
+and poisonable worker cache, a bomb file measured only after being decoded, no message for a rejected
+photo outside the camera step, and a visual-only HIGH that preselected a same-artwork sibling printing.
+
+**Decision.**
+
+1. **Latest scan wins.** Every `analyzeCapture` owns an `AbortController` fired by the caller, by a
+   newer scan, or by `dispose()`; OCR checks it before and after each recognition, the visual stage
+   before decode, and a publish gate precedes every write to controller state. A disposed
+   `VisualRecognitionClient` is terminal. A single recognition is bounded (60 s) and a single visual
+   round trip is bounded (30 s); on expiry the worker is discarded, never left wedged. Rejected
+   alternative: serialising scans in a queue — the UI never has two live scans, the useful behaviour on
+   a retake is to drop the abandoned one, and a queue would need its own bound.
+2. **Image limits are enforced before the decoder** whenever the header can be read: 10 MiB, 40 MP,
+   12,000 px longest edge, 32 px shortest edge, 6 : 1 aspect ratio; empty and SVG inputs refused.
+   Formats the sniffer cannot read (HEIC/AVIF) keep the post-decode check and the limitation is
+   documented, not hidden. Rejected: lowering the 40 MP ceiling without device evidence (it would
+   refuse legitimate large photos to guard a case the header check now covers).
+3. **Capture is latest-wins and cannot outlive its route.** Shutter and file-picker captures share one
+   guard invalidated at every camera-release site; a stale frame is dropped before it becomes an object
+   URL. A rejected photo is shown wherever the picker can be opened.
+4. **The worker cache is bounded and cannot be poisoned.** Only the current index generation is kept
+   after a verified load; a generation that fails integrity is purged; `text/html` is never stored and a
+   stored one is deleted on read. Rejected: disabling `env.useBrowserCache` / dropping the Service
+   Worker rule to remove the model double-copy — the consequence on Safari (a 48 MB re-download per
+   session, if worker fetches bypass the Service Worker) cannot be measured without the physical device;
+   deferred to that gate rather than guessed.
+5. **Visual-only evidence can never be HIGH.** A would-be HIGH with no readable name and no readable
+   collector number is held at MEDIUM (`visual-only-uncorroborated`); any printed-text signal lifts the
+   cap; thresholds, weights and the index are untouched (content id `f25fc05d569b7cca` unchanged).
+   Measured before/after counts are in SCANNER_RESEARCH §12e (false-HIGH 5.7–10.7% of unindexed-printing
+   scans → 0; visual-only correct-HIGH → 0, i.e. one extra tap). The scanner still never infers a
+   printing; the variant is the user's explicit choice unless the catalog has exactly one.
+6. **A read-only scanner result contract** (`scanner-identification.ts`): typed, provider-neutral, over
+   the existing controller, with no `commitBatch` member and no import path to the collection writer.
+   It is the only sanctioned way for a non-scanner consumer (Price Check) to use recognition.
+
+**Consequences.** One additional tap on scans where OCR read nothing at all; the visual-only HIGH badge
+no longer appears. `describeAnalysisError` is unchanged (a timeout maps to the generic "try the same
+photo again"). The P116 test that pinned "a fresh worker is constructed after dispose()" now pins the
+opposite, deliberately (documented in that test). No migration, no schema, no financial semantics.
+
+**Proof.** Reproduced on the baseline build in real Chromium (`tests/e2e/scanner-lifecycle-p151.spec.ts`:
+7 live workers → 0, 1 leaked blob URL → 0, no alert → alert) and by unit tests that fail on the old code;
+`scripts/scanner-p151/run-mutations.mjs` re-introduces 13 defects and the permanent tests kill all 13
+(files restored byte-for-byte); `pnpm scanner:stress` (seven modes, 100 iterations each);
+`pnpm scanner:confidence:audit` (real index, real matcher, synthetic proxies — **no real captures exist**).
+Emulated mobile only; the physical-iPhone gate remains deferred by the owner.
+
+## D-153 — Price Check is strictly read-only; a price belongs to one confirmed variant; graded prices are shown only from a real, authorized source (P153)
+
+**Status: accepted.**
+
+**Context.** Owners want to look a card's price up — by search or by scanning it — without
+creating a holding, purchase or sale. The existing scanner and search surfaces are add-flows, and
+the only price sources available are the TCGdex relay of Cardmarket (EUR) and TCGplayer (USD)
+statistics. No graded price source is authorized (docs/API_SOURCES.md, "Graded price sources").
+
+**Decisions.**
+
+1. **Read-only by construction, proven in layers.** Price Check code may call only the catalog
+   reads, the non-persisting `search-prices` function and a `SELECT` on `fx_rates`; it imports no
+   ledger data module and cannot reach the scanner's `commitBatch` (the scanner is consumed through
+   a two-member port). Proof: a static source guard, runtime scan-session tests, a browser network
+   log, and a database check that every `public` table with a `user_id` column — discovered from
+   `information_schema` — is byte-identical (row count + md5 of every row) after repeated searches,
+   lookups, variant switches, real scans and a click into the Add page. The request log and the
+   database check each fail on their own when an acquisition is injected (mutation evidence in
+   HANDOVER).
+2. **A price belongs to one exact variant.** A card with several variants gets no default: the
+   person chooses, and a scan (which identifies artwork, not finish) never decides. A variant id
+   that is not the card's is rejected, never replaced. A name alone is not identity: results always
+   show set, number, language, and flag same-name collisions.
+3. **Honest raw semantics.** Every relayed metric is an `index` (provider-computed statistic); it
+   is never labelled `sold` or `listing` because TCGdex documents neither. No per-condition
+   breakdown exists, so none is shown ("condition not specified by source"). A provider-reported
+   `0` is a value; a missing, malformed or failed lookup is a named state (`no_variant_price`,
+   `provider_error`, `rate_limited`, `network`, `malformed_response`) and never a number. Observed
+   date (from the provider) and fetched time (when this client received it) are shown separately;
+   freshness (`fresh` ≤ 3 days, `stale` ≤ 30, `outdated`, `unknown`) matches the portfolio
+   resolver's thresholds, and nothing is called "live".
+4. **FX.** The NOK figure is a labelled reference computed with the exact, exponent-aware
+   `convert` (P136 semantics: NOK per one major unit), showing the rate and its date; a rate older
+   than 7 days is flagged; with no usable rate only the source currency is shown.
+5. **Graded prices: modelled, not sourced.** The graded model (company + grade + qualifier + price
+   kind + currency + observed date, `kind` mandatory) and its validation exist, and the page shows
+   an explicit "no authorized source" state. No graded number is derived from a raw price, PSA 10
+   is never BGS 10, and a fixture is always rendered as "Synthetic test data". Graded capability
+   is **PARTIAL** until an owner-approved source is integrated (plan in API_SOURCES.md).
+6. **Access.** Catalog tables, `search_cards` and `search-prices` are `authenticated`-only
+   (`verify_jwt = true`), so Price Check needs a session like every private page. Public
+   signed-out reads would require relaxing RLS/grants and were not done.
+7. **Cache.** No new cache. The existing react-query cache (cleared on every identity change,
+   D-093) is used with keys built from stable ids and the provider/currency, never a card name;
+   `staleTime` 5 minutes, failures are never cached as a value, and a cached hit keeps its original
+   fetch time and is labelled "Cached".
+
+**Consequences.** `search-prices` gained an additive `observations[]` per variant (both providers,
+exact minor units as strings, provider timestamps); a client older than the function, or a function
+older than the client, degrades to the single headline value and says so. The function must be
+redeployed for Price Check to show both providers — P153 deployed nothing. `CardDetailPage` still
+formats source amounts with `Number(minor)/100`, wrong for exponent-0 currencies (none reach it
+today); left untouched as out of scope.
+
+## D-161 — Price Check consumes the scanner only through the read-only contract, with one owner per concern (P161)
+
+**2026-09-24 · Accepted**
+
+*(Integration of P151 (D-151) and P153 (D-153). P153's decision was numbered D-134 in its own branch;
+D-134 to D-140 are taken by the unreleased P143–P149 chain, so it is D-153 here, mirroring D-151.
+Released ids (up to D-133) are untouched.)*
+
+**Context.** P151 hardened the scanner and added `scanner-identification.ts` (a read-only port and a
+never-throwing `identifyCapture`) for exactly one consumer. P153 built Price Check before that seam
+existed and therefore carried its own two-member narrowing of the full controller and its own
+generation counter for stale results. Both branches were green alone; run together they layered two
+owners of the same concern, and the combination exposed three defects neither parent had (the pick race, the runner-up
+pre-selection and the NO_MATCH semantics below).
+
+**Decision.**
+
+1. **The only door into the scanner is `scanner-identification.ts`.** Price Check builds its session
+   from `createReadOnlyScanner(userId)` and `identifyCapture`, loaded by dynamic import on the scan
+   page only. It may not name `getScannerUiController`, `ScannerUiController` or `commitBatch`
+   (structural guard, `tests/ui/price-check-read-only.test.ts`); the text search and the result page
+   contain no scanner import at all.
+2. **One owner per concern.** Request ordering (latest scan wins, abort on newer scan / caller abort /
+   dispose, publish gate) belongs to the scanner controller. Cancellation is one `AbortSignal` per
+   analysis shared with it. The session keeps no generation counter and the page adds no stale-result
+   guard for the analysis. Rejected: keeping both layers "for safety" — two owners disagree about which
+   result is stale, and each masks a regression in the other (the mutation runner showed the session's
+   abort hides the controller's supersession from every Price Check-level test, so the controller half
+   is pinned separately through the port).
+3. **A photo pick is latest-wins** with the scanner's own `CameraAcquisitionGuard`. Before this, the
+   older of two picks in flight (the picker stays visible while a photo decodes) could finish decoding
+   last and win regardless of which the person chose last.
+4. **HIGH vouches for the scanner's first candidate only.** Candidates whose id is not a catalog uuid
+   are dropped; if the dropped one was the scanner's best, the runner-up that inherited the top slot is
+   no longer pre-selected (it becomes a MEDIUM review).
+5. **One scan screen per signed-in identity** (`key`): an account switch discards the photo preview,
+   the candidates and the scanner together. Defence in depth: `RequireSession` already unmounts the
+   page on sign-out; the key covers a switch that never passes through signed-out (a cross-tab
+   sign-in), and P149's identity boundary will subsume it.
+6. **NO_MATCH is no candidates.** The read-only contract returns an empty shortlist for a scan the
+   scanner rates below LOW. P153, built on the raw controller, showed those below-threshold guesses as a
+   "review" list; the integrated screen shows the honest no-match state with the manual-search
+   fallback instead. (Found by the combined browser run: P153's own confirm-and-price spec relied on
+   an echo backend that returned three unrelated cards for any text; its fixture now returns the card
+   the printed text identifies.)
+7. **The scan result page still never picks a variant.** A card identity does not prove holo / reverse
+   holo; the person chooses unless the catalog has exactly one active printing (D-153, D-151).
+
+**Consequences.** `narrowScannerPort` and `PriceCheckScannerPort` are gone; `PriceCheckScanSession`
+takes a `ReadOnlyScannerPort`. A `review` outcome now carries the scanner's band (shown as
+"medium" / "low" confidence). No migration, no financial semantics, no scanner core, index, model or
+threshold change (content id `f25fc05d569b7cca`). Graded pricing is still
+`PARTIAL_NO_AUTHORIZED_PROVIDER`.
+
+**Proof.** `tests/ui/p161-scanner-price-check-integration.test.ts` (real controller and read-only
+port, doubles only for Tesseract / the visual worker / catalog / collection writer),
+`tests/e2e/price-check-p161-integration.spec.ts` (real workers, real build, desktop Chromium and
+WebKit emulation), the A/B scenarios appended to
+`tests/e2e/authenticated/price-check-ledger.spec.ts` (real local stack, every `user_id` table
+compared by row hash), and `scripts/scanner-p161/mutants.mjs` (17 mutants, all killed by an assertion;
+run with `node scripts/scanner-p151/run-mutations.mjs --mutants scripts/scanner-p161/mutants.mjs`).
