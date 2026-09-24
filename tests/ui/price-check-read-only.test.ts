@@ -64,6 +64,13 @@ describe('Price Check is read-only by construction', () => {
     ['a purchase write', /create_purchase|createPurchase|update_purchase|updatePurchase/],
     ['a sale write', /create_sale|createSale|update_sale|updateSale/],
     ['the scanner commit path', /commitBatch/],
+    // P161: the ONLY door into the scanner is the read-only contract (scanner-identification.ts).
+    // The full controller factory is what carries commitBatch — Price Check must never name it.
+    [
+      'the full scanner controller factory',
+      /getScannerUiController|createRealScannerController|ScannerUiController\b/,
+    ],
+    ['a second scanner port narrowing', /narrowScannerPort/],
     ['manual card creation', /createManualCard|manual_card|createCustom/],
     ['a cost adjustment', /cost_adjust|costAdjust/i],
     ['a holding write', /createHolding/],
@@ -100,18 +107,27 @@ describe('Price Check is read-only by construction', () => {
   })
 
   it('the text search never statically imports the scanner (it loads only on the scan page)', () => {
+    // Heavy scanner modules (the decoder, and the read-only contract that pulls in the controller)
+    // may only be reached through a dynamic import(); only these tiny modules may be static.
+    const LIGHT = /scanner\/(errors|camera-acquisition-guard|contract)['"]$/
     for (const s of sources) {
       const offending = importStatements(s.code).filter(
         (statement) =>
           !/^import\s+type\b/.test(statement) &&
-          /scanner\/(controller|capture)['"]$/.test(statement),
+          /scanner\/[^'"]+['"]$/.test(statement) &&
+          !LIGHT.test(statement),
       )
       expect(offending, s.file).toEqual([])
     }
     const scan = sources.find((s) => s.file.endsWith('PriceCheckScanPage.tsx'))?.code ?? ''
-    expect(scan).toMatch(/import\(\s*'\.\.\/scanner\/controller'\s*\)/)
+    expect(scan).toMatch(/import\(\s*'\.\.\/scanner\/capture'\s*\)/)
+    expect(scan).not.toMatch(/import\(\s*'\.\.\/scanner\/controller'\s*\)/)
+    const session = sources.find((s) => s.file.endsWith('scan-session.ts'))?.code ?? ''
+    expect(session).toMatch(/import\(\s*'\.\.\/scanner\/scanner-identification'\s*\)/)
     const search = sources.find((s) => s.file.endsWith('PriceCheckPage.tsx'))?.code ?? ''
     expect(search).not.toMatch(/scanner\//)
+    const result = sources.find((s) => s.file.endsWith('PriceCheckResultPage.tsx'))?.code ?? ''
+    expect(result).not.toMatch(/scanner\//)
   })
 
   it('"Add to collection" is only a link into the existing add flow, never a call', () => {

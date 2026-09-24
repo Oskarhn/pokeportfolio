@@ -223,4 +223,34 @@ describe('interpretScan — how much confirmation a scanned identity needs', () 
   it('a contradictory NO_MATCH that carries candidates is shown for review, not pre-selected', () => {
     expect(interpretScan({ confidence: 'NO_MATCH', candidates: [cand('a')] }).kind).toBe('review')
   })
+
+  it('review keeps the scanner band so the page can say how unsure the scan was', () => {
+    expect(interpretScan({ confidence: 'MEDIUM', candidates: [cand('a')] })).toMatchObject({
+      kind: 'review',
+      confidence: 'MEDIUM',
+    })
+    expect(interpretScan({ confidence: 'LOW', candidates: [cand('a')] })).toMatchObject({
+      kind: 'review',
+      confidence: 'LOW',
+    })
+  })
+
+  it('HIGH vouches for the scanner’s own best card only (P161)', () => {
+    // Same card the scanner ranked first → HIGH stands.
+    expect(
+      interpretScan({ confidence: 'HIGH', candidates: [cand('a'), cand('b')], scannerBestId: 'a' }),
+    ).toMatchObject({ kind: 'high', preselectedId: 'a' })
+    // The scanner's best was filtered out upstream; 'b' merely inherited the top slot.
+    const outcome = interpretScan({
+      confidence: 'HIGH',
+      candidates: [cand('b')],
+      scannerBestId: 'a',
+    })
+    expect(outcome).toMatchObject({ kind: 'review', confidence: 'MEDIUM' })
+    expect('preselectedId' in outcome).toBe(false)
+    // HIGH with no best at all is contradictory → also no pre-selection.
+    expect(
+      interpretScan({ confidence: 'HIGH', candidates: [cand('b')], scannerBestId: null }).kind,
+    ).toBe('review')
+  })
 })

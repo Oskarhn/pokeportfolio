@@ -4,20 +4,36 @@ import { useAuth } from '../../auth/useAuth'
 import type { ScanCandidate, ScanOutcome } from '../../domain/price-check/scan'
 import type { CapturedFrame } from '../scanner/capture'
 import { CardImage } from '../catalog/CardImage'
+import { CameraAcquisitionGuard } from '../scanner/camera-acquisition-guard'
 import { describeCaptureError } from '../scanner/errors'
 import { FormMessage } from '../../ui/form'
 import { CameraIcon } from '../../ui/icons'
-import { narrowScannerPort, PriceCheckScanSession } from './scan-session'
+import {
+  createPriceCheckScanSession,
+  loadScannerModule,
+  type PriceCheckScanSession,
+} from './scan-session'
 
 /**
- * Price Check → Scan (P153). The photo is recognised by the existing on-device scanner through the
- * narrow `PriceCheckScanSession` port; the scanner proposes a card IDENTITY and this page asks the
- * person to confirm it. It never chooses a variant, never fetches a price itself, and has no route
- * to the scanner's acquisition path — leaving, cancelling or failing simply ends the session.
+ * Price Check → Scan (P153, integrated with the hardened scanner in P161). The photo is recognised
+ * by the existing on-device scanner through the read-only `ReadOnlyScannerPort` (P151) inside a
+ * `PriceCheckScanSession`; the scanner proposes a card IDENTITY and this page asks the person to
+ * confirm it. It never chooses a variant, never fetches a price itself, and has no route to the
+ * scanner's acquisition path — leaving, cancelling or failing simply ends the session.
  *
  * Capture is the device's own photo picker (`capture="environment"` opens the native camera on
  * phones), so no camera stream is ever held by this page. The scanner code is loaded only once
  * this page opens; the text search page never touches it.
+ *
+ * Ownership rules (P161):
+ *   - one screen instance per signed-in identity (`key`): an account switch discards the photo
+ *     preview, the candidates and the scanner in one step, so nothing of the previous account's
+ *     scan can be shown to the next one;
+ *   - a photo pick is "latest wins" (the scanner's own `CameraAcquisitionGuard`, as on /scan): a
+ *     slower, older decode can never overtake a newer pick, and a decode that finishes after
+ *     Cancel / unmount is dropped before it becomes an object URL;
+ *   - request ordering and cancellation of the analysis itself belong to the scanner controller and
+ *     the session's single AbortSignal — this page adds no further stale-result guard for it.
  */
 
 type Step =
@@ -84,7 +100,12 @@ function CandidateChoice({
 export function PriceCheckScanPage() {
   const { session: authSession } = useAuth()
   const userId = authSession?.user.id ?? null
+  return <PriceCheckScanScreen key={userId ?? 'signed-out'} userId={userId} />
+}
+
+function PriceCheckScanScreen({ userId }: { userId: string | null }) {
   const navigate = useNavigate()
+  const [captureGuard] = useState(() => new CameraAcquisitionGuard())
   const scanSessionRef = useRef<PriceCheckScanSession | null>(null)
   // Resolves to the session once the scanner has loaded (null if it could not be). A photo chosen
   // before that simply waits for it instead of failing.
@@ -94,24 +115,24 @@ export function PriceCheckScanPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
 
   // Set (not just cleared) on every mount so it survives StrictMode's mount/unmount/mount probe.
+  // Leaving also invalidates every capture still decoding, so none of them can start a scan.
   useEffect(() => {
     mountedRef.current = true
     return () => {
       mountedRef.current = false
+      captureGuard.invalidate()
     }
-  }, [])
+  }, [captureGuard])
 
   // One scanner session per mounted page and identity. Cleanup disposes it: an in-flight scan is
   // abandoned (its result is never delivered) and the OCR worker is released.
   useEffect(() => {
     let cancelled = false
     let created: PriceCheckScanSession | null = null
-    sessionReadyRef.current = import('../scanner/controller')
-      .then(({ getScannerUiController }) => {
+    sessionReadyRef.current = loadScannerModule()
+      .then((scanner) => {
         if (cancelled) return null
-        const controller = getScannerUiController(userId)
-        controller.prewarm?.()
-        created = new PriceCheckScanSession(narrowScannerPort(controller))
+        created = createPriceCheckScanSession(scanner, userId)
         scanSessionRef.current = created
         return created
       })
@@ -146,6 +167,7 @@ export function PriceCheckScanPage() {
   }
 
   function reset(notice: string | null): void {
+    captureGuard.invalidate()
     scanSessionRef.current?.cancel()
     setSelectedId(null)
     setStep({ kind: 'idle', notice })
@@ -155,19 +177,25 @@ export function PriceCheckScanPage() {
     const file = event.target.files?.[0]
     event.target.value = ''
     if (file === undefined) return
+    // This pick is now the newest: every older pick still decoding (or waiting for the scanner to
+    // load) becomes stale the moment it is issued.
+    const token = captureGuard.begin()
     void (async () => {
       let frame: CapturedFrame
       try {
         const { decodeImageFile } = await import('../scanner/capture')
         frame = await decodeImageFile(file)
       } catch (error) {
-        setStep({ kind: 'idle', notice: describeCaptureError(error).message })
+        if (captureGuard.isCurrent(token) && isMounted()) {
+          setStep({ kind: 'idle', notice: describeCaptureError(error).message })
+        }
         return
       }
-      // Left the page while the photo was decoding: create nothing that would need releasing.
-      if (!isMounted()) return
+      // Superseded, cancelled, or left the page while the photo was decoding: drop the frame
+      // before it becomes an object URL that would need releasing.
+      if (!captureGuard.isCurrent(token) || !isMounted()) return
       const session = await sessionReadyRef.current
-      if (session === null || !isMounted()) return
+      if (session === null || !captureGuard.isCurrent(token) || !isMounted()) return
       const url = URL.createObjectURL(frame.blob)
       setSelectedId(null)
       setStep({ kind: 'analyzing', previewUrl: url })
@@ -269,8 +297,14 @@ export function PriceCheckScanPage() {
               : 'Not sure — choose the right card'}
           </h2>
           {step.outcome.kind === 'review' ? (
-            <p data-testid="scan-uncertain" className="text-sm text-slate-300">
-              The scan could not identify this card with confidence. Nothing is selected for you.
+            <p
+              data-testid="scan-uncertain"
+              data-confidence={step.outcome.confidence}
+              className="text-sm text-slate-300"
+            >
+              The scan could not identify this card with confidence (
+              {step.outcome.confidence.toLowerCase().replace('_', ' ')}). Nothing is selected for
+              you.
             </p>
           ) : null}
           <CandidateChoice
