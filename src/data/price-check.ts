@@ -1,4 +1,5 @@
 import { supabase } from './supabase-client'
+import { EXACT_TRANSPORT_REWRITE_HEADER } from './exact-json-guard'
 import { isSupportedCurrencyCode, type CurrencyCode } from '../domain/currency'
 import { parseFxRate, type FxRateParse } from '../domain/price-check/fx'
 import type { CardPriceResponse } from '../domain/price-check/raw-section'
@@ -57,7 +58,12 @@ export interface SearchPricesInvoker {
   (
     name: 'search-prices',
     options: { body: { cardIds: string[]; useEuPricing: boolean }; signal?: AbortSignal },
-  ): Promise<{ data: unknown; error: unknown }>
+  ): Promise<{
+    data: unknown
+    error: unknown
+    /** supabase-js hands the (guard-produced) Response back; only its headers are read here. */
+    response?: { headers: { get(name: string): string | null } }
+  }>
 }
 
 const realInvoker: SearchPricesInvoker = (name, options) => supabase.functions.invoke(name, options)
@@ -78,7 +84,7 @@ export async function fetchCardPriceResponse(
   const { signal, invoke = realInvoker, now = Date.now } = options
   if (isAborted(signal)) throw abortError()
 
-  let invoked: { data: unknown; error: unknown }
+  let invoked: Awaited<ReturnType<SearchPricesInvoker>>
   try {
     invoked = await invoke('search-prices', {
       // `useEuPricing` only picks the legacy headline; Price Check reads `observations`, which
@@ -101,6 +107,15 @@ export async function fetchCardPriceResponse(
     if (status !== null && Number.isFinite(status))
       throw new PriceCheckError(reasonForStatus(status))
     throw new PriceCheckError('network')
+  }
+
+  // The exact-transport guard (D-137) quotes any bare JSON integer a JavaScript number cannot hold,
+  // and a quoted 16-18 digit string is a valid `valueMinor`. A price must arrive as a string ON THE
+  // WIRE: a rewrite means the function (or a provider behind it) emitted a rounded number, and the
+  // digits that reach the parser are no longer evidence of what the source said. Refuse the whole
+  // response rather than choose which fields to trust (D-164).
+  if (invoked.response?.headers.get(EXACT_TRANSPORT_REWRITE_HEADER) != null) {
+    throw new PriceCheckError('malformed_response')
   }
 
   const body = invoked.data as {

@@ -1,4 +1,5 @@
 import { supabase } from './supabase-client'
+import { EXACT_TRANSPORT_REWRITE_HEADER } from './exact-json-guard'
 import { parseMinorUnits, parseNullableMinorUnits } from './money'
 import { summarizeCardPricing as summarizeCardPricingPure } from '../domain/pricing-summary'
 export { type CardPriceSummary } from '../domain/pricing-summary'
@@ -64,6 +65,10 @@ export async function searchPrices(
     })
     const body = invoked.data as SearchPricesFunctionBody | null
     if (invoked.error || !body?.ok || !body.results) return new Map()
+    // A bare JSON integer this client cannot hold was quoted by the transport guard, which turns a
+    // number the function ALREADY rounded (`Number(bigint)`) into exact-looking digits. A price
+    // cannot be trusted after that: no prices, like any other malformed response (D-164).
+    if (invoked.response?.headers.get(EXACT_TRANSPORT_REWRITE_HEADER) != null) return new Map()
 
     return new Map(
       body.results.map((r) => [

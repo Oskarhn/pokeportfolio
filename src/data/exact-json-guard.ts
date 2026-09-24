@@ -152,6 +152,10 @@ function hasNoBody(response: Response, method: string): boolean {
   )
 }
 
+/** Set on the Response the guard hands on (never on the wire) when it quoted at least one unsafe
+ *  integer literal; the value is the number of literals rewritten. */
+export const EXACT_TRANSPORT_REWRITE_HEADER = 'x-exact-transport-rewritten'
+
 export interface ExactTransportOptions {
   /** Called with the literals quoted in a response body. The app leaves this unset; the test
    *  suites use it to prove no data path depends on the rewrite. */
@@ -180,11 +184,24 @@ export function createExactTransportFetch(
     if (!response.ok || hasNoBody(response, method) || !isJsonResponse(response)) return response
 
     const { text, literals } = quoteUnsafeIntegerLiterals(await response.text())
-    if (literals.length > 0) options.onResponseRewrite?.(literals)
+    if (literals.length === 0) {
+      return new Response(text, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      })
+    }
+    options.onResponseRewrite?.(literals)
+    // The quoted digits are indistinguishable from a legitimate decimal string once parsed. A
+    // reader whose grammar accepts such strings (Price Check's `valueMinor`, D-164) must be able to
+    // tell that a bare number was rewritten, so the copy handed on carries the count. Client-side
+    // only: the header never existed on the network.
+    const headers = new Headers(response.headers)
+    headers.set(EXACT_TRANSPORT_REWRITE_HEADER, String(literals.length))
     return new Response(text, {
       status: response.status,
       statusText: response.statusText,
-      headers: response.headers,
+      headers,
     })
   }
 }
