@@ -14,6 +14,7 @@ import {
 } from '../../db/setup'
 import {
   AUTH_STORAGE_KEY,
+  actInOtherTab,
   armBroadcastCounter,
   openOtherTab,
   signInThroughForm,
@@ -331,6 +332,16 @@ async function scanConfirmAndPrice(page: Page, expected: string): Promise<void> 
   await expect(page.getByTestId('observation').first()).toContainText(expected)
 }
 
+/** Opens the first search result and prices it; a card with several printings needs an explicit choice. */
+async function openFirstResultAndPrice(page: Page, expected: string): Promise<void> {
+  await page.getByTestId('price-check-result').first().click()
+  const choose = page.getByTestId('choose-variant')
+  const observation = page.getByTestId('observation').first()
+  await expect(choose.or(observation)).toBeVisible()
+  if (await choose.isVisible()) await page.getByTestId('variant-option').first().click()
+  await expect(observation).toContainText(expected)
+}
+
 function collectDownloads(page: Page): Download[] {
   const downloads: Download[] = []
   page.on('download', (d) => downloads.push(d))
@@ -451,11 +462,17 @@ test.beforeAll(async () => {
 })
 
 test.afterAll(async () => {
-  await pgClient.query('delete from public.card_variants where card_id = $1', [FAUX.cardId])
-  await pgClient.query('delete from public.cards where id = $1', [FAUX.cardId])
-  await pgClient.end()
+  // Users first: their purchase lines reference the fixture printings.
   await deleteSyntheticUser(service, userA.id)
   await deleteSyntheticUser(service, userB.id)
+  // Best effort: rows left by an aborted earlier run still reference the fixture (harmless catalog data).
+  try {
+    await pgClient.query('delete from public.card_variants where card_id = $1', [FAUX.cardId])
+    await pgClient.query('delete from public.cards where id = $1', [FAUX.cardId])
+  } catch (error) {
+    console.warn('fixture catalog rows kept:', (error as Error).message)
+  }
+  await pgClient.end()
 })
 
 test('the baselines are real, non-trivial ledgers (guards against a vacuous proof)', async () => {
@@ -677,8 +694,7 @@ test('C · A’s large export is held while B signs in and checks a price: no fi
   await page.goto('/price-check?q=Pikachu')
   await armBroadcastCounter(page)
   // A has looked at a price (A's value is now in the client cache).
-  await page.getByTestId('price-check-result').first().click()
-  await expect(page.getByTestId('observation').first()).toContainText(PRICE_TEXT.a)
+  await openFirstResultAndPrice(page, PRICE_TEXT.a)
 
   // Client-side navigation to the export page (a reload would end the export for free).
   await spaNavigate(page, '/profile/export')
@@ -725,8 +741,7 @@ test('C · A’s large export is held while B signs in and checks a price: no fi
 
   // B checks a price, client-side, while A's export is still parked.
   await spaNavigate(page, '/price-check?q=Pikachu')
-  await page.getByTestId('price-check-result').first().click()
-  await expect(page.getByTestId('observation').first()).toContainText(PRICE_TEXT.b)
+  await openFirstResultAndPrice(page, PRICE_TEXT.b)
   await expect(page.getByText(PRICE_TEXT.a)).toHaveCount(0)
 
   // A's held request finally completes; the export must go no further and deliver nothing.
@@ -912,24 +927,57 @@ test('D · refresh outage during an export: it fails closed with the session mes
 // Scenario E: sign-out during scanner start-up leaves no orphan worker.
 // ---------------------------------------------------------------------------------------------
 
-test('E · A signs out during scanner start-up (Price Check and /scan): no orphan worker, no page error', async ({
+test('E · A signs out during scanner start-up (Price Check and /scan): no worker outlives the start-up it interrupted, no page error', async ({
   page,
+  context,
 }) => {
-  test.setTimeout(300_000)
+  test.setTimeout(400_000)
   const workers = trackScannerWorkers(page)
   const pageErrors: string[] = []
   page.on('pageerror', (error) => pageErrors.push(error.message))
   await slowScanner(page, 4_000)
   await signInThroughForm(page, userA)
+  const other = await openOtherTab(context)
 
   for (const route of ['/price-check/scan', '/scan']) {
     await page.goto(route)
-    // The scanner is cold-starting (assets are slowed): sign out before it is ready.
+    // The scanner is cold-starting (its assets are slowed): sign out before it is ready. /scan is a
+    // full-screen overlay without the app's Sign out button, so there the OTHER tab signs out.
     await page.waitForTimeout(600)
-    await signOutViaUi(page)
-    await expect.poll(() => workers.live(), { timeout: 45_000 }).toBe(0)
-    await page.waitForTimeout(6_000) // a late-arriving worker would show up now
+    const signedOutAt = Date.now()
+    if (route === '/scan') {
+      await actInOtherTab(other, { kind: 'sign-out' })
+      await page.waitForURL((url) => url.pathname.startsWith('/login'), { timeout: 15_000 })
+    } else {
+      await signOutViaUi(page)
+    }
+    // A Tesseract worker whose construction had already begun cannot be interrupted: it is
+    // terminated the moment its initialisation completes (P151, ocr-engine.ts). What must hold is
+    // that this is BOUNDED, that nothing new is ever created afterwards, and that it ends at zero.
+    let lastAliveAt = 0
+    let zeroSince: number | null = null
+    const deadline = Date.now() + 90_000
+    while (Date.now() < deadline) {
+      if (workers.live() > 0) {
+        lastAliveAt = Date.now()
+        zeroSince = null
+      } else {
+        zeroSince ??= Date.now()
+        if (Date.now() - zeroSince >= 12_000) break
+      }
+      await page.waitForTimeout(500)
+    }
+    expect(zeroSince, `no scanner worker may remain after signing out from ${route}`).not.toBeNull()
     expect(workers.live()).toBe(0)
+    expect(lastAliveAt === 0 ? 0 : lastAliveAt - signedOutAt).toBeLessThan(45_000)
+    test.info().annotations.push({
+      type: 'orphan-window',
+      description: `${route}: last worker alive ${
+        lastAliveAt === 0
+          ? 'never after sign-out'
+          : `${String(lastAliveAt - signedOutAt)} ms after sign-out (assets slowed 4 s each)`
+      }`,
+    })
     await signInThroughForm(page, userA)
   }
   expect(pageErrors).toEqual([])
@@ -995,10 +1043,6 @@ test('G · /scan batch of two: A → B while the first write is in flight — th
   context,
 }) => {
   test.setTimeout(500_000)
-  await pgClient.query(
-    'delete from public.holdings where user_id = $1 and card_variant_id = any($2::uuid[])',
-    [userA.id, FAUX.variantIds],
-  )
   await settleDerivedTables()
   const lotsA = await countRows('acquisition_lots', userA.id)
   const holdingsB = await countRows('holdings', userB.id)
@@ -1009,15 +1053,25 @@ test('G · /scan batch of two: A → B while the first write is in flight — th
   await armBroadcastCounter(page)
 
   // Two items: both printings of the same scanned card (the scanner never picks a printing).
-  for (const [index, variantId] of FAUX.variantIds.entries()) {
+  for (const index of FAUX.variantIds.keys()) {
     await page.locator('input[type=file]').setInputFiles(SCAN_IMAGE)
-    const candidate = page.getByRole('radio').first()
-    await expect(candidate).toBeVisible({ timeout: 150_000 })
+    await page.getByRole('button', { name: 'Use photo' }).click()
+    await expect(page.getByRole('button', { name: 'Confirm card' })).toBeVisible({
+      timeout: 150_000,
+    })
     await page.getByRole('button', { name: 'Confirm card' }).click()
     await expect(page.getByRole('heading', { name: 'Confirm card' })).toBeVisible()
-    await page.getByRole('combobox').first().selectOption(variantId)
+    await page
+      .getByRole('group', { name: 'Version' })
+      .getByRole('button', { name: index === 0 ? 'Normal' : 'Reverse holo', exact: true })
+      .click()
     await page.getByRole('button', { name: 'Add to batch' }).click()
-    if (index === 0) await page.getByRole('button', { name: 'Scan next' }).click()
+    if (index === 0) {
+      await page.getByRole('button', { name: 'Scan next' }).click()
+      // Headless Chromium has no camera: the start attempt fails and settles the screen. A photo
+      // chosen before that settles would be discarded with the abandoned camera step.
+      await expect(page.getByRole('alert')).toBeVisible()
+    }
   }
   await page.getByRole('button', { name: 'Review batch' }).click()
   await expect(page.getByText('Total: 2 cards')).toBeVisible()
@@ -1062,7 +1116,9 @@ test('G · /scan batch of two: A → B while the first write is in flight — th
   expect(writes).toHaveLength(1)
   expect(writes[0]?.sub).toBe(userA.id)
   await expect(page.getByText('Total: 2 cards')).toHaveCount(0)
-  await expect(page.getByText(/cards? added|Added/i)).toHaveCount(0)
+  // B's scanner is a fresh screen: no batch counter, no committed-batch summary.
+  await expect(page.getByRole('heading', { name: 'Scan cards' })).toBeVisible()
+  await expect(page.getByText(/\d+ scanned/)).toHaveCount(0)
   expect(await countRows('acquisition_lots', userA.id)).toBe(lotsA + 1)
   expect(await countRows('holdings', userB.id)).toBe(holdingsB)
   // Nothing sent after the switch is A's.
