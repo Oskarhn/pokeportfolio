@@ -165,7 +165,8 @@ if (!isClean()) {
   process.exit(2)
 }
 
-function runJest(tests, jsonFile) {
+function runJest(tests) {
+  // No --json: the JSON reporter itself throws on a failing BigInt assertion in the parent process.
   return spawnSync(
     'pnpm',
     [
@@ -173,32 +174,23 @@ function runJest(tests, jsonFile) {
       'jest',
       '--selectProjects',
       'unit',
-      '--silent',
-      // In-band: a failing assertion whose values include a BigInt cannot be serialised across Jest
-      // worker processes ("Do not know how to serialize a BigInt"), which hides the real failure.
+      '--verbose',
+      // In-band + tests/support/bigint-json.ts keep failing BigInt assertions readable (jest#11617).
       '--runInBand',
-      '--json',
-      `--outputFile=${jsonFile}`,
       ...tests,
     ],
     { cwd: appRoot, encoding: 'utf8', shell: process.platform === 'win32' },
   )
 }
 
-function failedNames(jsonFile) {
-  try {
-    const report = JSON.parse(readFileSync(jsonFile, 'utf8'))
-    return report.testResults.flatMap((t) =>
-      t.assertionResults.filter((a) => a.status === 'failed').map((a) => a.fullName),
-    )
-  } catch {
-    return []
-  }
+/** Names of tests that FAILED, from the verbose reporter ("  × name (12 ms)"). */
+function failedNames(output) {
+  return [...output.matchAll(/^s+×s+(.*?)(?:s+(d+ ms))?$/gm)].map((m) => m[1])
 }
 
 // Baseline: every mutant's test files must pass unmutated, or a "kill" would mean nothing.
 const baselineFiles = [...new Set(MUTANTS.flatMap((m) => m.tests))]
-const baseline = runJest(baselineFiles, join(outDir, 'mutation-baseline.json'))
+const baseline = runJest(baselineFiles)
 if (baseline.status !== 0) {
   console.error('baseline run FAILED; refusing to run mutants')
   process.exit(2)
@@ -217,11 +209,11 @@ for (const m of MUTANTS) {
     }
     mutated = mutated.replace(find, () => replace)
   }
-  const jsonFile = join(outDir, `mutation-${m.id}.json`)
   try {
     writeFileSync(path, mutated)
-    const r = runJest(m.tests, jsonFile)
-    const failed = failedNames(jsonFile)
+    const r = runJest(m.tests)
+    const failed = failedNames(`${r.stdout}
+${r.stderr}`)
     const suiteCrash = r.status !== 0 && failed.length === 0
     results.push({
       id: m.id,
