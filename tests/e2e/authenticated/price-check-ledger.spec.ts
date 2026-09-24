@@ -1,5 +1,5 @@
 import { fileURLToPath } from 'node:url'
-import { test, expect, type Page, type Route } from '@playwright/test'
+import { test, expect, type Page, type Route, type Worker } from '@playwright/test'
 import type { Client as PgClient } from 'pg'
 import {
   createServiceClient,
@@ -554,4 +554,243 @@ test('account A → B in one browser: B sees none of A’s private data, and nei
   expect(afterA.tables).toEqual(beforeA.tables)
   expect(afterB.tables).toEqual(beforeB.tables)
   expect(ledgerRows(afterB)).toBe(0)
+})
+
+// ---------------------------------------------------------------------------------------------
+// P161 — the same proof with the HARDENED scanner behind Price Check, plus the identity scenarios
+// only a real Auth stack can stage: an account ending while a scan / price lookup is in flight.
+// ---------------------------------------------------------------------------------------------
+
+/** Every dedicated scanner worker (Tesseract or the visual model) the page currently has alive. */
+function trackScannerWorkers(page: Page): { live: () => number } {
+  const live = new Set<Worker>()
+  page.on('worker', (worker) => {
+    live.add(worker)
+    worker.on('close', () => {
+      live.delete(worker)
+    })
+  })
+  return {
+    live: () =>
+      [...live].filter((w) => /scanner-assets\/v7\/worker\.min\.js|visual-worker/.test(w.url()))
+        .length,
+  }
+}
+
+/** Answers one `search-prices` call for the requested card with one EUR observation. */
+async function answerPrices(route: Route, valueMinor: string): Promise<void> {
+  const { cardIds } = JSON.parse(route.request().postData() ?? '{}') as { cardIds?: string[] }
+  const { data } = (await service
+    .from('card_variants')
+    .select('id, card_id')
+    .in('card_id', cardIds ?? [])) as { data: { id: string; card_id: string }[] | null }
+  const observedAt = new Date(Date.now() - 86_400_000).toISOString()
+  await route
+    .fulfill({
+      status: 200,
+      headers: { ...CORS, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ok: true,
+        providerErrorCount: 0,
+        results: (data ?? []).map((v) => ({
+          cardVariantId: v.id,
+          cardId: v.card_id,
+          priceState: 'available',
+          provider: 'tcgdex_cardmarket',
+          priceKind: 'cm_trend',
+          sourceCurrency: 'EUR',
+          sourceValueMinor: Number(valueMinor),
+          valueNokMinor: null,
+          providerUpdatedAt: observedAt,
+          observations: [
+            {
+              provider: 'tcgdex_cardmarket',
+              priceKind: 'cm_trend',
+              sourceCurrency: 'EUR',
+              valueMinor,
+              providerUpdatedAt: observedAt,
+            },
+          ],
+        })),
+      }),
+    })
+    .catch(() => undefined)
+}
+
+async function signOutViaUi(page: Page): Promise<void> {
+  await page.getByRole('button', { name: 'Sign out' }).click()
+  await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
+}
+
+test('P161 · A → B while the scan of A is still being read: B starts empty, the late result of A never surfaces, its workers are gone', async ({
+  page,
+}) => {
+  test.setTimeout(400_000)
+  const clientB = await signInAs(userB)
+  await settleDerivedTables()
+  const beforeA = await snapshot(userA.id, clientA)
+  const beforeB = await snapshot(userB.id, clientB)
+  const workers = trackScannerWorkers(page)
+  const { log, bodies } = await instrument(page)
+  // Make the reader slow enough that ending A's session provably lands MID-scan.
+  await page.route('**/scanner-assets/v7/**', async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 2_500))
+    await route.continue().catch(() => undefined)
+  })
+
+  await signIn(page, userA)
+  const phaseStart = log.length
+  await page.goto('/price-check/scan')
+  await page.locator('input[type=file]').setInputFiles(SCAN_IMAGE)
+  await expect(page.getByAltText('Card being scanned')).toBeVisible()
+
+  await signOutViaUi(page)
+  bodies.length = 0
+  await signIn(page, userB)
+  await page.goto('/price-check/scan')
+  // A brand-new screen: none of A's photo, candidates or notices.
+  await expect(page.getByText('Take or choose a photo')).toBeVisible()
+  await expect(page.getByAltText('Card being scanned')).toHaveCount(0)
+  // Long enough for A's abandoned scan to have finished had it survived the identity change.
+  await page.waitForTimeout(20_000)
+  await expect(page.getByTestId('scan-candidate')).toHaveCount(0)
+  await expect(page.getByTestId('scan-no-match')).toHaveCount(0)
+  // Only B's own prewarmed reader (one OCR + one visual worker) may be alive — never A's.
+  expect(workers.live()).toBeLessThanOrEqual(2)
+
+  // B can scan, and B's traffic never mentions A.
+  expect(await scanSession(page)).toBe('candidates')
+  await page.waitForTimeout(500)
+  const seenByB = bodies.join('\n')
+  for (const secret of [userA.id, userA.email, ...ledgerIdsA]) {
+    expect(seenByB, `B's traffic must not contain ${secret.slice(0, 8)}…`).not.toContain(secret)
+  }
+
+  // A → B → A: the second session of A is as empty as B's was.
+  await signOutViaUi(page)
+  await signIn(page, userA)
+  await page.goto('/price-check/scan')
+  await expect(page.getByText('Take or choose a photo')).toBeVisible()
+  await expect(page.getByTestId('scan-candidate')).toHaveCount(0)
+
+  expect(writes(log.slice(phaseStart))).toEqual([])
+  const afterA = await snapshot(userA.id, clientA)
+  const afterB = await snapshot(userB.id, clientB)
+  expect(afterA.tables).toEqual(beforeA.tables)
+  expect(afterA.portfolioCounts).toEqual(beforeA.portfolioCounts)
+  expect(afterB.tables).toEqual(beforeB.tables)
+})
+
+test('P161 · A → B during a HELD price lookup: the late answer of A never replaces the price of B', async ({
+  page,
+}) => {
+  test.setTimeout(300_000)
+  const clientB = await signInAs(userB)
+  await settleDerivedTables()
+  const beforeA = await snapshot(userA.id, clientA)
+  const beforeB = await snapshot(userB.id, clientB)
+  const { log } = await instrument(page)
+
+  // The FIRST lookup (A's) is held at a barrier and answered LAST with A's value; every later
+  // lookup is answered at once with B's value. The two values differ, so a late answer of A that
+  // overwrote B would be visible as text.
+  let lookups = 0
+  let releaseA!: () => void
+  const heldA = new Promise<void>((resolve) => {
+    releaseA = resolve
+  })
+  await page.route('**/functions/v1/search-prices', async (route: Route) => {
+    if (route.request().method() === 'OPTIONS') {
+      await route.fulfill({ status: 204, headers: CORS })
+      return
+    }
+    lookups += 1
+    if (lookups === 1) {
+      await heldA
+      await answerPrices(route, '1234') // A's value: €12.34
+    } else {
+      await answerPrices(route, '9999') // B's value: €99.99
+    }
+  })
+
+  await signIn(page, userA)
+  const phaseStart = log.length
+  await page.goto('/price-check?q=Pikachu')
+  await page.getByTestId('price-check-result').first().click()
+  await expect.poll(() => lookups).toBe(1) // the lookup of A is in flight and held
+
+  await signOutViaUi(page)
+  await signIn(page, userB)
+  await page.goto('/price-check?q=Pikachu')
+  await page.getByTestId('price-check-result').first().click()
+  await expect(page.getByTestId('observation').first()).toContainText('€99.99')
+
+  releaseA() // the answer of A finally arrives, after B already has its own
+  await page.waitForTimeout(2_000)
+  await expect(page.getByTestId('observation').first()).toContainText('€99.99')
+  await expect(page.getByText('€12.34')).toHaveCount(0)
+
+  expect(writes(log.slice(phaseStart))).toEqual([])
+  expect((await snapshot(userA.id, clientA)).tables).toEqual(beforeA.tables)
+  expect((await snapshot(userB.id, clientB)).tables).toEqual(beforeB.tables)
+})
+
+test('P161 · same-user refresh mid-scan, overlapping photos and a provider failure change nothing', async ({
+  page,
+}) => {
+  test.setTimeout(400_000)
+  await settleDerivedTables()
+  const before = await snapshot(userA.id, clientA)
+  const workers = trackScannerWorkers(page)
+  const { log } = await instrument(page)
+  await signIn(page, userA)
+  const phaseStart = log.length
+
+  // Refresh while a scan is being read: the screen restarts empty and nothing detached delivers.
+  await page.goto('/price-check/scan')
+  await page.locator('input[type=file]').setInputFiles(SCAN_IMAGE)
+  await expect(page.getByAltText('Card being scanned')).toBeVisible()
+  await page.reload()
+  await expect(page.getByText('Take or choose a photo')).toBeVisible()
+  await page.waitForTimeout(8_000)
+  await expect(page.getByTestId('scan-candidate')).toHaveCount(0)
+  await expect(page.getByTestId('scan-no-match')).toHaveCount(0)
+
+  // Two overlapping photo picks: exactly one outcome is delivered.
+  const input = page.locator('input[type=file]')
+  await input.setInputFiles(SCAN_IMAGE)
+  await input.setInputFiles(SCAN_IMAGE)
+  const candidate = page.getByTestId('scan-candidate').first()
+  await expect(candidate.or(page.getByTestId('scan-no-match'))).toBeVisible({ timeout: 150_000 })
+  await page.waitForTimeout(3_000)
+  await expect(page.getByRole('radiogroup')).toHaveCount(1)
+  if (await candidate.isVisible()) {
+    if ((await candidate.getAttribute('aria-checked')) !== 'true') await candidate.click()
+    await page.getByRole('button', { name: 'Check price' }).click()
+    await expect(page).toHaveURL(/\/price-check\/[0-9a-f-]{36}/)
+    // Leaving the scan screen releases every scanner worker.
+    await expect.poll(() => workers.live(), { timeout: 30_000 }).toBe(0)
+  }
+
+  // A failing provider is an error state with a retry — never a number, never a write.
+  await page.route('**/functions/v1/search-prices', async (route: Route) => {
+    if (route.request().method() === 'OPTIONS') {
+      await route.fulfill({ status: 204, headers: CORS })
+      return
+    }
+    await route.fulfill({
+      status: 500,
+      headers: { ...CORS, 'content-type': 'application/json' },
+      body: JSON.stringify({ ok: false }),
+    })
+  })
+  await page.goto('/price-check?q=Pikachu')
+  await page.getByTestId('price-check-result').first().click()
+  await expect(page.getByRole('alert').filter({ hasText: /price|provider|lookup/i })).toBeVisible()
+  await expect(page.getByTestId('observation')).toHaveCount(0)
+
+  expect(writes(log.slice(phaseStart))).toEqual([])
+  const after = await snapshot(userA.id, clientA)
+  expect(after.tables).toEqual(before.tables)
+  expect(after.portfolioCounts).toEqual(before.portfolioCounts)
 })
