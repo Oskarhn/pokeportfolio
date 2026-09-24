@@ -13,7 +13,8 @@
     "test:all": "jest",
     "bundle:android": "expo export --platform android --output-dir .build/android",
     "bundle:ios": "expo export --platform ios --output-dir .build/ios",
-    "hermes:compile": "node scripts/hermes-compile-check.mjs",
+    "hermes:proof": "node scripts/hermes-money-proof.mjs",
+    "mutation": "node scripts/mutation-proofs.mjs",
     "backend:start": "node scripts/local-backend.mjs start",
     "backend:stop": "node scripts/local-backend.mjs stop",
     "backend:seed": "pnpm --dir ../.. exec tsx apps/mobile-spike/scripts/seed-local-backend.mts"

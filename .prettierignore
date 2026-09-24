@@ -11,3 +11,8 @@ scripts/scanner-visual-index/.visual-index-cache/
 scripts/scanner-visual-index/generated/
 scripts/scanner-visual-benchmark/.benchmark-cache/
 scripts/scanner-visual-benchmark/reports/
+# P158 native spike: generated output and local state (gitignored inside apps/mobile-spike)
+apps/mobile-spike/.build/
+apps/mobile-spike/.expo/
+apps/mobile-spike/.local-backend/
+apps/mobile-spike/pnpm-lock.yaml
