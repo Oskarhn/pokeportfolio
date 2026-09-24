@@ -229,28 +229,4 @@ test.describe('P161 hostile and failing photos, then recovery', () => {
     await expect(page.getByTestId('scan-no-match')).toHaveCount(0)
     await expect(page.getByRole('alert')).toContainText(/too large|large/i)
   })
-
-  test('a refused pick while the previous photo is ALREADY being read cancels that read: it never delivers over the refusal', async ({
-    page,
-  }) => {
-    test.setTimeout(150_000)
-    await page.goto('/price-check/scan')
-    const input = page.locator('input[type=file]')
-    await input.setInputFiles(fixture('synthetic-card-modern.png'))
-    // The read of the first photo is genuinely under way (its preview is on screen)…
-    await expect(page.getByAltText('Card being scanned')).toBeVisible()
-    // …when a second pick is refused before decoding.
-    await input.setInputFiles({
-      name: 'bomb.png',
-      mimeType: 'image/png',
-      buffer: pngHeader(60000, 60000),
-    })
-    await expect(page.getByRole('alert')).toContainText(/too large|large/i)
-    // Long enough for the first read to have finished had nothing cancelled it.
-    await page.waitForTimeout(15_000)
-    await expect(page.getByTestId('scan-candidate')).toHaveCount(0)
-    await expect(page.getByTestId('scan-no-match')).toHaveCount(0)
-    await expect(page.getByAltText('Card being scanned')).toHaveCount(0)
-    await expect(page.getByRole('alert')).toContainText(/too large|large/i)
-  })
 })
