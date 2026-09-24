@@ -825,8 +825,32 @@ throwing in the console is not passing.
   `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` and `P153_DB_URL` (the local `DB_URL`), refuses
   anything but a loopback stack, seeds one scannable catalog card, drains the portfolio recompute
   queue before each baseline (a pg_cron worker otherwise changes it mid-test) and compares every
-  `user_id` table. Two worktrees must not share a stack: give each its own `project_id` and ports
-  (local edit, never committed).
+  `user_id` table. Two worktrees must not share a stack: give each its own `project_id` and ports —
+  in a copy of `supabase/` used through `supabase start --workdir`, so the checkout stays clean.
+
+### Scanner + Price Check integration (P161)
+
+The parent suites never met: P151's tests did not use Price Check's session and P153's never ran over
+the real controller. These do.
+
+- **`tests/ui/p161-scanner-price-check-integration.test.ts`** — real controller, real read-only port,
+  real `PriceCheckScanSession`; doubles only for Tesseract, the visual worker (both counted), the
+  catalog and the collection writer. Covers HIGH / visual-only / no-match, latest-wins in both finishing
+  orders, 100 cancel/restart cycles with barriers, failure recovery, A→B during OCR, A→B→A, same-user
+  refresh, a 100-scan mixed valid/invalid workload, and "no write, no leaked engine/client/bitmap/URL".
+- **`tests/ui/p161-price-check-photo-input.test.ts`** — the shared decoder refuses pixel bombs before
+  decoding; structural wiring of the scan page (page cannot be mounted here); no derived prices.
+- **`tests/data/p161-search-prices-compat.test.ts`** — both skew directions of the function response.
+- **`tests/e2e/price-check-p161-integration.spec.ts`** (placeholder backend, desktop Chromium + iPhone
+  WebKit emulation, real workers): zero scanner workers after leaving, P130-10 through Price Check,
+  hostile / corrupt photos then recovery, Cancel during a slow read, latest pick wins, no camera / reader
+  / model for the text search, 320–430 px viewports, recorded cold-vs-warm text-search timing.
+- **A/B scenarios appended to `tests/e2e/authenticated/price-check-ledger.spec.ts`** (real local stack):
+  A→B during a scan, A→B→A, A→B during a held price lookup, same-user refresh mid-scan, overlapping
+  photos, provider failure — every `user_id` table compared before/after.
+- **Mutants:** `node scripts/scanner-p151/run-mutations.mjs --mutants scripts/scanner-p161/mutants.mjs`
+  (17; the P151 list of 13 still runs by default). Real-browser mutants were also run by hand (page
+  cleanup removed, pick guard removed): the browser specs failed for the intended reason.
 
 ---
 

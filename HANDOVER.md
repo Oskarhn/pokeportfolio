@@ -4,29 +4,45 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
-## P153 (2026-09-20) — Price Check, LOCAL candidate on `feat/p153-card-price-check`; nothing pushed, merged or deployed
+## P161 (2026-09-24) — scanner hardening (P151) + read-only Price Check (P153) INTEGRATED, LOCAL candidate on `feat/p161-scanner-price-check-integrated`; nothing pushed, merged or deployed
 
-Release state below (P141) is unchanged and still authoritative. P153 is an unmerged local branch
-from `d8682e0`. Decision: D-153. Flow: UX_FLOWS F17. Graded-source status: API_SOURCES.md.
+Release state below (P141) is unchanged and still authoritative. P161 is one unmerged local branch from
+`d8682e0` that contains P151 (`4bd34bf`) and P153 (`9e6bb46`) exactly once (two merge commits, then
+integration commits). It replaces the never-run "P155". Decisions: D-151, D-153 (was D-134 in P153's
+branch), D-161. Flow: UX_FLOWS F17. Graded-source status: API_SOURCES.md. Full account:
+`ai_outputs/Claude_outputs/output_161.txt`.
 
-- **What it is.** `/price-check` (search), `/price-check/scan`, `/price-check/$cardId?variantId=`:
-  a strictly read-only price lookup. Raw prices from the TCGdex relay (Cardmarket EUR, TCGplayer
-  USD) with source, price type (`index`), observed date vs fetched time, freshness, and an exact
-  exponent-aware NOK reference. **Raw: ready.** **Graded: PARTIAL** — modelled and validated, but no
-  authorized source exists (TCGdex has none, PSA's API has no prices, PriceCharting-class sources
-  cost money), so the page says "not available" and never estimates.
-- **Needs before it shows both providers in Production:** redeploy the `search-prices` Edge
-  Function (additive `observations[]`; without it the page falls back to one headline value and says
-  so). P153 deployed nothing and needs no migration.
-- **Scanner coupling (for P151).** Price Check consumes `ScannerUiController.analyzeCapture` and
-  `dispose` only, through `src/features/price-check/scan-session.ts`; it assumes `candidateId` is the
-  catalog `cards.id` uuid and that the scanner never reports a variant. Capture is the device photo
-  picker (`decodeImageFile`), no live camera. If P151 renames those, `scan-session.ts` and
-  `PriceCheckScanPage.tsx` are the only files to adjust.
-- **Not touched:** navigation/app shell (one link added to Search — `CatalogPage.tsx` — for P154 to
-  relocate), scanner core, finance/FX SQL, migrations, hosted anything.
-- **Local stack note.** The ledger proof needs a local Supabase stack with its own `project_id` and
-  ports; that edit to `supabase/config.toml` is deliberately uncommitted.
+- **What it is.** `/price-check` (search), `/price-check/scan`, `/price-check/$cardId?variantId=`: a
+  strictly read-only price lookup on top of the hardened scanner. Raw prices from the TCGdex relay
+  (Cardmarket EUR, TCGplayer USD) with source, price type (`index`), observed date vs fetched time,
+  freshness and an exact exponent-aware NOK reference. **Graded: PARTIAL_NO_AUTHORIZED_PROVIDER** — the
+  page says "not available" and never estimates. No migration (local migrations 104, unchanged); scanner
+  index content id `f25fc05d569b7cca` unchanged; no scanner core, model or threshold change.
+- **How the two were combined (semantics, not just text).** Price Check now reaches the scanner only
+  through `scanner-identification.ts` (`createReadOnlyScanner` + `identifyCapture`, dynamic import on
+  the scan page; no `commitBatch` exists on the port). Request ordering belongs to the scanner
+  controller; Price Check keeps one shared `AbortSignal` and no generation counter of its own.
+  Integration defects found and fixed: an older photo pick could overtake a newer one; a HIGH whose own
+  best candidate was filtered out pre-selected the runner-up; a below-threshold scan (NO_MATCH) no longer
+  yields "review" candidates. The scan screen is keyed by identity. The Search-page "Check a price" link failed axe `link-in-text-block` in the authenticated route smoke (P153 had not run it); it is now underlined.
+- **Deploy order (when released — nothing was deployed).** (1) `search-prices` Edge Function first
+  (additive `observations[]`; an old client ignores it), (2) then the frontend. Rollback: redeploy the
+  previous function version — a new client falls back to the single headline value and says so. Both skew
+  directions are tests (`tests/data/p161-search-prices-compat.test.ts`). Details: API_SOURCES.md.
+- **P149 (not merged here).** A trial merge in a scratch worktree (discarded) had only doc conflicts;
+  `pnpm typecheck` failed on one P151 test (`commitBatch` now takes a lease) and three scanner suites
+  need an extra `vi.mock` of `src/data/leased-db`; no Price Check production file broke. P149's
+  `supabase` client keeps its export, its exact-JSON guard quotes unsafe integers (Price Check's headline
+  parser then drops the row: fail closed), and its identity boundary subsumes the scan screen's key. P149
+  edits `controller.ts`, `contract.ts`, `ScannerPage.tsx`, `router.tsx`, `CatalogPage.tsx` — all
+  textually clean against this branch.
+- **Not proven.** Physical iPhone (still `DEFERRED_BY_OWNER`); real recognition quality (no real-capture
+  set); a direct A→B account switch that never passes through signed-out (only the sign-out path is
+  staged); hosted anything. Emulated mobile only.
+- **Local stack note.** The ledger and A/B proofs need a local Supabase stack of their own. Use
+  `supabase start --workdir <dir>` with a copy of `supabase/` whose `config.toml` has its own
+  `project_id` and ports (avoid Windows' excluded TCP ranges, `netsh int ipv4 show excludedportrange
+  protocol=tcp`); nothing in the repository is edited.
 
 ## Current state (P141, 2026-09-18) — P137/P138/P139/P140 RELEASED; hosted 104/0; Production live at `8eef187`; P130-04/05/07(DB)/12/15/27/28 closed
 

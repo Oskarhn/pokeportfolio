@@ -305,7 +305,7 @@ export function CatalogPage() {
 
       <p className="text-xs text-slate-400">
         Only want to know what a card is worth?{' '}
-        <Link to="/price-check" className="text-sky-400 underline-offset-4 hover:underline">
+        <Link to="/price-check" className="text-sky-400 underline underline-offset-4">
           Check a price
         </Link>{' '}
         without adding anything.

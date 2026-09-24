@@ -2282,3 +2282,25 @@ noise on this machine (warm scan 883 vs 885 ms); the work is reliability, not sp
 hands its barrier to the next scan (route by blob identity instead); and `history.back()` issued while an
 exit navigation is still in flight wedges the next navigation in the router (reproduced on the baseline;
 not scanner code).
+
+## 2026-09-24 — Two green branches, one red combined run: integrating the scanner and Price Check (P161)
+
+The scanner hardening (P151) and the read-only Price Check (P153) merged without a textual conflict in
+any source file, and each was green alone. The interesting part was that neither suite had ever run the
+other's code: P153 wrapped the raw scanner controller in its own narrowing and its own stale-result
+counter; P151 had shipped a purpose-built read-only port for exactly this consumer.
+
+Integrating meant deciding who owns what, not resolving conflicts. Request ordering already had an owner
+(the controller, with a publish gate); Price Check's counter was a second, weaker one. The session now
+holds one abort signal shared with the controller and nothing else. Real code then paid for the decision
+three times: the older of two photo picks could finish decoding last and win; a HIGH whose own best card
+was filtered out pre-selected the runner-up; and — found only by the full browser run, on both browser
+projects, reproducibly in isolation — P153's confirm-and-price spec turned into "not recognised", because
+P151's contract returns no candidates for a below-threshold scan while P153's fixture backend had leaned
+on the old behaviour of showing them. The fixture, not the assertion, was what had to change: a scan
+that reads nothing identifiable should not offer three unrelated cards.
+
+Mutation testing showed a second lesson: with the session aborting its own signal, the controller's
+supersession and publish gate became invisible to every Price Check-level test (both survived until a
+test drove the read-only port directly with no caller signal). Overlapping ownership hides regressions in
+the layer that is doing less of the work.

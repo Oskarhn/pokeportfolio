@@ -324,6 +324,23 @@ provider's verified terms. Until then graded data is `PARTIAL`, not `WORKING`.
 
 ---
 
+## `search-prices` response contract and deployment order (P153, checked in P161)
+
+The Edge Function gained ONE additive field: each result row carries `observations[]` (every provider
+value the exact variant has, exact integer minor units as decimal strings, provider timestamps). The
+headline fields are unchanged.
+
+| Client | Function | Result |
+|---|---|---|
+| old | new | The old consumer (`src/data/pricing.ts`) reads named fields and ignores the new one. |
+| new | old | Price Check uses the single headline value, marks the section "partial" and says so. A missing price stays "no price". |
+
+Deploy order: **(1) the function, (2) the frontend.** Rollback: redeploy the previous function version;
+the deployed frontend degrades as above. Neither step needs a migration. Not done in P161 (no hosted
+change); the hosted project is the Production project, so deploying is an owner action after a green
+release gate. Graded prices remain `PARTIAL_NO_AUTHORIZED_PROVIDER`: no authorized source exists (see
+"Graded price sources" above); nothing derives a graded price from a raw one.
+
 ## Scrydex
 
 **Status: Rejected for now — cost**

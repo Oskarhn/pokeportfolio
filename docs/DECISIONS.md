@@ -6125,3 +6125,65 @@ older than the client, degrades to the single headline value and says so. The fu
 redeployed for Price Check to show both providers — P153 deployed nothing. `CardDetailPage` still
 formats source amounts with `Number(minor)/100`, wrong for exponent-0 currencies (none reach it
 today); left untouched as out of scope.
+
+## D-161 — Price Check consumes the scanner only through the read-only contract, with one owner per concern (P161)
+
+**2026-09-24 · Accepted**
+
+*(Integration of P151 (D-151) and P153 (D-153). P153's decision was numbered D-134 in its own branch;
+D-134 to D-140 are taken by the unreleased P143–P149 chain, so it is D-153 here, mirroring D-151.
+Released ids (up to D-133) are untouched.)*
+
+**Context.** P151 hardened the scanner and added `scanner-identification.ts` (a read-only port and a
+never-throwing `identifyCapture`) for exactly one consumer. P153 built Price Check before that seam
+existed and therefore carried its own two-member narrowing of the full controller and its own
+generation counter for stale results. Both branches were green alone; run together they layered two
+owners of the same concern, and the combination exposed three defects neither parent had (the pick race, the runner-up
+pre-selection and the NO_MATCH semantics below).
+
+**Decision.**
+
+1. **The only door into the scanner is `scanner-identification.ts`.** Price Check builds its session
+   from `createReadOnlyScanner(userId)` and `identifyCapture`, loaded by dynamic import on the scan
+   page only. It may not name `getScannerUiController`, `ScannerUiController` or `commitBatch`
+   (structural guard, `tests/ui/price-check-read-only.test.ts`); the text search and the result page
+   contain no scanner import at all.
+2. **One owner per concern.** Request ordering (latest scan wins, abort on newer scan / caller abort /
+   dispose, publish gate) belongs to the scanner controller. Cancellation is one `AbortSignal` per
+   analysis shared with it. The session keeps no generation counter and the page adds no stale-result
+   guard for the analysis. Rejected: keeping both layers "for safety" — two owners disagree about which
+   result is stale, and each masks a regression in the other (the mutation runner showed the session's
+   abort hides the controller's supersession from every Price Check-level test, so the controller half
+   is pinned separately through the port).
+3. **A photo pick is latest-wins** with the scanner's own `CameraAcquisitionGuard`. Before this, the
+   older of two picks in flight (the picker stays visible while a photo decodes) could finish decoding
+   last and win regardless of which the person chose last.
+4. **HIGH vouches for the scanner's first candidate only.** Candidates whose id is not a catalog uuid
+   are dropped; if the dropped one was the scanner's best, the runner-up that inherited the top slot is
+   no longer pre-selected (it becomes a MEDIUM review).
+5. **One scan screen per signed-in identity** (`key`): an account switch discards the photo preview,
+   the candidates and the scanner together. Defence in depth: `RequireSession` already unmounts the
+   page on sign-out; the key covers a switch that never passes through signed-out (a cross-tab
+   sign-in), and P149's identity boundary will subsume it.
+6. **NO_MATCH is no candidates.** The read-only contract returns an empty shortlist for a scan the
+   scanner rates below LOW. P153, built on the raw controller, showed those below-threshold guesses as a
+   "review" list; the integrated screen shows the honest no-match state with the manual-search
+   fallback instead. (Found by the combined browser run: P153's own confirm-and-price spec relied on
+   an echo backend that returned three unrelated cards for any text; its fixture now returns the card
+   the printed text identifies.)
+7. **The scan result page still never picks a variant.** A card identity does not prove holo / reverse
+   holo; the person chooses unless the catalog has exactly one active printing (D-153, D-151).
+
+**Consequences.** `narrowScannerPort` and `PriceCheckScannerPort` are gone; `PriceCheckScanSession`
+takes a `ReadOnlyScannerPort`. A `review` outcome now carries the scanner's band (shown as
+"medium" / "low" confidence). No migration, no financial semantics, no scanner core, index, model or
+threshold change (content id `f25fc05d569b7cca`). Graded pricing is still
+`PARTIAL_NO_AUTHORIZED_PROVIDER`.
+
+**Proof.** `tests/ui/p161-scanner-price-check-integration.test.ts` (real controller and read-only
+port, doubles only for Tesseract / the visual worker / catalog / collection writer),
+`tests/e2e/price-check-p161-integration.spec.ts` (real workers, real build, desktop Chromium and
+WebKit emulation), the A/B scenarios appended to
+`tests/e2e/authenticated/price-check-ledger.spec.ts` (real local stack, every `user_id` table
+compared by row hash), and `scripts/scanner-p161/mutants.mjs` (17 mutants, all killed by an assertion;
+run with `node scripts/scanner-p151/run-mutations.mjs --mutants scripts/scanner-p161/mutants.mjs`).

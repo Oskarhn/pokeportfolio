@@ -734,8 +734,11 @@ A lookup, not an add flow: nothing done here creates a holding, purchase, sale o
 2. **Or scan it.** `/price-check/scan`: take/choose a photo (the device camera via the photo
    picker), recognised on-device by the existing scanner. HIGH confidence pre-selects the best
    candidate, MEDIUM/LOW select nothing, NO_MATCH offers "Search by name". The person confirms the
-   card; the scan never picks a variant. Cancel, retake and leaving the page abandon the scan and
-   discard any late result.
+   card; the scan never picks a variant. A not-confident scan says how unsure it was ("medium" /
+   "low") and selects nothing; a scan below that is a plain no-match. The newest photo wins; Cancel,
+   retake and leaving the page abandon the scan, discard any late result and release the on-device
+   readers; an account switch discards the photo and candidates. A refused photo (too large, corrupt,
+   not an image) says so and the next photo works.
 3. **Confirm the variant.** `/price-check/$cardId?variantId=`. One active variant is confirmed
    and says so; several variants require an explicit choice (availability per variant, never a
    price, until chosen).

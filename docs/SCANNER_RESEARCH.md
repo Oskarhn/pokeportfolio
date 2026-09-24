@@ -1199,6 +1199,11 @@ printing unless the catalog reports exactly one active printing. Starting a seco
 same port aborts the first (`error.code === 'aborted'`). The scanner page's add-to-collection flow is
 unchanged.
 
+**Consumed by Price Check (P161).** `PriceCheckScanSession` is built on exactly this port and
+`identifyCapture`. Two behaviours a consumer must expect: a scan below LOW is `no-match` with an EMPTY
+shortlist (P153 had shown those guesses); and HIGH vouches for `best` only — a consumer that filters the
+list must not pre-select whatever inherited the top slot. See D-161.
+
 ### 12h. Camera state machine and mobile emulation
 
 The camera lifecycle (`camera-session.ts`, `CameraAcquisitionGuard`) was already covered by deterministic
