@@ -174,6 +174,9 @@ function runJest(tests, jsonFile) {
       '--selectProjects',
       'unit',
       '--silent',
+      // In-band: a failing assertion whose values include a BigInt cannot be serialised across Jest
+      // worker processes ("Do not know how to serialize a BigInt"), which hides the real failure.
+      '--runInBand',
       '--json',
       `--outputFile=${jsonFile}`,
       ...tests,
