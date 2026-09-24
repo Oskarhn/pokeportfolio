@@ -378,35 +378,36 @@ jobs:
         if: always()
         run: pnpm exec supabase stop
 
-  # Explicit, CI-gated Production deploy (P130-08, P142) — the target architecture
-  # GIT_WORKFLOW.md §11 already documents, implemented here. Replaces Cloudflare's automatic
-  # Git-integrated deploy, which today races GitHub CI on the same push webhook with no ordering
-  # primitive between them (§11's own measured evidence: Production updates 30-45s after a push,
-  # long before db-tests alone finishes). This job only BECOMES the live deploy path once the
-  # owner has done what GIT_WORKFLOW.md §11 lists, in order: (1) GitHub repository variables
-  # VITE_SUPABASE_URL / VITE_SUPABASE_PUBLISHABLE_KEY (build-time, neither is a secret —
-  # DEVELOPMENT.md §9); (2) a Cloudflare API token with the account-level permission "Cloudflare
-  # Pages: Edit" (Cloudflare cannot narrow it to one Pages project), stored as the REPOSITORY
-  # secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID — GitHub Environments and environment
-  # secrets are not available for a private repository on the Free plan, so this job carries no
-  # `environment:` key; the credentials are visible only to jobs that name them, and the test suite
-  # asserts that is this job alone; (3) turning OFF Cloudflare's automatic Git-based deploys before
-  # the merge that makes this the live path. Until (1) and (2) exist, this job fails closed the
-  # moment it tries to build or deploy (a missing variable/secret is an explicit error, never a
-  # silent no-op deploy).
+  # Explicit, CI-gated Production deploy (P130-08, P142, P163) — the target architecture
+  # GIT_WORKFLOW.md §11 documents. Replaces Cloudflare's automatic Git-integrated deploy, which races
+  # GitHub CI on the same push webhook with no ordering primitive between them. This job only BECOMES
+  # the live deploy path once the owner has completed docs/security/RELEASE_PREFLIGHT_P163.md, in
+  # order. Until the secrets below exist it fails closed at the first guard (a missing value is an
+  # explicit error, never a silent no-op deploy).
+  #
+  # CONFIGURATION (P163). The two build-time values are the Supabase project URL and its PUBLISHABLE
+  # key. Both end up PUBLIC in the browser bundle whichever way GitHub stores them. They are stored
+  # as repository SECRETS, not variables, for one reason only: GitHub prints every step's resolved
+  # `env:` block in the job log BEFORE the step runs, and it redacts secrets there but not
+  # variables. A wrong value in a variable is therefore printed (the repository is public) before any
+  # guard can object; a wrong value in a secret is masked. The names deliberately differ from the old
+  # VITE_* variables so a stale, mis-filled variable can never be picked up by accident. No `vars.*`
+  # expression may appear anywhere in this file (tests/config/release-pipeline-integration.test.ts).
+  # Cloudflare credentials are repository secrets too — GitHub Environments and environment secrets
+  # are not available for a private repository on the Free plan, so there is no `environment:` key.
+  # Neither the configuration secrets nor the Cloudflare credentials may appear in any env block above
+  # step level.
   deploy-production:
     needs: [build-and-test, db-tests]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    # A dedicated group that serialises Production deploys: at most one upload in flight, a later
-    # one queues rather than interrupts an earlier one (`cancel-in-progress: false`). It does NOT by
-    # itself protect the job from the workflow-level `ci-${{ github.ref }}` group above — that is
-    # why that group only cancels pull-request runs. Cancelling this job mid-upload could leave
-    # Cloudflare in an ambiguous half-deployed state. "Latest eligible main wins" is enforced by the
-    # exact-SHA guard below, not by cancellation — a queued run for an already-superseded SHA
-    # checks origin/main again immediately before it would deploy and skips itself if main moved on.
+    # The one deployment concurrency mechanism: a dedicated group that serialises Production
+    # deploys (at most one upload in flight, a later one queues — `cancel-in-progress: false`).
+    # The workflow-level `ci-${{ github.ref }}` group above cancels only pull-request runs, which
+    # is what keeps a queued push to main from cancelling an upload mid-flight. "Latest eligible
+    # main wins" is enforced by the exact-SHA guard below, not by cancellation.
     concurrency:
       group: production-deploy
       cancel-in-progress: false
@@ -419,16 +420,27 @@ jobs:
         with:
           node-version-file: .nvmrc
 
+      # FIRST guard, before dependencies are installed and before anything is built: the public
+      # configuration must be a real `https://<ref>.supabase.co` URL and a `sb_publishable_` key. A
+      # secret-shaped value, a key in the URL slot, or a local/placeholder value fails here with a
+      # field name and a category — never a value. Unconditional (not gated on the stale-run check):
+      # a misconfiguration is a real defect whichever commit this run is for. The values come from
+      # SECRETS so the resolved env block of this very step is masked in the log (see above).
+      - name: Public configuration guard (deploy profile)
+        run: node scripts/check-public-env.mjs --require-hosted --process-env-only
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.PRODUCTION_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.PRODUCTION_SUPABASE_PUBLISHABLE_KEY }}
+
       - name: Enable Corepack and activate the pinned pnpm
         run: |
           corepack enable
           corepack prepare --activate
 
-      # Stale-run refusal: build-and-test + db-tests together take several minutes (db-tests'
-      # own steps above run a full ephemeral-database suite), so origin/main may have advanced
-      # past the SHA this run was triggered for by the time this job starts. Never fails the job
-      # on a mismatch — a stale run losing to a newer one is the intended, safe outcome, not a
-      # defect (scripts/lib/deploy-guards.mjs, tests/config/deploy-guards.test.ts).
+      # Stale-run refusal: build-and-test + db-tests together take several minutes, so origin/main
+      # may have advanced past the SHA this run was triggered for by the time this job starts. Never
+      # fails the job on a mismatch — a stale run losing to a newer one is the intended, safe
+      # outcome, not a defect (scripts/lib/deploy-guards.mjs, tests/config/deploy-guards.test.ts).
       - name: Check that origin/main is still exactly this commit
         id: guard-main
         run: node scripts/release-guard.mjs remote-main-current --github-sha "$GITHUB_SHA"
@@ -437,42 +449,35 @@ jobs:
         if: steps.guard-main.outputs.current == 'true'
         run: pnpm install --frozen-lockfile
 
-      # P160: judge the public build configuration BEFORE building. A secret-shaped value, a key in
-      # the URL slot, or a local/placeholder value fails here with a field name and a category —
-      # never a value. NOTE: GitHub prints a step's resolved `env:` values in the log (variables
-      # are not masked), so a wrong value is visible in THIS step's header regardless of this
-      # guard; see docs/security/P160_SECRET_INCIDENT_RUNBOOK.md §5 for the residual risk.
-      - name: Public configuration guard (deploy profile)
+      # A clean build, always: nothing built earlier may survive into the upload directory. On a
+      # fresh runner dist/ does not exist; this makes that a stated invariant instead of a
+      # coincidence, so a refused or failed build can never leave stale assets for a later step.
+      - name: Remove any pre-existing build output
         if: steps.guard-main.outputs.current == 'true'
-        run: node scripts/check-public-env.mjs --require-hosted
-        env:
-          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
-          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.VITE_SUPABASE_PUBLISHABLE_KEY }}
+        run: rm -rf dist
 
       # A SEPARATE production build, not a reuse of build-and-test's artifact: that job builds
       # against a placeholder Supabase URL on purpose (playwright.config.ts), which is the wrong
-      # artifact to ship. Only three build-time variables exist and none is a secret
-      # (DEVELOPMENT.md §9) — ordinary repository variables, not GitHub Actions secrets.
+      # artifact to ship. `pnpm build` runs the guard again as `prebuild` (with any .env files
+      # merged in) and vite.config.ts runs it a third time before any output is written.
       - name: Build for Production
         if: steps.guard-main.outputs.current == 'true'
         run: pnpm build
         env:
-          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
-          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.VITE_SUPABASE_PUBLISHABLE_KEY }}
+          VITE_SUPABASE_URL: ${{ secrets.PRODUCTION_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.PRODUCTION_SUPABASE_PUBLISHABLE_KEY }}
           # Selects the deploy profile inside `prebuild` and vite.config.ts (P160).
           PP_REQUIRE_HOSTED_PUBLIC_ENV: '1'
 
-      # P160: judge what was WRITTEN — dist/ must be complete and free of secret-shaped strings.
-      # Runs before the identity check and long before any upload.
+      # Judge what was WRITTEN: dist/ must be complete and free of secret-shaped strings. Runs
+      # before the identity check and long before any upload.
       - name: Built artefact secret scan (dist/)
         if: steps.guard-main.outputs.current == 'true'
         run: node scripts/check-dist-secrets.mjs
 
       # The artifact about to be uploaded must declare exactly this commit, not a `+dirty` build
-      # or (by construction, impossible in a clean CI checkout, but checked anyway — defence in
-      # depth matters more than an assumption about how this job is invoked) any other SHA. Hard
-      # failure, never skipped — unlike the guard above, a mismatch here is a real build defect,
-      # not a benign race.
+      # or any other SHA. Hard failure, never skipped — unlike the guard above, a mismatch here is
+      # a real build defect, not a benign race.
       - name: Verify build identity before upload
         if: steps.guard-main.outputs.current == 'true'
         run: node scripts/release-guard.mjs build-identity --github-sha "$GITHUB_SHA" --build-meta dist/build-meta.json
@@ -493,15 +498,11 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
-      # Post-deploy verification: the same bounded-retry idiom db-tests already uses above for
-      # "wait for a real service to come up" (its "Verify the redeem-invitation function is
-      # served" step) — CDN propagation is the only reason for a retry here, never a substitute
-      # for the checks themselves. Runs the two existing, independent release verifiers
-      # (scripts/preview-verify.mjs owns build-identity-vs-URL + the scanner index;
-      # scripts/deployment-check.mjs owns CSP/security headers/PWA — see each script's own header
-      # comment for why they are not merged) against the live Production URL with the exact commit
-      # just deployed. A verification failure fails this job; it does not roll back or redeploy
-      # anything — rollback stays a manual, documented decision (docs/GIT_WORKFLOW.md §11).
+      # Post-deploy verification: bounded retry only for CDN propagation, never a substitute for the
+      # checks themselves. Runs the two existing, independent release verifiers against the live
+      # Production URL with the exact commit just deployed. A failure fails this job; it does not
+      # roll back or redeploy anything — rollback stays a manual, documented decision
+      # (docs/GIT_WORKFLOW.md §11).
       - name: Verify Production actually serves this exact commit
         if: steps.guard-main.outputs.current == 'true'
         run: |
@@ -520,4 +521,4 @@ jobs:
           node scripts/deployment-check.mjs
         env:
           DEPLOYMENT_URL: https://pokeportfolio-dev.pages.dev
-          SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+          SUPABASE_URL: ${{ secrets.PRODUCTION_SUPABASE_URL }}

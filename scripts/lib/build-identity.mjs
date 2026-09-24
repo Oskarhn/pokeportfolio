@@ -35,7 +35,8 @@ function escapeRegExp(value) {
  */
 export function bundleDeclaresExactSha(bundleText, sha) {
   if (!sha) return false
-  const quote = '["\'`]'
-  const exactQuoted = new RegExp(`${quote}${escapeRegExp(sha)}${quote}`)
+  // Opening and closing quote must be the SAME character (backreference), so a stray mixed-quote
+  // fragment such as `"<sha>'` is not accepted as a declaration.
+  const exactQuoted = new RegExp(`(["'\`])${escapeRegExp(sha)}\\1`)
   return exactQuoted.test(bundleText)
 }

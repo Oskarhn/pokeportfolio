@@ -5,9 +5,10 @@
  *
  *   node scripts/release-guard.mjs remote-main-current --github-sha <sha>
  *     Re-checks `git ls-remote origin refs/heads/main` against the SHA this job was triggered for.
- *     NEVER fails the job on a mismatch — a stale run is an expected, benign outcome once a newer
- *     push has already taken over deployment (GIT_WORKFLOW.md §11's "latest eligible main wins").
- *     Always exits 0; writes `current=true`/`current=false` to $GITHUB_OUTPUT (or stdout outside
+ *     NEVER fails the job on a PROVEN mismatch — a stale run is an expected, benign outcome once a
+ *     newer push has already taken over deployment (GIT_WORKFLOW.md §11's "latest eligible main
+ *     wins"). Exits 0 then. An UNREADABLE origin is not a proven mismatch and exits 1 (P163): a
+ *     green job that deployed nothing because it could not look is a false success. Writes `current=true`/`current=false` to $GITHUB_OUTPUT (or stdout outside
  *     CI) so the calling workflow can gate the remaining steps with
  *     `if: steps.<id>.outputs.current == 'true'` instead of failing red for a benign race.
  *
@@ -48,6 +49,12 @@ if (subcommand === 'remote-main-current') {
     remoteMainSha = raw.split(/\s+/)[0] ?? ''
   } catch (error) {
     console.error(`release-guard: could not read origin/main — ${String(error)}`)
+  }
+  if (!remoteMainSha) {
+    // Unreadable is not stale: skipping here would end the job green having deployed nothing.
+    console.error('release-guard: origin/main could not be read — failing instead of skipping')
+    writeOutput('current', 'false')
+    process.exit(1)
   }
   const current = isRemoteMainCurrent(remoteMainSha, githubSha)
   console.log(

@@ -308,8 +308,8 @@ export function formatGuardReport(result) {
     lines.push(`public-env-guard: FAIL (${String(result.problems.length)} problem(s))`)
     for (const p of result.problems) lines.push(`  ${p.field}: ${p.category}`)
     lines.push(
-      '  No values are printed. Fix the variable in its source (GitHub Actions variables,',
-      '  Cloudflare Pages environment, .env.local); see docs/security/P160_SECRET_INCIDENT_RUNBOOK.md.',
+      '  No values are printed. Fix the value in its source (the GitHub repository secret,',
+      '  the Cloudflare Pages environment, .env.local); see docs/security/P160_SECRET_INCIDENT_RUNBOOK.md.',
     )
   }
   for (const n of result.notes) lines.push(`  note ${n.field}: ${n.category}`)
