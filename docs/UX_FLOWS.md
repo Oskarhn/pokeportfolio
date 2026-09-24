@@ -603,6 +603,9 @@ minor-unit strings past 2^53; canonical timestamps stay verbatim wire strings
 ✓ **Cancel** during "Preparing…" stops the run (no further requests, no files, no error). Leaving the
 page, or the signed-in account changing (this tab or another), also ends the run and drops any
 files already built — they are never shown or delivered under a different account (P157, D-141).
+The files belong to the identity lease of the button press: an A → B → A round trip counts as a change
+although the same person is signed in again, a token refresh does not, and a multi-file download stops
+at the next file if the identity changes part way (files already handed to the browser cannot be recalled).
 An account change mid-run surfaces as an error ("The signed-in account changed during the export.
 Nothing was saved."), never as a file.
 ✓ CSV cells that could be read as spreadsheet formulas are prefixed with an apostrophe (the JSON

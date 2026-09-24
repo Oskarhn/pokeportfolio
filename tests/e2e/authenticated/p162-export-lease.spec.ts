@@ -312,7 +312,7 @@ test('Quick CSV: A → B in another tab while its page request is held delivers 
   await page.waitForLoadState('networkidle')
   // From here on the next list_portfolio request is the export's own page.
   let held = false
-  await page.route('**/rest/v1/rpc/list_portfolio', async (route) => {
+  await page.route('**/rest/v1/rpc/list_portfolio**', async (route) => {
     if (!held) {
       held = true
       reached()
