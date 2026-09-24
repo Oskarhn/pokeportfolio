@@ -15,10 +15,11 @@ import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 const sha = (buffer) => createHash('sha256').update(buffer).digest('hex')
 
-const MUTANTS = [
+const P151_MUTANTS = [
   {
     id: 'M1',
     what: 'remove camera cleanup: session.stop() no longer stops the tracks',
@@ -136,6 +137,13 @@ const only = args.includes('--only')
   ? (args[args.indexOf('--only') + 1] ?? '').split(',').filter(Boolean)
   : []
 const outPath = args.includes('--out') ? args[args.indexOf('--out') + 1] : ''
+// P161: `--mutants <module>` swaps in another mutant list (an ES module exporting MUTANTS with the same
+// shape) so an integration branch can reuse this runner's kill/INVALID/restore rules unchanged.
+const mutantsModule = args.includes('--mutants') ? args[args.indexOf('--mutants') + 1] : ''
+const MUTANTS =
+  mutantsModule === ''
+    ? P151_MUTANTS
+    : (await import(pathToFileURL(path.resolve(mutantsModule)).href)).MUTANTS
 const selected = only.length > 0 ? MUTANTS.filter((m) => only.includes(m.id)) : MUTANTS
 
 const scratch = mkdtempSync(path.join(os.tmpdir(), 'p151-mut-'))
