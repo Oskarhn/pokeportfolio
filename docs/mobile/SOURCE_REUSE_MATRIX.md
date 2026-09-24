@@ -41,7 +41,7 @@ done here because this spike must not touch web code.
 `tests/financial/{money,cost-basis,fx,market-value,worked-examples}.test.ts` and
 `tests/data/{money,pricing}.test.ts`: byte-for-byte the files Vitest runs for the web app. The only
 adaptation is a module mapping of `vitest` to a shim over Jest's globals (`describe`, `it`, `expect`
-are all these files use). Result: 7 files, 41 tests, green in **both** the Node and the RN-preset
+are all these files use). Result: 7 files, 44 tests, green in **both** the Node and the RN-preset
 project. The remaining shared suites (`allocation`, `invariants`) need `fast-check` and were not
 brought over; scanner and export suites are out of scope.
 

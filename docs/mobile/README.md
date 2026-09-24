@@ -1,0 +1,17 @@
+# Native mobile spike: index
+
+**Provisional. Owner approval required.** No final navigation, visual direction or app icon has been
+selected; the P154 proposals are unchanged. The spike lives in [`apps/mobile-spike`](../../apps/mobile-spike/README.md).
+
+| Document | Answers |
+|---|---|
+| [DECISION_RECORD](DECISION_RECORD.md) | What the spike is and is not, decisions taken, framework versions and sources |
+| [SOURCE_REUSE_MATRIX](SOURCE_REUSE_MATRIX.md) | Which web modules run unchanged, the mechanism, hazards found in the shared code |
+| [BACKEND_COMPATIBILITY](BACKEND_COMPATIBILITY.md) | Dependency table (DB 104 vs the P149 candidate DB 106 vs P153), findings from the real stack, local-stack isolation |
+| [AUTH_IDENTITY](AUTH_IDENTITY.md) | Session storage decision and measurement, lifecycle, identity boundary diagram, adopting P149 |
+| [PRICE_CHECK_CONTRACT](PRICE_CHECK_CONTRACT.md) | Read-only adapter contract, released vs fixture adapters, adopting P153 |
+| [PHOTO_SPIKE](PHOTO_SPIKE.md) | Photo ownership contract, what attaches to P151/P153 later, camera portability |
+| [TEST_EVIDENCE](TEST_EVIDENCE.md) | Every number, the mutation proofs, and exactly what was **not** run (no emulator, no Hermes execution) |
+| [INTEGRATION_PLAN](INTEGRATION_PLAN.md) | Phased replacement of every `SPIKE_ONLY` adapter |
+
+Inputs (read-only): [`docs/design/p154`](../design/p154/README.md).
