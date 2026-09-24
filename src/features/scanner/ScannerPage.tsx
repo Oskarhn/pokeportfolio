@@ -30,6 +30,7 @@ import {
   type ManagedCameraSession,
 } from './camera-session'
 import { CaptureStore, captureVideoFrame, decodeImageFile } from './capture'
+import { runGuardedCapture } from './guarded-capture'
 import {
   describeAnalysisError,
   describeCameraError,
@@ -158,6 +159,11 @@ export function ScannerPage() {
   // since stopped being current (P98: including exit-requested, not just a newer open) stops its
   // stream on arrival instead of leaking it or resurrecting a camera the user already closed.
   const cameraGuardRef = useRef(new CameraAcquisitionGuard())
+  // P151: latest-capture-wins for the shutter and the file picker (see guarded-capture.ts). A frame
+  // that finishes encoding/decoding after the camera was released, the tab hidden, the route left or
+  // a newer pick started is dropped instead of allocating an object URL for a raw camera frame after
+  // the unmount cleanup already cleared the store. Invalidated at every site that releases the camera.
+  const captureGuardRef = useRef(new CameraAcquisitionGuard())
   // Guards double variant fetches for the same candidate across StrictMode-style re-runs.
   const variantsInFlightRef = useRef<string | null>(null)
   // F-05 (P89): bumped on every event that makes an in-flight analyzeCapture() result stale
@@ -197,6 +203,9 @@ export function ScannerPage() {
 
   // Open/close the single MediaStream as the machine enters/leaves the preview steps.
   useEffect(() => {
+    // A capture still in flight from before this transition is stale either way (leaving the
+    // camera steps, or a fresh acquisition that the user asked for after it).
+    captureGuardRef.current.invalidate()
     if (!cameraWanted) {
       cameraGuardRef.current.invalidate()
       stopActiveScannerCamera()
@@ -225,6 +234,7 @@ export function ScannerPage() {
     void openEnvironmentCamera(video, undefined, () => {
       // L1 (P70): track ended unexpectedly — clean up and return to start screen.
       if (cancelled || !cameraGuardRef.current.isCurrent(generation)) return
+      captureGuardRef.current.invalidate()
       sessionRef.current = null
       dispatch({ type: 'CAMERA_EXITED' })
     })
@@ -262,9 +272,11 @@ export function ScannerPage() {
     // reassignment anywhere in this component, so `.current` is the same object throughout this
     // component's life either way.
     const cameraGuard = cameraGuardRef.current
+    const captureGuard = captureGuardRef.current
     const captureStore = captureStoreRef.current
     return () => {
       cameraGuard.invalidate()
+      captureGuard.invalidate()
       stopActiveScannerCamera()
       captureStore.clear()
       // F-05: an account switch (userId change → new controller) or unmount both make any
@@ -347,6 +359,7 @@ export function ScannerPage() {
         (state.step === 'starting-camera' || state.step === 'camera')
       ) {
         cameraGuardRef.current.invalidate()
+        captureGuardRef.current.invalidate()
         stopActiveScannerCamera()
         sessionRef.current = null
         dispatch({ type: 'CAMERA_EXITED' })
@@ -403,6 +416,7 @@ export function ScannerPage() {
   useEffect(() => {
     if (!state.exitRequested) return
     cancelInFlightAnalysis()
+    captureGuardRef.current.invalidate()
     captureStoreRef.current.clear()
     // P98 camera-resurrection fix: this used to be the ONE call site that stopped the camera
     // without invalidating `cameraGuardRef` (every other stop/close site in this file pairs the
@@ -463,8 +477,8 @@ export function ScannerPage() {
     const video = videoRef.current
     if (video === null) return
     capturingRef.current = true
-    void captureVideoFrame(video)
-      .then((frame) => {
+    void runGuardedCapture(captureGuardRef.current, () => captureVideoFrame(video), {
+      onFrame: (frame) => {
         // Stop the stream as soon as a frame is held — shortest possible camera lifetime.
         cameraGuardRef.current.invalidate()
         stopActiveScannerCamera()
@@ -472,13 +486,13 @@ export function ScannerPage() {
         const stored = captureStoreRef.current.set(frame)
         setPreviewUrl(stored.previewUrl)
         dispatch({ type: 'CAPTURE_SUCCEEDED' })
-      })
-      .catch((error: unknown) => {
+      },
+      onError: (error) => {
         dispatch({ type: 'CAPTURE_FAILED', error: describeCaptureError(error) })
-      })
-      .finally(() => {
-        capturingRef.current = false
-      })
+      },
+    }).finally(() => {
+      capturingRef.current = false
+    })
   }
 
   function handleRetake(): void {
@@ -492,18 +506,19 @@ export function ScannerPage() {
     const file = event.target.files?.[0]
     event.target.value = ''
     if (file === undefined) return
-    void decodeImageFile(file)
-      .then((frame) => {
+    void runGuardedCapture(captureGuardRef.current, () => decodeImageFile(file), {
+      onFrame: (frame) => {
         cameraGuardRef.current.invalidate()
         stopActiveScannerCamera()
         sessionRef.current = null
         const stored = captureStoreRef.current.set(frame)
         setPreviewUrl(stored.previewUrl)
         dispatch({ type: 'CAPTURE_SUCCEEDED' })
-      })
-      .catch((error: unknown) => {
+      },
+      onError: (error) => {
         dispatch({ type: 'CAPTURE_FAILED', error: describeCaptureError(error) })
-      })
+      },
+    })
   }
 
   function handleUsePhoto(): void {
@@ -789,6 +804,7 @@ export function ScannerPage() {
         />
       ) : state.step === 'no-match' ? (
         <NoMatchView
+          captureError={state.captureError}
           onSearchManually={() => {
             dispatch({ type: 'SEARCH_OPENED', from: 'no-match' })
           }}
@@ -1440,7 +1456,12 @@ function IntroView({
   onChoosePhoto,
   onDefaultsPatch,
 }: {
-  state: { cameraError: { title: string; message: string } | null }
+  state: {
+    cameraError: { title: string; message: string } | null
+    /** A photo that could not be used (P151: previously rendered ONLY in the camera step, so a
+     *  corrupt / oversized / bomb file chosen from the start screen produced no feedback at all). */
+    captureError: { title: string; message: string } | null
+  }
   defaults: ScannerSessionDefaults
   locations: { id: string; label: string }[]
   japaneseNotice: boolean
@@ -1472,6 +1493,7 @@ function IntroView({
         </p>
       ) : null}
       {state.cameraError ? <ErrorAlert {...state.cameraError} /> : null}
+      {state.captureError ? <ErrorAlert {...state.captureError} /> : null}
       <div className="mt-2 flex flex-col gap-2">
         {cameraSupported ? (
           <Button type="button" onClick={onStartCamera}>
@@ -1792,10 +1814,12 @@ function ResultView({
 }
 
 function NoMatchView({
+  captureError,
   onSearchManually,
   onRetake,
   onChoosePhoto,
 }: {
+  captureError: { title: string; message: string } | null
   onSearchManually: () => void
   onRetake: () => void
   onChoosePhoto: () => void
@@ -1808,6 +1832,7 @@ function NoMatchView({
       <p className="text-sm text-slate-400">
         Try another photo with the whole card inside the frame, or find it by name instead.
       </p>
+      {captureError ? <ErrorAlert {...captureError} /> : null}
       <div className="mt-2 flex flex-col gap-2">
         <Button type="button" variant="quiet" onClick={onSearchManually}>
           <span className="inline-flex items-center gap-2">

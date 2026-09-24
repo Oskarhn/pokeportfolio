@@ -648,42 +648,24 @@ describe('P116 Phase Q — dispose()/crash must settle every in-flight request, 
     })
   })
 
-  it('a second, fresh analyze() call after dispose() behaves exactly as documented (no cross-generation contamination from the settled pending map)', async () => {
+  it('P151: dispose() is TERMINAL — a later analyze() resolves null, closes its bitmap and constructs no new Worker', async () => {
+    // Until P151 this test pinned the opposite ("a fresh worker is constructed for this call").
+    // That was a documented consequence of dispose() only nulling the ready state, never a product
+    // requirement: a disposed controller is never reused (ScannerPage builds a new one per mount /
+    // identity), so the ONLY post-dispose callers are stale in-flight scans, and each of them
+    // leaked a brand-new model-loading Worker that nothing referenced or terminated.
     const { client } = await readyClient()
     const firstBitmap = { close: vi.fn() } as unknown as ImageBitmap
     const firstAnalyze = client.analyze(firstBitmap, 30)
     await new Promise((resolve) => setTimeout(resolve, 0))
     client.dispose()
     await expect(firstAnalyze).resolves.toBeNull()
+    const workersBefore = FakeWorker.instances.length
 
-    // analyze() re-runs ensureReady() internally; a fresh worker is constructed for this call.
-    const secondBitmap = { close: vi.fn() } as unknown as ImageBitmap
-    const secondAnalyzePromise = client.analyze(secondBitmap, 30)
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    const worker = latestWorker()
-    worker.emit('message', { data: readyMessage() })
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    const lastCall = worker.postMessage.mock.calls.at(-1)?.[0] as {
-      type: string
-      requestId: number
-    }
-    expect(lastCall.type).toBe('embed-and-search')
-    worker.emit('message', {
-      data: {
-        type: 'result',
-        requestId: lastCall.requestId,
-        hits: [],
-        embedMs: 1,
-        searchMs: 1,
-        embeddingNorm: 1,
-      },
-    })
-    await expect(secondAnalyzePromise).resolves.toEqual({
-      hits: [],
-      backend: 'wasm',
-      embedMs: 1,
-      searchMs: 1,
-      embeddingNorm: 1,
-    })
+    const secondClose = vi.fn()
+    const secondBitmap = { close: secondClose } as unknown as ImageBitmap
+    await expect(client.analyze(secondBitmap, 30)).resolves.toBeNull()
+    expect(secondClose).toHaveBeenCalledTimes(1)
+    expect(FakeWorker.instances.length).toBe(workersBefore)
   })
 })
