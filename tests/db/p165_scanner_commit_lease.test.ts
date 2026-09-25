@@ -213,4 +213,26 @@ describe('scanner commitBatch: real controller, real leased client, real stack (
     expect(await lotsOf(b.id)).toBe(before.b)
     controller.dispose()
   })
+
+  it('another tab already signed in as B, this tab has not heard yet: the write is never sent as B', async () => {
+    const before = await baselines()
+    const tab = new SimulatedTab(tabUserA)
+    holder.tab = tab
+    const controller = createRealScannerController({ userId: a.id })
+    const lease = tab.leaseFor(tabUserA) // still current: no auth event has reached this tab
+    tab.switchTo(tabUserB, { heard: false }) // the shared storage already holds B's session
+    expect(lease.isCurrent()).toBe(true)
+    const result = await controller.commitBatch(
+      ITEMS.map((i) => ({ ...i, requestKey: crypto.randomUUID() })),
+      lease,
+    )
+    // The bearer would have been B's: the request layer compares the session it finds with the
+    // lease's user and refuses, so nothing was sent and B's account received nothing.
+    expect(result.addedCount).toBe(0)
+    expect(writes(tab)).toHaveLength(0)
+    expect(tab.requestsNotFrom(a.id)).toEqual([])
+    expect(await lotsOf(a.id)).toBe(before.a)
+    expect(await lotsOf(b.id)).toBe(before.b)
+    controller.dispose()
+  })
 })
