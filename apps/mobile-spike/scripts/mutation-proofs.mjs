@@ -146,6 +146,82 @@ const MUTANTS = [
     ],
     tests: ['tests/unit/backend-config.test.ts'],
   },
+  // ---- P167 Android hardening -----------------------------------------------------------------
+  {
+    id: 'M9',
+    title: 'F1: the expo-modules-core launcher re-registration patch is no longer applied',
+    file: 'pnpm-workspace.yaml',
+    edits: [['  expo-modules-core@57.0.18: patches/expo-modules-core@57.0.18.patch\n', '']],
+    tests: ['tests/unit/p167-platform.test.tsx'],
+  },
+  {
+    id: 'M10',
+    title: 'F1 fallback: an unregistered launcher is reported as a retryable error',
+    file: 'src/photo/expo-photo-port.ts',
+    edits: [["return 'restart_required'", "return 'error'"]],
+    tests: ['tests/unit/expo-photo-port.test.ts'],
+  },
+  {
+    id: 'M11',
+    title: 'F7: the keyboard covers Sign in again (no avoiding behaviour on Android)',
+    file: 'src/ui/screens/LoginScreen.tsx',
+    edits: [
+      [
+        "export const KEYBOARD_BEHAVIOR = 'padding' as const",
+        'export const KEYBOARD_BEHAVIOR = undefined',
+      ],
+    ],
+    tests: ['tests/unit/p167-platform.test.tsx'],
+  },
+  {
+    id: 'M12',
+    title: 'F5: navigation chrome not bound to the system scheme (light bars in dark mode)',
+    file: 'src/ui/AppRoot.tsx',
+    edits: [['        theme={navTheme}\n', '']],
+    tests: ['tests/unit/p167-dark-theme.test.tsx'],
+  },
+  {
+    id: 'M13',
+    title: 'F3: tabs fall back to the missing-glyph icon',
+    file: 'src/ui/MainNavigator.tsx',
+    edits: [['    tabBarIcon: () => null,\n', '']],
+    tests: ['tests/unit/p167-platform.test.tsx'],
+  },
+  {
+    id: 'M14',
+    title: 'photo: an identity change no longer purges orphaned picker copies (A file under B)',
+    file: 'src/photo/photo-store.ts',
+    edits: [['      await this.purgeOrphans()\n    })()', '    })()']],
+    tests: ['tests/unit/photo-store.test.ts'],
+  },
+  {
+    id: 'M15',
+    title: 'navigation memory not identity-scoped (B could be restored into A screens)',
+    file: 'src/wiring/runtime.ts',
+    edits: [["  registry.register('navigation', navigation)\n", '']],
+    tests: ['tests/unit/activity-recreation.test.tsx'],
+  },
+  {
+    id: 'M16',
+    title: 'collection rows not memoised (every page re-renders every mounted row)',
+    file: 'src/ui/screens/CollectionScreen.tsx',
+    edits: [['const Row = memo(function Row(', 'const Row = (function Row(']],
+    tests: ['tests/unit/collection-render.test.tsx'],
+  },
+  {
+    id: 'M17',
+    title: 'F4: a wrapping amount is one unbreakable word again (splits inside a digit group)',
+    file: 'src/ui/components.tsx',
+    edits: [["return formatted.replace(/[\\u00A0\\u202F]/g, ' ')", 'return formatted']],
+    tests: ['tests/unit/p167-platform.test.tsx', 'tests/unit/native-app.test.tsx'],
+  },
+  {
+    id: 'M18',
+    title: 'F5: navigation-bar style no longer follows a live dark switch (plugin dropped)',
+    file: 'app.json',
+    edits: [['      "./plugins/with-navigation-bar-follows-theme",\n', '']],
+    tests: ['tests/unit/navigation-bar-plugin.test.ts'],
+  },
 ]
 
 const only = process.argv.includes('--only')

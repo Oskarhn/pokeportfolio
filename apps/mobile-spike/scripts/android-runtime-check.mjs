@@ -139,13 +139,15 @@ function syntheticPng(w, h) {
 // The emulator's Gboard shows a "Try out your stylus" sheet over the app when injected events look
 // like a stylus; taps and swipes are therefore sent as `input touchscreen ...` and stylus
 // handwriting is switched off for the run (restored at the end). The keyboard stays enabled: the
-// password field is submitted with the keyboard's action key, as a person would, because with the
-// keyboard open the Sign in button is covered (a recorded finding, not worked around in the app).
+// password field is submitted with the keyboard's action key, as a person would. (P166 found the
+// Sign in button covered by the keyboard; P167 fixed that and android-p167-check.mjs taps the button.)
 async function signIn(user) {
   const n = (await waitFor((ns) => byId(ns, 'login-email') && ns, { label: 'login form' })).value
   tap(byId(n, 'login-email'))
   typeText(user.email)
-  tap(byId(n, 'login-password'))
+  // Since P167 the form moves up when the keyboard opens (F7), so positions read before it are stale.
+  await sleep(500)
+  tap((await waitFor((ns) => byId(ns, 'login-password'), { label: 'password field' })).value)
   typeText(user.password)
   shell('input keyevent 66') // IME action on the password field -> onSubmitEditing -> sign in
   const t0 = Date.now()
