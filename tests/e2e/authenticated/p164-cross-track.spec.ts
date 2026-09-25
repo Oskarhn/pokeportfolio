@@ -20,6 +20,11 @@ import {
   signInThroughForm,
   switchAndSettle,
 } from './support/two-tab'
+import {
+  acquireScannerFixtureCard,
+  SCANNER_FIXTURE_CARD,
+  type ScannerFixtureLease,
+} from './support/scanner-fixture-card'
 
 /**
  * P164 — the three integrated tracks in ONE real browser against the real local stack:
@@ -66,11 +71,11 @@ const PRICE_TEXT = { a: '€12.34', b: '€99.99' } as const
 const PRICE_MINOR = { a: '1234', b: '9999' } as const
 
 /** The synthetic scan fixture reads "FAUXOSAUR EX 049/197": a catalog card with that identity and
- *  two variants lets a real scan find a real candidate. Catalog data, removed afterwards. */
-const FAUX = {
-  cardId: 'c0000000-0000-0000-0000-000000000f64',
-  variantIds: ['c0000000-0000-0000-0000-0000000af641', 'c0000000-0000-0000-0000-0000000af642'],
-}
+ *  two variants lets a real scan find a real candidate. It is shared reference data with a lease per
+ *  spec (the ids are fixed and identical for every spec), not this spec's own row — see
+ *  support/scanner-fixture-card.ts (P165). */
+const FAUX = SCANNER_FIXTURE_CARD
+let scannerCard: ScannerFixtureLease | null = null
 
 let pgClient: PgClient
 let service: TestClient
@@ -354,27 +359,7 @@ test.beforeAll(async () => {
   pgClient = new Client({ connectionString: DB_URL })
   await pgClient.connect()
   service = createServiceClient()
-  try {
-    await pgClient.query(
-      `insert into public.cards (id, set_id, local_id, name, rarity, category, language, tcgdex_card_id)
-       values ($1, $2, '049', 'Fauxosaur EX', 'Double Rare', 'Pokemon', 'en', 'faux-049-p164')
-       on conflict (id) do nothing`,
-      [FAUX.cardId, seedCatalog.cardSetId],
-    )
-  } catch (error) {
-    // The scanner fixture PRINTS this identity, so the catalog row cannot differ, and it is unique
-    // per set: price-check-ledger.spec.ts uses the same printed card. Run the two one after the other.
-    throw new Error(
-      `fixture card 'Fauxosaur EX 049' already exists (price-check-ledger.spec.ts running at the same time?). Run the authenticated project with --workers=1.`,
-      { cause: error },
-    )
-  }
-  await pgClient.query(
-    `insert into public.card_variants (id, card_id, finish, stamp, subtype, size)
-     values ($1, $3, 'normal', '', '', 'standard'), ($2, $3, 'reverse', '', '', 'standard')
-     on conflict (id) do nothing`,
-    [FAUX.variantIds[0], FAUX.variantIds[1], FAUX.cardId],
-  )
+  scannerCard = await acquireScannerFixtureCard(DB_URL, seedCatalog.cardSetId)
   userA = await createSyntheticUser(service, 'p164-a')
   userB = await createSyntheticUser(service, 'p164-b')
   clientA = await signInAs(userA)
@@ -471,17 +456,14 @@ test.beforeAll(async () => {
 })
 
 test.afterAll(async () => {
-  // Users first: their purchase lines reference the fixture printings.
-  await deleteSyntheticUser(service, userA.id)
-  await deleteSyntheticUser(service, userB.id)
-  // Best effort: rows left by an aborted earlier run still reference the fixture (harmless catalog data).
-  try {
-    await pgClient.query('delete from public.card_variants where card_id = $1', [FAUX.cardId])
-    await pgClient.query('delete from public.cards where id = $1', [FAUX.cardId])
-  } catch (error) {
-    console.warn('fixture catalog rows kept:', (error as Error).message)
-  }
-  await pgClient.end()
+  // Cleanup follows what setup actually created, so a failed `beforeAll` is reported as itself.
+  // Users first (their purchase lines reference the fixture printings), then the lease: the
+  // fixture rows are deleted only by the last spec to give its lease back.
+  // The module-level `let`s are typed as always assigned; after a failed `beforeAll` they are not.
+  const created = [userA, userB] as (SyntheticUser | undefined)[]
+  for (const user of created) if (user) await deleteSyntheticUser(service, user.id)
+  await scannerCard?.release()
+  await (pgClient as PgClient | undefined)?.end()
 })
 
 test('the baselines are real, non-trivial ledgers (guards against a vacuous proof)', async () => {

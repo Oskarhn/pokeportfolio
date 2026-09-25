@@ -10,6 +10,7 @@ import {
   type SyntheticUser,
   type TestClient,
 } from '../../db/setup'
+import { acquireScannerFixtureCard, type ScannerFixtureLease } from './support/scanner-fixture-card'
 
 /**
  * P153 — the ledger non-mutation proof. Price Check must be unable to change anything a person
@@ -51,12 +52,10 @@ const CORS = {
 }
 
 /** The synthetic scan fixture reads "FAUXOSAUR EX 049/197". A catalog card with that identity (and
- *  two variants) is added to the LOCAL catalog so a real scan finds a real candidate and the confirm
- *  path is genuinely exercised. Catalog data, not user data; removed again afterwards. */
-const FAUX = {
-  cardId: 'c0000000-0000-0000-0000-000000000f01',
-  variantIds: ['c0000000-0000-0000-0000-0000000af011', 'c0000000-0000-0000-0000-0000000af012'],
-}
+ *  two variants) exists in the LOCAL catalog so a real scan finds a real candidate and the confirm
+ *  path is genuinely exercised. It is shared reference data with a lease per spec, not this spec's
+ *  own row — see support/scanner-fixture-card.ts (P165). */
+let scannerCard: ScannerFixtureLease | null = null
 
 interface Snapshot {
   tables: Record<string, { rows: number; hash: string }>
@@ -359,18 +358,7 @@ test.beforeAll(async () => {
   pgClient = new Client({ connectionString: DB_URL })
   await pgClient.connect()
   service = createServiceClient()
-  await pgClient.query(
-    `insert into public.cards (id, set_id, local_id, name, rarity, category, language, tcgdex_card_id)
-     values ($1, $2, '049', 'Fauxosaur EX', 'Double Rare', 'Pokemon', 'en', 'faux-049')
-     on conflict (id) do nothing`,
-    [FAUX.cardId, seedCatalog.cardSetId],
-  )
-  await pgClient.query(
-    `insert into public.card_variants (id, card_id, finish, stamp, subtype, size)
-     values ($1, $3, 'normal', '', '', 'standard'), ($2, $3, 'reverse', '', '', 'standard')
-     on conflict (id) do nothing`,
-    [FAUX.variantIds[0], FAUX.variantIds[1], FAUX.cardId],
-  )
+  scannerCard = await acquireScannerFixtureCard(DB_URL, seedCatalog.cardSetId)
   userA = await createSyntheticUser(service, 'p153-a')
   userB = await createSyntheticUser(service, 'p153-b')
   clientA = await signInAs(userA)
@@ -396,11 +384,14 @@ test.beforeAll(async () => {
 })
 
 test.afterAll(async () => {
-  await pgClient.query('delete from public.card_variants where card_id = $1', [FAUX.cardId])
-  await pgClient.query('delete from public.cards where id = $1', [FAUX.cardId])
-  await pgClient.end()
-  await deleteSyntheticUser(service, userA.id)
-  await deleteSyntheticUser(service, userB.id)
+  // Cleanup follows what setup actually created: a failed `beforeAll` must not turn into a
+  // TypeError here that hides the real cause. Users first (their rows reference the printings),
+  // then the lease — the fixture rows go only with the last lease.
+  // The module-level `let`s are typed as always assigned; after a failed `beforeAll` they are not.
+  const created = [userA, userB] as (SyntheticUser | undefined)[]
+  for (const user of created) if (user) await deleteSyntheticUser(service, user.id)
+  await scannerCard?.release()
+  await (pgClient as PgClient | undefined)?.end()
 })
 
 test('the baseline is a real, non-trivial ledger (guards against a vacuous proof)', async () => {
