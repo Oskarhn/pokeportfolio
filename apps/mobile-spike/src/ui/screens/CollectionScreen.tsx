@@ -72,10 +72,16 @@ export function CollectionScreen({ navigation }: Props) {
             {state.counts.uniqueHoldingCount} holdings {'·'} {state.counts.physicalCardCount} cards{' '}
             {'·'} {state.counts.unpricedHoldingCount} without a value
           </Body>
+          {/* No priced holding means the total is missing, not zero (FINANCIAL_MODEL F14): the
+              server's sum over an empty set is 0, and the web app shows it as missing too. */}
           <MoneyText
             testID="collection-total"
             emphasis
-            value={nokMoney(state.counts.portfolioValueMinor)}
+            value={
+              state.counts.pricedHoldingCount > 0
+                ? nokMoney(state.counts.portfolioValueMinor)
+                : null
+            }
           />
         </>
       ) : state.countsFailure !== null ? (

@@ -13,8 +13,10 @@ import type { PhotoOutcome, PhotoPort } from './photo-store'
  * - `deleteFile` deletes ONLY files under the app's cache directory, which is where the picker copies
  *   the chosen image. Anything else is not owned by the app and is left alone.
  *
- * Runtime behaviour (permission dialogs, the picker UI, the cache copy) is NOT verified: no emulator
- * or device was available. It is exercised through fakes in tests/unit/photo-store.test.ts.
+ * Android runtime behaviour (permission dialog, picker, camera, cache copy deleted on exit) was
+ * exercised on an Android 16 emulator in P166; after a configuration change (font scale) the picker
+ * launch is rejected by expo-image-picker (docs/mobile/P166_RUNTIME_AND_STITCH_REVIEW.md F1).
+ * iOS is not verified. Store logic is tested through fakes in tests/unit/photo-store.test.ts.
  */
 
 export function createExpoPhotoPort(now: () => string = () => new Date().toISOString()): PhotoPort {
@@ -43,8 +45,16 @@ export function createExpoPhotoPort(now: () => string = () => new Date().toISOSt
                 allowsMultipleSelection: false,
               })
       } catch (error) {
+        // Only the camera path can mean "no camera". A library failure is an error even when its
+        // message mentions a camera (seen on an Android 16 emulator: the library picker failed once
+        // and the screen told the person the CAMERA was unavailable).
         const message = error instanceof Error ? error.message : ''
-        return { status: 'unavailable', reason: /camera/i.test(message) ? 'no_camera' : 'error' }
+        // The picker's own message carries no personal data; without it a device failure is opaque.
+        console.warn(`photo ${source} failed: ${message || String(error)}`)
+        return {
+          status: 'unavailable',
+          reason: source === 'camera' && /camera/i.test(message) ? 'no_camera' : 'error',
+        }
       }
       if (result.canceled) return { status: 'cancelled' }
       const asset = result.assets[0]

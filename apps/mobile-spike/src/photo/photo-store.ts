@@ -49,11 +49,19 @@ export interface PhotoState {
   status: 'idle' | 'acquiring' | 'ready' | 'cancelled' | 'denied' | 'unavailable'
   image: LocalImageRef | null
   canAskAgain: boolean
+  /** Why the photo could not be acquired (status 'unavailable'), so the UI names the right cause. */
+  unavailableReason: 'no_camera' | 'error' | null
   /** URIs whose deletion failed (surfaced so a leak is visible in a test, not silent). */
   leaked: readonly string[]
 }
 
-const INITIAL: PhotoState = { status: 'idle', image: null, canAskAgain: true, leaked: [] }
+const INITIAL: PhotoState = {
+  status: 'idle',
+  image: null,
+  canAskAgain: true,
+  unavailableReason: null,
+  leaked: [],
+}
 
 export class PhotoStore implements Resettable {
   private state: PhotoState = INITIAL
@@ -102,7 +110,12 @@ export class PhotoStore implements Resettable {
         this.set({ ...this.state, status: 'denied', image: null, canAskAgain: outcome.canAskAgain })
         return
       case 'unavailable':
-        this.set({ ...this.state, status: 'unavailable', image: null })
+        this.set({
+          ...this.state,
+          status: 'unavailable',
+          image: null,
+          unavailableReason: outcome.reason,
+        })
         return
     }
   }

@@ -72,7 +72,17 @@ describe('PhotoStore (ownership contract; no recognition, no upload)', () => {
     expect(store.getSnapshot().status).toBe('cancelled')
     port.outcome = { status: 'unavailable', reason: 'no_camera' }
     await store.acquire('camera')
-    expect(store.getSnapshot().status).toBe('unavailable')
+    expect(store.getSnapshot()).toMatchObject({
+      status: 'unavailable',
+      unavailableReason: 'no_camera',
+    })
+  })
+
+  it('keeps the reason, so a library failure is not reported as a missing camera (P166 emulator)', async () => {
+    const { port, store } = make()
+    port.outcome = { status: 'unavailable', reason: 'error' }
+    await store.acquire('library')
+    expect(store.getSnapshot()).toMatchObject({ status: 'unavailable', unavailableReason: 'error' })
   })
 
   it('a picker that throws is "unavailable", not an unhandled rejection', async () => {

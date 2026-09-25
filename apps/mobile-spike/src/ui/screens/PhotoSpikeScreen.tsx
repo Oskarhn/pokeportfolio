@@ -59,7 +59,11 @@ export function PhotoSpikeScreen() {
       ) : null}
       {state.status === 'unavailable' ? (
         <Card testID="photo-unavailable">
-          <Body>The camera is not available here. Choose a photo from your library instead.</Body>
+          <Body>
+            {state.unavailableReason === 'no_camera'
+              ? 'The camera is not available here. Choose a photo from your library instead.'
+              : 'The photo could not be opened. Try again.'}
+          </Body>
         </Card>
       ) : null}
       {state.status === 'cancelled' ? (

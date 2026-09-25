@@ -100,6 +100,8 @@ describe('collection', () => {
     h.collection.countsResult = {
       ...h.collection.countsResult,
       uniqueHoldingCount: 3,
+      pricedHoldingCount: 2,
+      unpricedHoldingCount: 1,
       portfolioValueMinor: 891712726219545687n,
     }
     await mount(h)
@@ -114,6 +116,23 @@ describe('collection', () => {
     expect(screen.getByText(`8${NB}646${NB}911${NB}284${NB}551${NB}352,35 kr`)).toBeTruthy()
     expect(screen.getByText('0,00 kr')).toBeTruthy()
     expect(screen.getByText('—')).toBeTruthy()
+  })
+
+  it('a collection with no priced holding shows the total as missing, not 0,00 kr (F14; seen on Android)', async () => {
+    const h = harness()
+    h.collection.pages.push({ rows: [row('u1', { holdingValueMinor: null })], nextCursor: null })
+    h.collection.countsResult = {
+      ...h.collection.countsResult,
+      uniqueHoldingCount: 40,
+      pricedHoldingCount: 0,
+      unpricedHoldingCount: 40,
+      portfolioValueMinor: 0n,
+    }
+    await mount(h)
+    await signInAs(h, 'A')
+    const total = JSON.stringify((await screen.findByTestId('collection-total')).props.children)
+    expect(total).toContain('—')
+    expect(total).not.toContain('0,00')
   })
 
   it('an empty collection is an empty state; a 500 is an error state with retry', async () => {
