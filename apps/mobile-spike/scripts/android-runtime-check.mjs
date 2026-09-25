@@ -66,6 +66,10 @@ function shot(name) {
   writeFileSync(join(outDir, `${name}.png`), screencap())
 }
 const rows = (nodes) => byIdPrefix(nodes, 'row-')
+/** Taps a node once it is in the view tree: a dump taken while the UI is not idle can be empty (P167). */
+async function tapId(id) {
+  tap((await waitFor((ns) => byId(ns, id), { label: id })).value)
+}
 const text = (nodes, id) => byId(nodes, id)?.text ?? null
 
 function amStart() {
@@ -357,13 +361,13 @@ await run('accessibility tree: every clickable node has a name', async () => {
     }
   }
   check('collection', dump())
-  tap(byId(dump(), 'tab-pricecheck'))
+  await tapId('tab-pricecheck')
   await waitFor((ns) => byId(ns, 'price-check-home'), { label: 'price check home' })
   check('price-check', dump())
-  tap(byId(dump(), 'tab-profile'))
+  await tapId('tab-profile')
   await waitFor((ns) => byId(ns, 'profile'), { label: 'profile' })
   check('profile', dump())
-  tap(byId(dump(), 'tab-collection'))
+  await tapId('tab-collection')
   const bad = Object.entries(screens).filter(([, v]) => v.unnamed.length > 0)
   metrics.a11y = screens
   if (bad.length) throw new Error(`unnamed clickable nodes: ${JSON.stringify(bad)}`)
@@ -371,7 +375,7 @@ await run('accessibility tree: every clickable node has a name', async () => {
 })
 
 await run('Price Check (read-only): search, result, graded unavailable', async () => {
-  tap(byId(dump(), 'tab-pricecheck'))
+  await tapId('tab-pricecheck')
   let n = (await waitFor((ns) => byId(ns, 'pc-query') && ns, { label: 'query field' })).value
   tap(byId(n, 'pc-query'))
   typeText('Twin')
@@ -433,7 +437,7 @@ await run('Price Check (read-only): search, result, graded unavailable', async (
 })
 
 await run('photo: library picker cancelled -> cancelled state', async () => {
-  if (!byId(dump(), 'pc-photo')) tap(byId(dump(), 'tab-pricecheck'))
+  if (!byId(dump(), 'pc-photo')) await tapId('tab-pricecheck')
   let n = (await waitFor((ns) => byId(ns, 'pc-photo') && ns, { label: 'photo entry' })).value
   tap(byId(n, 'pc-photo'))
   n = (await waitFor((ns) => byId(ns, 'photo-library') && ns, { label: 'photo spike' })).value
@@ -525,7 +529,7 @@ await run('photo: owned cache copy deleted on screen exit (needs adb root)', asy
 })
 
 await run('font scale 2.0: collection and detail still render', async () => {
-  if (rows(dump()).length === 0) tap(byId(dump(), 'tab-collection'))
+  if (rows(dump()).length === 0) await tapId('tab-collection')
   shell('settings put system font_scale 2.0')
   await sleep(1500)
   let n = (await waitFor((ns) => rows(ns).length > 0 && ns, { label: 'rows at 2.0' })).value
@@ -545,7 +549,7 @@ await run('photo picker after a configuration change (font scale) still opens', 
   // A system font-size change recreates the Activity (fontScale is not in configChanges). The
   // image picker's ActivityResultLauncher must survive that; P166 observed it does not.
   if (!byId(dump(), 'photo-library')) {
-    if (!byId(dump(), 'pc-photo')) tap(byId(dump(), 'tab-pricecheck'))
+    if (!byId(dump(), 'pc-photo')) await tapId('tab-pricecheck')
     tap((await waitFor((ns) => byId(ns, 'pc-photo'), { label: 'photo entry' })).value)
   }
   const n = (await waitFor((ns) => byId(ns, 'photo-library') && ns, { label: 'photo spike' })).value
@@ -565,7 +569,7 @@ await run('photo picker after a configuration change (font scale) still opens', 
 })
 
 await run('sign out removes the session (restart shows login)', async () => {
-  tap(byId(dump(), 'tab-profile'))
+  await tapId('tab-profile')
   const n = (await waitFor((ns) => byId(ns, 'sign-out') && ns, { label: 'sign out' })).value
   tap(byId(n, 'sign-out'))
   await waitFor((ns) => byId(ns, 'login-screen'), { label: 'login after sign-out' })
