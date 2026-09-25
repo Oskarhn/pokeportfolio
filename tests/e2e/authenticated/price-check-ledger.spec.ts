@@ -320,10 +320,14 @@ async function priceCheckSession(page: Page): Promise<void> {
     await options.nth(i).click()
     await expect(page.getByTestId('observation').first()).toContainText('€12.34')
   }
-  // A single-variant card.
-  await page.goto('/price-check?q=Pikachu')
+  // A single-variant card: the seed Grass Energy. It is not Pikachu on purpose: a complete `pnpm test:db`
+  // run leaves extra Pikachu printings in the catalog (catalog_constraints.test.ts), and the CI job
+  // runs the authenticated project on that same database right after it (P165). Asserting that no
+  // choice is offered keeps this step about the single-printing path.
+  await page.goto('/price-check?q=Grass%20Energy')
   await page.getByTestId('price-check-result').first().click()
   await expect(page.getByTestId('observation').first()).toContainText('€12.34')
+  await expect(page.getByTestId('choose-variant')).toHaveCount(0)
   await expect(page.getByTestId('unavailable').first()).toHaveAttribute(
     'data-reason',
     'graded_source_not_configured',
@@ -334,6 +338,15 @@ async function priceCheckSession(page: Page): Promise<void> {
   await add.click()
   await expect(page).toHaveURL(/\/add\?variantId=/)
   await page.goBack()
+}
+
+/** A card with several printings never shows a price before the person chooses one; when the page
+ *  offers the choice, take the first option (an explicit click, as a person would). */
+async function chooseVariantIfAsked(page: Page): Promise<void> {
+  const choose = page.getByTestId('choose-variant')
+  const observation = page.getByTestId('observation').first()
+  await expect(choose.or(observation)).toBeVisible()
+  if (await choose.isVisible()) await page.getByTestId('variant-option').first().click()
 }
 
 async function scanSession(page: Page): Promise<'candidates' | 'no-match' | 'error'> {
@@ -714,16 +727,19 @@ test('P161 · A → B during a HELD price lookup: the late answer of A never rep
 
   await signIn(page, userA)
   const phaseStart = log.length
-  await page.goto('/price-check?q=Pikachu')
+  await page.goto('/price-check?q=Charizard')
   await page.getByTestId('price-check-result').first().click()
+  // Charizard always has two printings: the choice is always offered, whatever else the catalog holds
+  await chooseVariantIfAsked(page)
   await expect.poll(() => lookups).toBe(1) // the lookup of A is in flight and held
 
   const endOfA = log.length
   await signOutViaUi(page)
   await signIn(page, userB)
   const startOfB = log.length
-  await page.goto('/price-check?q=Pikachu')
+  await page.goto('/price-check?q=Charizard')
   await page.getByTestId('price-check-result').first().click()
+  await chooseVariantIfAsked(page)
   await expect(page.getByTestId('observation').first()).toContainText('€99.99')
 
   releaseA() // the answer of A finally arrives, after B already has its own
@@ -786,8 +802,9 @@ test('P161 · same-user refresh mid-scan, overlapping photos and a provider fail
       body: JSON.stringify({ ok: false }),
     })
   })
-  await page.goto('/price-check?q=Pikachu')
+  await page.goto('/price-check?q=Charizard')
   await page.getByTestId('price-check-result').first().click()
+  await chooseVariantIfAsked(page) // two printings: nothing is priced until one is chosen
   await expect(page.getByRole('alert').filter({ hasText: /price|provider|lookup/i })).toBeVisible()
   await expect(page.getByTestId('observation')).toHaveCount(0)
 
