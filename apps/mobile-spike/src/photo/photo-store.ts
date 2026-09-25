@@ -37,12 +37,26 @@ export type PhotoOutcome =
   | { status: 'picked'; image: LocalImageRef }
   | { status: 'cancelled' }
   | { status: 'permission_denied'; canAskAgain: boolean }
-  | { status: 'unavailable'; reason: 'no_camera' | 'error' }
+  | { status: 'unavailable'; reason: UnavailableReason }
+
+/**
+ * Why a photo could not be acquired. `restart_required`: the native picker refused to launch because
+ * its Activity-result registration was lost (expo-modules-core after an Activity recreation, P167 F1).
+ * The patched expo-modules-core re-registers instead; this state only appears if that patch is absent,
+ * and then it tells the person the one thing that helps instead of a vague "try again".
+ */
+export type UnavailableReason = 'no_camera' | 'restart_required' | 'error'
 
 export interface PhotoPort {
   acquire(source: 'camera' | 'library'): Promise<PhotoOutcome>
   /** Deletes an image file this app owns. Rejects if it could not. */
   deleteFile(uri: string): Promise<void>
+  /**
+   * Deletes every picker copy in the app-owned cache folder and resolves with how many there were.
+   * A copy is orphaned when the process dies while it is shown (no screen exit, no release()), so
+   * this runs at start-up and on every identity change.
+   */
+  purgeOwnedCache(): Promise<number>
 }
 
 export interface PhotoState {
@@ -50,7 +64,7 @@ export interface PhotoState {
   image: LocalImageRef | null
   canAskAgain: boolean
   /** Why the photo could not be acquired (status 'unavailable'), so the UI names the right cause. */
-  unavailableReason: 'no_camera' | 'error' | null
+  unavailableReason: UnavailableReason | null
   /** URIs whose deletion failed (surfaced so a leak is visible in a test, not silent). */
   leaked: readonly string[]
 }
@@ -134,7 +148,25 @@ export class PhotoStore implements Resettable {
     this.token += 1
     this.state = INITIAL
     this.emitter.emit()
-    if (image !== null) void this.deleteQuietly(image.uri)
+    void (async () => {
+      if (image !== null) await this.deleteQuietly(image.uri)
+      await this.purgeOrphans()
+    })()
+  }
+
+  /**
+   * Removes picker copies left by an earlier process (see PhotoPort.purgeOwnedCache). Skipped while
+   * this store shows an image or waits for one, so it can never delete the current person's photo.
+   * A failure is recorded in `leaked`, not thrown.
+   */
+  async purgeOrphans(): Promise<void> {
+    if (this.state.image !== null || this.state.status === 'acquiring') return
+    try {
+      await this.port.purgeOwnedCache()
+    } catch {
+      this.state = { ...this.state, leaked: [...this.state.leaked, 'cache:ImagePicker'] }
+      this.emitter.emit()
+    }
   }
 
   private async deleteQuietly(uri: string): Promise<void> {

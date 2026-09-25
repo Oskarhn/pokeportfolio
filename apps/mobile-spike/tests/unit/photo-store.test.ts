@@ -114,6 +114,54 @@ describe('PhotoStore (ownership contract; no recognition, no upload)', () => {
   })
 })
 
+describe('P167: orphaned picker copies (process death) and the identity boundary', () => {
+  it('an identity change deletes the shown image AND purges orphaned copies', async () => {
+    const { port, store } = make()
+    port.outcome = { status: 'picked', image: image('file:///cache/ImagePicker/a.jpg') }
+    await store.acquire('library')
+    store.reset()
+    await flush()
+    expect(port.deleted).toEqual(['file:///cache/ImagePicker/a.jpg'])
+    expect(port.purges).toBe(1)
+    expect(store.getSnapshot().image).toBeNull()
+  })
+
+  it('never purges while an image is shown or being acquired (it could be the current photo)', async () => {
+    const { port, store } = make()
+    port.outcome = { status: 'picked', image: image('file:///cache/ImagePicker/b.jpg') }
+    await store.acquire('library')
+    await store.purgeOrphans()
+    expect(port.purges).toBe(0)
+    await store.release()
+    port.pending = deferred()
+    const p = store.acquire('library')
+    await flush()
+    await store.purgeOrphans()
+    expect(port.purges).toBe(0)
+    port.pending.resolve({ status: 'cancelled' })
+    await p
+    await store.purgeOrphans()
+    expect(port.purges).toBe(1)
+  })
+
+  it('a purge that fails is recorded as a leak, not swallowed', async () => {
+    const { port, store } = make()
+    port.purgeError = true
+    await store.purgeOrphans()
+    expect(store.getSnapshot().leaked).toEqual(['cache:ImagePicker'])
+  })
+
+  it('the restart_required reason is kept for the screen', async () => {
+    const { port, store } = make()
+    port.outcome = { status: 'unavailable', reason: 'restart_required' }
+    await store.acquire('library')
+    expect(store.getSnapshot()).toMatchObject({
+      status: 'unavailable',
+      unavailableReason: 'restart_required',
+    })
+  })
+})
+
 describe('photo code stays on the device (static privacy guard)', () => {
   const files = ['src/photo/photo-store.ts', 'src/photo/expo-photo-port.ts']
   it.each(files)('%s imports no network or backend client and makes no request', (file) => {

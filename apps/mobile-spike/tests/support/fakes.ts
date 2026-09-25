@@ -198,6 +198,13 @@ export class FakePhotoPort implements PhotoPort {
     this.deleted.push(uri)
     return Promise.resolve()
   }
+  purges = 0
+  purgeError = false
+  purgeOwnedCache(): Promise<number> {
+    if (this.purgeError) return Promise.reject(new Error('cannot purge'))
+    this.purges += 1
+    return Promise.resolve(0)
+  }
 }
 
 export interface Harness {

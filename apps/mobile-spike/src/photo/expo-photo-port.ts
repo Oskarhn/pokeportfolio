@@ -1,6 +1,6 @@
-import { File, Paths } from 'expo-file-system'
+import { Directory, File, Paths } from 'expo-file-system'
 import * as ImagePicker from 'expo-image-picker'
-import type { PhotoOutcome, PhotoPort } from './photo-store'
+import type { PhotoOutcome, PhotoPort, UnavailableReason } from './photo-store'
 
 /**
  * expo-image-picker / expo-file-system adapter for the photo spike. On-device only: no network API is
@@ -14,8 +14,9 @@ import type { PhotoOutcome, PhotoPort } from './photo-store'
  *   the chosen image. Anything else is not owned by the app and is left alone.
  *
  * Android runtime behaviour (permission dialog, picker, camera, cache copy deleted on exit) was
- * exercised on an Android 16 emulator in P166; after a configuration change (font scale) the picker
- * launch is rejected by expo-image-picker (docs/mobile/P166_RUNTIME_AND_STITCH_REVIEW.md F1).
+ * exercised on an Android 16 emulator in P166. The picker launch that failed after an Activity
+ * recreation (font scale, display size, locale: P166 F1) is fixed by the expo-modules-core patch in
+ * patches/ and re-verified on the emulator (docs/mobile/P167_ANDROID_HARDENING.md).
  * iOS is not verified. Store logic is tested through fakes in tests/unit/photo-store.test.ts.
  */
 
@@ -51,10 +52,7 @@ export function createExpoPhotoPort(now: () => string = () => new Date().toISOSt
         const message = error instanceof Error ? error.message : ''
         // The picker's own message carries no personal data; without it a device failure is opaque.
         console.warn(`photo ${source} failed: ${message || String(error)}`)
-        return {
-          status: 'unavailable',
-          reason: source === 'camera' && /camera/i.test(message) ? 'no_camera' : 'error',
-        }
+        return { status: 'unavailable', reason: classifyPickerFailure(source, message) }
       }
       if (result.canceled) return { status: 'cancelled' }
       const asset = result.assets[0]
@@ -78,5 +76,36 @@ export function createExpoPhotoPort(now: () => string = () => new Date().toISOSt
       if (file.exists) file.delete()
       return Promise.resolve()
     },
+
+    async purgeOwnedCache(): Promise<number> {
+      // expo-image-picker writes every copy to <cache>/ImagePicker (ImagePickerConstants.CACHE_DIR_NAME
+      // on Android). Only files in that app-owned folder are removed; nothing else in the cache.
+      const folder = new Directory(Paths.cache, PICKER_CACHE_DIR)
+      if (!folder.exists) return Promise.resolve(0)
+      let removed = 0
+      for (const entry of folder.list()) {
+        if (entry instanceof File) {
+          entry.delete()
+          removed += 1
+        }
+      }
+      return Promise.resolve(removed)
+    },
   }
+}
+
+export const PICKER_CACHE_DIR = 'ImagePicker'
+
+/**
+ * Only the camera path can mean "no camera": a library failure whose message mentions a camera is an
+ * error (seen on an Android 16 emulator in P166). An unregistered Activity-result launcher (P167 F1)
+ * cannot be retried away; only a restart of the app (or the expo-modules-core patch) restores it.
+ */
+export function classifyPickerFailure(
+  source: 'camera' | 'library',
+  message: string,
+): UnavailableReason {
+  if (/unregistered ActivityResultLauncher/i.test(message)) return 'restart_required'
+  if (source === 'camera' && /camera/i.test(message)) return 'no_camera'
+  return 'error'
 }

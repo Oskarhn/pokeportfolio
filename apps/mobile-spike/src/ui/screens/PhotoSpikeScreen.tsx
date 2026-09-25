@@ -62,7 +62,9 @@ export function PhotoSpikeScreen() {
           <Body>
             {state.unavailableReason === 'no_camera'
               ? 'The camera is not available here. Choose a photo from your library instead.'
-              : 'The photo could not be opened. Try again.'}
+              : state.unavailableReason === 'restart_required'
+                ? 'The photo picker stopped working after a system setting changed. Close and reopen the app, then try again.'
+                : 'The photo could not be opened. Try again.'}
           </Body>
         </Card>
       ) : null}
