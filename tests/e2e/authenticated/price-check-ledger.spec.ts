@@ -1,5 +1,5 @@
 import { fileURLToPath } from 'node:url'
-import { test, expect, type Page, type Route, type Worker } from '@playwright/test'
+import { test, expect, type Page, type Request, type Route, type Worker } from '@playwright/test'
 import type { Client as PgClient } from 'pg'
 import {
   createServiceClient,
@@ -228,6 +228,17 @@ async function signIn(page: Page, user: SyntheticUser) {
 interface RequestLog {
   method: string
   url: string
+  /** Path of the page that issued the request ('' when it has no frame). */
+  from: string
+}
+
+/** The path of the document that issued `request`, read while the request is being issued. */
+function issuingPath(request: Request): string {
+  try {
+    return new URL(request.frame().url()).pathname
+  } catch {
+    return '' // a request without a frame (service worker) or a frame that has no URL yet
+  }
 }
 
 /** Records every request to the backend and answers `search-prices` with synthetic observations. */
@@ -236,7 +247,7 @@ async function instrument(page: Page): Promise<{ log: RequestLog[]; bodies: stri
   const bodies: string[] = []
   page.on('request', (request) => {
     if (request.url().startsWith(SUPABASE_URL)) {
-      log.push({ method: request.method(), url: request.url() })
+      log.push({ method: request.method(), url: request.url(), from: issuingPath(request) })
     }
   })
   page.on('response', (response) => {
@@ -296,9 +307,16 @@ async function instrument(page: Page): Promise<{ log: RequestLog[]; bodies: stri
 
 /** Requests that could change state, in the Price Check phase only (after sign-in — signing in and
  *  the Home page it lands on are not Price Check). Strict: outside GET, only `search_cards` and
- *  `search-prices` are allowed, so ANY other RPC — read or write — fails the phase. */
+ *  `search-prices` are allowed, so ANY other RPC — read or write — fails the phase.
+ *
+ *  The Home page is excluded by WHO issued the request, not by when it arrived (P165): its dashboard
+ *  reads (`get_market_movers`, `get_dashboard_summary`, `list_portfolio`, …) can be issued after the
+ *  sign-in's network-idle wait has returned and the phase has begun — observed in a four-worker run,
+ *  six POSTs counted as "writes" of a scan that had not started. Every other page stays strict,
+ *  including the Add page reached from Price Check. */
 function writes(log: RequestLog[]): RequestLog[] {
-  return log.filter(({ method, url }) => {
+  return log.filter(({ method, url, from }) => {
+    if (from === '/') return false
     const path = new URL(url).pathname
     if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return false
     if (path.endsWith('/rest/v1/rpc/search_cards')) return false
