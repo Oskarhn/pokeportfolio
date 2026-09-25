@@ -127,7 +127,7 @@ accessible name, the permission dialog is the system's. **Not tested:** TalkBack
 on this image), reading order, focus movement, Reduce Motion, contrast measurement on device, and
 anything on iOS/VoiceOver. `ACCESSIBILITY_RUNTIME` is therefore partial.
 
-## 6. Not done, and why
+## 6. Not done, and why (and one re-run)
 
 - **iOS**: impossible on Windows; no claim.
 - **Physical Android device**: none attached.
@@ -136,8 +136,8 @@ anything on iOS/VoiceOver. `ACCESSIBILITY_RUNTIME` is therefore partial.
 - **Scanner/OCR**: none exists in the spike; the photo flow is a picker + ownership prototype only.
 - **P149/P153/P164 integration**: out of scope and not merged; the spike's adapters are unchanged
   apart from the fixes above (INTEGRATION_PLAN.md still applies).
-- **Mutation proofs (`pnpm mutation`)**: not re-run in P166 (P158's 12/12 stand for the unchanged
-  modules); the two new tests were mutation-checked by hand (§4 F2, F8).
+- **Mutation proofs**: re-run in P166 on the committed tree: `pnpm mutation` 12/12 mutants killed, tree clean
+  afterwards. The two new tests were additionally mutation-checked by hand (§4 F2, F8).
 
 ## 7. Reproduce (Windows 11, Git Bash or PowerShell)
 
