@@ -11,7 +11,9 @@ selected; the P154 proposals are unchanged. The spike lives in [`apps/mobile-spi
 | [AUTH_IDENTITY](AUTH_IDENTITY.md) | Session storage decision and measurement, lifecycle, identity boundary diagram, adopting P149 |
 | [PRICE_CHECK_CONTRACT](PRICE_CHECK_CONTRACT.md) | Read-only adapter contract, released vs fixture adapters, adopting P153 |
 | [PHOTO_SPIKE](PHOTO_SPIKE.md) | Photo ownership contract, what attaches to P151/P153 later, camera portability |
-| [TEST_EVIDENCE](TEST_EVIDENCE.md) | Every number, the mutation proofs, and exactly what was **not** run (no emulator, no Hermes execution) |
+| [TEST_EVIDENCE](TEST_EVIDENCE.md) | Every number, the mutation proofs, and what P158 did **not** run (P166 has since run Android + Hermes) |
 | [INTEGRATION_PLAN](INTEGRATION_PLAN.md) | Phased replacement of every `SPIKE_ONLY` adapter |
+| [P166_RUNTIME_AND_STITCH_REVIEW](P166_RUNTIME_AND_STITCH_REVIEW.md) | Release build on an Android 16 emulator: Hermes exact-money proof, device steps, performance, runtime findings |
+| [P166_STITCH_DESIGN_BRIEF](P166_STITCH_DESIGN_BRIEF.md) | Stitch status (connected, no screens generated), three directions, seven screens, exact steps |
 
 Inputs (read-only): [`docs/design/p154`](../design/p154/README.md).

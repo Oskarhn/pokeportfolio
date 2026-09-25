@@ -8,8 +8,9 @@ hosted-backend use.
 
 What exists: sign-in, session restore/refresh/sign-out, collection list (10 k-safe), card detail,
 Price Check (read-only), an identity boundary (A → B), exact-money rendering, a bounded photo
-ownership spike. What does **not** exist: a scanner, writes, offline, accessibility testing, and any
-run on an emulator or device ([TEST_EVIDENCE](../../docs/mobile/TEST_EVIDENCE.md)).
+ownership spike. What does **not** exist: a scanner, writes, offline, screen-reader testing, and any
+iOS run. A release build has run on an Android 16 emulator
+([P166 review](../../docs/mobile/P166_RUNTIME_AND_STITCH_REVIEW.md)).
 
 ## Setup on Windows 11 (PowerShell, from the repository root)
 
@@ -54,9 +55,40 @@ $v = node scripts/local-backend.mjs env | ConvertFrom-StringData
 pnpm start                                     # Metro; open with a development build or an emulator
 ```
 
-Nothing has been run on an emulator or device yet. A development build needs the Android toolchain
-(`npx expo prebuild --platform android`, then `npx expo run:android`); iOS needs a Mac or a cloud
-build and, for a physical device, Apple signing, which is **not free** and not requested.
+iOS needs a Mac or a cloud build and, for a physical device, Apple signing, which is **not free**
+and not requested.
+
+### Android runtime (P166, Git Bash on Windows)
+
+Needs JDK 17+ (`JAVA_HOME`), the Android SDK (`ANDROID_HOME`; platform 36, build-tools 36.0.0, NDK
+27.1.12297006, CMake 3.22.1, emulator + an x86_64 system image) and a running emulator or a device.
+The release build embeds the Hermes bundle, so Metro is not needed.
+
+```bash
+echo "EXPO_PUBLIC_RUNTIME_PROOF=1" >> .env.local            # after the two values above; opt-in Hermes proof
+CI=1 npx expo prebuild --platform android --no-install      # generates android/ (gitignored)
+```
+
+Windows path limits need two passes. Pass 1 from the real path runs codegen and then fails in CMake
+with "Filename longer than 260 characters"; pass 2 from a short `subst` drive compiles the C++.
+Running codegen from the `subst` drive instead fails with "different roots".
+
+```bash
+(cd android && NODE_ENV=production ./gradlew.bat assembleRelease -PreactNativeArchitectures=x86_64)
+```
+
+```powershell
+subst Q: "C:\path\to\worktree"                               # session-only drive letter; subst Q: /d removes it
+```
+
+```bash
+(cd /q/apps/mobile-spike/android && NODE_ENV=production ./gradlew.bat assembleRelease -PreactNativeArchitectures=x86_64)
+adb install -r android/app/build/outputs/apk/release/app-release.apk
+node scripts/android-runtime-check.mjs                      # P166_STEPS=<regex> runs a subset
+```
+
+Plain HTTP to the local stack is allowed only for `10.0.2.2`, `10.0.3.2`, `127.0.0.1` and `localhost`
+(`plugins/with-local-cleartext.js`); a release build would otherwise refuse it.
 
 ## Checks
 

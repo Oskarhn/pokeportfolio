@@ -29,7 +29,8 @@ Status vocabulary, used consistently below:
 | Exact-money proof bundle compiled by `hermesc` 1.0.0 | 19/19 vectors pass under **Node**; compiles to bytecode | `HERMES_COMPILED` |
 | Web `tsc -b`, `eslint` (0 errors, 27 pre-existing `react-refresh` warnings), `prettier --check`, `vitest` (133 files, 1 636 passed, 1 skipped) | green | web regression |
 | Web `vite build` | green **with** `VITE_SUPABASE_URL`/`VITE_SUPABASE_PUBLISHABLE_KEY` set (the build refuses to run without them; that is pre-existing) | web regression |
-| Android emulator smoke, Android APK, iOS anything | **not run** | `ANDROID_RUNTIME_UNVERIFIED`, `IOS_RUNTIME_UNVERIFIED` |
+| Android emulator smoke, Android APK | **run in P166**: release APK on an Android 16 emulator, 17 of 18 device steps pass, the failure is a real picker defect ([P166 review](P166_RUNTIME_AND_STITCH_REVIEW.md)) | Android runtime |
+| iOS anything | **not run** (impossible on Windows) | `IOS_RUNTIME_UNVERIFIED` |
 
 ## Exact money
 
@@ -70,7 +71,7 @@ Also: 2 000+ random values per currency compared with the **web app's `Intl`-bas
 | Question | Answer |
 |---|---|
 | Does the formatter (BigInt literals, `**` on BigInt, `BigInt()`, string handling) **compile** for Hermes? | Yes: `hermesc` 1.0.0 (bytecode v98). The whole app also compiles (959/964 modules) |
-| Does it **run** correctly on Hermes? | **UNVERIFIED.** The npm `hermes-compiler` package is compiler-only (no `-exec`), there is no Hermes VM here, and no emulator/device. A standalone Hermes CLI would have to be downloaded from a release page; that was not done without approval |
+| Does it **run** correctly on Hermes? | **Yes, since P166**: the in-app proof (`src/diagnostics/runtime-proof.ts`, 36 checks incl. these vectors) passed on Hermes on an Android 16 emulator ([P166 review](P166_RUNTIME_AND_STITCH_REVIEW.md) §2). Original P158 note: **UNVERIFIED.** The npm `hermes-compiler` package is compiler-only (no `-exec`), there is no Hermes VM here, and no emulator/device. A standalone Hermes CLI would have to be downloaded from a release page; that was not done without approval |
 | How to close it | Run `.build/hermes-money-proof.js` (regenerate with `pnpm hermes:proof`) on any Hermes with `print`/`console.log` and expect `RESULT pass=19 fail=0`; or evaluate it inside the app on an emulator/device |
 | `Intl.NumberFormat` with BigInt on Hermes | not used, not tested; the docs describe partial support |
 

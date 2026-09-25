@@ -35,8 +35,10 @@ review).
 
 The permission dialogs, the camera UI, the picker UI, that `expo-image-picker` copies the choice into
 the cache directory on both platforms, that `File.exists`/`delete()` behave as expected on a real
-file, and memory behaviour for a full-resolution photo are **all unverified**: no emulator or device
-was available. Everything above is tested against fakes.
+file, and memory behaviour for a full-resolution photo were unverified in P158. **P166 exercised the
+Android part on an emulator** (picker, cancel, permission dialog and denial, system camera, cache copy
+deleted on exit) and found one defect: the picker fails after a configuration change
+([P166 review](P166_RUNTIME_AND_STITCH_REVIEW.md) §4 F1). iOS and memory remain unverified.
 
 ## How the scanner will attach later
 
