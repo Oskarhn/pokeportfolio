@@ -40,25 +40,32 @@ describe('card_variants identity (finish/stamp/subtype, not a single enum)', () 
 describe('provider product ids are informational, not unique (M5 schema correction)', () => {
   it('allows two sibling variants of the same card to share a TCGplayer product id', async () => {
     const shared = 'tcgplayer-shared-product-id-test'
-    const first = await service.from('card_variants').insert({
-      card_id: seedCatalog.pikachuCardId,
-      finish: 'reverse',
-      stamp: '',
-      subtype: '',
-      size: 'standard',
-      tcgplayer_product_id: shared,
-    })
-    expect(first.error).toBeNull()
+    try {
+      const first = await service.from('card_variants').insert({
+        card_id: seedCatalog.pikachuCardId,
+        finish: 'reverse',
+        stamp: '',
+        subtype: '',
+        size: 'standard',
+        tcgplayer_product_id: shared,
+      })
+      expect(first.error).toBeNull()
 
-    const second = await service.from('card_variants').insert({
-      card_id: seedCatalog.pikachuCardId,
-      finish: 'other',
-      stamp: 'test-second-finish',
-      subtype: '',
-      size: 'standard',
-      tcgplayer_product_id: shared,
-    })
-    expect(second.error).toBeNull()
+      const second = await service.from('card_variants').insert({
+        card_id: seedCatalog.pikachuCardId,
+        finish: 'other',
+        stamp: 'test-second-finish',
+        subtype: '',
+        size: 'standard',
+        tcgplayer_product_id: shared,
+      })
+      expect(second.error).toBeNull()
+    } finally {
+      // Catalog rows are shared by every suite. Left behind, they give the seed Pikachu three
+      // printings for the authenticated E2E project, which CI runs on this same database right
+      // after this suite (P165), and they make this test fail on a database that already ran it.
+      await service.from('card_variants').delete().eq('tcgplayer_product_id', shared)
+    }
   })
 })
 
