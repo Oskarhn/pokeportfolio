@@ -98,4 +98,8 @@ if (compiled.status !== 0) {
   process.exit(1)
 }
 console.log(`HERMESC ${release}: compiled to bytecode OK (${hbc})`)
-console.log('HERMES RUNTIME: NOT EXECUTED (no Hermes VM or emulator available in this environment)')
+console.log(
+  'HERMES RUNTIME: not executed by this script (hermesc cannot run code). On a device or emulator, ' +
+    'build with EXPO_PUBLIC_RUNTIME_PROOF=1 and read `P166_PROOF RESULT` from logcat ' +
+    '(src/diagnostics/runtime-proof.ts, scripts/android-runtime-check.mjs).',
+)

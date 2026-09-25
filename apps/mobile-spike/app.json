@@ -9,6 +9,7 @@
     "ios": { "bundleIdentifier": "invalid.pokeportfolio.spike", "supportsTablet": false },
     "android": { "package": "invalid.pokeportfolio.spike" },
     "plugins": [
+      "./plugins/with-local-cleartext",
       "expo-secure-store",
       [
         "expo-image-picker",
