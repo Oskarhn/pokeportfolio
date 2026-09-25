@@ -1,4 +1,4 @@
-import { backendDescribe, psql, publicEnv } from './support'
+import { backendDescribe, psql, publicEnv, stackIdentity } from './support'
 
 /**
  * The isolated stack must be harmless to everything outside it. P137 (in the released base, DB 104)
@@ -21,7 +21,11 @@ backendDescribe('local stack isolation', () => {
 
   it('the API this suite talks to is the isolated stack (own project id and port)', () => {
     const env = publicEnv()
-    expect(env.apiUrl).toBe('http://127.0.0.1:55321')
-    expect(env.dbContainer).toBe('supabase_db_pokeportfolio-p158-mobile')
+    const stack = stackIdentity()
+    // Never the repository's shared stack (project `pokeportfolio`, API port 54321).
+    expect(stack.projectId).toMatch(/^pokeportfolio-[a-z0-9-]+$/)
+    expect(stack.portOffset).toBeGreaterThanOrEqual(100)
+    expect(env.apiUrl).toBe(`http://127.0.0.1:${54321 + stack.portOffset}`)
+    expect(env.dbContainer).toBe(`supabase_db_${stack.projectId}`)
   })
 })

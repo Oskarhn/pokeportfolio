@@ -13,6 +13,26 @@ export const ADB = join(sdk, 'platform-tools', process.platform === 'win32' ? 'a
 export const PACKAGE = 'invalid.pokeportfolio.spike'
 export const ACTIVITY = `${PACKAGE}/.MainActivity`
 
+/**
+ * With more than one device attached (a parallel session may run its own emulator), an unscoped
+ * command would either fail or, worse, drive someone else's device. Require ANDROID_SERIAL then;
+ * adb itself honours it for every call below.
+ */
+function assertSingleTarget() {
+  if (process.env.ANDROID_SERIAL) return
+  const r = spawnSync(ADB, ['devices'], { encoding: 'utf8' })
+  const attached = String(r.stdout)
+    .split('\n')
+    .slice(1)
+    .filter((l) => /\t(device|offline|unauthorized)/.test(l))
+  if (attached.length > 1) {
+    throw new Error(
+      `${attached.length} adb devices attached; set ANDROID_SERIAL to the one this run owns`,
+    )
+  }
+}
+assertSingleTarget()
+
 export function adb(args, { encoding = 'utf8', allowFail = false } = {}) {
   const r = spawnSync(ADB, args, { encoding, maxBuffer: 64 * 1024 * 1024 })
   if (r.status !== 0 && !allowFail) {
@@ -47,6 +67,7 @@ export function parseNodes(xml) {
       text: attrs.text ?? '',
       desc: attrs['content-desc'] ?? '',
       cls: attrs.class ?? '',
+      pkg: attrs.package ?? '',
       clickable: attrs.clickable === 'true',
       focusable: attrs.focusable === 'true',
       bounds: b ? { x1: +b[1], y1: +b[2], x2: +b[3], y2: +b[4] } : null,

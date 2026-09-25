@@ -24,10 +24,39 @@ const here = dirname(fileURLToPath(import.meta.url))
 const appRoot = resolve(here, '..')
 const repoRoot = resolve(appRoot, '..', '..')
 const workdir = join(appRoot, '.local-backend')
-export const PROJECT_ID = 'pokeportfolio-p158-mobile'
+
+/**
+ * Stack identity. Parallel worktrees must never share one database, so the project id and port
+ * offset can be chosen per worktree: `SPIKE_BACKEND_PROJECT_ID` / `SPIKE_BACKEND_PORT_OFFSET` on
+ * `start`, which records them in the gitignored `.local-backend/stack.json` so every later command
+ * in the same worktree (env, seed, tests, stop) talks to the same stack. Without either, the P158
+ * defaults apply unchanged.
+ */
+export function resolveStackIdentity(env = process.env, recorded = readRecordedIdentity()) {
+  const projectId =
+    env.SPIKE_BACKEND_PROJECT_ID ?? recorded?.projectId ?? 'pokeportfolio-p158-mobile'
+  const portOffset = Number(env.SPIKE_BACKEND_PORT_OFFSET ?? recorded?.portOffset ?? 1000)
+  // `pokeportfolio` alone is the repository's shared stack; offset 0 would reuse its ports.
+  if (!/^pokeportfolio-[a-z0-9][a-z0-9-]{1,40}$/.test(projectId)) {
+    throw new Error(`refusing stack id "${projectId}": expected pokeportfolio-<suffix>`)
+  }
+  if (!Number.isInteger(portOffset) || portOffset < 100 || portOffset > 9000) {
+    throw new Error(`refusing port offset ${portOffset}: expected an integer in 100..9000`)
+  }
+  return { projectId, portOffset, apiPort: 54321 + portOffset }
+}
+
+function readRecordedIdentity() {
+  const file = join(workdir, 'stack.json')
+  return existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : null
+}
+
+const identity = resolveStackIdentity()
+export const PROJECT_ID = identity.projectId
 export const DB_CONTAINER = `supabase_db_${PROJECT_ID}`
-const PORT_OFFSET = 1000
-const LOCAL_SITE_URL = `http://127.0.0.1:${54321 + PORT_OFFSET}`
+export const API_PORT = identity.apiPort
+const PORT_OFFSET = identity.portOffset
+const LOCAL_SITE_URL = `http://127.0.0.1:${API_PORT}`
 
 /** Sections whose `enabled` flag is forced off: this spike needs Postgres, GoTrue and PostgREST. */
 const DISABLED_SECTIONS = new Set([
@@ -83,6 +112,10 @@ export function prepare() {
     throw new Error('generated config still references the Production origin; refusing')
   }
   writeFileSync(join(target, 'config.toml'), config)
+  writeFileSync(
+    join(workdir, 'stack.json'),
+    JSON.stringify({ projectId: PROJECT_ID, portOffset: PORT_OFFSET }, null, 2),
+  )
   cpSync(join(repoRoot, 'supabase', 'migrations'), join(target, 'migrations'), { recursive: true })
   if (existsSync(join(repoRoot, 'supabase', 'seed'))) {
     cpSync(join(repoRoot, 'supabase', 'seed'), join(target, 'seed'), { recursive: true })
@@ -142,6 +175,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
           apiUrl: env.API_URL,
           publishableKey: env.PUBLISHABLE_KEY ?? env.ANON_KEY,
           dbContainer: DB_CONTAINER,
+          apiPort: API_PORT,
         },
         null,
         2,

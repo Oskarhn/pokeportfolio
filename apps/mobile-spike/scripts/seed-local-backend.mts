@@ -24,7 +24,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createServiceClient, createSyntheticUser } from '../../../tests/db/setup'
 // @ts-expect-error plain .mjs helper without type declarations
-import { DB_CONTAINER, readLocalEnv } from './local-backend.mjs'
+import { API_PORT, DB_CONTAINER, readLocalEnv } from './local-backend.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const outDir = resolve(here, '..', '.local-backend')
@@ -60,7 +60,9 @@ const env = readLocalEnv() as Record<string, string>
 process.env.SUPABASE_URL = env.API_URL
 process.env.SUPABASE_ANON_KEY = env.ANON_KEY
 process.env.SUPABASE_SERVICE_ROLE_KEY = env.SERVICE_ROLE_KEY
-if (!/^http:\/\/(127\.0\.0\.1|localhost):55321$/.test(env.API_URL ?? '')) {
+if (
+  !new RegExp(`^http://(127\\.0\\.0\\.1|localhost):${String(API_PORT)}$`).test(env.API_URL ?? '')
+) {
   throw new Error("refusing to seed: API_URL is not this spike's isolated local stack")
 }
 

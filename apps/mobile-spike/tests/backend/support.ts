@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { AuthController } from '../../src/auth/auth-controller'
@@ -20,9 +20,10 @@ import { FakePhotoPort, MemoryKeyValueStore } from '../support/fakes'
 import { setBackendClient } from '../support/backend-supabase-client'
 
 /**
- * Harness for the tests that run against the REAL isolated local Supabase stack (project id
- * pokeportfolio-p158-mobile, ports 553xx, synthetic data only). They run only when
- * P158_LOCAL_BACKEND=1, so `pnpm test` never needs Docker.
+ * Harness for the tests that run against the REAL isolated local Supabase stack (default project id
+ * pokeportfolio-p158-mobile on ports 553xx; a worktree may record its own in .local-backend/stack.json,
+ * see scripts/local-backend.mjs; synthetic data only). They run only when P158_LOCAL_BACKEND=1, so
+ * `pnpm test` never needs Docker.
  */
 
 export const BACKEND_ENABLED = process.env.P158_LOCAL_BACKEND === '1'
@@ -35,6 +36,15 @@ interface PublicEnv {
   apiUrl: string
   publishableKey: string
   dbContainer: string
+  apiPort?: number
+}
+
+/** The stack this worktree started (written by `local-backend.mjs start`), or the P158 default. */
+export function stackIdentity(): { projectId: string; portOffset: number } {
+  const file = join(dir, 'stack.json')
+  return existsSync(file)
+    ? (JSON.parse(readFileSync(file, 'utf8')) as { projectId: string; portOffset: number })
+    : { projectId: 'pokeportfolio-p158-mobile', portOffset: 1000 }
 }
 interface Fixture {
   users: {
