@@ -4,6 +4,61 @@ Current-state document, written for a session that knows nothing from any earlie
 Read this first, update it last. History lives in [CHANGELOG.md](CHANGELOG.md) and
 [docs/PROJECT_JOURNAL.md](docs/PROJECT_JOURNAL.md).
 
+## Current state (P165, 2026-09-25) — independent verification of the P164 candidate: local only, NOT pushed, NOT released
+
+Branch `test/p165-p164-independent-release-verification` (worktree `p165`) starts exactly at P164 (`bae0b60`, tree `3e88b6e`) and adds **tests, test
+harness, scripts and docs only — no `src/`, no migration, no Edge Function change.** The product behaviour, the migrations (**106**) and the
+release order of P164 are unchanged; hosted database still 104; `origin/main` = `d8682e0` (verified at the start). Hosted Supabase, Cloudflare,
+GitHub, P142/P163 and every other worktree were not touched. Decision: **D-165**. Test guide: `docs/TESTING.md` §6e.
+
+- **The P164 parallel failure was not load (D-165).** Two specs each inserted "Fauxosaur EX 049" (the card the scanner photo prints): `cards` is unique
+  on `(set_id, local_id)`, the second `beforeAll` raised `23505`, six tests never ran. Reproduced (2 workers: 14 passed / 1 failed / 6 not run), traced
+  with a row poller and a browser-free reproduction. Fix: the card and its two printings are reference data with one owner, a lease
+  (`tests/e2e/authenticated/support/scanner-fixture-card.ts`: shared advisory lock, idempotent untargeted `ON CONFLICT DO NOTHING`, deleted by the last
+  holder, a dead holder's lease vanishes, a third printing is refused). Users, ledgers and per-account prices stay per spec. A card per spec or per set
+  does not isolate anything (`search_cards` returned both cards for one printed text). **`--workers=1` is no longer needed.**
+- **Two more defects found while doing it.** (1) `settleDerivedTables` drained once; the drain is one transaction with `SKIP LOCKED` on many users' rows,
+  so a drain in the other spec can hold yours and the baseline was taken early — it now waits until no due row is left for its own users
+  (`support/settle-derived-tables.ts`, proven with two real sessions). (2) **CI's own order — `pnpm test:db`, then the authenticated project on the same
+  database — failed `price-check-ledger.spec.ts` even with one worker**: `catalog_constraints.test.ts` left two extra Pikachu printings and a step assumed
+  Pikachu has one. The DB test now cleans up; the spec no longer depends on a seed card the DB suite touches. This would have turned the exact-head CI
+  run of the P164/P163 line red.
+- **Independent review of the integration seams (no P164 code changed).** Real code, not stubs: the `search-prices` function under Deno with the provider's
+  HTTP answer controlled (`scripts/p165/edge-harness`); the real scanner `commitBatch` + `addCardAcquisition` + production leased client against real
+  GoTrue/PostgREST (A → B → A with a lookup in flight; an unheard storage rewrite); two exports overlapping in one tab across an account change; the read-only
+  port with every property read recorded; variant resolution over 126 list shapes; 400 random orders of scan start/cancel/dispose. Findings, all in D-165 and
+  `docs/API_SOURCES.md`: the rewrite marker defends against the **released** `search-prices` (which emits `9999999999999998` for a provider price of
+  99999999999999.99), not against the new one (which drops such a price before it becomes a bigint); both consumers depend on `@supabase/functions-js` returning
+  `response` (2.112.3 does); an unsafe literal in an unrelated field refuses the whole response; an exponent-form number is refused by the consumers' grammar.
+- **Mutation check (14 mutants, disposable copy, DB suites against the 104 stack):** 14/14 killed by an assertion, 0 survived, 0 invalid, every file restored
+  byte-for-byte (`node scripts/scanner-p151/run-mutations.mjs --mutants scripts/p165/mutants.mjs`; the runner now takes `config` per mutant).
+- **Release compatibility (measured on isolated stacks with 104 and 106 migrations; authenticated E2E of each frontend):**
+
+  | frontend \ database | 104 (hosted today) | 106 (P149's two migrations) |
+  |---|---|---|
+  | released `d8682e0` | 79 / 79 passed | 79 / 79 passed |
+  | P165 (= P164 product) | 162 / 165 passed; the 3 failures are P144's write semantics, see below | 165 / 165 passed (final test code) |
+
+  What needs DB 106 (P144, `20260918120000`): a **purchase whose discount exceeds the subtotal** (up to subtotal + shipping + customs; DB 104 raises
+  `P0001`), a **sale with unknown cost basis and negative net proceeds** (DB 104: `sales_amounts_non_negative`), and the DB-side date bounds (DB 104 accepts
+  what DB 106 refuses). Against DB 104 the P165 frontend therefore *fails closed* on those two saves (a database error, nothing stored); the DB 106 changes only
+  accept more or refuse what the released forms already refuse, so the released frontend keeps working on 106 (79/79). **The P148 exception "released frontend
+  against DB 106 not run" is closed for the released authenticated suite** (13 specs; it does not exercise P144's new writes, which the released client cannot make).
+  Release order is unchanged: DB before frontend. Rollback of the database is not tested.
+- **Gates on the final tree** (isolated stack `pokeportfolio-p165`, ports 582xx, fresh reset, 106/106, pg_cron off, `environment_ingest_config` empty):
+  DB suite 954 passed / 1 skipped (P164: 932; +22 new), grant audit clean before and after, finance diagnostics 45 counts all 0 (weak: the DB holds no rows after
+  the suites clean up); `pnpm check` — typecheck, lint (0 errors, 30 warnings), format, unit 186 files / 2652 passed / 1 skipped; build with the CI environment,
+  platform verifier 28/28, links 31/31, scanner content id `f25fc05d569b7cca`; **authenticated E2E, 165 scheduled, 4 workers: 165 passed / 0 failed / 0 skipped in
+  runs 3, 4 and 6 (final test code); runs 1, 2 and 5 had failures, listed in `docs/TESTING.md` §6e**; browser E2E desktop + iPhone emulation 390 passed / 114 skipped /
+  0 failed (3 workers; a first 6-worker run had 5 preview-server-load failures that pass alone); M12 44 (+2 skipped), M13 62, M16 53; scanner stress 30, ROI smoke 0 failures.
+  Local-stack facts: `deno` is needed for the Deno-backed tests (skipped loudly without it; CI has none); `pnpm build` on a fresh worktree fetches the pinned,
+  SHA-256-verified DINOv2 weights into a gitignored cache.
+- **Not verified:** the live provider and any deployed function (the function ran locally with a controlled provider); a physical iPhone; a rollback drill; GitHub
+  Actions capacity; the released frontend against DB 106 for anything the released suite does not cover; one intermittent failure of a P149 spec (`p149-refresh-failure` "refresh endpoint
+  unreachable", 60 s `waitForURL` after the 62 s cool-down) in one of six four-worker full runs — not reproduced in 10 concurrent repeats or a six-worker load run, cause unknown; the
+  wall-clock-window specs (that one, the 30 s `private-routes-smoke` tests) are load-sensitive on a busy desktop.
+
+
 ## Current state (P164, 2026-09-25) — auth/export candidate (P149 + P162) + scanner/Price Check candidate (P161) INTEGRATED: local only, NOT pushed, NOT released
 
 Branch `feat/p164-integrated-auth-export-scanner-price` (worktree `p164`) starts exactly at P162 (`66eba62`, which contains P149 `7fb83c2`) and
