@@ -182,9 +182,12 @@ const MUTANTS = [
   },
   {
     id: 'M13',
-    title: 'F3: tabs fall back to the missing-glyph icon',
+    title: 'F3: tabs fall back to the missing-glyph icon (no icon, icon slot shown)',
     file: 'src/ui/MainNavigator.tsx',
-    edits: [['    tabBarIcon: () => null,\n', '']],
+    edits: [
+      ['    tabBarIcon: () => null,\n', ''],
+      ["        tabBarIconStyle: { display: 'none' },\n", ''],
+    ],
     tests: ['tests/unit/p167-platform.test.tsx'],
   },
   {
