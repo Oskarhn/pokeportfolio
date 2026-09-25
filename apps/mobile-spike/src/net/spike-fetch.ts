@@ -27,6 +27,13 @@ export const READ_ONLY_RPCS: ReadonlySet<string> = new Set([
   'get_card_variant_price_history',
 ])
 
+/**
+ * Edge Functions that only READ (P169). `search-prices` relays provider prices for a batch of
+ * catalog cards and persists nothing (a search never becomes price history); it is the Price Check
+ * source. No other function (ingest-*, sync-catalog, redeem-invitation, fetch-fx-rate) is allowed.
+ */
+export const READ_ONLY_FUNCTIONS: ReadonlySet<string> = new Set(['search-prices'])
+
 export class WriteRefusedError extends Error {
   readonly code = 'write_refused'
   constructor(method: string, path: string) {
@@ -65,6 +72,8 @@ export function assertReadOnlyRequest(method: string, url: string): void {
     if (path === '/auth/v1/token' || path === '/auth/v1/logout') return
     const rpc = /^\/rest\/v1\/rpc\/([a-z0-9_]+)$/.exec(path)
     if (rpc?.[1] !== undefined && READ_ONLY_RPCS.has(rpc[1])) return
+    const fn = /^\/functions\/v1\/([a-z0-9-]+)$/.exec(path)
+    if (fn?.[1] !== undefined && READ_ONLY_FUNCTIONS.has(fn[1])) return
   }
   throw new WriteRefusedError(upper, path)
 }
