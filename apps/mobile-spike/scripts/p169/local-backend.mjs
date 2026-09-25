@@ -41,7 +41,8 @@ const repoRoot = resolve(appRoot, '..', '..')
 
 export const RELEASED_SHA = 'd8682e047b757f63673a63ac8185a4806d68cb98'
 export const CANDIDATE_SHA = '3d03eec7a24756c635857bc7320b51e17cc8572c'
-export const MOCK_TCGDEX_PORT = 55999
+// Not 55999: the P166 backend tests use 127.0.0.1:55999 as their deliberately DEAD URL.
+export const MOCK_TCGDEX_PORT = 55979
 const MOCK_BASE_URL = `http://host.docker.internal:${MOCK_TCGDEX_PORT}/v2`
 const TCGDEX_BASE_LITERAL = "const BASE_URL = 'https://api.tcgdex.net/v2'"
 

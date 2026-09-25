@@ -29,7 +29,7 @@ const dir = join(
   '../../.local-backend',
   process.env.P169_STACK === 'db106' ? 'p169-db106' : 'p169',
 )
-export const MOCK_URL = 'http://127.0.0.1:55999'
+export const MOCK_URL = 'http://127.0.0.1:55979'
 
 interface PublicEnv {
   apiUrl: string

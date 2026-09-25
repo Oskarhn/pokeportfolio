@@ -1,6 +1,10 @@
 import type { SearchPage } from '../../src/features/catalog-search/catalog-search-port'
 import { CatalogSearchStore } from '../../src/features/catalog-search/catalog-search-store'
-import { deferred, flush, session } from '../support/fakes'
+import { IdentityAuthority } from '../../src/auth/identity-authority'
+import type { PriceCheckResult } from '../../src/features/price-check/model'
+import { PriceCheckFlowStore } from '../../src/features/price-check/price-check-flow-store'
+import type { PriceLookupService } from '../../src/features/price-check/price-lookup'
+import { deferred, flush, session, type Deferred } from '../support/fakes'
 import { body, card, hit, obs, p169Harness, variant } from '../support/p169-fakes'
 
 /**
@@ -354,5 +358,73 @@ describe('catalog search', () => {
       hits: [],
       failure: { kind: 'offline', retryable: true },
     })
+  })
+})
+
+describe('store guards do not rely on the adapter honouring AbortSignal', () => {
+  // A lookup service that answers whenever it likes and ignores the signal (a future adapter, or a
+  // transport without abort support). The store's own key / abort / lease guard must still hold.
+  function stubbed() {
+    const authority = new IdentityAuthority()
+    authority.observe('A')
+    const answers: Deferred<PriceCheckResult>[] = []
+    const prices = {
+      lookup: () => {
+        const d = deferred<PriceCheckResult>()
+        answers.push(d)
+        return d.promise
+      },
+    } as unknown as PriceLookupService
+    const cards = new Map([[PIKA.cardId, { card: PIKA, variants: [NORMAL, REVERSE] }]])
+    const store = new PriceCheckFlowStore(
+      (id) => Promise.resolve(cards.get(id) ?? null),
+      prices,
+      authority,
+    )
+    return { store, answers }
+  }
+  const result = (variantId: string): PriceCheckResult => ({
+    cardId: PIKA.cardId,
+    variantId,
+    source: 'search_prices',
+    raw: {
+      status: 'unavailable',
+      contract: 'search_prices_observations',
+      reason: 'no_variant_price',
+      dropped: [],
+      fetchedAt: '2026-09-25T12:00:00.000Z',
+      fromCache: false,
+    },
+    graded: {
+      status: 'unavailable',
+      observations: [],
+      unavailable: 'graded_source_not_configured',
+      dropped: [],
+      sources: [],
+    },
+  })
+
+  it('an answer that arrives after cancel() is not published', async () => {
+    const { store, answers } = stubbed()
+    await store.openCard(PIKA.cardId)
+    const p = store.chooseVariant(NORMAL.variantId)
+    await flush()
+    store.cancel()
+    answers[0]?.resolve(result(NORMAL.variantId))
+    await p
+    expect(store.getSnapshot().lookup).toMatchObject({ status: 'idle', result: null })
+  })
+
+  it('an answer for the previous printing never overwrites the current one', async () => {
+    const { store, answers } = stubbed()
+    await store.openCard(PIKA.cardId)
+    const first = store.chooseVariant(NORMAL.variantId)
+    await flush()
+    const second = store.chooseVariant(REVERSE.variantId)
+    await flush()
+    answers[1]?.resolve(result(REVERSE.variantId))
+    answers[0]?.resolve(result(NORMAL.variantId))
+    await Promise.all([first, second])
+    expect(store.getSnapshot().lookup.result?.variantId).toBe(REVERSE.variantId)
   })
 })

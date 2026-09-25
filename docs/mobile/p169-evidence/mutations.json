@@ -1,0 +1,81 @@
+[
+  {
+    "mutant": "auto-select the first printing",
+    "result": "KILLED",
+    "summary": "7 failed, 57 passed, 64 total",
+    "failingTests": [
+      "P169 screens › card with two printings: choose first, then exact money on ONE line, NOK reference, graded unavailable",
+      "printing confirmation › several ACTIVE printings: choice required, and NO price request until the person chooses",
+      "printing confirmation › one active printing is confirmed as only_variant and looked up; an inactive one does not count",
+      "printing confirmation › switching printing while a lookup is in flight drops the old answer"
+    ]
+  },
+  {
+    "mutant": "cache key by card NAME instead of card id",
+    "result": "KILLED",
+    "summary": "1 failed, 63 passed, 64 total",
+    "failingTests": [
+      "cache keys and identity › two cards with the SAME name and number in different sets never share a price"
+    ]
+  },
+  {
+    "mutant": "NULL amount rendered as zero",
+    "result": "KILLED",
+    "summary": "1 failed, 63 passed, 64 total",
+    "failingTests": [
+      "P169 copy › an absent amount renders as the dash, never as a zero"
+    ]
+  },
+  {
+    "mutant": "unsafe JSON number accepted (transport scan disabled, so it reaches BigInt/Number)",
+    "result": "KILLED",
+    "summary": "1 failed, 63 passed, 64 total",
+    "failingTests": [
+      "in-app proof (Node engine) › every P169 proof check passes"
+    ]
+  },
+  {
+    "mutant": "graded price derived from the raw price (x3 \"PSA 10\")",
+    "result": "KILLED",
+    "summary": "1 failed, 63 passed, 64 total",
+    "failingTests": [
+      "graded and snapshots › graded is ALWAYS not configured, never derived from a raw price"
+    ]
+  },
+  {
+    "mutant": "identity epoch dropped (stores not reset on A -> B)",
+    "result": "KILLED",
+    "summary": "4 failed, 60 passed, 64 total",
+    "failingTests": [
+      "identity boundary (A -> B, A -> B -> A, same-user refresh) › A -> B during an in-flight price request: A state gone at once, the late answer is dropped",
+      "identity boundary (A -> B, A -> B -> A, same-user refresh) › A -> B during an in-flight SEARCH: results cleared, A answer dropped, B searches fresh",
+      "identity boundary (A -> B, A -> B -> A, same-user refresh) › A -> B -> A: the second A session does not reuse the first one (cache reset, new request)",
+      "catalog search › repeating a query is served from the cache; the cache is dropped with the identity"
+    ]
+  },
+  {
+    "mutant": "price result published after cancel / variant switch",
+    "result": "KILLED",
+    "summary": "2 failed, 62 passed, 64 total",
+    "failingTests": [
+      "store guards do not rely on the adapter honouring AbortSignal › an answer that arrives after cancel() is not published",
+      "store guards do not rely on the adapter honouring AbortSignal › an answer for the previous printing never overwrites the current one"
+    ]
+  },
+  {
+    "mutant": "acquisition call introduced into the read-only feature",
+    "result": "KILLED",
+    "summary": "1 failed, 63 passed, 64 total",
+    "failingTests": [
+      "read-only by construction › no feature file imports a ledger/write data module or calls a write API"
+    ]
+  },
+  {
+    "mutant": "freshness label omitted for stale data",
+    "result": "KILLED",
+    "summary": "1 failed, 63 passed, 64 total",
+    "failingTests": [
+      "P169 copy › freshness is always named, and an old price is never presented as current"
+    ]
+  }
+]
