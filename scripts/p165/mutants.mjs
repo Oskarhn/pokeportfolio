@@ -110,6 +110,14 @@ export const MUTANTS = [
     tests: ['tests/domain/price-check/p165-variant-resolution.test.ts'],
   },
   {
+    id: 'P8',
+    what: 'the scan session no longer checks its abort signal: a scan abandoned by a newer one still delivers',
+    file: 'src/features/price-check/scan-session.ts',
+    find: "      if (isAborted(controller.signal)) return { status: 'abandoned' }\n",
+    replace: '',
+    tests: ['tests/ui/p165-scan-session-latest-wins.test.ts'],
+  },
+  {
     id: 'P6a',
     what: 'the delivery gate only checks that a lease EXISTS: an ended lease (A -> B) still hands files to the browser',
     file: 'src/features/export/fileDelivery.ts',
