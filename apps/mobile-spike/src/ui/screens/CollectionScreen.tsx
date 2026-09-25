@@ -1,5 +1,13 @@
-import { useEffect } from 'react'
-import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native'
+import { memo, useCallback, useEffect, useState } from 'react'
+import {
+  FlatList,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+  type LayoutChangeEvent,
+  type ListRenderItem,
+} from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { nokMoney, type CollectionRow } from '../../collection/types'
 import { Body, EmptyView, FailureView, Loading, MoneyText } from '../components'
@@ -12,7 +20,18 @@ export const ROW_HEIGHT = 72
 
 type Props = NativeStackScreenProps<CollectionStackParams, 'CollectionList'>
 
-function Row({ row, onPress }: { row: CollectionRow; onPress: () => void }) {
+/**
+ * Memoised: a row re-renders only when its own data (or the colour scheme) changes. Before P167 every
+ * appended page re-rendered every mounted row, because each render built a new `renderItem` and a new
+ * `onPress` closure per row (tests/unit/collection-render.test.tsx counts this).
+ */
+const Row = memo(function Row({
+  row,
+  onOpen,
+}: {
+  row: CollectionRow
+  onOpen: (holdingId: string) => void
+}) {
   const p = usePalette()
   const value = nokMoney(row.holdingValueMinor)
   return (
@@ -20,7 +39,7 @@ function Row({ row, onPress }: { row: CollectionRow; onPress: () => void }) {
       testID={`row-${row.holdingId}`}
       accessibilityRole="button"
       accessibilityLabel={`${row.title}, ${row.quantity} owned`}
-      onPress={onPress}
+      onPress={() => onOpen(row.holdingId)}
       style={{
         height: ROW_HEIGHT,
         minHeight: MIN_TOUCH,
@@ -50,10 +69,14 @@ function Row({ row, onPress }: { row: CollectionRow; onPress: () => void }) {
           {row.quantity}
         </Text>
       </View>
-      <MoneyText value={value} />
+      {/* The amount may take at most 60 % of the row and shrinks to one line rather than pushing the
+          title out entirely or cutting digits off (P166 F4, large text). */}
+      <View style={{ maxWidth: '60%', flexShrink: 1, alignItems: 'flex-end' }}>
+        <MoneyText value={value} fit="shrink" />
+      </View>
     </Pressable>
   )
-}
+})
 
 export function CollectionScreen({ navigation }: Props) {
   const { collection } = useRuntime()
@@ -64,8 +87,36 @@ export function CollectionScreen({ navigation }: Props) {
     if (collection.getSnapshot().status === 'idle') void collection.load()
   }, [collection])
 
+  const openHolding = useCallback(
+    (holdingId: string) => navigation.navigate('CardDetail', { holdingId }),
+    [navigation],
+  )
+  const renderItem = useCallback<ListRenderItem<CollectionRow>>(
+    ({ item }) => <Row row={item} onOpen={openHolding} />,
+    [openHolding],
+  )
+  // Row offsets start below the header; getItemLayout must include its (text-size dependent) height,
+  // or the list windows the wrong rows for positions it has not measured yet.
+  const [headerHeight, setHeaderHeight] = useState(0)
+  const onHeaderLayout = useCallback(
+    (e: LayoutChangeEvent) => setHeaderHeight(Math.round(e.nativeEvent.layout.height)),
+    [],
+  )
+  const getItemLayout = useCallback(
+    (_data: ArrayLike<CollectionRow> | null | undefined, index: number) => ({
+      length: ROW_HEIGHT,
+      offset: headerHeight + ROW_HEIGHT * index,
+      index,
+    }),
+    [headerHeight],
+  )
+
   const header = (
-    <View style={{ padding: SPACE.lg, gap: SPACE.xs }} testID="collection-summary">
+    <View
+      style={{ padding: SPACE.lg, gap: SPACE.xs }}
+      testID="collection-summary"
+      onLayout={onHeaderLayout}
+    >
       {state.counts !== null ? (
         <>
           <Body muted>
@@ -112,13 +163,8 @@ export function CollectionScreen({ navigation }: Props) {
       testID="collection-list"
       data={state.rows}
       keyExtractor={(row) => row.holdingId}
-      renderItem={({ item }) => (
-        <Row
-          row={item}
-          onPress={() => navigation.navigate('CardDetail', { holdingId: item.holdingId })}
-        />
-      )}
-      getItemLayout={(_data, index) => ({ length: ROW_HEIGHT, offset: ROW_HEIGHT * index, index })}
+      renderItem={renderItem}
+      getItemLayout={getItemLayout}
       initialNumToRender={12}
       maxToRenderPerBatch={12}
       windowSize={7}
