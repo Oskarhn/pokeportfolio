@@ -77,15 +77,35 @@ export function Heading({ children }: { children: ReactNode }) {
   )
 }
 
-/** A money figure. Absent (null) renders the honest dash, never a zero (see format-money.ts). */
+/**
+ * The formatter joins digit groups (and the amount and "kr") with no-break spaces, so a long amount is
+ * one unbreakable word and Android split it INSIDE a group at large text sizes ("8 917 127 26" /
+ * "2 195 456,87 kr", P166 F4). For wrapping layouts those separators become ordinary spaces: a line
+ * can then break only between whole groups or before the currency. The digits, the grouping and the
+ * accessibility label are unchanged; formatMoney itself is not touched.
+ */
+export function breakableMoneyText(formatted: string): string {
+  return formatted.replace(/[\u00A0\u202F]/g, ' ')
+}
+
+/** Smallest scale a one-line amount may shrink to; far below any amount this app can hold. */
+export const MONEY_MIN_FONT_SCALE = 0.4
+
+/**
+ * A money figure. Absent (null) renders the honest dash, never a zero (see format-money.ts).
+ * `fit`: 'wrap' (default) may take several lines, breaking only between digit groups; 'shrink' stays on
+ * one line and scales the font down instead of cutting digits off (fixed-height list rows).
+ */
 export function MoneyText({
   value,
   testID,
   emphasis,
+  fit = 'wrap',
 }: {
   value: Money | null
   testID?: string
   emphasis?: boolean
+  fit?: 'wrap' | 'shrink'
 }) {
   const p = usePalette()
   const text = formatMoney(value)
@@ -93,6 +113,9 @@ export function MoneyText({
     <Text
       testID={testID}
       accessibilityLabel={value === null ? 'No value' : text}
+      {...(fit === 'shrink'
+        ? { numberOfLines: 1, adjustsFontSizeToFit: true, minimumFontScale: MONEY_MIN_FONT_SCALE }
+        : {})}
       style={{
         color: value === null ? p.muted : p.text,
         fontSize: emphasis === true ? 20 : 15,
@@ -100,7 +123,7 @@ export function MoneyText({
         fontVariant: ['tabular-nums'],
       }}
     >
-      {text}
+      {fit === 'wrap' ? breakableMoneyText(text) : text}
     </Text>
   )
 }

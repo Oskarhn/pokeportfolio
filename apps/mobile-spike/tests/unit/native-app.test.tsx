@@ -110,9 +110,13 @@ describe('collection', () => {
       JSON.stringify((await screen.findByTestId(id)).props.children)
     expect(await screen.findByTestId('row-big')).toBeTruthy()
     expect(screen.getByTestId('collection-list')).toBeTruthy()
-    expect(await text('collection-total')).toContain(
-      `8${NB}917${NB}127${NB}262${NB}195${NB}456,87 kr`,
-    )
+    // The total may wrap: its visible text breaks only between digit groups (P167 F4), while what a
+    // screen reader announces is the exact formatted amount.
+    const exactTotal = `8${NB}917${NB}127${NB}262${NB}195${NB}456,87 kr`
+    const total = await screen.findByTestId('collection-total')
+    expect(total.props.accessibilityLabel).toBe(exactTotal)
+    expect(await text('collection-total')).toContain(exactTotal.replace(/[\u00A0\u202F]/g, ' '))
+    expect(await text('collection-total')).not.toMatch(/[\u00A0\u202F]/)
     expect(screen.getByText(`8${NB}646${NB}911${NB}284${NB}551${NB}352,35 kr`)).toBeTruthy()
     expect(screen.getByText('0,00 kr')).toBeTruthy()
     expect(screen.getByText('—')).toBeTruthy()

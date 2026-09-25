@@ -1,12 +1,14 @@
+import { useMemo } from 'react'
 import { useColorScheme } from 'react-native'
+import { DarkTheme, DefaultTheme, type Theme } from '@react-navigation/native'
 
 /**
  * NEUTRAL, PROVISIONAL styling: system colours only, no brand, no icon, no typeface choice. The
  * owner has not selected a visual direction (P154 proposes several; none is approved), so nothing here
- * decides one. Touch targets are at least 44 pt (Apple HIG) / 48 dp is not enforced; text uses the
- * system font and scales with the user's text-size setting (`allowFontScaling` stays on).
+ * decides one. Touch targets are at least 48 dp (Android; this also satisfies Apple's 44 pt); text uses
+ * the system font and scales with the user's text-size setting (`allowFontScaling` stays on).
  */
-export const MIN_TOUCH = 44
+export const MIN_TOUCH = 48
 
 export interface Palette {
   background: string
@@ -46,6 +48,34 @@ const DARK: Palette = {
 
 export function usePalette(): Palette {
   return useColorScheme() === 'dark' ? DARK : LIGHT
+}
+
+/**
+ * The navigation chrome (header, tab bar, stack background) in the same scheme as the content. Without
+ * it React Navigation keeps its light default: in dark mode the header and tab bar stayed light while
+ * `expo-status-bar` ("auto") switched the status-bar icons to light, i.e. white on white (P166 F5).
+ */
+export function navigationTheme(scheme: 'light' | 'dark'): Theme {
+  const base = scheme === 'dark' ? DarkTheme : DefaultTheme
+  const p = scheme === 'dark' ? DARK : LIGHT
+  return {
+    ...base,
+    dark: scheme === 'dark',
+    colors: {
+      ...base.colors,
+      primary: p.accent,
+      background: p.background,
+      card: p.surface,
+      text: p.text,
+      border: p.border,
+      notification: p.danger,
+    },
+  }
+}
+
+export function useNavigationTheme(): Theme {
+  const scheme = useColorScheme() === 'dark' ? 'dark' : 'light'
+  return useMemo(() => navigationTheme(scheme), [scheme])
 }
 
 export const SPACE = { xs: 4, sm: 8, md: 12, lg: 16, xl: 24 } as const

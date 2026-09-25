@@ -10,6 +10,7 @@
     "android": { "package": "invalid.pokeportfolio.spike" },
     "plugins": [
       "./plugins/with-local-cleartext",
+      "./plugins/with-navigation-bar-follows-theme",
       "expo-secure-store",
       [
         "expo-image-picker",

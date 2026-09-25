@@ -5,6 +5,7 @@ import { PhotoStore, type PhotoPort } from '../photo/photo-store'
 import type { PriceCheckPort } from '../price-check/types'
 import { CollectionStore } from '../state/collection-store'
 import { HoldingDetailStore } from '../state/holding-detail-store'
+import { NavigationMemory } from '../state/navigation-memory'
 import { PriceCheckStore } from '../state/price-check-store'
 import { ScopedRegistry } from '../state/registry'
 
@@ -31,6 +32,7 @@ export interface Runtime {
   holdingDetail: HoldingDetailStore
   priceCheck: PriceCheckStore
   photo: PhotoStore
+  navigation: NavigationMemory
   ports: RuntimeDeps['priceCheck']
 }
 
@@ -46,6 +48,8 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
   registry.register('holding-detail', holdingDetail)
   registry.register('price-check', priceCheck)
   registry.register('photo', photo)
+  const navigation = new NavigationMemory()
+  registry.register('navigation', navigation)
 
   const auth = new AuthController({
     auth: deps.auth,
@@ -64,6 +68,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
     holdingDetail,
     priceCheck,
     photo,
+    navigation,
     ports: deps.priceCheck,
   }
 }

@@ -1,9 +1,12 @@
-import { useState } from 'react'
-import { KeyboardAvoidingView, Platform, ScrollView, Text, TextInput, View } from 'react-native'
+import { useRef, useState } from 'react'
+import { KeyboardAvoidingView, ScrollView, Text, TextInput, View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { Body, Button, Heading } from '../components'
 import { useRuntime } from '../runtime-context'
 import { MIN_TOUCH, SPACE, usePalette } from '../theme'
+
+/** Same on both platforms; exported so a test pins it (an `undefined` here is the P166 F7 defect). */
+export const KEYBOARD_BEHAVIOR = 'padding' as const
 
 /**
  * Sign-in against the LOCAL synthetic backend. Credentials live only in component state for the
@@ -15,6 +18,7 @@ export function LoginScreen({ notice }: { notice?: string | null }) {
   const p = usePalette()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const passwordRef = useRef<TextInput>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -44,10 +48,9 @@ export function LoginScreen({ notice }: { notice?: string | null }) {
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: p.background }} testID="login-screen">
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      >
+      {/* Android 15+ draws edge-to-edge for apps targeting SDK 35+, so `adjustResize` no longer shrinks
+          the window for the keyboard: without padding here the keyboard covered "Sign in" (P166 F7). */}
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={KEYBOARD_BEHAVIOR}>
         <ScrollView
           keyboardShouldPersistTaps="handled"
           contentContainerStyle={{
@@ -73,11 +76,15 @@ export function LoginScreen({ notice }: { notice?: string | null }) {
               autoComplete="email"
               keyboardType="email-address"
               textContentType="username"
+              returnKeyType="next"
+              submitBehavior="submit"
+              onSubmitEditing={() => passwordRef.current?.focus()}
               placeholder="Email"
               placeholderTextColor={p.muted}
               style={input}
             />
             <TextInput
+              ref={passwordRef}
               testID="login-password"
               accessibilityLabel="Password"
               value={password}
@@ -89,6 +96,7 @@ export function LoginScreen({ notice }: { notice?: string | null }) {
               textContentType="password"
               placeholder="Password"
               placeholderTextColor={p.muted}
+              returnKeyType="go"
               onSubmitEditing={() => void submit()}
               style={input}
             />

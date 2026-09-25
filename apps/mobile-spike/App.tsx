@@ -1,7 +1,7 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect } from 'react'
 import { AppState, ScrollView, Text } from 'react-native'
 import { StatusBar } from 'expo-status-bar'
-import { createRuntime } from './src/wiring/runtime'
+import { createRuntime, type Runtime } from './src/wiring/runtime'
 import { attachForegroundRefresh } from './src/auth/auth-controller'
 import { createSharedCollectionPort } from './src/collection/shared-data-adapter'
 import { createExpoPhotoPort } from './src/photo/expo-photo-port'
@@ -31,22 +31,33 @@ export default function App() {
   return <ConfiguredApp host={backendConfig.config.host} />
 }
 
+/**
+ * One runtime per JS runtime, not per mount. When Android recreates the Activity (font size, display
+ * size, language) React Native mounts a NEW root in the SAME JS runtime: a runtime created in a hook
+ * was then created again, with empty stores, a second auth subscription and no memory of the screen
+ * the person was on, while the old one lived on unseen (P167).
+ */
+let appRuntime: Runtime | null = null
+function getAppRuntime(): Runtime {
+  appRuntime ??= createRuntime({
+    auth: supabase.auth,
+    removeStoredSession: clearStoredSession,
+    collection: createSharedCollectionPort(),
+    priceCheck: {
+      released: createReleasedPriceCheckPort(),
+      fixture: createFixturePriceCheckPort(),
+    },
+    photo: createExpoPhotoPort(),
+  })
+  return appRuntime
+}
+
 function ConfiguredApp({ host }: { host: string }) {
-  const runtime = useMemo(
-    () =>
-      createRuntime({
-        auth: supabase.auth,
-        removeStoredSession: clearStoredSession,
-        collection: createSharedCollectionPort(),
-        priceCheck: {
-          released: createReleasedPriceCheckPort(),
-          fixture: createFixturePriceCheckPort(),
-        },
-        photo: createExpoPhotoPort(),
-      }),
-    [],
-  )
+  const runtime = getAppRuntime()
   useEffect(() => attachForegroundRefresh(supabase.auth, AppState, AppState.currentState), [])
+  // A picker copy shown when the previous process died was never released: remove it before anyone
+  // signs in (P167).
+  useEffect(() => void runtime.photo.purgeOrphans(), [runtime])
   return (
     <>
       <AppRoot runtime={runtime} backendHost={host} />
