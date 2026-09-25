@@ -11,6 +11,7 @@ import {
   type TestClient,
 } from '../../db/setup'
 import { acquireScannerFixtureCard, type ScannerFixtureLease } from './support/scanner-fixture-card'
+import { settleDerivedTables as settleQueueFor } from './support/settle-derived-tables'
 
 /**
  * P153 — the ledger non-mutation proof. Price Check must be unable to change anything a person
@@ -164,8 +165,8 @@ async function buildLedger(client: TestClient): Promise<string[]> {
  *  page — so it is drained NOW, before each baseline, leaving nothing for the scheduler to change
  *  mid-test while every table (including those two) is still compared strictly. */
 async function settleDerivedTables(): Promise<void> {
-  const { error } = await service.rpc('drain_portfolio_recompute_queue', { p_batch_users: 100 })
-  if (error) throw new Error(`drain_portfolio_recompute_queue failed: ${error.message}`)
+  // Not "drain once": a drain running in another worker can hold these users' rows (P165).
+  await settleQueueFor(service, pgClient, [userA.id, userB.id])
 }
 
 /** Every user-owned table, discovered from the catalog: count + md5 of every row's full text. */

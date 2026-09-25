@@ -25,6 +25,7 @@ import {
   SCANNER_FIXTURE_CARD,
   type ScannerFixtureLease,
 } from './support/scanner-fixture-card'
+import { settleDerivedTables as settleQueueFor } from './support/settle-derived-tables'
 
 /**
  * P164 — the three integrated tracks in ONE real browser against the real local stack:
@@ -173,9 +174,9 @@ interface Snapshot {
 
 async function settleDerivedTables(): Promise<void> {
   // pg_cron is switched off on this stack, so the portfolio recompute queue is drained by hand:
-  // derived bookkeeping, not a page write.
-  const { error } = await service.rpc('drain_portfolio_recompute_queue', { p_batch_users: 100 })
-  if (error) throw new Error(`drain_portfolio_recompute_queue failed: ${error.message}`)
+  // derived bookkeeping, not a page write. Not "drain once": a drain running in another worker can
+  // hold these users' rows (P165), so this waits until none is due or in flight.
+  await settleQueueFor(service, pgClient, [userA.id, userB.id])
 }
 
 async function snapshot(userId: string, client: TestClient): Promise<Snapshot> {

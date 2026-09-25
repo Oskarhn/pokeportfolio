@@ -107,6 +107,16 @@ describe('E2E fixture ownership: the printed scanner fixture card (P165)', () =>
     expect(leasing).toEqual(scanning)
   })
 
+  it('no spec drains the portfolio recompute queue by itself: settling waits for the rows another worker may hold', () => {
+    const offenders = allSpecs.filter((s) => /drain_portfolio_recompute_queue/.test(s.text))
+    expect(offenders.map((s) => s.name)).toEqual([])
+    const settling = allSpecs.filter((s) => /\bsettleQueueFor\(/.test(s.text))
+    expect(settling.map((s) => authenticatedName(s.name)).sort()).toEqual([
+      'p164-cross-track.spec.ts',
+      'price-check-ledger.spec.ts',
+    ])
+  })
+
   it('the lease is given back only after the spec removed its own users, and the spec never deletes the shared rows', () => {
     for (const name of ['p164-cross-track.spec.ts', 'price-check-ledger.spec.ts']) {
       const text = readFileSync(join(DIR, name), 'utf8')
