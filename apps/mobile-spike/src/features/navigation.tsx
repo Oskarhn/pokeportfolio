@@ -3,21 +3,17 @@ import type { P169Feature } from './feature'
 import type { AddToCollectionIntent } from './price-check/price-check-flow-store'
 
 /**
- * ROUTE / REGISTRATION CONTRACT for integrating P169 into the app's real navigator (owned by P167).
- * Nothing here creates a navigator or changes the shell: the host adds these screens to ONE of its
- * native stacks and wraps that subtree in {@link P169FeatureProvider}.
+ * ROUTE / REGISTRATION CONTRACT of the Search / Price Check feature, as integrated in the shell
+ * (src/ui/MainNavigator.tsx, src/ui/AppRoot.tsx). The feature never creates a navigator or an
+ * identity system: the composition root (src/wiring/runtime.ts) builds it over the runtime's own
+ * IdentityAuthority and ScopedRegistry, so an identity change resets its stores synchronously with
+ * every other user-scoped store, and its requests are leased from that one authority. The shell
  *
- *   const feature = createP169Feature({ authority, registry, invoke, readFx, photo })  // once, next to createRuntime
- *   <P169FeatureProvider feature={feature} host={{ onAddToCollection }}>
- *     <Stack.Navigator>
- *       {P169_SCREENS.map((s) => <Stack.Screen key={s.name} name={s.name} component={s.component} options={{ title: s.title }} />)}
- *     </Stack.Navigator>
- *   </P169FeatureProvider>
+ *   - adds P169_SCREENS to ONE native stack (the Search tab's), alongside the shell's own screens,
+ *   - wraps the identity-keyed subtree in {@link P169FeatureProvider} so the screens find the feature,
+ *   - maps host.onAddToCollection to a screen that says nothing was saved (an intent only).
  *
- * The host stack's param list must include {@link P169StackParams} (an intersection is fine). The
- * provider must sit INSIDE the identity-keyed subtree the shell already remounts on A -> B, and the
- * feature's stores must be created with the runtime's own authority and registry (createP169Feature
- * does the registration), so an identity change resets them synchronously.
+ * The host stack's param list must include {@link P169StackParams} (an intersection is fine).
  *
  * RETURN STATES: the feature never navigates outside its own routes. The only thing it hands back
  * is an {@link AddToCollectionIntent} (card id + CONFIRMED variant id, `requiresConfirmation: true`)
