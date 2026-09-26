@@ -10,8 +10,12 @@ import { join } from 'node:path'
 
 const sdk = process.env.ANDROID_HOME ?? join(process.env.LOCALAPPDATA ?? '', 'Android', 'Sdk')
 export const ADB = join(sdk, 'platform-tools', process.platform === 'win32' ? 'adb.exe' : 'adb')
-export const PACKAGE = 'invalid.pokeportfolio.spike'
-export const ACTIVITY = `${PACKAGE}/.MainActivity`
+// The code namespace is fixed (app.json). A session may install the build under its OWN application
+// id (SPIKE_PACKAGE, set in the generated, gitignored android/ project by its build script) so that
+// parallel sessions never share app data on a device.
+export const NAMESPACE = 'invalid.pokeportfolio.spike'
+export const PACKAGE = process.env.SPIKE_PACKAGE ?? NAMESPACE
+export const ACTIVITY = `${PACKAGE}/${NAMESPACE}.MainActivity`
 
 /**
  * With more than one device attached (a parallel session may run its own emulator), an unscoped

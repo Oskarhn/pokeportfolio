@@ -4,7 +4,7 @@ import { StatusBar } from 'expo-status-bar'
 import { createRuntime, type Runtime } from './src/wiring/runtime'
 import { attachForegroundRefresh } from './src/auth/auth-controller'
 import { createSharedCollectionPort } from './src/collection/shared-data-adapter'
-import { logP169Event } from './src/diagnostics/feature-events'
+import { logP169Event, logRuntimeCreated } from './src/diagnostics/feature-events'
 import { fxRateReaderFor } from './src/features/price-check/fx-source'
 import { createExpoPhotoPort } from './src/photo/expo-photo-port'
 import { createFixturePriceCheckPort } from './src/price-check/fixture-adapter'
@@ -41,7 +41,9 @@ export default function App() {
  */
 let appRuntime: Runtime | null = null
 function getAppRuntime(): Runtime {
-  appRuntime ??= createRuntime({
+  if (appRuntime !== null) return appRuntime
+  logRuntimeCreated()
+  appRuntime = createRuntime({
     auth: supabase.auth,
     removeStoredSession: clearStoredSession,
     collection: createSharedCollectionPort(),

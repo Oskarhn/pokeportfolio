@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 /**
- * P170 cross-track mutation proofs. Each mutant plants ONE defect at the seam between the P167
+ * P173 cross-track mutation proofs. Each mutant plants ONE defect at the seam between the P167
  * runtime hardening and the P169 Search / Price Check feature, runs the whole `unit` project, and
  * must make it FAIL by an ASSERTION (a failing test), never by a build error: a mutant whose run
  * reports "Test suite failed to run" (syntax/import error) or fails no test is INVALID, not killed.
  * Every file is restored in a finally block, and the run ends by checking `git diff` of every
  * mutated file is empty.
  *
- *   node scripts/p170/mutations.mjs [regex-of-mutant-ids]
+ *   node scripts/p173/mutations.mjs [regex-of-mutant-ids]
  *
- * Result: .build/p170-mutations.json (gitignored) and stdout.
+ * Result: .build/p173-mutations.json (gitignored) and stdout.
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
@@ -206,5 +206,5 @@ console.log(
   `\n${String(killed)}/${String(results.length)} killed; tree after restore: ${diff.stdout.trim() === '' ? 'clean' : diff.stdout}`,
 )
 mkdirSync(join(appRoot, '.build'), { recursive: true })
-writeFileSync(join(appRoot, '.build', 'p170-mutations.json'), JSON.stringify(results, null, 2))
+writeFileSync(join(appRoot, '.build', 'p173-mutations.json'), JSON.stringify(results, null, 2))
 process.exit(killed === results.length && diff.stdout.trim() === '' ? 0 : 1)

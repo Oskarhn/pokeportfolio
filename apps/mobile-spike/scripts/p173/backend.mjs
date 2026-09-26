@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * The ONE isolated local Supabase stack of the P170 integrated candidate (LOCAL ONLY, synthetic data).
+ * The ONE isolated local Supabase stack of the P173 integrated candidate (LOCAL ONLY, synthetic data).
  *
  * It is P169's stack builder (DB 104 from the released main, the CANDIDATE and the RELEASED
  * `search-prices` functions from git objects, the TCGdex base URL redirected to a local synthetic
@@ -11,15 +11,15 @@
  *   - P169's catalog (same-name cards, several printings, a huge price, a zero, provider failures,
  *     Japanese and bulk cards) and fx rates.
  * The P167 tooling and tests look for `.local-backend/{stack.json,public-env.json,fixture.json}`;
- * this script writes those next to P169's `.local-backend/p170/` so both suites run unchanged.
+ * this script writes those next to P169's `.local-backend/p173/` so both suites run unchanged.
  *
- *   node scripts/p170/backend.mjs start        prepare + `supabase start` (containers of THIS project only)
- *   node scripts/p170/backend.mjs seed         both seeds + the EU/US pricing preference of the P167 users
- *   node scripts/p170/backend.mjs write-env    public connection values for the two test suites
- *   node scripts/p170/backend.mjs stop         stop THIS project only and verify no container is left
- *   node scripts/p170/backend.mjs status       containers and listeners of this project
+ *   node scripts/p173/backend.mjs start        prepare + `supabase start` (containers of THIS project only)
+ *   node scripts/p173/backend.mjs seed         both seeds + the EU/US pricing preference of the P167 users
+ *   node scripts/p173/backend.mjs write-env    public connection values for the two test suites
+ *   node scripts/p173/backend.mjs stop         stop THIS project only and verify no container is left
+ *   node scripts/p173/backend.mjs status       containers and listeners of this project
  *
- * The mock provider is a separate process: `node scripts/p169/mock-tcgdex.mjs --stack=p170`.
+ * The mock provider is a separate process: `node scripts/p169/mock-tcgdex.mjs --stack=p173`.
  */
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
@@ -31,7 +31,7 @@ const here = dirname(fileURLToPath(import.meta.url))
 const appRoot = resolve(here, '..', '..')
 const repoRoot = resolve(appRoot, '..', '..')
 const rootDir = join(appRoot, '.local-backend')
-const stack = stackOf(['--stack=p170'])
+const stack = stackOf(['--stack=p173'])
 const PORT_OFFSET = 1000 + stack.portShift // what the P167 tooling calls SPIKE_BACKEND_PORT_OFFSET
 
 const cli = (args, capture = false) =>
@@ -116,7 +116,7 @@ if (command === 'start') {
     SPIKE_BACKEND_PORT_OFFSET: String(PORT_OFFSET),
   }
   tsx('apps/mobile-spike/scripts/seed-local-backend.mts', [], env)
-  tsx('apps/mobile-spike/scripts/p169/seed.mts', ['--stack=p170'], env)
+  tsx('apps/mobile-spike/scripts/p169/seed.mts', ['--stack=p173'], env)
   // The P167 users carry the device journey: A prices from Cardmarket (EU), B from TCGplayer (US),
   // so a value of A under B (or B's under A) is visible by provider as well as by amount.
   const fx = JSON.parse(readFileSync(join(rootDir, 'fixture.json'), 'utf8'))
@@ -137,6 +137,8 @@ select cron.alter_job(jobid, active := false) from cron.job where jobname in ('m
     dbContainer: stack.dbContainer,
     projectId: stack.projectId,
     apiPort: stack.apiPort,
+    // The URL baked into the device build: scripts/p173/capture-proxy.mjs in front of the API (55401).
+    appUrl: 'http://127.0.0.1:55401',
   }
   mkdirSync(stack.workdir, { recursive: true })
   writeFileSync(join(stack.workdir, 'public-env.json'), JSON.stringify(pub, null, 2))

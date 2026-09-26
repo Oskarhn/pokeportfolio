@@ -1,24 +1,25 @@
 #!/usr/bin/env node
 /**
- * P170 Android runtime check: drives the INSTALLED integrated app (release build, Hermes, embedded
- * bundle, real native modules) on the P170 emulator through the catalog search / Price Check /
+ * P173 Android runtime check: drives the INSTALLED integrated app (release build, Hermes, embedded
+ * bundle, real native modules) on the P173 emulator through the catalog search / Price Check /
  * identity / session journey. LOCAL ONLY, synthetic users only. The photo lifecycle around Activity
  * recreation is scripts/android-p167-check.mjs (run against the same build).
  *
- *   ANDROID_SERIAL=emulator-5570 node scripts/p170/android-check.mjs      (P170_STEPS=<regex> for a subset)
+ *   ANDROID_SERIAL=emulator-5580 SPIKE_PACKAGE=invalid.pokeportfolio.spike.p173 node scripts/p173/android-check.mjs      (P173_STEPS=<regex> for a subset)
  *
  * Parallel-session safety: every adb call targets ANDROID_SERIAL (required; the script refuses to run
- * without it and unless the device is the AVD p170_api36), and only this app's package is cleared,
+ * without it and unless the device is the AVD p173_api36), and only this app's package is cleared,
  * started or stopped. Global emulator settings it changes (font scale, night mode, density, stylus
  * handwriting, autofill, network) are restored at the end.
  *
- * Preconditions: `node scripts/p170/backend.mjs start|seed|write-env` and the synthetic TCGdex mock
- * (`node scripts/p169/mock-tcgdex.mjs --stack=p170`) are running, and the APK from
- * scripts/p170/build-apk.mjs (EXPO_PUBLIC_RUNTIME_PROOF=1) is installed. Credentials come from the
+ * Preconditions: `node scripts/p173/backend.mjs start|seed|write-env` and the synthetic TCGdex mock
+ * (`node scripts/p169/mock-tcgdex.mjs --stack=p173`) are running, and the APK from
+ * scripts/p173/build-apk.mjs (EXPO_PUBLIC_RUNTIME_PROOF=1) is installed. Credentials come from the
  * gitignored fixture files and go to adb only; no e-mail address is printed.
  *
- * Output: .build/p170-evidence/{report.json, *.png, logcat-*.txt} (gitignored).
+ * Output: .build/p173-evidence/{report.json, *.png, logcat-*.txt} (gitignored).
  */
+import './env.mjs'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -50,17 +51,17 @@ import {
 } from '../android-p167-lib.mjs'
 
 if (!/^emulator-\d+$/.test(process.env.ANDROID_SERIAL ?? '')) {
-  console.error('set ANDROID_SERIAL to the P170 emulator serial (never another session’s)')
+  console.error('set ANDROID_SERIAL to the P173 emulator serial (never another session’s)')
   process.exit(2)
 }
 const SERIAL = process.env.ANDROID_SERIAL
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const outDir = join(appRoot, '.build', 'p170-evidence')
+const outDir = join(appRoot, '.build', 'p173-evidence')
 mkdirSync(outDir, { recursive: true })
 const readJson = (rel) => JSON.parse(readFileSync(join(appRoot, '.local-backend', rel), 'utf8'))
 const shared = readJson('fixture.json') // P167 users A/B (collections)
-const catalog = readJson('p170/fixture.json').catalog // P169 catalog ids
-const pub = readJson('p170/public-env.json')
+const catalog = readJson('p173/fixture.json').catalog // P169 catalog ids
+const pub = readJson('p173/public-env.json')
 const A = shared.users.a
 const B = shared.users.b
 const cardId = (key) => catalog[key].cardId
@@ -68,7 +69,7 @@ const variantId = (key, printing) => catalog[key].variants[printing]
 
 const steps = []
 const metrics = {}
-const only = process.env.P170_STEPS ? new RegExp(process.env.P170_STEPS, 'i') : null
+const only = process.env.P173_STEPS ? new RegExp(process.env.P173_STEPS, 'i') : null
 class NotRun extends Error {}
 
 /** Which screen roots the view tree shows after a step (a native stack keeps lower screens listed). */
@@ -338,8 +339,8 @@ const device = {
   density: shell('wm density').trim(),
 }
 metrics.device = device
-if (device.avd !== 'p170_api36') {
-  console.error(`refusing: ${SERIAL} runs AVD ${device.avd}, not p170_api36`)
+if (device.avd !== 'p173_api36') {
+  console.error(`refusing: ${SERIAL} runs AVD ${device.avd}, not p173_api36`)
   process.exit(2)
 }
 const width = Number(/(\d+)x\d+/.exec(device.size)?.[1] ?? 1080)

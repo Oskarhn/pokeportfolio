@@ -7,6 +7,17 @@
  */
 const ENABLED = process.env.EXPO_PUBLIC_RUNTIME_PROOF === '1'
 
+/**
+ * One line per app runtime created in this JS runtime. The device suite asserts there is exactly one
+ * after several Activity recreations (P167: a runtime per mount duplicated the stores and the auth
+ * subscription). No identity is logged.
+ */
+let runtimesCreated = 0
+export function logRuntimeCreated(): void {
+  runtimesCreated += 1
+  if (ENABLED) console.log(`P173_RUNTIME created count=${String(runtimesCreated)}`)
+}
+
 export function logP169Event(event: { type: string } & Record<string, unknown>): void {
   if (!ENABLED) return
   const safe: Record<string, unknown> = { type: event.type }

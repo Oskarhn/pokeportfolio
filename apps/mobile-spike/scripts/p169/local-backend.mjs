@@ -29,7 +29,7 @@
  * separate workdir/project, to check that the reads this feature makes are unchanged on DB 106.
  */
 import { createHash } from 'node:crypto'
-import { mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdirSync, readdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
@@ -64,6 +64,15 @@ const STACKS = {
     mockPort: MOCK_TCGDEX_PORT,
   },
   p170: { projectId: 'pokeportfolio-p170', portShift: 150, dir: 'p170', mockPort: 55461 },
+  // The recovered integrated candidate (P173): API 55421, mock 55411. It also carries the
+  // migrations the worktree adds on top of the released 104 (`withWorktreeMigrations`).
+  p173: {
+    projectId: 'pokeportfolio-p173',
+    portShift: 100,
+    dir: 'p173',
+    mockPort: 55411,
+    withWorktreeMigrations: true,
+  },
 }
 
 export function stackOf(argv) {
@@ -82,6 +91,7 @@ export function stackOf(argv) {
     dbContainer: `supabase_db_${s.projectId}`,
     portShift: s.portShift,
     mockPort: s.mockPort,
+    withWorktreeMigrations: s.withWorktreeMigrations === true,
   }
 }
 
@@ -212,13 +222,29 @@ function writeMigrations(target, stack) {
     .split('\n')
     .filter((n) => n.endsWith('.sql'))
   for (const name of names) writeFileSync(join(dir, name), blob(sha, `supabase/migrations/${name}`))
+  // Migrations this worktree adds to the released set (read from the checkout, recorded by hash so
+  // the run says exactly which SQL it applied). Never edits or replaces a released file.
+  const added = []
+  if (stack.withWorktreeMigrations) {
+    const own = join(repoRoot, 'supabase', 'migrations')
+    for (const name of readdirSync(own).filter((n) => n.endsWith('.sql'))) {
+      if (names.includes(name)) continue
+      const text = readFileSync(join(own, name), 'utf8')
+      writeFileSync(join(dir, name), text)
+      added.push({ name, sha256: sha256(text) })
+    }
+  }
   const seedNames = git(['ls-tree', '--name-only', `${sha}:supabase/seed`])
     .split('\n')
     .filter((n) => n.endsWith('.sql'))
   mkdirSync(join(target, 'seed'), { recursive: true })
   for (const name of seedNames)
     writeFileSync(join(target, 'seed', name), blob(sha, `supabase/seed/${name}`))
-  return { migrationSha: sha, migrationCount: names.length }
+  return {
+    migrationSha: sha,
+    migrationCount: names.length + added.length,
+    addedMigrations: added,
+  }
 }
 
 export function prepare(stack) {
