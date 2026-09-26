@@ -40,12 +40,12 @@ import {
   appPid,
   crashCount,
   decodePng,
+  focusedWindow,
   disableAutofill,
   localActivityId,
   plain,
   pxPerDp,
   rows,
-  signIn,
   text,
 } from '../android-p167-lib.mjs'
 
@@ -119,7 +119,11 @@ const NB = ' '
 // ---- input helpers (same verified-typing approach as P169's driver) --------------------------------
 function type(t) {
   if (!/^[A-Za-z0-9 ._@+-]+$/.test(t)) throw new Error('type: unsupported characters')
-  adb(['shell', 'input', 'text', t.replaceAll(' ', '%s')])
+  // small chunks: one long injection is sometimes cut off by the keyboard (seen after hours of uptime)
+  for (let i = 0; i < t.length; i += 6) {
+    adb(['shell', 'input', 'text', t.slice(i, i + 6).replaceAll(' ', '%s')])
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 120)
+  }
 }
 async function typeInto(id, t, { secret = false } = {}) {
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -159,6 +163,13 @@ async function findScrolling(id, tries = 8) {
   }
   throw new Error(`not found after scrolling: ${id}`)
 }
+/** Every P169_PERF line seen so far in earlier windows (logcat is a small ring buffer: it wraps). */
+const perfArchive = []
+/** Archives what logcat holds and clears it, so counts taken afterwards start from zero. */
+function perfMark() {
+  perfArchive.push(...perfLines())
+  adb(['logcat', '-c'], { allowFail: true })
+}
 function perfLines() {
   return adb(['logcat', '-d', '-v', 'brief', 'ReactNativeJS:V', '*:S'], { allowFail: true })
     .split('\n')
@@ -168,11 +179,21 @@ function perfLines() {
 
 // ---- journey helpers -----------------------------------------------------------------------------------
 async function goSearch() {
-  for (let i = 0; i < 6; i += 1) {
+  for (let i = 0; i < 10; i += 1) {
     let n = dump()
     if (byId(n, 'p169-search')) return
-    // select the Search tab and give a slow transition time (heavy results lists), and only then
-    // pop whatever the Search stack still holds
+    if (!n.some((x) => x.pkg === PACKAGE)) {
+      // mid-recreation (an empty tree) or the app left the foreground: never press Back then
+      if (!focusedWindow().includes(PACKAGE)) amStart()
+      await sleep(1500)
+      continue
+    }
+    // a deeper Search-stack screen: pop it
+    if (byId(n, 'p169-card') || byId(n, 'p169-photo-entry') || byId(n, 'p170-add-intent')) {
+      back()
+      await sleep(800)
+      continue
+    }
     if (byId(n, 'tab-search')) {
       tap(byId(n, 'tab-search'))
       for (let w = 0; w < 10; w += 1) {
@@ -180,9 +201,7 @@ async function goSearch() {
         n = dump()
         if (byId(n, 'p169-search')) return
       }
-    }
-    back()
-    await sleep(600)
+    } else await sleep(800)
   }
   const ids = [
     ...new Set(
@@ -233,6 +252,25 @@ async function choose(key, printing) {
   )
   return { ms: Date.now() - t0, nodes: r.nodes }
 }
+/**
+ * Signs in with VERIFIED typing (injected input is sometimes dropped, the keyboard's own suggestions
+ * can interfere): each field is checked to hold what was typed, with one retry. The address is
+ * compared in-process and never printed.
+ */
+async function signIn(user) {
+  await waitFor((ns) => byId(ns, 'login-email'), { label: 'login form', timeoutMs: 60000 })
+  await typeInto('login-email', user.email)
+  await typeInto('login-password', user.password, { secret: true })
+  shell('input keyevent 66')
+  const t0 = Date.now()
+  const r = await waitFor((ns) => (rows(ns).length > 0 || byId(ns, 'login-error')) && ns, {
+    timeoutMs: 60000,
+    label: 'first collection page',
+  })
+  if (byId(r.value, 'login-error')) throw new Error('login error: ' + text(r.value, 'login-error'))
+  return { firstPageVisibleMs: Date.now() - t0, nodes: r.value }
+}
+
 async function signOut() {
   await tapId('tab-profile', 'profile tab')
   tap((await findScrolling('sign-out')).node)
@@ -309,14 +347,21 @@ const dp = pxPerDp()
 const MIN_PX = Math.floor(48 * dp)
 
 /** Clickable controls of the app under 48 dp (a row cut off by the list's own edge is not undersized). */
-function undersized(nodes) {
+function undersized(nodes, minPx = MIN_PX) {
   const list = byId(nodes, 'p169-results')?.bounds
+  const tabTop = byId(nodes, 'tab-search')?.bounds?.y1 ?? Infinity
   return nodes
     .filter((x) => x.clickable && x.pkg === PACKAGE && x.bounds && !/^tab-/.test(x.id))
     .filter((x) => {
       const b = x.bounds
-      if (list && /^p169-hit-/.test(x.id) && (b.y1 <= list.y1 || b.y2 >= list.y2)) return false
-      return b.y2 - b.y1 < MIN_PX || b.x2 - b.x1 < MIN_PX
+      // a result row cut off by the list edge or by the tab bar is partly scrolled out, not undersized
+      if (
+        list &&
+        /^p169-hit-/.test(x.id) &&
+        (b.y1 <= list.y1 + 2 || b.y2 >= Math.min(list.y2, tabTop) - 2)
+      )
+        return false
+      return b.y2 - b.y1 < minPx || b.x2 - b.x1 < minPx
     })
     .map((x) => ({
       id: x.id || x.desc || x.text,
@@ -473,10 +518,15 @@ await run('9 graded: unavailable, never derived from a raw price', async () => {
 await run(
   '10 same card, other printing: answered from the session cache, then stored snapshot',
   async () => {
-    const before = perfLines().filter((p) => p.type === 'provider_request').length
+    perfMark()
+    const before = 0
     const { node } = await findScrolling(`p169-variant-${variantId('pika-base-025', 'normal|')}`)
     tap(node)
-    await waitFor((ns) => byId(ns, 'p169-obs-tcgdex_cardmarket-source'), { label: 'normal price' })
+    // the Normal printing's Cardmarket price (EUR 1.50) replaces the Reverse one (4.20)
+    await waitFor((ns) => text(ns, 'p169-obs-tcgdex_cardmarket-source') === '€1.50' && ns, {
+      label: 'normal price',
+      timeoutMs: 30000,
+    })
     const after = perfLines().filter((p) => p.type === 'provider_request').length
     metrics.printingSwitchNewProviderRequests = after - before
     await tapId('p169-source-snapshot_rpc')
@@ -603,6 +653,7 @@ await run('17 a slow lookup that is left is aborted; no late publication, no cra
 })
 
 await run('18 warm and multi-page search (timings; emulator only)', async () => {
+  perfMark()
   const warm = await search('P169 Pikachu')
   metrics.warmSearchMs = warm.ms
   const bulk = await search('P169 Bulk')
@@ -695,10 +746,7 @@ await run(
           const r = await search('P169 Pikachu')
           const overflow = r.nodes.filter((x) => x.bounds && x.bounds.x2 > width + 1).length
           const localMin = Math.floor(48 * (Math.round((width * 160) / w) / 160))
-          const small = r.nodes
-            .filter((x) => x.clickable && x.pkg === PACKAGE && x.bounds && !/^tab-/.test(x.id))
-            .filter((x) => x.bounds.y2 - x.bounds.y1 < localMin)
-            .map((x) => x.id || x.desc)
+          const small = undersized(r.nodes, localMin).map((x) => x.id)
           shot(`21-width-${String(w)}dp`)
           out[w] = { overflow, small }
           assert(overflow === 0, `${String(w)}dp overflow ${String(overflow)}`)
@@ -750,9 +798,10 @@ await run('23 A -> B -> A: nothing of the first A session or of B is resurrected
   assert(!byIdPrefix(n, 'p169-hit-')[0], 'no results resurrected')
   assert(!byId(n, 'p169-card'), 'no card resurrected')
   // The same card is a NEW request, not a cached answer from the earlier A session.
+  perfMark()
   const count = (type) => perfLines().filter((p) => p.type === type).length
-  const requestsBefore = count('provider_request')
-  const hitsBefore = count('cache_hit')
+  const requestsBefore = 0
+  const hitsBefore = 0
   await search('P169 Pikachu')
   await openHit('pika-base-025')
   await choose('pika-base-025', 'normal|')
@@ -767,7 +816,8 @@ await run('23 A -> B -> A: nothing of the first A session or of B is resurrected
 await run(
   '24 background and resume: the screen, the printing and the price are kept, no repeat request',
   async () => {
-    const before = perfLines().filter((p) => p.type === 'provider_request').length
+    perfMark()
+    const before = 0
     shell('input keyevent 3')
     await sleep(3000)
     amStart()
@@ -837,7 +887,7 @@ if (stylusBefore !== '' && stylusBefore !== 'null')
   shell(`settings put secure stylus_handwriting_enabled ${stylusBefore}`)
 
 metrics.touchTargets = { minDp: 48, checked: Object.keys(targets), undersized: targets }
-metrics.perf = perfLines()
+metrics.perf = [...perfArchive, ...perfLines()]
 metrics.crashes = crashCount()
 metrics.appPidAlive = appPid() !== ''
 writeFileSync(
