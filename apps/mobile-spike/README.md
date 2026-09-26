@@ -108,27 +108,34 @@ Plain HTTP to the local stack is allowed only for `10.0.2.2`, `10.0.3.2`, `127.0
   Both need `adb root` for the cache-file and process-kill steps and switch the emulator's autofill off
   for the run.
 
-### P170: the integrated app ([P170 report](../../docs/mobile/P170_INTEGRATED_NATIVE_ANDROID.md))
+### P173: the integrated app ([P173 report](../../docs/mobile/P173_INTEGRATED_NATIVE_ANDROID.md))
 
 One app: the P167 runtime hardening plus the P169 catalog search / read-only Price Check, on one
 identity system (the tabs are Collection, Search, Price Check, Profile). One stack serves both
-tracks' fixtures; the drivers need `ANDROID_SERIAL` and refuse any AVD but `p170_api36`.
+tracks' fixtures and carries the migrations this worktree adds to the released 104 (P173 adds one).
+The drivers need `ANDROID_SERIAL`, refuse any AVD but `p173_api36`, and use the application id
+`invalid.pokeportfolio.spike.p173` (`SPIKE_PACKAGE`; the code namespace is unchanged).
 
 ```bash
-node scripts/p170/backend.mjs start          # own project id pokeportfolio-p170, API 55471
-node scripts/p169/mock-tcgdex.mjs --stack=p170   # synthetic provider for the edge functions (own process)
-node scripts/p170/backend.mjs seed && node scripts/p170/backend.mjs write-env
-node scripts/p170/build-apk.mjs              # prebuild --clean + two-pass Gradle (own subst drive O:)
-adb -s emulator-5570 install -r android/app/build/outputs/apk/release/app-release.apk
-ANDROID_SERIAL=emulator-5570 node scripts/p170/android-check.mjs      # search / price / identity / session
-ANDROID_SERIAL=emulator-5570 node scripts/android-p167-check.mjs      # recreation, photo lifecycle, dark, 200 %
-node scripts/p170/mutations.mjs              # cross-track mutants (needs a clean tree)
-node scripts/p170/backend.mjs stop           # then quit Docker Desktop if no other session needs it
+node scripts/p173/backend.mjs start              # own project id pokeportfolio-p173, API 55421
+node scripts/p169/mock-tcgdex.mjs --stack=p173   # synthetic provider for the edge functions (own process)
+node scripts/p173/backend.mjs seed && node scripts/p173/backend.mjs write-env
+node scripts/p173/capture-proxy.mjs              # recording/holding proxy in front of the API (55401); the APK talks to it
+node scripts/p173/build-apk.mjs                  # prebuild --clean + two-pass Gradle (own subst drive N:)
+adb -s emulator-5580 install -r android/app/build/outputs/apk/release/app-release.apk
+ANDROID_SERIAL=emulator-5580 node scripts/p173/android-check.mjs      # search / price / identity / session / in-flight / refresh
+ANDROID_SERIAL=emulator-5580 SPIKE_PACKAGE=invalid.pokeportfolio.spike.p173 \
+  node scripts/android-p167-check.mjs                                  # recreation, photo lifecycle, dark, 200 %
+node scripts/p173/mutations.mjs                  # cross-track + database mutants (needs a clean tree and the stack)
+node scripts/p173/backend.mjs stop               # then quit Docker Desktop if no other session needs it
 ```
 
-Backend suites against that stack: `P158_LOCAL_BACKEND=1 P169_LOCAL_BACKEND=1 P169_STACK=p170
-P169_MOCK_PORT=55461 npx jest --selectProjects backend --runInBand tests/backend/<file>` (run the files
+Backend suites against that stack: `P158_LOCAL_BACKEND=1 P169_LOCAL_BACKEND=1 P169_STACK=p173
+P169_MOCK_PORT=55411 npx jest --selectProjects backend --runInBand tests/backend/<file>` (run the files
 one at a time; one combined run stalled with an idle database).
+
+`pnpm test` runs every project that needs no stack (`unit`, `shared-node`, `shared-rn`); a test fails if
+the command ever selects a name that is not a configured project.
 
 ## Checks
 

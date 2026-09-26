@@ -70,7 +70,7 @@ const APPLICATION_ID = process.env.SPIKE_PACKAGE ?? 'invalid.pokeportfolio.spike
 function patchApplicationId() {
   const file = join(appRoot, 'android', 'app', 'build.gradle')
   const text = readFileSync(file, 'utf8')
-  const next = text.replace(/applicationIds+['"][^'"]+['"]/, `applicationId '${APPLICATION_ID}'`)
+  const next = text.replace(/applicationId\s+['"][^'"]+['"]/, `applicationId '${APPLICATION_ID}'`)
   if (next === text && !text.includes(`applicationId '${APPLICATION_ID}'`))
     throw new Error('could not set applicationId in the generated build.gradle')
   writeFileSync(file, next)

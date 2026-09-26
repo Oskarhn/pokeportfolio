@@ -15,6 +15,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
+import { readLocalEnv, stackOf } from '../p169/local-backend.mjs'
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const P = (p) => join(appRoot, p)
@@ -140,6 +141,34 @@ const MUTANTS = [
     from: 'createP169Feature({ ...deps.priceFeature, authority, registry, photo })',
     to: 'createP169Feature({ ...deps.priceFeature, authority, registry: new ScopedRegistry(), photo })',
   },
+  {
+    id: 'S',
+    name: 'the photo store is not reset by the identity boundary (A photo survives into B)',
+    file: 'src/wiring/runtime.ts',
+    from: "  registry.register('photo', photo)\n",
+    to: '',
+  },
+  {
+    id: 'T',
+    name: 'a provider request is made before the printing is chosen (first printing looked up)',
+    file: 'src/features/price-check/price-check-flow-store.ts',
+    from: "    if (resolution.status === 'confirmed') await this.lookup(outcome.value.card, resolution.variant)",
+    to: "    if (resolution.status !== 'mismatch') await this.lookup(outcome.value.card, resolution.variant ?? outcome.value.variants[0])",
+  },
+  {
+    id: 'U',
+    name: 'a second native runtime is created when the root mounts again (Activity recreation)',
+    file: 'App.tsx',
+    from: '  if (appRuntime !== null) return appRuntime\n',
+    to: '',
+  },
+  {
+    id: 'W',
+    name: 'pnpm test names a project that does not exist, so the web domain tests are skipped',
+    file: 'package.json',
+    from: '"test": "jest --selectProjects unit shared-node shared-rn"',
+    to: '"test": "jest --selectProjects unit shared"',
+  },
 ]
 
 function jest() {
@@ -195,6 +224,98 @@ for (const m of MUTANTS) {
   } finally {
     writeFileSync(file, original)
   }
+  console.log(JSON.stringify(results.at(-1)))
+}
+// ---- V: the database mutant (needs the P173 stack: node scripts/p173/backend.mjs start + seed) ---------
+// search_cards without its unique final sort key. The mutant is the released definition (the previous
+// migration's SQL, byte for byte); the proof is the DB paging test failing by ASSERTION against it. The
+// fixed definition is re-applied in a finally block and the run checks the DB test passes again.
+if (!only || only.test('V')) {
+  const repoRoot = resolve(appRoot, '..', '..')
+  const stack = stackOf(['--stack=p173'])
+  const fixed = join(
+    repoRoot,
+    'supabase',
+    'migrations',
+    '20260926120000_p173_search_cards_stable_paging.sql',
+  )
+  const released = join(
+    repoRoot,
+    'supabase',
+    'migrations',
+    '20260820156000_m5_search_cards_slash_number_fix.sql',
+  )
+  const apply = (file) =>
+    spawnSync(
+      'docker',
+      [
+        'exec',
+        '-i',
+        stack.dbContainer,
+        'psql',
+        '-U',
+        'postgres',
+        '-d',
+        'postgres',
+        '-v',
+        'ON_ERROR_STOP=1',
+        '-q',
+      ],
+      {
+        input: readFileSync(file, 'utf8'),
+        encoding: 'utf8',
+        env: { ...process.env, MSYS_NO_PATHCONV: '1' },
+      },
+    )
+  const dbTest = () => {
+    const e = readLocalEnv(stack)
+    const r = spawnSync(
+      'pnpm',
+      [
+        'exec',
+        'vitest',
+        'run',
+        '--config',
+        'vitest.db.config.ts',
+        'tests/db/search_cards_paging.test.ts',
+      ],
+      {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        shell: process.platform === 'win32',
+        env: {
+          ...process.env,
+          SUPABASE_URL: e.API_URL,
+          SUPABASE_ANON_KEY: e.ANON_KEY,
+          SUPABASE_SERVICE_ROLE_KEY: e.SERVICE_ROLE_KEY,
+        },
+      },
+    )
+    const out = `${r.stdout}\n${r.stderr}`
+    return {
+      status: r.status,
+      failed: /Tests\s+(\d+) failed/.exec(out)?.[1] ?? '0',
+      assertion: /AssertionError/.test(out),
+      summary: /Tests\s+(.*)/.exec(out)?.[1] ?? 'no summary',
+    }
+  }
+  try {
+    if (apply(released).status !== 0) throw new Error('could not apply the mutant definition')
+    const r = dbTest()
+    results.push({
+      id: 'V',
+      mutant:
+        'search_cards without the unique final ORDER BY key (c.id) — OFFSET paging repeats and skips rows',
+      result: r.status !== 0 && Number(r.failed) > 0 && r.assertion ? 'KILLED' : 'SURVIVED',
+      summary: r.summary,
+    })
+  } finally {
+    if (apply(fixed).status !== 0)
+      console.error('WARNING: the fixed definition could not be re-applied')
+  }
+  const after = dbTest()
+  results.at(-1).restored =
+    after.status === 0 ? 'fixed definition re-applied, DB test passes' : 'RESTORE FAILED'
   console.log(JSON.stringify(results.at(-1)))
 }
 const diff = spawnSync('git', ['diff', '--stat', '--', ...new Set(MUTANTS.map((m) => m.file))], {

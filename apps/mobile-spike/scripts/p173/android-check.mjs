@@ -20,6 +20,7 @@
  * Output: .build/p173-evidence/{report.json, *.png, logcat-*.txt} (gitignored).
  */
 import './env.mjs'
+import { CARDS as FIXTURE_CARDS } from '../p169/catalog-fixture.mjs'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -29,6 +30,7 @@ import {
   adb,
   byId,
   byIdPrefix,
+  byText,
   dump,
   screencap,
   shell,
@@ -44,6 +46,13 @@ import {
   focusedWindow,
   disableAutofill,
   localActivityId,
+  rootAvailable,
+  openPhotoScreen,
+  waitForPickerOrState,
+  chooseNewestInPicker,
+  pushSyntheticImage,
+  pickerCacheFiles,
+  activityAfterChange,
   plain,
   pxPerDp,
   rows,
@@ -166,10 +175,20 @@ async function findScrolling(id, tries = 8) {
 }
 /** Every P169_PERF line seen so far in earlier windows (logcat is a small ring buffer: it wraps). */
 const perfArchive = []
+/** `P173_RUNTIME created count=N` lines from windows already cleared (one per created runtime). */
+const runtimeArchive = []
 /** Archives what logcat holds and clears it, so counts taken afterwards start from zero. */
 function perfMark() {
   perfArchive.push(...perfLines())
+  runtimeArchive.push(...runtimeCounts())
   adb(['logcat', '-c'], { allowFail: true })
+}
+function runtimeCounts() {
+  return adb(['logcat', '-d', '-v', 'brief', 'ReactNativeJS:V', '*:S'], { allowFail: true })
+    .split('\n')
+    .map((l) => /P173_RUNTIME created count=(\d+)/.exec(l))
+    .filter(Boolean)
+    .map((m) => Number(m[1]))
 }
 function perfLines() {
   return adb(['logcat', '-d', '-v', 'brief', 'ReactNativeJS:V', '*:S'], { allowFail: true })
@@ -296,6 +315,27 @@ const LEDGER = [
   'fx_rates',
   'profiles',
 ]
+function psqlValue(sql) {
+  const r = spawnSync(
+    'docker',
+    [
+      'exec',
+      '-i',
+      pub.dbContainer,
+      'psql',
+      '-U',
+      'postgres',
+      '-d',
+      'postgres',
+      '-At',
+      '-v',
+      'ON_ERROR_STOP=1',
+    ],
+    { input: sql, encoding: 'utf8', env: { ...process.env, MSYS_NO_PATHCONV: '1' } },
+  )
+  if (r.status !== 0) throw new Error(`psql failed: ${r.stderr}`)
+  return r.stdout.trim()
+}
 function ledgerHashes() {
   const sql = LEDGER.map(
     (t) =>
@@ -858,17 +898,406 @@ await run('26 sign-out removes the session: a restart shows the login screen', a
   return {}
 })
 
+// ---- P173: what needs the wire (capture-proxy.mjs) and the clock ---------------------------------------
+// The recording proxy sits between the app and the stack's API. It shows WHO each request was made as
+// (the `sub` claim of its Authorization JWT), HOW MANY there were, and can hold a response so that a
+// lookup is genuinely in flight while the account or the Activity changes.
+const PROXY = pub.appUrl ?? 'http://127.0.0.1:55401'
+async function proxyCall(path, method = 'GET') {
+  const r = await fetch(`${PROXY}${path}`, { method })
+  return r.json()
+}
+const proxyLog = async () => (await proxyCall('/__proxy/log')).requests
+const proxyReset = () => proxyCall('/__proxy/reset', 'POST')
+const proxyHold = (match) => proxyCall(`/__proxy/hold?match=${match}`, 'POST')
+const proxyRelease = () => proxyCall('/__proxy/release', 'POST')
+const proxyHeld = async () => (await proxyCall('/__proxy/held')).held
+const isPriceCall = (r) => r.method === 'POST' && r.path.includes('/functions/v1/search-prices')
+const priceCalls = async () => (await proxyLog()).filter(isPriceCall)
+async function waitUntil(fn, { timeoutMs = 30000, label = 'condition' } = {}) {
+  const t0 = Date.now()
+  for (;;) {
+    if (await fn()) return Date.now() - t0
+    if (Date.now() - t0 > timeoutMs) throw new Error(`timed out waiting for ${label}`)
+    await sleep(500)
+  }
+}
+/** Which user is signed in, tracked by this driver (a login screen resets it). */
+let current = 'A'
+const userOf = (key) => (key === 'A' ? A : B)
+async function switchTo(key) {
+  if (byId(dump(), 'login-screen')) current = null
+  if (current === key) return
+  if (current !== null) await signOut()
+  await signIn(userOf(key))
+  current = key
+}
+/** Taps a printing WITHOUT waiting for the price (the lookup is what the caller is timing). */
+async function tapPrinting(key, printing) {
+  const { node } = await findScrolling(`p169-variant-${variantId(key, printing)}`)
+  tap(node)
+}
+const priceShown = (nodes) => byIdPrefix(nodes, 'p169-obs-').length > 0
+// ---- 27: a same-user token refresh on the device ----------------------------------------------------
 await run(
-  '27 same-user token refresh keeps the screen (unit-tested; not forceable on device)',
+  '27 same-user token refresh (device clock moved): the screen, printing and price stay; nothing is requested again',
   async () => {
-    throw new NotRun(
-      'a refresh cannot be forced on the device without changing the clock or the JWT lifetime',
+    if (!rootAvailable())
+      throw new NotRun('adb root is unavailable (needed to move the emulator clock)')
+    await switchTo('A')
+    await goSearch()
+    await search('P169 Pikachu')
+    await openHit('pika-base-025')
+    await choose('pika-base-025', 'normal|')
+    const priceBefore = text(dump(), 'p169-obs-tcgdex_cardmarket-source')
+    assert(priceBefore === '€1.50', `price before ${String(priceBefore)}`)
+    await proxyReset()
+    const setClock = (ms) => {
+      const d = new Date(ms)
+      const p = (n) => String(n).padStart(2, '0')
+      const stamp = `${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}${p(d.getUTCHours())}${p(d.getUTCMinutes())}${String(d.getUTCFullYear())}.${p(d.getUTCSeconds())}`
+      shell(`date -u ${stamp}`)
+      shell('am broadcast -a android.intent.action.TIME_SET', { allowFail: true })
+    }
+    shell('settings put global auto_time 0')
+    let refreshed = null
+    try {
+      // 59.5 minutes ahead: the access token (1 h) is inside the client's refresh window
+      setClock(Date.now() + 3570 * 1000)
+      await waitUntil(
+        async () => {
+          refreshed = (await proxyLog()).find((r) => r.path.includes('grant_type=refresh_token'))
+          return refreshed !== undefined
+        },
+        { timeoutMs: 100000, label: 'a token refresh request' },
+      )
+      await sleep(3000)
+    } finally {
+      setClock(Date.now())
+      shell('settings put global auto_time 1')
+    }
+    const n = dump()
+    assert(byId(n, 'p169-card'), 'the card screen was replaced')
+    assert(byId(n, 'p169-printing-confirmed'), 'the confirmed printing was lost')
+    assert(text(n, 'p169-obs-tcgdex_cardmarket-source') === priceBefore, 'the price changed')
+    const log = await proxyLog()
+    assert((await priceCalls()).length === 0, 'the refresh repeated a provider request')
+    assert(
+      !log.some((r) => r.path.includes('/rpc/search_cards')),
+      'the refresh repeated a catalog search',
     )
+    return {
+      refreshCalls: log.filter((r) => r.path.includes('grant_type=refresh_token')).length,
+      screenKept: true,
+    }
+  },
+)
+
+// ---- 28 / 29: an answer that arrives after the account changed --------------------------------------
+// A card with ONE active printing starts its provider lookup the moment it is opened, and it has not
+// been looked up in this session, so the request really goes out (a cached card would send nothing).
+async function inFlightAccountSwitch(route, { key, query, marker }) {
+  // route: ['B'] = A -> B ; ['B', 'A'] = A -> B -> A
+  await switchTo('A')
+  await goSearch()
+  await search(query)
+  await proxyReset()
+  await proxyHold('search-prices')
+  try {
+    await openHit(key) // the lookup starts; its response is held by the proxy
+    await waitUntil(async () => (await proxyHeld()) === 1, { label: 'the lookup to be in flight' })
+    const aCall = (await priceCalls())[0]
+    assert(aCall?.sub === A.id, 'the in-flight request was not made as A')
+    assert(byText(dump(), /Looking up prices/), 'the lookup is not shown as pending')
+    for (const who of route) await switchTo(who)
+    assert((await proxyHeld()) === 1, 'the held answer was delivered early')
+    perfMark()
+    await proxyRelease() // A's answer now reaches the app, long after the identity changed
+    await sleep(3500)
+    const perf = perfLines()
+    // Whoever is signed in now starts clean: nothing of A's lookup is on any screen.
+    await tapId('tab-search')
+    const n = (
+      await waitFor((ns) => byId(ns, 'p169-search') && ns, { label: 'search after the switch' })
+    ).value
+    assert(byId(n, 'p169-search-status-idle'), 'the search is not idle after the switch')
+    assert(!byId(n, 'p169-card') && !byIdPrefix(n, 'p169-hit-')[0], 'a screen of A survived')
+    assert(!dump().some((x) => marker.test(`${x.text} ${x.desc}`)), "A's price is on screen")
+    return { aCall, perf }
+  } finally {
+    await proxyRelease()
+  }
+}
+
+const STALE = { key: 'stale-095', query: 'P169 Stale Price', marker: /€7\.77/ }
+const SLOW = { key: 'slow-093', query: 'P169 Slow Provider', marker: /€9\.99/ }
+
+await run(
+  "28 in flight: A starts a slow Price Check, B signs in, A's answer arrives: never shown, B clean",
+  async () => {
+    const { aCall } = await inFlightAccountSwitch(['B'], STALE)
+    // B's own lookup is a NEW request made as B, not A's answer and not A's cache.
+    await proxyReset()
+    perfMark()
+    await search(STALE.query)
+    await openHit(STALE.key)
+    await waitFor((ns) => byIdPrefix(ns, 'p169-obs-')[0] && ns, {
+      label: "B's own price",
+      timeoutMs: 30000,
+    })
+    const calls = await priceCalls()
+    assert(calls.length === 1, `B made ${String(calls.length)} provider requests`)
+    assert(calls[0].sub === B.id, "B's first request was not made as B")
+    assert(calls[0].sub !== aCall.sub, 'the request carries the previous identity')
+    const hits = perfLines().filter((p) => p.type === 'cache_hit').length
+    assert(hits === 0, `B was answered from a cache (${String(hits)} hits)`)
+    return { aSub: 'A', bRequests: calls.length, bSub: 'B', cacheHits: hits }
   },
 )
 
 await run(
-  '28 read-only again: after the identity changes and restarts, still no ledger row changed',
+  "29 in flight: A -> B -> A, then A's first answer arrives: it does not come back",
+  async () => {
+    const { aCall } = await inFlightAccountSwitch(['B', 'A'], SLOW)
+    await proxyReset()
+    perfMark()
+    await search(SLOW.query)
+    await openHit(SLOW.key)
+    await waitFor((ns) => byIdPrefix(ns, 'p169-obs-')[0] && ns, {
+      label: "A's second session price",
+      timeoutMs: 40000,
+    })
+    const calls = await priceCalls()
+    assert(
+      calls.length === 1 && calls[0].sub === A.id,
+      "A's second session did not make its own request",
+    )
+    const hits = perfLines().filter((p) => p.type === 'cache_hit').length
+    assert(hits === 0, "the second A session was answered from the first one's answer")
+    return {
+      firstRequestAs: 'A',
+      secondSessionRequests: calls.length,
+      cacheHits: hits,
+      aCall: aCall.n,
+    }
+  },
+)
+
+// ---- 30: Activity recreation with a Price Check on screen -------------------------------------------
+const RECREATIONS = [
+  {
+    name: 'font scale 1.3',
+    apply: () => shell('settings put system font_scale 1.3'),
+    revert: () => shell('settings put system font_scale 1.0'),
+  },
+  {
+    name: 'display density 480',
+    apply: () => shell('wm density 480'),
+    revert: () => shell('wm density reset'),
+  },
+  {
+    name: 'app locale nb-NO',
+    apply: () => shell(`cmd locale set-app-locales ${PACKAGE} --locales nb-NO`),
+    revert: () => shell(`cmd locale set-app-locales ${PACKAGE} --locales ""`, { allowFail: true }),
+  },
+]
+await run(
+  '30 Activity recreation with a finished Price Check: screen, printing and price kept, no repeat request, ONE runtime',
+  async () => {
+    await switchTo('A')
+    await goSearch()
+    await search('P169 Pikachu')
+    await openHit('pika-base-025')
+    await choose('pika-base-025', 'normal|')
+    const price = text(dump(), 'p169-obs-tcgdex_cardmarket-source')
+    await proxyReset()
+    const out = []
+    for (const change of RECREATIONS) {
+      const before = localActivityId()
+      change.apply()
+      let after
+      try {
+        after = await activityAfterChange(before)
+        assert(
+          before !== null && after !== null && before !== after,
+          `${change.name}: the Activity was not recreated`,
+        )
+        await waitFor((ns) => byId(ns, 'p169-card'), {
+          label: `card screen after ${change.name}`,
+          timeoutMs: 30000,
+        })
+        await sleep(1500)
+        const n = dump()
+        assert(
+          byId(n, 'p169-printing-confirmed'),
+          `${change.name}: the confirmed printing was lost`,
+        )
+        assert(
+          text(n, 'p169-obs-tcgdex_cardmarket-source') === price,
+          `${change.name}: the price changed`,
+        )
+      } finally {
+        change.revert()
+        await sleep(2500)
+      }
+      out.push({ change: change.name, recreated: true })
+    }
+    assert((await priceCalls()).length === 0, 'a recreation repeated a provider request')
+    const perf = [...perfArchive, ...perfLines()]
+    const runtimes = [...runtimeArchive, ...runtimeCounts()]
+    assert(
+      Math.max(0, ...runtimes) === 1,
+      `a second runtime was created in one process (${runtimes.join(',')})`,
+    )
+    return {
+      changes: out,
+      providerRequests: 0,
+      runtimeCreatedCounts: runtimes,
+      perfEvents: perf.length,
+    }
+  },
+)
+
+await run(
+  '30b Activity recreation while a lookup is in flight: one request, the printing kept, the answer shown once',
+  async () => {
+    await switchTo('A')
+    await goSearch()
+    await search('P169 Charizard')
+    await openHit('zard-base-004')
+    await proxyReset()
+    await proxyHold('search-prices')
+    const change = RECREATIONS[0]
+    try {
+      await tapPrinting('zard-base-004', 'holo|')
+      await waitUntil(async () => (await proxyHeld()) === 1, {
+        label: 'the lookup to be in flight',
+      })
+      const before = localActivityId()
+      change.apply()
+      const after = await activityAfterChange(before)
+      assert(before !== after && after !== null, 'the Activity was not recreated')
+      await waitFor((ns) => byId(ns, 'p169-card'), {
+        label: 'card after recreation',
+        timeoutMs: 30000,
+      })
+      await sleep(1500)
+      const n = dump()
+      assert(byId(n, 'p169-printing-confirmed'), 'the printing was lost')
+      assert(byText(n, /Looking up prices/), 'the lookup is no longer shown as pending')
+      assert((await priceCalls()).length === 1, 'the recreation sent the request again')
+      await proxyRelease()
+      const r = await waitFor((ns) => byIdPrefix(ns, 'p169-obs-')[0] && ns, {
+        label: 'the answer',
+        timeoutMs: 30000,
+      })
+      assert((await priceCalls()).length === 1, 'a second request appeared after the answer')
+      return {
+        requests: 1,
+        answerShown: true,
+        sample: text(r.value, 'p169-obs-tcgdex_cardmarket-source'),
+      }
+    } finally {
+      await proxyRelease()
+      change.revert()
+      await sleep(2500)
+    }
+  },
+)
+
+// ---- 31: exact money through the real screen, checked against an independent BigInt computation -----
+await run(
+  '31 Hermes, integrated: provider string -> bigint -> NOK -> the rendered text equals an independent BigInt result',
+  async () => {
+    await switchTo('A')
+    await goSearch()
+    await search('P169 Charizard')
+    await openHit('zard-base-004')
+    const r = await choose('zard-base-004', 'holo|')
+    const rendered = plain(text(r.nodes, 'p169-obs-tcgdex_cardmarket-nok') ?? '')
+    // The provider amount and the stored rate, read from the fixtures / database, never from the app.
+    const sourceMinor = BigInt(
+      FIXTURE_CARDS.find((c) => c.key === 'zard-base-004').provider.prices['holo|'].cm,
+    )
+    const rateText = psqlValue(
+      "select rate::text from public.fx_rates where base_currency = 'EUR' and quote_currency = 'NOK' order by rate_date desc limit 1",
+    )
+    const [whole, frac = ''] = rateText.split('.')
+    const scale = 10n ** BigInt(frac.length)
+    const scaled = BigInt(whole + frac)
+    const product = sourceMinor * scaled
+    const nokMinor = (product * 2n + scale) / (2n * scale) // half-up, both currencies have 2 decimals
+    const digits = nokMinor.toString().padStart(3, '0')
+    const intPart = digits.slice(0, -2).replace(/\B(?=(\d{3})+(?!\d))/g, ' ')
+    const expected = `${intPart},${digits.slice(-2)} kr`
+    assert(rendered === expected, `rendered ${rendered} != independent ${expected}`)
+    assert(nokMinor > BigInt(Number.MAX_SAFE_INTEGER), 'the vector is not above 2^53')
+    assert(
+      text(r.nodes, 'p169-obs-tcgdex_cardmarket-source') === '€9,876,543,210,987.65',
+      'source amount',
+    )
+    return {
+      sourceMinor: sourceMinor.toString(),
+      rate: rateText,
+      nokMinor: nokMinor.toString(),
+      rendered,
+    }
+  },
+)
+
+// ---- 32: search language filter (catalog) ----------------------------------------------------------
+await run('32 catalog search: the language filter narrows to Japanese and back', async () => {
+  await goSearch()
+  await tapId('p169-lang-ja')
+  const ja = await search('Japanese Starter')
+  assert(byId(ja.nodes, `p169-hit-${cardId('jp-001')}`), 'the Japanese card is missing under JA')
+  assert(
+    !byId(ja.nodes, `p169-hit-${cardId('pika-base-025')}`),
+    'an English card is shown under JA',
+  )
+  await tapId('p169-lang-all')
+  return { japaneseOnly: true }
+})
+
+// ---- 33: a picked photo never leaves the device ------------------------------------------------------
+await run(
+  '33 photo: pick a synthetic image on the Price Check photo entry; not one request reaches the API; the copy is deleted on leaving',
+  async () => {
+    await switchTo('A')
+    await pushSyntheticImage(join(outDir, 'p173-synthetic-card.png'), 'p173-synthetic-card.png')
+    await proxyReset()
+    const n = await openPhotoScreen()
+    tap(byId(n, 'p169-photo-library'))
+    const o = await waitForPickerOrState()
+    assert(o.picker, `the picker did not open (${String(o.state)})`)
+    await sleep(1200)
+    await chooseNewestInPicker()
+    await waitFor((ns) => byId(ns, 'p169-photo-ready') && ns, {
+      timeoutMs: 20000,
+      label: 'photo shown',
+    })
+    await sleep(2000)
+    const requests = await proxyLog()
+    assert(
+      requests.length === 0,
+      `${String(requests.length)} request(s) reached the API while a photo was picked and shown: ${requests.map((r) => r.path).join(', ')}`,
+    )
+    const shown = rootAvailable() ? pickerCacheFiles() : null
+    back()
+    await sleep(1500)
+    const left = rootAvailable() ? pickerCacheFiles() : null
+    if (left !== null)
+      assert(left.length === 0, `an owned copy remained after leaving: ${left.join(',')}`)
+    return {
+      requestsWhilePicked: 0,
+      ownedCopiesWhileShown: shown?.length ?? null,
+      ownedCopiesAfterLeaving: left?.length ?? null,
+    }
+  },
+)
+
+await run(
+  '34 read-only, at the very end: after every identity change, restart, recreation, refresh and held answer, no ledger row changed',
   async () => {
     const after = ledgerHashes()
     const changed = Object.keys(after).filter((t) => after[t] !== ledgerBefore[t])
