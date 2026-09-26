@@ -26,9 +26,9 @@ export const p169Describe = P169_ENABLED ? describe : describe.skip
 
 // P169_STACK: db106 (the DB-106 candidate stack), p170 (the integrated stack) or unset (P169's).
 const STACK_DIRS: Record<string, string | undefined> = { db106: 'p169-db106', p170: 'p170' }
-const stackName: string = process.env.P169_STACK ?? ''
+const stackName = String(process.env.P169_STACK ?? '')
 const dir = join(__dirname, '../../.local-backend', STACK_DIRS[stackName] ?? 'p169')
-export const MOCK_URL = `http://127.0.0.1:${process.env.P169_MOCK_PORT ?? '55979'}`
+export const MOCK_URL = `http://127.0.0.1:${String(process.env.P169_MOCK_PORT ?? '55979')}`
 
 interface PublicEnv {
   apiUrl: string

@@ -74,8 +74,8 @@ const MUTANTS = [
     id: 'H',
     name: 'Activity recreation identity preservation removed (navigation is not restored)',
     file: 'src/ui/AppRoot.tsx',
-    from: 'initialState={runtime.navigation.get() as InitialState | undefined}',
-    to: 'initialState={undefined as InitialState | undefined}',
+    from: 'restorableNavigationState(runtime.navigation.get()) as InitialState | undefined',
+    to: 'undefined as InitialState | undefined',
   },
   {
     id: 'I',
@@ -125,6 +125,13 @@ const MUTANTS = [
     file: 'src/features/price-check/PhotoEntryScreen.tsx',
     from: '        void feature.photo.release()',
     to: '        void 0',
+  },
+  {
+    id: 'Q',
+    name: 'the transient cross-tab instruction is restored (Search jumps back to the photo entry)',
+    file: 'src/state/navigation-memory.ts',
+    from: '([key]) => !(TRANSIENT_PARAMS as readonly string[]).includes(key),',
+    to: '() => true,',
   },
   {
     id: 'P',
