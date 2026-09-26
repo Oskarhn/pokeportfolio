@@ -153,7 +153,7 @@ export async function signIn(user, { submit = 'ime' } = {}) {
   const n = (await waitFor((ns) => byId(ns, 'login-email') && ns, { label: 'login form' })).value
   tap(byId(n, 'login-email'))
   clearFocusedField()
-  typeText(user.email)
+  typeChunked(user.email)
   // The form moves up when the keyboard opens (P167 F7), so positions read before it are stale.
   await sleep(500)
   const typed = (await waitFor((ns) => byId(ns, 'login-email'), { label: 'email field' })).value
@@ -161,7 +161,7 @@ export async function signIn(user, { submit = 'ime' } = {}) {
   if (typed.text !== user.email) throw new Error('the email field does not hold the typed address')
   tap((await waitFor((ns) => byId(ns, 'login-password'), { label: 'password field' })).value)
   clearFocusedField()
-  typeText(user.password)
+  typeChunked(user.password)
   if (submit === 'ime') shell('input keyevent 66')
   else tap(byId(dump(), 'login-submit'))
   const t0 = Date.now()
@@ -350,4 +350,25 @@ export function decodePng(buf) {
       return n === 0 ? null : Math.round((sum / n) * 1000) / 1000
     },
   }
+}
+
+/** Text in small chunks: one long injection is sometimes cut off by the keyboard on a slow emulator. */
+export function typeChunked(t) {
+  if (!/^[A-Za-z0-9 ._@+-]+$/.test(t)) throw new Error('typeChunked: unsupported characters')
+  for (let i = 0; i < t.length; i += 6) {
+    adb(['shell', 'input', 'text', t.slice(i, i + 6).replaceAll(' ', '%s')])
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 120)
+  }
+}
+
+/** Waits (up to timeoutMs) for the live Activity to be a different, non-null instance than `before`. */
+export async function activityAfterChange(before, timeoutMs = 12000) {
+  const t0 = Date.now()
+  let id = null
+  while (Date.now() - t0 < timeoutMs) {
+    await sleep(500)
+    id = localActivityId()
+    if (id !== null && id !== before) return id
+  }
+  return id
 }

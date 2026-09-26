@@ -50,6 +50,8 @@ import {
   rootAvailable,
   rows,
   signIn,
+  typeChunked,
+  activityAfterChange,
   text,
   waitForPickerOrState,
 } from './android-p167-lib.mjs'
@@ -128,12 +130,12 @@ await run(
   async () => {
     const n = (await waitFor((ns) => byId(ns, 'login-email') && ns, { label: 'login form' })).value
     tap(byId(n, 'login-email'))
-    adb(['shell', 'input', 'text', fixture.users.a.email])
+    typeChunked(fixture.users.a.email)
     shell('input keyevent 66') // IME "next" -> focus moves to the password field
     await sleep(600)
     let m = dump()
     assert(byId(m, 'login-password')?.focusable, 'password field missing')
-    adb(['shell', 'input', 'text', fixture.users.a.password])
+    typeChunked(fixture.users.a.password)
     await sleep(800)
     const ime = imeFrame()
     m = dump()
@@ -287,8 +289,7 @@ for (const change of CONFIG_CHANGES) {
       clearEvents()
       adb(['logcat', '-c'])
       change.apply()
-      await sleep(3500)
-      const after = localActivityId()
+      const after = await activityAfterChange(before)
       const events = lifecycleEvents()
       const recreated =
         before !== null &&
