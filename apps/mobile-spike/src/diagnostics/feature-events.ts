@@ -1,8 +1,9 @@
 /**
- * Device-side instrumentation for the P169 harness: when the bundle is built with
+ * Device-side instrumentation for Search / Price Check: when the bundle is built with
  * EXPO_PUBLIC_RUNTIME_PROOF=1, feature events (request timings, cache hits, dropped late answers)
- * are written to logcat as `P169_PERF {json}` lines for scripts/p169/android-check.mjs. Nothing
- * identifying is logged: ids are truncated and no query text, credential or amount is included.
+ * are written to logcat as `P169_PERF {json}` lines for the device drivers. Nothing identifying is
+ * logged: ids are truncated and no query text, credential or amount is included. A normal build
+ * logs nothing.
  */
 const ENABLED = process.env.EXPO_PUBLIC_RUNTIME_PROOF === '1'
 

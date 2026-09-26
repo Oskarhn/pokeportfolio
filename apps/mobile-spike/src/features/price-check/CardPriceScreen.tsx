@@ -118,10 +118,17 @@ export function CardPriceScreen({
   const p = usePalette()
 
   useEffect(() => {
-    void store.openCard(cardId, variantId)
-    // Leaving the screen cancels the price request; a late answer is never published.
-    return () => store.cancel()
+    // Idempotent: a new root after an Activity recreation adopts what the store already holds.
+    void store.enter(cardId, variantId)
   }, [store, cardId, variantId])
+
+  useEffect(
+    // Leaving for real (pop / replaced stack) cancels the price request, drops any late answer and
+    // forgets the printing choice. Unmounting alone (an Activity recreation) must not: it would
+    // cancel a request the person is still waiting for.
+    () => navigation.addListener('beforeRemove', () => store.leave()),
+    [navigation, store],
+  )
 
   if (
     state.card.status === 'idle' ||

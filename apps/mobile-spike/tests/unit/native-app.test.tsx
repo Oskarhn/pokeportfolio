@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-
 import { AppRoot } from '../../src/ui/AppRoot'
 import type { TabParams } from '../../src/ui/navigation-types'
 import { detail, flush, harness, row, session, type Harness } from '../support/fakes'
+import { body, card, hit, obs, p169Harness, variant } from '../support/p169-fakes'
 
 /**
  * The REAL native view tree and navigation (react-native-screens native stack + bottom tabs),
@@ -221,20 +222,26 @@ describe('the journey: collection -> card detail -> price check -> back', () => 
     expect(screen.getByTestId('detail-source-value').props.children).toBe('€85.89')
   })
 
-  it('Check price opens Price Check for exactly that variant, read-only, and Back returns to the card', async () => {
-    const h = harness()
+  it('Check price opens the card screen for exactly that printing, read-only, and Back returns to the card', async () => {
+    const h = p169Harness()
+    const twin = card('fixture-card-twin', { name: 'Twin Card', collectorNumber: '007' })
+    const holo = variant('fixture-variant-twin-holo', { finish: 'holo' })
+    const normal = variant('fixture-variant-twin-normal', { finish: 'normal' })
+    h.cards.set(twin.cardId, { card: twin, variants: [normal, holo] })
+    h.invoker.answer(twin.cardId, body({ [holo.variantId]: [obs('tcgdex_cardmarket', '98765')] }))
     const { navigationRef } = await toDetail(h)
     await fireEvent.press(screen.getByTestId('check-price'))
-    // The card is resolved from the holding's VARIANT and that variant is priced (holo, not normal).
-    expect(await screen.findByTestId('variant-confirmed')).toBeTruthy()
-    expect(await screen.findByTestId('price-observations')).toBeTruthy()
-    expect(screen.getByTestId('obs-tcgdex_cardmarket-source').props.children).toBe('€987.65')
-    expect(screen.queryByTestId('obs-tcgdex_tcgplayer')).toBeNull() // the holo variant has no TCGplayer row
-    expect(screen.getByTestId('graded-unavailable')).toBeTruthy()
-    expect(screen.getByTestId('source-banner')).toBeTruthy()
-    expect(
-      navigationRef.getRootState()?.routes[navigationRef.getRootState()?.index ?? 0]?.name,
-    ).toBe('PriceCheckTab')
+    // The card is resolved from the holding's PRINTING, and that printing (holo, not normal) is the
+    // confirmed one: the person is not asked to choose again for a card they own.
+    expect(await screen.findByTestId('p169-printing-confirmed')).toBeTruthy()
+    expect(screen.queryByTestId('p169-printing-choice')).toBeNull()
+    expect(await screen.findByTestId('p169-obs-tcgdex_cardmarket')).toBeTruthy()
+    expect(screen.getByTestId('p169-obs-tcgdex_cardmarket-source').props.children).toBe('€987.65')
+    expect(screen.queryByTestId('p169-obs-tcgdex_tcgplayer')).toBeNull() // the holo printing has no TCGplayer row
+    expect(screen.getByText(/No verified graded market data available/)).toBeTruthy()
+    expect(h.invoker.calls).toHaveLength(1)
+    const root0 = navigationRef.getRootState()
+    expect(root0?.routes[root0.index]?.name).toBe('SearchTab')
 
     // System Back -> tab history -> the card the person came from, still open.
     await act(async () => {
@@ -247,12 +254,24 @@ describe('the journey: collection -> card detail -> price check -> back', () => 
   })
 
   it('Price Check never adds anything: the collection port saw no writes and nothing new is listed', async () => {
-    const h = harness()
+    const h = p169Harness()
+    const twin = card('fixture-card-twin')
+    const holo = variant('fixture-variant-twin-holo', { finish: 'holo' })
+    h.cards.set(twin.cardId, { card: twin, variants: [holo] })
+    h.invoker.answer(twin.cardId, body({ [holo.variantId]: [obs('tcgdex_cardmarket', '98765')] }))
     await toDetail(h)
     const callsBefore = h.collection.listCalls.length
     await fireEvent.press(screen.getByTestId('check-price'))
-    await screen.findByTestId('price-observations')
+    await screen.findByTestId('p169-obs-tcgdex_cardmarket')
     expect(h.collection.listCalls.length).toBe(callsBefore)
+  })
+
+  it('a printing that is not in the catalog is "card not found", never a guessed card', async () => {
+    const h = p169Harness()
+    await toDetail(h) // the fixture port resolves the printing, but the card cannot be read
+    await fireEvent.press(screen.getByTestId('check-price'))
+    expect(await screen.findByTestId('p169-card-not-found')).toBeTruthy()
+    expect(h.invoker.calls).toHaveLength(0)
   })
 })
 
@@ -307,65 +326,136 @@ describe('identity switch remounts the whole authenticated tree', () => {
   })
 })
 
-describe('price check screens', () => {
-  it('a card with several variants asks for a choice and shows no price until one is chosen', async () => {
-    const h = harness()
-    await mount(h)
-    await signInAs(h, 'A')
-    await fireEvent.press(await screen.findByTestId('tab-pricecheck'))
-    await fireEvent.changeText(await screen.findByTestId('pc-query'), 'fixture twin')
-    await fireEvent.press(screen.getByTestId('pc-search'))
-    await fireEvent.press(await screen.findByTestId('hit-fixture-card-twin'))
-    expect(await screen.findByTestId('variant-choice')).toBeTruthy()
-    expect(screen.queryByTestId('price-observations')).toBeNull()
-    await fireEvent.press(screen.getByTestId('variant-fixture-variant-twin-normal'))
-    expect(await screen.findByTestId('price-observations')).toBeTruthy()
-    expect(screen.getByTestId('obs-tcgdex_cardmarket-source').props.children).toBe('€12.34')
-    expect(screen.getByTestId('obs-tcgdex_tcgplayer-source').props.children).toBe('$15.00')
+describe('search and price check tabs', () => {
+  const PIKA_A = card('pika-a', {
+    name: 'P170 Pikachu',
+    setName: 'P170 Base',
+    collectorNumber: '025',
   })
-
-  it('unavailable and provider-error states are worded, never a number; the source is labelled', async () => {
-    const h = harness()
-    await mount(h)
-    await signInAs(h, 'A')
-    await fireEvent.press(await screen.findByTestId('tab-pricecheck'))
-    await fireEvent.changeText(await screen.findByTestId('pc-query'), 'fixture provider')
-    await fireEvent.press(screen.getByTestId('pc-search'))
-    await fireEvent.press(await screen.findByTestId('hit-fixture-card-provider-error'))
-    expect(await screen.findByTestId('price-unavailable')).toBeTruthy()
-    expect(screen.getByText('The price provider had a problem. Try again later.')).toBeTruthy()
-    expect(
-      screen.getByText('Price source: synthetic fixture shaped like the P153 response.'),
-    ).toBeTruthy()
+  const PIKA_B = card('pika-b', {
+    name: 'P170 Pikachu',
+    setName: 'P170 Reprint',
+    collectorNumber: '025',
   })
+  const NORMAL = variant('pika-a-normal', { finish: 'normal' })
+  const REVERSE = variant('pika-a-reverse', { finish: 'reverse' })
 
-  it('JPY is rendered with no decimals and marked SYNTHETIC', async () => {
-    const h = harness()
-    await mount(h)
+  async function openSearch(h: ReturnType<typeof p169Harness>) {
+    h.catalog.corpus = [
+      hit('pika-a', {
+        name: 'P170 Pikachu',
+        setName: 'P170 Base',
+        collectorNumber: '025',
+        activeVariantCount: 2,
+      }),
+      hit('pika-b', { name: 'P170 Pikachu', setName: 'P170 Reprint', collectorNumber: '025' }),
+    ]
+    h.cards.set(PIKA_A.cardId, { card: PIKA_A, variants: [NORMAL, REVERSE] })
+    h.cards.set(PIKA_B.cardId, { card: PIKA_B, variants: [variant('pika-b-normal')] })
+    const m = await mount(h)
     await signInAs(h, 'A')
-    await fireEvent.press(await screen.findByTestId('tab-pricecheck'))
-    await fireEvent.changeText(await screen.findByTestId('pc-query'), 'fixture jpy')
-    await fireEvent.press(screen.getByTestId('pc-search'))
-    await fireEvent.press(await screen.findByTestId('hit-fixture-card-jpy'))
-    expect((await screen.findByTestId('obs-p158_fixture_jpy-source')).props.children).toBe(
-      '9,007,199,254,740,993 JPY',
+    await fireEvent.press(await screen.findByTestId('tab-search'))
+    return m
+  }
+  async function search(text: string) {
+    await act(async () => {
+      await fireEvent.changeText(await screen.findByTestId('p169-search-input'), text)
+      await flush(10)
+    })
+  }
+
+  it('the Search tab is real catalog search: same-name cards are flagged, nothing is selected, several printings need a choice and no price is requested before it', async () => {
+    const h = p169Harness()
+    await openSearch(h)
+    await search('Pikachu')
+    expect(await screen.findByTestId('p169-hit-pika-a')).toBeTruthy()
+    expect(screen.getByTestId('p169-hit-shared-pika-a')).toBeTruthy()
+    expect(screen.getByTestId('p169-hit-shared-pika-b')).toBeTruthy()
+    expect(h.invoker.calls).toHaveLength(0) // searching never prices anything
+
+    await fireEvent.press(screen.getByTestId('p169-hit-pika-a'))
+    expect(await screen.findByTestId('p169-printing-choice')).toBeTruthy()
+    expect(screen.queryByTestId('p169-obs-tcgdex_cardmarket')).toBeNull()
+    expect(h.invoker.calls).toHaveLength(0) // ... and neither does opening a card with several printings
+
+    h.invoker.answer(
+      PIKA_A.cardId,
+      body({ [REVERSE.variantId]: [obs('tcgdex_cardmarket', '420')] }),
     )
-    expect(screen.getAllByText('SYNTHETIC').length).toBeGreaterThan(0)
+    await act(async () => {
+      await fireEvent.press(screen.getByTestId('p169-variant-pika-a-reverse'))
+      await flush(10)
+    })
+    expect(await screen.findByTestId('p169-obs-tcgdex_cardmarket')).toBeTruthy()
+    expect(screen.getByTestId('p169-obs-tcgdex_cardmarket-source').props.children).toBe('€4.20')
+    expect(h.invoker.calls).toHaveLength(1)
   })
 
-  it('the typed query survives leaving and returning to the tab (draft), and a token refresh', async () => {
-    const h = harness()
+  it('the Price Check tab is a read-only landing that opens search and the photo entry', async () => {
+    const h = p169Harness()
     await mount(h)
     await signInAs(h, 'A')
     await fireEvent.press(await screen.findByTestId('tab-pricecheck'))
-    await fireEvent.changeText(await screen.findByTestId('pc-query'), 'pika')
+    expect(await screen.findByTestId('price-check-read-only')).toBeTruthy()
+    expect(screen.getByTestId('pc-home-photo-note').props.children).toBe(
+      'A photo does not currently identify the card automatically.',
+    )
+
+    await fireEvent.press(screen.getByTestId('pc-home-photo'))
+    expect(await screen.findByTestId('p169-photo-entry')).toBeTruthy()
+    expect(screen.getByTestId('p169-recognition-unavailable')).toBeTruthy()
+    expect(
+      screen.getByText(/A photo does not currently identify the card automatically/),
+    ).toBeTruthy()
+    // "Choose the card manually" ends in the search screen.
+    await fireEvent.press(screen.getByTestId('p169-choose-manually'))
+    expect(await screen.findByTestId('p169-search')).toBeTruthy()
+
+    await fireEvent.press(screen.getByTestId('tab-pricecheck'))
+    await fireEvent.press(await screen.findByTestId('pc-home-search'))
+    expect(await screen.findByTestId('p169-search')).toBeTruthy()
+    expect(h.invoker.calls).toHaveLength(0)
+  })
+
+  it('the typed query and results survive leaving the tab and a token refresh; A -> B starts empty', async () => {
+    const h = p169Harness()
+    await openSearch(h)
+    await search('Pikachu')
+    expect(await screen.findByTestId('p169-hit-pika-a')).toBeTruthy()
     await fireEvent.press(screen.getByTestId('tab-collection'))
     await act(async () => {
       h.auth.emit('TOKEN_REFRESHED', session('A'))
       await flush()
     })
-    await fireEvent.press(screen.getByTestId('tab-pricecheck'))
-    expect((await screen.findByTestId('pc-query')).props.value).toBe('pika')
+    await fireEvent.press(screen.getByTestId('tab-search'))
+    expect((await screen.findByTestId('p169-search-input')).props.value).toBe('Pikachu')
+    expect(screen.getByTestId('p169-hit-pika-a')).toBeTruthy()
+
+    await signInAs(h, 'B')
+    await fireEvent.press(await screen.findByTestId('tab-search'))
+    expect((await screen.findByTestId('p169-search-input')).props.value).toBe('')
+    expect(screen.queryByTestId('p169-hit-pika-a')).toBeNull()
+  })
+
+  it('Add to collection is only an intent: it says nothing was saved and sends no request', async () => {
+    const h = p169Harness()
+    await openSearch(h)
+    await search('Pikachu')
+    h.invoker.answer(PIKA_B.cardId, body({ 'pika-b-normal': [obs('tcgdex_cardmarket', '3000')] }))
+    await fireEvent.press(await screen.findByTestId('p169-hit-pika-b')) // one printing: confirmed
+    await act(async () => {
+      await flush(10)
+    })
+    const calls = h.invoker.calls.length
+    const listCalls = h.collection.listCalls.length
+    await fireEvent.press(await screen.findByTestId('p169-add-to-collection'))
+    expect(await screen.findByTestId('p170-add-intent')).toBeTruthy()
+    expect(JSON.stringify(screen.getByTestId('p170-add-intent-text').props.children)).toContain(
+      'nothing was saved',
+    )
+    expect(screen.getByTestId('p170-add-intent-card')).toBeTruthy()
+    expect(h.invoker.calls).toHaveLength(calls)
+    expect(h.collection.listCalls).toHaveLength(listCalls)
   })
 })
 

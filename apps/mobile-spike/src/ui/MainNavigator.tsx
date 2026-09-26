@@ -2,27 +2,39 @@ import { Text, useWindowDimensions } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs'
 import { createNativeStackNavigator } from '@react-navigation/native-stack'
+import { P169_SCREENS } from '../features/screens'
+import { AddIntentScreen } from './screens/AddIntentScreen'
 import { CardDetailScreen } from './screens/CardDetailScreen'
 import { CollectionScreen } from './screens/CollectionScreen'
-import { PhotoSpikeScreen } from './screens/PhotoSpikeScreen'
-import { PriceCheckHomeScreen, PriceCheckResultScreen } from './screens/PriceCheckScreens'
+import { PriceCheckHomeScreen } from './screens/PriceCheckHomeScreen'
 import { ProfileScreen } from './screens/ProfileScreen'
-import { SearchPlaceholderScreen } from './screens/SearchPlaceholderScreen'
-import type { CollectionStackParams, PriceCheckStackParams, TabParams } from './navigation-types'
+import { VariantEntryScreen } from './screens/VariantEntryScreen'
+import type {
+  CollectionStackParams,
+  PriceCheckStackParams,
+  SearchStackParams,
+  TabParams,
+} from './navigation-types'
 
 /**
  * PROVISIONAL navigation: Collection / Search / Price Check / Profile as bottom tabs, each tab with
- * its own native stack (UINavigationController / Fragment-backed via react-native-screens). This is
- * a neutral scaffold for the feasibility spike, NOT the owner's navigation choice: P154's proposed
- * schemes are untouched and unapproved. Text labels only; no icons (no icon direction is chosen; see
- * `tabOptions`).
+ * its own native stack (Fragment-backed via react-native-screens). This is a neutral scaffold, NOT
+ * the owner's navigation choice: P154's proposed schemes are untouched and unapproved. Text labels
+ * only; no icons (no icon direction is chosen; see `tabOptions`).
  *
- * Back semantics: each stack pops natively; `backBehavior="history"` returns from Price Check to the
- * tab the person came from (e.g. Card detail -> Check price -> Back lands on Card detail again).
+ * The Search stack holds every screen that reads a card: catalog search, the card + printing + price
+ * screen, the photo entry (all from the Search / Price Check feature), a resolver for a holding's
+ * "Check price", and the Add-to-collection intent. They live in ONE stack because they share ONE
+ * card store: a second card screen elsewhere could show a card the store no longer holds. The Price
+ * Check tab is a read-only landing that opens that stack.
+ *
+ * Back semantics: each stack pops natively; `backBehavior="history"` returns from another tab to the
+ * one the person came from (e.g. Card detail -> Check price -> Back lands on Card detail again).
  */
 
 const Tabs = createBottomTabNavigator<TabParams>()
 const CollectionStack = createNativeStackNavigator<CollectionStackParams>()
+const SearchStack = createNativeStackNavigator<SearchStackParams>()
 const PriceCheckStack = createNativeStackNavigator<PriceCheckStackParams>()
 
 function CollectionStackScreen() {
@@ -42,6 +54,31 @@ function CollectionStackScreen() {
   )
 }
 
+function SearchStackScreen() {
+  return (
+    <SearchStack.Navigator>
+      {P169_SCREENS.map((screen) => (
+        <SearchStack.Screen
+          key={screen.name}
+          name={screen.name}
+          component={screen.component}
+          options={{ title: screen.title, headerBackTitle: 'Back' }}
+        />
+      ))}
+      <SearchStack.Screen
+        name="P170VariantEntry"
+        component={VariantEntryScreen}
+        options={{ title: 'Price Check', headerBackTitle: 'Back' }}
+      />
+      <SearchStack.Screen
+        name="P170AddIntent"
+        component={AddIntentScreen}
+        options={{ title: 'Add to collection', headerBackTitle: 'Back' }}
+      />
+    </SearchStack.Navigator>
+  )
+}
+
 function PriceCheckStackScreen() {
   return (
     <PriceCheckStack.Navigator>
@@ -49,16 +86,6 @@ function PriceCheckStackScreen() {
         name="PriceCheckHome"
         component={PriceCheckHomeScreen}
         options={{ title: 'Price Check' }}
-      />
-      <PriceCheckStack.Screen
-        name="PriceCheckResult"
-        component={PriceCheckResultScreen}
-        options={{ title: 'Price' }}
-      />
-      <PriceCheckStack.Screen
-        name="PhotoSpike"
-        component={PhotoSpikeScreen}
-        options={{ title: 'Photo' }}
       />
     </PriceCheckStack.Navigator>
   )
@@ -119,8 +146,8 @@ export function MainNavigator({ backendHost }: { backendHost: string }) {
       />
       <Tabs.Screen
         name="SearchTab"
-        component={SearchPlaceholderScreen}
-        options={{ ...tabOptions('Search', 'tab-search'), headerShown: true }}
+        component={SearchStackScreen}
+        options={tabOptions('Search', 'tab-search')}
       />
       <Tabs.Screen
         name="PriceCheckTab"

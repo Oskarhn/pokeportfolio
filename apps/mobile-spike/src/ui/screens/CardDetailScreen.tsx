@@ -103,9 +103,13 @@ export function CardDetailScreen({ route, navigation }: Props) {
         accessibilityHint="Looks up the current price of this exact card variant. Read-only."
         onPress={() => {
           if (d.cardVariantId === null) return
-          navigation.getParent()?.navigate('PriceCheckTab', {
-            screen: 'PriceCheckResult',
-            params: { variantId: d.cardVariantId },
+          // Reset the Search stack to the resolver so Back leaves for the tab this came from
+          // (Card detail) instead of stepping through whatever the Search stack held.
+          navigation.getParent()?.navigate('SearchTab', {
+            state: {
+              index: 0,
+              routes: [{ name: 'P170VariantEntry', params: { variantId: d.cardVariantId } }],
+            },
           })
         }}
       />

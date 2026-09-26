@@ -1,4 +1,4 @@
-import { createP169Feature, type P169Feature } from '../../src/features/feature'
+import type { P169Feature } from '../../src/features/feature'
 import type {
   CatalogSearchPort,
   SearchHit,
@@ -177,37 +177,45 @@ export interface P169Harness extends ReturnType<typeof harness> {
 export function p169Harness(
   options: { fx?: Parameters<typeof fakeFx>[0]; now?: () => number } = {},
 ): P169Harness {
-  const base = harness()
   const invoker = new FakeInvoker()
   const catalog = new FakeCatalog()
   const cards = new Map<string, CardWithVariants>()
   const cardReads: Deferred<CardWithVariants | null>[] = []
   const snapshots = new Map<string, SnapshotPoint[]>()
   const fx = fakeFx(options.fx ?? STANDARD_FX)
-  const feature = createP169Feature({
-    authority: base.runtime.authority,
-    registry: base.runtime.registry,
-    invoke: invoker.invoke,
-    readFx: fx,
-    photo: base.runtime.photo,
-    catalog,
-    readCard: (id) => cardReads.shift()?.promise ?? Promise.resolve(cards.get(id) ?? null),
-    readSnapshots: (variantId) => Promise.resolve(snapshots.get(variantId) ?? []),
-    now: options.now ?? (() => NOW),
-    // Debounce runs as a microtask in tests, so `await flush()` settles it (a cancelled handle never fires).
-    searchOptions: {
-      debounceMs: 0,
-      schedule: (fn) => {
-        const handle = { cancelled: false }
-        queueMicrotask(() => {
-          if (!handle.cancelled) fn()
-        })
-        return handle
-      },
-      cancelSchedule: (handle) => {
-        ;(handle as { cancelled: boolean }).cancelled = true
+  // ONE runtime: the feature is created by the composition root, over these fakes.
+  const base = harness({
+    priceFeature: {
+      invoke: invoker.invoke,
+      readFx: fx,
+      catalog,
+      readCard: (id) => cardReads.shift()?.promise ?? Promise.resolve(cards.get(id) ?? null),
+      readSnapshots: (variantId) => Promise.resolve(snapshots.get(variantId) ?? []),
+      now: options.now ?? (() => NOW),
+      // Debounce runs as a microtask in tests, so `await flush()` settles it (a cancelled handle never fires).
+      searchOptions: {
+        debounceMs: 0,
+        schedule: (fn) => {
+          const handle = { cancelled: false }
+          queueMicrotask(() => {
+            if (!handle.cancelled) fn()
+          })
+          return handle
+        },
+        cancelSchedule: (handle) => {
+          ;(handle as { cancelled: boolean }).cancelled = true
+        },
       },
     },
   })
-  return { ...base, feature, invoker, catalog, cards, cardReads, snapshots, fx }
+  return {
+    ...base,
+    feature: base.runtime.feature,
+    invoker,
+    catalog,
+    cards,
+    cardReads,
+    snapshots,
+    fx,
+  }
 }

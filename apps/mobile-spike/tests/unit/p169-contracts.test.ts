@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
-import { runP169Proof } from '../../src/features/harness/p169-proof'
+import { runP169Proof } from '../../src/diagnostics/price-check-proof'
 import {
   NATIVE_RECOGNITION_UNAVAILABLE,
   toRecognitionOutcome,

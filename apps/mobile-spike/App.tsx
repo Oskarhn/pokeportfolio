@@ -4,6 +4,8 @@ import { StatusBar } from 'expo-status-bar'
 import { createRuntime, type Runtime } from './src/wiring/runtime'
 import { attachForegroundRefresh } from './src/auth/auth-controller'
 import { createSharedCollectionPort } from './src/collection/shared-data-adapter'
+import { logP169Event } from './src/diagnostics/feature-events'
+import { fxRateReaderFor } from './src/features/price-check/fx-source'
 import { createExpoPhotoPort } from './src/photo/expo-photo-port'
 import { createFixturePriceCheckPort } from './src/price-check/fixture-adapter'
 import { createReleasedPriceCheckPort } from './src/price-check/released-adapter'
@@ -46,6 +48,12 @@ function getAppRuntime(): Runtime {
     priceCheck: {
       released: createReleasedPriceCheckPort(),
       fixture: createFixturePriceCheckPort(),
+    },
+    // The feature's function calls and fx reads go through the SAME client as everything else.
+    priceFeature: {
+      invoke: (name, options) => supabase.functions.invoke(name, options),
+      readFx: fxRateReaderFor(supabase),
+      onEvent: logP169Event,
     },
     photo: createExpoPhotoPort(),
   })

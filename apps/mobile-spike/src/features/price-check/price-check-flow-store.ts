@@ -96,6 +96,8 @@ export function lookupKey(source: PriceSourceKind, cardId: string, variantId: st
 export class PriceCheckFlowStore implements Resettable {
   private state: PriceCheckFlowState = initial(DEFAULT_PRICE_SOURCE)
   private cardSeq = 0
+  /** `${cardId}|${variantId}` the card screen was entered with; see enter(). */
+  private entry: string | null = null
   private controller: AbortController | null = null
   private readonly emitter = new Emitter()
   /** Late answers dropped by a guard (observable in tests and on the device harness). */
@@ -124,7 +126,42 @@ export class PriceCheckFlowStore implements Resettable {
   reset(): void {
     this.abortInFlight()
     this.cardSeq += 1
+    this.entry = null
     this.set(initial(DEFAULT_PRICE_SOURCE))
+  }
+
+  /**
+   * The card screen for `cardId` (with the printing the route asks for, if any) appeared.
+   *
+   * A person arriving fresh gets a fresh load: `leave()` emptied the flow on their way out, so they
+   * are always asked to choose the printing again. But Android can recreate the Activity while they
+   * are looking at this very card, and React Native then mounts a NEW root in the SAME JS runtime
+   * (P167). The card, the printing they chose and the price are still in this store, so the new root
+   * ADOPTS them: no second card read, no second provider call, the choice is not forgotten. A price
+   * request that was on its way keeps going; only `leave()` cancels it, never an unmount.
+   */
+  async enter(cardId: string, variantId?: string): Promise<void> {
+    const key = `${cardId}|${variantId ?? ''}`
+    const { card } = this.state
+    const adoptable =
+      this.entry === key &&
+      card.cardId === cardId &&
+      (card.status === 'ready' || card.status === 'loading')
+    if (adoptable) return
+    this.entry = key
+    await this.openCard(cardId, variantId)
+  }
+
+  /**
+   * The person left the card screen for real (popped, or its stack was replaced): stop the request,
+   * drop any late answer, and forget the card and the printing choice. The price cache of the lookup
+   * service is unaffected (an identical lookup within the session is answered from it and labelled).
+   */
+  leave(): void {
+    this.abortInFlight()
+    this.cardSeq += 1
+    this.entry = null
+    this.set(initial(this.state.source))
   }
 
   /** Leaving the screen: stop the price request and make sure no late answer is published. */

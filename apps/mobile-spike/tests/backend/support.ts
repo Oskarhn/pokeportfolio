@@ -12,6 +12,7 @@ import {
   removeStoredSession,
 } from '../../src/auth/create-client'
 import { createSharedCollectionPort } from '../../src/collection/shared-data-adapter'
+import { fxRateReaderFor } from '../../src/features/price-check/fx-source'
 import { createReleasedPriceCheckPort } from '../../src/price-check/released-adapter'
 import { createFixturePriceCheckPort } from '../../src/price-check/fixture-adapter'
 import type { RequestLogEntry } from '../../src/net/spike-fetch'
@@ -131,6 +132,10 @@ export function realRuntime(session: Session): Runtime {
     removeStoredSession: () => removeStoredSession(session.storage),
     collection: createSharedCollectionPort(),
     priceCheck: { released: createReleasedPriceCheckPort(), fixture: fixturePort },
+    priceFeature: {
+      invoke: (name, opts) => session.client.functions.invoke(name, opts),
+      readFx: fxRateReaderFor(session.client),
+    },
     photo: new FakePhotoPort(),
   })
   runtime.auth.start()

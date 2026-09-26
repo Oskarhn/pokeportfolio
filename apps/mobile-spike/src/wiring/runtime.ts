@@ -1,6 +1,7 @@
 import { AuthController, type AuthClientPort } from '../auth/auth-controller'
 import { IdentityAuthority } from '../auth/identity-authority'
 import type { CollectionPort } from '../collection/types'
+import { createP169Feature, type P169Feature, type P169FeatureDeps } from '../features/feature'
 import { PhotoStore, type PhotoPort } from '../photo/photo-store'
 import type { PriceCheckPort } from '../price-check/types'
 import { CollectionStore } from '../state/collection-store'
@@ -16,11 +17,16 @@ import { ScopedRegistry } from '../state/registry'
  * store, synchronously.
  */
 
+/** What the Search / Price Check feature needs from outside; the identity pieces come from here. */
+export type PriceFeatureDeps = Omit<P169FeatureDeps, 'authority' | 'registry' | 'photo'>
+
 export interface RuntimeDeps {
   auth: AuthClientPort
   removeStoredSession: () => Promise<void>
   collection: CollectionPort
   priceCheck: { released: PriceCheckPort; fixture: PriceCheckPort }
+  /** Bound to the app's ONE Supabase client by the host (`client.functions.invoke`, fx reader). */
+  priceFeature: PriceFeatureDeps
   photo: PhotoPort
 }
 
@@ -31,6 +37,8 @@ export interface Runtime {
   collection: CollectionStore
   holdingDetail: HoldingDetailStore
   priceCheck: PriceCheckStore
+  /** Catalog search + read-only Price Check (P169). Its stores are in `registry` below. */
+  feature: P169Feature
   photo: PhotoStore
   navigation: NavigationMemory
   ports: RuntimeDeps['priceCheck']
@@ -50,6 +58,9 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
   registry.register('photo', photo)
   const navigation = new NavigationMemory()
   registry.register('navigation', navigation)
+  // Registers its own stores (catalog search, price lookup cache, price-check flow) in THIS registry
+  // and leases their requests from THIS authority: one identity boundary for everything.
+  const feature = createP169Feature({ ...deps.priceFeature, authority, registry, photo })
 
   const auth = new AuthController({
     auth: deps.auth,
@@ -67,6 +78,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
     collection,
     holdingDetail,
     priceCheck,
+    feature,
     photo,
     navigation,
     ports: deps.priceCheck,

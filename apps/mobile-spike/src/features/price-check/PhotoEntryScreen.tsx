@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
-import { Image, ScrollView } from 'react-native'
+import { useCallback, useEffect, useState } from 'react'
+import { Image, ScrollView, View } from 'react-native'
+import { useFocusEffect } from '@react-navigation/native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { toScannerInput } from '../../photo/photo-store'
 import { Heading, Loading } from '../../ui/components'
@@ -11,9 +12,10 @@ import type { RecognitionOutcome } from './recognition'
 
 /**
  * Photo -> identification entry. The honest state today: the native app can take or choose a photo
- * (P166 PhotoStore, reused unchanged), but it CANNOT recognise a card from it, so the only way on is
- * "Choose the card manually". A photo taken here is shown, passed to the recognition port (which
- * answers not_available), and deleted when the screen closes. Nothing is uploaded.
+ * (the runtime's PhotoStore), but it CANNOT recognise a card from it, so the only way on is "Choose
+ * the card manually". A photo taken here is shown, passed to the recognition port (which answers
+ * not_available), and deleted when the person leaves the screen (blur, pop, tab switch) or the
+ * identity changes. Nothing is uploaded.
  */
 export function PhotoEntryScreen({
   navigation,
@@ -23,7 +25,14 @@ export function PhotoEntryScreen({
   const p = usePalette()
   const [recognition, setRecognition] = useState<RecognitionOutcome | null>(null)
 
-  useEffect(() => () => void feature.photo.release(), [feature.photo])
+  useFocusEffect(
+    useCallback(
+      () => () => {
+        void feature.photo.release()
+      },
+      [feature.photo],
+    ),
+  )
 
   useEffect(() => {
     let live = true
@@ -49,8 +58,8 @@ export function PhotoEntryScreen({
       <Heading>Identify a card from a photo</Heading>
       <Section testID="p169-recognition-unavailable">
         <LiveStatus>
-          Card recognition from a photo is not available in this app yet. A photo on its own does
-          not identify a card — choose the card and its printing yourself.
+          Card recognition from a photo is not available in this app yet. A photo does not currently
+          identify the card automatically — choose the card and its printing yourself.
         </LiveStatus>
       </Section>
       <ActionButton
@@ -58,24 +67,42 @@ export function PhotoEntryScreen({
         label="Choose the card manually"
         onPress={manual}
       />
-      <ActionButton
-        testID="p169-photo-library"
-        variant="secondary"
-        label="Choose a photo anyway"
-        hint="The photo stays on this device and is deleted when you leave"
-        disabled={photo.status === 'acquiring'}
-        onPress={() => void feature.photo.acquire('library')}
-      />
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: SPACE.sm }}>
+        <ActionButton
+          testID="p169-photo-library"
+          variant="secondary"
+          label="Choose a photo anyway"
+          hint="The photo stays on this device and is deleted when you leave"
+          disabled={photo.status === 'acquiring'}
+          onPress={() => void feature.photo.acquire('library')}
+        />
+        <ActionButton
+          testID="p169-photo-camera"
+          variant="secondary"
+          label="Take a photo"
+          hint="The photo stays on this device and is deleted when you leave"
+          disabled={photo.status === 'acquiring'}
+          onPress={() => void feature.photo.acquire('camera')}
+        />
+      </View>
       {photo.status === 'acquiring' ? <Loading label="Waiting for the photo" /> : null}
       {photo.status === 'cancelled' ? (
         <LiveStatus testID="p169-photo-cancelled">No photo chosen.</LiveStatus>
       ) : null}
       {photo.status === 'denied' ? (
-        <LiveStatus testID="p169-photo-denied">Photo access was not allowed.</LiveStatus>
+        <LiveStatus testID="p169-photo-denied">
+          {photo.canAskAgain
+            ? 'Camera access was not allowed. You can try again, or choose a photo from your library instead.'
+            : 'Camera access was not allowed. Turn it on in the system settings, or choose a photo from your library instead.'}
+        </LiveStatus>
       ) : null}
       {photo.status === 'unavailable' ? (
         <LiveStatus testID="p169-photo-unavailable" tone="danger">
-          The photo could not be opened.
+          {photo.unavailableReason === 'no_camera'
+            ? 'The camera is not available here. Choose a photo from your library instead.'
+            : photo.unavailableReason === 'restart_required'
+              ? 'The photo picker stopped working after a system setting changed. Close and reopen the app, then try again.'
+              : 'The photo could not be opened. Try again.'}
         </LiveStatus>
       ) : null}
       {photo.status === 'ready' && photo.image !== null ? (

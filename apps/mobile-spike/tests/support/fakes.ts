@@ -182,7 +182,7 @@ export class FakeCollectionPort implements CollectionPort {
 
 import type { PhotoOutcome, PhotoPort } from '../../src/photo/photo-store'
 import type { PriceCheckPort, PriceLookup } from '../../src/price-check/types'
-import { createRuntime, type Runtime } from '../../src/wiring/runtime'
+import { createRuntime, type PriceFeatureDeps, type Runtime } from '../../src/wiring/runtime'
 import { createFixturePriceCheckPort } from '../../src/price-check/fixture-adapter'
 
 export class FakePhotoPort implements PhotoPort {
@@ -207,6 +207,12 @@ export class FakePhotoPort implements PhotoPort {
   }
 }
 
+/** Search / Price Check wired to nothing: any call is a test that forgot to fake it. */
+const INERT_PRICE_FEATURE: PriceFeatureDeps = {
+  invoke: () => Promise.reject(new Error('search-prices is not faked in this harness')),
+  readFx: () => Promise.reject(new Error('fx is not faked in this harness')),
+}
+
 export interface Harness {
   runtime: Runtime
   auth: FakeAuth
@@ -217,7 +223,11 @@ export interface Harness {
 
 /** The real composition root with every I/O dependency replaced by a fake. */
 export function harness(
-  overrides: { released?: PriceCheckPort; fixture?: PriceCheckPort } = {},
+  overrides: {
+    released?: PriceCheckPort
+    fixture?: PriceCheckPort
+    priceFeature?: PriceFeatureDeps
+  } = {},
 ): Harness {
   const auth = new FakeAuth()
   const collection = new FakeCollectionPort()
@@ -232,6 +242,7 @@ export function harness(
     },
     collection,
     priceCheck: { released: overrides.released ?? fixture, fixture },
+    priceFeature: overrides.priceFeature ?? INERT_PRICE_FEATURE,
     photo,
   })
   runtime.auth.start()

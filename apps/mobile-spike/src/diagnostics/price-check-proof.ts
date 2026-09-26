@@ -1,11 +1,14 @@
 import { sum } from '@shared/domain/money'
-import { formatMoney } from '../../money/format-money'
-import { findUnsafeIntegerLiteral } from '../../net/exact-transport-guard'
-import { describeEngine } from '../../diagnostics/runtime-proof'
-import { classifyFreshness } from '../price-check/p165-domain/price-check/freshness'
-import { nokReference } from '../price-check/p165-domain/price-check/fx'
-import { cardsSharingAName, resolveVariant } from '../price-check/p165-domain/price-check/identity'
-import { buildRawSection } from '../price-check/p165-domain/price-check/raw-section'
+import { formatMoney } from '../money/format-money'
+import { findUnsafeIntegerLiteral } from '../net/exact-transport-guard'
+import { describeEngine } from './runtime-proof'
+import { classifyFreshness } from '../features/price-check/p165-domain/price-check/freshness'
+import { nokReference } from '../features/price-check/p165-domain/price-check/fx'
+import {
+  cardsSharingAName,
+  resolveVariant,
+} from '../features/price-check/p165-domain/price-check/identity'
+import { buildRawSection } from '../features/price-check/p165-domain/price-check/raw-section'
 
 /**
  * P169 in-app proof: runs the VENDORED P165 price-check domain (unchanged web code) on whatever

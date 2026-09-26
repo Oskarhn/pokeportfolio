@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { createChunkedSessionStorage } from '../../src/auth/chunked-session-storage'
 import { createNativeClient, removeStoredSession } from '../../src/auth/create-client'
 import { createSharedCollectionPort } from '../../src/collection/shared-data-adapter'
-import { createP169Feature, type P169Feature } from '../../src/features/feature'
+import type { P169Feature } from '../../src/features/feature'
 import { fxRateReaderFor } from '../../src/features/price-check/fx-source'
 import type { SearchPricesInvoker } from '../../src/features/price-check/search-prices-source'
 import type { RequestLogEntry } from '../../src/net/spike-fetch'
@@ -145,6 +145,7 @@ export function p169Session(
     { storage, baseFetch, fetchOptions: { onRequest: (e) => log.push(e) } },
   )
   setBackendClient(client)
+  const invoke: SearchPricesInvoker = (name, opts) => client.functions.invoke(name, opts)
   const runtime = createRuntime({
     auth: client.auth,
     removeStoredSession: () => removeStoredSession(storage),
@@ -153,19 +154,15 @@ export function p169Session(
       released: createReleasedPriceCheckPort(),
       fixture: createFixturePriceCheckPort(),
     },
+    priceFeature: {
+      invoke,
+      readFx: fxRateReaderFor(client),
+      searchOptions: { debounceMs: 0 },
+    },
     photo: new FakePhotoPort(),
   })
   runtime.auth.start()
-  const invoke: SearchPricesInvoker = (name, opts) => client.functions.invoke(name, opts)
-  const feature = createP169Feature({
-    authority: runtime.authority,
-    registry: runtime.registry,
-    invoke,
-    readFx: fxRateReaderFor(client),
-    photo: runtime.photo,
-    searchOptions: { debounceMs: 0 },
-  })
-  return { runtime, feature, log, client }
+  return { runtime, feature: runtime.feature, log, client }
 }
 
 export async function signIn(s: P169Session, who: 'a' | 'b'): Promise<void> {

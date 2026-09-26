@@ -1,11 +1,13 @@
-import { Fragment, useEffect } from 'react'
+import { Fragment, useEffect, useMemo } from 'react'
 import { View } from 'react-native'
 import {
   NavigationContainer,
+  createNavigationContainerRef,
   type InitialState,
   type NavigationContainerRefWithCurrent,
 } from '@react-navigation/native'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
+import { P169FeatureProvider, type P169Host } from '../features/navigation'
 import { identityKey, type Runtime } from '../wiring/runtime'
 import { Body, Button, FailureView, Loading } from './components'
 import { MainNavigator } from './MainNavigator'
@@ -40,6 +42,23 @@ function Gate({
   const navTheme = useNavigationTheme()
 
   useEffect(() => runtime.auth.start(), [runtime])
+
+  // "Add to collection" from Price Check is an intent: navigate to the screen that says what happens
+  // next. It carries only ids; it never writes (the feature has no way to).
+  const ownRef = useMemo(() => createNavigationContainerRef<TabParams>(), [])
+  const containerRef = navigationRef ?? ownRef
+  const host = useMemo<P169Host>(
+    () => ({
+      onAddToCollection: (intent) => {
+        if (!containerRef.isReady()) return
+        containerRef.navigate('SearchTab', {
+          screen: 'P170AddIntent',
+          params: { cardId: intent.cardId, variantId: intent.variantId },
+        })
+      },
+    }),
+    [containerRef],
+  )
 
   if (session.status === 'initializing') {
     return (
@@ -78,14 +97,16 @@ function Gate({
   }
   return (
     <Fragment key={identityKey(session.userId, session.epoch)}>
-      <NavigationContainer
-        ref={navigationRef}
-        theme={navTheme}
-        initialState={runtime.navigation.get() as InitialState | undefined}
-        onStateChange={(state) => runtime.navigation.set(state)}
-      >
-        <MainNavigator backendHost={backendHost} />
-      </NavigationContainer>
+      <P169FeatureProvider feature={runtime.feature} host={host}>
+        <NavigationContainer
+          ref={containerRef}
+          theme={navTheme}
+          initialState={runtime.navigation.get() as InitialState | undefined}
+          onStateChange={(state) => runtime.navigation.set(state)}
+        >
+          <MainNavigator backendHost={backendHost} />
+        </NavigationContainer>
+      </P169FeatureProvider>
     </Fragment>
   )
 }

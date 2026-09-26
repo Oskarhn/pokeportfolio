@@ -1,20 +1,21 @@
 import type { ReactNode } from 'react'
 import { Pressable, StyleSheet, Text, View } from 'react-native'
 import type { Money } from '@shared/domain/money'
-import { formatMoney } from '../../money/format-money'
-import { SPACE, usePalette } from '../../ui/theme'
+import { MoneyText } from '../../ui/components'
+import { MIN_TOUCH, SPACE, usePalette } from '../../ui/theme'
 
 /**
- * Neutral, feature-local presentation helpers for the P169 screens. Deliberately plain (system
- * colours from the existing palette, system font, no icons): the owner-approved Stitch designs (P168)
- * replace the presentation later. Only what the shared kit (src/ui/components.tsx) does not do is
- * here, so the shared kit and the global theme stay untouched:
- *   - 48 dp minimum touch targets (Android guidance; the shared kit uses 44),
- *   - money on ONE line that shrinks to fit instead of wrapping inside the number,
- *   - a polite live region for search/lookup status announcements (TalkBack).
+ * Neutral, feature-local presentation helpers for the Search / Price Check screens. Deliberately
+ * plain (system colours from the existing palette, system font, no icons): the owner-approved
+ * designs replace the presentation later. Only what the shell kit (src/ui/components.tsx) does not
+ * do is here:
+ *   - buttons with a selected state and an accessibility hint,
+ *   - a polite live region for search/lookup status announcements (TalkBack),
+ *   - money through the shell's MoneyText (see ExactMoney).
  */
 
-export const TOUCH_48 = 48
+/** One source of truth for the touch-target floor: the shell's (48 dp, Android guidance). */
+export const TOUCH_48 = MIN_TOUCH
 
 export function ActionButton({
   label,
@@ -73,10 +74,11 @@ export function ActionButton({
 }
 
 /**
- * An exact amount on one line. Android breaks a "word" that is wider than the line at an arbitrary
- * character, which at 200 % text split long amounts across lines (P166 finding). Here the amount
- * never wraps: it shrinks to fit, and the full value is the accessibility label. Absent renders as
- * the dash (format-money.ts), never as zero.
+ * An exact amount. Adapter over the shell's `MoneyText` (P167): the amount wraps only between digit
+ * groups (or before the currency) and never shrinks, so at 200 % text every digit stays full size and
+ * visible. The formatted value and the announced label are unchanged; absent renders as the dash,
+ * never as zero (format-money.ts). P169 first shipped a one-line shrink-to-fit here; P167's wrapping
+ * rule replaced it when the two were integrated.
  */
 export function ExactMoney({
   value,
@@ -87,24 +89,13 @@ export function ExactMoney({
   testID?: string
   size?: 'body' | 'headline'
 }) {
-  const p = usePalette()
-  const text = formatMoney(value)
   return (
-    <Text
-      testID={testID}
-      accessibilityLabel={value === null ? 'No value' : text}
-      numberOfLines={1}
-      adjustsFontSizeToFit
-      minimumFontScale={0.2}
-      style={{
-        color: value === null ? p.muted : p.text,
-        fontSize: size === 'headline' ? 22 : 16,
-        fontWeight: size === 'headline' ? '700' : '600',
-        fontVariant: ['tabular-nums'],
-      }}
-    >
-      {text}
-    </Text>
+    <MoneyText
+      {...(testID !== undefined ? { testID } : {})}
+      value={value}
+      emphasis={size === 'headline'}
+      fit="wrap"
+    />
   )
 }
 

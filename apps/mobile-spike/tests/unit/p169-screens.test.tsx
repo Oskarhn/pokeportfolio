@@ -95,7 +95,7 @@ describe('P169 screens', () => {
     expect(status.props.accessibilityLiveRegion).toBe('polite')
   })
 
-  it('card with two printings: choose first, then exact money on ONE line, NOK reference, graded unavailable', async () => {
+  it('card with two printings: choose first, then exact wrapping money, NOK reference, graded unavailable', async () => {
     const { h, ref, intents } = await mount()
     h.cards.set(ZARD.cardId, { card: ZARD, variants: [HOLO, FIRST] })
     h.invoker.answer(
@@ -116,11 +116,14 @@ describe('P169 screens', () => {
     })
     const source = screen.getByTestId('p169-obs-tcgdex_cardmarket-source')
     expect(source.props.children).toBe('€9,876,543,210,987.65')
-    expect(source.props.numberOfLines).toBe(1)
-    expect(source.props.adjustsFontSizeToFit).toBe(true)
-    expect(screen.getByTestId('p169-obs-tcgdex_cardmarket-nok').props.children).toBe(
-      `113${NB}580${NB}246${NB}926${NB}357,98 kr`,
-    )
+    // P167's wrapping rule (kit ExactMoney -> MoneyText fit="wrap"): never shrunk or truncated; it may
+    // break only between digit groups, and what a screen reader announces is the exact amount.
+    expect(source.props.numberOfLines).toBeUndefined()
+    expect(source.props.adjustsFontSizeToFit).toBeUndefined()
+    const nok = screen.getByTestId('p169-obs-tcgdex_cardmarket-nok')
+    expect(nok.props.accessibilityLabel).toBe(`113${NB}580${NB}246${NB}926${NB}357,98 kr`)
+    expect(nok.props.children).toBe('113 580 246 926 357,98 kr')
+    expect(nok.props.numberOfLines).toBeUndefined()
     expect(screen.getByTestId('p169-contract-search_prices_observations')).toBeTruthy()
     expect(screen.getByText(/No verified graded market data available/)).toBeTruthy()
 
