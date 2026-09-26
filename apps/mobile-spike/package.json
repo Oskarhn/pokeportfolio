@@ -8,7 +8,7 @@
     "start": "expo start",
     "typecheck": "tsc --noEmit",
     "lint": "pnpm --dir ../.. exec eslint --config apps/mobile-spike/eslint.config.js apps/mobile-spike/src apps/mobile-spike/tests apps/mobile-spike/App.tsx apps/mobile-spike/index.ts",
-    "test": "jest --selectProjects unit shared",
+    "test": "jest --selectProjects unit shared-node shared-rn",
     "test:backend": "node scripts/run-backend-tests.mjs",
     "test:all": "jest",
     "bundle:android": "expo export --platform android --output-dir .build/android",
