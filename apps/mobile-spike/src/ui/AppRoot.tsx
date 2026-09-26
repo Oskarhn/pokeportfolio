@@ -8,6 +8,7 @@ import {
 } from '@react-navigation/native'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 import { P169FeatureProvider, type P169Host } from '../features/navigation'
+import { restorableNavigationState } from '../state/navigation-memory'
 import { identityKey, type Runtime } from '../wiring/runtime'
 import { Body, Button, FailureView, Loading } from './components'
 import { MainNavigator } from './MainNavigator'
@@ -101,7 +102,9 @@ function Gate({
         <NavigationContainer
           ref={containerRef}
           theme={navTheme}
-          initialState={runtime.navigation.get() as InitialState | undefined}
+          initialState={
+            restorableNavigationState(runtime.navigation.get()) as InitialState | undefined
+          }
           onStateChange={(state) => runtime.navigation.set(state)}
         >
           <MainNavigator backendHost={backendHost} />

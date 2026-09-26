@@ -13,6 +13,7 @@ import { createFixturePriceCheckPort } from '../../src/price-check/fixture-adapt
 import { createReleasedPriceCheckPort } from '../../src/price-check/released-adapter'
 import { AppRoot } from '../../src/ui/AppRoot'
 import type { TabParams } from '../../src/ui/navigation-types'
+import { restorableNavigationState } from '../../src/state/navigation-memory'
 import { createRuntime, type Runtime } from '../../src/wiring/runtime'
 import { FakeAuth, FakeCollectionPort, FakePhotoPort, MemoryKeyValueStore } from '../support/fakes'
 import { deferred, flush, session } from '../support/fakes'
@@ -639,5 +640,57 @@ describe('touch targets on the integrated screens (48 dp floor)', () => {
     expect(undersized()).toEqual([])
     await fireEvent.press(screen.getByTestId('p169-add-to-collection'))
     await screen.findByTestId('p170-add-intent')
+  })
+})
+
+describe('restoring the navigation after an Activity recreation', () => {
+  it('drops the transient cross-navigator instruction and keeps the reached screen', () => {
+    const saved = {
+      index: 1,
+      routes: [
+        { name: 'CollectionTab' },
+        {
+          name: 'SearchTab',
+          params: { screen: 'P169PhotoEntry', initial: true, extra: 'kept' },
+          state: {
+            index: 1,
+            routes: [
+              { name: 'P169PhotoEntry' },
+              { name: 'P169Card', params: { cardId: 'c1', variantId: 'v1' } },
+            ],
+          },
+        },
+        { name: 'PriceCheckTab', params: { state: { routes: [] } } },
+      ],
+    }
+    const restored = restorableNavigationState(saved)
+    expect(restored.routes[1]?.params).toEqual({ extra: 'kept' })
+    expect(restored.routes[2]).toEqual({ name: 'PriceCheckTab' })
+    // real screen params are untouched, and the input is not mutated
+    expect(restored.routes[1]?.state?.routes[1]?.params).toEqual({ cardId: 'c1', variantId: 'v1' })
+    expect(saved.routes[1]?.params?.screen).toBe('P169PhotoEntry')
+    expect(restorableNavigationState(undefined)).toBeUndefined()
+  })
+
+  it('Price Check landing -> photo entry -> "choose manually" -> recreation shows the SEARCH screen', async () => {
+    const h = p169Harness()
+    const first = await render(<AppRoot runtime={h.runtime} backendHost="127.0.0.1" />)
+    await act(async () => {
+      h.auth.emit('SIGNED_IN', session('A'))
+      await flush()
+    })
+    await fireEvent.press(await screen.findByTestId('tab-pricecheck'))
+    await fireEvent.press(await screen.findByTestId('pc-home-photo'))
+    await fireEvent.press(await screen.findByTestId('p169-choose-manually'))
+    await screen.findByTestId('p169-search')
+    await first.unmount()
+
+    await render(<AppRoot runtime={h.runtime} backendHost="127.0.0.1" />)
+    await act(async () => {
+      h.auth.emit('INITIAL_SESSION', session('A'))
+      await flush(10)
+    })
+    expect(await screen.findByTestId('p169-search-input')).toBeTruthy()
+    expect(screen.queryByTestId('p169-photo-entry')).toBeNull()
   })
 })

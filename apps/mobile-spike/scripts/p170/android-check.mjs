@@ -71,9 +71,25 @@ const metrics = {}
 const only = process.env.P170_STEPS ? new RegExp(process.env.P170_STEPS, 'i') : null
 class NotRun extends Error {}
 
+/** Which screen roots the view tree shows after a step (a native stack keeps lower screens listed). */
+function screenRoots() {
+  try {
+    return dump()
+      .map((n) => n.id.replace(/^.*:id./, ''))
+      .filter((id) =>
+        /^(p169-search|p169-card|p169-photo-entry|p170-add-intent|price-check-home|collection-list|card-detail|profile|login-screen)$/.test(
+          id,
+        ),
+      )
+  } catch {
+    return []
+  }
+}
 function record(step, status, detail) {
-  steps.push({ step, status, detail })
-  console.log(`${status} ${step}${detail ? `  ${JSON.stringify(detail).slice(0, 600)}` : ''}`)
+  steps.push({ step, status, detail, screens: screenRoots() })
+  console.log(
+    `${status} ${step}${detail ? `  ${JSON.stringify(detail).slice(0, 600)}` : ''}  screens=${steps.at(-1).screens.join('+')}`,
+  )
 }
 async function run(step, fn) {
   if (only && !only.test(step)) return
@@ -126,13 +142,20 @@ const back = () => shell('input keyevent 4')
 async function tapId(id, label = id) {
   tap((await waitFor((ns) => byId(ns, id), { label })).value)
 }
+/** Looks on the current screen, then scrolls down, then back up (the target may be above the fold). */
 async function findScrolling(id, tries = 8) {
-  for (let i = 0; i < tries; i += 1) {
-    const nodes = dump()
-    const node = byId(nodes, id)
-    if (node) return { node, nodes }
-    shell('input touchscreen swipe 540 1700 540 700 300')
-    await sleep(400)
+  for (const down of [true, false]) {
+    for (let i = 0; i < tries; i += 1) {
+      const nodes = dump()
+      const node = byId(nodes, id)
+      if (node) return { node, nodes }
+      shell(
+        down
+          ? 'input touchscreen swipe 540 1700 540 700 300'
+          : 'input touchscreen swipe 540 700 540 1700 300',
+      )
+      await sleep(400)
+    }
   }
   throw new Error(`not found after scrolling: ${id}`)
 }
@@ -146,17 +169,29 @@ function perfLines() {
 // ---- journey helpers -----------------------------------------------------------------------------------
 async function goSearch() {
   for (let i = 0; i < 6; i += 1) {
-    const n = dump()
+    let n = dump()
     if (byId(n, 'p169-search')) return
-    if (byId(n, 'tab-search') && !byId(n, 'p169-search-input')) {
+    // select the Search tab and give a slow transition time (heavy results lists), and only then
+    // pop whatever the Search stack still holds
+    if (byId(n, 'tab-search')) {
       tap(byId(n, 'tab-search'))
-      await sleep(500)
-      if (byId(dump(), 'p169-search')) return
+      for (let w = 0; w < 10; w += 1) {
+        await sleep(400)
+        n = dump()
+        if (byId(n, 'p169-search')) return
+      }
     }
     back()
     await sleep(600)
   }
-  throw new Error('could not reach the search screen')
+  const ids = [
+    ...new Set(
+      dump()
+        .map((n) => n.id.replace(/^.*:id./, ''))
+        .filter(Boolean),
+    ),
+  ]
+  throw new Error(`could not reach the search screen; visible: ${ids.slice(0, 25).join(', ')}`)
 }
 async function search(query) {
   await goSearch()
@@ -200,7 +235,7 @@ async function choose(key, printing) {
 }
 async function signOut() {
   await tapId('tab-profile', 'profile tab')
-  await tapId('sign-out', 'sign out')
+  tap((await findScrolling('sign-out')).node)
   await waitFor((ns) => byId(ns, 'login-screen'), { label: 'login after sign-out' })
 }
 
@@ -406,7 +441,11 @@ await run(
     metrics.firstPriceRequestMs = r.ms
     const n = r.nodes
     const cm = text(n, 'p169-obs-tcgdex_cardmarket-source')
-    const tp = text(n, 'p169-obs-tcgdex_tcgplayer-source')
+    // the second provider's card may be below the fold
+    const tp = text(
+      (await findScrolling('p169-obs-tcgdex_tcgplayer-source')).nodes,
+      'p169-obs-tcgdex_tcgplayer-source',
+    )
     const nok = plain(text(n, 'p169-obs-tcgdex_cardmarket-nok') ?? '')
     assert(cm === '€4.20' && tp === '$5.00', `source ${String(cm)} ${String(tp)}`)
     assert(nok === '48,30 kr', `nok ${nok}`)
@@ -415,7 +454,8 @@ await run(
       /\S/.test(text(n, 'p169-obs-tcgdex_cardmarket-observed') ?? ''),
       'observed/freshness text',
     )
-    assert(/\S/.test(text(n, 'p169-fetched') ?? ''), 'fetched text')
+    const fetched = text((await findScrolling('p169-fetched')).nodes, 'p169-fetched') ?? ''
+    assert(/\S/.test(fetched), 'fetched text')
     checkTargets('card prices', n)
     shot('08-price-reverse')
     return { ms: r.ms, cm, tp, nok }
@@ -581,30 +621,49 @@ await run('18 warm and multi-page search (timings; emulator only)', async () => 
   return { warmMs: warm.ms, bulkFirstMs: bulk.ms, offsetsLoaded: offsets }
 })
 
-await run(
-  '19 200 % text: search and price screens, amounts complete and inside the screen',
-  async () => {
-    shell('settings put system font_scale 2.0')
-    await sleep(3500)
-    await search('P169 Charizard')
-    shot('19a-search-200')
-    await openHit('zard-base-004')
-    await choose('zard-base-004', 'holo|')
-    const { node } = await findScrolling('p169-obs-tcgdex_cardmarket-nok')
-    assert(plain(node.text) === '113 580 246 926 357,98 kr', `amount ${plain(node.text)}`)
-    assert(node.bounds.x1 >= 0 && node.bounds.x2 <= width, 'amount inside the screen width')
-    const over = dump().filter((x) => x.bounds && x.bounds.x2 > width + 1)
-    assert(over.length === 0, `${String(over.length)} nodes wider than the screen`)
-    shot('19b-price-200')
-    shell('settings put system font_scale 1.0')
+/** A global emulator setting is put back even when the step fails, so one failure cannot cascade. */
+async function restoring(restore, fn) {
+  try {
+    return await fn()
+  } finally {
+    restore()
     await sleep(3000)
-    return { amountBounds: node.bounds, lineHeightPx: node.bounds.y2 - node.bounds.y1 }
-  },
+  }
+}
+
+await run('19 200 % text: search and price screens, amounts complete and inside the screen', () =>
+  restoring(
+    () => shell('settings put system font_scale 1.0'),
+    async () => {
+      shell('settings put system font_scale 2.0')
+      await sleep(3500)
+      await search('P169 Charizard')
+      shot('19a-search-200')
+      await openHit('zard-base-004')
+      await choose('zard-base-004', 'holo|')
+      const { node } = await findScrolling('p169-obs-tcgdex_cardmarket-nok')
+      assert(plain(node.text) === '113 580 246 926 357,98 kr', `amount ${plain(node.text)}`)
+      assert(node.bounds.x1 >= 0 && node.bounds.x2 <= width, 'amount inside the screen width')
+      const over = dump().filter((x) => x.bounds && x.bounds.x2 > width + 1)
+      assert(over.length === 0, `${String(over.length)} nodes wider than the screen`)
+      shot('19b-price-200')
+      return { amountBounds: node.bounds, lineHeightPx: node.bounds.y2 - node.bounds.y1 }
+    },
+  ),
 )
 
-await run('20 dark mode: the new screens and the chrome are dark', async () => {
-  shell('cmd uimode night yes')
-  await sleep(2500)
+await run('20 dark mode: the new screens and the chrome are dark', () =>
+  restoring(
+    () => shell('cmd uimode night no'),
+    async () => {
+      shell('cmd uimode night yes')
+      await sleep(2500)
+      return darkStep()
+    },
+  ),
+)
+
+async function darkStep() {
   await goSearch()
   const png = decodePng(shot('20-dark-search'))
   const header = png.bandLuminance(Math.round(30 * dp), Math.round(80 * dp))
@@ -619,35 +678,35 @@ await run('20 dark mode: the new screens and the chrome are dark', async () => {
   const landing = decodePng(shot('20-dark-landing'))
   const l = landing.bandLuminance(Math.round(400 * dp), Math.round(600 * dp))
   assert(l < 0.35, `landing luminance ${l}`)
-  shell('cmd uimode night no')
-  await sleep(1500)
   return { header, content, tabBar, landing: l }
-})
+}
 
 await run(
   '21 360 / 390 / 430 dp widths: no node wider than the screen, no target under 48 dp',
-  async () => {
-    const min = Math.floor(48 * dp)
-    const out = {}
-    for (const w of [360, 390, 430]) {
-      shell(`wm density ${String(Math.round((width * 160) / w))}`)
-      await sleep(2500)
-      const r = await search('P169 Pikachu')
-      const overflow = r.nodes.filter((x) => x.bounds && x.bounds.x2 > width + 1).length
-      const localMin = Math.floor(48 * (Math.round((width * 160) / w) / 160))
-      const small = r.nodes
-        .filter((x) => x.clickable && x.pkg === PACKAGE && x.bounds && !/^tab-/.test(x.id))
-        .filter((x) => x.bounds.y2 - x.bounds.y1 < localMin)
-        .map((x) => x.id || x.desc)
-      shot(`21-width-${String(w)}dp`)
-      out[w] = { overflow, small }
-      assert(overflow === 0, `${String(w)}dp overflow ${String(overflow)}`)
-      assert(small.length === 0, `${String(w)}dp targets under 48 dp: ${small.join(',')}`)
-    }
-    shell('wm density reset')
-    await sleep(2500)
-    return { ...out, minPxAtDefault: min }
-  },
+  () =>
+    restoring(
+      () => shell('wm density reset'),
+      async () => {
+        const min = Math.floor(48 * dp)
+        const out = {}
+        for (const w of [360, 390, 430]) {
+          shell(`wm density ${String(Math.round((width * 160) / w))}`)
+          await sleep(2500)
+          const r = await search('P169 Pikachu')
+          const overflow = r.nodes.filter((x) => x.bounds && x.bounds.x2 > width + 1).length
+          const localMin = Math.floor(48 * (Math.round((width * 160) / w) / 160))
+          const small = r.nodes
+            .filter((x) => x.clickable && x.pkg === PACKAGE && x.bounds && !/^tab-/.test(x.id))
+            .filter((x) => x.bounds.y2 - x.bounds.y1 < localMin)
+            .map((x) => x.id || x.desc)
+          shot(`21-width-${String(w)}dp`)
+          out[w] = { overflow, small }
+          assert(overflow === 0, `${String(w)}dp overflow ${String(overflow)}`)
+          assert(small.length === 0, `${String(w)}dp targets under 48 dp: ${small.join(',')}`)
+        }
+        return { ...out, minPxAtDefault: min }
+      },
+    ),
 )
 
 await run(
@@ -754,6 +813,16 @@ await run(
     throw new NotRun(
       'a refresh cannot be forced on the device without changing the clock or the JWT lifetime',
     )
+  },
+)
+
+await run(
+  '28 read-only again: after the identity changes and restarts, still no ledger row changed',
+  async () => {
+    const after = ledgerHashes()
+    const changed = Object.keys(after).filter((t) => after[t] !== ledgerBefore[t])
+    assert(changed.length === 0, `changed tables: ${changed.join(', ')}`)
+    return { tables: Object.keys(after).length, changed: 0 }
   },
 )
 

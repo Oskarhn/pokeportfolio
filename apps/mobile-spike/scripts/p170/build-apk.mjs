@@ -19,6 +19,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
+import { tmpdir } from 'node:os'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const appRoot = resolve(here, '..', '..')
@@ -61,8 +62,23 @@ function writeEnv() {
 
 const clean = !process.argv.includes('--no-clean')
 writeEnv()
+// EXPO_PUBLIC_* values are inlined at transform time, but Metro's transform cache is keyed by file
+// content, not by the environment: a cached supabase-client.ts from ANOTHER worktree's build (another
+// stack's port) was baked into the first P170 APK, which then never reached this stack. Clear it, and
+// the Gradle bundle output (its inputs do not include the environment either).
+rmSync(join(tmpdir(), 'metro-cache'), { recursive: true, force: true })
+rmSync(join(appRoot, 'android', 'app', 'build', 'generated', 'assets'), {
+  recursive: true,
+  force: true,
+})
 if (clean) {
-  rmSync(join(appRoot, 'android'), { recursive: true, force: true })
+  // Node's rmSync fails on the generated CMake trees (paths over 260 characters); rd accepts the
+  // extended-length prefix.
+  if (process.platform === 'win32') {
+    const target = '\\\\?\\' + join(appRoot, 'android')
+    if (existsSync(join(appRoot, 'android')))
+      spawnSync('cmd', ['/c', 'rd', '/s', '/q', target], { stdio: 'inherit' })
+  } else rmSync(join(appRoot, 'android'), { recursive: true, force: true })
   run('npx', ['expo', 'prebuild', '--clean', '--platform', 'android', '--no-install'], appRoot)
 }
 const gradleArgs = ['assembleRelease', '-PreactNativeArchitectures=x86_64']
@@ -83,5 +99,8 @@ if (pass1 !== 0) {
 }
 const apk = join(appRoot, 'android', 'app', 'build', 'outputs', 'apk', 'release', 'app-release.apk')
 if (status !== 0 || !existsSync(apk)) throw new Error('APK build failed')
+// The URL baked into the bundle must be the one just written to .env.local.
+const wanted = readFileSync(join(appRoot, '.env.local'), 'utf8').match(/SUPABASE_URL=([^s]+)/)?.[1]
+console.log(`expected backend URL in the bundle: ${wanted}`)
 const sha = createHash('sha256').update(readFileSync(apk)).digest('hex')
 console.log(`\nAPK ${apk}\nSHA-256 ${sha}`)
