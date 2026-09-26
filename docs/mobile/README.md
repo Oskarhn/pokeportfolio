@@ -15,5 +15,8 @@ selected; the P154 proposals are unchanged. The spike lives in [`apps/mobile-spi
 | [INTEGRATION_PLAN](INTEGRATION_PLAN.md) | Phased replacement of every `SPIKE_ONLY` adapter |
 | [P166_RUNTIME_AND_STITCH_REVIEW](P166_RUNTIME_AND_STITCH_REVIEW.md) | Release build on an Android 16 emulator: Hermes exact-money proof, device steps, performance, runtime findings |
 | [P166_STITCH_DESIGN_BRIEF](P166_STITCH_DESIGN_BRIEF.md) | Stitch status (connected, no screens generated), three directions, seven screens, exact steps |
+| [P167_ANDROID_HARDENING](P167_ANDROID_HARDENING.md) | Android runtime hardening: the picker after an Activity recreation, dark chrome, large text, keyboard, touch targets |
+| [P169_NATIVE_PRICE_CHECK](P169_NATIVE_PRICE_CHECK.md) | Native catalog search and read-only Price Check, contracts, findings F1-F9 |
+| [P173_INTEGRATED_NATIVE_ANDROID](P173_INTEGRATED_NATIVE_ANDROID.md) | The two tracks integrated in one app: graph proof, reconciliation, device evidence, fixes, limits |
 
 Inputs (read-only): [`docs/design/p154`](../design/p154/README.md).
