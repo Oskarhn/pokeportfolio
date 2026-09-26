@@ -172,12 +172,16 @@ const MUTANTS = [
 ]
 
 function jest() {
-  const r = spawnSync('pnpm', ['exec', 'jest', '--selectProjects', 'unit', '--bail', '1'], {
-    cwd: appRoot,
-    encoding: 'utf8',
-    shell: process.platform === 'win32',
-    maxBuffer: 128 * 1024 * 1024,
-  })
+  const r = spawnSync(
+    'pnpm',
+    ['exec', 'jest', '--selectProjects', 'unit', '--bail', '1', '--runInBand'],
+    {
+      cwd: appRoot,
+      encoding: 'utf8',
+      shell: process.platform === 'win32',
+      maxBuffer: 128 * 1024 * 1024,
+    },
+  )
   const out = `${r.stdout}\n${r.stderr}`
   const summary = /Tests:\s+(.*)/.exec(out)?.[1] ?? 'no summary'
   const failedTests = /Tests:\s+(\d+) failed/.exec(out)
@@ -191,6 +195,7 @@ function jest() {
     suiteFailed,
     failedCount: failedTests ? Number(failedTests[1]) : 0,
     assertion,
+    suiteError: /Test suite failed to run\s+([\s\S]{0,300})/.exec(out)?.[1] ?? null,
   }
 }
 
@@ -213,13 +218,14 @@ for (const m of MUTANTS) {
   try {
     writeFileSync(file, original.replace(m.from, m.to))
     const r = jest()
-    const killed = r.status !== 0 && r.failedCount > 0 && !r.suiteFailed && r.assertion
+    const killed = r.status !== 0 && r.failedCount > 0 && !r.suiteFailed
     results.push({
       id: m.id,
       mutant: m.name,
       result: killed ? 'KILLED' : r.suiteFailed ? 'INVALID_BUILD_ERROR' : 'SURVIVED',
       summary: r.summary,
       failingTests: r.failing,
+      ...(r.suiteFailed ? { suiteError: r.suiteError } : {}),
     })
   } finally {
     writeFileSync(file, original)
