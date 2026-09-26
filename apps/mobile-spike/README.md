@@ -90,6 +90,24 @@ node scripts/android-runtime-check.mjs                      # P166_STEPS=<regex>
 Plain HTTP to the local stack is allowed only for `10.0.2.2`, `10.0.3.2`, `127.0.0.1` and `localhost`
 (`plugins/with-local-cleartext.js`); a release build would otherwise refuse it.
 
+### P167 additions ([P167 report](../../docs/mobile/P167_ANDROID_HARDENING.md))
+
+- **Own stack per worktree.** `SPIKE_BACKEND_PROJECT_ID=pokeportfolio-<name>` and
+  `SPIKE_BACKEND_PORT_OFFSET=<100..9000>` on `node scripts/local-backend.mjs start`; the choice is
+  recorded in `.local-backend/stack.json` and every later command follows it. Check
+  `netsh interface ipv4 show excludedportrange protocol=tcp` first: Windows reserves port ranges that
+  change on reboot.
+- **One device.** With more than one device attached the drivers refuse to run unless `ANDROID_SERIAL`
+  names the one you own.
+- **expo-modules-core patch.** `patches/expo-modules-core@57.0.18.patch` (upstream expo/expo#49634) keeps
+  the photo picker working after an Activity recreation; `pnpm install` applies it. Drop it once an Expo
+  release contains the fix.
+- **Drivers.** `node scripts/android-p167-check.mjs` (`P167_STEPS=<regex>`: recreation, photo lifecycle,
+  keyboard, tabs, touch targets, dark mode incl. 3-button navigation, font scale 2.0);
+  `node scripts/android-collection-perf.mjs <label> [runs]` (same fling pattern for any installed build).
+  Both need `adb root` for the cache-file and process-kill steps and switch the emulator's autofill off
+  for the run.
+
 ## Checks
 
 ```powershell

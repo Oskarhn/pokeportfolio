@@ -34,7 +34,9 @@ export function LoginScreen({ notice }: { notice?: string | null }) {
   } as const
 
   async function submit() {
-    if (busy) return
+    // The keyboard's action key reaches submit() even when the button is disabled: an empty field
+    // must not send a sign-in (it did on Android: "not correct", then the typed password was cleared).
+    if (busy || email.trim() === '' || password === '') return
     setBusy(true)
     setError(null)
     const result = await runtime.auth.signIn(email.trim(), password)

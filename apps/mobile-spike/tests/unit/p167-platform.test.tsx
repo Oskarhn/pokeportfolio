@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { act, render, screen } from '@testing-library/react-native'
+import { act, fireEvent, render, screen } from '@testing-library/react-native'
 import { AppRoot } from '../../src/ui/AppRoot'
 import { breakableMoneyText } from '../../src/ui/components'
 import { tabBarHeight } from '../../src/ui/MainNavigator'
@@ -40,6 +40,25 @@ describe('F7 keyboard', () => {
     expect(source).toMatch(/<KeyboardAvoidingView[^>]*behavior={KEYBOARD_BEHAVIOR}/)
     expect(screen.getByTestId('login-email').props.returnKeyType).toBe('next')
     expect(screen.getByTestId('login-password').props.returnKeyType).toBe('go')
+  })
+})
+
+describe('F7 keyboard action key', () => {
+  it('an IME submit with an empty field sends no sign-in (seen on Android: it wiped the typed password)', async () => {
+    const h = harness()
+    const signIn = jest.spyOn(h.auth, 'signInWithPassword')
+    await render(<AppRoot runtime={h.runtime} backendHost="127.0.0.1" />)
+    await act(async () => {
+      h.auth.emit('INITIAL_SESSION', null)
+      await new Promise((r) => setTimeout(r, 5))
+    })
+    await fireEvent.changeText(await screen.findByTestId('login-email'), 'alice@example.invalid')
+    await fireEvent(screen.getByTestId('login-password'), 'submitEditing')
+    expect(signIn).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('login-error')).toBeNull()
+    await fireEvent.changeText(screen.getByTestId('login-password'), 'a-password')
+    await fireEvent(screen.getByTestId('login-password'), 'submitEditing')
+    expect(signIn).toHaveBeenCalledTimes(1)
   })
 })
 

@@ -174,6 +174,13 @@ const MUTANTS = [
     tests: ['tests/unit/p167-platform.test.tsx'],
   },
   {
+    id: 'M11b',
+    title: 'F7: the keyboard action key submits an empty field (sign-in with an empty password)',
+    file: 'src/ui/screens/LoginScreen.tsx',
+    edits: [["if (busy || email.trim() === '' || password === '') return", 'if (busy) return']],
+    tests: ['tests/unit/p167-platform.test.tsx'],
+  },
+  {
     id: 'M12',
     title: 'F5: navigation chrome not bound to the system scheme (light bars in dark mode)',
     file: 'src/ui/AppRoot.tsx',
