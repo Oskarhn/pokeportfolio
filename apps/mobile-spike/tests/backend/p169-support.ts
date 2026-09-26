@@ -24,12 +24,14 @@ import { FakePhotoPort, MemoryKeyValueStore } from '../support/fakes'
 export const P169_ENABLED = process.env.P169_LOCAL_BACKEND === '1'
 export const p169Describe = P169_ENABLED ? describe : describe.skip
 
+// P169_STACK: db106 (the DB-106 candidate stack), p170 (the integrated stack) or unset (P169's).
+const STACK_DIRS: Record<string, string> = { db106: 'p169-db106', p170: 'p170' }
 const dir = join(
   __dirname,
   '../../.local-backend',
-  process.env.P169_STACK === 'db106' ? 'p169-db106' : 'p169',
+  STACK_DIRS[process.env.P169_STACK ?? ''] ?? 'p169',
 )
-export const MOCK_URL = 'http://127.0.0.1:55979'
+export const MOCK_URL = `http://127.0.0.1:${process.env.P169_MOCK_PORT ?? '55979'}`
 
 interface PublicEnv {
   apiUrl: string

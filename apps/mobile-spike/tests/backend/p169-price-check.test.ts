@@ -135,7 +135,7 @@ p169Describe('P169 catalog search on the real stack', () => {
   })
 
   it('no match is "empty", not an error', async () => {
-    s.feature.search.setQuery('zzqx no such card')
+    s.feature.search.setQuery('zzqxjwv')
     await s.feature.search.submit()
     expect(s.feature.search.getSnapshot()).toMatchObject({ status: 'empty', hits: [] })
   })

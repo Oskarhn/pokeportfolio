@@ -300,19 +300,19 @@ for (const change of CONFIG_CHANGES) {
         recreated,
         `Activity was not recreated (before ${before}, after ${after}, events ${events.length})`,
       )
-      await waitFor((ns) => byId(ns, 'photo-library') || rows(ns).length > 0, {
+      await waitFor((ns) => byId(ns, 'p169-photo-library') || rows(ns).length > 0, {
         label: 'app after recreation',
       })
-      const navigation = byId(dump(), 'photo-library') ? 'kept on the photo screen' : 'reset'
+      const navigation = byId(dump(), 'p169-photo-library') ? 'kept on the photo screen' : 'reset'
       const n = await openPhotoScreen()
       const cacheBefore = pickerCacheFiles()
-      tap(byId(n, 'photo-library'))
+      tap(byId(n, 'p169-photo-library'))
       const opened = await waitForPickerOrState()
       shot(`f1-${change.name.split(' ')[0]}-picker`)
       assert(opened.picker, `picker did not open (state ${opened.state}; ${pickerLog()})`)
       await sleep(1200)
       const how = await chooseNewestInPicker()
-      const ready = await waitFor((ns) => byId(ns, 'photo-ready') && ns, {
+      const ready = await waitFor((ns) => byId(ns, 'p169-photo-ready') && ns, {
         timeoutMs: 20000,
         label: 'photo ready',
       })
@@ -335,7 +335,6 @@ for (const change of CONFIG_CHANGES) {
         navigation,
         lifecycle: events.map((l) => l.replace(/^.*?(wm_\w+).*?\[(.*)\]$/, '$1 [$2]')).slice(-4),
         picked: how,
-        meta: text(ready.value, 'photo-meta'),
         ownedCopies: during.length,
         remainingAfterExit: 0,
       }
@@ -372,36 +371,39 @@ await run(
 // ---- photo lifecycle ----------------------------------------------------------------------------
 await run('photo: library picker cancel -> "No photo chosen", then reopen works', async () => {
   const n = await openPhotoScreen()
-  tap(byId(n, 'photo-library'))
+  tap(byId(n, 'p169-photo-library'))
   let o = await waitForPickerOrState()
   assert(o.picker, `picker did not open (${o.state})`)
   shell('input keyevent 4')
   const r = await waitFor(
-    (ns) => (byId(ns, 'photo-cancelled') || byId(ns, 'photo-unavailable')) && ns,
+    (ns) => (byId(ns, 'p169-photo-cancelled') || byId(ns, 'p169-photo-unavailable')) && ns,
     { label: 'cancelled' },
   )
-  assert(byId(r.value, 'photo-cancelled'), 'cancel reported as unavailable')
-  tap(byId(dump(), 'photo-library'))
+  assert(byId(r.value, 'p169-photo-cancelled'), 'cancel reported as unavailable')
+  tap(byId(dump(), 'p169-photo-library'))
   o = await waitForPickerOrState()
   assert(o.picker, 'picker did not reopen after a cancel')
   shell('input keyevent 4')
-  await waitFor((ns) => byId(ns, 'photo-cancelled'), { label: 'cancelled again' })
-  return { cancelled: text(r.value, 'photo-cancelled'), reopened: true }
+  await waitFor((ns) => byId(ns, 'p169-photo-cancelled'), { label: 'cancelled again' })
+  return { cancelled: text(r.value, 'p169-photo-cancelled'), reopened: true }
 })
 
 await run('photo: rapid double tap opens one picker, no error state', async () => {
   const n = await openPhotoScreen()
-  const b = byId(n, 'photo-library').bounds
+  const b = byId(n, 'p169-photo-library').bounds
   const [x, y] = [Math.round((b.x1 + b.x2) / 2), Math.round((b.y1 + b.y2) / 2)]
   shell(`input touchscreen tap ${x} ${y}; input touchscreen tap ${x} ${y}`)
   const o = await waitForPickerOrState()
   assert(o.picker, `picker did not open (${o.state}; ${pickerLog()})`)
   shell('input keyevent 4')
   const r = await waitFor(
-    (ns) => (byId(ns, 'photo-cancelled') || byId(ns, 'photo-unavailable')) && ns,
+    (ns) => (byId(ns, 'p169-photo-cancelled') || byId(ns, 'p169-photo-unavailable')) && ns,
     { label: 'state' },
   )
-  assert(!byId(r.value, 'photo-unavailable'), `double tap produced "unavailable" (${pickerLog()})`)
+  assert(
+    !byId(r.value, 'p169-photo-unavailable'),
+    `double tap produced "unavailable" (${pickerLog()})`,
+  )
   await sleep(800)
   assert(!/photopicker|PhotoPicker/i.test(focusedWindow()), 'a second picker stayed open')
   return { state: 'cancelled', secondPicker: false }
@@ -411,13 +413,13 @@ await run('photo: camera permission denied -> denied card', async () => {
   shell(`pm revoke ${PACKAGE} android.permission.CAMERA`)
   shell(`pm clear-permission-flags ${PACKAGE} android.permission.CAMERA user-set user-fixed`)
   const n = await openPhotoScreen()
-  tap(byId(n, 'photo-camera'))
+  tap(byId(n, 'p169-photo-camera'))
   const dlg = await waitFor((ns) => ns.find((x) => /permission_deny_button/.test(x.id)) && ns, {
     timeoutMs: 15000,
     label: 'permission dialog',
   })
   tap(dlg.value.find((x) => /permission_deny_button/.test(x.id)))
-  await waitFor((ns) => byId(ns, 'photo-denied'), { label: 'denied state' })
+  await waitFor((ns) => byId(ns, 'p169-photo-denied'), { label: 'denied state' })
   shot('photo-camera-denied')
   return { deniedCard: true }
 })
@@ -426,7 +428,7 @@ await run('photo: camera "only this time" -> system camera -> back = cancelled',
   shell(`pm revoke ${PACKAGE} android.permission.CAMERA`)
   shell(`pm clear-permission-flags ${PACKAGE} android.permission.CAMERA user-set user-fixed`)
   const n = await openPhotoScreen()
-  tap(byId(n, 'photo-camera'))
+  tap(byId(n, 'p169-photo-camera'))
   const dlg = await waitFor(
     (ns) => ns.find((x) => /permission_allow_one_time_button/.test(x.id)) && ns,
     { timeoutMs: 15000, label: 'permission dialog' },
@@ -441,10 +443,10 @@ await run('photo: camera "only this time" -> system camera -> back = cancelled',
   assert(/camera/i.test(cam), `system camera did not open (focus ${cam})`)
   shell('input keyevent 4')
   const r = await waitFor(
-    (ns) => (byId(ns, 'photo-cancelled') || byId(ns, 'photo-unavailable')) && ns,
+    (ns) => (byId(ns, 'p169-photo-cancelled') || byId(ns, 'p169-photo-unavailable')) && ns,
     { timeoutMs: 20000, label: 'state after camera' },
   )
-  assert(byId(r.value, 'photo-cancelled'), 'leaving the camera was not reported as cancelled')
+  assert(byId(r.value, 'p169-photo-cancelled'), 'leaving the camera was not reported as cancelled')
   shell(`pm revoke ${PACKAGE} android.permission.CAMERA`) // kills the app: it held the grant
   await ensureApp()
   return { cameraActivity: cam, state: 'cancelled' }
@@ -457,7 +459,7 @@ await run(
     const n = await openPhotoScreen()
     const before = pickerCacheFiles()
     const crashesBefore = crashCount()
-    tap(byId(n, 'photo-library'))
+    tap(byId(n, 'p169-photo-library'))
     const o = await waitForPickerOrState()
     assert(o.picker, `picker did not open (${o.state})`)
     const pid = appPid()
@@ -473,14 +475,15 @@ await run(
     // Then open the app as a person would.
     await ensureApp()
     const r = await waitFor(
-      (ns) => (rows(ns).length > 0 || byId(ns, 'login-screen') || byId(ns, 'photo-library')) && ns,
+      (ns) =>
+        (rows(ns).length > 0 || byId(ns, 'login-screen') || byId(ns, 'p169-photo-library')) && ns,
       { timeoutMs: 60000, label: 'app after restart' },
     )
     await sleep(2000)
     const created = pickerCacheFiles().filter((f) => !before.includes(f))
     assert(crashCount() === crashesBefore, 'a crash was logged')
     assert(created.length === 0, `orphan picker copy after the restart: ${created.join(',')}`)
-    assert(!byId(r.value, 'photo-ready'), 'a photo from the killed process was shown')
+    assert(!byId(r.value, 'p169-photo-ready'), 'a photo from the killed process was shown')
     return {
       afterPickFocus: systemRelaunched ? 'app relaunched by the system' : afterPick,
       reopenedTo:
@@ -498,12 +501,12 @@ await run(
 await run('photo: process killed while a photo is shown -> copy purged on next start', async () => {
   if (!root) throw new NotRun('adb root unavailable')
   const n = await openPhotoScreen()
-  tap(byId(n, 'photo-library'))
+  tap(byId(n, 'p169-photo-library'))
   const o = await waitForPickerOrState()
   assert(o.picker, `picker did not open (${o.state})`)
   await sleep(1000)
   await chooseNewestInPicker()
-  await waitFor((ns) => byId(ns, 'photo-ready'), { timeoutMs: 20000, label: 'photo ready' })
+  await waitFor((ns) => byId(ns, 'p169-photo-ready'), { timeoutMs: 20000, label: 'photo ready' })
   const shown = pickerCacheFiles()
   assert(shown.length >= 1, 'no owned copy while shown')
   shell(`kill -9 ${appPid()}`)
@@ -528,11 +531,14 @@ await run(
   async () => {
     if (!root) throw new NotRun('adb root unavailable')
     const n = await openPhotoScreen()
-    tap(byId(n, 'photo-library'))
+    tap(byId(n, 'p169-photo-library'))
     assert((await waitForPickerOrState()).picker, 'picker did not open')
     await sleep(1000)
     await chooseNewestInPicker()
-    await waitFor((ns) => byId(ns, 'photo-ready'), { timeoutMs: 20000, label: 'A photo ready' })
+    await waitFor((ns) => byId(ns, 'p169-photo-ready'), {
+      timeoutMs: 20000,
+      label: 'A photo ready',
+    })
     const aCopies = pickerCacheFiles()
     shell('input keyevent 4')
     tap((await waitFor((ns) => byId(ns, 'tab-profile'), { label: 'profile tab' })).value)
@@ -550,7 +556,7 @@ await run(
     )
     const p = await openPhotoScreen()
     shot('photo-a-to-b')
-    assert(!byId(p, 'photo-ready') && !byId(p, 'photo-meta'), 'a photo is shown to B')
+    assert(!byId(p, 'p169-photo-ready'), 'a photo is shown to B')
     const left = pickerCacheFiles().filter((f) => aCopies.includes(f))
     assert(left.length === 0, `A copy still on disk under B: ${left.join(',')}`)
     shell('input keyevent 4')

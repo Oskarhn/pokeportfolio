@@ -46,8 +46,16 @@ function record(step, ok, detail) {
 }
 // P166_STEPS=<regex> runs only the matching steps (e.g. to re-check the photo flow).
 const only = process.env.P166_STEPS ? new RegExp(process.env.P166_STEPS, 'i') : null
+// P170: the Price Check and photo screens this driver's steps 10-15 drove were replaced by the
+// integrated Search / Price Check screens (scripts/p170/android-check.mjs) and the photo entry
+// (scripts/android-p167-check.mjs). Those steps are skipped, not silently dropped.
+const SUPERSEDED = /^(Price Check (read-only)|photo:|photo picker after a configuration change)/
 async function run(step, fn) {
   if (only && !only.test(step)) return
+  if (SUPERSEDED.test(step)) {
+    console.log(`SKIP ${step} (superseded by the P170 / P167 drivers)`)
+    return
+  }
   try {
     const detail = await fn()
     record(step, true, detail)

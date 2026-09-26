@@ -4,7 +4,7 @@
  * edge functions (their base URL is redirected here by scripts/p169/local-backend.mjs). It serves
  * the fixture catalog (catalog-fixture.mjs) and nothing else: no real card, no real price.
  *
- *   node scripts/p169/mock-tcgdex.mjs            listens on 0.0.0.0:55699 until stopped
+ *   node scripts/p169/mock-tcgdex.mjs [--stack=p170]   listens on 0.0.0.0:<the stack's mock port>
  *
  * Bound to all interfaces because the edge runtime reaches it from a Docker container through
  * host.docker.internal; it answers only GET /v2/<lang>/cards/<id> for fixture ids, plus two
@@ -14,7 +14,7 @@
  */
 import { createServer } from 'node:http'
 import { CARDS, tcgdexId, tcgdexPayload } from './catalog-fixture.mjs'
-import { MOCK_TCGDEX_PORT } from './local-backend.mjs'
+import { stackOf } from './local-backend.mjs'
 
 const byId = new Map(CARDS.filter((c) => tcgdexId(c) !== null).map((c) => [tcgdexId(c), c]))
 let log = []
@@ -24,7 +24,7 @@ const send = (res, status, body) => {
   res.end(JSON.stringify(body))
 }
 
-export function startMock(port = MOCK_TCGDEX_PORT) {
+export function startMock(port = stackOf(process.argv.slice(2)).mockPort) {
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://mock')
     if (url.pathname === '/__log' && req.method === 'GET') return send(res, 200, { requests: log })
@@ -49,6 +49,7 @@ export function startMock(port = MOCK_TCGDEX_PORT) {
 }
 
 if (process.argv[1] && process.argv[1].endsWith('mock-tcgdex.mjs')) {
-  await startMock()
-  console.log(`mock TCGdex (synthetic) listening on :${MOCK_TCGDEX_PORT}`)
+  const { mockPort } = stackOf(process.argv.slice(2))
+  await startMock(mockPort)
+  console.log(`mock TCGdex (synthetic) listening on :${String(mockPort)}`)
 }

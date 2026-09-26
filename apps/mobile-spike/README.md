@@ -108,6 +108,28 @@ Plain HTTP to the local stack is allowed only for `10.0.2.2`, `10.0.3.2`, `127.0
   Both need `adb root` for the cache-file and process-kill steps and switch the emulator's autofill off
   for the run.
 
+### P170: the integrated app ([P170 report](../../docs/mobile/P170_INTEGRATED_NATIVE_ANDROID.md))
+
+One app: the P167 runtime hardening plus the P169 catalog search / read-only Price Check, on one
+identity system (the tabs are Collection, Search, Price Check, Profile). One stack serves both
+tracks' fixtures; the drivers need `ANDROID_SERIAL` and refuse any AVD but `p170_api36`.
+
+```bash
+node scripts/p170/backend.mjs start          # own project id pokeportfolio-p170, API 55471
+node scripts/p169/mock-tcgdex.mjs --stack=p170   # synthetic provider for the edge functions (own process)
+node scripts/p170/backend.mjs seed && node scripts/p170/backend.mjs write-env
+node scripts/p170/build-apk.mjs              # prebuild --clean + two-pass Gradle (own subst drive O:)
+adb -s emulator-5570 install -r android/app/build/outputs/apk/release/app-release.apk
+ANDROID_SERIAL=emulator-5570 node scripts/p170/android-check.mjs      # search / price / identity / session
+ANDROID_SERIAL=emulator-5570 node scripts/android-p167-check.mjs      # recreation, photo lifecycle, dark, 200 %
+node scripts/p170/mutations.mjs              # cross-track mutants (needs a clean tree)
+node scripts/p170/backend.mjs stop           # then quit Docker Desktop if no other session needs it
+```
+
+Backend suites against that stack: `P158_LOCAL_BACKEND=1 P169_LOCAL_BACKEND=1 P169_STACK=p170
+P169_MOCK_PORT=55461 npx jest --selectProjects backend --runInBand tests/backend/<file>` (run the files
+one at a time; one combined run stalled with an idle database).
+
 ## Checks
 
 ```powershell

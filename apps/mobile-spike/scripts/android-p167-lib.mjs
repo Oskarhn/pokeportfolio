@@ -184,7 +184,7 @@ export async function ensureApp() {
     (ns) =>
       rows(ns).length > 0 ||
       byId(ns, 'login-screen') ||
-      byId(ns, 'photo-library') ||
+      byId(ns, 'p169-photo-library') ||
       byId(ns, 'card-detail') ||
       byId(ns, 'price-check-home'),
     { timeoutMs: 60000, label: 'app in the foreground' },
@@ -193,11 +193,12 @@ export async function ensureApp() {
 
 export async function openPhotoScreen() {
   await ensureApp()
-  if (byId(dump(), 'photo-library')) return dump()
-  if (!byId(dump(), 'pc-photo'))
+  if (byId(dump(), 'p169-photo-library')) return dump()
+  if (!byId(dump(), 'pc-home-photo'))
     tap((await waitFor((ns) => byId(ns, 'tab-pricecheck'), { label: 'price check tab' })).value)
-  tap((await waitFor((ns) => byId(ns, 'pc-photo'), { label: 'photo entry' })).value)
-  return (await waitFor((ns) => byId(ns, 'photo-library') && ns, { label: 'photo screen' })).value
+  tap((await waitFor((ns) => byId(ns, 'pc-home-photo'), { label: 'photo entry' })).value)
+  return (await waitFor((ns) => byId(ns, 'p169-photo-library') && ns, { label: 'photo screen' }))
+    .value
 }
 
 /** Waits until the system photo picker has focus, or the app reports a state instead. */
@@ -207,7 +208,7 @@ export async function waitForPickerOrState(timeoutMs = 8000) {
     const focus = focusedWindow()
     if (/photopicker|PhotoPicker|documentsui/i.test(focus)) return { picker: true, focus }
     const n = dump()
-    for (const id of ['photo-unavailable', 'photo-cancelled', 'photo-ready']) {
+    for (const id of ['p169-photo-unavailable', 'p169-photo-cancelled', 'p169-photo-ready']) {
       if (byId(n, id)) return { picker: false, state: id, focus }
     }
     if (Date.now() - t0 > timeoutMs) return { picker: false, state: null, focus }

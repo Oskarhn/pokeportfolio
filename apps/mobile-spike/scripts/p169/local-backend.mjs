@@ -43,21 +43,45 @@ export const RELEASED_SHA = 'd8682e047b757f63673a63ac8185a4806d68cb98'
 export const CANDIDATE_SHA = '3d03eec7a24756c635857bc7320b51e17cc8572c'
 // Not 55999: the P166 backend tests use 127.0.0.1:55999 as their deliberately DEAD URL.
 export const MOCK_TCGDEX_PORT = 55979
-const MOCK_BASE_URL = `http://host.docker.internal:${MOCK_TCGDEX_PORT}/v2`
 const TCGDEX_BASE_LITERAL = "const BASE_URL = 'https://api.tcgdex.net/v2'"
 
+/**
+ * Named stacks, each with its own project id, ports and mock port so parallel sessions never share
+ * a database. p169 / p169-db106 are P169's; p170 is the integrated candidate's (API 55471, mock
+ * 55461: below the Windows-reserved ranges seen on this machine, clear of P167's 550xx).
+ */
+const STACKS = {
+  p169: {
+    projectId: 'pokeportfolio-p169',
+    portShift: 600,
+    dir: 'p169',
+    mockPort: MOCK_TCGDEX_PORT,
+  },
+  'p169-db106': {
+    projectId: 'pokeportfolio-p169-db106',
+    portShift: 700,
+    dir: 'p169-db106',
+    mockPort: MOCK_TCGDEX_PORT,
+  },
+  p170: { projectId: 'pokeportfolio-p170', portShift: 150, dir: 'p170', mockPort: 55461 },
+}
+
 export function stackOf(argv) {
+  const named = argv.find((a) => a.startsWith('--stack='))?.slice('--stack='.length)
   const db106 = argv.includes('--db106')
-  const projectId = db106 ? 'pokeportfolio-p169-db106' : 'pokeportfolio-p169'
-  const portShift = db106 ? 700 : 600 // on top of transformConfig's +1000: 559xx / 560xx (clear of Windows' reserved ranges)
-  const workdir = join(appRoot, '.local-backend', db106 ? 'p169-db106' : 'p169')
+  const name = named ?? (db106 ? 'p169-db106' : 'p169')
+  const s = STACKS[name]
+  if (s === undefined)
+    throw new Error(`unknown stack "${name}"; expected one of ${Object.keys(STACKS).join(', ')}`)
   return {
-    db106,
-    projectId,
-    workdir,
-    apiPort: 54321 + 1000 + portShift,
-    dbContainer: `supabase_db_${projectId}`,
-    portShift,
+    name,
+    db106: name === 'p169-db106',
+    projectId: s.projectId,
+    workdir: join(appRoot, '.local-backend', s.dir),
+    apiPort: 54321 + 1000 + s.portShift,
+    dbContainer: `supabase_db_${s.projectId}`,
+    portShift: s.portShift,
+    mockPort: s.mockPort,
   }
 }
 
@@ -116,7 +140,8 @@ function p169Config(source, stack) {
   return config
 }
 
-function writeFunctions(target) {
+function writeFunctions(target, mockPort) {
+  const MOCK_BASE_URL = `http://host.docker.internal:${mockPort}/v2`
   const manifest = { mockBaseUrl: MOCK_BASE_URL, files: [] }
   const put = (sha, srcPath, destPath, transform) => {
     const original = blob(sha, srcPath)
@@ -203,7 +228,11 @@ export function prepare(stack) {
   const baseConfig = blob(RELEASED_SHA, 'supabase/config.toml')
   writeFileSync(join(target, 'config.toml'), p169Config(baseConfig, stack))
   const migrations = writeMigrations(target, stack)
-  const manifest = { ...writeFunctions(target), ...migrations, projectId: stack.projectId }
+  const manifest = {
+    ...writeFunctions(target, stack.mockPort),
+    ...migrations,
+    projectId: stack.projectId,
+  }
   writeFileSync(join(stack.workdir, 'functions-manifest.json'), JSON.stringify(manifest, null, 2))
   return manifest
 }
