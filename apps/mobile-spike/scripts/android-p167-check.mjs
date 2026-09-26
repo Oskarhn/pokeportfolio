@@ -37,6 +37,7 @@ import {
   clearEvents,
   crashCount,
   decodePng,
+  disableAutofill,
   focusedWindow,
   imeFrame,
   lifecycleEvents,
@@ -113,6 +114,7 @@ function resetDevice() {
 shell(`am force-stop ${PACKAGE}`)
 shell(`pm clear ${PACKAGE}`)
 shell('settings put secure stylus_handwriting_enabled 0')
+const restoreAutofill = disableAutofill()
 resetDevice()
 adb(['logcat', '-c'])
 adb(['logcat', '-b', 'crash', '-c'], { allowFail: true })
@@ -707,6 +709,7 @@ await run('collection: > 100 rows scrolled, stable keys, no blank samples', asyn
 })
 
 resetDevice()
+restoreAutofill()
 shell(
   stylusBefore === 'null'
     ? 'settings delete secure stylus_handwriting_enabled'

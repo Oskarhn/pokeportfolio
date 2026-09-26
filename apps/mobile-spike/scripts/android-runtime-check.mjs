@@ -31,6 +31,7 @@ import {
   typeText,
   waitFor,
 } from './android-adb.mjs'
+import { disableAutofill } from './android-p167-lib.mjs'
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const outDir = join(appRoot, '.build', 'android-evidence')
@@ -186,6 +187,7 @@ shell(`am force-stop ${PACKAGE}`)
 shell(`pm clear ${PACKAGE}`)
 const stylusBefore = shell('settings get secure stylus_handwriting_enabled').trim()
 shell('settings put secure stylus_handwriting_enabled 0')
+const restoreAutofill = disableAutofill() // P167: autofill put the previous account into the form
 shell('settings put system font_scale 1.0')
 shell('cmd uimode night no')
 adb(['logcat', '-c'])
@@ -611,6 +613,7 @@ await run('dark mode renders', async () => {
   return { screenshot: '17-dark-collection.png' }
 })
 
+restoreAutofill()
 shell(
   stylusBefore === 'null'
     ? 'settings delete secure stylus_handwriting_enabled'

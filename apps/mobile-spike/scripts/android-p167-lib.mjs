@@ -126,15 +126,41 @@ export function crashCount() {
     .length
 }
 
+/** Empties the focused text field (Ctrl+A, Delete): a field can hold text from autofill or a retry. */
+export function clearFocusedField() {
+  shell('input keycombination 113 29')
+  shell('input keyevent 67')
+}
+
+/**
+ * The emulator's Google autofill service offered the previous synthetic account in the email field
+ * (seen in P167: user A's address where user B's was typed). Runs switch autofill off and restore it.
+ */
+export function disableAutofill() {
+  const before = shell('settings get secure autofill_service').trim()
+  shell('settings put secure autofill_service null')
+  return () =>
+    shell(
+      before === 'null' || before === ''
+        ? 'settings delete secure autofill_service'
+        : `settings put secure autofill_service ${before}`,
+    )
+}
+
 // Gboard shows a "Try out your stylus" sheet when injected events look like a stylus, so input is
 // sent as `input touchscreen ...` and stylus handwriting is switched off for a run.
 export async function signIn(user, { submit = 'ime' } = {}) {
   const n = (await waitFor((ns) => byId(ns, 'login-email') && ns, { label: 'login form' })).value
   tap(byId(n, 'login-email'))
+  clearFocusedField()
   typeText(user.email)
   // The form moves up when the keyboard opens (P167 F7), so positions read before it are stale.
   await sleep(500)
+  const typed = (await waitFor((ns) => byId(ns, 'login-email'), { label: 'email field' })).value
+  // Compared in-process only; the synthetic address is never printed.
+  if (typed.text !== user.email) throw new Error('the email field does not hold the typed address')
   tap((await waitFor((ns) => byId(ns, 'login-password'), { label: 'password field' })).value)
+  clearFocusedField()
   typeText(user.password)
   if (submit === 'ime') shell('input keyevent 66')
   else tap(byId(dump(), 'login-submit'))
