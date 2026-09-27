@@ -103,6 +103,13 @@ export function RecordPurchaseScreen({
             {
               lineType: 'card',
               cardVariantId: d.cardVariantId,
+              // A raw card line requires a condition server-side (`create_purchase`'s own
+              // validation) — found by P177's device run, which the client-side type let through
+              // as optional and every unit/backend test happened to supply explicitly. 'NM'
+              // matches AddAcquisitionScreen's own default; a condition picker is a separate,
+              // larger UI change left for later, same as that screen's.
+              gradingState: 'raw',
+              condition: 'NM',
               quantity: validated.quantity,
               unitPriceMinor: validated.unitPriceMinor,
               spendClass: 'collectible',

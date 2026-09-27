@@ -73,6 +73,16 @@ const STACKS = {
     mockPort: 55411,
     withWorktreeMigrations: true,
   },
+  // P177: native financial-write runtime verification. API 55521, mock 55491 (clear of every port
+  // above). Carries the worktree's 107 migrations (P173's + P175's two P144 migrations) on top of
+  // the released 104, same mechanism as P173.
+  p177: {
+    projectId: 'pokeportfolio-p177-app',
+    portShift: 200,
+    dir: 'p177',
+    mockPort: 55491,
+    withWorktreeMigrations: true,
+  },
 }
 
 export function stackOf(argv) {

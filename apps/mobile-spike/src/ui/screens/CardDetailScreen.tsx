@@ -1,5 +1,6 @@
-import { useEffect } from 'react'
+import { useCallback } from 'react'
 import { ScrollView, View } from 'react-native'
+import { useFocusEffect } from '@react-navigation/native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { Money } from '@shared/domain/money'
 import { asCurrencyCode } from '../../price-check/observation-wire'
@@ -38,9 +39,16 @@ export function CardDetailScreen({ route, navigation }: Props) {
   const { holdingDetail } = useRuntime()
   const state = useStore(holdingDetail)
 
-  useEffect(() => {
-    void holdingDetail.load(holdingId)
-  }, [holdingDetail, holdingId])
+  // Reloads on every FOCUS, not just when holdingId changes: P175's Record sale / Record opening /
+  // Manual valuation all write to this exact holding and navigate back here (same holdingId) — a
+  // plain effect never re-ran, so this screen kept showing the value/price-state from before the
+  // write (found by P177's device driver: manual value written and readable in the database, but
+  // still "No value available" on screen after Confirm -> Back).
+  useFocusEffect(
+    useCallback(() => {
+      void holdingDetail.load(holdingId)
+    }, [holdingDetail, holdingId]),
+  )
 
   if (state.holdingId !== holdingId || state.status === 'loading' || state.status === 'idle') {
     return <Loading label="Loading card" />

@@ -5,7 +5,9 @@
  * Why a generated workdir instead of editing supabase/config.toml: the repository's own stack
  * uses project id `pokeportfolio` and ports 543xx, and other worktrees run stacks of their own.
  * This script derives a *separate* config (own project id, ports +1000, no studio/realtime/
- * storage/analytics/edge runtime, and no reference to the Production origin) into a gitignored
+ * storage/analytics, and no reference to the Production origin) into a gitignored
+ * (edge runtime is also off by default; SPIKE_BACKEND_ENABLE_EDGE_RUNTIME=1 turns it on for a
+ * session that needs the real redeem-invitation function — see the P177 worktree)
  * directory and points the CLI at it with --workdir. Nothing under supabase/ is modified, and
  * only this project's containers/volumes are ever started or stopped.
  *
@@ -58,6 +60,15 @@ export const API_PORT = identity.apiPort
 const PORT_OFFSET = identity.portOffset
 const LOCAL_SITE_URL = `http://127.0.0.1:${API_PORT}`
 
+/**
+ * P177: some sessions need the real Edge Runtime (redeem-invitation is called from
+ * tests/authorization/invite_only.test.ts and tests/db/invitation_claims.test.ts; every other
+ * mobile-spike stack before P177 disabled it and accepted those 13 failures as a known, documented
+ * gap — see P162/P175). Opt-in only, via SPIKE_BACKEND_ENABLE_EDGE_RUNTIME=1, so every OTHER
+ * worktree's stack (which never sets this) is byte-for-byte unaffected.
+ */
+const ENABLE_EDGE_RUNTIME = process.env.SPIKE_BACKEND_ENABLE_EDGE_RUNTIME === '1'
+
 /** Sections whose `enabled` flag is forced off: this spike needs Postgres, GoTrue and PostgREST. */
 const DISABLED_SECTIONS = new Set([
   'studio',
@@ -66,7 +77,7 @@ const DISABLED_SECTIONS = new Set([
   'storage',
   'storage.s3_protocol',
   'storage.vector',
-  'edge_runtime',
+  ...(ENABLE_EDGE_RUNTIME ? [] : ['edge_runtime']),
   'analytics',
   'experimental.pgdelta',
 ])
@@ -79,7 +90,7 @@ export function transformConfig(source) {
     const header = /^\[([^\]]+)\]\s*$/.exec(raw)
     if (header) {
       section = header[1]
-      droppingFunctions = section.startsWith('functions.')
+      droppingFunctions = !ENABLE_EDGE_RUNTIME && section.startsWith('functions.')
       if (droppingFunctions) continue
       out.push(raw)
       continue
@@ -120,6 +131,9 @@ export function prepare() {
   if (existsSync(join(repoRoot, 'supabase', 'seed'))) {
     cpSync(join(repoRoot, 'supabase', 'seed'), join(target, 'seed'), { recursive: true })
   }
+  if (ENABLE_EDGE_RUNTIME && existsSync(join(repoRoot, 'supabase', 'functions'))) {
+    cpSync(join(repoRoot, 'supabase', 'functions'), join(target, 'functions'), { recursive: true })
+  }
   return target
 }
 
@@ -154,11 +168,19 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   } else if (command === 'start') {
     prepare()
     // Only the containers this spike needs; everything else is disabled in the generated config.
-    const r = cli([
-      'start',
-      '-x',
-      'logflare,vector,studio,mailpit,imgproxy,edge-runtime,storage-api,realtime,postgres-meta,supavisor',
-    ])
+    const excluded = [
+      'logflare',
+      'vector',
+      'studio',
+      'mailpit',
+      'imgproxy',
+      ...(ENABLE_EDGE_RUNTIME ? [] : ['edge-runtime']),
+      'storage-api',
+      'realtime',
+      'postgres-meta',
+      'supavisor',
+    ]
+    const r = cli(['start', '-x', excluded.join(',')])
     process.exit(r.status ?? 1)
   } else if (command === 'env') {
     // Public connection values only (URL + publishable key); never the service-role or JWT secret.

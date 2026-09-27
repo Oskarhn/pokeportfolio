@@ -2,6 +2,13 @@ import { ABSENT, formatMoney } from '../money/format-money'
 import { parseMinorUnitsWire } from '../money/wire'
 import { findUnsafeIntegerLiteral } from '../net/exact-transport-guard'
 import { MONEY_VECTORS } from '../../tests/support/money-vectors'
+import {
+  parseNullableMoneyInput,
+  parseOptionalChargeInput,
+  requireKnownAmount,
+} from '../write/money-input'
+import { moneyArg, serializeMinorUnits } from '../write/money-wire'
+import { generateIdempotencyKey } from '../write/idempotency-key'
 
 /**
  * Exact-money boundary proof that runs INSIDE the app, on whatever engine executes the bundle.
@@ -15,6 +22,10 @@ import { MONEY_VECTORS } from '../../tests/support/money-vectors'
  * 2^58+1, zero), NULL vs zero, the wire parser (decimal string in, exact bigint out; unsafe JSON
  * numbers and '' refused) and the raw-body transport scan (unquoted unsafe integers found, quoted
  * decimal strings passed through JSON.parse byte-for-byte).
+ *
+ * P177 addition: the WRITE-side boundary (write/money-input.ts, write/money-wire.ts,
+ * write/idempotency-key.ts) — P175 proved this exact under Node and compiled to Hermes bytecode,
+ * but never EXECUTED it on Hermes (output_175.txt WARNINGS §1). This is that execution.
  */
 
 export interface RuntimeProofResult {
@@ -145,6 +156,61 @@ export function runRuntimeProof(): RuntimeProofResult {
     'JPY 2^53+1 via wire + formatter',
     formatMoney(yen === null ? null : { minorUnits: yen, currency: 'JPY' }),
     '9,007,199,254,740,993 JPY',
+  )
+
+  // P177: the WRITE-side boundary, executed for real on this device's engine (see file header).
+  check('write: blank nullable amount -> null, not 0', parseNullableMoneyInput('', 'NOK'), null)
+  check('write: explicit zero -> known 0n', parseNullableMoneyInput('0', 'NOK'), 0n)
+  check(
+    'write: 2^53+1 exact via decimal string',
+    parseNullableMoneyInput('90071992547409.93', 'NOK'),
+    2n ** 53n + 1n,
+  )
+  check(
+    'write: 2^58+1 exact via decimal string',
+    parseNullableMoneyInput('2882303761517117.45', 'NOK'),
+    2n ** 58n + 1n,
+  )
+  check('write: NOK 2 decimals', parseNullableMoneyInput('45.67', 'NOK'), 4567n)
+  check('write: EUR 2 decimals', parseNullableMoneyInput('45.67', 'EUR'), 4567n)
+  check('write: USD 2 decimals', parseNullableMoneyInput('45.67', 'USD'), 4567n)
+  check('write: GBP 2 decimals', parseNullableMoneyInput('45.67', 'GBP'), 4567n)
+  check('write: JPY has no fractional minor unit', parseNullableMoneyInput('12345', 'JPY'), 12345n)
+  check(
+    'write: JPY fraction rejected, not rounded',
+    throws(() => parseNullableMoneyInput('12345.5', 'JPY')),
+    true,
+  )
+  check(
+    'write: string -> minor units exact (comma separator)',
+    parseNullableMoneyInput('100,50', 'NOK'),
+    10050n,
+  )
+  check(
+    'write: minor units -> wire decimal string exact (2^58+1)',
+    serializeMinorUnits(2n ** 58n + 1n),
+    '288230376151711745',
+  )
+  check(
+    'write: moneyArg is a decimal string, not a JSON number, and round-trips exactly',
+    BigInt(String(moneyArg(2n ** 58n + 1n))),
+    2n ** 58n + 1n,
+  )
+  check(
+    'write: requireKnownAmount(blank) throws, never defaults to 0',
+    throws(() => requireKnownAmount('', 'NOK', 'required')),
+    true,
+  )
+  check(
+    'write: parseOptionalChargeInput(blank) is 0n BY NAME (not the nullable parser)',
+    parseOptionalChargeInput('', 'NOK'),
+    0n,
+  )
+  check(
+    'write: idempotency key is UUID-shaped, two calls differ',
+    /^[0-9a-f-]{36}$/i.test(generateIdempotencyKey()) &&
+      generateIdempotencyKey() !== generateIdempotencyKey(),
+    true,
   )
 
   return { pass, fail, engine: describeEngine(), lines }
