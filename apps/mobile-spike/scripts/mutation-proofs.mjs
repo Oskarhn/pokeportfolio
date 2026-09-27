@@ -183,8 +183,11 @@ const MUTANTS = [
   {
     id: 'M12',
     title: 'F5: navigation chrome not bound to the system scheme (light bars in dark mode)',
-    file: 'src/ui/AppRoot.tsx',
-    edits: [['        theme={navTheme}\n', '']],
+    // P178: the tab bar's active-tint colour is now sourced directly from `useTheme()` in
+    // MainNavigator's own screenOptions (not from NavigationContainer's `theme` prop, which this
+    // mutant used to target before every chrome colour became explicit) — mutate THAT source.
+    file: 'src/ui/MainNavigator.tsx',
+    edits: [['        tabBarActiveTintColor: t.accent,\n', '']],
     tests: ['tests/unit/p167-dark-theme.test.tsx'],
   },
   {
@@ -221,8 +224,11 @@ const MUTANTS = [
   {
     id: 'M17',
     title: 'F4: a wrapping amount is one unbreakable word again (splits inside a digit group)',
+    // P178: the no-break-space regex literal was rebuilt via `new RegExp(...)` (a literal
+    // `  ` inline regex triggered eslint's no-irregular-whitespace once actually typed
+    // into the file) — mutate the call site, which still has the same effect.
     file: 'src/ui/components.tsx',
-    edits: [["return formatted.replace(/[\\u00A0\\u202F]/g, ' ')", 'return formatted']],
+    edits: [[`return formatted.replace(new RegExp('[\\u00A0\\u202F]', 'g'), ' ')`, 'return formatted']],
     tests: ['tests/unit/p167-platform.test.tsx', 'tests/unit/native-app.test.tsx'],
   },
   {
