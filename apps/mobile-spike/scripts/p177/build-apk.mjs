@@ -20,7 +20,8 @@ const here = dirname(fileURLToPath(import.meta.url))
 const appRoot = resolve(here, '..', '..')
 const repoRoot = resolve(appRoot, '..', '..')
 const JAVA_HOME = process.env.P177_JAVA_HOME ?? 'C:\\Program Files\\Java\\jdk-21.0.10'
-const ANDROID_HOME = process.env.ANDROID_HOME ?? join(process.env.LOCALAPPDATA ?? '', 'Android', 'Sdk')
+const ANDROID_HOME =
+  process.env.ANDROID_HOME ?? join(process.env.LOCALAPPDATA ?? '', 'Android', 'Sdk')
 const DRIVE = process.env.P177_SUBST_DRIVE ?? 'S:'
 
 function run(cmd, args, cwd, { allowFail = false } = {}) {
@@ -36,10 +37,13 @@ function run(cmd, args, cwd, { allowFail = false } = {}) {
 }
 
 function writeEnv() {
-  const env = JSON.parse(readFileSync(join(appRoot, '.local-backend', 'p177', 'public-env.json'), 'utf8'))
+  const env = JSON.parse(
+    readFileSync(join(appRoot, '.local-backend', 'p177', 'public-env.json'), 'utf8'),
+  )
   const appUrl = env.appUrl ?? env.apiUrl
   const local = /^http:\/\/127\.0\.0\.1:\d+$/
-  if (!local.test(appUrl) || !local.test(env.apiUrl)) throw new Error('refusing: not a local API URL')
+  if (!local.test(appUrl) || !local.test(env.apiUrl))
+    throw new Error('refusing: not a local API URL')
   if (/^sb_secret_/.test(env.publishableKey)) throw new Error('refusing: secret key')
   writeFileSync(
     join(appRoot, '.env.local'),
@@ -66,11 +70,15 @@ function patchApplicationId() {
 const clean = !process.argv.includes('--no-clean')
 writeEnv()
 rmSync(join(tmpdir(), 'metro-cache'), { recursive: true, force: true })
-rmSync(join(appRoot, 'android', 'app', 'build', 'generated', 'assets'), { recursive: true, force: true })
+rmSync(join(appRoot, 'android', 'app', 'build', 'generated', 'assets'), {
+  recursive: true,
+  force: true,
+})
 if (clean) {
   if (process.platform === 'win32') {
     const target = '\\\\?\\' + join(appRoot, 'android')
-    if (existsSync(join(appRoot, 'android'))) spawnSync('cmd', ['/c', 'rd', '/s', '/q', target], { stdio: 'inherit' })
+    if (existsSync(join(appRoot, 'android')))
+      spawnSync('cmd', ['/c', 'rd', '/s', '/q', target], { stdio: 'inherit' })
   } else rmSync(join(appRoot, 'android'), { recursive: true, force: true })
   run('npx', ['expo', 'prebuild', '--clean', '--platform', 'android', '--no-install'], appRoot)
 }
@@ -79,10 +87,13 @@ const gradleArgs = ['assembleRelease', '-PreactNativeArchitectures=x86_64']
 const pass1 = run('.\\gradlew.bat', gradleArgs, join(appRoot, 'android'), { allowFail: true })
 let status = pass1
 if (pass1 !== 0) {
-  if (existsSync(`${DRIVE}/`)) throw new Error(`${DRIVE} is already in use; set P177_SUBST_DRIVE to a free letter`)
+  if (existsSync(`${DRIVE}/`))
+    throw new Error(`${DRIVE} is already in use; set P177_SUBST_DRIVE to a free letter`)
   run('subst', [DRIVE, repoRoot], appRoot)
   try {
-    status = run('.\\gradlew.bat', gradleArgs, `${DRIVE}\\apps\\mobile-spike\\android`, { allowFail: true })
+    status = run('.\\gradlew.bat', gradleArgs, `${DRIVE}\\apps\\mobile-spike\\android`, {
+      allowFail: true,
+    })
   } finally {
     run('subst', [DRIVE, '/d'], appRoot, { allowFail: true })
   }

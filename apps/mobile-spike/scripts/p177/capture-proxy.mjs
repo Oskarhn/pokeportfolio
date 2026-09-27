@@ -48,8 +48,10 @@ const server = createServer((req, res) => {
   if (url.pathname.startsWith('/__proxy/')) {
     if (req.socket.remoteAddress !== '127.0.0.1' && req.socket.remoteAddress !== '::1')
       return send(res, 403, { error: 'loopback only' })
-    if (url.pathname === '/__proxy/log' && req.method === 'GET') return send(res, 200, { requests: log })
-    if (url.pathname === '/__proxy/held' && req.method === 'GET') return send(res, 200, { held: releasers.length })
+    if (url.pathname === '/__proxy/log' && req.method === 'GET')
+      return send(res, 200, { requests: log })
+    if (url.pathname === '/__proxy/held' && req.method === 'GET')
+      return send(res, 200, { held: releasers.length })
     if (url.pathname === '/__proxy/reset' && req.method === 'POST') {
       log = []
       return send(res, 200, { ok: true })
@@ -112,5 +114,7 @@ const server = createServer((req, res) => {
 })
 
 server.listen(LISTEN_PORT, HOST, () =>
-  console.log(`capture proxy on ${HOST}:${String(LISTEN_PORT)} -> ${HOST}:${String(UPSTREAM_PORT)} (control: /__proxy/*)`),
+  console.log(
+    `capture proxy on ${HOST}:${String(LISTEN_PORT)} -> ${HOST}:${String(UPSTREAM_PORT)} (control: /__proxy/*)`,
+  ),
 )

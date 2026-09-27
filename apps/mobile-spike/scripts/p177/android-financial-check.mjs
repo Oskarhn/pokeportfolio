@@ -54,7 +54,9 @@ const variantId = (key, printing) => catalog[key].variants[printing]
 const steps = []
 function record(step, status, detail) {
   steps.push({ step, status, detail })
-  console.log(`${status} ${step}${detail !== undefined ? `  ${JSON.stringify(detail).slice(0, 500)}` : ''}`)
+  console.log(
+    `${status} ${step}${detail !== undefined ? `  ${JSON.stringify(detail).slice(0, 500)}` : ''}`,
+  )
 }
 async function run(step, fn) {
   try {
@@ -78,7 +80,8 @@ async function run(step, fn) {
 // needed by this phase's money-keyboard tests; anything genuinely unsupported still throws rather
 // than being silently mangled.
 function type(t) {
-  if (!/^[A-Za-z0-9 ,._@+-]+$/.test(t)) throw new Error(`type: unsupported characters in ${JSON.stringify(t)}`)
+  if (!/^[A-Za-z0-9 ,._@+-]+$/.test(t))
+    throw new Error(`type: unsupported characters in ${JSON.stringify(t)}`)
   for (let i = 0; i < t.length; i += 6) {
     adb(['shell', 'input', 'text', t.slice(i, i + 6).replaceAll(' ', '%s')])
     await_(120)
@@ -103,7 +106,10 @@ async function typeInto(id, t, { verify = true } = {}) {
   await sleep(300)
   if (verify) {
     const now = byId(dump(), id)?.text ?? ''
-    if (now !== t) throw new Error(`input did not reach ${id}: wanted ${JSON.stringify(t)} got ${JSON.stringify(now)}`)
+    if (now !== t)
+      throw new Error(
+        `input did not reach ${id}: wanted ${JSON.stringify(t)} got ${JSON.stringify(now)}`,
+      )
   }
   // A still-open soft keyboard covers the Confirm button on every one of these forms; a scrolling
   // tap aimed at a button hidden behind it lands on a KEYBOARD KEY instead (this is exactly how an
@@ -143,7 +149,11 @@ async function findScrolling(id, tries = 10) {
       const nodes = dump()
       const node = byId(nodes, id)
       if (node) return { node, nodes }
-      shell(down ? 'input touchscreen swipe 540 1700 540 700 300' : 'input touchscreen swipe 540 700 540 1700 300')
+      shell(
+        down
+          ? 'input touchscreen swipe 540 1700 540 700 300'
+          : 'input touchscreen swipe 540 700 540 1700 300',
+      )
       await sleep(350)
     }
   }
@@ -159,7 +169,20 @@ async function ensureApp() {
 // ---- DB helpers (docker exec into THIS project's database only) -------------------------------
 function psql(sql) {
   const r = spawnSync(
-    'docker', ['exec', '-i', pub.dbContainer, 'psql', '-U', 'postgres', '-d', 'postgres', '-At', '-v', 'ON_ERROR_STOP=1'],
+    'docker',
+    [
+      'exec',
+      '-i',
+      pub.dbContainer,
+      'psql',
+      '-U',
+      'postgres',
+      '-d',
+      'postgres',
+      '-At',
+      '-v',
+      'ON_ERROR_STOP=1',
+    ],
     { input: sql, encoding: 'utf8' },
   )
   if (r.status !== 0) throw new Error(`psql failed: ${r.stderr}`)
@@ -175,7 +198,12 @@ async function goSearch() {
   for (let i = 0; i < 10; i += 1) {
     const n = dump()
     if (byId(n, 'p169-search')) return
-    if (byId(n, 'p169-card') || byId(n, 'p169-card-identity') || byId(n, 'p170-add-intent') || byIdPrefix(n, 'p175-').length > 0) {
+    if (
+      byId(n, 'p169-card') ||
+      byId(n, 'p169-card-identity') ||
+      byId(n, 'p170-add-intent') ||
+      byIdPrefix(n, 'p175-').length > 0
+    ) {
       back()
       await sleep(600)
       continue
@@ -191,29 +219,41 @@ async function search(query) {
   await goSearch()
   await typeInto('p169-search-input', query)
   shell('input keyevent 66')
-  await waitFor((ns) => byIdPrefix(ns, 'p169-search-status-').find((x) => /ready|empty|error/.test(x.id)), {
-    timeoutMs: 30000,
-    label: `results for ${query}`,
-  })
+  await waitFor(
+    (ns) => byIdPrefix(ns, 'p169-search-status-').find((x) => /ready|empty|error/.test(x.id)),
+    {
+      timeoutMs: 30000,
+      label: `results for ${query}`,
+    },
+  )
 }
 async function openHitAndChoose(key, printing) {
   const { node } = await findScrolling(`p169-hit-${cardId(key)}`)
   tap(node)
-  await waitFor((ns) => byId(ns, 'p169-card') || byId(ns, 'p169-card-identity'), { label: 'card screen', timeoutMs: 30000 })
+  await waitFor((ns) => byId(ns, 'p169-card') || byId(ns, 'p169-card-identity'), {
+    label: 'card screen',
+    timeoutMs: 30000,
+  })
   const vId = variantId(key, printing)
   const variantNode = byId(dump(), `p169-variant-${vId}`)
   if (variantNode) {
     tap(variantNode)
-    await waitFor((ns) => byIdPrefix(ns, 'p169-raw-')[0] || byIdPrefix(ns, 'p169-lookup-error-')[0], {
-      timeoutMs: 30000,
-      label: 'price result',
-    })
+    await waitFor(
+      (ns) => byIdPrefix(ns, 'p169-raw-')[0] || byIdPrefix(ns, 'p169-lookup-error-')[0],
+      {
+        timeoutMs: 30000,
+        label: 'price result',
+      },
+    )
   } else {
     // only_variant cards resolve without a separate tap
-    await waitFor((ns) => byIdPrefix(ns, 'p169-raw-')[0] || byIdPrefix(ns, 'p169-lookup-error-')[0], {
-      timeoutMs: 30000,
-      label: 'price result (auto)',
-    })
+    await waitFor(
+      (ns) => byIdPrefix(ns, 'p169-raw-')[0] || byIdPrefix(ns, 'p169-lookup-error-')[0],
+      {
+        timeoutMs: 30000,
+        label: 'price result (auto)',
+      },
+    )
   }
 }
 async function goToAddIntent(key, printing) {
@@ -242,7 +282,10 @@ async function main() {
   await run('app foreground', ensureApp)
 
   await run('sign in as B', async () => {
-    const n = await waitFor((ns) => byId(ns, 'login-email') && ns, { label: 'login form', timeoutMs: 30000 })
+    const n = await waitFor((ns) => byId(ns, 'login-email') && ns, {
+      label: 'login form',
+      timeoutMs: 30000,
+    })
     tap(byId(n.value, 'login-email'))
     await sleep(300)
     type(B.email)
@@ -250,7 +293,10 @@ async function main() {
     await sleep(300)
     type(B.password)
     shell('input keyevent 66')
-    await waitFor((ns) => byId(ns, 'collection-list') || byId(ns, 'login-error'), { timeoutMs: 30000, label: 'post-login' })
+    await waitFor((ns) => byId(ns, 'collection-list') || byId(ns, 'login-error'), {
+      timeoutMs: 30000,
+      label: 'post-login',
+    })
     if (byId(dump(), 'login-error')) throw new Error('login failed')
   })
 
@@ -258,15 +304,23 @@ async function main() {
   const knownCostBefore = psql(
     `select count(*) from acquisition_lots where user_id='${B.id}' and cost_basis_state='known' and unit_cost_basis_minor=4567`,
   )
-  await run('acquisition: navigate to Add acquisition (known cost)', () => goToAddIntent('pika-reprint-025', 'normal|'))
-  await run('acquisition: open Add-to-collection (acquisition) — assert no write on open', async () => {
-    await tapScrolling('p175-go-add-acquisition')
-    await waitFor((ns) => byId(ns, 'p175-add-acquisition'), { label: 'add acquisition screen' })
-    const stillZero = psql(
-      `select count(*) from acquisition_lots where user_id='${B.id}' and cost_basis_state='known' and unit_cost_basis_minor=4567`,
-    )
-    if (stillZero !== knownCostBefore) throw new Error(`opening the form itself wrote a row: before=${knownCostBefore} after=${stillZero}`)
-  })
+  await run('acquisition: navigate to Add acquisition (known cost)', () =>
+    goToAddIntent('pika-reprint-025', 'normal|'),
+  )
+  await run(
+    'acquisition: open Add-to-collection (acquisition) — assert no write on open',
+    async () => {
+      await tapScrolling('p175-go-add-acquisition')
+      await waitFor((ns) => byId(ns, 'p175-add-acquisition'), { label: 'add acquisition screen' })
+      const stillZero = psql(
+        `select count(*) from acquisition_lots where user_id='${B.id}' and cost_basis_state='known' and unit_cost_basis_minor=4567`,
+      )
+      if (stillZero !== knownCostBefore)
+        throw new Error(
+          `opening the form itself wrote a row: before=${knownCostBefore} after=${stillZero}`,
+        )
+    },
+  )
   await run('acquisition: enter known cost 45.67 NOK, qty 2', async () => {
     await typeInto('p175-unit-cost', '45.67')
     await typeInto('p175-quantity', '2')
@@ -280,14 +334,17 @@ async function main() {
     const rows = psqlRows(
       `select al.id, al.holding_id, al.quantity, al.unit_cost_basis_minor, al.cost_basis_state from acquisition_lots al where al.user_id='${B.id}' and al.unit_cost_basis_minor=4567 and al.quantity=2`,
     )
-    if (rows.length !== 1) throw new Error(`expected exactly 1 matching lot, found ${rows.length}: ${rows.join('|')}`)
+    if (rows.length !== 1)
+      throw new Error(`expected exactly 1 matching lot, found ${rows.length}: ${rows.join('|')}`)
     const [, holdingId] = rows[0].split('|')
     return { holdingId, row: rows[0] }
   })
   const acquisitionHoldingId = steps.at(-1).detail.holdingId
 
   // ---- B. Add acquisition: unknown cost ----
-  await run('unknown-cost: navigate to Add acquisition', () => goToAddIntent('pika-base-025', 'normal|'))
+  await run('unknown-cost: navigate to Add acquisition', () =>
+    goToAddIntent('pika-base-025', 'normal|'),
+  )
   await run('unknown-cost: mark cost unknown and confirm', async () => {
     await tapScrolling('p175-go-add-acquisition')
     await waitFor((ns) => byId(ns, 'p175-add-acquisition'), { label: 'add acquisition screen' })
@@ -304,22 +361,28 @@ async function main() {
     )
     if (rows.length !== 1) throw new Error('unknown-cost lot not found')
     const [minor, state] = rows[0].split('|')
-    if (minor !== '' || state !== 'unknown') throw new Error(`expected unit_cost_basis_minor NULL / state unknown, got ${rows[0]}`)
+    if (minor !== '' || state !== 'unknown')
+      throw new Error(`expected unit_cost_basis_minor NULL / state unknown, got ${rows[0]}`)
     return rows[0]
   })
 
   // ---- C. Purchase with the specified charges ----
   const purchasesBefore = Number(psql(`select count(*) from purchases where user_id='${B.id}'`))
-  await run('purchase: navigate to Record purchase', () => goToAddIntent('zard-base-004', 'normal|'))
-  await run('purchase: enter quantity=2 unit=45.00 shipping=30 customs=10 discount=20', async () => {
-    await tapScrolling('p175-go-record-purchase')
-    await waitFor((ns) => byId(ns, 'p175-record-purchase'), { label: 'record purchase screen' })
-    await typeInto('p175-purchase-quantity', '2')
-    await typeInto('p175-purchase-unit-price', '45.00')
-    await typeInto('p175-purchase-shipping', '30')
-    await typeInto('p175-purchase-customs', '10')
-    await typeInto('p175-purchase-discount', '20')
-  })
+  await run('purchase: navigate to Record purchase', () =>
+    goToAddIntent('zard-base-004', 'normal|'),
+  )
+  await run(
+    'purchase: enter quantity=2 unit=45.00 shipping=30 customs=10 discount=20',
+    async () => {
+      await tapScrolling('p175-go-record-purchase')
+      await waitFor((ns) => byId(ns, 'p175-record-purchase'), { label: 'record purchase screen' })
+      await typeInto('p175-purchase-quantity', '2')
+      await typeInto('p175-purchase-unit-price', '45.00')
+      await typeInto('p175-purchase-shipping', '30')
+      await typeInto('p175-purchase-customs', '10')
+      await typeInto('p175-purchase-discount', '20')
+    },
+  )
   const previewTotal = await run('purchase: read preview total', () => {
     const n = dump()
     const el = byId(n, 'p175-purchase-total')
@@ -332,23 +395,32 @@ async function main() {
       label: 'purchase result',
     })
     const after = Number(psql(`select count(*) from purchases where user_id='${B.id}'`))
-    if (after !== purchasesBefore + 1) throw new Error(`expected exactly 1 new purchase, before=${purchasesBefore} after=${after}`)
+    if (after !== purchasesBefore + 1)
+      throw new Error(`expected exactly 1 new purchase, before=${purchasesBefore} after=${after}`)
     // 2*4500 + 3000 + 1000 - 2000 = 9000 + 3000 + 1000 - 2000 = 11000 minor units = 110.00 NOK
     const row = psql(
       `select p.id, p.shipping_minor, p.customs_minor, p.discount_minor, pl.quantity, pl.unit_price_minor from purchases p join purchase_lines pl on pl.purchase_id=p.id where p.user_id='${B.id}' order by p.created_at desc limit 1`,
     )
     const [, shipping, customs, discount, qty, unit] = row.split('|')
-    const computedTotal = Number(qty) * Number(unit) + Number(shipping) + Number(customs) - Number(discount)
-    if (computedTotal !== 11000) throw new Error(`unexpected computed total ${computedTotal} from row ${row}`)
+    const computedTotal =
+      Number(qty) * Number(unit) + Number(shipping) + Number(customs) - Number(discount)
+    if (computedTotal !== 11000)
+      throw new Error(`unexpected computed total ${computedTotal} from row ${row}`)
     return { previewTotal, dbRow: row, computedTotal }
   })
 
   // ---- D. Idempotency: rapid double-tap on a SECOND purchase ----
-  const purchasesBeforeDouble = Number(psql(`select count(*) from purchases where user_id='${B.id}'`))
-  await run('idempotency: navigate to a second Record purchase', () => goToAddIntent('pika-promo', 'normal|'))
+  const purchasesBeforeDouble = Number(
+    psql(`select count(*) from purchases where user_id='${B.id}'`),
+  )
+  await run('idempotency: navigate to a second Record purchase', () =>
+    goToAddIntent('pika-promo', 'normal|'),
+  )
   await run('idempotency: fill and rapid double-tap Confirm', async () => {
     await tapScrolling('p175-go-record-purchase')
-    await waitFor((ns) => byId(ns, 'p175-record-purchase'), { label: 'record purchase screen (double-tap)' })
+    await waitFor((ns) => byId(ns, 'p175-record-purchase'), {
+      label: 'record purchase screen (double-tap)',
+    })
     await typeInto('p175-purchase-unit-price', '10.00')
     const { node } = await findScrolling('p175-confirm-purchase')
     tap(node)
@@ -362,7 +434,10 @@ async function main() {
     })
     await sleep(1500) // let any (refused) second in-flight attempt resolve
     const after = Number(psql(`select count(*) from purchases where user_id='${B.id}'`))
-    if (after !== purchasesBeforeDouble + 1) throw new Error(`expected exactly 1 new purchase from 3 taps, before=${purchasesBeforeDouble} after=${after}`)
+    if (after !== purchasesBeforeDouble + 1)
+      throw new Error(
+        `expected exactly 1 new purchase from 3 taps, before=${purchasesBeforeDouble} after=${after}`,
+      )
     return { before: purchasesBeforeDouble, after }
   })
 
@@ -371,42 +446,63 @@ async function main() {
   // the "Manual valuation" NAVIGATION BUTTON is always on screen regardless of price state, so a
   // substring check against every text node is a false positive against its own label.
   const priceState = () => byId(dump(), 'detail-price-state')?.text ?? null
-  await run('manual value: open Card detail for the acquisition holding', () => openCardDetail(acquisitionHoldingId))
+  await run('manual value: open Card detail for the acquisition holding', () =>
+    openCardDetail(acquisitionHoldingId),
+  )
   await run('manual value: initial state is "No value available"', () => {
     const s = priceState()
-    if (s !== 'No value available') throw new Error(`expected no value yet; got ${JSON.stringify(s)}`)
+    if (s !== 'No value available')
+      throw new Error(`expected no value yet; got ${JSON.stringify(s)}`)
   })
   await run('manual value: set 100.00', async () => {
     await tapScrolling('manual-valuation')
     await waitFor((ns) => byId(ns, 'p175-manual-valuation'), { label: 'manual valuation screen' })
     await typeInto('p175-manual-value', '100.00')
     await tapScrolling('p175-confirm-manual-value')
-    await waitFor((ns) => byId(ns, 'p175-manual-valuation-success'), { timeoutMs: 15000, label: 'manual value set' })
+    await waitFor((ns) => byId(ns, 'p175-manual-valuation-success'), {
+      timeoutMs: 15000,
+      label: 'manual value set',
+    })
     back()
     await waitFor((ns) => byId(ns, 'card-detail'), { label: 'back to card detail' })
     const s = priceState()
-    if (s !== 'Manual valuation') throw new Error(`expected Manual valuation state; got ${JSON.stringify(s)}`)
+    if (s !== 'Manual valuation')
+      throw new Error(`expected Manual valuation state; got ${JSON.stringify(s)}`)
   })
   await run('manual value: set explicit 0.00 (known zero, not absent)', async () => {
     await tapScrolling('manual-valuation')
     await waitFor((ns) => byId(ns, 'p175-manual-valuation'), { label: 'manual valuation screen' })
     await typeInto('p175-manual-value', '0.00')
     await tapScrolling('p175-confirm-manual-value')
-    await waitFor((ns) => byId(ns, 'p175-manual-valuation-success'), { timeoutMs: 15000, label: 'manual value set to 0' })
-    const row = psql(`select value_minor from manual_valuations where holding_id='${acquisitionHoldingId}' and superseded_at is null`)
+    await waitFor((ns) => byId(ns, 'p175-manual-valuation-success'), {
+      timeoutMs: 15000,
+      label: 'manual value set to 0',
+    })
+    const row = psql(
+      `select value_minor from manual_valuations where holding_id='${acquisitionHoldingId}' and superseded_at is null`,
+    )
     if (row !== '0') throw new Error(`expected stored value 0, got ${JSON.stringify(row)}`)
     back()
     await waitFor((ns) => byId(ns, 'card-detail'), { label: 'back to card detail' })
     const s = priceState()
-    if (s !== 'Manual valuation') throw new Error(`explicit-zero manual value did not render as Manual valuation, got ${JSON.stringify(s)}`)
+    if (s !== 'Manual valuation')
+      throw new Error(
+        `explicit-zero manual value did not render as Manual valuation, got ${JSON.stringify(s)}`,
+      )
   })
   await run('manual value: clear -> NULL / no manual value, not zero', async () => {
     await tapScrolling('manual-valuation')
     await waitFor((ns) => byId(ns, 'p175-manual-valuation'), { label: 'manual valuation screen' })
     await tapScrolling('p175-clear-manual-value')
-    await waitFor((ns) => byId(ns, 'p175-manual-valuation-success'), { timeoutMs: 15000, label: 'manual value cleared' })
-    const row = psql(`select count(*) from manual_valuations where holding_id='${acquisitionHoldingId}' and superseded_at is null`)
-    if (row !== '0') throw new Error(`expected no active manual valuation row after Clear, found ${row}`)
+    await waitFor((ns) => byId(ns, 'p175-manual-valuation-success'), {
+      timeoutMs: 15000,
+      label: 'manual value cleared',
+    })
+    const row = psql(
+      `select count(*) from manual_valuations where holding_id='${acquisitionHoldingId}' and superseded_at is null`,
+    )
+    if (row !== '0')
+      throw new Error(`expected no active manual valuation row after Clear, found ${row}`)
     back()
     await waitFor((ns) => byId(ns, 'card-detail'), { label: 'back to card detail' })
     const s = priceState()
@@ -419,36 +515,53 @@ async function main() {
   const salesBefore = Number(psql(`select count(*) from sales where user_id='${B.id}'`))
   await run('sale known-basis: open Record sale', async () => {
     await tapScrolling('record-sale')
-    await waitFor((ns) => byId(ns, 'p175-record-sale'), { label: 'record sale screen', timeoutMs: 15000 })
+    await waitFor((ns) => byId(ns, 'p175-record-sale'), {
+      label: 'record sale screen',
+      timeoutMs: 15000,
+    })
   })
-  await run('sale known-basis: sell 1 at 20.00, fees 5, negative net expected is fine either way', async () => {
-    await typeInto('p175-sale-quantity', '1')
-    await typeInto('p175-sale-unit-gross', '20.00')
-    await typeInto('p175-sale-fees', '5')
-    await tapScrolling('p175-confirm-sale')
-    await waitFor((ns) => byId(ns, 'p175-sale-success'), { timeoutMs: 15000, label: 'sale recorded' })
-    const after = Number(psql(`select count(*) from sales where user_id='${B.id}'`))
-    if (after !== salesBefore + 1) throw new Error(`expected exactly 1 new sale, before=${salesBefore} after=${after}`)
-    const result = psql(
-      `select sl.realized_result_nok_minor from sale_lines sl join sales s on s.id=sl.sale_id where s.user_id='${B.id}' order by s.created_at desc limit 1`,
-    )
-    if (result === '') throw new Error('expected a KNOWN realized result for a known-basis lot, got NULL')
-    return { realizedResultMinor: result }
-  })
+  await run(
+    'sale known-basis: sell 1 at 20.00, fees 5, negative net expected is fine either way',
+    async () => {
+      await typeInto('p175-sale-quantity', '1')
+      await typeInto('p175-sale-unit-gross', '20.00')
+      await typeInto('p175-sale-fees', '5')
+      await tapScrolling('p175-confirm-sale')
+      await waitFor((ns) => byId(ns, 'p175-sale-success'), {
+        timeoutMs: 15000,
+        label: 'sale recorded',
+      })
+      const after = Number(psql(`select count(*) from sales where user_id='${B.id}'`))
+      if (after !== salesBefore + 1)
+        throw new Error(`expected exactly 1 new sale, before=${salesBefore} after=${after}`)
+      const result = psql(
+        `select sl.realized_result_nok_minor from sale_lines sl join sales s on s.id=sl.sale_id where s.user_id='${B.id}' order by s.created_at desc limit 1`,
+      )
+      if (result === '')
+        throw new Error('expected a KNOWN realized result for a known-basis lot, got NULL')
+      return { realizedResultMinor: result }
+    },
+  )
 
   // ---- G. Sale: negative net on the SAME (known-basis) holding, remaining qty 1 ----
   await run('sale negative-net: gross 1.00, fees 30.00 on the last remaining unit', async () => {
     await openCardDetail(acquisitionHoldingId)
     await tapScrolling('record-sale')
-    await waitFor((ns) => byId(ns, 'p175-record-sale'), { label: 'record sale screen (negative net)', timeoutMs: 15000 })
+    await waitFor((ns) => byId(ns, 'p175-record-sale'), {
+      label: 'record sale screen (negative net)',
+      timeoutMs: 15000,
+    })
     await typeInto('p175-sale-quantity', '1')
     await typeInto('p175-sale-unit-gross', '1.00')
     await typeInto('p175-sale-fees', '30.00')
     await tapScrolling('p175-confirm-sale')
-    const outcome = await waitFor((ns) => (byId(ns, 'p175-sale-success') || byId(ns, 'p175-record-sale')) && ns, {
-      timeoutMs: 15000,
-      label: 'negative-net sale outcome',
-    })
+    const outcome = await waitFor(
+      (ns) => (byId(ns, 'p175-sale-success') || byId(ns, 'p175-record-sale')) && ns,
+      {
+        timeoutMs: 15000,
+        label: 'negative-net sale outcome',
+      },
+    )
     if (!byId(outcome.nodes, 'p175-sale-success'))
       throw new Error('UI blocked a negative-net sale instead of accepting it')
     const result = psql(
@@ -463,18 +576,26 @@ async function main() {
     const holdingId = psql(
       `select h.id from holdings h join acquisition_lots al on al.holding_id=h.id where h.user_id='${B.id}' and al.cost_basis_state='unknown' and al.quantity_remaining>0 limit 1`,
     )
-    if (holdingId === '') throw new Error('no unknown-basis holding with remaining quantity found in the seed data')
+    if (holdingId === '')
+      throw new Error('no unknown-basis holding with remaining quantity found in the seed data')
     await openCardDetail(holdingId)
     await tapScrolling('record-sale')
-    await waitFor((ns) => byId(ns, 'p175-record-sale'), { label: 'record sale screen (unknown basis)', timeoutMs: 15000 })
+    await waitFor((ns) => byId(ns, 'p175-record-sale'), {
+      label: 'record sale screen (unknown basis)',
+      timeoutMs: 15000,
+    })
     await typeInto('p175-sale-quantity', '1')
     await typeInto('p175-sale-unit-gross', '15.00')
     await tapScrolling('p175-confirm-sale')
-    await waitFor((ns) => byId(ns, 'p175-sale-success'), { timeoutMs: 15000, label: 'unknown-basis sale recorded' })
+    await waitFor((ns) => byId(ns, 'p175-sale-success'), {
+      timeoutMs: 15000,
+      label: 'unknown-basis sale recorded',
+    })
     const result = psql(
       `select sl.realized_result_nok_minor from sale_lines sl join sales s on s.id=sl.sale_id where s.user_id='${B.id}' order by s.created_at desc limit 1`,
     )
-    if (result !== '') throw new Error(`expected NULL realized result for an unknown-basis lot, got ${result}`)
+    if (result !== '')
+      throw new Error(`expected NULL realized result for an unknown-basis lot, got ${result}`)
     return { holdingId }
   })
 
@@ -485,20 +606,30 @@ async function main() {
       `select quantity_remaining, purchase_line_id from acquisition_lots where id='${sealed.lotId}'`,
     )
     const [remainingBefore, purchaseLineIdBefore] = before.split('|')
-    if (remainingBefore !== '3') throw new Error(`expected the fixture lot to start at 3 remaining, got ${before}`)
+    if (remainingBefore !== '3')
+      throw new Error(`expected the fixture lot to start at 3 remaining, got ${before}`)
     await openCardDetail(sealed.holdingId)
     await tapScrolling('record-opening')
-    await waitFor((ns) => byId(ns, 'p175-record-opening'), { label: 'record opening screen', timeoutMs: 15000 })
+    await waitFor((ns) => byId(ns, 'p175-record-opening'), {
+      label: 'record opening screen',
+      timeoutMs: 15000,
+    })
     await typeInto('p175-opening-quantity', '1')
     await tapScrolling('p175-confirm-opening')
-    await waitFor((ns) => byId(ns, 'p175-opening-success'), { timeoutMs: 15000, label: 'opening recorded' })
+    await waitFor((ns) => byId(ns, 'p175-opening-success'), {
+      timeoutMs: 15000,
+      label: 'opening recorded',
+    })
     const after = psql(
       `select quantity_remaining, purchase_line_id from acquisition_lots where id='${sealed.lotId}'`,
     )
     const [remainingAfter, purchaseLineIdAfter] = after.split('|')
-    if (remainingAfter !== '2') throw new Error(`expected quantity_remaining 2 after opening 1 of 3, got ${after}`)
+    if (remainingAfter !== '2')
+      throw new Error(`expected quantity_remaining 2 after opening 1 of 3, got ${after}`)
     if (purchaseLineIdAfter !== purchaseLineIdBefore)
-      throw new Error(`opening changed the source lot's own purchase_line_id: before=${purchaseLineIdBefore} after=${purchaseLineIdAfter}`)
+      throw new Error(
+        `opening changed the source lot's own purchase_line_id: before=${purchaseLineIdBefore} after=${purchaseLineIdAfter}`,
+      )
     const purchaseCountForLine = psql(
       `select count(*) from purchase_lines where purchase_id=(select purchase_id from purchase_lines where id='${purchaseLineIdBefore}')`,
     )
@@ -509,12 +640,15 @@ async function main() {
   await run('keyboard: comma decimal separator parses exactly like a period', async () => {
     await goToAddIntent('zero-099', 'normal|')
     await tapScrolling('p175-go-record-purchase')
-    await waitFor((ns) => byId(ns, 'p175-record-purchase'), { label: 'record purchase (keyboard test)' })
+    await waitFor((ns) => byId(ns, 'p175-record-purchase'), {
+      label: 'record purchase (keyboard test)',
+    })
     await typeInto('p175-purchase-unit-price', '45,00')
     await sleep(300)
     const { node } = await findScrolling('p175-purchase-total')
     const preview = node?.text ?? node?.desc ?? ''
-    if (!/45[.,]00|45\s*kr/i.test(preview)) throw new Error(`comma input did not parse: preview=${JSON.stringify(preview)}`)
+    if (!/45[.,]00|45\s*kr/i.test(preview))
+      throw new Error(`comma input did not parse: preview=${JSON.stringify(preview)}`)
     return { preview }
   })
   await run('keyboard: malformed "1,2,3" is refused, not silently coerced', async () => {
@@ -530,9 +664,13 @@ async function main() {
     const okButton = dialog.nodes.find((n) => n.text === 'OK')
     if (okButton) tap(okButton)
     else back()
-    await waitFor((ns) => byId(ns, 'p175-record-purchase'), { label: 'back on the purchase form', timeoutMs: 10000 })
+    await waitFor((ns) => byId(ns, 'p175-record-purchase'), {
+      label: 'back on the purchase form',
+      timeoutMs: 10000,
+    })
     const after = Number(psql(`select count(*) from purchases where user_id='${B.id}'`))
-    if (after !== before) throw new Error(`malformed input created a purchase anyway: before=${before} after=${after}`)
+    if (after !== before)
+      throw new Error(`malformed input created a purchase anyway: before=${before} after=${after}`)
     return { before, after }
   })
 

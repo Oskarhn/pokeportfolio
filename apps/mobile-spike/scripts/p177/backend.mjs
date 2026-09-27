@@ -48,7 +48,19 @@ function tsx(script, args = [], env = {}) {
 function psql(sql) {
   const r = spawnSync(
     'docker',
-    ['exec', '-i', stack.dbContainer, 'psql', '-U', 'postgres', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-At'],
+    [
+      'exec',
+      '-i',
+      stack.dbContainer,
+      'psql',
+      '-U',
+      'postgres',
+      '-d',
+      'postgres',
+      '-v',
+      'ON_ERROR_STOP=1',
+      '-At',
+    ],
     { input: sql, encoding: 'utf8', env: { ...process.env, MSYS_NO_PATHCONV: '1' } },
   )
   if (r.status !== 0) throw new Error(`psql failed: ${r.stderr}`)
@@ -58,7 +70,14 @@ function psql(sql) {
 function containers() {
   const r = spawnSync(
     'docker',
-    ['ps', '-a', '--filter', `label=com.supabase.cli.project=${stack.projectId}`, '--format', '{{.Names}} {{.Status}}'],
+    [
+      'ps',
+      '-a',
+      '--filter',
+      `label=com.supabase.cli.project=${stack.projectId}`,
+      '--format',
+      '{{.Names}} {{.Status}}',
+    ],
     { encoding: 'utf8' },
   )
   return r.stdout.trim() === '' ? [] : r.stdout.trim().split(/\r?\n/)
@@ -67,17 +86,29 @@ function containers() {
 const command = process.argv[2]
 if (command === 'start') {
   const m = prepare(stack)
-  console.log(`${m.migrationCount} migrations from ${m.migrationSha.slice(0, 7)}; functions from git objects`)
+  console.log(
+    `${m.migrationCount} migrations from ${m.migrationSha.slice(0, 7)}; functions from git objects`,
+  )
   mkdirSync(join(rootDir, 'supabase'), { recursive: true })
-  copyFileSync(join(stack.workdir, 'supabase', 'config.toml'), join(rootDir, 'supabase', 'config.toml'))
+  copyFileSync(
+    join(stack.workdir, 'supabase', 'config.toml'),
+    join(rootDir, 'supabase', 'config.toml'),
+  )
   writeFileSync(
     join(rootDir, 'stack.json'),
     JSON.stringify({ projectId: stack.projectId, portOffset: PORT_OFFSET }, null, 2),
   )
-  const r = cli(['start', '-x', 'logflare,vector,studio,mailpit,imgproxy,storage-api,realtime,postgres-meta,supavisor'])
+  const r = cli([
+    'start',
+    '-x',
+    'logflare,vector,studio,mailpit,imgproxy,storage-api,realtime,postgres-meta,supavisor',
+  ])
   process.exit(r.status ?? 1)
 } else if (command === 'seed') {
-  const env = { SPIKE_BACKEND_PROJECT_ID: stack.projectId, SPIKE_BACKEND_PORT_OFFSET: String(PORT_OFFSET) }
+  const env = {
+    SPIKE_BACKEND_PROJECT_ID: stack.projectId,
+    SPIKE_BACKEND_PORT_OFFSET: String(PORT_OFFSET),
+  }
   tsx('apps/mobile-spike/scripts/seed-local-backend.mts', [], env)
   tsx('apps/mobile-spike/scripts/p169/seed.mts', ['--stack=p177'], env)
   const fx = JSON.parse(readFileSync(join(rootDir, 'fixture.json'), 'utf8'))
@@ -108,7 +139,11 @@ select cron.alter_job(jobid, active := false) from cron.job where jobname in ('m
 } else if (command === 'stop') {
   const r = cli(['stop', '--no-backup'])
   const left = containers()
-  console.log(left.length === 0 ? 'no container of this project remains' : `STILL PRESENT:\n${left.join('\n')}`)
+  console.log(
+    left.length === 0
+      ? 'no container of this project remains'
+      : `STILL PRESENT:\n${left.join('\n')}`,
+  )
   process.exit(r.status === 0 && left.length === 0 ? 0 : 1)
 } else if (command === 'status') {
   console.log(containers().join('\n') || '(no container of this project)')

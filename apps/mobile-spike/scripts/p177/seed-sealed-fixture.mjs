@@ -40,7 +40,8 @@ const client = createClient(pub.apiUrl, pub.publishableKey, {
 })
 
 const sealedProductRow = await client.from('sealed_products').select('id').limit(1).single()
-if (sealedProductRow.error) throw new Error(`no sealed_products row: ${sealedProductRow.error.message}`)
+if (sealedProductRow.error)
+  throw new Error(`no sealed_products row: ${sealedProductRow.error.message}`)
 const sealedProductId = sealedProductRow.data.id
 
 const { data, error } = await client
@@ -68,7 +69,9 @@ const { data, error } = await client
   })
   .single()
 if (error) throw new Error(`add_card_acquisition failed: ${error.message}`)
-console.log(`created sealed holding ${data.holding_id} (lot ${data.lot_id}), quantity 3, planned_to_open`)
+console.log(
+  `created sealed holding ${data.holding_id} (lot ${data.lot_id}), quantity 3, planned_to_open`,
+)
 writeFileSync(
   join(appRoot, '.local-backend', 'p177', 'sealed-fixture.json'),
   JSON.stringify({ holdingId: data.holding_id, lotId: data.lot_id }, null, 2),
