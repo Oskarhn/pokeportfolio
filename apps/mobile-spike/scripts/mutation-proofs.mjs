@@ -440,6 +440,39 @@ const MUTANTS = [
     ],
     tests: ['tests/unit/read-only-vs-write-policy.test.ts'],
   },
+  {
+    id: 'P19',
+    title: '#19 (P177, device-found) money-input parses through Number() instead of the exact decimal parser',
+    file: 'src/write/money-input.ts',
+    edits: [
+      [
+        'return fromDecimalString(normalized, currency).minorUnits',
+        'return BigInt(Math.round(Number(normalized) * 100))',
+      ],
+    ],
+    tests: ['tests/unit/money-input.test.ts'],
+  },
+  {
+    id: 'P20',
+    title: '#20 (P177, device-found) RecordPurchaseScreen omits condition on its card line again (the real bug this phase found and fixed)',
+    file: 'src/ui/screens/RecordPurchaseScreen.tsx',
+    edits: [[`gradingState: 'raw',\n              condition: 'NM',\n`, '']],
+    tests: ['tests/unit/record-purchase-uses-shared-allocator.test.ts'],
+  },
+  {
+    id: 'P21',
+    title: '#21 (P177, device-found) CardDetailScreen reverts to a plain useEffect (stops reloading on focus)',
+    file: 'src/ui/screens/CardDetailScreen.tsx',
+    edits: [
+      ["import { useCallback } from 'react'", "import { useCallback, useEffect } from 'react'"],
+      ["import { useFocusEffect } from '@react-navigation/native'\n", ''],
+      [
+        'useFocusEffect(\n    useCallback(() => {\n      void holdingDetail.load(holdingId)\n    }, [holdingDetail, holdingId]),\n  )',
+        'useEffect(() => {\n    void holdingDetail.load(holdingId)\n  }, [holdingDetail, holdingId])',
+      ],
+    ],
+    tests: ['tests/unit/card-detail-reloads-on-focus.test.ts'],
+  },
 ]
 
 const only = process.argv.includes('--only')
