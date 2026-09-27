@@ -40,7 +40,7 @@ export interface Tokens {
   scrim: string
 }
 
-const DARK: Tokens = {
+export const DARK_TOKENS: Tokens = {
   background: '#0F0F11',
   surface: '#0F0F11',
   surfaceRaised: '#18181B',
@@ -66,7 +66,7 @@ const DARK: Tokens = {
   scrim: 'rgba(0,0,0,0.85)',
 }
 
-const LIGHT: Tokens = {
+export const LIGHT_TOKENS: Tokens = {
   background: '#FAFAF7',
   surface: '#FFFFFF',
   surfaceRaised: '#FFFFFF',
@@ -75,7 +75,7 @@ const LIGHT: Tokens = {
   borderStrong: '#C7CBC4',
   textPrimary: '#191C1B',
   textSecondary: '#4A4F4D',
-  textMuted: '#6B706D',
+  textMuted: '#5F6461',
   textDisabled: '#9AA09C',
   accent: '#0E6B62',
   accentPressed: '#0B554E',
@@ -92,7 +92,7 @@ const LIGHT: Tokens = {
   scrim: 'rgba(0,0,0,0.6)',
 }
 
-const TOKENS: Record<'dark' | 'light', Tokens> = { dark: DARK, light: LIGHT }
+const TOKENS: Record<'dark' | 'light', Tokens> = { dark: DARK_TOKENS, light: LIGHT_TOKENS }
 
 /** Legacy flat shape kept for the many screens written against `usePalette()`; derived from the
  *  active token set so those screens inherit the dark-first theme without individually changing. */
@@ -165,11 +165,19 @@ export function usePalette(): Palette {
   return toPalette(useTokens())
 }
 
+/** Light icons read on the dark ground; dark icons read on the light one. Exported as a pure
+ *  function (P178 mutant #11) so the launch-time invariant — never dark-on-dark — is a direct unit
+ *  test, not dependent on how a native passthrough component like `expo-status-bar` renders in a
+ *  test environment. */
+export function statusBarStyleFor(scheme: 'dark' | 'light'): 'light' | 'dark' {
+  return scheme === 'dark' ? 'light' : 'dark'
+}
+
 /** Renders the system status bar in the icon colour that reads on the active background. Mounted
  *  once near the app root, inside `AppThemeProvider`, so a theme-mode change updates it live. */
 export function ThemedStatusBar() {
   const scheme = useActiveScheme()
-  return createElement(StatusBar, { style: scheme === 'dark' ? 'light' : 'dark' })
+  return createElement(StatusBar, { style: statusBarStyleFor(scheme) })
 }
 
 export function navigationTheme(scheme: 'light' | 'dark'): Theme {
