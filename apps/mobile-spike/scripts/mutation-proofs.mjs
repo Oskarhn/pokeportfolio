@@ -255,7 +255,7 @@ const MUTANTS = [
   {
     id: 'P3',
     title: '#3 JPY exponent treated as 2 instead of 0',
-    file: 'src/domain/currency.ts',
+    file: '../../src/domain/currency.ts',
     edits: [
       ["JPY: { code: 'JPY', minorUnitExponent: 0 }", "JPY: { code: 'JPY', minorUnitExponent: 2 }"],
     ],
@@ -316,8 +316,8 @@ const MUTANTS = [
     file: 'src/write/sale-writes.ts',
     edits: [
       [
-        'export async function createSale(',
-        "function assertNonNegativeNet(gross, fees) {\n  if (gross - fees < 0n) throw new Error('net proceeds cannot be negative')\n}\nexport async function createSale(",
+        'db: LeasedWriteDb,\n): Promise<Sale> {\n  const { data, error } = await db',
+        "db: LeasedWriteDb,\n): Promise<Sale> {\n  const grossTotal = lines.reduce((sum, l) => sum + l.unitGrossMinor * BigInt(l.quantity), 0n)\n  if (grossTotal - (input.feesMinor ?? 0n) < 0n) {\n    throw new Error('net proceeds cannot be negative')\n  }\n  const { data, error } = await db",
       ],
     ],
     tests: ['tests/unit/write-rpc-wire.test.ts'],
