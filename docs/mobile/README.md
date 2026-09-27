@@ -18,5 +18,6 @@ selected; the P154 proposals are unchanged. The spike lives in [`apps/mobile-spi
 | [P167_ANDROID_HARDENING](P167_ANDROID_HARDENING.md) | Android runtime hardening: the picker after an Activity recreation, dark chrome, large text, keyboard, touch targets |
 | [P169_NATIVE_PRICE_CHECK](P169_NATIVE_PRICE_CHECK.md) | Native catalog search and read-only Price Check, contracts, findings F1-F9 |
 | [P173_INTEGRATED_NATIVE_ANDROID](P173_INTEGRATED_NATIVE_ANDROID.md) | The two tracks integrated in one app: graph proof, reconciliation, device evidence, fixes, limits |
+| [P175_NATIVE_FINANCIAL_WRITES](P175_NATIVE_FINANCIAL_WRITES.md) | The first native financial writes: migration integration plan, the identity-leased write seam, what's implemented, scope boundaries, test evidence |
 
 Inputs (read-only): [`docs/design/p154`](../design/p154/README.md).
