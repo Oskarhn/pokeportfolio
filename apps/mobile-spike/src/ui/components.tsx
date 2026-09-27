@@ -1,5 +1,14 @@
 import type { ReactNode } from 'react'
-import { ActivityIndicator, Pressable, StyleSheet, Text, View, type ViewStyle } from 'react-native'
+import {
+  ActivityIndicator,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+  type KeyboardTypeOptions,
+  type ViewStyle,
+} from 'react-native'
 import type { Money } from '@shared/domain/money'
 import { formatMoney } from '../money/format-money'
 import type { Failure } from '../net/failure'
@@ -184,6 +193,64 @@ export function Card({ children, testID }: { children: ReactNode; testID?: strin
       }}
     >
       {children}
+    </View>
+  )
+}
+
+/**
+ * A labeled text field for the write forms. `keyboardType="decimal-pad"` for money/quantity fields
+ * never restricts what can be TYPED (a pasted or autocorrected value can still contain letters), so
+ * every money parser downstream (`write/money-input.ts`) still validates the raw string itself —
+ * this component is a keyboard hint, never a validator.
+ */
+export function TextField({
+  label,
+  value,
+  onChangeText,
+  placeholder,
+  keyboardType,
+  errorText,
+  testID,
+  editable = true,
+}: {
+  label: string
+  value: string
+  onChangeText: (text: string) => void
+  placeholder?: string
+  keyboardType?: KeyboardTypeOptions
+  errorText?: string | null
+  testID?: string
+  editable?: boolean
+}) {
+  const p = usePalette()
+  return (
+    <View style={{ gap: SPACE.xs }}>
+      <Text style={{ color: p.muted, fontSize: 13, fontWeight: '600' }}>{label}</Text>
+      <TextInput
+        testID={testID}
+        value={value}
+        onChangeText={onChangeText}
+        placeholder={placeholder}
+        placeholderTextColor={p.muted}
+        keyboardType={keyboardType}
+        editable={editable}
+        accessibilityLabel={label}
+        style={{
+          minHeight: MIN_TOUCH,
+          paddingHorizontal: SPACE.md,
+          borderRadius: 8,
+          borderWidth: StyleSheet.hairlineWidth,
+          borderColor: errorText != null ? p.danger : p.border,
+          backgroundColor: p.surface,
+          color: p.text,
+          fontSize: 16,
+        }}
+      />
+      {errorText != null ? (
+        <Text accessibilityRole="alert" style={{ color: p.danger, fontSize: 13 }}>
+          {errorText}
+        </Text>
+      ) : null}
     </View>
   )
 }

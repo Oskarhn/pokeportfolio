@@ -33,8 +33,9 @@
 -- P130-02 (JPY FX). Counts of JPY purchases/sales by fx_source; manual-rate rows need owner review.
 --
 -- Optional consistency (diagnostics only): unsupported currency codes (domain supports NOK, EUR,
--- USD, GBP, JPY), transaction dates before 1996-01-01 or after today + 1 day, and stored money
--- beyond the client's safe-integer boundary (|value| > 2^53 - 1).
+-- USD, GBP, JPY), event dates outside the P144 contract (before 1996-10-20 or after UTC today + 1
+-- day), negative attributable purchase-line costs, and stored money beyond the client's
+-- safe-integer boundary (|value| > 2^53 - 1).
 select jsonb_build_object(
   'generated_at_utc', to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
   'transaction_read_only', current_setting('transaction_read_only'),
@@ -211,12 +212,30 @@ select jsonb_build_object(
   'unsupported_currency_sales', (
     select count(*) from public.sales
     where currency not in ('NOK', 'EUR', 'USD', 'GBP', 'JPY')),
+  -- P144 completed-event date contract (20260918120000, D-135): 1996-10-20 <= date <= UTC today + 1.
+  -- A non-zero count is a row written before the contract existed (the triggers refuse new ones).
   'out_of_range_date_purchases', (
     select count(*) from public.purchases
-    where purchased_on < date '1996-01-01' or purchased_on > current_date + 1),
+    where purchased_on < date '1996-10-20' or purchased_on > (now() at time zone 'utc')::date + 1),
   'out_of_range_date_sales', (
     select count(*) from public.sales
-    where sold_on < date '1996-01-01' or sold_on > current_date + 1),
+    where sold_on < date '1996-10-20' or sold_on > (now() at time zone 'utc')::date + 1),
+  'out_of_range_date_lots', (
+    select count(*) from public.acquisition_lots
+    where acquired_on < date '1996-10-20' or acquired_on > (now() at time zone 'utc')::date + 1),
+  'out_of_range_date_disposals', (
+    select count(*) from public.lot_disposals
+    where disposed_on < date '1996-10-20' or disposed_on > (now() at time zone 'utc')::date + 1),
+  'out_of_range_date_openings', (
+    select count(*) from public.openings
+    where opened_on < date '1996-10-20' or opened_on > (now() at time zone 'utc')::date + 1),
+  'out_of_range_date_cost_adjustments', (
+    select count(*) from public.lot_cost_adjustments
+    where occurred_on < date '1996-10-20' or occurred_on > (now() at time zone 'utc')::date + 1),
+  -- P130-16/P144: an attributable cost is never negative (allocate_purchase_discount guarantees it).
+  'negative_attributable_purchase_lines', (
+    select count(*) from public.purchase_lines
+    where attributable_cost_minor < 0 or attributable_cost_nok_minor < 0),
   'unsafe_integer_money_purchases', (
     select count(*) from public.purchases
     where greatest(abs(subtotal_minor), abs(shipping_minor), abs(customs_minor), abs(discount_minor),

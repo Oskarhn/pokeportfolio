@@ -6,6 +6,22 @@ import type {
   CollectionRow,
   HoldingDetail,
 } from '../../src/collection/types'
+import type { LeasedWriteDb } from '../../src/write/leased-write-client'
+import type { WriteDbBinder } from '../../src/write/write-db'
+
+/** A write-db binder for tests that do not exercise a real (or scripted) write RPC call: any
+ *  attempt to actually USE the returned "client" fails loudly instead of silently no-op'ing. */
+export function fakeWriteDbBinder(): WriteDbBinder {
+  return () =>
+    new Proxy(
+      {},
+      {
+        get(_t, prop) {
+          throw new Error(`unexpected use of the fake write client: .${String(prop)}`)
+        },
+      },
+    ) as LeasedWriteDb
+}
 
 export interface Deferred<T> {
   promise: Promise<T>
@@ -244,6 +260,7 @@ export function harness(
     priceCheck: { released: overrides.released ?? fixture, fixture },
     priceFeature: overrides.priceFeature ?? INERT_PRICE_FEATURE,
     photo,
+    writeDb: fakeWriteDbBinder(),
   })
   runtime.auth.start()
   return { runtime, auth, collection, photo, removed: () => removed }

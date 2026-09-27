@@ -16,6 +16,7 @@ import { fxRateReaderFor } from '../../src/features/price-check/fx-source'
 import { createReleasedPriceCheckPort } from '../../src/price-check/released-adapter'
 import { createFixturePriceCheckPort } from '../../src/price-check/fixture-adapter'
 import type { RequestLogEntry } from '../../src/net/spike-fetch'
+import { createWriteDbBinder } from '../../src/write/write-db'
 import { createRuntime, type Runtime } from '../../src/wiring/runtime'
 import { FakePhotoPort, MemoryKeyValueStore } from '../support/fakes'
 import { setBackendClient } from '../support/backend-supabase-client'
@@ -101,6 +102,8 @@ export interface Session {
   storage: SessionStorage
   store: MemoryKeyValueStore
   log: RequestLogEntry[]
+  url: string
+  publishableKey: string
 }
 
 /** A native client exactly as the app builds it, over an in-memory stand-in for SecureStore that
@@ -112,18 +115,20 @@ export function newSession(
   const store = options.store ?? new MemoryKeyValueStore(2048)
   const storage = createChunkedSessionStorage(store)
   const log: RequestLogEntry[] = []
+  const url = options.url ?? env.apiUrl
   const client = createNativeClient(
-    { url: options.url ?? env.apiUrl, publishableKey: env.publishableKey, host: '127.0.0.1' },
+    { url, publishableKey: env.publishableKey, host: '127.0.0.1' },
     {
       storage,
       ...(options.baseFetch ? { baseFetch: options.baseFetch } : {}),
       fetchOptions: { onRequest: (e) => log.push(e) },
     },
   )
-  return { client, storage, store, log }
+  return { client, storage, store, log, url, publishableKey: env.publishableKey }
 }
 
-/** The full runtime over a REAL client: real GoTrue, real PostgREST, real shared data layer. */
+/** The full runtime over a REAL client: real GoTrue, real PostgREST, real shared data layer, and
+ *  a REAL P175 write seam (its own client, bound to this same session's `getSession`). */
 export function realRuntime(session: Session): Runtime {
   setBackendClient(session.client)
   const fixturePort = createFixturePriceCheckPort()
@@ -137,6 +142,11 @@ export function realRuntime(session: Session): Runtime {
       readFx: fxRateReaderFor(session.client),
     },
     photo: new FakePhotoPort(),
+    writeDb: createWriteDbBinder({
+      url: session.url,
+      publishableKey: session.publishableKey,
+      getSession: () => session.client.auth.getSession(),
+    }),
   })
   runtime.auth.start()
   return runtime

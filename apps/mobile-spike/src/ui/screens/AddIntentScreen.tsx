@@ -5,19 +5,21 @@ import {
   variantLabel,
 } from '../../features/price-check/p165-domain/price-check/identity'
 import { Label, LiveStatus, Section } from '../../features/ui/kit'
-import { Heading } from '../components'
+import { Button, Heading } from '../components'
 import type { SearchStackParams } from '../navigation-types'
 import { useRuntime, useStore } from '../runtime-context'
 import { SPACE, usePalette } from '../theme'
 
 /**
- * "Add to collection" from a price check is an INTENT: it names the card and the printing the person
- * confirmed and hands over to the collection flow, which must ask for its own explicit confirmation
- * before anything is written. The native app has no such flow yet, so this screen says so and
- * changes nothing: Price Check's client refuses every write request at the wire (net/spike-fetch.ts).
+ * "Add to collection" from a price check is an INTENT: it names the card and the printing the
+ * person confirmed and hands over to the collection flow, which asks for its own explicit
+ * confirmation before anything is written. P175 replaces the P173 read-only stub with the two real
+ * next steps: recording this card as an acquisition, or as a purchase receipt. Choosing either is
+ * still just navigation — nothing is written until that screen's own explicit confirm.
  */
 export function AddIntentScreen({
   route,
+  navigation,
 }: NativeStackScreenProps<SearchStackParams, 'P170AddIntent'>) {
   const { cardId, variantId } = route.params
   const { feature } = useRuntime()
@@ -43,9 +45,22 @@ export function AddIntentScreen({
         </Section>
       ) : null}
       <LiveStatus testID="p170-add-intent-text">
-        Adding cards to your collection is not available in the app yet, so nothing was saved. The
-        price check did not change your collection.
+        Choose how this card entered your collection. Nothing is saved until you confirm on the next
+        screen.
       </LiveStatus>
+      <Button
+        testID="p175-go-add-acquisition"
+        label="Add to collection"
+        accessibilityHint="Record ownership of this card, with or without a known cost"
+        onPress={() => navigation.navigate('P175AddAcquisition', { cardId, variantId })}
+      />
+      <Button
+        testID="p175-go-record-purchase"
+        label="Record as a purchase"
+        variant="secondary"
+        accessibilityHint="Record a purchase receipt for this card"
+        onPress={() => navigation.navigate('P175RecordPurchase', { cardId, variantId })}
+      />
     </ScrollView>
   )
 }

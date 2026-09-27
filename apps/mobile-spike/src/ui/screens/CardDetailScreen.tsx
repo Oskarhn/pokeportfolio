@@ -113,6 +113,24 @@ export function CardDetailScreen({ route, navigation }: Props) {
           })
         }}
       />
+      <Button
+        testID="record-sale"
+        label="Record sale"
+        variant="secondary"
+        onPress={() => navigation.navigate('RecordSale', { holdingId })}
+      />
+      <Button
+        testID="record-opening"
+        label="Record opening"
+        variant="secondary"
+        onPress={() => navigation.navigate('RecordOpening', { holdingId })}
+      />
+      <Button
+        testID="manual-valuation"
+        label="Manual valuation"
+        variant="secondary"
+        onPress={() => navigation.navigate('ManualValuation', { holdingId })}
+      />
     </ScrollView>
   )
 }

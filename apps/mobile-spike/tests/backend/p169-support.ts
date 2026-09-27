@@ -10,6 +10,7 @@ import type { SearchPricesInvoker } from '../../src/features/price-check/search-
 import type { RequestLogEntry } from '../../src/net/spike-fetch'
 import { createFixturePriceCheckPort } from '../../src/price-check/fixture-adapter'
 import { createReleasedPriceCheckPort } from '../../src/price-check/released-adapter'
+import { createWriteDbBinder } from '../../src/write/write-db'
 import { createRuntime, type Runtime } from '../../src/wiring/runtime'
 import { setBackendClient } from '../support/backend-supabase-client'
 import { FakePhotoPort, MemoryKeyValueStore } from '../support/fakes'
@@ -163,6 +164,11 @@ export function p169Session(
       searchOptions: { debounceMs: 0 },
     },
     photo: new FakePhotoPort(),
+    writeDb: createWriteDbBinder({
+      url: env.apiUrl,
+      publishableKey: env.publishableKey,
+      getSession: () => client.auth.getSession(),
+    }),
   })
   runtime.auth.start()
   return { runtime, feature: runtime.feature, log, client }

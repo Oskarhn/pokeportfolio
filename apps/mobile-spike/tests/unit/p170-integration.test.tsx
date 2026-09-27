@@ -16,7 +16,7 @@ import type { TabParams } from '../../src/ui/navigation-types'
 import { restorableNavigationState } from '../../src/state/navigation-memory'
 import { createRuntime, type Runtime } from '../../src/wiring/runtime'
 import { FakeAuth, FakeCollectionPort, FakePhotoPort, MemoryKeyValueStore } from '../support/fakes'
-import { deferred, flush, session } from '../support/fakes'
+import { deferred, fakeWriteDbBinder, flush, session } from '../support/fakes'
 import { FakeCatalog, body, card, hit, obs, p169Harness, variant } from '../support/p169-fakes'
 import type { P169Harness } from '../support/p169-fakes'
 
@@ -69,13 +69,13 @@ function snapshots(h: P169Harness) {
 }
 
 describe('one identity system', () => {
-  it('the feature stores live in the runtime registry (5 shell stores + 3 feature stores)', () => {
+  it('the feature stores live in the runtime registry (5 shell stores + 3 feature stores + 5 P175 write forms)', () => {
     const h = p169Harness()
-    expect(h.runtime.registry.size).toBe(8)
+    expect(h.runtime.registry.size).toBe(13)
     expect(h.feature).toBe(h.runtime.feature)
   })
 
-  it('the shell has ONE identity authority, ONE Supabase client and ONE feature composition', () => {
+  it('the shell has ONE identity authority, ONE shared Supabase client and ONE feature composition', () => {
     const files: string[] = []
     const walk = (dir: string) => {
       for (const name of readdirSync(dir)) {
@@ -95,7 +95,14 @@ describe('one identity system', () => {
       'src/features/feature.ts',
       'src/wiring/runtime.ts',
     ])
-    expect(users(/\bcreateClient(<[^>(]*>)?\(/)).toEqual(['src/auth/create-client.ts'])
+    // P175: a second, deliberate `createClient` call site. `leased-write-client.ts` builds an
+    // EPHEMERAL client per identity lease for the finance write seam (own accessToken provider,
+    // own write-only fetch policy) — never the shared reading client this app has always had one
+    // of. The two are structurally distinct (LeasedWriteDb vs the ambient `supabase` singleton).
+    expect(users(/\bcreateClient(<[^>(]*>)?\(/)).toEqual([
+      'src/auth/create-client.ts',
+      'src/write/leased-write-client.ts',
+    ])
     expect(users(/(?<!function )\bcreateNativeClient\(/)).toEqual(['src/seam/supabase-client.ts'])
     expect(users(/new AuthController\(/)).toEqual(['src/wiring/runtime.ts'])
   })
@@ -500,6 +507,7 @@ describe('the integrated client: what Price Check can and cannot send', () => {
         readSnapshots: () => Promise.resolve([]),
       },
       photo: new FakePhotoPort(),
+      writeDb: fakeWriteDbBinder(),
     })
     runtime.auth.start()
     auth.emit('SIGNED_IN', session('A'))

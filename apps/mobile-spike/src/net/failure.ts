@@ -13,6 +13,8 @@ export type FailureKind =
   | 'unsafe_numeric'
   | 'write_refused'
   | 'request_rejected'
+  | 'identity_changed'
+  | 'credentials_unavailable'
   | 'unknown'
 
 export interface Failure {
@@ -35,6 +37,8 @@ const MESSAGE: Record<FailureKind, string> = {
     'A value in the response could not be read exactly, so it is not shown. Nothing was changed.',
   write_refused: 'This build is read-only.',
   request_rejected: 'The server rejected this request.',
+  identity_changed: 'Your sign-in changed before this finished, so it was not completed.',
+  credentials_unavailable: 'Could not verify your session. Check your connection and try again.',
   unknown: 'Something went wrong. Try again.',
 }
 
@@ -72,6 +76,12 @@ export function classifyFailure(error: unknown): Failure {
   }
   if (name === 'WriteRefusedError' || message.includes('WriteRefusedError')) {
     return make('write_refused', null)
+  }
+  if (name === 'AuthIdentityChangedError') {
+    return make('identity_changed', null)
+  }
+  if (name === 'AuthCredentialsUnavailableError') {
+    return make('credentials_unavailable', null)
   }
   if (
     message.includes('UnsafeNumericResponseError') ||

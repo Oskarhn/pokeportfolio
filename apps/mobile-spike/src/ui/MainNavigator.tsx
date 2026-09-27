@@ -3,11 +3,16 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs'
 import { createNativeStackNavigator } from '@react-navigation/native-stack'
 import { P169_SCREENS } from '../features/screens'
+import { AddAcquisitionScreen } from './screens/AddAcquisitionScreen'
 import { AddIntentScreen } from './screens/AddIntentScreen'
 import { CardDetailScreen } from './screens/CardDetailScreen'
 import { CollectionScreen } from './screens/CollectionScreen'
+import { ManualValuationScreen } from './screens/ManualValuationScreen'
 import { PriceCheckHomeScreen } from './screens/PriceCheckHomeScreen'
 import { ProfileScreen } from './screens/ProfileScreen'
+import { RecordOpeningScreen } from './screens/RecordOpeningScreen'
+import { RecordPurchaseScreen } from './screens/RecordPurchaseScreen'
+import { RecordSaleScreen } from './screens/RecordSaleScreen'
 import { VariantEntryScreen } from './screens/VariantEntryScreen'
 import type {
   CollectionStackParams,
@@ -50,6 +55,21 @@ function CollectionStackScreen() {
         component={CardDetailScreen}
         options={{ title: 'Card', headerBackTitle: 'Back' }}
       />
+      <CollectionStack.Screen
+        name="RecordSale"
+        component={RecordSaleScreen}
+        options={{ title: 'Record sale', headerBackTitle: 'Back' }}
+      />
+      <CollectionStack.Screen
+        name="ManualValuation"
+        component={ManualValuationScreen}
+        options={{ title: 'Manual valuation', headerBackTitle: 'Back' }}
+      />
+      <CollectionStack.Screen
+        name="RecordOpening"
+        component={RecordOpeningScreen}
+        options={{ title: 'Record opening', headerBackTitle: 'Back' }}
+      />
     </CollectionStack.Navigator>
   )
 }
@@ -74,6 +94,16 @@ function SearchStackScreen() {
         name="P170AddIntent"
         component={AddIntentScreen}
         options={{ title: 'Add to collection', headerBackTitle: 'Back' }}
+      />
+      <SearchStack.Screen
+        name="P175AddAcquisition"
+        component={AddAcquisitionScreen}
+        options={{ title: 'Add to collection', headerBackTitle: 'Back' }}
+      />
+      <SearchStack.Screen
+        name="P175RecordPurchase"
+        component={RecordPurchaseScreen}
+        options={{ title: 'Record purchase', headerBackTitle: 'Back' }}
       />
     </SearchStack.Navigator>
   )

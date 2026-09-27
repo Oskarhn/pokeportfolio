@@ -437,7 +437,7 @@ describe('search and price check tabs', () => {
     expect(screen.queryByTestId('p169-hit-pika-a')).toBeNull()
   })
 
-  it('Add to collection is only an intent: it says nothing was saved and sends no request', async () => {
+  it('Add to collection is only navigation: opening the hub sends no request and writes nothing (P175)', async () => {
     const h = p169Harness()
     await openSearch(h)
     await search('Pikachu')
@@ -451,11 +451,40 @@ describe('search and price check tabs', () => {
     await fireEvent.press(await screen.findByTestId('p169-add-to-collection'))
     expect(await screen.findByTestId('p170-add-intent')).toBeTruthy()
     expect(JSON.stringify(screen.getByTestId('p170-add-intent-text').props.children)).toContain(
-      'nothing was saved',
+      'Nothing is saved until you confirm',
     )
     expect(screen.getByTestId('p170-add-intent-card')).toBeTruthy()
+    // The two P175 write forms are one navigation away, not reachable by merely opening this hub.
+    expect(screen.getByTestId('p175-go-add-acquisition')).toBeTruthy()
+    expect(screen.getByTestId('p175-go-record-purchase')).toBeTruthy()
+    expect(screen.queryByTestId('p175-add-acquisition')).toBeNull()
+    expect(screen.queryByTestId('p175-record-purchase')).toBeNull()
     expect(h.invoker.calls).toHaveLength(calls)
     expect(h.collection.listCalls).toHaveLength(listCalls)
+  })
+
+  it('opening the P175 acquisition or purchase form makes no write RPC call (mutation #17)', async () => {
+    // h's write client is fakeWriteDbBinder() (tests/support/fakes.ts): any accidental `.rpc()`
+    // call on it throws synchronously, so merely reaching either screen proves nothing was sent.
+    const h = p169Harness()
+    await openSearch(h)
+    await search('Pikachu')
+    h.invoker.answer(PIKA_B.cardId, body({ 'pika-b-normal': [obs('tcgdex_cardmarket', '3000')] }))
+    await fireEvent.press(await screen.findByTestId('p169-hit-pika-b'))
+    await act(async () => {
+      await flush(10)
+    })
+    await fireEvent.press(await screen.findByTestId('p169-add-to-collection'))
+    await screen.findByTestId('p170-add-intent')
+
+    await fireEvent.press(await screen.findByTestId('p175-go-add-acquisition'))
+    expect(await screen.findByTestId('p175-add-acquisition')).toBeTruthy()
+    expect(screen.getByTestId('p175-confirm-acquisition')).toBeTruthy() // reachable, not yet pressed
+    await act(async () => {
+      await flush(10)
+    })
+    // The store's own status is the precise signal: 'editing' means submit() was never called.
+    expect(h.runtime.writeForms.acquisition.getSnapshot().status).toBe('editing')
   })
 })
 

@@ -232,6 +232,214 @@ const MUTANTS = [
     edits: [['      "./plugins/with-navigation-bar-follows-theme",\n', '']],
     tests: ['tests/unit/navigation-bar-plugin.test.ts'],
   },
+
+  // ---------------------------------------------------------------------------------------------
+  // P175 finance write-seam mutants (output_175.txt MUTATION CAMPAIGN, items 1-18). Backend-only
+  // invariants that a source mutation cannot exercise without Docker (opening's "no second spend",
+  // #9) are proven instead by tests/backend/write-seam.test.ts against the real RPC surface — noted
+  // per mutant below rather than forced into this no-Docker runner.
+  {
+    id: 'P1',
+    title: '#1 blank money input becomes 0n instead of null',
+    file: 'src/write/money-input.ts',
+    edits: [["if (normalized === '') return null", "if (normalized === '') return 0n"]],
+    tests: ['tests/unit/money-input.test.ts'],
+  },
+  {
+    id: 'P2',
+    title: '#2 money serialised through Number() instead of an exact decimal string',
+    file: 'src/write/money-wire.ts',
+    edits: [['  return value.toString()\n}', '  return String(Number(value))\n}']],
+    tests: ['tests/unit/money-wire.test.ts'],
+  },
+  {
+    id: 'P3',
+    title: '#3 JPY exponent treated as 2 instead of 0',
+    file: 'src/domain/currency.ts',
+    edits: [
+      ["JPY: { code: 'JPY', minorUnitExponent: 0 }", "JPY: { code: 'JPY', minorUnitExponent: 2 }"],
+    ],
+    tests: ['tests/unit/money-input.test.ts'],
+  },
+  {
+    id: 'P4',
+    title: '#4 identity-lease bypass in the write client (accessToken skips sessionForLease)',
+    file: 'src/write/leased-write-client.ts',
+    edits: [
+      [
+        '    const session = await sessionForLease(lease, () => deps.getSession())\n    lease.assertCurrent()\n    return session.access_token',
+        '    const { data } = await deps.getSession()\n    return data.session?.access_token ?? null',
+      ],
+    ],
+    tests: ['tests/unit/leased-write-client.test.ts'],
+  },
+  {
+    id: 'P5',
+    title: '#5 idempotency key regenerated on a FAILED submit (a retry would no longer be a retry)',
+    file: 'src/state/write-form-store.ts',
+    edits: [
+      [
+        "      this.set({ status: 'error', failure })\n      return { ok: false, failure }",
+        "      this.set({ status: 'error', failure, idempotencyKey: generateIdempotencyKey() })\n      return { ok: false, failure }",
+      ],
+    ],
+    tests: ['tests/unit/write-form-store.test.ts'],
+  },
+  {
+    id: 'P6',
+    title:
+      '#6 double submit is no longer refused (a fast double-tap could reach the network twice)',
+    file: 'src/state/write-form-store.ts',
+    edits: [
+      [
+        "    if (this.state.status === 'submitting') {\n      return { ok: false, failure: classifyFailure(new Error('already submitting')) }\n    }\n",
+        '',
+      ],
+    ],
+    tests: ['tests/unit/write-form-store.test.ts'],
+  },
+  {
+    id: 'P7',
+    title: '#7 an unknown acquisition cost basis sends 0 instead of omitting the amount',
+    file: 'src/write/collection-writes.ts',
+    edits: [
+      [
+        'p_unit_cost_basis_minor: optionalMoneyArg(input.unitCostBasisMinor),',
+        'p_unit_cost_basis_minor: optionalMoneyArg(input.unitCostBasisMinor ?? 0n),',
+      ],
+    ],
+    tests: ['tests/unit/write-rpc-wire.test.ts'],
+  },
+  {
+    id: 'P8',
+    title: '#8 the client rejects a valid negative sale net instead of leaving it to the server',
+    file: 'src/write/sale-writes.ts',
+    edits: [
+      [
+        'export async function createSale(',
+        "function assertNonNegativeNet(gross, fees) {\n  if (gross - fees < 0n) throw new Error('net proceeds cannot be negative')\n}\nexport async function createSale(",
+      ],
+    ],
+    tests: ['tests/unit/write-rpc-wire.test.ts'],
+  },
+  {
+    id: 'P9',
+    title:
+      '#9 opening a sealed lot creates a second spend (NOT source-mutable without Docker — proven instead by ' +
+      'tests/backend/write-seam.test.ts\'s "create_opening" test, which asserts the source lot\'s ' +
+      'purchase_line_id is byte-identical before and after opening, against the real RPC)',
+    file: 'src/write/opening-writes.ts',
+    edits: [['p_pulls: undefined,', 'p_pulls: undefined, // see output_175.txt P9 note']],
+    tests: ['tests/unit/write-rpc-wire.test.ts'],
+  },
+  {
+    id: 'P10',
+    title: '#10 clearing a manual valuation is silently rewritten as "set it to 0"',
+    file: 'src/write/collection-writes.ts',
+    edits: [
+      [
+        "const { error } = await db.rpc('clear_manual_valuation', { p_holding_id: holdingId })",
+        "const { error } = await db.rpc('set_manual_valuation', { p_holding_id: holdingId, p_value_minor: 0 })",
+      ],
+    ],
+    tests: ['tests/unit/write-rpc-wire.test.ts'],
+  },
+  {
+    id: 'P11',
+    title: "#11 A's draft survives under B (reset() no longer clears the draft)",
+    file: 'src/state/write-form-store.ts',
+    edits: [
+      [
+        "  reset(): void {\n    this.seq += 1\n    this.state = {\n      status: 'editing',\n      draft: this.initialDraft(),\n      idempotencyKey: generateIdempotencyKey(),\n      failure: null,\n    }\n    this.emitter.emit()\n  }",
+        '  reset(): void {\n    this.seq += 1\n  }',
+      ],
+    ],
+    tests: ['tests/unit/write-form-store.test.ts'],
+  },
+  {
+    id: 'P12',
+    title: 'A -> B -> A resurrects the first A draft (ensureContext no longer compares contextKey)',
+    file: 'src/state/write-form-store.ts',
+    edits: [
+      [
+        '    const nextKey = freshDraft().contextKey\n    if (this.state.draft.contextKey === nextKey) return',
+        '    freshDraft()\n    return',
+      ],
+    ],
+    tests: ['tests/unit/write-form-store.test.ts'],
+  },
+  {
+    id: 'P13',
+    title: '#13 a same-user token refresh wrongly clears every write-form draft',
+    file: 'src/auth/auth-controller.ts',
+    edits: [
+      [
+        'if (this.deps.authority.observe(userId)) this.deps.onIdentityChange(userId)',
+        'if (this.deps.authority.observe(userId)) {\n      /* no-op */\n    }\n    this.deps.onIdentityChange(userId)',
+      ],
+    ],
+    tests: ['tests/unit/auth-identity.test.ts', 'tests/unit/identity-isolation.test.ts'],
+  },
+  {
+    id: 'P14',
+    title: "#14 a sale line is written against the WRONG lot (always the first line's lot)",
+    file: 'src/write/sale-writes.ts',
+    edits: [['lot_id: line.lotId,', 'lot_id: lines[0].lotId,']],
+    tests: ['tests/unit/write-rpc-wire.test.ts'],
+  },
+  {
+    id: 'P15',
+    title: '#15 the purchase preview stops calling the shared discount allocator',
+    file: 'src/ui/screens/RecordPurchaseScreen.tsx',
+    edits: [
+      [
+        "import { allocatePurchaseCharges } from '@shared/domain/allocation'",
+        '// allocatePurchaseCharges import removed',
+      ],
+      [
+        'const allocation = allocatePurchaseCharges',
+        'const allocation = ((): never => { throw new Error("unused") })',
+      ],
+    ],
+    tests: ['tests/unit/record-purchase-uses-shared-allocator.test.ts'],
+  },
+  {
+    id: 'P16',
+    title:
+      '#16 a completed-event date shifts by one day because it is read via UTC, not local time',
+    file: 'src/write/event-date.ts',
+    edits: [
+      [
+        'return `${String(date.getFullYear())}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`',
+        'return date.toISOString().slice(0, 10)',
+      ],
+    ],
+    tests: ['tests/unit/event-date.test.ts'],
+  },
+  {
+    id: 'P17',
+    title: '#17 the Add-acquisition screen writes merely on open (no explicit confirm)',
+    file: 'src/ui/screens/AddAcquisitionScreen.tsx',
+    edits: [
+      [
+        'writeForms.acquisition.ensureContext(() => initialAcquisitionDraft(variantId))',
+        "writeForms.acquisition.ensureContext(() => initialAcquisitionDraft(variantId)); void writeForms.acquisition.submit(session.userId, (db) => db.rpc('add_card_acquisition', {}))",
+      ],
+    ],
+    tests: ['tests/unit/native-app.test.tsx'],
+  },
+  {
+    id: 'P18',
+    title: "#18 Price Check's read-only RPC allow-list is widened to include a finance write RPC",
+    file: 'src/net/spike-fetch.ts',
+    edits: [
+      [
+        "  'get_card_variant_price_history',\n])",
+        "  'get_card_variant_price_history',\n  'create_purchase',\n])",
+      ],
+    ],
+    tests: ['tests/unit/read-only-vs-write-policy.test.ts'],
+  },
 ]
 
 const only = process.argv.includes('--only')

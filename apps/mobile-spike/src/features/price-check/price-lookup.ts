@@ -293,6 +293,8 @@ const FAILURE_TO_REASON: Readonly<Record<FailureKind, LookupFailureReason>> = {
   unsafe_numeric: 'malformed_response',
   write_refused: 'write_refused',
   request_rejected: 'provider_error',
+  identity_changed: 'unknown',
+  credentials_unavailable: 'network',
   unknown: 'unknown',
 }
 

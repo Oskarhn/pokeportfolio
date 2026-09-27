@@ -9,6 +9,24 @@ import { HoldingDetailStore } from '../state/holding-detail-store'
 import { NavigationMemory } from '../state/navigation-memory'
 import { PriceCheckStore } from '../state/price-check-store'
 import { ScopedRegistry } from '../state/registry'
+import { WriteFormStore } from '../state/write-form-store'
+import type { AddCardAcquisitionResult } from '../write/collection-writes'
+import {
+  initialAcquisitionDraft,
+  initialManualValuationDraft,
+  initialOpeningDraft,
+  initialPurchaseDraft,
+  initialSaleDraft,
+  type AcquisitionDraft,
+  type ManualValuationDraft,
+  type OpeningDraft,
+  type PurchaseDraft,
+  type SaleDraft,
+} from '../write/drafts'
+import type { Opening } from '../write/opening-writes'
+import type { Purchase } from '../write/purchase-writes'
+import type { Sale } from '../write/sale-writes'
+import type { WriteDbBinder } from '../write/write-db'
 
 /**
  * Composition root. Everything that talks to the outside world is injected, so the same wiring runs
@@ -28,6 +46,9 @@ export interface RuntimeDeps {
   /** Bound to the app's ONE Supabase client by the host (`client.functions.invoke`, fx reader). */
   priceFeature: PriceFeatureDeps
   photo: PhotoPort
+  /** The P175 finance write seam's client factory, bound by the host to ONE Supabase session (the
+   *  app's real one, or the backend test harness's). See `write/write-db.ts`. */
+  writeDb: WriteDbBinder
 }
 
 export interface Runtime {
@@ -42,6 +63,14 @@ export interface Runtime {
   photo: PhotoStore
   navigation: NavigationMemory
   ports: RuntimeDeps['priceCheck']
+  /** The financial write forms (P175) — one identity-scoped draft store per screen. */
+  writeForms: {
+    acquisition: WriteFormStore<AcquisitionDraft, AddCardAcquisitionResult>
+    purchase: WriteFormStore<PurchaseDraft, Purchase>
+    sale: WriteFormStore<SaleDraft, Sale>
+    manualValuation: WriteFormStore<ManualValuationDraft, void>
+    opening: WriteFormStore<OpeningDraft, Opening>
+  }
 }
 
 export function createRuntime(deps: RuntimeDeps): Runtime {
@@ -61,6 +90,35 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
   // Registers its own stores (catalog search, price lookup cache, price-check flow) in THIS registry
   // and leases their requests from THIS authority: one identity boundary for everything.
   const feature = createP169Feature({ ...deps.priceFeature, authority, registry, photo })
+
+  const writeForms = {
+    acquisition: new WriteFormStore<AcquisitionDraft, AddCardAcquisitionResult>(
+      authority,
+      () => initialAcquisitionDraft(''),
+      deps.writeDb,
+    ),
+    purchase: new WriteFormStore<PurchaseDraft, Purchase>(
+      authority,
+      () => initialPurchaseDraft(''),
+      deps.writeDb,
+    ),
+    sale: new WriteFormStore<SaleDraft, Sale>(authority, () => initialSaleDraft(''), deps.writeDb),
+    manualValuation: new WriteFormStore<ManualValuationDraft, void>(
+      authority,
+      () => initialManualValuationDraft(''),
+      deps.writeDb,
+    ),
+    opening: new WriteFormStore<OpeningDraft, Opening>(
+      authority,
+      () => initialOpeningDraft(''),
+      deps.writeDb,
+    ),
+  }
+  registry.register('write-acquisition', writeForms.acquisition)
+  registry.register('write-purchase', writeForms.purchase)
+  registry.register('write-sale', writeForms.sale)
+  registry.register('write-manual-valuation', writeForms.manualValuation)
+  registry.register('write-opening', writeForms.opening)
 
   const auth = new AuthController({
     auth: deps.auth,
@@ -82,6 +140,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
     photo,
     navigation,
     ports: deps.priceCheck,
+    writeForms,
   }
 }
 

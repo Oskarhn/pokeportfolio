@@ -11,6 +11,7 @@ import { createFixturePriceCheckPort } from './src/price-check/fixture-adapter'
 import { createReleasedPriceCheckPort } from './src/price-check/released-adapter'
 import { backendConfig, clearStoredSession, supabase } from './src/seam/supabase-client'
 import { AppRoot } from './src/ui/AppRoot'
+import { createWriteDbBinder } from './src/write/write-db'
 
 /**
  * Entry component. Real wiring only: the native Supabase client (through the seam), SecureStore-backed
@@ -42,6 +43,7 @@ export default function App() {
 let appRuntime: Runtime | null = null
 function getAppRuntime(): Runtime {
   if (appRuntime !== null) return appRuntime
+  if (!backendConfig.ok) throw backendConfig.error // only called from ConfiguredApp, see App()
   logRuntimeCreated()
   appRuntime = createRuntime({
     auth: supabase.auth,
@@ -58,6 +60,13 @@ function getAppRuntime(): Runtime {
       onEvent: logP169Event,
     },
     photo: createExpoPhotoPort(),
+    // P175: the finance write seam's own per-lease client, bound to THIS app's session — never the
+    // ambient `supabase` singleton itself (see write/leased-write-client.ts for why).
+    writeDb: createWriteDbBinder({
+      url: backendConfig.config.url,
+      publishableKey: backendConfig.config.publishableKey,
+      getSession: () => supabase.auth.getSession(),
+    }),
   })
   return appRuntime
 }
