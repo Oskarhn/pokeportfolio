@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "generated_from_repo_state": true,
+  "readme": "Machine-readable pointer/state index for a fresh coding-agent session. This is NOT a replacement for HANDOVER.md or the canonical docs it points to (see HANDOVER.md §16) — it exists so a session can grep/parse exact SHAs and counts instead of re-deriving them from prose. Validate with `node scripts/check-project-state.mjs`. Every value here was verified against the repository, git history or a live tool call during P176 (2026-09-27); a value that could not be verified is `null`, never guessed.",
+  "released": {
+    "main_sha": "d8682e047b757f63673a63ac8185a4806d68cb98",
+    "production_frontend_sha": "d8682e047b757f63673a63ac8185a4806d68cb98",
+    "hosted_migration_count": 104
+  },
+  "local_candidates": {
+    "native_integrated": {
+      "prompt": 173,
+      "branch": "feat/p173-native-integration-recovered",
+      "sha": "0600361f71ee2dd5591fbbbfb2fe260ab68ba7a2",
+      "local_migration_count": 105,
+      "status": "LOCAL_ONLY_NOT_DEVICE_VERIFIED"
+    },
+    "native_financial_writes": {
+      "prompt": 175,
+      "branch": "feat/p175-native-financial-write-flows",
+      "sha": "a193a8bab2d742edd504ec578253f99c18f6d9d1",
+      "builds_on": "native_integrated",
+      "local_migration_count": 107,
+      "status": "LOCAL_ONLY_NOT_DEVICE_VERIFIED"
+    },
+    "account_deletion": {
+      "prompt": 156,
+      "branch": "audit/p156-account-deletion-security-recovery",
+      "sha": "6b3ac90362ea0f992e9223cbda3431e2da5699a5",
+      "local_migration_count": 107,
+      "status": "LOCAL_ONLY"
+    },
+    "deployment_gate": {
+      "prompt": 163,
+      "branch": "fix/p163-integrated-ci-secret-gate",
+      "sha": "4f6be7bee4a69f6c5807c7ab58c7c61ad7bca53e",
+      "supersedes": ["fix/p142-ci-gated-production-deploy", "fix/p160-predeploy-secret-guard"],
+      "local_migration_count": 104,
+      "status": "BLOCKED",
+      "blocked_on": "owner Cloudflare Pages dashboard action; GitHub Actions billing/capacity"
+    },
+    "scanner_hardening": {
+      "prompt": 151,
+      "branch": "fix/p151-scanner-reliability-performance",
+      "sha": "4bd34bfda20c6388415f1e047fd6a6b739967430",
+      "local_migration_count": 104,
+      "status": "LOCAL_ONLY"
+    },
+    "export_hardening": {
+      "prompt": 157,
+      "branch": "fix/p157-safe-exact-export-pipeline",
+      "sha": "b0bc4da144e0e6ea42e89d478577e8a621a4d615",
+      "local_migration_count": 104,
+      "status": "LOCAL_ONLY"
+    },
+    "auth_refresh_fix": {
+      "prompt": 149,
+      "branch": "fix/p149-auth-refresh-failure-recovery",
+      "sha": "7fb83c27857cd5287f32eedf27eee6b7d41232ce",
+      "local_migration_count": 106,
+      "status": "LOCAL_ONLY"
+    },
+    "design": {
+      "prompt": 174,
+      "branch": "design/p174-stitch-owner-decision-pack",
+      "sha": "aacd218dab5f13047e082039871e1916e699ecff",
+      "local_migration_count": null,
+      "status": "DESIGN_ONLY"
+    }
+  },
+  "database": {
+    "released_migration_count": 104,
+    "latest_local_migration_count": 107
+  },
+  "scanner": {
+    "content_id": "f25fc05d569b7cca"
+  },
+  "production": {
+    "in_real_user_use": false
+  },
+  "repository": {
+    "visibility": "PUBLIC",
+    "visibility_expected": "PRIVATE",
+    "visibility_contradiction": true,
+    "verified_at": "2026-09-27"
+  },
+  "canonical_docs": {
+    "product_scope": "docs/PRODUCT_SPEC.md",
+    "financial_semantics": "docs/FINANCIAL_MODEL.md",
+    "data_model": "docs/DATA_MODEL.md",
+    "architecture": "docs/ARCHITECTURE.md",
+    "security": "docs/SECURITY.md",
+    "cost_policy": "docs/COST_POLICY.md",
+    "planning_freeze": "docs/PLANNING_FREEZE.md",
+    "testing": "docs/TESTING.md",
+    "development": "docs/DEVELOPMENT.md",
+    "git_workflow": "docs/GIT_WORKFLOW.md",
+    "roadmap": "docs/ROADMAP.md",
+    "decisions": "docs/DECISIONS.md",
+    "research": "docs/RESEARCH.md",
+    "api_sources": "docs/API_SOURCES.md",
+    "ux_flows": "docs/UX_FLOWS.md",
+    "design_system": "docs/DESIGN_SYSTEM.md",
+    "scanner_research": "docs/SCANNER_RESEARCH.md",
+    "backlog": "docs/BACKLOG.md",
+    "publication_checklist": "docs/PUBLICATION_CHECKLIST.md",
+    "project_journal": "docs/PROJECT_JOURNAL.md",
+    "native_mobile_current_state": "docs/CURRENT_STATE/NATIVE_MOBILE.md",
+    "release_and_deployment_current_state": "docs/CURRENT_STATE/RELEASE_AND_DEPLOYMENT.md",
+    "database_current_state": "docs/CURRENT_STATE/DATABASE.md",
+    "security_and_privacy_current_state": "docs/CURRENT_STATE/SECURITY_AND_PRIVACY.md",
+    "state_reconciliation": "docs/handover/STATE_RECONCILIATION.md",
+    "archive_index": "docs/handover/README.md"
+  }
+}
