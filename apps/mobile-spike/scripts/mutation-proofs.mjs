@@ -182,10 +182,14 @@ const MUTANTS = [
   },
   {
     id: 'M12',
-    title: 'F5: navigation chrome not bound to the system scheme (light bars in dark mode)',
-    // P178: the tab bar's active-tint colour is now sourced directly from `useTheme()` in
-    // MainNavigator's own screenOptions (not from NavigationContainer's `theme` prop, which this
-    // mutant used to target before every chrome colour became explicit) — mutate THAT source.
+    title:
+      'F5: navigation chrome not bound to the system scheme (light bars in dark mode) — ' +
+      'SURVIVES BY DESIGN since P178: React Navigation bottom-tabs falls back to ' +
+      "theme.colors.primary (AppRoot's own navTheme, itself t.accent) when " +
+      'tabBarActiveTintColor is absent, so removing either single source alone no longer ' +
+      'changes the rendered colour — both paths resolve to the same DARK_TOKENS.accent. ' +
+      'Killing this would need a compound mutation (both sources at once), which this ' +
+      'single-edit harness does not express. Documented and accepted, same as P9 below.',
     file: 'src/ui/MainNavigator.tsx',
     edits: [['        tabBarActiveTintColor: t.accent,\n', '']],
     tests: ['tests/unit/p167-dark-theme.test.tsx'],
@@ -228,7 +232,9 @@ const MUTANTS = [
     // `  ` inline regex triggered eslint's no-irregular-whitespace once actually typed
     // into the file) — mutate the call site, which still has the same effect.
     file: 'src/ui/components.tsx',
-    edits: [[`return formatted.replace(new RegExp('[\\u00A0\\u202F]', 'g'), ' ')`, 'return formatted']],
+    edits: [
+      [`return formatted.replace(new RegExp('[\\u00A0\\u202F]', 'g'), ' ')`, 'return formatted'],
+    ],
     tests: ['tests/unit/p167-platform.test.tsx', 'tests/unit/native-app.test.tsx'],
   },
   {
