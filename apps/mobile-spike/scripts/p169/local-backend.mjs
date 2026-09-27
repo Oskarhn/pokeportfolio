@@ -83,6 +83,15 @@ const STACKS = {
     mockPort: 55491,
     withWorktreeMigrations: true,
   },
+  // P178: dark-first native UI device verification. API 55571, mock 55495 (clear of every port
+  // above). Same migration set as P177 (this worktree adds none of its own).
+  p178: {
+    projectId: 'pokeportfolio-p178-app',
+    portShift: 250,
+    dir: 'p178',
+    mockPort: 55495,
+    withWorktreeMigrations: true,
+  },
 }
 
 export function stackOf(argv) {

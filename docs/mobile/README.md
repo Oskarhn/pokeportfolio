@@ -1,7 +1,9 @@
 # Native mobile spike: index
 
-**Provisional. Owner approval required.** No final navigation, visual direction or app icon has been
-selected; the P154 proposals are unchanged. The spike lives in [`apps/mobile-spike`](../../apps/mobile-spike/README.md).
+**Provisional. Owner approval required.** As of P178 the owner has chosen a visual direction
+(dark-first, Utility structure + Foil identity — see P178_STITCH_IMPLEMENTATION.md); navigation
+(N1/N2/current four tabs) and the app icon remain unselected, and the P154 proposals are unchanged
+on those two points. The spike lives in [`apps/mobile-spike`](../../apps/mobile-spike/README.md).
 
 | Document | Answers |
 |---|---|
@@ -19,5 +21,7 @@ selected; the P154 proposals are unchanged. The spike lives in [`apps/mobile-spi
 | [P169_NATIVE_PRICE_CHECK](P169_NATIVE_PRICE_CHECK.md) | Native catalog search and read-only Price Check, contracts, findings F1-F9 |
 | [P173_INTEGRATED_NATIVE_ANDROID](P173_INTEGRATED_NATIVE_ANDROID.md) | The two tracks integrated in one app: graph proof, reconciliation, device evidence, fixes, limits |
 | [P175_NATIVE_FINANCIAL_WRITES](P175_NATIVE_FINANCIAL_WRITES.md) | The first native financial writes: migration integration plan, the identity-leased write seam, what's implemented, scope boundaries, test evidence |
+| [P177_DOC_CORRECTIONS](P177_DOC_CORRECTIONS.md) | Native financial runtime verification: device+DB proof for all five write flows, the Edge Runtime DB-suite result, corrections to prior status labels |
+| [P178_STITCH_IMPLEMENTATION](P178_STITCH_IMPLEMENTATION.md) | Dark-first design system (Utility structure + Foil identity), the JPY currency-selector fix, and a screen-by-screen comparison against the accepted P174 Stitch references |
 
-Inputs (read-only): [`docs/design/p154`](../design/p154/README.md).
+Inputs (read-only): [`docs/design/p154`](../design/p154/README.md), [`docs/design/p174`](../design/p174/README.md) (in the `p174` worktree; not committed there yet).
