@@ -1,10 +1,20 @@
 import { useEffect, useState } from 'react'
-import { Alert, ScrollView } from 'react-native'
+import { Alert } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
-import { Body, Button, FailureView, Heading, Loading, TextField } from '../components'
+import {
+  Body,
+  DateField,
+  FailureView,
+  Heading,
+  Loading,
+  MoneyField,
+  PrimaryButton,
+  RadioRow,
+  TaskScreen,
+  TextField,
+} from '../components'
 import type { CollectionStackParams } from '../navigation-types'
 import { useRuntime, useStore } from '../runtime-context'
-import { SPACE } from '../theme'
 import { listWritableLots, type WritableLot } from '../../collection/lot-reads'
 import { initialOpeningDraft } from '../../write/drafts'
 import { assertValidEventDate, InvalidEventDateError } from '../../write/event-date'
@@ -109,68 +119,71 @@ export function RecordOpeningScreen({
 
   if (lots === null && !lotsFailed) return <Loading label="Loading sealed lots" />
 
+  const body = lotsFailed ? (
+    <Body muted>Could not load this holding&apos;s lots.</Body>
+  ) : lots !== null && lots.length === 0 ? (
+    <Body muted>No sealed lots left to open in this holding.</Body>
+  ) : (
+    <>
+      {(lots ?? []).map((lot) => (
+        <RadioRow
+          key={lot.lotId}
+          testID={`p175-opening-lot-${lot.lotId}`}
+          label={`Lot ${lot.lotId.slice(0, 8)}`}
+          meta={`${String(lot.quantityRemaining)} remaining`}
+          selected={draft.lotId === lot.lotId}
+          onPress={() => writeForms.opening.updateDraft({ lotId: lot.lotId })}
+        />
+      ))}
+      <TextField
+        testID="p175-opening-quantity"
+        label="Quantity to open"
+        value={draft.quantity}
+        onChangeText={(text) => writeForms.opening.updateDraft({ quantity: text })}
+        keyboardType="number-pad"
+      />
+      <DateField
+        testID="p175-opening-date"
+        label="Opened on (YYYY-MM-DD)"
+        value={draft.openedOn}
+        onChangeText={(text) => writeForms.opening.updateDraft({ openedOn: text })}
+      />
+      <MoneyField
+        testID="p175-opening-bulk-estimate"
+        label="Untracked-contents value estimate, NOK (optional)"
+        value={draft.bulkRemainderEstimateInput}
+        onChangeText={(text) =>
+          writeForms.opening.updateDraft({ bulkRemainderEstimateInput: text })
+        }
+      />
+      <TextField
+        testID="p175-opening-notes"
+        label="Notes (optional)"
+        value={draft.notes}
+        onChangeText={(text) => writeForms.opening.updateDraft({ notes: text })}
+      />
+      {form.failure !== null ? <FailureView failure={form.failure} /> : null}
+      {form.status === 'success' ? (
+        <Body testID="p175-opening-success">Opening recorded.</Body>
+      ) : null}
+    </>
+  )
+
   return (
-    <ScrollView
-      contentContainerStyle={{ padding: SPACE.lg, gap: SPACE.lg }}
+    <TaskScreen
       testID="p175-record-opening"
+      footer={
+        <PrimaryButton
+          testID="p175-confirm-opening"
+          label="Record opening"
+          disabled={form.status === 'submitting' || lots === null || lots.length === 0}
+          accessibilityHint="Marks this sealed lot as opened. This cannot be undone from here."
+          onPress={() => void onConfirm()}
+        />
+      }
     >
       <Heading>Record opening</Heading>
-      {lotsFailed ? (
-        <Body muted>Could not load this holding&apos;s lots.</Body>
-      ) : lots !== null && lots.length === 0 ? (
-        <Body muted>No sealed lots left to open in this holding.</Body>
-      ) : (
-        <>
-          {(lots ?? []).map((lot) => (
-            <Button
-              key={lot.lotId}
-              testID={`p175-opening-lot-${lot.lotId}`}
-              label={`Lot ${lot.lotId.slice(0, 8)} · ${String(lot.quantityRemaining)} remaining`}
-              variant={draft.lotId === lot.lotId ? 'primary' : 'secondary'}
-              onPress={() => writeForms.opening.updateDraft({ lotId: lot.lotId })}
-            />
-          ))}
-          <TextField
-            testID="p175-opening-quantity"
-            label="Quantity to open"
-            value={draft.quantity}
-            onChangeText={(text) => writeForms.opening.updateDraft({ quantity: text })}
-            keyboardType="number-pad"
-          />
-          <TextField
-            testID="p175-opening-date"
-            label="Opened on (YYYY-MM-DD)"
-            value={draft.openedOn}
-            onChangeText={(text) => writeForms.opening.updateDraft({ openedOn: text })}
-          />
-          <TextField
-            testID="p175-opening-bulk-estimate"
-            label="Untracked-contents value estimate, NOK (optional)"
-            value={draft.bulkRemainderEstimateInput}
-            onChangeText={(text) =>
-              writeForms.opening.updateDraft({ bulkRemainderEstimateInput: text })
-            }
-            keyboardType="decimal-pad"
-          />
-          <TextField
-            testID="p175-opening-notes"
-            label="Notes (optional)"
-            value={draft.notes}
-            onChangeText={(text) => writeForms.opening.updateDraft({ notes: text })}
-          />
-          {form.failure !== null ? <FailureView failure={form.failure} /> : null}
-          {form.status === 'success' ? (
-            <Body testID="p175-opening-success">Opening recorded.</Body>
-          ) : null}
-          <Button
-            testID="p175-confirm-opening"
-            label="Record opening"
-            disabled={form.status === 'submitting'}
-            accessibilityHint="Marks this sealed lot as opened. This cannot be undone from here."
-            onPress={() => void onConfirm()}
-          />
-        </>
-      )}
-    </ScrollView>
+      {body}
+    </TaskScreen>
   )
 }

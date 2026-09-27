@@ -1,27 +1,27 @@
 import { memo, useCallback, useEffect, useState } from 'react'
-import {
-  FlatList,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-  type LayoutChangeEvent,
-  type ListRenderItem,
-} from 'react-native'
+import { FlatList, View, type LayoutChangeEvent, type ListRenderItem } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { nokMoney, type CollectionRow } from '../../collection/types'
-import { Body, EmptyView, FailureView, Loading, MoneyText } from '../components'
+import {
+  Body,
+  CardRow,
+  EmptyView,
+  FailureView,
+  InlineNotice,
+  Loading,
+  MoneyText,
+} from '../components'
 import type { CollectionStackParams } from '../navigation-types'
 import { useRuntime, useStore } from '../runtime-context'
-import { MIN_TOUCH, SPACE, usePalette } from '../theme'
+import { SPACE, useTheme } from '../theme'
 
 /** Fixed row height: lets the list compute offsets without measuring (`getItemLayout`). */
-export const ROW_HEIGHT = 72
+export const ROW_HEIGHT = 76
 
 type Props = NativeStackScreenProps<CollectionStackParams, 'CollectionList'>
 
 /**
- * Memoised: a row re-renders only when its own data (or the colour scheme) changes. Before P167 every
+ * Memoised: a row re-renders only when its own data (or the theme) changes. Before P167 every
  * appended page re-rendered every mounted row, because each render built a new `renderItem` and a new
  * `onPress` closure per row (tests/unit/collection-render.test.tsx counts this).
  */
@@ -32,56 +32,24 @@ const Row = memo(function Row({
   row: CollectionRow
   onOpen: (holdingId: string) => void
 }) {
-  const p = usePalette()
-  const value = nokMoney(row.holdingValueMinor)
   return (
-    <Pressable
+    <CardRow
       testID={`row-${row.holdingId}`}
-      accessibilityRole="button"
       accessibilityLabel={`${row.title}, ${row.quantity} owned`}
+      title={row.title}
+      subtitle={`${row.subtitle} · ×${row.quantity}`}
+      value={nokMoney(row.holdingValueMinor)}
+      valueState={row.priceState}
+      height={ROW_HEIGHT}
       onPress={() => onOpen(row.holdingId)}
-      style={{
-        height: ROW_HEIGHT,
-        minHeight: MIN_TOUCH,
-        paddingHorizontal: SPACE.lg,
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: SPACE.md,
-        borderBottomWidth: StyleSheet.hairlineWidth,
-        borderBottomColor: p.border,
-        backgroundColor: p.surface,
-      }}
-    >
-      <View style={{ flex: 1 }}>
-        <Text
-          numberOfLines={1}
-          maxFontSizeMultiplier={1.4}
-          style={{ color: p.text, fontSize: 16, fontWeight: '600' }}
-        >
-          {row.title}
-        </Text>
-        <Text
-          numberOfLines={1}
-          maxFontSizeMultiplier={1.4}
-          style={{ color: p.muted, fontSize: 13 }}
-        >
-          {row.subtitle} {'·'} {'×'}
-          {row.quantity}
-        </Text>
-      </View>
-      {/* The amount may take at most 60 % of the row and shrinks to one line rather than pushing the
-          title out entirely or cutting digits off (P166 F4, large text). */}
-      <View style={{ maxWidth: '60%', flexShrink: 1, alignItems: 'flex-end' }}>
-        <MoneyText value={value} fit="shrink" />
-      </View>
-    </Pressable>
+    />
   )
 })
 
 export function CollectionScreen({ navigation }: Props) {
   const { collection } = useRuntime()
   const state = useStore(collection)
-  const p = usePalette()
+  const t = useTheme()
 
   useEffect(() => {
     if (collection.getSnapshot().status === 'idle') void collection.load()
@@ -113,27 +81,36 @@ export function CollectionScreen({ navigation }: Props) {
 
   const header = (
     <View
-      style={{ padding: SPACE.lg, gap: SPACE.xs }}
+      style={{ padding: SPACE.lg, gap: SPACE.sm, backgroundColor: t.background }}
       testID="collection-summary"
       onLayout={onHeaderLayout}
     >
       {state.counts !== null ? (
         <>
-          <Body muted>
-            {state.counts.uniqueHoldingCount} holdings {'·'} {state.counts.physicalCardCount} cards{' '}
-            {'·'} {state.counts.unpricedHoldingCount} without a value
-          </Body>
+          <Body muted>Collection value</Body>
           {/* No priced holding means the total is missing, not zero (FINANCIAL_MODEL F14): the
               server's sum over an empty set is 0, and the web app shows it as missing too. */}
           <MoneyText
             testID="collection-total"
-            emphasis
+            size="display"
             value={
               state.counts.pricedHoldingCount > 0
                 ? nokMoney(state.counts.portfolioValueMinor)
                 : null
             }
           />
+          <Body muted>
+            {state.counts.uniqueHoldingCount} holdings {'·'} {state.counts.physicalCardCount} cards{' '}
+            {'·'} {state.counts.unpricedHoldingCount} without a value
+          </Body>
+          {state.counts.unpricedHoldingCount > 0 ? (
+            <InlineNotice tone="warning">
+              {state.counts.unpricedHoldingCount}{' '}
+              {state.counts.unpricedHoldingCount === 1 ? 'holding has' : 'holdings have'} no price
+              and {state.counts.unpricedHoldingCount === 1 ? 'is' : 'are'} not counted as 0 in the
+              total above.
+            </InlineNotice>
+          ) : null}
         </>
       ) : state.countsFailure !== null ? (
         <Body muted testID="collection-total-unavailable">
@@ -187,7 +164,8 @@ export function CollectionScreen({ navigation }: Props) {
           </View>
         ) : null
       }
-      contentContainerStyle={{ backgroundColor: p.background }}
+      contentContainerStyle={{ backgroundColor: t.background }}
+      style={{ backgroundColor: t.background }}
     />
   )
 }

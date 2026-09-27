@@ -1,9 +1,9 @@
 import { ScrollView } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { ActionButton, Label, LiveStatus, Section } from '../../features/ui/kit'
-import { Heading } from '../components'
+import { Heading, InlineNotice } from '../components'
 import type { PriceCheckStackParams, TabParams } from '../navigation-types'
-import { SPACE, usePalette } from '../theme'
+import { SPACE, useTheme } from '../theme'
 
 /**
  * The Price Check tab: a read-only landing. The prices themselves are read on the card screen of the
@@ -13,13 +13,13 @@ import { SPACE, usePalette } from '../theme'
 export function PriceCheckHomeScreen({
   navigation,
 }: NativeStackScreenProps<PriceCheckStackParams, 'PriceCheckHome'>) {
-  const p = usePalette()
+  const t = useTheme()
   const tabs = navigation.getParent<{
     navigate: (name: 'SearchTab', params: TabParams['SearchTab']) => void
   }>()
   return (
     <ScrollView
-      style={{ backgroundColor: p.background }}
+      style={{ backgroundColor: t.background }}
       contentContainerStyle={{ padding: SPACE.lg, gap: SPACE.lg }}
       testID="price-check-home"
     >
@@ -28,10 +28,10 @@ export function PriceCheckHomeScreen({
         <Label>
           Find the card, choose the exact printing, then see the prices providers report for it.
         </Label>
-        <Label muted testID="price-check-read-only">
-          Read-only. Checking a price never adds anything to your collection.
-        </Label>
       </Section>
+      <InlineNotice testID="price-check-read-only">
+        Read-only. Checking a price never adds anything to your collection.
+      </InlineNotice>
       <ActionButton
         testID="pc-home-search"
         label="Search for a card"

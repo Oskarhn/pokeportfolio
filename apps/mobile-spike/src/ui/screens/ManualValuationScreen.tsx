@@ -1,10 +1,18 @@
 import { useEffect } from 'react'
-import { Alert, ScrollView } from 'react-native'
+import { Alert } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
-import { Body, Button, FailureView, Heading, TextField } from '../components'
+import {
+  Body,
+  FailureView,
+  Heading,
+  MoneyField,
+  PrimaryButton,
+  SecondaryButton,
+  TaskScreen,
+  TextField,
+} from '../components'
 import type { CollectionStackParams } from '../navigation-types'
 import { useRuntime, useStore } from '../runtime-context'
-import { SPACE } from '../theme'
 import { clearManualValuation, setManualValuation } from '../../write/collection-writes'
 import { initialManualValuationDraft } from '../../write/drafts'
 import { InvalidMoneyInputError, requireKnownAmount } from '../../write/money-input'
@@ -57,17 +65,31 @@ export function ManualValuationScreen({
   }
 
   return (
-    <ScrollView
-      contentContainerStyle={{ padding: SPACE.lg, gap: SPACE.lg }}
+    <TaskScreen
       testID="p175-manual-valuation"
+      footer={
+        <>
+          <PrimaryButton
+            testID="p175-confirm-manual-value"
+            label="Set value"
+            disabled={form.status === 'submitting'}
+            onPress={() => void onSet()}
+          />
+          <SecondaryButton
+            testID="p175-clear-manual-value"
+            label="Clear manual value (use market price)"
+            disabled={form.status === 'submitting'}
+            onPress={() => void onClear()}
+          />
+        </>
+      }
     >
       <Heading>Manual valuation</Heading>
-      <TextField
+      <MoneyField
         testID="p175-manual-value"
         label="Value (NOK) — 0 is a valid, known value"
         value={draft.valueInput}
         onChangeText={(text) => writeForms.manualValuation.updateDraft({ valueInput: text })}
-        keyboardType="decimal-pad"
         placeholder="0.00"
       />
       <TextField
@@ -80,19 +102,6 @@ export function ManualValuationScreen({
       {form.status === 'success' ? (
         <Body testID="p175-manual-valuation-success">Saved.</Body>
       ) : null}
-      <Button
-        testID="p175-confirm-manual-value"
-        label="Set value"
-        disabled={form.status === 'submitting'}
-        onPress={() => void onSet()}
-      />
-      <Button
-        testID="p175-clear-manual-value"
-        label="Clear manual value (use market price)"
-        variant="secondary"
-        disabled={form.status === 'submitting'}
-        onPress={() => void onClear()}
-      />
-    </ScrollView>
+    </TaskScreen>
   )
 }

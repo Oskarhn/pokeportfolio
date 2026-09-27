@@ -4,9 +4,9 @@ import { flush, harness, row, session } from '../support/fakes'
 
 /**
  * How much React work a new page costs (P167 collection performance). Every list row renders exactly
- * one one-line amount (`MoneyText fit="shrink"`), so counting those renders counts row renders.
- * UNIT_TESTED in the RN jest preset; frame timing on a device is measured separately
- * (scripts/android-collection-perf.mjs).
+ * one `CardRow` (P178: the shared row primitive `CollectionScreen`'s memoised `Row` wraps), so
+ * counting those renders counts row renders. UNIT_TESTED in the RN jest preset; frame timing on a
+ * device is measured separately (scripts/android-collection-perf.mjs).
  */
 const mockCounter = { rowRenders: 0 }
 jest.mock('../../src/ui/components', () => {
@@ -14,9 +14,9 @@ jest.mock('../../src/ui/components', () => {
     jest.requireActual<typeof import('../../src/ui/components')>('../../src/ui/components')
   return {
     ...actual,
-    MoneyText: (props: Parameters<typeof actual.MoneyText>[0]) => {
-      if (props.fit === 'shrink') mockCounter.rowRenders += 1
-      return actual.MoneyText(props)
+    CardRow: (props: Parameters<typeof actual.CardRow>[0]) => {
+      mockCounter.rowRenders += 1
+      return actual.CardRow(props)
     },
   }
 })

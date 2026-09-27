@@ -1,8 +1,12 @@
 import { Text, useWindowDimensions } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs'
-import { createNativeStackNavigator } from '@react-navigation/native-stack'
+import {
+  createNativeStackNavigator,
+  type NativeStackNavigationOptions,
+} from '@react-navigation/native-stack'
 import { P169_SCREENS } from '../features/screens'
+import { IconButton } from './components'
 import { AddAcquisitionScreen } from './screens/AddAcquisitionScreen'
 import { AddIntentScreen } from './screens/AddIntentScreen'
 import { CardDetailScreen } from './screens/CardDetailScreen'
@@ -14,12 +18,32 @@ import { RecordOpeningScreen } from './screens/RecordOpeningScreen'
 import { RecordPurchaseScreen } from './screens/RecordPurchaseScreen'
 import { RecordSaleScreen } from './screens/RecordSaleScreen'
 import { VariantEntryScreen } from './screens/VariantEntryScreen'
+import { useTheme } from './theme'
 import type {
   CollectionStackParams,
   PriceCheckStackParams,
   SearchStackParams,
   TabParams,
 } from './navigation-types'
+
+/** Shared native-stack header styling — dark surface, hairline shadow off (Foil: no shadows), a
+ *  screen title in the section type role. Applied per-navigator via `screenOptions`. */
+function useStackScreenOptions(): NativeStackNavigationOptions {
+  const t = useTheme()
+  return {
+    headerStyle: { backgroundColor: t.surface },
+    headerTintColor: t.textPrimary,
+    headerTitleStyle: { fontSize: 16, fontWeight: '600', color: t.textPrimary },
+    headerShadowVisible: false,
+    contentStyle: { backgroundColor: t.background },
+  }
+}
+
+/** A close (×) instead of a back arrow for the financial write-form screens (P178 §15/fixtures §7):
+ *  these are single-purpose task screens the person dismisses, not a place they browse forward from. */
+function CloseHeaderLeft({ onPress }: { onPress: () => void }) {
+  return <IconButton glyph="×" accessibilityLabel="Close" onPress={onPress} />
+}
 
 /**
  * PROVISIONAL navigation: Collection / Search / Price Check / Profile as bottom tabs, each tab with
@@ -43,8 +67,9 @@ const SearchStack = createNativeStackNavigator<SearchStackParams>()
 const PriceCheckStack = createNativeStackNavigator<PriceCheckStackParams>()
 
 function CollectionStackScreen() {
+  const screenOptions = useStackScreenOptions()
   return (
-    <CollectionStack.Navigator>
+    <CollectionStack.Navigator screenOptions={screenOptions}>
       <CollectionStack.Screen
         name="CollectionList"
         component={CollectionScreen}
@@ -58,25 +83,35 @@ function CollectionStackScreen() {
       <CollectionStack.Screen
         name="RecordSale"
         component={RecordSaleScreen}
-        options={{ title: 'Record sale', headerBackTitle: 'Back' }}
+        options={({ navigation }) => ({
+          title: 'Record sale',
+          headerLeft: () => <CloseHeaderLeft onPress={() => navigation.goBack()} />,
+        })}
       />
       <CollectionStack.Screen
         name="ManualValuation"
         component={ManualValuationScreen}
-        options={{ title: 'Manual valuation', headerBackTitle: 'Back' }}
+        options={({ navigation }) => ({
+          title: 'Manual valuation',
+          headerLeft: () => <CloseHeaderLeft onPress={() => navigation.goBack()} />,
+        })}
       />
       <CollectionStack.Screen
         name="RecordOpening"
         component={RecordOpeningScreen}
-        options={{ title: 'Record opening', headerBackTitle: 'Back' }}
+        options={({ navigation }) => ({
+          title: 'Record opening',
+          headerLeft: () => <CloseHeaderLeft onPress={() => navigation.goBack()} />,
+        })}
       />
     </CollectionStack.Navigator>
   )
 }
 
 function SearchStackScreen() {
+  const screenOptions = useStackScreenOptions()
   return (
-    <SearchStack.Navigator>
+    <SearchStack.Navigator screenOptions={screenOptions}>
       {P169_SCREENS.map((screen) => (
         <SearchStack.Screen
           key={screen.name}
@@ -98,20 +133,27 @@ function SearchStackScreen() {
       <SearchStack.Screen
         name="P175AddAcquisition"
         component={AddAcquisitionScreen}
-        options={{ title: 'Add to collection', headerBackTitle: 'Back' }}
+        options={({ navigation }) => ({
+          title: 'Add to collection',
+          headerLeft: () => <CloseHeaderLeft onPress={() => navigation.goBack()} />,
+        })}
       />
       <SearchStack.Screen
         name="P175RecordPurchase"
         component={RecordPurchaseScreen}
-        options={{ title: 'Record purchase', headerBackTitle: 'Back' }}
+        options={({ navigation }) => ({
+          title: 'Record purchase',
+          headerLeft: () => <CloseHeaderLeft onPress={() => navigation.goBack()} />,
+        })}
       />
     </SearchStack.Navigator>
   )
 }
 
 function PriceCheckStackScreen() {
+  const screenOptions = useStackScreenOptions()
   return (
-    <PriceCheckStack.Navigator>
+    <PriceCheckStack.Navigator screenOptions={screenOptions}>
       <PriceCheckStack.Screen
         name="PriceCheckHome"
         component={PriceCheckHomeScreen}
@@ -159,6 +201,7 @@ export function tabBarHeight(fontScale: number, bottomInset: number): number {
 export function MainNavigator({ backendHost }: { backendHost: string }) {
   const insets = useSafeAreaInsets()
   const { fontScale } = useWindowDimensions()
+  const t = useTheme()
   return (
     <Tabs.Navigator
       backBehavior="history"
@@ -166,7 +209,13 @@ export function MainNavigator({ backendHost }: { backendHost: string }) {
         headerShown: false,
         tabBarLabelPosition: 'beside-icon',
         tabBarIconStyle: { display: 'none' },
-        tabBarStyle: { height: tabBarHeight(fontScale, insets.bottom) },
+        tabBarActiveTintColor: t.accent,
+        tabBarInactiveTintColor: t.textMuted,
+        tabBarStyle: {
+          height: tabBarHeight(fontScale, insets.bottom),
+          backgroundColor: t.surface,
+          borderTopColor: t.borderSubtle,
+        },
       }}
     >
       <Tabs.Screen

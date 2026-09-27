@@ -1,9 +1,20 @@
 import { useEffect } from 'react'
-import { ScrollView, View } from 'react-native'
+import { View } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
-import { Badge, Heading, Loading } from '../../ui/components'
+import {
+  AppScreen,
+  Badge,
+  FilterChip,
+  FreshnessBadge,
+  Heading,
+  InlineNotice,
+  Loading,
+  ProviderBadge,
+  RadioRow,
+  SegmentedControl,
+} from '../../ui/components'
 import { useStore } from '../../ui/runtime-context'
-import { SPACE, usePalette } from '../../ui/theme'
+import { SPACE } from '../../ui/theme'
 import { useP169, type P169StackParams } from '../navigation'
 import { ActionButton, ExactMoney, Label, LiveStatus, Section } from '../ui/kit'
 import type { ObservationRow, PriceCheckResult, SnapshotHeadline } from './model'
@@ -34,7 +45,10 @@ function ObservationCard({ row }: { row: ObservationRow }) {
     <Section testID={id}>
       <View accessible accessibilityLabel={observationLabel(row)} style={{ gap: SPACE.xs }}>
         {o.synthetic ? <Badge label="SYNTHETIC — not market data" /> : null}
-        <Label bold>{o.providerLabel}</Label>
+        <View style={{ flexDirection: 'row', gap: SPACE.xs, flexWrap: 'wrap' }}>
+          <ProviderBadge label={o.providerLabel} />
+          <FreshnessBadge label={FRESHNESS_COPY[row.freshness]} freshness={row.freshness} />
+        </View>
         <Label muted>
           {o.metricLabel} · {KIND_COPY[o.kind]}
         </Label>
@@ -59,7 +73,10 @@ function SnapshotCard({ h }: { h: SnapshotHeadline }) {
   const id = `p169-snap-${h.provider}`
   return (
     <Section testID={id}>
-      <Label bold>{h.providerLabel}</Label>
+      <View style={{ flexDirection: 'row', gap: SPACE.xs, flexWrap: 'wrap' }}>
+        <ProviderBadge label={h.providerLabel} />
+        <FreshnessBadge label={FRESHNESS_COPY[h.freshness]} freshness={h.freshness} />
+      </View>
       <Label muted>Stored snapshot in NOK (converted by the server)</Label>
       <ExactMoney testID={`${id}-nok`} value={h.nok} size="headline" />
       <Label muted testID={`${id}-date`}>
@@ -115,7 +132,6 @@ export function CardPriceScreen({
   const { feature, host } = useP169()
   const store = feature.priceCheck
   const state = useStore(store)
-  const p = usePalette()
 
   useEffect(() => {
     // Idempotent: a new root after an Activity recreation adopts what the store already holds.
@@ -165,11 +181,10 @@ export function CardPriceScreen({
   const intent = store.addToCollectionIntent()
 
   return (
-    <ScrollView
-      style={{ backgroundColor: p.background }}
-      contentContainerStyle={{ padding: SPACE.lg, gap: SPACE.lg }}
-      testID="p169-card"
-    >
+    <AppScreen testID="p169-card">
+      <InlineNotice testID="p169-read-only-notice">
+        Checking a price never adds, buys or sells anything.
+      </InlineNotice>
       <View style={{ gap: SPACE.xs }}>
         <Heading>{card.name}</Heading>
         <Label muted testID="p169-card-identity">
@@ -192,17 +207,19 @@ export function CardPriceScreen({
           {variants.length > 1 ? (
             <View style={{ gap: SPACE.sm }}>
               <Label muted>Other printings</Label>
-              {variants
-                .filter((v) => v.variantId !== resolution.variant.variantId)
-                .map((v) => (
-                  <ActionButton
-                    key={v.variantId}
-                    testID={`p169-variant-${v.variantId}`}
-                    variant="secondary"
-                    label={printingLabel(v)}
-                    onPress={() => void store.chooseVariant(v.variantId)}
-                  />
-                ))}
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: SPACE.xs }}>
+                {variants
+                  .filter((v) => v.variantId !== resolution.variant.variantId)
+                  .map((v) => (
+                    <FilterChip
+                      key={v.variantId}
+                      testID={`p169-variant-${v.variantId}`}
+                      selected={false}
+                      label={printingLabel(v)}
+                      onPress={() => void store.chooseVariant(v.variantId)}
+                    />
+                  ))}
+              </View>
             </View>
           ) : null}
         </Section>
@@ -216,15 +233,17 @@ export function CardPriceScreen({
               ? 'The requested printing does not belong to this card. Nothing is guessed: choose one.'
               : 'This card has several printings, and their prices differ. No price is shown until you choose one.'}
           </LiveStatus>
-          {resolution.variants.map((v) => (
-            <ActionButton
-              key={v.variantId}
-              testID={`p169-variant-${v.variantId}`}
-              variant="secondary"
-              label={printingLabel(v)}
-              onPress={() => void store.chooseVariant(v.variantId)}
-            />
-          ))}
+          <View style={{ gap: SPACE.sm }} accessibilityRole="radiogroup">
+            {resolution.variants.map((v) => (
+              <RadioRow
+                key={v.variantId}
+                testID={`p169-variant-${v.variantId}`}
+                selected={false}
+                label={printingLabel(v)}
+                onPress={() => void store.chooseVariant(v.variantId)}
+              />
+            ))}
+          </View>
         </Section>
       ) : null}
 
@@ -236,26 +255,23 @@ export function CardPriceScreen({
 
       {resolution?.status === 'confirmed' ? (
         <View style={{ gap: SPACE.md }}>
-          <View
-            style={{ flexDirection: 'row', flexWrap: 'wrap', gap: SPACE.sm }}
-            accessibilityRole="radiogroup"
-            accessibilityLabel="Price source"
-          >
-            <ActionButton
-              testID="p169-source-search_prices"
-              variant="secondary"
-              selected={state.source === 'search_prices'}
-              label="Provider prices"
-              onPress={() => void store.setSource('search_prices')}
-            />
-            <ActionButton
-              testID="p169-source-snapshot_rpc"
-              variant="secondary"
-              selected={state.source === 'snapshot_rpc'}
-              label="Stored snapshot"
-              onPress={() => void store.setSource('snapshot_rpc')}
-            />
-          </View>
+          <SegmentedControl
+            testID="p169-source-toggle"
+            value={state.source}
+            onChange={(value) => void store.setSource(value)}
+            options={[
+              {
+                value: 'search_prices',
+                label: 'Provider prices',
+                testID: 'p169-source-search_prices',
+              },
+              {
+                value: 'snapshot_rpc',
+                label: 'Stored snapshot',
+                testID: 'p169-source-snapshot_rpc',
+              },
+            ]}
+          />
           {lookup.status === 'loading' ? <Loading label="Looking up prices" /> : null}
           {lookup.status === 'error' && lookup.failure !== null ? (
             <Section testID={`p169-lookup-error-${lookup.failure}`}>
@@ -309,6 +325,6 @@ export function CardPriceScreen({
         label="Search again"
         onPress={() => navigation.popToTop()}
       />
-    </ScrollView>
+    </AppScreen>
   )
 }

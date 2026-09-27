@@ -1,7 +1,8 @@
-import { FlatList, Pressable, StyleSheet, Text, TextInput, View } from 'react-native'
+import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
+import { CardArtwork, FilterChip, SearchField } from '../../ui/components'
 import { useStore } from '../../ui/runtime-context'
-import { SPACE, usePalette } from '../../ui/theme'
+import { SPACE, TYPE, useTheme } from '../../ui/theme'
 import { languageLabel } from '../price-check/p165-domain/price-check/identity'
 import { useP169, type P169StackParams } from '../navigation'
 import { ActionButton, LiveStatus, TOUCH_48 } from '../ui/kit'
@@ -13,7 +14,7 @@ function printings(n: number): string {
 }
 
 function HitRow({ hit, onPress }: { hit: SearchHitView; onPress: () => void }) {
-  const p = usePalette()
+  const t = useTheme()
   const meta = `${hit.setName} · #${hit.collectorNumber} · ${languageLabel(hit.language)} · ${printings(hit.activeVariantCount)}`
   const label = `${hit.name}. ${hit.setName}, number ${hit.collectorNumber}, ${languageLabel(hit.language)}, ${printings(hit.activeVariantCount)}${hit.rarity !== null ? `, ${hit.rarity}` : ''}.${hit.sharesName ? ' Same name as another result: check the set and number.' : ''}`
   return (
@@ -26,25 +27,30 @@ function HitRow({ hit, onPress }: { hit: SearchHitView; onPress: () => void }) {
       style={({ pressed }) => ({
         minHeight: TOUCH_48 + 16,
         paddingVertical: SPACE.sm,
-        justifyContent: 'center',
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: SPACE.md,
         borderBottomWidth: StyleSheet.hairlineWidth,
-        borderBottomColor: p.border,
+        borderBottomColor: t.borderSubtle,
         opacity: pressed ? 0.7 : 1,
       })}
     >
-      <Text style={{ color: p.text, fontSize: 16, fontWeight: '600' }}>{hit.name}</Text>
-      <Text style={{ color: p.muted, fontSize: 14 }}>{meta}</Text>
-      {hit.rarity !== null ? (
-        <Text style={{ color: p.muted, fontSize: 14 }}>{hit.rarity}</Text>
-      ) : null}
-      {hit.sharesName ? (
-        <Text
-          testID={`p169-hit-shared-${hit.cardId}`}
-          style={{ color: p.warning, fontSize: 14, fontWeight: '600' }}
-        >
-          Same name as another result — check the set and number
-        </Text>
-      ) : null}
+      <CardArtwork size="sm" />
+      <View style={{ flex: 1 }}>
+        <Text style={{ color: t.textPrimary, ...TYPE.bodyStrong }}>{hit.name}</Text>
+        <Text style={{ color: t.textSecondary, ...TYPE.caption }}>{meta}</Text>
+        {hit.rarity !== null ? (
+          <Text style={{ color: t.textSecondary, ...TYPE.caption }}>{hit.rarity}</Text>
+        ) : null}
+        {hit.sharesName ? (
+          <Text
+            testID={`p169-hit-shared-${hit.cardId}`}
+            style={{ color: t.warning, ...TYPE.caption, fontWeight: '600' }}
+          >
+            Same name as another result — check the set and number
+          </Text>
+        ) : null}
+      </View>
     </Pressable>
   )
 }
@@ -55,7 +61,7 @@ export function CatalogSearchScreen({
   const { feature } = useP169()
   const store = feature.search
   const state = useStore(store)
-  const p = usePalette()
+  const t = useTheme()
 
   const status = (() => {
     switch (state.status) {
@@ -74,40 +80,24 @@ export function CatalogSearchScreen({
   })()
 
   return (
-    <View style={{ flex: 1, backgroundColor: p.background }} testID="p169-search">
+    <View style={{ flex: 1, backgroundColor: t.background }} testID="p169-search">
       <View style={{ padding: SPACE.lg, gap: SPACE.md }}>
-        <TextInput
+        <SearchField
           testID="p169-search-input"
-          accessibilityLabel="Card name, set or number"
           value={state.query}
           onChangeText={(text) => store.setQuery(text)}
           onSubmitEditing={() => void store.submit()}
-          returnKeyType="search"
-          autoCapitalize="none"
-          autoCorrect={false}
           placeholder="Card name, set or number"
-          placeholderTextColor={p.muted}
-          style={{
-            minHeight: TOUCH_48,
-            borderWidth: 1,
-            borderColor: p.border,
-            borderRadius: 10,
-            paddingHorizontal: SPACE.md,
-            color: p.text,
-            backgroundColor: p.surface,
-            fontSize: 16,
-          }}
         />
         <View
-          style={{ flexDirection: 'row', flexWrap: 'wrap', gap: SPACE.sm }}
+          style={{ flexDirection: 'row', flexWrap: 'wrap', gap: SPACE.sm, alignItems: 'center' }}
           accessibilityRole="radiogroup"
           accessibilityLabel="Catalog language"
         >
           {([null, 'en', 'ja'] as const).map((lang) => (
-            <ActionButton
+            <FilterChip
               key={lang ?? 'all'}
               testID={`p169-lang-${lang ?? 'all'}`}
-              variant="secondary"
               selected={state.language === lang}
               label={lang === null ? 'All languages' : languageLabel(lang)}
               onPress={() => store.setLanguage(lang)}

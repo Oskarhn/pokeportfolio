@@ -1,11 +1,21 @@
 import { useEffect } from 'react'
-import { Alert, ScrollView } from 'react-native'
+import { Alert } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { CardCondition } from '@shared/data/collection'
-import { Body, Button, FailureView, Heading, TextField } from '../components'
+import {
+  Body,
+  DateField,
+  FailureView,
+  Heading,
+  MoneyField,
+  PrimaryButton,
+  StatusBadge,
+  SwitchRow,
+  TaskScreen,
+  TextField,
+} from '../components'
 import type { SearchStackParams } from '../navigation-types'
 import { useRuntime, useStore } from '../runtime-context'
-import { SPACE } from '../theme'
 import { addCardAcquisition } from '../../write/collection-writes'
 import { initialAcquisitionDraft } from '../../write/drafts'
 import { assertValidEventDate, InvalidEventDateError } from '../../write/event-date'
@@ -78,31 +88,37 @@ export function AddAcquisitionScreen({
   }
 
   return (
-    <ScrollView
-      contentContainerStyle={{ padding: SPACE.lg, gap: SPACE.lg }}
+    <TaskScreen
       testID="p175-add-acquisition"
+      footer={
+        <PrimaryButton
+          testID="p175-confirm-acquisition"
+          label="Add to collection"
+          disabled={form.status === 'submitting'}
+          accessibilityHint="Saves this card to your collection. This cannot be undone from here."
+          onPress={() => void onConfirm()}
+        />
+      }
     >
       <Heading>Add to collection</Heading>
       <Body muted>Card variant {cardId === variantId ? cardId : `${cardId} · ${variantId}`}</Body>
-      <Button
+      <SwitchRow
         testID="p175-cost-toggle"
-        label={
-          draft.costKnown ? 'Cost known — tap to mark unknown' : 'Cost unknown — tap to enter it'
-        }
-        variant="secondary"
-        onPress={() => writeForms.acquisition.updateDraft({ costKnown: !draft.costKnown })}
+        label="I don't know the cost"
+        helper="Saved as Cost unknown, never as 0.00"
+        value={!draft.costKnown}
+        onValueChange={(unknown) => writeForms.acquisition.updateDraft({ costKnown: !unknown })}
       />
       {draft.costKnown ? (
-        <TextField
+        <MoneyField
           testID="p175-unit-cost"
           label="Cost per card (NOK)"
           value={draft.unitCostInput}
           onChangeText={(text) => writeForms.acquisition.updateDraft({ unitCostInput: text })}
-          keyboardType="decimal-pad"
           placeholder="0.00"
         />
       ) : (
-        <Body muted>No cost will be recorded — it stays unknown, never zero.</Body>
+        <StatusBadge label="No cost will be recorded" tone="neutral" />
       )}
       <TextField
         testID="p175-quantity"
@@ -111,7 +127,7 @@ export function AddAcquisitionScreen({
         onChangeText={(text) => writeForms.acquisition.updateDraft({ quantity: text })}
         keyboardType="number-pad"
       />
-      <TextField
+      <DateField
         testID="p175-acquired-on"
         label="Acquired on (YYYY-MM-DD)"
         value={draft.acquiredOn}
@@ -127,13 +143,6 @@ export function AddAcquisitionScreen({
       {form.status === 'success' ? (
         <Body testID="p175-acquisition-success">Added to your collection.</Body>
       ) : null}
-      <Button
-        testID="p175-confirm-acquisition"
-        label="Add to collection"
-        disabled={form.status === 'submitting'}
-        accessibilityHint="Saves this card to your collection. This cannot be undone from here."
-        onPress={() => void onConfirm()}
-      />
-    </ScrollView>
+    </TaskScreen>
   )
 }

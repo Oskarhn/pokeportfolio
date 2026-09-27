@@ -33,3 +33,18 @@ it('RecordPurchaseScreen sends a condition for its card line (create_purchase re
   )
   expect(source).toMatch(/condition:\s*['"]/)
 })
+
+/**
+ * Regression guard (P178 §17, the JPY UI gap P177 disclosed): the screen must send the currency the
+ * person actually chose, not a hardcoded 'NOK' literal — a UI-level test
+ * (record-purchase-currency-selector.test.tsx) proves the selector itself works, but only a source
+ * check can catch someone re-hardcoding the RPC's own `currency` field later.
+ */
+it('RecordPurchaseScreen sends the selected currency to create_purchase, never a hardcoded literal', () => {
+  const source = readFileSync(
+    join(__dirname, '..', '..', 'src', 'ui', 'screens', 'RecordPurchaseScreen.tsx'),
+    'utf8',
+  )
+  expect(source).toMatch(/currency,\n/)
+  expect(source).not.toMatch(/currency:\s*['"]NOK['"]/)
+})

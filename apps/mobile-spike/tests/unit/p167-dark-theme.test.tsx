@@ -25,7 +25,9 @@ it('the navigation chrome follows the system scheme (no light header or tab bar 
   await screen.findByTestId('row-a1')
   const dark = navigationTheme('dark')
   expect(dark.dark).toBe(true)
-  expect(dark.colors.card).toBe('#1a1a1e')
+  // P178: dark moved from the neutral placeholder palette to the Foil-derived graphite ground —
+  // rows sit directly on the ground (no separate "card" surface colour), per the design system.
+  expect(dark.colors.card).toBe('#0F0F11')
   // The active tab label is tinted with the theme's primary colour: the dark accent. Without a theme
   // React Navigation uses its light default.
   const label = screen.getAllByText('Collection').find((t) => t.props.numberOfLines === 2)

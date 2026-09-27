@@ -1,19 +1,24 @@
 import { useCallback } from 'react'
-import { ScrollView, View } from 'react-native'
+import { View } from 'react-native'
 import { useFocusEffect } from '@react-navigation/native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { Money } from '@shared/domain/money'
 import { asCurrencyCode } from '../../price-check/observation-wire'
 import { nokMoney, type PriceState } from '../../collection/types'
 import {
+  AppScreen,
   Body,
-  Button,
-  Card,
+  CardArtwork,
   EmptyView,
   FailureView,
   Heading,
   Loading,
   MoneyText,
+  PriceBlock,
+  ProviderBadge,
+  SecondaryButton,
+  Surface,
+  providerLabelForCode,
 } from '../components'
 import type { CollectionStackParams } from '../navigation-types'
 import { useRuntime, useStore } from '../runtime-context'
@@ -65,80 +70,79 @@ export function CardDetailScreen({ route, navigation }: Props) {
   const d = state.detail
   const source = sourceMoney(d.sourceCurrency, d.sourceValueMinor)
   return (
-    <ScrollView contentContainerStyle={{ padding: SPACE.lg, gap: SPACE.lg }} testID="card-detail">
-      <View style={{ gap: SPACE.xs }}>
-        <Heading>{d.title}</Heading>
-        <Body muted>{d.subtitle}</Body>
+    <AppScreen testID="card-detail">
+      <View style={{ flexDirection: 'row', gap: SPACE.md, alignItems: 'flex-start' }}>
+        <CardArtwork size="lg" finish={d.finish} />
+        <View style={{ flex: 1, gap: SPACE.xs }}>
+          <Heading>{d.title}</Heading>
+          <Body muted>{d.subtitle}</Body>
+        </View>
       </View>
-      <Card>
-        <Body muted>Value of this holding</Body>
-        <MoneyText testID="detail-holding-value" emphasis value={nokMoney(d.holdingValueMinor)} />
-        <Body muted testID="detail-price-state">
-          {PRICE_STATE_LABEL[d.priceState]}
-        </Body>
-        {d.unitValueMinor !== null ? (
-          <>
-            <Body muted>Per card</Body>
-            <MoneyText testID="detail-unit-value" value={nokMoney(d.unitValueMinor)} />
-          </>
-        ) : null}
-      </Card>
+      <Surface>
+        <PriceBlock
+          label="Value of this holding"
+          value={nokMoney(d.holdingValueMinor)}
+          state={d.priceState}
+          stateLabel={PRICE_STATE_LABEL[d.priceState]}
+          unitValue={d.unitValueMinor !== null ? nokMoney(d.unitValueMinor) : undefined}
+          testID="detail-holding-value"
+          stateTestID="detail-price-state"
+          unitTestID="detail-unit-value"
+        />
+      </Surface>
       {d.provider !== null ? (
-        <Card testID="detail-provenance">
+        <Surface testID="detail-provenance">
           <Body muted>Where this number comes from</Body>
-          <Body>
-            {d.provider === 'tcgdex_cardmarket'
-              ? 'Cardmarket via TCGdex'
-              : d.provider === 'tcgdex_tcgplayer'
-                ? 'TCGplayer via TCGdex'
-                : d.provider}
-          </Body>
+          <ProviderBadge label={providerLabelForCode(d.provider)} />
           {source !== null ? <MoneyText testID="detail-source-value" value={source} /> : null}
           {d.snapshotDate !== null ? <Body muted>Snapshot {d.snapshotDate}</Body> : null}
-        </Card>
+        </Surface>
       ) : null}
-      <Card>
+      <Surface>
         <Body>
           {d.quantity} owned {'·'} {d.lotCount} {d.lotCount === 1 ? 'lot' : 'lots'}
           {d.condition !== null ? ` · ${d.condition}` : ''}
           {d.finish !== null ? ` · ${d.finish}` : ''}
         </Body>
-      </Card>
-      <Button
-        testID="check-price"
-        label="Check price"
-        disabled={d.cardVariantId === null}
-        accessibilityHint="Looks up the current price of this exact card variant. Read-only."
-        onPress={() => {
-          if (d.cardVariantId === null) return
-          // Reset the Search stack to the resolver so Back leaves for the tab this came from
-          // (Card detail) instead of stepping through whatever the Search stack held.
-          navigation.getParent()?.navigate('SearchTab', {
-            state: {
-              index: 0,
-              routes: [{ name: 'P170VariantEntry', params: { variantId: d.cardVariantId } }],
-            },
-          })
-        }}
-      />
-      <Button
-        testID="record-sale"
-        label="Record sale"
-        variant="secondary"
-        onPress={() => navigation.navigate('RecordSale', { holdingId })}
-      />
-      <Button
+      </Surface>
+      <View style={{ flexDirection: 'row', gap: SPACE.md }}>
+        <View style={{ flex: 1 }}>
+          <SecondaryButton
+            testID="check-price"
+            label="Check price"
+            disabled={d.cardVariantId === null}
+            accessibilityHint="Looks up the current price of this exact card variant. Read-only."
+            onPress={() => {
+              if (d.cardVariantId === null) return
+              // Reset the Search stack to the resolver so Back leaves for the tab this came from
+              // (Card detail) instead of stepping through whatever the Search stack held.
+              navigation.getParent()?.navigate('SearchTab', {
+                state: {
+                  index: 0,
+                  routes: [{ name: 'P170VariantEntry', params: { variantId: d.cardVariantId } }],
+                },
+              })
+            }}
+          />
+        </View>
+        <View style={{ flex: 1 }}>
+          <SecondaryButton
+            testID="record-sale"
+            label="Record a sale"
+            onPress={() => navigation.navigate('RecordSale', { holdingId })}
+          />
+        </View>
+      </View>
+      <SecondaryButton
         testID="record-opening"
         label="Record opening"
-        variant="secondary"
         onPress={() => navigation.navigate('RecordOpening', { holdingId })}
       />
-      <Button
+      <SecondaryButton
         testID="manual-valuation"
         label="Manual valuation"
-        variant="secondary"
         onPress={() => navigation.navigate('ManualValuation', { holdingId })}
       />
-    </ScrollView>
+    </AppScreen>
   )
 }

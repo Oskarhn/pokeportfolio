@@ -1,36 +1,42 @@
-import { ScrollView } from 'react-native'
-import { Badge, Body, Button, Card, Heading } from '../components'
+import {
+  AppScreen,
+  Body,
+  DestructiveButton,
+  SectionHeader,
+  SegmentedControl,
+  Surface,
+} from '../components'
 import { useRuntime, useStore } from '../runtime-context'
-import { SPACE } from '../theme'
+import { useThemeMode, type ThemeMode } from '../theme'
 
 export function ProfileScreen({ backendHost }: { backendHost: string }) {
   const { auth } = useRuntime()
   const session = useStore(auth)
+  const { mode, setMode } = useThemeMode()
   return (
-    <ScrollView contentContainerStyle={{ padding: SPACE.lg, gap: SPACE.lg }} testID="profile">
-      <Heading>Profile</Heading>
-      <Card>
+    <AppScreen testID="profile">
+      <Surface>
         <Body muted>Signed in as</Body>
         <Body testID="profile-email">{session.email ?? 'unknown'}</Body>
-      </Card>
-      <Card>
-        <Body muted>Backend</Body>
-        <Body testID="profile-host">{backendHost}</Body>
-        <Badge label="READ-ONLY SPIKE BUILD" />
-        <Body muted>
-          Provisional native feasibility build. Not a product UI: navigation, colours and icon are
-          not approved.
-        </Body>
-      </Card>
+      </Surface>
+      <SectionHeader title="Appearance" />
+      <SegmentedControl<ThemeMode>
+        testID="profile-theme-mode"
+        value={mode}
+        onChange={setMode}
+        options={[
+          { value: 'dark', label: 'Dark', testID: 'profile-theme-dark' },
+          { value: 'light', label: 'Light', testID: 'profile-theme-light' },
+          { value: 'system', label: 'System', testID: 'profile-theme-system' },
+        ]}
+      />
       {session.notice !== null ? (
         <Body testID="profile-notice">{session.notice.message}</Body>
       ) : null}
-      <Button
-        testID="sign-out"
-        variant="danger"
-        label="Sign out"
-        onPress={() => void auth.signOut()}
-      />
-    </ScrollView>
+      <DestructiveButton testID="sign-out" label="Sign out" onPress={() => void auth.signOut()} />
+      <Body testID="profile-host" muted>
+        {backendHost}
+      </Body>
+    </AppScreen>
   )
 }

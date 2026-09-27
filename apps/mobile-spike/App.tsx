@@ -1,6 +1,5 @@
 import { useEffect } from 'react'
 import { AppState, ScrollView, Text } from 'react-native'
-import { StatusBar } from 'expo-status-bar'
 import { createRuntime, type Runtime } from './src/wiring/runtime'
 import { attachForegroundRefresh } from './src/auth/auth-controller'
 import { createSharedCollectionPort } from './src/collection/shared-data-adapter'
@@ -11,6 +10,7 @@ import { createFixturePriceCheckPort } from './src/price-check/fixture-adapter'
 import { createReleasedPriceCheckPort } from './src/price-check/released-adapter'
 import { backendConfig, clearStoredSession, supabase } from './src/seam/supabase-client'
 import { AppRoot } from './src/ui/AppRoot'
+import { AppThemeProvider, ThemedStatusBar } from './src/ui/theme'
 import { createWriteDbBinder } from './src/write/write-db'
 
 /**
@@ -78,9 +78,9 @@ function ConfiguredApp({ host }: { host: string }) {
   // signs in (P167).
   useEffect(() => void runtime.photo.purgeOrphans(), [runtime])
   return (
-    <>
+    <AppThemeProvider>
       <AppRoot runtime={runtime} backendHost={host} />
-      <StatusBar style="auto" />
-    </>
+      <ThemedStatusBar />
+    </AppThemeProvider>
   )
 }

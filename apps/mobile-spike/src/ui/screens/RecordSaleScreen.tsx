@@ -1,11 +1,23 @@
 import { useEffect, useState } from 'react'
-import { Alert, ScrollView } from 'react-native'
+import { Alert } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { isSupportedCurrencyCode, type CurrencyCode } from '@shared/domain/currency'
-import { Body, Button, FailureView, Heading, Loading, TextField } from '../components'
+import {
+  Body,
+  BottomSheet,
+  DateField,
+  FailureView,
+  Heading,
+  Loading,
+  MoneyField,
+  PrimaryButton,
+  RadioRow,
+  SelectRow,
+  TaskScreen,
+  TextField,
+} from '../components'
 import type { CollectionStackParams } from '../navigation-types'
 import { useRuntime, useStore } from '../runtime-context'
-import { SPACE } from '../theme'
 import { listWritableLots, type WritableLot } from '../../collection/lot-reads'
 import { initialSaleDraft } from '../../write/drafts'
 import { assertValidEventDate, InvalidEventDateError } from '../../write/event-date'
@@ -15,6 +27,9 @@ import {
   requireKnownAmount,
 } from '../../write/money-input'
 import { createSale } from '../../write/sale-writes'
+
+/** Every currency the shared money domain supports, matching RecordPurchaseScreen (P178 §17). */
+const SALE_CURRENCIES: CurrencyCode[] = ['NOK', 'EUR', 'USD', 'GBP', 'JPY']
 
 /**
  * Record-sale (P175): sells a quantity of one lot of the holding. Known and unknown cost-basis lots
@@ -59,6 +74,7 @@ export function RecordSaleScreen({
   }, [holdingId])
 
   const currency: CurrencyCode = isSupportedCurrencyCode(draft.currency) ? draft.currency : 'NOK'
+  const [currencySheetOpen, setCurrencySheetOpen] = useState(false)
 
   function validate(): { unitGrossMinor: bigint; quantity: number } | null {
     if (draft.lotId === '') {
@@ -124,90 +140,118 @@ export function RecordSaleScreen({
 
   if (lots === null && !lotsFailed) return <Loading label="Loading lots" />
 
+  const canSubmit = !lotsFailed && lots !== null && lots.length > 0
+
   return (
-    <ScrollView
-      contentContainerStyle={{ padding: SPACE.lg, gap: SPACE.lg }}
-      testID="p175-record-sale"
-    >
-      <Heading>Record sale</Heading>
-      {lotsFailed ? (
-        <Body muted>Could not load this holding&apos;s lots.</Body>
-      ) : lots !== null && lots.length === 0 ? (
-        <Body muted>Nothing left to sell in this holding.</Body>
-      ) : (
-        <>
-          {(lots ?? []).length > 1 ? (
-            <Body muted>{(lots ?? []).length} lots — choose one:</Body>
-          ) : null}
-          {(lots ?? []).map((lot) => (
-            <Button
-              key={lot.lotId}
-              testID={`p175-lot-${lot.lotId}`}
-              label={`Lot ${lot.lotId.slice(0, 8)} · ${String(lot.quantityRemaining)} remaining`}
-              variant={draft.lotId === lot.lotId ? 'primary' : 'secondary'}
-              onPress={() => writeForms.sale.updateDraft({ lotId: lot.lotId })}
-            />
-          ))}
-          <TextField
-            testID="p175-sale-quantity"
-            label="Quantity sold"
-            value={draft.quantity}
-            onChangeText={(text) => writeForms.sale.updateDraft({ quantity: text })}
-            keyboardType="number-pad"
-          />
-          <TextField
-            testID="p175-sale-unit-gross"
-            label={`Price paid per unit (${currency})`}
-            value={draft.unitGrossInput}
-            onChangeText={(text) => writeForms.sale.updateDraft({ unitGrossInput: text })}
-            keyboardType="decimal-pad"
-            placeholder="0.00"
-          />
-          <TextField
-            testID="p175-sale-fees"
-            label="Marketplace fees (optional)"
-            value={draft.feesInput}
-            onChangeText={(text) => writeForms.sale.updateDraft({ feesInput: text })}
-            keyboardType="decimal-pad"
-          />
-          <TextField
-            testID="p175-sale-shipping"
-            label="Shipping you paid (optional)"
-            value={draft.shippingCostInput}
-            onChangeText={(text) => writeForms.sale.updateDraft({ shippingCostInput: text })}
-            keyboardType="decimal-pad"
-          />
-          <TextField
-            testID="p175-sale-date"
-            label="Sold on (YYYY-MM-DD)"
-            value={draft.soldOn}
-            onChangeText={(text) => writeForms.sale.updateDraft({ soldOn: text })}
-          />
-          <TextField
-            testID="p175-sale-marketplace"
-            label="Marketplace (optional)"
-            value={draft.marketplace}
-            onChangeText={(text) => writeForms.sale.updateDraft({ marketplace: text })}
-          />
-          <TextField
-            testID="p175-sale-notes"
-            label="Notes (optional)"
-            value={draft.notes}
-            onChangeText={(text) => writeForms.sale.updateDraft({ notes: text })}
-          />
-          {form.failure !== null ? <FailureView failure={form.failure} /> : null}
-          {form.status === 'success' ? (
-            <Body testID="p175-sale-success">Sale recorded.</Body>
-          ) : null}
-          <Button
+    <>
+      <TaskScreen
+        testID="p175-record-sale"
+        footer={
+          <PrimaryButton
             testID="p175-confirm-sale"
             label="Record sale"
-            disabled={form.status === 'submitting'}
+            disabled={form.status === 'submitting' || !canSubmit}
             accessibilityHint="Saves this sale. This cannot be undone from here."
             onPress={() => void onConfirm()}
           />
-        </>
-      )}
-    </ScrollView>
+        }
+      >
+        <Heading>Record sale</Heading>
+        {lotsFailed ? (
+          <Body muted>Could not load this holding&apos;s lots.</Body>
+        ) : lots !== null && lots.length === 0 ? (
+          <Body muted>Nothing left to sell in this holding.</Body>
+        ) : (
+          <>
+            {(lots ?? []).length > 1 ? (
+              <Body muted>{(lots ?? []).length} lots — choose one:</Body>
+            ) : null}
+            {(lots ?? []).map((lot) => (
+              <RadioRow
+                key={lot.lotId}
+                testID={`p175-lot-${lot.lotId}`}
+                label={`Lot ${lot.lotId.slice(0, 8)}`}
+                meta={`${String(lot.quantityRemaining)} remaining`}
+                selected={draft.lotId === lot.lotId}
+                onPress={() => writeForms.sale.updateDraft({ lotId: lot.lotId })}
+              />
+            ))}
+            <TextField
+              testID="p175-sale-quantity"
+              label="Quantity sold"
+              value={draft.quantity}
+              onChangeText={(text) => writeForms.sale.updateDraft({ quantity: text })}
+              keyboardType="number-pad"
+            />
+            <SelectRow
+              testID="p178-sale-currency"
+              label="Currency"
+              value={currency}
+              onPress={() => setCurrencySheetOpen(true)}
+            />
+            <MoneyField
+              testID="p175-sale-unit-gross"
+              label={`Price paid per unit (${currency})`}
+              value={draft.unitGrossInput}
+              onChangeText={(text) => writeForms.sale.updateDraft({ unitGrossInput: text })}
+              placeholder={currency === 'JPY' ? '0' : '0.00'}
+            />
+            <MoneyField
+              testID="p175-sale-fees"
+              label="Marketplace fees (optional)"
+              value={draft.feesInput}
+              onChangeText={(text) => writeForms.sale.updateDraft({ feesInput: text })}
+            />
+            <MoneyField
+              testID="p175-sale-shipping"
+              label="Shipping you paid (optional)"
+              value={draft.shippingCostInput}
+              onChangeText={(text) => writeForms.sale.updateDraft({ shippingCostInput: text })}
+            />
+            <DateField
+              testID="p175-sale-date"
+              label="Sold on (YYYY-MM-DD)"
+              value={draft.soldOn}
+              onChangeText={(text) => writeForms.sale.updateDraft({ soldOn: text })}
+            />
+            <TextField
+              testID="p175-sale-marketplace"
+              label="Marketplace (optional)"
+              value={draft.marketplace}
+              onChangeText={(text) => writeForms.sale.updateDraft({ marketplace: text })}
+            />
+            <TextField
+              testID="p175-sale-notes"
+              label="Notes (optional)"
+              value={draft.notes}
+              onChangeText={(text) => writeForms.sale.updateDraft({ notes: text })}
+            />
+            {form.failure !== null ? <FailureView failure={form.failure} /> : null}
+            {form.status === 'success' ? (
+              <Body testID="p175-sale-success">Sale recorded.</Body>
+            ) : null}
+          </>
+        )}
+      </TaskScreen>
+      <BottomSheet
+        testID="p178-sale-currency-sheet"
+        visible={currencySheetOpen}
+        onClose={() => setCurrencySheetOpen(false)}
+        title="Currency"
+      >
+        {SALE_CURRENCIES.map((code) => (
+          <RadioRow
+            key={code}
+            testID={`p178-sale-currency-option-${code}`}
+            label={code}
+            selected={code === currency}
+            onPress={() => {
+              writeForms.sale.updateDraft({ currency: code })
+              setCurrencySheetOpen(false)
+            }}
+          />
+        ))}
+      </BottomSheet>
+    </>
   )
 }

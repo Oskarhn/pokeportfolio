@@ -3,9 +3,9 @@ import { Image, ScrollView, View } from 'react-native'
 import { useFocusEffect } from '@react-navigation/native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { toScannerInput } from '../../photo/photo-store'
-import { Heading, Loading } from '../../ui/components'
+import { Heading, InlineNotice, Loading } from '../../ui/components'
 import { useStore } from '../../ui/runtime-context'
-import { SPACE, usePalette } from '../../ui/theme'
+import { SPACE, useTheme } from '../../ui/theme'
 import { useP169, type P169StackParams } from '../navigation'
 import { ActionButton, Label, LiveStatus, Section } from '../ui/kit'
 import type { RecognitionOutcome } from './recognition'
@@ -22,7 +22,7 @@ export function PhotoEntryScreen({
 }: NativeStackScreenProps<P169StackParams, 'P169PhotoEntry'>) {
   const { feature } = useP169()
   const photo = useStore(feature.photo)
-  const p = usePalette()
+  const t = useTheme()
   const [recognition, setRecognition] = useState<RecognitionOutcome | null>(null)
 
   useFocusEffect(
@@ -51,17 +51,15 @@ export function PhotoEntryScreen({
 
   return (
     <ScrollView
-      style={{ backgroundColor: p.background }}
+      style={{ backgroundColor: t.background }}
       contentContainerStyle={{ padding: SPACE.lg, gap: SPACE.lg }}
       testID="p169-photo-entry"
     >
       <Heading>Identify a card from a photo</Heading>
-      <Section testID="p169-recognition-unavailable">
-        <LiveStatus>
-          Card recognition from a photo is not available in this app yet. A photo does not currently
-          identify the card automatically — choose the card and its printing yourself.
-        </LiveStatus>
-      </Section>
+      <InlineNotice tone="info" testID="p169-recognition-unavailable">
+        Card recognition from a photo is not available in this app yet. A photo does not currently
+        identify the card automatically — choose the card and its printing yourself.
+      </InlineNotice>
       <ActionButton
         testID="p169-choose-manually"
         label="Choose the card manually"

@@ -1,9 +1,9 @@
 import { useRef, useState } from 'react'
 import { KeyboardAvoidingView, ScrollView, Text, TextInput, View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
-import { Body, Button, Heading } from '../components'
+import { Body, Heading, PrimaryButton } from '../components'
 import { useRuntime } from '../runtime-context'
-import { MIN_TOUCH, SPACE, usePalette } from '../theme'
+import { MIN_TOUCH, RADIUS, SPACE, TYPE, useTheme } from '../theme'
 
 /** Same on both platforms; exported so a test pins it (an `undefined` here is the P166 F7 defect). */
 export const KEYBOARD_BEHAVIOR = 'padding' as const
@@ -15,7 +15,7 @@ export const KEYBOARD_BEHAVIOR = 'padding' as const
  */
 export function LoginScreen({ notice }: { notice?: string | null }) {
   const runtime = useRuntime()
-  const p = usePalette()
+  const t = useTheme()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const passwordRef = useRef<TextInput>(null)
@@ -25,12 +25,12 @@ export function LoginScreen({ notice }: { notice?: string | null }) {
   const input = {
     minHeight: MIN_TOUCH,
     borderWidth: 1,
-    borderColor: p.border,
-    borderRadius: 10,
+    borderColor: t.borderSubtle,
+    borderRadius: RADIUS.sm,
     paddingHorizontal: SPACE.md,
-    color: p.text,
-    backgroundColor: p.surface,
-    fontSize: 16,
+    color: t.textPrimary,
+    backgroundColor: t.surfaceSunken,
+    fontSize: TYPE.body.fontSize,
   } as const
 
   async function submit() {
@@ -49,7 +49,7 @@ export function LoginScreen({ notice }: { notice?: string | null }) {
   }
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: p.background }} testID="login-screen">
+    <SafeAreaView style={{ flex: 1, backgroundColor: t.background }} testID="login-screen">
       {/* Android 15+ draws edge-to-edge for apps targeting SDK 35+, so `adjustResize` no longer shrinks
           the window for the keyboard: without padding here the keyboard covered "Sign in" (P166 F7). */}
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={KEYBOARD_BEHAVIOR}>
@@ -66,7 +66,7 @@ export function LoginScreen({ notice }: { notice?: string | null }) {
           <Body muted>
             Local spike build. Uses a synthetic account on the isolated local backend.
           </Body>
-          {notice ? <Text style={{ color: p.warning }}>{notice}</Text> : null}
+          {notice ? <Text style={{ color: t.warning }}>{notice}</Text> : null}
           <View style={{ gap: SPACE.sm }}>
             <TextInput
               testID="login-email"
@@ -82,7 +82,7 @@ export function LoginScreen({ notice }: { notice?: string | null }) {
               submitBehavior="submit"
               onSubmitEditing={() => passwordRef.current?.focus()}
               placeholder="Email"
-              placeholderTextColor={p.muted}
+              placeholderTextColor={t.textMuted}
               style={input}
             />
             <TextInput
@@ -97,18 +97,18 @@ export function LoginScreen({ notice }: { notice?: string | null }) {
               autoComplete="current-password"
               textContentType="password"
               placeholder="Password"
-              placeholderTextColor={p.muted}
+              placeholderTextColor={t.textMuted}
               returnKeyType="go"
               onSubmitEditing={() => void submit()}
               style={input}
             />
           </View>
           {error !== null ? (
-            <Text testID="login-error" accessibilityRole="alert" style={{ color: p.danger }}>
+            <Text testID="login-error" accessibilityRole="alert" style={{ color: t.negative }}>
               {error}
             </Text>
           ) : null}
-          <Button
+          <PrimaryButton
             testID="login-submit"
             label={busy ? 'Signing in…' : 'Sign in'}
             onPress={() => void submit()}
