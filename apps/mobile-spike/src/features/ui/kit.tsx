@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import { Pressable, StyleSheet, Text, View } from 'react-native'
 import type { Money } from '@shared/domain/money'
 import { MoneyText } from '../../ui/components'
-import { MIN_TOUCH, SPACE, usePalette } from '../../ui/theme'
+import { MIN_TOUCH, RADIUS, SPACE, TYPE, usePalette } from '../../ui/theme'
 
 /**
  * Neutral, feature-local presentation helpers for the Search / Price Check screens. Deliberately
@@ -50,7 +50,7 @@ export function ActionButton({
         minWidth: TOUCH_48,
         paddingHorizontal: SPACE.lg,
         paddingVertical: SPACE.sm,
-        borderRadius: 10,
+        borderRadius: RADIUS.md,
         justifyContent: 'center',
         alignItems: 'center',
         backgroundColor: filled ? p.accent : 'transparent',
@@ -62,8 +62,7 @@ export function ActionButton({
       <Text
         style={{
           color: filled ? p.onAccent : p.accent,
-          fontSize: 16,
-          fontWeight: '600',
+          ...TYPE.button,
           textAlign: 'center',
         }}
       >
@@ -115,7 +114,7 @@ export function LiveStatus({
       testID={testID}
       accessibilityLiveRegion="polite"
       accessibilityRole={tone === 'danger' ? 'alert' : 'text'}
-      style={{ color: tone === 'danger' ? p.danger : p.muted, fontSize: 15 }}
+      style={{ color: tone === 'danger' ? p.danger : p.muted, ...TYPE.body }}
     >
       {children}
     </Text>
@@ -129,7 +128,7 @@ export function Section({ children, testID }: { children: ReactNode; testID?: st
       testID={testID}
       style={{
         backgroundColor: p.surface,
-        borderRadius: 12,
+        borderRadius: RADIUS.md,
         padding: SPACE.lg,
         gap: SPACE.sm,
         borderWidth: StyleSheet.hairlineWidth,
@@ -153,13 +152,15 @@ export function Label({
   bold?: boolean
 }) {
   const p = usePalette()
+  // Muted (secondary/meta) text takes the shell's caption role, same as PriceBlock's own
+  // secondary lines elsewhere in the app; unmuted takes the body role, bold or not.
+  const role = muted === true ? TYPE.caption : bold === true ? TYPE.bodyStrong : TYPE.body
   return (
     <Text
       testID={testID}
       style={{
         color: muted === true ? p.muted : p.text,
-        fontSize: 15,
-        fontWeight: bold === true ? '700' : '400',
+        ...role,
       }}
     >
       {children}

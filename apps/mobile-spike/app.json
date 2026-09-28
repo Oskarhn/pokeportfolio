@@ -12,6 +12,7 @@
     "plugins": [
       "./plugins/with-local-cleartext",
       "./plugins/with-navigation-bar-follows-theme",
+      "./plugins/with-dark-splash-background",
       "expo-secure-store",
       [
         "expo-image-picker",

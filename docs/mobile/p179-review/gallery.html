@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>P179 screenshot gallery — baseline vs Stitch vs native</title>
+<style>
+  :root {
+    --bg: #0f0f11;
+    --surface: #18181b;
+    --border: #2b2b30;
+    --text: #f2f0ea;
+    --muted: #b0ada5;
+    --accent: #c9a45c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    padding: 32px 24px 80px;
+  }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p.lede { color: var(--muted); max-width: 760px; line-height: 1.5; margin: 0 0 32px; }
+  .row { margin-bottom: 48px; }
+  .row h2 { font-size: 17px; margin: 0 0 4px; border-left: 3px solid var(--accent); padding-left: 10px; }
+  .row .note { color: var(--muted); font-size: 13px; margin: 0 0 14px 13px; line-height: 1.5; }
+  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .card .label {
+    padding: 10px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-bottom: 1px solid var(--border);
+  }
+  .card .label.final { color: var(--accent); }
+  .card img {
+    width: 100%;
+    display: block;
+    background: #050506;
+  }
+  .card .missing {
+    padding: 40px 12px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 13px;
+  }
+  @media (max-width: 900px) {
+    .cards { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+  <h1>P179 review gallery — basic baseline → Stitch target → native final</h1>
+  <p class="lede">
+    Side-by-side for the four screens the P179 mission names explicitly. "Basic baseline" is P166's
+    pre-Stitch spike screenshot (P177 itself did not capture new screenshots — its own scope was
+    financial-write runtime verification, reusing P173's UI). "Stitch target" is P174's accepted
+    Foil golden-five export. "Native final" is captured this session (P179) against the P178
+    dark-first implementation, after the fixes this review made (see
+    <a href="../P179_OWNER_UI_REVIEW.md" style="color:var(--accent)">P179_OWNER_UI_REVIEW.md</a>).
+  </p>
+
+  <div class="row">
+    <h2>Collection</h2>
+    <p class="note">Native final shows the rich P158 fixture (40 holdings) — see the review doc's fixture-tooling note.</p>
+    <div class="cards">
+      <div class="card"><div class="label">Basic baseline (P166)</div><img src="assets/baseline-collection.png" alt="baseline collection" /></div>
+      <div class="card"><div class="label">Stitch target (P174 Foil)</div><img src="assets/stitch-collection.png" alt="stitch collection" /></div>
+      <div class="card"><div class="label final">Native final (P179)</div><img src="screens/02-collection-unpriced.png" alt="native collection" /></div>
+    </div>
+  </div>
+
+  <div class="row">
+    <h2>Card detail</h2>
+    <p class="note">Native final uses the "Astronomical" stress-value holding — see the money-stress findings in the review doc.</p>
+    <div class="cards">
+      <div class="card"><div class="label">Basic baseline (P166)</div><img src="assets/baseline-detail.png" alt="baseline detail" /></div>
+      <div class="card"><div class="label">Stitch target (P174 Foil)</div><img src="assets/stitch-detail.png" alt="stitch detail" /></div>
+      <div class="card"><div class="label final">Native final (P179)</div><img src="screens/03b-card-detail-astronomical2.png" alt="native detail" /></div>
+    </div>
+  </div>
+
+  <div class="row">
+    <h2>Price Check</h2>
+    <p class="note">Confirmed state: honest "no price for this printing" messaging, freshness timestamp, graded-unavailable block.</p>
+    <div class="cards">
+      <div class="card"><div class="label">Basic baseline (P166)</div><img src="assets/baseline-pricecheck.png" alt="baseline price check" /></div>
+      <div class="card"><div class="label">Stitch target (P174 Foil)</div><img src="assets/stitch-pricecheck.png" alt="stitch price check" /></div>
+      <div class="card"><div class="label final">Native final (P179)</div><img src="screens/07-printing-chooser.png" alt="native price check" /></div>
+    </div>
+  </div>
+
+  <div class="row">
+    <h2>Record purchase</h2>
+    <p class="note">No basic-baseline shot exists for this write form (it postdates the P166 spike). Stitch target shown for reference only.</p>
+    <div class="cards">
+      <div class="card"><div class="missing">No P166 baseline for this screen</div></div>
+      <div class="card"><div class="label">Stitch target (P174 Foil)</div><img src="assets/stitch-purchase.png" alt="stitch purchase" /></div>
+      <div class="card"><div class="label final">Native final (P179)</div><img src="screens/11-record-purchase.png" alt="native purchase" /></div>
+    </div>
+  </div>
+
+  <div class="row">
+    <h2>Additional P179 evidence (not in the mission's four-screen set, kept for completeness)</h2>
+    <div class="cards">
+      <div class="card"><div class="label final">Cold launch, before the P179 fix</div><img src="screens/00-cold-launch-before-fix.png" onerror="this.parentElement.innerHTML='<div class=missing>see 00d/00e for the corrected sequence</div>'" alt="before fix" /></div>
+      <div class="card"><div class="label final">Cold launch, after the fix</div><img src="screens/00d-launch-after-fix.png" alt="after fix" /></div>
+      <div class="card"><div class="label final">Card detail, absent price</div><img src="screens/04-card-detail-no-prices.png" alt="no prices" /></div>
+      <div class="card"><div class="label final">Card detail, font scale 2.0</div><img src="screens/font-2.0-astronomical.png" alt="font 2.0" /></div>
+      <div class="card"><div class="label final">Record sale</div><img src="screens/08-record-sale.png" alt="record sale" /></div>
+      <div class="card"><div class="label final">Record opening, nothing to open</div><img src="screens/09-record-opening.png" alt="record opening disabled" /></div>
+      <div class="card"><div class="label final">Manual valuation, saved</div><img src="screens/10-manual-valuation.png" alt="manual valuation" /></div>
+      <div class="card"><div class="label final">Profile, Dark</div><img src="screens/12-profile-dark.png" alt="profile dark" /></div>
+      <div class="card"><div class="label final">Profile, Light</div><img src="screens/13-profile-light.png" alt="profile light" /></div>
+      <div class="card"><div class="label final">Search results</div><img src="screens/05-search-results.png" alt="search results" /></div>
+    </div>
+  </div>
+</body>
+</html>

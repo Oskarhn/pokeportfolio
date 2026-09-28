@@ -92,6 +92,16 @@ const STACKS = {
     mockPort: 55495,
     withWorktreeMigrations: true,
   },
+  // P179: dark-first native UI finish-gate review, own stack/AVD/ports (independent of P178's,
+  // which stays intact for reference). API 55621, mock 55496 (clear of every port above). Same
+  // migration set as P177/P178 (this worktree adds none of its own).
+  p179: {
+    projectId: 'pokeportfolio-p179-app',
+    portShift: 300,
+    dir: 'p179',
+    mockPort: 55496,
+    withWorktreeMigrations: true,
+  },
 }
 
 export function stackOf(argv) {
