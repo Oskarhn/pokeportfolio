@@ -1,2 +1,5 @@
 patchedDependencies:
   expo-modules-core@57.0.18: patches/expo-modules-core@57.0.18.patch
+  onnxruntime-react-native: patches/onnxruntime-react-native.patch
+onlyBuiltDependencies:
+  - '@shopify/react-native-skia'

@@ -1,0 +1,21 @@
+diff --git a/android/build.gradle b/android/build.gradle
+index 41b43599a9af6ef1c170047d39db1f3baa6ca682..dc19bf7ca0134f70d3a57cb5a64dfa15cbe7d2eb 100644
+--- a/android/build.gradle
++++ b/android/build.gradle
+@@ -247,10 +247,12 @@ dependencies {
+     extractLibs "com.microsoft.onnxruntime:onnxruntime-android:latest.integration@aar"
+   }
+ 
+-  if (VersionNumber.parse(REACT_NATIVE_VERSION) < VersionNumber.parse("0.71")) {
+-    extractLibs "com.facebook.fbjni:fbjni:+:headers"
+-    extractLibs "com.facebook.fbjni:fbjni:+"
+-  }
++  // P182: this project's REACT_NATIVE_VERSION (0.86.3) is always >= 0.71, so the upstream
++  // fbjni-extraction branch this guarded never ran here anyway. The guard itself used
++  // org.gradle.util.VersionNumber, a class Gradle 9 removed outright (not merely an import gap —
++  // confirmed by the build's own "unable to resolve class" failure) — removed rather than patched
++  // around, since keeping a dead branch alive with a Gradle-version-specific workaround would only
++  // reintroduce the same fragility this patch exists to fix.
+ 
+   // By default it will just include onnxruntime full aar package
+   if (ortExtensionsEnabled) {
