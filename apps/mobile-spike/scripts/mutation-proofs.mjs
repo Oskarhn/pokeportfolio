@@ -291,8 +291,8 @@ const MUTANTS = [
     file: 'src/state/write-form-store.ts',
     edits: [
       [
-        "      this.set({ status: 'error', failure })\n      return { ok: false, failure }",
-        "      this.set({ status: 'error', failure, idempotencyKey: generateIdempotencyKey() })\n      return { ok: false, failure }",
+        "      this.set({ status: uncertain ? 'uncertain' : 'error', failure })\n      return { ok: false, failure }",
+        "      this.set({ status: uncertain ? 'uncertain' : 'error', failure, idempotencyKey: generateIdempotencyKey() })\n      return { ok: false, failure }",
       ],
     ],
     tests: ['tests/unit/write-form-store.test.ts'],
