@@ -72,11 +72,18 @@ commits (rare; state the reason in the PR if so).
 
 ## 6. Branch protection
 
-The repository is private, and GitHub Pro (needed for private-repo branch protection rules) is
-not purchased for this reason alone — see [COST_POLICY.md](COST_POLICY.md). Branch protection is
-therefore enforced by *process*, not by GitHub configuration: every session follows this document,
-CI is the gate, and direct pushes to `main` are the documented exception (§7), not the norm. If
-free GitHub capabilities change later, revisit; no payment is authorized for this.
+The repository is **supposed to be private** (`CLAUDE.md`'s hard rule); GitHub Pro (needed for
+private-repo branch protection rules) is not purchased for this reason alone — see
+[COST_POLICY.md](COST_POLICY.md). **As of 2026-09-27/28 the repository is actually PUBLIC** (`gh
+repo view`, re-confirmed live by P183) — an unresolved contradiction with that rule, not a policy
+change; see `HANDOVER.md` §1/§14 and `docs/CURRENT_STATE/GIT_PUBLICATION_PLAN.md`. Branch
+protection is enforced by *process*, not by GitHub configuration, whether the repo ends up private
+again or stays public and buys the protection GitHub offers on public repos for free: every session
+follows this document, CI is the gate, and direct pushes to `main` are the documented exception
+(§7), not the norm. Live-verified 2026-09-28: `main` has no branch-protection rule and no rulesets
+configured (`gh api .../branches/main/protection` → 404 "Branch not protected"; `gh api
+.../rulesets` → `[]`). If free GitHub capabilities change later, revisit; no payment is authorized
+for this.
 
 **This describes GitHub's own gate on `main`'s content — a separate, unrelated question is whether
 Production actually only ever serves a SHA that passed that gate. It currently does not: see §11.**
@@ -224,3 +231,29 @@ without approval per COST_POLICY.md):**
 **Status:** `PREVIEW_PRODUCTION_DB_STATUS=CONFIRMED_LIVE_TODAY` (re-verified this session, not
 inherited from P130). `PREVIEW_MUTATION_RISK=LOW_BUT_UNMITIGATED` (RLS holds; the gap is process,
 not a demonstrated exploit). `PREVIEW_SAFETY_DESIGN` = the two options above, owner to choose.
+
+## 13. Feature-branch pushes while repository visibility is unresolved
+
+A feature-branch push does **not** need to wait for a previous branch's GitHub Actions run to
+finish — pushes are independent; CI on one branch never blocks starting or pushing another. CI is
+**post-push validation**, not a prerequisite for making the commit or pushing the branch. This is
+unchanged and does not weaken §2/§4's requirement that CI be green **before a PR merges** — it only
+says the commit-and-push step itself is not gated on some other branch's run.
+
+**What changes while the repository is PUBLIC (§6):** before pushing any branch containing
+unreleased project source, check current visibility (`gh repo view --json visibility`, or see
+`HANDOVER.md` §1). If the repository is public, **do not push unreleased private project source by
+default** — every pushed branch, its diff, and its CI logs become world-readable the moment it
+lands on GitHub, for a project whose own hard rule says the repository should be private. This is
+not a new gate invented by this section; it follows directly from `CLAUDE.md`'s existing "GitHub
+visibility" hard rule and the contradiction recorded in `HANDOVER.md` §1. Once the owner restores
+private visibility (or explicitly decides public is intentional), this restriction lifts and the
+normal branch → PR → CI → merge workflow (§2) applies without a visibility check. See
+`docs/CURRENT_STATE/GIT_PUBLICATION_PLAN.md` for what is and is not safe to push under either
+state, and the branch-by-branch classification in
+`docs/CURRENT_STATE/BRANCH_PRUNING_PLAN.md`.
+
+`main` still requires the deliberate integration/release gate described in §1/§2/§11 regardless of
+visibility — a public repository is a reason to be more conservative about what reaches GitHub at
+all, never a reason to relax what is required to reach `main`. GitHub Actions results remain
+post-push validation, not a substitute for the PR review and green-CI-before-merge requirement.

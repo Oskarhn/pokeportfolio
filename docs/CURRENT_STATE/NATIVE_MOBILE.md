@@ -17,25 +17,49 @@ in local worktrees under `C:\Users\Oskar\Documents\Pokemonapp-worktrees\`.
 | `fix/p167-native-android-runtime-hardening` | P167 | Android runtime hardening; per-worktree stack/`ANDROID_SERIAL` isolation; F1 patch backport. Mobile-only diff (verified `git diff` touches nothing outside `apps/mobile-spike` and `docs/mobile`). |
 | `feat/p169-native-catalog-price-check` | P169 | Native catalog + Price Check. Graded pricing is `PARTIAL_NO_AUTHORIZED_PROVIDER` — no paid grading source is authorized. |
 | `feat/p170-integrated-native-android` | P170 | Attempted integration. **No `output_170.txt` exists anywhere** — a later session (P172) explicitly found no evidence this prompt completed successfully, and did not guess its SHA. |
-| `feat/p173-native-integration-recovered` | P173 | Recovers the missing P170 handoff; the current **native-integrated candidate**. SHA `0600361f71ee2dd5591fbbbfb2fe260ab68ba7a2`, 105 local migrations (104 released + 1: `20260926120000_p173_search_cards_stable_paging.sql`). Its own report claims no blockers for its scope. |
-| `feat/p175-native-financial-write-flows` | P175 | Native financial write layer built **on top of P173** (confirmed ancestor via `git merge-base --is-ancestor`). SHA `a193a8bab2d742edd504ec578253f99c18f6d9d1`, 107 local migrations (105 + 2 copied verbatim from the P144 worktree). **Its own report states the native build was NOT run this session** — this candidate has not been exercised on any runtime. |
+| `feat/p173-native-integration-recovered` | P173 | Recovers the missing P170 handoff; the base of the current native lineage. SHA `0600361f71ee2dd5591fbbbfb2fe260ab68ba7a2`, 105 local migrations (104 released + 1: `20260926120000_p173_search_cards_stable_paging.sql`). **Corrected 2026-09-28 (P183): P173 WAS device-verified** — its own report (`output_173.txt`) shows a release APK (Hermes, embedded bundle) driven on a real Android 16 x86_64 emulator with 35/35 and 19/19 passing driver runs. P176's `LOCAL_ONLY_NOT_DEVICE_VERIFIED` label conflated "unmerged" with "never run on a device" (P177 found and documented this error; see `docs/handover/STATE_RECONCILIATION.md`). "Local-only" (never merged/pushed) remains correct. |
+| `feat/p175-native-financial-write-flows` | P175 | Native financial write layer built **on top of P173** (confirmed ancestor). SHA `a193a8bab2d742edd504ec578253f99c18f6d9d1`, 107 local migrations (105 + 2 copied verbatim from the P144 worktree). Its own report states the native build was NOT run that session — correctly labelled `LOCAL_ONLY_NOT_DEVICE_VERIFIED` as of P175. Device-verified one phase later by P177 (below). |
+| `test/p177-native-financial-runtime` | P177 | **Device-verified the P175 write seam for the first time.** Release APK on a fresh AVD, all 6 write flows (add-acquisition, purchase, sale, opening, manual valuation) driven through the real app navigation, 28/28 driver steps passing, every write independently checked against the live database. Found and fixed 2 real defects (missing `condition` on purchase, `CardDetailScreen` not reloading after a write). Full DB suite green for the first time on this track with Edge Runtime enabled (745/1/0). SHA `0d1d93887ce900fb71778e635d89f0c159b7a62d`, 107 local migrations (unchanged from P175). |
+| `feat/p178-dark-native-ui` | P178 | Dark-first "Utility structure + Foil identity" visual redesign (the owner's explicit hybrid choice from the P174 decision pack) — 22-token theme system, 45-component UI kit, real on-device JPY currency selector. Found the FX-rate gap: `create_purchase`/`create_sale` reject any non-NOK currency because the screens never supplied `p_fx_rate_to_nok`/`p_fx_rate_date`/`p_fx_source` (disclosed as a BLOCKER, fixed in P180). SHA `084c7478baa45b8c8c85d2001e0825e66cd81f20`, 107 migrations. |
+| `test/p179-dark-ui-finish-gate` | P179 | UI finish-gate review of P178. Found and fixed a real white-flash-on-cold-launch defect (missing `expo-splash-screen` config plugin) and a Price Check typography/corner-radius drift from the shared design tokens. Device-verified big-money rendering (2^53+1 and ~2.88×10^17 minor units, no truncation) and the null/zero distinction. SHA `486bb86bdebc0e8aba566267bc8218117ed44a29`, 107 migrations. |
+| `feat/p180-native-financial-reliability` | P180 | **Closed the P178/P179 FX-rate blocker.** New `fx-for-write.ts` resolves a rate via the same `fx-source.ts` Price Check already uses, fails closed with no usable rate, never silently substitutes 1. Device-verified end-to-end: a real EUR sale, real FX notice, real NOK reference, independently confirmed against the database. Also built a pending-write journal (SecureStore-backed, addresses the process-death-after-commit gap disclosed since P177) and fixed the raw-UUID-in-purchase-form display. SHA `ecdb120863f0d8478ed69216cb64272b734de2a7`, 107 migrations (no schema change — client/tooling fix only). |
+| `feat/p181-native-device-accessibility-performance-gate` | P181 | **Latest native candidate as of 2026-09-27.** Representative (not exhaustive) device-matrix pass: 360/390/430dp widths, font scale up to 200%, Activity recreation, one performance/memory snapshot, full-session ANR/crash sweep (zero). Found and fixed a real tab-label mid-word-break defect at 200% font scale. SHA `45ebfefa9a5038e20dd1999644eb96c1ae6352ef`, 107 migrations. **Scoped success, not full certification** — see "What is NOT verified" below; its own STATUS is `SUCCESS_P181_NATIVE_PRODUCT_BASELINE_GATE` with explicitly disclosed gaps, not `FULLY_CERTIFIED`. |
 
-## What is NOT verified
+Lineage: `P173 → P175 → P177 → P178 → P179 → P180 → P181` (each branch built directly on the
+previous one's tip; ancestry confirmed via `git merge-base --is-ancestor` in each phase's own
+report). None of these branches is merged or pushed.
 
-- **No fresh-session confirmation that P173 or P175 has ever run on a real device.** P166/P167
-  report emulator runs of earlier, less-integrated states. Do not assume the current P173/P175
-  tip has been exercised the same way without re-running it.
+## What is NOT verified (as of P181, the current tip)
+
+- **TalkBack itself was never run** (P181 used the `uiautomator` accessibility-tree proxy, not a
+  real screen-reader pass).
+- **The full device matrix is not exhaustive**: of the mission's ~16 screens × 6+ width/scale/theme
+  combinations, P181 drove a representative subset (6 screens, 3 widths, up to 200% font, dark only
+  — the app has no reachable light theme by design). Font scale 130%, the 390/430dp combinations at
+  full font scale, and several screens (Search, Price Check, Photo, Record purchase, Record
+  opening, Profile) were not individually device-driven in P181.
+- **Performance and memory are one representative snapshot each**, not the full
+  cold/warm/30-fling/7-checkpoint battery the mission specified.
+- **JPY has never been driven as an on-device purchase journey** — its exact-money/FX math is
+  proven at the unit/Hermes/RPC level (P177, P180) but the currency selector's JPY path was only
+  UI-verified (P178), not submitted end-to-end on a device.
 - **No iOS simulator capability** — the toolchain audit (P159) confirms the host is Windows 11;
   iOS work needs a macOS host with Xcode, which no session here has had.
-- **P170's actual completion status is unknown** — P173 exists specifically to route around that
-  gap, but nothing retroactively proves P170 itself succeeded.
+- **P170's actual completion status is still unknown** — P173 exists specifically to route around
+  that gap; nothing retroactively proves P170 itself succeeded. Not relevant to current work, kept
+  for historical accuracy.
 - **Graded-card pricing is intentionally incomplete** (no authorized provider, `docs/COST_POLICY.md`).
+- **No final app icon selected; no N1/N2 navigation decision made** — both deliberately deferred
+  through every phase P178–P181.
 
 ## Before doing more native work
 
 1. Verify the Android toolchain (SDK, emulator or device, `ANDROID_SERIAL`) is actually present in
    your session — P159 found it entirely absent in a clean session; P166/P167 had to install it.
-2. Re-run P173+P175 on a real emulator/device before adding features on top — don't compound an
-   unverified base.
+2. Start from P181's tip (`45ebfefa9a5038e20dd1999644eb96c1ae6352ef`) — it is the most
+   device-verified point in the lineage, but re-verify rather than assume if picking this up much
+   later; do not build further on an unverified re-read of the tip.
 3. Check `docs/handover/STATE_RECONCILIATION.md` for the divergent local migration counts before
    assuming any one branch's count is authoritative for "the" local database state.
+4. Close the disclosed gaps above (TalkBack, the full device matrix, JPY-on-device) before treating
+   this lineage as release-ready, not just "device-verified enough for now."

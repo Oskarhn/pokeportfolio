@@ -13,14 +13,19 @@ Authority: this file for current status; `HANDOVER.md` §1/§13/§14 for the sum
 - There is no CI-enforced gate between a `main` merge and the Production deploy going live
   (**P130-08, still OPEN**). A merge to `main` does not automatically or verifiably deploy;
   closing this requires the P163 candidate below plus an owner-side Cloudflare action.
+- `main` has no GitHub branch-protection rule and no repository rulesets (live-verified 2026-09-28,
+  `gh api`) — matches `GIT_WORKFLOW.md` §6: protection is enforced by process, not GitHub
+  configuration.
 
 ## Repository visibility — CONTRADICTS CLAUDE.md
 
-`gh repo view` on 2026-09-27 reports `Oskarhn/pokeportfolio` as **PUBLIC**. `CLAUDE.md`'s hard
-rule states the repository is private and must never be made public without the owner's explicit
-approval plus a completed `docs/PUBLICATION_CHECKLIST.md` pass. Nothing found in this
-documentation session changed it, and no session in the reviewed output files claims to have
-changed it either — when/why it became public is unknown. Consequences while public:
+`gh repo view` on 2026-09-27, re-confirmed live again 2026-09-28 (P183), reports
+`Oskarhn/pokeportfolio` as **PUBLIC**. `CLAUDE.md`'s hard rule states the repository is private and
+must never be made public without the owner's explicit approval plus a completed
+`docs/PUBLICATION_CHECKLIST.md` pass. Nothing found in this documentation session changed it, and
+no session in the reviewed output files claims to have changed it either — when/why it became
+public is unknown. Full remediation plan: `docs/CURRENT_STATE/GIT_PUBLICATION_PLAN.md`.
+Consequences while public:
 - All GitHub Actions run logs are publicly readable (once any workflow actually runs).
 - All 66 remote branches and 27 draft PRs are publicly readable, including their diffs and commit
   history.
@@ -43,9 +48,15 @@ changed it either — when/why it became public is unknown. Consequences while p
      auto-deploy setting, and preview-deployment policy — no session tool here can read or change
      Cloudflare Pages settings; the Cloudflare MCP connector available in this environment has no
      Pages tools at all, only Workers/D1/KV/R2/Hyperdrive).
-  2. GitHub Actions capacity — the last observed CI run (PR #112, 2026-09-18) failed at job start
-     with "recent account payments have failed or your spending limit needs to be increased".
-     Current state of this block is unverified; re-check before relying on CI.
+  2. GitHub Actions capacity — **checked live 2026-09-28 (P183), still genuinely unverified.** No
+     workflow has run at all since P159's 2026-09-24 billing/capacity observation — `gh run list`
+     shows the newest run is still PR #112's, dated 2026-09-18 (`build-and-test` SUCCESS, `db-tests`
+     FAILURE — a real test failure, not a capacity refusal), which predates P159's block and so
+     proves nothing about it either way. **Re-check by actually pushing/triggering CI before relying
+     on it**, do not assume either resolved or still-blocked from stale evidence. PR #112 itself is
+     **still OPEN**, on `fix/p142-ci-gated-production-deploy` — the branch P163 supersedes; it was
+     not closed by any session reviewed here (closing/superseding it is part of the integration
+     work, not a documentation change — see `docs/CURRENT_STATE/GIT_PUBLICATION_PLAN.md`).
 
 ## Secret/variable finding (P159 → P160), still open
 

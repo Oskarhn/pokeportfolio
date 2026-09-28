@@ -31,6 +31,11 @@ comparable as "the" local state — each is 104 (released) plus whatever that br
 | `fix/p163-integrated-ci-secret-gate` | 104 | +0 (CI/build-tooling only, no schema) |
 | `feat/p173-native-integration-recovered` | 105 | +1: `20260926120000_p173_search_cards_stable_paging.sql` |
 | `feat/p175-native-financial-write-flows` | 107 | +2 copied verbatim from the P144 worktree, +1 from P173 (its ancestor) |
+| `test/p177-native-financial-runtime` | 107 | +0 over P175 (client/test-infra fix only; confirmed via a fresh `supabase db reset`) |
+| `feat/p178-dark-native-ui` | 107 | +0 over P177 (UI/design-token change only) |
+| `test/p179-dark-ui-finish-gate` | 107 | +0 over P178 (splash-plugin + token-consistency fix only) |
+| `feat/p180-native-financial-reliability` | 107 | +0 over P179 (FX-write client module, pending-write journal, tooling fixes — no schema change, confirmed via a fresh `supabase db reset`) |
+| `feat/p181-native-device-accessibility-performance-gate` | 107 | +0 over P180 (UI/accessibility fixes only) — **current tip of the native lineage, 2026-09-27** |
 | `test/p165-p164-independent-release-verification` | 106 (one measured run) / 104 (a second stack, per the file's own flagged inconsistency) | Independent verification run — see `docs/handover/STATE_RECONCILIATION.md` for the discrepancy note |
 
 **Do not average, sum, or otherwise combine these counts.** If you need a real integrated count,
@@ -47,7 +52,10 @@ differently:
 - `fix/p151-scanner-reliability-performance`: **D-151** (prompt-number-as-id).
 - `test/p165-p164-independent-release-verification`: **D-165** (prompt-number-as-id).
 - `feat/p173-native-integration-recovered`, `feat/p175-native-financial-write-flows`,
-  `design/p174-…`, `fix/p167-…`, `fix/p169-…`: still at **D-133** (added no new decision entry).
+  `design/p174-…`, `fix/p167-…`, `fix/p169-…`, `test/p177-…`, `feat/p178-…`, `test/p179-…`,
+  `feat/p180-…`, `feat/p181-…`: still at **D-133** (none of the P177–P181 phases' own output files
+  report a new decision entry either; not independently re-checked file-by-file by P183 — verify
+  before relying on this if it matters for an integration).
 
 Two different conventions (sequential continuation vs. prompt-number-as-id) were used across
 parallel branches without coordination. **Whoever integrates these branches must renumber the

@@ -206,6 +206,31 @@ migration applied — local stack, CI stack, disposable container — runs the M
 to the hosted edge functions every 15 minutes (P130-12); deactivate those two jobs locally
 (`cron.alter_job(jobid, active := false)`) on any stack that stays up.
 
+### Docker shutdown policy
+
+The owner's preference stands: Docker Desktop should not stay running for days unnecessarily when
+nothing needs it. But **safe shutdown takes precedence over destructive force termination.** A
+real incident (P181) showed why: a prior session's forced kill left a stale
+`sailor-ingest.sock`/`.sock.stale` pair that Docker's own graceful `--quit` could not clear on its
+next launch, blocking Docker Desktop entirely until the owner intervened manually — a
+multi-session-costing failure mode a repeated force-kill can trigger again. The procedure:
+
+1. Stop this session's own project containers (`backend.mjs stop` or equivalent) and confirm none
+   remain (`docker ps` for this project's names).
+2. Attempt a graceful Docker Desktop quit (`Docker Desktop.exe --quit`) and verify it actually
+   exited.
+3. **Do not repeatedly force-kill Docker/WSL after a failed graceful quit if doing so risks stale
+   Docker socket state.** One force-kill attempt after a failed graceful quit is the established
+   pattern (P167 onward); if a session observes signs of a prior forced-shutdown artifact (a
+   `.sock.stale` file, Docker Desktop failing to relaunch cleanly, `wsl --shutdown` not releasing a
+   lock `icacls`/`tasklist` shows nothing holding), **stop** — do not retry the force-kill loop.
+   Prefer leaving Docker idle (zero containers, process still running) over corrupting its local
+   runtime state; record the state and let the owner restart it. This is a considered exception,
+   not a default: most sessions with a clean environment should still force-stop the leftover
+   Docker processes once after a failed graceful quit, same as always — only escalate to "leave it
+   running" when there is a concrete signal of stale-socket risk, not merely because quitting is
+   inconvenient.
+
 **Remote dev project (for manual/interactive work, once linked).** A second free Supabase
 project, separate from any project holding real data — see the Supabase environment note in
 HANDOVER.md for whether one is linked yet. Useful for `pnpm dev` against real persisted data and

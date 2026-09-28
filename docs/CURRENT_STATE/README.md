@@ -15,6 +15,8 @@ in the same commit as the change that made it stale — do not let it drift the 
 | [RELEASE_AND_DEPLOYMENT.md](RELEASE_AND_DEPLOYMENT.md) | CI/CD, deploy gate, repository/hosting state |
 | [DATABASE.md](DATABASE.md) | Per-branch migration counts and why they diverge |
 | [SECURITY_AND_PRIVACY.md](SECURITY_AND_PRIVACY.md) | Open security findings, account deletion status |
+| [GIT_PUBLICATION_PLAN.md](GIT_PUBLICATION_PLAN.md) | What's safe to push given repo visibility; proposed native-RC path |
+| [BRANCH_PRUNING_PLAN.md](BRANCH_PRUNING_PLAN.md) | Branch-by-branch keep/superseded/archive classification |
 
 Machine-readable pointers for the same facts: [`docs/PROJECT_STATE.json`](../PROJECT_STATE.json).
 Top-level current state: [`HANDOVER.md`](../../HANDOVER.md).

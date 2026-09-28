@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_from_repo_state": true,
-  "readme": "Machine-readable pointer/state index for a fresh coding-agent session. This is NOT a replacement for HANDOVER.md or the canonical docs it points to (see HANDOVER.md §16) — it exists so a session can grep/parse exact SHAs and counts instead of re-deriving them from prose. Validate with `node scripts/check-project-state.mjs`. Every value here was verified against the repository, git history or a live tool call during P176 (2026-09-27); a value that could not be verified is `null`, never guessed.",
+  "readme": "Machine-readable pointer/state index for a fresh coding-agent session. This is NOT a replacement for HANDOVER.md or the canonical docs it points to (see HANDOVER.md §16) — it exists so a session can grep/parse exact SHAs and counts instead of re-deriving them from prose. Validate with `node scripts/check-project-state.mjs`. Every value here was verified against the repository, git history or a live tool call during P176 (2026-09-27) or P183 (2026-09-28); a value that could not be verified is `null`, never guessed.",
   "released": {
     "main_sha": "d8682e047b757f63673a63ac8185a4806d68cb98",
     "production_frontend_sha": "d8682e047b757f63673a63ac8185a4806d68cb98",
@@ -13,7 +13,9 @@
       "branch": "feat/p173-native-integration-recovered",
       "sha": "0600361f71ee2dd5591fbbbfb2fe260ab68ba7a2",
       "local_migration_count": 105,
-      "status": "LOCAL_ONLY_NOT_DEVICE_VERIFIED"
+      "status": "LOCAL_ONLY",
+      "device_verified": true,
+      "correction_note": "P176 mislabelled this LOCAL_ONLY_NOT_DEVICE_VERIFIED, conflating unmerged with never-run-on-device. Corrected by P183 (2026-09-28) from P173's own report (35/35 + 19/19 driver runs on a release APK) and P177's own doc-corrections file."
     },
     "native_financial_writes": {
       "prompt": 175,
@@ -21,7 +23,20 @@
       "sha": "a193a8bab2d742edd504ec578253f99c18f6d9d1",
       "builds_on": "native_integrated",
       "local_migration_count": 107,
-      "status": "LOCAL_ONLY_NOT_DEVICE_VERIFIED"
+      "status": "LOCAL_ONLY",
+      "device_verified": false,
+      "note": "Correctly LOCAL_ONLY_NOT_DEVICE_VERIFIED as of P175's own session; device-verified one phase later by P177 (see native_ui_baseline). Not re-labelled here since this entry describes P175's own tip, not P177's."
+    },
+    "native_ui_baseline": {
+      "prompt": 181,
+      "branch": "feat/p181-native-device-accessibility-performance-gate",
+      "sha": "45ebfefa9a5038e20dd1999644eb96c1ae6352ef",
+      "builds_on_chain": ["173", "175", "177", "178", "179", "180", "181"],
+      "local_migration_count": 107,
+      "status": "LOCAL_ONLY",
+      "device_verified": true,
+      "fully_certified": false,
+      "notes": "Latest native candidate as of 2026-09-27. Dark-first Foil UI, FX-rate write contract closed (P180), pending-write journal implemented (P180), representative (not exhaustive) device-accessibility/performance gate passed (P181) with disclosed gaps: no TalkBack run, device matrix not exhaustive, performance/memory each one snapshot not a full battery, JPY never driven as an on-device purchase journey. See docs/CURRENT_STATE/NATIVE_MOBILE.md."
     },
     "account_deletion": {
       "prompt": 156,
@@ -73,7 +88,10 @@
     "latest_local_migration_count": 107
   },
   "scanner": {
-    "content_id": "f25fc05d569b7cca"
+    "content_id": "f25fc05d569b7cca",
+    "web_scanner_status": "RELEASED_UNCHANGED",
+    "native_card_recognition_status": "PENDING_NOT_PROVEN_ON_DEVICE",
+    "native_card_recognition_note": "The native lineage (P173-P181) has device-verified financial writes and UI, but no session in that chain re-ran actual card-recognition/scanning on a device against the current tip. Do not treat native scanner recognition as complete unless a later session (e.g. P182, if it lands with an explicit success status) proves it."
   },
   "production": {
     "in_real_user_use": false
@@ -82,7 +100,10 @@
     "visibility": "PUBLIC",
     "visibility_expected": "PRIVATE",
     "visibility_contradiction": true,
-    "verified_at": "2026-09-27"
+    "verified_at": "2026-09-28",
+    "branch_protection": "none",
+    "rulesets": "none",
+    "publication_status": "NOT_READY_repo_public_but_unreleased_native_source_should_not_be_pushed_until_owner_resolves_visibility; see docs/CURRENT_STATE/GIT_PUBLICATION_PLAN.md and docs/PUBLICATION_CHECKLIST.md"
   },
   "canonical_docs": {
     "product_scope": "docs/PRODUCT_SPEC.md",
@@ -110,6 +131,8 @@
     "database_current_state": "docs/CURRENT_STATE/DATABASE.md",
     "security_and_privacy_current_state": "docs/CURRENT_STATE/SECURITY_AND_PRIVACY.md",
     "state_reconciliation": "docs/handover/STATE_RECONCILIATION.md",
-    "archive_index": "docs/handover/README.md"
+    "archive_index": "docs/handover/README.md",
+    "git_publication_plan": "docs/CURRENT_STATE/GIT_PUBLICATION_PLAN.md",
+    "branch_pruning_plan": "docs/CURRENT_STATE/BRANCH_PRUNING_PLAN.md"
   }
 }
