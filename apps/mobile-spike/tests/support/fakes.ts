@@ -7,7 +7,16 @@ import type {
   HoldingDetail,
 } from '../../src/collection/types'
 import type { LeasedWriteDb } from '../../src/write/leased-write-client'
+import { PendingWriteJournal } from '../../src/write/pending-write-journal'
+import type { ExistsCheckerMap } from '../../src/write/pending-write-reconciliation'
 import type { WriteDbBinder } from '../../src/write/write-db'
+
+/** Never finds anything settled — tests that need a real reconciliation outcome build their own
+ *  checkers; every other test's pending writes simply stay "unresolved" if it ever records one. */
+const INERT_PENDING_WRITES: ExistsCheckerMap = {
+  create_purchase: () => Promise.resolve(false),
+  create_sale: () => Promise.resolve(false),
+}
 
 /** A write-db binder for tests that do not exercise a real (or scripted) write RPC call: any
  *  attempt to actually USE the returned "client" fails loudly instead of silently no-op'ing. */
@@ -259,8 +268,13 @@ export function harness(
     collection,
     priceCheck: { released: overrides.released ?? fixture, fixture },
     priceFeature: overrides.priceFeature ?? INERT_PRICE_FEATURE,
+    readFx: overrides.priceFeature?.readFx ?? INERT_PRICE_FEATURE.readFx,
     photo,
     writeDb: fakeWriteDbBinder(),
+    pendingWrites: {
+      journal: new PendingWriteJournal(new MemoryKeyValueStore()),
+      existsCheckers: INERT_PENDING_WRITES,
+    },
   })
   runtime.auth.start()
   return { runtime, auth, collection, photo, removed: () => removed }

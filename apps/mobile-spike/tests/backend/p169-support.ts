@@ -10,6 +10,11 @@ import type { SearchPricesInvoker } from '../../src/features/price-check/search-
 import type { RequestLogEntry } from '../../src/net/spike-fetch'
 import { createFixturePriceCheckPort } from '../../src/price-check/fixture-adapter'
 import { createReleasedPriceCheckPort } from '../../src/price-check/released-adapter'
+import {
+  purchaseExistsCheckerFor,
+  saleExistsCheckerFor,
+} from '../../src/write/pending-write-exists'
+import { PendingWriteJournal } from '../../src/write/pending-write-journal'
 import { createWriteDbBinder } from '../../src/write/write-db'
 import { createRuntime, type Runtime } from '../../src/wiring/runtime'
 import { setBackendClient } from '../support/backend-supabase-client'
@@ -163,12 +168,20 @@ export function p169Session(
       readFx: fxRateReaderFor(client),
       searchOptions: { debounceMs: 0 },
     },
+    readFx: fxRateReaderFor(client),
     photo: new FakePhotoPort(),
     writeDb: createWriteDbBinder({
       url: env.apiUrl,
       publishableKey: env.publishableKey,
       getSession: () => client.auth.getSession(),
     }),
+    pendingWrites: {
+      journal: new PendingWriteJournal(new MemoryKeyValueStore()),
+      existsCheckers: {
+        create_purchase: purchaseExistsCheckerFor(client),
+        create_sale: saleExistsCheckerFor(client),
+      },
+    },
   })
   runtime.auth.start()
   return { runtime, feature: runtime.feature, log, client }

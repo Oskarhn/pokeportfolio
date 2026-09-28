@@ -16,6 +16,11 @@ import { fxRateReaderFor } from '../../src/features/price-check/fx-source'
 import { createReleasedPriceCheckPort } from '../../src/price-check/released-adapter'
 import { createFixturePriceCheckPort } from '../../src/price-check/fixture-adapter'
 import type { RequestLogEntry } from '../../src/net/spike-fetch'
+import {
+  purchaseExistsCheckerFor,
+  saleExistsCheckerFor,
+} from '../../src/write/pending-write-exists'
+import { PendingWriteJournal } from '../../src/write/pending-write-journal'
 import { createWriteDbBinder } from '../../src/write/write-db'
 import { createRuntime, type Runtime } from '../../src/wiring/runtime'
 import { FakePhotoPort, MemoryKeyValueStore } from '../support/fakes'
@@ -141,12 +146,20 @@ export function realRuntime(session: Session): Runtime {
       invoke: (name, opts) => session.client.functions.invoke(name, opts),
       readFx: fxRateReaderFor(session.client),
     },
+    readFx: fxRateReaderFor(session.client),
     photo: new FakePhotoPort(),
     writeDb: createWriteDbBinder({
       url: session.url,
       publishableKey: session.publishableKey,
       getSession: () => session.client.auth.getSession(),
     }),
+    pendingWrites: {
+      journal: new PendingWriteJournal(new MemoryKeyValueStore()),
+      existsCheckers: {
+        create_purchase: purchaseExistsCheckerFor(session.client),
+        create_sale: saleExistsCheckerFor(session.client),
+      },
+    },
   })
   runtime.auth.start()
   return runtime

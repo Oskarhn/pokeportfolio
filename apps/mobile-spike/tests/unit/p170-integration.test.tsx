@@ -14,6 +14,11 @@ import { createReleasedPriceCheckPort } from '../../src/price-check/released-ada
 import { AppRoot } from '../../src/ui/AppRoot'
 import type { TabParams } from '../../src/ui/navigation-types'
 import { restorableNavigationState } from '../../src/state/navigation-memory'
+import {
+  purchaseExistsCheckerFor,
+  saleExistsCheckerFor,
+} from '../../src/write/pending-write-exists'
+import { PendingWriteJournal } from '../../src/write/pending-write-journal'
 import { createRuntime, type Runtime } from '../../src/wiring/runtime'
 import { FakeAuth, FakeCollectionPort, FakePhotoPort, MemoryKeyValueStore } from '../support/fakes'
 import { deferred, fakeWriteDbBinder, flush, session } from '../support/fakes'
@@ -69,9 +74,9 @@ function snapshots(h: P169Harness) {
 }
 
 describe('one identity system', () => {
-  it('the feature stores live in the runtime registry (5 shell stores + 3 feature stores + 5 P175 write forms)', () => {
+  it('the feature stores live in the runtime registry (5 shell stores + 3 feature stores + 5 P175 write forms + 1 P180 pending-writes store)', () => {
     const h = p169Harness()
-    expect(h.runtime.registry.size).toBe(13)
+    expect(h.runtime.registry.size).toBe(14)
     expect(h.feature).toBe(h.runtime.feature)
   })
 
@@ -506,8 +511,16 @@ describe('the integrated client: what Price Check can and cannot send', () => {
         readCard: () => Promise.resolve({ card: C, variants: [V1, V2] }),
         readSnapshots: () => Promise.resolve([]),
       },
+      readFx: fxRateReaderFor(client),
       photo: new FakePhotoPort(),
       writeDb: fakeWriteDbBinder(),
+      pendingWrites: {
+        journal: new PendingWriteJournal(new MemoryKeyValueStore()),
+        existsCheckers: {
+          create_purchase: purchaseExistsCheckerFor(client),
+          create_sale: saleExistsCheckerFor(client),
+        },
+      },
     })
     runtime.auth.start()
     auth.emit('SIGNED_IN', session('A'))

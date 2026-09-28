@@ -1,6 +1,8 @@
 import { IdentityAuthority } from '../../src/auth/identity-authority'
 import type { LeasedWriteDb } from '../../src/write/leased-write-client'
+import { PendingWriteJournal } from '../../src/write/pending-write-journal'
 import { WriteFormStore } from '../../src/state/write-form-store'
+import { MemoryKeyValueStore } from '../support/fakes'
 
 interface Draft {
   contextKey: string
@@ -9,6 +11,15 @@ interface Draft {
 
 function draftFor(key: string): Draft {
   return { contextKey: key, value: '' }
+}
+
+/** classifyFailure (net/failure.ts) reads `.name`/`.status` structurally — a real Error with these
+ *  set reproduces an HttpStatusError without importing net/spike-fetch.ts's own class here. */
+function httpError(status: number): Error & { status: number } {
+  const error = new Error(`HTTP ${String(status)}`) as Error & { status: number }
+  error.name = 'HttpStatusError'
+  error.status = status
+  return error
 }
 
 const FAKE_DB = { fake: true } as unknown as LeasedWriteDb
@@ -222,5 +233,116 @@ describe('WriteFormStore', () => {
     expect(result.ok).toBe(false) // superseded — never surfaces as a success the UI would show
     expect(store.getSnapshot().status).toBe('editing') // reset()'s state, not overwritten
     expect(store.getSnapshot().idempotencyKey).toBe(keyAfterReset)
+  })
+})
+
+/**
+ * P180: process-death-after-commit reliability. Only exercised when a `PendingWriteConfig` is
+ * supplied (purchase/sale in the real app) — every test above this point passes no config and is
+ * proof that the pre-P180 behaviour (plain 'error' status, no journal calls) is unchanged when the
+ * feature is not wired in.
+ */
+describe('WriteFormStore pending-write journal', () => {
+  it('records a pending entry BEFORE the action runs, and clears it on success', async () => {
+    const authority = new IdentityAuthority()
+    authority.observe('A')
+    const journal = new PendingWriteJournal(new MemoryKeyValueStore())
+    const store = new WriteFormStore(
+      authority,
+      () => draftFor('x'),
+      () => FAKE_DB,
+      {
+        journal,
+        operationKind: 'create_purchase',
+        summarize: (draft) => ({ value: draft.value }),
+      },
+    )
+    let entriesDuringAction = -1
+    const result = await store.submit('A', async () => {
+      entriesDuringAction = (await journal.listFor('A')).length
+      return 'ok'
+    })
+    expect(result.ok).toBe(true)
+    expect(entriesDuringAction).toBe(1)
+    expect(await journal.listFor('A')).toEqual([])
+  })
+
+  it('a definite failure (e.g. server-side rejection) clears the entry and status is "error"', async () => {
+    const authority = new IdentityAuthority()
+    authority.observe('A')
+    const journal = new PendingWriteJournal(new MemoryKeyValueStore())
+    const store = new WriteFormStore(
+      authority,
+      () => draftFor('x'),
+      () => FAKE_DB,
+      {
+        journal,
+        operationKind: 'create_purchase',
+        summarize: () => ({}),
+      },
+    )
+    const result = await store.submit('A', () => Promise.reject(httpError(400)))
+    expect(result.ok).toBe(false)
+    expect(store.getSnapshot().status).toBe('error')
+    expect(await journal.listFor('A')).toEqual([])
+  })
+
+  it('an uncertain failure (offline) KEEPS the pending entry and status is "uncertain", never "error"', async () => {
+    const authority = new IdentityAuthority()
+    authority.observe('A')
+    const journal = new PendingWriteJournal(new MemoryKeyValueStore())
+    const store = new WriteFormStore(
+      authority,
+      () => draftFor('x'),
+      () => FAKE_DB,
+      {
+        journal,
+        operationKind: 'create_purchase',
+        summarize: () => ({}),
+      },
+    )
+    const keyBefore = store.getSnapshot().idempotencyKey
+    const result = await store.submit('A', () =>
+      Promise.reject(new TypeError('network request failed')),
+    )
+    expect(result.ok).toBe(false)
+    expect(store.getSnapshot().status).toBe('uncertain')
+    // The key is NOT rotated: a manual retry from this same instance reuses it, so the RPC's own
+    // idempotent-replay rule protects against a duplicate if the first attempt actually committed.
+    expect(store.getSnapshot().idempotencyKey).toBe(keyBefore)
+    expect(await journal.listFor('A')).toHaveLength(1)
+  })
+
+  it('a 5xx (server) failure is also uncertain, not a definite error', async () => {
+    const authority = new IdentityAuthority()
+    authority.observe('A')
+    const journal = new PendingWriteJournal(new MemoryKeyValueStore())
+    const store = new WriteFormStore(
+      authority,
+      () => draftFor('x'),
+      () => FAKE_DB,
+      {
+        journal,
+        operationKind: 'create_sale',
+        summarize: () => ({}),
+      },
+    )
+    const result = await store.submit('A', () => Promise.reject(httpError(503)))
+    expect(result.ok).toBe(false)
+    expect(store.getSnapshot().status).toBe('uncertain')
+    expect(await journal.listFor('A')).toHaveLength(1)
+  })
+
+  it('without a pending config, the pre-P180 status is unchanged: "unknown"-kind failures stay "error"', async () => {
+    const authority = new IdentityAuthority()
+    authority.observe('A')
+    const store = new WriteFormStore(
+      authority,
+      () => draftFor('x'),
+      () => FAKE_DB,
+    ) // no pending config
+    const result = await store.submit('A', () => Promise.reject(new Error('server error')))
+    expect(result.ok).toBe(false)
+    expect(store.getSnapshot().status).toBe('error')
   })
 })
