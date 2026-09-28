@@ -252,6 +252,8 @@ export function harness(
     released?: PriceCheckPort
     fixture?: PriceCheckPort
     priceFeature?: PriceFeatureDeps
+    readFx?: PriceFeatureDeps['readFx']
+    writeDb?: WriteDbBinder
   } = {},
 ): Harness {
   const auth = new FakeAuth()
@@ -268,9 +270,9 @@ export function harness(
     collection,
     priceCheck: { released: overrides.released ?? fixture, fixture },
     priceFeature: overrides.priceFeature ?? INERT_PRICE_FEATURE,
-    readFx: overrides.priceFeature?.readFx ?? INERT_PRICE_FEATURE.readFx,
+    readFx: overrides.readFx ?? overrides.priceFeature?.readFx ?? INERT_PRICE_FEATURE.readFx,
     photo,
-    writeDb: fakeWriteDbBinder(),
+    writeDb: overrides.writeDb ?? fakeWriteDbBinder(),
     pendingWrites: {
       journal: new PendingWriteJournal(new MemoryKeyValueStore()),
       existsCheckers: INERT_PENDING_WRITES,
