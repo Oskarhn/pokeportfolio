@@ -12,6 +12,10 @@ const nativeClient = path.resolve(projectRoot, 'src/seam/supabase-client.ts')
 const config = getDefaultConfig(projectRoot)
 config.watchFolders = [...(config.watchFolders ?? []), repoSrc]
 config.resolver.nodeModulesPaths = [path.resolve(projectRoot, 'node_modules')]
+// P182: the pinned visual-recognition model (.onnx) and the visual index (.bin) are large binary
+// assets bundled through Metro's own asset pipeline (require() -> Asset.fromModule().downloadAsync()
+// -> a real file:// path), not through the JS bundle — see src/features/scanner-native/model-assets.ts.
+config.resolver.assetExts = [...config.resolver.assetExts, 'onnx', 'bin']
 
 const upstreamResolve = config.resolver.resolveRequest
 config.resolver.resolveRequest = (context, moduleName, platform) => {

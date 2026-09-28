@@ -18,6 +18,8 @@
     "src",
     "tests",
     "../../src/domain/*.ts",
+    "../../src/domain/scanner/**/*.ts",
+    "../../src/data/scanner/visual-index.ts",
     "../../src/data/portfolio.ts",
     "../../src/data/collection.ts",
     "../../src/data/catalog.ts",

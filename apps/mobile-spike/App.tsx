@@ -9,6 +9,7 @@ import { fxRateReaderFor } from './src/features/price-check/fx-source'
 import { createExpoPhotoPort } from './src/photo/expo-photo-port'
 import { createFixturePriceCheckPort } from './src/price-check/fixture-adapter'
 import { createReleasedPriceCheckPort } from './src/price-check/released-adapter'
+import { createNativeCardRecognitionPort } from './src/features/scanner-native/recognition-pipeline'
 import { backendConfig, clearStoredSession, supabase } from './src/seam/supabase-client'
 import { AppRoot } from './src/ui/AppRoot'
 import { AppThemeProvider, ThemedStatusBar } from './src/ui/theme'
@@ -64,6 +65,7 @@ function getAppRuntime(): Runtime {
       invoke: (name, options) => supabase.functions.invoke(name, options),
       readFx,
       onEvent: logP169Event,
+      recognition: createNativeCardRecognitionPort(),
     },
     readFx,
     photo: createExpoPhotoPort(),

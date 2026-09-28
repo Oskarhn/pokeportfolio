@@ -38,6 +38,17 @@ jest.mock('../../src/photo/expo-photo-port', () => ({
   createExpoPhotoPort: () => mockPhoto,
 }))
 
+// P182: the real recognizer transitively imports native-only modules (Skia, onnxruntime-react-
+// native, ML Kit) that have no JS implementation for Jest to parse. This test's own job (one app
+// root, one runtime per JS runtime) has nothing to do with recognition, so the module is replaced
+// wholesale rather than mocking each native dependency it happens to use.
+jest.mock('../../src/features/scanner-native/recognition-pipeline', () => ({
+  createNativeCardRecognitionPort: () => ({
+    implemented: true,
+    recognize: () => Promise.reject(new Error('not used by this test')),
+  }),
+}))
+
 jest.mock('../../src/wiring/runtime', () => {
   const actual = jest.requireActual<typeof import('../../src/wiring/runtime')>(
     '../../src/wiring/runtime',

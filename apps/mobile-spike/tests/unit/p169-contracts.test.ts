@@ -133,8 +133,12 @@ describe('read-only by construction', () => {
   })
 
   it('text-only search / price code never imports the scanner, the photo picker or a model', () => {
+    // P182: scanner-native/ IS the real recognizer (OCR + visual model), so its own files are
+    // legitimately excluded here exactly like PhotoEntryScreen/recognition.ts/feature.ts already
+    // were — this test's job is keeping the OTHER Price Check code (search, price lookup, the
+    // catalog card screen) free of scanner/photo/model imports, not banning the recognizer itself.
     const textOnly = source.filter(
-      (s) => !/PhotoEntryScreen|recognition\.ts|feature\.ts/.test(s.file),
+      (s) => !/PhotoEntryScreen|recognition\.ts|feature\.ts|scanner-native[\\/]/.test(s.file),
     )
     const offenders = textOnly
       .filter((s) =>
