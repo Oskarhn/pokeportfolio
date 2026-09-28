@@ -488,6 +488,193 @@ const MUTANTS = [
     ],
     tests: ['tests/unit/card-detail-reloads-on-focus.test.ts'],
   },
+  // P180: 15 new mutants over this phase's own additions (FX contract, raw-UUID fix,
+  // pending-write journal, fixture-overwrite guard). P1-P21 above are unaffected and re-run
+  // unchanged as a regression check on the combined campaign.
+  {
+    id: 'P22',
+    title: '#1 (P180) a missing FX rate is silently replaced with 1 instead of failing closed',
+    file: 'src/write/fx-for-write.ts',
+    edits: [
+      [
+        "if (!parse.ok) return { kind: parse.reason }",
+        "if (!parse.ok) return { kind: 'ready', rateToNok: '1', rateDate: '1970-01-01', source: 'manual', stale: false }",
+      ],
+    ],
+    tests: ['tests/unit/fx-for-write.test.ts'],
+  },
+  {
+    id: 'P23',
+    title: '#2 (P180) the FX conversion direction is inverted (NOK treated as the source currency)',
+    file: 'src/write/fx-for-write.ts',
+    edits: [
+      [
+        "return convert(amount, state.rateToNok, 'NOK')",
+        "return convert({ minorUnits: amount.minorUnits, currency: 'NOK' }, state.rateToNok, amount.currency)",
+      ],
+    ],
+    tests: ['tests/unit/fx-for-write.test.ts'],
+  },
+  {
+    id: 'P24',
+    title: '#5a (P180) a failed FX read is silently treated as a valid rate instead of read_failed',
+    file: 'src/write/fx-for-write.ts',
+    edits: [
+      [
+        "  } catch {\n    return { kind: 'read_failed' }\n  }",
+        "  } catch {\n    return { kind: 'ready', rateToNok: '1', rateDate: '1970-01-01', source: 'manual', stale: false }\n  }",
+      ],
+    ],
+    tests: ['tests/unit/fx-for-write.test.ts'],
+  },
+  {
+    id: 'P25',
+    title: '#5b (P180) a stale (>7 day) FX rate is silently reported as fresh, contrary to the Price Check contract',
+    file: 'src/write/fx-for-write.ts',
+    edits: [
+      [
+        '      stale: isFxRateStale(parse.rate.rateDate, nowMs),',
+        '      stale: false,',
+      ],
+    ],
+    tests: ['tests/unit/fx-for-write.test.ts'],
+  },
+  {
+    id: 'P26',
+    title: "#5c (P180) fxWriteIsSubmittable treats 'missing' as submittable — fail-closed broken at its own gate",
+    file: 'src/write/fx-for-write.ts',
+    edits: [
+      [
+        "  return state.kind === 'not_needed' || state.kind === 'ready'",
+        "  return state.kind === 'not_needed' || state.kind === 'ready' || state.kind === 'missing'",
+      ],
+    ],
+    tests: ['tests/unit/fx-for-write.test.ts', 'tests/unit/record-purchase-fx-submission.test.tsx'],
+  },
+  {
+    id: 'P27',
+    title: '#6 (P180) process-death recovery: the pending journal records a FRESH idempotency key instead of the submit\'s own',
+    file: 'src/state/write-form-store.ts',
+    edits: [
+      [
+        '      await this.pending.journal.record({\n        idempotencyKey,\n        operationKind: this.pending.operationKind,',
+        '      await this.pending.journal.record({\n        idempotencyKey: generateIdempotencyKey(),\n        operationKind: this.pending.operationKind,',
+      ],
+    ],
+    tests: ['tests/unit/write-form-store.test.ts'],
+  },
+  {
+    id: 'P28',
+    title: '#7 (P180) an uncertain (offline/5xx) write also clears its pending entry — retried without reconciliation',
+    file: 'src/state/write-form-store.ts',
+    edits: [
+      [
+        '      if (this.pending !== undefined && !uncertain) {',
+        '      if (this.pending !== undefined) {',
+      ],
+    ],
+    tests: ['tests/unit/write-form-store.test.ts'],
+  },
+  {
+    id: 'P29',
+    title: "#8 (P180) the pending-write journal's listFor no longer filters by user — A's pending write visible under B",
+    file: 'src/write/pending-write-journal.ts',
+    edits: [
+      [
+        '  async listFor(userId: string, now = Date.now()): Promise<PendingWriteEntry[]> {\n    return (await this.readAll(now)).filter((e) => e.userId === userId)\n  }',
+        '  async listFor(userId: string, now = Date.now()): Promise<PendingWriteEntry[]> {\n    void userId\n    return await this.readAll(now)\n  }',
+      ],
+    ],
+    tests: [
+      'tests/unit/pending-write-journal.test.ts',
+      'tests/unit/pending-write-reconciliation.test.ts',
+      'tests/unit/pending-writes-store.test.ts',
+    ],
+  },
+  {
+    id: 'P30',
+    title: "#9 (P180) PendingWritesStore.reset() stops clearing synchronously — a NEW identity can show the OLD identity's list for a frame",
+    file: 'src/state/pending-writes-store.ts',
+    edits: [
+      [
+        '    this.set({ userId, unresolved: [] })\n    if (userId === null) return',
+        '    if (userId === null) return',
+      ],
+    ],
+    tests: ['tests/unit/pending-writes-store.test.ts'],
+  },
+  {
+    id: 'P31',
+    title: '#10 (P180) the pending journal\'s clear() becomes a no-op — an entry never clears after success',
+    file: 'src/write/pending-write-journal.ts',
+    edits: [
+      [
+        '  async clear(idempotencyKey: string, now = Date.now()): Promise<void> {\n    const entries = await this.readAll(now)\n    await this.writeAll(entries.filter((e) => e.idempotencyKey !== idempotencyKey))\n  }',
+        '  async clear(idempotencyKey: string, now = Date.now()): Promise<void> {\n    void idempotencyKey\n    const entries = await this.readAll(now)\n    await this.writeAll(entries)\n  }',
+      ],
+    ],
+    tests: ['tests/unit/pending-write-journal.test.ts', 'tests/unit/write-form-store.test.ts'],
+  },
+  {
+    id: 'P32',
+    title: '#11 (P180) cardIdentityLine falls back to a raw UUID-shaped string again',
+    file: 'src/ui/card-display-text.ts',
+    edits: [
+      [
+        "  if (display === undefined) return 'Selected card'",
+        "  if (display === undefined) return 'Card variant 00000000-0000-0000-0000-000000000000'",
+      ],
+    ],
+    tests: ['tests/unit/card-identity-no-uuid.test.tsx'],
+  },
+  {
+    id: 'P33',
+    title: '#12 (P180) the fixture-overwrite guard is restored to always silently overwrite',
+    file: 'scripts/fixture-overwrite-guard.js',
+    edits: [
+      [
+        "function decideFixtureAction({ exists, force, reuse }) {\n  if (!exists) return 'create'",
+        "function decideFixtureAction({ exists, force, reuse }) {\n  void exists\n  void force\n  void reuse\n  return 'create'",
+      ],
+    ],
+    tests: ['tests/unit/fixture-overwrite-guard.test.ts'],
+  },
+  {
+    id: 'P34',
+    title: '#15 (P180) the original entered (source-currency) purchase amount is replaced before it reaches create_purchase',
+    file: 'src/ui/screens/RecordPurchaseScreen.tsx',
+    edits: [
+      [
+        "quantity: validated.quantity,\n              unitPriceMinor: validated.unitPriceMinor,",
+        "quantity: validated.quantity,\n              unitPriceMinor: validated.unitPriceMinor * 2n,",
+      ],
+    ],
+    tests: ['tests/unit/record-purchase-fx-submission.test.tsx'],
+  },
+  {
+    id: 'P35',
+    title: '#4 (P180) the FX rate is round-tripped through Number(), losing precision on a long decimal rate',
+    file: 'src/write/fx-for-write.ts',
+    edits: [
+      [
+        '      rateToNok: parse.rate.rateToNok,\n      rateDate: parse.rate.rateDate,',
+        '      rateToNok: String(Number(parse.rate.rateToNok)),\n      rateDate: parse.rate.rateDate,',
+      ],
+    ],
+    tests: ['tests/unit/fx-for-write.test.ts'],
+  },
+  {
+    id: 'P36',
+    title: "#5d (P180) RecordPurchaseScreen's own fail-closed guard is removed — onConfirm no longer defends in depth",
+    file: 'src/ui/screens/RecordPurchaseScreen.tsx',
+    edits: [
+      [
+        "    if (!fxWriteIsSubmittable(fxState)) {\n      Alert.alert('Check your entry', 'An exchange rate is required before this can be recorded.')\n      return\n    }\n    const fx = fxState.kind === 'ready' ? fxState : null",
+        '    const fx = fxState.kind === \'ready\' ? fxState : null',
+      ],
+    ],
+    tests: ['tests/unit/record-purchase-fx-submission.test.tsx'],
+  },
 ]
 
 const only = process.argv.includes('--only')
