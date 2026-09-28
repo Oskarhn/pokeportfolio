@@ -73,12 +73,12 @@ describe('with-short-cxx-build-path', () => {
   it('takes the home directory from its argument, never a literal user path', () => {
     const dir = cxx.stagingDirFor('/anywhere', '/home/ci')
     expect(dir.startsWith('/home/ci/')).toBe(true)
-    expect(
-      require('node:fs').readFileSync(
-        require.resolve('../../plugins/with-short-cxx-build-path'),
-        'utf8',
-      ),
-    ).not.toMatch(/C:[\\/]+Users[\\/]+Oskar/i)
+    const fs = require('node:fs') as typeof import('node:fs')
+    const source = fs.readFileSync(
+      require.resolve('../../plugins/with-short-cxx-build-path'),
+      'utf8',
+    )
+    expect(source).not.toMatch(/C:[\\/]+Users[\\/]+Oskar/i)
   })
 
   it('injects the staging directory once (idempotent) into the android block', () => {
