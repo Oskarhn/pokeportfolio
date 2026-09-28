@@ -380,7 +380,11 @@ async function runPipeline(
  *  from the rule Price Check's UI already trusts. */
 function toOutcome(result: NativeRecognitionResult): RecognitionOutcome {
   const confidence = result.state as ScanConfidence
-  const candidates: ScanCandidate[] = result.candidates.map((c) => ({
+  // NO_MATCH means the engine found nothing it stands behind: the person is sent to manual search,
+  // never shown the first retrieved row as if it were a suggestion (P165 contract: a NO_MATCH carries
+  // no candidates; the engine can still hand back a weak-visual shortlist with tier `none`).
+  const shown = result.state === 'NO_MATCH' ? [] : result.candidates
+  const candidates: ScanCandidate[] = shown.map((c) => ({
     candidateId: c.cardId,
     name: c.name,
     setName: c.setName,

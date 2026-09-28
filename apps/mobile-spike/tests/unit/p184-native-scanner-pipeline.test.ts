@@ -398,6 +398,17 @@ describe('confidence policy: never a false HIGH', () => {
     },
   )
 
+  it('a weak-visual shortlist with tier NO_MATCH shows the person NO candidate at all', async () => {
+    const { outcome, trace } = await scanWith(
+      baseScript({
+        ocr: { name: null, number: null },
+        visual: [{ cardId: 'alpha', similarity: 0.6 }],
+      }),
+    )
+    expect(trace.tier).toBe('NO_MATCH')
+    expect(kindOf(outcome)).toBe('no_match')
+  })
+
   it('moderate visual-only (0.72) is never HIGH', async () => {
     const { outcome } = await scanWith(
       baseScript({

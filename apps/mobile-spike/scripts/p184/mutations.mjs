@@ -214,6 +214,13 @@ const MUTANTS = [
     to: 'const severeBlur = false as boolean',
   },
   {
+    id: 'M31',
+    name: 'NO_MATCH still shows the first retrieved candidate',
+    file: PIPE,
+    from: "const shown = result.state === 'NO_MATCH' ? [] : result.candidates",
+    to: 'const shown = result.candidates',
+  },
+  {
     id: 'M24',
     name: 'returning to the foreground always re-analyses (duplicate recognition)',
     file: 'src/features/price-check/recognition-lifecycle.ts',
