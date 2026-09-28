@@ -676,6 +676,93 @@ const MUTANTS = [
     ],
     tests: ['tests/unit/record-purchase-fx-submission.test.tsx'],
   },
+  {
+    id: 'P37',
+    title:
+      '(P181) MoneyText stops exposing the FULL amount to screen readers — accessibilityLabel becomes a generic placeholder instead of the real text',
+    file: 'src/ui/components.tsx',
+    edits: [
+      [
+        "accessibilityLabel={value === null ? 'No value' : text}",
+        "accessibilityLabel={value === null ? 'No value' : 'Amount'}",
+      ],
+    ],
+    tests: ['tests/unit/p181-device-accessibility-contracts.test.tsx'],
+  },
+  {
+    id: 'P38',
+    title: '(P181) the 48dp touch-target floor is weakened to 22dp',
+    file: 'src/ui/theme.ts',
+    edits: [['export const MIN_TOUCH = 48', 'export const MIN_TOUCH = 22']],
+    tests: [
+      'tests/unit/p181-device-accessibility-contracts.test.tsx',
+      'tests/unit/p170-integration.test.tsx',
+    ],
+  },
+  {
+    id: 'P39',
+    title:
+      '(P181) CollectionScreen keys its FlatList rows by array index instead of a stable id (key collisions/remounts on reorder or filter -> scroll jank)',
+    file: 'src/ui/screens/CollectionScreen.tsx',
+    edits: [
+      ['keyExtractor={(row) => row.holdingId}', 'keyExtractor={(row, i) => String(i)}'],
+    ],
+    tests: ['tests/unit/p181-device-accessibility-contracts.test.tsx'],
+  },
+  {
+    id: 'P40',
+    title:
+      '(P181) CollectionScreen drops getItemLayout, forcing FlatList to measure every row (a real jank regression on long collections)',
+    file: 'src/ui/screens/CollectionScreen.tsx',
+    edits: [['getItemLayout={getItemLayout}', 'getItemLayout={undefined}']],
+    tests: ['tests/unit/p181-device-accessibility-contracts.test.tsx'],
+  },
+  {
+    id: 'P41',
+    title:
+      "(P181) App.tsx's runtime singleton guard is removed — an Activity recreation (font/density/locale) would create a SECOND app runtime in the same JS process (duplicate stores, duplicate auth subscription) instead of reusing the first (P167's own finding, re-guarded)",
+    file: 'App.tsx',
+    edits: [
+      ['if (appRuntime !== null) return appRuntime', 'if (false as boolean) return appRuntime'],
+    ],
+    tests: ['tests/unit/p181-device-accessibility-contracts.test.tsx'],
+  },
+  {
+    id: 'P42',
+    title:
+      "(P181) TaskScreen drops its KeyboardAvoidingView — the focused field and the footer's Confirm button could end up hidden behind the keyboard on the financial write-form screens",
+    file: 'src/ui/components.tsx',
+    edits: [
+      [
+        '<KeyboardAvoidingView style={{ flex: 1 }} behavior={KEYBOARD_BEHAVIOR}>',
+        '<View style={{ flex: 1 }}>',
+      ],
+      ['</KeyboardAvoidingView>', '</View>'],
+    ],
+    tests: ['tests/unit/p181-device-accessibility-contracts.test.tsx'],
+  },
+  {
+    id: 'P43',
+    title:
+      '(P181) RecordPurchaseScreen hand-rolls an absolutely-positioned footer instead of using the shared TaskScreen/TaskFooter composition — it could overlay the last form field or the footer summary text',
+    file: 'src/ui/screens/RecordPurchaseScreen.tsx',
+    edits: [
+      [
+        '        footer={\n          <>',
+        "        footer={\n          <View style={{ position: 'absolute', bottom: 0 }}>",
+      ],
+      ['          </>\n        }\n      >', '          </View>\n        }\n      >'],
+    ],
+    tests: ['tests/unit/p181-device-accessibility-contracts.test.tsx'],
+  },
+  {
+    id: 'P44',
+    title:
+      "(P181) the native splash background drifts away from the dark theme's own background token — a white/default splash would flash before the themed UI mounts",
+    file: 'app.json',
+    edits: [['"backgroundColor": "#0F0F11"', '"backgroundColor": "#FFFFFF"']],
+    tests: ['tests/unit/p181-device-accessibility-contracts.test.tsx'],
+  },
 ]
 
 const only = process.argv.includes('--only')

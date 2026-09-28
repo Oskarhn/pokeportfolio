@@ -112,6 +112,16 @@ const STACKS = {
     mockPort: 55497,
     withWorktreeMigrations: true,
   },
+  // P181: native device-matrix/accessibility/performance gate, own stack/AVD/ports (independent of
+  // P180's, which stays intact for reference). API 55721, mock 55498 (clear of every port above).
+  // Same migration set as P177-P180 (this worktree adds none of its own).
+  p181: {
+    projectId: 'pokeportfolio-p181-app',
+    portShift: 400,
+    dir: 'p181',
+    mockPort: 55498,
+    withWorktreeMigrations: true,
+  },
 }
 
 export function stackOf(argv) {
