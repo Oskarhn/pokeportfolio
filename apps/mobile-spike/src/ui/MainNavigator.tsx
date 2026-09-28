@@ -180,10 +180,18 @@ export function tabOptions(title: string, testID: string) {
   }
 }
 
+// P181: a single-word label ("Collection", "Profile") has no space to wrap at, so numberOfLines={2}
+// used to force an ugly mid-word split ("Collectio"/"n") at large font scales instead of shrinking.
+// Shrinking to fit one line (the same pattern MoneyText already uses for its own fixed-height rows)
+// keeps every label legible and whole.
+const TAB_LABEL_MIN_FONT_SCALE = 0.6
+
 function TabLabel({ title, color }: { title: string; color: string }) {
   return (
     <Text
-      numberOfLines={2}
+      numberOfLines={1}
+      adjustsFontSizeToFit
+      minimumFontScale={TAB_LABEL_MIN_FONT_SCALE}
       maxFontSizeMultiplier={TAB_LABEL_MAX_SCALE}
       style={{ color, fontSize: 13, fontWeight: '600', textAlign: 'center' }}
     >

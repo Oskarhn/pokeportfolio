@@ -497,7 +497,7 @@ const MUTANTS = [
     file: 'src/write/fx-for-write.ts',
     edits: [
       [
-        "if (!parse.ok) return { kind: parse.reason }",
+        'if (!parse.ok) return { kind: parse.reason }',
         "if (!parse.ok) return { kind: 'ready', rateToNok: '1', rateDate: '1970-01-01', source: 'manual', stale: false }",
       ],
     ],
@@ -529,19 +529,16 @@ const MUTANTS = [
   },
   {
     id: 'P25',
-    title: '#5b (P180) a stale (>7 day) FX rate is silently reported as fresh, contrary to the Price Check contract',
+    title:
+      '#5b (P180) a stale (>7 day) FX rate is silently reported as fresh, contrary to the Price Check contract',
     file: 'src/write/fx-for-write.ts',
-    edits: [
-      [
-        '      stale: isFxRateStale(parse.rate.rateDate, nowMs),',
-        '      stale: false,',
-      ],
-    ],
+    edits: [['      stale: isFxRateStale(parse.rate.rateDate, nowMs),', '      stale: false,']],
     tests: ['tests/unit/fx-for-write.test.ts'],
   },
   {
     id: 'P26',
-    title: "#5c (P180) fxWriteIsSubmittable treats 'missing' as submittable — fail-closed broken at its own gate",
+    title:
+      "#5c (P180) fxWriteIsSubmittable treats 'missing' as submittable — fail-closed broken at its own gate",
     file: 'src/write/fx-for-write.ts',
     edits: [
       [
@@ -553,7 +550,8 @@ const MUTANTS = [
   },
   {
     id: 'P27',
-    title: '#6 (P180) process-death recovery: the pending journal records a FRESH idempotency key instead of the submit\'s own',
+    title:
+      "#6 (P180) process-death recovery: the pending journal records a FRESH idempotency key instead of the submit's own",
     file: 'src/state/write-form-store.ts',
     edits: [
       [
@@ -565,7 +563,8 @@ const MUTANTS = [
   },
   {
     id: 'P28',
-    title: '#7 (P180) an uncertain (offline/5xx) write also clears its pending entry — retried without reconciliation',
+    title:
+      '#7 (P180) an uncertain (offline/5xx) write also clears its pending entry — retried without reconciliation',
     file: 'src/state/write-form-store.ts',
     edits: [
       [
@@ -577,7 +576,8 @@ const MUTANTS = [
   },
   {
     id: 'P29',
-    title: "#8 (P180) the pending-write journal's listFor no longer filters by user — A's pending write visible under B",
+    title:
+      "#8 (P180) the pending-write journal's listFor no longer filters by user — A's pending write visible under B",
     file: 'src/write/pending-write-journal.ts',
     edits: [
       [
@@ -593,7 +593,8 @@ const MUTANTS = [
   },
   {
     id: 'P30',
-    title: "#9 (P180) PendingWritesStore.reset() stops clearing synchronously — a NEW identity can show the OLD identity's list for a frame",
+    title:
+      "#9 (P180) PendingWritesStore.reset() stops clearing synchronously — a NEW identity can show the OLD identity's list for a frame",
     file: 'src/state/pending-writes-store.ts',
     edits: [
       [
@@ -605,7 +606,8 @@ const MUTANTS = [
   },
   {
     id: 'P31',
-    title: '#10 (P180) the pending journal\'s clear() becomes a no-op — an entry never clears after success',
+    title:
+      "#10 (P180) the pending journal's clear() becomes a no-op — an entry never clears after success",
     file: 'src/write/pending-write-journal.ts',
     edits: [
       [
@@ -641,19 +643,21 @@ const MUTANTS = [
   },
   {
     id: 'P34',
-    title: '#15 (P180) the original entered (source-currency) purchase amount is replaced before it reaches create_purchase',
+    title:
+      '#15 (P180) the original entered (source-currency) purchase amount is replaced before it reaches create_purchase',
     file: 'src/ui/screens/RecordPurchaseScreen.tsx',
     edits: [
       [
-        "quantity: validated.quantity,\n              unitPriceMinor: validated.unitPriceMinor,",
-        "quantity: validated.quantity,\n              unitPriceMinor: validated.unitPriceMinor * 2n,",
+        'quantity: validated.quantity,\n              unitPriceMinor: validated.unitPriceMinor,',
+        'quantity: validated.quantity,\n              unitPriceMinor: validated.unitPriceMinor * 2n,',
       ],
     ],
     tests: ['tests/unit/record-purchase-fx-submission.test.tsx'],
   },
   {
     id: 'P35',
-    title: '#4 (P180) the FX rate is round-tripped through Number(), losing precision on a long decimal rate',
+    title:
+      '#4 (P180) the FX rate is round-tripped through Number(), losing precision on a long decimal rate',
     file: 'src/write/fx-for-write.ts',
     edits: [
       [
@@ -671,7 +675,7 @@ const MUTANTS = [
     edits: [
       [
         "    if (!fxWriteIsSubmittable(fxState)) {\n      Alert.alert('Check your entry', 'An exchange rate is required before this can be recorded.')\n      return\n    }\n    const fx = fxState.kind === 'ready' ? fxState : null",
-        '    const fx = fxState.kind === \'ready\' ? fxState : null',
+        "    const fx = fxState.kind === 'ready' ? fxState : null",
       ],
     ],
     tests: ['tests/unit/record-purchase-fx-submission.test.tsx'],
@@ -704,9 +708,7 @@ const MUTANTS = [
     title:
       '(P181) CollectionScreen keys its FlatList rows by array index instead of a stable id (key collisions/remounts on reorder or filter -> scroll jank)',
     file: 'src/ui/screens/CollectionScreen.tsx',
-    edits: [
-      ['keyExtractor={(row) => row.holdingId}', 'keyExtractor={(row, i) => String(i)}'],
-    ],
+    edits: [['keyExtractor={(row) => row.holdingId}', 'keyExtractor={(row, i) => String(i)}']],
     tests: ['tests/unit/p181-device-accessibility-contracts.test.tsx'],
   },
   {
