@@ -207,6 +207,13 @@ const MUTANTS = [
     to: 'for an answer nobody will see.\n      void 0',
   },
   {
+    id: 'M30',
+    name: 'severe-blur visual abstention removed (a blurred photo is embedded and trusted)',
+    file: PIPE,
+    from: 'const severeBlur = shouldAbstainForBlurScore(blurScore)',
+    to: 'const severeBlur = false as boolean',
+  },
+  {
     id: 'M24',
     name: 'returning to the foreground always re-analyses (duplicate recognition)',
     file: 'src/features/price-check/recognition-lifecycle.ts',

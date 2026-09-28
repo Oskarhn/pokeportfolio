@@ -1,4 +1,5 @@
 import { File } from 'expo-file-system'
+import { computeBlurScore, shouldAbstainForBlurScore } from '@shared/domain/scanner/capture-quality'
 import { matchScannerObservation } from '@shared/domain/scanner/engine'
 import type {
   ScannerCandidateRecord,
@@ -102,6 +103,8 @@ export function createNativeCardRecognitionPort(
         ocr: null,
         visualTop: [],
         visualFailed: false,
+        blurScore: null,
+        visualSkipped: null,
         tier: null,
         topCandidateIds: [],
         scannerBestId: null,
@@ -160,6 +163,8 @@ type TraceDraft = Mutable<
     | 'ocr'
     | 'visualTop'
     | 'visualFailed'
+    | 'blurScore'
+    | 'visualSkipped'
     | 'tier'
     | 'topCandidateIds'
     | 'scannerBestId'
@@ -184,6 +189,8 @@ class RecognitionAbstainError extends Error {
     super(message)
   }
 }
+
+class VisualSkipped extends Error {}
 
 class RecognitionCancelledError extends Error {
   constructor(readonly checkpoint: string) {
@@ -261,9 +268,17 @@ async function runPipeline(
     )
   }
 
+  // Web parity (P93/D-106): a severely blurred photo makes the visual channel unreliable — P91
+  // measured the nearest WRONG card scoring higher than the right one — so the visual channel
+  // abstains for this scan; OCR and the text search still run.
+  const blurScore = await timed(ctx, 'blurMs', () => computeBlurScore(decoded))
+  ctx.trace.blurScore = Math.round(blurScore)
+  const severeBlur = shouldAbstainForBlurScore(blurScore)
+  if (severeBlur) ctx.trace.visualSkipped = 'severe-blur'
+
   const [ocr, visualSession] = await Promise.all([
     timed(ctx, 'ocrMs', () => deps.ocr(input.uri, decoded.height)).catch(() => null),
-    timed(ctx, 'sessionMs', () => deps.visualSession()),
+    severeBlur ? Promise.resolve(null) : timed(ctx, 'sessionMs', () => deps.visualSession()),
   ])
   ctx.trace.ocr =
     ocr === null
@@ -278,6 +293,7 @@ async function runPipeline(
   let visualScores: VisualEvidenceByCard | undefined
   let visualHits: { cardId: string; similarity: number }[] = []
   try {
+    if (visualSession === null) throw new VisualSkipped()
     const embedding = await visualSession.embedTimed(decoded)
     ctx.stages.preprocessMs = embedding.preprocessMs
     ctx.stages.onnxMs = embedding.onnxMs
@@ -291,12 +307,17 @@ async function runPipeline(
       .map((hit) => ({ cardId: hit.cardId, similarity: Math.round(hit.similarity * 1e4) / 1e4 }))
   } catch (error) {
     if (error instanceof RecognitionCancelledError) throw error
-    // Visual channel failed (e.g. a corrupt tensor on this device): fall through to OCR-only,
-    // matching the web scanner's own documented degradation rather than erroring the whole scan
-    // when text evidence alone may still be usable.
-    visualScores = undefined
-    visualHits = []
-    ctx.trace.visualFailed = true
+    if (error instanceof VisualSkipped) {
+      visualScores = undefined
+      visualHits = []
+    } else {
+      // Visual channel failed (e.g. a corrupt tensor on this device): fall through to OCR-only,
+      // matching the web scanner's own documented degradation rather than erroring the whole scan
+      // when text evidence alone may still be usable.
+      visualScores = undefined
+      visualHits = []
+      ctx.trace.visualFailed = true
+    }
   }
 
   const observation: ScannerObservation = {
@@ -320,6 +341,14 @@ async function runPipeline(
   const fusionStart = nowMs()
   const match = matchScannerObservation(observation, candidates, visualScores)
   ctx.stages.fusionMs = nowMs() - fusionStart
+  // Nothing to show and the visual channel was skipped for blur: say so instead of a bare "no
+  // match", so the person knows a sharper photo can help.
+  if (severeBlur && match.candidates.length === 0) {
+    throw new RecognitionAbstainError(
+      'This photo is too blurry to identify a card. Retake it, or choose the card manually.',
+      'severe-blur',
+    )
+  }
   const scannerBestId = match.candidates[0]?.card.cardId ?? null
   const evidence = match.candidates[0] ? toEvidenceSummary(match.candidates[0]) : []
   ctx.trace.tier = confidenceStateFromTier(match.tier)

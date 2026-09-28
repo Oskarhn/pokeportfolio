@@ -13,6 +13,8 @@ export interface ScanStageTimings {
   readonly readMs: number
   readonly headerMs: number
   readonly decodeMs: number
+  /** Laplacian-variance sharpness measure (shared web capture-quality gate). */
+  readonly blurMs: number
   readonly ocrMs: number
   /** Time spent waiting for the (cached) model session; large only on the first scan. */
   readonly sessionMs: number
@@ -41,6 +43,10 @@ export interface ScanTraceEvent {
   } | null
   readonly visualTop: readonly { readonly cardId: string; readonly similarity: number }[]
   readonly visualFailed: boolean
+  /** Shared capture-quality sharpness score of the decoded photo (lower = blurrier). */
+  readonly blurScore: number | null
+  /** Why the visual channel did not run for this scan, when it did not (web parity: severe blur). */
+  readonly visualSkipped: 'severe-blur' | null
   readonly tier: string | null
   readonly topCandidateIds: readonly string[]
   readonly scannerBestId: string | null

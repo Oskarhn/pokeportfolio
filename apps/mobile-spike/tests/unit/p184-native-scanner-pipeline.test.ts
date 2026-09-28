@@ -118,7 +118,27 @@ interface Script {
   visual: { cardId: string; similarity: number }[] | 'fail'
   catalog: ScannerCandidateRecord[]
   decodeError?: ImageDecodeError | Error
+  /** A flat (edge-free) decoded image: the shared capture-quality gate reads it as severe blur. */
+  blurred?: boolean
 }
+
+// A small decoded image: high-contrast pseudo-random texture (sharp) or one flat colour (blurred).
+const DECODED_W = 160
+const DECODED_H = 224
+const TEXTURED_PIXELS = (() => {
+  const out = new Uint8ClampedArray(DECODED_W * DECODED_H * 4)
+  let seed = 7
+  for (let i = 0; i < out.length; i += 4) {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0
+    const v = (seed >>> 24) & 0xff
+    out[i] = v
+    out[i + 1] = (v * 3) & 0xff
+    out[i + 2] = (v * 7) & 0xff
+    out[i + 3] = 255
+  }
+  return out
+})()
+const FLAT_PIXELS = new Uint8ClampedArray(DECODED_W * DECODED_H * 4).fill(128)
 
 interface Calls {
   readBytes: number
@@ -158,9 +178,9 @@ function makeDeps(
       calls.decode += 1
       if (script.decodeError) throw script.decodeError
       return {
-        data: new Uint8ClampedArray(4),
-        width: 1000,
-        height: 1400,
+        data: script.blurred ? FLAT_PIXELS : TEXTURED_PIXELS,
+        width: DECODED_W,
+        height: DECODED_H,
         originalWidth: CARD_W,
         originalHeight: CARD_H,
       }
@@ -329,6 +349,39 @@ function kindOf(
 ) {
   return outcome.status === 'analysed' ? outcome.outcome.kind : outcome.status
 }
+
+describe('severe blur: the visual channel abstains (web parity), text still works', () => {
+  it('a blurred photo never loads or runs the model, and the trace says why', async () => {
+    const { trace, calls } = await scanWith(baseScript({ blurred: true }))
+    expect(calls.session).toBe(0)
+    expect(calls.embed).toBe(0)
+    expect(trace.visualSkipped).toBe('severe-blur')
+    expect(trace.blurScore).toBeLessThan(378)
+    expect(trace.visualTop).toEqual([])
+  })
+
+  it('a sharp photo runs the model and records a sharpness score above the gate', async () => {
+    const { trace, calls } = await scanWith(baseScript())
+    expect(calls.embed).toBe(1)
+    expect(trace.visualSkipped).toBeNull()
+    expect(trace.blurScore).toBeGreaterThanOrEqual(378)
+  })
+
+  it('blurred but readable text still finds the card by text, and never reaches HIGH without visual support', async () => {
+    const { outcome } = await scanWith(baseScript({ blurred: true }))
+    expect(outcome.status).toBe('analysed')
+    expect(kindOf(outcome)).not.toBe('high')
+  })
+
+  it('blurred and unreadable is an honest quality abstention, not a guess', async () => {
+    const events = traceCollector()
+    const { deps } = makeDeps(baseScript({ blurred: true, ocr: { name: null, number: null } }))
+    const outcome = await createNativeCardRecognitionPort(deps).recognize(IMAGE)
+    expect(outcome.status).toBe('abstain_quality')
+    if (outcome.status === 'abstain_quality') expect(outcome.reason).toMatch(/blurry/)
+    expect(scans(events)[0]?.stoppedAt).toBe('severe-blur')
+  })
+})
 
 describe('confidence policy: never a false HIGH', () => {
   it.each([0.05, 0.3, 0.5, 0.6, 0.67])(
