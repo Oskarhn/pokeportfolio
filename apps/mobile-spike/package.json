@@ -7,7 +7,6 @@
   "scripts": {
     "start": "expo start",
     "assets:scanner": "node scripts/prepare-scanner-native-assets.mjs",
-    "postinstall": "node scripts/install-skia-android-libs.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "pnpm --dir ../.. exec eslint --config apps/mobile-spike/eslint.config.js apps/mobile-spike/src apps/mobile-spike/tests apps/mobile-spike/App.tsx apps/mobile-spike/index.ts",
     "test": "jest --selectProjects unit shared-node shared-rn",

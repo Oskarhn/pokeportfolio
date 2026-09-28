@@ -329,6 +329,64 @@ function procCpuTicks(pid) {
 }
 
 // ------------------------------------------------------------------------------------------------
+// 4b. Same-user token refresh in the middle of a scan (explicit contract: the scan is preserved)
+// ------------------------------------------------------------------------------------------------
+function setDeviceClockUtc(epochMs) {
+  const d = new Date(epochMs)
+  const p = (n) => String(n).padStart(2, '0')
+  shell(`settings put global auto_time 0`)
+  shell(
+    `date -u ${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}${p(d.getUTCHours())}${p(d.getUTCMinutes())}${d.getUTCFullYear()}.${p(d.getUTCSeconds())}`,
+  )
+}
+function restoreDeviceClock() {
+  setDeviceClockUtc(Date.now())
+  shell(`settings put global auto_time 1`)
+}
+
+await step(
+  'same-user refresh: the access token is refreshed while a scan is held; the same scan still publishes',
+  async () => {
+    if (!rootAvailable()) throw new Error('adb root is not available')
+    clearLog()
+    await proxy('reset', 'POST')
+    await goPhotoScreen()
+    const retake = byId(dump(), 'p169-recognition-retake')
+    if (retake) tap(retake)
+    await holdNextScan()
+    await pushImage(fx('f01-clean'), 'refresh')
+    await pickNewest()
+    const t0 = Date.now()
+    try {
+      // The client refreshes when its clock says the token is (nearly) expired: jump it forward.
+      setDeviceClockUtc(Date.now() + 65 * 60 * 1000)
+      let refreshed = 0
+      while (Date.now() - t0 < 24000) {
+        refreshed = (await proxy('log')).requests.filter((r) =>
+          r.path.includes('grant_type=refresh_token'),
+        ).length
+        if (refreshed > 0) break
+        await sleep(700)
+      }
+      const ui = await waitRecognition(60000)
+      const all = scanTraces()
+      const cancelled = all.filter((t) => t.outcome === 'cancelled')
+      if (refreshed === 0) throw new Error('no token refresh happened during the scan')
+      if (cancelled.length > 0) throw new Error('the token refresh cancelled the scan')
+      if (!candidateNames(ui).includes('Sparkfin'))
+        throw new Error(`the scan did not publish: ${candidateNames(ui).join('|')}`)
+      return {
+        refreshRequests: refreshed,
+        published: candidateNames(ui),
+        traces: all.map((t) => t.outcome),
+      }
+    } finally {
+      restoreDeviceClock()
+    }
+  },
+)
+
+// ------------------------------------------------------------------------------------------------
 // 5. Identity adversarial
 // ------------------------------------------------------------------------------------------------
 async function signOut() {
