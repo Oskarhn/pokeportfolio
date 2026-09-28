@@ -129,6 +129,9 @@ export async function pushImage(localPath, label) {
   const name = `p184-${label}-${String(Date.now())}-${String(pushCounter)}.${localPath.split('.').pop()}`
   shell('mkdir -p /sdcard/Pictures')
   adb(['push', localPath, `/sdcard/Pictures/${name}`])
+  // adb push keeps the local file's modification time; the picker lists newest-first by that time,
+  // so an older local file would not be the newest item. Make it "now".
+  shell(`touch /sdcard/Pictures/${name}`)
   shell(
     `am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file:///sdcard/Pictures/${name}`,
   )
