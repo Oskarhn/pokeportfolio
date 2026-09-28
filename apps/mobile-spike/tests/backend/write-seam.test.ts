@@ -13,6 +13,7 @@ import type { LeasedWriteDb } from '../../src/write/leased-write-client'
 import { createOpening } from '../../src/write/opening-writes'
 import { createPurchase } from '../../src/write/purchase-writes'
 import { createSale } from '../../src/write/sale-writes'
+import { fxRateReaderFor, readLatestFxRate } from '../../src/features/price-check/fx-source'
 import { createWriteDbBinder } from '../../src/write/write-db'
 import type { Runtime } from '../../src/wiring/runtime'
 import { deferred } from '../support/fakes'
@@ -481,5 +482,238 @@ backendDescribe('P175 write seam against the real backend', () => {
     expect(owner).toBe(a.id)
     expect(owner).not.toBe(b.id) // never published under B, whatever the tab looks like now
     expect(runtime.authority.userId).toBe(b.id) // the tab itself is genuinely on B now
+  })
+
+  /**
+   * P180 primary task, against the REAL backend: `create_purchase`/`create_sale` require
+   * p_fx_rate_to_nok/p_fx_rate_date/p_fx_source for any non-NOK currency (the P133 migration this
+   * stack carries) — P178's own device run found EUR/USD/GBP/JPY purchases were refused because
+   * RecordPurchaseScreen never supplied them. These tests drive the SAME write functions the fixed
+   * screens now call, with FX metadata read through the SAME `fx-source.ts` reader Price Check
+   * already uses (not a second FX mechanism), and verify the stored row directly — never trusting
+   * only the RPC's return value.
+   */
+  it('create_purchase: JPY (exponent 0) with a real FX read succeeds and stores the exact NOK total', async () => {
+    // scripts/p169/seed.mts already seeds a JPY rate (0.0712) alongside EUR/USD — read it back
+    // through the real client, exactly as RecordPurchaseScreen now does, rather than inserting a
+    // second, conflicting row.
+    const { session, runtime } = await signedInAs(a)
+    const { variantId } = realCardVariant()
+    const { db: leasedDb } = db(session, runtime.authority.userId, runtime)
+    const rate = await readLatestFxRate('JPY', fxRateReaderFor(session.client))
+    if (!rate.ok) throw new Error(`expected the seeded JPY rate, got ${rate.reason}`)
+    expect(rate.rate.rateToNok).toBe('0.0712')
+
+    const purchase = await createPurchase(
+      {
+        purchasedOn: '2026-01-11',
+        currency: 'JPY',
+        lines: [
+          {
+            lineType: 'card',
+            cardVariantId: variantId,
+            condition: 'NM',
+            quantity: 1,
+            unitPriceMinor: 2500n, // JPY: minor units == major units (exponent 0)
+            spendClass: 'collectible',
+          },
+        ],
+        fxRateToNok: rate.rate.rateToNok,
+        fxRateDate: rate.rate.rateDate,
+        fxSource: 'norges_bank',
+      },
+      generateIdempotencyKey(),
+      leasedDb,
+    )
+    createdPurchaseIds.push(purchase.id)
+    createdHoldingIds.push(holdingIdForPurchase(purchase.id))
+    expect(purchase.currency).toBe('JPY')
+    expect(purchase.totalMinor).toBe(2500n) // no fractional JPY, no rescaling
+    const row = psql(
+      `select currency, total_minor::text, total_nok_minor::text, fx_rate_to_nok::text, fx_source ` +
+        `from public.purchases where id = '${purchase.id}';`,
+    )
+    const [currency, totalMinor, totalNokMinor, fxRate, fxSource] = row.split('|')
+    expect(currency).toBe('JPY')
+    expect(totalMinor).toBe('2500')
+    // money_minor_to_nok_minor: 2500 (JPY, exponent 0) * 0.0712 * 10^(2-0) = 17800 (exponent-aware,
+    // P133) — NOT round(2500 * 0.0712) = 178, the pre-P133 exponent-naive bug this migration fixed.
+    expect(totalNokMinor).toBe('17800')
+    expect(fxRate).toBe('0.07120000')
+    expect(fxSource).toBe('norges_bank')
+  })
+
+  it('create_purchase: JPY rejects a fractional unit price — no minor unit exists to round to', async () => {
+    const { session, runtime } = await signedInAs(a)
+    const { variantId } = realCardVariant()
+    const { db: leasedDb } = db(session, runtime.authority.userId, runtime)
+    const rate = await readLatestFxRate('JPY', fxRateReaderFor(session.client))
+    if (!rate.ok) throw new Error(`expected a JPY rate, got ${rate.reason}`)
+    // The client itself refuses this before any network call (write/money-input.ts) — asserted at
+    // the unit level already; this proves the SAME input, sent raw to the real RPC bypassing the
+    // client parser, is ALSO refused server-side (defense in depth, not double validation UX).
+    const { error } = await leasedDb
+      .rpc('create_purchase', {
+        p_purchased_on: '2026-01-11',
+        p_currency: 'JPY',
+        p_lines: [
+          {
+            line_type: 'card',
+            card_variant_id: variantId,
+            condition: 'NM',
+            grading_state: 'raw',
+            quantity: 1,
+            unit_price_minor: '2500.50',
+          },
+        ],
+        p_fx_rate_to_nok: rate.rate.rateToNok,
+        p_fx_rate_date: rate.rate.rateDate,
+        p_fx_source: 'norges_bank',
+        p_idempotency_key: generateIdempotencyKey(),
+      })
+      .single()
+    expect(error).not.toBeNull()
+  })
+
+  it('create_purchase: EUR with the real seeded rate succeeds and stores it exactly', async () => {
+    const { session, runtime } = await signedInAs(a)
+    const { variantId } = realCardVariant()
+    const { db: leasedDb } = db(session, runtime.authority.userId, runtime)
+    const rate = await readLatestFxRate('EUR', fxRateReaderFor(session.client))
+    if (!rate.ok) throw new Error(`expected the seeded EUR rate, got ${rate.reason}`)
+    // PostgREST serializes `numeric` as a bare JSON number (fx-source.ts's own documented
+    // caveat) — trailing zeros are gone by the time this arrives; the STORED value (asserted via
+    // an explicit ::text cast below) is what actually carries full numeric(18,8) precision.
+    expect(rate.rate.rateToNok).toBe('11.5') // seed-local-backend.mts's own fixture rate
+
+    const purchase = await createPurchase(
+      {
+        purchasedOn: '2026-01-12',
+        currency: 'EUR',
+        lines: [
+          {
+            lineType: 'card',
+            cardVariantId: variantId,
+            condition: 'LP',
+            quantity: 2,
+            unitPriceMinor: 4500n, // 45.00 EUR
+            spendClass: 'collectible',
+          },
+        ],
+        fxRateToNok: rate.rate.rateToNok,
+        fxRateDate: rate.rate.rateDate,
+        fxSource: 'norges_bank',
+      },
+      generateIdempotencyKey(),
+      leasedDb,
+    )
+    createdPurchaseIds.push(purchase.id)
+    createdHoldingIds.push(holdingIdForPurchase(purchase.id))
+    expect(purchase.currency).toBe('EUR')
+    expect(purchase.totalMinor).toBe(9000n) // 2 * 4500
+    // EUR and NOK share exponent 2, so this is a plain round(9000 * 11.5) = 103500.
+    expect(purchase.totalNokMinor).toBe(103500n)
+  })
+
+  it('create_sale: USD with the real seeded rate succeeds and stores it exactly', async () => {
+    const { session, runtime } = await signedInAs(a)
+    const { variantId } = realCardVariant()
+    const { db: leasedDb } = db(session, runtime.authority.userId, runtime)
+    const acquisition = await addCardAcquisition(
+      {
+        cardVariantId: variantId,
+        gradingState: 'raw',
+        condition: 'GD',
+        origin: 'other',
+        costBasisState: 'unknown',
+        quantity: 1,
+        acquiredOn: '2026-01-13',
+      },
+      leasedDb,
+    )
+    createdHoldingIds.push(acquisition.holdingId)
+    const rate = await readLatestFxRate('USD', fxRateReaderFor(session.client))
+    if (!rate.ok) throw new Error(`expected the seeded USD rate, got ${rate.reason}`)
+    expect(rate.rate.rateToNok).toBe('10.5')
+
+    const sale = await createSale(
+      [{ lotId: acquisition.lotId, quantity: 1, unitGrossMinor: 2000n }], // 20.00 USD
+      {
+        soldOn: '2026-01-14',
+        currency: 'USD',
+        fxRateToNok: rate.rate.rateToNok,
+        fxRateDate: rate.rate.rateDate,
+        fxSource: 'norges_bank',
+      },
+      generateIdempotencyKey(),
+      leasedDb,
+    )
+    createdSaleIds.push(sale.id)
+    expect(sale.currency).toBe('USD')
+    expect(sale.netProceedsMinor).toBe(2000n)
+    expect(sale.netProceedsNokMinor).toBe(21000n) // round(2000 * 10.5)
+  })
+
+  it('create_purchase: GBP with a manual rate (no ingested row) succeeds — "manual" is a real, distinct source', async () => {
+    const { session, runtime } = await signedInAs(a)
+    const { variantId } = realCardVariant()
+    const { db: leasedDb } = db(session, runtime.authority.userId, runtime)
+    // No GBP row is seeded at all — proves a MANUAL rate (what the app would offer if a person
+    // typed one in, or what a future manual-entry UI would send) works exactly like an
+    // automatically-read one; the RPC does not care which source produced the rate.
+    const purchase = await createPurchase(
+      {
+        purchasedOn: '2026-01-15',
+        currency: 'GBP',
+        lines: [
+          {
+            lineType: 'card',
+            cardVariantId: variantId,
+            condition: 'PL',
+            quantity: 1,
+            unitPriceMinor: 12345n, // 123.45 GBP
+            spendClass: 'collectible',
+          },
+        ],
+        fxRateToNok: '13.25000000',
+        fxRateDate: '2026-01-15',
+        fxSource: 'manual',
+      },
+      generateIdempotencyKey(),
+      leasedDb,
+    )
+    createdPurchaseIds.push(purchase.id)
+    createdHoldingIds.push(holdingIdForPurchase(purchase.id))
+    expect(purchase.currency).toBe('GBP')
+    expect(purchase.totalNokMinor).toBe(163571n) // round(12345 * 13.25) = 163571.25 -> 163571
+    const fxSource = psql(`select fx_source from public.purchases where id = '${purchase.id}';`)
+    expect(fxSource).toBe('manual')
+  })
+
+  it('create_purchase: a non-NOK currency with NO fx metadata is refused server-side — fails closed', async () => {
+    const { session, runtime } = await signedInAs(a)
+    const { variantId } = realCardVariant()
+    const { db: leasedDb } = db(session, runtime.authority.userId, runtime)
+    // Exactly the P178/P179 disclosed bug, reproduced directly against the real RPC: a non-NOK
+    // purchase sent with no FX metadata at all must be refused, not silently accepted at rate 0/1.
+    const { data, error } = await leasedDb
+      .rpc('create_purchase', {
+        p_purchased_on: '2026-01-16',
+        p_currency: 'EUR',
+        p_lines: [
+          {
+            line_type: 'card',
+            card_variant_id: variantId,
+            condition: 'NM',
+            grading_state: 'raw',
+            quantity: 1,
+            unit_price_minor: '1000',
+          },
+        ],
+        p_idempotency_key: generateIdempotencyKey(),
+      })
+      .single()
+    expect(data).toBeNull()
+    expect(error?.message).toContain('p_fx_rate_to_nok')
   })
 })
