@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Alert } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { isSupportedCurrencyCode, type CurrencyCode } from '@shared/domain/currency'
@@ -8,6 +8,7 @@ import {
   DateField,
   FailureView,
   Heading,
+  InlineNotice,
   Loading,
   MoneyField,
   PrimaryButton,
@@ -21,6 +22,13 @@ import { useRuntime, useStore } from '../runtime-context'
 import { listWritableLots, type WritableLot } from '../../collection/lot-reads'
 import { initialSaleDraft } from '../../write/drafts'
 import { assertValidEventDate, InvalidEventDateError } from '../../write/event-date'
+import { fxWriteNotice } from '../../write/fx-copy'
+import {
+  fxWriteIsSubmittable,
+  loadFxForWrite,
+  nokReferenceForWrite,
+  type FxWriteState,
+} from '../../write/fx-for-write'
 import {
   InvalidMoneyInputError,
   parseOptionalChargeInput,
@@ -41,8 +49,10 @@ export function RecordSaleScreen({
   route,
 }: NativeStackScreenProps<CollectionStackParams, 'RecordSale'>) {
   const { holdingId } = route.params
-  const { auth, writeForms } = useRuntime()
+  const { auth, writeForms, readFx, pendingWrites } = useRuntime()
   const session = useStore(auth)
+  useStore(pendingWrites) // subscribe: re-render when this identity's unresolved list changes
+  const hasUnresolvedSale = pendingWrites.hasUnresolved('create_sale')
   const form = useStore(writeForms.sale)
   const draft = form.draft
   const [lots, setLots] = useState<WritableLot[] | null>(null)
@@ -75,6 +85,35 @@ export function RecordSaleScreen({
 
   const currency: CurrencyCode = isSupportedCurrencyCode(draft.currency) ? draft.currency : 'NOK'
   const [currencySheetOpen, setCurrencySheetOpen] = useState(false)
+
+  // P180: same FX requirement and the same reused `fx_rates` read as RecordPurchaseScreen — see
+  // that screen's comment and write/fx-for-write.ts for the shared contract.
+  const [fxState, setFxState] = useState<FxWriteState>(
+    currency === 'NOK' ? { kind: 'not_needed' } : { kind: 'loading' },
+  )
+  useEffect(() => {
+    let cancelled = false
+    setFxState(currency === 'NOK' ? { kind: 'not_needed' } : { kind: 'loading' })
+    void loadFxForWrite(currency, readFx, Date.now()).then((state) => {
+      if (!cancelled) setFxState(state)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [currency, readFx])
+
+  const grossPreview = useMemo(() => {
+    try {
+      const unitGross = requireKnownAmount(draft.unitGrossInput, currency, '')
+      const quantity = Number.parseInt(draft.quantity, 10)
+      if (!Number.isInteger(quantity) || quantity < 1) return null
+      return { minorUnits: unitGross * BigInt(quantity), currency }
+    } catch {
+      return null
+    }
+  }, [draft.unitGrossInput, draft.quantity, currency])
+  const nokReference = grossPreview !== null ? nokReferenceForWrite(grossPreview, fxState) : null
+  const fxNotice = fxWriteNotice(fxState, nokReference)
 
   function validate(): { unitGrossMinor: bigint; quantity: number } | null {
     if (draft.lotId === '') {
@@ -115,6 +154,13 @@ export function RecordSaleScreen({
   async function onConfirm() {
     const validated = validate()
     if (validated === null) return
+    // Same fail-closed guard as RecordPurchaseScreen (mission §5): never send a non-NOK sale
+    // without real FX metadata, whatever the button's own `disabled` state currently is.
+    if (!fxWriteIsSubmittable(fxState)) {
+      Alert.alert('Check your entry', 'An exchange rate is required before this can be recorded.')
+      return
+    }
+    const fx = fxState.kind === 'ready' ? fxState : null
     await writeForms.sale.submit(session.userId, (db, d, idempotencyKey) =>
       createSale(
         [
@@ -127,6 +173,9 @@ export function RecordSaleScreen({
         {
           soldOn: d.soldOn,
           currency,
+          fxRateToNok: fx?.rateToNok,
+          fxRateDate: fx?.rateDate,
+          fxSource: fx?.source,
           marketplace: d.marketplace === '' ? undefined : d.marketplace,
           feesMinor: parseOptionalChargeInput(d.feesInput, currency),
           shippingCostMinor: parseOptionalChargeInput(d.shippingCostInput, currency),
@@ -140,7 +189,7 @@ export function RecordSaleScreen({
 
   if (lots === null && !lotsFailed) return <Loading label="Loading lots" />
 
-  const canSubmit = !lotsFailed && lots !== null && lots.length > 0
+  const canSubmit = !lotsFailed && lots !== null && lots.length > 0 && fxWriteIsSubmittable(fxState)
 
   return (
     <>
@@ -157,6 +206,12 @@ export function RecordSaleScreen({
         }
       >
         <Heading>Record sale</Heading>
+        {hasUnresolvedSale ? (
+          <InlineNotice testID="p180-sale-unresolved-notice" tone="warning">
+            A previous sale attempt did not confirm as saved. Check your Sales list before recording
+            this one, so you do not record it twice.
+          </InlineNotice>
+        ) : null}
         {lotsFailed ? (
           <Body muted>Could not load this holding&apos;s lots.</Body>
         ) : lots !== null && lots.length === 0 ? (
@@ -189,6 +244,11 @@ export function RecordSaleScreen({
               value={currency}
               onPress={() => setCurrencySheetOpen(true)}
             />
+            {fxNotice !== null ? (
+              <InlineNotice testID="p180-sale-fx-notice" tone={fxNotice.tone}>
+                {fxNotice.text}
+              </InlineNotice>
+            ) : null}
             <MoneyField
               testID="p175-sale-unit-gross"
               label={`Price paid per unit (${currency})`}
@@ -226,7 +286,14 @@ export function RecordSaleScreen({
               value={draft.notes}
               onChangeText={(text) => writeForms.sale.updateDraft({ notes: text })}
             />
-            {form.failure !== null ? <FailureView failure={form.failure} /> : null}
+            {form.status === 'uncertain' ? (
+              <InlineNotice testID="p180-sale-uncertain" tone="warning">
+                Could not confirm whether this sale was saved. Check your Sales list before trying
+                again — do not assume it failed.
+              </InlineNotice>
+            ) : form.failure !== null ? (
+              <FailureView failure={form.failure} />
+            ) : null}
             {form.status === 'success' ? (
               <Body testID="p175-sale-success">Sale recorded.</Body>
             ) : null}

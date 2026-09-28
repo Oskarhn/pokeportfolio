@@ -9,6 +9,7 @@ import {
   DateField,
   FailureView,
   Heading,
+  InlineNotice,
   MoneyField,
   MoneyText,
   PrimaryButton,
@@ -18,11 +19,19 @@ import {
   TaskScreen,
   TextField,
 } from '../components'
+import { cardIdentityLine } from '../card-display-text'
 import type { SearchStackParams } from '../navigation-types'
 import { useRuntime, useStore } from '../runtime-context'
 import { formatMoney } from '../../money/format-money'
 import { initialPurchaseDraft } from '../../write/drafts'
 import { assertValidEventDate, InvalidEventDateError } from '../../write/event-date'
+import { fxWriteNotice } from '../../write/fx-copy'
+import {
+  fxWriteIsSubmittable,
+  loadFxForWrite,
+  nokReferenceForWrite,
+  type FxWriteState,
+} from '../../write/fx-for-write'
 import {
   InvalidMoneyInputError,
   parseOptionalChargeInput,
@@ -53,9 +62,11 @@ export function RecordPurchaseScreen({
   route,
   navigation,
 }: NativeStackScreenProps<SearchStackParams, 'P175RecordPurchase'>) {
-  const { cardId, variantId } = route.params
-  const { auth, writeForms } = useRuntime()
+  const { variantId, cardDisplay } = route.params
+  const { auth, writeForms, readFx, pendingWrites } = useRuntime()
   const session = useStore(auth)
+  useStore(pendingWrites) // subscribe: re-render when this identity's unresolved list changes
+  const hasUnresolvedPurchase = pendingWrites.hasUnresolved('create_purchase')
   const form = useStore(writeForms.purchase)
   const draft = form.draft
   const [currencySheetOpen, setCurrencySheetOpen] = useState(false)
@@ -65,6 +76,25 @@ export function RecordPurchaseScreen({
   }, [writeForms.purchase, variantId])
 
   const currency: CurrencyCode = isSupportedCurrencyCode(draft.currency) ? draft.currency : 'NOK'
+
+  // P180 primary task: `create_purchase` requires `p_fx_rate_to_nok`/`p_fx_rate_date`/
+  // `p_fx_source` for any non-NOK currency (P133 migration) — the P178 currency selector made a
+  // non-NOK currency reachable without ever supplying this, so every such purchase was refused
+  // server-side (P178/P179's own disclosed finding). Reloaded whenever the chosen currency changes;
+  // NOK resolves synchronously to `not_needed` without a network round trip.
+  const [fxState, setFxState] = useState<FxWriteState>(
+    currency === 'NOK' ? { kind: 'not_needed' } : { kind: 'loading' },
+  )
+  useEffect(() => {
+    let cancelled = false
+    setFxState(currency === 'NOK' ? { kind: 'not_needed' } : { kind: 'loading' })
+    void loadFxForWrite(currency, readFx, Date.now()).then((state) => {
+      if (!cancelled) setFxState(state)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [currency, readFx])
 
   const preview = useMemo(() => {
     try {
@@ -117,6 +147,15 @@ export function RecordPurchaseScreen({
   async function onConfirm() {
     const validated = validate()
     if (validated === null) return
+    // Defense in depth: the Confirm button is already disabled whenever `fxState` is not
+    // submittable (see the footer below), but `onConfirm` itself never sends a non-NOK purchase
+    // without real FX metadata — mission §5's "fail closed", enforced here rather than only in the
+    // button's `disabled` prop.
+    if (!fxWriteIsSubmittable(fxState)) {
+      Alert.alert('Check your entry', 'An exchange rate is required before this can be recorded.')
+      return
+    }
+    const fx = fxState.kind === 'ready' ? fxState : null
     // There is no retailer-management RPC ported to the native write seam (P175 scope: see
     // output_175.txt BLOCKERS), so a typed retailer/source name is folded into the free-text notes
     // rather than silently discarded — `p_retailer_id` itself stays unset.
@@ -125,6 +164,11 @@ export function RecordPurchaseScreen({
         {
           purchasedOn: d.purchasedOn,
           currency,
+          // fx_rate_to_nok is always "NOK per ONE MAJOR unit of the source currency"
+          // (FINANCIAL_MODEL.md §7) — passed straight through from the read, never rescaled here.
+          fxRateToNok: fx?.rateToNok,
+          fxRateDate: fx?.rateDate,
+          fxSource: fx?.source,
           lines: [
             {
               lineType: 'card',
@@ -158,6 +202,10 @@ export function RecordPurchaseScreen({
 
   const totalValue =
     preview !== null ? { minorUnits: preview.total, currency: preview.currency } : null
+  const nokReference =
+    preview !== null && totalValue !== null ? nokReferenceForWrite(totalValue, fxState) : null
+  const fxNotice = fxWriteNotice(fxState, nokReference)
+  const submitDisabled = form.status === 'submitting' || !fxWriteIsSubmittable(fxState)
 
   return (
     <>
@@ -168,7 +216,7 @@ export function RecordPurchaseScreen({
             <PrimaryButton
               testID="p175-confirm-purchase"
               label="Record purchase"
-              disabled={form.status === 'submitting'}
+              disabled={submitDisabled}
               accessibilityHint="Saves this purchase receipt. This cannot be undone from here."
               onPress={() => void onConfirm()}
             />
@@ -183,7 +231,15 @@ export function RecordPurchaseScreen({
       >
         <Heading>Record purchase</Heading>
         <Body muted>Records a purchase you already made. Nothing is charged in the app.</Body>
-        <Body muted>Card variant {cardId === variantId ? cardId : `${cardId} · ${variantId}`}</Body>
+        {hasUnresolvedPurchase ? (
+          <InlineNotice testID="p180-purchase-unresolved-notice" tone="warning">
+            A previous purchase attempt did not confirm as saved. Check your Purchases list before
+            recording this one, so you do not record it twice.
+          </InlineNotice>
+        ) : null}
+        <Body muted testID="p180-purchase-card-identity">
+          {cardIdentityLine(cardDisplay)}
+        </Body>
         <TextField
           testID="p175-purchase-quantity"
           label="Quantity"
@@ -197,6 +253,11 @@ export function RecordPurchaseScreen({
           value={currency}
           onPress={() => setCurrencySheetOpen(true)}
         />
+        {fxNotice !== null ? (
+          <InlineNotice testID="p180-purchase-fx-notice" tone={fxNotice.tone}>
+            {fxNotice.text}
+          </InlineNotice>
+        ) : null}
         <MoneyField
           testID="p175-purchase-unit-price"
           label={`Unit price (${currency})`}
@@ -244,7 +305,15 @@ export function RecordPurchaseScreen({
           <Body muted>Receipt total</Body>
           <MoneyText testID="p175-purchase-total" size="large" value={totalValue} />
         </Surface>
-        {form.failure !== null ? <FailureView failure={form.failure} /> : null}
+        {form.status === 'uncertain' ? (
+          // P180 mission §12: never shown as a plain failure — the request may have committed.
+          <InlineNotice testID="p180-purchase-uncertain" tone="warning">
+            Could not confirm whether this purchase was saved. Check your Purchases list before
+            trying again — do not assume it failed.
+          </InlineNotice>
+        ) : form.failure !== null ? (
+          <FailureView failure={form.failure} />
+        ) : null}
         {form.status === 'success' ? (
           <Body testID="p175-purchase-success">Purchase recorded.</Body>
         ) : null}

@@ -1,6 +1,21 @@
 import type { NavigatorScreenParams } from '@react-navigation/native'
 import type { P169StackParams } from '../features/navigation'
 
+/**
+ * P180: the human-readable card identity a screen needs to show instead of a raw
+ * `card_variant_id`/catalog-card UUID. Built once, where the identity is already known (Price
+ * Check's own confirmed card + printing, in `AddIntentScreen`), and carried through navigation
+ * params rather than re-fetched — UUIDs stay internal identifiers, never rendered.
+ */
+export interface CardDisplaySummary {
+  name: string
+  setName: string
+  collectorNumber: string
+  languageLabel: string
+  /** e.g. "Holo · Reverse" — empty when the printing has no distinguishing label. */
+  printingLabel: string
+}
+
 export type CollectionStackParams = {
   CollectionList: undefined
   CardDetail: { holdingId: string }
@@ -25,8 +40,10 @@ export type CollectionStackParams = {
 export type SearchStackParams = P169StackParams & {
   P170VariantEntry: { variantId: string }
   P170AddIntent: { cardId: string; variantId: string }
-  P175AddAcquisition: { cardId: string; variantId: string }
-  P175RecordPurchase: { cardId: string; variantId: string }
+  /** `cardDisplay` is optional only because a param type cannot force every existing caller to
+   *  supply it; `AddIntentScreen` (the one real caller) always does — see P180_CARD_DISPLAY. */
+  P175AddAcquisition: { cardId: string; variantId: string; cardDisplay?: CardDisplaySummary }
+  P175RecordPurchase: { cardId: string; variantId: string; cardDisplay?: CardDisplaySummary }
 }
 
 /** The Price Check tab: a read-only landing; every price is read on the Search stack's card screen. */

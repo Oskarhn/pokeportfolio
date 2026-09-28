@@ -6,7 +6,7 @@ import {
 } from '../../features/price-check/p165-domain/price-check/identity'
 import { Label, LiveStatus, Section } from '../../features/ui/kit'
 import { Button, Heading } from '../components'
-import type { SearchStackParams } from '../navigation-types'
+import type { CardDisplaySummary, SearchStackParams } from '../navigation-types'
 import { useRuntime, useStore } from '../runtime-context'
 import { SPACE, usePalette } from '../theme'
 
@@ -28,6 +28,18 @@ export function AddIntentScreen({
   const data =
     flow.card.data !== null && flow.card.data.card.cardId === cardId ? flow.card.data : null
   const printing = data?.variants.find((v) => v.variantId === variantId) ?? null
+  // P180: built once, here, where the confirmed card identity is already known — the acquisition
+  // and purchase screens carry this through navigation instead of showing the raw variant UUID.
+  const cardDisplay: CardDisplaySummary | undefined =
+    data !== null
+      ? {
+          name: data.card.name,
+          setName: data.card.setName,
+          collectorNumber: data.card.collectorNumber,
+          languageLabel: languageLabel(data.card.language),
+          printingLabel: printing !== null ? variantLabel(printing) : '',
+        }
+      : undefined
   return (
     <ScrollView
       style={{ backgroundColor: p.background }}
@@ -52,14 +64,18 @@ export function AddIntentScreen({
         testID="p175-go-add-acquisition"
         label="Add to collection"
         accessibilityHint="Record ownership of this card, with or without a known cost"
-        onPress={() => navigation.navigate('P175AddAcquisition', { cardId, variantId })}
+        onPress={() =>
+          navigation.navigate('P175AddAcquisition', { cardId, variantId, cardDisplay })
+        }
       />
       <Button
         testID="p175-go-record-purchase"
         label="Record as a purchase"
         variant="secondary"
         accessibilityHint="Record a purchase receipt for this card"
-        onPress={() => navigation.navigate('P175RecordPurchase', { cardId, variantId })}
+        onPress={() =>
+          navigation.navigate('P175RecordPurchase', { cardId, variantId, cardDisplay })
+        }
       />
     </ScrollView>
   )

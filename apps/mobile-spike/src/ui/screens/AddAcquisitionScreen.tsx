@@ -14,6 +14,7 @@ import {
   TaskScreen,
   TextField,
 } from '../components'
+import { cardIdentityLine } from '../card-display-text'
 import type { SearchStackParams } from '../navigation-types'
 import { useRuntime, useStore } from '../runtime-context'
 import { addCardAcquisition } from '../../write/collection-writes'
@@ -32,7 +33,7 @@ export function AddAcquisitionScreen({
   route,
   navigation,
 }: NativeStackScreenProps<SearchStackParams, 'P175AddAcquisition'>) {
-  const { cardId, variantId } = route.params
+  const { variantId, cardDisplay } = route.params
   const { auth, writeForms } = useRuntime()
   const session = useStore(auth)
   const form = useStore(writeForms.acquisition)
@@ -101,7 +102,9 @@ export function AddAcquisitionScreen({
       }
     >
       <Heading>Add to collection</Heading>
-      <Body muted>Card variant {cardId === variantId ? cardId : `${cardId} · ${variantId}`}</Body>
+      <Body muted testID="p180-acquisition-card-identity">
+        {cardIdentityLine(cardDisplay)}
+      </Body>
       <SwitchRow
         testID="p175-cost-toggle"
         label="I don't know the cost"

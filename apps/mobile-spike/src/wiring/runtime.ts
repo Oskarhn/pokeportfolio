@@ -2,14 +2,18 @@ import { AuthController, type AuthClientPort } from '../auth/auth-controller'
 import { IdentityAuthority } from '../auth/identity-authority'
 import type { CollectionPort } from '../collection/types'
 import { createP169Feature, type P169Feature, type P169FeatureDeps } from '../features/feature'
+import type { FxRateReader } from '../features/price-check/fx-source'
 import { PhotoStore, type PhotoPort } from '../photo/photo-store'
 import type { PriceCheckPort } from '../price-check/types'
 import { CollectionStore } from '../state/collection-store'
 import { HoldingDetailStore } from '../state/holding-detail-store'
 import { NavigationMemory } from '../state/navigation-memory'
+import { PendingWritesStore } from '../state/pending-writes-store'
 import { PriceCheckStore } from '../state/price-check-store'
 import { ScopedRegistry } from '../state/registry'
 import { WriteFormStore } from '../state/write-form-store'
+import type { ExistsCheckerMap } from '../write/pending-write-reconciliation'
+import type { PendingWriteJournal } from '../write/pending-write-journal'
 import type { AddCardAcquisitionResult } from '../write/collection-writes'
 import {
   initialAcquisitionDraft,
@@ -49,6 +53,18 @@ export interface RuntimeDeps {
   /** The P175 finance write seam's client factory, bound by the host to ONE Supabase session (the
    *  app's real one, or the backend test harness's). See `write/write-db.ts`. */
   writeDb: WriteDbBinder
+  /** P180: the SAME `fx_rates` reader Price Check already uses (`fxRateReaderFor(supabase)`, bound
+   *  to the app's one ambient client), reused by the purchase/sale screens so a non-NOK write can
+   *  supply `create_purchase`/`create_sale`'s required FX metadata instead of inventing a second FX
+   *  source. Read-only: never used to freeze or alter a stored amount. */
+  readFx: FxRateReader
+  /** P180: process-death-after-commit reliability for the purchase/sale write flows — a bounded,
+   *  device-secure journal (see write/pending-write-journal.ts) plus the read that tells
+   *  reconciliation whether a pending entry's operation already committed. */
+  pendingWrites: {
+    journal: PendingWriteJournal
+    existsCheckers: ExistsCheckerMap
+  }
 }
 
 export interface Runtime {
@@ -63,6 +79,12 @@ export interface Runtime {
   photo: PhotoStore
   navigation: NavigationMemory
   ports: RuntimeDeps['priceCheck']
+  /** P180: exposed at the top level (not nested under `feature`) so the purchase/sale screens can
+   *  read it directly without depending on the whole Price Check feature. */
+  readFx: FxRateReader
+  /** P180: this identity's unresolved pending writes (reconciled on every identity change,
+   *  including the initial sign-in — see state/pending-writes-store.ts). */
+  pendingWrites: PendingWritesStore
   /** The financial write forms (P175) — one identity-scoped draft store per screen. */
   writeForms: {
     acquisition: WriteFormStore<AcquisitionDraft, AddCardAcquisitionResult>
@@ -101,8 +123,18 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
       authority,
       () => initialPurchaseDraft(''),
       deps.writeDb,
+      {
+        journal: deps.pendingWrites.journal,
+        operationKind: 'create_purchase',
+        // Non-secret summary only (mission §10) — never the price, quantity or card identity.
+        summarize: (draft) => ({ currency: draft.currency, purchasedOn: draft.purchasedOn }),
+      },
     ),
-    sale: new WriteFormStore<SaleDraft, Sale>(authority, () => initialSaleDraft(''), deps.writeDb),
+    sale: new WriteFormStore<SaleDraft, Sale>(authority, () => initialSaleDraft(''), deps.writeDb, {
+      journal: deps.pendingWrites.journal,
+      operationKind: 'create_sale',
+      summarize: (draft) => ({ currency: draft.currency, soldOn: draft.soldOn }),
+    }),
     manualValuation: new WriteFormStore<ManualValuationDraft, void>(
       authority,
       () => initialManualValuationDraft(''),
@@ -119,6 +151,16 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
   registry.register('write-sale', writeForms.sale)
   registry.register('write-manual-valuation', writeForms.manualValuation)
   registry.register('write-opening', writeForms.opening)
+
+  // P180: registered like every other user-scoped store, so the FIRST identity change (including
+  // the initial sign-in on a fresh process) already triggers the "on restart, reconcile" pass the
+  // mission asks for — no separate startup hook needed.
+  const pendingWrites = new PendingWritesStore(
+    authority,
+    deps.pendingWrites.journal,
+    deps.pendingWrites.existsCheckers,
+  )
+  registry.register('pending-writes', pendingWrites)
 
   const auth = new AuthController({
     auth: deps.auth,
@@ -140,6 +182,8 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
     photo,
     navigation,
     ports: deps.priceCheck,
+    readFx: deps.readFx,
+    pendingWrites,
     writeForms,
   }
 }

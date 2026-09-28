@@ -3,11 +3,40 @@ import {
   type IdentityAuthority,
   type IdentityLease,
 } from '../auth/identity-authority'
-import { classifyFailure, type Failure } from '../net/failure'
+import { classifyFailure, type Failure, type FailureKind } from '../net/failure'
 import { generateIdempotencyKey } from '../write/idempotency-key'
 import type { LeasedWriteDb } from '../write/leased-write-client'
+import {
+  hashPendingPayload,
+  type PendingOperationKind,
+  type PendingWriteJournal,
+} from '../write/pending-write-journal'
 import type { WriteDbBinder } from '../write/write-db'
 import { Emitter, type Resettable } from './registry'
+
+/**
+ * P180: a failure kind is "uncertain" when the request may have reached and even committed at the
+ * server before the failure surfaced — offline/server/unknown are exactly `net/failure.ts`'s own
+ * RETRYABLE set, and `identity_changed` is added here because `runWithLease` can wrap a failure
+ * that surfaced AFTER the network call was already sent (see write-form-store's own class doc).
+ * Every other kind (unauthorized/forbidden/not_found/request_rejected/write_refused/
+ * unsafe_numeric/credentials_unavailable) happens before any request is sent, or is a definite
+ * rejection the server processed and rolled back — never a "maybe committed" state.
+ */
+const UNCERTAIN_FAILURE_KINDS: ReadonlySet<FailureKind> = new Set([
+  'offline',
+  'server',
+  'unknown',
+  'identity_changed',
+])
+
+export interface PendingWriteConfig<TDraft> {
+  journal: PendingWriteJournal
+  operationKind: PendingOperationKind
+  /** A canonical, non-secret SUMMARY of the draft for the journal's diagnostic hash — never the
+   *  money amounts (see pending-write-journal.ts's header). */
+  summarize: (draft: TDraft) => Record<string, string | number | boolean>
+}
 
 /**
  * Generic identity-scoped write-form state (P175): one instance per financial write screen (add
@@ -32,7 +61,12 @@ import { Emitter, type Resettable } from './registry'
  */
 
 export interface WriteFormState<TDraft> {
-  status: 'editing' | 'submitting' | 'success' | 'error'
+  /** `uncertain` (P180): the request failed in a way that does NOT prove the server never
+   *  committed it (offline, a 5xx, an identity-changed wrapper around an in-flight request). Never
+   *  shown as a plain "failed" — the pending-write journal entry survives so a later reconciliation
+   *  pass can tell whether it actually went through, and the same idempotency key is kept so a
+   *  manual retry from this same form instance is still safe. */
+  status: 'editing' | 'submitting' | 'success' | 'error' | 'uncertain'
   draft: TDraft
   idempotencyKey: string
   failure: Failure | null
@@ -52,6 +86,10 @@ export class WriteFormStore<TDraft extends { contextKey: string }, TResult> impl
      *  and everything above it, up to `createRuntime` — stays usable with any Supabase session:
      *  the app's real one, the backend test harness's real one, or a fake. */
     private readonly writeDb: WriteDbBinder,
+    /** P180: optional so every OTHER write form (acquisition/manual-valuation/opening) is
+     *  unaffected — wired for `purchase`/`sale` only in `createRuntime`, the two RPCs a
+     *  reconciliation existence-check currently covers (see pending-write-exists.ts). */
+    private readonly pending?: PendingWriteConfig<TDraft>,
   ) {
     this.state = {
       status: 'editing',
@@ -123,6 +161,19 @@ export class WriteFormStore<TDraft extends { contextKey: string }, TResult> impl
     const idempotencyKey = this.state.idempotencyKey
     const draft = this.state.draft
     this.set({ status: 'submitting', failure: null })
+    // P180: recorded BEFORE the network call, not after — a process kill during the request must
+    // still leave a journal entry to reconcile against on restart. renderedUserId is the identity
+    // the screen itself was rendered under, the same one every other identity check in this class
+    // uses (never authority.userId read back later).
+    if (this.pending !== undefined && renderedUserId !== null) {
+      await this.pending.journal.record({
+        idempotencyKey,
+        operationKind: this.pending.operationKind,
+        payloadHash: hashPendingPayload(this.pending.summarize(draft)),
+        userId: renderedUserId,
+        createdAt: new Date().toISOString(),
+      })
+    }
     try {
       // `runWithLease`: refuses to even start when the lease is already dead (a stale screen's
       // Confirm must not reach the write client at all), and turns a failure that surfaces after
@@ -132,6 +183,8 @@ export class WriteFormStore<TDraft extends { contextKey: string }, TResult> impl
       )
       if (mySeq !== this.seq)
         return { ok: false, failure: classifyFailure(new Error('superseded')) }
+      // Settled successfully: the pending entry's job is done.
+      if (this.pending !== undefined) await this.pending.journal.clear(idempotencyKey)
       // A fresh key for the NEXT logical write; the just-used one stays valid for the RPC's own
       // idempotent-replay window (nothing here deletes or invalidates it server-side).
       this.set({ status: 'success', idempotencyKey: generateIdempotencyKey() })
@@ -139,7 +192,17 @@ export class WriteFormStore<TDraft extends { contextKey: string }, TResult> impl
     } catch (error) {
       if (mySeq !== this.seq) return { ok: false, failure: classifyFailure(error) }
       const failure = classifyFailure(error)
-      this.set({ status: 'error', failure })
+      const uncertain = this.pending !== undefined && UNCERTAIN_FAILURE_KINDS.has(failure.kind)
+      if (this.pending !== undefined && !uncertain) {
+        // A definite failure: the server never committed this attempt (a validation/auth
+        // rejection, or a request that was never even sent) — safe to clear.
+        await this.pending.journal.clear(idempotencyKey)
+      }
+      // Uncertain: the journal entry survives, and the idempotency key is NOT rotated (unchanged
+      // from the pre-P180 "a failed attempt keeps the same key" behaviour) — a manual retry from
+      // this same form instance reuses it, so the RPC's own idempotent-replay rule protects
+      // against a duplicate even if the first attempt actually did commit.
+      this.set({ status: uncertain ? 'uncertain' : 'error', failure })
       return { ok: false, failure }
     }
   }

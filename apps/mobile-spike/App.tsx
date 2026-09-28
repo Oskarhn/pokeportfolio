@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { AppState, ScrollView, Text } from 'react-native'
 import { createRuntime, type Runtime } from './src/wiring/runtime'
 import { attachForegroundRefresh } from './src/auth/auth-controller'
+import { secureStoreAdapter } from './src/auth/secure-store-adapter'
 import { createSharedCollectionPort } from './src/collection/shared-data-adapter'
 import { logP169Event, logRuntimeCreated } from './src/diagnostics/feature-events'
 import { fxRateReaderFor } from './src/features/price-check/fx-source'
@@ -11,6 +12,8 @@ import { createReleasedPriceCheckPort } from './src/price-check/released-adapter
 import { backendConfig, clearStoredSession, supabase } from './src/seam/supabase-client'
 import { AppRoot } from './src/ui/AppRoot'
 import { AppThemeProvider, ThemedStatusBar } from './src/ui/theme'
+import { PendingWriteJournal } from './src/write/pending-write-journal'
+import { purchaseExistsCheckerFor, saleExistsCheckerFor } from './src/write/pending-write-exists'
 import { createWriteDbBinder } from './src/write/write-db'
 
 /**
@@ -45,6 +48,9 @@ function getAppRuntime(): Runtime {
   if (appRuntime !== null) return appRuntime
   if (!backendConfig.ok) throw backendConfig.error // only called from ConfiguredApp, see App()
   logRuntimeCreated()
+  // One reader instance, shared: Price Check and the purchase/sale write screens read the SAME
+  // `fx_rates` table through the SAME ambient client (P180) — never two independent FX sources.
+  const readFx = fxRateReaderFor(supabase)
   appRuntime = createRuntime({
     auth: supabase.auth,
     removeStoredSession: clearStoredSession,
@@ -56,9 +62,10 @@ function getAppRuntime(): Runtime {
     // The feature's function calls and fx reads go through the SAME client as everything else.
     priceFeature: {
       invoke: (name, options) => supabase.functions.invoke(name, options),
-      readFx: fxRateReaderFor(supabase),
+      readFx,
       onEvent: logP169Event,
     },
+    readFx,
     photo: createExpoPhotoPort(),
     // P175: the finance write seam's own per-lease client, bound to THIS app's session — never the
     // ambient `supabase` singleton itself (see write/leased-write-client.ts for why).
@@ -67,6 +74,16 @@ function getAppRuntime(): Runtime {
       publishableKey: backendConfig.config.publishableKey,
       getSession: () => supabase.auth.getSession(),
     }),
+    // P180: SecureStore-backed (same device-secure medium as the session itself), holding only
+    // idempotency keys and non-secret summaries — never card/price data. Reconciliation reads go
+    // through the SAME ambient `supabase` client as every other read in this app.
+    pendingWrites: {
+      journal: new PendingWriteJournal(secureStoreAdapter),
+      existsCheckers: {
+        create_purchase: purchaseExistsCheckerFor(supabase),
+        create_sale: saleExistsCheckerFor(supabase),
+      },
+    },
   })
   return appRuntime
 }
