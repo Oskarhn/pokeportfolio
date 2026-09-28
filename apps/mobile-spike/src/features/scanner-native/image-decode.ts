@@ -1,4 +1,3 @@
-import { AlphaType, ColorType, Skia, type SkCanvas, type SkImage } from '@shopify/react-native-skia'
 import type { RgbaImage } from '@shared/domain/scanner/rectify'
 import {
   orientationSwapsDimensions,
@@ -12,7 +11,74 @@ import {
  * consume, unchanged from the web scanner). Skia is the ONLY thing in this file that touches a
  * native decoder or a canvas; everything past `decodeToRgba`'s return value is the same pure
  * domain code the web scanner already proved correct.
+ *
+ * Deep, headless-only imports (not the package root): `@shopify/react-native-skia`'s own root
+ * barrel (src/index.ts) re-exports `<Canvas>` and its Reanimated integration, which crashed real
+ * app startup on-device with "react-native-reanimated is not installed!" (a lazily-thrown error
+ * from an eager module-scope proxy access — see docs/mobile/P182_PORTABILITY_AUDIT.md). This
+ * module only ever needs the headless `Skia` global (raw decode/surface/paint), never a React
+ * component, so it `require()`s the specific files that provide it directly — none of which
+ * reference Reanimated or Canvas (confirmed by reading their own import lists). `require()`
+ * rather than `import` is deliberate here too: those files' own `.ts` sources assume DOM lib
+ * types (`OffscreenCanvas`, `GPUDevice`, ...) this project's tsconfig does not include, and a
+ * static `import` would pull them into this project's own typecheck graph. The small surface this
+ * file actually uses is hand-typed below instead.
  */
+
+// Side-effect only: installs the native JSI bindings and sets the `global.SkiaApi` that
+// `skia/Skia.ts` (required below) reads from. Normally pulled in transitively by the package's own
+// root barrel; required explicitly here since this module deliberately bypasses that barrel.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+require('@shopify/react-native-skia/src/skia/NativeSetup')
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- see module doc: avoids tsc following Skia's own DOM-typed source graph.
+const { Skia } = require('@shopify/react-native-skia/src/skia/Skia') as { Skia: MinimalSkiaApi }
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { AlphaType } = require('@shopify/react-native-skia/src/skia/types/Image/ImageFactory') as {
+  AlphaType: { Unpremul: number }
+}
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { ColorType } = require('@shopify/react-native-skia/src/skia/types/Image/ColorType') as {
+  ColorType: { RGBA_8888: number }
+}
+
+interface MinimalSkImage {
+  width(): number
+  height(): number
+  dispose(): void
+}
+
+interface MinimalSkCanvas {
+  save(): void
+  restore(): void
+  translate(x: number, y: number): void
+  rotate(degrees: number, px: number, py: number): void
+  scale(x: number, y: number): void
+  drawImageRect(
+    image: MinimalSkImage,
+    src: { x: number; y: number; width: number; height: number },
+    dest: { x: number; y: number; width: number; height: number },
+    paint: unknown,
+  ): void
+}
+
+interface MinimalSkSurface {
+  getCanvas(): MinimalSkCanvas
+  flush(): void
+  makeImageSnapshot(): {
+    readPixels(
+      x: number,
+      y: number,
+      info: { width: number; height: number; colorType: number; alphaType: number },
+    ): Uint8Array | Float32Array | null
+  }
+}
+
+interface MinimalSkiaApi {
+  Data: { fromBytes(bytes: Uint8Array): unknown }
+  Image: { MakeImageFromEncoded(data: unknown): MinimalSkImage | null }
+  Surface: { MakeOffscreen(width: number, height: number): MinimalSkSurface | null }
+  Paint(): unknown
+}
 
 export interface DecodedImage extends RgbaImage {
   readonly originalWidth: number
@@ -36,7 +102,7 @@ export class ImageDecodeError extends Error {
  *  rotate/flip table every image library uses. `outW`/`outH` are the CORRECTED (possibly
  *  swapped) canvas dimensions the caller already sized the offscreen surface to. */
 export function applyOrientationTransform(
-  canvas: Pick<SkCanvas, 'translate' | 'rotate' | 'scale'>,
+  canvas: Pick<MinimalSkCanvas, 'translate' | 'rotate' | 'scale'>,
   orientation: ExifOrientation,
   outW: number,
   outH: number,
@@ -85,7 +151,7 @@ export function applyOrientationTransform(
  */
 export function decodeToRgba(fileBytes: Uint8Array, maxLongEdge: number): DecodedImage {
   const data = Skia.Data.fromBytes(fileBytes)
-  const decoded: SkImage | null = Skia.Image.MakeImageFromEncoded(data)
+  const decoded = Skia.Image.MakeImageFromEncoded(data)
   if (!decoded) throw new ImageDecodeError('Could not decode this image.', 'corrupt')
   const srcWidth = decoded.width()
   const srcHeight = decoded.height()

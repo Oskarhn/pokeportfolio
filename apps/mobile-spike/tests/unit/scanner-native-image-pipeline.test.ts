@@ -3,10 +3,18 @@ import {
   orientationSwapsDimensions,
 } from '../../src/features/scanner-native/exif-orientation'
 
-// image-decode.ts imports the real @shopify/react-native-skia for its (untested-here) decode
-// function; only its pure `applyOrientationTransform` export is exercised below, which never
-// touches Skia at runtime — mocked wholesale so Jest never tries to parse the native package's ESM.
-jest.mock('@shopify/react-native-skia', () => ({}))
+// image-decode.ts require()s these specific Skia source files (headless-only, see its own module
+// doc) for its (untested-here) decode function; only the pure `applyOrientationTransform` export
+// is exercised below, which never touches Skia at runtime. Mocked wholesale so Jest never tries to
+// transform these raw-TypeScript third-party source files (outside this project's transform config).
+jest.mock('@shopify/react-native-skia/src/skia/NativeSetup', () => ({}))
+jest.mock('@shopify/react-native-skia/src/skia/Skia', () => ({ Skia: {} }))
+jest.mock('@shopify/react-native-skia/src/skia/types/Image/ImageFactory', () => ({
+  AlphaType: { Unpremul: 3 },
+}))
+jest.mock('@shopify/react-native-skia/src/skia/types/Image/ColorType', () => ({
+  ColorType: { RGBA_8888: 4 },
+}))
 import { applyOrientationTransform } from '../../src/features/scanner-native/image-decode'
 import {
   checkFileSize,
