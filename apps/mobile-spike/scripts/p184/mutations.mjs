@@ -216,9 +216,9 @@ const MUTANTS = [
   {
     id: 'M26',
     name: 'an integrity failure is not sticky (the asset is tried again)',
-    file: VISUAL,
-    from: 'if (!(error instanceof AssetIntegrityError) && cachedSession === pending) cachedSession = null',
-    to: 'if (cachedSession === pending) cachedSession = null',
+    file: ASSETS,
+    from: 'if (!(error instanceof AssetIntegrityError) && cached === pending) cached = null',
+    to: 'if (cached === pending) cached = null',
   },
   {
     id: 'M27',

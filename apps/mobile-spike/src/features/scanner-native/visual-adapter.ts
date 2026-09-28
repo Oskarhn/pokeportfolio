@@ -6,7 +6,7 @@ import {
   l2Normalize,
   searchVisualIndex,
 } from '@shared/data/scanner/visual-index'
-import { AssetIntegrityError, loadScannerAssets } from './model-assets'
+import { loadScannerAssets } from './model-assets'
 import { emitTrace, nowMs } from './scan-trace'
 
 /**
@@ -45,10 +45,10 @@ export interface VisualSession {
  * density or locale change. `createdSessions` counts real creations (the device driver asserts it
  * stays 1 across recreations).
  *
- * A FAILED creation is not cached, except an integrity failure: a transient error (out of memory,
- * an I/O hiccup) must not disable the scanner until the app is killed, but a hash mismatch is a
- * refusal that must stay a refusal — the failed promise is kept so no later scan falls back to, or
- * retries against, an asset that did not verify.
+ * A FAILED creation is not cached here, so a transient error (out of memory, an I/O hiccup) does not
+ * disable the scanner until the app is killed. An integrity failure still stays a refusal: the asset
+ * loader (model-assets.ts) keeps that failure cached, so every retry re-throws it and no later scan
+ * falls back to, or retries against, an asset that did not verify.
  */
 let cachedSession: Promise<VisualSession> | null = null
 let createdSessions = 0
@@ -60,8 +60,8 @@ export function getVisualSession(): Promise<VisualSession> {
   }
   const pending = createVisualSession()
   cachedSession = pending
-  pending.catch((error: unknown) => {
-    if (!(error instanceof AssetIntegrityError) && cachedSession === pending) cachedSession = null
+  pending.catch(() => {
+    if (cachedSession === pending) cachedSession = null
   })
   return pending
 }
