@@ -102,6 +102,16 @@ const STACKS = {
     mockPort: 55496,
     withWorktreeMigrations: true,
   },
+  // P180: native financial reliability (FX contract, pending-write journal). API 55671, mock 55497
+  // (clear of every port above). Same migration set as P177/P178/P179 (this worktree adds none of
+  // its own — 107 local migrations).
+  p180: {
+    projectId: 'pokeportfolio-p180-app',
+    portShift: 350,
+    dir: 'p180',
+    mockPort: 55497,
+    withWorktreeMigrations: true,
+  },
 }
 
 export function stackOf(argv) {

@@ -3,6 +3,11 @@ import { parseMinorUnitsWire } from '../money/wire'
 import { findUnsafeIntegerLiteral } from '../net/exact-transport-guard'
 import { MONEY_VECTORS } from '../../tests/support/money-vectors'
 import {
+  fxWriteIsSubmittable,
+  nokReferenceForWrite,
+  type FxWriteState,
+} from '../write/fx-for-write'
+import {
   parseNullableMoneyInput,
   parseOptionalChargeInput,
   requireKnownAmount,
@@ -211,6 +216,67 @@ export function runRuntimeProof(): RuntimeProofResult {
     /^[0-9a-f-]{36}$/i.test(generateIdempotencyKey()) &&
       generateIdempotencyKey() !== generateIdempotencyKey(),
     true,
+  )
+
+  // P180: the FX boundary for a non-NOK write (write/fx-for-write.ts) — the same exact bigint
+  // conversion `money_minor_to_nok_minor` performs server-side (P133), executed here on whatever
+  // engine runs this proof. `fxRateToNok` is always "NOK per ONE MAJOR unit of the source currency"
+  // (FINANCIAL_MODEL.md §7); every expected value below was independently computed once via
+  // src/domain/fx.ts's own `convert` under Node and is asserted exactly, not re-derived here.
+  const readyState = (rateToNok: string): FxWriteState => ({
+    kind: 'ready',
+    rateToNok,
+    rateDate: '2026-09-27',
+    source: 'norges_bank',
+    stale: false,
+  })
+  check(
+    'fx: JPY (exponent 0), amount 2^53+1, exact NOK conversion',
+    nokReferenceForWrite({ minorUnits: 2n ** 53n + 1n, currency: 'JPY' }, readyState('0.065'))
+      ?.minorUnits,
+    58546795155816455n,
+  )
+  check(
+    'fx: EUR minor amount 2^53+1, exact NOK conversion',
+    nokReferenceForWrite({ minorUnits: 2n ** 53n + 1n, currency: 'EUR' }, readyState('11.5'))
+      ?.minorUnits,
+    103582791429521420n,
+  )
+  check(
+    'fx: USD minor amount 2^53+1, exact NOK conversion',
+    nokReferenceForWrite({ minorUnits: 2n ** 53n + 1n, currency: 'USD' }, readyState('10.5'))
+      ?.minorUnits,
+    94575592174780427n,
+  )
+  check(
+    'fx: GBP 123.45 at 13.25 -> exact NOK',
+    nokReferenceForWrite({ minorUnits: 12345n, currency: 'GBP' }, readyState('13.25'))?.minorUnits,
+    163571n,
+  )
+  check(
+    'fx: NOK never needs a rate (not_needed, always submittable)',
+    fxWriteIsSubmittable({ kind: 'not_needed' }),
+    true,
+  )
+  check(
+    'fx: half-up (away from zero) tie-break, 0.01 EUR @ 0.5 -> 1 øre, not 0',
+    nokReferenceForWrite({ minorUnits: 1n, currency: 'EUR' }, readyState('0.5'))?.minorUnits,
+    1n,
+  )
+  check(
+    'fx: half-up (away from zero) tie-break, 0.03 EUR @ 0.5 -> 2 øre',
+    nokReferenceForWrite({ minorUnits: 3n, currency: 'EUR' }, readyState('0.5'))?.minorUnits,
+    2n,
+  )
+  check(
+    'fx: missing rate stays missing — never a fabricated NOK reference',
+    nokReferenceForWrite({ minorUnits: 100n, currency: 'EUR' }, { kind: 'missing' }),
+    null,
+  )
+  check(
+    'fx: missing state is never submittable — fail closed',
+    fxWriteIsSubmittable({ kind: 'missing' }),
+    false,
   )
 
   return { pass, fail, engine: describeEngine(), lines }
