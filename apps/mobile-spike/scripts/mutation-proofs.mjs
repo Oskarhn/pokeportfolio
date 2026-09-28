@@ -665,7 +665,8 @@ const MUTANTS = [
   },
   {
     id: 'P36',
-    title: "#5d (P180) RecordPurchaseScreen's own fail-closed guard is removed — onConfirm no longer defends in depth",
+    title:
+      "#5d (P180) RecordPurchaseScreen's own fail-closed guard is removed — onConfirm no longer defends in depth — SURVIVES BY DESIGN: record-purchase-fx-submission.test.tsx fires the Confirm Pressable via testID, and React Native's own Pressable never invokes onPress while its disabled prop is true (submitDisabled, untouched by this mutant, still gates the SAME outcome) — a single-edit harness cannot observe the removed INNER guard without also disabling the OUTER one, which is exactly what 'defense in depth' means: this is the intended, redundant second layer, not an untested one (same class of survival as M12 above)",
     file: 'src/ui/screens/RecordPurchaseScreen.tsx',
     edits: [
       [
