@@ -58,7 +58,6 @@ export const PROJECT_ID = identity.projectId
 export const DB_CONTAINER = `supabase_db_${PROJECT_ID}`
 export const API_PORT = identity.apiPort
 const PORT_OFFSET = identity.portOffset
-const LOCAL_SITE_URL = `http://127.0.0.1:${API_PORT}`
 
 /**
  * P177: some sessions need the real Edge Runtime (redeem-invitation is called from
@@ -69,20 +68,33 @@ const LOCAL_SITE_URL = `http://127.0.0.1:${API_PORT}`
  */
 const ENABLE_EDGE_RUNTIME = process.env.SPIKE_BACKEND_ENABLE_EDGE_RUNTIME === '1'
 
-/** Sections whose `enabled` flag is forced off: this spike needs Postgres, GoTrue and PostgREST. */
-const DISABLED_SECTIONS = new Set([
-  'studio',
-  'realtime',
-  'local_smtp',
-  'storage',
-  'storage.s3_protocol',
-  'storage.vector',
-  ...(ENABLE_EDGE_RUNTIME ? [] : ['edge_runtime']),
-  'analytics',
-  'experimental.pgdelta',
-])
-
-export function transformConfig(source) {
+/**
+ * P180 §15: PURE — every value this needs comes from `identity`, never from this module's own
+ * top-level `resolveStackIdentity()` call. Before this fix the function closed over the module-
+ * level `PROJECT_ID`/`PORT_OFFSET`/`LOCAL_SITE_URL` consts (computed ONCE, at import time, from
+ * `process.env` and the shared, gitignored `.local-backend/stack.json` recorded-identity fallback —
+ * see `resolveStackIdentity` above). A caller building a NAMED stack (scripts/p169/local-backend.mjs
+ * and everything under scripts/p17{3,7,8,9}/) imports this function but has its OWN, already-
+ * resolved identity (`stackOf(argv)`'s STACKS table entry) — it never intended to inherit whatever
+ * the BASE P158 stack's last `start`/`prepare` happened to record on disk. P177 hit this directly: a
+ * named-stack config generated through this path silently carried the wrong port offset, because the
+ * SAME worktree had a stale `.local-backend/stack.json` from an earlier, unrelated base-stack run.
+ * Every caller now passes its own identity explicitly; nothing here reads global state.
+ */
+export function transformConfig(source, identity) {
+  const { projectId, portOffset, enableEdgeRuntime, basePort = 54300 } = identity
+  const localSiteUrl = `http://127.0.0.1:${54321 + portOffset}`
+  const disabledSections = new Set([
+    'studio',
+    'realtime',
+    'local_smtp',
+    'storage',
+    'storage.s3_protocol',
+    'storage.vector',
+    ...(enableEdgeRuntime ? [] : ['edge_runtime']),
+    'analytics',
+    'experimental.pgdelta',
+  ])
   const out = []
   let section = ''
   let droppingFunctions = false
@@ -90,23 +102,23 @@ export function transformConfig(source) {
     const header = /^\[([^\]]+)\]\s*$/.exec(raw)
     if (header) {
       section = header[1]
-      droppingFunctions = !ENABLE_EDGE_RUNTIME && section.startsWith('functions.')
+      droppingFunctions = !enableEdgeRuntime && section.startsWith('functions.')
       if (droppingFunctions) continue
       out.push(raw)
       continue
     }
     if (droppingFunctions) continue
     let line = raw
-    if (/^\s*project_id\s*=/.test(line)) line = `project_id = "${PROJECT_ID}"`
+    if (/^\s*project_id\s*=/.test(line)) line = `project_id = "${projectId}"`
     const portMatch = /^(\s*(?:port|shadow_port)\s*=\s*)(\d+)(.*)$/.exec(line)
-    if (portMatch && Number(portMatch[2]) >= 54300 && Number(portMatch[2]) <= 54399) {
-      line = `${portMatch[1]}${Number(portMatch[2]) + PORT_OFFSET}${portMatch[3]}`
+    if (portMatch && Number(portMatch[2]) >= basePort && Number(portMatch[2]) <= basePort + 99) {
+      line = `${portMatch[1]}${Number(portMatch[2]) + portOffset}${portMatch[3]}`
     }
-    if (section === 'auth' && /^\s*site_url\s*=/.test(line)) line = `site_url = "${LOCAL_SITE_URL}"`
+    if (section === 'auth' && /^\s*site_url\s*=/.test(line)) line = `site_url = "${localSiteUrl}"`
     if (section === 'auth' && /^\s*additional_redirect_urls\s*=/.test(line)) {
       line = 'additional_redirect_urls = []'
     }
-    if (DISABLED_SECTIONS.has(section) && /^\s*enabled\s*=/.test(line)) line = 'enabled = false'
+    if (disabledSections.has(section) && /^\s*enabled\s*=/.test(line)) line = 'enabled = false'
     out.push(line)
   }
   return out.join('\n')
@@ -118,7 +130,11 @@ export function prepare() {
   const target = join(workdir, 'supabase')
   rmSync(target, { recursive: true, force: true })
   mkdirSync(target, { recursive: true })
-  const config = transformConfig(readFileSync(join(repoRoot, 'supabase', 'config.toml'), 'utf8'))
+  const config = transformConfig(readFileSync(join(repoRoot, 'supabase', 'config.toml'), 'utf8'), {
+    projectId: PROJECT_ID,
+    portOffset: PORT_OFFSET,
+    enableEdgeRuntime: ENABLE_EDGE_RUNTIME,
+  })
   if (config.includes('pokeportfolio-dev.pages.dev')) {
     throw new Error('generated config still references the Production origin; refusing')
   }

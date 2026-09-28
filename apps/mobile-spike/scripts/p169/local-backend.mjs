@@ -148,7 +148,20 @@ function substitute(text, from, to, expected, label) {
 }
 
 function p169Config(source, stack) {
-  let config = transformConfig(source)
+  // P180 §15: `transformConfig` now takes its identity as an explicit argument (see its own header
+  // comment in ../local-backend.mjs) instead of closing over that module's `resolveStackIdentity()`
+  // — which used to read the SHARED, gitignored .local-backend/stack.json as a fallback, so a named
+  // stack build here could silently inherit whatever the BASE P158 stack's last `start` happened to
+  // record (P177's own disclosed finding). `portOffset: 1000` and `enableEdgeRuntime: false`
+  // reproduce this function's own PRE-EXISTING behaviour exactly (the two lines immediately below
+  // already re-derive project_id and ports from `stack` itself, unconditionally; edge_runtime is
+  // force-enabled a few lines down regardless of this flag) — nothing about this stack's OWN output
+  // changes, only where its inputs come from.
+  let config = transformConfig(source, {
+    projectId: stack.projectId,
+    portOffset: 1000,
+    enableEdgeRuntime: false,
+  })
   config = config.replace(/^project_id = ".*"$/m, `project_id = "${stack.projectId}"`)
   config = config.replace(
     /^(\s*(?:port|shadow_port)\s*=\s*)(\d+)(.*)$/gm,
