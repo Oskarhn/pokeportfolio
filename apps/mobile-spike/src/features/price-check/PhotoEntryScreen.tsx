@@ -18,6 +18,8 @@ import { useStore } from '../../ui/runtime-context'
 import { SPACE, useTheme } from '../../ui/theme'
 import { useP169, type P169StackParams } from '../navigation'
 import { ActionButton, LiveStatus, Section } from '../ui/kit'
+import { P184_PROOF_ENABLED } from '../../diagnostics/p184-proof'
+import { P184ProofPanel } from '../../diagnostics/P184ProofPanel'
 import { shouldResumeRecognition } from './recognition-lifecycle'
 import type { RecognitionOutcome } from './recognition'
 import type { ScanCandidate } from './p165-domain/price-check/scan'
@@ -169,7 +171,7 @@ export function PhotoEntryScreen({
           <Image
             accessibilityLabel="The photo you chose"
             source={{ uri: photo.image.uri }}
-            style={{ width: '100%', aspectRatio: 0.72, borderRadius: 8 }}
+            style={{ width: '46%', aspectRatio: 0.72, borderRadius: 8, alignSelf: 'center' }}
           />
           <RecognitionSection
             outcome={recognition}
@@ -180,6 +182,14 @@ export function PhotoEntryScreen({
             onChooseManually={manual}
           />
         </Section>
+      ) : null}
+      {P184_PROOF_ENABLED ? (
+        <P184ProofPanel
+          recognition={feature.recognition}
+          input={
+            photo.status === 'ready' && photo.image !== null ? toScannerInput(photo.image) : null
+          }
+        />
       ) : null}
     </ScrollView>
   )

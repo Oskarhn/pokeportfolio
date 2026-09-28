@@ -1,0 +1,262 @@
+/**
+ * Shared helpers for the P184 device drivers (scanner-check.mjs). LOCAL ONLY, synthetic users only.
+ * Credentials come from the gitignored .local-backend/fixture.json and go to adb only.
+ */
+import './env.mjs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import {
+  PACKAGE,
+  adb,
+  byId,
+  byIdPrefix,
+  dump,
+  screencap,
+  shell,
+  sleep,
+  tap,
+  waitFor,
+} from '../android-adb.mjs'
+import {
+  chooseNewestInPicker,
+  ensureApp,
+  focusedWindow,
+  openPhotoScreen,
+  rows,
+  signIn,
+  waitForPickerOrState,
+} from '../android-p167-lib.mjs'
+
+export {
+  PACKAGE,
+  adb,
+  byId,
+  byIdPrefix,
+  dump,
+  shell,
+  sleep,
+  tap,
+  waitFor,
+  ensureApp,
+  rows,
+  signIn,
+  focusedWindow,
+}
+
+const here = dirname(fileURLToPath(import.meta.url))
+export const appRoot = resolve(here, '..', '..')
+export const outDir = join(appRoot, '.build', 'p184-evidence')
+mkdirSync(outDir, { recursive: true })
+
+export const fixtureJson = JSON.parse(
+  readFileSync(join(appRoot, '.local-backend', 'fixture.json'), 'utf8'),
+)
+export const users = fixtureJson.users
+export const fixtureManifest = JSON.parse(
+  readFileSync(join(appRoot, 'tests', 'fixtures', 'scanner-p184', 'manifest.json'), 'utf8'),
+)
+export const fixtureDir = join(appRoot, 'tests', 'fixtures', 'scanner-p184')
+export const PROXY = 'http://127.0.0.1:55781'
+export const DB_CONTAINER = 'supabase_db_pokeportfolio-p184-app'
+
+export function shot(name) {
+  writeFileSync(join(outDir, `${name}.png`), screencap())
+}
+
+// ---- logcat trace ---------------------------------------------------------------------------
+export function clearLog() {
+  adb(['logcat', '-c'], { allowFail: true })
+}
+
+export function rawLog() {
+  return adb(['logcat', '-d', '-v', 'time', 'ReactNativeJS:V', '*:S'], { allowFail: true })
+}
+
+/** Every P184_TRACE event currently in the log buffer, in order. */
+export function traces() {
+  const out = []
+  for (const line of rawLog().split(/\r?\n/)) {
+    const at = line.indexOf('P184_TRACE ')
+    if (at === -1) continue
+    try {
+      out.push(JSON.parse(line.slice(at + 'P184_TRACE '.length)))
+    } catch {
+      // A truncated log line is dropped, never guessed at.
+    }
+  }
+  return out
+}
+
+export const scanTraces = () => traces().filter((t) => t.kind === 'scan')
+export const sessionTraces = () => traces().filter((t) => t.kind === 'session')
+
+// ---- proxy control ----------------------------------------------------------------------------
+export async function proxy(path, method = 'GET') {
+  const res = await fetch(`${PROXY}/__proxy/${path}`, { method })
+  return res.json()
+}
+
+// ---- database (local, isolated stack only) -----------------------------------------------------
+import { spawnSync } from 'node:child_process'
+export function psql(sql) {
+  const r = spawnSync(
+    'docker',
+    [
+      'exec',
+      '-i',
+      DB_CONTAINER,
+      'psql',
+      '-U',
+      'postgres',
+      '-d',
+      'postgres',
+      '-v',
+      'ON_ERROR_STOP=1',
+      '-At',
+    ],
+    { input: sql, encoding: 'utf8', env: { ...process.env, MSYS_NO_PATHCONV: '1' } },
+  )
+  if (r.status !== 0) throw new Error(`psql failed: ${r.stderr}`)
+  return r.stdout.trim()
+}
+
+// ---- image push and pick ------------------------------------------------------------------------
+let pushCounter = 0
+/** Pushes a local file to the shared pictures folder under a unique name and makes it the newest. */
+export async function pushImage(localPath, label) {
+  pushCounter += 1
+  const name = `p184-${label}-${String(Date.now())}-${String(pushCounter)}.${localPath.split('.').pop()}`
+  shell('mkdir -p /sdcard/Pictures')
+  adb(['push', localPath, `/sdcard/Pictures/${name}`])
+  shell(
+    `am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file:///sdcard/Pictures/${name}`,
+  )
+  await sleep(1500)
+  return name
+}
+
+/** On the photo screen: choose from the library, take the newest image in the system picker. */
+export async function pickNewest() {
+  const nodes = await openPhotoScreen()
+  if (byId(nodes, 'p169-recognition-retake') || byId(nodes, 'p169-photo-ready')) {
+    const retake = byId(dump(), 'p169-recognition-retake')
+    if (retake) {
+      tap(retake)
+      await sleep(600)
+    }
+  }
+  tap(
+    (await waitFor((ns) => byId(ns, 'p169-photo-library'), { label: 'choose photo button' })).value,
+  )
+  const state = await waitForPickerOrState(10000)
+  if (state.picker) {
+    await sleep(1200)
+    await chooseNewestInPicker()
+  }
+  await waitFor((ns) => byId(ns, 'p169-photo-ready'), { timeoutMs: 30000, label: 'photo ready' })
+}
+
+const RECOGNITION_IDS = [
+  'p169-recognition-result',
+  'p169-recognition-no-match',
+  'p169-recognition-abstain',
+  'p169-recognition-error',
+]
+
+export function swipeUp() {
+  shell('input touchscreen swipe 540 1900 540 700 300')
+}
+export function swipeDown() {
+  shell('input touchscreen swipe 540 700 540 1900 300')
+}
+
+/** Like waitFor, but scrolls the screen down a step whenever `pick` finds nothing. */
+export async function waitForScrolling(
+  pick,
+  { timeoutMs = 30000, label = 'condition', steps = 4 } = {},
+) {
+  const start = Date.now()
+  let scrolled = 0
+  for (;;) {
+    const nodes = dump()
+    const value = pick(nodes)
+    if (value) return { value, ms: Date.now() - start, nodes }
+    if (Date.now() - start > timeoutMs) {
+      const ids = [...new Set(nodes.map((n) => n.id).filter(Boolean))].slice(0, 40)
+      throw new Error(
+        `timed out after ${timeoutMs} ms waiting for ${label}; visible ids: ${ids.join(', ')}`,
+      )
+    }
+    // Give a running analysis time first; only scroll once a full second has passed without a hit.
+    if (Date.now() - start > 1500 && scrolled < steps) {
+      swipeUp()
+      scrolled += 1
+      await sleep(500)
+    } else if (scrolled >= steps) {
+      for (let i = 0; i < steps; i += 1) swipeDown()
+      scrolled = 0
+      await sleep(400)
+    } else await sleep(300)
+  }
+}
+
+/** Waits for the recognition section to show a final state; returns what the person sees. */
+export async function waitRecognition(timeoutMs = 90000) {
+  const r = await waitForScrolling((ns) => RECOGNITION_IDS.find((id) => byId(ns, id)) && ns, {
+    timeoutMs,
+    label: 'a recognition outcome',
+  })
+  const nodes = r.value
+  const kind = RECOGNITION_IDS.find((id) => byId(nodes, id)).replace('p169-recognition-', '')
+  const candidates = byIdPrefix(nodes, 'p169-recognition-candidate-').map((n) => ({
+    id: n.id.split('p169-recognition-candidate-')[1],
+    label: n.desc || n.text,
+  }))
+  return {
+    kind,
+    heading: byId(nodes, 'p169-recognition-heading')?.text ?? null,
+    badge: byId(nodes, 'p169-recognition-confidence')?.text ?? null,
+    preselectable: byId(nodes, 'p169-recognition-confirm') !== undefined,
+    candidates,
+    ms: r.ms,
+    nodes,
+  }
+}
+
+/** Newest FINISHED (non-cancelled) scan trace recorded after `sinceCount` scan traces. */
+export async function nextScanTrace(
+  sinceCount,
+  { timeoutMs = 60000, includeCancelled = false } = {},
+) {
+  const start = Date.now()
+  for (;;) {
+    const all = scanTraces()
+    const fresh = all.slice(sinceCount).filter((t) => includeCancelled || t.outcome !== 'cancelled')
+    if (fresh.length > 0) return fresh[fresh.length - 1]
+    if (Date.now() - start > timeoutMs) throw new Error('no scan trace appeared')
+    await sleep(400)
+  }
+}
+
+/** Runs one fixture end to end and returns { trace, ui }. */
+export async function scanFixture(fileName, { label } = {}) {
+  const before = scanTraces().length
+  await pushImage(fileName, label ?? 'fx')
+  await pickNewest()
+  const ui = await waitRecognition()
+  const trace = await nextScanTrace(before)
+  return { trace, ui }
+}
+
+export const stripNodes = ({ nodes: _nodes, ...rest }) => rest
+
+export function saveJson(name, data) {
+  writeFileSync(join(outDir, name), `${JSON.stringify(data, null, 2)}\n`)
+}
+
+/** Signs in only when the login form is showing (the app may already hold a session). */
+export async function ensureSignedIn(user) {
+  const nodes = dump()
+  if (byId(nodes, 'login-email') || byId(nodes, 'login-screen')) await signIn(user)
+}

@@ -155,3 +155,6 @@ logs/
 tmp/
 temp/
 scratch/
+
+# P184 scratch (generated pathological images, evidence captures)
+.p184-scratch/

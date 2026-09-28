@@ -50,7 +50,7 @@ export interface RecognitionPipelineDeps {
   }): Promise<ScannerCandidateRecord[]>
 }
 
-const realDeps: RecognitionPipelineDeps = {
+export const defaultRecognitionDeps: RecognitionPipelineDeps = {
   readFile: (uri) => {
     const file = new File(uri)
     return Promise.resolve({ size: file.size, bytes: () => file.bytes() })
@@ -79,7 +79,7 @@ const realDeps: RecognitionPipelineDeps = {
  * identity change, so a recognition in flight across a refresh is still valid.
  */
 export function createNativeCardRecognitionPort(
-  deps: RecognitionPipelineDeps = realDeps,
+  deps: RecognitionPipelineDeps = defaultRecognitionDeps,
 ): CardRecognitionPort {
   let generation = 0
   let scanCounter = 0

@@ -128,10 +128,11 @@ select cron.alter_job(jobid, active := false) from cron.job where jobname in ('m
     dbContainer: stack.dbContainer,
     projectId: stack.projectId,
     apiPort: stack.apiPort,
-    // No capture proxy this phase either (P184's mission is device-matrix/accessibility/
-    // performance, not lost-response reliability) — src/config/backend-config.ts already rewrites
-    // localhost/127.0.0.1 to the Android emulator's 10.0.2.2 host alias at runtime, so the app
-    // reaches this API port directly.
+    // The device build talks to the P184 capture proxy (scripts/p184/capture-proxy.mjs, port 55781),
+    // which audits every request for image egress and can hold/drop a response (lost-response
+    // test) before forwarding to the API. src/config/backend-config.ts rewrites 127.0.0.1 to the
+    // Android emulator's 10.0.2.2 host alias at runtime.
+    appUrl: 'http://127.0.0.1:55781',
   }
   mkdirSync(stack.workdir, { recursive: true })
   writeFileSync(join(stack.workdir, 'public-env.json'), JSON.stringify(pub, null, 2))
