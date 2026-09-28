@@ -32,6 +32,8 @@ const VISUAL_TOP_K = 30
 const DECODE_MAX_LONG_EDGE = 1600
 const TRACE_VISUAL_TOP = 5
 const TRACE_CANDIDATES = 5
+const TRACE_OCR_LINES = 16
+const TRACE_OCR_LINE_CHARS = 48
 
 /**
  * The I/O of the pipeline, injectable so the decision logic (checkpoints, safety order, fusion,
@@ -277,16 +279,22 @@ async function runPipeline(
   if (severeBlur) ctx.trace.visualSkipped = 'severe-blur'
 
   const [ocr, visualSession] = await Promise.all([
-    timed(ctx, 'ocrMs', () => deps.ocr(input.uri, decoded.height)).catch(() => null),
+    timed(ctx, 'ocrMs', () => deps.ocr(input.uri, decoded.orientedHeight)).catch(() => null),
     severeBlur ? Promise.resolve(null) : timed(ctx, 'sessionMs', () => deps.visualSession()),
   ])
   ctx.trace.ocr =
     ocr === null
-      ? { name: null, number: null, failed: true }
+      ? { name: null, number: null, failed: true, lines: [], slashTokens: [] }
       : {
           name: ocr.rawNameText ?? null,
           number: ocr.rawCollectorNumberText ?? null,
           failed: false,
+          slashTokens: ocr.slashTokens.map((token) => token.text),
+          lines: ocr.fullText
+            .split(/\r?\n/)
+            .filter((line) => line.trim() !== '')
+            .slice(0, TRACE_OCR_LINES)
+            .map((line) => line.slice(0, TRACE_OCR_LINE_CHARS)),
         }
   checkpoint(ctx, 'after_ocr_and_session')
 

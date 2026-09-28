@@ -19,7 +19,7 @@ const COLLECTOR_NUMBER_SHAPE = /^[A-Za-z]{0,4}\s?\d{1,4}\s?\/?\s?[A-Za-z0-9]{0,4
 const MAX_COLLECTOR_TOKEN_LENGTH = 14
 const NAME_MIN_LETTERS = 2
 
-interface OcrLine {
+export interface OcrLine {
   readonly text: string
   readonly confidenceScore: number | null
   readonly top: number
@@ -31,6 +31,8 @@ export interface OcrExtraction extends Pick<
   'rawNameText' | 'rawCollectorNumberText' | 'nameOcrConfidence' | 'collectorOcrConfidence'
 > {
   readonly fullText: string
+  /** Every printed "N/M" token found (diagnostics only). */
+  readonly slashTokens: readonly SlashToken[]
 }
 
 function toOcrLines(result: {
@@ -62,21 +64,72 @@ function toOcrLines(result: {
   return lines
 }
 
-function pickCollectorNumberLine(lines: readonly OcrLine[], imageHeight: number): OcrLine | null {
-  const bottomBand = imageHeight * 0.6
-  const candidates = lines.filter(
+/**
+ * A printed "number / total" token (`058/191`, `4/102`, `TG12/TG30`, `SV049/SV122`) anywhere INSIDE a
+ * line. Real cards print it beside other text on one line (`Illus. <artist>   58/102`), so the whole
+ * line is not number-shaped and a shape test on the line misses it. No lookbehind: Hermes.
+ */
+const SLASH_NUMBER =
+  /(^|[^0-9A-Za-z/])([A-Za-z]{0,3}[0-9]{1,4})\s?\/\s?([A-Za-z]{0,3}[0-9]{2,4})(?![0-9A-Za-z/])/g
+
+/** Lower fractions of the card are where a collector number is printed; damage / HP numbers sit higher. */
+const NUMBER_BAND_SLASH = 0.6
+const NUMBER_BAND_PREFIXED = 0.75
+const NUMBER_BAND_BARE = 0.88
+
+export interface SlashToken {
+  readonly text: string
+  readonly top: number
+}
+
+export function findSlashTokens(lines: readonly OcrLine[]): SlashToken[] {
+  const out: SlashToken[] = []
+  for (const line of lines) {
+    for (const match of line.text.matchAll(SLASH_NUMBER)) {
+      out.push({ text: `${match[2] ?? ''}/${match[3] ?? ''}`, top: line.top })
+    }
+  }
+  return out
+}
+
+/**
+ * The collector number, in order of how much a reading can be trusted:
+ *  1. a printed "N/M" token in the lower part of the card (the LOWEST one wins);
+ *  2. a whole line shaped like a prefixed id (`SV049`, `TG12`, `H31`) in the bottom quarter;
+ *  3. a bare digit run only in the very bottom band — never mid-card, where HP, damage and
+ *     weakness numbers ("30", "60", "100 HP") live and were misread as collector numbers on real
+ *     cards before P184.
+ * Nothing found is `null`, which the fusion treats as "no number evidence" — safer than a wrong one.
+ * `imageHeight` is the height in the SAME pixel space as the recogniser's line frames.
+ */
+export function pickCollectorNumber(lines: readonly OcrLine[], imageHeight: number): string | null {
+  const slash = findSlashTokens(lines)
+    .filter((token) => token.top >= imageHeight * NUMBER_BAND_SLASH)
+    .reduce<SlashToken | null>(
+      (best, token) => (best === null || token.top > best.top ? token : best),
+      null,
+    )
+  if (slash !== null) return slash.text
+
+  const shaped = lines.filter(
     (line) =>
       line.text.length <= MAX_COLLECTOR_TOKEN_LENGTH &&
       COLLECTOR_NUMBER_SHAPE.test(line.text) &&
-      /\d/.test(line.text),
+      /[0-9]/.test(line.text),
   )
-  if (candidates.length === 0) return null
-  const inBottomBand = candidates.filter((line) => line.top >= bottomBand)
-  const pool = inBottomBand.length > 0 ? inBottomBand : candidates
-  return pool.reduce((best, line) => (line.top > best.top ? line : best), pool[0] as OcrLine)
+  const pick = (band: number, predicate: (text: string) => boolean): OcrLine | null =>
+    shaped
+      .filter((line) => line.top >= imageHeight * band && predicate(line.text))
+      .reduce<OcrLine | null>(
+        (best, line) => (best === null || line.top > best.top ? line : best),
+        null,
+      )
+  const prefixed = pick(NUMBER_BAND_PREFIXED, (text) => /^[A-Za-z]{1,4}\s?[0-9]{1,4}$/.test(text))
+  if (prefixed !== null) return prefixed.text
+  return pick(NUMBER_BAND_BARE, (text) => /^[0-9]{1,4}$/.test(text))?.text ?? null
 }
 
-function pickNameLine(lines: readonly OcrLine[], imageHeight: number): OcrLine | null {
+export function pickNameLine(lines: readonly OcrLine[], imageHeight: number): OcrLine | null {
   const topBand = imageHeight * 0.5
   const candidates = lines.filter((line) => {
     const letters = line.text.replace(/[^A-Za-z]/g, '')
@@ -100,13 +153,15 @@ export async function recognizeCardText(
 ): Promise<OcrExtraction> {
   const result = await TextRecognition.recognize(imagePath, TextRecognitionScript.LATIN)
   const lines = toOcrLines(result)
-  const collectorLine = pickCollectorNumberLine(lines, imageHeight)
+  const collectorNumber = pickCollectorNumber(lines, imageHeight)
   const nameLine = pickNameLine(lines, imageHeight)
   return {
     fullText: result.text,
     rawNameText: nameLine?.text ?? null,
-    rawCollectorNumberText: collectorLine?.text ?? null,
+    rawCollectorNumberText: collectorNumber,
     nameOcrConfidence: nameLine?.confidenceScore ?? null,
-    collectorOcrConfidence: collectorLine?.confidenceScore ?? null,
+    // The recogniser exposes no per-line confidence (see toOcrLines): absent means full reliability.
+    collectorOcrConfidence: null,
+    slashTokens: findSlashTokens(lines).slice(0, 6),
   }
 }

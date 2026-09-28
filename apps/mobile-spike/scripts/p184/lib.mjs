@@ -140,7 +140,18 @@ export async function pushImage(localPath, label) {
 }
 
 /** On the photo screen: choose from the library, take the newest image in the system picker. */
+export async function scrollPhotoScreenToTop() {
+  // A previous scan leaves the screen scrolled down to its outcome; the picker buttons are at the top.
+  for (let i = 0; i < 4; i += 1) {
+    const n = dump()
+    if (!byId(n, 'p169-photo-entry') || byId(n, 'p169-photo-library')) return
+    swipeDown()
+    await sleep(500)
+  }
+}
+
 export async function pickNewest() {
+  await scrollPhotoScreenToTop()
   const nodes = await openPhotoScreen()
   if (byId(nodes, 'p169-recognition-retake') || byId(nodes, 'p169-photo-ready')) {
     const retake = byId(dump(), 'p169-recognition-retake')

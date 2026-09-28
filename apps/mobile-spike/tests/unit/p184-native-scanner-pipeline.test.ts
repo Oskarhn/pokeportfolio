@@ -149,6 +149,7 @@ interface Calls {
   search: number
   retrieve: number
   retrieveArgs: unknown[]
+  ocrHeights: number[]
 }
 
 function makeDeps(
@@ -164,6 +165,7 @@ function makeDeps(
     search: 0,
     retrieve: 0,
     retrieveArgs: [],
+    ocrHeights: [],
   }
   const deps: RecognitionPipelineDeps = {
     readFile: () =>
@@ -183,10 +185,13 @@ function makeDeps(
         height: DECODED_H,
         originalWidth: CARD_W,
         originalHeight: CARD_H,
+        orientedWidth: CARD_W,
+        orientedHeight: CARD_H,
       }
     },
-    ocr: async () => {
+    ocr: async (_uri, imageHeight) => {
       calls.ocr += 1
+      calls.ocrHeights.push(imageHeight)
       if (hooks.ocr) await hooks.ocr()
       if (script.ocr === 'fail') throw new Error('ocr failed')
       return {
@@ -195,6 +200,7 @@ function makeDeps(
         rawCollectorNumberText: script.ocr.number,
         nameOcrConfidence: null,
         collectorOcrConfidence: null,
+        slashTokens: [],
       }
     },
     visualSession: () => {
@@ -349,6 +355,14 @@ function kindOf(
 ) {
   return outcome.status === 'analysed' ? outcome.outcome.kind : outcome.status
 }
+
+describe('OCR coordinate space', () => {
+  it('the recogniser is told the ORIENTED full-size height (its line frames are in that space), not the downscaled decode height', async () => {
+    const { calls } = await scanWith(baseScript())
+    expect(calls.ocrHeights).toEqual([CARD_H])
+    expect(DECODED_H).not.toBe(CARD_H)
+  })
+})
 
 describe('severe blur: the visual channel abstains (web parity), text still works', () => {
   it('a blurred photo never loads or runs the model, and the trace says why', async () => {
@@ -765,7 +779,7 @@ describe('trace', () => {
     ] as const) {
       expect(trace.stages[stage]).toEqual(expect.any(Number))
     }
-    expect(trace.ocr).toEqual({ name: 'P184 Alpha', number: '007/999', failed: false })
+    expect(trace.ocr).toMatchObject({ name: 'P184 Alpha', number: '007/999', failed: false })
     expect(trace.visualTop[0]?.cardId).toBe('alpha')
     expect(trace.topCandidateIds).toEqual(['alpha'])
   })

@@ -83,6 +83,10 @@ interface MinimalSkiaApi {
 export interface DecodedImage extends RgbaImage {
   readonly originalWidth: number
   readonly originalHeight: number
+  /** Size of the image AFTER EXIF orientation and BEFORE the downscale: the pixel space the text
+   *  recogniser (which opens the file itself) reports its line frames in. */
+  readonly orientedWidth: number
+  readonly orientedHeight: number
 }
 
 export class ImageDecodeError extends Error {
@@ -207,6 +211,8 @@ export function decodeToRgba(fileBytes: Uint8Array, maxLongEdge: number): Decode
       height: outHeight,
       originalWidth: srcWidth,
       originalHeight: srcHeight,
+      orientedWidth,
+      orientedHeight,
     }
   } finally {
     decoded.dispose()

@@ -40,6 +40,10 @@ export interface ScanTraceEvent {
     readonly name: string | null
     readonly number: string | null
     readonly failed: boolean
+    /** First lines of the recognised text (bounded), for diagnosing what the recogniser saw. */
+    readonly lines: readonly string[]
+    /** Printed "N/M" tokens the recogniser found anywhere in the text. */
+    readonly slashTokens: readonly string[]
   } | null
   readonly visualTop: readonly { readonly cardId: string; readonly similarity: number }[]
   readonly visualFailed: boolean
