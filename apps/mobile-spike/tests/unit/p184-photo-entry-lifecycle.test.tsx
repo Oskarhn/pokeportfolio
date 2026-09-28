@@ -174,6 +174,7 @@ describe('recognition on the photo entry screen', () => {
     })
     // The photo is released when the screen loses focus.
     expect(h.runtime.photo.getSnapshot().image).toBeNull()
+    expect(port.cancelActiveCalls).toBeGreaterThanOrEqual(1)
     await settle(port.calls[0] as Deferred<RecognitionOutcome>, analysed('cand-A', 'P184 Alpha'))
     await act(async () => {
       ref.goBack()
@@ -189,8 +190,9 @@ describe('backgrounding', () => {
   it('cancels the running recognition, and analyses the same photo once when the app returns', async () => {
     const { h, port } = await mount()
     await pick(h, 1)
+    const cancelsBefore = port.cancelActiveCalls
     await emitAppState('background')
-    expect(port.cancelActiveCalls).toBe(1)
+    expect(port.cancelActiveCalls).toBe(cancelsBefore + 1)
     // The pipeline reports the cancelled scan at its next checkpoint; the app is still backgrounded.
     await settle(port.calls[0] as Deferred<RecognitionOutcome>, { status: 'cancelled' })
     expect(port.calls).toHaveLength(1)

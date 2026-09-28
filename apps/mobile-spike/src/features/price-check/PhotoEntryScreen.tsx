@@ -79,6 +79,10 @@ export function PhotoEntryScreen({
     return () => {
       live = false
       inFlightRef.current = false
+      // Leaving the screen (the photo is released on blur), a new photo or an identity change ends
+      // this run: stop the recognition at its next checkpoint instead of letting it finish the
+      // expensive stages and the catalog query for an answer nobody will see.
+      feature.recognition.cancelActive?.()
     }
     // resumeKey is a deliberate re-run trigger, not a value read inside.
   }, [feature.recognition, photo.status, photo.image, resumeKey])

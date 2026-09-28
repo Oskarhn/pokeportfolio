@@ -196,8 +196,15 @@ const MUTANTS = [
     id: 'M23',
     name: 'backgrounding no longer cancels the recognition',
     file: 'src/features/price-check/PhotoEntryScreen.tsx',
-    from: 'feature.recognition.cancelActive?.()',
-    to: 'void 0',
+    from: "if (state === 'background') {\n        feature.recognition.cancelActive?.()",
+    to: "if (state === 'background') {\n        void 0",
+  },
+  {
+    id: 'M29',
+    name: 'leaving the screen no longer cancels the running recognition',
+    file: 'src/features/price-check/PhotoEntryScreen.tsx',
+    from: 'for an answer nobody will see.\n      feature.recognition.cancelActive?.()',
+    to: 'for an answer nobody will see.\n      void 0',
   },
   {
     id: 'M24',
