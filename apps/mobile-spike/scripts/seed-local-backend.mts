@@ -3,10 +3,23 @@
  * data). Run through the repo's tsx so it can reuse the invitation-claim user harness already used
  * by every database suite:
  *
- *   pnpm --dir <repo> exec tsx apps/mobile-spike/scripts/seed-local-backend.mts
+ *   pnpm --dir <repo> exec tsx apps/mobile-spike/scripts/seed-local-backend.mts [--force|--reuse]
  *
  * Output: apps/mobile-spike/.local-backend/fixture.json (gitignored). It holds the generated
  * throwaway credentials of two synthetic users, so it must never be committed.
+ *
+ * FIXTURE CONTRACT (P180 §14): this is the ONE script that writes .local-backend/fixture.json —
+ * every device driver (android-runtime-check.mjs, android-collection-perf.mjs,
+ * android-p167-check.mjs, probe.mts, and the p17x/backend.mjs seed steps) reads it as "the" fixture.
+ * A second run against an already-seeded stack REFUSES by default (no silent overwrite): pass
+ * --reuse to keep the existing fixture and its recorded credentials unchanged (prints its path and
+ * exits), or --force to intentionally replace it (the previous users' rows and holdings are not
+ * deleted, only no longer referenced by this file — see fixture-overwrite-guard.mjs).
+ *
+ * A phase that needs a SECOND, additional fixture (a different catalog, a different user pool) adds
+ * its own script writing its own explicitly-named file under its own `.local-backend/<phase>/`
+ * subdirectory (the pattern scripts/p169/seed.mts and scripts/p17{7,8,9}/seed-sealed-fixture.mjs
+ * already follow) — never a second writer of this base path.
  *
  * Fixture design (each row exists so one specific failure is detectable):
  *   - user A: 10,000 holdings (list virtualisation / pagination / memory), plus named holdings whose
@@ -19,18 +32,55 @@
  *   - fx_rates: EUR/USD -> NOK, so the released RPC converts snapshots into NOK server-side.
  */
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createServiceClient, createSyntheticUser } from '../../../tests/db/setup'
 // @ts-expect-error plain .mjs helper without type declarations
 import { API_PORT, DB_CONTAINER, readLocalEnv } from './local-backend.mjs'
+// @ts-expect-error plain .js helper without type declarations
+import { blockedMessage, decideFixtureAction } from './fixture-overwrite-guard.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const outDir = resolve(here, '..', '.local-backend')
+const fixturePath = join(outDir, 'fixture.json')
 
 const A_HOLDINGS = 10_000
 const B_HOLDINGS = 40
+
+// P180 §14: no silent overwrite. See fixture-overwrite-guard.mjs's header for the hazard this
+// closes — re-running this script used to create fresh random users and clobber fixture.json with
+// no warning, orphaning whatever a previous run's fixture (and anything documented from it) pointed
+// at. Checked BEFORE anything talks to the database.
+{
+  const args = process.argv.slice(2)
+  const force = args.includes('--force')
+  const reuse = args.includes('--reuse')
+  const exists = existsSync(fixturePath)
+  const action = decideFixtureAction({ exists, force, reuse }) as
+    'create' | 'reuse' | 'overwrite' | 'blocked'
+  if (action === 'blocked') {
+    const previous = JSON.parse(readFileSync(fixturePath, 'utf8')) as {
+      users?: { a?: { email?: string }; b?: { email?: string } }
+    }
+    throw new Error(
+      blockedMessage(
+        fixturePath,
+        `existing users ${previous.users?.a?.email ?? '?'} / ${previous.users?.b?.email ?? '?'}`,
+      ),
+    )
+  }
+  if (action === 'reuse') {
+    console.log(`reusing existing fixture at ${fixturePath} (pass --force to replace it)`)
+    process.exit(0)
+  }
+  if (action === 'overwrite') {
+    console.log(
+      `--force: replacing the existing fixture at ${fixturePath} — its previous users' rows are ` +
+        'NOT deleted, only no longer referenced by this file.',
+    )
+  }
+}
 
 function psql(sql: string, vars: Record<string, string> = {}): string {
   const args = [
@@ -182,7 +232,7 @@ for (const line of ids.trim().split('\n')) {
 
 mkdirSync(outDir, { recursive: true })
 writeFileSync(
-  join(outDir, 'fixture.json'),
+  fixturePath,
   JSON.stringify(
     {
       apiUrl: env.API_URL,
@@ -194,6 +244,4 @@ writeFileSync(
     2,
   ),
 )
-console.log(
-  `seeded: A=${A_HOLDINGS + 6} holdings, B=${B_HOLDINGS} holdings -> ${join(outDir, 'fixture.json')}`,
-)
+console.log(`seeded: A=${A_HOLDINGS + 6} holdings, B=${B_HOLDINGS} holdings -> ${fixturePath}`)
