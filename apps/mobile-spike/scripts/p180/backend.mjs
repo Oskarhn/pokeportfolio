@@ -128,7 +128,10 @@ select cron.alter_job(jobid, active := false) from cron.job where jobname in ('m
     dbContainer: stack.dbContainer,
     projectId: stack.projectId,
     apiPort: stack.apiPort,
-    appUrl: 'http://127.0.0.1:55603',
+    // No capture proxy this phase (basic boot + Hermes-proof verification only, not the
+    // lost-response device scenario) — src/config/backend-config.ts already rewrites
+    // localhost/127.0.0.1 to the Android emulator's 10.0.2.2 host alias at runtime, so the app
+    // reaches this API port directly.
   }
   mkdirSync(stack.workdir, { recursive: true })
   writeFileSync(join(stack.workdir, 'public-env.json'), JSON.stringify(pub, null, 2))
