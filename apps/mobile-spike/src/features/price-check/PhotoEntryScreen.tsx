@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
-import { Image, ScrollView, View } from 'react-native'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { AppState, Image, ScrollView, View } from 'react-native'
 import { useFocusEffect } from '@react-navigation/native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { toScannerInput } from '../../photo/photo-store'
@@ -18,6 +18,7 @@ import { useStore } from '../../ui/runtime-context'
 import { SPACE, useTheme } from '../../ui/theme'
 import { useP169, type P169StackParams } from '../navigation'
 import { ActionButton, LiveStatus, Section } from '../ui/kit'
+import { shouldResumeRecognition } from './recognition-lifecycle'
 import type { RecognitionOutcome } from './recognition'
 import type { ScanCandidate } from './p165-domain/price-check/scan'
 
@@ -36,6 +37,14 @@ export function PhotoEntryScreen({
   const t = useTheme()
   const [recognition, setRecognition] = useState<RecognitionOutcome | null>(null)
   const [showAllCandidates, setShowAllCandidates] = useState(false)
+  // Bumped to start a fresh recognition of the SAME photo after the app came back to the
+  // foreground (P184): backgrounding cancels the running recognition instead of letting it burn
+  // CPU, and the person finds the photo analysed again when they return.
+  const [resumeKey, setResumeKey] = useState(0)
+  const inFlightRef = useRef(false)
+  const outcomeStatusRef = useRef<RecognitionOutcome['status'] | null>(null)
+  const photoReadyRef = useRef(false)
+  photoReadyRef.current = photo.status === 'ready' && photo.image !== null
 
   useFocusEffect(
     useCallback(
@@ -49,18 +58,48 @@ export function PhotoEntryScreen({
   const runRecognition = useCallback(() => {
     let live = true
     setRecognition(null)
+    outcomeStatusRef.current = null
     setShowAllCandidates(false)
     if (photo.status === 'ready' && photo.image !== null) {
+      inFlightRef.current = true
       void feature.recognition.recognize(toScannerInput(photo.image)).then((outcome) => {
-        if (live) setRecognition(outcome)
+        if (!live) return
+        inFlightRef.current = false
+        outcomeStatusRef.current = outcome.status
+        setRecognition(outcome)
+        // Cancelled while the app was in the background but the app is already back: the person
+        // is looking at this screen, so analyse again instead of leaving it blank.
+        if (outcome.status === 'cancelled' && AppState.currentState === 'active') {
+          setResumeKey((key) => key + 1)
+        }
       })
     }
     return () => {
       live = false
+      inFlightRef.current = false
     }
-  }, [feature.recognition, photo.status, photo.image])
+    // resumeKey is a deliberate re-run trigger, not a value read inside.
+  }, [feature.recognition, photo.status, photo.image, resumeKey])
 
   useEffect(runRecognition, [runRecognition])
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'background') {
+        feature.recognition.cancelActive?.()
+      } else if (
+        state === 'active' &&
+        shouldResumeRecognition({
+          photoReady: photoReadyRef.current,
+          outcomeStatus: outcomeStatusRef.current,
+          inFlight: inFlightRef.current,
+        })
+      ) {
+        setResumeKey((key) => key + 1)
+      }
+    })
+    return () => subscription.remove()
+  }, [feature.recognition])
 
   const manual = () => navigation.navigate('P169Search')
   const openCard = (candidateId: string) => navigation.navigate('P169Card', { cardId: candidateId })

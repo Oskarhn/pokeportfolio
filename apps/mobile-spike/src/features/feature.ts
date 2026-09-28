@@ -72,11 +72,17 @@ export function createP169Feature(deps: P169FeatureDeps): P169Feature {
   deps.registry.register('p169-catalog-search', search)
   deps.registry.register('p169-price-lookup', prices)
   deps.registry.register('p169-price-check', priceCheck)
+  const recognition = deps.recognition ?? NATIVE_RECOGNITION_UNAVAILABLE
+  // A recognition started for user A must never publish under user B (P184): the port's own reset
+  // invalidates it synchronously with the rest of the identity boundary.
+  if (recognition.reset !== undefined) {
+    deps.registry.register('p169-recognition', { reset: () => recognition.reset?.() })
+  }
   return {
     search,
     priceCheck,
     prices,
     photo: deps.photo,
-    recognition: deps.recognition ?? NATIVE_RECOGNITION_UNAVAILABLE,
+    recognition,
   }
 }

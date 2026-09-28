@@ -63,10 +63,17 @@ async function materializeLocalUri(assetModule: number): Promise<string> {
 let cached: Promise<ScannerAssets> | null = null
 
 /** Loads and verifies both assets once per process; every later call returns the same cached,
- *  already-verified result (no repeated hashing on every scan). */
+ *  already-verified result (no repeated hashing on every scan). An integrity failure stays cached
+ *  (fail closed: nothing else is tried in its place); any other failure (an I/O error while
+ *  materializing the bundled asset) is dropped so the next scan can try again. */
 export function loadScannerAssets(): Promise<ScannerAssets> {
-  if (cached === null) cached = loadScannerAssetsUncached()
-  return cached
+  if (cached !== null) return cached
+  const pending = loadScannerAssetsUncached()
+  cached = pending
+  pending.catch((error: unknown) => {
+    if (!(error instanceof AssetIntegrityError) && cached === pending) cached = null
+  })
+  return pending
 }
 
 async function loadScannerAssetsUncached(): Promise<ScannerAssets> {

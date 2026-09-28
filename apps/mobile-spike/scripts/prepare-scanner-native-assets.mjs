@@ -63,7 +63,9 @@ async function stageModel(expectedModelSha256) {
     const url = `https://huggingface.co/${VISUAL_MODEL_REPO}/resolve/${VISUAL_MODEL_REVISION}/${file.upstreamPath}`
     const response = await fetch(url)
     if (!response.ok) {
-      throw new Error(`prepare-scanner-native-assets: fetch failed for ${url}: HTTP ${response.status}`)
+      throw new Error(
+        `prepare-scanner-native-assets: fetch failed for ${url}: HTTP ${response.status}`,
+      )
     }
     const bytes = new Uint8Array(await response.arrayBuffer())
     writeFileSync(dest, bytes)

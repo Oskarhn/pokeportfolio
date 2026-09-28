@@ -122,6 +122,15 @@ const STACKS = {
     mockPort: 55498,
     withWorktreeMigrations: true,
   },
+  // P184: native release-candidate scanner hardening, own stack/AVD/ports. API 55771, mock 55499
+  // (clear of every port above). Same 107 local migrations as P177-P182 (this worktree adds none).
+  p184: {
+    projectId: 'pokeportfolio-p184-app',
+    portShift: 450,
+    dir: 'p184',
+    mockPort: 55499,
+    withWorktreeMigrations: true,
+  },
 }
 
 export function stackOf(argv) {

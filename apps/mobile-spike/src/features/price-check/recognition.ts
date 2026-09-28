@@ -40,6 +40,15 @@ export interface CardRecognitionPort {
   /** False until a real native recognizer exists and has been proven on a device. */
   readonly implemented: boolean
   recognize(input: ScannerImageInput): Promise<RecognitionOutcome>
+  /**
+   * Invalidates every recognition that is running now: its eventual answer is discarded as
+   * `cancelled` and it stops at its next checkpoint instead of finishing the expensive stages.
+   * Called when the app goes to the background (P184: no inference in the background).
+   */
+  cancelActive?(): void
+  /** Identity boundary (A -> B, sign-out): same effect as `cancelActive`, registered in the scoped
+   *  registry so it runs synchronously with every other user-scoped reset. */
+  reset?(): void
 }
 
 export const NATIVE_RECOGNITION_UNAVAILABLE: CardRecognitionPort = {
