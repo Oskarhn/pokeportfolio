@@ -14,7 +14,15 @@
 import './env.mjs'
 import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { amStart, appPid, crashCount, localActivityId, activityAfterChange, rootAvailable, focusedWindow } from '../android-p167-lib.mjs'
+import {
+  amStart,
+  appPid,
+  crashCount,
+  localActivityId,
+  activityAfterChange,
+  rootAvailable,
+  focusedWindow,
+} from '../android-p167-lib.mjs'
 import {
   appRoot,
   byId,
@@ -53,7 +61,12 @@ async function step(name, fn) {
     report.push({ step: name, status: 'PASS', ms: Date.now() - t0, detail })
     console.log(`PASS ${name}  ${JSON.stringify(detail ?? null).slice(0, 700)}`)
   } catch (e) {
-    report.push({ step: name, status: 'FAIL', ms: Date.now() - t0, detail: String(e.message ?? e).slice(0, 700) })
+    report.push({
+      step: name,
+      status: 'FAIL',
+      ms: Date.now() - t0,
+      detail: String(e.message ?? e).slice(0, 700),
+    })
     console.log(`FAIL ${name}  ${String(e.message ?? e).slice(0, 500)}`)
     try {
       shot(`fail-${name.replace(/[^a-z0-9]+/gi, '-').slice(0, 50)}`)
@@ -87,10 +100,13 @@ async function statusText() {
 }
 
 async function waitStatus(re, timeoutMs = 240000) {
-  const r = await waitFor((ns) => {
-    const t = byId(ns, 'p184-proof-status')?.text ?? ''
-    return re.test(t) ? t : null
-  }, { timeoutMs, label: `status ${String(re)}` })
+  const r = await waitFor(
+    (ns) => {
+      const t = byId(ns, 'p184-proof-status')?.text ?? ''
+      return re.test(t) ? t : null
+    },
+    { timeoutMs, label: `status ${String(re)}` },
+  )
   return r.value
 }
 
@@ -107,7 +123,9 @@ clearLog()
 // ------------------------------------------------------------------------------------------------
 const pathDir = join(appRoot, '..', '..', '.p184-scratch', 'pathological')
 if (existsSync(pathDir)) {
-  for (const file of readdirSync(pathDir).filter((f) => /^p\d\d-/.test(f)).sort()) {
+  for (const file of readdirSync(pathDir)
+    .filter((f) => /^p\d\d-/.test(f))
+    .sort()) {
     await step(`pathological ${file}`, async () => {
       const before = scanTraces().length
       const pidBefore = appPid()
@@ -119,7 +137,11 @@ if (existsSync(pathDir)) {
         state = 'picked'
       } catch {
         const n = dump()
-        state = byId(n, 'p169-photo-unavailable') ? 'picker-refused' : byId(n, 'p169-photo-cancelled') ? 'picker-cancelled' : 'unknown'
+        state = byId(n, 'p169-photo-unavailable')
+          ? 'picker-refused'
+          : byId(n, 'p169-photo-cancelled')
+            ? 'picker-cancelled'
+            : 'unknown'
       }
       let ui = null
       let trace = null
@@ -134,7 +156,14 @@ if (existsSync(pathDir)) {
         ui: ui && { kind: ui.kind, heading: ui.heading },
         outcome: trace?.outcome ?? null,
         stoppedAt: trace?.stoppedAt ?? null,
-        stages: trace ? { decodeMs: trace.stages.decodeMs, ocrMs: trace.stages.ocrMs, onnxMs: trace.stages.onnxMs, totalMs: trace.stages.totalMs } : null,
+        stages: trace
+          ? {
+              decodeMs: trace.stages.decodeMs,
+              ocrMs: trace.stages.ocrMs,
+              onnxMs: trace.stages.onnxMs,
+              totalMs: trace.stages.totalMs,
+            }
+          : null,
         pickToOutcomeMs: ms,
       }
     })
@@ -169,12 +198,18 @@ await step('latest-capture-wins: photo A held 20 s, photo B chosen meanwhile', a
   await sleep(3000)
   const final = await waitRecognition(20000)
   const all = scanTraces()
-  const aTrace = all.find((t) => t.ocr?.name === 'Voltmoth' || t.stoppedAt?.startsWith('after_') || t.outcome === 'cancelled')
+  const aTrace = all.find(
+    (t) =>
+      t.ocr?.name === 'Voltmoth' || t.stoppedAt?.startsWith('after_') || t.outcome === 'cancelled',
+  )
   const cancelled = all.filter((t) => t.outcome === 'cancelled')
   const analysed = all.filter((t) => t.outcome === 'analysed')
-  if (!seenAtB.includes('Sparkfin')) throw new Error(`B's card was not shown first: ${seenAtB.join('|')}`)
-  if (flashes.length > 0) throw new Error(`A's card (Voltmoth) appeared on screen at ${flashes.join(',')} ms`)
-  if (candidateNames(final).includes('Voltmoth')) throw new Error("A's card is on screen at the end")
+  if (!seenAtB.includes('Sparkfin'))
+    throw new Error(`B's card was not shown first: ${seenAtB.join('|')}`)
+  if (flashes.length > 0)
+    throw new Error(`A's card (Voltmoth) appeared on screen at ${flashes.join(',')} ms`)
+  if (candidateNames(final).includes('Voltmoth'))
+    throw new Error("A's card is on screen at the end")
   if (cancelled.length < 1) throw new Error('A was not reported as cancelled')
   return {
     aStartedAfterMs: aStarted,
@@ -201,70 +236,90 @@ await step('latest-capture-wins: burst of 8 overlapping analyses of one photo', 
   const status = await waitStatus(/burst8 DONE/)
   const m = /analysed=(\d+) cancelled=(\d+) abstain=(\d+) failed=(\d+)/.exec(status)
   const [analysed, cancelled, abstain, failed] = m.slice(1).map(Number)
-  if (analysed !== 1 || cancelled !== 7 || abstain !== 0 || failed !== 0) throw new Error(`unexpected burst tally: ${status}`)
+  if (analysed !== 1 || cancelled !== 7 || abstain !== 0 || failed !== 0)
+    throw new Error(`unexpected burst tally: ${status}`)
   return { status }
 })
 
 // ------------------------------------------------------------------------------------------------
 // 3. Navigation cancellation
 // ------------------------------------------------------------------------------------------------
-await step('navigation: leave the scanner while a scan is held, no result, no leak into the next entry', async () => {
-  clearLog()
-  await goPhotoScreen()
-  const retake = byId(dump(), 'p169-recognition-retake')
-  if (retake) tap(retake)
-  await holdNextScan()
-  const t0 = Date.now()
-  await pushImage(fx('f01-clean'), 'nav')
-  await pickNewest()
-  tap((await waitFor((ns) => byId(ns, 'tab-collection'), { label: 'collection tab' })).value)
-  await waitFor((ns) => byId(ns, 'collection-list'), { label: 'collection list' })
-  await sleep(Math.max(0, 27000 - (Date.now() - t0)))
-  const all = scanTraces()
-  const trace = all[all.length - 1]
-  await goPhotoScreen()
-  const n = dump()
-  const leaked = ['p169-photo-ready', 'p169-recognition-result', 'p169-recognition-no-match', 'p169-recognition-abstain'].filter((id) => byId(n, id))
-  if (leaked.length > 0) throw new Error(`state leaked into the next entry: ${leaked.join(',')}`)
-  if (trace?.outcome !== 'cancelled') throw new Error(`the scan was not cancelled: ${trace?.outcome}`)
-  if (trace.stages.onnxMs !== undefined || trace.stages.retrievalMs !== undefined) throw new Error('expensive stages ran after leaving the screen')
-  return { outcome: trace.outcome, stoppedAt: trace.stoppedAt, stages: trace.stages, leaked }
-})
+await step(
+  'navigation: leave the scanner while a scan is held, no result, no leak into the next entry',
+  async () => {
+    clearLog()
+    await goPhotoScreen()
+    const retake = byId(dump(), 'p169-recognition-retake')
+    if (retake) tap(retake)
+    await holdNextScan()
+    const t0 = Date.now()
+    await pushImage(fx('f01-clean'), 'nav')
+    await pickNewest()
+    tap((await waitFor((ns) => byId(ns, 'tab-collection'), { label: 'collection tab' })).value)
+    await waitFor((ns) => byId(ns, 'collection-list'), { label: 'collection list' })
+    await sleep(Math.max(0, 27000 - (Date.now() - t0)))
+    const all = scanTraces()
+    const trace = all[all.length - 1]
+    await goPhotoScreen()
+    const n = dump()
+    const leaked = [
+      'p169-photo-ready',
+      'p169-recognition-result',
+      'p169-recognition-no-match',
+      'p169-recognition-abstain',
+    ].filter((id) => byId(n, id))
+    if (leaked.length > 0) throw new Error(`state leaked into the next entry: ${leaked.join(',')}`)
+    if (trace?.outcome !== 'cancelled')
+      throw new Error(`the scan was not cancelled: ${trace?.outcome}`)
+    if (trace.stages.onnxMs !== undefined || trace.stages.retrievalMs !== undefined)
+      throw new Error('expensive stages ran after leaving the screen')
+    return { outcome: trace.outcome, stoppedAt: trace.stoppedAt, stages: trace.stages, leaked }
+  },
+)
 
 // ------------------------------------------------------------------------------------------------
 // 4. Background cancellation
 // ------------------------------------------------------------------------------------------------
-await step('background: HOME while a scan is held: cancelled, no inference, resume analyses once', async () => {
-  clearLog()
-  await goPhotoScreen()
-  await holdNextScan()
-  const t0 = Date.now()
-  await pushImage(fx('f01-clean'), 'bg')
-  await pickNewest()
-  const pid = appPid()
-  shell('input keyevent 3') // HOME
-  await sleep(2000)
-  const cpu0 = procCpuTicks(pid)
-  await sleep(Math.max(0, 27000 - (Date.now() - t0)))
-  const cpu1 = procCpuTicks(pid)
-  const during = scanTraces()
-  const backgroundTrace = during[during.length - 1]
-  amStart()
-  await waitFor((ns) => byId(ns, 'p169-photo-library'), { label: 'photo screen after resume', timeoutMs: 30000 })
-  const ui = await waitRecognition(60000)
-  const after = scanTraces()
-  const resumed = after.filter((t) => t.outcome === 'analysed')
-  if (backgroundTrace?.outcome !== 'cancelled') throw new Error(`the background scan was not cancelled: ${backgroundTrace?.outcome}`)
-  if (backgroundTrace.stages.onnxMs !== undefined) throw new Error('ONNX inference ran for a cancelled background scan')
-  if (resumed.length !== 1) throw new Error(`expected exactly one analysis after resume, found ${resumed.length}`)
-  return {
-    cancelledAt: backgroundTrace.stoppedAt,
-    backgroundCpuTicks: cpu1 !== null && cpu0 !== null ? cpu1 - cpu0 : null,
-    resumedAnalyses: resumed.length,
-    shown: candidateNames(ui),
-    traces: after.map((t) => `${t.outcome}@${t.stoppedAt}`),
-  }
-})
+await step(
+  'background: HOME while a scan is held: cancelled, no inference, resume analyses once',
+  async () => {
+    clearLog()
+    await goPhotoScreen()
+    await holdNextScan()
+    const t0 = Date.now()
+    await pushImage(fx('f01-clean'), 'bg')
+    await pickNewest()
+    const pid = appPid()
+    shell('input keyevent 3') // HOME
+    await sleep(2000)
+    const cpu0 = procCpuTicks(pid)
+    await sleep(Math.max(0, 27000 - (Date.now() - t0)))
+    const cpu1 = procCpuTicks(pid)
+    const during = scanTraces()
+    const backgroundTrace = during[during.length - 1]
+    amStart()
+    await waitFor((ns) => byId(ns, 'p169-photo-library'), {
+      label: 'photo screen after resume',
+      timeoutMs: 30000,
+    })
+    const ui = await waitRecognition(60000)
+    const after = scanTraces()
+    const resumed = after.filter((t) => t.outcome === 'analysed')
+    if (backgroundTrace?.outcome !== 'cancelled')
+      throw new Error(`the background scan was not cancelled: ${backgroundTrace?.outcome}`)
+    if (backgroundTrace.stages.onnxMs !== undefined)
+      throw new Error('ONNX inference ran for a cancelled background scan')
+    if (resumed.length !== 1)
+      throw new Error(`expected exactly one analysis after resume, found ${resumed.length}`)
+    return {
+      cancelledAt: backgroundTrace.stoppedAt,
+      backgroundCpuTicks: cpu1 !== null && cpu0 !== null ? cpu1 - cpu0 : null,
+      resumedAnalyses: resumed.length,
+      shown: candidateNames(ui),
+      traces: after.map((t) => `${t.outcome}@${t.stoppedAt}`),
+    }
+  },
+)
 
 function procCpuTicks(pid) {
   const line = shell(`cat /proc/${pid}/stat`, { allowFail: true }).trim()
@@ -280,28 +335,39 @@ async function signOut() {
   tap((await waitFor((ns) => byId(ns, 'tab-profile'), { label: 'profile tab' })).value)
   const { node } = await findScrolling('profile-sign-out')
   tap(node)
-  await waitFor((ns) => byId(ns, 'login-email') || byId(ns, 'login-screen'), { timeoutMs: 30000, label: 'login after sign-out' })
+  await waitFor((ns) => byId(ns, 'login-email') || byId(ns, 'login-screen'), {
+    timeoutMs: 30000,
+    label: 'login after sign-out',
+  })
 }
 
-await step('identity: scan started as B, signed out and A signs in: B result never appears', async () => {
-  clearLog()
-  await goPhotoScreen()
-  await holdNextScan()
-  const t0 = Date.now()
-  await pushImage(fx('f01-clean'), 'idAB')
-  await pickNewest()
-  await signOut()
-  await ensureSignedIn(users.a)
-  await goPhotoScreen()
-  await sleep(Math.max(0, 27000 - (Date.now() - t0)))
-  const n = dump()
-  const leaked = ['p169-photo-ready', 'p169-recognition-result', 'p169-recognition-no-match'].filter((id) => byId(n, id))
-  const all = scanTraces()
-  const last = all[all.length - 1]
-  if (leaked.length > 0) throw new Error(`B's scan state is visible to A: ${leaked.join(',')}`)
-  if (last?.outcome !== 'cancelled') throw new Error(`the scan was not cancelled by the identity change: ${last?.outcome}`)
-  return { leaked, outcome: last.outcome, stoppedAt: last.stoppedAt }
-})
+await step(
+  'identity: scan started as B, signed out and A signs in: B result never appears',
+  async () => {
+    clearLog()
+    await goPhotoScreen()
+    await holdNextScan()
+    const t0 = Date.now()
+    await pushImage(fx('f01-clean'), 'idAB')
+    await pickNewest()
+    await signOut()
+    await ensureSignedIn(users.a)
+    await goPhotoScreen()
+    await sleep(Math.max(0, 27000 - (Date.now() - t0)))
+    const n = dump()
+    const leaked = [
+      'p169-photo-ready',
+      'p169-recognition-result',
+      'p169-recognition-no-match',
+    ].filter((id) => byId(n, id))
+    const all = scanTraces()
+    const last = all[all.length - 1]
+    if (leaked.length > 0) throw new Error(`B's scan state is visible to A: ${leaked.join(',')}`)
+    if (last?.outcome !== 'cancelled')
+      throw new Error(`the scan was not cancelled by the identity change: ${last?.outcome}`)
+    return { leaked, outcome: last.outcome, stoppedAt: last.stoppedAt }
+  },
+)
 
 await step('identity: A -> B -> A with the old scan still pending stays invalid', async () => {
   clearLog()
@@ -317,9 +383,14 @@ await step('identity: A -> B -> A with the old scan still pending stays invalid'
   await goPhotoScreen()
   await sleep(Math.max(0, 40000 - (Date.now() - t0)))
   const n = dump()
-  const leaked = ['p169-photo-ready', 'p169-recognition-result', 'p169-recognition-no-match'].filter((id) => byId(n, id))
+  const leaked = [
+    'p169-photo-ready',
+    'p169-recognition-result',
+    'p169-recognition-no-match',
+  ].filter((id) => byId(n, id))
   const last = scanTraces().pop()
-  if (leaked.length > 0) throw new Error(`the old scan reappeared after A -> B -> A: ${leaked.join(',')}`)
+  if (leaked.length > 0)
+    throw new Error(`the old scan reappeared after A -> B -> A: ${leaked.join(',')}`)
   if (last?.outcome !== 'cancelled') throw new Error(`old scan not cancelled: ${last?.outcome}`)
   return { leaked, outcome: last.outcome }
 })
@@ -328,43 +399,80 @@ await step('identity: A -> B -> A with the old scan still pending stays invalid'
 // 6. Activity recreation (font scale, density, locale) around the scanner
 // ------------------------------------------------------------------------------------------------
 const CHANGES = [
-  { name: 'font scale 1.3', apply: () => shell('settings put system font_scale 1.3'), revert: () => shell('settings put system font_scale 1.0') },
-  { name: 'display density 480', apply: () => shell('wm density 480'), revert: () => shell('wm density reset') },
-  { name: 'app locale nb-NO', apply: () => shell(`cmd locale set-app-locales invalid.pokeportfolio.spike.p184 --locales nb-NO`), revert: () => shell(`cmd locale set-app-locales invalid.pokeportfolio.spike.p184 --locales ""`, { allowFail: true }) },
+  {
+    name: 'font scale 1.3',
+    apply: () => shell('settings put system font_scale 1.3'),
+    revert: () => shell('settings put system font_scale 1.0'),
+  },
+  {
+    name: 'display density 480',
+    apply: () => shell('wm density 480'),
+    revert: () => shell('wm density reset'),
+  },
+  {
+    name: 'app locale nb-NO',
+    apply: () =>
+      shell(`cmd locale set-app-locales invalid.pokeportfolio.spike.p184 --locales nb-NO`),
+    revert: () =>
+      shell(`cmd locale set-app-locales invalid.pokeportfolio.spike.p184 --locales ""`, {
+        allowFail: true,
+      }),
+  },
 ]
 if (rootAvailable()) {
   await ensureSignedIn(users.b)
   for (const change of CHANGES) {
-    await step(`recreation ${change.name} A: before the picker, Photo Picker still launches`, async () => {
-      await goPhotoScreen()
-      const before = localActivityId()
-      change.apply()
-      const after = await activityAfterChange(before)
-      await sleep(1500)
-      await ensureSignedIn(users.b)
-      await goPhotoScreen()
-      const sessions = sessionTraces().filter((s) => s.action === 'created').length
-      await pushImage(fx('f01-clean'), 'recA')
-      await pickNewest()
-      const ui = await waitRecognition(60000)
-      change.revert()
-      await sleep(2500)
-      return { activityBefore: before, activityAfter: after, recreated: before !== after, pid: appPid() === pid0, modelSessionsCreated: sessionTraces().filter((s) => s.action === 'created').length, sessionsBefore: sessions, shown: candidateNames(ui) }
-    })
-    await step(`recreation ${change.name} B: after the image is selected and analysed`, async () => {
-      await goPhotoScreen()
-      const before = localActivityId()
-      const scansBefore = scanTraces().length
-      change.apply()
-      const after = await activityAfterChange(before)
-      await sleep(2500)
-      await goPhotoScreen()
-      const state = { photoReady: !!byId(dump(), 'p169-photo-ready'), result: !!byId(dump(), 'p169-recognition-result') }
-      const scansAfter = scanTraces().length
-      change.revert()
-      await sleep(2500)
-      return { recreated: before !== after, ...state, duplicateAnalyses: scansAfter - scansBefore }
-    })
+    await step(
+      `recreation ${change.name} A: before the picker, Photo Picker still launches`,
+      async () => {
+        await goPhotoScreen()
+        const before = localActivityId()
+        change.apply()
+        const after = await activityAfterChange(before)
+        await sleep(1500)
+        await ensureSignedIn(users.b)
+        await goPhotoScreen()
+        const sessions = sessionTraces().filter((s) => s.action === 'created').length
+        await pushImage(fx('f01-clean'), 'recA')
+        await pickNewest()
+        const ui = await waitRecognition(60000)
+        change.revert()
+        await sleep(2500)
+        return {
+          activityBefore: before,
+          activityAfter: after,
+          recreated: before !== after,
+          pid: appPid() === pid0,
+          modelSessionsCreated: sessionTraces().filter((s) => s.action === 'created').length,
+          sessionsBefore: sessions,
+          shown: candidateNames(ui),
+        }
+      },
+    )
+    await step(
+      `recreation ${change.name} B: after the image is selected and analysed`,
+      async () => {
+        await goPhotoScreen()
+        const before = localActivityId()
+        const scansBefore = scanTraces().length
+        change.apply()
+        const after = await activityAfterChange(before)
+        await sleep(2500)
+        await goPhotoScreen()
+        const state = {
+          photoReady: !!byId(dump(), 'p169-photo-ready'),
+          result: !!byId(dump(), 'p169-recognition-result'),
+        }
+        const scansAfter = scanTraces().length
+        change.revert()
+        await sleep(2500)
+        return {
+          recreated: before !== after,
+          ...state,
+          duplicateAnalyses: scansAfter - scansBefore,
+        }
+      },
+    )
     await step(`recreation ${change.name} C: during a held recognition`, async () => {
       await goPhotoScreen()
       const retake = byId(dump(), 'p169-recognition-retake')
@@ -378,7 +486,10 @@ if (rootAvailable()) {
       const after = await activityAfterChange(before)
       await ensureSignedIn(users.b)
       await goPhotoScreen()
-      const ui = await waitRecognition(90000).catch((e) => ({ kind: `no-outcome: ${String(e.message).slice(0, 80)}`, candidates: [] }))
+      const ui = await waitRecognition(90000).catch((e) => ({
+        kind: `no-outcome: ${String(e.message).slice(0, 80)}`,
+        candidates: [],
+      }))
       const scansAfter = scanTraces().slice(scansBefore)
       change.revert()
       await sleep(2500)
@@ -398,10 +509,23 @@ if (rootAvailable()) {
 const crashesEnd = crashCount()
 const sessions = sessionTraces()
 const audit = await proxy('audit')
-note('crash sweep', crashesEnd === crashes0 ? 'PASS' : 'FAIL', { fatalBefore: crashes0, fatalAfter: crashesEnd, samePid: appPid() === pid0 })
-note('model sessions', sessions.filter((s) => s.action === 'created').length <= 1 ? 'PASS' : 'FAIL', { created: sessions.filter((s) => s.action === 'created').length, all: sessions.map((s) => s.action) })
+note('crash sweep', crashesEnd === crashes0 ? 'PASS' : 'FAIL', {
+  fatalBefore: crashes0,
+  fatalAfter: crashesEnd,
+  samePid: appPid() === pid0,
+})
+note(
+  'model sessions',
+  sessions.filter((s) => s.action === 'created').length <= 1 ? 'PASS' : 'FAIL',
+  {
+    created: sessions.filter((s) => s.action === 'created').length,
+    all: sessions.map((s) => s.action),
+  },
+)
 note('image egress', audit.imageMarkers === 0 ? 'PASS' : 'FAIL', audit)
 saveJson('lifecycle-report.json', { report, audit })
 const failed = report.filter((r) => r.status === 'FAIL').length
-console.log(`\nSTEPS ${String(report.length)}  PASS ${String(report.filter((r) => r.status === 'PASS').length)}  FAIL ${String(failed)}  NOT_RUN ${String(report.filter((r) => r.status === 'NOT_RUN').length)}`)
+console.log(
+  `\nSTEPS ${String(report.length)}  PASS ${String(report.filter((r) => r.status === 'PASS').length)}  FAIL ${String(failed)}  NOT_RUN ${String(report.filter((r) => r.status === 'NOT_RUN').length)}`,
+)
 process.exit(failed > 0 ? 1 : 0)
