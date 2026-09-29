@@ -34,6 +34,7 @@ import {
   pickNewest,
   proxy,
   pushImage,
+  scrollPhotoScreenToTop,
   saveJson,
   scanFixture,
   scanTraces,
@@ -85,6 +86,7 @@ const candidateNames = (ui) => ui.candidates.map((c) => c.label.split(',')[0])
 
 async function goPhotoScreen() {
   const { openPhotoScreen } = await import('../android-p167-lib.mjs')
+  await scrollPhotoScreenToTop()
   await openPhotoScreen()
 }
 
@@ -108,6 +110,12 @@ async function waitStatus(re, timeoutMs = 240000) {
     { timeoutMs, label: `status ${String(re)}` },
   )
   return r.value
+}
+
+async function waitForTrace(count, timeoutMs = 45000) {
+  const t0 = Date.now()
+  while (scanTraces().length <= count && Date.now() - t0 < timeoutMs) await sleep(1000)
+  return scanTraces().slice(count)
 }
 
 const crashesAtStart = () => crashCount()
@@ -257,7 +265,7 @@ await step(
     await pickNewest()
     tap((await waitFor((ns) => byId(ns, 'tab-collection'), { label: 'collection tab' })).value)
     await waitFor((ns) => byId(ns, 'collection-list'), { label: 'collection list' })
-    await sleep(Math.max(0, 27000 - (Date.now() - t0)))
+    await sleep(Math.max(0, 50000 - (Date.now() - t0)))
     const all = scanTraces()
     const trace = all[all.length - 1]
     await goPhotoScreen()
@@ -293,10 +301,9 @@ await step(
     shell('input keyevent 3') // HOME
     await sleep(2000)
     const cpu0 = procCpuTicks(pid)
-    await sleep(Math.max(0, 27000 - (Date.now() - t0)))
+    await sleep(Math.max(0, 50000 - (Date.now() - t0)))
     const cpu1 = procCpuTicks(pid)
     const during = scanTraces()
-    const backgroundTrace = during[during.length - 1]
     amStart()
     await waitFor((ns) => byId(ns, 'p169-photo-library'), {
       label: 'photo screen after resume',
@@ -305,6 +312,7 @@ await step(
     const ui = await waitRecognition(60000)
     const after = scanTraces()
     const resumed = after.filter((t) => t.outcome === 'analysed')
+    const backgroundTrace = after.find((t) => t.outcome === 'cancelled')
     if (backgroundTrace?.outcome !== 'cancelled')
       throw new Error(`the background scan was not cancelled: ${backgroundTrace?.outcome}`)
     if (backgroundTrace.stages.onnxMs !== undefined)
@@ -391,7 +399,7 @@ await step(
 // ------------------------------------------------------------------------------------------------
 async function signOut() {
   tap((await waitFor((ns) => byId(ns, 'tab-profile'), { label: 'profile tab' })).value)
-  const { node } = await findScrolling('profile-sign-out')
+  const { node } = await findScrolling('sign-out')
   tap(node)
   await waitFor((ns) => byId(ns, 'login-email') || byId(ns, 'login-screen'), {
     timeoutMs: 30000,
@@ -411,7 +419,7 @@ await step(
     await signOut()
     await ensureSignedIn(users.a)
     await goPhotoScreen()
-    await sleep(Math.max(0, 27000 - (Date.now() - t0)))
+    await sleep(Math.max(0, 50000 - (Date.now() - t0)))
     const n = dump()
     const leaked = [
       'p169-photo-ready',
@@ -439,7 +447,7 @@ await step('identity: A -> B -> A with the old scan still pending stays invalid'
   await signOut()
   await ensureSignedIn(users.a)
   await goPhotoScreen()
-  await sleep(Math.max(0, 40000 - (Date.now() - t0)))
+  await sleep(Math.max(0, 65000 - (Date.now() - t0)))
   const n = dump()
   const leaked = [
     'p169-photo-ready',

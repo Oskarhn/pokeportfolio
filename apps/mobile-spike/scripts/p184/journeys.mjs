@@ -23,9 +23,10 @@ export const B = users.b
 /** Counts of every financial table for user B; a change in any of them is a write. */
 export const finCounts = () =>
   psql(
-    ['holdings', 'acquisition_lots', 'purchases', 'purchase_lines', 'sales', 'manual_valuations']
-      .map((t) => `(select count(*) from ${t} where user_id='${B.id}')`)
-      .join(" || '|' || "),
+    'select ' +
+      ['holdings', 'acquisition_lots', 'purchases', 'purchase_lines', 'sales', 'manual_valuations']
+        .map((t) => `(select count(*) from ${t} where user_id='${B.id}')`)
+        .join(" || '|' || "),
   ).replace(/\s/g, '')
 export const counts = () => finCounts().split('|').map(Number)
 export const NAMES = ['holdings', 'lots', 'purchases', 'purchaseLines', 'sales', 'manualValuations']

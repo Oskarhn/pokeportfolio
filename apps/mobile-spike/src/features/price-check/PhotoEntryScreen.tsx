@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AppState, Image, ScrollView, View } from 'react-native'
-import { useFocusEffect } from '@react-navigation/native'
+import { useFocusEffect, useIsFocused } from '@react-navigation/native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { toScannerInput } from '../../photo/photo-store'
 import {
@@ -43,6 +43,13 @@ export function PhotoEntryScreen({
   // foreground (P184): backgrounding cancels the running recognition instead of letting it burn
   // CPU, and the person finds the photo analysed again when they return.
   const [resumeKey, setResumeKey] = useState(0)
+  // Only the screen the person is looking at analyses: another mounted instance of this screen
+  // (a second stack entry) sharing the one recognition port would cancel this one's scan and be
+  // cancelled in turn, forever.
+  const focused = useIsFocused()
+  // Set only by THIS screen's background handler: a cancelled answer is re-analysed on return
+  // solely when the app itself cancelled it, never because someone else superseded the scan.
+  const cancelledByBackgroundRef = useRef(false)
   const inFlightRef = useRef(false)
   const outcomeStatusRef = useRef<RecognitionOutcome['status'] | null>(null)
   const photoReadyRef = useRef(false)
@@ -62,7 +69,7 @@ export function PhotoEntryScreen({
     setRecognition(null)
     outcomeStatusRef.current = null
     setShowAllCandidates(false)
-    if (photo.status === 'ready' && photo.image !== null) {
+    if (focused && photo.status === 'ready' && photo.image !== null) {
       inFlightRef.current = true
       void feature.recognition.recognize(toScannerInput(photo.image)).then((outcome) => {
         if (!live) return
@@ -71,7 +78,12 @@ export function PhotoEntryScreen({
         setRecognition(outcome)
         // Cancelled while the app was in the background but the app is already back: the person
         // is looking at this screen, so analyse again instead of leaving it blank.
-        if (outcome.status === 'cancelled' && AppState.currentState === 'active') {
+        if (
+          outcome.status === 'cancelled' &&
+          cancelledByBackgroundRef.current &&
+          AppState.currentState === 'active'
+        ) {
+          cancelledByBackgroundRef.current = false
           setResumeKey((key) => key + 1)
         }
       })
@@ -85,13 +97,14 @@ export function PhotoEntryScreen({
       feature.recognition.cancelActive?.()
     }
     // resumeKey is a deliberate re-run trigger, not a value read inside.
-  }, [feature.recognition, photo.status, photo.image, resumeKey])
+  }, [feature.recognition, photo.status, photo.image, resumeKey, focused])
 
   useEffect(runRecognition, [runRecognition])
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (state) => {
       if (state === 'background') {
+        cancelledByBackgroundRef.current = inFlightRef.current
         feature.recognition.cancelActive?.()
       } else if (
         state === 'active' &&

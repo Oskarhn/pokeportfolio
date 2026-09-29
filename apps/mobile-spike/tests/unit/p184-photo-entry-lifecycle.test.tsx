@@ -186,6 +186,25 @@ describe('recognition on the photo entry screen', () => {
   })
 })
 
+describe('two mounted photo screens', () => {
+  it('only the focused instance analyses: a second stack entry never fights over the shared port', async () => {
+    const { h, port, ref } = await mount()
+    await act(async () => {
+      ref.navigate('P169Search')
+      await flush(10)
+      ref.navigate('P169PhotoEntry')
+      await flush(10)
+    })
+    await pick(h, 1)
+    await flush(30)
+    expect(port.calls).toHaveLength(1)
+    // A cancelled answer that nobody asked to re-run never restarts anything.
+    await settle(port.calls[0] as Deferred<RecognitionOutcome>, { status: 'cancelled' })
+    await flush(30)
+    expect(port.calls).toHaveLength(1)
+  })
+})
+
 describe('backgrounding', () => {
   it('cancels the running recognition, and analyses the same photo once when the app returns', async () => {
     const { h, port } = await mount()

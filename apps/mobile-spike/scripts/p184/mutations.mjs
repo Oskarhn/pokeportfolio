@@ -244,6 +244,22 @@ const MUTANTS = [
     tests: ['tests/unit/p184-ocr-number-extraction.test.ts'],
   },
   {
+    id: 'M35',
+    name: 'a cancelled answer always triggers a re-analysis (two screens cancel each other forever)',
+    file: 'src/features/price-check/PhotoEntryScreen.tsx',
+    from: '          cancelledByBackgroundRef.current &&\n',
+    to: '',
+    tests: ['tests/unit/p184-photo-entry-lifecycle.test.tsx'],
+  },
+  {
+    id: 'M36',
+    name: 'every mounted photo screen analyses, not only the focused one',
+    file: 'src/features/price-check/PhotoEntryScreen.tsx',
+    from: 'if (focused && photo.status === ',
+    to: 'if (photo.status === ',
+    tests: ['tests/unit/p184-photo-entry-lifecycle.test.tsx'],
+  },
+  {
     id: 'M24',
     name: 'returning to the foreground always re-analyses (duplicate recognition)',
     file: 'src/features/price-check/recognition-lifecycle.ts',

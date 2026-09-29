@@ -29,6 +29,7 @@ import {
   waitFor,
 } from './lib.mjs'
 import { back, findScrolling, tapId, tapScrolling, typeInto } from './flows.mjs'
+import { B, choosePrinting, counts, diff, finCounts, priceTexts, scanToCard } from './journeys.mjs'
 
 const only = process.env.P184_STEPS ? new RegExp(process.env.P184_STEPS, 'i') : null
 const report = []

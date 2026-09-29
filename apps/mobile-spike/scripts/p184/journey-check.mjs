@@ -12,7 +12,24 @@
  */
 import './env.mjs'
 import { amStart, decodePng } from '../android-p167-lib.mjs'
-import { adb, byId, byIdPrefix, dump, psql, saveJson, screencap, shell, shot, sleep, tap, users, waitFor, PACKAGE, signIn, rows } from './lib.mjs'
+import {
+  adb,
+  byId,
+  byIdPrefix,
+  dump,
+  psql,
+  saveJson,
+  screencap,
+  shell,
+  shot,
+  sleep,
+  tap,
+  users,
+  waitFor,
+  PACKAGE,
+  signIn,
+  rows,
+} from './lib.mjs'
 import { back, findScrolling, tapId, tapScrolling, typeInto } from './flows.mjs'
 import { B, choosePrinting, counts, diff, priceTexts, scanToCard } from './journeys.mjs'
 
@@ -22,10 +39,18 @@ async function step(n, name, fn) {
   try {
     const detail = await fn()
     report.push({ n, step: name, status: 'PASS', ms: Date.now() - t0, detail })
-    console.log(`PASS ${String(n).padStart(2)} ${name}  ${JSON.stringify(detail ?? null).slice(0, 600)}`)
+    console.log(
+      `PASS ${String(n).padStart(2)} ${name}  ${JSON.stringify(detail ?? null).slice(0, 600)}`,
+    )
     return true
   } catch (e) {
-    report.push({ n, step: name, status: 'FAIL', ms: Date.now() - t0, detail: String(e.message ?? e).slice(0, 700) })
+    report.push({
+      n,
+      step: name,
+      status: 'FAIL',
+      ms: Date.now() - t0,
+      detail: String(e.message ?? e).slice(0, 700),
+    })
     console.log(`FAIL ${String(n).padStart(2)} ${name}  ${String(e.message ?? e).slice(0, 500)}`)
     try {
       shot(`journey-fail-${n}`)
@@ -36,8 +61,12 @@ async function step(n, name, fn) {
   }
 }
 
-const cardId = psql("select id from cards where name = 'P169 Charizard' and language = 'en' limit 1")
-const variantId = psql(`select id from card_variants where card_id = '${cardId}' and finish = 'holo' and stamp = '' and is_active limit 1`)
+const cardId = psql(
+  "select id from cards where name = 'P169 Charizard' and language = 'en' limit 1",
+)
+const variantId = psql(
+  `select id from card_variants where card_id = '${cardId}' and finish = 'holo' and stamp = '' and is_active limit 1`,
+)
 let holdingId = null
 
 // 1 ---------------------------------------------------------------------------------------------
@@ -51,10 +80,19 @@ await step(1, 'cold dark launch', async () => {
   const png = decodePng(screencap())
   const lum = png.bandLuminance(0, png.h)
   shot('journey-01-cold-launch')
-  await waitFor((ns) => byId(ns, 'login-email') || byId(ns, 'login-screen'), { timeoutMs: 30000, label: 'login screen' })
+  await waitFor((ns) => byId(ns, 'login-email') || byId(ns, 'login-screen'), {
+    timeoutMs: 30000,
+    label: 'login screen',
+  })
   const login = decodePng(screencap()).bandLuminance(0, png.h)
-  if (login === null || login > 0.25) throw new Error(`the login screen is not dark: ${String(login)}`)
-  return { launchState: launch.launchState, totalTimeMs: launch.totalTimeMs, meanLuminanceFirstFrame: lum, meanLuminanceLogin: login }
+  if (login === null || login > 0.25)
+    throw new Error(`the login screen is not dark: ${String(login)}`)
+  return {
+    launchState: launch.launchState,
+    totalTimeMs: launch.totalTimeMs,
+    meanLuminanceFirstFrame: lum,
+    meanLuminanceLogin: login,
+  }
 })
 // 2 ---------------------------------------------------------------------------------------------
 await step(2, 'sign in', async () => {
@@ -72,14 +110,27 @@ let scan = null
 await step(4, 'open the scanner (Price Check -> photo)', async () => {
   const { openPhotoScreen } = await import('../android-p167-lib.mjs')
   await openPhotoScreen()
-  return { photoButtons: ['p169-photo-library', 'p169-photo-camera'].every((id) => byId(dump(), id)) }
+  return {
+    photoButtons: ['p169-photo-library', 'p169-photo-camera'].every((id) => byId(dump(), id)),
+  }
 })
-await step(5, 'choose an image, 6 recognition, 7 candidate review, 8 card confirmation', async () => {
-  const before = counts()
-  scan = await scanToCard('f17-p169-charizard.jpg', 'journey', 'P169 Charizard')
-  shot('journey-07-candidate-then-card')
-  return { recognition: scan.ui.kind, badge: scan.ui.badge, heading: scan.ui.heading, candidates: scan.ui.candidates.map((c) => c.label.slice(0, 60)), confirmedCardOpened: true, writes: diff(before, counts()) }
-})
+await step(
+  5,
+  'choose an image, 6 recognition, 7 candidate review, 8 card confirmation',
+  async () => {
+    const before = counts()
+    scan = await scanToCard('f17-p169-charizard.jpg', 'journey', 'P169 Charizard')
+    shot('journey-07-candidate-then-card')
+    return {
+      recognition: scan.ui.kind,
+      badge: scan.ui.badge,
+      heading: scan.ui.heading,
+      candidates: scan.ui.candidates.map((c) => c.label.slice(0, 60)),
+      confirmedCardOpened: true,
+      writes: diff(before, counts()),
+    }
+  },
+)
 await step(9, 'printing chosen explicitly', async () => {
   const p = await choosePrinting(scan.cardId, 'holo')
   return p
@@ -115,11 +166,16 @@ await step(12, 'Add acquisition from a recognised card', async () => {
   await typeInto('p175-quantity', '3')
   if (counts().join('|') !== before.join('|')) throw new Error('written before the final confirm')
   await tapScrolling('p175-confirm-acquisition')
-  await waitFor((ns) => byId(ns, 'collection-list') || byId(ns, 'p175-acquisition-success'), { timeoutMs: 30000, label: 'acquisition result' })
+  await waitFor((ns) => byId(ns, 'collection-list') || byId(ns, 'p175-acquisition-success'), {
+    timeoutMs: 30000,
+    label: 'acquisition result',
+  })
   await sleep(1500)
   const d = diff(before, counts())
   if (d.lots !== 1) throw new Error(`expected exactly one acquisition lot: ${JSON.stringify(d)}`)
-  holdingId = psql(`select id from holdings where user_id='${B.id}' and card_variant_id='${variantId}'`)
+  holdingId = psql(
+    `select id from holdings where user_id='${B.id}' and card_variant_id='${variantId}'`,
+  )
   return { writes: d, holding: holdingId.slice(0, 8) }
 })
 await step(13, 'verify Collection', async () => {
@@ -135,9 +191,15 @@ await step(14, 'non-NOK transaction (EUR purchase with FX)', async () => {
   await tapId('tab-search', 'search tab')
   await typeInto('p169-search-input', 'P169 Charizard')
   shell('input keyevent 66')
-  await waitFor((ns) => byIdPrefix(ns, 'p169-search-status-').find((x) => /ready/.test(x.id)), { timeoutMs: 30000, label: 'search results' })
+  await waitFor((ns) => byIdPrefix(ns, 'p169-search-status-').find((x) => /ready/.test(x.id)), {
+    timeoutMs: 30000,
+    label: 'search results',
+  })
   tap((await findScrolling(`p169-hit-${cardId}`)).node)
-  await waitFor((ns) => byId(ns, 'p169-card') || byId(ns, 'p169-card-identity'), { timeoutMs: 30000, label: 'card screen' })
+  await waitFor((ns) => byId(ns, 'p169-card') || byId(ns, 'p169-card-identity'), {
+    timeoutMs: 30000,
+    label: 'card screen',
+  })
   await choosePrinting(cardId, 'holo')
   tap((await findScrolling('p169-add-to-collection')).node)
   await waitFor((ns) => byId(ns, 'p170-add-intent'), { label: 'add intent screen' })
@@ -146,15 +208,23 @@ await step(14, 'non-NOK transaction (EUR purchase with FX)', async () => {
   await tapScrolling('p178-purchase-currency')
   await waitFor((ns) => byId(ns, 'p178-currency-option-EUR'), { label: 'currency sheet' })
   tap(byId(dump(), 'p178-currency-option-EUR'))
-  await waitFor((ns) => byId(ns, 'p180-purchase-fx-notice'), { timeoutMs: 20000, label: 'FX notice' })
+  await waitFor((ns) => byId(ns, 'p180-purchase-fx-notice'), {
+    timeoutMs: 20000,
+    label: 'FX notice',
+  })
   await typeInto('p175-purchase-quantity', '1')
   await typeInto('p175-purchase-unit-price', '12.50')
   await tapScrolling('p175-confirm-purchase')
-  await waitFor((ns) => byId(ns, 'collection-list') || byId(ns, 'p175-purchase-success'), { timeoutMs: 30000, label: 'purchase result' })
+  await waitFor((ns) => byId(ns, 'collection-list') || byId(ns, 'p175-purchase-success'), {
+    timeoutMs: 30000,
+    label: 'purchase result',
+  })
   await sleep(1500)
   const d = diff(before, counts())
   if (d.purchases !== 1) throw new Error(`expected one purchase: ${JSON.stringify(d)}`)
-  const row = psql(`select p.currency||'|'||p.total_minor||'|'||p.fx_rate_to_nok||'|'||p.total_nok_minor from purchases p where p.user_id='${B.id}' order by p.created_at desc limit 1`)
+  const row = psql(
+    `select p.currency||'|'||p.total_minor||'|'||p.fx_rate_to_nok||'|'||p.total_nok_minor from purchases p where p.user_id='${B.id}' order by p.created_at desc limit 1`,
+  )
   if (row !== 'EUR|1250|11.50000000|14375') throw new Error(`unexpected purchase row ${row}`)
   return { row, writes: d }
 })
@@ -168,8 +238,13 @@ await step(15, 'manual valuation', async () => {
   await waitFor((ns) => byId(ns, 'p175-manual-valuation'), { label: 'manual valuation screen' })
   await typeInto('p175-manual-value', '100.00')
   await tapScrolling('p175-confirm-manual-value')
-  await waitFor((ns) => byId(ns, 'p175-manual-valuation-success'), { timeoutMs: 20000, label: 'manual value set' })
-  const stored = psql(`select value_minor from manual_valuations where holding_id='${holdingId}' and superseded_at is null`)
+  await waitFor((ns) => byId(ns, 'p175-manual-valuation-success'), {
+    timeoutMs: 20000,
+    label: 'manual value set',
+  })
+  const stored = psql(
+    `select value_minor from manual_valuations where holding_id='${holdingId}' and superseded_at is null`,
+  )
   if (stored !== '10000') throw new Error(`stored manual value ${stored}`)
   back()
   await waitFor((ns) => byId(ns, 'card-detail'), { label: 'back to card detail' })
@@ -179,7 +254,10 @@ await step(15, 'manual valuation', async () => {
 await step(16, 'sale', async () => {
   const before = counts()
   await tapScrolling('record-sale')
-  await waitFor((ns) => byId(ns, 'p175-record-sale'), { timeoutMs: 15000, label: 'record sale screen' })
+  await waitFor((ns) => byId(ns, 'p175-record-sale'), {
+    timeoutMs: 15000,
+    label: 'record sale screen',
+  })
   await typeInto('p175-sale-quantity', '1')
   await typeInto('p175-sale-unit-gross', '40.00')
   await typeInto('p175-sale-fees', '3')
@@ -187,20 +265,28 @@ await step(16, 'sale', async () => {
   await waitFor((ns) => byId(ns, 'p175-sale-success'), { timeoutMs: 20000, label: 'sale recorded' })
   const d = diff(before, counts())
   if (d.sales !== 1) throw new Error(`expected one sale: ${JSON.stringify(d)}`)
-  const result = psql(`select sl.realized_result_nok_minor from sale_lines sl join sales s on s.id=sl.sale_id where s.user_id='${B.id}' order by s.created_at desc limit 1`)
+  const result = psql(
+    `select sl.realized_result_nok_minor from sale_lines sl join sales s on s.id=sl.sale_id where s.user_id='${B.id}' order by s.created_at desc limit 1`,
+  )
   return { realizedResultMinor: result, writes: d }
 })
 // 17 --------------------------------------------------------------------------------------------
 await step(17, 'Profile', async () => {
   await tapId('tab-profile', 'profile tab')
-  await waitFor((ns) => byId(ns, 'profile-sign-out') || byId(ns, 'profile-screen'), { timeoutMs: 20000, label: 'profile screen' })
+  await waitFor((ns) => byId(ns, 'sign-out') || byId(ns, 'profile-screen'), {
+    timeoutMs: 20000,
+    label: 'profile screen',
+  })
   shot('journey-17-profile')
-  return { signOutVisible: !!byId(dump(), 'profile-sign-out') || !!(await findScrolling('profile-sign-out')).node }
+  return { signOutVisible: !!byId(dump(), 'sign-out') || !!(await findScrolling('sign-out')).node }
 })
 // 18 --------------------------------------------------------------------------------------------
 await step(18, 'sign out', async () => {
-  tap((await findScrolling('profile-sign-out')).node)
-  await waitFor((ns) => byId(ns, 'login-email') || byId(ns, 'login-screen'), { timeoutMs: 30000, label: 'login after sign-out' })
+  tap((await findScrolling('sign-out')).node)
+  await waitFor((ns) => byId(ns, 'login-email') || byId(ns, 'login-screen'), {
+    timeoutMs: 30000,
+    label: 'login after sign-out',
+  })
   const stale = ['collection-list', 'p169-photo-ready'].filter((id) => byId(dump(), id))
   if (stale.length > 0) throw new Error(`user data still visible: ${stale.join(',')}`)
   return { loginShown: true }
@@ -210,12 +296,17 @@ await step(19, 'restart', async () => {
   shell(`am force-stop ${PACKAGE}`)
   await sleep(2000)
   amStart()
-  await waitFor((ns) => byId(ns, 'login-email') || byId(ns, 'login-screen'), { timeoutMs: 30000, label: 'login after restart (no session left)' })
+  await waitFor((ns) => byId(ns, 'login-email') || byId(ns, 'login-screen'), {
+    timeoutMs: 30000,
+    label: 'login after restart (no session left)',
+  })
   const r = await signIn(B)
   return { signedInAgainMs: r.firstPageVisibleMs, sessionSurvivedSignOut: false }
 })
 
 saveJson('journey-report.json', report)
 const failed = report.filter((r) => r.status === 'FAIL').length
-console.log(`\nJOURNEY STEPS ${String(report.length)}  PASS ${String(report.filter((r) => r.status === 'PASS').length)}  FAIL ${String(failed)}`)
+console.log(
+  `\nJOURNEY STEPS ${String(report.length)}  PASS ${String(report.filter((r) => r.status === 'PASS').length)}  FAIL ${String(failed)}`,
+)
 process.exit(failed > 0 ? 1 : 0)
