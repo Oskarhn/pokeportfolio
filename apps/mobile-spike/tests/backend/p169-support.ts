@@ -35,6 +35,7 @@ const STACK_DIRS: Record<string, string | undefined> = {
   db106: 'p169-db106',
   p170: 'p170',
   p173: 'p173',
+  p184: 'p184',
 }
 const stackName = String(process.env.P169_STACK ?? '')
 const dir = join(__dirname, '../../.local-backend', STACK_DIRS[stackName] ?? 'p169')
