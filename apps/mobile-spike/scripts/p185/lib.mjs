@@ -80,7 +80,9 @@ export function traces() {
     const at = line.indexOf('P184_TRACE ')
     if (at === -1) continue
     try {
-      out.push(JSON.parse(line.slice(at + 'P184_TRACE '.length)))
+      const event = JSON.parse(line.slice(at + 'P184_TRACE '.length))
+      event.logTime = line.slice(0, 18) // 'MM-DD HH:MM:SS.mmm' as logcat prints it
+      out.push(event)
     } catch {
       // A truncated log line is dropped, never guessed at.
     }
@@ -90,12 +92,13 @@ export function traces() {
 
 export const scanTraces = () => traces().filter((t) => t.kind === 'scan')
 /**
- * A position in the scan sequence that survives the logcat ring buffer wrapping (P185: counting
- * traces broke after a few dozen uiautomator dumps pushed old lines out). Scan ids only grow
- * within one app process; every driver keeps one process for the span it measures.
+ * A position in time that survives BOTH the logcat ring buffer wrapping and the app process being
+ * restarted (P185: counting traces broke after a few dozen uiautomator dumps pushed old lines out,
+ * and scan ids restart at 1 in a new process). It is the device clock; a scan is "after the mark"
+ * when its trace was logged later.
  */
-export const scanMark = () => scanTraces().reduce((m, t) => Math.max(m, t.scanId ?? 0), 0)
-export const scansSince = (mark) => scanTraces().filter((t) => (t.scanId ?? 0) > mark)
+export const scanMark = () => shell("date '+%m-%d %H:%M:%S'").trim()
+export const scansSince = (mark) => scanTraces().filter((t) => (t.logTime ?? '') > mark)
 export const sessionTraces = () => traces().filter((t) => t.kind === 'session')
 
 // ---- proxy control ----------------------------------------------------------------------------

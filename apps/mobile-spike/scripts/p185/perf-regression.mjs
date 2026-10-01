@@ -6,9 +6,12 @@
  *
  *   node scripts/p185/perf-regression.mjs
  *
- * One cold first scan, then 10 warm analyses driven through the real photo picker (the user's
- * path), comparing the median / p95 with P184's recorded figures (warm median 1044 ms, p95 1257 ms).
- * Output: .build/p185-evidence/perf-regression.json
+ * Same method as P184's warm benchmark so the figures are comparable: after one cold first scan
+ * through the real picker, the proof panel's "analyse 25 times" runs back-to-back analyses of one
+ * photo inside the app, polled only every 2 s (a driver that dumps the accessibility tree and
+ * swipes during an analysis competes with it for the CPU: the picker-driven figures below show how
+ * much). Reported: the first 10 and all 25 warm analyses, vs P184's recorded warm median 1044 ms and
+ * p95 1257 ms. Output: .build/p185-evidence/perf-regression.json
  */
 import './env.mjs'
 import { join } from 'node:path'
@@ -16,7 +19,9 @@ import { amStart, appPid, openPhotoScreen } from '../android-p167-lib.mjs'
 import {
   PACKAGE,
   adb,
+  byId,
   clearLog,
+  dump,
   ensureSignedIn,
   fixtureDir,
   nextScanTrace,
@@ -31,10 +36,15 @@ import {
   users,
   waitRecognition,
 } from './lib.mjs'
+import { tapTestId } from './driver.mjs'
 
 const P184 = { warmMedianMs: 1044, warmP95Ms: 1257, coldFirstScanMs: [2900, 3300] }
 const pct = (sorted, p) =>
   sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1))]
+const summary = (values) => {
+  const s = [...values].sort((a, b) => a - b)
+  return { n: s.length, median: pct(s, 50), p90: pct(s, 90), p95: pct(s, 95), max: s[s.length - 1] }
+}
 
 shell(`am force-stop ${PACKAGE}`)
 await sleep(2500)
@@ -43,35 +53,52 @@ adb(['logcat', '-G', '16M'], { allowFail: true })
 amStart()
 await ensureSignedIn(users.b)
 await openPhotoScreen()
-const totals = []
-const stagesAll = []
-for (let i = 0; i < 11; i += 1) {
-  const before = scanMark()
+
+// 1. cold first scan through the picker (model + index load included)
+let before = scanMark()
+await pushImage(join(fixtureDir, 'f01-clean.jpg'), 'perf-cold')
+await pickNewest()
+await waitRecognition(90000)
+const coldTrace = await nextScanTrace(before)
+console.log(`cold first scan: ${String(coldTrace.stages.totalMs)} ms`)
+
+// 2. warm: 25 back-to-back analyses inside the app (P184's method), quiet polling
+before = scanMark()
+await tapTestId('p184-proof-stress-25', { label: 'analyse 25 times' })
+const start = Date.now()
+for (;;) {
+  await sleep(2000)
+  const text = byId(dump(), 'p184-proof-status')?.text ?? ''
+  if (/stress25 DONE 25[/]25/.test(text)) break
+  if (Date.now() - start > 300000) throw new Error('the 25-analysis block did not finish')
+}
+const warm = scansSince(before).filter((t) => t.outcome === 'analysed')
+const totals = warm.map((t) => t.stages.totalMs)
+const first10 = summary(totals.slice(0, 10))
+const all = summary(totals)
+
+// 3. the user path under driver load: 10 picker-driven scans (informational)
+const driven = []
+for (let i = 0; i < 10; i += 1) {
+  const mark = scanMark()
   await pushImage(join(fixtureDir, 'f01-clean.jpg'), `perf${String(i)}`)
   await pickNewest()
   await waitRecognition(90000)
-  const t = await nextScanTrace(before)
-  totals.push(t.stages.totalMs)
-  stagesAll.push(t.stages)
-  console.log(`scan ${String(i)}: ${String(t.stages.totalMs)} ms (${t.outcome})`)
+  driven.push((await nextScanTrace(mark)).stages.totalMs)
 }
-const cold = totals[0]
-const warm = [...totals.slice(1)].sort((a, b) => a - b)
-const warmMedian = pct(warm, 50)
-const warmP95 = pct(warm, 95)
 const pss = /TOTAL PSS:\s+(\d+)/.exec(shell(`dumpsys meminfo ${PACKAGE}`))?.[1]
 const report = {
-  scans: totals.length,
-  failures: scansSince(0).filter((t) => t.outcome === 'error').length,
-  coldFirstScanMs: cold,
-  warmN: warm.length,
-  warmMedianMs: warmMedian,
-  warmP95Ms: warmP95,
-  warmMaxMs: warm[warm.length - 1],
+  coldFirstScanMs: coldTrace.stages.totalMs,
+  warmAnalysed: warm.length,
+  warmFailures: scansSince(before).filter((t) => t.outcome === 'error').length,
+  warmFirst10: first10,
+  warmAll25: all,
   vsP184: {
-    medianRatio: Math.round((warmMedian / P184.warmMedianMs) * 100) / 100,
-    p95Ratio: Math.round((warmP95 / P184.warmP95Ms) * 100) / 100,
+    medianRatio: Math.round((first10.median / P184.warmMedianMs) * 100) / 100,
+    p95Ratio: Math.round((first10.p95 / P184.warmP95Ms) * 100) / 100,
+    median25Ratio: Math.round((all.median / P184.warmMedianMs) * 100) / 100,
   },
+  pickerDrivenUnderDriverLoad: summary(driven),
   pssKb: Number(pss),
   modelSessionsCreated: sessionTraces().filter((s) => s.action === 'created').length,
   pid: appPid(),
@@ -79,4 +106,4 @@ const report = {
 }
 saveJson('perf-regression.json', report)
 console.log(JSON.stringify(report, null, 1))
-process.exit(report.failures === 0 && report.vsP184.medianRatio < 1.5 ? 0 : 1)
+process.exit(report.warmFailures === 0 && report.vsP184.medianRatio < 1.5 ? 0 : 1)

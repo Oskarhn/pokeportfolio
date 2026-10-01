@@ -121,7 +121,7 @@ const MUTANTS = [
     id: 'N14',
     name: 'P184 M23 re-anchored (its anchor no longer matched the P184 tip): backgrounding no longer cancels the recognition',
     file: PHOTO,
-    from: "cancelledByBackgroundRef.current = inFlightRef.current\n        feature.recognition.cancelActive?.()",
+    from: 'cancelledByBackgroundRef.current = inFlightRef.current\n        feature.recognition.cancelActive?.()',
     to: 'cancelledByBackgroundRef.current = inFlightRef.current\n        void 0',
     tests: ['tests/unit/p184-photo-entry-lifecycle.test.tsx'],
   },
