@@ -60,9 +60,23 @@ export interface ScanTraceEvent {
 
 export interface SessionTraceEvent {
   readonly kind: 'session'
-  readonly action: 'create_started' | 'created' | 'create_failed' | 'reused'
+  readonly action:
+    | 'create_started'
+    | 'created'
+    | 'create_failed'
+    | 'reused'
+    | 'released'
+    // Prewarm on entering the photo screen (recognition-pipeline.ts); `ms` is its duration.
+    | 'prewarm_started'
+    | 'prewarm_ready'
+    | 'prewarm_failed'
+  /** Sessions created in this process so far. */
   readonly sessionCount: number
+  /** Sessions alive right now; the invariant is <= 1. */
+  readonly active?: number
   readonly ms?: number
+  /** On `created`: how much of `ms` was loading and verifying the bundled model and index. */
+  readonly assetsMs?: number
 }
 
 export type NativeTraceEvent = ScanTraceEvent | SessionTraceEvent

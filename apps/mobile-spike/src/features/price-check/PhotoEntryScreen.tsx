@@ -56,12 +56,13 @@ export function PhotoEntryScreen({
   photoReadyRef.current = photo.status === 'ready' && photo.image !== null
 
   useFocusEffect(
-    useCallback(
-      () => () => {
+    useCallback(() => {
+      // P186: start the on-device model while the person chooses a photo (see CardRecognitionPort).
+      feature.recognition.scannerEntered?.()
+      return () => {
         void feature.photo.release()
-      },
-      [feature.photo],
-    ),
+      }
+    }, [feature.photo, feature.recognition]),
   )
 
   const runRecognition = useCallback(() => {

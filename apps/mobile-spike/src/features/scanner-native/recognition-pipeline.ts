@@ -11,7 +11,7 @@ import { retrieveCandidates } from './candidate-retrieval'
 import { checkDecodedDimensions, checkFileSize, imageSafetyRejectionMessage } from './image-safety'
 import { decodeToRgba, ImageDecodeError, type DecodedImage } from './image-decode'
 import { sniffImageHeader } from './image-header'
-import { recognizeCardText, type OcrExtraction } from './ocr-adapter'
+import { recognizeCardText, warmOcr, type OcrExtraction } from './ocr-adapter'
 import {
   toRecognitionOutcome,
   type CardRecognitionPort,
@@ -26,7 +26,13 @@ import {
   type ScanTraceOutcome,
 } from './scan-trace'
 import { confidenceStateFromTier, toEvidenceSummary, type NativeRecognitionResult } from './types'
-import { getVisualSession, type VisualSession } from './visual-adapter'
+import { WARMUP_PNG } from './warmup-image'
+import {
+  getVisualSession,
+  visualSessionActiveCount,
+  visualSessionCreationCount,
+  type VisualSession,
+} from './visual-adapter'
 
 const VISUAL_TOP_K = 30
 const DECODE_MAX_LONG_EDGE = 1600
@@ -45,6 +51,8 @@ export interface RecognitionPipelineDeps {
   ): Promise<{ readonly size: number; readonly bytes: () => Promise<Uint8Array> }>
   decode(bytes: Uint8Array, maxLongEdge: number): DecodedImage
   ocr(uri: string, imageHeight: number): Promise<OcrExtraction>
+  /** Starts the OCR engine on a synthetic blank (P186 prewarm). Optional: a test double may omit it. */
+  warmOcr?(): Promise<void>
   visualSession(): Promise<VisualSession>
   retrieve(input: {
     ocrName: string | null
@@ -60,6 +68,7 @@ export const defaultRecognitionDeps: RecognitionPipelineDeps = {
   },
   decode: decodeToRgba,
   ocr: recognizeCardText,
+  warmOcr,
   visualSession: getVisualSession,
   retrieve: retrieveCandidates,
 }
@@ -86,6 +95,60 @@ export function createNativeCardRecognitionPort(
 ): CardRecognitionPort {
   let generation = 0
   let scanCounter = 0
+  // PREWARM (P186). Entering the photo screen starts, while the person chooses a photo, the three
+  // things the first photo would otherwise wait for: the model session, the OCR engine and the image
+  // decoder. Nothing here runs at app launch: the only trigger is the screen's own focus. The model
+  // session is the shared, cached one (getVisualSession), so a photo chosen before the prewarm has
+  // finished awaits the SAME pending creation and a second one can never exist. Everything stays
+  // loaded afterwards: measured, releasing the session after an idle window returned 19 of 277 MB
+  // (the verified assets, the OCR engine and the allocator keep the rest), which did not justify the
+  // unload/reload machinery (docs/mobile/P186_ANDROID_PACKAGING_PERFORMANCE.md).
+  // The OCR engine only needs starting once per process; a failed start may be retried on the next
+  // entry. Its failure never fails the prewarm: the scan runs its own OCR regardless.
+  let prewarmStartedAt = 0
+  let ocrWarmed = false
+  const warmOcrOnce = async (): Promise<void> => {
+    if (ocrWarmed || deps.warmOcr === undefined) return
+    try {
+      await deps.warmOcr()
+      ocrWarmed = true
+    } catch {
+      // ignored on purpose (see above)
+    }
+  }
+  // The image decoder (Skia) is likewise slow on its first use. It runs on the JS thread, so it
+  // goes last: after the model and OCR starts (native work, ~1-2 s), when the screen transition is
+  // long over, and only once per process.
+  let decodeWarmed = false
+  const warmDecodeOnce = (): void => {
+    if (decodeWarmed) return
+    try {
+      deps.decode(WARMUP_PNG, DECODE_MAX_LONG_EDGE)
+      decodeWarmed = true
+    } catch {
+      // ignored on purpose: a scan decodes its own photo regardless
+    }
+  }
+  const prewarmEvent = (action: 'prewarm_started' | 'prewarm_ready' | 'prewarm_failed'): void => {
+    if (action === 'prewarm_started') prewarmStartedAt = nowMs()
+    emitTrace({
+      kind: 'session',
+      action,
+      sessionCount: visualSessionCreationCount(),
+      active: visualSessionActiveCount(),
+      ...(action === 'prewarm_started' ? {} : { ms: Math.round(nowMs() - prewarmStartedAt) }),
+    })
+  }
+  const prewarm = (): void => {
+    prewarmEvent('prewarm_started')
+    Promise.all([deps.visualSession(), warmOcrOnce()]).then(
+      () => {
+        warmDecodeOnce()
+        prewarmEvent('prewarm_ready')
+      },
+      () => prewarmEvent('prewarm_failed'),
+    )
+  }
 
   return {
     implemented: true,
@@ -94,6 +157,9 @@ export function createNativeCardRecognitionPort(
     },
     reset() {
       generation += 1
+    },
+    scannerEntered() {
+      prewarm()
     },
     async recognize(input: ScannerImageInput): Promise<RecognitionOutcome> {
       const myGeneration = (generation += 1)

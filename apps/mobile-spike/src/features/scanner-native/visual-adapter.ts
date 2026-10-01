@@ -52,10 +52,18 @@ export interface VisualSession {
  */
 let cachedSession: Promise<VisualSession> | null = null
 let createdSessions = 0
+// Sessions alive right now. The invariant (checked by the device drivers through the trace) is <= 1:
+// the prewarm (recognition-pipeline.ts) and a scan share this cache, they never create their own.
+let activeSessions = 0
 
 export function getVisualSession(): Promise<VisualSession> {
   if (cachedSession !== null) {
-    emitTrace({ kind: 'session', action: 'reused', sessionCount: createdSessions })
+    emitTrace({
+      kind: 'session',
+      action: 'reused',
+      sessionCount: createdSessions,
+      active: activeSessions,
+    })
     return cachedSession
   }
   const pending = createVisualSession()
@@ -70,13 +78,25 @@ export function visualSessionCreationCount(): number {
   return createdSessions
 }
 
+export function visualSessionActiveCount(): number {
+  return activeSessions
+}
+
 async function createVisualSession(): Promise<VisualSession> {
   const startedAt = nowMs()
-  emitTrace({ kind: 'session', action: 'create_started', sessionCount: createdSessions })
+  emitTrace({
+    kind: 'session',
+    action: 'create_started',
+    sessionCount: createdSessions,
+    active: activeSessions,
+  })
   let ortSession: InferenceSession
   let assets: Awaited<ReturnType<typeof loadScannerAssets>>
+  // Time until the verified model and index were in memory (the rest of `ms` is the runtime start).
+  let assetsMs: number
   try {
     assets = await loadScannerAssets()
+    assetsMs = Math.round(nowMs() - startedAt)
     ortSession = await InferenceSession.create(assets.modelPath, {
       executionProviders: ['cpu'],
     })
@@ -85,6 +105,7 @@ async function createVisualSession(): Promise<VisualSession> {
       kind: 'session',
       action: 'create_failed',
       sessionCount: createdSessions,
+      active: activeSessions,
       ms: Math.round(nowMs() - startedAt),
     })
     throw error
@@ -96,13 +117,16 @@ async function createVisualSession(): Promise<VisualSession> {
   }
   const inputName: string = firstInputName
   createdSessions += 1
+  activeSessions += 1
   const index = decodeVisualIndex(assets.manifest, assets.cardIds, assets.embeddingsBytes)
 
   emitTrace({
     kind: 'session',
     action: 'created',
     sessionCount: createdSessions,
+    active: activeSessions,
     ms: Math.round(nowMs() - startedAt),
+    assetsMs,
   })
 
   async function embedTimed(image: RgbaImage): Promise<TimedEmbedding> {
@@ -126,6 +150,7 @@ async function createVisualSession(): Promise<VisualSession> {
     return { vector, preprocessMs, onnxMs: nowMs() - onnxStart }
   }
 
+  let disposed = false
   return {
     embedTimed,
     async embed(image: RgbaImage): Promise<Float32Array> {
@@ -135,9 +160,18 @@ async function createVisualSession(): Promise<VisualSession> {
       return searchVisualIndex(index, queryVector, topK)
     },
     async dispose() {
+      if (disposed) return
+      disposed = true
+      activeSessions -= 1
       // A disposed session must not stay cached: the next scan would run on a released runtime.
       cachedSession = null
       await ortSession.release()
+      emitTrace({
+        kind: 'session',
+        action: 'released',
+        sessionCount: createdSessions,
+        active: activeSessions,
+      })
     },
   }
 }
@@ -146,4 +180,5 @@ async function createVisualSession(): Promise<VisualSession> {
 export function __resetVisualSessionCacheForTests(): void {
   cachedSession = null
   createdSessions = 0
+  activeSessions = 0
 }

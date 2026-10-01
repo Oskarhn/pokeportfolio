@@ -46,6 +46,12 @@ export interface CardRecognitionPort {
    * Called when the app goes to the background (P184: no inference in the background).
    */
   cancelActive?(): void
+  /**
+   * The photo screen became the screen the person is looking at (P186). A recognizer with a costly
+   * start can begin it now, while they choose a photo, instead of after the photo. Never called at
+   * app launch; calling it again is harmless.
+   */
+  scannerEntered?(): void
   /** Identity boundary (A -> B, sign-out): same effect as `cancelActive`, registered in the scoped
    *  registry so it runs synchronously with every other user-scoped reset. */
   reset?(): void

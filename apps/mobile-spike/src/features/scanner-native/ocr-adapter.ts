@@ -1,4 +1,6 @@
 import TextRecognition, { TextRecognitionScript } from '@react-native-ml-kit/text-recognition'
+import { File, Paths } from 'expo-file-system'
+import { WARMUP_PNG } from './warmup-image'
 import type { ScannerObservation } from '@shared/domain/scanner/types'
 
 /**
@@ -139,6 +141,20 @@ export function pickNameLine(lines: readonly OcrLine[], imageHeight: number): Oc
   const inTopBand = candidates.filter((line) => line.top <= topBand)
   const pool = inTopBand.length > 0 ? inTopBand : candidates
   return pool.reduce((best, line) => (line.height > best.height ? line : best), pool[0] as OcrLine)
+}
+
+/**
+ * Runs one recognition of the synthetic blank so the first real photo does not pay ML Kit's
+ * start-up. Errors are the caller's to ignore: a failed warm-up changes nothing about a scan.
+ */
+export async function warmOcr(): Promise<void> {
+  // A fixed name in the cache directory, overwritten on every start: the only thing left behind is
+  // this 98-byte synthetic blank (the scanner's no-write-path guard forbids a delete call here, and
+  // the cache directory is the system's to evict).
+  const file = new File(Paths.cache, 'ocr-warmup.png')
+  file.create({ overwrite: true })
+  file.write(WARMUP_PNG)
+  await TextRecognition.recognize(file.uri, TextRecognitionScript.LATIN)
 }
 
 /**
