@@ -1,46 +1,82 @@
 #!/usr/bin/env node
 /**
- * P185 full release-APK journey for ONE clean synthetic user (19 steps): cold dark launch, sign in,
- * Collection, scanner, photo, recognition, candidate review, card confirmation, printing, Price
- * Check, return, Add acquisition, verify Collection, non-NOK transaction, manual valuation, sale,
- * Profile, sign out, restart. Every write is checked against the isolated database. LOCAL ONLY.
+ * P185 full release-APK journey for ONE clean synthetic user: 20 steps, every one PASS or FAIL.
+ * LOCAL ONLY (isolated stack, synthetic data). Every write is checked in the isolated database.
  *
  *   node scripts/p185/journey-check.mjs
  *
- * Fresh app data (pm clear) and the seeded synthetic user B. Output:
- * .build/p185-evidence/journey-report.json + PNGs.
+ *   1 cold dark launch   2 sign in            3 Collection        4 scanner entry
+ *   5 select image       6 recognise          7 inspect candidate 8 confirm the card
+ *   9 choose printing   10 Price Check       11 return           12 Add to Collection
+ *  13 confirm acquisition 14 holding in Collection 15 manual valuation (100.00 / 0 / clear)
+ *  16 sale (NOK)        17 non-NOK purchase + sale (EUR, FX)     18 Profile
+ *  19 sign out          20 cold restart / session state
+ *
+ * Driver contract: scripts/p185/driver.mjs (testID/tree first, fresh bounds, bounded waits, adb
+ * recovery that re-proves the same emulator). Fresh app data and the seeded synthetic user B.
+ * Output: .build/p185-evidence/journey-report.json, journey-*.png, journey-logcat.json
  */
 import './env.mjs'
-import { amStart, decodePng } from '../android-p167-lib.mjs'
+import { join } from 'node:path'
 import {
+  activityAfterChange,
+  amStart,
+  appPid,
+  decodePng,
+  localActivityId,
+  openPhotoScreen,
+} from '../android-p167-lib.mjs'
+import { establishIdentity, recoveryState } from '../android-adb.mjs'
+import {
+  PACKAGE,
   adb,
   byId,
-  byIdPrefix,
   dump,
+  fixtureDir,
+  nextScanTrace,
+  pickNewest,
+  proxy,
   psql,
+  pushImage,
   saveJson,
+  scanTraces,
   screencap,
+  sessionTraces,
   shell,
   shot,
-  sleep,
-  tap,
-  users,
-  waitFor,
-  PACKAGE,
   signIn,
-  rows,
+  sleep,
+  waitFor,
 } from './lib.mjs'
-import { back, findScrolling, tapId, tapScrolling, typeInto } from './flows.mjs'
-import { B, choosePrinting, counts, diff, priceTexts, scanToCard } from './journeys.mjs'
+import {
+  assertActivityAlive,
+  back,
+  bringIntoView,
+  clearAndType,
+  findNode,
+  screen,
+  tapNode,
+  tapTestId,
+  tapUntil,
+  waitForNode,
+} from './driver.mjs'
+import { auditSweep, leaks } from './a11y-lib.mjs'
+import { B, choosePrinting, counts, diff, priceTexts } from './journeys.mjs'
+
+establishIdentity()
+adb(['logcat', '-G', '16M'], { allowFail: true })
+adb(['logcat', '-c'], { allowFail: true })
+adb(['logcat', '-b', 'crash', '-c'], { allowFail: true })
 
 const report = []
 async function step(n, name, fn) {
   const t0 = Date.now()
   try {
     const detail = await fn()
+    assertActivityAlive()
     report.push({ n, step: name, status: 'PASS', ms: Date.now() - t0, detail })
     console.log(
-      `PASS ${String(n).padStart(2)} ${name}  ${JSON.stringify(detail ?? null).slice(0, 600)}`,
+      `PASS ${String(n).padStart(2)} ${name}  ${JSON.stringify(detail ?? null).slice(0, 700)}`,
     )
     return true
   } catch (e) {
@@ -49,9 +85,9 @@ async function step(n, name, fn) {
       step: name,
       status: 'FAIL',
       ms: Date.now() - t0,
-      detail: String(e.message ?? e).slice(0, 700),
+      detail: String(e.message ?? e).slice(0, 900),
     })
-    console.log(`FAIL ${String(n).padStart(2)} ${name}  ${String(e.message ?? e).slice(0, 500)}`)
+    console.log(`FAIL ${String(n).padStart(2)} ${name}  ${String(e.message ?? e).slice(0, 600)}`)
     try {
       shot(`journey-fail-${n}`)
     } catch {
@@ -61,13 +97,70 @@ async function step(n, name, fn) {
   }
 }
 
+const q = (s) => `'${String(s).replaceAll("'", "''")}'`
+const check = (cond, message) => {
+  if (!cond) throw new Error(message)
+}
+const eq = (actual, expected, what) =>
+  check(
+    String(actual) === String(expected),
+    `${what}: expected ${String(expected)}, got ${String(actual)}`,
+  )
+
+/** Polls the database until `sql` returns `expected` (the app writes asynchronously). */
+async function dbEquals(sql, expected, what, timeoutMs = 20000) {
+  const start = Date.now()
+  let last = null
+  while (Date.now() - start < timeoutMs) {
+    last = psql(sql)
+    if (last === String(expected)) return last
+    await sleep(500)
+  }
+  throw new Error(`${what}: expected ${String(expected)}, database says ${String(last)}`)
+}
+
 const cardId = psql(
-  "select id from cards where name = 'P169 Charizard' and language = 'en' limit 1",
+  `select id from cards where name = 'P169 Charizard' and language = 'en' limit 1`,
 )
 const variantId = psql(
-  `select id from card_variants where card_id = '${cardId}' and finish = 'holo' and stamp = '' and is_active limit 1`,
+  `select id from card_variants where card_id = ${q(cardId)} and finish = 'holo' and stamp = '' and is_active limit 1`,
+)
+const holdingOf = () =>
+  psql(
+    `select id from holdings where user_id = ${q(B.id)} and card_variant_id = ${q(variantId)} and deleted_at is null limit 1`,
+  )
+const holdingsBefore = psql(
+  `select count(*) from holdings where user_id = ${q(B.id)} and card_variant_id = ${q(variantId)} and deleted_at is null`,
 )
 let holdingId = null
+let acquisitionLot = null
+
+async function gotoTab(tab, ready) {
+  await tapTestId(tab, { scroll: false })
+  await waitForNode(ready, { timeoutMs: 20000, label: `${ready} after ${tab}` })
+}
+
+/** Leaves any form / card / photo screen so the next step starts from a tab root. */
+async function toRoot() {
+  for (let i = 0; i < 8; i += 1) {
+    const nodes = dump()
+    if (findNode(nodes, 'collection-list') || findNode(nodes, 'price-check-home')) return
+    back()
+    await sleep(700)
+  }
+}
+
+async function scanToResult(fixture, label) {
+  const before = scanTraces().length
+  await pushImage(join(fixtureDir, fixture), label)
+  await pickNewest()
+  const trace = await nextScanTrace(before)
+  await sleep(1000)
+  return trace
+}
+
+const candidateRow = () =>
+  bringIntoView({ prefix: 'p169-recognition-candidate-' }, { label: 'candidate row' })
 
 // 1 ---------------------------------------------------------------------------------------------
 await step(1, 'cold dark launch', async () => {
@@ -85,13 +178,12 @@ await step(1, 'cold dark launch', async () => {
     label: 'login screen',
   })
   const login = decodePng(screencap()).bandLuminance(0, png.h)
-  if (login === null || login > 0.25)
-    throw new Error(`the login screen is not dark: ${String(login)}`)
+  check(login !== null && login <= 0.25, `the login screen is not dark: ${String(login)}`)
   return {
     launchState: launch.launchState,
     totalTimeMs: launch.totalTimeMs,
-    meanLuminanceFirstFrame: lum,
-    meanLuminanceLogin: login,
+    lumFirstFrame: lum,
+    lumLogin: login,
   }
 })
 // 2 ---------------------------------------------------------------------------------------------
@@ -101,212 +193,492 @@ await step(2, 'sign in', async () => {
 })
 // 3 ---------------------------------------------------------------------------------------------
 await step(3, 'Collection', async () => {
-  const n = await waitFor((ns) => byId(ns, 'collection-list') && ns, { label: 'collection list' })
+  const r = await waitForNode('collection-list', { label: 'collection list' })
   shot('journey-03-collection')
-  return { rows: rows(n.value).length }
+  return { rows: r.nodes.filter((n) => n.id.includes('row-')).length }
 })
-// 4-10 ------------------------------------------------------------------------------------------
-let scan = null
-await step(4, 'open the scanner (Price Check -> photo)', async () => {
-  const { openPhotoScreen } = await import('../android-p167-lib.mjs')
+// 4 ---------------------------------------------------------------------------------------------
+await step(4, 'scanner entry', async () => {
   await openPhotoScreen()
+  const nodes = dump()
+  const buttons = ['p169-photo-library', 'p169-photo-camera'].filter((id) => findNode(nodes, id))
+  check(buttons.length === 2, `photo entry buttons: ${buttons.join(',')}`)
+  return { buttons }
+})
+// 5 ---------------------------------------------------------------------------------------------
+let trace1 = null
+await step(5, 'select the safe recognition fixture', async () => {
+  const before = scanTraces().length
+  await pushImage(join(fixtureDir, 'f17-p169-charizard.jpg'), 'journey')
+  await pickNewest()
+  await waitForNode('p169-photo-ready', { label: 'photo ready' })
+  trace1 = await nextScanTrace(before)
+  return { photoReady: true }
+})
+// 6 ---------------------------------------------------------------------------------------------
+await step(6, 'recognise a real candidate (on-device OCR + visual match)', async () => {
+  await sleep(1000)
+  const { node } = await candidateRow()
+  check(/P169 Charizard/.test(node.desc), `unexpected candidate ${node.desc}`)
+  check(trace1.outcome === 'analysed', `scan outcome ${String(trace1.outcome)}`)
+  shot('journey-06-recognition')
   return {
-    photoButtons: ['p169-photo-library', 'p169-photo-camera'].every((id) => byId(dump(), id)),
+    tier: trace1.tier,
+    ocr: trace1.ocr,
+    totalMs: trace1.stages.totalMs,
+    candidate: node.desc,
   }
 })
-await step(
-  5,
-  'choose an image, 6 recognition, 7 candidate review, 8 card confirmation',
-  async () => {
-    const before = counts()
-    scan = await scanToCard('f17-p169-charizard.jpg', 'journey', 'P169 Charizard')
-    shot('journey-07-candidate-then-card')
-    return {
-      recognition: scan.ui.kind,
-      badge: scan.ui.badge,
-      heading: scan.ui.heading,
-      candidates: scan.ui.candidates.map((c) => c.label.slice(0, 60)),
-      confirmedCardOpened: true,
-      writes: diff(before, counts()),
-    }
-  },
-)
-await step(9, 'printing chosen explicitly', async () => {
-  const p = await choosePrinting(scan.cardId, 'holo')
+// 7 ---------------------------------------------------------------------------------------------
+await step(7, 'inspect the candidate (+ one Activity recreation)', async () => {
+  const row = (await candidateRow()).node
+  check(/^P169 Charizard, P169 Base Set, 004$/.test(row.desc), `candidate name: ${row.desc}`)
+  const badge = (await bringIntoView('p169-recognition-confidence', { label: 'confidence' })).node
+  check(
+    /Match confidence: (High confidence|Needs confirmation|Low confidence)/.test(badge.desc),
+    `confidence name: ${badge.desc}`,
+  )
+  const scr = screen()
+  const a = auditSweep([dump()], { dpi: scr.dpi, width: scr.width })
+  check(leaks(a).length === 0, `an internal identifier is exposed: ${leaks(a).join('; ')}`)
+  // One recreation after the result and before any financial step (font 1.0 -> 1.3 -> 1.0).
+  const scansBefore = scanTraces().length
+  const countsBefore = counts()
+  const pid = appPid()
+  const actBefore = localActivityId()
+  shell('settings put system font_scale 1.3')
+  const actMid = await activityAfterChange(actBefore)
+  await sleep(1500)
+  shell('settings put system font_scale 1.0')
+  const actAfter = await activityAfterChange(actMid)
+  await sleep(2500)
+  assertActivityAlive()
+  const nodes = dump()
+  const results = nodes.filter((n) => n.id.endsWith('p169-recognition-result')).length
+  check(appPid() === pid, 'the process changed on recreation')
+  check(actMid !== actBefore && actAfter !== actMid, 'the Activity was not recreated twice')
+  check(results <= 1, `${String(results)} scanner results after recreation`)
+  eq(scanTraces().length, scansBefore, 'analyses started by the recreation')
+  eq(counts().join('|'), countsBefore.join('|'), 'database counts across the recreation')
+  const sessions = sessionTraces().filter((s) => s.action === 'created').length
+  check(sessions <= 1, `${String(sessions)} model sessions were created`)
+  const photoStillReady = !!findNode(nodes, 'p169-photo-ready')
+  // The photo and result are released on recreation (the existing ownership contract): the person
+  // is back on a usable photo screen. Take the photo again so the journey continues from a result.
+  trace1 = await scanToResult('f17-p169-charizard.jpg', 'journey-after-recreate')
+  await candidateRow()
+  eq(scanTraces().length, scansBefore + 1, 'exactly one analysis for the re-taken photo')
+  return {
+    sameProcess: true,
+    recreations: 2,
+    resultsAfterRecreation: results,
+    photoStillReadyAfterRecreation: photoStillReady,
+    modelSessionsCreated: sessions,
+    runtimeSingleton: sessions <= 1,
+  }
+})
+// 8 ---------------------------------------------------------------------------------------------
+await step(8, 'explicit card confirmation', async () => {
+  const before = counts()
+  tapNode((await candidateRow()).node)
+  await waitForNode('p169-card-identity', { timeoutMs: 30000, label: 'card identity' }).catch(() =>
+    waitForNode('p169-card', { timeoutMs: 5000, label: 'card screen' }),
+  )
+  eq(JSON.stringify(diff(before, counts())), '{}', 'writes on confirming a card')
+  shot('journey-08-card')
+  return { confirmedCardOpened: true }
+})
+// 9 ---------------------------------------------------------------------------------------------
+await step(9, 'explicit printing selection', async () => {
+  const before = counts()
+  const p = await choosePrinting(cardId, 'holo')
+  eq(p.hadChoice, true, 'the printing choice was offered')
+  eq(JSON.stringify(diff(before, counts())), '{}', 'writes on choosing a printing')
   return p
 })
-await step(10, 'raw Price Check (read-only)', async () => {
+// 10 --------------------------------------------------------------------------------------------
+await step(10, 'Price Check (read-only)', async () => {
   const before = counts()
   await sleep(500)
   const texts = priceTexts()
   shot('journey-10-price-check')
-  if (texts.length === 0) throw new Error('no raw price is shown')
-  return { prices: texts, ledgerUnchanged: counts().join('|') === before.join('|') }
+  check(texts.length > 0, 'no raw price is shown')
+  eq(counts().join('|'), before.join('|'), 'ledger across Price Check')
+  return { prices: texts }
 })
-await step(11, 'return: back to the scanner leaves nothing behind', async () => {
+// 11 --------------------------------------------------------------------------------------------
+await step(11, 'return from Price Check', async () => {
+  const scansBefore = scanTraces().length
   back()
-  await sleep(700)
+  await waitForNode('p169-photo-entry', { timeoutMs: 15000, label: 'photo screen after one back' })
+  const nodes = dump()
+  check(!findNode(nodes, 'p169-card'), 'the card screen is still showing')
+  eq(scanTraces().length, scansBefore, 'a re-analysis on returning')
+  const state = {
+    photoReady: !!findNode(nodes, 'p169-photo-ready'),
+    result: !!findNode(nodes, 'p169-recognition-result'),
+  }
   back()
-  await waitFor((ns) => byId(ns, 'p169-photo-library'), { label: 'photo screen after returning' })
-  const n = dump()
-  const leaked = ['p169-photo-ready', 'p169-recognition-result'].filter((id) => byId(n, id))
-  if (leaked.length > 0) throw new Error(`state left behind: ${leaked.join(',')}`)
-  return { leaked }
-})
-// 12-13 -----------------------------------------------------------------------------------------
-await step(12, 'Add acquisition from a recognised card', async () => {
-  const before = counts()
-  await scanToCard('f17-p169-charizard.jpg', 'journey2', 'P169 Charizard')
-  await choosePrinting(scan.cardId, 'holo')
-  tap((await findScrolling('p169-add-to-collection')).node)
-  await waitFor((ns) => byId(ns, 'p170-add-intent'), { label: 'add intent screen' })
-  await tapScrolling('p175-go-add-acquisition')
-  await waitFor((ns) => byId(ns, 'p175-add-acquisition'), { label: 'acquisition form' })
-  await typeInto('p175-unit-cost', '25.00')
-  await typeInto('p175-quantity', '3')
-  if (counts().join('|') !== before.join('|')) throw new Error('written before the final confirm')
-  await tapScrolling('p175-confirm-acquisition')
-  await waitFor((ns) => byId(ns, 'collection-list') || byId(ns, 'p175-acquisition-success'), {
-    timeoutMs: 30000,
-    label: 'acquisition result',
+  await waitForNode('price-check-home', {
+    timeoutMs: 15000,
+    label: 'Price Check landing after the second back',
   })
+  return { backsToPhotoScreen: 1, backsToLanding: 2, ...state }
+})
+// 12 --------------------------------------------------------------------------------------------
+await step(12, 'Add to Collection (nothing is written yet)', async () => {
+  const before = counts()
+  await toRoot()
+  await tapTestId('tab-pricecheck', { scroll: false })
+  await openPhotoScreen()
+  trace1 = await scanToResult('f17-p169-charizard.jpg', 'journey2')
+  tapNode((await candidateRow()).node)
+  await waitForNode('p169-card-identity', { timeoutMs: 30000, label: 'card identity' }).catch(() =>
+    waitForNode('p169-card', { timeoutMs: 5000, label: 'card' }),
+  )
+  await choosePrinting(cardId, 'holo')
+  await tapUntil('p169-add-to-collection', 'p170-add-intent', { label: 'Add to Collection' })
+  await tapUntil('p175-go-add-acquisition', 'p175-add-acquisition', { label: 'add acquisition' })
+  await clearAndType('p175-unit-cost', '25.00')
+  await clearAndType('p175-quantity', '3')
+  eq(counts().join('|'), before.join('|'), 'writes before the final confirm')
+  return { holdingsBefore: Number(holdingsBefore), countsUnchanged: true }
+})
+// 13 --------------------------------------------------------------------------------------------
+await step(13, 'explicit acquisition confirmation', async () => {
+  const before = counts()
+  await tapTestId('p175-confirm-acquisition', { label: 'confirm acquisition' })
+  await waitForNode('collection-list', {
+    timeoutMs: 30000,
+    label: 'Collection after the acquisition',
+  }).catch(() =>
+    waitForNode('p175-acquisition-success', { timeoutMs: 5000, label: 'acquisition success' }),
+  )
   await sleep(1500)
   const d = diff(before, counts())
-  if (d.lots !== 1) throw new Error(`expected exactly one acquisition lot: ${JSON.stringify(d)}`)
-  holdingId = psql(
-    `select id from holdings where user_id='${B.id}' and card_variant_id='${variantId}'`,
+  eq(d.lots, 1, 'acquisition lots written')
+  holdingId = holdingOf()
+  check(holdingId !== '', 'the holding does not exist')
+  const lot = psql(
+    `select id||'|'||user_id||'|'||quantity||'|'||quantity_remaining||'|'||cost_basis_state||'|'||coalesce(unit_cost_basis_minor::text,'null')||'|'||coalesce(cost_basis_currency,'null')||'|'||origin from acquisition_lots where holding_id = ${q(holdingId)} and voided_at is null order by created_at desc limit 1`,
+  ).split('|')
+  acquisitionLot = lot[0]
+  eq(lot[1], B.id, 'lot owner')
+  eq(lot[2], 3, 'lot quantity')
+  eq(lot[3], 3, 'lot quantity remaining')
+  eq(lot[4], 'known', 'cost basis state')
+  eq(lot[5], 2500, 'unit cost minor')
+  eq(lot[6], 'NOK', 'cost currency')
+  eq(psql(`select card_variant_id from holdings where id = ${q(holdingId)}`), variantId, 'variant')
+  // No duplicate from a retry: still exactly one lot for this holding.
+  eq(
+    psql(
+      `select count(*) from acquisition_lots where holding_id = ${q(holdingId)} and voided_at is null`,
+    ),
+    1,
+    'lots on the holding',
   )
-  return { writes: d, holding: holdingId.slice(0, 8) }
-})
-await step(13, 'verify Collection', async () => {
-  await tapId('tab-collection', 'collection tab')
-  await waitFor((ns) => byId(ns, 'collection-list'), { label: 'collection list' })
-  const { node } = await findScrolling(`row-${holdingId}`)
-  shot('journey-13-collection-row')
-  return { rowVisible: !!node, label: (node.desc || node.text).slice(0, 80) }
+  return {
+    writes: d,
+    lot: { quantity: 3, basisState: lot[4], unitCostMinor: lot[5], currency: lot[6], origin: lot[7] },
+  }
 })
 // 14 --------------------------------------------------------------------------------------------
-await step(14, 'non-NOK transaction (EUR purchase with FX)', async () => {
+await step(14, 'verify the holding in Collection', async () => {
+  await toRoot()
+  await gotoTab('tab-collection', 'collection-list')
+  const { node } = await bringIntoView(`row-${holdingId}`, { label: 'the new holding row' })
+  check(/Charizard/.test(node.desc || node.text), `row label: ${node.desc || node.text}`)
+  shot('journey-14-collection-row')
+  return { rowVisible: true, label: (node.desc || node.text).slice(0, 90) }
+})
+// 15 --------------------------------------------------------------------------------------------
+const ACTIVE_MANUAL = () =>
+  `select coalesce(string_agg(value_minor::text, ','), 'none') from manual_valuations where holding_id = ${q(holdingId)} and superseded_at is null`
+await step(15, 'manual valuation: 100.00, explicit 0, clear', async () => {
+  tapNode((await bringIntoView(`row-${holdingId}`, { label: 'holding row' })).node)
+  await waitForNode('card-detail', { timeoutMs: 20000, label: 'card detail' })
+  await tapUntil('manual-valuation', 'p175-manual-valuation', { label: 'manual valuation' })
+  eq(psql(ACTIVE_MANUAL()), 'none', 'a manual value before the test')
+  // positive
+  await clearAndType('p175-manual-value', '100.00')
+  await tapTestId('p175-confirm-manual-value', { label: 'set value' })
+  await waitForNode('p175-manual-valuation-success', { timeoutMs: 20000, label: 'Saved (100.00)' })
+  await dbEquals(ACTIVE_MANUAL(), '10000', 'positive manual value')
+  shot('journey-15-manual-100')
+  // an explicit zero is a KNOWN value, not an absent one
+  await clearAndType('p175-manual-value', '0')
+  await tapTestId('p175-confirm-manual-value', { label: 'set value 0' })
+  await dbEquals(ACTIVE_MANUAL(), '0', 'explicit zero manual value')
+  eq(
+    psql(
+      `select value_nok_minor||'|'||currency from manual_valuations where holding_id = ${q(holdingId)} and superseded_at is null`,
+    ),
+    '0|NOK',
+    'the zero row',
+  )
+  // clear: back to "no manual valuation", never a zero
+  await tapTestId('p175-clear-manual-value', { label: 'clear manual value' })
+  await dbEquals(ACTIVE_MANUAL(), 'none', 'cleared manual value')
+  const history = psql(
+    `select count(*) from manual_valuations where holding_id = ${q(holdingId)}`,
+  )
+  eq(history, 2, 'history rows kept (100.00 and 0, both superseded)')
+  back()
+  await waitForNode('card-detail', { label: 'card detail after the valuation' })
+  return { positive: 10000, zeroKnown: true, clearedActive: 'none', historyRows: Number(history) }
+})
+// 16 --------------------------------------------------------------------------------------------
+let nokSale = null
+await step(16, 'sale (NOK, quantity 1, fees)', async () => {
   const before = counts()
-  await tapId('tab-search', 'search tab')
-  await typeInto('p169-search-input', 'Charizard')
+  await tapUntil('record-sale', 'p175-record-sale', { label: 'record sale' })
+  await clearAndType('p175-sale-quantity', '1')
+  await clearAndType('p175-sale-unit-gross', '40.00')
+  await clearAndType('p175-sale-fees', '3')
+  await tapTestId('p175-confirm-sale', { label: 'record sale' })
+  await waitForNode('p175-sale-success', { timeoutMs: 20000, label: 'sale recorded' })
+  await sleep(800)
+  const d = diff(before, counts())
+  eq(d.sales, 1, 'sales written')
+  const s = psql(
+    `select s.id||'|'||s.currency||'|'||s.gross_minor||'|'||s.fees_minor||'|'||s.net_proceeds_minor||'|'||s.net_proceeds_nok_minor||'|'||s.realized_result_nok_minor from sales s where s.user_id = ${q(B.id)} and s.voided_at is null order by s.created_at desc limit 1`,
+  ).split('|')
+  nokSale = s[0]
+  eq(s[1], 'NOK', 'sale currency')
+  eq(s[2], 4000, 'gross minor')
+  eq(s[3], 300, 'fees minor')
+  eq(s[4], 3700, 'net proceeds minor')
+  eq(s[6], 1200, 'realized result (net 37.00 - cost 25.00)')
+  const line = psql(
+    `select quantity||'|'||cost_basis_at_sale_nok_minor||'|'||lot_id from sale_lines where sale_id = ${q(nokSale)}`,
+  ).split('|')
+  eq(line[0], 1, 'sale line quantity')
+  eq(line[1], 2500, 'cost basis at sale')
+  eq(line[2], acquisitionLot, 'sold lot')
+  eq(
+    psql(`select quantity_remaining from acquisition_lots where id = ${q(acquisitionLot)}`),
+    2,
+    'lot quantity remaining after the sale',
+  )
+  return { net: s[4], realized: s[6], remainingOnLot: 2, writes: d }
+})
+// 17 --------------------------------------------------------------------------------------------
+let eurPurchase = null
+let eurSale = null
+await step(17, 'non-NOK transaction: EUR purchase and EUR sale with FX', async () => {
+  const before = counts()
+  await toRoot()
+  await gotoTab('tab-search', 'p169-search-input')
+  await clearAndType('p169-search-input', 'Charizard')
   shell('input keyevent 66')
-  await waitFor((ns) => byIdPrefix(ns, 'p169-search-status-').find((x) => /ready/.test(x.id)), {
+  await waitFor((ns) => ns.find((x) => /p169-search-status-.*ready/.test(x.id)), {
     timeoutMs: 30000,
     label: 'search results',
   })
-  tap((await findScrolling(`p169-hit-${cardId}`)).node)
-  await waitFor((ns) => byId(ns, 'p169-card') || byId(ns, 'p169-card-identity'), {
-    timeoutMs: 30000,
-    label: 'card screen',
-  })
+  tapNode((await bringIntoView(`p169-hit-${cardId}`, { label: 'the Charizard hit' })).node)
+  await waitForNode('p169-card-identity', { timeoutMs: 30000, label: 'card identity' }).catch(() =>
+    waitForNode('p169-card', { timeoutMs: 5000 }),
+  )
   await choosePrinting(cardId, 'holo')
-  tap((await findScrolling('p169-add-to-collection')).node)
-  await waitFor((ns) => byId(ns, 'p170-add-intent'), { label: 'add intent screen' })
-  await tapScrolling('p175-go-record-purchase')
-  await waitFor((ns) => byId(ns, 'p175-record-purchase'), { label: 'record purchase screen' })
-  await tapScrolling('p178-purchase-currency')
-  await waitFor((ns) => byId(ns, 'p178-currency-option-EUR'), { label: 'currency sheet' })
-  tap(byId(dump(), 'p178-currency-option-EUR'))
-  await waitFor((ns) => byId(ns, 'p180-purchase-fx-notice'), {
-    timeoutMs: 20000,
-    label: 'FX notice',
-  })
-  await typeInto('p175-purchase-quantity', '1')
-  await typeInto('p175-purchase-unit-price', '12.50')
-  await tapScrolling('p175-confirm-purchase')
-  await waitFor((ns) => byId(ns, 'collection-list') || byId(ns, 'p175-purchase-success'), {
-    timeoutMs: 30000,
-    label: 'purchase result',
-  })
+  await tapUntil('p169-add-to-collection', 'p170-add-intent', { label: 'Add to Collection' })
+  await tapUntil('p175-go-record-purchase', 'p175-record-purchase', { label: 'record purchase' })
+  await tapUntil('p178-purchase-currency', 'p178-currency-option-EUR', { label: 'currency sheet' })
+  // The currency chooser is a radio group: >= 48 dp, named, exactly one selected.
+  const dpv = screen().dpi / 160
+  const radios = dump()
+    .filter((n) => n.cls === 'android.widget.RadioButton' && /currency-option/.test(n.id))
+    .map((n) => ({
+      id: n.id.replace(/^.*:id\//, ''),
+      hDp: Math.round((n.bounds.y2 - n.bounds.y1) / dpv),
+      selected: n.selected || n.checked,
+      name: n.desc || n.text,
+    }))
+  check(radios.length >= 5, `currency radios found: ${String(radios.length)}`)
+  check(
+    radios.every((r) => r.hDp >= 47),
+    `currency radio below 48 dp: ${JSON.stringify(radios.filter((r) => r.hDp < 47))}`,
+  )
+  eq(radios.filter((r) => r.selected).length, 1, 'selected currency radios')
+  await tapTestId('p178-currency-option-EUR', { scroll: false })
+  await waitForNode('p180-purchase-fx-notice', { timeoutMs: 20000, label: 'FX notice' })
+  await clearAndType('p175-purchase-quantity', '1')
+  await clearAndType('p175-purchase-unit-price', '12.50')
+  await tapTestId('p175-confirm-purchase', { label: 'confirm purchase' })
+  await waitForNode('collection-list', { timeoutMs: 30000, label: 'Collection after the purchase' }).catch(
+    () => waitForNode('p175-purchase-success', { timeoutMs: 5000 }),
+  )
   await sleep(1500)
-  const d = diff(before, counts())
-  if (d.purchases !== 1) throw new Error(`expected one purchase: ${JSON.stringify(d)}`)
-  const row = psql(
-    `select p.currency||'|'||p.total_minor||'|'||p.fx_rate_to_nok||'|'||p.total_nok_minor from purchases p where p.user_id='${B.id}' order by p.created_at desc limit 1`,
+  eq(diff(before, counts()).purchases, 1, 'purchases written')
+  const pr = psql(
+    `select id||'|'||currency||'|'||total_minor||'|'||fx_rate_to_nok||'|'||fx_rate_date||'|'||fx_source||'|'||total_nok_minor from purchases where user_id = ${q(B.id)} and voided_at is null order by created_at desc limit 1`,
+  ).split('|')
+  eurPurchase = pr[0]
+  eq(`${pr[1]}|${pr[2]}|${pr[3]}|${pr[6]}`, 'EUR|1250|11.50000000|14375', 'EUR purchase and FX')
+  // EUR sale of the purchased lot
+  await toRoot()
+  await gotoTab('tab-collection', 'collection-list')
+  tapNode((await bringIntoView(`row-${holdingId}`, { label: 'holding row' })).node)
+  await waitForNode('card-detail', { timeoutMs: 20000, label: 'card detail' })
+  const purchaseLot = psql(
+    `select al.id from acquisition_lots al join purchase_lines pl on pl.id = al.purchase_line_id where pl.purchase_id = ${q(eurPurchase)}`,
   )
-  if (row !== 'EUR|1250|11.50000000|14375') throw new Error(`unexpected purchase row ${row}`)
-  return { row, writes: d }
-})
-// 15 --------------------------------------------------------------------------------------------
-await step(15, 'manual valuation', async () => {
-  await tapId('tab-collection', 'collection tab')
-  await waitFor((ns) => byId(ns, 'collection-list'), { label: 'collection list' })
-  tap((await findScrolling(`row-${holdingId}`)).node)
-  await waitFor((ns) => byId(ns, 'card-detail'), { timeoutMs: 20000, label: 'card detail' })
-  await tapScrolling('manual-valuation')
-  await waitFor((ns) => byId(ns, 'p175-manual-valuation'), { label: 'manual valuation screen' })
-  await typeInto('p175-manual-value', '100.00')
-  await tapScrolling('p175-confirm-manual-value')
-  await waitFor((ns) => byId(ns, 'p175-manual-valuation-success'), {
-    timeoutMs: 20000,
-    label: 'manual value set',
+  const salesBefore = counts()
+  await tapUntil('record-sale', 'p175-record-sale', { label: 'record sale' })
+  await tapTestId(`p175-lot-${purchaseLot}`, { label: 'the purchased lot' })
+  await tapUntil('p178-sale-currency', 'p178-sale-currency-option-EUR', {
+    label: 'sale currency sheet',
   })
-  const stored = psql(
-    `select value_minor from manual_valuations where holding_id='${holdingId}' and superseded_at is null`,
+  await tapTestId('p178-sale-currency-option-EUR', { scroll: false })
+  await waitForNode('p180-sale-fx-notice', { timeoutMs: 20000, label: 'sale FX notice' })
+  await clearAndType('p175-sale-quantity', '1')
+  await clearAndType('p175-sale-unit-gross', '10.00')
+  await clearAndType('p175-sale-fees', '1.00')
+  await tapTestId('p175-confirm-sale', { label: 'record EUR sale' })
+  await waitForNode('p175-sale-success', { timeoutMs: 20000, label: 'EUR sale recorded' })
+  await sleep(800)
+  eq(diff(salesBefore, counts()).sales, 1, 'EUR sales written')
+  const sl = psql(
+    `select id||'|'||currency||'|'||gross_minor||'|'||fees_minor||'|'||net_proceeds_minor||'|'||fx_rate_to_nok||'|'||fx_rate_date||'|'||fx_source||'|'||net_proceeds_nok_minor||'|'||realized_result_nok_minor from sales where user_id = ${q(B.id)} and voided_at is null order by created_at desc limit 1`,
+  ).split('|')
+  eurSale = sl[0]
+  eq(
+    `${sl[1]}|${sl[2]}|${sl[3]}|${sl[4]}|${sl[5]}|${sl[8]}`,
+    'EUR|1000|100|900|11.50000000|10350',
+    'EUR sale, FX and NOK proceeds',
   )
-  if (stored !== '10000') throw new Error(`stored manual value ${stored}`)
-  back()
-  await waitFor((ns) => byId(ns, 'card-detail'), { label: 'back to card detail' })
-  return { storedMinor: stored }
-})
-// 16 --------------------------------------------------------------------------------------------
-await step(16, 'sale', async () => {
-  const before = counts()
-  await tapScrolling('record-sale')
-  await waitFor((ns) => byId(ns, 'p175-record-sale'), {
-    timeoutMs: 15000,
-    label: 'record sale screen',
-  })
-  await typeInto('p175-sale-quantity', '1')
-  await typeInto('p175-sale-unit-gross', '40.00')
-  await typeInto('p175-sale-fees', '3')
-  await tapScrolling('p175-confirm-sale')
-  await waitFor((ns) => byId(ns, 'p175-sale-success'), { timeoutMs: 20000, label: 'sale recorded' })
-  const d = diff(before, counts())
-  if (d.sales !== 1) throw new Error(`expected one sale: ${JSON.stringify(d)}`)
-  const result = psql(
-    `select sl.realized_result_nok_minor from sale_lines sl join sales s on s.id=sl.sale_id where s.user_id='${B.id}' order by s.created_at desc limit 1`,
-  )
-  return { realizedResultMinor: result, writes: d }
-})
-// 17 --------------------------------------------------------------------------------------------
-await step(17, 'Profile', async () => {
-  await tapId('tab-profile', 'profile tab')
-  await waitFor((ns) => byId(ns, 'sign-out') || byId(ns, 'profile-screen'), {
-    timeoutMs: 20000,
-    label: 'profile screen',
-  })
-  shot('journey-17-profile')
-  return { signOutVisible: !!byId(dump(), 'sign-out') || !!(await findScrolling('sign-out')).node }
+  eq(sl[9], 10350 - 14375, 'EUR sale realized result in NOK (10350 - 14375)')
+  return {
+    purchase: {
+      currency: pr[1],
+      totalMinor: pr[2],
+      fxRate: pr[3],
+      fxDate: pr[4],
+      fxSource: pr[5],
+      totalNokMinor: pr[6],
+    },
+    sale: {
+      currency: sl[1],
+      grossMinor: sl[2],
+      feesMinor: sl[3],
+      netMinor: sl[4],
+      fxRate: sl[5],
+      fxDate: sl[6],
+      fxSource: sl[7],
+      netNokMinor: sl[8],
+      realizedNok: sl[9],
+    },
+    currencyRadios: radios,
+  }
 })
 // 18 --------------------------------------------------------------------------------------------
-await step(18, 'sign out', async () => {
-  tap((await findScrolling('sign-out')).node)
+await step(18, 'Profile', async () => {
+  await toRoot()
+  await tapTestId('tab-profile', { scroll: false })
+  const { node } = await bringIntoView('sign-out', { label: 'sign out' })
+  shot('journey-18-profile')
+  return { signOutVisible: !!node }
+})
+// 19 --------------------------------------------------------------------------------------------
+await step(19, 'sign out', async () => {
+  tapNode((await bringIntoView('sign-out', { label: 'sign out' })).node)
   await waitFor((ns) => byId(ns, 'login-email') || byId(ns, 'login-screen'), {
     timeoutMs: 30000,
     label: 'login after sign-out',
   })
-  const stale = ['collection-list', 'p169-photo-ready'].filter((id) => byId(dump(), id))
-  if (stale.length > 0) throw new Error(`user data still visible: ${stale.join(',')}`)
+  const stale = ['collection-list', 'p169-photo-ready', 'p169-recognition-result'].filter((id) =>
+    findNode(dump(), id),
+  )
+  check(stale.length === 0, `user data still visible: ${stale.join(',')}`)
   return { loginShown: true }
 })
-// 19 --------------------------------------------------------------------------------------------
-await step(19, 'restart', async () => {
+// 20 --------------------------------------------------------------------------------------------
+await step(20, 'cold restart and session state', async () => {
   shell(`am force-stop ${PACKAGE}`)
   await sleep(2000)
-  amStart()
+  const launch = amStart()
   await waitFor((ns) => byId(ns, 'login-email') || byId(ns, 'login-screen'), {
     timeoutMs: 30000,
-    label: 'login after restart (no session left)',
+    label: 'login after restart (no session left behind)',
   })
   const r = await signIn(B)
-  return { signedInAgainMs: r.firstPageVisibleMs, sessionSurvivedSignOut: false }
+  await waitForNode('collection-list', { label: 'Collection after signing in again' })
+  await bringIntoView(`row-${holdingId}`, { label: 'the holding after a cold restart and sign-in' })
+  return {
+    launchState: launch.launchState,
+    sessionSurvivedSignOut: false,
+    signedInAgainMs: r.firstPageVisibleMs,
+    dataPersisted: true,
+  }
 })
 
-saveJson('journey-report.json', report)
+// ---- network audit + logcat sweep over the whole run ----------------------------------------------
+const audit = await proxy('audit')
+const log = adb(['logcat', '-d', '-v', 'time'], { allowFail: true })
+const crash = adb(['logcat', '-b', 'crash', '-d', '-v', 'time'], { allowFail: true })
+const PATTERNS = {
+  fatal: /FATAL EXCEPTION/,
+  anr: /ANR in |am_anr|Application Not Responding/,
+  inputTimeout: /Input dispatching timed out/,
+  oom: /OutOfMemoryError|Out of memory/i,
+  nativeCrash: /Fatal signal|SIGSEGV|SIGABRT|backtrace:/,
+  onnx: /OrtException|onnxruntime[^\n]*(error|fail|exception)/i,
+  mlkit: /(MlKit|MLKit)[^\n]*(exception|failed|error)/i,
+  unhandledRejection: /Unhandled promise rejection|possible unhandled/i,
+  reactFatal: /ReactNativeJS[^\n]*(Fatal|FATAL)/,
+}
+const own = (line) =>
+  line.includes(PACKAGE) || /ReactNativeJS|ReactNative|onnx|MlKit|OrtException/i.test(line)
+const matches = {}
+const allLines = `${log}\n${crash}`.split(/\r?\n/)
+for (const [name, re] of Object.entries(PATTERNS)) {
+  matches[name] = allLines
+    .filter((l) => re.test(l) && (own(l) || name === 'fatal' || name === 'anr'))
+    .map((l) => l.slice(0, 220))
+}
+saveJson('journey-logcat.json', { lines: log.split(/\r?\n/).length, matches })
+saveJson('journey-network-audit.json', audit)
+const logClean = Object.values(matches).every((m) => m.length === 0)
+console.log(
+  `LOGCAT lines=${String(log.split(/\r?\n/).length)} matches=${JSON.stringify(Object.fromEntries(Object.entries(matches).map(([k, v]) => [k, v.length])))}`,
+)
+console.log(`NETWORK ${JSON.stringify(audit)}  ADB_RECOVERY ${JSON.stringify(recoveryState())}`)
+
+// ---- cleanup through the product's own reversal functions (never raw deletes) ----------------------
+function asUser(sql) {
+  return psql(
+    `begin;\nset local role authenticated;\nselect set_config('request.jwt.claims', json_build_object('sub', ${q(B.id)}, 'role', 'authenticated')::text, true);\n${sql}\ncommit;`,
+  )
+}
+let cleanup = 'not_run'
+try {
+  if (eurSale) asUser(`select public.void_sale(${q(eurSale)}::uuid, 'p185 journey cleanup');`)
+  if (nokSale) asUser(`select public.void_sale(${q(nokSale)}::uuid, 'p185 journey cleanup');`)
+  if (eurPurchase)
+    asUser(`select public.void_purchase(${q(eurPurchase)}::uuid, 'p185 journey cleanup');`)
+  if (acquisitionLot)
+    asUser(`select public.void_acquisition_lot(${q(acquisitionLot)}::uuid, 'p185 journey cleanup');`)
+  if (holdingId)
+    asUser(`select public.remove_holdings_from_portfolio(array[${q(holdingId)}::uuid]);`)
+  cleanup = 'void_sale, void_purchase, void_acquisition_lot, remove_holdings_from_portfolio'
+} catch (e) {
+  cleanup = `FAILED: ${String(e.message).slice(0, 300)}`
+}
+console.log(`CLEANUP ${cleanup}`)
+const left = psql(
+  `select (select count(*) from sales where user_id=${q(B.id)} and voided_at is null and created_at > now() - interval '3 hours') || '|' || (select count(*) from purchases where user_id=${q(B.id)} and voided_at is null and created_at > now() - interval '3 hours') || '|' || (select count(*) from acquisition_lots where user_id=${q(B.id)} and voided_at is null and created_at > now() - interval '3 hours')`,
+)
+console.log(`ACTIVE_AFTER_CLEANUP sales|purchases|lots = ${left}`)
+
+saveJson('journey-report.json', {
+  steps: report,
+  logClean,
+  cleanup,
+  activeAfterCleanup: left,
+  adbRecovery: recoveryState(),
+})
 const failed = report.filter((r) => r.status === 'FAIL').length
 console.log(
-  `\nJOURNEY STEPS ${String(report.length)}  PASS ${String(report.filter((r) => r.status === 'PASS').length)}  FAIL ${String(failed)}`,
+  `\nJOURNEY STEPS ${String(report.length)}  PASS ${String(report.filter((r) => r.status === 'PASS').length)}  FAIL ${String(failed)}  LOGCAT_CLEAN ${String(logClean)}`,
 )
-process.exit(failed > 0 ? 1 : 0)
+process.exit(failed > 0 || !logClean ? 1 : 0)
