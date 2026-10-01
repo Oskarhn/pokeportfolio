@@ -34,6 +34,8 @@ d8682e0 (released main)
           → P179  test/p179-dark-ui-finish-gate               107 migrations
             → P180  feat/p180-native-financial-reliability   107 migrations, device-verified
               → P181  feat/p181-native-device-accessibility-performance-gate   107 migrations
+              → P182  feat/p182-native-card-recognition                        107 migrations
+              → P184  release/p184-native-rc                                   107 migrations (current tip; NOT pushed — repository is PUBLIC)
                 (current native tip, 45ebfefa9a5038e20dd1999644eb96c1ae6352ef)
 ```
 

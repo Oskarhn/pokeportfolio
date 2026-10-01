@@ -83,7 +83,9 @@ pointers: `docs/PROJECT_STATE.json` → `local_candidates`.
 | Native dark UI (P178, on P177) | `feat/p178-dark-native-ui` | `084c7478…` | 107 | **LOCAL ONLY.** Dark-first "Utility structure + Foil identity" redesign; found the FX-rate write gap (fixed by P180) |
 | Native UI finish gate (P179, on P178) | `test/p179-dark-ui-finish-gate` | `486bb86b…` | 107 | **LOCAL ONLY.** Fixed a white-flash-on-launch defect + a Price Check token drift |
 | Native financial reliability (P180, on P179) | `feat/p180-native-financial-reliability` | `ecdb1208…` | 107 | **LOCAL ONLY — DEVICE-VERIFIED.** Closed the FX-rate write gap (real EUR sale, DB-confirmed); built a pending-write journal |
-| **Native product baseline (P181, on P180) — latest native candidate** | `feat/p181-native-device-accessibility-performance-gate` | `45ebfefa…` | 107 | **LOCAL ONLY — scoped device-accessibility/performance pass, not fully certified** (see §9). Fixed a real tab-label defect |
+| Native product baseline (P181, on P180) | `feat/p181-native-device-accessibility-performance-gate` | `45ebfefa…` | 107 | **LOCAL ONLY — scoped device-accessibility/performance pass, not fully certified** (see §9). Fixed a real tab-label defect |
+| Native on-device card recognition (P182, on P181) | `feat/p182-native-card-recognition` | `61547520…` | 107 | **LOCAL ONLY — core recognition device-proven** (release APK: ML Kit OCR + ONNX/DINO + shared index → real candidate); its hardening scope was not run |
+| **Native release candidate (P184, on P182) — latest native candidate** | `release/p184-native-rc` | `953aa017…` | 107 | **LOCAL ONLY — `PARTIAL_P184_NATIVE_RC_HARDENING`.** Scanner hardened and device-verified (24/24 adversarial, 0 false HIGH, 0 image egress, lifecycle/identity/background, perf + memory plateau, clean build); RC journey and 360dp accessibility text checks not fully green. See [docs/mobile/P184_NATIVE_RELEASE_CANDIDATE.md](docs/mobile/P184_NATIVE_RELEASE_CANDIDATE.md) |
 | Account deletion (P156) | `audit/p156-account-deletion-security-recovery` | `6b3ac903…` | 107 | **LOCAL ONLY** |
 | Deployment/secret gate, integrated (P163, supersedes P142+P160) | `fix/p163-integrated-ci-secret-gate` | `4f6be7be…` | 104 | **LOCAL ONLY — BLOCKED** on owner Cloudflare action + Actions billing capacity |
 | Scanner reliability hardening (P151) | `fix/p151-scanner-reliability-performance` | `4bd34bfd…` | 104 | **LOCAL ONLY** |
@@ -173,7 +175,7 @@ not introduce new money rules. It is still **local, unmerged, and not reviewed f
 - Released scanner content id: `f25fc05d569b7cca` (§1), unchanged by any local candidate.
 - P151 (scanner reliability hardening) fixes an OCR-worker resource leak (P130-10) — **local
   only**, zero index/model/threshold changes, zero new migrations.
-- Native (Android) scanner/recognition execution status: see
+- Native (Android) card recognition: on-device OCR + visual embedding over this same index, device-verified and hardened in P182/P184 (local only; see §9). Detail:
   [docs/CURRENT_STATE/NATIVE_MOBILE.md](docs/CURRENT_STATE/NATIVE_MOBILE.md) — do not assume it
   has been run on a real device or emulator without checking that file's citations.
 - Re-research before touching scanner internals: [docs/SCANNER_RESEARCH.md](docs/SCANNER_RESEARCH.md).
@@ -195,8 +197,7 @@ provisional/local, not a released feature.
 Full current-state detail: [docs/CURRENT_STATE/NATIVE_MOBILE.md](docs/CURRENT_STATE/NATIVE_MOBILE.md).
 Headline: React Native/Expo native app is a **local-only track**, never released, never pushed, but
 now extensively device-verified through a linear chain: **P173 → P175 → P177 → P178 → P179 → P180
-→ P181** (each phase builds directly on the previous tip). Latest candidate is **P181**
-(`45ebfefa9a5038e20dd1999644eb96c1ae6352ef`, 2026-09-27): a dark-first Foil UI (P178/P179), a
+→ P181** (each phase builds directly on the previous tip). P181 (`45ebfefa9a5038e20dd1999644eb96c1ae6352ef`, 2026-09-27) was the tip before P182/P184: a dark-first Foil UI (P178/P179), a
 device-verified financial write seam with a real non-NOK FX contract and a pending-write journal
 (P177/P180), and a representative (not exhaustive) device-accessibility/performance pass (P181).
 **Correction (P183, 2026-09-28):** P176 had labelled P173 `LOCAL_ONLY_NOT_DEVICE_VERIFIED` — this
@@ -210,14 +211,13 @@ covered — P181 drove a representative subset; performance/memory are each one 
 full battery; JPY has never been driven as an on-device purchase journey (proven at unit/Hermes/RPC
 level only); no final app icon is selected; no N1/N2 navigation decision has been made. No native
 runtime environment (Android SDK, emulator, physical device) is guaranteed present in any given
-session — verify before claiming a run happened. **Native card scanning/recognition on this lineage
-is unproven** — P173–P181 device-verify catalog browsing, Price Check and financial writes, not a
-fresh recognition run; treat it as pending until a session explicitly proves it (see
-`docs/PROJECT_STATE.json` → `scanner.native_card_recognition_status`). A branch named
-`feat/p182-native-card-recognition` exists locally — **its status is unknown; no `output_182.txt`
-exists as of this sync (2026-09-28).** It may be an in-progress parallel session. Do not read it,
-build on it, or describe it as complete until its own output file exists with an explicit success
-status.
+session — verify before claiming a run happened. **Native card recognition (P182 → P184):** P182 proved the core on a release APK (real image → real
+catalog candidate); P184 hardened it (header-first image safety, checkpoint / identity / background
+cancellation, severe-blur gate, banded collector-number extraction, loop and cache fixes) and
+verified it on device: 24/24 adversarial scenarios with 0 false HIGH, 0 image egress, warm median
+1.04 s, stable memory plateau, 36 scanner mutants killed. Latest native tip is **P184**
+(`953aa017d2f950e77d1319dd238dcd35d83b5ded`), local only, status `PARTIAL_P184_NATIVE_RC_HARDENING`: the full RC journey and the
+360dp/200 % accessibility text checks are not fully green and TalkBack was not driven.
 
 ---
 
@@ -308,9 +308,9 @@ scope reopening — see [docs/PLANNING_FREEZE.md](docs/PLANNING_FREEZE.md)):
    with P151/P157/P156 first (P159's conflict map).
 4. Pick an integration order for the remaining local candidates (§2) rather than merging
    piecemeal — P159's `NEXT_RELEASE_ORDER` has a reasoned proposal.
-5. Native mobile: the P173→P181 chain is now extensively device-verified (§9) — the remaining work
-   is closing the disclosed gaps (TalkBack, the full device matrix, JPY on-device) and proving
-   native card recognition, not re-verifying the write seam from scratch.
+5. Native mobile: the P173→P184 chain is device-verified (§9) — the remaining work is closing the
+   disclosed gaps (TalkBack, the full RC journey, 360dp accessibility text checks, JPY on-device,
+   arm64/physical device), not re-verifying the write seam or the scanner from scratch.
 6. Design: the owner has already picked P178's dark-first "Utility structure + Foil identity"
    direction — the remaining decisions are the app icon and N1/N2 navigation (§9/§11), still open.
 

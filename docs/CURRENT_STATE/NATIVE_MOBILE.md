@@ -23,13 +23,18 @@ in local worktrees under `C:\Users\Oskar\Documents\Pokemonapp-worktrees\`.
 | `feat/p178-dark-native-ui` | P178 | Dark-first "Utility structure + Foil identity" visual redesign (the owner's explicit hybrid choice from the P174 decision pack) — 22-token theme system, 45-component UI kit, real on-device JPY currency selector. Found the FX-rate gap: `create_purchase`/`create_sale` reject any non-NOK currency because the screens never supplied `p_fx_rate_to_nok`/`p_fx_rate_date`/`p_fx_source` (disclosed as a BLOCKER, fixed in P180). SHA `084c7478baa45b8c8c85d2001e0825e66cd81f20`, 107 migrations. |
 | `test/p179-dark-ui-finish-gate` | P179 | UI finish-gate review of P178. Found and fixed a real white-flash-on-cold-launch defect (missing `expo-splash-screen` config plugin) and a Price Check typography/corner-radius drift from the shared design tokens. Device-verified big-money rendering (2^53+1 and ~2.88×10^17 minor units, no truncation) and the null/zero distinction. SHA `486bb86bdebc0e8aba566267bc8218117ed44a29`, 107 migrations. |
 | `feat/p180-native-financial-reliability` | P180 | **Closed the P178/P179 FX-rate blocker.** New `fx-for-write.ts` resolves a rate via the same `fx-source.ts` Price Check already uses, fails closed with no usable rate, never silently substitutes 1. Device-verified end-to-end: a real EUR sale, real FX notice, real NOK reference, independently confirmed against the database. Also built a pending-write journal (SecureStore-backed, addresses the process-death-after-commit gap disclosed since P177) and fixed the raw-UUID-in-purchase-form display. SHA `ecdb120863f0d8478ed69216cb64272b734de2a7`, 107 migrations (no schema change — client/tooling fix only). |
-| `feat/p181-native-device-accessibility-performance-gate` | P181 | **Latest native candidate as of 2026-09-27.** Representative (not exhaustive) device-matrix pass: 360/390/430dp widths, font scale up to 200%, Activity recreation, one performance/memory snapshot, full-session ANR/crash sweep (zero). Found and fixed a real tab-label mid-word-break defect at 200% font scale. SHA `45ebfefa9a5038e20dd1999644eb96c1ae6352ef`, 107 migrations. **Scoped success, not full certification** — see "What is NOT verified" below; its own STATUS is `SUCCESS_P181_NATIVE_PRODUCT_BASELINE_GATE` with explicitly disclosed gaps, not `FULLY_CERTIFIED`. |
+| `feat/p181-native-device-accessibility-performance-gate` | P181 | **Previous native tip (2026-09-27).** Representative (not exhaustive) device-matrix pass: 360/390/430dp widths, font scale up to 200%, Activity recreation, one performance/memory snapshot, full-session ANR/crash sweep (zero). Found and fixed a real tab-label mid-word-break defect at 200% font scale. SHA `45ebfefa9a5038e20dd1999644eb96c1ae6352ef`, 107 migrations. **Scoped success, not full certification** — see "What is NOT verified" below; its own STATUS is `SUCCESS_P181_NATIVE_PRODUCT_BASELINE_GATE` with explicitly disclosed gaps, not `FULLY_CERTIFIED`. |
 
-Lineage: `P173 → P175 → P177 → P178 → P179 → P180 → P181` (each branch built directly on the
+| `feat/p182-native-card-recognition` | P182 | **Native on-device card recognition proven on a release APK** (ML Kit OCR + ONNX/DINO + shared index `f25fc05d569b7cca` → a real candidate); reliability scope not run. SHA `615475209a3342c0c627ceddc00fa37606c59fad`, 107 migrations. |
+| `release/p184-native-rc` | P184 | **Latest native candidate.** Hardens and device-verifies the scanner (24/24 adversarial, 0 false HIGH, 0 image egress, warm median 1.04 s, memory plateau, clean-install build in one pass). SHA `953aa017d2f950e77d1319dd238dcd35d83b5ded`, 107 migrations. `PARTIAL_P184_NATIVE_RC_HARDENING` — [details and gaps](../mobile/P184_NATIVE_RELEASE_CANDIDATE.md). |
+
+Lineage: `P173 → P175 → P177 → P178 → P179 → P180 → P181 → P182 → P184` (each branch built directly on the
 previous one's tip; ancestry confirmed via `git merge-base --is-ancestor` in each phase's own
 report). None of these branches is merged or pushed.
 
-## What is NOT verified (as of P181, the current tip)
+## What is NOT verified (as of P184, the current tip; P181-era gaps still apply unless noted)
+
+- **P184:** full RC journey 10 of 16 steps (later steps failed on driver navigation, not an observed app fault); 360dp/200 % result-screen text checks not green; **TalkBack** not driven; no arm64 / physical device.
 
 - **TalkBack itself was never run** (P181 used the `uiautomator` accessibility-tree proxy, not a
   real screen-reader pass).
@@ -56,7 +61,7 @@ report). None of these branches is merged or pushed.
 
 1. Verify the Android toolchain (SDK, emulator or device, `ANDROID_SERIAL`) is actually present in
    your session — P159 found it entirely absent in a clean session; P166/P167 had to install it.
-2. Start from P181's tip (`45ebfefa9a5038e20dd1999644eb96c1ae6352ef`) — it is the most
+2. Start from P184's tip (`953aa017d2f950e77d1319dd238dcd35d83b5ded`) — it is the most
    device-verified point in the lineage, but re-verify rather than assume if picking this up much
    later; do not build further on an unverified re-read of the tip.
 3. Check `docs/handover/STATE_RECONCILIATION.md` for the divergent local migration counts before

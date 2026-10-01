@@ -31,12 +31,20 @@
       "prompt": 181,
       "branch": "feat/p181-native-device-accessibility-performance-gate",
       "sha": "45ebfefa9a5038e20dd1999644eb96c1ae6352ef",
-      "builds_on_chain": ["173", "175", "177", "178", "179", "180", "181"],
+      "builds_on_chain": [
+        "173",
+        "175",
+        "177",
+        "178",
+        "179",
+        "180",
+        "181"
+      ],
       "local_migration_count": 107,
       "status": "LOCAL_ONLY",
       "device_verified": true,
       "fully_certified": false,
-      "notes": "Latest native candidate as of 2026-09-27. Dark-first Foil UI, FX-rate write contract closed (P180), pending-write journal implemented (P180), representative (not exhaustive) device-accessibility/performance gate passed (P181) with disclosed gaps: no TalkBack run, device matrix not exhaustive, performance/memory each one snapshot not a full battery, JPY never driven as an on-device purchase journey. See docs/CURRENT_STATE/NATIVE_MOBILE.md."
+      "notes": "Previous native tip (2026-09-27); superseded by native_rc. Dark-first Foil UI, FX-rate write contract closed (P180), pending-write journal implemented (P180), representative (not exhaustive) device-accessibility/performance gate passed (P181) with disclosed gaps: no TalkBack run, device matrix not exhaustive, performance/memory each one snapshot not a full battery, JPY never driven as an on-device purchase journey. See docs/CURRENT_STATE/NATIVE_MOBILE.md."
     },
     "account_deletion": {
       "prompt": 156,
@@ -49,7 +57,10 @@
       "prompt": 163,
       "branch": "fix/p163-integrated-ci-secret-gate",
       "sha": "4f6be7bee4a69f6c5807c7ab58c7c61ad7bca53e",
-      "supersedes": ["fix/p142-ci-gated-production-deploy", "fix/p160-predeploy-secret-guard"],
+      "supersedes": [
+        "fix/p142-ci-gated-production-deploy",
+        "fix/p160-predeploy-secret-guard"
+      ],
       "local_migration_count": 104,
       "status": "BLOCKED",
       "blocked_on": "owner Cloudflare Pages dashboard action; GitHub Actions billing/capacity"
@@ -81,6 +92,27 @@
       "sha": "aacd218dab5f13047e082039871e1916e699ecff",
       "local_migration_count": null,
       "status": "DESIGN_ONLY"
+    },
+    "native_card_recognition": {
+      "prompt": 182,
+      "branch": "feat/p182-native-card-recognition",
+      "sha": "615475209a3342c0c627ceddc00fa37606c59fad",
+      "builds_on": "native_ui_baseline",
+      "local_migration_count": 107,
+      "status": "LOCAL_ONLY",
+      "device_verified": true,
+      "notes": "Core recognition proven on a release APK; reliability scope not run (done by P184)."
+    },
+    "native_rc": {
+      "prompt": 184,
+      "branch": "release/p184-native-rc",
+      "sha": "953aa017d2f950e77d1319dd238dcd35d83b5ded",
+      "builds_on": "native_card_recognition",
+      "local_migration_count": 107,
+      "status": "LOCAL_ONLY",
+      "device_verified": true,
+      "fully_certified": false,
+      "notes": "PARTIAL_P184_NATIVE_RC_HARDENING. See docs/mobile/P184_NATIVE_RELEASE_CANDIDATE.md. Docs lineage P176/P183 cherry-picked (documentation only)."
     }
   },
   "database": {
@@ -90,8 +122,8 @@
   "scanner": {
     "content_id": "f25fc05d569b7cca",
     "web_scanner_status": "RELEASED_UNCHANGED",
-    "native_card_recognition_status": "PENDING_NOT_PROVEN_ON_DEVICE",
-    "native_card_recognition_note": "The native lineage (P173-P181) has device-verified financial writes and UI, but no session in that chain re-ran actual card-recognition/scanning on a device against the current tip. Do not treat native scanner recognition as complete unless a later session (e.g. P182, if it lands with an explicit success status) proves it."
+    "native_card_recognition_status": "DEVICE_VERIFIED_HARDENED_LOCAL_ONLY",
+    "native_card_recognition_note": "P182 proved core recognition on a release APK; P184 hardened and device-verified it (24/24 adversarial scenarios, 0 false HIGH, 0 image egress). Local only; full RC journey and 360dp accessibility text checks not fully green; TalkBack not driven. See docs/mobile/P184_NATIVE_RELEASE_CANDIDATE.md."
   },
   "production": {
     "in_real_user_use": false
@@ -133,6 +165,7 @@
     "state_reconciliation": "docs/handover/STATE_RECONCILIATION.md",
     "archive_index": "docs/handover/README.md",
     "git_publication_plan": "docs/CURRENT_STATE/GIT_PUBLICATION_PLAN.md",
-    "branch_pruning_plan": "docs/CURRENT_STATE/BRANCH_PRUNING_PLAN.md"
+    "branch_pruning_plan": "docs/CURRENT_STATE/BRANCH_PRUNING_PLAN.md",
+    "p184_native_rc": "docs/mobile/P184_NATIVE_RELEASE_CANDIDATE.md"
   }
 }
