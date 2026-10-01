@@ -272,6 +272,12 @@ function RecognitionSection({
     )
   }
   const preselected = scan.kind === 'high' ? scan.preselectedId : null
+  const confidenceLabel =
+    scan.kind === 'high'
+      ? 'High confidence'
+      : scan.confidence === 'MEDIUM'
+        ? 'Needs confirmation'
+        : 'Low confidence'
   const visibleCandidates = showAllCandidates ? scan.candidates : scan.candidates.slice(0, 1)
   return (
     <View style={{ gap: SPACE.md }} testID="p169-recognition-result">
@@ -279,13 +285,14 @@ function RecognitionSection({
         title={scan.kind === 'high' ? 'Likely match' : 'Possible matches'}
         testID="p169-recognition-heading"
       />
-      {scan.kind === 'review' ? (
-        <StatusBadge
-          label={scan.confidence === 'MEDIUM' ? 'Needs confirmation' : 'Low confidence'}
-          tone={scan.confidence === 'MEDIUM' ? 'warning' : 'neutral'}
-          testID="p169-recognition-confidence"
-        />
-      ) : null}
+      <StatusBadge
+        label={confidenceLabel}
+        tone={
+          scan.kind === 'high' ? 'positive' : scan.confidence === 'MEDIUM' ? 'warning' : 'neutral'
+        }
+        accessibilityLabel={`Match confidence: ${confidenceLabel}`}
+        testID="p169-recognition-confidence"
+      />
       {visibleCandidates.map((candidate: ScanCandidate) => (
         <CardRow
           key={candidate.candidateId}
@@ -296,6 +303,7 @@ function RecognitionSection({
             .filter((part): part is string => part !== null)
             .join(' · ')}
           onPress={() => onOpenCard(candidate.candidateId)}
+          wrapText
           accessibilityLabel={`${candidate.name}, ${candidate.setName ?? 'unknown set'}, ${candidate.collectorNumber ?? 'no printed number'}`}
         />
       ))}

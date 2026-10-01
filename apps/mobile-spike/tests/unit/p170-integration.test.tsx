@@ -609,12 +609,16 @@ describe('the integrated client: what Price Check can and cannot send', () => {
 })
 
 describe('touch targets on the integrated screens (48 dp floor)', () => {
+  // P185: the sweep used to query role="button" only, so radios (printing and currency choices) were
+  // never measured. Every interactive role an app-owned control can have is swept now.
+  const SWEPT_ROLES = ['button', 'radio', 'checkbox', 'switch'] as const
   function undersized(): string[] {
+    expect(SWEPT_ROLES).toEqual(expect.arrayContaining(['button', 'radio']))
     const bad: string[] = []
     // The tab bar buttons are sized by the bar (tabBarHeight, pinned in p167-platform.test.tsx).
-    const nodes = screen
-      .queryAllByRole('button')
-      .filter((n) => !String(n.props.testID ?? '').startsWith('tab-'))
+    const nodes = SWEPT_ROLES.flatMap((role) => screen.queryAllByRole(role)).filter(
+      (n) => !String(n.props.testID ?? '').startsWith('tab-'),
+    )
     for (const node of nodes) {
       const style = Object.assign(
         {},
@@ -652,6 +656,7 @@ describe('touch targets on the integrated screens (48 dp floor)', () => {
     expect(undersized()).toEqual([])
     await fireEvent.press(screen.getByTestId('p169-hit-c1'))
     await screen.findByTestId('p169-printing-choice')
+    expect(screen.queryAllByRole('radio').length).toBeGreaterThanOrEqual(2) // the sweep really saw them
     expect(undersized()).toEqual([])
     await act(async () => {
       await fireEvent.press(screen.getByTestId('p169-variant-v1'))

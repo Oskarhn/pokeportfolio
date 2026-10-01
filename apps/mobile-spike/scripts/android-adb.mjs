@@ -6,7 +6,10 @@
  * `screencap` writes PNGs. Nothing here prints a credential: typed text is passed to adb only.
  */
 import { spawnSync } from 'node:child_process'
+import { createRequire } from 'node:module'
 import { join } from 'node:path'
+
+const { createRecovery } = createRequire(import.meta.url)('./adb-recovery.cjs')
 
 const sdk = process.env.ANDROID_HOME ?? join(process.env.LOCALAPPDATA ?? '', 'Android', 'Sdk')
 export const ADB = join(sdk, 'platform-tools', process.platform === 'win32' ? 'adb.exe' : 'adb')
@@ -37,8 +40,50 @@ function assertSingleTarget() {
 }
 assertSingleTarget()
 
+const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+const rawRun = (args) => {
+  const r = spawnSync(ADB, args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+  return { status: r.status, stdout: String(r.stdout ?? ''), stderr: String(r.stderr ?? '') }
+}
+
+// P185: a lost adb server (P184's journey died on one) is recovered once, bounded, and only after the
+// SAME emulator is proven again (serial, AVD name, boot id). Needs ANDROID_SERIAL; see adb-recovery.cjs.
+let recovery = null
+function recoveryOrNull() {
+  const serial = process.env.ANDROID_SERIAL
+  if (!serial) return null
+  recovery ??= createRecovery({
+    run: rawRun,
+    sleepSync,
+    serial,
+    expectedAvd: process.env.ANDROID_AVD_NAME || undefined,
+    log: (line) => console.error(line),
+  })
+  return recovery
+}
+
+/** Records the identity of the device this run owns; later recoveries must match it exactly. */
+export function establishIdentity() {
+  const rec = recoveryOrNull()
+  if (rec === null) throw new Error('establishIdentity needs ANDROID_SERIAL')
+  return rec.verifyIdentity({ remember: true })
+}
+export const recoveryState = () => ({ ...(recoveryOrNull()?.state ?? {}) })
+
 export function adb(args, { encoding = 'utf8', allowFail = false } = {}) {
-  const r = spawnSync(ADB, args, { encoding, maxBuffer: 64 * 1024 * 1024 })
+  let r = spawnSync(ADB, args, { encoding, maxBuffer: 64 * 1024 * 1024 })
+  const rec = recoveryOrNull()
+  if (
+    rec !== null &&
+    rec.shouldRecover({
+      status: r.status,
+      stdout: encoding === 'buffer' ? '' : r.stdout,
+      stderr: r.stderr,
+    })
+  ) {
+    rec.recover(`${args[0]} ${args[1] ?? ''}`)
+    r = spawnSync(ADB, args, { encoding, maxBuffer: 64 * 1024 * 1024 })
+  }
   if (r.status !== 0 && !allowFail) {
     throw new Error(`adb ${args[0]} ${args[1] ?? ''} failed: ${String(r.stderr).slice(0, 300)}`)
   }
@@ -74,14 +119,24 @@ export function parseNodes(xml) {
       pkg: attrs.package ?? '',
       clickable: attrs.clickable === 'true',
       focusable: attrs.focusable === 'true',
+      enabled: attrs.enabled !== 'false',
+      selected: attrs.selected === 'true',
+      checked: attrs.checked === 'true',
+      checkable: attrs.checkable === 'true',
       bounds: b ? { x1: +b[1], y1: +b[2], x2: +b[3], y2: +b[4] } : null,
     })
   }
   return nodes
 }
 
-export function dump() {
-  const xml = adb(['exec-out', 'uiautomator', 'dump', '/dev/tty'], { allowFail: true })
+/** The live view tree. uiautomator sometimes returns nothing mid-animation: retried, bounded. */
+export function dump({ tries = 3 } = {}) {
+  let xml = ''
+  for (let i = 0; i < tries; i += 1) {
+    xml = adb(['exec-out', 'uiautomator', 'dump', '/dev/tty'], { allowFail: true })
+    if (xml.includes('<hierarchy')) break
+    sleepSync(400)
+  }
   const end = xml.lastIndexOf('</hierarchy>')
   return parseNodes(end === -1 ? xml : xml.slice(0, end + 12))
 }

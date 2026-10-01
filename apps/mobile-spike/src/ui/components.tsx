@@ -893,7 +893,7 @@ export function SegmentedControl<T extends string>({
             key={option.value}
             testID={option.testID}
             accessibilityRole="radio"
-            accessibilityState={{ selected }}
+            accessibilityState={{ selected, checked: selected }}
             accessibilityLabel={option.label}
             onPress={() => onChange(option.value)}
             style={{
@@ -1010,10 +1010,13 @@ export function StatusBadge({
   label,
   tone = 'neutral',
   testID,
+  accessibilityLabel,
 }: {
   label: string
   tone?: 'positive' | 'negative' | 'warning' | 'info' | 'neutral'
   testID?: string
+  /** Spoken meaning when the visible label alone is not enough (colour is never the message). */
+  accessibilityLabel?: string
 }) {
   const t = useTheme()
   const color =
@@ -1029,6 +1032,8 @@ export function StatusBadge({
   return (
     <View
       testID={testID}
+      accessible={accessibilityLabel !== undefined ? true : undefined}
+      accessibilityLabel={accessibilityLabel}
       style={{
         alignSelf: 'flex-start',
         borderWidth: StyleSheet.hairlineWidth,
@@ -1131,6 +1136,7 @@ export function CardRow({
   testID,
   height,
   accessibilityLabel,
+  wrapText,
 }: {
   title: string
   subtitle: string
@@ -1142,8 +1148,11 @@ export function CardRow({
   testID?: string
   height?: number
   accessibilityLabel?: string
+  /** Authoritative identity (a recognised card) is never ellipsized: it wraps instead. */
+  wrapText?: boolean
 }) {
   const t = useTheme()
+  const lines = wrapText === true ? undefined : 1
   return (
     <Pressable
       testID={testID}
@@ -1166,14 +1175,14 @@ export function CardRow({
       <CardArtwork size="sm" finish={finish} />
       <View style={{ flex: 1 }}>
         <Text
-          numberOfLines={1}
+          numberOfLines={lines}
           maxFontSizeMultiplier={1.4}
           style={{ color: t.textPrimary, ...TYPE.bodyStrong }}
         >
           {title}
         </Text>
         <Text
-          numberOfLines={1}
+          numberOfLines={lines}
           maxFontSizeMultiplier={1.4}
           style={{ color: t.textSecondary, ...TYPE.caption }}
         >

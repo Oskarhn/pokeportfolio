@@ -131,6 +131,15 @@ const STACKS = {
     mockPort: 55499,
     withWorktreeMigrations: true,
   },
+  // P185: native RC closure, own stack/AVD/ports. API 55821, mock 55500 (clear of every port
+  // above). Same 107 local migrations as P177-P184 (this worktree adds none).
+  p185: {
+    projectId: 'pokeportfolio-p185-app',
+    portShift: 500,
+    dir: 'p185',
+    mockPort: 55500,
+    withWorktreeMigrations: true,
+  },
 }
 
 export function stackOf(argv) {
