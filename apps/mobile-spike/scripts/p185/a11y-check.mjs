@@ -23,6 +23,7 @@ import './env.mjs'
 import { join } from 'node:path'
 import { amStart, openPhotoScreen } from '../android-p167-lib.mjs'
 import {
+  adb,
   byId,
   dump,
   ensureSignedIn,
@@ -31,7 +32,8 @@ import {
   pickNewest,
   pushImage,
   saveJson,
-  scanTraces,
+  scanMark,
+  scansSince,
   shell,
   shot,
   sleep,
@@ -115,7 +117,7 @@ const SCENARIOS = [
     outcomeId: 'p169-recognition-no-match',
     tier: 'NO_MATCH',
     texts: [['no match', /did not match a card/]],
-    controls: ['p169-photo-choose-manually'],
+    controls: ['p169-choose-manually'],
   },
   {
     name: 'blur-abstain',
@@ -128,7 +130,7 @@ const SCENARIOS = [
 ]
 
 async function scanAndSweep(cfgName, sc) {
-  const before = scanTraces().length
+  const before = scanMark()
   await pushImage(join(fixtureDir, sc.file), `a11y-${cfgName}`)
   await pickNewest()
   const trace = await nextScanTrace(before)
@@ -150,6 +152,7 @@ const clean = (a) =>
     a.offscreenX.length ===
   0
 
+adb(['logcat', '-G', '16M'], { allowFail: true })
 amStart()
 await ensureSignedIn(users.b)
 
@@ -228,7 +231,7 @@ for (const cfg of CONFIGS) {
 
   // --- card screen with printing radios: sizes, names, selected state after a choice
   {
-    const before = scanTraces().length
+    const before = scanMark()
     await pushImage(join(fixtureDir, 'f17-p169-charizard.jpg'), `a11y-${cfg.name}-card`)
     await pickNewest()
     await nextScanTrace(before)
@@ -271,9 +274,9 @@ for (const cfg of CONFIGS) {
       onScreen: (i) => shot(`a11y-${cfg.name}-card-chosen-${String(i)}${TAG}`),
     })
     const after = auditSweep(afterDumps, { dpi: scr.dpi, width: scr.width })
-    const afterRadios = after.all.filter(
-      (n) => n.cls === 'android.widget.RadioButton' && idOf(n).startsWith('p169-variant-'),
-    )
+    // After a choice the printing is stated in words and the price source is a radio pair
+    // ("Provider prices" / "Stored snapshot"): exactly one of them is checked.
+    const afterRadios = after.all.filter((n) => n.cls === 'android.widget.RadioButton')
     const checkedCount = afterRadios.filter((n) => n.checked || n.selected).length
     const printingWords = textSeen(after, /Printing you chose/)
     record(

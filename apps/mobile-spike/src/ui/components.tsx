@@ -832,13 +832,23 @@ export function SwitchRow({
   disabled?: boolean
 }) {
   const t = useTheme()
+  // The whole row is the switch: a native Switch alone is only ~46 x 27 dp, below the 48 dp touch
+  // floor, and its label would not be part of its name. The row carries the role, the name and the
+  // checked state; the drawn Switch is a non-interactive picture of that state.
   return (
-    <View
+    <Pressable
+      testID={testID}
+      accessibilityRole="switch"
+      accessibilityLabel={label}
+      accessibilityState={{ checked: value, disabled: disabled === true }}
+      disabled={disabled}
+      onPress={() => onValueChange(!value)}
       style={{
         minHeight: MIN_TOUCH,
         flexDirection: 'row',
         alignItems: 'center',
         gap: SPACE.md,
+        opacity: disabled === true ? 0.5 : 1,
       }}
     >
       <View style={{ flex: 1 }}>
@@ -848,15 +858,15 @@ export function SwitchRow({
         ) : null}
       </View>
       <Switch
-        testID={testID}
         value={value}
-        onValueChange={onValueChange}
         disabled={disabled}
-        accessibilityLabel={label}
+        pointerEvents="none"
+        accessible={false}
+        importantForAccessibility="no-hide-descendants"
         trackColor={{ false: t.borderStrong, true: t.accentSoft }}
         thumbColor={value ? t.accent : t.textDisabled}
       />
-    </View>
+    </Pressable>
   )
 }
 

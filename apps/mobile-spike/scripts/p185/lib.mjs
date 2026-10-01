@@ -89,6 +89,13 @@ export function traces() {
 }
 
 export const scanTraces = () => traces().filter((t) => t.kind === 'scan')
+/**
+ * A position in the scan sequence that survives the logcat ring buffer wrapping (P185: counting
+ * traces broke after a few dozen uiautomator dumps pushed old lines out). Scan ids only grow
+ * within one app process; every driver keeps one process for the span it measures.
+ */
+export const scanMark = () => scanTraces().reduce((m, t) => Math.max(m, t.scanId ?? 0), 0)
+export const scansSince = (mark) => scanTraces().filter((t) => (t.scanId ?? 0) > mark)
 export const sessionTraces = () => traces().filter((t) => t.kind === 'session')
 
 // ---- proxy control ----------------------------------------------------------------------------
@@ -291,14 +298,10 @@ export async function waitRecognition(timeoutMs = 90000) {
 }
 
 /** Newest FINISHED (non-cancelled) scan trace recorded after `sinceCount` scan traces. */
-export async function nextScanTrace(
-  sinceCount,
-  { timeoutMs = 60000, includeCancelled = false } = {},
-) {
+export async function nextScanTrace(mark, { timeoutMs = 60000, includeCancelled = false } = {}) {
   const start = Date.now()
   for (;;) {
-    const all = scanTraces()
-    const fresh = all.slice(sinceCount).filter((t) => includeCancelled || t.outcome !== 'cancelled')
+    const fresh = scansSince(mark).filter((t) => includeCancelled || t.outcome !== 'cancelled')
     if (fresh.length > 0) return fresh[fresh.length - 1]
     if (Date.now() - start > timeoutMs) throw new Error('no scan trace appeared')
     await sleep(400)
@@ -307,7 +310,7 @@ export async function nextScanTrace(
 
 /** Runs one fixture end to end and returns { trace, ui }. */
 export async function scanFixture(fileName, { label } = {}) {
-  const before = scanTraces().length
+  const before = scanMark()
   await pushImage(fileName, label ?? 'fx')
   await pickNewest()
   const ui = await waitRecognition()

@@ -252,9 +252,24 @@ export async function tapTestId(
   sel,
   { scroll = true, timeoutMs = 20000, label = describe(sel) } = {},
 ) {
-  await waitForNode(sel, { timeoutMs, label })
-  const { node } = scroll ? await bringIntoView(sel, { label }) : dumpAndFind(sel)
-  if (!node) throw new Error(`vanished before the tap: ${label}`)
+  let node
+  if (scroll) {
+    // The target may be below the fold (a dump holds only what is on screen): scroll toward it,
+    // and keep trying until the screen has had time to render it.
+    const start = Date.now()
+    for (;;) {
+      try {
+        node = (await bringIntoView(sel, { label })).node
+        break
+      } catch (error) {
+        if (Date.now() - start > timeoutMs) throw error
+        await sleep(500)
+      }
+    }
+  } else {
+    node = (await waitForNode(sel, { timeoutMs, label })).node
+    node = dumpAndFind(sel).node ?? node
+  }
   tapNode(node) // bounds are from the dump taken a moment ago, after the last scroll
   return node
 }

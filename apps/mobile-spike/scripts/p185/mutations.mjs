@@ -97,6 +97,27 @@ const MUTANTS = [
     to: '      onPress={onPress}\n      style={style}',
   },
   {
+    id: 'N11',
+    name: 'the switch row loses its checked state (a screen reader cannot tell on from off)',
+    file: COMPONENTS,
+    from: 'accessibilityState={{ checked: value, disabled: disabled === true }}',
+    to: 'accessibilityState={{ disabled: disabled === true }}',
+  },
+  {
+    id: 'N12',
+    name: 'the switch row shrinks back to the native Switch size (below 48 dp)',
+    file: COMPONENTS,
+    from: "minHeight: MIN_TOUCH,\n        flexDirection: 'row',\n        alignItems: 'center',\n        gap: SPACE.md,\n        opacity:",
+    to: "minHeight: 27,\n        flexDirection: 'row',\n        alignItems: 'center',\n        gap: SPACE.md,\n        opacity:",
+  },
+  {
+    id: 'N13',
+    name: 'a disabled switch stays actionable (the disabled prop is dropped from the row)',
+    file: COMPONENTS,
+    from: 'disabled={disabled}\n      onPress={() => onValueChange(!value)}',
+    to: 'onPress={() => onValueChange(!value)}',
+  },
+  {
     id: 'N10',
     name: 'the touch-target sweep forgets radios again (role=button only)',
     file: 'tests/unit/p170-integration.test.tsx',

@@ -35,14 +35,6 @@ export function roleOf(n) {
   return n.clickable ? 'clickable' : 'other'
 }
 
-function visibleFraction(b, area) {
-  const w = b.x2 - b.x1
-  const h = b.y2 - b.y1
-  if (w <= 0 || h <= 0) return 0
-  const ix = Math.max(0, Math.min(b.x2, area.x2) - Math.max(b.x1, area.x1))
-  const iy = Math.max(0, Math.min(b.y2, area.y2) - Math.max(b.y1, area.y1))
-  return (ix * iy) / (w * h)
-}
 const intersects = (a, b) => {
   const ix = Math.min(a.x2, b.x2) - Math.max(a.x1, b.x1)
   const iy = Math.min(a.y2, b.y2) - Math.max(a.y1, b.y1)
@@ -72,7 +64,7 @@ export function viewportOf(nodes, screenW) {
 export function auditSweep(dumps, { dpi, width, minDp = 48 }) {
   const dp = dpi / 160
   const minPx = Math.floor((minDp - 1) * dp) // 1 dp of rounding tolerance
-  const best = new Map() // key -> { node, fraction, dumpIndex }
+  const best = new Map() // key -> best instance: interior (not cut by an edge), then largest
   const all = new Map() // key -> first node seen (any visibility), for text lookups
   dumps.forEach((nodes, dumpIndex) => {
     const vp = viewportOf(nodes, width)
@@ -81,20 +73,25 @@ export function auditSweep(dumps, { dpi, width, minDp = 48 }) {
       const key = `${idOf(n)}|${n.text}|${n.desc}`
       if (!all.has(key)) all.set(key, { node: n, dumpIndex })
       if (!isInteractive(n)) continue
-      if (vp.tabTop !== null && idOf(n).startsWith('tab-')) continue
-      const fraction = visibleFraction(n.bounds, vp)
+      if (idOf(n).startsWith('tab-')) continue
+      // uiautomator reports bounds CLIPPED to what is visible, so a node cut by the header or the
+      // tab bar looks smaller than it is. Judge each node where it is not cut by an edge.
+      const b = n.bounds
+      const interior = b.y1 >= vp.y1 + 2 && b.y2 <= vp.y2 - 2 && b.x1 >= 0 && b.x2 <= width
+      const area = (b.x2 - b.x1) * (b.y2 - b.y1)
       const cur = best.get(key)
-      if (!cur || fraction > cur.fraction) best.set(key, { node: n, fraction, dumpIndex, vp })
+      const better =
+        !cur || (interior && !cur.interior) || (interior === cur.interior && area > cur.area)
+      if (better) best.set(key, { node: n, interior, area, dumpIndex, vp })
     }
   })
-  const interactive = [...best.values()].filter(({ node }) => !idOf(node).startsWith('tab-'))
-  const unreachable = interactive.filter((x) => x.fraction < 0.99).map((x) => idOf(x.node))
+  const dimsOk = ({ node }) =>
+    node.bounds.x2 - node.bounds.x1 >= minPx && node.bounds.y2 - node.bounds.y1 >= minPx
+  const interactive = [...best.values()]
+  // Reachable: seen uncut somewhere, or at least wholly 48 dp even while cut (it can be touched).
+  const unreachable = interactive.filter((x) => !x.interior && !dimsOk(x)).map((x) => idOf(x.node))
   const small = interactive
-    .filter(({ node, fraction }) => {
-      if (fraction < 0.99) return false // reported as unreachable instead
-      const b = node.bounds
-      return b.x2 - b.x1 < minPx || b.y2 - b.y1 < minPx
-    })
+    .filter((x) => x.interior && !dimsOk(x))
     .map(({ node }) => ({
       id: idOf(node),
       role: roleOf(node),
@@ -112,7 +109,7 @@ export function auditSweep(dumps, { dpi, width, minDp = 48 }) {
   const obstructed = []
   dumps.forEach((nodes, i) => {
     const vp = viewportOf(nodes, width)
-    const here = interactive.filter((x) => x.dumpIndex === i && x.fraction >= 0.99)
+    const here = interactive.filter((x) => x.dumpIndex === i && x.interior)
     for (let a = 0; a < here.length; a += 1) {
       if (vp.tabTop !== null && here[a].node.bounds.y2 > vp.tabTop + 4)
         obstructed.push(idOf(here[a].node))

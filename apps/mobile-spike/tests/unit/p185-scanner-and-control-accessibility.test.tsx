@@ -9,7 +9,7 @@ import type {
 } from '../../src/features/price-check/recognition'
 import { P169_SCREENS } from '../../src/features/screens'
 import type { PhotoOutcome } from '../../src/photo/photo-store'
-import { PrimaryButton, RadioRow, SegmentedControl } from '../../src/ui/components'
+import { PrimaryButton, RadioRow, SegmentedControl, SwitchRow } from '../../src/ui/components'
 import { RuntimeProvider } from '../../src/ui/runtime-context'
 import { MIN_TOUCH } from '../../src/ui/theme'
 import { flush, harness, session } from '../support/fakes'
@@ -203,7 +203,8 @@ describe('radios: touch target, name, selected state; disabled controls are not 
       expect(styleOf(r).minHeight).toBeGreaterThanOrEqual(MIN_TOUCH)
       expect(r.props.accessibilityLabel).toMatch(/Alpha|Beta/)
     }
-    const state = (id: string): unknown => screen.getByTestId(id).props.accessibilityState as unknown
+    const state = (id: string): unknown =>
+      screen.getByTestId(id).props.accessibilityState as unknown
     expect(state('seg-a')).toMatchObject({ selected: false, checked: false })
     expect(state('seg-b')).toMatchObject({ selected: true, checked: true })
   })
@@ -240,5 +241,43 @@ describe('radios: touch target, name, selected state; disabled controls are not 
     expect(b.props.accessibilityState).toMatchObject({ disabled: true })
     await fireEvent.press(b)
     expect(onPress).not.toHaveBeenCalled()
+  })
+})
+
+describe('switch: the whole row is the control (a native Switch alone is below 48 dp)', () => {
+  it('is a switch >= 48 dp, named by its label, with its checked state, and toggles on press', async () => {
+    const onValueChange = jest.fn()
+    await render(
+      <SafeAreaProvider>
+        <SwitchRow
+          testID="sw"
+          label="I know what I paid"
+          value={false}
+          onValueChange={onValueChange}
+        />
+      </SafeAreaProvider>,
+    )
+    const row = screen.getByTestId('sw')
+    expect(row.props.accessibilityRole).toBe('switch')
+    expect(row.props.accessibilityLabel).toBe('I know what I paid')
+    expect(row.props.accessibilityState).toMatchObject({ checked: false })
+    expect(styleOf(row).minHeight).toBeGreaterThanOrEqual(MIN_TOUCH)
+    await fireEvent.press(row)
+    expect(onValueChange).toHaveBeenCalledWith(true)
+  })
+
+  it('a disabled switch announces disabled and does not toggle', async () => {
+    const onValueChange = jest.fn()
+    await render(
+      <SafeAreaProvider>
+        <SwitchRow testID="sw" label="Locked" value disabled onValueChange={onValueChange} />
+      </SafeAreaProvider>,
+    )
+    expect(screen.getByTestId('sw').props.accessibilityState).toMatchObject({
+      checked: true,
+      disabled: true,
+    })
+    await fireEvent.press(screen.getByTestId('sw'))
+    expect(onValueChange).not.toHaveBeenCalled()
   })
 })
