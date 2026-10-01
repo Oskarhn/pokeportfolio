@@ -253,6 +253,7 @@ describe('decoder prewarm through the port', () => {
     const decode = jest.fn()
     createNativeCardRecognitionPort(depsWithDecode(decode))
     await flush(5)
+    await new Promise((resolve) => setTimeout(resolve, 25))
     expect(decode).not.toHaveBeenCalled()
   })
 })

@@ -115,7 +115,10 @@ function setup(overrides: Partial<RecognitionPipelineDeps> = {}) {
 describe('scanner prewarm (P186)', () => {
   it('does nothing at construction: no model work (never at app launch)', async () => {
     const s = setup()
+    // A real timer tick as well as microtasks: a prewarm scheduled with setTimeout(0) at construction
+    // must not slip through.
     await flush(10)
+    await new Promise((resolve) => setTimeout(resolve, 25))
     expect(s.created.n).toBe(0)
     expect(s.events).toEqual([])
   })
