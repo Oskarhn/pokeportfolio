@@ -22,6 +22,8 @@ on those two points. The spike lives in [`apps/mobile-spike`](../../apps/mobile-
 | [P173_INTEGRATED_NATIVE_ANDROID](P173_INTEGRATED_NATIVE_ANDROID.md) | The two tracks integrated in one app: graph proof, reconciliation, device evidence, fixes, limits |
 | [P175_NATIVE_FINANCIAL_WRITES](P175_NATIVE_FINANCIAL_WRITES.md) | The first native financial writes: migration integration plan, the identity-leased write seam, what's implemented, scope boundaries, test evidence |
 | [P184_NATIVE_RELEASE_CANDIDATE](P184_NATIVE_RELEASE_CANDIDATE.md) | Native scanner hardening and device verification (adversarial suite, lifecycle, privacy, performance, memory, size), build-workaround audit, disclosed gaps |
+| [P185_NATIVE_RC_CLOSURE](P185_NATIVE_RC_CLOSURE.md) | The 20-step release journey, the 360 dp / 200 % accessibility defects found and fixed, adb recovery, manual valuation and NOK/EUR sales verified |
+| [P186_ANDROID_PACKAGING_PERFORMANCE](P186_ANDROID_PACKAGING_PERFORMANCE.md) | Android App Bundle and per-ABI delivery sizes, R8, the scanner prewarm (cold photo → result −35 %), memory attribution, the build recipe and every workaround with its removal condition |
 | [P177_DOC_CORRECTIONS](P177_DOC_CORRECTIONS.md) | Native financial runtime verification: device+DB proof for all five write flows, the Edge Runtime DB-suite result, corrections to prior status labels |
 | [P178_STITCH_IMPLEMENTATION](P178_STITCH_IMPLEMENTATION.md) | Dark-first design system (Utility structure + Foil identity), the JPY currency-selector fix, and a screen-by-screen comparison against the accepted P174 Stitch references |
 
