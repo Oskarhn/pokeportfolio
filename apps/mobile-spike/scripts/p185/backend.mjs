@@ -85,7 +85,7 @@ function containers() {
 const command = process.argv[2]
 if (command === 'start') {
   const m = prepare(stack)
-  if (stack.name === 'p185db') {
+  if (stack.name.endsWith('db')) {
     // The real invitation-redemption function (+ its helper), served from this checkout.
     const from = join(repoRoot, 'supabase', 'functions', 'redeem-invitation')
     const to = join(stack.workdir, 'supabase', 'functions', 'redeem-invitation')
@@ -116,7 +116,7 @@ if (command === 'start') {
     SPIKE_BACKEND_PORT_OFFSET: String(PORT_OFFSET),
   }
   tsx('apps/mobile-spike/scripts/seed-local-backend.mts', [], env)
-  tsx('apps/mobile-spike/scripts/p169/seed.mts', ['--stack=p185'], env)
+  tsx('apps/mobile-spike/scripts/p169/seed.mts', [`--stack=${stack.name}`], env)
   const fx = JSON.parse(readFileSync(join(rootDir, 'fixture.json'), 'utf8'))
   psql(`
 update public.profiles set use_eu_pricing = true where id = '${fx.users.a.id}'::uuid;
@@ -139,7 +139,7 @@ select cron.alter_job(jobid, active := false) from cron.job where jobname in ('m
     // which audits every request for image egress and can hold/drop a response (lost-response
     // test) before forwarding to the API. src/config/backend-config.ts rewrites 127.0.0.1 to the
     // Android emulator's 10.0.2.2 host alias at runtime.
-    appUrl: 'http://127.0.0.1:55831',
+    appUrl: `http://127.0.0.1:${process.env.P185_PROXY_PORT ?? '55831'}`,
   }
   mkdirSync(stack.workdir, { recursive: true })
   writeFileSync(join(stack.workdir, 'public-env.json'), JSON.stringify(pub, null, 2))

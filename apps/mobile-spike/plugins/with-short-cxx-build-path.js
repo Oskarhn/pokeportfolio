@@ -16,8 +16,16 @@
  * P184: the staging directory is keyed by a short hash of THIS project's root (was a single shared
  * `~/.p182-cxx-build`), so two checkouts or worktrees built on one machine never share, or corrupt,
  * each other's CMake state. The home directory comes from `os.homedir()`, never a literal path.
+ *
+ * P186: the same guard trips in the LIBRARY modules that build their own native code
+ * (onnxruntime-react-native's `onnxruntimejsi` target): their `.cxx` directory sits inside
+ * node_modules and CMake mirrors the absolute source path under CMakeFiles/, so the object path
+ * exceeds Windows' 260 characters. It passes for x86_64 and fails for arm64-v8a (three characters
+ * longer) at this checkout depth, so a release bundle that carries arm64 needs it. The root project
+ * now gives every Android library module that declares a CMake build its own short staging
+ * directory under the same per-project hash.
  */
-const { withAppBuildGradle } = require('expo/config-plugins')
+const { withAppBuildGradle, withProjectBuildGradle } = require('expo/config-plugins')
 const { createHash } = require('node:crypto')
 const os = require('node:os')
 
@@ -43,10 +51,45 @@ android {
   return contents.replace(/android\s*\{/, block.trimStart())
 }
 
+const LIBRARY_MARKER =
+  'short .cxx build path for library modules (Windows CMAKE_OBJECT_PATH_MAX workaround)'
+
+/**
+ * Appends to the root build.gradle a block that points every Android library module's CMake
+ * staging directory at `<stagingDir>/<module name>` (only modules that declare a CMake build).
+ */
+function injectLibraryStagingDirs(contents, stagingDir) {
+  if (contents.includes(LIBRARY_MARKER)) return contents
+  const block = `
+// ${LIBRARY_MARKER}
+subprojects { subproject ->
+    def shortCxx = {
+        def android = subproject.extensions.findByName('android')
+        if (android != null && subproject.plugins.hasPlugin('com.android.library')) {
+            def cmake = android.externalNativeBuild.cmake
+            if (cmake.path != null) {
+                cmake.buildStagingDirectory = new File("${stagingDir}/" + subproject.name)
+            }
+        }
+    }
+    // A module that is already evaluated cannot take afterEvaluate (Gradle refuses it).
+    if (subproject.state.executed) shortCxx() else subproject.afterEvaluate(shortCxx)
+}
+`
+  return contents.endsWith('\n') ? contents + block : `${contents}\n${block}`
+}
+
 function withShortCxxBuildPath(config) {
   if (os.platform() !== 'win32') return config
-  return withAppBuildGradle(config, (cfg) => {
+  const withApp = withAppBuildGradle(config, (cfg) => {
     cfg.modResults.contents = injectStagingDir(
+      cfg.modResults.contents,
+      stagingDirFor(cfg.modRequest.projectRoot),
+    )
+    return cfg
+  })
+  return withProjectBuildGradle(withApp, (cfg) => {
+    cfg.modResults.contents = injectLibraryStagingDirs(
       cfg.modResults.contents,
       stagingDirFor(cfg.modRequest.projectRoot),
     )
@@ -57,4 +100,6 @@ function withShortCxxBuildPath(config) {
 module.exports = withShortCxxBuildPath
 module.exports.stagingDirFor = stagingDirFor
 module.exports.injectStagingDir = injectStagingDir
+module.exports.injectLibraryStagingDirs = injectLibraryStagingDirs
 module.exports.MARKER = MARKER
+module.exports.LIBRARY_MARKER = LIBRARY_MARKER

@@ -46,7 +46,8 @@ export {
 
 const here = dirname(fileURLToPath(import.meta.url))
 export const appRoot = resolve(here, '..', '..')
-export const outDir = join(appRoot, '.build', 'p185-evidence')
+// P186 reuses these drivers under its own evidence directory, database container and proxy port.
+export const outDir = join(appRoot, '.build', process.env.P185_EVIDENCE_DIR ?? 'p185-evidence')
 mkdirSync(outDir, { recursive: true })
 
 export const fixtureJson = JSON.parse(
@@ -57,8 +58,8 @@ export const fixtureManifest = JSON.parse(
   readFileSync(join(appRoot, 'tests', 'fixtures', 'scanner-p184', 'manifest.json'), 'utf8'),
 )
 export const fixtureDir = join(appRoot, 'tests', 'fixtures', 'scanner-p184')
-export const PROXY = 'http://127.0.0.1:55831'
-export const DB_CONTAINER = 'supabase_db_pokeportfolio-p185-app'
+export const PROXY = `http://127.0.0.1:${process.env.P185_PROXY_PORT ?? '55831'}`
+export const DB_CONTAINER = process.env.P185_DB_CONTAINER ?? 'supabase_db_pokeportfolio-p185-app'
 
 export function shot(name) {
   writeFileSync(join(outDir, `${name}.png`), screencap())

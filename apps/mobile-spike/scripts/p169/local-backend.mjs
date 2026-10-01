@@ -149,6 +149,22 @@ const STACKS = {
     mockPort: 55500,
     withWorktreeMigrations: true,
   },
+  // P186: packaging/performance phase, own stacks. App API 55971, DB-suite API 56071, mocks 55502/55503
+  // (clear of every port above; same 107 migrations as P185 - this phase adds none).
+  p186db: {
+    projectId: 'pokeportfolio-p186-db',
+    portShift: 750,
+    dir: 'p186db',
+    mockPort: 55503,
+    withWorktreeMigrations: true,
+  },
+  p186: {
+    projectId: 'pokeportfolio-p186-app',
+    portShift: 650,
+    dir: 'p186',
+    mockPort: 55502,
+    withWorktreeMigrations: true,
+  },
 }
 
 export function stackOf(argv) {

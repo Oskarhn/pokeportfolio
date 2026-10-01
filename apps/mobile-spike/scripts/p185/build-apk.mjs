@@ -38,7 +38,10 @@ function run(cmd, args, cwd, { allowFail = false } = {}) {
 
 function writeEnv() {
   const env = JSON.parse(
-    readFileSync(join(appRoot, '.local-backend', 'p185', 'public-env.json'), 'utf8'),
+    readFileSync(
+      join(appRoot, '.local-backend', process.env.P185_STACK ?? 'p185', 'public-env.json'),
+      'utf8',
+    ),
   )
   const appUrl = env.appUrl ?? env.apiUrl
   const local = /^http:\/\/127\.0\.0\.1:\d+$/

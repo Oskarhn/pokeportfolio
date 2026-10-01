@@ -15,6 +15,7 @@
       "./plugins/with-dark-splash-background",
       "./plugins/with-short-cxx-build-path",
       "./plugins/with-onnxruntime-package",
+      "./plugins/with-release-packaging",
       "expo-secure-store",
       [
         "expo-image-picker",
