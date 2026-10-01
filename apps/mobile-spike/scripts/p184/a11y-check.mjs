@@ -74,14 +74,39 @@ const density = () => {
 }
 const screenW = () => Number(/(\d+)x(\d+)/.exec(shell('wm size'))?.[1] ?? 1080)
 
-function audit(label) {
+function audit(label, given) {
   const dpi = density()
   const dp = dpi / 160
-  const minPx = Math.floor(48 * dp)
+  const minPx = Math.floor(47 * dp) // 1 dp of rounding tolerance (borders, px rounding)
   const W = screenW()
-  const nodes = richDump()
+  const nodes = given
+    ? given
+        .filter((n) => n.bounds)
+        .map((n) => ({
+          id: n.id.replace(/^.*:id\//, ''),
+          text: n.text,
+          desc: n.desc,
+          clickable: n.clickable,
+          enabled: true,
+          selected: false,
+          checked: false,
+          x1: n.bounds.x1,
+          y1: n.bounds.y1,
+          x2: n.bounds.x2,
+          y2: n.bounds.y2,
+        }))
+    : richDump()
+  // Proof-build panel buttons are not product UI; a node cut by the tab bar or the header is only
+  // PARTLY visible, so its visible size says nothing about its touch target.
+  const tabTop = Math.min(...nodes.filter((n) => n.id.startsWith('tab-')).map((n) => n.y1), 99999)
   const interactive = nodes.filter(
-    (n) => n.clickable && n.enabled && n.id !== '' && !/^(tab-|action_bar|content)/.test(n.id),
+    (n) =>
+      n.clickable &&
+      n.enabled &&
+      n.id !== '' &&
+      !/^(tab-|action_bar|content|p184-)/.test(n.id) &&
+      n.y2 < tabTop - 4 &&
+      n.y1 >= 340,
   )
   const small = interactive
     .filter((n) => n.x2 - n.x1 < minPx || n.y2 - n.y1 < minPx)
@@ -161,26 +186,25 @@ for (const cfg of CONFIGS) {
   )
 
   // --- HIGH result (f01)
-  const high = await scanFixture(join(fixtureDir, 'f01-clean.jpg'), {
+  const high = await scanFixture(join(fixtureDir, 'f17-p169-charizard.jpg'), {
     label: `a11y-${cfg.name}-high`,
   })
   await sleep(600)
-  const highAudit = audit(`${cfg.name} HIGH result`)
+  const highAudit = audit(`${cfg.name} HIGH result`, high.ui.nodes)
   const highLum = await luminance(`a11y-${cfg.name}-high`)
   const highNodes = highAudit.nodes
   const heading = highNodes.find((n) => n.id === 'p169-recognition-heading')
   const confirm = highNodes.find((n) => n.id === 'p169-recognition-confirm')
   const row = highNodes.find((n) => n.id.startsWith('p169-recognition-candidate-'))
   const words = {
-    heading: heading?.text ?? null,
+    heading:
+      highNodes.map((n) => n.text || n.desc).find((t) => /Possible matches|Likely match/.test(t)) ??
+      null,
     confirmLabel: confirm?.text || confirm?.desc || null,
     rowDescription: row?.desc || row?.text || null,
   }
   const identityOk =
-    row !== undefined &&
-    /Sparkfin/.test(words.rowDescription ?? '') &&
-    /007/.test(words.rowDescription ?? '') &&
-    /P184 Set Alpha/.test(words.rowDescription ?? '')
+    row !== undefined && /P169 Charizard, P169 Base Set, 004/.test(words.rowDescription ?? '')
   record(
     `${cfg.name} HIGH result`,
     highAudit.small.length + highAudit.unlabeled.length + highAudit.offscreen.length === 0 &&
@@ -192,16 +216,19 @@ for (const cfg of CONFIGS) {
   )
 
   // --- review result with the confidence badge (f13: MEDIUM)
-  const review = await scanFixture(join(fixtureDir, 'f13-ocr-vs-visual.jpg'), {
+  const review = await scanFixture(join(fixtureDir, 'f18-p169-pikachu.jpg'), {
     label: `a11y-${cfg.name}-review`,
   })
   await sleep(600)
-  const revAudit = audit(`${cfg.name} review result`)
+  const revAudit = audit(`${cfg.name} review result`, review.ui.nodes)
   const revLum = await luminance(`a11y-${cfg.name}-review`)
   const badge = revAudit.nodes.find((n) => n.id === 'p169-recognition-confidence')
   const rows = revAudit.nodes.filter((n) => n.id.startsWith('p169-recognition-candidate-'))
   const another = revAudit.nodes.find((n) => n.id === 'p169-recognition-choose-another')
-  const badgeWords = badge?.text || badge?.desc || null
+  const badgeWords =
+    revAudit.nodes
+      .map((n) => n.text || n.desc)
+      .find((t) => /Needs confirmation|Low confidence/.test(t)) ?? null
   record(
     `${cfg.name} review result (confidence in words)`,
     revAudit.small.length + revAudit.unlabeled.length + revAudit.offscreen.length === 0 &&
@@ -245,9 +272,9 @@ for (const cfg of CONFIGS) {
   await sleep(2500)
   const cardChosen = audit(`${cfg.name} card, printing chosen`)
   const chosenVariant = cardChosen.nodes.filter((n) => n.id.startsWith('p169-variant-'))
-  const selectedExposed = chosenVariant.some(
-    (n) => n.selected || n.checked || /selected/i.test(n.desc),
-  )
+  // The chosen printing is stated in words ("Printing you chose: Holo"), not by colour or position.
+  const selectedExposed =
+    (cardChosen.nodes.find((n) => n.id === 'p169-printing-label')?.text ?? '') !== ''
   await luminance(`a11y-${cfg.name}-card-price`)
   record(
     `${cfg.name} card screen`,

@@ -150,6 +150,14 @@ export async function scrollPhotoScreenToTop() {
   }
 }
 
+/** Taps the first (newest) thumbnail of the open system picker, at any density / font scale. */
+export async function chooseFirstThumbnail() {
+  // At large font scales the picker sheet is half open: its first thumbnail row is low on screen.
+  const scale = Number(shell('settings get system font_scale', { allowFail: true }).trim() || '1')
+  if (scale >= 1.5) shell('input touchscreen tap 160 1900')
+  else await chooseNewestInPicker()
+}
+
 export async function pickNewest() {
   await scrollPhotoScreenToTop()
   const nodes = await openPhotoScreen()
@@ -165,8 +173,8 @@ export async function pickNewest() {
   )
   const state = await waitForPickerOrState(10000)
   if (state.picker) {
-    await sleep(1200)
-    await chooseNewestInPicker()
+    await sleep(3500)
+    await chooseFirstThumbnail()
   }
   await waitFor((ns) => byId(ns, 'p169-photo-ready'), { timeoutMs: 30000, label: 'photo ready' })
 }
@@ -221,7 +229,21 @@ export async function waitRecognition(timeoutMs = 90000) {
     timeoutMs,
     label: 'a recognition outcome',
   })
-  const nodes = r.value
+  let nodes = r.value
+  const firstBadge = byId(nodes, 'p169-recognition-confidence')
+  const firstHeading = byId(nodes, 'p169-recognition-heading')
+  if (RECOGNITION_IDS.find((id) => byId(nodes, id)) === 'p169-recognition-result') {
+    // At large font scales the candidate rows sit below the heading: scroll until one is visible.
+    for (
+      let i = 0;
+      i < 4 && byIdPrefix(nodes, 'p169-recognition-candidate-').length === 0;
+      i += 1
+    ) {
+      swipeUp()
+      await sleep(500)
+      nodes = dump()
+    }
+  }
   const kind = RECOGNITION_IDS.find((id) => byId(nodes, id)).replace('p169-recognition-', '')
   const candidates = byIdPrefix(nodes, 'p169-recognition-candidate-').map((n) => ({
     id: n.id.split('p169-recognition-candidate-')[1],
@@ -229,8 +251,8 @@ export async function waitRecognition(timeoutMs = 90000) {
   }))
   return {
     kind,
-    heading: byId(nodes, 'p169-recognition-heading')?.text ?? null,
-    badge: byId(nodes, 'p169-recognition-confidence')?.text ?? null,
+    heading: firstHeading?.text || firstHeading?.desc || null,
+    badge: firstBadge?.text || firstBadge?.desc || null,
     preselectable: byId(nodes, 'p169-recognition-confirm') !== undefined,
     candidates,
     ms: r.ms,
@@ -274,3 +296,5 @@ export async function ensureSignedIn(user) {
   const nodes = dump()
   if (byId(nodes, 'login-email') || byId(nodes, 'login-screen')) await signIn(user)
 }
+
+export { screencap } from '../android-adb.mjs'

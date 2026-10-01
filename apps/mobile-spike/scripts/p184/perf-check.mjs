@@ -130,16 +130,20 @@ await nextScanTrace(beforeFirst)
 await sleep(2500)
 samples.afterFirstScan = mem()
 
+const blockStatus = []
 const warmStart = scanTraces().length
 for (let block = 1; block <= 4; block += 1) {
   await tapScrolling('p184-proof-stress-25')
-  await waitFor(
+  // The previous block's DONE text stays on screen until this block reports: wait for a DONE
+  // text that differs from it.
+  const done = await waitFor(
     (ns) => {
       const t = byId(ns, 'p184-proof-status')?.text ?? ''
-      return new RegExp(`stress25 DONE 25/25`).test(t) && t
+      return /stress25 DONE 25[/]25/.test(t) && t !== blockStatus[blockStatus.length - 1] ? t : null
     },
     { timeoutMs: 300000, label: `stress block ${block}` },
   )
+  blockStatus.push(done.value)
   await sleep(1500)
   samples[`after${block * 25}`] = mem()
   console.log(`after ${block * 25}: PSS ${samples[`after${block * 25}`].pssKb} kB`)
@@ -187,6 +191,7 @@ const report = {
     total: stages.totalMs,
     stages,
   },
+  blockStatus,
   memory: samples,
   pssGrowthBetween25And100Kb: growth,
   pssSeries25to100: series,
