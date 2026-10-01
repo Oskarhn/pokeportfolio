@@ -80,6 +80,19 @@ export async function waitForNode(sel, { timeoutMs = 30000, label = describe(sel
   }
 }
 
+/** Like waitForNode, but scrolls toward the target: it may be below the fold (a dump holds only what is on screen). */
+export async function waitForNodeScrolling(sel, { timeoutMs = 30000, label = describe(sel) } = {}) {
+  const start = Date.now()
+  for (;;) {
+    try {
+      return await bringIntoView(sel, { label })
+    } catch (error) {
+      if (Date.now() - start > timeoutMs) throw error
+      await sleep(500)
+    }
+  }
+}
+
 export async function waitForText(re, opts = {}) {
   return waitForNode({ label: re }, { ...opts, label: opts.label ?? String(re) })
 }

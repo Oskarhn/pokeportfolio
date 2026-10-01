@@ -62,9 +62,11 @@ import {
   tapUntil,
   waitForAny,
   waitForNode,
+  waitForNodeScrolling,
 } from './driver.mjs'
 import { auditSweep, leaks } from './a11y-lib.mjs'
 import { B, choosePrinting, counts, diff, priceTexts } from './journeys.mjs'
+import { cleanupSince } from './journey-cleanup.mjs'
 
 establishIdentity()
 adb(['logcat', '-G', '16M'], { allowFail: true })
@@ -140,6 +142,8 @@ const activeFin = () =>
     `select (select count(*) from sales where user_id=${q(B.id)} and voided_at is null) || '|' || (select count(*) from purchases where user_id=${q(B.id)} and voided_at is null) || '|' || (select count(*) from acquisition_lots where user_id=${q(B.id)} and voided_at is null) || '|' || (select count(*) from holdings where user_id=${q(B.id)} and deleted_at is null)`,
   )
 const finBaseline = activeFin()
+// Everything this journey writes is created after this instant (the database's own clock).
+const startedAt = psql('select now()')
 let holdingId = null
 let acquisitionLot = null
 
@@ -403,7 +407,10 @@ await step(13, 'explicit acquisition confirmation', async () => {
     timeoutMs: 30000,
     label: 'Collection after the acquisition',
   }).catch(() =>
-    waitForNode('p175-acquisition-success', { timeoutMs: 5000, label: 'acquisition success' }),
+    waitForNodeScrolling('p175-acquisition-success', {
+      timeoutMs: 5000,
+      label: 'acquisition success',
+    }),
   )
   await sleep(1500)
   const d = diff(before, counts())
@@ -457,11 +464,17 @@ await step(15, 'manual valuation: 100.00, explicit 0, clear', async () => {
   await waitForNode('card-detail', { timeoutMs: 20000, label: 'card detail' })
   await tapUntil('manual-valuation', 'p175-manual-valuation', { label: 'manual valuation' })
   eq(psql(ACTIVE_MANUAL()), 'none', 'a manual value before the test')
+  const historyBefore = Number(
+    psql(`select count(*) from manual_valuations where holding_id = ${q(holdingId)}`),
+  )
   await auditScreen('Manual valuation')
   // positive
   await clearAndType('p175-manual-value', '100.00')
   await tapTestId('p175-confirm-manual-value', { label: 'set value' })
-  await waitForNode('p175-manual-valuation-success', { timeoutMs: 20000, label: 'Saved (100.00)' })
+  await waitForNodeScrolling('p175-manual-valuation-success', {
+    timeoutMs: 20000,
+    label: 'Saved (100.00)',
+  })
   await dbEquals(ACTIVE_MANUAL(), '10000', 'positive manual value')
   shot('journey-15-manual-100')
   // an explicit zero is a KNOWN value, not an absent one
@@ -479,7 +492,7 @@ await step(15, 'manual valuation: 100.00, explicit 0, clear', async () => {
   await tapTestId('p175-clear-manual-value', { label: 'clear manual value' })
   await dbEquals(ACTIVE_MANUAL(), 'none', 'cleared manual value')
   const history = psql(`select count(*) from manual_valuations where holding_id = ${q(holdingId)}`)
-  eq(history, 2, 'history rows kept (100.00 and 0, both superseded)')
+  eq(Number(history) - historyBefore, 2, 'history rows added (100.00 and 0, both superseded)')
   back()
   await waitForNode('card-detail', { label: 'card detail after the valuation' })
   return { positive: 10000, zeroKnown: true, clearedActive: 'none', historyRows: Number(history) }
@@ -494,7 +507,7 @@ await step(16, 'sale (NOK, quantity 1, fees)', async () => {
   await clearAndType('p175-sale-unit-gross', '40.00')
   await clearAndType('p175-sale-fees', '3')
   await tapTestId('p175-confirm-sale', { label: 'record sale' })
-  await waitForNode('p175-sale-success', { timeoutMs: 20000, label: 'sale recorded' })
+  await waitForNodeScrolling('p175-sale-success', { timeoutMs: 20000, label: 'sale recorded' })
   await sleep(800)
   const d = diff(before, counts())
   eq(d.sales, 1, 'sales written')
@@ -527,15 +540,22 @@ await step(17, 'non-NOK transaction: EUR purchase and EUR sale with FX', async (
   const before = counts()
   await toRoot()
   await tapTestId('tab-search', { scroll: false })
-  // The Search tab keeps its own stack: it may open on the photo screen, whose "choose manually"
-  // leads to the search field.
-  const landed = await waitForAny(['p169-search-input', 'p169-choose-manually'], {
-    label: 'Search tab content',
-  })
-  if (landed.sel === 'p169-choose-manually') {
-    tapNode(landed.node)
-    await waitForNode('p169-search-input', { label: 'search field' })
+  // The Search tab keeps its own stack. It may open on a screen left from earlier (the photo
+  // screen, or a finished form): leave it with Back until the search field, or the photo screen's
+  // "choose manually" that leads to it, is showing. Bounded.
+  for (let i = 0; i < 6; i += 1) {
+    const nodes = dump()
+    if (findNode(nodes, 'p169-search-input')) break
+    const manual = findNode(nodes, 'p169-choose-manually')
+    if (manual) {
+      tapNode(manual)
+      await sleep(800)
+      continue
+    }
+    back()
+    await sleep(900)
   }
+  await waitForNode('p169-search-input', { timeoutMs: 15000, label: 'search field' })
   await clearAndType('p169-search-input', 'Charizard')
   shell('input keyevent 66')
   await waitFor((ns) => ns.find((x) => /p169-search-status-.*ready/.test(x.id)), {
@@ -603,7 +623,7 @@ await step(17, 'non-NOK transaction: EUR purchase and EUR sale with FX', async (
   await clearAndType('p175-sale-unit-gross', '10.00')
   await clearAndType('p175-sale-fees', '1.00')
   await tapTestId('p175-confirm-sale', { label: 'record EUR sale' })
-  await waitForNode('p175-sale-success', { timeoutMs: 20000, label: 'EUR sale recorded' })
+  await waitForNodeScrolling('p175-sale-success', { timeoutMs: 20000, label: 'EUR sale recorded' })
   await sleep(800)
   eq(diff(salesBefore, counts()).sales, 1, 'EUR sales written')
   const sl = psql(
@@ -725,31 +745,19 @@ console.log(
 console.log(`NETWORK ${JSON.stringify(audit)}  ADB_RECOVERY ${JSON.stringify(recoveryState())}`)
 
 // ---- cleanup through the product's own reversal functions (never raw deletes) ----------------------
-function asUser(sql) {
-  return psql(
-    `begin;\nset local role authenticated;\nselect set_config('request.jwt.claims', json_build_object('sub', ${q(B.id)}, 'role', 'authenticated')::text, true);\n${sql}\ncommit;`,
-  )
-}
 let cleanup = 'not_run'
+let keptHoldings = []
 try {
-  if (eurSale) asUser(`select public.void_sale(${q(eurSale)}::uuid, 'p185 journey cleanup');`)
-  if (nokSale) asUser(`select public.void_sale(${q(nokSale)}::uuid, 'p185 journey cleanup');`)
-  if (eurPurchase)
-    asUser(`select public.void_purchase(${q(eurPurchase)}::uuid, 'p185 journey cleanup');`)
-  if (acquisitionLot)
-    asUser(
-      `select public.void_acquisition_lot(${q(acquisitionLot)}::uuid, 'p185 journey cleanup');`,
-    )
-  if (holdingId)
-    asUser(`select public.remove_holdings_from_portfolio(array[${q(holdingId)}::uuid]);`)
-  cleanup = 'void_sale, void_purchase, void_acquisition_lot, remove_holdings_from_portfolio'
+  const r = cleanupSince(startedAt)
+  cleanup = r.log.join('; ') || 'nothing to reverse'
+  keptHoldings = r.keptHoldings
 } catch (e) {
   cleanup = `FAILED: ${String(e.message).slice(0, 300)}`
 }
 console.log(`CLEANUP ${cleanup}`)
 const left = activeFin()
 console.log(
-  `ACTIVE sales|purchases|lots|holdings baseline=${finBaseline} afterCleanup=${left} restored=${String(left === finBaseline)}`,
+  `ACTIVE sales|purchases|lots|holdings baseline=${finBaseline} afterCleanup=${left} restored=${String(left.split('|').slice(0, 3).join('|') === finBaseline.split('|').slice(0, 3).join('|'))} (holdings are kept by the product once they have disposal history)`,
 )
 
 saveJson('journey-report.json', {
@@ -757,9 +765,11 @@ saveJson('journey-report.json', {
   steps: report,
   logClean,
   cleanup,
+  keptHoldings,
   activeBaseline: finBaseline,
   activeAfterCleanup: left,
-  restoredToBaseline: left === finBaseline,
+  restoredToBaseline:
+    left.split('|').slice(0, 3).join('|') === finBaseline.split('|').slice(0, 3).join('|'),
   adbRecovery: recoveryState(),
 })
 const failed = report.filter((r) => r.status === 'FAIL').length
