@@ -133,6 +133,15 @@ const STACKS = {
   },
   // P185: native RC closure, own stack/AVD/ports. API 55821, mock 55500 (clear of every port
   // above). Same 107 local migrations as P177-P184 (this worktree adds none).
+  // P185 DB-suite stack: the same migrations plus the real redeem-invitation function, so the
+  // root `pnpm test:db` runs with a working invitation path (the app stack serves only search-prices).
+  p185db: {
+    projectId: 'pokeportfolio-p185-db',
+    portShift: 550,
+    dir: 'p185db',
+    mockPort: 55501,
+    withWorktreeMigrations: true,
+  },
   p185: {
     projectId: 'pokeportfolio-p185-app',
     portShift: 500,

@@ -25,7 +25,7 @@ const here = dirname(fileURLToPath(import.meta.url))
 const appRoot = resolve(here, '..', '..')
 const repoRoot = resolve(appRoot, '..', '..')
 const rootDir = join(appRoot, '.local-backend')
-const stack = stackOf(['--stack=p185'])
+const stack = stackOf([`--stack=${process.env.P185_STACK ?? 'p185'}`])
 const PORT_OFFSET = 1000 + stack.portShift
 
 const cli = (args, capture = false) =>
@@ -85,6 +85,13 @@ function containers() {
 const command = process.argv[2]
 if (command === 'start') {
   const m = prepare(stack)
+  if (stack.name === 'p185db') {
+    // The real invitation-redemption function (+ its helper), served from this checkout.
+    const from = join(repoRoot, 'supabase', 'functions', 'redeem-invitation')
+    const to = join(stack.workdir, 'supabase', 'functions', 'redeem-invitation')
+    mkdirSync(to, { recursive: true })
+    for (const f of ['index.ts', 'password.ts']) copyFileSync(join(from, f), join(to, f))
+  }
   console.log(
     `${m.migrationCount} migrations from ${m.migrationSha.slice(0, 7)}; functions from git objects`,
   )
