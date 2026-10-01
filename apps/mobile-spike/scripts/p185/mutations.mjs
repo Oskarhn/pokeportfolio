@@ -118,6 +118,14 @@ const MUTANTS = [
     to: 'onPress={() => onValueChange(!value)}',
   },
   {
+    id: 'N14',
+    name: 'P184 M23 re-anchored (its anchor no longer matched the P184 tip): backgrounding no longer cancels the recognition',
+    file: PHOTO,
+    from: "cancelledByBackgroundRef.current = inFlightRef.current\n        feature.recognition.cancelActive?.()",
+    to: 'cancelledByBackgroundRef.current = inFlightRef.current\n        void 0',
+    tests: ['tests/unit/p184-photo-entry-lifecycle.test.tsx'],
+  },
+  {
     id: 'N10',
     name: 'the touch-target sweep forgets radios again (role=button only)',
     file: 'tests/unit/p170-integration.test.tsx',

@@ -23,6 +23,7 @@ import './env.mjs'
 import { join } from 'node:path'
 import { amStart, openPhotoScreen } from '../android-p167-lib.mjs'
 import {
+  PACKAGE,
   adb,
   byId,
   dump,
@@ -159,6 +160,9 @@ await ensureSignedIn(users.b)
 for (const cfg of CONFIGS) {
   cfg.apply()
   await sleep(4000)
+  // A fresh process per configuration: an earlier visit's printing choice must not be remembered.
+  shell(`am force-stop ${PACKAGE}`)
+  await sleep(1500)
   amStart()
   await ensureSignedIn(users.b)
   await openPhotoScreen()
