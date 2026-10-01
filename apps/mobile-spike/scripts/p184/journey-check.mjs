@@ -189,7 +189,7 @@ await step(13, 'verify Collection', async () => {
 await step(14, 'non-NOK transaction (EUR purchase with FX)', async () => {
   const before = counts()
   await tapId('tab-search', 'search tab')
-  await typeInto('p169-search-input', 'P169 Charizard')
+  await typeInto('p169-search-input', 'Charizard')
   shell('input keyevent 66')
   await waitFor((ns) => byIdPrefix(ns, 'p169-search-status-').find((x) => /ready/.test(x.id)), {
     timeoutMs: 30000,

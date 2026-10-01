@@ -88,6 +88,7 @@ export async function waitForOrScroll(pick, { label = 'condition', timeoutMs = 2
 
 export async function tapScrolling(id) {
   await dismissKeyboard()
+  await sleep(900) // the keyboard animates away; a tap during it lands on a key
   const { node } = await findScrolling(id)
   tap(node)
 }

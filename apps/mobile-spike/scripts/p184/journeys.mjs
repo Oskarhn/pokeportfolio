@@ -16,7 +16,7 @@ import {
   users,
   waitFor,
 } from './lib.mjs'
-import { findScrolling } from './flows.mjs'
+import { back, findScrolling } from './flows.mjs'
 
 export const B = users.b
 
@@ -33,7 +33,34 @@ export const NAMES = ['holdings', 'lots', 'purchases', 'purchaseLines', 'sales',
 export const diff = (before, after) =>
   Object.fromEntries(NAMES.map((n, i) => [n, after[i] - before[i]]).filter(([, d]) => d !== 0))
 
+/** Leaves any write form / card screen the previous journey stopped on. */
+export async function leaveForms() {
+  for (let i = 0; i < 6; i += 1) {
+    const n = dump()
+    if (
+      ![
+        'p175-record-purchase',
+        'p175-add-acquisition',
+        'p170-add-intent',
+        'p169-card',
+        'p169-card-identity',
+        'p175-record-sale',
+        'p175-manual-valuation',
+      ].some((id) => byId(n, id))
+    )
+      return
+    back()
+    await new Promise((r) => setTimeout(r, 700))
+  }
+}
+
 export async function scanToCard(fixtureFile, label, wantName) {
+  await leaveForms()
+  // The Price Check tab's stack is the one wired to Add to Collection (the Search stack's photo
+  // screen is read-only): always start there.
+  const tab = byId(dump(), 'tab-pricecheck')
+  if (tab) tap(tab)
+  await new Promise((r) => setTimeout(r, 900))
   await openPhotoScreen()
   const { trace, ui } = await scanFixture(join(fixtureDir, fixtureFile), { label })
   const candidate = ui.candidates.find((c) => c.label.startsWith(wantName)) ?? ui.candidates[0]
@@ -54,7 +81,8 @@ export async function choosePrinting(cardId, finish) {
     .split('\n')
     .map((l) => l.split('|'))
   const wanted =
-    variants.find((v) => v[1] === finish && v[3] === 't') ?? variants.find((v) => v[3] === 't')
+    variants.find((v) => v[1] === finish && v[3] === 'true') ??
+    variants.find((v) => v[3] === 'true')
   const choice = byId(dump(), 'p169-printing-choice')
   if (choice) {
     const { node } = await findScrolling(`p169-variant-${wanted[0]}`)
