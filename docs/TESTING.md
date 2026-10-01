@@ -1071,6 +1071,12 @@ round numbers chosen so allocation edge cases appear, one opening with tracked p
 grading submission, one partial sale, one holding with a missing price and one with a stale
 price.
 
+A fixture that depends on today's date goes through `tests/db/lib/fixture-dates.ts`
+(`monthlyFixtureDate`), never through `setUTCMonth` / `setUTCDate` arithmetic on a "10th of the
+month": the purchase-date trigger rejects a date after today + 1 day, so a hard-coded day passes on some days
+of the month and fails on others (P186: "monthly spend reconciles" failed on days 1-8). The helper has pure
+regression tests for day 1, 2, 10, month end, a leap day and the year boundary.
+
 Amounts are deliberately chosen to produce inexact division — a shipping charge of 100 over
 three lines is worth more as a test than one of 90.
 

@@ -573,6 +573,8 @@ export default defineConfig({
       'tests/financial/**/*.test.ts',
       'tests/data/**/*.test.ts',
       'tests/ui/**/*.test.ts',
+      // Pure fixture helpers of the database suites (no stack needed).
+      'tests/db/lib/**/*.test.ts',
       // Build/platform security configuration (M15): CSP policy shape and scanner asset
       // caching rules, asserted at config level; dist artefacts are checked separately by
       // scripts/verify-scanner-platform-build.mjs after a real build.

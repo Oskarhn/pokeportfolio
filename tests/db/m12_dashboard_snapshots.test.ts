@@ -8,6 +8,7 @@ import {
   type SyntheticUser,
   type TestClient,
 } from './setup'
+import { monthlyFixtureDate } from './lib/fixture-dates'
 
 /**
  * M12: the snapshot cache engine (DATA_MODEL.md §6, FINANCIAL_MODEL.md §3, TESTING.md §3).
@@ -1409,10 +1410,9 @@ describe('M12 dashboard aggregates', () => {
         hobby: number,
         shipping: number,
       ) {
-        const d = new Date(today)
-        d.setUTCMonth(d.getUTCMonth() - monthsAgo)
-        d.setUTCDate(10)
-        const purchasedOn = d.toISOString().slice(0, 10)
+        // Calendar-safe: day 1 of the current month (the purchase date trigger rejects dates after
+        // today + 1 day, so the 10th fails on days 1-8), day 10 of earlier months, no overflow.
+        const purchasedOn = monthlyFixtureDate(today, monthsAgo)
         const subtotal = collectible + hobby
         const total = subtotal + shipping
         const { data: purchase, error } = await service
