@@ -112,7 +112,18 @@
       "status": "LOCAL_ONLY",
       "device_verified": true,
       "fully_certified": false,
-      "notes": "PARTIAL_P184_NATIVE_RC_HARDENING. See docs/mobile/P184_NATIVE_RELEASE_CANDIDATE.md. Docs lineage P176/P183 cherry-picked (documentation only)."
+      "notes": "PARTIAL_P184_NATIVE_RC_HARDENING (hardened predecessor; its six open items are closed by P185). See docs/mobile/P184_NATIVE_RELEASE_CANDIDATE.md. Docs lineage P176/P183 cherry-picked (documentation only)."
+    },
+    "native_rc_closure": {
+      "prompt": 185,
+      "branch": "release/p185-native-rc-closure",
+      "sha": "b4100bcb4522d77fbf3e569f433e3307dea9c55e",
+      "builds_on": "native_rc",
+      "local_migration_count": 107,
+      "status": "LOCAL_ONLY",
+      "device_verified": true,
+      "fully_certified": false,
+      "notes": "SUCCESS_P185_NATIVE_RC_VERIFIED on an Android emulator: 20/20 release-APK journey, scanner usable at 360dp/200%, manual valuation + NOK/EUR sales DB-verified. Not fully certified: TalkBack not driven to a PASS, arm64/physical device deferred. See docs/mobile/P185_NATIVE_RC_CLOSURE.md."
     }
   },
   "database": {
@@ -123,7 +134,7 @@
     "content_id": "f25fc05d569b7cca",
     "web_scanner_status": "RELEASED_UNCHANGED",
     "native_card_recognition_status": "DEVICE_VERIFIED_HARDENED_LOCAL_ONLY",
-    "native_card_recognition_note": "P182 proved core recognition on a release APK; P184 hardened and device-verified it (24/24 adversarial scenarios, 0 false HIGH, 0 image egress). Local only; full RC journey and 360dp accessibility text checks not fully green; TalkBack not driven. See docs/mobile/P184_NATIVE_RELEASE_CANDIDATE.md."
+    "native_card_recognition_note": "P182 proved core recognition on a release APK; P184 hardened and device-verified it (24/24 adversarial scenarios, 0 false HIGH, 0 image egress); P185 closed the RC journey, 360dp/200% accessibility and financial re-runs on an emulator. Local only; TalkBack not driven to a PASS; arm64/physical device deferred. See docs/mobile/P185_NATIVE_RC_CLOSURE.md."
   },
   "production": {
     "in_real_user_use": false
@@ -166,6 +177,7 @@
     "archive_index": "docs/handover/README.md",
     "git_publication_plan": "docs/CURRENT_STATE/GIT_PUBLICATION_PLAN.md",
     "branch_pruning_plan": "docs/CURRENT_STATE/BRANCH_PRUNING_PLAN.md",
-    "p184_native_rc": "docs/mobile/P184_NATIVE_RELEASE_CANDIDATE.md"
+    "p184_native_rc": "docs/mobile/P184_NATIVE_RELEASE_CANDIDATE.md",
+    "p185_native_rc_closure": "docs/mobile/P185_NATIVE_RC_CLOSURE.md"
   }
 }

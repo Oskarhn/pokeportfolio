@@ -85,7 +85,8 @@ pointers: `docs/PROJECT_STATE.json` → `local_candidates`.
 | Native financial reliability (P180, on P179) | `feat/p180-native-financial-reliability` | `ecdb1208…` | 107 | **LOCAL ONLY — DEVICE-VERIFIED.** Closed the FX-rate write gap (real EUR sale, DB-confirmed); built a pending-write journal |
 | Native product baseline (P181, on P180) | `feat/p181-native-device-accessibility-performance-gate` | `45ebfefa…` | 107 | **LOCAL ONLY — scoped device-accessibility/performance pass, not fully certified** (see §9). Fixed a real tab-label defect |
 | Native on-device card recognition (P182, on P181) | `feat/p182-native-card-recognition` | `61547520…` | 107 | **LOCAL ONLY — core recognition device-proven** (release APK: ML Kit OCR + ONNX/DINO + shared index → real candidate); its hardening scope was not run |
-| **Native release candidate (P184, on P182) — latest native candidate** | `release/p184-native-rc` | `953aa017…` | 107 | **LOCAL ONLY — `PARTIAL_P184_NATIVE_RC_HARDENING`.** Scanner hardened and device-verified (24/24 adversarial, 0 false HIGH, 0 image egress, lifecycle/identity/background, perf + memory plateau, clean build); RC journey and 360dp accessibility text checks not fully green. See [docs/mobile/P184_NATIVE_RELEASE_CANDIDATE.md](docs/mobile/P184_NATIVE_RELEASE_CANDIDATE.md) |
+| **Native RC closure (P185, on P184) — latest native candidate** | `release/p185-native-rc-closure` | `b4100bcb…` | 107 | **LOCAL ONLY — `SUCCESS_P185_NATIVE_RC_VERIFIED` (Android emulator).** 20/20 release-APK journey (scanner → Price Check → Add → manual valuation 100/0/clear → NOK sale → EUR purchase + sale with FX → sign-out/restart), 14/14 scanner accessibility checks at 360 dp/200 % and 430 dp/100 %, adb-loss recovery, 14 new mutants killed; fixed identity truncation, missing HIGH confidence text, switch/radio target gaps. TalkBack run but not claimed; arm64/physical device deferred. See [docs/mobile/P185_NATIVE_RC_CLOSURE.md](docs/mobile/P185_NATIVE_RC_CLOSURE.md) |
+| Native release candidate (P184, on P182) — hardened predecessor | `release/p184-native-rc` | `953aa017…` | 107 | **LOCAL ONLY — `PARTIAL_P184_NATIVE_RC_HARDENING`** (its six open items are closed by P185). Scanner hardened and device-verified (24/24 adversarial, 0 false HIGH, 0 image egress). See [docs/mobile/P184_NATIVE_RELEASE_CANDIDATE.md](docs/mobile/P184_NATIVE_RELEASE_CANDIDATE.md) |
 | Account deletion (P156) | `audit/p156-account-deletion-security-recovery` | `6b3ac903…` | 107 | **LOCAL ONLY** |
 | Deployment/secret gate, integrated (P163, supersedes P142+P160) | `fix/p163-integrated-ci-secret-gate` | `4f6be7be…` | 104 | **LOCAL ONLY — BLOCKED** on owner Cloudflare action + Actions billing capacity |
 | Scanner reliability hardening (P151) | `fix/p151-scanner-reliability-performance` | `4bd34bfd…` | 104 | **LOCAL ONLY** |
@@ -215,9 +216,11 @@ session — verify before claiming a run happened. **Native card recognition (P1
 catalog candidate); P184 hardened it (header-first image safety, checkpoint / identity / background
 cancellation, severe-blur gate, banded collector-number extraction, loop and cache fixes) and
 verified it on device: 24/24 adversarial scenarios with 0 false HIGH, 0 image egress, warm median
-1.04 s, stable memory plateau, 36 scanner mutants killed. Latest native tip is **P184**
-(`953aa017d2f950e77d1319dd238dcd35d83b5ded`), local only, status `PARTIAL_P184_NATIVE_RC_HARDENING`: the full RC journey and the
-360dp/200 % accessibility text checks are not fully green and TalkBack was not driven.
+1.04 s, stable memory plateau, 36 scanner mutants killed. P184 left six items open and P185 closed them. Latest native tip is **P185**
+(`b4100bcb4522d77fbf3e569f433e3307dea9c55e`), local only, status `SUCCESS_P185_NATIVE_RC_VERIFIED` on an emulator: the 20-step release journey is 20/20,
+manual valuation and sales (NOK and EUR with FX) are database-verified, the scanner result is usable at 360 dp/200 %, and the
+radio/switch touch-target gap is closed. Still open: a TalkBack walk-through on a real device (the emulator run could not be
+automated reliably), arm64 / physical device, and one latent date-dependent DB test (M12 monthly spend fails before the 9th of a month).
 
 ---
 
@@ -308,9 +311,9 @@ scope reopening — see [docs/PLANNING_FREEZE.md](docs/PLANNING_FREEZE.md)):
    with P151/P157/P156 first (P159's conflict map).
 4. Pick an integration order for the remaining local candidates (§2) rather than merging
    piecemeal — P159's `NEXT_RELEASE_ORDER` has a reasoned proposal.
-5. Native mobile: the P173→P184 chain is device-verified (§9) — the remaining work is closing the
-   disclosed gaps (TalkBack, the full RC journey, 360dp accessibility text checks, JPY on-device,
-   arm64/physical device), not re-verifying the write seam or the scanner from scratch.
+5. Native mobile: the P173→P185 chain is device-verified on an emulator (§9) — the remaining work is the
+   disclosed gaps (a real-device TalkBack pass, JPY on-device, arm64/physical device), not re-verifying the write seam
+   or the scanner from scratch.
 6. Design: the owner has already picked P178's dark-first "Utility structure + Foil identity"
    direction — the remaining decisions are the app icon and N1/N2 navigation (§9/§11), still open.
 

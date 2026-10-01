@@ -26,15 +26,16 @@ in local worktrees under `C:\Users\Oskar\Documents\Pokemonapp-worktrees\`.
 | `feat/p181-native-device-accessibility-performance-gate` | P181 | **Previous native tip (2026-09-27).** Representative (not exhaustive) device-matrix pass: 360/390/430dp widths, font scale up to 200%, Activity recreation, one performance/memory snapshot, full-session ANR/crash sweep (zero). Found and fixed a real tab-label mid-word-break defect at 200% font scale. SHA `45ebfefa9a5038e20dd1999644eb96c1ae6352ef`, 107 migrations. **Scoped success, not full certification** — see "What is NOT verified" below; its own STATUS is `SUCCESS_P181_NATIVE_PRODUCT_BASELINE_GATE` with explicitly disclosed gaps, not `FULLY_CERTIFIED`. |
 
 | `feat/p182-native-card-recognition` | P182 | **Native on-device card recognition proven on a release APK** (ML Kit OCR + ONNX/DINO + shared index `f25fc05d569b7cca` → a real candidate); reliability scope not run. SHA `615475209a3342c0c627ceddc00fa37606c59fad`, 107 migrations. |
-| `release/p184-native-rc` | P184 | **Latest native candidate.** Hardens and device-verifies the scanner (24/24 adversarial, 0 false HIGH, 0 image egress, warm median 1.04 s, memory plateau, clean-install build in one pass). SHA `953aa017d2f950e77d1319dd238dcd35d83b5ded`, 107 migrations. `PARTIAL_P184_NATIVE_RC_HARDENING` — [details and gaps](../mobile/P184_NATIVE_RELEASE_CANDIDATE.md). |
+| `release/p185-native-rc-closure` | P185 | **Latest native candidate.** Closes P184's six open items on an emulator: 20/20 release-APK journey, scanner usable at 360 dp/200 % (found and fixed a truncated card identity, a missing HIGH confidence text, a 46×27 dp switch), manual valuation 100/0/clear and NOK + EUR sales database-verified, adb-loss recovery, 14 new mutants killed, radio/switch touch-target sweep. Code tip `b4100bcb4522d77fbf3e569f433e3307dea9c55e`, 107 migrations. `SUCCESS_P185_NATIVE_RC_VERIFIED` — [details](../mobile/P185_NATIVE_RC_CLOSURE.md). |
+| `release/p184-native-rc` | P184 | Hardened predecessor. Hardens and device-verifies the scanner (24/24 adversarial, 0 false HIGH, 0 image egress, warm median 1.04 s, memory plateau, clean-install build in one pass). SHA `953aa017d2f950e77d1319dd238dcd35d83b5ded`, 107 migrations. `PARTIAL_P184_NATIVE_RC_HARDENING` — [details and gaps](../mobile/P184_NATIVE_RELEASE_CANDIDATE.md). |
 
-Lineage: `P173 → P175 → P177 → P178 → P179 → P180 → P181 → P182 → P184` (each branch built directly on the
+Lineage: `P173 → P175 → P177 → P178 → P179 → P180 → P181 → P182 → P184 → P185` (each branch built directly on the
 previous one's tip; ancestry confirmed via `git merge-base --is-ancestor` in each phase's own
 report). None of these branches is merged or pushed.
 
-## What is NOT verified (as of P184, the current tip; P181-era gaps still apply unless noted)
+## What is NOT verified (as of P185, the current tip; P181-era gaps still apply unless noted)
 
-- **P184:** full RC journey 10 of 16 steps (later steps failed on driver navigation, not an observed app fault); 360dp/200 % result-screen text checks not green; **TalkBack** not driven; no arm64 / physical device.
+- **P185:** TalkBack was enabled and responded on the emulator but a scripted traversal of the scanner path could not be made reliable — a human TalkBack pass on a real device is still wanted; no arm64 / physical device. (P184's journey, 360dp text and manual-valuation/sale gaps are closed by P185.)
 
 - **TalkBack itself was never run** (P181 used the `uiautomator` accessibility-tree proxy, not a
   real screen-reader pass).
@@ -61,7 +62,7 @@ report). None of these branches is merged or pushed.
 
 1. Verify the Android toolchain (SDK, emulator or device, `ANDROID_SERIAL`) is actually present in
    your session — P159 found it entirely absent in a clean session; P166/P167 had to install it.
-2. Start from P184's tip (`953aa017d2f950e77d1319dd238dcd35d83b5ded`) — it is the most
+2. Start from P185's tip (`b4100bcb4522d77fbf3e569f433e3307dea9c55e`) — it is the most
    device-verified point in the lineage, but re-verify rather than assume if picking this up much
    later; do not build further on an unverified re-read of the tip.
 3. Check `docs/handover/STATE_RECONCILIATION.md` for the divergent local migration counts before

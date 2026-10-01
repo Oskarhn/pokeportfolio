@@ -5,6 +5,9 @@ repository is PUBLIC), not merged, nothing deployed. Code tip when this was writ
 `953aa017d2f950e77d1319dd238dcd35d83b5ded`. Scripts: `apps/mobile-spike/scripts/p184/`; raw evidence
 (gitignored): `apps/mobile-spike/.build/p184-evidence/`.
 
+> **Superseded for the open items by [P185](P185_NATIVE_RC_CLOSURE.md)** (`SUCCESS_P185_NATIVE_RC_VERIFIED`): the full journey, the
+> 360 dp text checks, manual valuation and sale are closed there. This document stays the record of the scanner hardening.
+
 **Status: `PARTIAL_P184_NATIVE_RC_HARDENING`.** The scanner and its safety properties are verified on a
 release APK; the full release-candidate journey and the accessibility sweep are not fully green (see
 "Not verified").
