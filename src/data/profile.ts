@@ -1,5 +1,6 @@
 import { supabase } from './supabase-client'
-import { parseMinorUnits } from './money'
+import type { LeasedDb } from './leased-client'
+import { parseMinorUnits, serializeMinorUnits } from './money'
 import type { CardCondition } from './collection'
 import type { Database } from './database.types'
 
@@ -106,7 +107,12 @@ export interface ProfileUpdate {
   useEuPricing?: boolean
 }
 
-export async function updateMyProfile(update: ProfileUpdate): Promise<void> {
+/**
+ * The row to update is named by the LEASE, not by asking Supabase who is signed in: the lease is the
+ * identity the change was typed under (P145). Asking `auth.getUser()` here was a read-then-write
+ * that could resolve B and then write A's typed value into B's profile.
+ */
+export async function updateMyProfile(update: ProfileUpdate, db: LeasedDb): Promise<void> {
   const patch: Record<string, unknown> = {}
   if ('displayName' in update) patch.display_name = update.displayName
   if (update.theme !== undefined) patch.theme = update.theme
@@ -120,7 +126,7 @@ export async function updateMyProfile(update: ProfileUpdate): Promise<void> {
     patch.collection_default_sort = update.collectionDefaultSort
   }
   if (update.lowValueThresholdMinor !== undefined) {
-    patch.low_value_threshold_minor = Number(update.lowValueThresholdMinor)
+    patch.low_value_threshold_minor = serializeMinorUnits(update.lowValueThresholdMinor)
   }
   if (update.hideLowValueByDefault !== undefined) {
     patch.hide_low_value_by_default = update.hideLowValueByDefault
@@ -130,13 +136,9 @@ export async function updateMyProfile(update: ProfileUpdate): Promise<void> {
   if (update.hideValues !== undefined) patch.hide_values = update.hideValues
   if (update.useEuPricing !== undefined) patch.use_eu_pricing = update.useEuPricing
 
-  const { data: userData } = await supabase.auth.getUser()
-  const userId = userData.user?.id
-  if (!userId) throw new Error('not authenticated')
-
-  const { error } = await supabase
+  const { error } = await db
     .from('profiles')
     .update(patch as Database['public']['Tables']['profiles']['Update'])
-    .eq('id', userId)
+    .eq('id', db.identityLease.userId)
   if (error) throw new Error(error.message)
 }

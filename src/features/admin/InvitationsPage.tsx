@@ -1,6 +1,8 @@
 import { useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '../../data/supabase-client'
+import { leasedDb } from '../../data/leased-db'
+import { useLeasedAction, useLeasedMutation } from '../../auth/useLeasedMutation'
 import { Button, FormMessage, TextField } from '../../ui/form'
 
 const EXPIRY_HOURS = 168
@@ -42,9 +44,10 @@ export function InvitationsPage() {
     },
   })
 
-  const create = useMutation({
-    mutationFn: async () => {
-      const { data, error: rpcError } = await supabase
+  // An invitation typed under one admin account is never issued under another (P145).
+  const create = useLeasedAction({
+    mutationFn: async (lease) => {
+      const { data, error: rpcError } = await leasedDb(lease)
         .rpc('create_invitation', {
           p_email: email.trim(),
           p_expires_in_hours: EXPIRY_HOURS,
@@ -68,9 +71,9 @@ export function InvitationsPage() {
     },
   })
 
-  const revoke = useMutation({
-    mutationFn: async (invitationId: string) => {
-      const { error: rpcError } = await supabase.rpc('revoke_invitation', {
+  const revoke = useLeasedMutation({
+    mutationFn: async (invitationId: string, lease) => {
+      const { error: rpcError } = await leasedDb(lease).rpc('revoke_invitation', {
         p_invitation_id: invitationId,
       })
       if (rpcError) throw new Error(rpcError.message)

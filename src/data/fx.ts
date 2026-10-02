@@ -1,5 +1,7 @@
 import { supabase } from './supabase-client'
+import type { Db } from './leased-client'
 import type { CurrencyCode } from '../domain/currency'
+import { normalizeDecimalText } from './money'
 
 /**
  * Client for the fetch-fx-rate Edge Function (M8, FINANCIAL_MODEL.md §7). Resolves and caches a
@@ -41,7 +43,7 @@ const GENERIC_UNAVAILABLE_MESSAGE =
 export async function getLatestFxRatesToNok(): Promise<Partial<Record<'EUR' | 'USD', string>>> {
   const { data, error } = await supabase
     .from('fx_rates')
-    .select('base_currency, rate, rate_date')
+    .select('base_currency, rate::text, rate_date')
     .in('base_currency', ['EUR', 'USD'])
     .eq('quote_currency', 'NOK')
     .order('rate_date', { ascending: false })
@@ -50,16 +52,22 @@ export async function getLatestFxRatesToNok(): Promise<Partial<Record<'EUR' | 'U
   const result: Partial<Record<'EUR' | 'USD', string>> = {}
   for (const row of data) {
     const base = row.base_currency as 'EUR' | 'USD'
-    if (!(base in result)) result[base] = row.rate.toString()
+    if (!(base in result)) result[base] = normalizeDecimalText(row.rate)
   }
   return result
 }
 
+/**
+ * Inside a mutation the caller MUST pass the mutation's leased client: this is the awaited step that
+ * sits between the user pressing Save and the final write, and the rate it returns is about to be
+ * recorded. Only the stand-alone "Norges Bank" preview button uses the shared client (default).
+ */
 export async function fetchFxRate(
   baseCurrency: Exclude<CurrencyCode, 'NOK'>,
   date: string,
+  db: Db = supabase,
 ): Promise<ResolvedFxRate> {
-  const invoked = await supabase.functions.invoke('fetch-fx-rate', {
+  const invoked = await db.functions.invoke('fetch-fx-rate', {
     body: { baseCurrency, date },
   })
   const body = invoked.data as FxFunctionBody | null

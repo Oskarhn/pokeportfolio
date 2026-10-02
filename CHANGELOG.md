@@ -10,6 +10,121 @@ they were**.
 
 ## [Unreleased]
 
+### Changed — 2026-09-25 — Scanner + Price Check integrated with the auth/export candidate (P164)
+
+Not released; local integration of two unreleased candidates (hosted database is still 104, this tree is 106).
+
+- A price response whose numbers the transport had to rewrite is now refused as a whole (Price Check: "malformed response"; the existing
+  pricing consumer: no prices) instead of showing a rounded number as an exact price (D-164). Missing price is still no price.
+- New cross-track browser suite (identity switches, refresh outages, large exports, scanner batches) and skew tests for `search-prices`.
+- No migration. Edge Functions to redeploy when released: `search-prices`, `ingest-prices` (see `docs/API_SOURCES.md`).
+
+### Fixed — 2026-09-19 — A failed session refresh no longer makes Save do nothing (P149)
+
+Not released; local fix on top of the P148 candidate.
+
+- When the access token had expired and the auth service could not be reached, pressing Save on a financial form did nothing
+  and showed nothing: the sign-in was wrongly treated as changed and the result of the click was discarded. The write is
+  still refused (nothing is sent, nothing is saved), but the form now says "Could not verify your session. Check your
+  connection and try again.", keeps what was typed and its request key, and a later Save goes through once and only once
+  (D-140). A real sign-out or account switch is still detected and still stops the operation, and it takes precedence over
+  a failed refresh, so nothing about one account is shown in another's screen.
+- The same misreport is gone from the recovery-link password form.
+- New tests pin what the installed auth library does when a refresh fails, run the identity lease against the real library,
+  drive the form's submit hook without a DOM, and repeat it all in a real browser with only the refresh endpoint made
+  unreachable.
+
+### Fixed — 2026-09-19 — Independent review of the integrated candidate (P148)
+
+Not released; local review of the P147 candidate.
+
+- The recovery-link password form no longer changes another account's password. A tab that had not heard another tab sign
+  in as B could submit A's new password while the browser held B's session; the change is now refused unless the browser's
+  session belongs to the form's user (D-139).
+- New independent tests: the exact-money transport guard against the platform JSON parser, a deterministic checkpoint
+  matrix of identity events x large amounts against a real database (purchase, negative uncosted sale, portfolio reset),
+  and real-browser runs of the same with 2^53-scale amounts.
+
+### Fixed — 2026-09-19 — Local integrated candidate: sign-in identity protection and exact money on the same client (P147; integrates P143–P146)
+
+Not released. This is the local integration of the two hardening tracks (`LOCAL_INTEGRATED_CANDIDATE`); Production
+still runs the P141 build.
+
+- Every write to user data now goes through a client that is both bound to the identity that started it (D-136) and
+  guarded against inexact money (D-137). The two tracks had each been built on a client of their own; merging them
+  would have left writes unguarded, so one factory now builds both (D-138) and a test fails if a construction path
+  lacks the guard.
+- Tests prove the two protections together: a large amount survives a leased request digit for digit; a sign-in
+  switch, a sign-out or an A → B → A sequence during a running purchase sends nothing; a same-user token refresh does
+  not stop it; a replayed or retried purchase or sale is still recognised as the same request, and one minor unit of
+  difference above 2^53 is still a different one. Each protection was removed in turn to confirm a test fails.
+- Fixed a test that failed only between local midnight and 02:00 (it expected the UTC date; the product correctly uses
+  the local date) and now pins those hours with a fake clock.
+- Fixed a parallel-only failure in the authenticated browser suite: a test that sold a card from the shared fixture
+  inventory could sell a lot another test had just created. Selling tests now use their own inventory.
+- One database test no longer leaves a synthetic user behind after a run.
+- Two browser specs that claimed to hold a slow response held nothing (their route never matched the real URL) and passed by
+  luck; they now hold the request for real, prove it, and the product passes them. Two sign-out and account-entry
+  flakes were traced (one test race, one local Edge Runtime resource limit) and one absurd-amount spec no longer
+  pollutes the shared test ledger.
+- Database: 106 migrations (the two from P144 below); no migration of its own.
+
+### Fixed — 2026-09-19 — A running purchase, sale, opening or reset can no longer continue under another account (P145, D-136, P130-23)
+
+- Signing in as somebody else in another tab while a submission was in flight could record the first person's
+  entry in the second person's account — the sharpest case was a confirmed "Reset portfolio data" deleting the wrong
+  person's portfolio. Every write now carries an identity lease taken when the button is pressed; the request layer
+  refuses to send anything under a different identity, and a token refresh for the same person does not interrupt it.
+
+### Fixed — 2026-09-18 — The signed-in screen is keyed by the account; signing out always ends local access (P143, D-134, P130-22/23)
+
+- Switching account in another tab now clears the previous account's typed input, scanner batch and caches instead of
+  letting the next submit go out under the new account.
+- "Sign out" ends the session on this device even when the server cannot be reached (it says so, without technical
+  detail), and the old session cannot come back on reload.
+
+### Fixed — 2026-09-18 — Discounts, uncosted losses, dates and blank prices (P144, D-135, P130-16/17/18/25)
+
+- A discount that also consumes shipping and customs is now allocated instead of rejected; no line's cost goes
+  negative and totals stay exact.
+- A sale of a card with unknown cost whose fees exceed its price can now be recorded; its cash result is kept with
+  its sign and its realised result stays unknown.
+- Completed events must fall between 1996-10-20 and tomorrow (UTC) and are refused with a named error otherwise.
+- A blank price field is asked for instead of being saved as a known zero; a typed 0 is still a known zero.
+- Database: two migrations (`20260918120000_p144_financial_boundary_semantics`, `20260918120010_p144_privilege_baseline`).
+
+### Fixed — 2026-09-19 — Money above 2^53 minor units no longer changes on the way to or from the database (P146, P130-19)
+
+- Every money write and read now crosses the client/database boundary as a decimal string; the client holds
+  `bigint` (D-137, invariant M3). Before, an amount above 9,007,199,254,740,991 minor units — a unit price, a
+  shipping charge, a manual valuation, the low-value threshold, an opening total, a portfolio pagination cursor —
+  was silently rounded by `Number()` on the way in, and any column not cast `::text` was rounded by `JSON.parse` on
+  the way out. Signed results below −2^53 and sums above 2^53 are exact end to end.
+- The app's Supabase client now refuses a request body carrying an integer a JavaScript number cannot hold, and
+  quotes such a number in a response before it is parsed (`src/data/exact-json-guard.ts`).
+- `fx_rate_to_nok` and cached FX rates are read as text (18 significant digits do not fit in a double).
+- Amounts on Card Detail, Holding Detail provenance, openings, the accessible chart text and the Quick Portfolio CSV are
+  formatted from the exact value instead of through a float. The Home chart no longer throws for a portfolio above
+  2^53 minor units; its coordinate is explicitly non-authoritative.
+- A provider price too large to convert exactly is treated as absent instead of rounded.
+- No migration and no deployment ordering: the change is entirely in the client bundle and one adapter helper.
+- Still open: P130-21 (Quick Portfolio CSV formula injection / labels / download timing) and P130-26.
+### Fixed — 2026-09-24 — Safe, exact, lease-bound exports (P157, P162, P130-21, D-141)
+
+- **CSV formula injection.** All CSV files are written by declared column kind: free text starting
+  (after any whitespace/control/invisible characters) with `= + - @` or the full-width forms, or
+  starting with tab/CR/LF, gets a leading apostrophe; canonical kinds are written verbatim only when
+  canonical; signed money stays numeric. The JSON backup is unchanged and keeps raw text.
+- **Portfolio Quick CSV** now uses the same writer: exact money (a value past 2^53 is no longer
+  rounded), quoted CR/LF, UTF-8 BOM and terminating CRLF, honest `Value status` header (was
+  `Cost basis state`), an error instead of silent truncation at the page ceiling, a visible error
+  message, and the shared file-delivery path.
+- **Account isolation.** Exports run under the identity lease they started with and fail (never mix
+  accounts) if it ends mid-run — A → B, sign-out and A → B → A alike; a same-user token refresh does
+  not. The Export page gains Cancel, aborts on navigation or account change, and the files are not
+  shown or handed to the browser once their lease has ended.
+- CSV schema v2: `purchase_lines.csv` and `sale_lines.csv` gain a trailing `Currency` column.
+
 ### Fixed — 2026-09-15 — JPY FX conversion: SQL currency-exponent awareness and Norges Bank UNIT_MULT normalization (P136, integrating P133/P134/P135, P130-02, D-132)
 
 - `fx_rate_to_nok` means NOK per one MAJOR unit of the source currency everywhere it is used —

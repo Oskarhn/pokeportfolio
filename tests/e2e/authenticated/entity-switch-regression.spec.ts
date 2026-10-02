@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test'
 import { createFixtureHolding, createFixturePurchase } from './fixtures'
 import { seedCatalog } from '../../db/setup'
+import { holdRequest } from './support/two-tab'
 
 /**
  * P111 §13-14 — real, signed-in browser regressions for two entity-switch bug classes the prior
@@ -130,22 +131,19 @@ test.describe('SaleFormPage — A -> B -> A entity-switch regression (P109 full 
     await page.locator('input[type="number"]').first().fill('1')
     await page.getByLabel('Sale price per unit').fill('80')
 
-    let releaseA: () => void = () => {}
-    const aReleased = new Promise<void>((resolve) => {
-      releaseA = resolve
-    })
-    await page.route('**/rest/v1/rpc/create_sale', async (route) => {
-      await aReleased
-      await route.continue()
-    })
+    // The data layer calls create_sale as `.rpc(...).select(<columns>)`, so the URL carries a query
+    // string that a bare `**/rest/v1/rpc/create_sale` glob does not match: this spec used to hold
+    // nothing and passed without ever creating the race it is about (P147). holdRequest resolves
+    // `reached` only once a matching request really is being held.
+    const saleHold = await holdRequest(page, /\/rest\/v1\/rpc\/create_sale(?:\?.*)?$/, 'POST')
 
     await page.getByRole('button', { name: /save sale/i }).click()
+    await saleHold.reached
 
     await navigateWithinApp(page, `/sales/new?holdingId=${holdingB}`)
     await expect(page.getByText(/charizard/i).first()).toBeVisible({ timeout: 10_000 })
 
-    releaseA()
-    await page.unroute('**/rest/v1/rpc/create_sale')
+    saleHold.release()
 
     // Give A's now-released response a moment to resolve inside the app, then confirm it did
     // not navigate B away or contaminate B's fields.

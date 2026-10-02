@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearch } from '@tanstack/react-router'
-import { useMutation, useQueries, useQueryClient } from '@tanstack/react-query'
+import { useQueries, useQueryClient } from '@tanstack/react-query'
 import { getHoldingLots, type AcquisitionLot } from '../../data/collection'
 import {
   listPortfolio,
@@ -10,13 +10,20 @@ import {
 } from '../../data/portfolio'
 import { createSale, type SaleLineInput } from '../../data/sales'
 import { fetchFxRate, FxRateNotFoundError } from '../../data/fx'
-import { fromDecimalString, toDecimalString } from '../../domain/money'
+import { leasedDb } from '../../data/leased-db'
+import { useLeasedMutation } from '../../auth/useLeasedMutation'
+import { toDecimalString } from '../../domain/money'
 import { allocate } from '../../domain/allocation'
 import { suggestFifoOrder } from '../../domain/sales'
 import type { CurrencyCode } from '../../domain/currency'
 import { CONDITION_LABEL, GRADER_LABEL, ORIGIN_LABEL } from '../collection/labels'
 import { CardImage } from '../catalog/CardImage'
 import { Button, FormMessage, SelectField, TextField } from '../../ui/form'
+import {
+  parseNullableMoneyInput,
+  parseOptionalChargeInput,
+  requireKnownAmount,
+} from '../../ui/money-format'
 import { ItemPicker } from './ItemPicker'
 import { KeyedPrefillGuard } from './keyed-prefill-guard'
 import {
@@ -31,12 +38,6 @@ import { localTodayIso } from '../../platform/local-date'
 const CURRENCIES: CurrencyCode[] = ['NOK', 'EUR', 'USD', 'GBP', 'JPY']
 
 const today = localTodayIso
-
-function parseAmount(raw: string, currency: CurrencyCode): bigint {
-  const trimmed = raw.trim().replace(',', '.')
-  if (trimmed === '') return 0n
-  return fromDecimalString(trimmed, currency).minorUnits
-}
 
 function lotCostLabel(lot: AcquisitionLot): string {
   switch (lot.costBasisState) {
@@ -288,12 +289,17 @@ export function SaleFormPage() {
 
   const preview = useMemo(() => {
     try {
-      const fees = parseAmount(fields.feesInput, fields.currency)
-      const shippingCost = parseAmount(fields.shippingCostInput, fields.currency)
-      const shippingCharged = parseAmount(fields.shippingChargedInput, fields.currency)
-      const lineGross = activeLines.map(
-        (l) => parseAmount(l.unitGrossInput || '0', fields.currency) * BigInt(l.quantity),
-      )
+      // Fees/shipping: blank = no such charge. A line's sale PRICE is different — blank is an
+      // unknown amount, so the preview waits for it instead of showing a fabricated 0 (P130-25).
+      const fees = parseOptionalChargeInput(fields.feesInput, fields.currency)
+      const shippingCost = parseOptionalChargeInput(fields.shippingCostInput, fields.currency)
+      const shippingCharged = parseOptionalChargeInput(fields.shippingChargedInput, fields.currency)
+      const lineGross: bigint[] = []
+      for (const l of activeLines) {
+        const unit = parseNullableMoneyInput(l.unitGrossInput, fields.currency)
+        if (unit === null) return null
+        lineGross.push(unit * BigInt(l.quantity))
+      }
       const gross = lineGross.reduce((a, b) => a + b, 0n)
       const net = gross - fees - shippingCost + shippingCharged
       const allocFees = allocate(fees, lineGross)
@@ -320,15 +326,24 @@ export function SaleFormPage() {
   // server-side effect already happened (or didn't); this only guards the frontend's reaction to
   // it. Global cache invalidation still runs unconditionally on success — a real sale changing
   // Portfolio/Sales/Home figures is correct regardless of which local form is currently open.
-  const submitMutation = useMutation({
-    mutationFn: async (submissionGeneration: number) => {
+  // P145: fx lookup then create_sale, under one identity lease (see PurchaseFormPage). The
+  // idempotency key is unchanged: a retry by the SAME identity reuses it, and an aborted attempt
+  // never reached create_sale, so nothing is consumed for the next person's fresh form.
+  const submitMutation = useLeasedMutation({
+    mutationFn: async (submissionGeneration: number, lease) => {
+      const db = leasedDb(lease)
       if (activeLines.length === 0) {
         throw new Error('Choose at least one card and quantity to sell.')
       }
       const lineInputs: SaleLineInput[] = activeLines.map((l) => ({
         lotId: l.lotId,
         quantity: l.quantity,
-        unitGrossMinor: parseAmount(l.unitGrossInput || '0', fields.currency),
+        // P130-25: a blank sale price is not a free sale — refuse it instead of submitting 0.
+        unitGrossMinor: requireKnownAmount(
+          l.unitGrossInput,
+          fields.currency,
+          'Enter a sale price per unit — type 0 if it was given away.',
+        ),
       }))
 
       let resolvedFxRate: string | undefined
@@ -339,7 +354,8 @@ export function SaleFormPage() {
           resolvedFxRate = fields.fxRate.trim()
           resolvedFxDate = fields.soldOn
         } else if (!fields.fxRate) {
-          const result = await fetchFxRate(fields.currency, fields.soldOn)
+          const result = await fetchFxRate(fields.currency, fields.soldOn, db)
+          lease.assertCurrent()
           resolvedFxRate = result.rate
           resolvedFxDate = result.rateDate
           // Only reflect the fetched rate back into the visible form if the user is still on the
@@ -360,15 +376,19 @@ export function SaleFormPage() {
           soldOn: fields.soldOn,
           currency: fields.currency,
           marketplace: fields.marketplace || undefined,
-          feesMinor: parseAmount(fields.feesInput, fields.currency),
-          shippingCostMinor: parseAmount(fields.shippingCostInput, fields.currency),
-          shippingChargedMinor: parseAmount(fields.shippingChargedInput, fields.currency),
+          feesMinor: parseOptionalChargeInput(fields.feesInput, fields.currency),
+          shippingCostMinor: parseOptionalChargeInput(fields.shippingCostInput, fields.currency),
+          shippingChargedMinor: parseOptionalChargeInput(
+            fields.shippingChargedInput,
+            fields.currency,
+          ),
           fxRateToNok: resolvedFxRate,
           fxRateDate: resolvedFxDate,
           fxSource: fields.currency === 'NOK' ? undefined : fields.fxMode,
           notes: fields.notes || undefined,
         },
         fields.idempotencyKey,
+        db,
       )
       return { sale, submissionGeneration }
     },

@@ -1,5 +1,12 @@
 import { supabase } from './supabase-client'
-import { parseMinorUnits } from './money'
+import type { LeasedDb } from './leased-client'
+import {
+  normalizeDecimalText,
+  parseMinorUnits,
+  serializeMinorUnits,
+  serializeOptionalMinorUnits,
+  optionalMoneyArg,
+} from './money'
 import type { Database, Json } from './database.types'
 import type { CardCondition, Grader, GradingState, SealedIntent } from './collection'
 
@@ -52,13 +59,12 @@ function serializeLine(line: PurchaseLineInput): Json {
     grade: line.grade,
     cert_number: line.certNumber,
     quantity: line.quantity,
-    unit_price_minor: Number(line.unitPriceMinor),
+    unit_price_minor: serializeMinorUnits(line.unitPriceMinor),
     spend_class: line.spendClass,
     storage_location_id: line.storageLocationId,
     is_favorite: line.isFavorite,
     lot_notes: line.lotNotes,
-    manual_value_minor:
-      line.manualValueMinor === undefined ? undefined : Number(line.manualValueMinor),
+    manual_value_minor: serializeOptionalMinorUnits(line.manualValueMinor),
   }
 }
 
@@ -105,7 +111,7 @@ interface PurchaseRow {
   customs_minor: string
   discount_minor: string
   total_minor: string
-  fx_rate_to_nok: number
+  fx_rate_to_nok: string
   fx_rate_date: string
   fx_source: FxSource
   total_nok_minor: string
@@ -124,7 +130,7 @@ function mapPurchase(row: PurchaseRow): Purchase {
     customsMinor: parseMinorUnits(row.customs_minor),
     discountMinor: parseMinorUnits(row.discount_minor),
     totalMinor: parseMinorUnits(row.total_minor),
-    fxRateToNok: String(row.fx_rate_to_nok),
+    fxRateToNok: normalizeDecimalText(row.fx_rate_to_nok),
     fxRateDate: row.fx_rate_date,
     fxSource: row.fx_source,
     totalNokMinor: parseMinorUnits(row.total_nok_minor),
@@ -135,7 +141,7 @@ function mapPurchase(row: PurchaseRow): Purchase {
 
 const PURCHASE_COLUMNS =
   'id, purchased_on, retailer_id, currency, subtotal_minor::text, shipping_minor::text, ' +
-  'customs_minor::text, discount_minor::text, total_minor::text, fx_rate_to_nok, fx_rate_date, ' +
+  'customs_minor::text, discount_minor::text, total_minor::text, fx_rate_to_nok::text, fx_rate_date, ' +
   'fx_source, total_nok_minor::text, notes, voided_at'
 
 /**
@@ -148,16 +154,17 @@ const PURCHASE_COLUMNS =
 export async function createPurchase(
   input: PurchaseWriteInput,
   idempotencyKey: string,
+  db: LeasedDb,
 ): Promise<Purchase> {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .rpc('create_purchase', {
       p_purchased_on: input.purchasedOn,
       p_currency: input.currency,
       p_lines: input.lines.map(serializeLine),
       p_retailer_id: input.retailerId,
-      p_shipping_minor: input.shippingMinor === undefined ? undefined : Number(input.shippingMinor),
-      p_customs_minor: input.customsMinor === undefined ? undefined : Number(input.customsMinor),
-      p_discount_minor: input.discountMinor === undefined ? undefined : Number(input.discountMinor),
+      p_shipping_minor: optionalMoneyArg(input.shippingMinor),
+      p_customs_minor: optionalMoneyArg(input.customsMinor),
+      p_discount_minor: optionalMoneyArg(input.discountMinor),
       p_fx_rate_to_nok: input.fxRateToNok,
       p_fx_rate_date: input.fxRateDate,
       p_fx_source: input.fxSource,
@@ -174,17 +181,18 @@ export async function createPurchase(
 export async function updatePurchase(
   purchaseId: string,
   input: PurchaseWriteInput,
+  db: LeasedDb,
 ): Promise<Purchase> {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .rpc('update_purchase', {
       p_purchase_id: purchaseId,
       p_purchased_on: input.purchasedOn,
       p_currency: input.currency,
       p_lines: input.lines.map(serializeLine),
       p_retailer_id: input.retailerId,
-      p_shipping_minor: input.shippingMinor === undefined ? undefined : Number(input.shippingMinor),
-      p_customs_minor: input.customsMinor === undefined ? undefined : Number(input.customsMinor),
-      p_discount_minor: input.discountMinor === undefined ? undefined : Number(input.discountMinor),
+      p_shipping_minor: optionalMoneyArg(input.shippingMinor),
+      p_customs_minor: optionalMoneyArg(input.customsMinor),
+      p_discount_minor: optionalMoneyArg(input.discountMinor),
       p_fx_rate_to_nok: input.fxRateToNok,
       p_fx_rate_date: input.fxRateDate,
       p_fx_source: input.fxSource,
@@ -197,8 +205,12 @@ export async function updatePurchase(
   return mapPurchase(data)
 }
 
-export async function voidPurchase(purchaseId: string, reason?: string): Promise<void> {
-  const { error } = await supabase.rpc('void_purchase', {
+export async function voidPurchase(
+  purchaseId: string,
+  db: LeasedDb,
+  reason?: string,
+): Promise<void> {
+  const { error } = await db.rpc('void_purchase', {
     p_purchase_id: purchaseId,
     p_reason: reason,
   })

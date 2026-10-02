@@ -3,13 +3,21 @@
  * (the JSON envelope is the lossless artifact). Column contracts:
  *
  * - Stable column order; headers are plain English labels (CSV is for humans/spreadsheets).
- * - Money renders as decimal strings using the currency's minor-unit exponent, with an explicit
- *   currency column beside every original-currency amount; frozen NOK amounts say _nok.
+ *   The declared columns below are the versioned schema ({@link EXPORT_CSV_SCHEMA_VERSION}):
+ *   changes are additive (new columns appended) or a deliberate version bump, and a golden test
+ *   pins every header and kind.
+ * - Money renders as decimal strings in MAJOR units using the currency's minor-unit exponent
+ *   (JPY 0, NOK/EUR/USD 2), with an explicit currency column beside every original-currency
+ *   amount; frozen NOK amounts say NOK in the header. Exact — rendered from integer minor units
+ *   without a float.
  * - An empty cell means "not applicable / unknown" — NEVER a fabricated zero. Genuine zero
  *   renders as 0.00 (or 0 for zero-exponent currencies).
- * - Dates are YYYY-MM-DD; timestamps verbatim ISO 8601 as returned by PostgREST.
- * - Free-text cells are formula-injection-sanitized; numeric/date/enum/id cells are emitted
- *   canonically so legitimate negatives survive (see csv.ts).
+ * - Dates are YYYY-MM-DD (date-only values are never time-zone shifted); timestamps verbatim
+ *   ISO 8601 as returned by PostgREST.
+ * - Every column declares a kind ({@link CsvColumnKind}). The writer — not this file's call
+ *   sites — sanitizes free text against spreadsheet formulas and writes canonical kinds only when
+ *   the value has the canonical shape, so negatives survive in money columns while a text cell
+ *   that looks numeric does not become a trusted number (see csv.ts).
  * - Display columns (card name, set, number, variant, storage, retailer, tags) are joined at
  *   export time from the snapshot itself; id columns stay authoritative.
  *
@@ -34,8 +42,16 @@ import type {
   BackupTagRow,
   ManifestCardVariantEntry,
 } from './backup-format'
-import { buildCsvText, csvBoolean, csvFreeText, csvMoney } from './csv'
+import { buildTypedCsvText, csvBoolean, csvMoney, type CsvColumn } from './csv'
 import type { ExportSnapshot } from './snapshot-types'
+
+/**
+ * Version of the CSV column contract. v1 is the M13 suite; v2 (P157) appends a `Currency` column
+ * to purchase_lines.csv and sale_lines.csv (their amounts are in the parent's currency, which was
+ * not in the row) — additive, so a reader that addresses columns by header or by leading
+ * position is unaffected.
+ */
+export const EXPORT_CSV_SCHEMA_VERSION = 2
 
 export interface CsvFileContent {
   readonly filename: string
@@ -141,6 +157,234 @@ export interface CsvProjectionInput {
   readonly retailerNames: ReadonlyMap<string, string>
 }
 
+// ---------------------------------------------------------------------------
+// Declared columns — the versioned CSV schema. Header and kind live side by side so a cell can
+// never be sanitized (or left alone) by an accident of its position in a hand-written array.
+// ---------------------------------------------------------------------------
+
+const HOLDINGS_COLUMNS = [
+  { header: 'Holding ID', kind: 'id' },
+  { header: 'Card', kind: 'text' },
+  { header: 'Set', kind: 'text' },
+  { header: 'Number', kind: 'text' },
+  { header: 'Variant', kind: 'text' },
+  { header: 'Kind', kind: 'enum' },
+  { header: 'Condition', kind: 'enum' },
+  { header: 'Grade', kind: 'decimal' },
+  { header: 'Grader', kind: 'enum' },
+  { header: 'Cert number', kind: 'text' },
+  { header: 'Live quantity', kind: 'integer' },
+  { header: 'Favourite', kind: 'boolean' },
+  { header: 'Tags', kind: 'text' },
+  { header: 'Collections', kind: 'text' },
+  { header: 'Notes', kind: 'text' },
+  { header: 'Created at', kind: 'timestamp' },
+  { header: 'Updated at', kind: 'timestamp' },
+] as const satisfies readonly CsvColumn[]
+
+const ACQUISITION_LOTS_COLUMNS = [
+  { header: 'Lot ID', kind: 'id' },
+  { header: 'Holding ID', kind: 'id' },
+  { header: 'Card', kind: 'text' },
+  { header: 'Set', kind: 'text' },
+  { header: 'Number', kind: 'text' },
+  { header: 'Variant', kind: 'text' },
+  { header: 'Origin', kind: 'enum' },
+  { header: 'Cost basis state', kind: 'enum' },
+  { header: 'Unit cost', kind: 'money' },
+  { header: 'Currency', kind: 'enum' },
+  { header: 'Unit cost NOK', kind: 'money' },
+  { header: 'Residual', kind: 'money' },
+  { header: 'Residual NOK', kind: 'money' },
+  { header: 'Quantity', kind: 'integer' },
+  { header: 'Quantity remaining', kind: 'integer' },
+  { header: 'Sealed intent', kind: 'enum' },
+  { header: 'Storage location', kind: 'text' },
+  { header: 'Purchase line ID', kind: 'id' },
+  { header: 'Acquired on', kind: 'date' },
+  { header: 'Voided at', kind: 'timestamp' },
+  { header: 'Notes', kind: 'text' },
+  { header: 'Created at', kind: 'timestamp' },
+] as const satisfies readonly CsvColumn[]
+
+const MANUAL_VALUATIONS_COLUMNS = [
+  { header: 'Valuation ID', kind: 'id' },
+  { header: 'Holding ID', kind: 'id' },
+  { header: 'Card', kind: 'text' },
+  { header: 'Set', kind: 'text' },
+  { header: 'Effective from', kind: 'date' },
+  { header: 'Value', kind: 'money' },
+  { header: 'Currency', kind: 'enum' },
+  { header: 'Value NOK', kind: 'money' },
+  { header: 'Note', kind: 'text' },
+  { header: 'Superseded at', kind: 'timestamp' },
+  { header: 'Created at', kind: 'timestamp' },
+] as const satisfies readonly CsvColumn[]
+
+const PURCHASES_COLUMNS = [
+  { header: 'Purchase ID', kind: 'id' },
+  { header: 'Purchased on', kind: 'date' },
+  { header: 'Retailer', kind: 'text' },
+  { header: 'Currency', kind: 'enum' },
+  { header: 'Subtotal', kind: 'money' },
+  { header: 'Shipping', kind: 'money' },
+  { header: 'Customs', kind: 'money' },
+  { header: 'Discount', kind: 'money' },
+  { header: 'Total', kind: 'money' },
+  { header: 'Total NOK', kind: 'money' },
+  { header: 'FX rate to NOK', kind: 'rate' },
+  { header: 'FX rate date', kind: 'date' },
+  { header: 'FX source', kind: 'enum' },
+  { header: 'Origin', kind: 'enum' },
+  { header: 'Voided at', kind: 'timestamp' },
+  { header: 'Notes', kind: 'text' },
+  { header: 'Created at', kind: 'timestamp' },
+  { header: 'Updated at', kind: 'timestamp' },
+] as const satisfies readonly CsvColumn[]
+
+const PURCHASE_LINES_COLUMNS = [
+  { header: 'Line ID', kind: 'id' },
+  { header: 'Purchase ID', kind: 'id' },
+  { header: 'Purchased on', kind: 'date' },
+  { header: 'Line type', kind: 'enum' },
+  { header: 'Spend class', kind: 'enum' },
+  { header: 'Description', kind: 'text' },
+  { header: 'Card', kind: 'text' },
+  { header: 'Set', kind: 'text' },
+  { header: 'Number', kind: 'text' },
+  { header: 'Variant', kind: 'text' },
+  { header: 'Condition', kind: 'enum' },
+  { header: 'Quantity', kind: 'integer' },
+  { header: 'Unit price', kind: 'money' },
+  { header: 'Line total', kind: 'money' },
+  { header: 'Allocated shipping', kind: 'money' },
+  { header: 'Allocated customs', kind: 'money' },
+  { header: 'Allocated discount', kind: 'money' },
+  { header: 'Attributable cost', kind: 'money' },
+  { header: 'Attributable cost NOK', kind: 'money' },
+  { header: 'Created at', kind: 'timestamp' },
+  // v2 (additive): the currency of every non-NOK amount above — the parent purchase's currency.
+  { header: 'Currency', kind: 'enum' },
+] as const satisfies readonly CsvColumn[]
+
+const SALES_COLUMNS = [
+  { header: 'Sale ID', kind: 'id' },
+  { header: 'Sold on', kind: 'date' },
+  { header: 'Marketplace', kind: 'text' },
+  { header: 'Currency', kind: 'enum' },
+  { header: 'Gross', kind: 'money' },
+  { header: 'Fees', kind: 'money' },
+  { header: 'Shipping cost', kind: 'money' },
+  { header: 'Shipping charged', kind: 'money' },
+  { header: 'Net proceeds', kind: 'money' },
+  { header: 'Net proceeds NOK', kind: 'money' },
+  { header: 'Realized result NOK', kind: 'money' },
+  { header: 'Proceeds from uncosted NOK', kind: 'money' },
+  { header: 'FX rate to NOK', kind: 'rate' },
+  { header: 'FX rate date', kind: 'date' },
+  { header: 'FX source', kind: 'enum' },
+  { header: 'Voided at', kind: 'timestamp' },
+  { header: 'Notes', kind: 'text' },
+  { header: 'Created at', kind: 'timestamp' },
+  { header: 'Updated at', kind: 'timestamp' },
+] as const satisfies readonly CsvColumn[]
+
+const SALE_LINES_COLUMNS = [
+  { header: 'Line ID', kind: 'id' },
+  { header: 'Sale ID', kind: 'id' },
+  { header: 'Sold on', kind: 'date' },
+  { header: 'Lot ID', kind: 'id' },
+  { header: 'Card', kind: 'text' },
+  { header: 'Set', kind: 'text' },
+  { header: 'Number', kind: 'text' },
+  { header: 'Variant', kind: 'text' },
+  { header: 'Quantity', kind: 'integer' },
+  { header: 'Unit gross', kind: 'money' },
+  { header: 'Line gross', kind: 'money' },
+  { header: 'Allocated fees', kind: 'money' },
+  { header: 'Allocated shipping', kind: 'money' },
+  { header: 'Allocated shipping charged', kind: 'money' },
+  { header: 'Net proceeds', kind: 'money' },
+  { header: 'Net proceeds NOK', kind: 'money' },
+  { header: 'Cost basis NOK', kind: 'money' },
+  { header: 'Realized result NOK', kind: 'money' },
+  { header: 'Created at', kind: 'timestamp' },
+  // v2 (additive): the currency of every non-NOK amount above — the parent sale's currency.
+  { header: 'Currency', kind: 'enum' },
+] as const satisfies readonly CsvColumn[]
+
+const LOT_DISPOSALS_COLUMNS = [
+  { header: 'Disposal ID', kind: 'id' },
+  { header: 'Lot ID', kind: 'id' },
+  { header: 'Card', kind: 'text' },
+  { header: 'Kind', kind: 'enum' },
+  { header: 'Disposed on', kind: 'date' },
+  { header: 'Quantity', kind: 'integer' },
+  { header: 'Cost basis NOK', kind: 'money' },
+  { header: 'Sale line ID', kind: 'id' },
+  { header: 'Voided at', kind: 'timestamp' },
+  { header: 'Created at', kind: 'timestamp' },
+] as const satisfies readonly CsvColumn[]
+
+const LOT_COST_ADJUSTMENTS_COLUMNS = [
+  { header: 'Adjustment ID', kind: 'id' },
+  { header: 'Lot ID', kind: 'id' },
+  { header: 'Kind', kind: 'enum' },
+  { header: 'Occurred on', kind: 'date' },
+  { header: 'Amount', kind: 'money' },
+  { header: 'Currency', kind: 'enum' },
+  { header: 'Amount NOK', kind: 'money' },
+  { header: 'Note', kind: 'text' },
+  { header: 'Purchase line ID', kind: 'id' },
+  { header: 'Created at', kind: 'timestamp' },
+] as const satisfies readonly CsvColumn[]
+
+const OPENINGS_COLUMNS = [
+  { header: 'Opening ID', kind: 'id' },
+  { header: 'Date', kind: 'date' },
+  { header: 'Product', kind: 'text' },
+  { header: 'Quantity', kind: 'integer' },
+  { header: 'Opening cost NOK', kind: 'money' },
+  { header: 'Cost source', kind: 'enum' },
+  { header: 'Tracking completeness', kind: 'enum' },
+  { header: 'Bulk remainder estimate NOK', kind: 'money' },
+  { header: 'Bulk remainder count', kind: 'integer' },
+  { header: 'Purchase provenance', kind: 'enum' },
+  { header: 'Reconciliation', kind: 'enum' },
+  { header: 'Voided at', kind: 'timestamp' },
+  { header: 'Notes', kind: 'text' },
+  { header: 'Created at', kind: 'timestamp' },
+] as const satisfies readonly CsvColumn[]
+
+const CUSTOM_COLLECTIONS_COLUMNS = [
+  { header: 'Collection ID', kind: 'id' },
+  { header: 'Name', kind: 'text' },
+  { header: 'Description', kind: 'text' },
+  { header: 'Colour', kind: 'text' },
+  { header: 'Sort order', kind: 'integer' },
+  { header: 'Member holding IDs', kind: 'text' },
+  { header: 'Created at', kind: 'timestamp' },
+] as const satisfies readonly CsvColumn[]
+
+/** The whole declared schema, keyed by file — the single source for docs and the golden test. */
+export const EXPORT_CSV_SCHEMA: Readonly<Record<ExportCsvFilename, readonly CsvColumn[]>> = {
+  'holdings.csv': HOLDINGS_COLUMNS,
+  'acquisition_lots.csv': ACQUISITION_LOTS_COLUMNS,
+  'manual_valuations.csv': MANUAL_VALUATIONS_COLUMNS,
+  'purchases.csv': PURCHASES_COLUMNS,
+  'purchase_lines.csv': PURCHASE_LINES_COLUMNS,
+  'sales.csv': SALES_COLUMNS,
+  'sale_lines.csv': SALE_LINES_COLUMNS,
+  'lot_disposals.csv': LOT_DISPOSALS_COLUMNS,
+  'lot_cost_adjustments.csv': LOT_COST_ADJUSTMENTS_COLUMNS,
+  'openings.csv': OPENINGS_COLUMNS,
+  'custom_collections.csv': CUSTOM_COLLECTIONS_COLUMNS,
+}
+
+// ---------------------------------------------------------------------------
+// Identity display columns (all free text — the writer sanitizes by column kind)
+// ---------------------------------------------------------------------------
+
 interface IdentityColumns {
   readonly cardName: string
   readonly setName: string
@@ -155,10 +399,10 @@ function variantIdentity(entry: ManifestCardVariantEntry): IdentityColumns {
     .filter((part) => part !== '' && part !== 'normal')
     .join(' · ')
   return {
-    cardName: csvFreeText(entry.card_name),
-    setName: csvFreeText(entry.set_name),
-    collectorNumber: csvFreeText(entry.card_local_id),
-    variant: csvFreeText(descriptor === '' ? null : descriptor),
+    cardName: entry.card_name ?? '',
+    setName: entry.set_name ?? '',
+    collectorNumber: entry.card_local_id ?? '',
+    variant: descriptor,
   }
 }
 
@@ -170,16 +414,16 @@ function identityFor(holding: BackupHoldingRow, input: CsvProjectionInput): Iden
   if (holding.sealed_product_id !== null) {
     return {
       ...NO_IDENTITY,
-      cardName: csvFreeText(input.sealedProductNames.get(holding.sealed_product_id) ?? null),
+      cardName: input.sealedProductNames.get(holding.sealed_product_id) ?? '',
     }
   }
   if (holding.manual_card_id !== null) {
     const entry = input.manualCardIndex.get(holding.manual_card_id)
     if (!entry) return NO_IDENTITY
     return {
-      cardName: csvFreeText(entry.name),
-      setName: csvFreeText(entry.set_name),
-      collectorNumber: csvFreeText(entry.collector_number),
+      cardName: entry.name,
+      setName: entry.set_name ?? '',
+      collectorNumber: entry.collector_number ?? '',
       variant: '',
     }
   }
@@ -253,44 +497,20 @@ export function buildHoldingsCsv(input: CsvProjectionInput): CsvFileContent {
         identity.collectorNumber,
         identity.variant,
         h.holding_kind,
-        h.condition ?? '',
-        h.grade === null ? '' : String(h.grade),
-        h.grader ?? '',
-        csvFreeText(h.cert_number),
+        h.condition,
+        h.grade === null ? null : String(h.grade),
+        h.grader,
+        h.cert_number,
         String(liveQuantity.get(h.id) ?? 0),
         csvBoolean(h.is_favorite),
-        csvFreeText((tagsByHolding.get(h.id) ?? []).join('; ') || null),
-        csvFreeText((collectionsByHolding.get(h.id) ?? []).join('; ') || null),
-        csvFreeText(h.notes),
+        (tagsByHolding.get(h.id) ?? []).join('; '),
+        (collectionsByHolding.get(h.id) ?? []).join('; '),
+        h.notes,
         h.created_at,
         h.updated_at,
       ]
     })
-  return {
-    filename: 'holdings.csv',
-    text: buildCsvText(
-      [
-        'Holding ID',
-        'Card',
-        'Set',
-        'Number',
-        'Variant',
-        'Kind',
-        'Condition',
-        'Grade',
-        'Grader',
-        'Cert number',
-        'Live quantity',
-        'Favourite',
-        'Tags',
-        'Collections',
-        'Notes',
-        'Created at',
-        'Updated at',
-      ],
-      rows,
-    ),
-  }
+  return { filename: 'holdings.csv', text: buildTypedCsvText(HOLDINGS_COLUMNS, rows) }
 }
 
 // ---------------------------------------------------------------------------
@@ -313,54 +533,26 @@ export function buildAcquisitionLotsCsv(input: CsvProjectionInput): CsvFileConte
       lot.origin,
       lot.cost_basis_state,
       csvMoney(lot.unit_cost_basis_minor, currency ?? ''),
-      currency ?? '',
+      currency,
       csvMoney(lot.unit_cost_basis_nok_minor, 'NOK'),
       csvMoney(lot.residual_minor, currency ?? ''),
       csvMoney(lot.residual_nok_minor, 'NOK'),
       String(lot.quantity),
       String(lot.quantity_remaining),
-      lot.sealed_intent ?? '',
-      csvFreeText(
-        lot.storage_location_id === null
-          ? null
-          : (input.storageLocationNames.get(lot.storage_location_id) ?? null),
-      ),
-      lot.purchase_line_id ?? '',
+      lot.sealed_intent,
+      lot.storage_location_id === null
+        ? null
+        : (input.storageLocationNames.get(lot.storage_location_id) ?? null),
+      lot.purchase_line_id,
       lot.acquired_on,
-      lot.voided_at ?? '',
-      csvFreeText(lot.notes),
+      lot.voided_at,
+      lot.notes,
       lot.created_at,
     ]
   })
   return {
     filename: 'acquisition_lots.csv',
-    text: buildCsvText(
-      [
-        'Lot ID',
-        'Holding ID',
-        'Card',
-        'Set',
-        'Number',
-        'Variant',
-        'Origin',
-        'Cost basis state',
-        'Unit cost',
-        'Currency',
-        'Unit cost NOK',
-        'Residual',
-        'Residual NOK',
-        'Quantity',
-        'Quantity remaining',
-        'Sealed intent',
-        'Storage location',
-        'Purchase line ID',
-        'Acquired on',
-        'Voided at',
-        'Notes',
-        'Created at',
-      ],
-      rows,
-    ),
+    text: buildTypedCsvText(ACQUISITION_LOTS_COLUMNS, rows),
   }
 }
 
@@ -382,29 +574,14 @@ export function buildManualValuationsCsv(input: CsvProjectionInput): CsvFileCont
       csvMoney(v.value_minor, v.currency),
       v.currency,
       csvMoney(v.value_nok_minor, 'NOK'),
-      csvFreeText(v.note),
-      v.superseded_at ?? '',
+      v.note,
+      v.superseded_at,
       v.created_at,
     ]
   })
   return {
     filename: 'manual_valuations.csv',
-    text: buildCsvText(
-      [
-        'Valuation ID',
-        'Holding ID',
-        'Card',
-        'Set',
-        'Effective from',
-        'Value',
-        'Currency',
-        'Value NOK',
-        'Note',
-        'Superseded at',
-        'Created at',
-      ],
-      rows,
-    ),
+    text: buildTypedCsvText(MANUAL_VALUATIONS_COLUMNS, rows),
   }
 }
 
@@ -416,7 +593,7 @@ export function buildPurchasesCsv(input: CsvProjectionInput): CsvFileContent {
   const rows = input.purchases.map((p) => [
     p.id,
     p.purchased_on,
-    csvFreeText(p.retailer_id === null ? null : (input.retailerNames.get(p.retailer_id) ?? null)),
+    p.retailer_id === null ? null : (input.retailerNames.get(p.retailer_id) ?? null),
     p.currency,
     csvMoney(p.subtotal_minor, p.currency),
     csvMoney(p.shipping_minor, p.currency),
@@ -428,37 +605,12 @@ export function buildPurchasesCsv(input: CsvProjectionInput): CsvFileContent {
     p.fx_rate_date,
     p.fx_source,
     p.origin,
-    p.voided_at ?? '',
-    csvFreeText(p.notes),
+    p.voided_at,
+    p.notes,
     p.created_at,
     p.updated_at,
   ])
-  return {
-    filename: 'purchases.csv',
-    text: buildCsvText(
-      [
-        'Purchase ID',
-        'Purchased on',
-        'Retailer',
-        'Currency',
-        'Subtotal',
-        'Shipping',
-        'Customs',
-        'Discount',
-        'Total',
-        'Total NOK',
-        'FX rate to NOK',
-        'FX rate date',
-        'FX source',
-        'Origin',
-        'Voided at',
-        'Notes',
-        'Created at',
-        'Updated at',
-      ],
-      rows,
-    ),
-  }
+  return { filename: 'purchases.csv', text: buildTypedCsvText(PURCHASES_COLUMNS, rows) }
 }
 
 function lineIdentity(
@@ -472,7 +624,7 @@ function lineIdentity(
   if (line.sealed_product_id !== null) {
     return {
       ...NO_IDENTITY,
-      cardName: csvFreeText(input.sealedProductNames.get(line.sealed_product_id) ?? null),
+      cardName: input.sealedProductNames.get(line.sealed_product_id) ?? '',
     }
   }
   return NO_IDENTITY
@@ -482,57 +634,35 @@ export function buildPurchaseLinesCsv(input: CsvProjectionInput): CsvFileContent
   const purchasesById = indexBy(input.purchases, (p) => p.id)
   const rows = input.purchase_lines.map((line) => {
     const identity = lineIdentity(line, input)
-    const purchasedOn = purchasesById.get(line.purchase_id)?.purchased_on ?? ''
+    const purchase = purchasesById.get(line.purchase_id)
+    const currency = purchase?.currency ?? ''
     return [
       line.id,
       line.purchase_id,
-      purchasedOn,
+      purchase?.purchased_on ?? null,
       line.line_type,
       line.spend_class,
-      csvFreeText(line.description),
+      line.description,
       identity.cardName,
       identity.setName,
       identity.collectorNumber,
       identity.variant,
-      line.condition ?? '',
+      line.condition,
       String(line.quantity),
-      csvMoney(line.unit_price_minor, purchasesById.get(line.purchase_id)?.currency ?? ''),
-      csvMoney(line.line_total_minor, purchasesById.get(line.purchase_id)?.currency ?? ''),
-      csvMoney(line.allocated_shipping_minor, purchasesById.get(line.purchase_id)?.currency ?? ''),
-      csvMoney(line.allocated_customs_minor, purchasesById.get(line.purchase_id)?.currency ?? ''),
-      csvMoney(line.allocated_discount_minor, purchasesById.get(line.purchase_id)?.currency ?? ''),
-      csvMoney(line.attributable_cost_minor, purchasesById.get(line.purchase_id)?.currency ?? ''),
+      csvMoney(line.unit_price_minor, currency),
+      csvMoney(line.line_total_minor, currency),
+      csvMoney(line.allocated_shipping_minor, currency),
+      csvMoney(line.allocated_customs_minor, currency),
+      csvMoney(line.allocated_discount_minor, currency),
+      csvMoney(line.attributable_cost_minor, currency),
       csvMoney(line.attributable_cost_nok_minor, 'NOK'),
       line.created_at,
+      currency === '' ? null : currency,
     ]
   })
   return {
     filename: 'purchase_lines.csv',
-    text: buildCsvText(
-      [
-        'Line ID',
-        'Purchase ID',
-        'Purchased on',
-        'Line type',
-        'Spend class',
-        'Description',
-        'Card',
-        'Set',
-        'Number',
-        'Variant',
-        'Condition',
-        'Quantity',
-        'Unit price',
-        'Line total',
-        'Allocated shipping',
-        'Allocated customs',
-        'Allocated discount',
-        'Attributable cost',
-        'Attributable cost NOK',
-        'Created at',
-      ],
-      rows,
-    ),
+    text: buildTypedCsvText(PURCHASE_LINES_COLUMNS, rows),
   }
 }
 
@@ -544,7 +674,7 @@ export function buildSalesCsv(input: CsvProjectionInput): CsvFileContent {
   const rows = input.sales.map((s) => [
     s.id,
     s.sold_on,
-    csvFreeText(s.marketplace),
+    s.marketplace,
     s.currency,
     csvMoney(s.gross_minor, s.currency),
     csvMoney(s.fees_minor, s.currency),
@@ -557,38 +687,12 @@ export function buildSalesCsv(input: CsvProjectionInput): CsvFileContent {
     s.fx_rate_to_nok,
     s.fx_rate_date,
     s.fx_source,
-    s.voided_at ?? '',
-    csvFreeText(s.notes),
+    s.voided_at,
+    s.notes,
     s.created_at,
     s.updated_at,
   ])
-  return {
-    filename: 'sales.csv',
-    text: buildCsvText(
-      [
-        'Sale ID',
-        'Sold on',
-        'Marketplace',
-        'Currency',
-        'Gross',
-        'Fees',
-        'Shipping cost',
-        'Shipping charged',
-        'Net proceeds',
-        'Net proceeds NOK',
-        'Realized result NOK',
-        'Proceeds from uncosted NOK',
-        'FX rate to NOK',
-        'FX rate date',
-        'FX source',
-        'Voided at',
-        'Notes',
-        'Created at',
-        'Updated at',
-      ],
-      rows,
-    ),
-  }
+  return { filename: 'sales.csv', text: buildTypedCsvText(SALES_COLUMNS, rows) }
 }
 
 export function buildSaleLinesCsv(input: CsvProjectionInput): CsvFileContent {
@@ -597,56 +701,33 @@ export function buildSaleLinesCsv(input: CsvProjectionInput): CsvFileContent {
   const holdingsById = indexBy(input.holdings, (h) => h.id)
   const rows = input.sale_lines.map((line) => {
     const identity = identityForLot(line.lot_id, lotsById, holdingsById, input)
+    const sale = salesById.get(line.sale_id)
+    const currency = sale?.currency ?? ''
     return [
       line.id,
       line.sale_id,
-      salesById.get(line.sale_id)?.sold_on ?? '',
+      sale?.sold_on ?? null,
       line.lot_id,
       identity.cardName,
       identity.setName,
       identity.collectorNumber,
       identity.variant,
       String(line.quantity),
-      csvMoney(line.unit_gross_minor, salesById.get(line.sale_id)?.currency ?? ''),
-      csvMoney(line.line_gross_minor, salesById.get(line.sale_id)?.currency ?? ''),
-      csvMoney(line.allocated_fees_minor, salesById.get(line.sale_id)?.currency ?? ''),
-      csvMoney(line.allocated_shipping_minor, salesById.get(line.sale_id)?.currency ?? ''),
-      csvMoney(line.allocated_shipping_charged_minor, salesById.get(line.sale_id)?.currency ?? ''),
-      csvMoney(line.net_proceeds_minor, salesById.get(line.sale_id)?.currency ?? ''),
+      csvMoney(line.unit_gross_minor, currency),
+      csvMoney(line.line_gross_minor, currency),
+      csvMoney(line.allocated_fees_minor, currency),
+      csvMoney(line.allocated_shipping_minor, currency),
+      csvMoney(line.allocated_shipping_charged_minor, currency),
+      csvMoney(line.net_proceeds_minor, currency),
       csvMoney(line.net_proceeds_nok_minor, 'NOK'),
       // Unknown basis stays empty — never a fabricated zero result (D-060 honesty).
       csvMoney(line.cost_basis_at_sale_nok_minor, 'NOK'),
       csvMoney(line.realized_result_nok_minor, 'NOK'),
       line.created_at,
+      currency === '' ? null : currency,
     ]
   })
-  return {
-    filename: 'sale_lines.csv',
-    text: buildCsvText(
-      [
-        'Line ID',
-        'Sale ID',
-        'Sold on',
-        'Lot ID',
-        'Card',
-        'Set',
-        'Number',
-        'Variant',
-        'Quantity',
-        'Unit gross',
-        'Line gross',
-        'Allocated fees',
-        'Allocated shipping',
-        'Allocated shipping charged',
-        'Net proceeds',
-        'Net proceeds NOK',
-        'Cost basis NOK',
-        'Realized result NOK',
-        'Created at',
-      ],
-      rows,
-    ),
-  }
+  return { filename: 'sale_lines.csv', text: buildTypedCsvText(SALE_LINES_COLUMNS, rows) }
 }
 
 // ---------------------------------------------------------------------------
@@ -666,28 +747,14 @@ export function buildLotDisposalsCsv(input: CsvProjectionInput): CsvFileContent 
       d.disposed_on,
       String(d.quantity),
       csvMoney(d.cost_basis_at_disposal_nok_minor, 'NOK'),
-      d.sale_line_id ?? '',
-      d.voided_at ?? '',
+      d.sale_line_id,
+      d.voided_at,
       d.created_at,
     ]
   })
   return {
     filename: 'lot_disposals.csv',
-    text: buildCsvText(
-      [
-        'Disposal ID',
-        'Lot ID',
-        'Card',
-        'Kind',
-        'Disposed on',
-        'Quantity',
-        'Cost basis NOK',
-        'Sale line ID',
-        'Voided at',
-        'Created at',
-      ],
-      rows,
-    ),
+    text: buildTypedCsvText(LOT_DISPOSALS_COLUMNS, rows),
   }
 }
 
@@ -700,27 +767,13 @@ export function buildLotCostAdjustmentsCsv(input: CsvProjectionInput): CsvFileCo
     csvMoney(a.amount_minor, a.currency),
     a.currency,
     csvMoney(a.amount_nok_minor, 'NOK'),
-    csvFreeText(a.note),
+    a.note,
     a.purchase_line_id,
     a.created_at,
   ])
   return {
     filename: 'lot_cost_adjustments.csv',
-    text: buildCsvText(
-      [
-        'Adjustment ID',
-        'Lot ID',
-        'Kind',
-        'Occurred on',
-        'Amount',
-        'Currency',
-        'Amount NOK',
-        'Note',
-        'Purchase line ID',
-        'Created at',
-      ],
-      rows,
-    ),
+    text: buildTypedCsvText(LOT_COST_ADJUSTMENTS_COLUMNS, rows),
   }
 }
 
@@ -735,42 +788,21 @@ export function buildOpeningsCsv(input: CsvProjectionInput): CsvFileContent {
   const rows = input.openings.map((o) => [
     o.id,
     o.opened_on,
-    csvFreeText(input.sealedProductNames.get(o.sealed_product_id) ?? null),
+    input.sealedProductNames.get(o.sealed_product_id) ?? null,
     String(o.quantity_opened),
     // Unknown cost stays an empty cell — never a fabricated 0.00 (M1 at opening scope).
     csvMoney(o.cost_nok_minor, 'NOK'),
     o.cost_source,
     o.tracking_completeness,
     csvMoney(o.bulk_remainder_estimate_nok_minor, 'NOK'),
-    o.bulk_remainder_count === null ? '' : String(o.bulk_remainder_count),
-    o.provisional_purchase_id === null ? '' : 'provisional',
-    o.reconciled_at === null ? '' : 'reconciled',
-    o.voided_at ?? '',
-    csvFreeText(o.notes),
+    o.bulk_remainder_count === null ? null : String(o.bulk_remainder_count),
+    o.provisional_purchase_id === null ? null : 'provisional',
+    o.reconciled_at === null ? null : 'reconciled',
+    o.voided_at,
+    o.notes,
     o.created_at,
   ])
-  return {
-    filename: 'openings.csv',
-    text: buildCsvText(
-      [
-        'Opening ID',
-        'Date',
-        'Product',
-        'Quantity',
-        'Opening cost NOK',
-        'Cost source',
-        'Tracking completeness',
-        'Bulk remainder estimate NOK',
-        'Bulk remainder count',
-        'Purchase provenance',
-        'Reconciliation',
-        'Voided at',
-        'Notes',
-        'Created at',
-      ],
-      rows,
-    ),
-  }
+  return { filename: 'openings.csv', text: buildTypedCsvText(OPENINGS_COLUMNS, rows) }
 }
 
 // ---------------------------------------------------------------------------
@@ -786,27 +818,16 @@ export function buildCustomCollectionsCsv(input: CsvProjectionInput): CsvFileCon
   }
   const rows = input.custom_collections.map((c) => [
     c.id,
-    csvFreeText(c.name),
-    csvFreeText(c.description),
-    csvFreeText(c.color),
+    c.name,
+    c.description,
+    c.color,
     String(c.sort_order),
-    csvFreeText((membersByCollection.get(c.id) ?? []).join('; ') || null),
+    (membersByCollection.get(c.id) ?? []).join('; '),
     c.created_at,
   ])
   return {
     filename: 'custom_collections.csv',
-    text: buildCsvText(
-      [
-        'Collection ID',
-        'Name',
-        'Description',
-        'Colour',
-        'Sort order',
-        'Member holding IDs',
-        'Created at',
-      ],
-      rows,
-    ),
+    text: buildTypedCsvText(CUSTOM_COLLECTIONS_COLUMNS, rows),
   }
 }
 

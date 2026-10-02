@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   getSale,
   updateSale,
@@ -9,17 +9,18 @@ import {
   type SaleLineUpdateInput,
 } from '../../data/sales'
 import { fetchFxRate } from '../../data/fx'
-import { fromDecimalString, toDecimalString } from '../../domain/money'
+import { leasedDb } from '../../data/leased-db'
+import { useLeasedAction } from '../../auth/useLeasedMutation'
+import { toDecimalString } from '../../domain/money'
 import type { CurrencyCode } from '../../domain/currency'
 import { Button, FormMessage, TextField } from '../../ui/form'
+import {
+  parseNullableMoneyInput,
+  parseOptionalChargeInput,
+  requireKnownAmount,
+} from '../../ui/money-format'
 import { useUnsavedWorkSnapshot } from '../../platform/unsaved-work-registry'
 import { useIsMountedRef } from '../../platform/use-mounted-ref'
-
-function parseAmount(raw: string, currency: CurrencyCode): bigint {
-  const trimmed = raw.trim().replace(',', '.')
-  if (trimmed === '') return 0n
-  return fromDecimalString(trimmed, currency).minorUnits
-}
 
 /**
  * Safe-correction path (prompt §50-51, mirrors update_purchase's scope): fixes sale-level charges
@@ -116,46 +117,62 @@ function SaleEditForm({ saleId, sale, lines }: { saleId: string; sale: Sale; lin
 
   const preview = useMemo(() => {
     try {
-      const gross = lines.reduce(
-        (sum, l) => sum + parseAmount(lineInputs[l.id] ?? '0', currency) * BigInt(l.quantity),
-        0n,
-      )
-      const fees = parseAmount(feesInput, currency)
-      const ship = parseAmount(shippingCostInput, currency)
-      const shipCharged = parseAmount(shippingChargedInput, currency)
+      // A blank sale PRICE is an unknown amount, not a free sale: the preview waits for it
+      // (P130-25). Blank fees/shipping mean no such charge.
+      let gross = 0n
+      for (const l of lines) {
+        const unit = parseNullableMoneyInput(lineInputs[l.id] ?? '', currency)
+        if (unit === null) return null
+        gross += unit * BigInt(l.quantity)
+      }
+      const fees = parseOptionalChargeInput(feesInput, currency)
+      const ship = parseOptionalChargeInput(shippingCostInput, currency)
+      const shipCharged = parseOptionalChargeInput(shippingChargedInput, currency)
       return gross - fees - ship + shipCharged
     } catch {
       return null
     }
   }, [lines, lineInputs, feesInput, shippingCostInput, shippingChargedInput, currency])
 
-  const submitMutation = useMutation({
-    mutationFn: async () => {
+  const submitMutation = useLeasedAction({
+    mutationFn: async (lease) => {
+      const db = leasedDb(lease)
       const saleLines: SaleLineUpdateInput[] = lines.map((l) => ({
         lineId: l.id,
-        unitGrossMinor: parseAmount(lineInputs[l.id] ?? '0', currency),
+        // P130-25: a cleared sale price is not a free sale — refuse it instead of submitting 0.
+        unitGrossMinor: requireKnownAmount(
+          lineInputs[l.id] ?? '',
+          currency,
+          'Enter a sale price per unit — type 0 if it was given away.',
+        ),
       }))
 
       let resolvedFxRate: string | undefined = fxRate || undefined
       let resolvedFxDate: string | undefined = sale.fxRateDate
       if (currency !== 'NOK' && !resolvedFxRate) {
-        const result = await fetchFxRate(currency, soldOn)
+        const result = await fetchFxRate(currency, soldOn, db)
+        lease.assertCurrent()
         resolvedFxRate = result.rate
         resolvedFxDate = result.rateDate
       }
 
-      return updateSale(saleId, saleLines, {
-        soldOn,
-        currency,
-        marketplace: marketplace || undefined,
-        feesMinor: parseAmount(feesInput, currency),
-        shippingCostMinor: parseAmount(shippingCostInput, currency),
-        shippingChargedMinor: parseAmount(shippingChargedInput, currency),
-        fxRateToNok: resolvedFxRate,
-        fxRateDate: resolvedFxDate,
-        fxSource: currency === 'NOK' ? undefined : sale.fxSource,
-        notes: notes || undefined,
-      })
+      return updateSale(
+        saleId,
+        saleLines,
+        {
+          soldOn,
+          currency,
+          marketplace: marketplace || undefined,
+          feesMinor: parseOptionalChargeInput(feesInput, currency),
+          shippingCostMinor: parseOptionalChargeInput(shippingCostInput, currency),
+          shippingChargedMinor: parseOptionalChargeInput(shippingChargedInput, currency),
+          fxRateToNok: resolvedFxRate,
+          fxRateDate: resolvedFxDate,
+          fxSource: currency === 'NOK' ? undefined : sale.fxSource,
+          notes: notes || undefined,
+        },
+        db,
+      )
     },
     onSuccess: async () => {
       // Cache invalidation always runs, even for a stale instance: the edit genuinely happened on

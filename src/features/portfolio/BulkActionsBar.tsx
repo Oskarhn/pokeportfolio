@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQueryClient } from '@tanstack/react-query'
+import { useLeasedAction, useLeasedMutation } from '../../auth/useLeasedMutation'
+import { leasedDb } from '../../data/leased-db'
 import {
   bulkSetFavorite,
   removeHoldingsFromPortfolio,
@@ -45,29 +47,31 @@ export function BulkActionsBar({
     await queryClient.invalidateQueries({ queryKey: ['portfolio-counts'] })
   }
 
-  const addMutation = useMutation({
-    mutationFn: (collectionId: string) => addHoldingsToCollection(collectionId, ids),
+  const addMutation = useLeasedMutation({
+    mutationFn: (collectionId: string, lease) =>
+      addHoldingsToCollection(collectionId, ids, leasedDb(lease)),
     onSuccess: async () => {
       await invalidate()
       onClear()
     },
   })
-  const removeFromActiveMutation = useMutation({
-    mutationFn: () => removeHoldingsFromCollection(activeCollectionId as string, ids),
+  const removeFromActiveMutation = useLeasedAction({
+    mutationFn: (lease) =>
+      removeHoldingsFromCollection(activeCollectionId as string, ids, leasedDb(lease)),
     onSuccess: async () => {
       await invalidate()
       onClear()
     },
   })
-  const favoriteMutation = useMutation({
-    mutationFn: (value: boolean) => bulkSetFavorite(ids, value),
+  const favoriteMutation = useLeasedMutation({
+    mutationFn: (value: boolean, lease) => bulkSetFavorite(ids, value, leasedDb(lease)),
     onSuccess: async () => {
       await invalidate()
       onClear()
     },
   })
-  const removeMutation = useMutation({
-    mutationFn: () => removeHoldingsFromPortfolio(ids),
+  const removeMutation = useLeasedAction({
+    mutationFn: (lease) => removeHoldingsFromPortfolio(ids, leasedDb(lease)),
     onSuccess: async (results) => {
       const blocked = results.filter((r) => r.blocked)
       if (blocked.length > 0) {

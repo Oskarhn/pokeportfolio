@@ -779,6 +779,127 @@ leak this section's scope didn't catch. Fixed by namespacing the key per user id
 UI preference. No other unnamespaced localStorage/sessionStorage/IndexedDB write carrying anything
 user-specific was found in the same review pass.
 
+### 9.2 Identity boundary for React state, and what "Sign out" guarantees (D-134, P143)
+
+**Component state.** §9.1 clears state that lives outside React. State inside mounted components
+is a different problem: supabase-js broadcasts auth events across every tab sharing the browser
+profile's storage, so another tab signing in as B delivers `SIGNED_IN(B)` to a tab showing A's
+half-typed form while the app's status stays "signed in". `src/auth/AuthIdentityBoundary.tsx`
+(rendered by the root route) mounts the whole authenticated subtree under a key derived from the
+**user id** — a different id remounts it, the same id (token refresh, `USER_UPDATED`, repeated
+`SIGNED_IN`) keeps every component's state. `AuthProvider` clears the external state
+(`applyAuthIdentityBoundary`) in the same callback, before the new identity is renderable.
+
+| Event | React subtree | Query cache / stores |
+|---|---|---|
+| A → B (direct) | remounted | cleared |
+| A → signed-out, signed-out → A or B | remounted | cleared |
+| TOKEN_REFRESHED / USER_UPDATED / repeated SIGNED_IN, same user | kept | kept |
+| Initial session restore | one remount if it resolves to a user | not cleared (first observation) |
+
+**Sign-out.** A deliberate Sign out ends local access whatever the Auth service does, and
+separates that from remote revocation (`src/auth/end-session.ts`): the request to revoke gets a
+3 s deadline; the stored session is then verified gone and, if supabase-js left it behind (an
+expired access token with the service unreachable — the installed auth-js retries the refresh for
+~25 s and then returns without removing anything), removed through the explicit storage adapter
+(`src/auth/session-storage.ts`) and followed by the library's own local sign-out. The person sees
+fixed text — never a raw error — only when revocation could not be confirmed. **Limit:** over a dead
+connection the server-side refresh token cannot be revoked; it stays valid until it rotates or
+expires, and signing in and out again while online revokes it.
+
+**Operations already in flight** are covered by the identity lease (§9.3, D-136). Regression suites:
+`tests/ui/auth-identity-boundary.test.ts`, `tests/ui/auth-end-session.test.ts`,
+`tests/e2e/auth-identity-lifecycle.spec.ts`, `tests/e2e/auth-signout.spec.ts`, and the real-GoTrue
+`tests/e2e/authenticated/auth-identity-real.spec.ts` / `auth-signout-real.spec.ts`.
+
+### 9.3 A running operation never continues under another identity (D-136, P145)
+
+Remounting (§9.2) cannot stop an async continuation that already started. Every user-data write is
+therefore a *leased* operation: `mutate()` takes an identity lease for the user the screen was
+rendered under (`IdentityAuthority`, owned by `AuthProvider`: user id plus a monotonic epoch that
+changes on A → B, sign-out and sign-in, never on token refresh), and every request of the operation
+is sent by a per-lease client (`src/data/leased-client.ts`) whose bearer-token provider hands out a
+token only if the lease is still current **and** the session the browser holds right now belongs to
+the lease's user. Otherwise the operation stops (`auth-identity-changed`), nothing is sent, and no
+result or error is shown to the identity that is on screen now. A request that was already on its way
+completes as the user it began under; no token is stored or replayed. Ledger of what is covered and
+what cannot rot silently: `tests/ui/identity-lease-coverage.test.ts`.
+
+**The lease client and the money guard are one client (D-138, P147).** A leased client is built by the
+same factory as the shared client (`src/data/supabase-factory.ts`), so it carries the same
+exact-transport guard: a request body with an integer a JavaScript number cannot hold is refused before
+it leaves, and a response is repaired before it is parsed (D-137). The two protections are
+independent — the identity check decides whose token is sent, the guard decides what may be sent — and
+each is tested by removing it while keeping the other (`tests/data/p147-cross-track-mutations.test.ts`).
+The guard never reads, stores or logs a token.
+
+**The password change is covered too (D-139, P148).** `auth.updateUser` cannot be routed through a leased client, so
+`ResetPasswordPage` runs it through `updatePasswordForLease` (`src/auth/update-password.ts`): the lease must be current and
+the browser's live session must belong to the lease's user, otherwise nothing is sent. Not covered by design: the global
+sign-out of a tab that never heard an identity switch signs out the browser's current session (it ends a session, it does
+not take one over). The check and the call are two reads of the shared storage (`updateUser` takes no credential), so a write
+by another tab between them is not excluded; D-140 lists what was weighed and why nothing supported closes it.
+
+**A failed credential lookup is not an identity change (D-140, P149).** When the token refresh behind a write cannot complete
+(the auth service is unreachable, an expired access token cannot be renewed), the write is refused with "Could not verify your
+session. Check your connection and try again.", nothing is sent, and neither the lease nor the form's request key is touched,
+so a retry is one more click and cannot duplicate a record (P138). A lease ends only for what the auth state says ended it: an
+identity change or `SIGNED_OUT` that reached the tab, a lookup that finds nobody signed in, or another user's session — and that
+check takes precedence over a failed lookup, so no error about A's data appears in B's interface. The error class of the auth
+library is never consulted for this (it does not say whether the person is still signed in;
+`tests/data/p149-auth-lookup-contract.test.ts` pins what it does say). Two library behaviours the person can notice: a failing
+refresh takes about 25 s to be reported, and inside the next minute the same failure is answered from the library's cache.
+### 9.4 Exports: the identity lease, formula safety and what leaves the account (P157/P162, D-141)
+
+An export is many sequential requests, and the D-093 boundary only clears the TanStack Query cache
+and remounts the UI — an export is plain async code and outlives both. Without more, an A → B
+switch in this tab, or in another tab through the shared session storage, lets the remaining
+requests run as B: the file mixes accounts, or A's captured data becomes deliverable under B.
+
+- **The authority is the identity lease of §9.3** (D-136, P145). Both exports and the Quick CSV
+  run under the lease taken when the button is pressed and read every page through the leased
+  client (`leasedDb(lease)`), which attaches a bearer token only if the session in storage right
+  now belongs to the lease's user — a request cannot be sent as anyone else, and there is no
+  fallback to the shared client. `src/data/export/identity-guard.ts` is the seam: for a leased
+  client `assertUnchanged()` *is* `lease.assertCurrent()`, evaluated before and after every request
+  (count, page, catalog-manifest chunk, Quick CSV page) and once more before the snapshot leaves
+  the fetch layer, so a page that came back while the identity ended is dropped, not kept. Because
+  the lease is bound to the identity epoch, **A → B → A ends the export although the old user id is
+  back**, and a same-user token refresh, `USER_UPDATED` or repeated `SIGNED_IN` does not.
+  It is detection at request granularity, not isolation or an atomic snapshot (D-077; see
+  DATA_MODEL.md §10.1/§10.2): at most the request already in flight completes, and it is discarded.
+  A plain (unleased) client, used only by database harnesses, gets a session-based fallback that
+  compares user ids; the application never reaches it (`artifacts.ts` accepts only a leased client
+  and a structural test forbids handing the shared client to the export).
+- **The UI adds what only a UI can** (`ExportPage`): the run is aborted (`AbortSignal`, which also
+  tears down the request in flight) on Cancel, on unmount and on any change of the signed-in
+  user; the files are tied to their lease and are neither shown nor delivered once it has ended —
+  the delivery layer re-checks it immediately before every file is handed to the browser, the save
+  dialog (after the person picks a location) or the share sheet, so a multi-file download stops at
+  the file boundary if the identity changes. Files already handed to the browser before that point
+  cannot be recalled. A superseded or cancelled run cannot touch the flow when it ends. Artifacts
+  stay in component memory only: nothing is written to localStorage, IndexedDB, a service-worker
+  cache or analytics.
+- **CSV formula injection (CWE-1236).** Cells are written by declared column kind
+  (`src/domain/export/csv.ts`): free text is prefixed with `'` when its first character after any
+  leading whitespace/control/format characters is `= + - @` (or the full-width forms), or when it
+  starts with tab/CR/LF; canonical kinds are written verbatim only when they have their canonical
+  shape, so signed money stays numeric and attacker text that merely looks numeric does not. The
+  prefix is CSV presentation only — the JSON backup and the database keep the raw text.
+- **Files leave the account.** An export is a file the user chose to download. It is not encrypted,
+  not tracked, and not covered by server-side account deletion (P152's worksheet already lists
+  exports as user-held copies); the UI copy tells the user to store it somewhere they trust. The
+  export sends nothing anywhere and writes nothing to Storage or any third party; the fetch is
+  read-only (no non-GET/HEAD request, asserted in `tests/db/p157_export_integrity.test.ts`).
+
+### 9.5 A rewritten response is not evidence of an amount (D-164, P164)
+
+The exact-transport guard (§9.3, D-137) quotes unsafe JSON integers in a response so PostgREST money keeps its digits. It cannot know whether a
+digit string was produced by the database (exact) or by a third party that had already rounded it (an Edge Function's `Number(bigint)`). The guard
+therefore marks a response it rewrote (`x-exact-transport-rewritten`, client-side only). Any consumer whose grammar accepts a quoted digit string as
+an exact amount — Price Check's `valueMinor`, the pricing consumer — refuses a marked response instead of choosing which fields to trust. A missing
+price is still no price, never zero, and no graded price is ever derived from a raw one.
+
 ---
 
 ## 10. Dependency and supply chain
@@ -804,6 +925,8 @@ Stated explicitly rather than left implicit:
 | An invited user photographing their own screen | Not a technical problem. |
 | Traffic analysis, timing attacks, side channels | Out of scope for a ten-user hobby application. |
 | DDoS | Cloudflare's default protection; no further work. |
+| A spreadsheet product or version that treats an exported CSV cell as a formula despite the `'` prefix | No exporter can promise safety in every current and future spreadsheet. Observed (Excel 16.0.20326, nb-NO, P157): unprefixed `=1+1` and `-1+2` became formulas; prefixed cells and cells behind leading whitespace/NBSP/zero-width/control characters stayed text. Google Sheets and LibreOffice were not available and are untested. The threat model is a self-export: the data in a cell is the owner's own or public catalog text, and there is no attacker-controlled import path. |
+| A CSV opened by double-click in a locale whose list separator is `;` (nb-NO Excel) lands in one column | A usability limit of the comma dialect, not a safety one. The files import correctly through Data › From Text/CSV. The same locale also reads dot-decimal amounts (`-123.45`) as text on double-click (observed, P157) — money columns are deliberately locale-neutral, machine-readable dot decimals. The dialect is unchanged (D-141). |
 
 ---
 

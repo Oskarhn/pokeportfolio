@@ -1,17 +1,20 @@
 import { useState } from 'react'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   addCardAcquisition,
   createStorageLocation,
   getManualCard,
   listStorageLocations,
+  type AddCardAcquisitionInput,
   type CardCondition,
   type CostBasisState,
   type Grader,
   type GradingState,
   type LotOrigin,
 } from '../../data/collection'
+import { leasedDb } from '../../data/leased-db'
+import { useLeasedMutation } from '../../auth/useLeasedMutation'
 import { getCardVariantWithCard, type CatalogVariantWithCard } from '../../data/catalog'
 import { localTodayIso } from '../../platform/local-date'
 import { useEntityKeyReset } from '../../platform/entity-key-change-tracker'
@@ -101,8 +104,9 @@ export function AddToCollectionPage() {
     setClientRequestKey(crypto.randomUUID())
   })
 
-  const addMutation = useMutation({
-    mutationFn: addCardAcquisition,
+  const addMutation = useLeasedMutation({
+    mutationFn: (input: AddCardAcquisitionInput, lease) =>
+      addCardAcquisition(input, leasedDb(lease)),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['portfolio'] })
       await queryClient.invalidateQueries({ queryKey: ['portfolio-counts'] })
@@ -112,8 +116,8 @@ export function AddToCollectionPage() {
     },
   })
 
-  const createLocationMutation = useMutation({
-    mutationFn: createStorageLocation,
+  const createLocationMutation = useLeasedMutation({
+    mutationFn: (name: string, lease) => createStorageLocation(name, leasedDb(lease)),
     onSuccess: async (location) => {
       await queryClient.invalidateQueries({ queryKey: ['storage-locations'] })
       setStorageLocationId(location.id)
@@ -380,6 +384,7 @@ export function AddToCollectionPage() {
             label="Acquired on"
             type="date"
             value={acquiredOn}
+            max={localTodayIso()}
             onChange={(event) => {
               setAcquiredOn(event.target.value)
             }}

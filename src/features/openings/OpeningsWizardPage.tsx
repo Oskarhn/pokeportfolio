@@ -1,7 +1,9 @@
 import { useRef, useState } from 'react'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { createManualCard } from '../../data/collection'
+import { leasedDb } from '../../data/leased-db'
+import { useLeasedAction } from '../../auth/useLeasedMutation'
 import { searchSealedProducts } from '../../data/sealedProducts'
 import { CardImage } from '../catalog/CardImage'
 import { SealedProductImage } from '../catalog/SealedProductImage'
@@ -149,8 +151,11 @@ export function OpeningsWizardPage() {
   // reuses the SAME definition row instead of inserting an identical one (P56 §10).
   const resolvedManualCards = useRef(new Map<string, string>())
 
-  const submitMutation = useMutation({
-    mutationFn: async () => {
+  // P145: manual-card definitions, then the opening that consumes sealed inventory. One identity
+  // lease covers all of it: an opening begun under one account can never deplete another's stock,
+  // and a manual card typed under one account is never created in another.
+  const submitMutation = useLeasedAction({
+    mutationFn: async (lease) => {
       const error = reviewError(draft)
       if (error) throw new Error(error)
 
@@ -172,16 +177,22 @@ export function OpeningsWizardPage() {
           // never logged.
           try {
             manualCardId = (
-              await createManualCard({
-                name: identity.name,
-                setName: identity.setName,
-                collectorNumber: identity.collectorNumber,
-              })
+              await createManualCard(
+                {
+                  name: identity.name,
+                  setName: identity.setName,
+                  collectorNumber: identity.collectorNumber,
+                },
+                leasedDb(lease),
+              )
             ).id
           } catch {
+            // Identity changes are reported as themselves, not as a card-creation failure.
+            lease.assertCurrent()
             throw new Error(MANUAL_CARD_CREATE_FAILED)
           }
         }
+        lease.assertCurrent()
         if (!cached) resolvedManualCards.current.set(key, manualCardId)
         idByKey.set(pull.key, manualCardId)
       }
@@ -199,6 +210,7 @@ export function OpeningsWizardPage() {
       if (draft.mode === 'bought_now') {
         return controller.createBoughtAndOpened(
           buildBoughtAndOpenedInput(resolvedDraft, draft.idempotencyKey, parseNokInput),
+          lease,
         )
       }
       if (!selectedSource) throw new Error('Choose which acquisition lot you opened from.')
@@ -208,7 +220,7 @@ export function OpeningsWizardPage() {
         draft.idempotencyKey,
         parseNokInput,
       )
-      return controller.createOpening(input)
+      return controller.createOpening(input, lease)
     },
     onMutate: () => {
       dispatch({ type: 'BEGIN_SUBMIT' })

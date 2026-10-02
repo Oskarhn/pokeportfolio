@@ -2,6 +2,11 @@ import { useState } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { supabase } from '../../data/supabase-client'
 import { useAuth } from '../../auth/useAuth'
+import {
+  isAuthCredentialsUnavailableError,
+  isAuthIdentityChangedError,
+} from '../../auth/identity-lease'
+import { updatePasswordForLease } from '../../auth/update-password'
 import { AuthLayout, Button, FormMessage, PasswordField } from '../../ui/form'
 
 const MIN_PASSWORD_LENGTH = 12
@@ -13,7 +18,7 @@ const MIN_PASSWORD_LENGTH = 12
  * never existed.
  */
 export function ResetPasswordPage() {
-  const { status } = useAuth()
+  const { status, session, identity } = useAuth()
   const navigate = useNavigate()
   const [password, setPassword] = useState('')
   const [confirmation, setConfirmation] = useState('')
@@ -32,8 +37,23 @@ export function ResetPasswordPage() {
       return
     }
 
+    // P148: a password change acts for whoever the browser's session belongs to when the request is
+    // made. The form was typed under the user this page was rendered for; if the browser already
+    // holds somebody else's session (another tab signed in as B and this tab has not heard yet) the
+    // change must not be applied to B. See auth/update-password.ts.
+    const lease = identity.begin(session?.user.id ?? null)
     setBusy(true)
-    const { error: updateError } = await supabase.auth.updateUser({ password })
+    let updateError: unknown
+    try {
+      ;({ error: updateError } = await updatePasswordForLease(lease, password, supabase.auth))
+    } catch (caught) {
+      setBusy(false)
+      if (isAuthIdentityChangedError(caught) || isAuthCredentialsUnavailableError(caught)) {
+        setError(caught.message)
+        return
+      }
+      throw caught
+    }
     setBusy(false)
 
     if (updateError) {

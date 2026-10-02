@@ -600,6 +600,16 @@ minor-unit strings past 2^53; canonical timestamps stay verbatim wire strings
 ✓ NotAllowedError is surfaced with explicit "Try sharing again" / "Download instead" choices
 (D-079); a dismissed sheet is quiet cancellation, never styled as an error
 ✓ Generated artifacts live in memory only until delivered — nothing persisted, nothing uploaded
+✓ **Cancel** during "Preparing…" stops the run (no further requests, no files, no error). Leaving the
+page, or the signed-in account changing (this tab or another), also ends the run and drops any
+files already built — they are never shown or delivered under a different account (P157, D-141).
+The files belong to the identity lease of the button press: an A → B → A round trip counts as a change
+although the same person is signed in again, a token refresh does not, and a multi-file download stops
+at the next file if the identity changes part way (files already handed to the browser cannot be recalled).
+An account change mid-run surfaces as an error ("The signed-in account changed during the export.
+Nothing was saved."), never as a file.
+✓ CSV cells that could be read as spreadsheet formulas are prefixed with an apostrophe (the JSON
+backup keeps the raw text); the Quick CSV reports failures instead of failing silently.
 Restore/import does NOT exist yet; copy says so. A periodic local-only export reminder nudge on
 Profile (D-080).
 
@@ -721,6 +731,38 @@ as a dashboard glance; the dedicated screen is where period/sort actually apply.
 
 ---
 
+## F17 — Price Check (P153)
+
+A lookup, not an add flow: nothing done here creates a holding, purchase, sale or manual card
+(D-153). Entry: a "Check a price" link on Search, and `/price-check`.
+
+1. **Find the card.** `/price-check`: one field for name, set or collector number (shared catalog
+   search, optional language). Results always show set, number, language, rarity and illustrator;
+   results that share a name are flagged. The query lives in the URL, so Back returns to it. A newer
+   query can never be overwritten by a slower older response. Empty, error (with retry) and loading
+   states are announced.
+2. **Or scan it.** `/price-check/scan`: take/choose a photo (the device camera via the photo
+   picker), recognised on-device by the existing scanner. HIGH confidence pre-selects the best
+   candidate, MEDIUM/LOW select nothing, NO_MATCH offers "Search by name". The person confirms the
+   card; the scan never picks a variant. A not-confident scan says how unsure it was ("medium" /
+   "low") and selects nothing; a scan below that is a plain no-match. The newest photo wins; Cancel,
+   retake and leaving the page abandon the scan, discard any late result and release the on-device
+   readers; an account switch discards the photo and candidates. A refused photo (too large, corrupt,
+   not an image) says so and the next photo works.
+3. **Confirm the variant.** `/price-check/$cardId?variantId=`. One active variant is confirmed
+   and says so; several variants require an explicit choice (availability per variant, never a
+   price, until chosen).
+4. **Read the prices.** Raw section: each provider's value in its source currency with metric,
+   price type ("Index price"), observed date, fetched time, freshness badge, condition ("not
+   specified by source") and a labelled NOK reference with rate and date. Graded section: a table
+   per company (never merged) when a source exists; today "no authorized source", never an
+   estimate. Unavailable, failed, rate-limited and malformed states are distinct and retryable where
+   sensible.
+5. **Optionally add.** "Add to collection…" is a plain link to `/add?variantId=` — the existing
+   add flow, with its own confirmation.
+
+---
+
 ## Cross-cutting rules
 
 | Rule | Applies to |
@@ -728,7 +770,7 @@ as a dashboard glance; the dedicated screen is where period/sort actually apply.
 | Destructive confirmations name the concrete downstream impact | Every void and delete |
 | Uncertainty is marked where the number is displayed | Stale, manual, estimated, incomplete |
 | Money inputs use a numeric keypad on mobile and accept both `,` and `.` | Every amount field |
-| Dates default to today and allow any past date | Every date field |
+| Dates default to today and allow any real past date (from 1996-10-20, the first Pokemon TCG release; never a future date on a completed event — D-135) | Every date field |
 | Long lists are virtualised | Collection, purchases, sales |
 | Every destructive action is undoable, or blocked | Financial records |
 | Offline: reads work from cache, writes fail with a clear message | Whole app |

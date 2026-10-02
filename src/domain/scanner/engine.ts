@@ -554,6 +554,20 @@ export function rankScannerCandidates(
     }
   }
 
+  // P151: visual-only evidence can never be HIGH. Measured against the real production index
+  // (scripts/scanner-confidence-audit, docs/SCANNER_RESEARCH.md P151): when the true printing has no
+  // reference image (the ~7% of catalog cards not indexed) the nearest indexed card is a
+  // same-artwork sibling printing, and the old rule made that sibling HIGH — preselected — in ~6-10%
+  // of such scans, at every distortion level where HIGH occurs at all. The user cannot catch it by
+  // comparing pictures (the art is identical). MEDIUM lists the candidates with their set and
+  // number and asks for one tap. Any printed-text signal (name OR collector number) lifts the cap;
+  // whether text SHOULD be required for the printing itself (number) is a separate, measured
+  // question this change deliberately leaves alone.
+  if (tier === 'high' && signals.collectorNumber === null && signals.normalizedName === null) {
+    tier = 'medium'
+    notes.push('visual-only-uncorroborated')
+  }
+
   return { tier, candidates: bounded, signals, notes }
 }
 

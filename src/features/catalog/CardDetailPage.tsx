@@ -5,6 +5,7 @@ import { getCardVariantPriceHistory, searchPrices } from '../../data/pricing'
 import { getMyProfile } from '../../data/profile'
 import { CardImage } from './CardImage'
 import { MoneyDisplay } from '../../ui/MoneyDisplay'
+import { formatSourcePriceMinor } from '../../ui/money-format'
 import { PriceHistoryChart } from '../../ui/PriceHistoryChart'
 
 const FINISH_LABEL: Record<string, string> = {
@@ -22,7 +23,7 @@ function sourceValueText(sourceCurrency: string | null, sourceValueMinor: bigint
   if (sourceCurrency === null || sourceValueMinor === null) return '—'
   const symbol =
     sourceCurrency === 'EUR' ? '€' : sourceCurrency === 'USD' ? '$' : `${sourceCurrency} `
-  return `${symbol}${(Number(sourceValueMinor) / 100).toFixed(2)}`
+  return `${symbol}${formatSourcePriceMinor(sourceValueMinor)}`
 }
 
 const PROVIDER_LABEL: Record<string, string> = {

@@ -51,7 +51,9 @@
     "scanner:ocr:benchmark:psm-forensics": "tsx scripts/scanner-ocr-benchmark/run-psm-forensics.ts",
     "scanner:ocr:benchmark:recognition": "tsx scripts/scanner-ocr-benchmark/run-recognition-benchmark.ts",
     "scanner:name-lexicon:build": "tsx scripts/scanner-name-lexicon/build-lexicon.ts",
-    "scanner:roi-fixture:smoke": "tsx scripts/scanner-roi-fixture-smoke.ts"
+    "scanner:roi-fixture:smoke": "tsx scripts/scanner-roi-fixture-smoke.ts",
+    "scanner:confidence:audit": "tsx scripts/scanner-confidence-audit/run-audit.ts",
+    "scanner:stress": "node scripts/scanner-p151/run-stress.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "4.2.0",

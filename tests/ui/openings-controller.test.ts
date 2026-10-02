@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { liveLease } from './lease-support'
 
 import type {
   BoughtAndOpenedInput,
@@ -12,6 +13,11 @@ import type {
  * proving the mapping layer (typed optionality, error mapping, blocked-void outcomes) without a
  * live backend. The DB-gated suites (tests/db + tests/m16-independent) prove the backend itself.
  */
+
+// The data layer is mocked; the controller only forwards a leased client, so a stand-in is enough.
+vi.mock('../../src/data/leased-db', () => ({
+  leasedDb: (lease: unknown) => ({ identityLease: lease }),
+}))
 
 const createOpeningRecord = vi.fn<(...args: unknown[]) => Promise<unknown>>()
 const createProvisionalRecord = vi.fn<(...args: unknown[]) => Promise<unknown>>()
@@ -82,9 +88,12 @@ describe('integrated opening controller (I1)', () => {
       pulls: [{ cardVariantId: 'v-1', condition: 'NM', quantity: 1 }],
       trackingCompleteness: 'all_cards',
     }
-    await expect(controller.createOpening(input)).resolves.toEqual({ openingId: 'opening-1' })
+    await expect(controller.createOpening(input, liveLease())).resolves.toEqual({
+      openingId: 'opening-1',
+    })
     expect(createOpeningRecord).toHaveBeenCalledWith(
       expect.objectContaining({ idempotencyKey: 'key-1', sourceLotId: 'lot-1', quantity: 2 }),
+      expect.anything(),
     )
   })
 
@@ -100,11 +109,12 @@ describe('integrated opening controller (I1)', () => {
       pulls: [],
       trackingCompleteness: 'all_cards',
     }
-    await expect(controller.createBoughtAndOpened(input)).resolves.toEqual({
+    await expect(controller.createBoughtAndOpened(input, liveLease())).resolves.toEqual({
       openingId: 'opening-9',
     })
     expect(createProvisionalRecord).toHaveBeenCalledWith(
       expect.objectContaining({ totalPaidNokMinor: 29995n }),
+      expect.anything(),
     )
   })
 
@@ -201,10 +211,12 @@ describe('integrated opening controller (I1)', () => {
   it('reconcileOpeningCost delegates to the data layer and returns the opening id (P59 §12)', async () => {
     reconcileOpeningRecord.mockResolvedValue({ id: 'opening-1' })
     const controller = getOpeningController()
-    await expect(controller.reconcileOpeningCost('opening-1', 'lot-9')).resolves.toEqual({
+    await expect(
+      controller.reconcileOpeningCost('opening-1', 'lot-9', liveLease()),
+    ).resolves.toEqual({
       openingId: 'opening-1',
     })
-    expect(reconcileOpeningRecord).toHaveBeenCalledWith('opening-1', 'lot-9')
+    expect(reconcileOpeningRecord).toHaveBeenCalledWith('opening-1', 'lot-9', expect.anything())
   })
 
   it('reconciliation refusals map to safe sentences — no raw SQL, ids or internals (P59 §12)', async () => {
@@ -213,24 +225,24 @@ describe('integrated opening controller (I1)', () => {
     reconcileOpeningRecord.mockRejectedValue(
       new Error('only 1 of the target lot remain available, but 2 are needed'),
     )
-    await expect(controller.reconcileOpeningCost('opening-1', 'lot-x')).rejects.toThrow(
-      /Not enough unopened units left/,
-    )
+    await expect(
+      controller.reconcileOpeningCost('opening-1', 'lot-x', liveLease()),
+    ).rejects.toThrow(/Not enough unopened units left/)
 
     reconcileOpeningRecord.mockRejectedValue(new Error('opening x is already reconciled'))
-    await expect(controller.reconcileOpeningCost('opening-1', 'lot-x')).rejects.toThrow(
-      /already been linked/,
-    )
+    await expect(
+      controller.reconcileOpeningCost('opening-1', 'lot-x', liveLease()),
+    ).rejects.toThrow(/already been linked/)
 
     reconcileOpeningRecord.mockRejectedValue(new Error('source lot is unavailable'))
-    await expect(controller.reconcileOpeningCost('opening-1', 'lot-x')).rejects.toThrow(
-      /no longer available/,
-    )
+    await expect(
+      controller.reconcileOpeningCost('opening-1', 'lot-x', liveLease()),
+    ).rejects.toThrow(/no longer available/)
 
     reconcileOpeningRecord.mockRejectedValue(new Error('relation "openings" does not exist'))
-    await expect(controller.reconcileOpeningCost('opening-1', 'lot-x')).rejects.toThrow(
-      /Something went wrong/,
-    )
+    await expect(
+      controller.reconcileOpeningCost('opening-1', 'lot-x', liveLease()),
+    ).rejects.toThrow(/Something went wrong/)
   })
 
   it('a refused void becomes { blocked: true } with the concise reason — not a thrown error', async () => {
@@ -240,7 +252,7 @@ describe('integrated opening controller (I1)', () => {
       ),
     )
     const controller = getOpeningController()
-    const outcome = await controller.voidOpening('opening-1')
+    const outcome = await controller.voidOpening('opening-1', liveLease())
     expect(outcome.blocked).toBe(true)
     expect(outcome.blockedReason).toMatch(/has been sold/)
   })
@@ -248,7 +260,7 @@ describe('integrated opening controller (I1)', () => {
   it('already-voided is surfaced as a blocked outcome too', async () => {
     voidOpeningRecord.mockRejectedValue(new Error('opening x is already voided'))
     const controller = getOpeningController()
-    const outcome = await controller.voidOpening('opening-1')
+    const outcome = await controller.voidOpening('opening-1', liveLease())
     expect(outcome).toEqual({
       blocked: true,
       blockedReason: 'This opening has already been corrected.',
@@ -261,14 +273,17 @@ describe('integrated opening controller (I1)', () => {
     )
     const controller = getOpeningController()
     await expect(
-      controller.createOpening({
-        idempotencyKey: 'k',
-        sourceLotId: 'lot-1',
-        quantity: 2,
-        openedOn: '2026-08-01',
-        pulls: [],
-        trackingCompleteness: 'all_cards',
-      }),
+      controller.createOpening(
+        {
+          idempotencyKey: 'k',
+          sourceLotId: 'lot-1',
+          quantity: 2,
+          openedOn: '2026-08-01',
+          pulls: [],
+          trackingCompleteness: 'all_cards',
+        },
+        liveLease(),
+      ),
     ).rejects.toThrow(/Not enough unopened units left/)
   })
 })

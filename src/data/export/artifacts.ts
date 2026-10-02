@@ -15,7 +15,7 @@ import {
   type CsvFileContent,
 } from '../../domain/export/csv-projections'
 import type { ExportSnapshot } from '../../domain/export/snapshot-types'
-import { supabase } from '../supabase-client'
+import type { LeasedDb } from '../leased-client'
 import { fetchExportSnapshot, type ExportFetchOptions } from './fetch-snapshot'
 import { localTodayIso } from '../../platform/local-date'
 
@@ -45,8 +45,11 @@ function currentAppVersion(): string {
 
 async function collectSnapshot(
   options: ExportOptions,
+  db: LeasedDb,
 ): Promise<{ snapshot: ExportSnapshot; exportedAt: string }> {
-  const snapshot = await fetchExportSnapshot(supabase, options)
+  // Roughly twenty sequential reads assemble one file; all of them go through the caller's leased
+  // client, so an identity change part way ends the export instead of mixing two people's rows.
+  const snapshot = await fetchExportSnapshot(db, options)
   return { snapshot, exportedAt: new Date().toISOString() }
 }
 
@@ -57,8 +60,11 @@ function textArtifact(filename: string, mimeType: string, text: string): ExportA
 /**
  * Builds the lossless, versioned JSON backup artifact. Fetches its own snapshot.
  */
-export async function exportJsonBackup(options: ExportOptions = {}): Promise<ExportArtifact> {
-  const { snapshot, exportedAt } = await collectSnapshot(options)
+export async function exportJsonBackup(
+  options: ExportOptions,
+  db: LeasedDb,
+): Promise<ExportArtifact> {
+  const { snapshot, exportedAt } = await collectSnapshot(options, db)
   const envelope = buildBackupEnvelope(snapshot, {
     exportedAt,
     appVersion: currentAppVersion(),
@@ -73,8 +79,11 @@ export async function exportJsonBackup(options: ExportOptions = {}): Promise<Exp
 /**
  * Builds every CSV analysis file. Fetches its own snapshot.
  */
-export async function exportCsvArtifacts(options: ExportOptions = {}): Promise<ExportArtifact[]> {
-  const { snapshot } = await collectSnapshot(options)
+export async function exportCsvArtifacts(
+  options: ExportOptions,
+  db: LeasedDb,
+): Promise<ExportArtifact[]> {
+  const { snapshot } = await collectSnapshot(options, db)
   const files: CsvFileContent[] = buildCsvSuite(projectionInputFromSnapshot(snapshot))
   return files.map((file) => textArtifact(file.filename, CSV_MIME_TYPE, file.text))
 }

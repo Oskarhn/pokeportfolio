@@ -2255,3 +2255,202 @@ id, versus a numerically-shaped fact that happens to sit nearby) are different q
 scorer that only asks the first one will eventually promote the second by accident. Neither bug
 was visible from confidence scores or pass/fail test counts alone; both were caught by actually
 looking at what the block-read text contained before trusting that it "found something."
+
+## 2026-09-18 (P144) - Four "the input was fine, the boundary was not" defects, and the two things testing them turned up
+
+Four separate audit findings (P130-16/17/18-date/25) turned out to be one shape: a legitimate value
+was either refused or quietly rewritten at a boundary. A free receipt (goods 1+2, shipping 1,
+customs 1, discount 5) was rejected because the discount was allocated by goods weight only and
+rounding pushed one line to -1; an uncosted sale that lost money could not be saved while the
+identical sale on a costed lot could, because a CHECK constrained a signed cash flow to be
+non-negative; any date, 0001-01-01 included, was accepted for a purchase; and a blank price field
+was submitted as a known 0. Each was reproduced against the released code first, and the pre-fix
+run is what shaped the fixes: the discount fix keeps the documented rule byte-identical whenever
+the discount fits inside the goods (only the previously-broken case changes), the sale fix removes a
+constraint instead of adding a workaround, and the date rule is a trigger rather than a CHECK so it
+produces a named domain error, covers the client's direct `acquired_on` column update, and never
+makes a pre-contract row un-updatable.
+
+Two things the tests exposed that the findings did not. First, an exact SQL-vs-TypeScript parity
+test at 2^58-scale amounts failed by 2 minor units - not because the SQL was wrong but because
+PostgREST returns `bigint[]` as JSON numbers that JavaScript silently rounds above 2^53. That is
+P130-19 (still open) showing up as a testing constraint, so the exact comparison runs through a
+single raw psql session that returns text. Second, the edit-form regression could not be exercised
+against the Vite dev server at all: `useIsMountedRef` set its ref to false on effect cleanup and
+never back to true, so under StrictMode's mount-unmount-mount the form's error message and
+post-save navigation were silently skipped for the life of a live component - invisible in
+production (no double mount) and invisible to every existing test. A one-line re-arm fixed it.
+
+## 2026-09-19 (P146) - The number was exact until the moment something called it a number
+
+P144 had already shown the symptom by accident: an exact parity test at 2^58 scale failed by 2 minor units
+because PostgREST returns a `bigint[]` as JSON numbers. Reproducing P130-19 properly meant asking where the
+digits actually die, and the answer was not where the audit pointed. The audit named `Number(bigint)` on the
+write path, which is real, but on the read path the loss is earlier and invisible: Postgres holds the exact
+value, the PostgREST body carries every digit (`{"total_minor":9007199254740993}`), and it is `JSON.parse`,
+inside supabase-js, that hands the application 9007199254740992. By the time any of our code runs the value has
+already changed, so a `BigInt(number)` "fix" on the read side would have preserved the wrong amount with the right
+type. The existing habit (select every money column `::text`) was correct and mostly followed; the defects were
+the writes, three RPCs that return a whole row of which the caller reads nothing, and a handful of places that
+formatted money through a double.
+
+Two decisions were not obvious. First, whether to bound the money domain instead: it is attractive (a portfolio
+never reaches 90 trillion kroner) but every write, every product, every `numeric` sum and every FX multiplication
+would need its own proof, and one missed path is exactly the silent bug again, while the database already fails
+loudly rather than wrapping. Second, what the guard on the wire should do with a response it did not expect. The
+first version threw, and the very first real round trip showed why that is wrong: `set_manual_valuation` returns
+the whole row, its `value_minor` came back as an unsafe literal, and the guard reported an error for a write that
+had already committed - an invitation to retry and double-write. The guard now quotes the literal (the digits
+survive, as text), reports it, and the tests require the report to stay empty; the two RPCs were changed to select
+only `id`, which is the actual fix.
+
+The rest of the time went to making the wrong shape unmergeable. A catalog audit derives the client-callable
+function list from `pg_proc`; static rules fail on a money column without `::text` or a `Number(<money>)` that is
+not on a named display-only list; property tests sweep the whole signed range around 2^53 and 2^63. Mutations of
+each rule fail the suite that owns them. Two environmental notes for whoever runs this next: two full database
+suites started against one local stack interfere (a killed run left an orphan behind, and the resulting m12/m16
+failures vanished after a `supabase db reset` and a single run), and `tests/ui/opening-draft.test.ts` compares the
+local date with the UTC date, so it fails between local midnight and 02:00 in Norway on the untouched base as well.
+
+## 2026-09-19 (P147) - Two correct halves, one unguarded client: what integrating the auth and money tracks actually had to prove
+
+P145 and P146 were each green on their own suites, and `git merge` reported ten textual conflicts, all in the data
+layer, all resolvable by keeping both sides. The dangerous part was the one Git could not see. P145 builds a small
+Supabase client per user action (`createLeasedDb`, authenticated through the documented `accessToken` option) and
+routes every write through it; P146 installs its exact-money guard in `createAppSupabaseClient`, which the
+leased clients never touch. After a clean resolution of every conflict the tree compiled, typechecked and passed
+1,938 unit tests, and every write to user data — that is, every write — travelled through a client with no guard
+at all. Nothing failed because P146's suites called the data layer through the shared client (the old signature)
+and P145's suites used stub amounts far below 2^53: each suite tested its own half through a client that did not
+have the other half. The defect was only findable by asking "which client does a write actually use, and what is
+on it", which is a question about the composition.
+
+The resolution was structural rather than a patch. `supabase-factory.ts` became the one place that calls
+`createClient`, with two constructors that both wrap the network `fetch` in the guard, and a test that counts
+`createClient` calls against guarded fetches so a third path cannot appear silently (D-138). The proof that the
+two protections coexist is a set of six scenarios whose assertions read the backend (bearer, body text, stored
+value), run against production and against five compositions that each lack one protection. All five mutants
+were also applied to the production files one at a time: no guard on the leased client (3 unit and 1 database test
+fail), no identity validation (17 and 5), `Number()` at a money argument (7 and 15), an A → B → A sequence that
+reactivates a lease (5 and 1), a same-user refresh that kills a lease (10 and 1). The first form of the `Number()`
+mutation did not compile (an unused import); it was redone in a compiling form, since a production build would
+have rejected the first. On the real stack the scenarios use real GoTrue sessions and a real `refreshSession()`; the
+seeded campaign (default 72 cases from seed 147; 4 further seeds of 150 cases were run once) mixes switches, refreshes,
+sign-outs, large/zero/unsafe amounts, replays, ambiguous retries and concurrent duplicates with parked-lookup
+scheduling instead of sleeps, and found nothing — which is the result, not an omission.
+
+Three smaller findings came from running the combined suites rather than from either track. The "midnight flake" both
+tracks noticed was a wrong test, not a wrong product: two assertions in `opening-draft.test.ts` expected the UTC
+date while the app deliberately uses the local one, so they failed only in the hours between local and UTC midnight.
+Reproducing it took a detour: on this Windows machine `TZ=... node` is ignored at process start and only an
+assignment to `process.env.TZ` at runtime takes effect, so a first round of "run the suite under other timezones"
+runs silently ran in Oslo time and proved nothing; a temporary setup file that assigns the variable inside the
+worker made the timezone real (the old test then failed exactly its two assertions under UTC+14, the new suite passed
+under UTC+14, UTC−11, UTC and Oslo). The E2E "fixture race" was one spec that sold from the shared Pikachu holding
+through the UI: the sale form pre-fills the first lot, which can be another worker's edit fixture. Serialising the
+project was not necessary; the rule is now "the shared pool is read-and-edit-only, and a spec that sells owns its
+own variant", enforced by a static check, because the failure needs parallel workers and a run that happens to pass
+proves nothing (a first version of the check let a mutant survive: it matched the import, not the use). The leaked
+synthetic user was a `beforeAll` user that `beforeEach` overwrote by reassigning the variable, losing its id; the
+delete helper was fine.
+
+The full authenticated project, run three times after the isolation work, turned up two more things that no single
+track's runs could have shown. The first: `exact-money-input` (P146) types a 16-digit amount into the shared user's
+ledger, and `private-routes-smoke` (older) loads the Purchases list at 390 px, where that amount widens the row by
+6 px — a failure that appeared in one combined run and vanished alone, and that reproduces every time with one worker
+and the right order. The test was moved to its own user; the layout limitation is pre-existing and went to the
+backlog rather than into an unrelated CSS change. The second: the real sign-out test failed one run in three, and a
+probe (the same test with each `/auth/v1/token` request labelled by whether it came before or after the reload call,
+run 16 to 48 times under CPU load) showed that the "old refresh token presented after sign-out" was the old
+document's own retry loop landing in the few tens of milliseconds between `unroute()` and `reload()`, with the stored
+session null and the sign-in form visible every time. A control run on the P145 tree in the same conditions produced
+0 in 32 and the integrated tree 2 in 48, and the distributions of when the test reached the reload differed by about
+the width of the window, so the honest reading is a race that the integration made a little more likely rather than
+a regression: nothing was resurrected, and no product code changed. Counting only requests after the main frame's
+navigation commit fixed it (48 of 48 under the same load), and removing the storage cleanup still fails the test —
+which is the property that matters, checked again in both the mocked and the real variant.
+
+The third failure had the longest way round. `edit-form-async-race` missed its "Saving…" state in three consecutive runs
+and then failed a different test of the same file, one that found "55.00" stored although the save was meant to be held.
+Stress runs under CPU load did not reproduce it (0 in 42), a control tree never failed it, and my first explanation (an
+unawaited `page.route()`) was a guess that a later failure disproved. The trace settled it: the `update_purchase` request
+completed in 28 ms, after the interception was in place. A five-line probe showed why — Playwright's glob
+`**/rest/v1/rpc/update_purchase` does not match `…/update_purchase?select=…`, and every data-layer RPC carries a
+`.select()`. The route had never matched, at any commit, so two specs written to prove that a slow response arriving
+after an entity switch changes nothing had never had a slow response; they passed by luck until timing shifted. Made real,
+all seven tests pass — the product (the P124 guard and the P145 leases) was right — and each now asserts that the
+request was held. The lesson is the one the mutation tests keep teaching: the question is not whether a test passes but
+whether it can fail for the reason it names.
+
+## 2026-09-20 — Scanner hardening: leaks, hangs and one visible-only-in-a-browser bug (P151)
+
+**What the tests could not see.** The scanner's unit tests all stubbed the browser, so a class of
+lifecycle defects was invisible to them by construction. Driving the real production build of `/scan` in
+Chromium — real workers, real blob URLs — reproduced them on the untouched baseline: 7 Tesseract/visual
+workers alive after six enter/exit cycles (P130-10, and a sibling one: any scan reaching a disposed
+visual client built a fresh worker nobody owned), and a blob URL of a raw camera frame alive after the
+user had left the scanner. The same run found a bug no unit test was looking for: a rejected photo
+chosen from the start screen produced no message at all, because the error was rendered only in the
+camera step.
+
+**Measure before deciding.** The confidence change was chosen from numbers, not from the audit's
+recommendation alone: against the real 19,500-card index, 5.7–10.7% of scans whose true printing has no
+reference image preselected a same-artwork sibling as HIGH, and a stricter visual threshold did not
+remove that (the sibling sits at cosine ≥ 0.95). The fix is one extra tap on scans where OCR read
+nothing. No real captures exist, so the audit bounds the structure of the failure, not real accuracy.
+
+**Performance was a non-result, recorded as one.** Baseline and hardened builds measure the same within
+noise on this machine (warm scan 883 vs 885 ms); the work is reliability, not speed.
+
+**Test-tooling lessons.** Vitest's JSON reporter renders a test timeout as an opaque `STACK_TRACE_ERROR`
+(the mutation runner had to learn that a timeout is a legitimate kill for a hang defect); a
+`mockReturnValueOnce` queue is consumed in *call* order, not start order, so a scan that aborts early
+hands its barrier to the next scan (route by blob identity instead); and `history.back()` issued while an
+exit navigation is still in flight wedges the next navigation in the router (reproduced on the baseline;
+not scanner code).
+
+## 2026-09-24 — Two green branches, one red combined run: integrating the scanner and Price Check (P161)
+
+The scanner hardening (P151) and the read-only Price Check (P153) merged without a textual conflict in
+any source file, and each was green alone. The interesting part was that neither suite had ever run the
+other's code: P153 wrapped the raw scanner controller in its own narrowing and its own stale-result
+counter; P151 had shipped a purpose-built read-only port for exactly this consumer.
+
+Integrating meant deciding who owns what, not resolving conflicts. Request ordering already had an owner
+(the controller, with a publish gate); Price Check's counter was a second, weaker one. The session now
+holds one abort signal shared with the controller and nothing else. Real code then paid for the decision
+three times: the older of two photo picks could finish decoding last and win; a HIGH whose own best card
+was filtered out pre-selected the runner-up; and — found only by the full browser run, on both browser
+projects, reproducibly in isolation — P153's confirm-and-price spec turned into "not recognised", because
+P151's contract returns no candidates for a below-threshold scan while P153's fixture backend had leaned
+on the old behaviour of showing them. The fixture, not the assertion, was what had to change: a scan
+that reads nothing identifiable should not offer three unrelated cards.
+
+Mutation testing showed a second lesson: with the session aborting its own signal, the controller's
+supersession and publish gate became invisible to every Price Check-level test (both survived until a
+test drove the read-only port directly with no caller signal). Overlapping ownership hides regressions in
+the layer that is doing less of the work.
+
+## 2026-09-25 — The guard that made a rounded number look exact (P164)
+
+Two candidates, each green alone, met: the auth/export line (identity leases, an exact-money transport guard,
+safe exports) and the scanner + Price Check line. Git had almost nothing to say — three append-only documents.
+The semantic surface was larger: the leased `commitBatch` signature broke the scanner suites' mocks (fixed by
+adapting the tests to the real lease, not by un-leasing the production call), and the two lines each carried
+an identity layer for the same screen.
+
+The real finding came from asking what the exact-money guard does to a *third party's* number. The guard quotes
+any bare JSON integer above 2^53 so that PostgREST money keeps its digits. An Edge Function is not PostgREST: it
+had already turned a bigint into a double, so the digits it sends are a rounded value's digits. Quoted, they are a
+16-digit string, and Price Check's own grammar — written to accept exact strings — accepted them. P161's tests
+replaced the Supabase client with a stub, so the guard had never been in the path. Pushing raw JSON text through
+the real client showed the old pricing consumer returning 9007199254740992n as a price. The fix is small (the
+guard tags a rewritten response; price consumers refuse it); the lesson is that a stub at the seam between two
+tracks removes exactly the layer that interacts with the other track.
+
+Testing lessons worth keeping: (a) two E2E specs that both need the scanner's printed fixture card cannot share
+one catalog unless run serially — the unique constraint says so; (b) a mutation that removes one of two
+independent identity layers survives, by design — the browser test only discriminates when both are removed;
+(c) "no orphan worker after sign-out" needs a bounded-window assertion, not an instantaneous zero: a worker whose
+construction had begun cannot be interrupted, only terminated on arrival; (d) a regex written through a shell
+heredoc lost its backslash and made an assertion vacuous — read the file back.

@@ -1,11 +1,14 @@
-import { useState } from 'react'
-import { useMutation } from '@tanstack/react-query'
+import { useEffect, useRef, useState } from 'react'
+import { useLeasedAction } from '../../auth/useLeasedMutation'
+import { leasedDb } from '../../data/leased-db'
 import { useNavigate } from '@tanstack/react-router'
-import { buildPortfolioCsv, downloadCsv } from '../../data/portfolioExport'
+import { buildPortfolioCsv } from '../../data/portfolioExport'
 import type { PortfolioFilters } from '../../data/portfolio'
+import { FormMessage } from '../../ui/form'
 import { Sheet } from '../../ui/Sheet'
 import { DownloadIcon, CheckIcon, ChartIcon, SwapIcon } from '../../ui/icons'
 import { localTodayIso } from '../../platform/local-date'
+import { downloadOnly } from '../export/fileDelivery'
 
 /**
  * The four Portfolio shortcuts the owner described (M7.1 prompt §46-49): Export and Bulk Actions
@@ -30,10 +33,30 @@ export function PortfolioActionShortcuts({
 }) {
   const navigate = useNavigate()
   const [futureNotice, setFutureNotice] = useState<'trade' | null>(null)
-  const exportMutation = useMutation({
-    mutationFn: async () => {
-      const csv = await buildPortfolioCsv(filters)
-      downloadCsv(csv, `portfolio-export-${localTodayIso()}.csv`)
+  const exportAbortRef = useRef<AbortController | null>(null)
+  // Leaving the Portfolio ends an export in flight instead of letting it finish unattended.
+  useEffect(() => {
+    return () => {
+      exportAbortRef.current?.abort()
+    }
+  }, [])
+  // The export runs under an identity lease (P145): every page is read through the leased client,
+  // and the finished file is handed to the browser only while the lease is still current.
+  const exportMutation = useLeasedAction({
+    mutationFn: async (lease) => {
+      const controller = new AbortController()
+      exportAbortRef.current = controller
+      const csv = await buildPortfolioCsv(filters, leasedDb(lease), { signal: controller.signal })
+      lease.assertCurrent()
+      await downloadOnly(
+        [
+          {
+            filename: `portfolio-export-${localTodayIso()}.csv`,
+            blob: new Blob([csv], { type: 'text/csv;charset=utf-8' }),
+          },
+        ],
+        { canDeliver: () => lease.isCurrent() },
+      )
     },
   })
 
@@ -68,6 +91,16 @@ export function PortfolioActionShortcuts({
           void navigate({ to: '/market-movers' })
         }}
       />
+
+      {exportMutation.isError ? (
+        <div className="col-span-4">
+          <FormMessage tone="error">
+            {exportMutation.error instanceof Error && exportMutation.error.message
+              ? exportMutation.error.message
+              : 'The CSV could not be created. Nothing was saved.'}
+          </FormMessage>
+        </div>
+      ) : null}
 
       <Sheet
         open={futureNotice !== null}

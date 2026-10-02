@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { Link, useParams, useSearch } from '@tanstack/react-router'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useLeasedAction } from '../../auth/useLeasedMutation'
+import { leasedDb } from '../../data/leased-db'
 import { getSale, voidSale } from '../../data/sales'
 import { toDecimalString } from '../../domain/money'
 import type { CurrencyCode } from '../../domain/currency'
@@ -20,8 +22,8 @@ export function SaleDetailPage() {
 
   const detail = useQuery({ queryKey: ['sale', saleId], queryFn: () => getSale(saleId) })
 
-  const voidMutation = useMutation({
-    mutationFn: () => voidSale(saleId),
+  const voidMutation = useLeasedAction({
+    mutationFn: (lease) => voidSale(saleId, leasedDb(lease)),
     onSuccess: async () => {
       setVoidOpen(false)
       await queryClient.invalidateQueries({ queryKey: ['sale', saleId] })

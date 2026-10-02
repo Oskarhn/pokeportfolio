@@ -1,8 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query'
+import { leasedDb } from '../../data/leased-db'
+import { useLeasedMutation } from '../../auth/useLeasedMutation'
 import { listPortfolio, getPortfolioCounts, type PortfolioFilters } from '../../data/portfolio'
-import { getMyProfile, updateMyProfile, type CollectionView } from '../../data/profile'
+import {
+  getMyProfile,
+  updateMyProfile,
+  type CollectionView,
+  type ProfileUpdate,
+} from '../../data/profile'
 import type { PortfolioSortOrder } from '../../data/portfolio'
 import { CollectionsBar } from './CollectionsBar'
 import { PortfolioToolbar } from './PortfolioToolbar'
@@ -109,14 +116,20 @@ export function PortfolioPage() {
   }, [portfolio])
 
   const hideValues = profile.data?.hideValues ?? false
-  const toggleHideValues = useMutation({
-    mutationFn: (next: boolean) => updateMyProfile({ hideValues: next }),
+  // Every preference write goes through one leased mutation, including the ones that used to be
+  // fire-and-forget: a value chosen under one account must not be saved into another (P145).
+  const savePreference = useLeasedMutation({
+    mutationFn: (update: ProfileUpdate, lease) => updateMyProfile(update, leasedDb(lease)),
+  })
+  const toggleHideValues = useLeasedMutation({
+    mutationFn: (next: boolean, lease) => updateMyProfile({ hideValues: next }, leasedDb(lease)),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['my-profile'] })
     },
   })
-  const setCurrency = useMutation({
-    mutationFn: (currency: string) => updateMyProfile({ displayCurrency: currency }),
+  const setCurrency = useLeasedMutation({
+    mutationFn: (currency: string, lease) =>
+      updateMyProfile({ displayCurrency: currency }, leasedDb(lease)),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['my-profile'] })
     },
@@ -200,7 +213,7 @@ export function PortfolioPage() {
           sort={sort}
           onSortChange={(next) => {
             updateSearch({ sort: next })
-            void updateMyProfile({ collectionDefaultSort: next })
+            savePreference.mutate({ collectionDefaultSort: next })
             void queryClient.invalidateQueries({ queryKey: ['my-profile'] })
           }}
           onEnterSelectMode={enterSelectMode}
@@ -290,19 +303,19 @@ export function PortfolioPage() {
         sort={sort}
         onSortChange={(next) => {
           updateSearch({ sort: next })
-          void updateMyProfile({ collectionDefaultSort: next })
+          savePreference.mutate({ collectionDefaultSort: next })
           void queryClient.invalidateQueries({ queryKey: ['my-profile'] })
         }}
         density={density}
         onDensityChange={(next) => {
           updateSearch({ density: next })
-          void updateMyProfile({ collectionGridDensity: next })
+          savePreference.mutate({ collectionGridDensity: next })
           void queryClient.invalidateQueries({ queryKey: ['my-profile'] })
         }}
         view={view}
         onViewChange={(next) => {
           updateSearch({ view: next })
-          void updateMyProfile({ collectionDefaultView: next })
+          savePreference.mutate({ collectionDefaultView: next })
           void queryClient.invalidateQueries({ queryKey: ['my-profile'] })
         }}
         filters={filters}

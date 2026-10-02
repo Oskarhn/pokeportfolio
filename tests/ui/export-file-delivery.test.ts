@@ -1,8 +1,13 @@
+import { IdentityAuthority } from '../../src/auth/identity-lease'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   deliverFiles,
+  deliverUnderLease,
+  type DeliveryOptions,
+  type DeliveryOutcome,
   downloadOnly,
   DeliveryError,
+  DeliveryRefusedError,
   type DeliverableFile,
 } from '../../src/features/export/fileDelivery'
 
@@ -255,5 +260,152 @@ describe('deliverFiles', () => {
     await expect(deliverFiles([])).rejects.toThrow(DeliveryError)
     await expect(deliverFiles([])).rejects.toThrow(/No files came back/)
     expect(createObjectURL).not.toHaveBeenCalled()
+  })
+})
+
+describe('P162 canDeliver: files are handed over only while their identity is current', () => {
+  it('refuses before anything is shared, saved or downloaded when the gate is already closed', async () => {
+    const share = vi.fn<ShareFn>().mockResolvedValue(undefined)
+    stubNavigator({ share, canShare: () => true })
+    await expect(deliverFiles([file('a.csv')], { canDeliver: () => false })).rejects.toThrow(
+      DeliveryRefusedError,
+    )
+    await expect(downloadOnly([file('a.csv')], { canDeliver: () => false })).rejects.toThrow(
+      DeliveryRefusedError,
+    )
+    expect(share).not.toHaveBeenCalled()
+    expect(createObjectURL).not.toHaveBeenCalled()
+    expect(anchors).toHaveLength(0)
+  })
+
+  it('stops a multi-file download at the file boundary when the gate closes part way', async () => {
+    stubNavigator({ share: null, canShare: null })
+    let open = true
+    // The gate is asked once per file; it closes while the second file is being awaited.
+    const canDeliver = vi.fn<() => boolean>(() => open)
+    const names = ['holdings.csv', 'purchases.csv', 'sales.csv']
+    const pending = downloadOnly(
+      names.map((name) => file(name)),
+      { canDeliver },
+    ).then(
+      (outcome) => ({ outcome }),
+      (error: unknown) => ({ error }),
+    )
+    await vi.advanceTimersByTimeAsync(0) // first file goes out at once
+    expect(anchors.map((a) => a.download)).toEqual(['holdings.csv'])
+    open = false
+    await vi.runAllTimersAsync()
+    const result = await pending
+    expect('error' in result && result.error).toBeInstanceOf(DeliveryRefusedError)
+    // Only the file handed over before the change was delivered; the rest never got an object URL.
+    expect(anchors.map((a) => a.download)).toEqual(['holdings.csv'])
+    expect(createObjectURL).toHaveBeenCalledTimes(1)
+    expect(revokeObjectURL).toHaveBeenCalledTimes(1) // that one URL is still revoked
+  })
+
+  it('checks again after the save dialog closes and writes nothing if the identity ended meanwhile', async () => {
+    stubNavigator({ share: null, canShare: null })
+    let open = true
+    const write = vi.fn<(data: Blob) => Promise<void>>().mockResolvedValue(undefined)
+    const picker = vi.fn<PickerFn>(() => {
+      open = false // the person switched account while the dialog was open
+      return Promise.resolve({
+        createWritable: () => Promise.resolve({ write, close: () => Promise.resolve(undefined) }),
+      })
+    })
+    ;(globalThis as { showSaveFilePicker?: PickerFn }).showSaveFilePicker = picker
+    const pending = deliverFiles([file('backup.json')], { canDeliver: () => open }).then(
+      (outcome) => ({ outcome }),
+      (error: unknown) => ({ error }),
+    )
+    await vi.runAllTimersAsync()
+    const result = await pending
+    expect('error' in result && result.error).toBeInstanceOf(DeliveryRefusedError)
+    expect(write).not.toHaveBeenCalled()
+    // A refusal is never converted into the download fallback.
+    expect(createObjectURL).not.toHaveBeenCalled()
+  })
+
+  it('an open gate changes nothing about a normal delivery', async () => {
+    stubNavigator({ share: null, canShare: null })
+    const pending = deliverFiles([file('a.csv'), file('b.csv')], { canDeliver: () => true })
+    await vi.runAllTimersAsync()
+    expect(await pending).toEqual({ method: 'download', filenames: ['a.csv', 'b.csv'] })
+    expect(anchors).toHaveLength(2)
+  })
+})
+
+describe('P162 deliverUnderLease: the final delivery gate', () => {
+  function tab() {
+    const authority = new IdentityAuthority()
+    authority.observe('user-a')
+    return { authority, lease: authority.begin('user-a') }
+  }
+
+  it('delivers while the lease is current', async () => {
+    const { lease } = tab()
+    const send = vi.fn((options: DeliveryOptions) => {
+      expect(options.canDeliver?.()).toBe(true)
+      return Promise.resolve<DeliveryOutcome>({ method: 'download', filenames: ['a.csv'] })
+    })
+    expect(await deliverUnderLease(lease, send)).toEqual({
+      status: 'delivered',
+      outcome: { method: 'download', filenames: ['a.csv'] },
+    })
+  })
+
+  it('a lease that ended after the files were built delivers nothing and never calls send', async () => {
+    const { authority, lease } = tab()
+    authority.observe('user-b')
+    const send = vi.fn<(o: DeliveryOptions) => Promise<DeliveryOutcome>>()
+    expect(await deliverUnderLease(lease, send)).toEqual({ status: 'stale' })
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it('A → B → A leaves the first generation stale although user-a is signed in again', async () => {
+    const { authority, lease } = tab()
+    authority.observe('user-b')
+    authority.observe('user-a')
+    expect(authority.userId).toBe('user-a')
+    const send = vi.fn<(o: DeliveryOptions) => Promise<DeliveryOutcome>>()
+    expect(await deliverUnderLease(lease, send)).toEqual({ status: 'stale' })
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it('no lease at all is stale', async () => {
+    expect(await deliverUnderLease(null, vi.fn())).toEqual({ status: 'stale' })
+  })
+
+  it('a lease that ends while the delivery is under way stops it at the next hand-over point', async () => {
+    stubNavigator({ share: null, canShare: null })
+    const { authority, lease } = tab()
+    const pending = deliverUnderLease(lease, (options) =>
+      downloadOnly([file('a.csv'), file('b.csv'), file('c.csv')], options),
+    )
+    await vi.advanceTimersByTimeAsync(0)
+    authority.observe(null) // signed out after the first file
+    await vi.runAllTimersAsync()
+    expect(await pending).toEqual({ status: 'stale' })
+    expect(anchors.map((a) => a.download)).toEqual(['a.csv'])
+  })
+
+  it('a same-user refresh event does not stop a delivery', async () => {
+    stubNavigator({ share: null, canShare: null })
+    const { authority, lease } = tab()
+    const pending = deliverUnderLease(lease, (options) =>
+      downloadOnly([file('a.csv'), file('b.csv')], options),
+    )
+    await vi.advanceTimersByTimeAsync(0)
+    authority.observe('user-a') // TOKEN_REFRESHED: same user, same epoch
+    await vi.runAllTimersAsync()
+    expect(await pending).toMatchObject({ status: 'delivered' })
+    expect(anchors).toHaveLength(2)
+  })
+
+  it('any other failure propagates unchanged', async () => {
+    const { lease } = tab()
+    await expect(
+      deliverUnderLease(lease, () => Promise.reject(new DeliveryError('disk full'))),
+    ).rejects.toThrow('disk full')
   })
 })
