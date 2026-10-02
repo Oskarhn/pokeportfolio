@@ -9,6 +9,11 @@ import {
   type TestClient,
 } from '../db/setup'
 
+// P191 (P130-13): fixtures are written with the service role. A Data API role can no longer insert
+// into the ledger tables directly (tests/db/p191_ledger_write_gate.test.ts proves the refusal), so
+// what this file asserts - that RLS and the S1 owner triggers isolate users - is exercised on rows
+// created the way an operator or the RPCs create them; every attack is still a client attempt.
+
 let service: TestClient
 let userA: SyntheticUser
 let userB: SyntheticUser
@@ -30,8 +35,8 @@ afterAll(async () => {
 
 // holdings_identity is a real unique constraint (user_id, holding_kind, variant, condition, ...) —
 // every call site below passes a distinct `condition` so tests sharing userA don't collide on it.
-async function createHolding(client: TestClient, userId: string, condition: string) {
-  const { data, error } = await client
+async function createHolding(_client: TestClient, userId: string, condition: string) {
+  const { data, error } = await service
     .from('holdings')
     .insert({
       user_id: userId,
@@ -46,9 +51,9 @@ async function createHolding(client: TestClient, userId: string, condition: stri
 }
 
 /** A real, owned purchase_line — acquisition_lots with cost_basis_state='known' needs one. */
-async function createOwnedPurchaseLine(client: TestClient, userId: string) {
+async function createOwnedPurchaseLine(_client: TestClient, userId: string) {
   const today = new Date().toISOString().slice(0, 10)
-  const { data: purchase, error: purchaseError } = await client
+  const { data: purchase, error: purchaseError } = await service
     .from('purchases')
     .insert({
       user_id: userId,
@@ -63,7 +68,7 @@ async function createOwnedPurchaseLine(client: TestClient, userId: string) {
     .single()
   if (purchaseError) throw purchaseError
 
-  const { data: line, error: lineError } = await client
+  const { data: line, error: lineError } = await service
     .from('purchase_lines')
     .insert({
       purchase_id: purchase!.id,
@@ -86,10 +91,17 @@ async function createOwnedPurchaseLine(client: TestClient, userId: string) {
 }
 
 describe('RLS isolation: holdings', () => {
-  it('owner can create and read their own holding', async () => {
+  it('owner can read their own holding; a direct client insert is refused (P130-13)', async () => {
     const holding = await createHolding(clientA, userA.id, 'NM')
     const { data } = await clientA.from('holdings').select().eq('id', holding.id).single()
     expect(data?.user_id).toBe(userA.id)
+    const direct = await clientA.from('holdings').insert({
+      user_id: userA.id,
+      holding_kind: 'raw_card',
+      card_variant_id: seedCatalog.charizardVariantId,
+      condition: 'NM',
+    })
+    expect(direct.error?.code).toBe('42501')
   })
 
   it('a stranger cannot read, update or delete another user holding', async () => {
@@ -121,11 +133,11 @@ describe('RLS isolation: holdings', () => {
 })
 
 describe('RLS isolation: acquisition_lots (S1 child-parent ownership)', () => {
-  it('owner can create a lot on their own holding, linked to their own purchase line', async () => {
+  it('the S1 triggers accept a lot on the owner own holding and purchase line', async () => {
     const holding = await createHolding(clientA, userA.id, 'EX')
     const line = await createOwnedPurchaseLine(clientA, userA.id)
 
-    const { data, error } = await clientA
+    const { data, error } = await service
       .from('acquisition_lots')
       .insert({
         holding_id: holding.id,
@@ -149,7 +161,7 @@ describe('RLS isolation: acquisition_lots (S1 child-parent ownership)', () => {
   it('rejects a lot with user_id=B pointing at A holding (critical cross-tenant attack)', async () => {
     const holdingA = await createHolding(clientA, userA.id, 'GD')
 
-    const { error } = await clientB.from('acquisition_lots').insert({
+    const attack = {
       holding_id: holdingA.id,
       user_id: userB.id,
       origin: 'other',
@@ -157,15 +169,17 @@ describe('RLS isolation: acquisition_lots (S1 child-parent ownership)', () => {
       acquired_on: new Date().toISOString().slice(0, 10),
       quantity: 1,
       quantity_remaining: 1,
-    })
-    expect(error).not.toBeNull()
+    }
+    expect((await clientB.from('acquisition_lots').insert(attack)).error).not.toBeNull()
+    // The S1 trigger holds on its own, under the service role that bypasses RLS and the gate.
+    expect((await service.from('acquisition_lots').insert(attack)).error).not.toBeNull()
   })
 
   it('rejects a lot on B own holding that cites A purchase_line (defence in depth)', async () => {
     const holdingB = await createHolding(clientB, userB.id, 'NM')
     const lineA = await createOwnedPurchaseLine(clientA, userA.id)
 
-    const { error } = await clientB.from('acquisition_lots').insert({
+    const attack = {
       holding_id: holdingB.id,
       user_id: userB.id,
       origin: 'purchase',
@@ -177,14 +191,15 @@ describe('RLS isolation: acquisition_lots (S1 child-parent ownership)', () => {
       unit_cost_basis_minor: 5_000,
       cost_basis_currency: 'NOK',
       unit_cost_basis_nok_minor: 5_000,
-    })
-    expect(error).not.toBeNull()
+    }
+    expect((await clientB.from('acquisition_lots').insert(attack)).error).not.toBeNull()
+    expect((await service.from('acquisition_lots').insert(attack)).error).not.toBeNull()
   })
 
   it('a stranger cannot read another user lot', async () => {
     const holding = await createHolding(clientA, userA.id, 'PL')
     const line = await createOwnedPurchaseLine(clientA, userA.id)
-    const { data: lot } = await clientA
+    const { data: lot } = await service
       .from('acquisition_lots')
       .insert({
         holding_id: holding.id,
