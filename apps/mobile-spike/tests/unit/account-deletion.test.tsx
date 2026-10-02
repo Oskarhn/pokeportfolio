@@ -185,6 +185,20 @@ describe('the controller', () => {
     }
   })
 
+  it('an UNEXPECTED exception (not from the contract) is shown as the generic sentence, never its own text', async () => {
+    const p = ports(() => Promise.reject(new Error('socket hang up')))
+    // The probe itself blows up with backend text: it escapes runAccountDeletion as a raw error.
+    p.accountIsGone = () =>
+      Promise.reject(new Error('PGRST116 select * from purchases where user_id = $1'))
+    const h = harness({ accountDeletion: p })
+    await signIn(h, 'A')
+    h.runtime.accountDeletion.open()
+    await h.runtime.accountDeletion.confirm(PASSWORD)
+    const error = h.runtime.accountDeletion.getSnapshot().error ?? ''
+    expect(error).toMatch(/could not confirm the result/)
+    expect(error).not.toMatch(/PGRST|purchases|select/)
+  })
+
   it('a lost answer: only Auth saying the account is gone counts as deleted', async () => {
     const lost = () => Promise.resolve({ error: new FunctionsFetchError(new Error('socket')) })
     const gone = harness({ accountDeletion: ports(lost, true) })
