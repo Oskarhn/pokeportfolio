@@ -528,3 +528,27 @@ environment that was deployed to. A green CI run is not one of them.
 - Mobile: Safari Web Inspector over USB for a real iPhone. Emulation is a first pass, not proof.
 - Never log monetary amounts, collection contents, tokens or full email addresses — this applies
   to development logging too, because that is where such lines get committed by accident.
+
+
+## Account deletion and restores (P189)
+
+Deleting an account is a server-side workflow (`delete-account` Edge Function) that records the
+erasure in an **off-platform registry before it destroys anything**; a restored database must pass the
+erasure gate before it serves. Operator procedure: [security/RESTORE_RUNBOOK.md](security/RESTORE_RUNBOOK.md)
+(read it before any restore; the key points are repeated here because they are easy to forget):
+
+- **Never promote a restored database before `restore-gate postcheck` and `promote-check` exit 0.** The
+  restore drill (`scripts/p137/restore-drill.ts`) fails unless the gate ran (`--erasure-registry <file>`,
+  key in `ERASURE_REGISTRY_KEY`).
+- **Function secrets** (hosted: `supabase secrets set`, never committed): `ERASURE_REGISTRY_URL`
+  (https), `ERASURE_REGISTRY_TOKEN` (append only). Without them every deletion is refused with
+  `503 deletion_unavailable`. The registry key is **not** an Edge Function secret; it lives with the
+  registry and the operator.
+- **Deploy order for the deletion migrations** (never executed against the hosted project in P189):
+  verified backup (`pnpm db:backup`, `BACKUP COMPLETE`) → read-only finance diagnostics → `db push
+  --dry-run` must list the four P189 migrations (`20261002120000`…`20261002130000`) in order → push →
+  deploy the function **before** the client → grant audit → client. Do not push until the owner has
+  chosen registry storage; the function would only refuse deletions, but the UI would show them.
+- **Local stacks:** the stack's `supabase/config.toml` reads `ERASURE_REGISTRY_*` from the environment
+  at `supabase start`; the test suites start the reference sink (`tests/db/global-setup.ts`). After
+  `supabase db reset`, deactivate the cron jobs and delete the temp registry file together with it.

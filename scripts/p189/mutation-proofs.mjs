@@ -98,11 +98,11 @@ const MUTANTS = [
   },
   {
     id: 'M03',
-    what: 'a deleted user is omitted from the replay (first registry entry skipped)',
+    what: 'a deleted user is omitted from the replay (only the first registry entry is replayed)',
     kind: 'sql',
     fn: 'restore_gate_apply',
     find: "     order by (e ->> 'seq')::bigint\n  loop",
-    replace: "     order by (e ->> 'seq')::bigint offset 1\n  loop",
+    replace: "     order by (e ->> 'seq')::bigint limit 1\n  loop",
     run: [...DB, 'tests/db/p189_restore_safe_erasure.test.ts', '-t', 'R1 / R4 / R8'],
   },
   {
@@ -165,15 +165,21 @@ const MUTANTS = [
     id: 'M10',
     what: 'a stale or pending session can still write (the write barrier is removed)',
     kind: 'sql-raw',
-    sql: 'drop trigger if exists account_deletion_barrier on public.tags; drop trigger if exists account_deletion_barrier on public.purchases;',
-    restore: `create trigger account_deletion_barrier before insert or update or delete on public.tags for each statement execute function public.account_deletion_caller_guard();
-create trigger account_deletion_barrier before insert or update or delete on public.purchases for each statement execute function public.account_deletion_caller_guard();`,
-    run: [
-      ...DB,
-      'tests/authorization/p189_deletion_restore_safety.test.ts',
-      '-t',
-      'registry that cannot record',
-    ],
+    // Every guarded table, as in the P156 barrier migration. (The older INSERT-only guard would still
+    // refuse an INSERT, which is why the UPDATE/DELETE/RPC barrier suite is the one that must notice.)
+    sql: `do $$ declare t text; begin
+  for t in select c.relname from pg_trigger g join pg_class c on c.oid = g.tgrelid
+            where g.tgname = 'account_deletion_barrier' loop
+    execute format('drop trigger account_deletion_barrier on public.%I', t);
+  end loop; end $$;`,
+    restore: `do $$ declare t text; begin
+  foreach t in array array['retailers','storage_locations','tags','purchases','purchase_lines','holdings',
+    'acquisition_lots','manual_card_definitions','holding_tags','manual_valuations','custom_collections',
+    'custom_collection_members','sales','sale_lines','lot_disposals','lot_cost_adjustments','openings',
+    'sealed_products','profiles','portfolio_snapshots','portfolio_recompute_queue','invitations'] loop
+    execute format('create trigger account_deletion_barrier before insert or update or delete on public.%I for each statement execute function public.account_deletion_caller_guard()', t);
+  end loop; end $$;`,
+    run: [...DB, 'tests/db/p156_pending_write_barrier.test.ts'],
   },
   {
     id: 'M11',

@@ -134,7 +134,7 @@ Which of these the owner can actually do depends on settings this repository can
 
 ## 7. Verified evidence (local; hosted not exercised)
 
-See `docs/TESTING.md` §6f for the exact commands and counts. In short: `tests/db/p189_restore_safe_erasure.test.ts`
+See `docs/TESTING.md` §6g for the exact commands and counts. In short: `tests/db/p189_restore_safe_erasure.test.ts`
 restores a real pre-deletion backup, shows every account-owning relation resurrected (the hazard),
 and proves `apply`/`postcheck`/`promote-check` remove it, are idempotent, refuse every bad registry,
 detect a registry older than the backup and never touch a live account. With `P189_FULL_DRILL=1` the

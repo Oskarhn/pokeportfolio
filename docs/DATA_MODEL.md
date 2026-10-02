@@ -1694,3 +1694,23 @@ event-sourcing table exists; Openings (M16)/Grading (M17)/Trades (M18) extend th
 their canonical tables land.
 
 
+
+
+## Account deletion lifecycle (P189)
+
+Full per-table decisions, FK behaviour and restore replay: [security/P189_DELETION_DATA_MAP.md](security/P189_DELETION_DATA_MAP.md).
+Mechanics and threat model: [SECURITY.md](SECURITY.md) §8.1; decision D-189.
+
+`account_deletion_requests` (one row per account whose deletion was authorised; cascades away with the
+auth user, so no tombstone with an id survives) carries the retryable state: `last_stage`
+(`requested → registry_failed | purge_failed | purged | auth_delete_failed`), `deletion_id` (random),
+`registry_state` (`not_recorded` → `recorded`), `registry_seq`. **`purge_account_data` only runs for
+`registry_state = 'recorded'`.** `account_erasure_receipts` (`deletion_id`, `subject_hash`,
+`registry_seq`, `recorded_at`) is a witness copy of the off-platform registry: no foreign key, no
+personal data. `restore_gate_runs` holds operator stamps of restore-gate runs. All three are
+service-role/operator tables with RLS enabled and no policy.
+
+Every foreign key from `public` to `auth.users` is `ON DELETE CASCADE` except
+`invitations.created_by` (`SET NULL`, an audit record that outlives its issuer); a new user-owned
+table must be added to `purge_account_data`, the write barrier and `USER_OWNED_TABLES` or the graph
+tests fail.

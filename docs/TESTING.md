@@ -1513,3 +1513,35 @@ Do not read a single red run of these as a regression without re-running the spe
 
 **Documentation checks in CI (P188).** `node scripts/check-doc-size.mjs`, `check-project-state.mjs` and `check-doc-links.mjs` run in `build-and-test`; the link check
 covers `HANDOVER.md`, `CLAUDE.md`, `AGENTS.md`, `docs/CURRENT_STATE/`, `docs/handover/`, `docs/release/` and `docs/mobile/`.
+
+
+## 6g. Restore-safe account deletion (P189)
+
+The one invariant under test: **after a deletion is confirmed, no normal restore of any backup — even
+one older than the deletion — leaves that identity active in a database that may serve.** Everything
+below is synthetic; no test touches a hosted project.
+
+Stack requirements (local; CI generates them, see `.github/workflows/ci.yml`): the edge runtime must
+be started with `ERASURE_REGISTRY_URL`, `ERASURE_REGISTRY_TOKEN` (`supabase/config.toml`
+`[edge_runtime.secrets]`), and the tests need `ERASURE_REGISTRY_KEY` and `P156_DB_CONTAINER` (the
+stack's database container). `tests/db/global-setup.ts` starts the file-backed registry sink on the
+function's address; without these variables the deletion suites are skipped or, through the function,
+correctly refused (`503 deletion_unavailable`). After `supabase db reset` re-deactivate the cron jobs
+and delete `%TEMP%/p189-erasure-registry-<port>.ndjson` (the database's receipts and the registry must
+reset together — a registry that vanished while receipts remain is exactly what the gate refuses).
+
+| Layer | File | Proves |
+|---|---|---|
+| format, integrity, sink contract | `tests/ops/erasure-registry.test.ts` (42) | strict parse; every kind of tampering/torn/duplicate/unsupported record is refused; idempotent append; the sink client only accepts a confirmed record for the record it sent |
+| gate decisions | `tests/ops/restore-gate.test.ts` (13) | verdict → exit code; a stamp never authorises promotion alone; only hashes and integers reach SQL |
+| workflow ordering | `tests/ops/account-deletion-core.test.ts` | registry append + confirmation precede the purge; unavailable/failed registry leaves nothing deleted |
+| real database + real registry | `tests/db/p189_restore_safe_erasure.test.ts` (22) | R0 hazard (24 relations resurrect); R1/R4/R8 deleted accounts replayed away, live account byte-identical; R2 backup after (some) deletions; R3 idempotent; R5/R6 missing/empty/malformed/torn/tampered/wrongly-keyed registry refused and the image untouched; R7 unknown/already-gone entry harmless; registry **older than the backup** and operator-pinned head refused; stamp invalidated by a grown registry |
+| deployed function + Auth | `tests/authorization/p189_deletion_restore_safety.test.ts` (15) | registry failure leaves the account pending with all data and a retry completes; the purge refuses before the record exists; receipt = registry record (SQL hash equals TS hash); operator-only surface; A cannot delete B; anonymous/stale/racing writes; no SQL/table/function text in any answer |
+| existing deletion suites | `p152_*`, `p156_*`, `function_grants`, hostile-grant convergence | adapted to the recorded-erasure contract |
+| full tooling drill | `P189_FULL_DRILL=1 pnpm test:db tests/db/p189_restore_safe_erasure.test.ts -t "full disaster"` | real `pnpm db:backup` → `scripts/p137/restore-drill.ts` with the gate as a required step; `--no-erasure-gate` fails loudly; mutation F refused |
+| web | `tests/data/account-deletion-client.test.ts`, `tests/ui/account-deletion-copy.test.ts`, `tests/e2e/account-deletion-public.spec.ts`, `tests/e2e/authenticated/account-deletion.spec.ts`, `a11y.spec.ts` | lease-bound client, closed error vocabulary, public page without a session, real-browser deletion against the deployed function, no unsupported retention claim |
+| native | `apps/mobile-spike/tests/unit/account-deletion.test.tsx` | same contract, confirmation friction, identity-change safety, journal/session/photo cleanup, fixed error copy |
+| mutations | `node scripts/p189/mutation-proofs.mjs` | 15 mutants (restore without registry, verification skipped, user omitted from replay, wrong/live user replayed, second replay corrupts, record after success, A deletes B, anonymous endpoint, no barrier, native journal survives, raw SQL error shown, retention claim, session valid after delete, promote before postcheck) — each must be killed by a real assertion |
+
+Commit before running the mutation harness: it patches tracked files and restores them with
+`git checkout`.
