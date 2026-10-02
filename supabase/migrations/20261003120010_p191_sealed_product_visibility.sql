@@ -3,7 +3,11 @@
 -- sealed_products rows are curated (created_by_user_id NULL, visible to all) or private to their
 -- creator (RLS policy sealed_products_read). Two references to a product row cross that boundary:
 --
---   holdings.sealed_product_id, purchase_lines.sealed_product_id, openings.sealed_product_id
+--   holdings.sealed_product_id, purchase_lines.sealed_product_id
+--
+-- (openings.sealed_product_id is the third referencing column; openings_check_owner already requires
+-- it to equal the source lot's holding's product, and that holding is guarded below, so no separate
+-- trigger is needed there.)
 --
 -- Foreign-key checks are performed by the system as the table owner, so they ignore RLS. Reproduced
 -- before this migration, as user B naming user A's private product id:
@@ -37,9 +41,6 @@ begin
     + (select count(*) from public.purchase_lines l
          join public.sealed_products sp on sp.id = l.sealed_product_id
         where sp.created_by_user_id is not null and sp.created_by_user_id <> l.user_id)
-    + (select count(*) from public.openings o
-         join public.sealed_products sp on sp.id = o.sealed_product_id
-        where sp.created_by_user_id is not null and sp.created_by_user_id <> o.user_id)
   into v_bad;
   if v_bad > 0 then
     raise warning 'P191: % existing row(s) reference another user''s private sealed product; they are left untouched and should be reviewed', v_bad;
@@ -83,8 +84,4 @@ create trigger holdings_sealed_product_visible
 
 create trigger purchase_lines_sealed_product_visible
   before insert or update of sealed_product_id on public.purchase_lines
-  for each row execute function public.enforce_sealed_product_reference();
-
-create trigger openings_sealed_product_visible
-  before insert or update of sealed_product_id on public.openings
   for each row execute function public.enforce_sealed_product_reference();

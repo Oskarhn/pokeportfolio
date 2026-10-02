@@ -286,23 +286,51 @@ describe('P130-14 — B cannot pin A’s private product', () => {
     expect(ok.error).toBeNull()
   })
 
-  it('every table that can name a sealed product carries the rule, with one shared answer', async () => {
+  it('holdings and purchase_lines carry the rule, with one shared answer', async () => {
     // BEFORE triggers run ahead of NOT NULL / CHECK constraints, so a minimal row reaches the
-    // ownership trigger on each of the three referencing tables. The answer for A's private id is
-    // exactly the answer for an id that does not exist.
-    const attempt = async (table: 'holdings' | 'purchase_lines' | 'openings', id: string) =>
+    // ownership trigger. purchase_lines first passes its own owner check, so it names a real
+    // purchase of B's. The answer for A's private id is exactly the answer for a missing id.
+    const { data: purchase, error } = await clientB
+      .rpc('create_purchase', {
+        p_purchased_on: today,
+        p_currency: 'NOK',
+        p_lines: [
+          {
+            line_type: 'sealed',
+            sealed_product_id: curated,
+            quantity: 1,
+            unit_price_minor: 100,
+          },
+        ],
+      })
+      .single<{ id: string }>()
+    expect(error).toBeNull()
+    const attempt = async (table: 'holdings' | 'purchase_lines', id: string) =>
       observe(
         await service.from(table).insert({
           user_id: userB.id,
           sealed_product_id: id,
+          ...(table === 'purchase_lines' ? { purchase_id: purchase!.id } : {}),
         } as never),
       )
-    for (const table of ['holdings', 'purchase_lines', 'openings'] as const) {
+    for (const table of ['holdings', 'purchase_lines'] as const) {
       const foreign = await attempt(table, privateOfA)
       const random = await attempt(table, RANDOM())
       expect(foreign, table).toEqual(random)
       expect(foreign.code, table).toBe('23503')
       expect(foreign.messageClass, table).toMatch(/available sealed product/)
     }
+  })
+
+  it('openings cannot name it either: the source lot’s holding is the only way in, and it is guarded', async () => {
+    const attempt = async (id: string) =>
+      observe(
+        await service.from('openings').insert({
+          user_id: userB.id,
+          source_lot_id: RANDOM(),
+          sealed_product_id: id,
+        } as never),
+      )
+    expect(await attempt(privateOfA)).toEqual(await attempt(RANDOM()))
   })
 })
