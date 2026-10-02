@@ -108,6 +108,16 @@ export class PendingWriteJournal {
     await this.writeAll(entries.filter((e) => e.idempotencyKey !== idempotencyKey))
   }
 
+  /**
+   * Removes EVERY entry of one user (P189 account deletion): after the account is deleted nothing may
+   * remember an uncertain operation for it, or a later session would try to reconcile or retry a
+   * write for an identity that no longer exists. Other users' entries are kept.
+   */
+  async clearForUser(userId: string, now = Date.now()): Promise<void> {
+    const entries = await this.readAll(now)
+    await this.writeAll(entries.filter((e) => e.userId !== userId))
+  }
+
   /** Never returns another user's entries. The one read path every reconciliation and UI surface
    *  must go through — no caller reads the raw store directly. */
   async listFor(userId: string, now = Date.now()): Promise<PendingWriteEntry[]> {

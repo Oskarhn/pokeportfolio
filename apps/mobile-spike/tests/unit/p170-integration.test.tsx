@@ -74,9 +74,9 @@ function snapshots(h: P169Harness) {
 }
 
 describe('one identity system', () => {
-  it('the feature stores live in the runtime registry (5 shell stores + 3 feature stores + 5 P175 write forms + 1 P180 pending-writes store)', () => {
+  it('the feature stores live in the runtime registry (5 shell stores + 3 feature stores + 5 P175 write forms + 1 P180 pending-writes store + 1 P189 account-deletion controller)', () => {
     const h = p169Harness()
-    expect(h.runtime.registry.size).toBe(14)
+    expect(h.runtime.registry.size).toBe(15)
     expect(h.feature).toBe(h.runtime.feature)
   })
 
@@ -514,6 +514,10 @@ describe('the integrated client: what Price Check can and cannot send', () => {
       readFx: fxRateReaderFor(client),
       photo: new FakePhotoPort(),
       writeDb: fakeWriteDbBinder(),
+      accountDeletion: {
+        invoke: (name, options) => client.functions.invoke(name, options),
+        accountIsGone: () => Promise.resolve(false),
+      },
       pendingWrites: {
         journal: new PendingWriteJournal(new MemoryKeyValueStore()),
         existsCheckers: {

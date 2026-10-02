@@ -42,7 +42,9 @@ const ENABLED = Boolean(CONTAINER && KEY_TEXT && REGISTRY)
 const FUNCTION_URL = `${process.env.SUPABASE_URL ?? ''}/functions/v1/delete-account`
 const TSX = join(process.cwd(), 'node_modules', 'tsx', 'dist', 'cli.mjs')
 const PORT = ENABLED ? new URL(process.env.DB_URL!).port : ''
-const urlOf = (db: string) => `postgresql://postgres:postgres@127.0.0.1:${PORT}/${db}`
+// The gate runs as the role that OWNS the restored objects (here the restoring superuser), exactly as an
+// operator would; the API roles hold no execute privilege on it.
+const urlOf = (db: string) => `postgresql://supabase_admin:postgres@127.0.0.1:${PORT}/${db}`
 
 const docker = (args: string[], allowFailure = false): string => {
   try {
@@ -86,13 +88,14 @@ function gate(
     { encoding: 'utf8', env: { ...process.env, ERASURE_REGISTRY_KEY: key ?? '' } },
   )
   const out = `${r.stdout}${r.stderr}`
-  let json: Record<string, unknown> | null = null
-  try {
-    json = JSON.parse(r.stdout.trim().split('\n').pop() ?? '') as Record<string, unknown>
-  } catch {
-    json = null
+  const parseJson = (): Record<string, unknown> | null => {
+    try {
+      return JSON.parse(r.stdout.trim().split('\n').pop() ?? '') as Record<string, unknown>
+    } catch {
+      return null
+    }
   }
-  return { code: r.status, out, json }
+  return { code: r.status, out, json: parseJson() }
 }
 
 async function query<T = Record<string, unknown>>(
@@ -284,7 +287,7 @@ describe.skipIf(!ENABLED)('restore-safe account deletion (P189)', () => {
       expect(await digest(img, live.id)).toBe(before)
     })
 
-    it('postcheck stamps the image; promote-check then passes; a registry that grew afterwards invalidates the stamp', async () => {
+    it('postcheck stamps the image; promote-check then passes; a registry that grew afterwards invalidates the stamp', () => {
       expect(gate('promote-check', img, registryCopy).code).toBe(6) // no passing stamp yet
       const post = gate('postcheck', img, registryCopy)
       expect(post.code).toBe(0)
@@ -326,7 +329,7 @@ describe.skipIf(!ENABLED)('restore-safe account deletion (P189)', () => {
       expect((await footprint(img, live.id))['auth.users']).toBe(1)
     })
 
-    it('a backup taken after every deletion is already clean: verify passes, apply replays nothing', async () => {
+    it('a backup taken after every deletion is already clean: verify passes, apply replays nothing', () => {
       const img = restore(backupAfterAll, 'p189_r2b')
       expect(gate('verify', img, registryCopy).code).toBe(0)
       const r = gate('apply', img, registryCopy)
@@ -354,7 +357,8 @@ describe.skipIf(!ENABLED)('restore-safe account deletion (P189)', () => {
       const empty = join(dir, 'empty.ndjson')
       writeFileSync(empty, '')
       expect(gate('verify', img, empty).code).toBe(2)
-      expect(gate('verify', img, empty, ['--allow-empty-registry']).code).toBe(1) // resurrected, not "clean"
+      // Allowed on purpose, it is still never "clean": this image holds receipts the empty registry lacks.
+      expect(gate('verify', img, empty, ['--allow-empty-registry']).code).toBe(5)
     })
 
     it('R6 malformed, torn, tampered and wrongly keyed registries are refused (2)', () => {
@@ -371,14 +375,14 @@ describe.skipIf(!ENABLED)('restore-safe account deletion (P189)', () => {
         expect(gate('apply', img, file).code, name).toBe(2)
       }
       expect(gate('apply', img, registryCopy, [], 'ab'.repeat(32)).code).toBe(2) // wrong key
-      expect(gate('apply', img, registryCopy, [], undefined).code).toBe(2) // no key
+      expect(gate('apply', img, registryCopy, [], '').code).toBe(2) // no key
     })
 
     it('after every refusal the image is exactly as it was', async () => {
       expect(await footprint(img, a.id)).toEqual(before)
     })
 
-    it('an unreachable database is 4 and an image without the machinery is 3', async () => {
+    it('an unreachable database is 4 and an image without the machinery is 3', () => {
       expect(gate('verify', 'database_that_does_not_exist', registryCopy).code).toBe(4)
       sql('postgres', 'drop database if exists p189_stale')
       docker(['createdb', '-U', 'supabase_admin', 'p189_stale'])
@@ -448,3 +452,118 @@ describe.skipIf(!ENABLED)('restore-safe account deletion (P189)', () => {
     })
   })
 })
+
+/**
+ * The REAL restore: `pnpm db:backup` (P131) of the running database, then scripts/p137/restore-drill.ts
+ * (P137: a fresh disposable Postgres on an internal Docker network, the real GoTrue schema, roles →
+ * schema → migration history → roll-forward → data → privilege baseline → grant audit → diagnostics)
+ * with the erasure gate as a REQUIRED step. Slow (minutes), so it runs when P189_FULL_DRILL=1; the
+ * disaster-recovery evidence in docs/security/RESTORE_RUNBOOK.md §9 comes from this block.
+ */
+describe.skipIf(!ENABLED || process.env.P189_FULL_DRILL !== '1')(
+  'full disaster-recovery drill with the real backup and restore tooling (P189)',
+  () => {
+    let service: TestClient
+    let out: string
+    let backupDir = ''
+    let a: SyntheticUser
+    let live: SyntheticUser
+
+    const run = (args: string[], env: Record<string, string> = {}) =>
+      spawnSync(process.execPath, [TSX, ...args], {
+        encoding: 'utf8',
+        env: { ...process.env, ERASURE_REGISTRY_KEY: KEY_TEXT ?? '', ...env },
+        maxBuffer: 64 * 1024 * 1024,
+      })
+
+    beforeAll(async () => {
+      service = createServiceClient()
+      out = mkdtempSync(join(tmpdir(), 'p189-fulldr-'))
+      a = await createSyntheticUser(service, 'fulldr-a')
+      live = await createSyntheticUser(service, 'fulldr-live')
+      await seedAccountLedger(service, a, await signInAs(a), 'fulldr-a')
+      await seedAccountLedger(service, live, await signInAs(live), 'fulldr-live')
+
+      // 1. the real backup, taken while A exists. The drill's cron check expects the ingest jobs to be
+      // ACTIVE in the source (a production-shaped backup), whereas test runs deactivate them for
+      // stability, so they are switched on only for the instant of the dump.
+      sql('postgres', 'select cron.alter_job(jobid, active := true) from cron.job')
+      const backup = run([
+        'scripts/db-backup/run-backup.ts',
+        '--db-url',
+        process.env.DB_URL!,
+        '--out-root',
+        out,
+      ])
+      sql('postgres', 'select cron.alter_job(jobid, active := false) from cron.job')
+      expect(backup.stdout).toContain('BACKUP COMPLETE')
+      backupDir = /directory:\s+(.+)/.exec(backup.stdout)![1]!.trim()
+
+      // 2. A is deleted for real afterwards
+      const token = (await (await signInAs(a)).auth.getSession()).data.session!.access_token
+      const res = await fetch(FUNCTION_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          apikey: process.env.SUPABASE_ANON_KEY ?? '',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ expectedUserId: a.id, password: a.password, confirm: true }),
+      })
+      expect(res.status).toBe(200)
+    }, 900_000)
+
+    afterAll(async () => {
+      rmSync(out, { recursive: true, force: true })
+      await service.from('account_deletion_requests').delete().eq('user_id', live.id)
+      await deleteSyntheticUser(service, live.id)
+    }, 120_000)
+
+    it('WITH the registry: the restored image passes the whole drill, including apply, postcheck and promote-check', () => {
+      const r = run([
+        'scripts/p137/restore-drill.ts',
+        '--backup',
+        backupDir,
+        '--erasure-registry',
+        REGISTRY!,
+      ])
+      const text = `${r.stdout}${r.stderr}`
+      expect(text).toMatch(/PASS\s+ERASURE_GATE apply/)
+      expect(text).toMatch(/PASS\s+ERASURE_GATE postcheck/)
+      expect(text).toMatch(/PASS\s+ERASURE_GATE promote-check/)
+      // Every check passes EXCEPT one pre-existing P137 limitation unrelated to deletion: cron.job is
+      // not captured by a backup and is recreated only by replaying migrations the backup lacks, so a
+      // backup that is already current restores with no ingest jobs and that single check fails (it
+      // passes for a backup older than the newest migration). Recorded in docs/security/RESTORE_RUNBOOK.md §7.
+      const failed = text.split('\n').filter((l) => /^FAIL\s/.test(l))
+      expect(failed.length).toBeLessThanOrEqual(1)
+      for (const line of failed) expect(line).toContain('POST_RESTORE_CRON_PRODUCTION_CALLS')
+      expect(text).toMatch(/PASS\s+POST_RESTORE_GRANT_AUDIT/)
+      expect(text).toMatch(/PASS\s+POST_RESTORE_FINANCE_DIAGNOSTICS/)
+      expect(text).not.toContain(a.id)
+    }, 1_200_000)
+
+    it('WITHOUT the gate the drill FAILS and says the image is not safe to serve (bypass is loud)', () => {
+      const r = run(['scripts/p137/restore-drill.ts', '--backup', backupDir, '--no-erasure-gate'])
+      const text = `${r.stdout}${r.stderr}`
+      expect(text).toMatch(/FAIL\s+ERASURE_GATE: NOT RUN/)
+      expect(text).toContain('NOT SAFE TO SERVE')
+      expect(r.status).toBe(1)
+    }, 1_200_000)
+
+    it('MUTATION F: skipping the replay but still asking for promotion is refused', () => {
+      const r = run([
+        'scripts/p137/restore-drill.ts',
+        '--backup',
+        backupDir,
+        '--erasure-registry',
+        REGISTRY!,
+        '--mutation',
+        'F',
+      ])
+      const text = `${r.stdout}${r.stderr}`
+      expect(text).toMatch(/PASS\s+MUTATION_F: promotion WITHOUT the replay is REFUSED/)
+      expect(text).toMatch(/PASS\s+MUTATION_F: promote-check refuses/)
+    }, 1_200_000)
+  },
+)

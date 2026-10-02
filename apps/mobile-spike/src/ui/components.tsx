@@ -605,6 +605,7 @@ export function TextField({
   errorText,
   testID,
   editable = true,
+  secureTextEntry = false,
 }: {
   label: string
   value: string
@@ -614,6 +615,8 @@ export function TextField({
   errorText?: string | null
   testID?: string
   editable?: boolean
+  /** A password: masked, never auto-capitalised or auto-corrected, no suggestions kept. */
+  secureTextEntry?: boolean
 }) {
   const t = useTheme()
   return (
@@ -627,6 +630,9 @@ export function TextField({
         placeholderTextColor={t.textMuted}
         keyboardType={keyboardType}
         editable={editable}
+        secureTextEntry={secureTextEntry}
+        autoCapitalize={secureTextEntry ? 'none' : undefined}
+        autoCorrect={secureTextEntry ? false : undefined}
         accessibilityLabel={label}
         style={{
           minHeight: MIN_TOUCH,

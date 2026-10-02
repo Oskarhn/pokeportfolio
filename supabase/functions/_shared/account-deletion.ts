@@ -228,7 +228,7 @@ export async function handleAccountDeletion(
         const receipt = await deps.appendToRegistry({
           deletionId: prepared.deletionId,
           subject: prepared.subject,
-          deletedAt: new Date().toISOString().replace(/.d{3}Z$/, 'Z'),
+          deletedAt: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
         })
         await deps.confirmErasure(user.id, receipt.deletionId, receipt.seq)
       }

@@ -207,6 +207,7 @@ export class FakeCollectionPort implements CollectionPort {
 
 import type { PhotoOutcome, PhotoPort } from '../../src/photo/photo-store'
 import type { PriceCheckPort, PriceLookup } from '../../src/price-check/types'
+import type { AccountDeletionPorts } from '../../src/account/account-deletion-controller'
 import { createRuntime, type PriceFeatureDeps, type Runtime } from '../../src/wiring/runtime'
 import { createFixturePriceCheckPort } from '../../src/price-check/fixture-adapter'
 
@@ -254,6 +255,8 @@ export function harness(
     priceFeature?: PriceFeatureDeps
     readFx?: PriceFeatureDeps['readFx']
     writeDb?: WriteDbBinder
+    accountDeletion?: AccountDeletionPorts
+    journal?: PendingWriteJournal
   } = {},
 ): Harness {
   const auth = new FakeAuth()
@@ -273,8 +276,13 @@ export function harness(
     readFx: overrides.readFx ?? overrides.priceFeature?.readFx ?? INERT_PRICE_FEATURE.readFx,
     photo,
     writeDb: overrides.writeDb ?? fakeWriteDbBinder(),
+    accountDeletion: overrides.accountDeletion ?? {
+      invoke: () =>
+        Promise.resolve({ error: new Error('account deletion is not wired in this harness') }),
+      accountIsGone: () => Promise.resolve(false),
+    },
     pendingWrites: {
-      journal: new PendingWriteJournal(new MemoryKeyValueStore()),
+      journal: overrides.journal ?? new PendingWriteJournal(new MemoryKeyValueStore()),
       existsCheckers: INERT_PENDING_WRITES,
     },
   })

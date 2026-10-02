@@ -110,7 +110,15 @@ async function readFailure(error: unknown): Promise<AccountDeletionError | null>
  * not exist" counts: an expired or revoked session is not the same statement.
  */
 function isLeaseRefusal(error: unknown): error is Error {
-  return isAuthIdentityChangedError(error) || isAuthCredentialsUnavailableError(error)
+  // Name-based as well as instanceof: the native app has its own lease classes (same names, same
+  // fixed messages) and must not be mistaken for "could not confirm the result".
+  return (
+    isAuthIdentityChangedError(error) ||
+    isAuthCredentialsUnavailableError(error) ||
+    (error instanceof Error &&
+      (error.name === 'AuthIdentityChangedError' ||
+        error.name === 'AuthCredentialsUnavailableError'))
+  )
 }
 
 export async function runAccountDeletion(

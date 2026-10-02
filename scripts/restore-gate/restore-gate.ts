@@ -292,7 +292,9 @@ async function main(): Promise<ExitCode> {
         : `NOT PROMOTABLE (${p.reason}). NOT SAFE TO SERVE.`,
     ])
     return p.exit
-  } catch {
+  } catch (error) {
+    // Operator opt-in only: a database error message can quote row values, so it is never printed by default.
+    if (process.env.RESTORE_GATE_DEBUG === '1') console.error((error as Error).message)
     emit(args, { status: 'db_unreadable' }, ['could not read the database'])
     return EXIT.DB_UNREADABLE
   } finally {

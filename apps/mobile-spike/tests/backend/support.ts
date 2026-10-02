@@ -153,6 +153,10 @@ export function realRuntime(session: Session): Runtime {
       publishableKey: session.publishableKey,
       getSession: () => session.client.auth.getSession(),
     }),
+    accountDeletion: {
+      invoke: (name, opts) => session.client.functions.invoke(name, opts),
+      accountIsGone: () => Promise.resolve(false),
+    },
     pendingWrites: {
       journal: new PendingWriteJournal(new MemoryKeyValueStore()),
       existsCheckers: {

@@ -85,6 +85,20 @@ function getAppRuntime(): Runtime {
     // P180: SecureStore-backed (same device-secure medium as the session itself), holding only
     // idempotency keys and non-secret summaries — never card/price data. Reconciliation reads go
     // through the SAME ambient `supabase` client as every other read in this app.
+    // P189: the same delete-account contract as the web app, through the app's ONE client.
+    accountDeletion: {
+      invoke: (name, options) => supabase.functions.invoke(name, options),
+      accountIsGone: async () => {
+        try {
+          const { data } = await supabase.auth.getSession()
+          if (data.session === null) return false
+          const { error } = await supabase.auth.getUser(data.session.access_token)
+          return (error as { code?: string } | null)?.code === 'user_not_found'
+        } catch {
+          return false
+        }
+      },
+    },
     pendingWrites: {
       journal: new PendingWriteJournal(secureStoreAdapter),
       existsCheckers: {

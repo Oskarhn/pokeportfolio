@@ -187,7 +187,7 @@ export async function recordErasure(
       const receipt = await deps.appendToRegistry({
         deletionId: prepared.deletionId,
         subject: prepared.subject,
-        deletedAt: new Date().toISOString().replace(/.d{3}Z$/, 'Z'),
+        deletedAt: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
       })
       await deps.confirmErasure(userId, receipt.deletionId, receipt.seq)
     }

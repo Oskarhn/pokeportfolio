@@ -7,6 +7,7 @@ import {
   Surface,
 } from '../components'
 import { useRuntime, useStore } from '../runtime-context'
+import { DeleteAccountPanel } from './DeleteAccountPanel'
 import { useThemeMode, type ThemeMode } from '../theme'
 
 export function ProfileScreen({ backendHost }: { backendHost: string }) {
@@ -34,6 +35,7 @@ export function ProfileScreen({ backendHost }: { backendHost: string }) {
         <Body testID="profile-notice">{session.notice.message}</Body>
       ) : null}
       <DestructiveButton testID="sign-out" label="Sign out" onPress={() => void auth.signOut()} />
+      <DeleteAccountPanel />
       <Body testID="profile-host" muted>
         {backendHost}
       </Body>

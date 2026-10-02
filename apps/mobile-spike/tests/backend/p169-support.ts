@@ -184,6 +184,10 @@ export function p169Session(
       publishableKey: env.publishableKey,
       getSession: () => client.auth.getSession(),
     }),
+    accountDeletion: {
+      invoke: (name, opts) => client.functions.invoke(name, opts),
+      accountIsGone: () => Promise.resolve(false),
+    },
     pendingWrites: {
       journal: new PendingWriteJournal(new MemoryKeyValueStore()),
       existsCheckers: {

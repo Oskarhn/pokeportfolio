@@ -1,3 +1,7 @@
+import {
+  AccountDeletionController,
+  type AccountDeletionPorts,
+} from '../account/account-deletion-controller'
 import { AuthController, type AuthClientPort } from '../auth/auth-controller'
 import { IdentityAuthority } from '../auth/identity-authority'
 import type { CollectionPort } from '../collection/types'
@@ -65,6 +69,8 @@ export interface RuntimeDeps {
     journal: PendingWriteJournal
     existsCheckers: ExistsCheckerMap
   }
+  /** P189: the app's ONE client's delete-account call and Auth's is-this-account-gone probe. */
+  accountDeletion: AccountDeletionPorts
 }
 
 export interface Runtime {
@@ -85,6 +91,8 @@ export interface Runtime {
   /** P180: this identity's unresolved pending writes (reconciled on every identity change,
    *  including the initial sign-in — see state/pending-writes-store.ts). */
   pendingWrites: PendingWritesStore
+  /** In-app account deletion (P189): the same backend contract as the web app. */
+  accountDeletion: AccountDeletionController
   /** The financial write forms (P175) — one identity-scoped draft store per screen. */
   writeForms: {
     acquisition: WriteFormStore<AcquisitionDraft, AddCardAcquisitionResult>
@@ -171,10 +179,19 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
     removeStoredSession: deps.removeStoredSession,
   })
 
+  const accountDeletion = new AccountDeletionController(
+    authority,
+    auth,
+    deps.pendingWrites.journal,
+    deps.accountDeletion,
+  )
+  registry.register('account-deletion', accountDeletion)
+
   return {
     authority,
     registry,
     auth,
+    accountDeletion,
     collection,
     holdingDetail,
     priceCheck,
