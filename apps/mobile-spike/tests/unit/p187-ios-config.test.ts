@@ -14,7 +14,10 @@ import { join } from 'node:path'
 
 const appRoot = join(__dirname, '..', '..')
 const appJson = JSON.parse(readFileSync(join(appRoot, 'app.json'), 'utf8')) as {
-  expo: { plugins: (string | [string, Record<string, unknown>])[] } & Record<string, unknown>
+  expo: {
+    plugins: (string | [string, Record<string, unknown>])[]
+    android: { blockedPermissions: string[] }
+  } & Record<string, unknown>
 }
 const pkg = JSON.parse(readFileSync(join(appRoot, 'package.json'), 'utf8')) as {
   dependencies: Record<string, string>
@@ -25,14 +28,17 @@ type PluginFn = (config: { name: string; slug: string; mods?: ModRegistry }) => 
   mods?: ModRegistry
 }
 
-const LOCAL_PLUGIN_PATHS = appJson.expo.plugins
+const IOS_PLUGIN_PATHS = ['./plugins/with-ios-dark-splash']
+const ALL_LOCAL_PLUGIN_PATHS = appJson.expo.plugins
   .map((entry) => (Array.isArray(entry) ? entry[0] : entry))
   .filter((name) => name.startsWith('./plugins/'))
+const LOCAL_PLUGIN_PATHS = ALL_LOCAL_PLUGIN_PATHS.filter((name) => !IOS_PLUGIN_PATHS.includes(name))
 
 describe('Android-specific config plugins are scoped to Android (P187)', () => {
-  it('the app lists the six local plugins this test covers', () => {
-    expect(LOCAL_PLUGIN_PATHS.sort()).toEqual([
+  it('the app lists the local plugins this test covers (six Android, one iOS)', () => {
+    expect([...ALL_LOCAL_PLUGIN_PATHS].sort()).toEqual([
       './plugins/with-dark-splash-background',
+      './plugins/with-ios-dark-splash',
       './plugins/with-local-cleartext',
       './plugins/with-navigation-bar-follows-theme',
       './plugins/with-onnxruntime-package',
@@ -48,6 +54,40 @@ describe('Android-specific config plugins are scoped to Android (P187)', () => {
     const platforms = Object.keys(result.mods ?? {})
     expect(platforms.length).toBeGreaterThan(0) // the plugin really registered something
     expect(platforms).toEqual(['android'])
+  })
+})
+
+describe('the iOS-only config plugin never touches Android (P187)', () => {
+  it.each(IOS_PLUGIN_PATHS)('%s registers mods for ios only', (relative) => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const plugin = require(join(appRoot, relative)) as PluginFn
+    const platforms = Object.keys(plugin({ name: 'p187', slug: 'p187' }).mods ?? {})
+    expect(platforms).toEqual(['ios'])
+  })
+
+  it('the dark splash storyboard transform paints #0F0F11, drops the dangling image view, and fails loudly on drift', () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { darkSplashStoryboard } = require(join(appRoot, IOS_PLUGIN_PATHS[0]!)) as {
+      darkSplashStoryboard: (xml: string) => string
+    }
+    const template = `<view key="view">
+  <subviews>
+    <imageView image="SplashScreen" id="EXPO-SplashScreen"/>
+  </subviews>
+  <constraints>
+    <constraint firstItem="EXPO-SplashScreen"/>
+  </constraints>
+  <color key="backgroundColor" systemColor="systemBackgroundColor"/>
+</view>
+<resources>
+  <image name="SplashScreenLogo" width="100" height="90"/>
+</resources>`
+    const out = darkSplashStoryboard(template)
+    expect(out).toContain('red="0.0588')
+    expect(out).not.toContain('<color key="backgroundColor" systemColor')
+    expect(out).not.toContain('imageView')
+    expect(out).not.toContain('SplashScreenLogo')
+    expect(() => darkSplashStoryboard('<view/>')).toThrow(/unexpected shape/)
   })
 })
 
@@ -92,6 +132,15 @@ describe('resolved iOS Info.plist (expo config --type introspect)', () => {
     expect(android.permissions ?? []).not.toContain('android.permission.RECORD_AUDIO')
   })
 
+  it('blocks the Android permissions no feature uses (merged in by React Native / androidx.biometric)', () => {
+    expect(appJson.expo.android.blockedPermissions.sort()).toEqual([
+      'android.permission.SYSTEM_ALERT_WINDOW',
+      'android.permission.USE_BIOMETRIC',
+      'android.permission.USE_FINGERPRINT',
+      'android.permission.VIBRATE',
+    ])
+  })
+
   it('is dark-first: forced dark style and a dark native root view, never a white one', () => {
     expect(ios.UIUserInterfaceStyle).toBe('Dark')
     // RCTRootViewBackgroundColor is written by the expo-system-ui plugin from `backgroundColor`.
@@ -100,6 +149,12 @@ describe('resolved iOS Info.plist (expo config --type introspect)', () => {
     // 0xFF0F0F11 = the app's #0F0F11, opaque.
     expect(ios.RCTRootViewBackgroundColor).toBe(0xff0f0f11)
     expect(pkg.dependencies).toHaveProperty('expo-system-ui')
+  })
+
+  it('keeps App Transport Security ON: only local-network loads are exempt (no NSAllowsArbitraryLoads)', () => {
+    const ats = ios.NSAppTransportSecurity as Record<string, unknown>
+    expect(ats).toEqual({ NSAllowsLocalNetworking: true })
+    expect(typeof ios.NSLocalNetworkUsageDescription).toBe('string')
   })
 
   it('is portrait-only on iPhone (no iPad layout is built or claimed)', () => {

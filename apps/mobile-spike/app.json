@@ -7,16 +7,39 @@
     "userInterfaceStyle": "dark",
     "backgroundColor": "#0F0F11",
     "scheme": "pokeportfolio-spike",
-    "ios": { "bundleIdentifier": "invalid.pokeportfolio.spike", "supportsTablet": false },
-    "android": { "package": "invalid.pokeportfolio.spike" },
+    "ios": {
+      "bundleIdentifier": "invalid.pokeportfolio.spike",
+      "supportsTablet": false,
+      "infoPlist": {
+        "NSAppTransportSecurity": {
+          "NSAllowsLocalNetworking": true
+        },
+        "NSLocalNetworkUsageDescription": "Connect to the PokePortfolio backend running on your local network. Local candidate builds only."
+      }
+    },
+    "android": {
+      "package": "invalid.pokeportfolio.spike",
+      "blockedPermissions": [
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.VIBRATE",
+        "android.permission.USE_BIOMETRIC",
+        "android.permission.USE_FINGERPRINT"
+      ]
+    },
     "plugins": [
       "./plugins/with-local-cleartext",
       "./plugins/with-navigation-bar-follows-theme",
       "./plugins/with-dark-splash-background",
+      "./plugins/with-ios-dark-splash",
       "./plugins/with-short-cxx-build-path",
       "./plugins/with-onnxruntime-package",
       "./plugins/with-release-packaging",
-      ["expo-secure-store", { "faceIDPermission": false }],
+      [
+        "expo-secure-store",
+        {
+          "faceIDPermission": false
+        }
+      ],
       [
         "expo-image-picker",
         {

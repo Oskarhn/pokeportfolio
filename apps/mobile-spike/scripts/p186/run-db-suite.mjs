@@ -14,7 +14,11 @@ import { fileURLToPath } from 'node:url'
 import { readLocalEnv, stackOf } from '../p169/local-backend.mjs'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..')
-const stack = stackOf(['--stack=p186db'])
+// P186_DB_STACK / P186_DB_PORT_SHIFT select another instance's DB-suite stack (no source edit).
+const dbStackArgs = [`--stack=${process.env.P186_DB_STACK ?? 'p186db'}`]
+if (process.env.P186_DB_PORT_SHIFT !== undefined)
+  dbStackArgs.push(`--port-shift=${process.env.P186_DB_PORT_SHIFT}`)
+const stack = stackOf(dbStackArgs)
 const env = readLocalEnv(stack)
 const anon = env.ANON_KEY
 const service = env.SERVICE_ROLE_KEY

@@ -33,6 +33,7 @@ import { mkdirSync, readdirSync, rmSync, writeFileSync, readFileSync } from 'nod
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
+import { createRequire } from 'node:module'
 import { transformConfig } from '../local-backend.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -167,13 +168,30 @@ const STACKS = {
   },
 }
 
+/**
+ * A stack name outside the registry is accepted when the caller names its port shift (`--port-shift=N`
+ * or P185_PORT_SHIFT / P186_PORT_SHIFT), so a parallel instance needs no edit to this file
+ * (scripts/p186/instance.cjs). The registry entries keep their fixed ports.
+ */
+function registryEntry(name, argv) {
+  const known = STACKS[name]
+  if (known !== undefined) return known
+  const shift =
+    argv.find((a) => a.startsWith('--port-shift='))?.slice('--port-shift='.length) ??
+    process.env.P185_PORT_SHIFT ??
+    process.env.P186_PORT_SHIFT
+  if (shift === undefined)
+    throw new Error(
+      `unknown stack "${name}"; expected one of ${Object.keys(STACKS).join(', ')}, or pass --port-shift=N / set P186_PORT_SHIFT for a new instance`,
+    )
+  return createRequire(import.meta.url)('../p186/instance.cjs').dynamicStack(name, shift)
+}
+
 export function stackOf(argv) {
   const named = argv.find((a) => a.startsWith('--stack='))?.slice('--stack='.length)
   const db106 = argv.includes('--db106')
   const name = named ?? (db106 ? 'p169-db106' : 'p169')
-  const s = STACKS[name]
-  if (s === undefined)
-    throw new Error(`unknown stack "${name}"; expected one of ${Object.keys(STACKS).join(', ')}`)
+  const s = registryEntry(name, argv)
   return {
     name,
     db106: name === 'p169-db106',

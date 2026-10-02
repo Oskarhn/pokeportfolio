@@ -14,8 +14,11 @@
  *   --no-clean keep an existing android/ (faster rebuild; Metro cache is still cleared)
  *   --env K=V  an extra EXPO_PUBLIC_* line for .env.local (repeatable; experiments only)
  *   --tag      suffix for the copied artifacts in .build/p186-artifacts (default <variant>)
+ *   --supabase-url=URL --publishable-key=KEY   the public build-time backend values; without them
+ *              EXPO_PUBLIC_SUPABASE_URL/_PUBLISHABLE_KEY, then .local-backend/<stack>/public-env.json
+ *              (a started local stack) are used (build-env.cjs)
  *
- * Requirements: the scanner assets staged (`pnpm assets:scanner`), `pnpm install --frozen-lockfile`,
+ * Requirements: the build-time backend values (above), the scanner assets staged (`pnpm assets:scanner`), `pnpm install --frozen-lockfile`,
  * a JDK 17+ (P186_JAVA_HOME or JAVA_HOME), the Android SDK (ANDROID_HOME or the default location).
  * Nothing machine-specific is committed: every path comes from the environment or os.homedir().
  * The step-by-step Windows notes live in docs/mobile/P186_ANDROID_PACKAGING_PERFORMANCE.md.
@@ -34,7 +37,10 @@ import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createRequire } from 'node:module'
 import './env.mjs'
+
+const { resolveBuildEnv } = createRequire(import.meta.url)('./build-env.cjs')
 
 const here = dirname(fileURLToPath(import.meta.url))
 const appRoot = resolve(here, '..', '..')
@@ -79,16 +85,17 @@ function run(cmd, cmdArgs, cwd, { allowFail = false } = {}) {
 
 function writeEnvLocal() {
   const stack = process.env.P185_STACK ?? 'p186'
-  const env = JSON.parse(
-    readFileSync(join(appRoot, '.local-backend', stack, 'public-env.json'), 'utf8'),
-  )
-  const appUrl = env.appUrl ?? env.apiUrl
-  const local = /^http:\/\/127\.0\.0\.1:\d+$/
-  if (!local.test(appUrl) || !local.test(env.apiUrl)) throw new Error('refusing: not a local URL')
-  if (/^sb_secret_/.test(env.publishableKey)) throw new Error('refusing: secret key')
+  const resolved = resolveBuildEnv({
+    argv: process.argv.slice(2),
+    env: process.env,
+    stack,
+    readStackFile: () =>
+      JSON.parse(readFileSync(join(appRoot, '.local-backend', stack, 'public-env.json'), 'utf8')),
+  })
+  console.log(`build-time backend configuration from: ${resolved.source}`)
   const lines = [
-    `EXPO_PUBLIC_SUPABASE_URL=${appUrl}`,
-    `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY=${env.publishableKey}`,
+    `EXPO_PUBLIC_SUPABASE_URL=${resolved.url}`,
+    `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY=${resolved.publishableKey}`,
   ]
   if (variant === 'proof') lines.push('EXPO_PUBLIC_RUNTIME_PROOF=1')
   lines.push(...extraEnv)
