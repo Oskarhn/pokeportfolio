@@ -128,7 +128,7 @@
     "native_ios_readiness": {
       "prompt": 187,
       "branch": "feat/p187-ios-readiness",
-      "sha": "619d0f1823f668719a4f087e56809477044fa81a",
+      "sha": "9aa9db3710f04e6a2a63646886d500ff32499bc7",
       "builds_on": "native_packaging",
       "local_migration_count": 107,
       "status": "LOCAL_ONLY",

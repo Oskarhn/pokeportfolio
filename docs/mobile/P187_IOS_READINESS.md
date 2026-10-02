@@ -187,9 +187,26 @@ are gitignored (generated) and were not committed. `pod install` was **not** run
 
 ## 11. Verification run on this branch
 
-Native: typecheck, lint, format and unit all clean (see the output file for counts). New suites: `p187-ios-config`,
-`p187-ios-graph`, `p187-ios-image-pipeline`, `p187-ios-layout-readiness`, `p187-keyboard-platform`,
-`p187-platform-portability`, `p187-driver-config`, `p187-storage-and-asset-contract`; `pnpm test:android-resolver` runs
-the same unit suite with the Android haste platform. Mutants: `scripts/p187/mutations.mjs` (28, one defect each; a run
-that fails to load is INVALID, not killed). No Android runtime source changed except the shared OCR URI guard and the
-picker quality constant (both behaviour-neutral on Android), so no new emulator run was made.
+| Gate | Result |
+|---|---|
+| native typecheck / lint / format | clean (root `prettier --check .`, ESLint with the native config, `tsc --noEmit`) |
+| native unit (`unit`, `shared-node`, `shared-rn`) | **892 tests, 88 suites** (P186: 776 / 80) |
+| native unit, Android haste platform (`pnpm test:android-resolver`) | 804 tests, 74 suites (the `unit` project resolved as Android) |
+| web: typecheck, ESLint, `pnpm test`, build | typecheck clean, 0 errors (27 pre-existing warnings), **1,722 passed, 1 skipped, 0 failed**, build green (placeholder `VITE_SUPABASE_URL`) |
+| P187 mutants (`scripts/p187/mutations.mjs`, 28 + the date mutant of §1) | **28 / 28 killed, 0 survived, 0 invalid** after two fixes (I10 survived because the test iterated the mutated list; I15's anchor predated Prettier); date mutant: 11 failing cases |
+| Android release smoke (the OCR URI guard is shared scanner code) | **9 / 9 PASS** on a clean release APK (R8, 121,098,809 B, x86_64, built with the explicit `--supabase-url`/`--publishable-key` path from a clean prebuild with the five permissions blocked) on a fresh emulator/stack/app id of **instance p187** (`P186_INSTANCE=p187 P186_PORT_SHIFT=1800 P186_EMULATOR_PORT=5562`, no source edit): real picker → on-device OCR + ONNX + Skia → candidate → Price Check → Add (0 rows) → cancel → Collection. Logcat: fatal 0, ANR 0, OOM 0, native crash 0, NoClassDef 0, crash buffer empty; image egress 0 (10 requests, largest body 148 B). The smoke's `ortOrMlKit` counter reported 1: the line belongs to pid 1568, Gboard (`com.google.android.inputmethod.latin`), "Modules download failed" in its own ML Kit manager, not to the app; the counter does not filter by pid |
+| database | not rerun: no database, migration or shared-date code changed (P186: 771 passed, 1 skipped, 0 failed) |
+
+New suites: `p187-ios-config`, `p187-ios-graph`, `p187-ios-image-pipeline`, `p187-ios-layout-readiness`,
+`p187-keyboard-platform`, `p187-platform-portability`, `p187-driver-config`, `p187-storage-and-asset-contract`.
+No Android runtime source changed except the shared OCR URI guard and the picker-quality constant, both exercised by the
+smoke above. A full 100-scan Android benchmark was not repeated (no performance-relevant change).
+
+## 12. Environment hygiene
+
+The incomplete P186 independent-verification environment was removed: stack `p186sha` stopped (zero containers, zero
+volumes), worktrees `p186-sha` and `p186-sha-base` removed (`git worktree remove`/prune; `node_modules` needed a
+long-path delete), the verifier's never-started AVD `p186sha_api36` deleted. Its uncommitted edits to
+`scripts/p169/local-backend.mjs` and `scripts/p186/env.mjs` were saved outside the repository and **not merged**; the
+branches `verify/p186-sha-*` were left in place. This phase's own stack, emulator, proxy, mock provider and Gradle
+daemon were stopped (zero `p187` containers; the `skynet-*` containers were not touched).
