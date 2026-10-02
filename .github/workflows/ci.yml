@@ -162,6 +162,9 @@ jobs:
             echo "SUPABASE_ANON_KEY=$(grep '^ANON_KEY=' /tmp/supabase-status.env | cut -d= -f2- | tr -d '\"')"
             echo "SUPABASE_SERVICE_ROLE_KEY=$(grep '^SERVICE_ROLE_KEY=' /tmp/supabase-status.env | cut -d= -f2- | tr -d '\"')"
             echo "DB_URL=$(grep '^DB_URL=' /tmp/supabase-status.env | cut -d= -f2- | tr -d '\"')"
+            # The P161/P164 ledger specs read the local database URL under this name (TESTING.md §6e).
+            # Without it the authenticated E2E refuses to run price-check-ledger.spec.ts in CI.
+            echo "P153_DB_URL=$(grep '^DB_URL=' /tmp/supabase-status.env | cut -d= -f2- | tr -d '\"')"
           } >> "$GITHUB_ENV"
 
       # The privilege checks below talk to Postgres directly. Every runner image ships psql, but
