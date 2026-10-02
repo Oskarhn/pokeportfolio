@@ -10,6 +10,7 @@
 // This is configuration readiness only: it does not generate or build an Xcode project.
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
+import os from 'node:os'
 import { join } from 'node:path'
 
 const appRoot = join(__dirname, '..', '..')
@@ -51,10 +52,18 @@ describe('Android-specific config plugins are scoped to Android (P187)', () => {
   it.each(LOCAL_PLUGIN_PATHS)('%s registers mods for android only', (relative) => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const plugin = require(join(appRoot, relative)) as PluginFn
-    const result = plugin({ name: 'p187', slug: 'p187' })
-    const platforms = Object.keys(result.mods ?? {})
-    expect(platforms.length).toBeGreaterThan(0) // the plugin really registered something
-    expect(platforms).toEqual(['android'])
+    // with-short-cxx-build-path is Windows-only by design (the CMake object-path limit it works
+    // around does not exist elsewhere) and returns the config untouched on any other host, so the
+    // test pins the platform it is about instead of depending on where CI happens to run.
+    const platform = jest.spyOn(os, 'platform').mockReturnValue('win32')
+    try {
+      const result = plugin({ name: 'p187', slug: 'p187' })
+      const platforms = Object.keys(result.mods ?? {})
+      expect(platforms.length).toBeGreaterThan(0) // the plugin really registered something
+      expect(platforms).toEqual(['android'])
+    } finally {
+      platform.mockRestore()
+    }
   })
 })
 
