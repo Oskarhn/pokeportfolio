@@ -21,6 +21,7 @@
 
 import { createClient } from 'npm:@supabase/supabase-js@2.112.3'
 import { handleAccountDeletion, type AccountDeletionDeps } from '../_shared/account-deletion.ts'
+import { appendErasure, loadSinkConfig } from '../_shared/erasure-sink.ts'
 import { resolvePublishableKey, resolveServiceRoleKey } from '../_shared/service-key.ts'
 
 const ALLOWED_ORIGINS = (Deno.env.get('ALLOWED_ORIGINS') ?? 'http://localhost:5173')
@@ -146,7 +147,40 @@ function buildDeps(
     auth: { autoRefreshToken: false, persistSession: false },
   })
 
+  // The off-platform erasure registry (P189). Absent or invalid configuration means deletions are
+  // refused before anything is touched; see _shared/erasure-sink.ts.
+  const sink = loadSinkConfig(Deno.env)
+
   return {
+    registryConfigured() {
+      return sink !== null
+    },
+
+    async prepareErasure(userId) {
+      const { data, error } = await admin.rpc('prepare_account_erasure', { p_user_id: userId })
+      if (error || !data) throw new Error('prepare failed')
+      const row = data as { deletion_id: string; subject_hash: string; registry_state: string }
+      return {
+        deletionId: row.deletion_id,
+        subject: row.subject_hash,
+        recorded: row.registry_state === 'recorded',
+      }
+    },
+
+    async appendToRegistry(input) {
+      if (sink === null) throw new Error('registry not configured')
+      return appendErasure(sink, input)
+    },
+
+    async confirmErasure(userId, deletionId, seq) {
+      const { error } = await admin.rpc('record_account_erasure', {
+        p_user_id: userId,
+        p_deletion_id: deletionId,
+        p_registry_seq: seq,
+      })
+      if (error) throw new Error('confirm failed')
+    },
+
     async authenticate(bearerToken) {
       const { data, error } = await admin.auth.getUser(bearerToken)
       if (error) {

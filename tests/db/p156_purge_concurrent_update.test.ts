@@ -6,7 +6,7 @@ import {
   deleteSyntheticUser,
   type TestClient,
 } from './setup'
-import { connectDb } from './lib/account-deletion-deps'
+import { beginRecorded, connectDb } from './lib/account-deletion-deps'
 import { connectMonitor, waitUntilLockWaiting } from './lib/held-lock-session'
 
 /**
@@ -46,7 +46,7 @@ describe('the purge does not report complete over a row a concurrent update made
     for (let i = 0; i < 5; i++) {
       await service.from('tags').insert({ user_id: a.id, name: `t${i}` })
     }
-    expect((await service.rpc('begin_account_deletion', { p_user_id: a.id })).error).toBeNull()
+    expect((await beginRecorded(service, a.id)).error).toBeNull()
 
     // Writer X (no user identity, so the pending guard does not apply) holds a row lock.
     const writer = new pg.Client({ connectionString: process.env.DB_URL })

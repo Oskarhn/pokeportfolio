@@ -22,6 +22,8 @@ const B = '22222222-2222-4222-8222-222222222222'
 const A_EMAIL = 'a-synthetic@example.invalid'
 const TOKEN = 'header.payload.signature'
 const PASSWORD = 'correct horse battery staple'
+const DELETION_ID = '33333333-3333-4333-8333-333333333333'
+const SUBJECT = 'a'.repeat(64)
 
 interface Harness {
   deps: AccountDeletionDeps
@@ -33,6 +35,18 @@ function harness(overrides: Partial<AccountDeletionDeps> = {}): Harness {
   const calls: string[] = []
   const logs: string[] = []
   const deps: AccountDeletionDeps = {
+    registryConfigured: () => true,
+    async prepareErasure(userId) {
+      calls.push(`prepare:${userId}`)
+      return { deletionId: DELETION_ID, subject: SUBJECT, recorded: false }
+    },
+    async appendToRegistry(input) {
+      calls.push(`registry:${input.deletionId}`)
+      return { seq: 7, deletionId: input.deletionId }
+    },
+    async confirmErasure(userId, _deletionId, seq) {
+      calls.push(`confirm:${userId}:${String(seq)}`)
+    },
     async authenticate(token) {
       calls.push(`authenticate:${token}`)
       return { id: A, email: A_EMAIL, passwordReauthentication: true }
@@ -69,7 +83,7 @@ function harness(overrides: Partial<AccountDeletionDeps> = {}): Harness {
 
 const goodBody = { expectedUserId: A, password: PASSWORD, confirm: true }
 const destructive = (calls: string[]) =>
-  calls.filter((c) => /^(begin|purge|deleteAuthUser|scrub|stage):/.test(c))
+  calls.filter((c) => /^(begin|prepare|registry|confirm|purge|deleteAuthUser|scrub|stage):/.test(c))
 
 describe('authority: who can ask, and what they can ask for', () => {
   it('refuses a request with no bearer token before looking at anything else', async () => {
@@ -220,12 +234,15 @@ describe('recent authentication', () => {
 })
 
 describe('the happy path', () => {
-  it('runs begin → purge → auth delete → audit scrub, in that order, for the verified user only', async () => {
+  it('runs begin → record the erasure → purge → auth delete → audit scrub, in that order, for the verified user only', async () => {
     const h = harness()
     const res = await handleAccountDeletion(h.deps, { bearerToken: TOKEN, body: goodBody })
     expect(res).toEqual({ status: 200, body: { status: 'deleted' } })
     expect(destructive(h.calls)).toEqual([
       `begin:${A}`,
+      `prepare:${A}`,
+      `registry:${DELETION_ID}`,
+      `confirm:${A}:7`,
       `purge:${A}`,
       `stage:${A}:purged`,
       `deleteAuthUser:${A}`,
@@ -407,5 +424,91 @@ describe('logging never carries secrets or identifiers', () => {
     expect(serialized).not.toContain(A_EMAIL)
     expect(serialized).not.toContain(' at ')
     expect(Object.keys(res.body).sort()).toEqual(['error', 'retryable', 'stage'])
+  })
+})
+
+describe('restore safety: the erasure is recorded off-platform BEFORE anything is deleted (P189)', () => {
+  const idx = (calls: string[], prefix: string) => calls.findIndex((c) => c.startsWith(prefix))
+
+  it('the registry append and its confirmation both precede the first purge', async () => {
+    const h = harness()
+    await handleAccountDeletion(h.deps, { bearerToken: TOKEN, body: goodBody })
+    expect(idx(h.calls, 'registry:')).toBeGreaterThan(idx(h.calls, 'begin:'))
+    expect(idx(h.calls, 'confirm:')).toBeGreaterThan(idx(h.calls, 'registry:'))
+    expect(idx(h.calls, 'purge:')).toBeGreaterThan(idx(h.calls, 'confirm:'))
+    expect(idx(h.calls, 'deleteAuthUser:')).toBeGreaterThan(idx(h.calls, 'purge:'))
+  })
+
+  it('with no registry configured nothing is touched and the answer says deletion is unavailable', async () => {
+    const h = harness({ registryConfigured: () => false })
+    const res = await handleAccountDeletion(h.deps, { bearerToken: TOKEN, body: goodBody })
+    expect(res).toEqual({ status: 503, body: { error: 'deletion_unavailable' } })
+    expect(destructive(h.calls)).toEqual([])
+  })
+
+  it('a registry that cannot be written leaves the account pending with its data: no purge, no login deletion, not reported deleted', async () => {
+    const h = harness({
+      appendToRegistry: async () => {
+        throw new Error('registry down')
+      },
+    })
+    const res = await handleAccountDeletion(h.deps, { bearerToken: TOKEN, body: goodBody })
+    expect(res).toEqual({
+      status: 503,
+      body: { error: 'deletion_incomplete', retryable: true, stage: 'registry' },
+    })
+    expect(h.calls).toContain(`stage:${A}:registry_failed`)
+    expect(h.calls.some((c) => c.startsWith('purge:') || c.startsWith('deleteAuthUser:'))).toBe(
+      false,
+    )
+  })
+
+  it('a database that cannot confirm the receipt is the same retryable state, and the purge still does not run', async () => {
+    const h = harness({
+      confirmErasure: async () => {
+        throw new Error('db down')
+      },
+    })
+    const res = await handleAccountDeletion(h.deps, { bearerToken: TOKEN, body: goodBody })
+    expect(res.status).toBe(503)
+    expect(h.calls.some((c) => c.startsWith('purge:'))).toBe(false)
+  })
+
+  it('a retry after a registry failure records once and completes', async () => {
+    let attempts = 0
+    const h = harness({
+      appendToRegistry: async (input) => {
+        attempts += 1
+        if (attempts === 1) throw new Error('registry down')
+        return { seq: 7, deletionId: input.deletionId }
+      },
+    })
+    const first = await handleAccountDeletion(h.deps, { bearerToken: TOKEN, body: goodBody })
+    const second = await handleAccountDeletion(h.deps, { bearerToken: TOKEN, body: goodBody })
+    expect(first.status).toBe(503)
+    expect(second).toEqual({ status: 200, body: { status: 'deleted' } })
+  })
+
+  it('an erasure already recorded (a retry after a later failure) is not appended again', async () => {
+    const h = harness({
+      prepareErasure: async () => ({ deletionId: DELETION_ID, subject: SUBJECT, recorded: true }),
+    })
+    const res = await handleAccountDeletion(h.deps, { bearerToken: TOKEN, body: goodBody })
+    expect(res.status).toBe(200)
+    expect(h.calls.some((c) => c.startsWith('registry:'))).toBe(false)
+  })
+
+  it('the response never carries an id, subject or registry detail', async () => {
+    const h = harness({
+      appendToRegistry: async () => {
+        throw new Error(`registry down for ${A}`)
+      },
+    })
+    const res = await handleAccountDeletion(h.deps, { bearerToken: TOKEN, body: goodBody })
+    const text = JSON.stringify(res)
+    expect(text).not.toContain(A)
+    expect(text).not.toContain(SUBJECT)
+    expect(text).not.toContain('registry down')
+    expect(h.logs.join('')).not.toContain(A)
   })
 })

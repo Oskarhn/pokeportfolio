@@ -16,6 +16,7 @@ import { getPortfolioCounts } from '../../data/portfolio'
 import { readLastReminderMark, shouldRemindExport } from '../../domain/export/export-reminder'
 import { resetMyPortfolioData } from '../../data/reset'
 import { Button, FormMessage, TextField } from '../../ui/form'
+import { DeleteAccountSection } from './DeleteAccountSection'
 import { formatNokMinor, parseNokInput } from '../../ui/money-format'
 import { applyTheme } from '../../ui/theme'
 import { MoneyDisplay } from '../../ui/MoneyDisplay'
@@ -183,6 +184,8 @@ export function ProfilePage() {
       </section>
 
       <DangerZone />
+
+      <DeleteAccountSection />
 
       <Footer />
     </div>

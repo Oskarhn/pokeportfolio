@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { useAuth } from '../../auth/useAuth'
+import { accountWasJustDeleted, clearAccountDeletedNotice } from '../../auth/account-deleted-notice'
 import { AuthLayout, Button, FormMessage, PasswordField, TextField } from '../../ui/form'
 import { PublicFooter } from '../legal/LegalLayout'
 
@@ -12,6 +13,9 @@ import { PublicFooter } from '../legal/LegalLayout'
 export function LoginPage() {
   const { signIn, signOutNotice } = useAuth()
   const navigate = useNavigate()
+  // Shown once, after this tab deleted the account it was signed in as.
+  const [accountDeleted] = useState(accountWasJustDeleted)
+  useEffect(() => clearAccountDeletedNotice, [])
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -74,6 +78,9 @@ export function LoginPage() {
             setPassword(event.target.value)
           }}
         />
+        {accountDeleted ? (
+          <FormMessage tone="success">Your account has been deleted.</FormMessage>
+        ) : null}
         {error ? <FormMessage tone="error">{error}</FormMessage> : null}
         <Button type="submit" disabled={busy}>
           {busy ? 'Signing in…' : 'Sign in'}

@@ -14,7 +14,14 @@
  *
  * Order matters, and every step before `beginDeletion` changes nothing:
  *
- *   authenticate → intent check → fresh password verification → begin → purge → delete auth user
+ *   authenticate → intent check → fresh password verification → begin
+ *     → record the erasure OFF-PLATFORM (restore-safety) → purge → delete auth user
+ *
+ * The erasure is recorded BEFORE the first destructive step (P189). A deletion that destroyed data
+ * but left no record outside the backups would be undone by the next restore of an older backup;
+ * so the database itself refuses to purge until the record exists, and this function follows the
+ * same order. If the registry cannot be reached nothing has been deleted: the account is pending
+ * (write-blocked) with its data intact and the same request can be repeated.
  *
  * The pending record is only written after the password has been verified, so a stolen access
  * token alone cannot even put an account into the pending state (which blocks its writes).
@@ -45,6 +52,24 @@ export interface AccountDeletionDeps {
   authenticate(bearerToken: string): Promise<VerifiedUser | null>
   /** Verifies the password against Auth for the given (server-derived) address. */
   verifyPassword(email: string, password: string): Promise<PasswordCheck>
+  /** Whether the off-platform erasure registry is configured at all. When it is not, no deletion
+   *  starts: deleting without being able to record the erasure is the unsafe state. */
+  registryConfigured(): boolean
+  /** Reads the identifiers of this account's pending deletion. */
+  prepareErasure(userId: string): Promise<{
+    deletionId: string
+    subject: string
+    recorded: boolean
+  }>
+  /** Appends the erasure to the off-platform registry and returns its receipt. Rejects on anything
+   *  but a durable, confirmed record. */
+  appendToRegistry(input: {
+    deletionId: string
+    subject: string
+    deletedAt: string
+  }): Promise<{ seq: number; deletionId: string }>
+  /** Mirrors the registry receipt into the database, which unlocks the purge. */
+  confirmErasure(userId: string, deletionId: string, seq: number): Promise<void>
   /** Commits the pending record. `user_gone` means the account no longer exists (a parallel
    *  request finished first); any other failure rejects. */
   beginDeletion(userId: string): Promise<'pending' | 'user_gone'>
@@ -59,7 +84,7 @@ export interface AccountDeletionDeps {
   /** Coarse stage label kept on the pending record for operators. Best effort. */
   recordStage(
     userId: string,
-    stage: 'purge_failed' | 'purged' | 'auth_delete_failed',
+    stage: 'registry_failed' | 'purge_failed' | 'purged' | 'auth_delete_failed',
   ): Promise<void>
   /** Operational logging. Fields are stage/outcome labels only — never ids, emails or tokens. */
   log(event: string, fields?: Record<string, string | number>): void
@@ -78,12 +103,17 @@ export type AccountDeletionErrorCode =
   | 'reauthentication_unavailable'
   | 'reauthentication_unsupported'
   | 'deletion_incomplete'
+  | 'deletion_unavailable'
 
 export interface AccountDeletionResponse {
   status: number
   body:
     | { status: 'deleted' }
-    | { error: AccountDeletionErrorCode; retryable?: boolean; stage?: 'data' | 'login' }
+    | {
+        error: AccountDeletionErrorCode
+        retryable?: boolean
+        stage?: 'registry' | 'data' | 'login'
+      }
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -167,6 +197,13 @@ export async function handleAccountDeletion(
     return respond(503, { error: 'reauthentication_unavailable', retryable: true })
   }
 
+  // 4b. The restore-safe record needs somewhere to go. Without a configured registry no deletion
+  //     starts and nothing is changed: the alternative is deleting data a restore would resurrect.
+  if (!deps.registryConfigured()) {
+    deps.log('delete-account.registry_not_configured')
+    return respond(503, { error: 'deletion_unavailable' })
+  }
+
   // 5. Commit the pending state. From here on the database refuses new rows for this account. A
   //    failure means nothing else has happened yet.
   let gone = false
@@ -179,6 +216,31 @@ export async function handleAccountDeletion(
   } catch {
     deps.log('delete-account.begin_failed')
     return respond(500, { error: 'deletion_incomplete', retryable: true, stage: 'data' })
+  }
+
+  // 5b. Record the erasure outside the database (and mirror it into the database) BEFORE anything is
+  //     deleted. A failure here leaves the account pending with all its data: retry, or an operator
+  //     releases it (abort_account_deletion) after checking the registry.
+  if (!gone) {
+    try {
+      const prepared = await deps.prepareErasure(user.id)
+      if (!prepared.recorded) {
+        const receipt = await deps.appendToRegistry({
+          deletionId: prepared.deletionId,
+          subject: prepared.subject,
+          deletedAt: new Date().toISOString().replace(/.d{3}Z$/, 'Z'),
+        })
+        await deps.confirmErasure(user.id, receipt.deletionId, receipt.seq)
+      }
+    } catch {
+      deps.log('delete-account.registry_failed')
+      await deps.recordStage(user.id, 'registry_failed').catch(() => undefined)
+      return respond(503, {
+        error: 'deletion_incomplete',
+        retryable: true,
+        stage: 'registry',
+      })
+    }
   }
 
   // 6. Data. Bounded atomic batches, child-first; progress is durable, so a failure leaves a

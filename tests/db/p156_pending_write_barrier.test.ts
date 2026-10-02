@@ -10,7 +10,7 @@ import {
   type TestClient,
 } from './setup'
 import { seedAccountLedger, type SeededLedger } from './lib/account-ledger-fixture'
-import { connectDb } from './lib/account-deletion-deps'
+import { beginRecorded, connectDb, recordErasure } from './lib/account-deletion-deps'
 import {
   HeldLockSession,
   connectMonitor,
@@ -471,7 +471,7 @@ describe('P156 part 1 — a pending identity cannot write through any browser-re
 
   beforeAll(async () => {
     t = await seedTargets('p156-matrix')
-    const begun = await service.rpc('begin_account_deletion', { p_user_id: t.user.id })
+    const begun = await beginRecorded(service, t.user.id)
     expect(begun.error).toBeNull()
     // The still-valid bearer is exactly what a second tab or a stolen session would hold.
     for (const op of OPERATIONS) outcomes.set(op.name, await attempt(() => op.run(t), op.rows))
@@ -555,6 +555,7 @@ describe('P156 part 2 — pending is a barrier under READ COMMITTED, not a race'
 
     // The writer's row committed BEFORE pending did, so every purge batch can see it.
     expect(await tagCount(a.id, name)).toBe(1)
+    expect((await recordErasure(service, a.id)).error).toBeNull()
     const purge = await service.rpc('purge_account_data', { p_user_id: a.id })
     expect(purge.error).toBeNull()
     expect(await tagCount(a.id, name)).toBe(0)
@@ -566,7 +567,7 @@ describe('P156 part 2 — pending is a barrier under READ COMMITTED, not a race'
     // Open, and has run a read only — no guarded statement yet.
     await writer.query('select count(*) from public.tags where user_id = $1', [a.id])
 
-    expect((await service.rpc('begin_account_deletion', { p_user_id: a.id })).error).toBeNull()
+    expect((await beginRecorded(service, a.id)).error).toBeNull()
 
     const name = `late ${uid()}`
     let refusal: unknown
@@ -650,7 +651,7 @@ describe('P156 part 2 — pending is a barrier under READ COMMITTED, not a race'
     )
     expect(resolved).toHaveLength(1)
     // Deletion is authorised in another session between step 1 and step 2.
-    expect((await service.rpc('begin_account_deletion', { p_user_id: a.id })).error).toBeNull()
+    expect((await beginRecorded(service, a.id)).error).toBeNull()
     // Step 2: the ledger write.
     let refusal: unknown
     try {
@@ -705,6 +706,7 @@ describe('P156 part 2 — pending is a barrier under READ COMMITTED, not a race'
         )
       ).rows[0]!.n
     expect(await count()).toBe(2) // the fixture's sale plus the one drained above
+    expect((await recordErasure(service, a.id)).error).toBeNull()
     for (let i = 0; i < 50; i++) {
       const purge = await service.rpc('purge_account_data', { p_user_id: a.id })
       expect(purge.error).toBeNull()
@@ -716,7 +718,7 @@ describe('P156 part 2 — pending is a barrier under READ COMMITTED, not a race'
   it('other accounts are never held up by, or refused because of, a neighbour being pending', async () => {
     const a = await freshUser('p156-neighbour-a')
     const b = await freshUser('p156-neighbour-b')
-    expect((await service.rpc('begin_account_deletion', { p_user_id: a.id })).error).toBeNull()
+    expect((await beginRecorded(service, a.id)).error).toBeNull()
     const writerB = await open(b.id)
     await insertTag(writerB, b.id, 'b writes fine')
     await writerB.commit()
@@ -726,7 +728,7 @@ describe('P156 part 2 — pending is a barrier under READ COMMITTED, not a race'
   it('the service role and operator sessions (no user identity) are not blocked, so purge and cleanup work', async () => {
     const a = await freshUser('p156-service-context')
     await insertOne('tags', { user_id: a.id, name: 'seeded before' })
-    expect((await service.rpc('begin_account_deletion', { p_user_id: a.id })).error).toBeNull()
+    expect((await beginRecorded(service, a.id)).error).toBeNull()
     const purge = await service.rpc('purge_account_data', { p_user_id: a.id })
     expect(purge.error).toBeNull()
     expect((purge.data as { tags: number }).tags).toBe(1)
@@ -825,7 +827,7 @@ describe('P156 part 3 — the barrier covers every table a signed-in account can
   it('a caller with no identity (service role, operator) takes no advisory lock and is never refused', async () => {
     const a = await freshUser('p156-no-identity')
     const tagId = await insertOne('tags', { user_id: a.id, name: 'before pending' })
-    expect((await service.rpc('begin_account_deletion', { p_user_id: a.id })).error).toBeNull()
+    expect((await beginRecorded(service, a.id)).error).toBeNull()
     const locksBefore = await db.query<{ n: number }>(
       "select count(*)::int as n from pg_locks where locktype = 'advisory'",
     )

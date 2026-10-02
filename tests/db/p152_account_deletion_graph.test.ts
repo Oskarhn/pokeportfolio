@@ -43,6 +43,10 @@ const SHARED_OR_SYSTEM_TABLES = [
   'portfolio_recompute_runs',
   'price_snapshots',
   'price_sync_runs',
+  // P189: hash-only witness of registry erasures (no FK, no personal data) and the operator-only
+  // restore-gate stamps. Neither holds anything a deleted person owns.
+  'account_erasure_receipts',
+  'restore_gate_runs',
 ]
 
 /** Owned, but system-derived: not guarded against inserts (see the migration), swept by cascade. */

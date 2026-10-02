@@ -29,6 +29,19 @@
  *   tsx scripts/p137/restore-drill.ts --backup <dir> --mutation E    point at a corrupted backup
  *                                                                    copy with a tampered manifest
  *
+ * P189 — erasure gate (restore-safe account deletion). A restored image is NOT SAFE TO SERVE until the
+ * off-backup erasure registry has been replayed onto it. The drill therefore runs the gate and
+ * refuses to pass without it:
+ *
+ *   tsx scripts/p137/restore-drill.ts --backup <dir> --erasure-registry <file>   registry from
+ *                                                                    ERASURE_REGISTRY_KEY (env)
+ *   tsx scripts/p137/restore-drill.ts --backup <dir> --no-erasure-gate           explicit bypass: the
+ *                                                                    drill FAILS and says NOT SAFE
+ *                                                                    TO SERVE (a disposable drill
+ *                                                                    of the plumbing only)
+ *   tsx scripts/p137/restore-drill.ts --backup <dir> --mutation F    skip the replay but still
+ *                                                                    postcheck (must be refused)
+ *
  * Prints only aggregate counts/hashes/pass-fail — never row contents. Needs Docker. Touches no
  * hosted project. The target container has --network none for the entire drill.
  */
@@ -52,20 +65,42 @@ import {
   verifyBackupDirectory,
 } from '../db-backup/backup-core'
 import { REPO_ROOT } from '../db-backup/supabase-cli'
+import { parseRegistryKey, readRegistryFile, RegistryError } from '../restore-gate/erasure-registry'
+import {
+  apply,
+  checkMachinery,
+  EXIT,
+  postcheck,
+  promoteCheck,
+  type SqlRunner,
+} from '../restore-gate/gate'
 
 const IMAGE = process.env.P137_REPRO_IMAGE ?? 'public.ecr.aws/supabase/postgres:17.6.1.158'
 
-type Mutation = 'A' | 'B' | 'C' | 'D' | 'E' | null
+type Mutation = 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | null
 
-function parseArgs(argv: readonly string[]): { backup: string; mutation: Mutation } {
+function parseArgs(argv: readonly string[]): {
+  backup: string
+  mutation: Mutation
+  registry: string | null
+  noGate: boolean
+} {
   let backup: string | undefined
   let mutation: Mutation = null
+  let registry: string | null = null
+  let noGate = false
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === '--backup') backup = argv[++i]
     else if (argv[i] === '--mutation') mutation = argv[++i] as Mutation
+    else if (argv[i] === '--erasure-registry') registry = argv[++i] ?? null
+    else if (argv[i] === '--no-erasure-gate') noGate = true
   }
-  if (backup === undefined) throw new Error('usage: --backup <dir> [--mutation A|B|C|D|E]')
-  return { backup, mutation }
+  if (backup === undefined) {
+    throw new Error(
+      'usage: --backup <dir> (--erasure-registry <file> | --no-erasure-gate) [--mutation A|B|C|D|E|F]',
+    )
+  }
+  return { backup, mutation, registry, noGate }
 }
 
 function run(
@@ -219,8 +254,100 @@ function latestPrivilegeBaseline(): string {
   return join(dir, last)
 }
 
+/** Runs the gate's SQL inside the disposable container: JSON in, one JSON value out. */
+function dockerRunner(container: string): SqlRunner {
+  return {
+    async json(sql) {
+      const r = await must(
+        'docker',
+        [
+          'exec',
+          '-i',
+          container,
+          'psql',
+          '-X',
+          '-q',
+          '-t',
+          '-A',
+          '-v',
+          'ON_ERROR_STOP=1',
+          '-U',
+          'postgres',
+          '-d',
+          'postgres',
+        ],
+        sql,
+      )
+      return JSON.parse(r.stdout.trim()) as unknown
+    },
+  }
+}
+
+async function runErasureGate(
+  db: ReturnType<typeof psqlOf>,
+  registryPath: string | null,
+  noGate: boolean,
+  mutation: Mutation,
+): Promise<void> {
+  void db
+  if (noGate || registryPath === null) {
+    check(
+      'ERASURE_GATE: NOT RUN — the erasure registry was not replayed onto this image, so it is NOT SAFE TO SERVE (restore-safe account deletion, docs/security/RESTORE_RUNBOOK.md)',
+      false,
+      noGate ? '--no-erasure-gate' : 'no --erasure-registry given',
+    )
+    return
+  }
+  let registry
+  try {
+    registry = readRegistryFile(registryPath, parseRegistryKey(process.env.ERASURE_REGISTRY_KEY))
+  } catch (error) {
+    check(
+      'ERASURE_GATE: registry refused — NOT SAFE TO SERVE',
+      false,
+      error instanceof RegistryError ? `${error.code}: ${error.message}` : 'unreadable',
+    )
+    return
+  }
+  const runner = dockerRunner(CONTAINER_FOR_GATE.name)
+  const machinery = await checkMachinery(runner)
+  check(
+    'ERASURE_GATE machinery present in the restored image (rolled forward)',
+    machinery.present,
+    machinery.present ? 'ok' : machinery.missing.join(', '),
+  )
+  if (!machinery.present) return
+  const options = { allowEmpty: false }
+  if (mutation !== 'F') {
+    const applied = await apply(runner, registry, { ...options, dryRun: false })
+    check(
+      'ERASURE_GATE apply: erased accounts replayed onto the restored image and re-verified clean',
+      applied.exit === EXIT.OK,
+      `replayed=${String(applied.replayed_accounts)} verdict=${applied.after?.verdict ?? '?'} tables_with_residue=${JSON.stringify(applied.after?.report.tables ?? {})}`,
+    )
+  }
+  const post = await postcheck(runner, registry, options)
+  check(
+    mutation === 'F'
+      ? 'MUTATION_F: promotion WITHOUT the replay is REFUSED by postcheck'
+      : 'ERASURE_GATE postcheck: image stamped passed for the current registry head',
+    mutation === 'F' ? post.exit !== EXIT.OK : post.exit === EXIT.OK,
+    `verdict=${post.verify.verdict}`,
+  )
+  const promote = await promoteCheck(runner, registry, options)
+  check(
+    mutation === 'F'
+      ? 'MUTATION_F: promote-check refuses'
+      : 'ERASURE_GATE promote-check: PROMOTABLE (the only state in which this image may serve)',
+    mutation === 'F' ? promote.exit !== EXIT.OK : promote.exit === EXIT.OK,
+    promote.reason,
+  )
+}
+
+const CONTAINER_FOR_GATE = { name: '' }
+
 async function main(): Promise<number> {
-  const { backup, mutation } = parseArgs(process.argv.slice(2))
+  const { backup, mutation, registry, noGate } = parseArgs(process.argv.slice(2))
   const runId = randomBytes(4).toString('hex')
   const container = `p137-restore-${runId}`
   const network = `p137-restore-net-${runId}`
@@ -298,6 +425,7 @@ async function main(): Promise<number> {
     )
     await waitReady(container)
     const db = psqlOf(container)
+    CONTAINER_FOR_GATE.name = container
 
     // ── Step 1b: bootstrap the CURRENT auth schema with the real GoTrue service ──
     // The bare `supabase/postgres` image's baked-in `auth.users` is an old baseline (missing
@@ -697,6 +825,10 @@ async function main(): Promise<number> {
         diag.code === 0 ? 'ran clean' : diag.stderr.trim().slice(-300),
       )
     }
+
+    // ── Step 11b (P189): the erasure gate. A restored image that has not passed it is NOT SAFE TO
+    //    SERVE, so the drill cannot pass without it. ──
+    await runErasureGate(db, registry, noGate, mutation)
 
     // ── Step 12: app-compatibility surface (schema/RPC presence, not a live client) ──
     const coreRpcs = ['create_purchase', 'create_sale', 'set_sealed_lot_intent', 'void_purchase']

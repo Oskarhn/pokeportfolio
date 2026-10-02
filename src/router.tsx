@@ -19,6 +19,7 @@ import { InvitePage } from './features/auth/InvitePage'
 import { ForgotPasswordPage } from './features/auth/ForgotPasswordPage'
 import { ResetPasswordPage } from './features/auth/ResetPasswordPage'
 import { HomePage } from './features/home/HomePage'
+import { AccountDeletionPage } from './features/legal/AccountDeletionPage'
 import { PrivacyPage } from './features/legal/PrivacyPage'
 import { TermsPage } from './features/legal/TermsPage'
 import { FaqPage } from './features/legal/FaqPage'
@@ -223,8 +224,9 @@ function AppErrorComponent(props: ErrorComponentProps) {
 /**
  * Three route classes (docs/UX_FLOWS.md):
  *
- *   public     /login, /invite/$token, /forgot-password, /reset-password, /privacy, /terms, /faq
- *              (only /privacy, /terms, /faq are crawlable — public/robots.txt disallows the rest;
+ *   public     /login, /invite/$token, /forgot-password, /reset-password, /privacy, /terms, /faq,
+ *              /account-deletion
+ *              (only /privacy, /terms, /faq, /account-deletion are crawlable — public/robots.txt disallows the rest;
  *              /invite/$token and /reset-password carry live tokens and must never be indexed)
  *   protected  /, /catalog, /catalog/$cardId, /catalog/sets/$setId,
  *              /catalog/sealed/$sealedProductId, /portfolio, /portfolio/$holdingId,
@@ -323,6 +325,14 @@ const termsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/terms',
   component: TermsPage,
+})
+
+// P189: the public account-deletion information URL (store listings point here). Public and
+// crawlable like the three above, but deliberately NOT analytics-eligible.
+const accountDeletionRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/account-deletion',
+  component: AccountDeletionPage,
 })
 
 const faqRoute = createRoute({
@@ -785,6 +795,7 @@ const routeTree = rootRoute.addChildren([
   forgotPasswordRoute,
   resetPasswordRoute,
   privacyRoute,
+  accountDeletionRoute,
   termsRoute,
   faqRoute,
   catalogRoute,

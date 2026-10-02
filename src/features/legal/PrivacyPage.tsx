@@ -1,4 +1,6 @@
 import { useDocumentMeta } from '../../ui/useDocumentMeta'
+import { Link } from '@tanstack/react-router'
+import { CONTACT_EMAIL } from './contact'
 import { LegalLayout } from './LegalLayout'
 
 /**
@@ -19,7 +21,7 @@ export function PrivacyPage() {
   })
 
   return (
-    <LegalLayout title="Privacy" updated="2026-09-04">
+    <LegalLayout title="Privacy" updated="2026-10-02">
       <p>
         PokePortfolio is a private, invite-only tool built and operated by one person, for a small
         group of invited people. This page describes exactly what the application does with your
@@ -68,9 +70,12 @@ export function PrivacyPage() {
       <section className="space-y-2">
         <h2 className="text-base font-semibold text-slate-100">What's on your device</h2>
         <p>
-          Two things are stored locally in your browser, and nothing else: your signed-in session
-          (so you don't have to sign in on every visit) and your theme preference. Neither is used
-          for tracking, and neither is shared with anyone. See{' '}
+          Your browser keeps a few small things so the app works: your signed-in session (so you
+          don't have to sign in on every visit), your theme choice, a timestamp used to remind you
+          to export your data (kept per account), a timestamp that stops the app reloading itself
+          repeatedly after an update, and cached copies of the app itself and of the scanner's model
+          files. None of it is used for tracking and none of it is shared. Signing out or deleting
+          your account removes your session; the theme choice is a device preference and stays. See{' '}
           <a href="#analytics" className="underline underline-offset-2">
             Analytics
           </a>{' '}
@@ -96,10 +101,19 @@ export function PrivacyPage() {
         <p>
           You can generate a complete export of your data (a full JSON backup plus per-category CSV
           files) at any time from Profile → Export &amp; backup — nothing is withheld from it.
-          Profile → Reset portfolio data permanently erases your portfolio, purchases, sales,
-          openings and history; it does not remove your account itself. There is no self-service
-          "delete my account" action yet — email the address below to have your account and
-          remaining data removed.
+          Profile → Reset portfolio data erases your portfolio, purchases, sales, openings and
+          history but keeps your account.
+        </p>
+        <p>
+          Profile → Delete account permanently deletes your account and everything in it: your
+          sign-in and display name, all your portfolio and organisation data, your own sealed
+          product definitions, your portfolio history and your settings. You confirm by entering
+          your password again. It cannot be undone. The full description, including what happens to
+          backups, is on the{' '}
+          <Link to="/account-deletion" className="underline underline-offset-2">
+            account deletion page
+          </Link>
+          .
         </p>
       </section>
 
@@ -108,8 +122,8 @@ export function PrivacyPage() {
         <p>
           This is a one-person project with no company, legal entity or registered address behind
           it. Questions, correction requests or deletion requests:{' '}
-          <a href="mailto:oskarhn06@outlook.com" className="underline underline-offset-2">
-            oskarhn06@outlook.com
+          <a href={`mailto:${CONTACT_EMAIL}`} className="underline underline-offset-2">
+            {CONTACT_EMAIL}
           </a>
           .
         </p>

@@ -8,7 +8,7 @@ import {
   type SyntheticUser,
   type TestClient,
 } from '../db/setup'
-import { connectDb } from '../db/lib/account-deletion-deps'
+import { beginRecorded, connectDb } from '../db/lib/account-deletion-deps'
 import { seedAccountLedger } from '../db/lib/account-ledger-fixture'
 
 vi.mock('../../src/data/supabase-client', () => ({ supabase: {} }))
@@ -16,8 +16,10 @@ vi.mock('../../src/data/supabase-client', () => ({ supabase: {} }))
 import {
   AccountDeletionError,
   runAccountDeletion,
-  type DeletionClient,
+  type DeletionProbe,
 } from '../../src/data/account-deletion'
+import { IdentityAuthority } from '../../src/auth/identity-lease'
+import type { LeasedDb } from '../../src/data/leased-client'
 
 /**
  * P156: "the response was lost" against a REAL Auth server and the REAL deployed function, with the
@@ -72,25 +74,47 @@ async function sendAndLoseTheAnswer(token: string, body: unknown): Promise<never
   throw new TypeError('network connection lost') // ...and the client never sees it
 }
 
-function clientOver(real: TestClient, lose: (token: string) => Promise<never>): DeletionClient {
-  return {
-    auth: {
-      getSession: () => real.auth.getSession(),
-      getUser: () => real.auth.getUser(),
-    },
+/**
+ * The shipped client logic over a REAL Auth server: a leased client whose request is "lost", and the
+ * same probe src/data/account-deletion-probe.ts uses (getUser with the session's own token; only
+ * Auth's explicit user_not_found counts as gone).
+ */
+function clientOver(
+  real: TestClient,
+  userId: string,
+  lose: (token: string) => Promise<never>,
+): { db: LeasedDb; probe: DeletionProbe } {
+  const authority = new IdentityAuthority()
+  authority.observe(userId)
+  const lease = authority.begin(userId)
+  const db = {
+    identityLease: lease,
     functions: {
       invoke: async () => {
         const session = (await real.auth.getSession()).data.session!
         return lose(session.access_token)
       },
     },
+  } as unknown as LeasedDb
+  const probe: DeletionProbe = {
+    async accountIsGone() {
+      try {
+        const session = (await real.auth.getSession()).data.session
+        if (!session || session.user.id !== userId) return false
+        const { error } = await real.auth.getUser(session.access_token)
+        return (error as { code?: string } | null)?.code === 'user_not_found'
+      } catch {
+        return false
+      }
+    },
   }
+  return { db, probe }
 }
 
 describe('the answer to a deletion request is lost after the server finished', () => {
   it('the client asks Auth, gets user_not_found from a real GoTrue, and reports success', async () => {
     const a = await actor('p156-lost-ok')
-    const client = clientOver(a.client, (token) =>
+    const { db: leased, probe } = clientOver(a.client, a.user.id, (token) =>
       sendAndLoseTheAnswer(token, {
         expectedUserId: a.user.id,
         password: a.user.password,
@@ -98,7 +122,7 @@ describe('the answer to a deletion request is lost after the server finished', (
       }),
     )
     await expect(
-      runAccountDeletion(client, { expectedUserId: a.user.id, password: a.user.password }),
+      runAccountDeletion(leased, probe, { password: a.user.password }),
     ).resolves.toBeUndefined()
     expect(await exists(a.user.id)).toBe(false)
   })
@@ -130,13 +154,10 @@ describe('the answer to a deletion request is lost after the server finished', (
     // The request never reached the server (the connection died first) and the session was revoked
     // elsewhere in the meantime. Auth answers the probe with something other than user_not_found.
     await service.auth.admin.signOut(a.token, 'global')
-    const client = clientOver(a.client, () =>
+    const { db: leased, probe } = clientOver(a.client, a.user.id, () =>
       Promise.reject(new TypeError('network connection lost')),
     )
-    const failure = await runAccountDeletion(client, {
-      expectedUserId: a.user.id,
-      password: a.user.password,
-    }).then(
+    const failure = await runAccountDeletion(leased, probe, { password: a.user.password }).then(
       () => null,
       (e: unknown) => e,
     )
@@ -148,7 +169,7 @@ describe('the answer to a deletion request is lost after the server finished', (
   it('a pending account whose login deletion never happened stays write-blocked but readable, and a fresh attempt completes it', async () => {
     const a = await actor('p156-lost-partial')
     // Deletion authorised and data purged, login still present: the "between purge and Auth" state.
-    expect((await service.rpc('begin_account_deletion', { p_user_id: a.user.id })).error).toBeNull()
+    expect((await beginRecorded(service, a.user.id)).error).toBeNull()
     for (let i = 0; i < 50; i++) {
       const p = await service.rpc('purge_account_data', { p_user_id: a.user.id })
       if ((p.data as { complete: boolean }).complete) break

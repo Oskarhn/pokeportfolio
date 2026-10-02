@@ -475,8 +475,12 @@ inspector_port = 8083
 # The Deno major version to use.
 deno_version = 2
 
-# [edge_runtime.secrets]
-# secret_key = "env(SECRET_VALUE)"
+# P189: where delete-account records an erasure OUTSIDE the database (restore-safe deletion, see
+# docs/security/RESTORE_RUNBOOK.md). Values come from the environment of `supabase start`; unset means
+# the function refuses every deletion (fail closed). Production sets these as Edge Function secrets.
+[edge_runtime.secrets]
+ERASURE_REGISTRY_URL = "env(ERASURE_REGISTRY_URL)"
+ERASURE_REGISTRY_TOKEN = "env(ERASURE_REGISTRY_TOKEN)"
 
 [analytics]
 enabled = true

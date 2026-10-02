@@ -48,6 +48,9 @@ export function PublicFooter() {
       <Link to="/faq" className="hover:text-slate-300 hover:underline">
         FAQ
       </Link>
+      <Link to="/account-deletion" className="hover:text-slate-300 hover:underline">
+        Delete account
+      </Link>
     </footer>
   )
 }

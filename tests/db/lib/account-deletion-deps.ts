@@ -2,6 +2,7 @@ import pg from 'pg'
 import { createAnonClient } from '../setup'
 import type { TestClient } from '../setup'
 import type { AccountDeletionDeps } from '../../../supabase/functions/_shared/account-deletion'
+import { appendErasure, loadSinkConfig } from '../../../supabase/functions/_shared/erasure-sink'
 import { USER_OWNED_TABLES } from './account-ledger-fixture'
 
 /**
@@ -18,7 +19,39 @@ export function realDeps(
   overrides: Partial<AccountDeletionDeps> = {},
 ): AccountDeletionDeps & { logs: string[] } {
   const logs: string[] = []
+  // The same registry client the Edge Function uses, pointed at the sink tests/db/global-setup.ts
+  // runs (the test process reaches it on the loopback address of the same port).
+  const sinkUrl = process.env.ERASURE_REGISTRY_URL
+  const sink = loadSinkConfig({
+    get: (name) =>
+      name === 'ERASURE_REGISTRY_URL' && sinkUrl
+        ? sinkUrl.replace('host.docker.internal', '127.0.0.1')
+        : process.env[name],
+  })
   const deps: AccountDeletionDeps = {
+    registryConfigured: () => sink !== null,
+    async prepareErasure(userId) {
+      const { data, error } = await service.rpc('prepare_account_erasure', { p_user_id: userId })
+      if (error || !data) throw new Error(`prepare failed: ${error?.message ?? 'no data'}`)
+      const row = data as { deletion_id: string; subject_hash: string; registry_state: string }
+      return {
+        deletionId: row.deletion_id,
+        subject: row.subject_hash,
+        recorded: row.registry_state === 'recorded',
+      }
+    },
+    async appendToRegistry(input) {
+      if (sink === null) throw new Error('registry not configured')
+      return appendErasure(sink, input)
+    },
+    async confirmErasure(userId, deletionId, seq) {
+      const { error } = await service.rpc('record_account_erasure', {
+        p_user_id: userId,
+        p_deletion_id: deletionId,
+        p_registry_seq: seq,
+      })
+      if (error) throw new Error(`confirm failed: ${error.message}`)
+    },
     async authenticate(token) {
       const { data, error } = await service.auth.getUser(token)
       if (error) {
@@ -135,4 +168,40 @@ export async function sharedDigest(db: pg.Client): Promise<string> {
   )
   parts.push(shared.rows[0]!.d)
   return parts.join(':')
+}
+
+/**
+ * begin_account_deletion followed by the restore-safe record, exactly as the Edge Function orders
+ * it (P189): the database refuses to purge until the erasure is recorded, so a suite that drives
+ * the purge directly has to go through this first. The record goes to the REAL registry sink the
+ * suites start (tests/db/global-setup.ts), so the database's witness copy and the registry agree.
+ */
+export async function recordErasure(
+  service: TestClient,
+  userId: string,
+): Promise<{ error: { message: string } | null }> {
+  const deps = realDeps(service)
+  try {
+    const prepared = await deps.prepareErasure(userId)
+    if (!prepared.recorded) {
+      const receipt = await deps.appendToRegistry({
+        deletionId: prepared.deletionId,
+        subject: prepared.subject,
+        deletedAt: new Date().toISOString().replace(/.d{3}Z$/, 'Z'),
+      })
+      await deps.confirmErasure(userId, receipt.deletionId, receipt.seq)
+    }
+  } catch (e) {
+    return { error: { message: (e as Error).message } }
+  }
+  return { error: null }
+}
+
+export async function beginRecorded(
+  service: TestClient,
+  userId: string,
+): Promise<{ error: { message: string } | null }> {
+  const begun = await service.rpc('begin_account_deletion', { p_user_id: userId })
+  if (begun.error) return { error: begun.error }
+  return recordErasure(service, userId)
 }

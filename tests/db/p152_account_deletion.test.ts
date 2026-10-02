@@ -17,7 +17,13 @@ import {
   USER_OWNED_TABLES,
   type SeededLedger,
 } from './lib/account-ledger-fixture'
-import { connectDb, ownedDigests, realDeps, sharedDigest } from './lib/account-deletion-deps'
+import {
+  beginRecorded,
+  connectDb,
+  ownedDigests,
+  realDeps,
+  sharedDigest,
+} from './lib/account-deletion-deps'
 import { handleAccountDeletion } from '../../supabase/functions/_shared/account-deletion'
 
 /**
@@ -218,7 +224,7 @@ describe('synthetic A / B / C: deleting A removes A and nothing else', () => {
 describe('the purge on its own', () => {
   it('is idempotent: a second run finds nothing and changes nothing', async () => {
     const a = await seeded('p152-idem')
-    await service.rpc('begin_account_deletion', { p_user_id: a.user.id })
+    await beginRecorded(service, a.user.id)
     const first = await service.rpc('purge_account_data', { p_user_id: a.user.id })
     expect(first.error).toBeNull()
     expect((first.data as Record<string, number>).sales).toBe(1)
@@ -309,7 +315,7 @@ interface PurgeResult extends Record<string, number | boolean> {
 describe('the purge runs in bounded batches that are safe to stop at any point', () => {
   it('rejects a batch size outside 1..100000', async () => {
     const a = await seeded('p152-batch-arg')
-    await service.rpc('begin_account_deletion', { p_user_id: a.user.id })
+    await beginRecorded(service, a.user.id)
     for (const p_max_rows of [0, -1, 100_001]) {
       const res = await service.rpc('purge_account_data', { p_user_id: a.user.id, p_max_rows })
       expect(res.error?.message, String(p_max_rows)).toContain('p_max_rows must be between')
@@ -321,7 +327,7 @@ describe('the purge runs in bounded batches that are safe to stop at any point',
     const b = await seeded('p152-batch-prefix-b')
     const beforeB = await ownedDigests(db, b.user.id)
     const original = await countOwnedRows(service, a.user.id)
-    await service.rpc('begin_account_deletion', { p_user_id: a.user.id })
+    await beginRecorded(service, a.user.id)
 
     let calls = 0
     for (;;) {
@@ -358,7 +364,7 @@ describe('the purge runs in bounded batches that are safe to stop at any point',
 
   it('a fault in a LATER batch rolls back only that batch; earlier progress stays and a retry finishes', async () => {
     const a = await seeded('p152-batch-fault')
-    await service.rpc('begin_account_deletion', { p_user_id: a.user.id })
+    await beginRecorded(service, a.user.id)
     const original = await countOwnedRows(service, a.user.id)
     await db.query(`
       create or replace function public.zz_p152_fault2() returns trigger language plpgsql as $$
@@ -445,7 +451,7 @@ describe('the purge runs in bounded batches that are safe to stop at any point',
         residual_minor: 0,
       })),
     )
-    await service.rpc('begin_account_deletion', { p_user_id: user.id })
+    await beginRecorded(service, user.id)
 
     let calls = 0
     for (;;) {
@@ -470,7 +476,7 @@ describe('the write guard: a pending account accepts no new rows', () => {
   it('blocks direct inserts, RPC writes and mixed-user bulk inserts, and only for the pending user', async () => {
     const a = await seeded('p152-guard-a')
     const b = await seeded('p152-guard-b')
-    expect((await service.rpc('begin_account_deletion', { p_user_id: a.user.id })).error).toBeNull()
+    expect((await beginRecorded(service, a.user.id)).error).toBeNull()
 
     // Direct table insert as A's own session.
     const direct = await a.client.from('retailers').insert({ user_id: a.user.id, name: 'blocked' })
@@ -528,7 +534,7 @@ describe('the write guard: a pending account accepts no new rows', () => {
 
   it('a client cannot clear its own pending state to get around the guard', async () => {
     const a = await seeded('p152-guard-self')
-    await service.rpc('begin_account_deletion', { p_user_id: a.user.id })
+    await beginRecorded(service, a.user.id)
     const del = await a.client.from('account_deletion_requests').delete().eq('user_id', a.user.id)
     expect(del.error).not.toBeNull()
     expect(await pendingRow(a.user.id)).not.toBeNull()
