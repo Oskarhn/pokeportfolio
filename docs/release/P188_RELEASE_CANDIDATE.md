@@ -22,7 +22,7 @@ database (104 migrations) were not touched. Nothing here may be read as "P188 is
 | P187 source | `79c447d9136093f5ee93f33db42b6aae794941ed`, tree `f56103cfe4e9fd342663ef4a92635b4eae8ae309` |
 | Reconstruction | the nine P187 commits were replayed on P186; the one carrying a `Co-Authored-By` trailer (`60f2cd6`) was re-committed with the trailer removed. **Checkpoint:** `HEAD^{tree}` after the replay = `f56103cfe4e9fd342663ef4a92635b4eae8ae309` = `79c447d^{tree}`, before any P188 change |
 | Integrations | merge P164 `bae0b604`, merge P163 `4f6be7be`, merge P165 `3d03eec7`; P156 deliberately not merged |
-| Commits | 227 commits on top of the released base before the closeout documentation commit (219 non-merge), one author and committer identity |
+| Commits | 229 commits on top of the released base at the code tip (plus the closeout documentation commits), one author and committer identity |
 | Attribution audit | 0 forbidden trailers or generated-by lines in any commit reachable from the candidate (matrix §6) |
 
 ## 2. What it contains

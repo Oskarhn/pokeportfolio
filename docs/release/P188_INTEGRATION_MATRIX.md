@@ -149,7 +149,7 @@ the robot-emoji marker:
 | B. local unpushed candidate commits (`d8682e0..P188`) | cleaned before publication | **0** matches. The only hit in the P187 line was `60f2cd6`; its content was re-committed without the trailer (the other three message hits are the filename `CLAUDE.md`, not an attribution) |
 | C. unrelated or superseded branches | recorded only | 29 commits carry the trailer (`git log --all --grep='^Co-Authored-By:' -i`); 52 branch refs contain at least one, none of them an ancestor of P188. **24 of those refs are remote branches already on the public GitHub repository** (the M15/P84–P111 scanner-era branches, `fix/p123-finance-accounting-phase3`, …). They are outside P188's ancestry and cannot be cleaned from here: rewriting pushed branches is an owner decision |
 
-Every commit in `d8682e0..P188` (227 before the closeout documentation commit) has the same single author and
+Every commit in `d8682e0..P188` (229 at the code tip, plus the closeout documentation commits) has the same single author and
 committer identity (the repository owner's). No identity setting was modified.
 
 ## 7. How to re-run
