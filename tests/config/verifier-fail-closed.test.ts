@@ -133,6 +133,27 @@ describe('bundleDeclaresExactSha — exact quoted-string match, not substring (P
     expect(bundleDeclaresExactSha(cleanBundle, '')).toBe(false)
   })
 
+  // P150: the shape the production minifier actually emits, measured on the live Production entry
+  // bundle (`var wo=<backtick>SHA<backtick>,To=<backtick>builtAt<backtick>`): a template literal, not
+  // a JSON string. A pattern accepting only " and ' failed a CORRECT build's identity check.
+  const bt = '`'
+
+  it('P150: a backtick-quoted literal (real minified bundle shape) matches the exact expected SHA', () => {
+    const minified = `var wo=${bt}${cleanSha}${bt},To=${bt}2026-09-18T08:22:20.781Z${bt};`
+    expect(bundleDeclaresExactSha(minified, cleanSha)).toBe(true)
+  })
+
+  it('P150: a backtick-quoted DIRTY value still does not match the clean expected SHA', () => {
+    const minifiedDirty = `var wo=${bt}${cleanSha}+dirty${bt};`
+    expect(bundleDeclaresExactSha(minifiedDirty, cleanSha)).toBe(false)
+    expect(bundleDeclaresExactSha(minifiedDirty, `${cleanSha}+dirty`)).toBe(true)
+  })
+
+  it('P150: backtick-quoted prefix/suffix contamination is still rejected', () => {
+    expect(bundleDeclaresExactSha(`var x=${bt}0000prefix${cleanSha}${bt};`, cleanSha)).toBe(false)
+    expect(bundleDeclaresExactSha(`var x=${bt}${cleanSha}0000${bt};`, cleanSha)).toBe(false)
+  })
+
   it('OLD (mutation proof): plain substring search reports the DIRTY build as matching the CLEAN expected SHA — the exact P130-27 false pass', () => {
     const oldFound = dirtyBundle.includes(cleanSha)
     expect(oldFound).toBe(true) // the bug: a dirty build satisfied the old check

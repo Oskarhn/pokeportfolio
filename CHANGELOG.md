@@ -125,6 +125,31 @@ still runs the P141 build.
   shown or handed to the browser once their lease has ended.
 - CSV schema v2: `purchase_lines.csv` and `sale_lines.csv` gain a trailing `Currency` column.
 
+### Security — 2026-09-24 — CI-gated Production deploy integrated with the public-config guards (P163, D-163)
+
+- Integrates the P142 deploy job, the P150 corrections and the P160 guards on one local branch. Not
+  pushed, not run on GitHub; **P130-08 is still open**.
+- The deploy job reads its two public build values from repository **secrets** (masked in the step
+  header) instead of unmasked variables, runs the configuration guard first (before install), removes
+  `dist/` before building, scans `dist/`, checks the build identity, and only then uploads.
+- `release-guard remote-main-current` fails on an unreadable origin instead of ending green having
+  deployed nothing; the bundle SHA match needs the same quote on both sides.
+- New `pnpm check:github-config` (names only) replaces the value-reading `check:github-vars`.
+- Owner checklist: `docs/security/RELEASE_PREFLIGHT_P163.md`.
+
+### Security — 2026-09-24 — Public build configuration guard (P160, D-160)
+
+- Every build now validates the public (`VITE_*`) configuration before doing anything else and
+  refuses a secret-shaped value (`sb_secret_…`, service-role JWT), a key in the URL slot, a URL with
+  credentials/query/fragment/path, or a non-Supabase host. Output is a field name and an error
+  category — never a value. Cloudflare Pages builds and any job setting
+  `PP_REQUIRE_HOSTED_PUBLIC_ENV=1` additionally require `https://<ref>.supabase.co` and a
+  `sb_publishable_…` key.
+- Closes two measured holes: a bare secret in the URL slot failed late and left a partial `dist/`;
+  a *valid* URL carrying `?apikey=sb_secret_…` built successfully and inlined the value.
+- CI scans the built `dist/` (completeness + secret shapes) right after the build.
+- Owner runbook for the exposed-key incident: `docs/security/P160_SECRET_INCIDENT_RUNBOOK.md`.
+
 ### Fixed — 2026-09-15 — JPY FX conversion: SQL currency-exponent awareness and Norges Bank UNIT_MULT normalization (P136, integrating P133/P134/P135, P130-02, D-132)
 
 - `fx_rate_to_nok` means NOK per one MAJOR unit of the source currency everywhere it is used —

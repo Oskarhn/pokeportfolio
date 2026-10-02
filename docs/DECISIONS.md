@@ -6882,3 +6882,87 @@ completes (bounded, measured ~8 s with each asset artificially delayed 4 s; neve
 `tests/e2e/authenticated/p164-cross-track.spec.ts` (12 scenarios, every request judged by the account its
 token belongs to and every `user_id` table by row hash for both accounts), `scripts/p164/mutants.mjs`
 (16 mutants, all killed by an assertion; three more killed against the real browser by hand).
+
+---
+
+## D-160 — Public build configuration is validated fail-closed; the deploy profile requires a real Supabase origin and a publishable key (P160)
+
+**2026-09-24 · Accepted**
+
+**Context.** The repository Actions variable `VITE_SUPABASE_URL` was found holding a value shaped like
+a Supabase secret key (`output_159.txt` S-1). Measured against the unguarded build (Vite 8): a bare
+`sb_secret_…` in the URL slot failed only in `generateBundle`, after `public/` and `sw.js` had
+already been written to `dist/` (no `index.html`); a *valid* URL carrying `?apikey=sb_secret_…`
+built with exit 0 and inlined the value into two public chunks. Nothing in CI or the deploy path
+judged these inputs, and the deploy job would evaluate `vars.*` into a public job log.
+
+**Decision.** One pure validator (`scripts/lib/public-env-guard.mjs`) judges the effective `VITE_*`
+environment (`.env*` files overridden by the process environment, Vite's own precedence). It runs as
+the first `prebuild` step and as the first Vite plugin's `config` hook (before any write), and a
+second gate scans the finished `dist/` (`scripts/check-dist-secrets.mjs`). Output is a field name and a
+category only. The **deploy profile** — `CF_PAGES=1` or `PP_REQUIRE_HOSTED_PUBLIC_ENV=1` — requires
+`https://<20-character ref>.supabase.co` and a `sb_publishable_…` key; a legacy `anon` JWT is
+accepted for a local stack only and is reported as a note, because an opaque JWT is not safe by shape.
+
+**Alternatives rejected.** *Regex in CI only*: misses Cloudflare's own builds and local builds.
+*Guard in `generateBundle`*: already too late (partial output). *Accept any `https` host*: a
+lookalike or a custom domain would pass; a custom domain in front of Supabase is not supported by the
+deploy profile and would need its own decision. *Match the bare `sb_secret_` prefix in the artefact
+scan*: `@supabase/supabase-js` carries the literal itself, so it would fail every correct bundle.
+
+**Consequences.** From the merge that lands this, a Cloudflare Pages build with a localhost URL, a
+placeholder or a legacy key fails. The served Production bundle already carries a `sb_publishable_`
+key and one Supabase origin, so a correct Pages configuration is unaffected. A new public variable
+must be added to `KNOWN_PUBLIC_VARS` deliberately. Not solved here (runbook §5): GitHub prints
+resolved step `env:` values into the job log, unmasked for variables.
+
+**Proof.** `tests/config/public-env-guard.test.ts` (31 cases: accepted configurations, every refusal
+category, no-leak windows through the library, the CLI and a real `vite build`, no output directory
+on refusal, wiring, source scan); five deliberate mutants of the guard each fail it.
+
+## D-163 — The CI Production deploy job reads its public build values from repository secrets, runs the configuration guard first, and integrates the P160 gates (P163)
+
+**Context.** P142 built a CI-gated `deploy-production` job; P150 corrected four defects in it; P160
+built the public-configuration guards. Integrated as they stood, the job would still have evaluated
+`${{ vars.VITE_SUPABASE_URL }}` into a step's `env:` block. GitHub writes that resolved block to the
+job log before the step runs and redacts secrets there but not variables (P160 confirmed this on a
+real past run), and the repository is public — so a wrong value would have been printed before any
+guard could object. The variable did hold a secret-shaped value (P159/P160).
+
+**Decision.**
+
+1. The deploy job reads the two build values from repository **secrets** `PRODUCTION_SUPABASE_URL`
+   and `PRODUCTION_SUPABASE_PUBLISHABLE_KEY` (masked in the step header). Both remain public in the
+   browser bundle; secrets are used for masking only. The names differ from the old `VITE_*`
+   variables so a stale variable can never be consumed. No `vars.*` expression and no `env:` block
+   above step level may exist in the workflow (asserted).
+2. Step order: `check-public-env.mjs --require-hosted --process-env-only` (before `pnpm install`) →
+   stale-run check → install → `rm -rf dist` → build in the deploy profile →
+   `check-dist-secrets.mjs` → build-identity check → `wrangler pages deploy` → live verification.
+   Everything after the stale-run check is gated on it; nothing may fail open.
+3. `release-guard.mjs remote-main-current` distinguishes a *proven* stale run (green, deploys
+   nothing) from an *unreadable* origin (fails). A green job that deployed nothing because it could
+   not look is a false success.
+4. `bundleDeclaresExactSha` requires the same quote character on both sides.
+5. The P160 value-reading variable check is replaced by `check-github-release-config.mjs`, which
+   reads **names only** (required secrets present, legacy variables absent).
+6. One deployment concurrency mechanism: the `production-deploy` job group with
+   `cancel-in-progress: false`; the workflow-level group cancels pull-request runs only (P150).
+
+**Alternatives rejected.** *Keep variables and rely on the guard*: the header is printed first.
+*Make the repository private*: the owner's decision, not a session's, and complementary — it does
+not remove the reason to mask. *Environment-scoped secrets*: unavailable for a private repository on
+the Free plan. *Reuse `build-and-test`'s artifact*: it is built against a placeholder URL on
+purpose. *A Cloudflare deploy hook*: builds whatever is newest, not the validated SHA.
+
+**Consequences.** The owner creates four repository secrets and deletes the two old variables
+(docs/security/RELEASE_PREFLIGHT_P163.md). The Supabase URL appears as `***` in verifier output.
+Masking matches the exact string only. A custom domain in front of Supabase remains unsupported by
+the deploy profile (D-160). None of this changes the fact that the key found in the variable must be
+treated as exposed until the owner rotates it. **P130-08 stays OPEN**: the pipeline is proven by
+local static and semantic tests and real guard-CLI runs, not by a hosted gated deployment.
+
+**Proof.** `tests/config/release-pipeline-integration.test.ts` (policy checker, GitHub step-semantics
+simulator, 17 mutation proofs, real guard-CLI and local-origin runs) and
+`tests/config/release-config-check.test.ts`; five further mutations were applied to the files on
+disk, each caught and restored byte-identically.

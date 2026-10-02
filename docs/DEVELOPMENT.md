@@ -481,6 +481,18 @@ the bundle by design. The Supabase secret key lives in the Edge Function environ
 database password in the owner's password manager; neither belongs in a frontend build, and a
 frontend build has no use for either.
 
+**The build refuses a wrong public configuration (P160, D-160).** `pnpm build` starts with
+`node scripts/check-public-env.mjs`; `vite.config.ts` repeats the check for a direct `vite build`;
+`node scripts/check-dist-secrets.mjs` judges the finished `dist/`. On Cloudflare Pages (`CF_PAGES=1`)
+the URL must be exactly `https://<ref>.supabase.co` and the key a `sb_publishable_…` key — a
+localhost URL, a placeholder or a legacy JWT there fails the build with a category, never a value.
+`pnpm check:public-env` runs the input check by hand; `pnpm check:github-config` lists, by **name**
+only, whether the four repository secrets the CI Production deploy job needs exist and the two
+legacy `VITE_*` Actions variables are gone (P163, D-163). That job reads its two public build values
+from repository secrets — not variables — because GitHub prints a step's resolved `env:` block
+before the step runs and redacts secrets there but not variables; the values are public in the bundle
+either way. See [security/RELEASE_PREFLIGHT_P163.md](security/RELEASE_PREFLIGHT_P163.md).
+
 **Environment variables are baked in at build time.** Editing one in the dashboard changes nothing
 until a redeploy. This is not theoretical — the first deployment of this project went out with two
 transposed characters in the Supabase project ref, so every request failed and the invite page said
