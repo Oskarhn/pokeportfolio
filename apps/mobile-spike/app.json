@@ -16,12 +16,13 @@
       "./plugins/with-short-cxx-build-path",
       "./plugins/with-onnxruntime-package",
       "./plugins/with-release-packaging",
-      "expo-secure-store",
+      ["expo-secure-store", { "faceIDPermission": false }],
       [
         "expo-image-picker",
         {
-          "photosPermission": "Choose a card photo to preview. Photos stay on this device.",
-          "cameraPermission": "Take a card photo to preview. Photos stay on this device."
+          "photosPermission": "Choose a card photo to identify. The card is recognised on this device and the photo is never uploaded.",
+          "cameraPermission": "Take a card photo to identify. The card is recognised on this device and the photo is never uploaded.",
+          "microphonePermission": false
         }
       ]
     ]

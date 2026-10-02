@@ -2,11 +2,12 @@ import { useRef, useState } from 'react'
 import { KeyboardAvoidingView, ScrollView, Text, TextInput, View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { Body, Heading, PrimaryButton } from '../components'
+import { KEYBOARD_BEHAVIOR } from '../keyboard'
 import { useRuntime } from '../runtime-context'
 import { MIN_TOUCH, RADIUS, SPACE, TYPE, useTheme } from '../theme'
 
-/** Same on both platforms; exported so a test pins it (an `undefined` here is the P166 F7 defect). */
-export const KEYBOARD_BEHAVIOR = 'padding' as const
+/** `padding` on both platforms (src/ui/keyboard.ts); re-exported so a test pins it (an `undefined` here is the P166 F7 defect). */
+export { KEYBOARD_BEHAVIOR }
 
 /**
  * Sign-in against the LOCAL synthetic backend. Credentials live only in component state for the

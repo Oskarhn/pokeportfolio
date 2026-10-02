@@ -17,7 +17,7 @@ import type { PhotoOutcome, PhotoPort, UnavailableReason } from './photo-store'
  * exercised on an Android 16 emulator in P166. The picker launch that failed after an Activity
  * recreation (font scale, display size, locale: P166 F1) is fixed by the expo-modules-core patch in
  * patches/ and re-verified on the emulator (docs/mobile/P167_ANDROID_HARDENING.md).
- * iOS is not verified. Store logic is tested through fakes in tests/unit/photo-store.test.ts.
+ * iOS is source-audited (docs/mobile/IOS_PORTABILITY_AUDIT.md) but not runtime-verified. Store logic is tested through fakes in tests/unit/photo-store.test.ts.
  */
 
 export function createExpoPhotoPort(now: () => string = () => new Date().toISOString()): PhotoPort {
@@ -34,7 +34,7 @@ export function createExpoPhotoPort(now: () => string = () => new Date().toISOSt
         allowsEditing: false,
         exif: false,
         base64: false,
-        quality: 0.8,
+        quality: PICKER_QUALITY,
       }
       let result: ImagePicker.ImagePickerResult
       try {
@@ -95,6 +95,15 @@ export function createExpoPhotoPort(now: () => string = () => new Date().toISOSt
 }
 
 export const PICKER_CACHE_DIR = 'ImagePicker'
+
+/**
+ * Must stay below 1. expo-image-picker's iOS handler (MediaHandler.swift) only re-encodes when
+ * `quality < 1` (or editing is on); at 1 it hands back the ORIGINAL file, and an iPhone's original
+ * is usually HEIC, which the header check (image-header.ts: JPEG / PNG / WebP) refuses and Skia may not
+ * decode. The same re-encode also bakes EXIF orientation into the pixels on iOS, so the decode sees
+ * an upright JPEG. Pinned by tests/unit/p187-ios-image-pipeline.test.ts.
+ */
+export const PICKER_QUALITY = 0.8
 
 /**
  * Only the camera path can mean "no camera": a library failure whose message mentions a camera is an

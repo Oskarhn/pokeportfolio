@@ -158,6 +158,21 @@ export async function warmOcr(): Promise<void> {
 }
 
 /**
+ * What the native recogniser can open. iOS's binding does `[NSURL URLWithString:path]` and feeds the
+ * result straight into UIImage/MLKVisionImage with no nil check, so a bare path, a `content://` URI or
+ * a string with an unescaped space (a nil NSURL) would reach native code as a nil image and could take
+ * the process down instead of rejecting. Android's binding parses leniently, so the one rule is checked
+ * in JS for both: a local, absolute, correctly percent-encoded `file:///` URI (what expo-file-system
+ * and the picker produce). Anything else is refused here and the scan degrades like any other OCR
+ * failure (the pipeline treats it as "no text", never as a candidate).
+ */
+const NATIVE_READABLE_FILE_URI = /^file:\/\/\/[A-Za-z0-9\-._~%!$&'()*+,;=:@/]+$/
+
+export function isNativeReadableFileUri(uri: string): boolean {
+  return NATIVE_READABLE_FILE_URI.test(uri)
+}
+
+/**
  * `imagePath` must be a local `file://` path ML Kit's native side can open directly — never bytes,
  * never uploaded (mission's absolute privacy contract; verified by the network-guard test, see
  * docs/mobile/P182_PORTABILITY_AUDIT.md §"privacy"). `imageHeight` is the DECODED (oriented) pixel
@@ -167,6 +182,9 @@ export async function recognizeCardText(
   imagePath: string,
   imageHeight: number,
 ): Promise<OcrExtraction> {
+  if (!isNativeReadableFileUri(imagePath)) {
+    throw new TypeError('OCR needs a local file:/// URI.')
+  }
   const result = await TextRecognition.recognize(imagePath, TextRecognitionScript.LATIN)
   const lines = toOcrLines(result)
   const collectorNumber = pickCollectorNumber(lines, imageHeight)

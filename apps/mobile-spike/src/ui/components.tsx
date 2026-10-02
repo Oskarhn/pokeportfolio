@@ -10,7 +10,6 @@ import {
   Text,
   TextInput,
   View,
-  type KeyboardAvoidingViewProps,
   type KeyboardTypeOptions,
   type ViewStyle,
 } from 'react-native'
@@ -18,6 +17,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import type { Money } from '@shared/domain/money'
 import { formatMoney } from '../money/format-money'
 import type { Failure } from '../net/failure'
+import { useKeyboardAvoidingProps } from './keyboard'
 import { MIN_TOUCH, RADIUS, SPACE, TYPE, usePalette, useTheme, type Tokens } from './theme'
 
 /**
@@ -27,8 +27,6 @@ import { MIN_TOUCH, RADIUS, SPACE, TYPE, usePalette, useTheme, type Tokens } fro
  * their exact prior API so every screen that already imports them is upgraded for free; everything
  * below `SectionHeader` is new, built for the screens this phase actually restyles.
  */
-
-const KEYBOARD_BEHAVIOR: KeyboardAvoidingViewProps['behavior'] = 'padding'
 
 // ---------------------------------------------------------------------------
 // Buttons
@@ -571,8 +569,9 @@ export function TaskScreen({
 }) {
   const t = useTheme()
   const insets = useSafeAreaInsets()
+  const keyboardProps = useKeyboardAvoidingProps()
   return (
-    <KeyboardAvoidingView style={{ flex: 1 }} behavior={KEYBOARD_BEHAVIOR}>
+    <KeyboardAvoidingView style={{ flex: 1 }} {...keyboardProps}>
       <View style={{ flex: 1, backgroundColor: t.background }}>
         <ScrollView
           testID={testID}
