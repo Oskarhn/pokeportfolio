@@ -27,7 +27,7 @@
     "account_deletion": {
       "prompt": 189,
       "branch": "security/p189-restore-safe-account-deletion",
-      "sha": "4005736ea7f4e23eb1ecc2ff3b748da23bcdfb5a",
+      "sha": "cb500fce9809b6bab57907300f9daf93ae684350",
       "builds_on": "P188 2783c93e4ebc54a70b6678b6dc76ff848c2793b3",
       "local_migration_count": 111,
       "status": "LOCAL_ONLY",

@@ -68,7 +68,36 @@ P188 chain (`20261002120000/10/20`) because none was ever applied anywhere, then
 
 ## 4. Verification (all local; commands in `docs/TESTING.md` §6g)
 
-Filled from the closing run — see `ai_outputs/Claude_outputs/output_189.txt` for the exact counts.
+All on this machine, one fresh isolated stack (`pokeportfolio-p189`, ports 557xx), 111 migrations applied from empty.
+
+| Check | Result |
+|---|---|
+| Resurrection reproduced before any change | yes: 24 relations (§1) |
+| `pnpm typecheck` / `eslint` / `format:check` (web) | PASS / PASS (0 errors, 31 existing warnings) / PASS |
+| Web unit (`vitest run`) | 201 files, 2987 passed, 1 skipped (P188: 196 / 2859) |
+| Web build (CI env) · link check · doc checks | PASS · 31/31 · size PASS, doc links 254/254, project state valid |
+| Placeholder-backend E2E (new spec, 3 repeats, desktop + iPhone) · a11y + launch-readiness | 24/24 · pass (public page, no session) |
+| Authenticated E2E, real browser, deployed function + registry | account-deletion spec 2/2 (wrong password refused; A deleted, bystander intact; confirmation closed on identity switch) |
+| Native typecheck / lint / unit + shared | PASS / PASS / 91 suites, 1237 tests (P188: 89 / 1202) |
+| Full DB suite, fresh `db reset` | 76 files passed + 1 skipped, **1183 passed**, 4 skipped (P188: 984 / 1; the new skips are the 3 gated full-drill tests and the same one) |
+| M12 / M13 / M16 adversarial | 44 passed 2 skipped / 62 / 53 (= baseline) |
+| Restore-safety suite (R0–R8, registry older than backup, pins) | 22/22; **plus the full tooling drill (`P189_FULL_DRILL=1`, real `db:backup` → restore-drill → gate) 25/25, run twice** |
+| Deployed function + Auth suite | 15/15 |
+| Grant audit · hostile-grant convergence · finance diagnostics | OK · OK (in the full suite) · every counter 0 |
+| Mutation proofs (`scripts/p189/mutation-proofs.mjs`) | 15/15 killed (3 needed a sharper mutant or test on the first pass: replay-skip, barrier removal, raw-text path) |
+| Android release APK, emulator `p189_api36` (API 36, x86_64), local stack | **9/9** (`apps/mobile-spike/scripts/p189/delete-journey.mjs`): sign in, portfolio of 7 rows, sheet copy, gating, wrong password refused with fixed copy, right password → signed-out screen, rows/login gone from the database, registry holds the account, old credentials refused in the app, old access token HTTP 403 and old refresh token HTTP 400 at Auth, logcat fatal 0 |
+| Secret / personal-data scan of all added lines vs P188 | clean: only synthetic ids and `.invalid` addresses; the single real address is the one the Privacy page already published |
+
+**Defects found by running it, not by reading it:** (1) the emulator showed "the connection was lost":
+the shared native client's read-only policy refused `delete-account` on the wire — fixed with a separate
+one-request policy and client (`src/account/account-request-client.ts`, pinned by the structural guard);
+(2) with no registry reachable the account correctly ended `pending` / `registry_failed` with all data
+intact (observed on the device run before the sink was started); (3) `deleted_at` carried millisecond noise
+(regex typo) — fixed and asserted; (4) the P137 drill's cron check fails on an already-current backup
+(pre-existing, §6.4).
+
+Not run: the native backend suite (needs the separate native stack), iOS, a physical device, TalkBack,
+the hosted project, GitHub Actions (repository is public, nothing pushed).
 
 ## 5. Readiness
 
