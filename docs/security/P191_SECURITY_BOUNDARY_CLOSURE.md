@@ -1,7 +1,7 @@
 # P191 — Security boundary closure (P130-13, -14, -20, -26, -29, -30, -36, -09)
 
 Development RC only (PR #113). Nothing here is merged to `main`, deployed, or applied to the hosted
-project. Three new migrations (`20261003120000`, `…0010`, `…0020`; 114 in the tree) are an owner-gated
+project. Three new migrations (`20261002140000`, `…0010`, `…0020`; 114 in the tree) are an owner-gated
 release step like every other unreleased migration. Decision record: DECISIONS.md D-191.
 
 | Item | Status | One line |
@@ -49,7 +49,7 @@ but creating it and granting it `authenticated` cannot be verified against the h
 
 ### The gate
 
-`20261003120000_p191_ledger_write_gate.sql`: a `BEFORE INSERT/UPDATE/DELETE` trigger
+`20261002140000_p191_ledger_write_gate.sql`: a `BEFORE INSERT/UPDATE/DELETE` trigger
 `a00_ledger_write_gate` on the five tables. If `current_user` is `authenticated` or `anon` **and**
 `app.ledger_write` is not `rpc`, it refuses (42501) — except an UPDATE whose changed columns are all in the
 organisational set above. The ten INVOKER writers re-create themselves verbatim with one added first
