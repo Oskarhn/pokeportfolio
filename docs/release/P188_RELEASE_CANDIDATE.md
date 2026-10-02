@@ -103,7 +103,7 @@ recorded on this desktop; both passed when re-run alone. A green re-run is not p
 No 100-scan benchmark was re-run: no scanner code changed. The smoke's `pickToResultMs` (about 18.5-19.6 s) includes the system photo
 picker interaction and equals the P186 smoke's own recorded figure (18.7 s); it is not a performance claim.
 
-**Documentation** (`node scripts/check-doc-size.mjs`, `check-project-state.mjs`, `check-doc-links.mjs`; also CI steps now): HANDOVER.md 21.6 KB (target < 30 KB, hard < 40 KB), `PROJECT_STATE.json` 7.9 KB, `docs/CURRENT_STATE/*.md` all within budget, `PROJECT_STATE.json` schema-valid, **242/242** link and secret-shape checks (now also covering `docs/release/` and `docs/mobile/`).
+**Documentation** (`node scripts/check-doc-size.mjs`, `check-project-state.mjs`, `check-doc-links.mjs`; also CI steps now): HANDOVER.md 21.6 KB (target < 30 KB, hard < 40 KB), `PROJECT_STATE.json` 7.9 KB, `docs/CURRENT_STATE/*.md` all within budget, `PROJECT_STATE.json` schema-valid, all link and secret-shape checks (244/244 at the final tip) (now also covering `docs/release/` and `docs/mobile/`).
 
 ## 5. Security and secret audit
 

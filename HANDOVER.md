@@ -84,10 +84,10 @@ number includes an earlier fix; compare patch-ids and file blobs, not only ances
 
 ## 3. Repository / branch state
 
-- Primary checkout (`C:/Users/Oskar/Documents/Pokemonapp prosjekt`): local `main` is at `72e4660`,
+- Primary checkout: local `main` is at `72e4660`,
   3 commits **behind** `origin/main` (a plain fast-forward; nobody has done it). Two untracked files
   are not part of any commit: `AGENTS.md` and `worktrees/` (an older worktree location).
-- The P188 worktree is `C:\Users\Oskar\Documents\Pokemonapp-worktrees\p188`, branch
+- The P188 worktree is `Pokemonapp-worktrees/p188` (a sibling of the primary checkout), branch
   `release/p188-cross-platform-rc`, built from P186 `3fac34ff…` (not from P187). The P187 branch
   `feat/p187-ios-readiness` still carries a forbidden `Co-Authored-By` trailer in `60f2cd6`; never push it.
 - 67 remote branches and 30 open PRs exist on GitHub; 24 of those remote branches carry attribution
