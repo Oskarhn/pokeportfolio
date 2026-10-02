@@ -618,6 +618,21 @@ holding, it surfaces as a failure rather than as silence.
 pg_graphql resolves against the same tables under the same role, so it is bounded by the same RLS
 policies and the same column grants. It widens nothing, and needs no separate baseline.
 
+### 5.10 The ledger is written only through its operations (P191, D-191)
+
+The browser-reachable privilege list in §5.9 still grants `authenticated` INSERT/UPDATE on the five
+ledger tables, because ten SECURITY INVOKER functions write them with the caller's privileges. The
+boundary that stops a client from using those grants directly is a trigger, not the ACL:
+`a00_ledger_write_gate` on `purchases`, `purchase_lines`, `acquisition_lots`, `holdings` and
+`manual_valuations` refuses (42501) any INSERT/DELETE, and any UPDATE outside a small organisational
+column set, from `authenticated`/`anon` unless the transaction is inside one of the writers, which set
+`app.ledger_write = 'rpc'` (transaction-local) as their first statement. The sale family and `openings`
+have no write grant at all (SECURITY DEFINER writers). `scripts/grant-audit.sql` asserts the gate and the
+ten writers independently of the migration; `tests/db/p191_*.test.ts` attack it. A private sealed product
+can be referenced only by its creator's rows (`enforce_sealed_product_reference`), and
+`sealed_products.id` is not client-insertable, so another user's private id is not an existence oracle.
+Detail and residuals: [security/P191_SECURITY_BOUNDARY_CLOSURE.md](security/P191_SECURITY_BOUNDARY_CLOSURE.md).
+
 ## 6. Secrets
 
 | Secret | Where it lives | Ever in the client? |
@@ -774,7 +789,7 @@ authenticate → intent → password → begin (pending) → RECORD THE ERASURE 
   device — [security/P189_DELETION_DATA_MAP.md](security/P189_DELETION_DATA_MAP.md). Auth-level actions of
   a pending account (password or e-mail change) are not covered by the database barrier.
 - **Open owner gates:** production registry storage, provider retention facts, the hosted in-place
-  restore interval, and the P130-13 direct-edit ledger grants (not widened by this work).
+  restore interval. (The P130-13 direct-edit ledger grants are closed by the P191 write gate, §5.10.)
 
 ---
 

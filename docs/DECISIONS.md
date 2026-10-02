@@ -7153,3 +7153,28 @@ and `GIT_PUBLICATION_PLAN.md` state `PUBLIC_BY_OWNER_CHOICE`. Historical reports
 `PUBLICATION_CHECKLIST.md` is retained as the pre-launch checklist for a deliberate public *launch*
 (announcement, README as portfolio piece), not as a gate for pushing branches. Branch protection is
 recommended, not applied (`GIT_PUBLICATION_PLAN.md` §5).
+
+
+## D-191 — Ledger writes go through a gate, private references are ownership-checked, failures use one vocabulary (P191)
+
+**Decision.** (1) A `BEFORE` trigger on the five ledger tables refuses direct client writes unless a
+transaction-local flag set by the ten authoritative INVOKER writers is present; grants are left as they
+were, because revoking breaks the INVOKER writers and flipping them to DEFINER would drop RLS from ten
+large bodies. (2) A sealed product may be referenced only by rows of the user who created it (or if it is
+curated), with one answer for "missing" and "not yours", and `sealed_products.id` is no longer
+client-insertable. (3) `secure_password_change` is enabled in the local config; the hosted setting is an
+owner action. (4) Screens render failures through `userMessage()`, a closed vocabulary; only
+product-authored errors pass through. (5) The Android ONNX runtime is pinned to the package version; `onnxruntime-node`'s
+install script (an unverified NuGet download) is not run; the model download is bounded.
+
+**Why.** Each was a reproduced or catalogued gap (docs/security/P191_SECURITY_BOUNDARY_CLOSURE.md): a
+stale session changing a password, a cross-user reference that blocked another user's erasure, a
+floating native runtime whose shipped binary was not the declared version.
+
+**Rejected.** Revoking the table grants (breaks the writers); a function-level `SET app.ledger_write`
+(Postgres refuses it for a non-superuser); a dedicated definer role (cannot be verified against the hosted
+project from a development phase); upgrading `sharp` to clear an advisory that is not reachable in a
+shipped artefact (it would change scanner preprocessing); showing a sanitised version of the backend message.
+
+**Accepted residual.** The gate flag is transaction-local, so inside a raw SQL transaction that has called
+a writer it stays set until commit; a client has no raw SQL.

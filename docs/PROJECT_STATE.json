@@ -13,11 +13,11 @@
       "branch": "release/p190-cross-platform-development-rc",
       "builds_on": "P189 bde11f99d08545c45eb347a7d78e3bc47ec7bcd3",
       "pull_request": 113,
-      "local_migration_count": 111,
+      "local_migration_count": 114,
       "status": "PUSHED_DEVELOPMENT_RC",
       "device_verified": true,
       "fully_certified": false,
-      "notes": "Development RC, not merged, not deployed, hosted database untouched. Contains P188 and P189. The branch tip is read from git, not recorded here. Release blockers: PRODUCTION_REGISTRY_STORAGE_READY=no, PROVIDER_RETENTION_VERIFIED=no, no physical Android/iOS runtime, identifiers and signing not selected, P163 owner actions open."
+      "notes": "Development RC, not merged, not deployed, hosted database untouched. Contains P188 and P189. The branch tip is read from git, not recorded here. Release blockers: PRODUCTION_REGISTRY_STORAGE_READY=no, PROVIDER_RETENTION_VERIFIED=no, no physical Android/iOS runtime, identifiers and signing not selected, P163 owner actions open. P191 (same branch): ledger write gate, sealed-product ownership, privilege baseline (3 migrations); P130-13/-14/-26/-09 closed in the RC, P130-20 OWNER_ACTION_REQUIRED, P130-29/-30 PARTIALLY_CLOSED. docs/security/P191_SECURITY_BOUNDARY_CLOSURE.md"
     },
     "release_candidate": {
       "prompt": 188,

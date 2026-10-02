@@ -15,17 +15,23 @@ There is no `docs/PRIVACY.md` in this repository yet; the deletion data scope is
 - **Repository is PUBLIC**, contradicting `CLAUDE.md`. 24 remote branches on it carry
   attribution trailers in their commit messages (matrix §6); unchanged and not rewritten.
 
-## Still OPEN in the P188 candidate (release-relevant, owner/design decisions)
+## P130 items taken up in P191 (development RC, PR #113)
 
-- **P130-13** direct-edit grants on ledger columns (`quantity_remaining`, frozen basis, residual,
-  purchase totals) — the writing functions are `SECURITY INVOKER`, so revoking breaks them.
-- **P130-14** private `sealed_products` id existence/deletion pin by another user — needs a trigger.
-- **P130-20** `secure_password_change` is still `false` locally and unverified on the hosted project
-  (the client-side identity check of D-139 is in).
-- **P130-26** raw technical errors in financial forms; **P130-09** Add card / Add sealed / Openings
-  wizard are not registered with the unsaved-work registry.
-- **P130-29/-30** mutable action tags and `gitleaks:latest`; the model download has no timeout and
-  `onnxruntime-node`'s NuGet download is unverified (the model itself is SHA-256 pinned).
+Record: [docs/security/P191_SECURITY_BOUNDARY_CLOSURE.md](../security/P191_SECURITY_BOUNDARY_CLOSURE.md); decision D-191.
+Code-side only — none of it is in Production, and the hosted database still has 104 migrations.
+
+- **P130-13** direct-edit ledger grants — **CLOSED in the RC**: a write gate trigger on the five ledger
+  tables refuses direct client writes; ten INVOKER writers announce themselves; grants unchanged.
+- **P130-14** private `sealed_products` id oracle / pin — **CLOSED in the RC** (ownership trigger; `id`
+  no longer client-insertable).
+- **P130-20** password change — **OWNER_ACTION_REQUIRED**: local `secure_password_change = true`, tested;
+  enable it (and "require current password") on the hosted project.
+- **P130-26** raw technical errors — **CLOSED** (closed vocabulary; static audits web + native).
+- **P130-29/-30** CI and model supply chain — **PARTIALLY_CLOSED**: runners/pnpm pinned, bounded model
+  download, Android ONNX runtime was floating (`latest.integration`) and is pinned, `onnxruntime-node`
+  NuGet install stopped; no upstream attestation, Supabase images/Playwright browsers version-pinned only.
+- **P130-36** advisories — reviewed; none reachable in a shipped artefact.
+- **P130-09** — **CLOSED**: all typed-input forms defer an automatic reload.
 
 ## Account deletion — restore-safe, LOCAL ONLY (P189), supersedes P156
 
