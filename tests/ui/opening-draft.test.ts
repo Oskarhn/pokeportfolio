@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   INTERRUPTED_SUBMISSION_COPY,
@@ -19,6 +19,7 @@ import {
   type PullDraft,
 } from '../../src/features/openings/draft'
 import type { OpeningSource } from '../../src/features/openings/contract'
+import { localTodayIso } from '../../src/platform/local-date'
 import { parseNokInput } from '../../src/ui/money-format'
 
 /**
@@ -141,7 +142,7 @@ describe('opening date (prompt §9)', () => {
 
   it('defaults to today', () => {
     const draft = initialDraft()
-    expect(draft.openedOn).toBe(new Date().toISOString().slice(0, 10))
+    expect(draft.openedOn).toBe(localTodayIso())
   })
 
   it('backdating is accepted', () => {
@@ -150,7 +151,8 @@ describe('opening date (prompt §9)', () => {
   })
 
   it('a future date is refused', () => {
-    const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10)
+    const [y, m, d] = localTodayIso().split('-').map(Number)
+    const tomorrow = new Date(Date.UTC(y!, m! - 1, d! + 1)).toISOString().slice(0, 10)
     expect(dateIsValidAndNotFuture(tomorrow)).toBe(false)
     const draft = draftWithSource(base, { openedOn: tomorrow })
     expect(stepError('quantity', draft, CTX_ONE_LOT())).toMatch(/today or earlier/)
@@ -159,6 +161,112 @@ describe('opening date (prompt §9)', () => {
   it('garbage dates are refused', () => {
     expect(dateIsValidAndNotFuture('15/01/2026')).toBe(false)
     expect(dateIsValidAndNotFuture('')).toBe(false)
+  })
+})
+
+/**
+ * The opening date is a LOCAL calendar date (src/platform/local-date.ts; the financial-event-date
+ * contract of P175/P180). The tests above once compared it with `toISOString().slice(0, 10)`, a UTC
+ * date, so they failed for the first hours after local midnight (00:00-02:00 in Oslo, 01:00-02:00
+ * in winter) and passed by luck the rest of the day. These cases pin the clock and the zone.
+ */
+describe('opening date across the local-midnight boundary', () => {
+  const originalTz = process.env.TZ
+  afterEach(() => {
+    vi.useRealTimers()
+    if (originalTz === undefined) delete process.env.TZ
+    else process.env.TZ = originalTz
+  })
+
+  function at(utcInstant: string, tz = 'Europe/Oslo'): void {
+    process.env.TZ = tz
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(utcInstant))
+  }
+
+  const base = source()
+  const cases: Array<{ name: string; utc: string; oslo: string; tomorrow: string }> = [
+    // CEST (UTC+2): 22:30Z is already the next day in Oslo.
+    { name: 'Oslo 00:30', utc: '2026-10-01T22:30:00Z', oslo: '2026-10-02', tomorrow: '2026-10-03' },
+    { name: 'Oslo 01:30', utc: '2026-10-01T23:30:00Z', oslo: '2026-10-02', tomorrow: '2026-10-03' },
+    { name: 'Oslo 02:30', utc: '2026-10-02T00:30:00Z', oslo: '2026-10-02', tomorrow: '2026-10-03' },
+    { name: 'Oslo 23:59', utc: '2026-10-02T21:59:00Z', oslo: '2026-10-02', tomorrow: '2026-10-03' },
+    // CET (UTC+1): the offset window is one hour in winter.
+    {
+      name: 'winter Oslo 00:30',
+      utc: '2026-01-14T23:30:00Z',
+      oslo: '2026-01-15',
+      tomorrow: '2026-01-16',
+    },
+    { name: 'month end', utc: '2026-01-31T23:30:00Z', oslo: '2026-02-01', tomorrow: '2026-02-02' },
+    {
+      name: 'month end (30 days)',
+      utc: '2026-04-29T22:30:00Z',
+      oslo: '2026-04-30',
+      tomorrow: '2026-05-01',
+    },
+    { name: 'year end', utc: '2026-12-31T23:30:00Z', oslo: '2027-01-01', tomorrow: '2027-01-02' },
+    { name: 'leap day', utc: '2028-02-28T23:30:00Z', oslo: '2028-02-29', tomorrow: '2028-03-01' },
+    // DST: spring forward 2026-03-29 01:00Z, fall back 2026-10-25 01:00Z.
+    {
+      name: 'before spring-forward',
+      utc: '2026-03-28T23:30:00Z',
+      oslo: '2026-03-29',
+      tomorrow: '2026-03-30',
+    },
+    {
+      name: 'just after spring-forward',
+      utc: '2026-03-29T01:30:00Z',
+      oslo: '2026-03-29',
+      tomorrow: '2026-03-30',
+    },
+    {
+      name: 'before fall-back',
+      utc: '2026-10-24T22:30:00Z',
+      oslo: '2026-10-25',
+      tomorrow: '2026-10-26',
+    },
+    {
+      name: 'inside the repeated hour',
+      utc: '2026-10-25T00:30:00Z',
+      oslo: '2026-10-25',
+      tomorrow: '2026-10-26',
+    },
+    {
+      name: 'after fall-back',
+      utc: '2026-10-25T01:30:00Z',
+      oslo: '2026-10-25',
+      tomorrow: '2026-10-26',
+    },
+  ]
+
+  for (const c of cases) {
+    it(`${c.name}: defaults to the local date, accepts it, refuses tomorrow`, () => {
+      at(c.utc)
+      expect(initialDraft().openedOn).toBe(c.oslo)
+      expect(dateIsValidAndNotFuture(c.oslo)).toBe(true)
+      expect(dateIsValidAndNotFuture(c.tomorrow)).toBe(false)
+      const draft = draftWithSource(base, { openedOn: c.tomorrow })
+      expect(stepError('quantity', draft, CTX_ONE_LOT())).toMatch(/today or earlier/)
+    })
+  }
+
+  it('the old UTC comparison is wrong in exactly the Oslo 00:30 window (documents the defect)', () => {
+    at('2026-10-01T22:30:00Z')
+    const utcDate = new Date().toISOString().slice(0, 10)
+    expect(utcDate).toBe('2026-10-01')
+    expect(initialDraft().openedOn).not.toBe(utcDate)
+    // A UTC-derived "tomorrow" is today in Oslo, so the old test would have called it refused.
+    const oldTomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10)
+    expect(oldTomorrow).toBe('2026-10-02')
+    expect(dateIsValidAndNotFuture(oldTomorrow)).toBe(true)
+  })
+
+  it('west of UTC the local date is BEHIND the UTC date (America/Los_Angeles, 17:30 local = next UTC day)', () => {
+    at('2026-10-02T00:30:00Z', 'America/Los_Angeles')
+    expect(initialDraft().openedOn).toBe('2026-10-01')
+    expect(dateIsValidAndNotFuture('2026-10-01')).toBe(true)
+    expect(dateIsValidAndNotFuture('2026-10-02')).toBe(false)
   })
 })
 
