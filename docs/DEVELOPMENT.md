@@ -191,7 +191,7 @@ Three ways to run a database, each serving a different purpose — this is a hyb
 either/or choice.
 
 **CI (authoritative for the M3+ gate).** `.github/workflows/ci.yml`'s `db-tests` job runs the
-full local Supabase stack in Docker on GitHub's `ubuntu-latest` runner — which has Docker
+full local Supabase stack in Docker on GitHub's `ubuntu-24.04` runner — which has Docker
 preinstalled — on every push and PR. It applies every migration to an empty database, resets and
 reapplies to prove reproducibility, runs the database and authorization suites, and generates
 TypeScript types. This never touches any remote project or credential, so it is safe to run on

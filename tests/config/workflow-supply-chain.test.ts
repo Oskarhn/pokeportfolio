@@ -88,3 +88,61 @@ describe('workflow supply chain', () => {
     ).toEqual([])
   })
 })
+
+/**
+ * P191 (P130-29) — the remaining mutable build inputs, closed or classified.
+ *
+ *   IMMUTABLY_PINNED  actions (commit SHA), the gitleaks image (digest), pnpm (corepack sha512)
+ *   VERSION_PINNED    Node (.nvmrc exact), Playwright + browsers, Supabase CLI and the container
+ *                     images it starts, wrangler — all by the locked package version, not a hash
+ *   MUTABLE_TAG       none left that this repository selects (the Supabase stack images are chosen
+ *                     by the CLI version, not by a tag in this repository)
+ *   runner            `ubuntu-24.04`, never `*-latest` (the image a job runs on is a build input)
+ * docs/security/P191_SECURITY_BOUNDARY_CLOSURE.md records each with its update mechanism.
+ */
+describe('workflow supply chain — P191 additions', () => {
+  for (const { file, text } of workflows) {
+    it(`${file}: runners are a named image, not *-latest`, () => {
+      expect(text).not.toMatch(/runs-on:\s*\S*-latest/)
+    })
+
+    it(`${file}: no remote script is piped into a shell and nothing is fetched ad hoc`, () => {
+      expect(text).not.toMatch(/\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:ba|z)?sh\b/)
+      expect(text).not.toMatch(/\b(?:npx|pnpm dlx|bunx)\b/)
+    })
+
+    it(`${file}: every dependency install honours the lockfile`, () => {
+      const installs = text
+        .split('\n')
+        .filter((l) => /\bpnpm(?:\s+--dir\s+\S+)?\s+install\b/.test(l))
+      expect(installs.length).toBeGreaterThan(0)
+      for (const line of installs) expect(line).toMatch(/--frozen-lockfile/)
+      expect(text).not.toMatch(/\bpnpm\s+(?:add|update|up)\b/)
+    })
+
+    it(`${file}: no action or image is selected by a floating ref`, () => {
+      expect(text).not.toMatch(/uses:\s*\S+@(?:main|master|latest|v\d+(?:\.\d+)*)\s*$/m)
+      expect(text).not.toMatch(/:latest\b/)
+    })
+  }
+
+  it('pnpm is pinned with a content hash that corepack verifies', () => {
+    const pkg = JSON.parse(readFileSync('package.json', 'utf-8')) as { packageManager: string }
+    expect(pkg.packageManager).toMatch(/^pnpm@\d+\.\d+\.\d+\+sha512\.[0-9a-f]{128}$/)
+  })
+
+  it('Node is pinned to an exact version', () => {
+    expect(readFileSync('.nvmrc', 'utf-8').trim()).toMatch(/^\d+\.\d+\.\d+$/)
+  })
+
+  it('mutation: floating runners, piped installers and unfrozen installs are detected', () => {
+    expect('runs-on: ubuntu-latest').toMatch(/runs-on:\s*\S*-latest/)
+    expect('curl -fsSL https://x.sh | sh').toMatch(
+      /\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:ba|z)?sh\b/,
+    )
+    expect('run: npx something').toMatch(/\b(?:npx|pnpm dlx|bunx)\b/)
+    expect('uses: actions/checkout@main').toMatch(
+      /uses:\s*\S+@(?:main|master|latest|v\d+(?:\.\d+)*)\s*$/m,
+    )
+  })
+})

@@ -13,9 +13,10 @@
  * like /public/scanner-assets/ for the web build.
  */
 import { createHash } from 'node:crypto'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { downloadPinnedFile } from '../../../scripts/scanner-visual-index/lib/pinned-download.mjs'
 import {
   VISUAL_MODEL_FILES,
   VISUAL_MODEL_REPO,
@@ -61,20 +62,9 @@ async function stageModel(expectedModelSha256) {
     mkdirSync(dirname(dest), { recursive: true })
     if (existsSync(dest) && sha256(dest) === file.sha256) continue
     const url = `https://huggingface.co/${VISUAL_MODEL_REPO}/resolve/${VISUAL_MODEL_REVISION}/${file.upstreamPath}`
-    const response = await fetch(url)
-    if (!response.ok) {
-      throw new Error(
-        `prepare-scanner-native-assets: fetch failed for ${url}: HTTP ${response.status}`,
-      )
-    }
-    const bytes = new Uint8Array(await response.arrayBuffer())
-    writeFileSync(dest, bytes)
-    const actualSha = sha256(dest)
-    if (actualSha !== file.sha256) {
-      throw new Error(
-        `prepare-scanner-native-assets: ${file.stagedName} hash mismatch (expected ${file.sha256}, got ${actualSha})`,
-      )
-    }
+    // Bounded (timeout, size ceiling, https + Hugging Face hosts only) and verified BEFORE the file
+    // is placed: a failure of any kind leaves nothing at `dest` and never falls back (P191).
+    await downloadPinnedFile({ url, dest, expectedSha256: file.sha256, file })
   }
   const modelSha = sha256(join(outDir, 'onnx', 'model_quantized.onnx'))
   if (modelSha !== expectedModelSha256) {
