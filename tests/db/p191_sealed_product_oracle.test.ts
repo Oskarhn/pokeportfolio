@@ -285,4 +285,24 @@ describe('P130-14 — B cannot pin A’s private product', () => {
     })
     expect(ok.error).toBeNull()
   })
+
+  it('every table that can name a sealed product carries the rule, with one shared answer', async () => {
+    // BEFORE triggers run ahead of NOT NULL / CHECK constraints, so a minimal row reaches the
+    // ownership trigger on each of the three referencing tables. The answer for A's private id is
+    // exactly the answer for an id that does not exist.
+    const attempt = async (table: 'holdings' | 'purchase_lines' | 'openings', id: string) =>
+      observe(
+        await service.from(table).insert({
+          user_id: userB.id,
+          sealed_product_id: id,
+        } as never),
+      )
+    for (const table of ['holdings', 'purchase_lines', 'openings'] as const) {
+      const foreign = await attempt(table, privateOfA)
+      const random = await attempt(table, RANDOM())
+      expect(foreign, table).toEqual(random)
+      expect(foreign.code, table).toBe('23503')
+      expect(foreign.messageClass, table).toMatch(/available sealed product/)
+    }
+  })
 })
