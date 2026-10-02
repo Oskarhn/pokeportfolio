@@ -328,7 +328,7 @@ const termsRoute = createRoute({
 })
 
 // P189: the public account-deletion information URL (store listings point here). Public and
-// crawlable like the three above, but deliberately NOT analytics-eligible.
+// crawlable like the three above (and, like them, an aggregate-only analytics-eligible page).
 const accountDeletionRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/account-deletion',

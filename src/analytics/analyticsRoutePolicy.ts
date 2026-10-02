@@ -26,7 +26,12 @@
  * against that script's own `PUBLIC_ROUTES`.
  */
 
-export const ANALYTICS_ELIGIBLE_PATHS: readonly string[] = ['/privacy', '/terms', '/faq']
+export const ANALYTICS_ELIGIBLE_PATHS: readonly string[] = [
+  '/privacy',
+  '/terms',
+  '/faq',
+  '/account-deletion',
+]
 
 /**
  * A location is analytics-eligible only when its pathname is an EXACT match against the allowlist

@@ -1,4 +1,6 @@
 import { defineConfig, devices } from '@playwright/test'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 // P94 §20-22: local-authenticated-E2E infrastructure. Set when a caller wants the
 // `*-authenticated` project to run at all — see docs/TESTING.md §6a. Absent by
@@ -108,6 +110,28 @@ export default defineConfig({
             env: {
               VITE_SUPABASE_URL: process.env.SUPABASE_URL ?? 'http://127.0.0.1:54321',
               VITE_SUPABASE_PUBLISHABLE_KEY: process.env.SUPABASE_ANON_KEY ?? '',
+            },
+          },
+        ]
+      : []),
+    // P189: the erasure registry the DEPLOYED delete-account function records to (the stack hands it
+    // ERASURE_REGISTRY_URL / _TOKEN at start). Without a reachable registry every deletion is refused
+    // (503 deletion_unavailable) by design, so the real-browser deletion specs need this running.
+    // The same stable file as tests/db/global-setup.ts uses, so the database's receipts and the
+    // registry never disagree between suites.
+    ...(AUTHENTICATED_E2E_ENABLED &&
+    process.env.ERASURE_REGISTRY_URL &&
+    process.env.ERASURE_REGISTRY_TOKEN &&
+    process.env.ERASURE_REGISTRY_KEY
+      ? [
+          {
+            command: `pnpm exec tsx scripts/restore-gate/registry-sink.ts --registry "${join(tmpdir(), `p189-erasure-registry-${new URL(process.env.ERASURE_REGISTRY_URL).port}.ndjson`)}" --port ${new URL(process.env.ERASURE_REGISTRY_URL).port} --host 0.0.0.0`,
+            port: Number(new URL(process.env.ERASURE_REGISTRY_URL).port),
+            reuseExistingServer: true,
+            timeout: 30_000,
+            env: {
+              ERASURE_SINK_TOKEN: process.env.ERASURE_REGISTRY_TOKEN,
+              ERASURE_REGISTRY_KEY: process.env.ERASURE_REGISTRY_KEY,
             },
           },
         ]
