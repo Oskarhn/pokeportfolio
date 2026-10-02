@@ -126,7 +126,7 @@ test.describe('scanner camera route + visibility soak (P119 §10/§11)', () => {
   })
 
   test('route cycle with a full capture in the loop: enter -> acquire -> capture -> use photo -> leave -> re-enter', async ({
-    page,
+    context,
   }) => {
     // 5 cycles of a real cold-ish OCR + visual-worker pipeline can exceed the 30s default too.
     // The per-cycle budget below is dominated by the terminal-result wait (real OCR/visual-worker
@@ -140,18 +140,36 @@ test.describe('scanner camera route + visibility soak (P119 §10/§11)', () => {
     // mechanism (route survives a real analyze-capture cycle repeatedly) at a scale this session
     // can actually verify rather than merely assert.
     const CYCLES = 5
-    await installFakeSession(page)
-    await installCameraMock(page, { behavior: 'success' })
 
     const consoleErrors: string[] = []
-    page.on('console', (msg) => {
-      if (msg.type() === 'error') consoleErrors.push(msg.text())
-    })
-    page.on('pageerror', (err) => {
-      consoleErrors.push(err.message)
-    })
+    // P190: every cycle runs in a FRESH page of the same browser context (shared storage and HTTP
+    // cache, so the warm-asset path is still exercised), and the previous page is closed first.
+    // Re-navigating one page with page.goto() worked in WebKit on Linux for the first cycle only:
+    // from the second load on, the mocked canvas.captureStream() never delivered a frame, the
+    // preview video stayed at readyState 0 and the shutter never enabled (reproduced in the
+    // Playwright 1.62.1 Linux image against released main too, so not an app regression; five
+    // cycles in five fresh pages pass). A document load per cycle is exactly what goto() was for.
+    let page = await context.newPage()
+    async function openCyclePage(): Promise<void> {
+      const previous = page
+      page = await context.newPage()
+      await previous.close()
+      await prepareCyclePage()
+    }
+    async function prepareCyclePage(): Promise<void> {
+      await installFakeSession(page)
+      await installCameraMock(page, { behavior: 'success' })
+      page.on('console', (msg) => {
+        if (msg.type() === 'error') consoleErrors.push(msg.text())
+      })
+      page.on('pageerror', (err) => {
+        consoleErrors.push(err.message)
+      })
+    }
+    await prepareCyclePage()
 
     for (let cycle = 0; cycle < CYCLES; cycle += 1) {
+      if (cycle > 0) await openCyclePage()
       await page.goto('/scan')
       await expect(page.getByRole('heading', { name: 'Scan cards' })).toBeVisible()
       await page.getByRole('button', { name: 'Start camera' }).click()
