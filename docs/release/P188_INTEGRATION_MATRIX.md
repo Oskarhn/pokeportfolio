@@ -47,6 +47,9 @@ integration decision that was **not** taken is P156 (§4).
 
 ## 4. P156 — account deletion: `UNSAFE_OR_UNRESOLVED`, kept separate
 
+> **Superseded by P189.** The blocker described here (restore resurrection) was closed on a branch built on this
+> exact candidate: [`P189_ACCOUNT_DELETION.md`](P189_ACCOUNT_DELETION.md). The text below is the P188 audit as it stood.
+
 `audit/p156-account-deletion-security-recovery` `6b3ac903`, 13 commits on `d8682e0`, three
 migrations (`20260920120000` / `…140000` / `…150000`), the `delete-account` Edge Function, the
 profile UI and 18 test files. It merges into P188 with **no source conflict** (documentation only),

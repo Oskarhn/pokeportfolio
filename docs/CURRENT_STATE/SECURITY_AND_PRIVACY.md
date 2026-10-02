@@ -3,7 +3,7 @@
 Authority: this file for current open findings and account-deletion status;
 `docs/SECURITY.md` for the durable trust-boundary model, RLS/invite rules (unchanged);
 `docs/release/P188_INTEGRATION_MATRIX.md` §8 for the P130 findings relevant to the release.
-There is no `docs/PRIVACY.md` in this repository yet — see "Account deletion" below.
+There is no `docs/PRIVACY.md` in this repository yet; the deletion data scope is `docs/security/P189_DELETION_DATA_MAP.md`.
 
 ## Open findings in the RELEASED product (Production, `d8682e0`)
 
@@ -27,17 +27,24 @@ There is no `docs/PRIVACY.md` in this repository yet — see "Account deletion" 
 - **P130-29/-30** mutable action tags and `gitleaks:latest`; the model download has no timeout and
   `onnxruntime-node`'s NuGet download is unverified (the model itself is SHA-256 pinned).
 
-## Account deletion — LOCAL ONLY, kept separate, NOT in the P188 candidate
+## Account deletion — restore-safe, LOCAL ONLY (P189), supersedes P156
 
-- P152 + P156, branch `audit/p156-account-deletion-security-recovery`, SHA `6b3ac903…`, 3 migrations
-  over the 104 base. **Classified `UNSAFE_OR_UNRESOLVED`** (matrix §4): a restore of a pre-deletion
-  backup resurrects the deleted account (reproduced); the mitigation is an owner-kept off-backup
-  erasure registry plus a promotion gate that P188 does not have; the public deletion URL and the
-  hosted retention facts are owner decisions.
-- Do not tell a user account deletion exists. The native app has no in-app deletion, which blocks
-  store distribution (`docs/mobile/BUILD_CONFIGURATION_PROFILES.md` §4).
-- When integrated, promote its invariants into a real `docs/PRIVACY.md` and add the three migrations
-  after `20260926120000`.
+- **P189** (`security/p189-restore-safe-account-deletion`, on the exact P188 candidate) integrates the
+  P152/P156 deletion work *selectively* and closes the restore resurrection: the erasure is recorded in
+  an off-backup registry **before** anything is destroyed (enforced by the database), a restored database
+  must pass the erasure gate before it serves, web and native call one backend contract, and a public
+  `/account-deletion` page exists. Record: [`docs/release/P189_ACCOUNT_DELETION.md`](../release/P189_ACCOUNT_DELETION.md);
+  decision D-189; operator procedure [`docs/security/RESTORE_RUNBOOK.md`](../security/RESTORE_RUNBOOK.md);
+  data scope [`docs/security/P189_DELETION_DATA_MAP.md`](../security/P189_DELETION_DATA_MAP.md).
+  `audit/p156-account-deletion-security-recovery` is `SUPERSEDED_BY_P189` (kept as evidence, not merged).
+- **Still owner decisions / gates, stated rather than hidden:** where the production registry lives and
+  its credentials (`PRODUCTION_REGISTRY_STORAGE_READY=no` — without them every deletion is refused);
+  the hosted project's backup/PITR/log settings (`PROVIDER_RETENTION_VERIFIED=no`); the hosted
+  **in-place restore** cannot be isolated, so the runbook's two options need an owner choice; the
+  completion time of an e-mailed deletion request; whether a hash of a deleted account id is acceptable
+  personal-data handling. None of these is invented or promised in the product copy.
+- Not deployed, not pushed (the repository is PUBLIC), hosted database untouched. The four P189
+  migrations (`20261002120000`…`20261002130000`) follow `20260926120000`.
 
 ## Toolchain / access findings (P159, P160) still relevant
 

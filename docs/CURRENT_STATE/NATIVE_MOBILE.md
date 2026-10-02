@@ -52,8 +52,9 @@ signing from the build environment and fails closed. Nothing real is committed; 
 (`invalid.pokeportfolio.spike`) stay until the owner chooses. [docs/mobile/BUILD_CONFIGURATION_PROFILES.md](../mobile/BUILD_CONFIGURATION_PROFILES.md).
 
 **Still true:** the Android AAB and the iOS configuration are **not store-ready**; `IOS_RUNTIME_VERIFIED=no`
-(risks R1–R7 in `docs/mobile/P187_IOS_READINESS.md`); there is no in-app account deletion because P156 is not
-integrated.
+(risks R1–R7 in `docs/mobile/P187_IOS_READINESS.md`); in-app account deletion exists on the P189 branch
+(Profile → Delete account, the same backend contract as the web app; `docs/release/P189_ACCOUNT_DELETION.md`) and is
+not in the P188 line.
 
 ## What is NOT verified (as of P187, the current tip; P181-era gaps still apply unless noted)
 

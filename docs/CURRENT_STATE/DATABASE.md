@@ -26,7 +26,8 @@ comparable as "the" local state — each is 104 (released) plus whatever that br
 |---|---|---|
 | `fix/p149-auth-refresh-failure-recovery` | 106 | +2, inherited from P148 (not authored by P149 itself) |
 | `fix/p151-scanner-reliability-performance` | 104 | +0 (scanner-only change, no schema) |
-| `audit/p156-account-deletion-security-recovery` | 107 | +3: `20260920120000_p152_account_deletion.sql`, `20260920140000_p156_pending_deletion_write_barrier.sql`, `20260920150000_p156_purge_verifies_completion.sql` |
+| `security/p189-restore-safe-account-deletion` | **111** | +4 on the P188 line (107): `20261002120000_p189_account_deletion.sql`, `…120010_p189_pending_deletion_write_barrier.sql`, `…120020_p189_purge_verifies_completion.sql` (P152/P156 SQL, re-timestamped) and `20261002130000_p189_restore_safe_erasure.sql` (new). No duplicate timestamps. |
+| `audit/p156-account-deletion-security-recovery` (`SUPERSEDED_BY_P189`) | 107 | +3: `20260920120000_p152_account_deletion.sql`, `20260920140000_p156_pending_deletion_write_barrier.sql`, `20260920150000_p156_purge_verifies_completion.sql` |
 | `fix/p157-safe-exact-export-pipeline` | 104 | +0 (export-only change, no schema) |
 | `fix/p163-integrated-ci-secret-gate` | 104 | +0 (CI/build-tooling only, no schema) |
 | `feat/p173-native-integration-recovered` | 105 | +1: `20260926120000_p173_search_cards_stable_paging.sql` |
@@ -74,11 +75,10 @@ schema. Its migration set is the released 104 plus exactly three files, none dup
 | `20260918120010_p144_privilege_baseline.sql` | same | same |
 | `20260926120000_p173_search_cards_stable_paging.sql` | P173 (native catalog paging) | native only; additive |
 
-Merging P164, P163 and P165 added **no** migration. The three P156 migrations (`…p152_account_deletion`,
-`…p156_pending_deletion_write_barrier`, `…p156_purge_verifies_completion`) are **not** in this line:
-account deletion is kept separate (`docs/release/P188_INTEGRATION_MATRIX.md` §4). A future
-integration of P156 must add them after `20260926120000` in their own timestamp order and rerun
-`tests/db/p156_*`.
+Merging P164, P163 and P165 added **no** migration. P189 adds four (above): the three deletion migrations are
+the P152/P156 SQL re-timestamped after `20260926120000` (they had never been applied anywhere), and
+`20261002130000` is new (erasure state, receipts, the operator-only restore gate). See
+`docs/release/P189_ACCOUNT_DELETION.md`.
 
 Verified on a fresh isolated stack: all 107 apply from an empty database (twice, once more by
 `supabase db reset`), `scripts/grant-audit.sql` passes, and the hostile-grants convergence step
