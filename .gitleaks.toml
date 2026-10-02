@@ -25,4 +25,9 @@ regexes = [
   # apps/mobile-spike/scripts/p169/catalog-fixture.mjs: the fixture row key "unpriced-098" of a
   # synthetic catalog card (matches the generic-api-key shape `key: '...'`); not a credential.
   '''unpriced-098''',
+  # tests/authorization/p152_account_deletion_attacks.test.ts forges HS256 tokens to prove the
+  # delete-account function refuses a correctly signed token for a session that does not exist.
+  # This is the Supabase CLI's documented default `jwt_secret` for the LOCAL stack — identical on
+  # every install, never valid against a hosted project (which has its own signing keys).
+  '''super-secret-jwt-token-with-at-least-32-characters-long''',
 ]

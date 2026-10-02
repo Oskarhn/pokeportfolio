@@ -72,6 +72,29 @@ const FUNCTIONS: FunctionCase[] = [
     authenticated: REFUSED,
     why: 'server-only helper; the one that was reachable on the remote',
   },
+  // P152: the destructive account-deletion surface. Each takes a user id and TRUSTS it, so each
+  // must be unreachable from every browser role; the probes use an id that matches nobody.
+  {
+    name: 'begin_account_deletion',
+    args: { p_user_id: '00000000-0000-0000-0000-000000000000' },
+    anon: REFUSED,
+    authenticated: REFUSED,
+    why: 'trusts its user id argument; only the delete-account Edge Function (service role) calls it',
+  },
+  {
+    name: 'purge_account_data',
+    args: { p_user_id: '00000000-0000-0000-0000-000000000000' },
+    anon: REFUSED,
+    authenticated: REFUSED,
+    why: 'deletes every row a user owns, for the id it is given; service role only',
+  },
+  {
+    name: 'scrub_account_audit_trail',
+    args: { p_user_id: '00000000-0000-0000-0000-000000000000' },
+    anon: REFUSED,
+    authenticated: REFUSED,
+    why: 'removes Auth audit rows for the id it is given; service role only',
+  },
   {
     name: 'claim_invitation',
     args: { p_token: 'x' },
@@ -250,6 +273,8 @@ describe('trigger functions are not an API surface', () => {
     'manual_valuations_check_owner',
     'profiles_check_default_storage_owner',
     'purchases_check_retailer_owner',
+    'account_deletion_write_guard',
+    'account_deletion_write_guard_sealed',
   ]
 
   for (const name of triggerFunctions) {

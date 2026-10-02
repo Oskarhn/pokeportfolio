@@ -456,6 +456,14 @@ verify_jwt = false
 enabled = true
 verify_jwt = true
 
+# delete-account (P152) permanently deletes the CALLING user's account and data. It requires a real
+# user session -- verify_jwt stays true -- and then re-resolves the bearer token against the Auth
+# server itself and re-verifies the password; the target is never chosen by the request body. See
+# the function header and docs/SECURITY.md §8.
+[functions.delete-account]
+enabled = true
+verify_jwt = true
+
 [edge_runtime]
 enabled = true
 # Supported request policies: `oneshot`, `per_worker`.
