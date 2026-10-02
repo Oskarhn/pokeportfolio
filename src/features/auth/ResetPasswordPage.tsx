@@ -7,6 +7,8 @@ import {
   isAuthIdentityChangedError,
 } from '../../auth/identity-lease'
 import { updatePasswordForLease } from '../../auth/update-password'
+import { describePasswordUpdateError } from '../../auth/password-update-error'
+import { userMessage } from '../../platform/user-error'
 import { AuthLayout, Button, FormMessage, PasswordField } from '../../ui/form'
 
 const MIN_PASSWORD_LENGTH = 12
@@ -49,7 +51,7 @@ export function ResetPasswordPage() {
     } catch (caught) {
       setBusy(false)
       if (isAuthIdentityChangedError(caught) || isAuthCredentialsUnavailableError(caught)) {
-        setError(caught.message)
+        setError(userMessage(caught))
         return
       }
       throw caught
@@ -57,7 +59,7 @@ export function ResetPasswordPage() {
     setBusy(false)
 
     if (updateError) {
-      setError('That password could not be set. Choose a different one and try again.')
+      setError(describePasswordUpdateError(updateError))
       return
     }
     await navigate({ to: '/', replace: true })

@@ -31,6 +31,7 @@ import {
 } from '../../ui/form'
 import { parseNokInput } from '../../ui/money-format'
 import { useDebouncedValue } from '../../ui/useDebouncedValue'
+import { userMessage } from '../../platform/user-error'
 
 /** The frozen origin subset for a sealed acquisition (M11 prompt §29) — a sealed product is never
  *  "pulled" (that's a card leaving a pack, the opposite direction) and is never a trade-in target
@@ -261,9 +262,7 @@ export function AddSealedProductPage() {
         clientRequestKey,
       })
     } catch (mutationError) {
-      setError(
-        mutationError instanceof Error ? mutationError.message : 'Could not save this product.',
-      )
+      setError(userMessage(mutationError, 'Could not save this product.'))
     }
   }
 

@@ -32,6 +32,7 @@ import {
   DownloadIcon,
   ChevronDownIcon,
 } from '../../ui/icons'
+import { userMessage } from '../../platform/user-error'
 
 const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
   { value: 'system', label: 'System' },
@@ -471,7 +472,7 @@ function DangerZone() {
       await navigate({ to: '/' })
     },
     onError: (mutationError: Error) => {
-      setError(mutationError.message)
+      setError(userMessage(mutationError))
     },
   })
 

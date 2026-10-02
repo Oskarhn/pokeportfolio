@@ -1,3 +1,4 @@
+import { UserFacingError } from '../../platform/user-error'
 /**
  * Platform file delivery for M13 export/backup — the "how does the file reach the user" layer,
  * deliberately separate from what generates the bytes (P35's engine) and from the UI.
@@ -38,9 +39,10 @@ export type DeliveryOutcome =
   | { method: 'cancelled' }
 
 /** Raised when delivery genuinely failed and the user should see it (with Retry in the UI). */
-export class DeliveryError extends Error {
+export class DeliveryError extends UserFacingError {
   constructor(message: string, options?: { cause?: unknown }) {
-    super(message, options)
+    super(message, 'could_not_complete')
+    if (options?.cause !== undefined) this.cause = options.cause
     this.name = 'DeliveryError'
   }
 }
@@ -51,9 +53,9 @@ export class DeliveryError extends Error {
  * dialog or the share sheet. A refusal always propagates — it is never converted into another
  * delivery path — and files that were already handed over before it cannot be recalled.
  */
-export class DeliveryRefusedError extends Error {
+export class DeliveryRefusedError extends UserFacingError {
   constructor() {
-    super('These files can no longer be delivered. Nothing more was saved.')
+    super('These files can no longer be delivered. Nothing more was saved.', 'could_not_complete')
     this.name = 'DeliveryRefusedError'
   }
 }

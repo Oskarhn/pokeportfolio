@@ -9,6 +9,7 @@ import { Sheet } from '../../ui/Sheet'
 import { DownloadIcon, CheckIcon, ChartIcon, SwapIcon } from '../../ui/icons'
 import { localTodayIso } from '../../platform/local-date'
 import { downloadOnly } from '../export/fileDelivery'
+import { userMessage } from '../../platform/user-error'
 
 /**
  * The four Portfolio shortcuts the owner described (M7.1 prompt §46-49): Export and Bulk Actions
@@ -95,9 +96,7 @@ export function PortfolioActionShortcuts({
       {exportMutation.isError ? (
         <div className="col-span-4">
           <FormMessage tone="error">
-            {exportMutation.error instanceof Error && exportMutation.error.message
-              ? exportMutation.error.message
-              : 'The CSV could not be created. Nothing was saved.'}
+            {userMessage(exportMutation.error, 'The CSV could not be created. Nothing was saved.')}
           </FormMessage>
         </div>
       ) : null}

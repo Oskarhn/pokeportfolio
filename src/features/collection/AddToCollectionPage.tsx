@@ -31,6 +31,7 @@ import {
 import { parseNokInput } from '../../ui/money-format'
 import { CONDITION_LABEL, FINISH_LABEL, GRADER_LABEL, ORIGIN_LABEL } from './labels'
 import { fixedCostBasisState } from './origin-basis'
+import { userMessage } from '../../platform/user-error'
 
 const CONDITIONS: CardCondition[] = ['MT', 'NM', 'EX', 'GD', 'LP', 'PL', 'PO']
 const GRADERS: Grader[] = ['psa', 'cgc', 'bgs', 'ace', 'sgc', 'tag', 'other']
@@ -238,7 +239,7 @@ export function AddToCollectionPage() {
         clientRequestKey,
       })
     } catch (mutationError) {
-      setError(mutationError instanceof Error ? mutationError.message : 'Could not save this card.')
+      setError(userMessage(mutationError, 'Could not save this card.'))
     }
   }
 

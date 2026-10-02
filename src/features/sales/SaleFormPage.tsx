@@ -34,6 +34,7 @@ import {
 } from './sale-form-state'
 import { useUnsavedWorkSnapshot } from '../../platform/unsaved-work-registry'
 import { localTodayIso } from '../../platform/local-date'
+import { userMessage } from '../../platform/user-error'
 
 const CURRENCIES: CurrencyCode[] = ['NOK', 'EUR', 'USD', 'GBP', 'JPY']
 
@@ -412,9 +413,9 @@ export function SaleFormPage() {
       // Stale: do not surface an old entity's error banner over whatever the user is now editing.
       if (entityTrackerRef.current.generation() !== submissionGeneration) return
       if (err instanceof FxRateNotFoundError) {
-        patchFields({ fxError: err.message })
+        patchFields({ fxError: userMessage(err) })
       } else {
-        patchFields({ error: err.message })
+        patchFields({ error: userMessage(err) })
       }
     },
   })

@@ -10,6 +10,7 @@ import {
 } from '../../data/collection'
 import { Sheet } from '../../ui/Sheet'
 import { Button, ChoiceGroup, FormMessage, TextField } from '../../ui/form'
+import { userMessage } from '../../platform/user-error'
 
 const INTENTS: SealedIntent[] = ['keep_sealed', 'planned_to_open', 'undecided']
 
@@ -53,7 +54,7 @@ export function SealedIntentSheet({
       onClose()
     },
     onError: (mutationError: Error) => {
-      setError(mutationError.message)
+      setError(userMessage(mutationError))
     },
   })
 

@@ -2,6 +2,7 @@ import { supabase } from './supabase-client'
 import type { Db } from './leased-client'
 import type { CurrencyCode } from '../domain/currency'
 import { normalizeDecimalText } from './money'
+import { UserFacingError } from '../platform/user-error'
 
 /**
  * Client for the fetch-fx-rate Edge Function (M8, FINANCIAL_MODEL.md §7). Resolves and caches a
@@ -20,8 +21,16 @@ export interface ResolvedFxRate {
   source: 'norges_bank'
 }
 
-export class FxRateNotFoundError extends Error {}
-export class FxRateUnavailableError extends Error {}
+export class FxRateNotFoundError extends UserFacingError {
+  constructor(message: string) {
+    super(message, 'price_unavailable')
+  }
+}
+export class FxRateUnavailableError extends UserFacingError {
+  constructor(message: string) {
+    super(message, 'price_unavailable')
+  }
+}
 
 interface FxFunctionBody {
   ok: boolean

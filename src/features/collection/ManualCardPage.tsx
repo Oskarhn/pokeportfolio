@@ -4,6 +4,7 @@ import { createManualCard } from '../../data/collection'
 import { leasedDb } from '../../data/leased-db'
 import { useLeasedMutation } from '../../auth/useLeasedMutation'
 import { Button, FormMessage, TextField } from '../../ui/form'
+import { userMessage } from '../../platform/user-error'
 
 /** The honest fallback when the shared catalog does not (yet) have a physical card the owner
  *  holds (M6 prompt §16-19, D-017). Deliberately thin: only what identifies the item — no fake
@@ -40,7 +41,7 @@ export function ManualCardPage() {
         notes: notes.trim() || undefined,
       })
     } catch (mutationError) {
-      setError(mutationError instanceof Error ? mutationError.message : 'Could not save this card.')
+      setError(userMessage(mutationError, 'Could not save this card.'))
     }
   }
 

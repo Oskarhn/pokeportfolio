@@ -17,6 +17,7 @@ import type {
   OpeningSource,
   VoidOpeningOutcome,
 } from './contract'
+import { UserFacingError } from '../../platform/user-error'
 
 /**
  * The M16 integration adapter (P53): the single place the opening feature meets the backend.
@@ -82,7 +83,7 @@ export function mapOpeningErrorMessage(rawMessage: string): string {
 
 function toFriendlyError(error: unknown): Error {
   const message = error instanceof Error ? error.message : String(error)
-  return new Error(mapOpeningErrorMessage(message))
+  return new UserFacingError(mapOpeningErrorMessage(message), 'could_not_complete')
 }
 
 function mapSource(row: Awaited<ReturnType<typeof listOpeningSources>>[number]): OpeningSource {

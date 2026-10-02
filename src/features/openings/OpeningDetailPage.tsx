@@ -28,6 +28,7 @@ import {
 } from './copy'
 import { Button, FormMessage } from '../../ui/form'
 import { Sheet } from '../../ui/Sheet'
+import { userMessage } from '../../platform/user-error'
 
 /**
  * Opening Detail (prompt §16): everything the act of opening produced, with the honesty rules of
@@ -82,7 +83,7 @@ export function OpeningDetailPage() {
       setVoidOpen(false)
     },
     onError: (error: Error) => {
-      setVoidError(error.message)
+      setVoidError(userMessage(error))
     },
   })
 
@@ -98,7 +99,7 @@ export function OpeningDetailPage() {
       setReconcileOpen(false)
     },
     onError: (error: Error) => {
-      setReconcileError(error.message)
+      setReconcileError(userMessage(error))
     },
   })
 
@@ -117,9 +118,7 @@ export function OpeningDetailPage() {
           role="alert"
           className="rounded-lg border border-rose-900/60 bg-rose-950/40 p-3 text-sm text-rose-200"
         >
-          {opening.error instanceof Error
-            ? opening.error.message
-            : 'That opening could not be found.'}
+          {userMessage(opening.error, 'That opening could not be found.')}
         </p>
       </div>
     )

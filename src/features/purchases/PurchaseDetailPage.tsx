@@ -9,6 +9,7 @@ import { formatNokMinor } from '../../ui/money-format'
 import { Button, FormMessage } from '../../ui/form'
 import { Sheet } from '../../ui/Sheet'
 import { LINE_TYPE_LABEL, SPEND_CLASS_LABEL } from './labels'
+import { userMessage } from '../../platform/user-error'
 
 function fmt(minorUnits: bigint, currency: string): string {
   return toDecimalString({ minorUnits, currency } as Money)
@@ -46,7 +47,7 @@ export function PurchaseDetailPage() {
       await queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] })
     },
     onError: (error: Error) => {
-      setVoidError(error.message)
+      setVoidError(userMessage(error))
     },
   })
 
