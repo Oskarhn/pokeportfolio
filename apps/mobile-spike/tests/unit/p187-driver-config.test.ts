@@ -178,3 +178,19 @@ describe('resolveBuildEnv', () => {
     ).toThrow(/secret/)
   })
 })
+
+describe('resolveInstance: every explicit consumer variable beats the derived value', () => {
+  it.each([
+    ['SPIKE_PACKAGE', 'invalid.pokeportfolio.explicit'],
+    ['ANDROID_SERIAL', 'emulator-5590'],
+    ['ANDROID_AVD_NAME', 'explicit_avd'],
+    ['P185_STACK', 'explicitstack'],
+    ['P185_PROXY_PORT', '59001'],
+    ['P185_API_PORT', '59002'],
+    ['P185_DB_CONTAINER', 'explicit_container'],
+    ['P185_EVIDENCE_DIR', 'explicit-evidence'],
+  ])('%s', (name, value) => {
+    const r = resolveInstance({ env: { [name]: value } })
+    expect(r[name]).toBe(value)
+  })
+})
