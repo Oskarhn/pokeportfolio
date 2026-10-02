@@ -68,7 +68,7 @@ describe('the client', () => {
       seen.push({
         url: String(input),
         auth: new Headers(init.headers).get('Authorization'),
-        body: String(init.body),
+        body: typeof init.body === 'string' ? init.body : '',
       })
       return Promise.resolve(new Response(JSON.stringify({ status: 'deleted' }), { status: 200 }))
     }) as unknown as typeof fetch

@@ -104,7 +104,10 @@ describe('one identity system', () => {
     // EPHEMERAL client per identity lease for the finance write seam (own accessToken provider,
     // own write-only fetch policy) — never the shared reading client this app has always had one
     // of. The two are structurally distinct (LeasedWriteDb vs the ambient `supabase` singleton).
+    // P189: a third deliberate site, the account-lifecycle client (ONE allowed request, delete-account),
+    // built lazily; the shared reading client stays read-only.
     expect(users(/\bcreateClient(<[^>(]*>)?\(/)).toEqual([
+      'src/account/account-request-client.ts',
       'src/auth/create-client.ts',
       'src/write/leased-write-client.ts',
     ])

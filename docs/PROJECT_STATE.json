@@ -25,12 +25,15 @@
       "notes": "SUCCESS_P188_CROSS_PLATFORM_RC_LOCAL. Not released, not pushed (repo PUBLIC). Android release build verified on an emulator; IOS_RUNTIME_VERIFIED=no; not store-ready. docs/release/P188_RELEASE_CANDIDATE.md"
     },
     "account_deletion": {
-      "prompt": 156,
-      "branch": "audit/p156-account-deletion-security-recovery",
-      "sha": "6b3ac90362ea0f992e9223cbda3431e2da5699a5",
-      "local_migration_count": 107,
+      "prompt": 189,
+      "branch": "security/p189-restore-safe-account-deletion",
+      "sha": "4005736ea7f4e23eb1ecc2ff3b748da23bcdfb5a",
+      "builds_on": "P188 2783c93e4ebc54a70b6678b6dc76ff848c2793b3",
+      "local_migration_count": 111,
       "status": "LOCAL_ONLY",
-      "notes": "NOT integrated: UNSAFE_OR_UNRESOLVED (restore resurrects a deleted account; needs an owner-kept erasure registry). docs/release/P188_INTEGRATION_MATRIX.md section 4"
+      "device_verified": true,
+      "fully_certified": false,
+      "notes": "SUCCESS_P189_RESTORE_SAFE_ACCOUNT_DELETION. Not pushed (repo PUBLIC), not merged, not deployed. Off-backup erasure registry + restore gate + web/native in-app deletion + /account-deletion page. PRODUCTION_REGISTRY_STORAGE_READY=no, PROVIDER_RETENTION_VERIFIED=no (owner gates). docs/release/P189_ACCOUNT_DELETION.md"
     },
     "deployment_gate": {
       "prompt": 163,
@@ -106,11 +109,20 @@
       "status": "SUPERSEDED",
       "superseded_by": "release_candidate",
       "notes": "Test and tooling fixes; merged."
+    },
+    "account_deletion_p156": {
+      "prompt": 156,
+      "branch": "audit/p156-account-deletion-security-recovery",
+      "sha": "6b3ac90362ea0f992e9223cbda3431e2da5699a5",
+      "local_migration_count": 107,
+      "status": "SUPERSEDED",
+      "notes": "SUPERSEDED_BY_P189: kept as evidence only, never merged. Its code was imported selectively into the P189 branch.",
+      "superseded_by": "account_deletion"
     }
   },
   "database": {
     "released_migration_count": 104,
-    "latest_local_migration_count": 107
+    "latest_local_migration_count": 111
   },
   "scanner": {
     "content_id": "f25fc05d569b7cca",

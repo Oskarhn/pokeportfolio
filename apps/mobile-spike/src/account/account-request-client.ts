@@ -1,4 +1,5 @@
-import { createClient } from '@supabase/supabase-js'
+import { createClient, type SupabaseClient } from '@supabase/supabase-js'
+import type { Database } from '@shared/data/database.types'
 import type { AccountDeletionPorts } from './account-deletion-controller'
 
 /**
@@ -54,25 +55,31 @@ export interface AccountRequestDeps {
 export function createAccountDeletionPorts(deps: AccountRequestDeps): AccountDeletionPorts {
   const base = deps.baseFetch ?? fetch
   const guarded: typeof fetch = (input, init) => {
-    const url =
-      typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url
-    const method = init?.method ?? (typeof input === 'string' ? 'GET' : (input as Request).method)
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    const method =
+      init?.method ?? (typeof input === 'string' || input instanceof URL ? 'GET' : input.method)
     assertAccountRequest(method, url)
     return base(input, init)
   }
-  // Constructed once; the token provider is the ONLY authentication and is read per request.
-  let constructing = true
-  const client = createClient(deps.url, deps.publishableKey, {
-    global: { fetch: guarded },
-    accessToken: async () => {
-      if (constructing) return deps.publishableKey // supabase-js asks once while constructing
-      const { data } = await deps.getSession()
-      return data.session?.access_token ?? null
-    },
-  })
-  constructing = false
+  // Built on first use (not at app start): nothing here may run unless the person asks to delete.
+  // The token provider is the ONLY authentication and is read per request.
+  let client: SupabaseClient<Database> | null = null
+  const clientFor = (): SupabaseClient<Database> => {
+    if (client !== null) return client
+    let constructing = true
+    client = createClient<Database>(deps.url, deps.publishableKey, {
+      global: { fetch: guarded },
+      accessToken: async () => {
+        if (constructing) return deps.publishableKey // supabase-js asks once while constructing
+        const { data } = await deps.getSession()
+        return data.session?.access_token ?? null
+      },
+    })
+    constructing = false
+    return client
+  }
   return {
-    invoke: (name, options) => client.functions.invoke(name, options),
+    invoke: (name, options) => clientFor().functions.invoke(name, options),
     accountIsGone: deps.accountIsGone,
   }
 }
