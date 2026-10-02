@@ -7022,3 +7022,42 @@ harness's `import_map.json` updated. No behaviour of the product changed.
 **Proof.** `tests/db/p165_scanner_fixture_lease.test.ts`, `p165_settle_derived_tables.test.ts`, `p165_scanner_commit_lease.test.ts`, `p165_export_overlap.test.ts`,
 `tests/data/p165-search-prices-real-function.test.ts` (+ `scripts/p165/edge-harness`), `tests/ui/p165-read-only-scanner-runtime.test.ts`,
 `p165-scan-session-latest-wins.test.ts`, `tests/domain/price-check/p165-variant-resolution.test.ts`; `scripts/p165/mutants.mjs` (14 mutants).
+
+## D-188 — One release-candidate line carries the web and native candidates; deletion stays out; native builds have three explicit profiles (P188)
+
+**2026-10-02 · Accepted**
+
+*(Local candidate only; nothing released, pushed or merged. Ids stay unique: D-188 follows D-165.)*
+
+**Context.** The native lineage (P173 → P187) and the web lineage (P149 … P165) were developed in parallel from the same released base, and the
+later prompt numbers were assumed to include the earlier fixes. They did not: a patch-id comparison found no web commit in the native line. Separately,
+the native app could only be a local candidate (placeholder identity, loopback-only backend guard, debug keystore), and one early P187 commit carried an
+attribution trailer the repository forbids.
+
+**Decision.**
+
+1. **One candidate line, built by merging, not by re-implementing.** `release/p188-cross-platform-rc` starts from P186, replays P187 *without* the
+   trailer (tree verified identical before any other change), then merges P164 (web integration), P163 (deploy gate and secret guard) and P165
+   (verification fixes). Conflicts are resolved to the native line where both sides had fixed the same thing; semantic overlaps that git could not see
+   (an env-guard test versus two comments; the native app's use of the shared money transport) are fixed in the test or the comment, never by
+   weakening a guard. Record: `docs/release/P188_INTEGRATION_MATRIX.md`.
+2. **Account deletion (P156) is not integrated.** Restoring a backup taken before a deletion resurrects the account, and the only mitigation
+   (an owner-kept off-backup erasure registry and a promotion gate) is an owner process this line does not have. Shipping the function without it would
+   promise something the next restore breaks. It stays `UNSAFE_OR_UNRESOLVED` until the owner decides.
+3. **Three build profiles, selected by one build-time value** (`EXPO_PUBLIC_BUILD_PROFILE`): `LOCAL_DEV`, `LOCAL_RELEASE_TEST`, `PRODUCTION_RELEASE`.
+   The native configuration and the runtime backend guard read the same value. Only `PRODUCTION_RELEASE` accepts a hosted backend, and then only
+   `https://<ref>.supabase.co` with an `sb_publishable_` key; every other profile keeps refusing Production. `PRODUCTION_RELEASE` takes its identity and
+   signing from the build environment, fails closed naming the variable (never a value), drops the local-only cleartext and local-network plumbing, and
+   cannot fall back to the debug keystore. No real identifier is committed; the placeholders stay for local builds until the owner chooses
+   (`docs/mobile/BUILD_CONFIGURATION_PROFILES.md` §4).
+4. **Release-candidate branches run CI.** A push to `release/**` starts the validation jobs; the deploy job stays restricted to a push to `main`.
+5. **Attribution.** A local candidate's history is cleaned before it is published; commits already on released `main` and pushed branches are not
+   rewritten by a session.
+
+**Consequences.** The candidate is 107 migrations (none new from the merges) and Production is unchanged. Releasing it still needs the owner-gated steps
+in `docs/release/P188_RELEASE_CANDIDATE.md` §6: visibility, secrets and Cloudflare (P163 Part A), a backup, the hosted migrations 105–107, the Edge Function
+deploys. P130-13, -14, -20, -26 and part of -09 remain OPEN (matrix §8).
+
+**Rejected.** Merging every active branch mechanically (P156 would have entered with an unresolved restore hazard); cherry-picking P164's content piecemeal
+(loses the P149/P151/P161/P162 ancestry that proves what is present); making `LOCAL_RELEASE_TEST` the production profile with different values
+(a local build would then be one wrong variable away from Production).

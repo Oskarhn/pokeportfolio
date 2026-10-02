@@ -113,3 +113,33 @@ branch, `security/m15-scanner-wasm-csp-p69`, `fix/p104-…` through `fix/p149-au
 semantics` — with no local counterpart; every other remote branch matches a local one above). A
 remote branch with a merged/superseded local counterpart should be pruned on GitHub only after the
 local classification above is acted on, not independently.
+
+## P188 integration update (2026-10-02)
+
+Classification after the P188 integration audit (`docs/release/P188_INTEGRATION_MATRIX.md`). **Nothing
+was deleted, archived or closed.** `SAFE_TO_ARCHIVE_LATER` here means: its content is an ancestor of,
+patch-equivalent to, or deliberately superseded by `release/p188-cross-platform-rc`. Archive only after
+that line is merged (or the owner decides to abandon it); until then a branch is also the only handle
+on its own history.
+
+| Branch | P188 result |
+|---|---|
+| `feat/p173…`, `p175…`, `test/p177…`, `feat/p178…`, `test/p179…`, `feat/p180…`, `feat/p181…`, `feat/p182…`, `release/p184…`, `release/p185…`, `perf/p186…` | ancestors of P188 → `SAFE_TO_ARCHIVE_LATER` |
+| `fix/p149…`, `fix/p151…`, `feat/p153…`, `feat/p161…`, `fix/p162…`, `feat/p164…`, `test/p165…`, `fix/p142…`, `fix/p143…`, `fix/p145…`, `fix/p146…`, `fix/p147…`, `fix/p144…` | ancestors of P188 (via the P164 and P165 merges) → `SAFE_TO_ARCHIVE_LATER` |
+| `fix/p163-integrated-ci-secret-gate` | merged into P188 → `SAFE_TO_ARCHIVE_LATER`; **PR #112 is `SUPERSEDED_BY_P163`** and stays open until the owner closes or re-points it |
+| `fix/p160-predeploy-secret-guard` | integrated into P163 once, with hardening → `SAFE_TO_ARCHIVE_LATER` |
+| `fix/p157-safe-exact-export-pipeline` | superseded by P162's re-application (export source files identical) → `SAFE_TO_ARCHIVE_LATER` |
+| `docs/p176…`, `docs/p183…`, `feat/p169…`, `spike/p158…`, `spike/p166…`, `fix/p167…`, `feat/p170…`, `audit/p148…` | patch-equivalent or ancestors → `SAFE_TO_ARCHIVE_LATER` |
+| `feat/p187-ios-readiness` | **content** is in P188 (tree-identical at the reconstruction checkpoint), but this branch carries a forbidden attribution trailer in `60f2cd6`. Keep it local until P188 is published; never push it → `SAFE_TO_ARCHIVE_LATER` after P188 is on GitHub |
+| `audit/p156-account-deletion-security-recovery`, `feat/p152-privacy-account-deletion` | **not** integrated: `KEEP_SEPARATE_UNRESOLVED` (restore resurrection, public deletion link, retention facts) |
+| `docs/p159-toolchain-audit` | `KEEP_SEPARATE_UNRESOLVED` (ten toolchain documents not promoted) |
+| `design/p154…`, `design/p168…`, `design/p171…`, `design/p174…` | design records, no product code; the direction is implemented by P178 → keep as reference |
+| `chore/m41-security-deployment` | was `UNKNOWN_REVIEW_FIRST`: squash-merged long ago as `fcf56e9` (#5) → `SAFE_TO_ARCHIVE_LATER` |
+| `origin/fix/p136-integrated-jpy-fx-semantics` | was `UNKNOWN_REVIEW_FIRST`: the same P130-02 work reached released history as `72e4660` (#108); FX files identical → `SAFE_TO_ARCHIVE_LATER` |
+| `docs/p141…`, `docs/p34…`, `docs/m13-p42-p43…`, `docs/m12…` | historical release closeouts replaced by the P176 structure → `SAFE_TO_ARCHIVE_LATER` |
+
+Branches that carry the forbidden attribution trailer (29 commits; 52 branch refs contain at least one,
+most through shared ancestry; list in the integration matrix §6) must never be pushed as they are.
+24 of those refs are remote branches **already on GitHub** (e.g.
+`origin/fix/p123-finance-accounting-phase3`: `6ae670b`, `93d486e`); rewriting a pushed branch needs the
+owner's explicit approval.

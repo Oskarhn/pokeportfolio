@@ -1,57 +1,36 @@
 {
   "schema_version": 1,
   "generated_from_repo_state": true,
-  "readme": "Machine-readable pointer/state index for a fresh coding-agent session. This is NOT a replacement for HANDOVER.md or the canonical docs it points to (see HANDOVER.md §16) — it exists so a session can grep/parse exact SHAs and counts instead of re-deriving them from prose. Validate with `node scripts/check-project-state.mjs`. Every value here was verified against the repository, git history or a live tool call during P176 (2026-09-27) or P183 (2026-09-28); a value that could not be verified is `null`, never guessed.",
+  "readme": "Machine-readable pointer/state index for a fresh coding-agent session. This is NOT a replacement for HANDOVER.md or the canonical docs it points to (see HANDOVER.md §16) — it exists so a session can grep/parse exact SHAs and counts instead of re-deriving them from prose. Validate with `node scripts/check-project-state.mjs`. Every value was verified against the repository, git history or a live tool call during P176, P183 or P188 (2026-10-02); a value that could not be verified is `null`, never guessed.",
   "released": {
     "main_sha": "d8682e047b757f63673a63ac8185a4806d68cb98",
     "production_frontend_sha": "d8682e047b757f63673a63ac8185a4806d68cb98",
     "hosted_migration_count": 104
   },
   "local_candidates": {
-    "native_integrated": {
-      "prompt": 173,
-      "branch": "feat/p173-native-integration-recovered",
-      "sha": "0600361f71ee2dd5591fbbbfb2fe260ab68ba7a2",
-      "local_migration_count": 105,
-      "status": "LOCAL_ONLY",
-      "device_verified": true,
-      "correction_note": "P176 mislabelled this LOCAL_ONLY_NOT_DEVICE_VERIFIED, conflating unmerged with never-run-on-device. Corrected by P183 (2026-09-28) from P173's own report (35/35 + 19/19 driver runs on a release APK) and P177's own doc-corrections file."
-    },
-    "native_financial_writes": {
-      "prompt": 175,
-      "branch": "feat/p175-native-financial-write-flows",
-      "sha": "a193a8bab2d742edd504ec578253f99c18f6d9d1",
-      "builds_on": "native_integrated",
-      "local_migration_count": 107,
-      "status": "LOCAL_ONLY",
-      "device_verified": false,
-      "note": "Correctly LOCAL_ONLY_NOT_DEVICE_VERIFIED as of P175's own session; device-verified one phase later by P177 (see native_ui_baseline). Not re-labelled here since this entry describes P175's own tip, not P177's."
-    },
-    "native_ui_baseline": {
-      "prompt": 181,
-      "branch": "feat/p181-native-device-accessibility-performance-gate",
-      "sha": "45ebfefa9a5038e20dd1999644eb96c1ae6352ef",
-      "builds_on_chain": [
-        "173",
-        "175",
-        "177",
-        "178",
-        "179",
-        "180",
-        "181"
+    "release_candidate": {
+      "prompt": 188,
+      "branch": "release/p188-cross-platform-rc",
+      "sha": "a048da53926d0c501508136d7fb11457fada1d86",
+      "builds_on": "P186 3fac34ffb6834026fcda5ee01734197c46d3b445 (P187 rebuilt without its attribution trailer, tree f56103cfe4e9fd342663ef4a92635b4eae8ae309)",
+      "merges": [
+        "P164 bae0b604",
+        "P163 4f6be7be",
+        "P165 3d03eec7"
       ],
       "local_migration_count": 107,
       "status": "LOCAL_ONLY",
       "device_verified": true,
       "fully_certified": false,
-      "notes": "Previous native tip (2026-09-27); superseded by native_rc. Dark-first Foil UI, FX-rate write contract closed (P180), pending-write journal implemented (P180), representative (not exhaustive) device-accessibility/performance gate passed (P181) with disclosed gaps: no TalkBack run, device matrix not exhaustive, performance/memory each one snapshot not a full battery, JPY never driven as an on-device purchase journey. See docs/CURRENT_STATE/NATIVE_MOBILE.md."
+      "notes": "SUCCESS_P188_CROSS_PLATFORM_RC_LOCAL. Not released, not pushed (repo PUBLIC). Android release build verified on an emulator; IOS_RUNTIME_VERIFIED=no; not store-ready. docs/release/P188_RELEASE_CANDIDATE.md"
     },
     "account_deletion": {
       "prompt": 156,
       "branch": "audit/p156-account-deletion-security-recovery",
       "sha": "6b3ac90362ea0f992e9223cbda3431e2da5699a5",
       "local_migration_count": 107,
-      "status": "LOCAL_ONLY"
+      "status": "LOCAL_ONLY",
+      "notes": "NOT integrated: UNSAFE_OR_UNRESOLVED (restore resurrects a deleted account; needs an owner-kept erasure registry). docs/release/P188_INTEGRATION_MATRIX.md section 4"
     },
     "deployment_gate": {
       "prompt": 163,
@@ -61,91 +40,72 @@
         "fix/p142-ci-gated-production-deploy",
         "fix/p160-predeploy-secret-guard"
       ],
+      "integrated_in": "release_candidate",
       "local_migration_count": 104,
       "status": "BLOCKED",
-      "blocked_on": "owner Cloudflare Pages dashboard action; GitHub Actions billing/capacity"
-    },
-    "scanner_hardening": {
-      "prompt": 151,
-      "branch": "fix/p151-scanner-reliability-performance",
-      "sha": "4bd34bfda20c6388415f1e047fd6a6b739967430",
-      "local_migration_count": 104,
-      "status": "LOCAL_ONLY"
-    },
-    "export_hardening": {
-      "prompt": 157,
-      "branch": "fix/p157-safe-exact-export-pipeline",
-      "sha": "b0bc4da144e0e6ea42e89d478577e8a621a4d615",
-      "local_migration_count": 104,
-      "status": "LOCAL_ONLY"
-    },
-    "auth_refresh_fix": {
-      "prompt": 149,
-      "branch": "fix/p149-auth-refresh-failure-recovery",
-      "sha": "7fb83c27857cd5287f32eedf27eee6b7d41232ce",
-      "local_migration_count": 106,
-      "status": "LOCAL_ONLY"
+      "blocked_on": "owner Cloudflare action and secrets (docs/security/RELEASE_PREFLIGHT_P163.md Part A); Actions capacity unverified. PR #112 is SUPERSEDED_BY_P163"
     },
     "design": {
       "prompt": 174,
       "branch": "design/p174-stitch-owner-decision-pack",
       "sha": "aacd218dab5f13047e082039871e1916e699ecff",
       "local_migration_count": null,
-      "status": "DESIGN_ONLY"
+      "status": "DESIGN_ONLY",
+      "notes": "Design record; the direction is implemented by P178."
     },
-    "native_card_recognition": {
-      "prompt": 182,
-      "branch": "feat/p182-native-card-recognition",
-      "sha": "615475209a3342c0c627ceddc00fa37606c59fad",
-      "builds_on": "native_ui_baseline",
-      "local_migration_count": 107,
-      "status": "LOCAL_ONLY",
-      "device_verified": true,
-      "notes": "Core recognition proven on a release APK; reliability scope not run (done by P184)."
+    "native_lineage_p173": {
+      "prompt": 173,
+      "branch": "feat/p173-native-integration-recovered",
+      "sha": "0600361f71ee2dd5591fbbbfb2fe260ab68ba7a2",
+      "status": "SUPERSEDED",
+      "superseded_by": "release_candidate",
+      "notes": "P173..P187 native chain (ancestors of the release candidate)"
     },
-    "native_rc": {
-      "prompt": 184,
-      "branch": "release/p184-native-rc",
-      "sha": "953aa017d2f950e77d1319dd238dcd35d83b5ded",
-      "builds_on": "native_card_recognition",
-      "local_migration_count": 107,
-      "status": "LOCAL_ONLY",
-      "device_verified": true,
-      "fully_certified": false,
-      "notes": "PARTIAL_P184_NATIVE_RC_HARDENING (hardened predecessor; its six open items are closed by P185). See docs/mobile/P184_NATIVE_RELEASE_CANDIDATE.md. Docs lineage P176/P183 cherry-picked (documentation only)."
+    "native_p181": {
+      "prompt": 181,
+      "branch": "feat/p181-native-device-accessibility-performance-gate",
+      "sha": "45ebfefa9a5038e20dd1999644eb96c1ae6352ef",
+      "status": "SUPERSEDED",
+      "superseded_by": "release_candidate"
     },
-    "native_rc_closure": {
+    "native_p185": {
       "prompt": 185,
       "branch": "release/p185-native-rc-closure",
       "sha": "b4100bcb4522d77fbf3e569f433e3307dea9c55e",
-      "builds_on": "native_rc",
-      "local_migration_count": 107,
-      "status": "LOCAL_ONLY",
-      "device_verified": true,
-      "fully_certified": false,
-      "notes": "SUCCESS_P185_NATIVE_RC_VERIFIED on an Android emulator: 20/20 release-APK journey, scanner usable at 360dp/200%, manual valuation + NOK/EUR sales DB-verified. Not fully certified: TalkBack not driven to a PASS, arm64/physical device deferred. See docs/mobile/P185_NATIVE_RC_CLOSURE.md."
+      "status": "SUPERSEDED",
+      "superseded_by": "release_candidate"
     },
-    "native_ios_readiness": {
-      "prompt": 187,
-      "branch": "feat/p187-ios-readiness",
-      "sha": "9aa9db3710f04e6a2a63646886d500ff32499bc7",
-      "builds_on": "native_packaging",
-      "local_migration_count": 107,
-      "status": "LOCAL_ONLY",
-      "device_verified": false,
-      "fully_certified": false,
-      "notes": "SUCCESS_P187_IOS_BUILD_READINESS on Windows: iOS source, config and JS bundle ready, prebuild generated on Linux only, Xcode build and iPhone run NOT done (IOS_RUNTIME_VERIFIED=no). Opening-draft clock test fixed; unused Android permissions blocked. See docs/mobile/P187_IOS_READINESS.md and docs/mobile/IOS_BUILD_AND_DEVICE_RUNBOOK.md."
-    },
-    "native_packaging": {
+    "native_p186": {
       "prompt": 186,
       "branch": "perf/p186-native-packaging-scanner",
-      "sha": "6a285528e776c0a5fb1175d1fc2a10c9ee94134c",
-      "builds_on": "native_rc_closure",
-      "local_migration_count": 107,
-      "status": "LOCAL_ONLY",
-      "device_verified": true,
-      "fully_certified": false,
-      "notes": "SUCCESS_P186_ANDROID_RELEASE_OPTIMIZED on an Android emulator: Android App Bundle (arm64-v8a + x86_64) delivers 63.9 MB to an arm64 phone (was 72.3), R8 on, scanner prewarm (cold photo-to-result 3.6 to 2.3 s), date-dependent M12 DB test fixed. arm64 is packaged but never ran (static proof only). See docs/mobile/P186_ANDROID_PACKAGING_PERFORMANCE.md."
+      "sha": "3fac34ffb6834026fcda5ee01734197c46d3b445",
+      "status": "SUPERSEDED",
+      "superseded_by": "release_candidate",
+      "notes": "Base of the release candidate."
+    },
+    "native_p187": {
+      "prompt": 187,
+      "branch": "feat/p187-ios-readiness",
+      "sha": "79c447d9136093f5ee93f33db42b6aae794941ed",
+      "status": "SUPERSEDED",
+      "superseded_by": "release_candidate",
+      "notes": "Carries a forbidden attribution trailer in 60f2cd6; never push this branch. Content is in the release candidate"
+    },
+    "web_p164": {
+      "prompt": 164,
+      "branch": "feat/p164-integrated-auth-export-scanner-price",
+      "sha": "bae0b6047e668e260502567590ef6b16912d59be",
+      "status": "SUPERSEDED",
+      "superseded_by": "release_candidate",
+      "notes": "Carries P149, P151, P153, P161, P162 and P143-P148; merged"
+    },
+    "web_p165": {
+      "prompt": 165,
+      "branch": "test/p165-p164-independent-release-verification",
+      "sha": "3d03eec7",
+      "status": "SUPERSEDED",
+      "superseded_by": "release_candidate",
+      "notes": "Test and tooling fixes; merged."
     }
   },
   "database": {
@@ -156,7 +116,7 @@
     "content_id": "f25fc05d569b7cca",
     "web_scanner_status": "RELEASED_UNCHANGED",
     "native_card_recognition_status": "DEVICE_VERIFIED_HARDENED_LOCAL_ONLY",
-    "native_card_recognition_note": "P182 proved core recognition on a release APK; P184 hardened and device-verified it (24/24 adversarial scenarios, 0 false HIGH, 0 image egress); P185 closed the RC journey, 360dp/200% accessibility and financial re-runs on an emulator. Local only; TalkBack not driven to a PASS; arm64/physical device deferred. See docs/mobile/P185_NATIVE_RC_CLOSURE.md."
+    "native_card_recognition_note": "Proven on a release APK (P182), hardened and device-verified (P184: 24/24 adversarial, 0 false HIGH, 0 image egress), release journey re-run on the P188 line (20/20). Local only; TalkBack not driven to a PASS; arm64/physical device deferred."
   },
   "production": {
     "in_real_user_use": false
@@ -165,10 +125,10 @@
     "visibility": "PUBLIC",
     "visibility_expected": "PRIVATE",
     "visibility_contradiction": true,
-    "verified_at": "2026-09-28",
+    "verified_at": "2026-10-02",
     "branch_protection": "none",
     "rulesets": "none",
-    "publication_status": "NOT_READY_repo_public_but_unreleased_native_source_should_not_be_pushed_until_owner_resolves_visibility; see docs/CURRENT_STATE/GIT_PUBLICATION_PLAN.md and docs/PUBLICATION_CHECKLIST.md"
+    "publication_status": "NOT_PUSHED_repo_is_public; unreleased candidates stay local until the owner resolves visibility; see docs/CURRENT_STATE/GIT_PUBLICATION_PLAN.md"
   },
   "canonical_docs": {
     "product_scope": "docs/PRODUCT_SPEC.md",
@@ -203,6 +163,9 @@
     "p185_native_rc_closure": "docs/mobile/P185_NATIVE_RC_CLOSURE.md",
     "p186_android_packaging": "docs/mobile/P186_ANDROID_PACKAGING_PERFORMANCE.md",
     "p187_ios_readiness": "docs/mobile/P187_IOS_READINESS.md",
-    "ios_build_runbook": "docs/mobile/IOS_BUILD_AND_DEVICE_RUNBOOK.md"
+    "ios_build_runbook": "docs/mobile/IOS_BUILD_AND_DEVICE_RUNBOOK.md",
+    "p188_release_candidate": "docs/release/P188_RELEASE_CANDIDATE.md",
+    "p188_integration_matrix": "docs/release/P188_INTEGRATION_MATRIX.md",
+    "native_build_profiles": "docs/mobile/BUILD_CONFIGURATION_PROFILES.md"
   }
 }

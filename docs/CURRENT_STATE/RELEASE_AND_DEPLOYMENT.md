@@ -76,3 +76,36 @@ See `HANDOVER.md` §2 for the full table and `docs/PROJECT_STATE.json` for machi
 pointers. None of P149/P151/P156/P157/P163/P173/P175 share an integration branch; a proposed
 integration order exists in P159's own `NEXT_RELEASE_ORDER` (in the P159 worktree, not yet
 promoted to a canonical doc).
+
+## P188 update (2026-10-02): what is now in the candidate line
+
+`RELEASED_MAIN` = `d8682e047b757f63673a63ac8185a4806d68cb98` = Production. The local release
+candidate `release/p188-cross-platform-rc` is **not released, not pushed, not merged** and Production
+is unchanged. Rule: **the CI-gated deploy job, the public-build guard and the P130-19 fix are in the
+candidate line, not in Production.**
+
+- **P163 is integrated** into the candidate (`docs/release/P188_INTEGRATION_MATRIX.md`). Its
+  deploy job runs only for a push to `refs/heads/main`, needs `build-and-test` and `db-tests`, reads
+  its public build values from repository **secrets** (`PRODUCTION_SUPABASE_URL`,
+  `PRODUCTION_SUPABASE_PUBLISHABLE_KEY`) and Cloudflare credentials from secrets, runs the public
+  configuration guard before installing or building, and refuses a stale run. It still needs the
+  owner's Part A in `docs/security/RELEASE_PREFLIGHT_P163.md` before it can become the live path, so
+  **P130-08 is PARTIALLY_CLOSED, not closed**.
+- **Feature-branch CI (P188):** `ci.yml` also triggers on pushes to `release/**`. Those runs execute
+  the same `build-and-test` and `db-tests` jobs and can never deploy: `deploy-production` requires a
+  push to `main`, and the validation jobs read no Production secret
+  (`tests/config/workflow-deploy-gate.test.ts`).
+- **PR #112** (`fix/p142-ci-gated-production-deploy`, draft, OPEN, MERGEABLE) is
+  **`SUPERSEDED_BY_P163`**. Do not merge it; closing it is the owner's call.
+- **Native CI is not in the workflow.** The native test suites (`apps/mobile-spike`: typecheck, lint,
+  Jest, backend) run locally only; adding a Linux job needs a validated recipe for the gitignored
+  scanner assets and a first real run, and was not guessed here.
+- **Secret scan:** gitleaks over the whole candidate history (321 commits) found two false positives
+  that would have failed the CI secret-scan step on first push (the jwt.io documentation sample token
+  in `tests/config/doc-link-checker.test.ts`, and the fixture key `unpriced-098`); both are
+  allow-listed by exact value in `.gitleaks.toml`.
+- **Live GitHub state, 2026-10-02:** repository PUBLIC; `main` unprotected; no rulesets; 30 open PRs,
+  67 remote branches; newest workflow run is still 2026-09-18, so Actions capacity is unverified.
+  Recommended (not applied) settings: `docs/CURRENT_STATE/GIT_PUBLICATION_PLAN.md` §5.
+- The secret-shaped `VITE_SUPABASE_URL` Actions variable (above) is unchanged and still needs the
+  owner's rotation and deletion; the new deploy job does not read `vars.*` at all.

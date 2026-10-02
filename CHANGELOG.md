@@ -10,6 +10,18 @@ they were**.
 
 ## [Unreleased]
 
+### Changed — 2026-10-02 — One local release-candidate line for web and native (P188)
+
+Not released, not pushed. `release/p188-cross-platform-rc` merges the web candidates the native line never carried (P164 with P149/P151/P153/P161/P162, P163, P165) into the P186/P187
+native line, with P187's history rebuilt without an attribution trailer. Production is unchanged.
+
+- Native builds have three explicit profiles (`LOCAL_DEV`, `LOCAL_RELEASE_TEST`, `PRODUCTION_RELEASE`); a production build takes its identity, backend and signing from the build
+  environment and refuses to build without them (D-188, `docs/mobile/BUILD_CONFIGURATION_PROFILES.md`).
+- CI also runs for pushes to `release/**`; the Production deploy still runs only for `main`.
+- Account deletion (P156) is deliberately not included: restore resurrection is unresolved (`docs/release/P188_INTEGRATION_MATRIX.md` §4).
+- Test-only: a gitleaks allowlist for two synthetic strings, an env-guard comment wording, a native test that follows the decimal-string money transport.
+
+
 ### Changed — 2026-09-25 — Scanner + Price Check integrated with the auth/export candidate (P164)
 
 Not released; local integration of two unreleased candidates (hosted database is still 104, this tree is 106).

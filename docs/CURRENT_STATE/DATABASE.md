@@ -62,3 +62,30 @@ parallel branches without coordination. **Whoever integrates these branches must
 decision IDs to avoid collisions** before merging more than one branch that added a decision.
 This is a real, unresolved integration hazard, not a documentation artifact — see
 `docs/handover/STATE_RECONCILIATION.md`.
+
+## P188 release candidate: one integrated line, 107 migrations
+
+`release/p188-cross-platform-rc` is the first local line that carries more than one candidate's
+schema. Its migration set is the released 104 plus exactly three files, none duplicated:
+
+| Migration | Origin | Notes |
+|---|---|---|
+| `20260918120000_p144_financial_boundary_semantics.sql` | P144, via P148/P149 and the native lineage | byte-identical in P149, P164 and P188 (blob hashes compared) |
+| `20260918120010_p144_privilege_baseline.sql` | same | same |
+| `20260926120000_p173_search_cards_stable_paging.sql` | P173 (native catalog paging) | native only; additive |
+
+Merging P164, P163 and P165 added **no** migration. The three P156 migrations (`…p152_account_deletion`,
+`…p156_pending_deletion_write_barrier`, `…p156_purge_verifies_completion`) are **not** in this line:
+account deletion is kept separate (`docs/release/P188_INTEGRATION_MATRIX.md` §4). A future
+integration of P156 must add them after `20260926120000` in their own timestamp order and rerun
+`tests/db/p156_*`.
+
+Verified on a fresh isolated stack: all 107 apply from an empty database (twice, once more by
+`supabase db reset`), `scripts/grant-audit.sql` passes, and the hostile-grants convergence step
+passes. The hosted project is still at 104; applying 105–107 there is an owner-gated release step
+(`pnpm db:backup` printing `BACKUP COMPLETE` first). P165 measured the released frontend against
+DB 106: compatible.
+
+Edge Functions changed relative to released (deploy later, in this order after the migrations):
+`search-prices` (+ new `_shared/price-observations.ts`) and `_shared/tcgdex.ts`, which `ingest-prices`
+and `sync-catalog` also bundle.

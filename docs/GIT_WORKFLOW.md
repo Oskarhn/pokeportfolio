@@ -10,7 +10,9 @@ standing rules for Claude sessions live in [CLAUDE.md](../CLAUDE.md).
 
 `main` represents tested, working project state at all times. Every push to `main` triggers CI
 (`.github/workflows/ci.yml`); `main` should never be red for longer than it takes to notice and
-fix.
+fix. CI also runs for every pull request and, since P188, for every push to a `release/**` branch, so
+a release candidate is validated before any PR exists; the Production deploy job is restricted to a
+push to `main` and never runs from any other ref.
 
 ## 2. Normal workflow: branch → PR → CI → merge
 

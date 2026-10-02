@@ -35,6 +35,26 @@ Lineage: `P173 → P175 → P177 → P178 → P179 → P180 → P181 → P182 �
 previous one's tip; ancestry confirmed via `git merge-base --is-ancestor` in each phase's own
 report). None of these branches is merged or pushed.
 
+## P188 (current tip): the native line now sits on the integrated web line
+
+`release/p188-cross-platform-rc` carries P186 + P187 (history rebuilt without an attribution trailer,
+tree-identical) and the web candidates the native line never had (P164, P163, P165; matrix
+`docs/release/P188_INTEGRATION_MATRIX.md`). The native app imports the web `src/` data layer through
+`@shared`, so it now runs the exact decimal-string money transport (D-137): one native test that pinned the
+old JSON-number cursor was updated, nothing else in `apps/mobile-spike/src` changed except the build
+profile work below. Re-verified on the merged tree: native typecheck, lint, 906 unit tests, backend tests
+against a fresh isolated stack, and the Android release smoke (`docs/release/P188_RELEASE_CANDIDATE.md` §4).
+
+**Build profiles.** `LOCAL_DEV`, `LOCAL_RELEASE_TEST`, `PRODUCTION_RELEASE` (`EXPO_PUBLIC_BUILD_PROFILE`;
+`apps/mobile-spike/config/build-profile.cjs`, `app.config.js`, `plugins/with-release-signing.js`,
+`src/config/backend-config.ts`). Only `PRODUCTION_RELEASE` accepts a hosted backend; it takes identity and
+signing from the build environment and fails closed. Nothing real is committed; the placeholders
+(`invalid.pokeportfolio.spike`) stay until the owner chooses. [docs/mobile/BUILD_CONFIGURATION_PROFILES.md](../mobile/BUILD_CONFIGURATION_PROFILES.md).
+
+**Still true:** the Android AAB and the iOS configuration are **not store-ready**; `IOS_RUNTIME_VERIFIED=no`
+(risks R1–R7 in `docs/mobile/P187_IOS_READINESS.md`); there is no in-app account deletion because P156 is not
+integrated.
+
 ## What is NOT verified (as of P187, the current tip; P181-era gaps still apply unless noted)
 
 - **P187 / iOS:** nothing has been compiled or run on Apple platforms. Open, in this order: ONNX Runtime `install()` under the New Architecture (R1), ML Kit pulls five script pods (binary size, R2), Keychain survives uninstall (R3), ATS for a LAN backend (R7). Status labels: `IOS_SOURCE_READY` / `IOS_CONFIG_READY` / `IOS_JS_BUNDLE_READY` yes; `IOS_PREBUILD_READY` partial (Linux-generated, Windows blocked); `IOS_MAC_BUILD_REQUIRED` yes; `IOS_RUNTIME_VERIFIED` **no** ([risks](../mobile/P187_IOS_READINESS.md#10-risks-the-first-mac-build-must-answer)).

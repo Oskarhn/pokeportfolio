@@ -40,6 +40,9 @@ integration decision that was **not** taken is P156 (§4).
 | `tests/ui/opening-draft.test.ts` | P147 (web) and P187 (native) had independently fixed the same UTC-vs-local-date test defect, with different clock fixtures | P187's version kept (pinned clock and time zone, DST cases); no production change |
 | `tests/config/public-env-guard.test.ts` vs `src/data/leased-db.ts`, `src/data/supabase-factory.ts` | **Semantic**, no textual conflict: the P163 guard forbids the literal Vite env object anywhere under `src/`; two P149/P164 comments spelled it | comments reworded, no code change |
 | `apps/mobile-spike/tests/unit/shared-data-reuse.test.ts` | **Semantic**: the native app imports the web `src/` through `@shared`. After the merge the shared data layer sends every money argument as a decimal string (D-137), and a native test pinned the released JSON-number cursor | test updated to the string form; the RPC accepts it (proven by `p146_exact_money_roundtrip`) |
+| `apps/mobile-spike` Jest projects `shared-node` / `shared-rn` | **Semantic**: they run the web's `tests/data/money.test.ts` unchanged, and P146 made it import fast-check; Jest could not resolve fast-check's `pure-rand` subpath through pnpm, so native `pnpm test` was red on the merged line (two projects failed to run one file) | a fallback to Node resolution in `tests/support/node-fallback-resolver.js`; native `pnpm test` is 89 suites / 1202 tests green |
+| `.github/workflows/ci.yml` vs the P161/P164 authenticated specs | **Semantic**: the ledger spec reads `P153_DB_URL`, the workflow exported only `DB_URL`; the first CI run would have failed the spec and left six tests unrun | the job exports it; `tests/config/e2e-ci-env.test.ts` pins every variable the specs read |
+| `.gitleaks.toml` vs P176/P169 test files | the CI secret-scan step scans the whole history; two synthetic strings (the jwt.io sample token, a fixture key) would have failed it | exact-value allow-list |
 | `HANDOVER.md`, `CHANGELOG.md`, `docs/DECISIONS.md`, `package.json` | append-append | both sides kept; HANDOVER rewritten in the closeout; no duplicate `D-` ids |
 
 ## 4. P156 — account deletion: `UNSAFE_OR_UNRESOLVED`, kept separate
@@ -144,10 +147,10 @@ the robot-emoji marker:
 |---|---|---|
 | A. already on released `main` (`d8682e0` and its ancestors) | not rewritten | **0** matches (`git log --format=%B d8682e0 \| grep -ic '^co-authored-by'` = 0) |
 | B. local unpushed candidate commits (`d8682e0..P188`) | cleaned before publication | **0** matches. The only hit in the P187 line was `60f2cd6`; its content was re-committed without the trailer (the other three message hits are the filename `CLAUDE.md`, not an attribution) |
-| C. unrelated or superseded branches | recorded only | 29 commits across 22 branches carry the trailer (`git log --all --grep='^Co-Authored-By:' -i`), none an ancestor of P188; two are on **already-pushed** branches (`origin/fix/p123-finance-accounting-phase3`: `6ae670b`, `93d486e`) and must not be force-rewritten |
+| C. unrelated or superseded branches | recorded only | 29 commits carry the trailer (`git log --all --grep='^Co-Authored-By:' -i`); 52 branch refs contain at least one, none of them an ancestor of P188. **24 of those refs are remote branches already on the public GitHub repository** (the M15/P84–P111 scanner-era branches, `fix/p123-finance-accounting-phase3`, …). They are outside P188's ancestry and cannot be cleaned from here: rewriting pushed branches is an owner decision |
 
-All 225 commits in `d8682e0..P188` have a single author and committer identity (the repository
-owner's). No identity setting was modified.
+Every commit in `d8682e0..P188` (227 before the closeout documentation commit) has the same single author and
+committer identity (the repository owner's). No identity setting was modified.
 
 ## 7. How to re-run
 
@@ -169,7 +172,7 @@ fix is in the P188 tree and was exercised there.
 | P130-22, P130-23 sign-out error ignored; A→B identity switch | **CLOSED** | P143/P145 (D-134, D-136) via P164 |
 | P130-10 OCR worker leak on scanner exit | **CLOSED** | P151 (D-151) via P164; native scanner is separate code |
 | P130-24 visual-only evidence reaches HIGH | **PARTIALLY_CLOSED** | P151 rule "visual-only evidence never HIGH"; calibration still synthetic-only (K-6) |
-| P130-16/17/18 discount allocation, uncosted negative proceeds, XXX/date bounds | **CLOSED** at the DB (P144 migrations, in P188); the hosted DB is still 104 migrations | applying them is an owner-gated release step |
+| P130-16/17 discount allocation, uncosted negative proceeds; P130-18 date bounds | **CLOSED** at the DB (D-135, P144 migrations, in P188); the hosted DB is still 104 migrations | applying them is an owner-gated release step. The currency-`XXX` half of P130-18 was not re-audited here |
 | P130-02 JPY FX | **CLOSED** (released) | #108 |
 | P130-08 no enforced deploy gate | **PARTIALLY_CLOSED** | the gated job is now in the tree; it only takes effect after the owner's Cloudflare action and secrets (`docs/security/RELEASE_PREFLIGHT_P163.md` Part A) |
 | P130-29 CI hygiene | **PARTIALLY_CLOSED** | `permissions: contents: read` and secrets-not-vars added by P163; actions are still pinned by mutable tag (`@v4`/`@v5`) and the gitleaks image is `:latest` |

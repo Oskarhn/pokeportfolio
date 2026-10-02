@@ -1497,3 +1497,19 @@ supplies the env" and "an optional local convenience skip when it doesn't" descr
 correctly in its two different contexts, per this file's own §8 instruction not to make a local
 convenience test universally fail just because an env var it can supply for itself is briefly
 absent mid-setup.
+
+## 6f. The CI job must provide what the E2E specs read (P188)
+
+`price-check-ledger.spec.ts` reads `P153_DB_URL` (§6d "Run it") and refuses to run without it, but the `db-tests` job exported only `DB_URL`. Run by hand against a
+local stack with the CI's own variable names, the first full authenticated project of the merged line failed that spec's `beforeAll` and left six dependent tests
+unrun. Neither P164 nor P165 could have seen it: no GitHub run existed for either. The job now exports `P153_DB_URL` from `supabase status` (local stack only), and
+`tests/config/e2e-ci-env.test.ts` fails if any `process.env.X` read under `tests/e2e/authenticated/` is not exported by `ci.yml` (with an explicit allow-list of
+variables the runner or a default supplies). Lesson: after merging suites, run the authenticated project with exactly the environment the workflow builds, not the
+one a developer's shell happens to have.
+
+The same first run showed two timing failures under two workers on a busy desktop that passed when re-run alone (recorded with their re-run results in
+`docs/release/P188_RELEASE_CANDIDATE.md` §4): a sign-in that did not leave `/login` within 15 s, and the P149 refresh-outage spec waiting 90 s for its alert.
+Do not read a single red run of these as a regression without re-running the spec alone; do not read a green re-run as proof the cause is gone either.
+
+**Documentation checks in CI (P188).** `node scripts/check-doc-size.mjs`, `check-project-state.mjs` and `check-doc-links.mjs` run in `build-and-test`; the link check
+covers `HANDOVER.md`, `CLAUDE.md`, `AGENTS.md`, `docs/CURRENT_STATE/`, `docs/handover/`, `docs/release/` and `docs/mobile/`.
