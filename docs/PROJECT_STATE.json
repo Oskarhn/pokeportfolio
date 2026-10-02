@@ -8,6 +8,17 @@
     "hosted_migration_count": 104
   },
   "local_candidates": {
+    "development_rc": {
+      "prompt": 190,
+      "branch": "release/p190-cross-platform-development-rc",
+      "builds_on": "P189 bde11f99d08545c45eb347a7d78e3bc47ec7bcd3",
+      "pull_request": 113,
+      "local_migration_count": 111,
+      "status": "PUSHED_DEVELOPMENT_RC",
+      "device_verified": true,
+      "fully_certified": false,
+      "notes": "Development RC, not merged, not deployed, hosted database untouched. Contains P188 and P189. The branch tip is read from git, not recorded here. Release blockers: PRODUCTION_REGISTRY_STORAGE_READY=no, PROVIDER_RETENTION_VERIFIED=no, no physical Android/iOS runtime, identifiers and signing not selected, P163 owner actions open."
+    },
     "release_candidate": {
       "prompt": 188,
       "branch": "release/p188-cross-platform-rc",
@@ -22,7 +33,7 @@
       "status": "LOCAL_ONLY",
       "device_verified": true,
       "fully_certified": false,
-      "notes": "SUCCESS_P188_CROSS_PLATFORM_RC_LOCAL. Not released, not pushed (repo PUBLIC). Android release build verified on an emulator; IOS_RUNTIME_VERIFIED=no; not store-ready. docs/release/P188_RELEASE_CANDIDATE.md"
+      "notes": "SUCCESS_P188_CROSS_PLATFORM_RC_LOCAL. Contained in the pushed P190 development RC. Not released. Android release build verified on an emulator; IOS_RUNTIME_VERIFIED=no; not store-ready. docs/release/P188_RELEASE_CANDIDATE.md"
     },
     "account_deletion": {
       "prompt": 189,
@@ -33,7 +44,7 @@
       "status": "LOCAL_ONLY",
       "device_verified": true,
       "fully_certified": false,
-      "notes": "SUCCESS_P189_RESTORE_SAFE_ACCOUNT_DELETION. Not pushed (repo PUBLIC), not merged, not deployed. Off-backup erasure registry + restore gate + web/native in-app deletion + /account-deletion page. PRODUCTION_REGISTRY_STORAGE_READY=no, PROVIDER_RETENTION_VERIFIED=no (owner gates). docs/release/P189_ACCOUNT_DELETION.md"
+      "notes": "SUCCESS_P189_RESTORE_SAFE_ACCOUNT_DELETION. Contained in the pushed P190 development RC; not merged to main, not deployed. Off-backup erasure registry + restore gate + web/native in-app deletion + /account-deletion page. PRODUCTION_REGISTRY_STORAGE_READY=no, PROVIDER_RETENTION_VERIFIED=no (owner gates). docs/release/P189_ACCOUNT_DELETION.md"
     },
     "deployment_gate": {
       "prompt": 163,

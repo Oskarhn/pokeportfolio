@@ -60,13 +60,14 @@ believed at the time and are known to contain claims later superseded — see
 
 ---
 
-## 2. Current unreleased candidates — **LOCAL ONLY**, do not confuse with §1
+## 2. Current unreleased candidates — **not released**, do not confuse with §1
 
-`RELEASED_MAIN` = `d8682e0` = Production. `LOCAL_RC` = the P188 line below. Nothing here is live.
+`RELEASED_MAIN` = `d8682e0` = Production. The development RC is the P190 line (P188 + P189 + CI/publication work), pushed and under draft PR #113. Nothing here is live.
 Machine pointers: `docs/PROJECT_STATE.json` → `local_candidates`.
 
 | Candidate | Branch | SHA | Migrations | Status |
 |---|---|---|---|---|
+| **Development RC (P190)** | `release/p190-cross-platform-development-rc` | branch tip (read `git ls-remote`; not recorded here) | **111** | **PUSHED, draft PR #113 into `main`. DEVELOPMENT RC — DO NOT MERGE/DEPLOY YET.** Contains P188 and P189. CI (`build-and-test`, `db-tests`, `native-checks`) green on its head; `deploy-production` skipped (not `main`). Release blockers: [P189 record](docs/release/P189_ACCOUNT_DELETION.md), [P188 RC](docs/release/P188_RELEASE_CANDIDATE.md) §6. |
 | **Cross-platform release candidate (P188)** | `release/p188-cross-platform-rc` | code tip `a048da53926d0c501508136d7fb11457fada1d86` | 107 | **LOCAL ONLY — `SUCCESS_P188_CROSS_PLATFORM_RC_LOCAL`.** P186 + P187 (rebuilt without its attribution trailer; tree-identical) + merges of **P164** (auth/exact money/exports/scanner hardening/Price Check), **P163** (deploy gate + secret guard) and **P165** (verification fixes). Native build profiles. [RC doc](docs/release/P188_RELEASE_CANDIDATE.md), [matrix](docs/release/P188_INTEGRATION_MATRIX.md) |
 | **Restore-safe account deletion (P189)** | `security/p189-restore-safe-account-deletion` | see `docs/PROJECT_STATE.json` → `local_candidates.account_deletion` | **111** | **LOCAL ONLY — `SUCCESS_P189_RESTORE_SAFE_ACCOUNT_DELETION`**, built on the exact P188 candidate `2783c93e…` (descends from it; not merged, not pushed, not deployed). Selective integration of P152/P156 plus the erasure registry, the restore gate, the in-app web and native deletion flows and the public `/account-deletion` page. [Record](docs/release/P189_ACCOUNT_DELETION.md) |
 | Account deletion (P152 → P156) | `audit/p156-account-deletion-security-recovery` | `6b3ac903…` | 107 (+3 own) | **`SUPERSEDED_BY_P189`** — kept as evidence only; never merged. |
