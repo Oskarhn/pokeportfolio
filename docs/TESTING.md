@@ -1411,11 +1411,14 @@ three lines is worth more as a test than one of 90.
 Added when the application scaffold exists, not before — an empty pipeline in a docs-only
 repository is noise.
 
-Two jobs, on every push to `main` and every pull request. This diagram names every mandatory
+Three validation jobs (`build-and-test`, `native-checks`, `db-tests`), on every push to `main` or a
+`release/**` branch and every pull request. This diagram names every mandatory
 step; see §11 below for which of the two release-only/manual scripts and campaigns mentioned
 elsewhere in this document are deliberately NOT here.
 
 ```
+native-checks   install (root + apps/mobile-spike) → stage scanner assets (index from the repo,
+                model by pinned revision + SHA-256, cached) → native typecheck → lint → unit suites
 build-and-test  install → typecheck → lint → format → domain + property tests → build
                 → platform build verifier (dist/_headers, dist/sw.js artefact gate, P139)
                 → link/route checker (static dist/ mode, P139)
@@ -1429,6 +1432,12 @@ db-tests        supabase start → db reset → grant-audit → hostile-grant co
                 → independent M16 adversarial suite (execution, P139 — see §11)
                 → generate types
 ```
+
+`native-checks` (P190) is deliberately light: no emulator, no Android SDK, no credentials, no Supabase
+stack. The native backend suite (`test:backend`), device journeys and the Android/iOS builds stay local
+(§6g, docs/mobile). The scanner model is fetched from a Hugging Face revision pinned by commit and
+verified by SHA-256 before use; the cache is keyed on the pin file and the staging script re-hashes
+whatever it restores, so a cache can never substitute different bytes.
 
 `db-tests` runs a full ephemeral Supabase stack on the runner — migrations from empty, seed, then
 every database and authorization test. It uses **no remote credentials of any kind**, which is what

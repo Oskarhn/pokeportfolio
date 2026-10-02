@@ -34,11 +34,11 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0 # full history for the secret-scan step below
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
 
@@ -116,7 +116,7 @@ jobs:
 
       - name: Upload Playwright report on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: playwright-report
           path: playwright-report
@@ -127,6 +127,54 @@ jobs:
           docker run --rm -v "${{ github.workspace }}:/repo" \
             zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f detect --source=/repo --config=/repo/.gitleaks.toml -v --redact
 
+  # P190: lightweight native gate (React Native / Expo app in apps/mobile-spike): typecheck, lint and
+  # the unit suites. No emulator, no Android SDK, no credentials, no Supabase stack (the backend
+  # integration suite `test:backend` and every device journey stay local — docs/TESTING.md). The
+  # scanner assets are gitignored, so they are staged here exactly as a local build stages them:
+  # the visual INDEX is copied from the committed generation, the MODEL is fetched from a Hugging
+  # Face revision pinned by commit and verified by SHA-256 (scripts/scanner-visual-index/lib/
+  # model-pin.mjs) before it is used. The cache below is keyed on that pin file only, so a changed
+  # pin is a cache miss; the staging script re-hashes whatever the cache restores and re-downloads on
+  # any mismatch, so the cache can never substitute different bytes.
+  native-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Enable Corepack and activate the pinned pnpm
+        run: |
+          corepack enable
+          corepack prepare --activate
+
+      # The root install provides eslint (the native lint runs through the root toolchain) and tsx.
+      - name: Install dependencies (root)
+        run: pnpm install --frozen-lockfile
+
+      - name: Install dependencies (native app, its own lockfile)
+        run: pnpm --dir apps/mobile-spike install --frozen-lockfile
+
+      - name: Restore the pinned scanner model
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: apps/mobile-spike/assets/scanner/visual-v1/model
+          key: scanner-model-${{ hashFiles('scripts/scanner-visual-index/lib/model-pin.mjs') }}
+
+      - name: Stage the scanner assets (index from the repository, model verified by SHA-256)
+        run: pnpm --dir apps/mobile-spike assets:scanner
+
+      - name: Native typecheck
+        run: pnpm --dir apps/mobile-spike typecheck
+
+      - name: Native lint
+        run: pnpm --dir apps/mobile-spike lint
+
+      - name: Native unit tests
+        run: pnpm --dir apps/mobile-spike test
+
   # Migrations, RLS and the two-client authorization suite (docs/TESTING.md §4-5), against an
   # ephemeral local Supabase/Postgres stack — ubuntu-latest ships Docker, so this needs nothing
   # beyond what's already free. Never touches the real dev/production Supabase project: no
@@ -134,9 +182,9 @@ jobs:
   db-tests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
 
@@ -305,7 +353,7 @@ jobs:
 
       - name: Upload authenticated-E2E Playwright report on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: playwright-report-authenticated
           path: playwright-report
@@ -403,7 +451,7 @@ jobs:
         run: pnpm db:types
 
       - name: Upload generated types (reviewed and committed by hand, not auto-merged)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: database-types
           path: src/data/database.types.ts
@@ -446,11 +494,11 @@ jobs:
       group: production-deploy
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.sha }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
 
