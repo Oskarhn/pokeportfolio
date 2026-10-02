@@ -16,7 +16,7 @@
 --   * the accepted row then made A's own product undeletable (A's DELETE failed 23503 on B's row)
 --     and, worse, made A's account purge fail closed — one user could block another's erasure;
 --   * INSERT into sealed_products with a chosen id raised 23505 for A's id and succeeded for a
---     random one (closed by the column-level INSERT grant in 20261003120020, which excludes id).
+--     random one (closed by the column-level INSERT grant in 20261002140020, which excludes id).
 -- The RPC paths (create_purchase, add_card_acquisition, create_opening_from_provisional) already
 -- answered uniformly; the table-level paths did not, and the schema is the right place to say so.
 --

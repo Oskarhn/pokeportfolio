@@ -510,7 +510,7 @@ $$;
 -- ── P191: the ledger write gate (P130-13) ───────────────────────────────────────────────────────
 -- Table privileges alone do not keep the browser out of the ledger: ten SECURITY INVOKER writers
 -- need them. The boundary is the gate trigger on each ledger table plus the
--- `set_config('app.ledger_write', ...)` call each of those writers makes (20261003120000_p191_
+-- `set_config('app.ledger_write', ...)` call each of those writers makes (20261002140000_p191_
 -- ledger_write_gate.sql). Both halves are asserted here, independently of that migration: a table
 -- that lost its gate, or a writer re-created without the call, fails the audit.
 do $$

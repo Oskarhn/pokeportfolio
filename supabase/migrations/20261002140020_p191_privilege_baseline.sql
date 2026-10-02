@@ -3,7 +3,7 @@
 -- per column and EXCLUDES `id`. With a caller-chosen id, an INSERT naming another user's private
 -- product UUID failed 23505 where a random UUID succeeded — an existence oracle. The column default
 -- (gen_random_uuid()) still supplies every id the browser needs. No function signature changed and
--- no other grant moved: the ledger write gate (20261003120000) is trigger-based and
+-- no other grant moved: the ledger write gate (20261002140000) is trigger-based and
 -- leaves the table privileges as they were.
 -- CI selects the lexicographically-latest `*_privilege_baseline.sql` automatically.
 

@@ -357,8 +357,14 @@ describe.skipIf(!ENABLED)('restore-safe account deletion (P189)', () => {
       const empty = join(dir, 'empty.ndjson')
       writeFileSync(empty, '')
       expect(gate('verify', img, empty).code).toBe(2)
-      // Allowed on purpose, it is still never "clean": this image holds receipts the empty registry lacks.
-      expect(gate('verify', img, empty, ['--allow-empty-registry']).code).toBe(5)
+      // Allowed on purpose, it is still never "clean" when the image holds receipts the empty registry
+      // lacks. That state is built from this file's own deletions (the after-both-deletions dump
+      // carries a receipt for each) rather than inherited from receipts earlier test files left behind.
+      const withReceipts = restore(backupAfterAll, 'p189_r5_receipts')
+      expect(sql(withReceipts, 'select count(*) from public.account_erasure_receipts')).not.toBe(
+        '0',
+      )
+      expect(gate('verify', withReceipts, empty, ['--allow-empty-registry']).code).toBe(5)
     })
 
     it('R6 malformed, torn, tampered and wrongly keyed registries are refused (2)', () => {

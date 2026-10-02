@@ -15,7 +15,7 @@ import { connectDb } from './lib/account-deletion-deps'
  * authoritative RPCs; a direct INSERT / UPDATE / DELETE on a ledger table by a Data API role is
  * refused (42501) except for the few organisational columns the clients really write.
  *
- * Each hostile write below succeeded before 20261003120000_p191_ledger_write_gate.sql.
+ * Each hostile write below succeeded before 20261002140000_p191_ledger_write_gate.sql.
  */
 
 let service: TestClient
