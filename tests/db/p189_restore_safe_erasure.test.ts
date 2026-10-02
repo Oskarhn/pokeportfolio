@@ -361,7 +361,9 @@ describe.skipIf(!ENABLED)('restore-safe account deletion (P189)', () => {
       // lacks. That state is built from this file's own deletions (the after-both-deletions dump
       // carries a receipt for each) rather than inherited from receipts earlier test files left behind.
       const withReceipts = restore(backupAfterAll, 'p189_r5_receipts')
-      expect(sql(withReceipts, 'select count(*) from public.account_erasure_receipts')).not.toBe('0')
+      expect(sql(withReceipts, 'select count(*) from public.account_erasure_receipts')).not.toBe(
+        '0',
+      )
       expect(gate('verify', withReceipts, empty, ['--allow-empty-registry']).code).toBe(5)
     })
 

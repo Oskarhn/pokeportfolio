@@ -17,7 +17,7 @@
       "status": "PUSHED_DEVELOPMENT_RC",
       "device_verified": true,
       "fully_certified": false,
-      "notes": "Development RC, not merged, not deployed, hosted database untouched. Contains P188 and P189. The branch tip is read from git, not recorded here. Release blockers: PRODUCTION_REGISTRY_STORAGE_READY=no, PROVIDER_RETENTION_VERIFIED=no, no physical Android/iOS runtime, identifiers and signing not selected, P163 owner actions open. P191 (same branch): ledger write gate, sealed-product ownership, privilege baseline (3 migrations); P130-13/-14/-26/-09 closed in the RC, P130-20 OWNER_ACTION_REQUIRED, P130-29/-30 PARTIALLY_CLOSED. docs/security/P191_SECURITY_BOUNDARY_CLOSURE.md"
+      "notes": "Development RC, not merged, not deployed, hosted database untouched. Contains P188 and P189. The branch tip is read from git, not recorded here. Release blockers: PRODUCTION_REGISTRY_STORAGE_READY=no, PROVIDER_RETENTION_VERIFIED=no, no physical Android/iOS runtime, identifiers and signing not selected, P163 owner actions open. P192: P191 migrations re-timestamped to 20261002140000/10/20 (unapplied), P189 empty-registry test made self-contained, MERGE_READY=no because of deploy coupling, docs/release/P192_MERGE_READINESS.md. P191 (same branch): ledger write gate, sealed-product ownership, privilege baseline (3 migrations); P130-13/-14/-26/-09 closed in the RC, P130-20 OWNER_ACTION_REQUIRED, P130-29/-30 PARTIALLY_CLOSED. docs/security/P191_SECURITY_BOUNDARY_CLOSURE.md"
     },
     "release_candidate": {
       "prompt": 188,
