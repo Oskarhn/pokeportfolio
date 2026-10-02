@@ -1,3 +1,4 @@
+import { userMessage } from '../../platform/user-error'
 /**
  * Friendly scanner error mapping (prompt §24). Browser internals — DOMException names, stack
  * traces, media error codes — never reach the screen; each failure class maps to one message
@@ -99,22 +100,19 @@ export function describeSearchError(error: unknown): ScannerErrorInfo {
   if (isOffline()) return OFFLINE_ERROR
   return {
     title: 'Search failed',
-    message:
-      error instanceof Error && error.message !== ''
-        ? error.message
-        : 'The manual search did not go through. Try again.',
+    message: userMessage(error, 'The manual search did not go through. Try again.'),
   }
 }
 
 export function describeCommitError(error: unknown): ScannerErrorInfo {
-  // Controllers produce user-ready messages by contract; anything else maps to a generic,
-  // honest failure that makes clear nothing was changed.
-  if (error instanceof Error && error.message !== '') {
-    return { title: 'Cards were not added', message: error.message }
-  }
+  // Only product-authored text passes through (UserFacingError); anything else is the closed
+  // vocabulary or the honest generic below, never a backend message.
   return {
     title: 'Cards were not added',
-    message: 'Adding the scanned cards failed. Nothing was changed — try again.',
+    message: userMessage(
+      error,
+      'Adding the scanned cards failed. Nothing was changed — try again.',
+    ),
   }
 }
 

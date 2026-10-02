@@ -737,17 +737,34 @@ describe('cross-user references fail closed', () => {
   it("another user's row pointing at A's private sealed product blocks A's purge without touching B", async () => {
     const a = await seeded('p152-xref-a')
     const b = await seeded('p152-xref-b')
-    // Constructed by the service role: the FK check ignores RLS, so a user who somehow learned the
-    // (random, unguessable) id could do the same. The requirement is that it can neither delete
-    // B's data nor half-delete A's.
-    const xref = await service.from('holdings').insert({
+    // P191 (P130-14): the reference can no longer be CREATED — an ownership trigger refuses it for
+    // every role, which is the fix for the cross-user pin this test used to construct. Rows that
+    // already violate the rule can still exist in a database written before that migration, and the
+    // purge must keep failing closed on them, so the trigger is disabled for exactly this
+    // construction (a superuser statement, re-enabled in `finally`) to model such a legacy row.
+    const refused = await service.from('holdings').insert({
       user_id: b.user.id,
       holding_kind: 'sealed',
       sealed_product_id: a.ledger.privateSealedProductId,
       grading_state: 'raw',
     })
-    // The seeded lot already made A's own holding for this product; B's is a separate row.
-    expect(xref.error).toBeNull()
+    expect(refused.error?.code).toBe('23503')
+
+    await db.query('alter table public.holdings disable trigger holdings_sealed_product_visible')
+    try {
+      // Constructed by the service role: the FK check ignores RLS. The requirement is that it can
+      // neither delete B's data nor half-delete A's.
+      const xref = await service.from('holdings').insert({
+        user_id: b.user.id,
+        holding_kind: 'sealed',
+        sealed_product_id: a.ledger.privateSealedProductId,
+        grading_state: 'raw',
+      })
+      // The seeded lot already made A's own holding for this product; B's is a separate row.
+      expect(xref.error).toBeNull()
+    } finally {
+      await db.query('alter table public.holdings enable trigger holdings_sealed_product_visible')
+    }
 
     const beforeA = await ownedDigests(db, a.user.id)
     const beforeB = await ownedDigests(db, b.user.id)

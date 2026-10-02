@@ -22,6 +22,7 @@
  * Pure and dependency-free (no React, no Supabase) so every rule is unit-testable without a DOM.
  */
 
+import { UserFacingError } from '../platform/user-error'
 /** Stable outcome code for "the identity changed under a running operation". Expected control
  *  flow, not a fault: nothing about the aborted operation is reported as saved. */
 export const AUTH_IDENTITY_CHANGED = 'auth-identity-changed'
@@ -31,10 +32,10 @@ export const AUTH_IDENTITY_CHANGED = 'auth-identity-changed'
  * carries no request detail, no server error and nothing of the operation's data, so it is safe to
  * show or log whatever identity is now on screen.
  */
-export class AuthIdentityChangedError extends Error {
+export class AuthIdentityChangedError extends UserFacingError {
   readonly code = AUTH_IDENTITY_CHANGED
   constructor() {
-    super('Your sign-in changed before this finished, so it was not completed.')
+    super('Your sign-in changed before this finished, so it was not completed.', 'session_expired')
     this.name = 'AuthIdentityChangedError'
   }
 }
@@ -53,10 +54,10 @@ export const AUTH_CREDENTIALS_UNAVAILABLE = 'auth-credentials-unavailable'
  * person can simply try again. Like {@link AuthIdentityChangedError} the text is fixed: no HTTP
  * detail, endpoint, token or library error class can reach the screen through it.
  */
-export class AuthCredentialsUnavailableError extends Error {
+export class AuthCredentialsUnavailableError extends UserFacingError {
   readonly code = AUTH_CREDENTIALS_UNAVAILABLE
   constructor() {
-    super('Could not verify your session. Check your connection and try again.')
+    super('Could not verify your session. Check your connection and try again.', 'connection')
     this.name = 'AuthCredentialsUnavailableError'
   }
 }

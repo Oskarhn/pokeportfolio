@@ -21,6 +21,7 @@ import {
 } from '../../ui/money-format'
 import { useUnsavedWorkSnapshot } from '../../platform/unsaved-work-registry'
 import { useIsMountedRef } from '../../platform/use-mounted-ref'
+import { userMessage } from '../../platform/user-error'
 
 /**
  * Safe-correction path (prompt §50-51, mirrors update_purchase's scope): fixes sale-level charges
@@ -190,7 +191,7 @@ function SaleEditForm({ saleId, sale, lines }: { saleId: string; sale: Sale; lin
     onError: (err: Error) => {
       // A stale instance's error has nowhere correct to render — the form it belongs to is gone.
       if (!isMountedRef.current) return
-      setError(err.message)
+      setError(userMessage(err))
     },
   })
 

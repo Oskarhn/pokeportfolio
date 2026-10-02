@@ -24,6 +24,7 @@ import { LINE_TYPE_LABEL } from './labels'
 import { at } from './util'
 import { useUnsavedWorkSnapshot } from '../../platform/unsaved-work-registry'
 import { useIsMountedRef } from '../../platform/use-mounted-ref'
+import { userMessage } from '../../platform/user-error'
 
 interface EditLineState {
   lineId: string
@@ -211,7 +212,7 @@ function PurchaseEditForm({ purchaseId, detail }: { purchaseId: string; detail: 
     onError: (err: Error) => {
       // A stale instance's error has nowhere correct to render — the form it belongs to is gone.
       if (!isMountedRef.current) return
-      setError(err.message)
+      setError(userMessage(err))
     },
   })
 

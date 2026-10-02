@@ -358,8 +358,8 @@ describe('mutation proofs — each simulated regression is reported', () => {
 
   it('a value in a job-level env block, printed before any guard can run', () => {
     const m = WORKFLOW.replace(
-      '    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n    # The one deployment',
-      '    runs-on: ubuntu-latest\n    env:\n      VITE_SUPABASE_URL: ${{ secrets.PRODUCTION_SUPABASE_URL }}\n    permissions:\n      contents: read\n    # The one deployment',
+      '    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n    # The one deployment',
+      '    runs-on: ubuntu-24.04\n    env:\n      VITE_SUPABASE_URL: ${{ secrets.PRODUCTION_SUPABASE_URL }}\n    permissions:\n      contents: read\n    # The one deployment',
     )
     expect(m).not.toBe(WORKFLOW)
     expect(violations(m)).toContain('env block above step level')

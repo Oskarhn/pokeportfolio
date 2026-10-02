@@ -31,6 +31,7 @@ import {
   updatePurchaseLine,
 } from './purchase-form-state'
 import { ManualCardResolutionCache, resolveManualCardId } from './manual-card-resolution'
+import { userMessage } from '../../platform/user-error'
 
 const CURRENCIES: CurrencyCode[] = ['NOK', 'EUR', 'USD', 'GBP', 'JPY']
 
@@ -327,7 +328,7 @@ export function PurchaseFormPage() {
       })
     },
     onError: (err: Error) => {
-      patch({ error: err.message })
+      patch({ error: userMessage(err) })
     },
   })
 

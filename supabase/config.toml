@@ -258,7 +258,15 @@ double_confirm_changes = true
 # If enabled, users need to confirm their email address before signing in.
 enable_confirmations = false
 # If enabled, users will need to reauthenticate or have logged in recently to change their password.
-secure_password_change = false
+# P191 (P130-20): ON. The CLI maps this key to GoTrue's SECURITY_UPDATE_PASSWORD_REQUIRE_REAUTHENTICATION
+# (verified in supabase/cli: gotrue.service.ts and pkg/config/auth.go; the CLI's reference page
+# describes it as "requires the current password", which is not what the key does). Semantics: a
+# session created within the last 24 hours may change the password directly; an older session must
+# first call auth.reauthenticate() and send the emailed nonce with updateUser — so a stolen but
+# stale session cannot set a new password on its own. The web app's only password-change path is the
+# recovery link (a fresh session), so nothing in the product needs the nonce flow; it fails safe
+# (src/auth/password-update-error.ts). The hosted project's setting is NOT changed by this file.
+secure_password_change = true
 # Controls the minimum amount of time that must pass before sending another signup confirmation or password reset email.
 max_frequency = "1s"
 # Number of characters used in the email OTP.

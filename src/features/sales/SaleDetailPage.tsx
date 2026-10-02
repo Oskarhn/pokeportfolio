@@ -9,6 +9,7 @@ import type { CurrencyCode } from '../../domain/currency'
 import { CONDITION_LABEL, ORIGIN_LABEL } from '../collection/labels'
 import { Button, FormMessage } from '../../ui/form'
 import { Sheet } from '../../ui/Sheet'
+import { userMessage } from '../../platform/user-error'
 
 /** UX_FLOWS.md F8.1's sale-detail audit trail (prompt §58). Every figure here is traceable back to
  *  the exact lots that left inventory — no internal UUIDs, no fabricated result where the cost
@@ -35,7 +36,7 @@ export function SaleDetailPage() {
       await queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] })
     },
     onError: (err: Error) => {
-      setVoidError(err.message)
+      setVoidError(userMessage(err))
     },
   })
 

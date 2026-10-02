@@ -28,6 +28,7 @@ import { Button, ChoiceGroup, FormMessage, SelectField, TextField } from '../../
 import { naturalCompare } from '../../ui/naturalSort'
 import { useDebouncedValue } from '../../ui/useDebouncedValue'
 import { SearchIcon, XIcon, CameraIcon, StarIcon, SortIcon, CheckIcon } from '../../ui/icons'
+import { userMessage } from '../../platform/user-error'
 
 const PAGE_SIZE = 40
 const SEALED_PAGE_SIZE = 30
@@ -554,7 +555,7 @@ function CustomSealedProductForm({
       await navigate({ to: '/portfolio/sealed/new', search: { sealedProductId: product.id } })
     },
     onError: (mutationError: Error) => {
-      setError(mutationError.message)
+      setError(userMessage(mutationError))
     },
   })
 

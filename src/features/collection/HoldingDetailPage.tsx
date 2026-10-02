@@ -39,6 +39,7 @@ import {
   PRICE_KIND_LABEL,
   PROVIDER_LABEL,
 } from './labels'
+import { userMessage } from '../../platform/user-error'
 
 /** Storage is a lot-level fact (D-036) — a holding's lots may legitimately sit in different
  *  places. Never pick one arbitrarily (M7 prompt §62): show the shared location when every open
@@ -109,7 +110,7 @@ export function HoldingDetailPage() {
       await queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] })
     },
     onError: (error: Error) => {
-      setVoidError(error.message)
+      setVoidError(userMessage(error))
     },
   })
 
@@ -138,7 +139,7 @@ export function HoldingDetailPage() {
       await navigate({ to: '/portfolio' })
     },
     onError: (error: Error) => {
-      setRemoveError(error.message)
+      setRemoveError(userMessage(error))
     },
   })
 

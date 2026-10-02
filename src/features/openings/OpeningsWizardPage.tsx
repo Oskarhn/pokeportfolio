@@ -44,6 +44,8 @@ import {
 } from './draft'
 import type { OpeningSource, TrackingCompleteness } from './contract'
 import { PullPickerSheet } from './PullPickerSheet'
+import { userMessage } from '../../platform/user-error'
+import { useUnsavedWorkSnapshot } from '../../platform/unsaved-work-registry'
 
 const STEP_LABELS: Record<OpeningStep, string> = {
   source: 'Product',
@@ -98,6 +100,11 @@ export function OpeningsWizardPage() {
     if (scopedStored) return recoverInterruptedSubmission(scopedStored)
     return initialDraft({ holdingId: search.holdingId, lotId: search.lotId })
   })
+
+  // P130-09: the draft survives in-app navigation (draftStore) but not a page reload. An automatic
+  // stale-deployment reload now waits while the wizard holds more than its initial state. The
+  // baseline resets with the signed-in user; nothing new is persisted.
+  useUnsavedWorkSnapshot('opening-wizard', draft, true, userId)
 
   function dispatch(action: DraftAction) {
     setDraft((current) => {
@@ -246,8 +253,9 @@ export function OpeningsWizardPage() {
     },
     onError: (mutationError: Error) => {
       // The entire draft survives untouched — pulls, quantities, dates (prompt §23).
-      dispatch({ type: 'SUBMIT_FAILED', message: mutationError.message })
-      setAnnouncement(mutationError.message)
+      const failure = userMessage(mutationError)
+      dispatch({ type: 'SUBMIT_FAILED', message: failure })
+      setAnnouncement(failure)
     },
   })
 
@@ -266,9 +274,7 @@ export function OpeningsWizardPage() {
           role="alert"
           className="rounded-lg border border-rose-900/60 bg-rose-950/40 p-3 text-sm text-rose-200"
         >
-          {sourcesQuery.error instanceof Error
-            ? sourcesQuery.error.message
-            : 'Openings could not be loaded.'}
+          {userMessage(sourcesQuery.error, 'Openings could not be loaded.')}
         </p>
       </div>
     )

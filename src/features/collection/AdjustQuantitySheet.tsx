@@ -7,6 +7,7 @@ import { reduceHoldingQuantity, type AcquisitionLot } from '../../data/collectio
 import { ORIGIN_LABEL } from './labels'
 import { Sheet } from '../../ui/Sheet'
 import { Button, FormMessage, TextField } from '../../ui/form'
+import { userMessage } from '../../platform/user-error'
 
 /** Short per-lot cost wording for the adjustment sheet — the same semantics as the acquisition
  *  history's labels, condensed for a row. Unknown cost stays unknown; it never reads as zero. */
@@ -80,7 +81,7 @@ export function AdjustQuantitySheet({
       onClose()
     },
     onError: (mutationError: Error) => {
-      setError(mutationError.message)
+      setError(userMessage(mutationError))
     },
   })
 

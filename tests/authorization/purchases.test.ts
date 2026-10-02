@@ -9,6 +9,11 @@ import {
   type TestClient,
 } from '../db/setup'
 
+// P191 (P130-13): fixtures are written with the service role. A Data API role can no longer insert
+// into the ledger tables directly (tests/db/p191_ledger_write_gate.test.ts proves the refusal), so
+// what this file asserts - that RLS and the S1 owner triggers isolate users - is exercised on rows
+// created the way an operator or the RPCs create them; every attack is still a client attempt.
+
 let service: TestClient
 let userA: SyntheticUser
 let userB: SyntheticUser
@@ -45,15 +50,15 @@ afterAll(async () => {
 })
 
 describe('RLS isolation: purchases and purchase_lines', () => {
-  it('owner can create a purchase with a line and read them together', async () => {
-    const { data: purchase, error: purchaseError } = await clientA
+  it('owner reads a purchase and its lines together (rows created by the service role)', async () => {
+    const { data: purchase, error: purchaseError } = await service
       .from('purchases')
       .insert(purchasePayload(userA.id))
       .select()
       .single()
     expect(purchaseError).toBeNull()
 
-    const { data: line, error: lineError } = await clientA
+    const { data: line, error: lineError } = await service
       .from('purchase_lines')
       .insert({
         purchase_id: purchase!.id,
@@ -84,7 +89,7 @@ describe('RLS isolation: purchases and purchase_lines', () => {
   })
 
   it('a stranger cannot read or update another user purchase by id', async () => {
-    const { data: purchase } = await clientA
+    const { data: purchase } = await service
       .from('purchases')
       .insert(purchasePayload(userA.id))
       .select()
@@ -102,7 +107,7 @@ describe('RLS isolation: purchases and purchase_lines', () => {
   })
 
   it('nobody can delete a purchase through the client API, not even its owner (void semantics only)', async () => {
-    const { data: purchase } = await clientA
+    const { data: purchase } = await service
       .from('purchases')
       .insert(purchasePayload(userA.id))
       .select()
@@ -122,12 +127,12 @@ describe('RLS isolation: purchases and purchase_lines', () => {
   })
 
   it('a stranger reading through the embedded purchase_lines resource sees nothing', async () => {
-    const { data: purchase } = await clientA
+    const { data: purchase } = await service
       .from('purchases')
       .insert(purchasePayload(userA.id))
       .select()
       .single()
-    await clientA.from('purchase_lines').insert({
+    await service.from('purchase_lines').insert({
       purchase_id: purchase!.id,
       user_id: userA.id,
       line_type: 'card',
@@ -147,26 +152,28 @@ describe('RLS isolation: purchases and purchase_lines', () => {
   })
 
   it('cannot insert a purchase_line pointing at another user purchase (S1, rejected by trigger)', async () => {
-    const { data: purchaseA } = await clientA
+    const { data: purchaseA } = await service
       .from('purchases')
       .insert(purchasePayload(userA.id))
       .select()
       .single()
 
-    const { error } = await clientB.from('purchase_lines').insert({
+    const attack = {
       purchase_id: purchaseA!.id,
       user_id: userB.id,
-      line_type: 'card',
-      spend_class: 'collectible',
+      line_type: 'card' as const,
+      spend_class: 'collectible' as const,
       card_variant_id: seedCatalog.pikachuVariantId,
       quantity: 1,
       unit_price_minor: 500,
       line_total_minor: 500,
-    })
-    expect(error).not.toBeNull()
+    }
+    expect((await clientB.from('purchase_lines').insert(attack)).error).not.toBeNull()
+    // The S1 trigger holds on its own, under the service role that bypasses RLS and the gate.
+    expect((await service.from('purchase_lines').insert(attack)).error).not.toBeNull()
   })
 
-  it('cannot insert a purchase claiming another user as owner', async () => {
+  it('cannot insert a purchase directly, claiming another user as owner (P130-13)', async () => {
     const { error } = await clientA.from('purchases').insert(purchasePayload(userB.id))
     expect(error).not.toBeNull()
   })

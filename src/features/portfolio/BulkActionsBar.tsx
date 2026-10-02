@@ -14,6 +14,7 @@ import { CollectionPickerSheet } from './CollectionPickerSheet'
 import { Sheet } from '../../ui/Sheet'
 import { Button, FormMessage } from '../../ui/form'
 import { XIcon, StarIcon, TrashIcon, TagIcon } from '../../ui/icons'
+import { userMessage } from '../../platform/user-error'
 
 /**
  * Portfolio select mode's action bar (M7.1 prompt §42-43, extended M8.1 prompt §11-13). Add/
@@ -87,7 +88,7 @@ export function BulkActionsBar({
       onClear()
     },
     onError: (error: Error) => {
-      setRemoveError(error.message)
+      setRemoveError(userMessage(error))
     },
   })
 

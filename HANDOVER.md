@@ -51,7 +51,7 @@ believed at the time and are known to contain claims later superseded — see
   [docs/CURRENT_STATE/GIT_PUBLICATION_PLAN.md](docs/CURRENT_STATE/GIT_PUBLICATION_PLAN.md).
 - **PR #112** (`fix/p142-ci-gated-production-deploy`, draft) is **`SUPERSEDED_BY_P163`**; P163 is
   contained in the P190 line. See §2 for the P190 branch/PR and its CI status.
-- **P130 findings still OPEN in Production:** P130-08 (no enforced deploy gate: the repo-side gate is now
+- **P130 findings still OPEN in Production** (P130-13/-14/-26/-09 are closed in the RC, see P191; Production has none of it): P130-08 (no enforced deploy gate: the repo-side gate is now
   in the P188 candidate; needs the owner's Cloudflare action), P130-19 (`Number(bigint)`: **fixed in
   the P188 candidate**), and a secret-shaped `VITE_SUPABASE_URL` Actions variable (S-1: rotate and
   delete; treat any key that transited it as exposed). Full release-relevant list and state:
@@ -65,9 +65,11 @@ believed at the time and are known to contain claims later superseded — see
 `RELEASED_MAIN` = `d8682e0` = Production. The development RC is the P190 line (P188 + P189 + CI/publication work), pushed and under draft PR #113. Nothing here is live.
 Machine pointers: `docs/PROJECT_STATE.json` → `local_candidates`.
 
+**P191** (security boundary hardening, merged into the P190 RC branch) added three migrations (ledger write gate, sealed-product ownership, privilege baseline), closed P130-13/-14/-26/-09, left P130-20 as an owner action (hosted Auth setting) and P130-29/-30 partially closed. Record: [docs/security/P191_SECURITY_BOUNDARY_CLOSURE.md](docs/security/P191_SECURITY_BOUNDARY_CLOSURE.md). **Maintenance rule that comes with it:** a migration that re-creates one of the ten ledger writers must keep the `perform set_config('app.ledger_write', 'rpc', true)` line (the audit and tests fail loudly otherwise).
+
 | Candidate | Branch | SHA | Migrations | Status |
 |---|---|---|---|---|
-| **Development RC (P190)** | `release/p190-cross-platform-development-rc` | branch tip (read `git ls-remote`; not recorded here) | **111** | **PUSHED, draft PR #113 into `main`. DEVELOPMENT RC — DO NOT MERGE/DEPLOY YET.** Contains P188 and P189. CI (`build-and-test`, `db-tests`, `native-checks`) green on its head; `deploy-production` skipped (not `main`). Release blockers: [P189 record](docs/release/P189_ACCOUNT_DELETION.md), [P188 RC](docs/release/P188_RELEASE_CANDIDATE.md) §6. |
+| **Development RC (P190, extended by P191)** | `release/p190-cross-platform-development-rc` | branch tip (read `git ls-remote`; not recorded here) | **114** (111 + 3 P191) | **PUSHED, draft PR #113 into `main`. DEVELOPMENT RC — DO NOT MERGE/DEPLOY YET.** Contains P188 and P189. CI (`build-and-test`, `db-tests`, `native-checks`) green on its head; `deploy-production` skipped (not `main`). Release blockers: [P189 record](docs/release/P189_ACCOUNT_DELETION.md), [P188 RC](docs/release/P188_RELEASE_CANDIDATE.md) §6. |
 | **Cross-platform release candidate (P188)** | `release/p188-cross-platform-rc` | code tip `a048da53926d0c501508136d7fb11457fada1d86` | 107 | **LOCAL ONLY — `SUCCESS_P188_CROSS_PLATFORM_RC_LOCAL`.** P186 + P187 (rebuilt without its attribution trailer; tree-identical) + merges of **P164** (auth/exact money/exports/scanner hardening/Price Check), **P163** (deploy gate + secret guard) and **P165** (verification fixes). Native build profiles. [RC doc](docs/release/P188_RELEASE_CANDIDATE.md), [matrix](docs/release/P188_INTEGRATION_MATRIX.md) |
 | **Restore-safe account deletion (P189)** | `security/p189-restore-safe-account-deletion` | see `docs/PROJECT_STATE.json` → `local_candidates.account_deletion` | **111** | **LOCAL ONLY — `SUCCESS_P189_RESTORE_SAFE_ACCOUNT_DELETION`**, built on the exact P188 candidate `2783c93e…` (descends from it; not merged, not pushed, not deployed). Selective integration of P152/P156 plus the erasure registry, the restore gate, the in-app web and native deletion flows and the public `/account-deletion` page. [Record](docs/release/P189_ACCOUNT_DELETION.md) |
 | Account deletion (P152 → P156) | `audit/p156-account-deletion-security-recovery` | `6b3ac903…` | 107 (+3 own) | **`SUPERSEDED_BY_P189`** — kept as evidence only; never merged. |

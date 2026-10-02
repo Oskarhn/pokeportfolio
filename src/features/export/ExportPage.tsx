@@ -20,6 +20,7 @@ import {
   isAuthIdentityChangedError,
   type IdentityLease,
 } from '../../auth/identity-lease'
+import { userMessage } from '../../platform/user-error'
 
 /**
  * Profile › Export & backup (M13; UX_FLOWS.md F11's Settings › Export home).
@@ -50,13 +51,13 @@ const DONE_VERB: Record<Exclude<DeliveryOutcome['method'], 'cancelled'>, string>
 }
 
 function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message ? error.message : fallback
+  return userMessage(error, fallback)
 }
 
 const STALE_IDENTITY_MESSAGE = 'The signed-in account changed during the export. Nothing was saved.'
 
-/** An identity change is described for what it means to an export; any other error keeps its own
- *  (already user-safe, fixed or data-layer) message. */
+/** An identity change is described for what it means to an export; any other error is the closed
+ *  vocabulary (product-authored delivery errors pass through, backend detail never does). */
 function exportErrorMessage(error: unknown, fallback: string): string {
   return isAuthIdentityChangedError(error) ? STALE_IDENTITY_MESSAGE : errorMessage(error, fallback)
 }

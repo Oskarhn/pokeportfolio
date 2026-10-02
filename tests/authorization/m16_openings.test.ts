@@ -322,17 +322,24 @@ describe('the grant model holds: no direct browser writes to opening state', () 
       aOpeningId = created.id
     }
 
-    const { error } = await clientB.from('acquisition_lots').insert({
+    const attack = {
       holding_id: bHolding.id,
-      origin: 'opening',
-      cost_basis_state: 'unallocated_opening',
+      origin: 'opening' as const,
+      cost_basis_state: 'unallocated_opening' as const,
       acquired_on: today,
       quantity: 1,
       quantity_remaining: 1,
       opening_id: aOpeningId,
-    })
+    }
+    // P191 (P130-13): the browser is refused at the ledger write gate before any owner trigger runs…
+    const { error } = await clientB.from('acquisition_lots').insert(attack)
     expect(error).not.toBeNull()
-    expect(JSON.stringify(error)).toMatch(/same owner|must belong/i)
+    // …and the owner trigger holds on its own, under the service role that bypasses RLS and the gate.
+    const underneath = await service
+      .from('acquisition_lots')
+      .insert({ ...attack, user_id: userB.id })
+    expect(underneath.error).not.toBeNull()
+    expect(JSON.stringify(underneath.error)).toMatch(/same owner|must belong/i)
   })
 
   it('defence in depth fires under the service role too: openings_check_owner rejects mismatches', async () => {
