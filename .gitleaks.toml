@@ -5,7 +5,7 @@ title = "pokeportfolio gitleaks config"
 [extend]
 useDefault = true
 
-[allowlist]
+[[allowlists]]
 description = "Known-public, non-sensitive values that structurally match a secret rule"
 regexes = [
   # Supabase's well-known LOCAL-only demo `service_role` JWT, printed by `supabase status` on
@@ -31,3 +31,14 @@ regexes = [
   # every install, never valid against a hosted project (which has its own signing keys).
   '''super-secret-jwt-token-with-at-least-32-characters-long''',
 ]
+
+# P189 / P190: tests/ops/erasure-registry.test.ts uses a fixed, repeating-hex 32-byte HMAC key
+# ('0123456789abcdef' x 4) to prove registry integrity checks. A synthetic test vector: never used by
+# any deployed function. Scoped to this one file AND this one line (both must match), so the same
+# pattern anywhere else, or any other key in this file, is still reported.
+[[allowlists]]
+description = "Synthetic registry HMAC test vector in erasure-registry.test.ts"
+condition = "AND"
+paths = ['''^tests/ops/erasure-registry\.test\.ts$''']
+regexTarget = "line"
+regexes = ['''const KEY_HEX = '0123456789abcdef'\.repeat\(4\)''']

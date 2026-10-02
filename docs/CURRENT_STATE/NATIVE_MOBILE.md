@@ -7,8 +7,9 @@ Authority: this file for current status; `HANDOVER.md` §9 for the one-paragraph
 ## What exists
 
 A React Native/Expo native app track, built up across a long, mostly-linear chain of local
-prompts. **Nothing in this track has ever been merged, pushed, or released.** It lives entirely
-in local worktrees under `C:\Users\Oskar\Documents\Pokemonapp-worktrees\`.
+prompts. **Nothing in this track has been merged to `main` or released.** It was built in local git
+worktrees (one per prompt) and, from P190, is published on the development release-candidate branch
+`release/p190-cross-platform-development-rc` (see `GIT_PUBLICATION_PLAN.md`).
 
 | Branch (worktree) | Prompt | What it added |
 |---|---|---|
