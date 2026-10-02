@@ -66,7 +66,8 @@ Machine pointers: `docs/PROJECT_STATE.json` → `local_candidates`.
 | Candidate | Branch | SHA | Migrations | Status |
 |---|---|---|---|---|
 | **Cross-platform release candidate (P188)** | `release/p188-cross-platform-rc` | code tip `a048da53926d0c501508136d7fb11457fada1d86` | 107 | **LOCAL ONLY — `SUCCESS_P188_CROSS_PLATFORM_RC_LOCAL`.** P186 + P187 (rebuilt without its attribution trailer; tree-identical) + merges of **P164** (auth/exact money/exports/scanner hardening/Price Check), **P163** (deploy gate + secret guard) and **P165** (verification fixes). Native build profiles. [RC doc](docs/release/P188_RELEASE_CANDIDATE.md), [matrix](docs/release/P188_INTEGRATION_MATRIX.md) |
-| Account deletion (P152 → P156) | `audit/p156-account-deletion-security-recovery` | `6b3ac903…` | 107 (+3 own) | **LOCAL ONLY — NOT integrated: `UNSAFE_OR_UNRESOLVED`.** A restore resurrects a deleted account; the mitigation is an owner-kept erasure registry. Matrix §4 |
+| **Restore-safe account deletion (P189)** | `security/p189-restore-safe-account-deletion` | see `docs/PROJECT_STATE.json` → `local_candidates.account_deletion` | **111** | **LOCAL ONLY — `SUCCESS_P189_RESTORE_SAFE_ACCOUNT_DELETION`**, built on the exact P188 candidate `2783c93e…` (descends from it; not merged, not pushed, not deployed). Selective integration of P152/P156 plus the erasure registry, the restore gate, the in-app web and native deletion flows and the public `/account-deletion` page. [Record](docs/release/P189_ACCOUNT_DELETION.md) |
+| Account deletion (P152 → P156) | `audit/p156-account-deletion-security-recovery` | `6b3ac903…` | 107 (+3 own) | **`SUPERSEDED_BY_P189`** — kept as evidence only; never merged. |
 | Design decision pack (P174) | `design/p174-stitch-owner-decision-pack` | `aacd218d…` | n/a | DESIGN ONLY; the direction is implemented by P178 |
 
 Everything else previously listed here is **contained in or superseded by P188**: the native chain
@@ -102,7 +103,7 @@ number includes an earlier fix; compare patch-ids and file blobs, not only ances
 
 Authoritative schema/lifecycle rules: [docs/DATA_MODEL.md](docs/DATA_MODEL.md). Migration
 process rules: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). Current counts: §1 (released, 104) and
-the P188 candidate (107, one integrated line; P156's three migrations are not in it). Full detail and per-branch
+the P188 candidate (107) and the P189 branch (111: P188 + the four deletion migrations). Full detail and per-branch
 migration filenames: [docs/CURRENT_STATE/DATABASE.md](docs/CURRENT_STATE/DATABASE.md).
 
 Before applying **any** migration to a database holding real data, run `pnpm db:backup` and
@@ -194,7 +195,7 @@ P179 → P180 → P181 → P182 → P184 → P185 → P186 → P187, now carried
   merge changed what native runs (exact decimal-string money transport). P188 re-ran the native
   unit, backend and release-APK smoke on the merged tree (RC doc §4).
 - **Still open, do not overstate:** a TalkBack pass on a real device; arm64 / physical device;
-  JPY as an on-device purchase; no in-app account deletion (§12); no final app icon; N1/N2 navigation
+  JPY as an on-device purchase; in-app account deletion exists only on the P189 branch (§12); no final app icon; N1/N2 navigation
   undecided; graded-card pricing `PARTIAL_NO_AUTHORIZED_PROVIDER`.
 
 
@@ -228,15 +229,27 @@ into this canonical file — a good candidate for the next integration pass).
 
 ## 12. Privacy / account deletion
 
-Account deletion exists **only on a local branch and is deliberately NOT in the P188 candidate**
-(P152 → P156, `audit/p156-account-deletion-security-recovery`, 3 migrations). Classified
-**`UNSAFE_OR_UNRESOLVED`**: restoring a backup taken before a deletion brings the deleted account back
-(reproduced by P156); the mitigation is an owner-maintained erasure registry kept outside every backup
-plus a promotion gate that this line does not have, and the public deletion URL and hosted retention
-facts are owner decisions. Exact blocker and per-change classification:
-[matrix §4](docs/release/P188_INTEGRATION_MATRIX.md). There is no `docs/PRIVACY.md` yet. Do not tell a
-user deletion exists; the native app has no in-app deletion, which blocks store distribution.
-Current blocker summary: [docs/CURRENT_STATE/SECURITY_AND_PRIVACY.md](docs/CURRENT_STATE/SECURITY_AND_PRIVACY.md).
+Account deletion is **restore-safe on the P189 branch** (`security/p189-restore-safe-account-deletion`, built on
+the exact P188 candidate; **not** in P188 itself, not merged, not pushed, not deployed). Record:
+[docs/release/P189_ACCOUNT_DELETION.md](docs/release/P189_ACCOUNT_DELETION.md); decision D-189; operator
+procedure [docs/security/RESTORE_RUNBOOK.md](docs/security/RESTORE_RUNBOOK.md) (read it before any restore);
+data scope [docs/security/P189_DELETION_DATA_MAP.md](docs/security/P189_DELETION_DATA_MAP.md).
+
+- **Invariant:** after a deletion is confirmed no normal restore leaves that identity active in a database
+  that serves. The restore resurrection P156 left open was reproduced first (24/24 account-owning relations
+  came back) and is closed by: the erasure recorded in an **off-backup registry before anything is
+  destroyed** (the database refuses to purge otherwise), a hash-chained/HMAC-signed registry, the
+  `restore-gate` replay (`verify | apply | postcheck | promote-check`), and a restore drill that fails
+  without the gate. **NEVER PROMOTE A RESTORED DATABASE BEFORE THE ERASURE GATE PASSES.**
+- **Surfaces:** web Profile → Delete account (identity-lease based), native Profile → Delete account (same
+  backend contract, plus journal/session/photo cleanup), public `/account-deletion` page (no retention
+  period, only the contact the Privacy page already published).
+- **Owner gates (not hidden):** production registry storage and credentials (`PRODUCTION_REGISTRY_STORAGE_READY=no`;
+  without them every deletion is refused `503 deletion_unavailable`); hosted backup/PITR/log settings
+  (`PROVIDER_RETENTION_VERIFIED=no`); the hosted **in-place restore** cannot be isolated (provider
+  documentation) — runbook §5; completion time of an e-mailed request; legal view of a hashed id.
+- `audit/p156-account-deletion-security-recovery` is `SUPERSEDED_BY_P189`. P156's privacy-policy draft and
+  store worksheets were **not** imported (they assert unverified provider facts).
 
 ---
 
@@ -266,7 +279,8 @@ Owner-only actions, most urgent first:
    gated job is the only deploy path; then close or re-point PR #112.
 4. **GitHub Actions capacity** — unverified; the first real push of `release/p188-cross-platform-rc`
    (after #1) answers it.
-5. **Account deletion decision** (§12): erasure registry or another mechanism, deletion URL, retention.
+5. **Account deletion** (§12): choose the production registry storage and credentials, the hosted backup/PITR/log
+   facts and the in-place-restore plan; then review and release the P189 branch (it follows the P188 line).
 6. **Store identity and signing** (BUILD_CONFIGURATION_PROFILES §4): application id, bundle id, keystore,
    Apple team, version policy, hosted backend values, app icon, N1/N2.
 7. **A real Mac and iPhone** for the iOS gates (§9 R1–R7); a physical Android device for arm64 and TalkBack.
@@ -284,7 +298,8 @@ Not a scope reopening ([docs/PLANNING_FREEZE.md](docs/PLANNING_FREEZE.md)):
 1. Resolve §14 items 1–3, then push `release/p188-cross-platform-rc` and read its own CI run; fix real
    defects, never weaken a gate.
 2. Review and, if accepted, release the P188 line in the §14 item 9 order.
-3. Decide account deletion (§12) and, if accepted, integrate P156 with its three migrations and gate.
+3. Decide the registry storage and provider facts (§12); if accepted, release P189 after P188 (migrations
+   108–111 follow 105–107; deploy the function before the client; set the function secrets first).
 4. Close the native gaps that need hardware (§14 item 7) and choose the store identity (item 6).
 5. Close the remaining P130 items by deliberate design work, not as side effects.
 

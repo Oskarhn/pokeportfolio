@@ -17,6 +17,7 @@ import { P184_PROOF_ENABLED, withProofDelay } from './src/diagnostics/p184-proof
 import { backendConfig, clearStoredSession, supabase } from './src/seam/supabase-client'
 import { AppRoot } from './src/ui/AppRoot'
 import { AppThemeProvider, ThemedStatusBar } from './src/ui/theme'
+import { createAccountDeletionPorts } from './src/account/account-request-client'
 import { PendingWriteJournal } from './src/write/pending-write-journal'
 import { purchaseExistsCheckerFor, saleExistsCheckerFor } from './src/write/pending-write-exists'
 import { createWriteDbBinder } from './src/write/write-db'
@@ -86,8 +87,11 @@ function getAppRuntime(): Runtime {
     // idempotency keys and non-secret summaries — never card/price data. Reconciliation reads go
     // through the SAME ambient `supabase` client as every other read in this app.
     // P189: the same delete-account contract as the web app, through the app's ONE client.
-    accountDeletion: {
-      invoke: (name, options) => supabase.functions.invoke(name, options),
+    // P189: its OWN wire seam (one request allowed: POST delete-account), never the read-only client.
+    accountDeletion: createAccountDeletionPorts({
+      url: backendConfig.config.url,
+      publishableKey: backendConfig.config.publishableKey,
+      getSession: () => supabase.auth.getSession(),
       accountIsGone: async () => {
         try {
           const { data } = await supabase.auth.getSession()
@@ -98,7 +102,7 @@ function getAppRuntime(): Runtime {
           return false
         }
       },
-    },
+    }),
     pendingWrites: {
       journal: new PendingWriteJournal(secureStoreAdapter),
       existsCheckers: {

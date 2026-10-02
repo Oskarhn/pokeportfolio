@@ -39,11 +39,13 @@ function arg(name, fallback) {
 }
 const apk = arg('install', null)
 const seed = JSON.parse(arg('seed', 'null') ?? 'null')
-if (seed === null) throw new Error('--seed <json> is required (scripts/p189/seed-synthetic-account.ts)')
+if (seed === null)
+  throw new Error('--seed <json> is required (scripts/p189/seed-synthetic-account.ts)')
 const SUPABASE_URL = process.env.SUPABASE_URL
 const ANON = process.env.SUPABASE_ANON_KEY
 const DB_CONTAINER = process.env.P189_DB_CONTAINER ?? 'supabase_db_pokeportfolio-p189'
-if (!SUPABASE_URL || !ANON) throw new Error('SUPABASE_URL and SUPABASE_ANON_KEY (local stack) are required')
+if (!SUPABASE_URL || !ANON)
+  throw new Error('SUPABASE_URL and SUPABASE_ANON_KEY (local stack) are required')
 
 mkdirSync(outDir, { recursive: true })
 if (apk !== null) {
@@ -56,9 +58,13 @@ adb(['logcat', '-c'], { allowFail: true })
 adb(['logcat', '-b', 'crash', '-c'], { allowFail: true })
 
 const psql = (sql) =>
-  execFileSync('docker', ['exec', '-i', DB_CONTAINER, 'psql', '-U', 'postgres', '-d', 'postgres', '-At', '-c', sql], {
-    encoding: 'utf8',
-  }).trim()
+  execFileSync(
+    'docker',
+    ['exec', '-i', DB_CONTAINER, 'psql', '-U', 'postgres', '-d', 'postgres', '-At', '-c', sql],
+    {
+      encoding: 'utf8',
+    },
+  ).trim()
 const ledgerRows = () =>
   Number(
     psql(
@@ -75,11 +81,19 @@ async function step(n, name, fn) {
     const detail = await fn()
     assertActivityAlive()
     report.push({ n, step: name, status: 'PASS', ms: Date.now() - t0, detail })
-    console.log(`PASS ${String(n).padStart(2)} ${name}  ${JSON.stringify(detail ?? null).slice(0, 400)}`)
+    console.log(
+      `PASS ${String(n).padStart(2)} ${name}  ${JSON.stringify(detail ?? null).slice(0, 400)}`,
+    )
     return true
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
-    report.push({ n, step: name, status: 'FAIL', ms: Date.now() - t0, detail: message.slice(0, 900) })
+    report.push({
+      n,
+      step: name,
+      status: 'FAIL',
+      ms: Date.now() - t0,
+      detail: message.slice(0, 900),
+    })
     console.log(`FAIL ${String(n).padStart(2)} ${name}  ${message.slice(0, 600)}`)
     try {
       shot(`p189-fail-${String(n)}`)
@@ -121,61 +135,92 @@ await step(2, 'sign in with the synthetic account; the portfolio is there', asyn
   return { ledgerRows: before }
 })
 
-await step(3, 'Profile → Delete account…: the sheet says what is and is not deleted, and opening it sends nothing', async () => {
-  await tapTestId('tab-profile')
-  await waitForNode('delete-account', { timeoutMs: 20000, label: 'delete account section' })
-  await tapTestId('delete-account-open')
-  const { nodes } = await waitForNode('delete-account-covers', { timeoutMs: 20000 })
-  remember()
-  const text = nodes.map((n) => n.text).join(' ')
-  check(/Deleted right away/.test(text), 'the sheet does not list what is deleted')
-  check(/not rewritten/.test(text), 'the sheet does not state that backups are not rewritten')
-  check(!/\b\d+\s*(days?|weeks?|months?)\b/i.test(text), 'the sheet states a retention period')
-  check(authUserExists() && ledgerRows() === before, 'opening the sheet changed the account')
-  shot('p189-03-sheet')
-  return { sheet: true }
-})
+await step(
+  3,
+  'Profile → Delete account…: the sheet says what is and is not deleted, and opening it sends nothing',
+  async () => {
+    await tapTestId('tab-profile')
+    await waitForNode('delete-account', { timeoutMs: 20000, label: 'delete account section' })
+    await tapTestId('delete-account-open')
+    const { nodes } = await waitForNode('delete-account-covers', { timeoutMs: 20000 })
+    remember()
+    const text = nodes.map((n) => n.text).join(' ')
+    check(/Deleted right away/.test(text), 'the sheet does not list what is deleted')
+    check(/not rewritten/.test(text), 'the sheet does not state that backups are not rewritten')
+    check(!/\b\d+\s*(days?|weeks?|months?)\b/i.test(text), 'the sheet states a retention period')
+    check(authUserExists() && ledgerRows() === before, 'opening the sheet changed the account')
+    shot('p189-03-sheet')
+    return { sheet: true }
+  },
+)
 
-await step(4, 'the confirm button is disabled until the password AND the acknowledgement are given', async () => {
-  const disabled = () => findNode(dump(), 'delete-account-confirm')?.enabled === false
-  check(disabled(), 'confirm is enabled with nothing entered')
-  await clearAndType('delete-account-password', 'definitely-not-my-password', { verify: false })
-  check(disabled(), 'confirm is enabled with a password but no acknowledgement')
-  await tapTestId('delete-account-ack')
-  await sleep(400)
-  check(!disabled(), 'confirm is still disabled with a password and the acknowledgement')
-  return { gated: true }
-})
+await step(
+  4,
+  'the confirm button is disabled until the password AND the acknowledgement are given',
+  async () => {
+    // uiautomator does not reliably expose a disabled Pressable as enabled=false, so the gate is proved by
+    // BEHAVIOUR: pressing confirm in each incomplete state must start nothing (no working state, no
+    // error, the account untouched).
+    const pressedNothing = async (label) => {
+      await tapTestId('delete-account-confirm')
+      await sleep(2500)
+      const nodes = dump()
+      check(!findNode(nodes, 'delete-account-working'), `${label}: a deletion started`)
+      check(
+        !nodes.some((n) => /not correct|did not finish|could not/i.test(n.text)),
+        `${label}: a request was made`,
+      )
+      check(authUserExists() && ledgerRows() === before, `${label}: the account changed`)
+    }
+    await pressedNothing('nothing entered')
+    await clearAndType('delete-account-password', 'definitely-not-my-password', { verify: false })
+    await pressedNothing('password but no acknowledgement')
+    await tapTestId('delete-account-ack')
+    await sleep(400)
+    check(
+      findNode(dump(), 'delete-account-ack')?.checked === true,
+      'the acknowledgement did not switch on',
+    )
+    return { gated: true }
+  },
+)
 
-await step(5, 'a WRONG password is refused with fixed copy; still signed in; nothing deleted', async () => {
-  await tapTestId('delete-account-confirm')
-  await waitFor((ns) => ns.some((n) => /not correct/.test(n.text)), { timeoutMs: 45000, label: 'wrong-password message' })
-  remember()
-  shot('p189-05-wrong-password')
-  check(authUserExists() && ledgerRows() === before, 'a wrong password changed the account')
-  return { refused: true }
-})
+await step(
+  5,
+  'a WRONG password is refused with fixed copy; still signed in; nothing deleted',
+  async () => {
+    await tapTestId('delete-account-confirm')
+    await waitFor((ns) => ns.some((n) => /not correct/.test(n.text)), {
+      timeoutMs: 45000,
+      label: 'wrong-password message',
+    })
+    remember()
+    shot('p189-05-wrong-password')
+    check(authUserExists() && ledgerRows() === before, 'a wrong password changed the account')
+    return { refused: true }
+  },
+)
 
-await step(6, 'the right password deletes the account and returns to the SIGNED-OUT screen', async () => {
-  await clearAndType('delete-account-password', seed.password, { verify: false })
-  await tapTestId('delete-account-confirm')
-  await waitFor((ns) => byId(ns, 'login-email') || byId(ns, 'login-screen'), {
-    timeoutMs: 120000,
-    label: 'signed-out screen after deletion',
-  })
-  remember()
-  shot('p189-06-signed-out-after-delete')
-  return { signedOut: true }
-})
+await step(
+  6,
+  'the right password deletes the account and returns to the SIGNED-OUT screen',
+  async () => {
+    await clearAndType('delete-account-password', seed.password, { verify: false })
+    await tapTestId('delete-account-confirm')
+    await waitFor((ns) => byId(ns, 'login-email') || byId(ns, 'login-screen'), {
+      timeoutMs: 120000,
+      label: 'signed-out screen after deletion',
+    })
+    remember()
+    shot('p189-06-signed-out-after-delete')
+    return { signedOut: true }
+  },
+)
 
 await step(7, 'the account is gone from the database: login, ledger rows', async () => {
   check(!authUserExists(), 'the Auth user still exists')
   check(ledgerRows() === 0, 'ledger rows remain')
-  const owned = Number(
-    psql(
-      `select count(*) from public.profiles where id = '${seed.id}'`,
-    ),
-  )
+  const owned = Number(psql(`select count(*) from public.profiles where id = '${seed.id}'`))
   check(owned === 0, 'the profile remains')
   return { ledgerRowsAfter: 0 }
 })
@@ -200,22 +245,36 @@ await step(8, 'the old credentials and the OLD tokens are refused', async () => 
     body: JSON.stringify({ refresh_token: seed.refreshToken }),
   })
   check(user.status >= 400, `the old access token is still accepted (HTTP ${String(user.status)})`)
-  check(refresh.status >= 400, `the old refresh token is still accepted (HTTP ${String(refresh.status)})`)
+  check(
+    refresh.status >= 400,
+    `the old refresh token is still accepted (HTTP ${String(refresh.status)})`,
+  )
   return { accessTokenHttp: user.status, refreshTokenHttp: refresh.status }
 })
 
 await step(9, 'logcat clean; no raw backend text on any screen seen', async () => {
   const log = adb(['logcat', '-d', '-b', 'all'], { allowFail: true }) ?? ''
-  const mine = log.split('\n').filter((l) => l.includes(PACKAGE) || /FATAL EXCEPTION|ANR in/.test(l))
+  const mine = log
+    .split('\n')
+    .filter((l) => l.includes(PACKAGE) || /FATAL EXCEPTION|ANR in/.test(l))
   const fatal = mine.filter((l) => /FATAL EXCEPTION|ANR in|Process: .*died|SIGSEGV/.test(l))
   check(fatal.length === 0, `fatal lines: ${fatal.slice(0, 3).join(' | ')}`)
-  const raw = seenText.filter((t) => /PGRST|violates|purge_account_data|account_deletion|duplicate key|supabase/i.test(t))
+  const raw = seenText.filter((t) =>
+    /PGRST|violates|purge_account_data|account_deletion|duplicate key|supabase/i.test(t),
+  )
   check(raw.length === 0, `raw backend text on screen: ${raw.slice(0, 3).join(' | ')}`)
   return { fatal: 0, rawTextOnScreen: 0 }
 })
 
 const failed = report.filter((r) => r.status !== 'PASS')
-writeFileSync(join(outDir, 'delete-journey-report.json'), `${JSON.stringify({ report, failed: failed.length }, null, 2)}\n`)
-console.log(failed.length === 0 ? `\nP189 DELETE JOURNEY: PASS (${String(report.length)}/${String(report.length)})` : `\nP189 DELETE JOURNEY: FAIL (${String(failed.length)})`)
+writeFileSync(
+  join(outDir, 'delete-journey-report.json'),
+  `${JSON.stringify({ report, failed: failed.length }, null, 2)}\n`,
+)
+console.log(
+  failed.length === 0
+    ? `\nP189 DELETE JOURNEY: PASS (${String(report.length)}/${String(report.length)})`
+    : `\nP189 DELETE JOURNEY: FAIL (${String(failed.length)})`,
+)
 process.exitCode = failed.length === 0 ? 0 : 1
 void tapNode
