@@ -1,110 +1,84 @@
 # Git publication plan
 
-Authority: this file for what is/isn't safe to push given current repository visibility, and the
-proposed integration path. `docs/GIT_WORKFLOW.md` for the durable branch/PR/CI conventions this
-plan operates inside (unchanged). `docs/CURRENT_STATE/BRANCH_PRUNING_PLAN.md` for the branch-by-
-branch keep/archive classification this plan references.
+Authority: this file for what is and is not safe to push given repository visibility, the
+candidate lineage, and the GitHub settings recommended before publication.
+`docs/GIT_WORKFLOW.md` for the durable branch/PR/CI conventions (unchanged).
+`docs/CURRENT_STATE/BRANCH_PRUNING_PLAN.md` for the branch-by-branch classification;
+`docs/release/P188_INTEGRATION_MATRIX.md` for what the candidate contains and why.
 
-**This is a plan, not an action.** Nothing here pushes, closes, or deletes anything. All figures
-verified live 2026-09-28 (P183) via `gh` — re-verify before acting if this file is read much later.
+**This is a plan, not an action.** Nothing here pushes, closes, deletes or reconfigures anything.
+Figures were verified live on 2026-10-02 (P188) with read-only `gh` calls; re-verify before acting.
 
-## 1. Current repository state (live-verified 2026-09-28)
+## 1. Current repository state (live-verified 2026-10-02)
 
 | Fact | Value |
 |---|---|
-| Visibility | **PUBLIC** (contradicts `CLAUDE.md`'s hard rule — see `HANDOVER.md` §1/§14) |
-| Default branch | `main` |
-| `origin/main` SHA | `d8682e047b757f63673a63ac8185a4806d68cb98` (matches the released frontend and hosted DB record — `HANDOVER.md` §1) |
-| Branch protection on `main` | None |
-| Repository rulesets | None |
-| Open PRs (spot-checked) | PR #112 (`fix/p142-ci-gated-production-deploy` → `main`), OPEN, MERGEABLE, last CI run 2026-09-18: `build-and-test` SUCCESS, `db-tests` FAILURE. Superseded by P163 (below) but not closed. |
-| Remote branches | 66 (per P176's count; not recounted branch-by-branch this session — see `BRANCH_PRUNING_PLAN.md`) |
-| Draft PRs | 27 (per P176's count, not independently recounted) |
+| Visibility | **PUBLIC** — contradicts `CLAUDE.md`'s hard rule; unchanged since first observed (2026-09-27) |
+| Default branch | `main`; `origin/main` = `d8682e047b757f63673a63ac8185a4806d68cb98` (released, = Production) |
+| Branch protection on `main` | none |
+| Repository rulesets | none |
+| Open PRs | 30 (PR #112 is draft, OPEN, MERGEABLE: `fix/p142-ci-gated-production-deploy`) |
+| Remote branches | 67 |
+| Newest workflow run | 2026-09-18 (PR #112, `db-tests` failure). **No run since**, so Actions capacity is still unverified, not blocked or resolved |
 
-## 2. Current local candidate chain (none pushed)
+**PR #112 is `SUPERSEDED_BY_P163`.** P163 integrates the P142 workflow it carries and the P160
+guard, and P188 contains P163. Do not merge #112 and do not close it from a session; closing or
+re-pointing it is the owner's call once the P188 line replaces it.
 
-The native lineage, in order, none merged or pushed:
+## 2. The release-candidate line (local, not pushed)
 
 ```
-d8682e0 (released main)
-  → P173  feat/p173-native-integration-recovered            105 migrations, device-verified
-    → P175  feat/p175-native-financial-write-flows           107 migrations
-      → P177  test/p177-native-financial-runtime             107 migrations, device-verified
-        → P178  feat/p178-dark-native-ui                     107 migrations
-          → P179  test/p179-dark-ui-finish-gate               107 migrations
-            → P180  feat/p180-native-financial-reliability   107 migrations, device-verified
-              → P181  feat/p181-native-device-accessibility-performance-gate   107 migrations
-              → P182  feat/p182-native-card-recognition                        107 migrations
-              → P184  release/p184-native-rc                                   107 migrations (current tip; NOT pushed — repository is PUBLIC)
-                (current native tip, 45ebfefa9a5038e20dd1999644eb96c1ae6352ef)
+d8682e0 (released main, 104 migrations)
+  └─ … native lineage P173 → P175 → P177 → P178 → P179 → P180 → P181 → P182 → P184 → P185 → P186 (3fac34f)
+        └─ P187 iOS readiness, rebuilt without its attribution trailer (tree-identical to 79c447d)
+            ├─ merge P164  (P143/145/146/147/148/149 auth + exact money, P151, P153/P161 Price Check, P157/P162 exports)
+            ├─ merge P163  (P142 deploy gate + P160 secret guard)
+            ├─ merge P165  (verification fixes for the P164 seams)
+            └─ P188 changes: build profiles, feature-branch CI trigger, comment rewording, documentation
+                 = release/p188-cross-platform-rc   (107 migrations; LOCAL_RC; see docs/release/P188_RELEASE_CANDIDATE.md)
 ```
 
-Plus independent (non-native) local candidates off the same `d8682e0` base: `fix/p163-integrated-
-ci-secret-gate` (deployment gate), `audit/p156-account-deletion-security-recovery` (account
-deletion), `fix/p149-auth-refresh-failure-recovery` (closes P130-19), `fix/p151-scanner-
-reliability-performance`, `fix/p157-safe-exact-export-pipeline`, `design/p174-stitch-owner-
-decision-pack` (superseded by the P178 implementation decision — see §3). None of these shares an
-integration branch with another or with the native chain; each needs its own merge/conflict pass.
+Kept **out** of the line on purpose: `audit/p156-account-deletion-security-recovery` (restore
+resurrection and public deletion URL are unresolved owner decisions; matrix §4). Design-only and
+documentation-only branches stay where they are.
 
-## 3. Superseded branches (do not treat as active work)
+## 3. What must not be pushed while the repository is PUBLIC
 
-- `fix/p142-ci-gated-production-deploy` and `fix/p160-predeploy-secret-guard` → superseded by
-  `fix/p163-integrated-ci-secret-gate` (integrates both).
-- `feat/p152-privacy-account-deletion` → superseded by `audit/p156-account-deletion-security-
-  recovery` (P156 builds on P152 with an independent security audit + fixes).
-- `spike/p158-native-collection-pricecheck` → superseded by `spike/p166-native-runtime-stitch`.
-- `spike/p166-native-runtime-stitch` → superseded by `fix/p167-native-android-runtime-hardening`.
-- `feat/p169-native-catalog-price-check`, `feat/p170-integrated-native-android` (unknown
-  completion status) → superseded/recovered by `feat/p173-native-integration-recovered`.
-- `design/p168-stitch-native-ui`, `design/p171-stitch-owner-review` → superseded by `design/p174-
-  stitch-owner-decision-pack`.
-- `design/p174-stitch-owner-decision-pack` itself → the direction it informed has now been
-  **implemented** as `feat/p178-dark-native-ui` (the owner's DARK_FIRST_UTILITY_STRUCTURE_FOIL_
-  IDENTITY hybrid choice). P174 remains useful as the design record, not as a pending decision.
-- Every `feat/p1xx-…`/`fix/p1xx-…` branch in the P104–P141 hardening chain that predates the
-  released `d8682e0` tip → already released (their content is in `main`); kept only as history.
-- Full branch-by-branch classification: `docs/CURRENT_STATE/BRANCH_PRUNING_PLAN.md`.
+Any branch carrying unreleased project source. That includes the P188 branch (it contains the
+deployment-gate and secret-guard work, whose publication is itself a security-relevant disclosure),
+the native lineage, and the account-deletion audit. **P188 is therefore not pushed.** The publication
+step in the P188 prompt is conditional on the owner having made the repository private; it was
+re-checked at the end of the session (see `docs/release/P188_RELEASE_CANDIDATE.md` §7).
 
-## 4. Which branch should eventually become the native RC
+## 4. When the repository is private: how to publish the candidate
 
-**`feat/p181-native-device-accessibility-performance-gate`** (the current tip of the P173→P181
-chain) is the natural base for a future native release-candidate branch — it carries every prior
-phase's fixes and is the most device-verified point in the lineage. It is **not ready to become an
-RC today**: the disclosed gaps in `HANDOVER.md` §9 (TalkBack never run, device matrix not
-exhaustive, JPY never driven as an on-device purchase, native card recognition unproven on this
-tip) should close first, and the branch has never been integration-tested against the
-non-native local candidates (P149/P151/P156/P157/P163) it would eventually need to merge with.
-Recommended path: close §9's native gaps on this branch (or a follow-on branch based on it) before
-naming anything `release/native-rc-*`.
+1. Push **only** `release/p188-cross-platform-rc` (no `main`, no force, no old P17x/P18x branches).
+2. `.github/workflows/ci.yml` now triggers on pushes to `release/**` as well as pull requests, so the
+   push itself starts `build-and-test` and `db-tests`. The `deploy-production` job is restricted to
+   a push to `refs/heads/main` and needs no Production secret on this branch; the validation jobs read
+   none.
+3. Watch that run's own result. If a job fails, classify it (real code failure, workflow defect,
+   expected missing secret, billing/capacity, transient) before changing anything; never weaken a
+   required gate to get green.
+4. Open a PR into `main` only after the run is green. Merge is squash, per `GIT_WORKFLOW.md`.
 
-## 5. What should NOT be pushed while the repository stays PUBLIC
+## 5. Recommended GitHub settings (NOT applied — owner action)
 
-Per `GIT_WORKFLOW.md` §13 and `CLAUDE.md`'s repository-visibility hard rule: **do not push any
-branch carrying unreleased project source** while visibility is PUBLIC, including but not limited
-to the entire native lineage (§2), the deployment-gate/secret-guard work (P163 — pushing this
-specifically would also be pushing a fix for a security finding, which is worse to expose than
-ordinary feature work), the account-deletion audit (P156), and the auth-refresh fix (P149). None
-of this should reach a public GitHub repository before the owner resolves the visibility
-contradiction.
+Read-only observation today: no protection, no rulesets. Recommended, in this order:
 
-## 6. What CAN be pushed once the repository is private again (or the owner explicitly accepts public)
+1. **Make the repository private** (Settings → General → Danger Zone) — before anything in §4.
+2. A ruleset or branch protection on `main`: require a pull request; require status checks
+   `build-and-test` and `db-tests` (strict: branch up to date); block force pushes and deletion;
+   optionally require conversation resolution. Do not allow bypass for admins.
+3. Delete the stale `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` **variables**, create the
+   four secrets in `docs/security/RELEASE_PREFLIGHT_P163.md` Part A, and rotate the key implicated by
+   the secret-shaped variable value (P159/P160 S-1).
+4. Cloudflare Pages: turn off the Git-integrated automatic deploy and preview builds against the
+   Production Supabase project, so the gated job is the only path (P130-08).
+5. Check Actions minutes / billing so the first run is not refused for capacity.
 
-Once visibility is resolved, the normal branch → PR → CI → merge workflow (`GIT_WORKFLOW.md` §2)
-applies with no special restriction — every local candidate in §2 becomes a normal push/PR
-candidate again, in whatever integration order the owner picks (P159's `NEXT_RELEASE_ORDER`, in
-the P159 worktree, has a reasoned starting proposal not yet promoted to a canonical doc).
+## 6. What must pass before a `main` merge
 
-## 7. What CI should run after a push
-
-Unchanged from `GIT_WORKFLOW.md` §2/§10: `.github/workflows/ci.yml`'s `build-and-test` and
-`db-tests` jobs (typecheck, lint, format, domain tests, build, secret scan, full ephemeral-database
-migration + authorization suite). CI is **post-push validation**, not a prerequisite for making the
-push itself (`GIT_WORKFLOW.md` §13) — but see §8 below for what must pass before anything merges.
-
-## 8. What must pass before a `main` merge
-
-Unchanged, `GIT_WORKFLOW.md` §1/§2/§4/§11: CI green (`build-and-test` and `db-tests` both passing,
-not merged with a red gate or an admin override), a reviewed diff, no secrets. `main`'s lack of
-GitHub-configured branch protection (§1 above) does not relax this — protection here is enforced by
-process, and this plan does not propose buying GitHub Pro or otherwise weakening that discipline
-just because the repository happens to be public right now.
+Unchanged (`GIT_WORKFLOW.md` §1/§2/§4/§11): CI green on both jobs, a reviewed diff, no secrets.
+A merge of the P188 line additionally needs the owner decisions in
+`docs/release/P188_RELEASE_CANDIDATE.md` §6 (hosted migration order, Edge Function deploys).

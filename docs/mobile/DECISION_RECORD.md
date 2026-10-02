@@ -3,7 +3,7 @@
 > **PROVISIONAL. OWNER APPROVAL REQUIRED.**
 > Nothing in this document, and nothing in `apps/mobile-spike/`, is an approved product decision.
 > The owner has **not** selected the final navigation, the visual direction or the app icon. The
-> proposals in [`docs/design/p154/`](../design/p154/README.md) are untouched and remain proposals.
+> proposals in `docs/design/p154/` (on branch `design/p154-native-mobile-redesign-blueprint`, not in this line) are untouched and remain proposals.
 
 ## What this spike is
 

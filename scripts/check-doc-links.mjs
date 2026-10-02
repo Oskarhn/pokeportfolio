@@ -1,7 +1,8 @@
 /**
  * Verifies the P176 documentation set: relative Markdown links resolve, no committed reference
  * to an agent scratch/temp path, and no secret-shaped string. Scoped to the files P176 introduced
- * or rewrote (HANDOVER.md, docs/CURRENT_STATE/, docs/handover/, CLAUDE.md, AGENTS.md) rather than
+ * or rewrote (HANDOVER.md, docs/CURRENT_STATE/, docs/handover/, CLAUDE.md, AGENTS.md; P188 adds
+ * docs/release/ and docs/mobile/) rather than
  * every pre-existing doc in `docs/`, which this task did not audit line-by-line.
  *
  * Usage: node scripts/check-doc-links.mjs
@@ -34,6 +35,8 @@ const targets = [
   join(root, 'AGENTS.md'),
   ...markdownFilesUnder(join(root, 'docs', 'CURRENT_STATE')),
   ...markdownFilesUnder(join(root, 'docs', 'handover')),
+  ...markdownFilesUnder(join(root, 'docs', 'release')),
+  ...markdownFilesUnder(join(root, 'docs', 'mobile')),
 ]
 
 const results = []

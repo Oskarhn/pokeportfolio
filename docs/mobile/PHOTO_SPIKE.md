@@ -49,7 +49,7 @@ P151's read-only identification result (`ScannerMatch { tier, candidates[], sign
 1. **P151 identification.** Native capture → decode to an RGBA buffer (a native image module) →
    the existing pure matcher (`src/domain/scanner/*`, reusable) with a native OCR (Apple Vision
    `VNRecognizeTextRequest`, ML Kit Text Recognition v2) behind `OcrEnginePort`. P154's
-   [NATIVE_SCANNER_PORTABILITY](../design/p154/NATIVE_SCANNER_PORTABILITY.md) has the parity gates
+   `NATIVE_SCANNER_PORTABILITY` (`docs/design/p154/` on branch `design/p154-native-mobile-redesign-blueprint`) has the parity gates
    (top-1/top-5 against the web baseline, embedding cosine ≈ 1, 50-scan thermal run); none is started
    here. Ask the P151 integrator whether `OcrEnginePort.recognize` still takes a canvas (P154 §7).
 2. **P153 variant confirmation.** A scan identifies a **printing**, never a finish, foil or condition.

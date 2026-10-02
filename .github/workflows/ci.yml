@@ -59,6 +59,16 @@ jobs:
       - name: Format check
         run: pnpm format:check
 
+      # P188: the documentation set the next session reads first must stay readable and truthful in
+      # form: HANDOVER.md / PROJECT_STATE.json within their size budgets, PROJECT_STATE.json valid and
+      # pointing at files that exist, and every relative link in the current-state, release and mobile
+      # documents resolving. Pure filesystem checks, no network.
+      - name: Documentation checks (size budget, project state, links)
+        run: |
+          node scripts/check-doc-size.mjs
+          node scripts/check-project-state.mjs
+          node scripts/check-doc-links.mjs
+
       - name: Domain and property tests
         run: pnpm test
 

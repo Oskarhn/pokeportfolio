@@ -27,4 +27,4 @@ on those two points. The spike lives in [`apps/mobile-spike`](../../apps/mobile-
 | [P177_DOC_CORRECTIONS](P177_DOC_CORRECTIONS.md) | Native financial runtime verification: device+DB proof for all five write flows, the Edge Runtime DB-suite result, corrections to prior status labels |
 | [P178_STITCH_IMPLEMENTATION](P178_STITCH_IMPLEMENTATION.md) | Dark-first design system (Utility structure + Foil identity), the JPY currency-selector fix, and a screen-by-screen comparison against the accepted P174 Stitch references |
 
-Inputs (read-only): [`docs/design/p154`](../design/p154/README.md), [`docs/design/p174`](../design/p174/README.md) (in the `p174` worktree; not committed there yet).
+Inputs (read-only): `docs/design/p154` (branch `design/p154-native-mobile-redesign-blueprint`) and `docs/design/p174` (branch `design/p174-stitch-owner-decision-pack`); neither is in this line.
