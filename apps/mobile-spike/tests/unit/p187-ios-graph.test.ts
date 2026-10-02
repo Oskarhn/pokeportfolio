@@ -76,6 +76,22 @@ describe('analyzeGraph', () => {
     ).toEqual([])
   })
 
+  it('requires the scanner chain by name (a shortened list would make the next test vacuous)', () => {
+    expect(REQUIRED_MODULES).toEqual(
+      expect.arrayContaining([
+        '/src/features/scanner-native/recognition-pipeline.ts',
+        '/src/features/scanner-native/ocr-adapter.ts',
+        '/src/features/scanner-native/visual-adapter.ts',
+        '/src/features/scanner-native/image-decode.ts',
+        '/src/features/scanner-native/model-assets.ts',
+        '/node_modules/onnxruntime-react-native/',
+        '/node_modules/@react-native-ml-kit/text-recognition/',
+        '/node_modules/@shopify/react-native-skia/src/skia/NativeSetup',
+        '/node_modules/expo-image-picker/',
+      ]),
+    )
+  })
+
   it('reports each missing part of the scanner chain', () => {
     for (const needle of REQUIRED_MODULES) {
       const without = GOOD.filter((source) => !source.includes(needle))

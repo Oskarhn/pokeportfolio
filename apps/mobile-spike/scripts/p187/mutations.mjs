@@ -150,8 +150,8 @@ const MUTANTS = [
     id: 'I15',
     name: 'the Face ID usage text comes back for a store that is never biometric-gated',
     file: 'app.json',
-    from: '["expo-secure-store", { "faceIDPermission": false }]',
-    to: '"expo-secure-store"',
+    from: '"faceIDPermission": false',
+    to: '"faceIDPermission": true',
     tests: CONFIG,
   },
   {

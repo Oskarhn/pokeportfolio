@@ -125,6 +125,17 @@
       "fully_certified": false,
       "notes": "SUCCESS_P185_NATIVE_RC_VERIFIED on an Android emulator: 20/20 release-APK journey, scanner usable at 360dp/200%, manual valuation + NOK/EUR sales DB-verified. Not fully certified: TalkBack not driven to a PASS, arm64/physical device deferred. See docs/mobile/P185_NATIVE_RC_CLOSURE.md."
     },
+    "native_ios_readiness": {
+      "prompt": 187,
+      "branch": "feat/p187-ios-readiness",
+      "sha": "619d0f1823f668719a4f087e56809477044fa81a",
+      "builds_on": "native_packaging",
+      "local_migration_count": 107,
+      "status": "LOCAL_ONLY",
+      "device_verified": false,
+      "fully_certified": false,
+      "notes": "SUCCESS_P187_IOS_BUILD_READINESS on Windows: iOS source, config and JS bundle ready, prebuild generated on Linux only, Xcode build and iPhone run NOT done (IOS_RUNTIME_VERIFIED=no). Opening-draft clock test fixed; unused Android permissions blocked. See docs/mobile/P187_IOS_READINESS.md and docs/mobile/IOS_BUILD_AND_DEVICE_RUNBOOK.md."
+    },
     "native_packaging": {
       "prompt": 186,
       "branch": "perf/p186-native-packaging-scanner",
@@ -190,6 +201,8 @@
     "branch_pruning_plan": "docs/CURRENT_STATE/BRANCH_PRUNING_PLAN.md",
     "p184_native_rc": "docs/mobile/P184_NATIVE_RELEASE_CANDIDATE.md",
     "p185_native_rc_closure": "docs/mobile/P185_NATIVE_RC_CLOSURE.md",
-    "p186_android_packaging": "docs/mobile/P186_ANDROID_PACKAGING_PERFORMANCE.md"
+    "p186_android_packaging": "docs/mobile/P186_ANDROID_PACKAGING_PERFORMANCE.md",
+    "p187_ios_readiness": "docs/mobile/P187_IOS_READINESS.md",
+    "ios_build_runbook": "docs/mobile/IOS_BUILD_AND_DEVICE_RUNBOOK.md"
   }
 }
