@@ -153,3 +153,17 @@ describe('P130-26 — product-authored text passes through, technical-looking te
     expect(userMessage(leakyWithPath)).not.toMatch(/functions\/v1/)
   })
 })
+
+describe('an amount the ledger cannot hold is told to the person (found by the authenticated E2E)', () => {
+  it('serializeMinorUnits refuses with text that survives the closed vocabulary', async () => {
+    const { serializeMinorUnits } = await import('../../src/data/money')
+    let caught: unknown
+    try {
+      serializeMinorUnits(10n ** 19n)
+    } catch (error) {
+      caught = error
+    }
+    expect(userMessage(caught)).toMatch(/outside the supported money range/i)
+    expect(describeError(caught).kind).toBe('invalid_input')
+  })
+})

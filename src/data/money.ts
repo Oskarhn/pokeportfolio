@@ -37,6 +37,18 @@ export class MoneyTransportError extends Error {
   }
 }
 
+/** A typed amount the ledger cannot hold. Reachable by a user typing a very large number, so its
+ *  message is written for them: `userFacing` lets it through the closed error vocabulary
+ *  (platform/user-error.ts, P130-26) while every other transport error stays technical. */
+export class MoneyRangeError extends MoneyTransportError {
+  readonly userFacing = true
+  readonly kind = 'invalid_input'
+  constructor(message: string) {
+    super(message)
+    this.name = 'MoneyRangeError'
+  }
+}
+
 /** The range a stored money amount can have: Postgres `bigint`. Anything outside it is refused
  *  before a request is built — the server would refuse it too (`bigint out of range`). */
 export const LEDGER_MINOR_MIN = -(2n ** 63n)
@@ -90,7 +102,7 @@ export function serializeMinorUnits(value: bigint): string {
     throw new MoneyTransportError(`money must be a bigint, got ${typeof value}`)
   }
   if (value < LEDGER_MINOR_MIN || value > LEDGER_MINOR_MAX) {
-    throw new MoneyTransportError(
+    throw new MoneyRangeError(
       `amount ${value.toString()} is outside the supported money range ` +
         `(${LEDGER_MINOR_MIN.toString()} to ${LEDGER_MINOR_MAX.toString()} minor units)`,
     )

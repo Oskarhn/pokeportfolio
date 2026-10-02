@@ -89,18 +89,28 @@ function structured(error: unknown): { code: string; status: number | null } {
   }
 }
 
+/** Product-authored text: a UserFacingError, an InvalidMoneyInputError, or any Error that carries
+ *  the `userFacing` marker (an error class that must keep another base class). */
+function isAuthored(error: unknown): error is Error {
+  return (
+    error instanceof UserFacingError ||
+    error instanceof InvalidMoneyInputError ||
+    (error instanceof Error && (error as { userFacing?: unknown }).userFacing === true)
+  )
+}
+
 /** Classify any thrown value into the closed vocabulary. Order matters: most specific first. */
 export function describeError(error: unknown): DescribedError {
   const raw = rawMessage(error)
   const { code, status } = structured(error)
   const probe = `${code} ${raw}`
 
-  if (
-    (error instanceof UserFacingError || error instanceof InvalidMoneyInputError) &&
-    error.message !== '' &&
-    !TECHNICAL_DETAIL.test(error.message)
-  ) {
-    const kind: UserErrorKind = error instanceof UserFacingError ? error.kind : 'invalid_input'
+  if (isAuthored(error) && error.message !== '' && !TECHNICAL_DETAIL.test(error.message)) {
+    const declared = (error as { kind?: unknown }).kind
+    const kind: UserErrorKind =
+      typeof declared === 'string' && declared in USER_ERROR_TEXT
+        ? (declared as UserErrorKind)
+        : 'invalid_input'
     return { kind, message: error.message, diagnostic: raw }
   }
 
