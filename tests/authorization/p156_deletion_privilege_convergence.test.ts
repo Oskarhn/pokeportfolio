@@ -30,7 +30,24 @@ const latestBaseline = (): string => {
   return join(migrationsDir, files[files.length - 1]!)
 }
 
-const RPCS = ['begin_account_deletion', 'purge_account_data', 'scrub_account_audit_trail']
+// The Edge Function's service-role surface (P152, P156, P189)...
+const RPCS = [
+  'begin_account_deletion',
+  'purge_account_data',
+  'scrub_account_audit_trail',
+  'prepare_account_erasure',
+  'record_account_erasure',
+  'erasure_subject_hash',
+]
+// ...and the OPERATOR-ONLY surface (P189): not even the service role may execute these.
+const OPERATOR_ONLY = [
+  'abort_account_deletion',
+  'restore_gate_account_columns',
+  'restore_gate_scan',
+  'restore_gate_check',
+  'restore_gate_apply',
+  'restore_gate_postcheck',
+]
 const TRIGGER_FUNCTIONS = [
   'account_deletion_write_guard',
   'account_deletion_write_guard_sealed',
@@ -65,7 +82,7 @@ async function functionExposure(): Promise<Exposure[]> {
        from pg_proc p
       where p.pronamespace = 'public'::regnamespace and p.proname = any($1)
       order by 1`,
-    [[...RPCS, ...TRIGGER_FUNCTIONS]],
+    [[...RPCS, ...OPERATOR_ONLY, ...TRIGGER_FUNCTIONS]],
   )
   return res.rows
 }
@@ -97,7 +114,9 @@ describe('the account-deletion surface converges from a hostile privilege state'
       await db.query(readFileSync(join(ROOT, 'tests', 'db', 'sql', 'hostile_grants.sql'), 'utf8'))
 
       const exposed = await functionExposure()
-      expect(exposed.map((f) => f.name).sort()).toEqual([...RPCS, ...TRIGGER_FUNCTIONS].sort())
+      expect(exposed.map((f) => f.name).sort()).toEqual(
+        [...RPCS, ...OPERATOR_ONLY, ...TRIGGER_FUNCTIONS].sort(),
+      )
       for (const fn of exposed) {
         expect(fn.anon, `${fn.name} exposed to anon`).toBe(true)
         expect(fn.authenticated, `${fn.name} exposed to authenticated`).toBe(true)
@@ -113,7 +132,8 @@ describe('the account-deletion surface converges from a hostile privilege state'
       expect(fn.anon, fn.name).toBe(false)
       expect(fn.authenticated, fn.name).toBe(false)
       expect(fn.public_exec, fn.name).toBe(false)
-      // The three RPCs keep service_role (the Edge Function needs them); trigger functions need none.
+      // The Edge Function's RPCs keep service_role; trigger functions and the operator-only surface
+      // (abort, restore gate) are executable by nobody but the database owner.
       expect(fn.service_role, fn.name).toBe(RPCS.includes(fn.name))
     }
     expect(await tableExposure()).toEqual({ anon: false, authenticated: false, service_role: true })

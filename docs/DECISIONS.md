@@ -7061,3 +7061,62 @@ deploys. P130-13, -14, -20, -26 and part of -09 remain OPEN (matrix §8).
 **Rejected.** Merging every active branch mechanically (P156 would have entered with an unresolved restore hazard); cherry-picking P164's content piecemeal
 (loses the P149/P151/P161/P162 ancestry that proves what is present); making `LOCAL_RELEASE_TEST` the production profile with different values
 (a local build would then be one wrong variable away from Production).
+
+
+## D-189 — Account deletion is restore-safe: the erasure is recorded off-platform before anything is destroyed, and a restored database must pass the erasure gate before it serves (P189)
+
+**Context.** P152/P156 built hard account deletion (a server-side workflow with a write barrier, a
+batched purge and password re-authentication) and found it could not be released: a backup taken
+while an account exists knows nothing about a later deletion, and restoring it resurrects the login
+and the whole ledger. P189 re-reproduced that on the P188 tree before changing anything: a real
+`pg_dump` of the database, the account deleted through the deployed function, the old dump restored
+— 24 of 24 account-owning relations came back (`auth.users`, `auth.identities` and 22 `public`
+tables). The defect cannot be fixed inside a backup, so the decision is about what lives outside it.
+
+**Decision.**
+
+1. **An erasure registry outside every backup is the source of truth.** One append-only,
+   hash-chained, HMAC-signed record per erasure: schema version, sequence number, random deletion id,
+   SHA-256 of the namespaced account UUID, UTC time, scope version. No address, name, financial data,
+   card data, credential or token — the random Auth UUID is sufficient because every owned row and the
+   login carry it. The write side is a small HTTP contract (`scripts/restore-gate/registry-sink.ts`);
+   the function holds only an append token, never the integrity key. The file-backed sink is the
+   reference implementation and the test double. **Where production keeps it is an owner decision**
+   (`COST_POLICY.md` applies); it is not decided here and `PRODUCTION_REGISTRY_STORAGE_READY=no`.
+2. **Registry before destruction, enforced by the database.** Sequence: authenticate → intent → fresh
+   password → `begin` (pending, writes blocked) → **record the erasure** (registry, then
+   `record_account_erasure`) → purge → delete the Auth user → scrub. `purge_account_data` raises
+   `account_erasure_not_recorded` until the record exists, so a future caller cannot reorder the steps.
+   If the registry is unreachable nothing has been deleted: the account stays pending with its data,
+   the answer is `deletion_incomplete`/`registry`, and the same request retries. With no registry
+   configured the function refuses every deletion (`503 deletion_unavailable`) — there is no
+   "delete anyway" mode. `abort_account_deletion` (operator-only) releases an unrecorded deletion, only
+   after the registry is checked.
+3. **A witness copy in the database.** `account_erasure_receipts` (deletion id, subject hash, registry
+   sequence; no foreign key, no personal data) lets a restore see that the registry is OLDER than the
+   backup — the one thing the registry file cannot show about its own truncated tail.
+4. **A promotion gate.** `restore-gate verify | apply | postcheck | promote-check` against the
+   restored, isolated image; replay re-uses the live workflow, is idempotent, fails closed (exit
+   codes in `docs/security/RESTORE_RUNBOOK.md`), and `promote-check` never trusts a stamp — it verifies
+   again for the current registry head. `scripts/p137/restore-drill.ts` fails unless the gate ran.
+5. **One backend seam, no second implementation.** Web and native call the same `delete-account`
+   contract through the shared client module; the native app only adds local cleanup (pending-write
+   journal, session, identity-scoped stores, scanner photo) after the server says the account is gone.
+6. **A truthful public page** (`/account-deletion`) states what is deleted, what is not and no
+   retention period; its only contact is the address the Privacy page already published.
+7. **P156 is evidence, not authority.** Its code was imported selectively (never merged): the three
+   migrations were re-timestamped after the P188 chain because they had never been applied anywhere,
+   and the P189 migration is appended after them. Its documentation set (privacy policy draft, store
+   worksheets) was not imported (`docs/release/P189_ACCOUNT_DELETION.md`).
+
+**Consequences.** A deletion in production requires configured registry storage and secrets; until
+the owner chooses them, deletion is correctly unavailable. Operators must run the gate on every
+restore; the hosted in-place restore (provider documentation: the project is restored in place)
+cannot be made isolated, which is the largest open gap and is written down as such. A registry
+record can never be dropped while an older restorable backup exists.
+
+**Rejected.** Tombstone table inside the database (it travels with, and is overwritten by, the
+backup being corrected); deleting inside backups (not possible, not claimed); a purge-mode flag to
+bypass the barrier (a switch to abuse); recording the erasure after the purge (data gone, nothing
+protecting it); registry-first-then-begin (a registered account whose deletion never started);
+storing the account e-mail or any content in the registry; a paid external service chosen here.

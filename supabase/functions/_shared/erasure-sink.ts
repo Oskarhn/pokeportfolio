@@ -30,7 +30,10 @@ export interface ErasureReceipt {
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
-const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', 'host.docker.internal'])
+// Loopback and the Docker host as a development/CI stack sees it. 172.17.0.1 is docker0's address on
+// a Linux runner; none of these is reachable from the public internet, which is why plain http is
+// tolerated for exactly them and nothing else.
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', 'host.docker.internal', '172.17.0.1'])
 export const SINK_TIMEOUT_MS = 10_000
 
 /**

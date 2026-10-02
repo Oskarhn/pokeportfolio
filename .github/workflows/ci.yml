@@ -148,6 +148,20 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # P189: the erasure registry the delete-account Edge Function records to. The values are
+      # generated for this run (never literals) and handed to the stack at start through
+      # supabase/config.toml [edge_runtime.secrets]; tests/db/global-setup.ts and the authenticated
+      # E2E start the file-backed reference sink on that address. 172.17.0.1 is the Docker host as
+      # seen from the stack's containers on a Linux runner (UNVERIFIED until the first CI run; the
+      # function refuses every deletion, fail closed, if the sink is not reachable).
+      - name: Generate the ephemeral erasure-registry credentials for this run
+        run: |
+          {
+            echo "ERASURE_REGISTRY_URL=http://172.17.0.1:8787"
+            echo "ERASURE_REGISTRY_TOKEN=$(openssl rand -hex 24)"
+            echo "ERASURE_REGISTRY_KEY=$(openssl rand -hex 32)"
+          } >> "$GITHUB_ENV"
+
       - name: Start local Supabase stack (applies every migration to an empty database)
         run: pnpm exec supabase start
 
@@ -165,6 +179,9 @@ jobs:
             # The P161/P164 ledger specs read the local database URL under this name (TESTING.md §6e).
             # Without it the authenticated E2E refuses to run price-check-ledger.spec.ts in CI.
             echo "P153_DB_URL=$(grep '^DB_URL=' /tmp/supabase-status.env | cut -d= -f2- | tr -d '\"')"
+            # P189: the restore-safe-deletion suite runs pg_dump / pg_restore inside the stack's own
+            # database container as the superuser (tests/db/p189_restore_safe_erasure.test.ts).
+            echo "P156_DB_CONTAINER=$(docker ps --filter name=supabase_db_ --format '{{.Names}}' | head -n 1)"
           } >> "$GITHUB_ENV"
 
       # The privilege checks below talk to Postgres directly. Every runner image ships psql, but

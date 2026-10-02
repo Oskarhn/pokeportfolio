@@ -732,17 +732,49 @@ arrives with its own milestone. M4 made this real for the tables that existed at
 `invitations.created_by` is the deliberate exception, using `ON DELETE SET NULL`, because an
 invitation is an audit record of an administrative action and outliving its issuer is the point.
 
-**This coverage is stale, not universal — corrected here after P108 verified it directly against
-`pg_constraint` rather than repeating the M4-era claim.** Five tables added after M4 still carry the
-default `NO ACTION` and are NOT reachable by `auth.users` cascade today: `sales`, `sale_lines`,
-`lot_disposals`, `lot_cost_adjustments` (M10), and `sealed_products.created_by_user_id` (M11).
-Every other user-private table — including `holding_tags`/`manual_valuations`/
-`custom_collections`/`custom_collection_members` (M6/M7), which a stale BACKLOG.md entry had also
-listed as gaps — does cascade correctly. `reset_my_portfolio_data()` is unaffected (it deletes this
-exact graph explicitly, in FK-respecting order, rather than relying on cascade); an actual "delete
-my account" RPC, when built, must either delete these five explicitly first or gain its own cascade
-migration — tracked in BACKLOG.md's "Later" table, not fixed here (P108's own scope was making test
-cleanup for this gap honest, not closing the gap itself).
+**This coverage was stale until P189 — five tables (`sales`, `sale_lines`, `lot_disposals`,
+`lot_cost_adjustments`, `sealed_products.created_by_user_id`) kept `NO ACTION` and made deletion
+impossible for any user with a sale.** The P189 migrations (`20261002120000`…) make every foreign key to
+`auth.users` cascade (except `invitations.created_by`, `SET NULL`), and derive the list from
+`pg_constraint` in tests so a later table cannot be forgotten.
+
+### 8.1 Account deletion is a restore-safe, retryable workflow (P152/P156, D-189)
+
+The target of a deletion is the account the **server-verified bearer token** identifies — never an id
+in the request. The function (`supabase/functions/delete-account`, `verify_jwt = true`) re-resolves the
+token against Auth, requires a freshly typed password verified by Auth against the token's own address
+(accounts with no email/password identity or with a verified second factor are refused,
+`reauthentication_unsupported`), and treats `expectedUserId` only as an intent check that can make it do
+less. Sequence, each step idempotent and the whole a state machine rather than a transaction:
+
+```text
+authenticate → intent → password → begin (pending) → RECORD THE ERASURE (registry + receipt)
+  → purge (batched, completion-verified) → delete the Auth user → scrub audit residue
+```
+
+- **Pending is a barrier**, not a flag: a statement-level trigger on every table a signed-in account
+  can write refuses INSERT/UPDATE/DELETE for an identity with a pending row, and `begin` waits for
+  writes already in flight (advisory lock), so a write cannot slip in after the purge has looked. There
+  is no bypass switch: the purge and Auth's cascade carry no user identity.
+- **The erasure is recorded off-platform first**, and `purge_account_data` refuses until it is
+  (`account_erasure_not_recorded`). A deletion with no registry configured is refused up front;
+  with an unreachable registry it stops before destroying anything. Registry format, sink contract
+  and the exact fields: `scripts/restore-gate/erasure-registry.ts`; the registry holds a hash of the
+  random account UUID and nothing else.
+- **A restored database is not safe to serve until the erasure gate passes** — procedure, exit codes
+  and the hosted in-place-restore caveat: [security/RESTORE_RUNBOOK.md](security/RESTORE_RUNBOOK.md).
+- **Privileges.** Only the Edge Function's RPCs (`begin_account_deletion`, `prepare_account_erasure`,
+  `record_account_erasure`, `purge_account_data`, `scrub_account_audit_trail`, `erasure_subject_hash`) are
+  granted to `service_role`; `abort_account_deletion` and every `restore_gate_*` function are executable
+  by the database owner only. All are `SECURITY DEFINER`, owned by `postgres`, with an empty `search_path`;
+  none is browser-reachable (`tests/authorization/function_grants.test.ts`, the hostile-grants
+  convergence test). Caveat: re-applying the latest privilege baseline grants `service_role` all tables,
+  which includes `restore_gate_runs`; a stamp alone never authorises promotion, so this is accepted.
+- **What it does not reach:** earlier backups (not rewritten), provider logs, exports on the person's
+  device — [security/P189_DELETION_DATA_MAP.md](security/P189_DELETION_DATA_MAP.md). Auth-level actions of
+  a pending account (password or e-mail change) are not covered by the database barrier.
+- **Open owner gates:** production registry storage, provider retention facts, the hosted in-place
+  restore interval, and the P130-13 direct-edit ledger grants (not widened by this work).
 
 ---
 

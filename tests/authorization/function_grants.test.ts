@@ -95,6 +95,39 @@ const FUNCTIONS: FunctionCase[] = [
     authenticated: REFUSED,
     why: 'removes Auth audit rows for the id it is given; service role only',
   },
+  // P189: the restore-safe erasure workflow and the operator-only surface.
+  {
+    name: 'prepare_account_erasure',
+    args: { p_user_id: '00000000-0000-0000-0000-000000000000' },
+    anon: REFUSED,
+    authenticated: REFUSED,
+    why: 'reads the pending deletion of the id it is given; service role only',
+  },
+  {
+    name: 'record_account_erasure',
+    args: {
+      p_user_id: '00000000-0000-0000-0000-000000000000',
+      p_deletion_id: '00000000-0000-0000-0000-000000000000',
+      p_registry_seq: 1,
+    },
+    anon: REFUSED,
+    authenticated: REFUSED,
+    why: 'unlocks the purge for the id it is given; service role only',
+  },
+  {
+    name: 'abort_account_deletion',
+    args: { p_user_id: '00000000-0000-0000-0000-000000000000' },
+    anon: REFUSED,
+    authenticated: REFUSED,
+    why: 'releases a pending deletion; operator (database owner) only, not even the service role',
+  },
+  {
+    name: 'restore_gate_apply',
+    args: { p_registry: [], p_dry_run: true },
+    anon: REFUSED,
+    authenticated: REFUSED,
+    why: 'deletes accounts by registry on a restored image; operator only',
+  },
   {
     name: 'claim_invitation',
     args: { p_token: 'x' },
