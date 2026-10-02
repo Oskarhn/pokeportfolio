@@ -81,25 +81,60 @@ describe('P130-26 native — UI sources do not render raw error messages', () =>
   const READ = /\.message\b/
 
   /** Reads that are not an Error's own text; each says why. */
-  const ALLOWED: Record<string, string> = {
-    'src/ui/AppRoot.tsx': 'session.notice is a classifyFailure Failure (fixed text)',
-    'src/ui/components.tsx': 'failure is a classifyFailure Failure (fixed text)',
-    'src/ui/screens/AddAcquisitionScreen.tsx':
-      'guarded by instanceof InvalidMoneyInputError/InvalidEventDateError',
-    'src/ui/screens/LoginScreen.tsx': 'invalid_credentials copy and a Failure (fixed text)',
-    'src/ui/screens/ManualValuationScreen.tsx': 'guarded by instanceof InvalidMoneyInputError',
-    'src/ui/screens/ProfileScreen.tsx': 'session.notice is a Failure (fixed text)',
-    'src/ui/screens/RecordOpeningScreen.tsx': 'guarded by instanceof validation errors',
-    'src/ui/screens/RecordPurchaseScreen.tsx': 'guarded by instanceof validation errors',
-    'src/ui/screens/RecordSaleScreen.tsx': 'guarded by instanceof validation errors',
-    'src/features/catalog-search/CatalogSearchScreen.tsx':
-      'state.failure is a Failure (fixed text)',
-    'src/features/price-check/CardPriceScreen.tsx': 'state.card.failure is a Failure (fixed text)',
-    'src/features/scanner-native/recognition-pipeline.ts':
-      'abstain messages are authored here; the error status reason is never rendered (PhotoEntryScreen shows fixed copy)',
-    'src/account/account-deletion-controller.ts':
-      'only AuthIdentityChanged/AuthCredentialsUnavailable (fixed text); everything else is UNKNOWN',
-    'App.tsx': 'developer build refusal (backend-config), not a runtime backend error',
+  const ALLOWED: Record<string, { count: number; why: string }> = {
+    'src/ui/AppRoot.tsx': {
+      count: 1,
+      why: 'session.notice is a classifyFailure Failure (fixed text)',
+    },
+    'src/ui/components.tsx': { count: 1, why: 'failure is a classifyFailure Failure (fixed text)' },
+    'src/ui/screens/AddAcquisitionScreen.tsx': {
+      count: 1,
+      why: 'guarded by instanceof InvalidMoneyInputError/InvalidEventDateError',
+    },
+    'src/ui/screens/LoginScreen.tsx': {
+      count: 1,
+      why: 'invalid_credentials copy and a Failure (fixed text)',
+    },
+    'src/ui/screens/ManualValuationScreen.tsx': {
+      count: 1,
+      why: 'guarded by instanceof InvalidMoneyInputError',
+    },
+    'src/ui/screens/ProfileScreen.tsx': {
+      count: 1,
+      why: 'session.notice is a Failure (fixed text)',
+    },
+    'src/ui/screens/RecordOpeningScreen.tsx': {
+      count: 1,
+      why: 'guarded by instanceof validation errors',
+    },
+    'src/ui/screens/RecordPurchaseScreen.tsx': {
+      count: 1,
+      why: 'guarded by instanceof validation errors',
+    },
+    'src/ui/screens/RecordSaleScreen.tsx': {
+      count: 1,
+      why: 'guarded by instanceof validation errors',
+    },
+    'src/features/catalog-search/CatalogSearchScreen.tsx': {
+      count: 2,
+      why: 'state.failure is a Failure (fixed text)',
+    },
+    'src/features/price-check/CardPriceScreen.tsx': {
+      count: 1,
+      why: 'state.card.failure is a Failure (fixed text)',
+    },
+    'src/features/scanner-native/recognition-pipeline.ts': {
+      count: 2,
+      why: 'abstain messages are authored here; the error status reason is never rendered (PhotoEntryScreen shows fixed copy)',
+    },
+    'src/account/account-deletion-controller.ts': {
+      count: 1,
+      why: 'only AuthIdentityChanged/AuthCredentialsUnavailable (fixed text); everything else is UNKNOWN',
+    },
+    'App.tsx': {
+      count: 1,
+      why: 'developer build refusal (backend-config), not a runtime backend error',
+    },
   }
 
   function walk(path: string): string[] {
@@ -115,14 +150,19 @@ describe('P130-26 native — UI sources do not render raw error messages', () =>
     expect(files.length).toBeGreaterThan(20)
   })
 
-  it('every .message read is on the reviewed allowlist', () => {
-    const unreviewed = files.filter(
-      (f) =>
-        readFileSync(f, 'utf8')
-          .split('\n')
-          .some((line) => !/^\s*(\*|\/\/)/.test(line) && READ.test(line)) && !(rel(f) in ALLOWED),
-    )
-    expect(unreviewed.map(rel)).toEqual([])
+  const reads = (f: string) =>
+    readFileSync(f, 'utf8')
+      .split('\n')
+      .filter((line) => !/^\s*(\*|\/\/)/.test(line) && READ.test(line)).length
+
+  it('every .message read is reviewed — the COUNT per file is part of the review', () => {
+    const unreviewed = files
+      .filter((f) => reads(f) !== (ALLOWED[rel(f)]?.count ?? 0))
+      .map(
+        (f) =>
+          `${rel(f)}: ${String(reads(f))} reads, ${String(ALLOWED[rel(f)]?.count ?? 0)} reviewed`,
+      )
+    expect(unreviewed).toEqual([])
   })
 
   it('allowlist entries are not stale', () => {

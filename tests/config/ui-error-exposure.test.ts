@@ -15,22 +15,37 @@ const ROOTS = ['src/features', 'src/ui', 'src/auth']
 const FILE = /\.(ts|tsx)$/
 const MESSAGE_READ = /\b(?:[A-Za-z_.]*(?:rror|err|caught|failure|cause)|e|ex)\??\.message\b/
 
-/** `file` → reasons the listed read is not a backend message reaching a person. */
-const ALLOWED: Record<string, string> = {
-  'src/features/admin/InvitationsPage.tsx':
-    'throws new Error(...) inside queryFn (never rendered) and maps RPC codes to fixed admin sentences',
-  'src/features/openings/controller.ts':
-    'input to mapOpeningErrorMessage, which returns one of a fixed set of sentences',
-  'src/features/price-check/scan-session.ts':
-    'ScannerIdentificationError messages are one of four fixed strings (scanner-identification.ts)',
-  'src/features/purchases/PurchaseFormPage.tsx':
-    'guarded by instanceof FxRateNotFoundError (UserFacingError, authored text)',
-  'src/features/scanner/errors.ts':
-    'scanner-typed errors (ScannerEngineError etc.) carry pre-sanitised copy; checked by name',
-  'src/features/scanner/ScannerPage.tsx':
-    'captureError is the {title, message} produced by describeCaptureError, not an Error',
-  'src/features/scanner/visual/visual-worker.ts':
-    'worker-internal diagnostic posted to the client; surfaced only through scanner debug state',
+/** `file` → how many reviewed reads it holds, and why none of them is a backend message reaching a
+ *  person. The COUNT is part of the review: a new read in an allowlisted file fails like a new file. */
+const ALLOWED: Record<string, { count: number; why: string }> = {
+  'src/features/admin/InvitationsPage.tsx': {
+    count: 4,
+    why: 'throws new Error(...) inside queryFn (never rendered) and maps RPC codes to fixed admin sentences',
+  },
+  'src/features/openings/controller.ts': {
+    count: 2,
+    why: 'input to mapOpeningErrorMessage, which returns one of a fixed set of sentences',
+  },
+  'src/features/price-check/scan-session.ts': {
+    count: 1,
+    why: 'ScannerIdentificationError messages are one of four fixed strings (scanner-identification.ts)',
+  },
+  'src/features/purchases/PurchaseFormPage.tsx': {
+    count: 1,
+    why: 'guarded by instanceof FxRateNotFoundError (UserFacingError, authored text)',
+  },
+  'src/features/scanner/errors.ts': {
+    count: 2,
+    why: 'scanner-typed errors (ScannerEngineError etc.) carry pre-sanitised copy; checked by name',
+  },
+  'src/features/scanner/ScannerPage.tsx': {
+    count: 1,
+    why: 'captureError is the {title, message} produced by describeCaptureError, not an Error',
+  },
+  'src/features/scanner/visual/visual-worker.ts': {
+    count: 1,
+    why: 'worker-internal diagnostic posted to the client; surfaced only through scanner debug state',
+  },
 }
 
 function walk(dir: string): string[] {
@@ -63,7 +78,12 @@ describe('P130-26 — UI sources do not render raw error messages', () => {
     const unreviewed: string[] = []
     for (const file of files) {
       const lines = offendingLines(readFileSync(file, 'utf8'))
-      if (lines.length > 0 && !(file in ALLOWED)) unreviewed.push(`${file}: ${lines[0]!.trim()}`)
+      const allowed = ALLOWED[file]?.count ?? 0
+      if (lines.length !== allowed) {
+        unreviewed.push(
+          `${file}: ${String(lines.length)} reads, ${String(allowed)} reviewed — ${lines[0]?.trim() ?? ''}`,
+        )
+      }
     }
     expect(unreviewed).toEqual([])
   })
@@ -72,6 +92,14 @@ describe('P130-26 — UI sources do not render raw error messages', () => {
     for (const file of Object.keys(ALLOWED)) {
       expect(offendingLines(readFileSync(file, 'utf8')).length, file).toBeGreaterThan(0)
     }
+  })
+
+  it('mutation: one extra read in an allowlisted file is caught by the count', () => {
+    const text =
+      readFileSync('src/features/openings/controller.ts', 'utf8') + '\nsetX(err.message)\n'
+    expect(offendingLines(text).length).not.toBe(
+      ALLOWED['src/features/openings/controller.ts']!.count,
+    )
   })
 
   it('mutation: the audit flags the shape that originally leaked', () => {
