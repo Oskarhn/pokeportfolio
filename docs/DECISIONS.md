@@ -7120,3 +7120,36 @@ backup being corrected); deleting inside backups (not possible, not claimed); a 
 bypass the barrier (a switch to abuse); recording the erasure after the purge (data gone, nothing
 protecting it); registry-first-then-begin (a registered account whose deletion never started);
 storing the account e-mail or any content in the registry; a paid external service chosen here.
+
+
+## D-190 — The repository is public by the owner's choice; development phases are pushed after local checks (P190)
+
+**Decision (owner, 2026-10-02).** `Oskarhn/pokeportfolio` is intentionally **PUBLIC**
+(`PUBLIC_BY_OWNER_CHOICE`). The earlier position — that public visibility contradicted a
+"private" hard rule and that unreleased work must stay local while it was public — is withdrawn.
+Public visibility is neither a publication blocker nor a warning.
+
+**Standing rule.** Completed development phases SHOULD be pushed to their feature or release branch
+after local checks. GitHub Actions runs after the push (CI is post-push validation; a branch does not
+wait for another branch's run). A development branch does not need to be feature-complete or
+Production-ready. **Merging to `main` and deploying to Production keep their own, stricter gates**
+(`GIT_WORKFLOW.md` §1/§2/§11): green required CI, a reviewed diff, no secrets, and for a deploy the
+owner actions in `docs/security/RELEASE_PREFLIGHT_P163.md`.
+
+**What public does not change.** It does not authorize committing credentials, private keys,
+Production configuration secrets, personal data, signing material (Android keystores, Apple
+certificates and profiles) or backups. Before every push: a secret scan of the diff and, where CI
+does it, of the history; documentation must carry no real local usernames, Production account ids,
+real test-user credentials, registry records or backup content. Secret scanning remains mandatory.
+No session changes repository visibility.
+
+**Why.** Refusing every push because the repository is public left finished, verified work
+unreviewed and unvalidated by real CI (the first real run of the P189 Linux registry-sink wiring, for
+example, could not happen). The owner chose open development; the controls that matter are the
+secret gates, not secrecy of source.
+
+**Consequences.** `CLAUDE.md`, `AGENTS.md`, `HANDOVER.md`, `PROJECT_STATE.json`, `GIT_WORKFLOW.md` §13
+and `GIT_PUBLICATION_PLAN.md` state `PUBLIC_BY_OWNER_CHOICE`. Historical reports are not rewritten.
+`PUBLICATION_CHECKLIST.md` is retained as the pre-launch checklist for a deliberate public *launch*
+(announcement, README as portfolio piece), not as a gate for pushing branches. Branch protection is
+recommended, not applied (`GIT_PUBLICATION_PLAN.md` §5).

@@ -287,28 +287,32 @@ rather than a separate credential ask.
 inherited from P130). `PREVIEW_MUTATION_RISK=LOW_BUT_UNMITIGATED` (RLS holds; the gap is process,
 not a demonstrated exploit). `PREVIEW_SAFETY_DESIGN` = the two options above, owner to choose.
 
-## 13. Feature-branch pushes while repository visibility is unresolved
+## 13. Development pushes (repository is PUBLIC_BY_OWNER_CHOICE)
 
-A feature-branch push does **not** need to wait for a previous branch's GitHub Actions run to
-finish — pushes are independent; CI on one branch never blocks starting or pushing another. CI is
-**post-push validation**, not a prerequisite for making the commit or pushing the branch. This is
-unchanged and does not weaken §2/§4's requirement that CI be green **before a PR merges** — it only
-says the commit-and-push step itself is not gated on some other branch's run.
+The repository is intentionally public (D-190). That is **not** a reason to withhold a push.
 
-**What changes while the repository is PUBLIC (§6):** before pushing any branch containing
-unreleased project source, check current visibility (`gh repo view --json visibility`, or see
-`HANDOVER.md` §1). If the repository is public, **do not push unreleased private project source by
-default** — every pushed branch, its diff, and its CI logs become world-readable the moment it
-lands on GitHub, for a project whose own hard rule says the repository should be private. This is
-not a new gate invented by this section; it follows directly from `CLAUDE.md`'s existing "GitHub
-visibility" hard rule and the contradiction recorded in `HANDOVER.md` §1. Once the owner restores
-private visibility (or explicitly decides public is intentional), this restriction lifts and the
-normal branch → PR → CI → merge workflow (§2) applies without a visibility check. See
-`docs/CURRENT_STATE/GIT_PUBLICATION_PLAN.md` for what is and is not safe to push under either
-state, and the branch-by-branch classification in
-`docs/CURRENT_STATE/BRANCH_PRUNING_PLAN.md`.
+**Standing rule.** Completed development phases SHOULD be pushed to their feature/release branch
+after local checks. GitHub Actions runs after the push. A development branch does not need to be
+feature-complete or Production-ready before it is pushed. A push never waits for another branch's
+Actions run: CI is post-push validation, not a prerequisite for making the commit or pushing the
+branch. This does not weaken §2/§4: CI must still be green **before a PR merges**.
 
-`main` still requires the deliberate integration/release gate described in §1/§2/§11 regardless of
-visibility — a public repository is a reason to be more conservative about what reaches GitHub at
-all, never a reason to relax what is required to reach `main`. GitHub Actions results remain
-post-push validation, not a substitute for the PR review and green-CI-before-merge requirement.
+**Before every push** (mandatory, public or not): a clean or deliberately staged working tree; a
+secret scan of the diff and the pushed history (gitleaks with the repository's `.gitleaks.toml` and
+the project guards `scripts/check-*`); no real local usernames, Production account ids, real
+test-user credentials, registry records, backup content, private Stitch URLs or tokens in committed
+documentation; no `Co-Authored-By`/generated-by attribution in the pushed ancestry.
+
+**Public does not authorize** committing credentials, private keys, Production configuration
+secrets, personal data, signing material (keystores, Apple certificates/profiles) or private
+backups. Secret scanning stays mandatory.
+
+**Branches that trigger CI.** `release/**` pushes run the same validation jobs as a pull request
+(`build-and-test`, `db-tests`); `deploy-production` is restricted to a push to `refs/heads/main`,
+needs no secret on a branch, and is skipped there (`tests/config/workflow-deploy-gate.test.ts`).
+
+**Main and Production keep their own gates.** `main` still requires the integration/release gate in
+§1/§2/§11 — green required CI, a reviewed diff, no secrets — and a Production deploy additionally the
+owner actions in `docs/security/RELEASE_PREFLIGHT_P163.md`. Public visibility relaxes neither. See
+`docs/CURRENT_STATE/GIT_PUBLICATION_PLAN.md` for the publication state and the recommended
+(unapplied) branch-protection baseline.

@@ -85,11 +85,12 @@ frontend filtering for access control. The `service_role` key never reaches the 
 **Secrets.** Never commit any. Never print one into documentation, logs, error messages, test
 fixtures or commit messages. `.env.example` holds names and placeholders only.
 
-**GitHub visibility.** The repository should be private. **Never make it public.** That requires
-the owner's explicit approval plus a completed pass through PUBLICATION_CHECKLIST. **As of this
-writing the repository is actually PUBLIC** — see [HANDOVER.md](HANDOVER.md) §1/§14. This is an
-open owner decision, not something to silently fix or silently ignore; verify with
-`gh repo view` yourself rather than assuming either state.
+**GitHub visibility.** `PUBLIC_BY_OWNER_CHOICE` — the repository is intentionally public (owner
+decision, recorded in [DECISIONS.md](docs/DECISIONS.md) D-190). Public visibility is **not** a
+blocker or a warning and is **not** a reason to withhold a push. Public development does **not**
+authorize committing credentials, Production configuration secrets, personal data, signing material
+or private backups — secret scanning stays mandatory before every push. No session changes
+visibility. Push policy: [GIT_WORKFLOW.md](docs/GIT_WORKFLOW.md) §13.
 
 **Real data.** Everything committed is synthetic. Never commit the user's actual collection,
 purchases or valuations.

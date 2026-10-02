@@ -17,23 +17,21 @@ Authority: this file for current status; `HANDOVER.md` §1/§13/§14 for the sum
   `gh api`) — matches `GIT_WORKFLOW.md` §6: protection is enforced by process, not GitHub
   configuration.
 
-## Repository visibility — CONTRADICTS CLAUDE.md
+## Repository visibility — PUBLIC_BY_OWNER_CHOICE
 
-`gh repo view` on 2026-09-27, re-confirmed live again 2026-09-28 (P183), reports
-`Oskarhn/pokeportfolio` as **PUBLIC**. `CLAUDE.md`'s hard rule states the repository is private and
-must never be made public without the owner's explicit approval plus a completed
-`docs/PUBLICATION_CHECKLIST.md` pass. Nothing found in this documentation session changed it, and
-no session in the reviewed output files claims to have changed it either — when/why it became
-public is unknown. Full remediation plan: `docs/CURRENT_STATE/GIT_PUBLICATION_PLAN.md`.
-Consequences while public:
-- All GitHub Actions run logs are publicly readable (once any workflow actually runs).
-- All 66 remote branches and 27 draft PRs are publicly readable, including their diffs and commit
-  history.
-- The repository's public JS bundle already carries the Supabase project ref and a
-  `sb_publishable_` key by design (that's expected for a Supabase frontend) — the *added* exposure
-  from being public is source history and CI logs, not the deployed bundle itself.
+`Oskarhn/pokeportfolio` is **public by the owner's explicit choice** (D-190, 2026-10-02). It is not a
+blocker or a warning, and development branches are pushed after local checks
+(`docs/GIT_WORKFLOW.md` §13). Earlier notes in this documentation set that called public visibility a
+contradiction of `CLAUDE.md` are superseded. What public does **not** change:
+- no credentials, Production configuration secrets, personal data, signing material or private
+  backups are ever committed — secret scanning stays mandatory;
+- GitHub Actions run logs and every pushed branch, diff and commit are world-readable, so a value
+  that reaches a log is exposed (the reason the P163 gate keeps build values in repository secrets);
+- the repository's public JS bundle carries the Supabase project ref and a `sb_publishable_` key by
+  design; `main` merge and Production deploy keep their own gates.
 
-**This needs an explicit owner decision** — see `HANDOVER.md` §14 item 1.
+Publication state and recommended (unapplied) branch protection:
+`docs/CURRENT_STATE/GIT_PUBLICATION_PLAN.md`.
 
 ## Deployment-gate candidate: P163 (supersedes P142 + P160)
 

@@ -40,15 +40,17 @@ believed at the time and are known to contain claims later superseded — see
   **104 migrations applied, 0 pending** (Supabase MCP connector, P159).
 - **Scanner content id:** `f25fc05d569b7cca` — unchanged across P130–P188 (web build verified again in
   P188: `scanner:index:verify` OK, 19,500 cards, `dist/…/current.json` = this id).
-- **Repository visibility: PUBLIC.** ⚠️ Contradicts `CLAUDE.md`'s hard rule. Live-checked 2026-10-02
-  (P188): `visibility: PUBLIC`, no branch protection on `main`, no rulesets, 30 open PRs, 67 remote
-  branches. Nobody in scope changed it. **Do not push unreleased local candidates while it stays
-  public** (`GIT_WORKFLOW.md` §13). P188 therefore did **not** push. Plan:
-  [docs/CURRENT_STATE/GIT_PUBLICATION_PLAN.md](docs/CURRENT_STATE/GIT_PUBLICATION_PLAN.md). §14.
-- **PR #112** (`fix/p142-ci-gated-production-deploy`, draft, OPEN, MERGEABLE) is
-  **`SUPERSEDED_BY_P163`** and P188 contains P163. Do not merge it; closing it is the owner's call.
-  The newest GitHub Actions run is still 2026-09-18, so capacity is unverified (not blocked, not
-  resolved).
+- **Repository visibility: `PUBLIC_BY_OWNER_CHOICE`** (D-190, 2026-10-02). Intentional; not a
+  blocker or a warning. No branch protection on `main`, no rulesets (P188 live check). **Standing push
+  rule:** completed development phases SHOULD be pushed to their feature/release branch after local
+  checks; GitHub Actions runs after the push; a development branch need not be feature-complete or
+  Production-ready. Main merge and Production deploy keep their own stricter gates. Public does
+  **not** authorize committing credentials, Production secrets, personal data, signing material or
+  private backups — secret scanning stays mandatory.
+  Rule and plan: [GIT_WORKFLOW.md](docs/GIT_WORKFLOW.md) §13,
+  [docs/CURRENT_STATE/GIT_PUBLICATION_PLAN.md](docs/CURRENT_STATE/GIT_PUBLICATION_PLAN.md).
+- **PR #112** (`fix/p142-ci-gated-production-deploy`, draft) is **`SUPERSEDED_BY_P163`**; P163 is
+  contained in the P190 line. See §2 for the P190 branch/PR and its CI status.
 - **P130 findings still OPEN in Production:** P130-08 (no enforced deploy gate: the repo-side gate is now
   in the P188 candidate; needs the owner's Cloudflare action), P130-19 (`Number(bigint)`: **fixed in
   the P188 candidate**), and a secret-shaped `VITE_SUPABASE_URL` Actions variable (S-1: rotate and
@@ -270,9 +272,9 @@ Native test suites are not in the workflow. Conventions (unchanged): [docs/GIT_W
 
 Owner-only actions, most urgent first:
 
-1. **Repository visibility** — decide whether PUBLIC was intended; if not, make it private (GitHub
-   Settings → General → Danger Zone). Until then nothing unreleased is pushed (§1). Recommended
-   branch protection / ruleset (not applied): `GIT_PUBLICATION_PLAN.md` §5.
+1. **Branch protection on `main`** (not applied; the repository is public by choice, §1): require a
+   PR and the `build-and-test` and `db-tests` checks, block force-push and deletion —
+   `GIT_PUBLICATION_PLAN.md` §5.
 2. **Rotate the Supabase key** implicated by the secret-shaped `VITE_SUPABASE_URL` Actions variable,
    delete the old `VITE_*` variables, create the four secrets (P163 Part A).
 3. **Cloudflare Pages** dashboard check/change (production branch, auto-deploy off, previews) so the

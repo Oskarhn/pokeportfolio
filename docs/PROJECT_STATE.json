@@ -135,12 +135,13 @@
   },
   "repository": {
     "visibility": "PUBLIC",
-    "visibility_expected": "PRIVATE",
-    "visibility_contradiction": true,
+    "visibility_policy": "PUBLIC_BY_OWNER_CHOICE",
+    "visibility_expected": "PUBLIC",
+    "visibility_contradiction": false,
     "verified_at": "2026-10-02",
     "branch_protection": "none",
     "rulesets": "none",
-    "publication_status": "NOT_PUSHED_repo_is_public; unreleased candidates stay local until the owner resolves visibility; see docs/CURRENT_STATE/GIT_PUBLICATION_PLAN.md"
+    "publication_status": "PUSHED_development_rc; branch release/p190-cross-platform-development-rc; public by owner choice (D-190); see docs/CURRENT_STATE/GIT_PUBLICATION_PLAN.md"
   },
   "canonical_docs": {
     "product_scope": "docs/PRODUCT_SPEC.md",
