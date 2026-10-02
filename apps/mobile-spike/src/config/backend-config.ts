@@ -9,8 +9,14 @@
  * reaches a client bundle). Because Expo inlines `EXPO_PUBLIC_*` values into the JS bundle, anything
  * placed there is readable by whoever holds the app.
  *
- * SPIKE_ONLY: a production build path (an explicit, reviewed opt-in) is a later, owner-approved
- * decision; nothing here can be flipped to Production by an environment variable.
+ * BUILD PROFILES (P188). The profile is a BUILD-time value (EXPO_PUBLIC_BUILD_PROFILE, inlined into
+ * the bundle next to the URL and key; config/build-profile.cjs applies the matching native
+ * configuration). LOCAL_DEV and LOCAL_RELEASE_TEST, and an unset profile, keep the rule above. Only
+ * PRODUCTION_RELEASE accepts a hosted backend, and then ONLY a hosted one: an exact
+ * `https://<20-character project ref>.supabase.co` origin and an `sb_publishable_` key, never a
+ * local, private or loopback address and never a legacy JWT. The profile cannot be chosen at run
+ * time and an unknown value is refused, so a local build cannot reach Production and a Production
+ * build cannot be pointed at a developer machine by a stray environment value.
  */
 
 export type BackendConfigErrorCode =
@@ -21,6 +27,8 @@ export type BackendConfigErrorCode =
   | 'non_local_backend_refused'
   | 'secret_key_refused'
   | 'invalid_key'
+  | 'invalid_build_profile'
+  | 'non_hosted_backend_refused'
 
 export class BackendConfigError extends Error {
   readonly code: BackendConfigErrorCode
@@ -40,7 +48,30 @@ export interface BackendConfig {
 
 export type Platform = 'ios' | 'android' | 'web'
 
+export type BuildProfile = 'LOCAL_DEV' | 'LOCAL_RELEASE_TEST' | 'PRODUCTION_RELEASE'
+
+const BUILD_PROFILES: readonly BuildProfile[] = [
+  'LOCAL_DEV',
+  'LOCAL_RELEASE_TEST',
+  'PRODUCTION_RELEASE',
+]
+
+/** Unset or empty is LOCAL_DEV (the profile that can only reach a local backend); unknown is refused. */
+export function parseBuildProfile(raw: string | undefined): BuildProfile {
+  if (raw === undefined || raw.trim() === '') return 'LOCAL_DEV'
+  const value = raw.trim() as BuildProfile
+  if (!BUILD_PROFILES.includes(value)) {
+    throw new BackendConfigError(
+      'invalid_build_profile',
+      'EXPO_PUBLIC_BUILD_PROFILE is not a known build profile',
+    )
+  }
+  return value
+}
+
 export interface EnvInput {
+  /** The build profile (EXPO_PUBLIC_BUILD_PROFILE); see the header. */
+  profile?: string | undefined
   url?: string | undefined
   publishableKey?: string | undefined
   /** Android emulator only: the host alias for the developer machine's loopback. Default 10.0.2.2. */
@@ -129,7 +160,40 @@ export function resolvePlatformUrl(url: string, platform: Platform, env: EnvInpu
   return `${scheme}://${alias}${port === '' ? '' : `:${port}`}${rest === '/' ? '' : rest}`
 }
 
+const HOSTED_ORIGIN = /^https:\/\/([a-z0-9]{20})\.supabase\.co$/
+const HOSTED_PUBLISHABLE_KEY = /^sb_publishable_[A-Za-z0-9_-]{16,}$/
+
+/** PRODUCTION_RELEASE: a hosted origin and a publishable key, nothing else. */
+function loadHostedBackendConfig(env: EnvInput): BackendConfig {
+  const url = env.url?.trim() ?? ''
+  const key = env.publishableKey?.trim() ?? ''
+  if (url === '') {
+    throw new BackendConfigError('missing_url', 'EXPO_PUBLIC_SUPABASE_URL is not set')
+  }
+  if (key === '') {
+    throw new BackendConfigError('missing_key', 'EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY is not set')
+  }
+  // A key in the URL slot, or a secret anywhere, is named for what it is before the shape check.
+  if (/sb_secret_/i.test(key) || /sb_secret_/i.test(url)) {
+    throw new BackendConfigError('secret_key_refused', 'a secret key must never be in the app')
+  }
+  const hosted = HOSTED_ORIGIN.exec(url)
+  if (hosted === null) {
+    throw new BackendConfigError(
+      'non_hosted_backend_refused',
+      'a production build accepts only a hosted Supabase origin',
+    )
+  }
+  if (!HOSTED_PUBLISHABLE_KEY.test(key)) {
+    // Not echoed: the key is not logged. A legacy anon JWT is not accepted either.
+    assertPublishableKey(key)
+    throw new BackendConfigError('invalid_key', 'a production build needs an sb_publishable_ key')
+  }
+  return { url, publishableKey: key, host: hosted[0].slice('https://'.length) }
+}
+
 export function loadBackendConfig(env: EnvInput, platform: Platform): BackendConfig {
+  if (parseBuildProfile(env.profile) === 'PRODUCTION_RELEASE') return loadHostedBackendConfig(env)
   if (!env.url?.trim())
     throw new BackendConfigError('missing_url', 'EXPO_PUBLIC_SUPABASE_URL is not set')
   if (!env.publishableKey?.trim()) {

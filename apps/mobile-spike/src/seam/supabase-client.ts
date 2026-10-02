@@ -28,6 +28,7 @@ function load(): ConfigResult {
   try {
     const config = loadBackendConfig(
       {
+        profile: str(process.env.EXPO_PUBLIC_BUILD_PROFILE),
         url: str(process.env.EXPO_PUBLIC_SUPABASE_URL),
         publishableKey: str(process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY),
         androidEmulatorHost: str(process.env.EXPO_PUBLIC_ANDROID_EMULATOR_HOST),

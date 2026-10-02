@@ -194,7 +194,9 @@ describe('collection port over the RELEASED shared data layer', () => {
     expect(log).toHaveLength(0)
   })
 
-  it('sends a safe value cursor as a JSON number and the request passes the guard', async () => {
+  // P188: the shared data layer now carries every money argument as a decimal string (D-137, P146);
+  // a number would be rounded above 2^53, so the safe value is no longer special-cased to a JSON number.
+  it('sends a safe value cursor as a decimal string and the request passes the guard', async () => {
     const { bodies } = client(() => json([]))
     const cursor: CollectionCursor = {
       holdingId: 'h',
@@ -208,7 +210,7 @@ describe('collection port over the RELEASED shared data layer', () => {
       numberKey: '1',
     }
     await createSharedCollectionPort().listPage({ sort: 'value_desc', cursor, limit: 10 })
-    expect(bodies[0]).toContain('"p_cursor_value_minor":123456')
+    expect(bodies[0]).toContain('"p_cursor_value_minor":"123456"')
   })
 })
 

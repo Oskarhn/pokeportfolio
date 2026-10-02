@@ -97,6 +97,12 @@ function writeEnvLocal() {
     `EXPO_PUBLIC_SUPABASE_URL=${resolved.url}`,
     `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY=${resolved.publishableKey}`,
   ]
+  // P188: the build profile (config/build-profile.cjs, src/config/backend-config.ts). Both of these
+  // variants talk to a LOCAL backend with the placeholder identity; a store build is PRODUCTION_RELEASE
+  // and is not produced by this script.
+  lines.push(
+    `EXPO_PUBLIC_BUILD_PROFILE=${variant === 'proof' ? 'LOCAL_DEV' : 'LOCAL_RELEASE_TEST'}`,
+  )
   if (variant === 'proof') lines.push('EXPO_PUBLIC_RUNTIME_PROOF=1')
   lines.push(...extraEnv)
   writeFileSync(join(appRoot, '.env.local'), `${lines.join('\n')}\n`)
