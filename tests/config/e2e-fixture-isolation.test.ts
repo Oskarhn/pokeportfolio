@@ -71,3 +71,63 @@ describe('E2E fixture isolation (shared-user authenticated specs)', () => {
     expect(owners.map((s) => s.name)).toContain('exact-money-input.spec.ts')
   })
 })
+
+/**
+ * P165 — the card the synthetic scanner photo prints ("Fauxosaur EX 049") is shared REFERENCE data
+ * with exactly one owner, the lease helper. P164 had two specs each insert their own copy: `cards`
+ * is unique on (set_id, local_id), so under parallel workers one `beforeAll` failed and six tests
+ * never ran (and a copy in another set would make BOTH cards candidates of every scan). A run that
+ * happens to schedule the specs apart proves nothing, so this is a static rule, like the ones above.
+ */
+describe('E2E fixture ownership: the printed scanner fixture card (P165)', () => {
+  const E2E_DIR = join(DIR, '..')
+  const allSpecs = readdirSync(E2E_DIR, { recursive: true, encoding: 'utf8' })
+    .filter((name) => name.endsWith('.spec.ts'))
+    .map((name) => ({ name, text: readFileSync(join(E2E_DIR, name), 'utf8') }))
+  const authenticatedName = (name: string) => name.replace(/^authenticated[\\/]/, '')
+
+  it('no spec inserts a catalog card itself', () => {
+    const offenders = allSpecs.filter((s) => /insert\s+into\s+public\.cards\b/i.test(s.text))
+    expect(offenders.map((s) => s.name)).toEqual([])
+  })
+
+  it('every spec that scans the printed photo against the real catalog leases the card, and only those do', () => {
+    const scanning = allSpecs
+      .filter(
+        (s) => /^authenticated[\\/]/.test(s.name) && /synthetic-card-modern\.png/.test(s.text),
+      )
+      .map((s) => authenticatedName(s.name))
+      .sort()
+    const leasing = allSpecs
+      .filter((s) => /\bacquireScannerFixtureCard\(/.test(s.text))
+      .map((s) => authenticatedName(s.name))
+      .sort()
+    // The rule is not vacuous: it finds the two specs that exist today.
+    expect(scanning).toEqual(['p164-cross-track.spec.ts', 'price-check-ledger.spec.ts'])
+    expect(leasing).toEqual(scanning)
+  })
+
+  it('no spec drains the portfolio recompute queue by itself: settling waits for the rows another worker may hold', () => {
+    const offenders = allSpecs.filter((s) => /drain_portfolio_recompute_queue/.test(s.text))
+    expect(offenders.map((s) => s.name)).toEqual([])
+    const settling = allSpecs.filter((s) => /\bsettleQueueFor\(/.test(s.text))
+    expect(settling.map((s) => authenticatedName(s.name)).sort()).toEqual([
+      'p164-cross-track.spec.ts',
+      'price-check-ledger.spec.ts',
+    ])
+  })
+
+  it('the lease is given back only after the spec removed its own users, and the spec never deletes the shared rows', () => {
+    for (const name of ['p164-cross-track.spec.ts', 'price-check-ledger.spec.ts']) {
+      const text = readFileSync(join(DIR, name), 'utf8')
+      const after = text.slice(text.indexOf('test.afterAll('))
+      const users = after.indexOf('deleteSyntheticUser')
+      const release = after.indexOf('.release()')
+      expect(users, `${name}: afterAll deletes its users`).toBeGreaterThan(-1)
+      expect(release, `${name}: afterAll releases the lease`).toBeGreaterThan(users)
+      expect(text, `${name}: never deletes the shared fixture rows itself`).not.toMatch(
+        /delete\s+from\s+public\.(cards|card_variants)\b/i,
+      )
+    }
+  })
+})

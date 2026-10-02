@@ -2454,3 +2454,31 @@ independent identity layers survives, by design — the browser test only discri
 (c) "no orphan worker after sign-out" needs a bounded-window assertion, not an instantaneous zero: a worker whose
 construction had begun cannot be interrupted, only terminated on arrival; (d) a regex written through a shell
 heredoc lost its backslash and made an assertion vacuous — read the file back.
+
+## 2026-09-25 — The failure that was not about load (P165)
+
+The integrated candidate had one recorded test failure under parallel workers, and a documented workaround: run the authenticated project with one
+worker. That is the shape of a defect being tolerated. Reproducing it with two workers gave the same numbers (14 passed, 1 failed, 6 not run); polling the
+fixture rows while it ran showed a single row from the spec that started first, and the spec that lost never owned one. The reproduction that mattered needed
+no browser and no load: run the two `beforeAll` inserts one after the other and read the constraint name. Two specs wanted the same *printed* card — the
+scanner photo is a picture, so the row cannot differ — and the table says a set has one card 049.
+
+The obvious repairs did not survive a measurement. Different sets: the scanner searches the whole catalog, and one printed text returned both cards, so each
+spec could confirm the other's. One worker: hides it. What is actually shared is ownership of a reference row, so it got a lease — a shared advisory lock on
+a dedicated session, taken for the spec's lifetime, the row deleted by whoever lets go last. The first version of the helper failed its own randomized
+interleaving test: `ON CONFLICT (id)` arbitrates the primary key only, and two holders inserting at once collided on the other unique index. The same test
+now also proves that a holder killed with `pg_terminate_backend` stops holding the fixture.
+
+Building that turned up three more things nobody had asked about. (1) "Drain the recompute queue, then take the baseline" is not a barrier: the drain is one
+transaction taking `SKIP LOCKED` on many users' rows, so a drain in the other spec can be holding yours, and yours returns zero at once. Two real sessions
+show it; waiting until no due row is left is the barrier. (2) Running the whole project after a complete DB suite — the order CI uses — failed a spec even
+with a single worker: an old DB test had left two Pikachu printings in the seed catalog, and a step that assumed "Pikachu has one printing" was right about the
+wrong database. That one would have turned the exact-head CI run red. (3) The independent look at the money transport found nothing to change in the P164
+code, and one thing worth writing down: the rewrite marker protects against the *released* function, which sends `9999999999999998` for a provider price of
+99999999999999.99, not against the new one, which cannot send an unsafe number at all. Running the function's real code under Deno, instead of grepping its
+source, is what made that a statement about behaviour.
+
+Testing lessons worth keeping: (a) a workaround recorded next to a failure is a claim to test, not a fact; (b) when two specs share a row the scanner
+looks up across the catalog, isolate ownership, not location; (c) an idempotent `ON CONFLICT` clause must name no target if more than one unique index can
+fire; (d) "run it after the other suite, in CI's order" is a separate test from "run it alone"; (e) a shell heredoc turned `\b` into a backspace inside a
+regular expression and, separately, a `\n` inside a mutant string literal into a real newline — after scripting edits into a file, load it.

@@ -1271,13 +1271,66 @@ request's bearer token belongs to (JWT `sub` read from the browser's own request
   sign-out during scanner start-up; Add to Collection writes only on submit; a two-item `/scan` batch across an account switch.
 - `scripts/p164/mutants.mjs` — 16 mutants (`node scripts/scanner-p151/run-mutations.mjs --mutants scripts/p164/mutants.mjs`).
 
-**Run it.** Same as §6b, with two additions: export `P153_DB_URL="$DB_URL"` (the P161 ledger spec reads it) and run the authenticated project with
-`--workers=1`. `p164-cross-track.spec.ts` and `price-check-ledger.spec.ts` both need the card the scanner fixture prints ("Fauxosaur EX 049"), which is
-unique per set: run concurrently, the second `beforeAll` fails with a message saying so.
+**Run it.** Same as §6b, with one addition: export `P153_DB_URL="$DB_URL"` (the P161 ledger spec reads it). The authenticated project runs with
+**any number of workers** (P165: `--workers=1` is no longer needed; see §6e for why it was).
 
-**Local-stack hygiene learned here.** A `test:db` run that is killed midway leaves catalog fixtures behind (reset before re-running). After a *complete*
-DB run the catalog also keeps extra printings (e.g. the seed Pikachu has three variants), so E2E specs must choose a variant explicitly when the card has
-several. pg_cron jobs are deactivated on the local stack (`update cron.job set active=false` as `supabase_admin`).
+**Local-stack hygiene learned here.** A `test:db` run that is killed midway leaves catalog fixtures behind (reset before re-running). pg_cron jobs are
+deactivated on the local stack (`update cron.job set active=false` as `supabase_admin`). Until P165 a *complete* DB run also left two extra Pikachu printings
+(`catalog_constraints.test.ts` never removed them), which CI's own order — `pnpm test:db`, then the authenticated project on the same database — turned into a
+failure of `price-check-ledger.spec.ts` (see §6e). The DB test now removes them; a spec that needs a single-printing card still must not pick one the DB suite
+touches, and a spec that uses a multi-printing card must choose a printing explicitly.
+
+## 6e. Parallel authenticated E2E: who owns what (P165)
+
+P164 recorded one failure in the full authenticated project under `--workers=2` (`price-check-ledger.spec.ts` `beforeAll`, six dependent tests not run) and
+worked around it with `--workers=1`. The cause was **not load**: both specs inserted their own row for the card the scanner photo prints, and `cards`
+is unique on `(set_id, local_id)` (`23505 cards_set_id_local_id_key`). A separate card in another set is no isolation either: `search_cards` looks across
+the whole catalog, so both cards would be candidates of every scan (measured: two rows for "Fauxosaur EX 049"). What can be isolated is ownership.
+
+| Fixture | Owner | Rule |
+|---|---|---|
+| Synthetic users, their ledgers, per-account provider prices | each spec | `createSyntheticUser` (unique email per call); deleted in that spec's `afterAll`, before the lease is given back |
+| The printed card "Fauxosaur EX 049" and its two printings | the lease helper `support/scanner-fixture-card.ts` | fixed ids, identical for every spec; a lease is a shared Postgres advisory lock on a dedicated session; idempotent untargeted `ON CONFLICT DO NOTHING`; deleted only by the **last** holder; a killed holder's lease disappears with its session; refuses a third printing (the explicit-variant tests stay meaningful) |
+| The portfolio recompute queue | `support/settle-derived-tables.ts` | wait until no due row is left for the spec's own users; a plain drain returns at once when another worker's transaction holds the rows (`SKIP LOCKED`) |
+| Market data (`fx_rates` EUR/USD → NOK) | shared, identical values | both specs upsert the same values on the same key; nothing deletes them |
+
+- `tests/db/p165_scanner_fixture_lease.test.ts` (real advisory locks, barriers observed in `pg_locks`, 25 seeded randomized interleavings, a killed
+  holder, a stray row on the printed identity, a third printing) and `tests/db/p165_settle_derived_tables.test.ts` (two real sessions).
+- `tests/config/e2e-fixture-isolation.test.ts` gained the static rules: no spec inserts a catalog card, exactly the specs that scan the printed photo lease it,
+  users are removed before the lease is released, nobody drains the queue by itself.
+- Verified under real parallelism (local stack, 106 migrations): the two specs together with 2 workers (21 passed); both specs with `--repeat-each=2` and
+  4 and 3 workers, i.e. all four serial groups running at once including a spec against itself (40 passed each). Repeat with `--repeat-each=N --workers=M`
+  where `M >=` the number of serial groups to force the worst overlap.
+- **Second defect, not about parallelism:** CI runs `pnpm test:db` and then the authenticated project on the same database. A complete DB run left two extra Pikachu
+  printings (`catalog_constraints.test.ts`), and the ledger spec's single-variant step searched Pikachu — a failure reproducible with `--workers=1`. Fixed at both
+  ends (see D-165).
+- **The whole authenticated project, 165 tests scheduled (`--workers=4`, this 12-thread desktop):**
+
+  | run | result |
+  |---|---|
+  | 1 (before the fixes above; after a full DB run) | 159 passed, 1 failed, 5 not run — the Pikachu assumption |
+  | 2 (fresh reset → DB suite → project) | 164 passed, 1 failed — `p149-refresh-failure` "refresh endpoint unreachable": `waitForURL` timed out 60 s after the 62 s cool-down. Not reproduced in 10 concurrent repeats of that test (12/12) nor in a six-worker run with two cross-track specs (36/36); **cause not established** |
+  | 3, 4 | 165 passed |
+  | 5 (slower machine: 10.2 min against 8.9) | 157 passed, 4 failed, 4 not run — a race in the ledger spec's phase log (the Home page's own dashboard reads, issued after the sign-in wait, counted as Price Check "writes"; fixed by attributing requests to the page that issued them) and three 30 s `networkidle` timeouts in `private-routes-smoke.spec.ts` |
+  | 6 (final test code; a Vite server that logged every event: no dependency re-optimisation or reload) | 165 passed |
+
+  Read a failing full run against this list before suspecting fixtures: the specs that wait on wall-clock windows (the P149 outage test's 62 s cool-down, the
+  30 s smoke tests) are the ones that move when the machine is busy. Against a database with 104 migrations the same project passes 162 of 165 (§ compatibility in HANDOVER).
+
+**Independent seam tests (P165).** Written from what the real code produces, not from P164's values:
+- `tests/data/p165-search-prices-real-function.test.ts` + `scripts/p165/edge-harness/` — the real `search-prices` code (index.ts and `_shared/*`)
+  executed under **Deno** with the provider's HTTP answer and the two database reads controlled (`import_map.json` stubs `npm:@supabase/supabase-js@2.112.3`,
+  so a version bump there needs the map updated). The response text is inspected before any parser sees it and then pushed through real clients into the
+  real consumers. Needs `deno` on the PATH; **without it those tests are skipped with a warning** (CI has no Deno today), the frozen-wire tests always run.
+- `tests/db/p165_scanner_commit_lease.test.ts` (real controller + real `addCardAcquisition` + production leased client, A → B → A with a lookup in flight,
+  an unheard storage rewrite), `tests/db/p165_export_overlap.test.ts` (two exports overlapping in one tab; the last request in flight),
+  `tests/ui/p165-read-only-scanner-runtime.test.ts`, `tests/domain/price-check/p165-variant-resolution.test.ts` (126 list shapes).
+- `tests/ui/p165-scan-session-latest-wins.test.ts` — 400 random orders of scan start / cancel / dispose against the real session.
+- `scripts/p165/mutants.mjs` — 14 mutants; the runner takes `config` per mutant for the database suites. Run it on a disposable copy of the tree:
+  `node scripts/scanner-p151/run-mutations.mjs --mutants scripts/p165/mutants.mjs`.
+- Tooling traps found here: scripting an edit turned `\b` into a backspace character inside a regular expression (an assertion that could never match) and a
+  `\n` inside a string literal into a real newline (a module that no longer loaded), in a shell heredoc and in a JS template literal alike. After scripting
+  edits into a file, load it and `grep -c $'\x08'` it.
 
 ## 7a. Privilege-convergence tests
 

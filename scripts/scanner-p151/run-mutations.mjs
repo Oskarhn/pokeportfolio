@@ -149,11 +149,21 @@ const selected = only.length > 0 ? MUTANTS.filter((m) => only.includes(m.id)) : 
 const scratch = mkdtempSync(path.join(os.tmpdir(), 'p151-mut-'))
 const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
 
-function runVitest(tests, tag) {
+// P165: a mutant may name a vitest `config` (the database suites need vitest.db.config.ts and a live
+// stack in the environment); the default is the unit config.
+function runVitest(tests, tag, config) {
   const report = path.join(scratch, `${tag}.json`)
   const result = spawnSync(
     pnpm,
-    ['exec', 'vitest', 'run', ...tests, '--reporter=json', `--outputFile=${report}`],
+    [
+      'exec',
+      'vitest',
+      'run',
+      ...(config === undefined ? [] : ['--config', config]),
+      ...tests,
+      '--reporter=json',
+      `--outputFile=${report}`,
+    ],
     { shell: process.platform === 'win32', encoding: 'utf8', env: { ...process.env, CI: '1' } },
   )
   let json = null
@@ -232,7 +242,7 @@ try {
       })
       continue
     }
-    const control = runVitest(m.tests, `${m.id}-control`)
+    const control = runVitest(m.tests, `${m.id}-control`, m.config)
     if (control.status !== 0) {
       results.push({
         id: m.id,
@@ -249,7 +259,7 @@ try {
     )
     let outcome
     try {
-      outcome = classify(runVitest(m.tests, m.id).json)
+      outcome = classify(runVitest(m.tests, m.id, m.config).json)
     } finally {
       writeFileSync(m.file, original)
     }

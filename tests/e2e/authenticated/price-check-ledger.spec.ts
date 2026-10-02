@@ -1,5 +1,5 @@
 import { fileURLToPath } from 'node:url'
-import { test, expect, type Page, type Route, type Worker } from '@playwright/test'
+import { test, expect, type Page, type Request, type Route, type Worker } from '@playwright/test'
 import type { Client as PgClient } from 'pg'
 import {
   createServiceClient,
@@ -10,6 +10,8 @@ import {
   type SyntheticUser,
   type TestClient,
 } from '../../db/setup'
+import { acquireScannerFixtureCard, type ScannerFixtureLease } from './support/scanner-fixture-card'
+import { settleDerivedTables as settleQueueFor } from './support/settle-derived-tables'
 
 /**
  * P153 — the ledger non-mutation proof. Price Check must be unable to change anything a person
@@ -51,12 +53,10 @@ const CORS = {
 }
 
 /** The synthetic scan fixture reads "FAUXOSAUR EX 049/197". A catalog card with that identity (and
- *  two variants) is added to the LOCAL catalog so a real scan finds a real candidate and the confirm
- *  path is genuinely exercised. Catalog data, not user data; removed again afterwards. */
-const FAUX = {
-  cardId: 'c0000000-0000-0000-0000-000000000f01',
-  variantIds: ['c0000000-0000-0000-0000-0000000af011', 'c0000000-0000-0000-0000-0000000af012'],
-}
+ *  two variants) exists in the LOCAL catalog so a real scan finds a real candidate and the confirm
+ *  path is genuinely exercised. It is shared reference data with a lease per spec, not this spec's
+ *  own row — see support/scanner-fixture-card.ts (P165). */
+let scannerCard: ScannerFixtureLease | null = null
 
 interface Snapshot {
   tables: Record<string, { rows: number; hash: string }>
@@ -165,8 +165,8 @@ async function buildLedger(client: TestClient): Promise<string[]> {
  *  page — so it is drained NOW, before each baseline, leaving nothing for the scheduler to change
  *  mid-test while every table (including those two) is still compared strictly. */
 async function settleDerivedTables(): Promise<void> {
-  const { error } = await service.rpc('drain_portfolio_recompute_queue', { p_batch_users: 100 })
-  if (error) throw new Error(`drain_portfolio_recompute_queue failed: ${error.message}`)
+  // Not "drain once": a drain running in another worker can hold these users' rows (P165).
+  await settleQueueFor(service, pgClient, [userA.id, userB.id])
 }
 
 /** Every user-owned table, discovered from the catalog: count + md5 of every row's full text. */
@@ -228,6 +228,17 @@ async function signIn(page: Page, user: SyntheticUser) {
 interface RequestLog {
   method: string
   url: string
+  /** Path of the page that issued the request ('' when it has no frame). */
+  from: string
+}
+
+/** The path of the document that issued `request`, read while the request is being issued. */
+function issuingPath(request: Request): string {
+  try {
+    return new URL(request.frame().url()).pathname
+  } catch {
+    return '' // a request without a frame (service worker) or a frame that has no URL yet
+  }
 }
 
 /** Records every request to the backend and answers `search-prices` with synthetic observations. */
@@ -236,7 +247,7 @@ async function instrument(page: Page): Promise<{ log: RequestLog[]; bodies: stri
   const bodies: string[] = []
   page.on('request', (request) => {
     if (request.url().startsWith(SUPABASE_URL)) {
-      log.push({ method: request.method(), url: request.url() })
+      log.push({ method: request.method(), url: request.url(), from: issuingPath(request) })
     }
   })
   page.on('response', (response) => {
@@ -296,9 +307,16 @@ async function instrument(page: Page): Promise<{ log: RequestLog[]; bodies: stri
 
 /** Requests that could change state, in the Price Check phase only (after sign-in — signing in and
  *  the Home page it lands on are not Price Check). Strict: outside GET, only `search_cards` and
- *  `search-prices` are allowed, so ANY other RPC — read or write — fails the phase. */
+ *  `search-prices` are allowed, so ANY other RPC — read or write — fails the phase.
+ *
+ *  The Home page is excluded by WHO issued the request, not by when it arrived (P165): its dashboard
+ *  reads (`get_market_movers`, `get_dashboard_summary`, `list_portfolio`, …) can be issued after the
+ *  sign-in's network-idle wait has returned and the phase has begun — observed in a four-worker run,
+ *  six POSTs counted as "writes" of a scan that had not started. Every other page stays strict,
+ *  including the Add page reached from Price Check. */
 function writes(log: RequestLog[]): RequestLog[] {
-  return log.filter(({ method, url }) => {
+  return log.filter(({ method, url, from }) => {
+    if (from === '/') return false
     const path = new URL(url).pathname
     if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return false
     if (path.endsWith('/rest/v1/rpc/search_cards')) return false
@@ -320,10 +338,14 @@ async function priceCheckSession(page: Page): Promise<void> {
     await options.nth(i).click()
     await expect(page.getByTestId('observation').first()).toContainText('€12.34')
   }
-  // A single-variant card.
-  await page.goto('/price-check?q=Pikachu')
+  // A single-variant card: the seed Grass Energy. It is not Pikachu on purpose: a complete `pnpm test:db`
+  // run leaves extra Pikachu printings in the catalog (catalog_constraints.test.ts), and the CI job
+  // runs the authenticated project on that same database right after it (P165). Asserting that no
+  // choice is offered keeps this step about the single-printing path.
+  await page.goto('/price-check?q=Grass%20Energy')
   await page.getByTestId('price-check-result').first().click()
   await expect(page.getByTestId('observation').first()).toContainText('€12.34')
+  await expect(page.getByTestId('choose-variant')).toHaveCount(0)
   await expect(page.getByTestId('unavailable').first()).toHaveAttribute(
     'data-reason',
     'graded_source_not_configured',
@@ -334,6 +356,15 @@ async function priceCheckSession(page: Page): Promise<void> {
   await add.click()
   await expect(page).toHaveURL(/\/add\?variantId=/)
   await page.goBack()
+}
+
+/** A card with several printings never shows a price before the person chooses one; when the page
+ *  offers the choice, take the first option (an explicit click, as a person would). */
+async function chooseVariantIfAsked(page: Page): Promise<void> {
+  const choose = page.getByTestId('choose-variant')
+  const observation = page.getByTestId('observation').first()
+  await expect(choose.or(observation)).toBeVisible()
+  if (await choose.isVisible()) await page.getByTestId('variant-option').first().click()
 }
 
 async function scanSession(page: Page): Promise<'candidates' | 'no-match' | 'error'> {
@@ -359,18 +390,7 @@ test.beforeAll(async () => {
   pgClient = new Client({ connectionString: DB_URL })
   await pgClient.connect()
   service = createServiceClient()
-  await pgClient.query(
-    `insert into public.cards (id, set_id, local_id, name, rarity, category, language, tcgdex_card_id)
-     values ($1, $2, '049', 'Fauxosaur EX', 'Double Rare', 'Pokemon', 'en', 'faux-049')
-     on conflict (id) do nothing`,
-    [FAUX.cardId, seedCatalog.cardSetId],
-  )
-  await pgClient.query(
-    `insert into public.card_variants (id, card_id, finish, stamp, subtype, size)
-     values ($1, $3, 'normal', '', '', 'standard'), ($2, $3, 'reverse', '', '', 'standard')
-     on conflict (id) do nothing`,
-    [FAUX.variantIds[0], FAUX.variantIds[1], FAUX.cardId],
-  )
+  scannerCard = await acquireScannerFixtureCard(DB_URL, seedCatalog.cardSetId)
   userA = await createSyntheticUser(service, 'p153-a')
   userB = await createSyntheticUser(service, 'p153-b')
   clientA = await signInAs(userA)
@@ -396,11 +416,14 @@ test.beforeAll(async () => {
 })
 
 test.afterAll(async () => {
-  await pgClient.query('delete from public.card_variants where card_id = $1', [FAUX.cardId])
-  await pgClient.query('delete from public.cards where id = $1', [FAUX.cardId])
-  await pgClient.end()
-  await deleteSyntheticUser(service, userA.id)
-  await deleteSyntheticUser(service, userB.id)
+  // Cleanup follows what setup actually created: a failed `beforeAll` must not turn into a
+  // TypeError here that hides the real cause. Users first (their rows reference the printings),
+  // then the lease — the fixture rows go only with the last lease.
+  // The module-level `let`s are typed as always assigned; after a failed `beforeAll` they are not.
+  const created = [userA, userB] as (SyntheticUser | undefined)[]
+  for (const user of created) if (user) await deleteSyntheticUser(service, user.id)
+  await scannerCard?.release()
+  await (pgClient as PgClient | undefined)?.end()
 })
 
 test('the baseline is a real, non-trivial ledger (guards against a vacuous proof)', async () => {
@@ -722,16 +745,19 @@ test('P161 · A → B during a HELD price lookup: the late answer of A never rep
 
   await signIn(page, userA)
   const phaseStart = log.length
-  await page.goto('/price-check?q=Pikachu')
+  await page.goto('/price-check?q=Charizard')
   await page.getByTestId('price-check-result').first().click()
+  // Charizard always has two printings: the choice is always offered, whatever else the catalog holds
+  await chooseVariantIfAsked(page)
   await expect.poll(() => lookups).toBe(1) // the lookup of A is in flight and held
 
   const endOfA = log.length
   await signOutViaUi(page)
   await signIn(page, userB)
   const startOfB = log.length
-  await page.goto('/price-check?q=Pikachu')
+  await page.goto('/price-check?q=Charizard')
   await page.getByTestId('price-check-result').first().click()
+  await chooseVariantIfAsked(page)
   await expect(page.getByTestId('observation').first()).toContainText('€99.99')
 
   releaseA() // the answer of A finally arrives, after B already has its own
@@ -794,8 +820,9 @@ test('P161 · same-user refresh mid-scan, overlapping photos and a provider fail
       body: JSON.stringify({ ok: false }),
     })
   })
-  await page.goto('/price-check?q=Pikachu')
+  await page.goto('/price-check?q=Charizard')
   await page.getByTestId('price-check-result').first().click()
+  await chooseVariantIfAsked(page) // two printings: nothing is priced until one is chosen
   await expect(page.getByRole('alert').filter({ hasText: /price|provider|lookup/i })).toBeVisible()
   await expect(page.getByTestId('observation')).toHaveCount(0)
 

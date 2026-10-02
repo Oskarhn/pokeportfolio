@@ -6966,3 +6966,59 @@ local static and semantic tests and real guard-CLI runs, not by a hosted gated d
 simulator, 17 mutation proofs, real guard-CLI and local-origin runs) and
 `tests/config/release-config-check.test.ts`; five further mutations were applied to the files on
 disk, each caught and restored byte-identically.
+
+## D-165 — Shared test data has one owner and a lease; "settled" means nobody else holds the rows; the DB suite leaves the catalog as it found it (P165)
+
+**2026-09-25 · Accepted**
+
+*(Independent verification of the P164 integrated candidate. No production code changed; no migration. Ids stay unique: D-165 follows D-164.)*
+
+**Context.** P164 reported one failure in the whole authenticated E2E project under `--workers=2` — `price-check-ledger.spec.ts`'s `beforeAll`, six
+dependent tests not run — and worked around it with `--workers=1`. Reproduced (2 workers, the two specs: 14 passed, 1 failed, 6 not run) and traced by
+polling the fixture rows and by a browser-free reproduction: not load. Both specs inserted their own row for the card the synthetic scanner photo prints
+("Fauxosaur EX 049", set = the seed set); `cards` is unique on `(set_id, local_id)`, so the second insert raised `23505 cards_set_id_local_id_key`. The
+spec's `afterAll` then threw a `TypeError` on its never-assigned user, hiding the cause. A card in another set would not isolate anything: `search_cards`
+looks across the whole catalog and returned **both** cards as candidates of one printed text (measured), so each spec could confirm the other's card.
+
+Running the whole project after a complete `pnpm test:db` — the order CI uses on one database — exposed a second, unrelated defect, reproducible with
+`--workers=1`: `catalog_constraints.test.ts` inserted two Pikachu printings and never removed them, and the ledger spec's "single-variant card" step
+searched Pikachu. Two further latent hazards were found while building the fix (below).
+
+**Decision.**
+
+1. **The printed card and its two printings are shared reference data with one owner: a lease.** `tests/e2e/authenticated/support/scanner-fixture-card.ts`
+   creates them with fixed ids, idempotently (`ON CONFLICT DO NOTHING`, untargeted), under a shared Postgres advisory lock held on a dedicated session for
+   the spec's lifetime; the rows are deleted only by the last holder (`pg_try_advisory_lock` exclusive after giving the shared lock back); a killed holder's
+   lease vanishes with its session; a third printing is refused so the explicit-variant tests stay meaningful. Users, ledgers and per-account provider prices
+   stay per spec. Rejected: one card per spec (constraint or double candidates, above); `--workers=1` (hides the defect and makes every future pair of
+   fixture-sharing specs a trap); a Playwright setup project owning the card (does not cover a single spec run alone or `--repeat-each`).
+2. **Settling the portfolio recompute queue waits for it to be free.** `drain_portfolio_recompute_queue` is one transaction taking `FOR UPDATE SKIP LOCKED`
+   on up to 100 users' rows, so a drain in another worker can hold this spec's rows and a plain drain returns 0 at once; the baseline was then taken before that
+   transaction committed and rewrote `portfolio_snapshots`. `settleDerivedTables` repeats the drain until no *due* row is left for the spec's own users (a
+   row stays visible until the processing transaction commits), bounded, with a clear message. Both specs call it in their first test, at the same moment.
+3. **The DB suite leaves the catalog as it found it** (`catalog_constraints.test.ts` removes its printings in a `finally`), and a spec never relies on a
+   seed card the DB suite can change: the ledger spec's single-printing step uses the seed Grass Energy and asserts that no choice is offered; its
+   held-lookup and provider-failure steps use Charizard (always two printings) and choose explicitly.
+4. **Static rules keep it so** (`tests/config/e2e-fixture-isolation.test.ts`): no spec inserts a catalog card; exactly the specs that scan the printed
+   photo lease it; users are removed before the lease is released; nobody drains the queue by themselves.
+
+**Findings of the independent review (the P164 code was not changed).**
+- The rewrite marker (D-164) defends against the **released** `search-prices` (skew), not against the new one: `asFiniteNumber` drops a provider price above
+  2^53 − 1 minor units before it becomes a `bigint`. Run for real under Deno: the released code answers `"sourceValueMinor":9999999999999998` for a provider
+  value of 99999999999999.99 EUR (already rounded) with a NOK string computed from it; the new code omits the price. See `docs/API_SOURCES.md`.
+- Both price consumers read the marker from `invoked.response`, which `@supabase/functions-js` 2.112.3 returns; a dependency bump that drops it would make
+  both fail open, and the frozen-wire tests would fail.
+- Any unsafe integer literal anywhere in a price response refuses the whole response (fail-closed); a large safe integer does not; an exponent-form number is
+  not an integer literal to the guard and no consumer accepts it as a price.
+- The identity layers are redundant on purpose (token provider *and* post-lookup check; before *and* after every export request): removing one of two alone
+  survives, so the mutants remove the layer a test claims to witness (see `scripts/p165/mutants.mjs`).
+- A helper bug caught by the interleaving test itself: `ON CONFLICT (id)` arbitrates one unique index, not both; concurrent inserts of the same card raised
+  `23505` on the other.
+
+**Consequences.** The authenticated project runs with any number of workers; `docs/TESTING.md` §6d/§6e say so. The Deno-backed tests skip, loudly, where
+`deno` is missing (CI has none today); the frozen-wire tests always run. A dependency bump of `npm:@supabase/supabase-js@2.112.3` in the functions needs the
+harness's `import_map.json` updated. No behaviour of the product changed.
+
+**Proof.** `tests/db/p165_scanner_fixture_lease.test.ts`, `p165_settle_derived_tables.test.ts`, `p165_scanner_commit_lease.test.ts`, `p165_export_overlap.test.ts`,
+`tests/data/p165-search-prices-real-function.test.ts` (+ `scripts/p165/edge-harness`), `tests/ui/p165-read-only-scanner-runtime.test.ts`,
+`p165-scan-session-latest-wins.test.ts`, `tests/domain/price-check/p165-variant-resolution.test.ts`; `scripts/p165/mutants.mjs` (14 mutants).

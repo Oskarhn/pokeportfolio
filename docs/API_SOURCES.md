@@ -360,6 +360,29 @@ function shows the single headline value, marked partial; a function that still 
 response) and produces no price in the existing pricing consumer. Rollback of a function: redeploy the previous version. Nothing is deployed by
 these sessions.
 
+### Independent check of the function half (P165)
+
+Which shared modules each function bundles (import graph, multi-line imports included): `search-prices` → `tcgdex.ts`, `service-key.ts`,
+`price-observations.ts`; `ingest-prices` → `tcgdex.ts`, `service-key.ts`; `sync-catalog` → `tcgdex.ts` (only `fetchCardDetail`, `fetchSetDetail`,
+`isPocketSeries`, `TcgdexNotFoundError`; none reaches the changed `asFiniteNumber`), `service-key.ts`; `fetch-fx-rate` and `ingest-fx` →
+`norges-bank.ts`, `service-key.ts`; `redeem-invitation` → `service-key.ts`. So exactly `search-prices` and `ingest-prices` need a deploy.
+
+The real `search-prices` code was run under Deno (`scripts/p165/edge-harness`, `tests/data/p165-search-prices-real-function.test.ts`) with the provider's
+answer controlled — **not** against the live provider and **not** against a deployed function:
+
+- The candidate can never emit an unsafe number itself: `asFiniteNumber` drops a provider price whose minor units exceed 2^53 − 1 *before* it becomes a
+  `bigint`, so `Number(valueMinor)` is exact and every `observations[].valueMinor` is a decimal string. The rewrite marker (D-164) therefore defends
+  against the **released** function, not the new one.
+- The released function (d8682e0), given a provider value of 99999999999999.99 EUR, answers `"sourceValueMinor":9999999999999998` (already rounded) and a
+  `valueNokMinor` string computed from that rounded number. The guard flags the bare number, the marker refuses the whole response, so the string next to
+  it is never shown either. Frozen in the test as the old-function/new-frontend half.
+- When the preferred provider's price is dropped, the headline falls back to the other provider under the existing D-052 rule (a USD TCGplayer value
+  can become the headline of a variant whose Cardmarket price is absurd); `observations[]` shows only what exists.
+- Consumer dependency worth knowing: both consumers read the marker from `invoked.response`, which `@supabase/functions-js` 2.112.3 returns. A dependency
+  upgrade that drops `response` would make both consumers fail open; the frozen-wire tests fail in that case.
+- Behaviour when a number that is not a price is unsafe: any unsafe integer literal anywhere in the response refuses the whole response (fail-closed); a
+  large but safe integer does not; an exponent-form number (`1.5e+21`) is not an integer literal to the guard, and no consumer accepts it as a price.
+
 ## Scrydex
 
 **Status: Rejected for now — cost**
