@@ -212,7 +212,7 @@ Observed provenance of the pinned AAR (not an attestation): Maven Central `…/o
 40,948,335 B, SHA-256 `67397e4a970e75617f765d2015ceaf911917e1d822276cfb5792744e8085cbce`; a detached `.asc`
 exists upstream and was **not** verified. A Gradle `verification-metadata.xml` using that hash is the
 follow-up if the owner wants build-time enforcement. **Consequence:** the Android runtime changes
-(1.30.x → 1.24.3) — see §9 for what was and was not run on a device.
+(1.30.x → 1.24.3) — §9 records the emulator run.
 
 ## 7. P130-36 — advisories (`pnpm audit`, 2026-10-02)
 
@@ -242,13 +242,22 @@ now" the typed input is lost, as for the forms that were already covered. `tests
 every form id is present, a dirty source defers the reload and a clean one lets it proceed, and with no
 source the reload happens (mutation).
 
-## 9. Not verified
+## 9. Android check of the pinned runtime, and what was not verified
 
-- **Android runtime with the pinned AAR** — see the run record in output_191 (`ANDROID_SMOKE`). A pass of
-  `pnpm --dir apps/mobile-spike test` does not exercise the Gradle resolution or the native binary.
-- **iOS** — no Mac; unchanged.
-- **Hosted project** — migrations, Auth settings: untouched, owner-gated.
-- **The 1.24.3 AAR's PGP signature** — present upstream, not verified.
+**Run (emulator, x86_64, own stack/AVD, release build with R8):** `gradlew assembleRelease` resolved
+`onnxruntime-android:1.24.3@aar` and built (4 m 40 s). The APK's `lib/x86_64/libonnxruntime.so` is
+**31,316,520 B — exactly the 1.24.3 AAR's x86_64 library** (P186's shipped x86_64 runtime was 39,348,480 B, a
+different release). `scripts/p186/smoke.mjs`: steps 1–5 and 7–9 **pass** — dark cold launch, sign-in, scanner
+entry, a real synthetic image recognised on-device through OCR + ONNX (candidate shown), Add to Collection
+form with nothing written, cancel, Collection list. Logcat: fatal 0, ANR 0, OOM 0, native crash 0,
+`NoClassDefFoundError` 0. **Step 6 (Price Check) failed in this ad-hoc environment:** the app showed
+its honest "price provider failed — not a price of zero" state because the mock provider was not wired to this
+stack's port; it is a read-only path unrelated to the ONNX runtime and was not re-run to green. One
+`ortOrMlKit` logcat hit is Google Play services failing to download an optional ML Kit module (no network).
+Cold photo→result took ~23 s on this software-rendered emulator (not comparable to P186's figures).
+
+Not verified: arm64 (no device; static only, as in P186); iOS (no Mac); the hosted project (migrations, Auth
+settings — untouched, owner-gated); the 1.24.3 AAR's PGP signature (present upstream, not checked).
 
 ## 10. Mutation proofs (all killed)
 

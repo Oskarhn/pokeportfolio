@@ -32,7 +32,9 @@ describe('onnxruntime provenance (P130-30)', () => {
   })
 
   it('the Android runtime and QNN AARs are pinned to the package version, never latest', () => {
-    expect(patch).toContain(`+    extractLibs "com.microsoft.onnxruntime:onnxruntime-android:${version}@aar"`)
+    expect(patch).toContain(
+      `+    extractLibs "com.microsoft.onnxruntime:onnxruntime-android:${version}@aar"`,
+    )
     expect(patch).toContain(
       `+    extractLibs "com.microsoft.onnxruntime:onnxruntime-android-qnn:${version}@aar"`,
     )
@@ -61,7 +63,9 @@ describe('onnxruntime provenance (P130-30)', () => {
 
   it('the package integrity is recorded in the lockfile', () => {
     expect(lock).toMatch(
-      new RegExp(`onnxruntime-react-native@${version.replace(/\./g, '\\.')}:\\n\\s+resolution: \\{integrity: sha512-`),
+      new RegExp(
+        `onnxruntime-react-native@${version.replace(/\./g, '\\.')}:\\n\\s+resolution: \\{integrity: sha512-`,
+      ),
     )
   })
 })
