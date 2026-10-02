@@ -37,6 +37,8 @@ const sharedBase = {
     ...seam('tests/support/unit-supabase-client.ts'),
   },
   moduleDirectories: appModules,
+  // Since P146 a shared file uses fast-check; see the comment in the resolver for why this is needed.
+  resolver: path.resolve(__dirname, 'tests/support/node-fallback-resolver.js'),
 }
 
 module.exports = {

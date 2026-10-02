@@ -41,10 +41,11 @@ const STACK_DIRS: Record<string, string | undefined> = {
 const stackName = String(process.env.P169_STACK ?? '')
 // P188: P169_STACK_DIR names any other local instance's directory (scripts/p186/instance.cjs), so a
 // parallel instance needs no source edit.
+const stackDirOverride = String(process.env.P169_STACK_DIR ?? '')
 const dir = join(
   __dirname,
   '../../.local-backend',
-  process.env.P169_STACK_DIR ?? STACK_DIRS[stackName] ?? 'p169',
+  stackDirOverride !== '' ? stackDirOverride : (STACK_DIRS[stackName] ?? 'p169'),
 )
 export const MOCK_URL = `http://127.0.0.1:${String(process.env.P169_MOCK_PORT ?? '55979')}`
 

@@ -6,6 +6,12 @@ Expo SDK 57, native views and native navigation (not a WebView), the existing Su
 the web app's `src/domain` + `src/data` reused unchanged. Local only; read-only; no store, EAS or
 hosted-backend use.
 
+> **P188 update.** This README describes the original P158 spike and is kept as history; the app has since become
+> the native release-candidate track (`docs/CURRENT_STATE/NATIVE_MOBILE.md`). Builds now have three explicit profiles
+> (`LOCAL_DEV`, `LOCAL_RELEASE_TEST`, `PRODUCTION_RELEASE`; `EXPO_PUBLIC_BUILD_PROFILE`): everything described below is a
+> LOCAL profile. A hosted backend is accepted only by `PRODUCTION_RELEASE`, which takes its identity and signing from
+> the build environment and fails closed — see [`docs/mobile/BUILD_CONFIGURATION_PROFILES.md`](../../docs/mobile/BUILD_CONFIGURATION_PROFILES.md).
+
 What exists: sign-in, session restore/refresh/sign-out, collection list (10 k-safe), card detail,
 Price Check (read-only), an identity boundary (A → B), exact-money rendering, a bounded photo
 ownership spike. What does **not** exist: a scanner, writes, offline, screen-reader testing, and any
