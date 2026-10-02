@@ -66,6 +66,58 @@ function assertDeployJobIsGated(jobBlock: string): { ok: boolean; reasons: strin
   return { ok: reasons.length === 0, reasons }
 }
 
+/** The text of the `on:` trigger block (its header through the next top-level key). */
+function extractTriggerBlock(text: string): string {
+  const lines = text.split('\n')
+  const start = lines.findIndex((line) => /^on:\s*$/.test(line))
+  if (start === -1) throw new Error('trigger block not found in workflow text')
+  let end = lines.length
+  for (let i = start + 1; i < lines.length; i++) {
+    if (/^\S/.test(lines[i]!) && !lines[i]!.startsWith('#')) {
+      end = i
+      break
+    }
+  }
+  return lines.slice(start, end).join('\n')
+}
+
+describe('feature-branch CI runs the validation jobs and never the Production deploy (P188)', () => {
+  const triggers = extractTriggerBlock(workflowText)
+  const deployBlock = extractJobBlock(workflowText, 'deploy-production')
+
+  it('runs on pull requests and on pushes to main and release/** branches only', () => {
+    expect(triggers).toMatch(/push:\s*\n\s*branches:\s*\[main, 'release\/\*\*'\]/)
+    expect(triggers).toMatch(/\n {2}pull_request:/)
+    // No catch-all branch pattern: an arbitrary branch name must not start a run.
+    expect(triggers).not.toMatch(/branches:\s*\[[^\]]*['"]\*\*?['"]/)
+  })
+
+  it('a release/** push cannot reach the deploy job: it is restricted to refs/heads/main', () => {
+    expect(deployBlock).toContain(
+      "if: github.event_name == 'push' && github.ref == 'refs/heads/main'",
+    )
+    // The branch trigger is wider than main, so the ref check above is what carries the guarantee.
+    expect(triggers).toContain("'release/**'")
+  })
+
+  it('the validation jobs carry no branch condition, so a release candidate gets the full gate', () => {
+    for (const job of ['build-and-test', 'db-tests']) {
+      expect(extractJobBlock(workflowText, job)).not.toMatch(/^ {4}if:/m)
+    }
+  })
+
+  it('no validation job reads a Production secret (a feature-branch run needs none)', () => {
+    for (const job of ['build-and-test', 'db-tests']) {
+      expect(extractJobBlock(workflowText, job)).not.toMatch(/secrets\.(PRODUCTION_|CLOUDFLARE_)/)
+    }
+  })
+
+  it('Mutation: widening the deploy condition to any push is detected', () => {
+    const widened = deployBlock.replace(" && github.ref == 'refs/heads/main'", '')
+    expect(assertDeployJobIsGated(widened).ok).toBe(false)
+  })
+})
+
 describe('deploy-production job — eligibility is structurally impossible outside push-to-main (P130-08)', () => {
   const jobBlock = extractJobBlock(workflowText, 'deploy-production')
 

@@ -4,7 +4,7 @@ import { supabase, supabasePublishableKey, supabaseUrl } from './supabase-client
 
 /**
  * Binds {@link createLeasedDb} to the app's Supabase session. Kept apart from leased-client.ts so
- * that module stays free of `import.meta.env` and can be unit-tested with a fake session.
+ * that module stays free of any Vite build-environment access and can be unit-tested with a fake session.
  */
 
 const clients = new WeakMap<IdentityLease, LeasedDb>()

@@ -7,7 +7,7 @@ import type { Database } from './database.types'
 import { createExactTransportFetch, type ExactTransportOptions } from './exact-json-guard'
 
 /**
- * The single place a Supabase client is constructed, kept free of `import.meta.env` so the
+ * The single place a Supabase client is constructed, kept free of any Vite build-environment access so the
  * database test suites can build the SAME clients the app runs (tests/db/p146_*.test.ts,
  * tests/db/p147_*.test.ts).
  *

@@ -1,8 +1,12 @@
 name: CI
 
+# P188: a push to a `release/**` branch runs the same validation jobs as a pull request, so a release
+# candidate is judged by CI before any PR exists. The Production deploy job below is gated on
+# `github.ref == 'refs/heads/main'`, so such a push can never deploy and never needs a Production
+# secret (tests/config/workflow-deploy-gate.test.ts proves both).
 on:
   push:
-    branches: [main]
+    branches: [main, 'release/**']
   pull_request:
 
 # GitHub Actions is free for this private repo up to 2,000 minutes/month, and
