@@ -20,6 +20,7 @@ import {
 import { SealedProductImage } from '../catalog/SealedProductImage'
 import { localTodayIso } from '../../platform/local-date'
 import { useEntityKeyReset } from '../../platform/entity-key-change-tracker'
+import { useUnsavedWorkSnapshot } from '../../platform/unsaved-work-registry'
 import { useAuth } from '../../auth/useAuth'
 import {
   Button,
@@ -109,6 +110,27 @@ export function AddSealedProductPage() {
   const [isFavorite, setIsFavorite] = useState(false)
   const [notes, setNotes] = useState('')
   const [error, setError] = useState<string | null>(null)
+
+  // P130-09: same deferral as the add-card form — an automatic reload waits while typed input is
+  // unsaved. In-memory only; the baseline resets when the product or the signed-in user changes.
+  useUnsavedWorkSnapshot(
+    'add-sealed-form',
+    {
+      quantity,
+      intent,
+      origin,
+      costKnown,
+      costPerUnit,
+      acquiredOn,
+      storageLocationId,
+      newLocationName,
+      isFavorite,
+      notes,
+      pickerQuery,
+    },
+    true,
+    `${userId ?? ''}|${selectedProductId ?? ''}`,
+  )
 
   // P130-04: same fixed-per-mount, retry-stable idempotency key as AddToCollectionPage's own fix —
   // see that page's comment for the full rationale.

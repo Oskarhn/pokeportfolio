@@ -107,7 +107,6 @@
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild",
-      "onnxruntime-node",
       "sharp"
     ],
     "overrides": {

@@ -4,6 +4,7 @@ import { createManualCard } from '../../data/collection'
 import { leasedDb } from '../../data/leased-db'
 import { useLeasedMutation } from '../../auth/useLeasedMutation'
 import { Button, FormMessage, TextField } from '../../ui/form'
+import { useUnsavedWorkSnapshot } from '../../platform/unsaved-work-registry'
 import { userMessage } from '../../platform/user-error'
 
 /** The honest fallback when the shared catalog does not (yet) have a physical card the owner
@@ -17,6 +18,9 @@ export function ManualCardPage() {
   const [language, setLanguage] = useState('')
   const [notes, setNotes] = useState('')
   const [error, setError] = useState<string | null>(null)
+
+  // P130-09: an automatic stale-deployment reload waits while typed input is unsaved.
+  useUnsavedWorkSnapshot('manual-card-form', { name, setName_, collectorNumber, language, notes })
 
   const createMutation = useLeasedMutation({
     mutationFn: (input: Parameters<typeof createManualCard>[0], lease) =>

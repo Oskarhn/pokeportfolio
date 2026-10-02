@@ -18,6 +18,7 @@ import { useLeasedMutation } from '../../auth/useLeasedMutation'
 import { getCardVariantWithCard, type CatalogVariantWithCard } from '../../data/catalog'
 import { localTodayIso } from '../../platform/local-date'
 import { useEntityKeyReset } from '../../platform/entity-key-change-tracker'
+import { useUnsavedWorkSnapshot } from '../../platform/unsaved-work-registry'
 import { useAuth } from '../../auth/useAuth'
 import { CardImage } from '../catalog/CardImage'
 import {
@@ -87,6 +88,33 @@ export function AddToCollectionPage() {
   const [isFavorite, setIsFavorite] = useState(false)
   const [notes, setNotes] = useState('')
   const [error, setError] = useState<string | null>(null)
+
+  // P130-09: typed-but-unsaved input here must survive an automatic stale-deployment reload, like
+  // the purchase and sale forms (the reload is deferred while this reports dirty). Nothing is
+  // persisted: no draft storage is invented for a form that never had one. The baseline is the
+  // form's own initial state and resets when the card or the signed-in user changes.
+  useUnsavedWorkSnapshot(
+    'add-card-form',
+    {
+      gradingState,
+      condition,
+      grader,
+      grade,
+      certNumber,
+      manualValue,
+      quantity,
+      origin,
+      costKnown,
+      costPerCard,
+      acquiredOn,
+      storageLocationId,
+      newLocationName,
+      isFavorite,
+      notes,
+    },
+    true,
+    `${userId ?? ''}|${variantId ?? ''}|${manualCardId ?? ''}`,
+  )
 
   // P130-04: minted once per mount and reused for every retry of this same logical submission
   // (never regenerated merely because an error was shown) — identical contract to

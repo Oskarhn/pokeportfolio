@@ -9,7 +9,7 @@ patchedDependencies:
     hash: 9c50a7f59b391848b0e2b9e188c7607271c06e99d344d784655e8e49d4307cd0
     path: patches/expo-modules-core@57.0.18.patch
   onnxruntime-react-native:
-    hash: 58dd887c4aa5453194c82633ce52e453f84429ac8a8adc9e917061400b581404
+    hash: 4e95e4468aeb425768bc6b42968aa44a8fd2ac04d8b93ec1bad8ba0e017b9a0d
     path: patches/onnxruntime-react-native.patch
 
 importers:
@@ -66,7 +66,7 @@ importers:
         version: 57.0.4(expo@57.0.24)(react-native@0.86.3(@babel/core@7.29.7)(@react-native/jest-preset@0.86.3(@babel/core@7.29.7)(react@19.2.3))(@react-native/metro-config@0.87.1(@babel/core@7.29.7))(@types/react@19.2.18)(react@19.2.3))
       onnxruntime-react-native:
         specifier: 1.24.3
-        version: 1.24.3(patch_hash=58dd887c4aa5453194c82633ce52e453f84429ac8a8adc9e917061400b581404)(react-native@0.86.3(@babel/core@7.29.7)(@react-native/jest-preset@0.86.3(@babel/core@7.29.7)(react@19.2.3))(@react-native/metro-config@0.87.1(@babel/core@7.29.7))(@types/react@19.2.18)(react@19.2.3))(react@19.2.3)
+        version: 1.24.3(patch_hash=4e95e4468aeb425768bc6b42968aa44a8fd2ac04d8b93ec1bad8ba0e017b9a0d)(react-native@0.86.3(@babel/core@7.29.7)(@react-native/jest-preset@0.86.3(@babel/core@7.29.7)(react@19.2.3))(@react-native/metro-config@0.87.1(@babel/core@7.29.7))(@types/react@19.2.18)(react@19.2.3))(react@19.2.3)
       react:
         specifier: 19.2.3
         version: 19.2.3
@@ -7039,7 +7039,7 @@ snapshots:
 
   onnxruntime-common@1.24.3: {}
 
-  onnxruntime-react-native@1.24.3(patch_hash=58dd887c4aa5453194c82633ce52e453f84429ac8a8adc9e917061400b581404)(react-native@0.86.3(@babel/core@7.29.7)(@react-native/jest-preset@0.86.3(@babel/core@7.29.7)(react@19.2.3))(@react-native/metro-config@0.87.1(@babel/core@7.29.7))(@types/react@19.2.18)(react@19.2.3))(react@19.2.3):
+  onnxruntime-react-native@1.24.3(patch_hash=4e95e4468aeb425768bc6b42968aa44a8fd2ac04d8b93ec1bad8ba0e017b9a0d)(react-native@0.86.3(@babel/core@7.29.7)(@react-native/jest-preset@0.86.3(@babel/core@7.29.7)(react@19.2.3))(@react-native/metro-config@0.87.1(@babel/core@7.29.7))(@types/react@19.2.18)(react@19.2.3))(react@19.2.3):
     dependencies:
       onnxruntime-common: 1.24.3
       react: 19.2.3

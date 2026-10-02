@@ -45,6 +45,7 @@ import {
 import type { OpeningSource, TrackingCompleteness } from './contract'
 import { PullPickerSheet } from './PullPickerSheet'
 import { userMessage } from '../../platform/user-error'
+import { useUnsavedWorkSnapshot } from '../../platform/unsaved-work-registry'
 
 const STEP_LABELS: Record<OpeningStep, string> = {
   source: 'Product',
@@ -99,6 +100,11 @@ export function OpeningsWizardPage() {
     if (scopedStored) return recoverInterruptedSubmission(scopedStored)
     return initialDraft({ holdingId: search.holdingId, lotId: search.lotId })
   })
+
+  // P130-09: the draft survives in-app navigation (draftStore) but not a page reload. An automatic
+  // stale-deployment reload now waits while the wizard holds more than its initial state. The
+  // baseline resets with the signed-in user; nothing new is persisted.
+  useUnsavedWorkSnapshot('opening-wizard', draft, true, userId)
 
   function dispatch(action: DraftAction) {
     setDraft((current) => {
