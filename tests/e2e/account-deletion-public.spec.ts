@@ -31,6 +31,7 @@ test('explains how to delete in the app, what is covered and what is not', async
 
 test('states no retention period and invents no contact', async ({ page }) => {
   await page.goto('/account-deletion')
+  await expect(page.getByRole('heading', { name: 'Delete your account' })).toBeVisible()
   const text = (await page.locator('body').innerText()).replace(/\s+/g, ' ')
   // No "N days / weeks / months" claim anywhere on the page.
   expect(text).not.toMatch(/\b\d+\s*(days?|weeks?|months?|years?)\b/i)
@@ -42,6 +43,7 @@ test('states no retention period and invents no contact', async ({ page }) => {
     .evaluateAll((a) => a.map((x) => (x as HTMLAnchorElement).getAttribute('href')))
   expect(new Set(mails)).toEqual(new Set(['mailto:oskarhn06@outlook.com']))
   await page.goto('/privacy')
+  await expect(page.getByRole('heading', { name: 'Privacy' })).toBeVisible()
   const privacyMails = await page
     .locator('a[href^="mailto:"]')
     .evaluateAll((a) => a.map((x) => (x as HTMLAnchorElement).getAttribute('href')))
