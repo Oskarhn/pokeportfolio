@@ -31,6 +31,7 @@
       "./plugins/with-navigation-bar-follows-theme",
       "./plugins/with-dark-splash-background",
       "./plugins/with-ios-dark-splash",
+      "./plugins/with-ios-onnxruntime-pin",
       "./plugins/with-short-cxx-build-path",
       "./plugins/with-onnxruntime-package",
       "./plugins/with-release-packaging",

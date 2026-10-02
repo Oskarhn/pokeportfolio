@@ -23,6 +23,8 @@ const KEYBOARD = ['tests/unit/p187-keyboard-platform.test.tsx']
 const IMAGE = ['tests/unit/p187-ios-image-pipeline.test.ts']
 const GRAPH = ['tests/unit/p187-ios-graph.test.ts']
 const PLATFORM = ['tests/unit/p187-platform-portability.test.ts']
+const DRIVER = ['tests/unit/p187-driver-config.test.ts']
+const ASSET_CONTRACT = ['tests/unit/p187-storage-and-asset-contract.test.ts']
 const INTEGRITY = ['tests/unit/p184-native-asset-integrity.test.ts']
 
 const KEYBOARD_SRC = 'src/ui/keyboard.ts'
@@ -175,6 +177,93 @@ const MUTANTS = [
     from: '    "expo-system-ui": "~57.0.4",\n',
     to: '',
     tests: CONFIG,
+  },
+  {
+    id: 'I19',
+    name: 'the iOS dark splash keeps the system background (white / pure black) instead of #0F0F11',
+    file: 'plugins/with-ios-dark-splash.js',
+    from: "    .replace(background, BACKGROUND)",
+    to: "    .replace(background, background)",
+    tests: CONFIG,
+  },
+  {
+    id: 'I20',
+    name: 'App Transport Security is opened for every host (NSAllowsArbitraryLoads) instead of local networking only',
+    file: 'app.json',
+    from: '"NSAllowsLocalNetworking": true',
+    to: '"NSAllowsArbitraryLoads": true',
+    tests: CONFIG,
+  },
+  {
+    id: 'I21',
+    name: 'the onnxruntime-c pin is dropped (pod install would resolve the newest runtime)',
+    file: 'plugins/with-ios-onnxruntime-pin.js',
+    from: '  return podfile.replace(ANCHOR, `${ANCHOR}${line}`)',
+    to: '  return podfile',
+    tests: CONFIG,
+  },
+  {
+    id: 'I22',
+    name: 'the iOS-only splash plugin also registers an Android mod',
+    file: 'plugins/with-ios-dark-splash.js',
+    from: "    'ios',
+    (cfg) => {",
+    to: "    'android',
+    (cfg) => {",
+    tests: CONFIG,
+  },
+  {
+    id: 'I23',
+    name: 'an unused Android permission is unblocked again (VIBRATE removed from blockedPermissions)',
+    file: 'app.json',
+    from: '        "android.permission.VIBRATE",
+',
+    to: '',
+    tests: CONFIG,
+  },
+  {
+    id: 'I24',
+    name: 'the scanner gets a platform branch (an iOS-only index or hash path could hide behind it)',
+    file: 'src/features/scanner-native/model-assets.ts',
+    from: "import manifestJson from",
+    to: "import { Platform } from 'react-native'
+void Platform.OS
+import manifestJson from",
+    tests: ASSET_CONTRACT,
+  },
+  {
+    id: 'I25',
+    name: 'the session store switches to a backup-able persistence (documentDirectory) next to SecureStore',
+    file: 'src/auth/secure-store-adapter.ts',
+    from: "const OPTIONS: SecureStore.SecureStoreOptions = {",
+    to: "const STRAY = 'documentDirectory'
+void STRAY
+const OPTIONS: SecureStore.SecureStoreOptions = {",
+    tests: ASSET_CONTRACT,
+  },
+  {
+    id: 'I26',
+    name: 'an explicit EXPO_PUBLIC/CLI build value is ignored (the stack file always wins) / driver env override ignored',
+    file: 'scripts/p186/instance.cjs',
+    from: "SPIKE_PACKAGE: env.SPIKE_PACKAGE ?? ",
+    to: "SPIKE_PACKAGE: ",
+    tests: DRIVER,
+  },
+  {
+    id: 'I27',
+    name: 'the build driver stops honouring --supabase-url (always reads the local stack file)',
+    file: 'scripts/p186/build-env.cjs',
+    from: "  let url = flag('supabase-url')",
+    to: "  let url = undefined",
+    tests: DRIVER,
+  },
+  {
+    id: 'I28',
+    name: 'the build driver accepts a hosted (non-local) backend URL',
+    file: 'scripts/p186/build-env.cjs',
+    from: "  if (!LOCAL_URL.test(url)) throw new Error('refusing: not a local development URL')",
+    to: "",
+    tests: DRIVER,
   },
 ]
 

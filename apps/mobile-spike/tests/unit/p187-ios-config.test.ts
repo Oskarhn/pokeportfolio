@@ -28,7 +28,7 @@ type PluginFn = (config: { name: string; slug: string; mods?: ModRegistry }) => 
   mods?: ModRegistry
 }
 
-const IOS_PLUGIN_PATHS = ['./plugins/with-ios-dark-splash']
+const IOS_PLUGIN_PATHS = ['./plugins/with-ios-dark-splash', './plugins/with-ios-onnxruntime-pin']
 const ALL_LOCAL_PLUGIN_PATHS = appJson.expo.plugins
   .map((entry) => (Array.isArray(entry) ? entry[0] : entry))
   .filter((name) => name.startsWith('./plugins/'))
@@ -39,6 +39,7 @@ describe('Android-specific config plugins are scoped to Android (P187)', () => {
     expect([...ALL_LOCAL_PLUGIN_PATHS].sort()).toEqual([
       './plugins/with-dark-splash-background',
       './plugins/with-ios-dark-splash',
+      './plugins/with-ios-onnxruntime-pin',
       './plugins/with-local-cleartext',
       './plugins/with-navigation-bar-follows-theme',
       './plugins/with-onnxruntime-package',
@@ -88,6 +89,30 @@ describe('the iOS-only config plugin never touches Android (P187)', () => {
     expect(out).not.toContain('imageView')
     expect(out).not.toContain('SplashScreenLogo')
     expect(() => darkSplashStoryboard('<view/>')).toThrow(/unexpected shape/)
+  })
+})
+
+describe('onnxruntime-c pin (iOS Podfile)', () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { pinOnnxruntimeC } = require(join(appRoot, 'plugins/with-ios-onnxruntime-pin.js')) as {
+    pinOnnxruntimeC: (podfile: string, version: string) => string
+  }
+  const podfile = ["target 'App' do", '  use_expo_modules!', '  config = 1', 'end', ''].join('\n')
+
+  it('adds one exact-version pod line after use_expo_modules! and is idempotent', () => {
+    const once = pinOnnxruntimeC(podfile, '1.24.3')
+    expect(once).toContain(
+      ['  use_expo_modules!', "  pod 'onnxruntime-c', '1.24.3'", ''].join('\n'),
+    )
+    expect(pinOnnxruntimeC(once, '1.24.3')).toBe(once)
+  })
+
+  it('follows the installed JS package version and fails loudly on a changed Podfile', () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { version } = require('onnxruntime-react-native/package.json') as { version: string }
+    expect(version).toBe('1.24.3')
+    expect(() => pinOnnxruntimeC('target', version)).toThrow(/anchor/)
+    expect(() => pinOnnxruntimeC(podfile, '^1.24')).toThrow(/unexpected/)
   })
 })
 
