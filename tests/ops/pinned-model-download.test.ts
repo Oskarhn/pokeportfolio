@@ -198,6 +198,24 @@ describe('downloadPinnedFile', () => {
       }),
     ).rejects.toThrow(/HTTP 503/)
   })
+
+  it('a transport failure names its cause instead of the bare "fetch failed"', async () => {
+    const dest = join(dir(), 'f')
+    await expect(
+      downloadPinnedFile({
+        url: URL_OK,
+        dest,
+        expectedSha256: GOOD_SHA,
+        fetchImpl: () =>
+          Promise.reject(
+            Object.assign(new TypeError('fetch failed'), {
+              cause: Object.assign(new Error('connect'), { code: 'UND_ERR_CONNECT_TIMEOUT' }),
+            }),
+          ),
+      }),
+    ).rejects.toThrow(/UND_ERR_CONNECT_TIMEOUT/)
+    expect(existsSync(dest)).toBe(false)
+  })
 })
 
 describe('redirect policy', () => {

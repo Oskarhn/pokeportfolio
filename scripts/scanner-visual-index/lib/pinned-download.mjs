@@ -125,6 +125,13 @@ export async function downloadPinnedFile({
     if (signal.aborted) {
       throw new Error(`download of ${url} did not finish within ${timeoutMs} ms`, { cause: error })
     }
+    // Node's fetch reports every transport failure as the bare "fetch failed"; the reason is on
+    // `cause` (ECONNRESET, UND_ERR_CONNECT_TIMEOUT...). Name it, so a failed build says why.
+    const reason = error instanceof Error && error.cause instanceof Error ? error.cause : null
+    const code = reason !== null && 'code' in reason ? ` (${String(reason.code)})` : ''
+    if (error instanceof Error && error.message === 'fetch failed') {
+      throw new Error(`download of ${url} failed: fetch failed${code}`, { cause: error })
+    }
     throw error
   }
 
