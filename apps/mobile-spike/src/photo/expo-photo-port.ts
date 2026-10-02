@@ -17,7 +17,7 @@ import type { PhotoOutcome, PhotoPort, UnavailableReason } from './photo-store'
  * exercised on an Android 16 emulator in P166. The picker launch that failed after an Activity
  * recreation (font scale, display size, locale: P166 F1) is fixed by the expo-modules-core patch in
  * patches/ and re-verified on the emulator (docs/mobile/P167_ANDROID_HARDENING.md).
- * iOS is source-audited (docs/mobile/IOS_PORTABILITY_AUDIT.md) but not runtime-verified. Store logic is tested through fakes in tests/unit/photo-store.test.ts.
+ * iOS is source-audited (docs/mobile/P187_IOS_READINESS.md) but not runtime-verified. Store logic is tested through fakes in tests/unit/photo-store.test.ts.
  */
 
 export function createExpoPhotoPort(now: () => string = () => new Date().toISOString()): PhotoPort {

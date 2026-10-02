@@ -33,6 +33,8 @@ const appRoot = join(__dirname, '..', '..')
 describe('picker options that keep iOS output decodable and private', () => {
   const launch = ImagePicker.launchImageLibraryAsync as jest.Mock
   const camera = ImagePicker.launchCameraAsync as jest.Mock
+  const firstOptions = (mock: jest.Mock): Record<string, unknown> =>
+    (mock.mock.calls as unknown[][])[0]?.[0] as Record<string, unknown>
   beforeEach(() => {
     launch.mockReset().mockResolvedValue({ canceled: true, assets: null })
     camera.mockReset().mockResolvedValue({ canceled: true, assets: null })
@@ -47,7 +49,7 @@ describe('picker options that keep iOS output decodable and private', () => {
     '%s: no EXIF (GPS), no base64, no editing, images only',
     async (source) => {
       await createExpoPhotoPort().acquire(source)
-      const options = (source === 'library' ? launch : camera).mock.calls[0][0]
+      const options = firstOptions(source === 'library' ? launch : camera)
       expect(options).toMatchObject({
         mediaTypes: ['images'],
         exif: false,
@@ -60,7 +62,7 @@ describe('picker options that keep iOS output decodable and private', () => {
 
   it('the library path asks for one image and requests no photo-library permission (system picker)', async () => {
     await createExpoPhotoPort().acquire('library')
-    expect(launch.mock.calls[0][0].allowsMultipleSelection).toBe(false)
+    expect(firstOptions(launch).allowsMultipleSelection).toBe(false)
     expect(ImagePicker.requestMediaLibraryPermissionsAsync).toBeUndefined()
   })
 })
@@ -123,10 +125,8 @@ describe('isNativeReadableFileUri (iOS NSURL URLWithString: contract)', () => {
 describe('backend reachability from an iPhone', () => {
   const key = 'sb_publishable_' + 'x'.repeat(20)
   it('the simulator shares the host loopback: iOS leaves the URL alone (only Android is rewritten to 10.0.2.2)', () => {
-    expect(resolvePlatformUrl('http://127.0.0.1:55321', 'ios', {} as never)).toBe(
-      'http://127.0.0.1:55321',
-    )
-    expect(resolvePlatformUrl('http://127.0.0.1:55321', 'android', {} as never)).toBe(
+    expect(resolvePlatformUrl('http://127.0.0.1:55321', 'ios', {})).toBe('http://127.0.0.1:55321')
+    expect(resolvePlatformUrl('http://127.0.0.1:55321', 'android', {})).toBe(
       'http://10.0.2.2:55321',
     )
   })

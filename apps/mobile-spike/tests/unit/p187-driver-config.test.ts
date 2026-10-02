@@ -93,7 +93,7 @@ describe('dynamicStack and stackOf', () => {
     const script =
       "import('./scripts/p169/local-backend.mjs').then((m) => { const s = m.stackOf(['--stack=zzverify']); console.log(JSON.stringify({ api: s.apiPort, db: s.dbContainer })) })"
     const run = (shift: string | null) => {
-      const env: Record<string, string | undefined> = { ...process.env }
+      const env: NodeJS.ProcessEnv = { ...process.env }
       delete env.P185_PORT_SHIFT
       delete env.P186_PORT_SHIFT
       if (shift !== null) env.P186_PORT_SHIFT = shift

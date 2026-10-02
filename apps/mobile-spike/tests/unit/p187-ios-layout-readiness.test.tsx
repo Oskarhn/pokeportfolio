@@ -6,8 +6,12 @@
 // nothing in the UI source pins a width or a height that a narrow screen or a 200% font would break.
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { Platform, Text } from 'react-native'
-import { SafeAreaInsetsContext, SafeAreaProvider } from 'react-native-safe-area-context'
+import { Platform, StyleSheet, Text } from 'react-native'
+import {
+  SafeAreaInsetsContext,
+  SafeAreaProvider,
+  useSafeAreaInsets,
+} from 'react-native-safe-area-context'
 import { render, screen } from '@testing-library/react-native'
 import { BottomSheet, TaskScreen } from '../../src/ui/components'
 import { tabBarHeight } from '../../src/ui/MainNavigator'
@@ -28,9 +32,7 @@ function styleOf(host: { props: { style?: unknown } }): Record<string, unknown> 
   return StyleSheetFlatten(host.props.style)
 }
 function StyleSheetFlatten(style: unknown): Record<string, unknown> {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { StyleSheet } = require('react-native') as typeof import('react-native')
-  return (StyleSheet.flatten(style as never) ?? {}) as Record<string, unknown>
+  return (StyleSheet.flatten(style) ?? {}) as Record<string, unknown>
 }
 
 describe.each(IPHONES)('$name', (phone) => {
@@ -69,7 +71,7 @@ describe.each(IPHONES)('$name', (phone) => {
     )
     const sheet = screen.getByTestId('sheet')
     const content = (sheet.children[0] as { props: { style?: unknown } } | undefined) ?? sheet
-    const style = styleOf(content as never)
+    const style = styleOf(content)
     expect(style.paddingBottom).toBe(SPACE.lg + phone.bottom)
   })
 
@@ -88,9 +90,6 @@ describe.each(IPHONES)('$name', (phone) => {
   it('the Dynamic Island / status-bar inset is read from the safe-area context, not assumed', async () => {
     let seenTop = -1
     function Probe() {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { useSafeAreaInsets } =
-        require('react-native-safe-area-context') as typeof import('react-native-safe-area-context')
       seenTop = useSafeAreaInsets().top
       return null
     }

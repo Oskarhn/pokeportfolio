@@ -12,7 +12,7 @@ exists on this machine.
 
 ## Result in one table
 
-| | P185 / baseline (rebuilt today) | P186 |
+| | P185 / baseline (rebuilt today; see the note below the table) | P186 |
 |---|---|---|
 | Proof APK, x86_64 (comparable to P185's 129,774,102 B) | 129,774,086 B | **121,113,601 B** (−8,660,485 B, −6.7 %) |
 | Android App Bundle (arm64-v8a + x86_64) | 150,800,532 B (R8 off, with the same ABIs) | **145,701,566 B** (−5.1 MB; 47.85 MB of the file is Play-only symbol tables, not delivered) |
@@ -20,6 +20,14 @@ exists on this machine.
 | Delivered to an x86_64 device | 74,658,413 B | **66,264,576 B** (−11.2 %) |
 | Cold photo → result (10 cold process starts, median / p95) | 3,598 / 4,624 ms | **2,347 / 2,858 ms** (−35 % / −38 %) |
 | …of which waiting for the model session (median) | 713 ms | **0.2 ms** |
+
+> **What "baseline" means (corrected in P187).** The proof-APK baseline (129,774,086 B) is the unchanged P185 code
+> rebuilt from a clean prebuild. The **baseline AAB and the delivered-size baselines** (150,800,532 / 72,257,219 /
+> 74,658,413 B) are an **experimental comparison build**: P185 code **plus** the CMake-path fix of §5 (without it
+> arm64 does not build on this machine), R8 off, both ABIs. That build is **not a Git commit** and is not
+> independently addressable; an independent verifier could not rebuild it from the P185 commit alone (its x86_64
+> CMake path fails without the fix). The measured numbers are kept as measured; read them as "the same code without
+> P186's R8/resource shrinking/ML Kit script removal/DEX changes", not as "the P185 release".
 | Warm photo → result (100 analyses, two interleaved runs each, median / p95) | 1,066 · 1,004 / 1,264 · 1,234 ms | 1,026 · 1,009 / 1,305 · 1,227 ms (no change beyond run-to-run noise) |
 | Adversarial suite / false HIGH / image egress | (P184/P185) 24/24, 0, 0 | **24/24, 0, 0** |
 | `tests/db` | 744 passed, 1 skipped, **1 failed** (P185) | **771 passed, 1 skipped, 0 failed** |
@@ -44,7 +52,7 @@ the change below is attributed to variance.
 
 ## 2. AAB versus APK
 
-`bundleRelease` (R8 off, P185 code plus the CMake-path fix of §5 without which arm64 does not build on this machine, arm64-v8a + x86_64): **150,800,532 B**. What it contains is not what a
+`bundleRelease` (R8 off, P185 code plus the CMake-path fix of §5 without which arm64 does not build on this machine, arm64-v8a + x86_64; an experimental comparison build, not a single Git commit): **150,800,532 B**. What it contains is not what a
 device receives:
 
 | Artifact | Bytes |
@@ -63,9 +71,12 @@ The native symbol tables are for crash symbolication in Play and are never deliv
 user bytes and make native ONNX/Skia/ML Kit crashes readable) — `ndk.debugSymbolLevel` would remove 48 MB of the
 file if upload size ever mattered.
 
-Tooling: official bundletool 1.18.1 (`bundletool-all-1.18.1.jar` from the `google/bundletool` GitHub release,
-SHA-256 `675786493983787ffa11550bdb7c0715679a44e1643f3ff980a529e9c822595c`; not committed; point
-`BUNDLETOOL_JAR` at it). `scripts/p186/aab-analysis.mjs` produces the table; `scripts/p186/package-inventory.mjs`
+Tooling: bundletool 1.18.1 (`bundletool-all-1.18.1.jar`, 32,505,571 B, downloaded from the `google/bundletool`
+GitHub release). **Provenance: a locally pinned, downloaded artifact.** Its SHA-256
+`675786493983787ffa11550bdb7c0715679a44e1643f3ff980a529e9c822595c` is the value observed when P186 downloaded it and
+is what the scripts compare against. The release publishes no checksum next to the asset (the GitHub release
+metadata checked on 2026-10-02 lists the jar with no digest), so this is a **reproducibility pin, not an upstream
+checksum attestation**; it detects a changed file, not a compromised release. Not committed; point `BUNDLETOOL_JAR` at it. `scripts/p186/aab-analysis.mjs` produces the table; `scripts/p186/package-inventory.mjs`
 reads any APK/AAB (pure Node).
 
 ## 3. Size table (arm64-v8a delivery, baseline AAB)
@@ -323,21 +334,30 @@ journey was not repeated: no shared write code changed.
 
 **Not a Play candidate, and not meant to be:** placeholder application id, a loopback cleartext network-security
 config (`with-local-cleartext.js`, SPIKE_ONLY), the local backend URL baked into the bundle, signed with the
-debug keystore. Found while reading the manifest and **not changed** (outside this phase): the merged manifest
-declares `RECORD_AUDIO` (from `expo-image-picker`'s video capture), `SYSTEM_ALERT_WINDOW`, `USE_BIOMETRIC`/
-`USE_FINGERPRINT` (from `expo-secure-store`) and `VIBRATE`; a card scanner needs none of them. The fix is one
-line (`"microphonePermission": false` in the `expo-image-picker` plugin options, and `android.blockedPermissions`
-for the rest) and belongs with the store-readiness phase.
+debug keystore. Manifest permissions are classified in P187 (`docs/mobile/P187_IOS_READINESS.md` §3); the five this section first
+listed as unnecessary (`RECORD_AUDIO`, `SYSTEM_ALERT_WINDOW`, `USE_BIOMETRIC`, `USE_FINGERPRINT`, `VIBRATE`) were
+blocked in P187 (`microphonePermission: false`, `android.blockedPermissions`). `CAMERA` and `INTERNET` were never
+unnecessary: the scanner takes photos and the app talks to its backend.
 
 ## 13. Reproducible build
 
 From a clean checkout, Windows 11 PowerShell/Git Bash, JDK 17+ (tested with 18), Android SDK + NDK, Node 24, pnpm 10:
 
+**Prerequisite the first version of this section left out:** the build embeds two PUBLIC `EXPO_PUBLIC_*` values (backend
+URL, publishable key). Since P187 pass them explicitly (`--supabase-url=… --publishable-key=…`, or the
+`EXPO_PUBLIC_SUPABASE_URL` / `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` environment variables); without them the driver
+falls back to `.local-backend/<stack>/public-env.json`, which exists only after a local stack was started and
+`node scripts/p185/backend.mjs write-env` ran, and says so if it is missing. Only local development URLs and
+publishable keys are accepted (`scripts/p186/build-env.cjs`). A second, parallel instance (own stack, emulator, AVD,
+ports) is selected with `P186_INSTANCE`, `P186_PORT_SHIFT`, `P186_EMULATOR_PORT` and needs no source edit
+(`scripts/p186/instance.cjs`).
+
 ```bash
 pnpm install --frozen-lockfile                      # repository root
 cd apps/mobile-spike && pnpm install --frozen-lockfile
 pnpm assets:scanner                                  # stages + verifies the pinned model and the committed index
-node scripts/p186/build.mjs --variant release --task both --abis arm64-v8a,x86_64    # AAB + APK, R8 on
+node scripts/p186/build.mjs --variant release --task both --abis arm64-v8a,x86_64 \
+  --supabase-url=http://127.0.0.1:55971 --publishable-key=<local publishable key>    # AAB + APK, R8 on
 node scripts/p186/build.mjs --variant proof   --task apk  --abis x86_64                # the emulator driver build
 ```
 
@@ -370,10 +390,11 @@ CMake staging directory is `os.homedir()` plus a per-project hash.
 | P185 accessibility mutants | 14 / 14 killed |
 | `scripts/mutation-proofs.mjs` | 64 / 67 — the same three by-design survivors as P185 (M12, P9, P36) |
 
-**The two web failures are not P186's.** `tests/ui/opening-draft.test.ts` "defaults to today" and "a future date is
-refused" compare the product's *local* calendar date with a *UTC* date, so they fail between local midnight and
-the UTC offset (00:00–02:00 in Oslo in summer). They were first seen at 01:38 local on 2026-10-02 and fail
-identically on the unchanged P185 tree. A follow-up task was filed; nothing was changed here.
+**The two web failures were a test defect, fixed in P187.** `tests/ui/opening-draft.test.ts` "defaults to today" and
+"a future date is refused" compared the product's *local* calendar date with a *UTC* date, so they failed between
+local midnight and the UTC offset (00:00–02:00 in Oslo in summer; first seen at 01:38 local on 2026-10-02, identical
+on the unchanged P185 tree). P187 pins the clock and the zone and tests the local-date contract
+(`docs/mobile/P187_IOS_READINESS.md` §1).
 
 Other things to know:
 
