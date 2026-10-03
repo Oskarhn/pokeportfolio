@@ -371,7 +371,9 @@ describe('malformed requests', () => {
 
   it('oversize bodies are refused before parsing; GET is 405', async () => {
     const a = await actor('p152-atk-size', false)
-    const big = await call(a.token, null, { raw: JSON.stringify({ password: 'x'.repeat(10_000) }) })
+    // 5 000 bytes: over the function's 4 KiB bound, below the ~16 KiB size at which the local gateway
+    // can lose the early 413 (docs/TESTING.md, "Request-body bound over the local gateway").
+    const big = await call(a.token, null, { raw: JSON.stringify({ password: 'x'.repeat(5_000) }) })
     expect(big.status).toBe(413)
     const get = await call(a.token, null, { method: 'GET' })
     expect(get.status).toBe(405)

@@ -2482,3 +2482,18 @@ Testing lessons worth keeping: (a) a workaround recorded next to a failure is a 
 looks up across the catalog, isolate ownership, not location; (c) an idempotent `ON CONFLICT` clause must name no target if more than one unique index can
 fire; (d) "run it after the other suite, in CI's order" is a separate test from "run it alone"; (e) a shell heredoc turned `\b` into a backspace inside a
 regular expression and, separately, a `\n` inside a mutant string literal into a real newline — after scripting edits into a file, load it.
+
+## 2026-10-03 — A refusal that sometimes never arrived (P196C)
+
+The account-deletion trust-boundary suite failed intermittently in GitHub CI (P190, P194, P195): an
+oversized request, expected to get a prompt `413`, sat until the 20 s test timeout; the same SHA passed
+on rerun. It was treated as a transient three times before anyone measured it. Reproduced on the first
+run against a fresh local stack, then bisected by body size: no hang in about 600 requests up to
+16 KiB, 10-20 % per request from 24 KiB, whichever framing or connection policy. Edge Runtime logged
+`user body write aborted` once per hang; Kong showed no upstream error. The fix is in the harness,
+not the function: refusals are asserted at sizes the gateway delivers reliably, larger bodies get an
+explicit deadline plus a proof that nothing changed, and an exact-limit body proves the check is not
+a blanket refusal. Two side findings: a state digest that included cron-rewritten tables failed 2 in
+30 runs of the new test, and restarting one container of a local stack (to get a cold start) made
+Kong send to a stale address, which produced a convincing but false "cold start hangs" signal.
+Details: docs/TESTING.md §6h.
