@@ -42,3 +42,14 @@ condition = "AND"
 paths = ['''^tests/ops/erasure-registry\.test\.ts$''']
 regexTarget = "line"
 regexes = ['''const KEY_HEX = '0123456789abcdef'\.repeat\(4\)''']
+
+# P195: tests/ops/erasure-registry-worker.test.ts uses the same fixed, repeating-hex 32-byte HMAC
+# test vector as erasure-registry.test.ts to prove the registry Worker's integrity checks against the
+# canonical parser. Synthetic, never deployed (the real key is generated per environment and lives
+# only in Worker secrets). Scoped to this one file AND this one line, like the entry above.
+[[allowlists]]
+description = "Synthetic registry HMAC test vector in erasure-registry-worker.test.ts"
+condition = "AND"
+paths = ['''^tests/ops/erasure-registry-worker\.test\.ts$''']
+regexTarget = "line"
+regexes = ['''const KEY_HEX = '0123456789abcdef'\.repeat\(4\)''']
