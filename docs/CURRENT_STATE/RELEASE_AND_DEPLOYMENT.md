@@ -10,12 +10,15 @@ Authority: this file for current status; `HANDOVER.md` §1/§13/§14 for the sum
   via `git ls-remote origin refs/heads/main` and Production's own `/build-meta.json`
   (`builtAt 2026-09-18T08:22:20Z`) independently by both P159 and P160.
 - Hosted Supabase project `pokeportfolio-dev` (eu-west-3): 104 migrations applied, 0 pending.
-- There is no CI-enforced gate between a `main` merge and the Production deploy going live
-  (**P130-08, still OPEN**). A merge to `main` does not automatically or verifiably deploy;
-  closing this requires the P163 candidate below plus an owner-side Cloudflare action.
-- `main` has no GitHub branch-protection rule and no repository rulesets (live-verified 2026-09-28,
-  `gh api`) — matches `GIT_WORKFLOW.md` §6: protection is enforced by process, not GitHub
-  configuration.
+- **P193:** a merge to `main` no longer deploys. `ci.yml` validates only; Production is released by the
+  manual `deploy-production.yml` (explicit SHA, CI evidence, dry run default) and Cloudflare Pages' automatic
+  production deployments are disabled (read back 2026-10-03). Policy:
+  [../release/P193_MAIN_AND_PRODUCTION_POLICY.md](../release/P193_MAIN_AND_PRODUCTION_POLICY.md); gates:
+  [../release/PRODUCTION_RELEASE_CHECKLIST.md](../release/PRODUCTION_RELEASE_CHECKLIST.md). The text below
+  that mentions a `deploy-production` job in `ci.yml` is the pre-P193 history.
+- `main` is protected since P193 (2026-10-03, read back): PR required (0 approvals), checks
+  `build-and-test`, `db-tests`, `native-checks`, force push and deletion blocked, admins not enforced
+  (owner recovery path). Before P193 there was no rule.
 
 ## Repository visibility — PUBLIC_BY_OWNER_CHOICE
 
@@ -90,9 +93,8 @@ candidate line, not in Production.**
   owner's Part A in `docs/security/RELEASE_PREFLIGHT_P163.md` before it can become the live path, so
   **P130-08 is PARTIALLY_CLOSED, not closed**.
 - **Feature-branch CI (P188):** `ci.yml` also triggers on pushes to `release/**`. Those runs execute
-  the same `build-and-test` and `db-tests` jobs and can never deploy: `deploy-production` requires a
-  push to `main`, and the validation jobs read no Production secret
-  (`tests/config/workflow-deploy-gate.test.ts`).
+  the same validation jobs and can never deploy: `ci.yml` has no deploy job and reads no Production
+  secret (`tests/config/release-control-plane.test.ts`).
 - **PR #112** (`fix/p142-ci-gated-production-deploy`, draft, OPEN, MERGEABLE) is
   **`SUPERSEDED_BY_P163`**. Do not merge it; closing it is the owner's call.
 - **Native CI is not in the workflow.** The native test suites (`apps/mobile-spike`: typecheck, lint,

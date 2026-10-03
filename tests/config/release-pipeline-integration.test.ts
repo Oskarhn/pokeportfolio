@@ -1,15 +1,16 @@
 /**
- * P163 — integration tests for the release pipeline: the P142 CI-gated deploy job together with
- * the P160 public-configuration guards.
+ * P163/P193 — integration tests for the release pipeline: the manually dispatched Production
+ * workflow (`.github/workflows/deploy-production.yml`, P193) together with the P160 public
+ * configuration guards.
  *
  * Two layers, both local and both without a GitHub run:
- *   1. A policy checker over `.github/workflows/ci.yml` (comments stripped, steps parsed) plus a
- *      small simulator of GitHub's step-outcome semantics. Each rule has a mutation proof: the same
+ *   1. A policy checker over the workflow files (comments stripped, steps parsed) plus a small
+ *      simulator of GitHub's step-outcome semantics. Each rule has a mutation proof: the same
  *      checker run over a deliberately broken copy of the workflow must report it.
  *   2. Real subprocess runs of the guard CLIs (`check-public-env`, `check-dist-secrets`,
  *      `release-guard`) against synthetic fixtures.
  *
- * A static pass here is NOT a hosted, gated deployment: the workflow has never run on GitHub.
+ * A static pass here is NOT a hosted deployment: the Production workflow has never run on GitHub.
  * Every secret-shaped fixture is synthetic and assembled at runtime.
  */
 import { spawnSync } from 'node:child_process'
@@ -22,11 +23,13 @@ import { bundleDeclaresExactSha } from '../../scripts/lib/build-identity.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url))
 const WORKFLOW_DIR = join(REPO_ROOT, '.github', 'workflows')
-const WORKFLOW = readFileSync(join(WORKFLOW_DIR, 'ci.yml'), 'utf-8')
+const CI = readFileSync(join(WORKFLOW_DIR, 'ci.yml'), 'utf-8')
+const WORKFLOW = readFileSync(join(WORKFLOW_DIR, 'deploy-production.yml'), 'utf-8')
+const DEPLOY_FILE = 'deploy-production.yml'
 
 // ---------------------------------------------------------------------------------------------
 // Workflow parsing (deliberately small — this repo has no YAML dependency, see
-// workflow-deploy-gate.test.ts for why).
+// release-control-plane.test.ts for why).
 // ---------------------------------------------------------------------------------------------
 
 /** Removes comment-only lines so prose in a comment can never satisfy or trip a rule. */
@@ -87,7 +90,6 @@ function parseSteps(job: string): Step[] {
   })
 }
 
-const GATED = "steps.guard-main.outputs.current == 'true'"
 const SECRET_URL = '${{ secrets.PRODUCTION_SUPABASE_URL }}'
 const SECRET_KEY = '${{ secrets.PRODUCTION_SUPABASE_PUBLISHABLE_KEY }}'
 
@@ -98,33 +100,35 @@ const SECRET_KEY = '${{ secrets.PRODUCTION_SUPABASE_PUBLISHABLE_KEY }}'
  */
 function pipelineViolations(files: Record<string, string>): string[] {
   const out: string[] = []
-  const ci = stripComments(files['ci.yml'] ?? '')
+  const wf = stripComments(files[DEPLOY_FILE] ?? '')
 
-  // --- eligibility ---------------------------------------------------------------------------
-  const deploy = jobCode(ci, 'deploy-production')
-  if (!/^ {4}needs:\s*\[build-and-test,\s*db-tests\]\s*$/m.test(deploy)) {
-    out.push('deploy does not need BOTH build-and-test and db-tests')
+  // --- eligibility: verified SHA first, and never on a dry run ---------------------------------
+  const deploy = jobCode(wf, 'deploy')
+  if (!/^ {4}needs:\s*\[verify\]\s*$/m.test(deploy)) {
+    out.push('deploy does not need the verify job')
   }
-  const pushToMain = new RegExp(
-    String.raw`^ {4}if:\s*github\.event_name == 'push' && github\.ref == 'refs/heads/main'\s*$`,
-    'm',
-  )
-  if (!pushToMain.test(deploy)) {
-    out.push('deploy is not restricted to a push to main')
+  if (!/^ {4}if:\s*inputs\.dry_run == false\s*$/m.test(deploy)) {
+    out.push('deploy is not skipped on a dry run')
   }
 
   // --- nothing that prints a value before a guard can run -----------------------------------
-  if (/\$\{\{\s*vars\./.test(ci)) out.push('a vars.* expression is used (variables are not masked)')
-  if (/^(?: {4})?env:/m.test(ci)) out.push('env block above step level (workflow or job)')
+  for (const [name, text] of Object.entries(files)) {
+    const code = stripComments(text)
+    if (/\$\{\{\s*vars\./.test(code))
+      out.push(`${name}: a vars.* expression is used (variables are not masked)`)
+    if (/^(?: {4})?env:/m.test(code))
+      out.push(`${name}: env block above step level (workflow or job)`)
+  }
 
   // --- credential scoping --------------------------------------------------------------------
-  for (const job of ['build-and-test', 'db-tests']) {
-    const code = jobCode(ci, job)
-    if (/CLOUDFLARE_|PRODUCTION_SUPABASE_/.test(code)) out.push(`${job} references a deploy secret`)
-    for (const m of code.matchAll(/^ {10}VITE_[A-Z_]+:\s*(.+)$/gm)) {
-      if (m[1]!.includes('${{')) out.push(`${job} feeds an expression into a VITE_ variable`)
+  for (const [name, text] of Object.entries(files)) {
+    if (name === DEPLOY_FILE) continue
+    if (/CLOUDFLARE_|PRODUCTION_SUPABASE_/.test(stripComments(text))) {
+      out.push(`${name} references a deploy secret`)
     }
   }
+  const verify = jobCode(wf, 'verify')
+  if (/secrets\./.test(verify)) out.push('verify job reads a secret')
   if (/^ {4}environment:/m.test(deploy)) out.push('deploy carries an environment: key')
 
   // --- step structure ------------------------------------------------------------------------
@@ -132,7 +136,6 @@ function pipelineViolations(files: Record<string, string>): string[] {
   const at = (needle: RegExp) => steps.findIndex((s) => needle.test(s.raw))
   const idx = {
     guard: at(/check-public-env\.mjs --require-hosted/),
-    stale: at(/release-guard\.mjs remote-main-current/),
     install: at(/pnpm install/),
     clean: at(/rm -rf dist/),
     build: at(/^\s+run: pnpm build\s*$/m),
@@ -148,22 +151,15 @@ function pipelineViolations(files: Record<string, string>): string[] {
     if (a !== -1 && b !== -1 && a > b)
       out.push(`step order: ${order[i]} must precede ${order[i + 1]}`)
   }
-  if (idx.stale !== -1 && idx.guard > idx.stale)
-    out.push('step order: guard must precede stale check')
 
-  // every step from the stale check onwards is gated on it (a stale run deploys nothing)
-  if (idx.stale !== -1) {
-    steps.slice(idx.stale + 1).forEach((s) => {
-      if (s.condition !== GATED) out.push(`step "${s.name}" is not gated on the stale-run check`)
-    })
-  }
-  if (idx.guard !== -1 && steps[idx.guard]!.condition !== undefined) {
-    out.push('the public configuration guard must be unconditional')
+  // every deploy step runs on success only: no step-level condition at all
+  for (const s of steps) {
+    if (s.condition !== undefined) out.push(`step "${s.name}" carries a condition`)
   }
 
   // fail closed: nothing may turn a failure into a pass
-  if (/continue-on-error|\|\|\s*true|\balways\(\)|\bfailure\(\)|\bcancelled\(\)/.test(deploy)) {
-    out.push('deploy job contains a fail-open construct')
+  if (/continue-on-error|\|\|\s*true|\balways\(\)|\bfailure\(\)|\bcancelled\(\)/.test(wf)) {
+    out.push('workflow contains a fail-open construct')
   }
 
   // guard and build use secrets only; the build selects the deploy profile
@@ -195,10 +191,12 @@ function pipelineViolations(files: Record<string, string>): string[] {
     }
   }
   const upload = steps[idx.upload]
-  if (upload && !upload.raw.includes('--commit-hash="$GITHUB_SHA"'))
-    out.push('upload is not pinned to the SHA')
+  if (upload && !upload.raw.includes('--commit-hash="$RELEASE_SHA"'))
+    out.push('upload is not pinned to the verified SHA')
+  if (upload && !upload.raw.includes('RELEASE_SHA: ${{ needs.verify.outputs.sha }}'))
+    out.push('upload takes its SHA from somewhere other than the verify job output')
 
-  // --- one automatic production path ---------------------------------------------------------
+  // --- one production path --------------------------------------------------------------------
   let uploads = 0
   for (const [name, text] of Object.entries(files)) {
     const code = stripComments(text)
@@ -209,27 +207,20 @@ function pipelineViolations(files: Record<string, string>): string[] {
   }
   if (uploads !== 1)
     out.push(`expected exactly one upload command across all workflows, found ${String(uploads)}`)
-  if ((deploy.match(/group:\s*production-deploy/g) ?? []).length !== 1)
+  if ((wf.match(/group:\s*production-deploy/g) ?? []).length !== 1)
     out.push('deploy concurrency group count')
-  if (!/group:\s*production-deploy\s*\n\s*cancel-in-progress:\s*false/.test(deploy)) {
+  if (!/group:\s*production-deploy\s*\n\s*cancel-in-progress:\s*false/.test(wf)) {
     out.push('deploy concurrency may cancel an in-flight upload')
   }
   return out
 }
 
 /** Minimal model of GitHub's step semantics: implicit success(), `if`, continue-on-error. */
-function simulate(
-  steps: Step[],
-  fails: string[],
-  mainIsCurrent: boolean,
-): { ran: string[]; jobSucceeded: boolean } {
+function simulate(steps: Step[], fails: string[]): { ran: string[]; jobSucceeded: boolean } {
   const ran: string[] = []
   let failed = false
   for (const s of steps) {
     const always = /\balways\(\)/.test(s.condition ?? '')
-    const gated = s.condition?.includes(GATED) === true
-    const conditionOk = s.condition === undefined || always || (gated && mainIsCurrent)
-    if (!conditionOk) continue
     if (failed && !always) continue
     ran.push(s.name)
     const failsHere = fails.some((f) => s.raw.includes(f))
@@ -238,21 +229,20 @@ function simulate(
   return { ran, jobSucceeded: !failed }
 }
 
-const deploySteps = parseSteps(jobCode(stripComments(WORKFLOW), 'deploy-production'))
+const deploySteps = parseSteps(jobCode(stripComments(WORKFLOW), 'deploy'))
 const UPLOAD = 'wrangler pages deploy'
-const workflowFiles = (ci: string): Record<string, string> => {
+const workflowFiles = (deployText: string): Record<string, string> => {
   const files: Record<string, string> = {}
   for (const f of readdirSync(WORKFLOW_DIR).filter((n) => /\.ya?ml$/.test(n))) {
     files[f] = readFileSync(join(WORKFLOW_DIR, f), 'utf-8')
   }
-  files['ci.yml'] = ci
+  files[DEPLOY_FILE] = deployText
   return files
 }
 
 /** Cuts one deploy-job step out of the text and returns [textWithoutStep, stepText]. */
 function cutStep(text: string, nameFragment: string): [string, string] {
-  // Only inside the deploy job: build-and-test carries a step with the same name (P160).
-  const marker = text.indexOf(`- name: ${nameFragment}`, text.indexOf('\n  deploy-production:'))
+  const marker = text.indexOf(`- name: ${nameFragment}`, text.indexOf('\n  deploy:'))
   if (marker === -1) throw new Error(`step not found: ${nameFragment}`)
   const start = text.lastIndexOf('\n', marker) + 1 // include the step's own indentation
   const next = text.indexOf('\n      - ', marker + 1)
@@ -260,51 +250,44 @@ function cutStep(text: string, nameFragment: string): [string, string] {
   return [text.slice(0, start) + text.slice(end), text.slice(start, end)]
 }
 
-describe('the unmutated workflow satisfies every pipeline rule', () => {
+describe('the unmutated workflows satisfy every pipeline rule', () => {
   it('has no violations', () => {
     expect(pipelineViolations(workflowFiles(WORKFLOW))).toEqual([])
   })
 
-  it('has one upload command in exactly one workflow file, inside deploy-production', () => {
+  it('has one upload command in exactly one workflow file, inside the deploy job', () => {
     expect(deploySteps.filter((s) => s.raw.includes(UPLOAD))).toHaveLength(1)
+    expect(stripComments(CI)).not.toContain(UPLOAD)
   })
 })
 
 describe('mutation proofs — each simulated regression is reported', () => {
-  const violations = (ci: string) => pipelineViolations(workflowFiles(ci)).join(' | ')
+  const violations = (wf: string) => pipelineViolations(workflowFiles(wf)).join(' | ')
 
-  it('removed db-tests dependency', () => {
-    const m = WORKFLOW.replace('needs: [build-and-test, db-tests]', 'needs: [build-and-test]')
+  it('deploy no longer waits for the verified SHA', () => {
+    const m = WORKFLOW.replace('needs: [verify]', 'needs: []')
     expect(m).not.toBe(WORKFLOW)
-    expect(violations(m)).toContain('BOTH build-and-test and db-tests')
+    expect(violations(m)).toContain('does not need the verify job')
   })
 
-  it('pull-request deployment enabled', () => {
-    const m = WORKFLOW.replace(
-      "if: github.event_name == 'push' && github.ref == 'refs/heads/main'",
-      "if: github.ref == 'refs/heads/main'",
-    )
+  it('a dry run would still deploy', () => {
+    const m = WORKFLOW.replace('if: inputs.dry_run == false\n    runs-on', 'runs-on')
     expect(m).not.toBe(WORKFLOW)
-    expect(violations(m)).toContain('not restricted to a push to main')
-  })
-
-  it('stale SHA accepted: upload no longer gated on the stale-run check', () => {
-    const m = WORKFLOW.replace(
-      /(- name: Deploy to Cloudflare Pages \(Production\)\n)\s+if: steps\.guard-main\.outputs\.current == 'true'\n/,
-      '$1',
-    )
-    expect(m).not.toBe(WORKFLOW)
-    expect(violations(m)).toContain('Deploy to Cloudflare Pages (Production)" is not gated')
-  })
-
-  it('stale SHA accepted: stale-run check removed', () => {
-    const [m] = cutStep(WORKFLOW, 'Check that origin/main is still exactly this commit')
-    expect(violations(m)).toContain('no stale step')
+    expect(violations(m)).toContain('not skipped on a dry run')
   })
 
   it('mismatching build SHA accepted: identity check removed', () => {
     const [m] = cutStep(WORKFLOW, 'Verify build identity before upload')
     expect(violations(m)).toContain('no identity step')
+  })
+
+  it('upload deploys a SHA that did not come from the verify job', () => {
+    const m = WORKFLOW.replace(
+      'RELEASE_SHA: ${{ needs.verify.outputs.sha }}\n          CLOUDFLARE_API_TOKEN',
+      'RELEASE_SHA: ${{ inputs.sha }}\n          CLOUDFLARE_API_TOKEN',
+    )
+    expect(m).not.toBe(WORKFLOW)
+    expect(violations(m)).toContain('other than the verify job output')
   })
 
   it('guard after upload: the public configuration guard moved to the end of the job', () => {
@@ -349,8 +332,8 @@ describe('mutation proofs — each simulated regression is reported', () => {
 
   it('upload made unconditional-on-failure with always()', () => {
     const m = WORKFLOW.replace(
-      /(- name: Deploy to Cloudflare Pages \(Production\)\n\s+if: )steps\.guard-main\.outputs\.current == 'true'/,
-      '$1always()',
+      '      - name: Deploy to Cloudflare Pages (Production)\n',
+      '      - name: Deploy to Cloudflare Pages (Production)\n        if: always()\n',
     )
     expect(m).not.toBe(WORKFLOW)
     expect(violations(m)).toContain('fail-open construct')
@@ -358,8 +341,8 @@ describe('mutation proofs — each simulated regression is reported', () => {
 
   it('a value in a job-level env block, printed before any guard can run', () => {
     const m = WORKFLOW.replace(
-      '    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n    # The one deployment',
-      '    runs-on: ubuntu-24.04\n    env:\n      VITE_SUPABASE_URL: ${{ secrets.PRODUCTION_SUPABASE_URL }}\n    permissions:\n      contents: read\n    # The one deployment',
+      '    needs: [verify]\n',
+      '    needs: [verify]\n    env:\n      VITE_SUPABASE_URL: ${{ secrets.PRODUCTION_SUPABASE_URL }}\n',
     )
     expect(m).not.toBe(WORKFLOW)
     expect(violations(m)).toContain('env block above step level')
@@ -369,6 +352,21 @@ describe('mutation proofs — each simulated regression is reported', () => {
     const m = WORKFLOW.replaceAll('secrets.PRODUCTION_SUPABASE_URL', 'vars.VITE_SUPABASE_URL')
     expect(m).not.toBe(WORKFLOW)
     expect(violations(m)).toContain('vars.* expression')
+  })
+
+  it('the verify job reading a secret', () => {
+    const m = WORKFLOW.replace(
+      'GITHUB_TOKEN: ${{ github.token }}',
+      'GITHUB_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}',
+    )
+    expect(m).not.toBe(WORKFLOW)
+    expect(violations(m)).toContain('verify job reads a secret')
+  })
+
+  it('the validation workflow referencing a deploy secret', () => {
+    const files = workflowFiles(WORKFLOW)
+    files['ci.yml'] = `${CI}\n      - run: echo \${{ secrets.CLOUDFLARE_API_TOKEN }}\n`
+    expect(pipelineViolations(files).join(' | ')).toContain('ci.yml references a deploy secret')
   })
 
   it('a second, parallel Production deploy path', () => {
@@ -393,13 +391,13 @@ describe('mutation proofs — each simulated regression is reported', () => {
   })
 })
 
-describe('step semantics: a failed or skipped step can never be followed by an upload', () => {
+describe('step semantics: a failed step can never be followed by an upload', () => {
   const idx = deploySteps.findIndex((s) => s.raw.includes(UPLOAD))
   const uploaded = (r: { ran: string[] }) => r.ran.some((n) => n.startsWith('Deploy to Cloudflare'))
 
-  it('a fully successful, current run reaches the upload', () => {
+  it('a fully successful run reaches the upload', () => {
     expect(idx).toBeGreaterThan(-1)
-    const r = simulate(deploySteps, [], true)
+    const r = simulate(deploySteps, [])
     expect(uploaded(r)).toBe(true)
     expect(r.jobSucceeded).toBe(true)
   })
@@ -410,27 +408,21 @@ describe('step semantics: a failed or skipped step can never be followed by an u
     ['the dist scan', 'check-dist-secrets.mjs'],
     ['the build identity check', 'build-identity'],
   ])('a failing %s stops everything after it, so nothing is uploaded', (_label, fragment) => {
-    const r = simulate(deploySteps, [fragment], true)
+    const r = simulate(deploySteps, [fragment])
     expect(uploaded(r)).toBe(false)
     expect(r.jobSucceeded).toBe(false)
   })
 
   it('a failing guard runs no install and no build at all', () => {
-    const r = simulate(deploySteps, ['check-public-env.mjs'], true)
+    const r = simulate(deploySteps, ['check-public-env.mjs'])
     expect(r.ran.some((n) => /Install|Build/.test(n))).toBe(false)
-  })
-
-  it('a stale run uploads nothing and ends successfully', () => {
-    const r = simulate(deploySteps, [], false)
-    expect(uploaded(r)).toBe(false)
-    expect(r.jobSucceeded).toBe(true)
   })
 
   it('the simulator itself detects a fail-open workflow (always() on the upload)', () => {
     const broken = deploySteps.map((s) =>
       s.raw.includes(UPLOAD) ? { ...s, condition: 'always()', raw: s.raw } : s,
     )
-    expect(uploaded(simulate(broken, ['run: pnpm build'], true))).toBe(true)
+    expect(uploaded(simulate(broken, ['run: pnpm build']))).toBe(true)
   })
 })
 

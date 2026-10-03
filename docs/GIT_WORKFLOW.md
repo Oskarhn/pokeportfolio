@@ -8,11 +8,14 @@ standing rules for Claude sessions live in [CLAUDE.md](../CLAUDE.md).
 
 ## 1. `main` is stable
 
-`main` represents tested, working project state at all times. Every push to `main` triggers CI
+`main` represents tested, working project state at all times and is the integrated development
+branch (P193): merging to it is **not** a Production release. Every push to `main` triggers CI
 (`.github/workflows/ci.yml`); `main` should never be red for longer than it takes to notice and
 fix. CI also runs for every pull request and, since P188, for every push to a `release/**` branch, so
-a release candidate is validated before any PR exists; the Production deploy job is restricted to a
-push to `main` and never runs from any other ref.
+a release candidate is validated before any PR exists. `ci.yml` only validates; Production is released
+by the separate, manually dispatched `deploy-production.yml` for one verified `main` SHA
+([release/P193_MAIN_AND_PRODUCTION_POLICY.md](release/P193_MAIN_AND_PRODUCTION_POLICY.md)). `main` is
+protected on GitHub: PR + `build-and-test`, `db-tests`, `native-checks`; no force push or deletion.
 
 ## 2. Normal workflow: branch → PR → CI → merge
 
@@ -128,6 +131,12 @@ to a database holding real data outside this workflow; see DEVELOPMENT.md's migr
 the full discipline.
 
 ## 11. Production deploy gate (Cloudflare) — P130-08, status OPEN (workflow implemented, P142)
+
+> **P193 supersedes the mechanism below.** The `deploy-production` job described in this section no
+> longer exists in `ci.yml`; Production is deployed by `.github/workflows/deploy-production.yml`
+> (`workflow_dispatch` only, explicit full SHA, CI evidence for that SHA, `dry_run` default true), and
+> Cloudflare's automatic production deployments were disabled. The text below is kept for the reasoning
+> (race, masking, step order); where it says "push to `main`" or "stale-run check", read the P193 policy.
 
 **GitHub CI passing is not the same thing as Production serving CI-approved code, and nothing in
 this repository can make it the same thing by itself.** This section states the current mechanism
@@ -308,8 +317,8 @@ secrets, personal data, signing material (keystores, Apple certificates/profiles
 backups. Secret scanning stays mandatory.
 
 **Branches that trigger CI.** `release/**` pushes run the same validation jobs as a pull request
-(`build-and-test`, `db-tests`); `deploy-production` is restricted to a push to `refs/heads/main`,
-needs no secret on a branch, and is skipped there (`tests/config/workflow-deploy-gate.test.ts`).
+(`build-and-test`, `db-tests`, `native-checks`). No workflow triggered by a push or pull request can
+deploy or reads a Production secret (`tests/config/release-control-plane.test.ts`).
 
 **Main and Production keep their own gates.** `main` still requires the integration/release gate in
 §1/§2/§11 — green required CI, a reviewed diff, no secrets — and a Production deploy additionally the

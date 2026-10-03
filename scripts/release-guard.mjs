@@ -16,10 +16,20 @@
  *     Reads the just-built dist/build-meta.json and requires it to declare exactly this SHA.
  *     Exits 1 (hard failure — this is a real defect, never a benign race) on any mismatch, missing
  *     file, or malformed JSON. "Do not deploy" per GIT_WORKFLOW.md §11's build-identity clause.
+ *
+ *   node scripts/release-guard.mjs verify-release-sha --sha <40-hex> [--main-ref origin/main]
+ *       [--repo owner/name] [--checks-file <json>]
+ *     P193, used by `.github/workflows/deploy-production.yml` (manual dispatch only). Fails closed
+ *     unless the SHA is a full 40-hex commit that exists, is an ancestor of (or equal to) the main
+ *     ref, and build-and-test, db-tests and native-checks all succeeded on that exact SHA (GitHub
+ *     check-runs API with GITHUB_TOKEN, or `--checks-file` offline). Writes `sha=<sha>` to
+ *     $GITHUB_OUTPUT. `remote-main-current` above is the pre-P193 "latest main wins" guard and no
+ *     workflow calls it any more.
  */
 import { execFileSync } from 'node:child_process'
 import { readFileSync, appendFileSync } from 'node:fs'
 import { isRemoteMainCurrent, isBuildIdentityExact } from './lib/deploy-guards.mjs'
+import { evaluateRequiredChecks, isFullSha } from './lib/release-verify.mjs'
 
 const args = process.argv.slice(2)
 const subcommand = args[0]
@@ -90,10 +100,72 @@ if (subcommand === 'remote-main-current') {
       `built from.`,
   )
   process.exit(1)
+} else if (subcommand === 'verify-release-sha') {
+  await verifyReleaseSha()
 } else {
+  console.error('       node scripts/release-guard.mjs verify-release-sha --sha <40-hex>')
   console.error('Usage: node scripts/release-guard.mjs remote-main-current --github-sha <sha>')
   console.error(
     '       node scripts/release-guard.mjs build-identity --github-sha <sha> --build-meta <path>',
   )
   process.exit(1)
+}
+
+function failVerify(message) {
+  console.error(`release-guard verify-release-sha: ${message}`)
+  process.exit(1)
+}
+
+async function verifyReleaseSha() {
+  const sha = argValue('sha')
+  const mainRef = argValue('main-ref') ?? 'origin/main'
+  if (!isFullSha(sha)) {
+    failVerify('--sha must be a full lowercase 40-hex commit SHA (no branch, tag or short SHA)')
+  }
+  try {
+    execFileSync('git', ['cat-file', '-e', `${sha}^{commit}`], { stdio: 'ignore' })
+  } catch {
+    failVerify(`commit ${sha} does not exist in this checkout`)
+  }
+  try {
+    execFileSync('git', ['merge-base', '--is-ancestor', sha, mainRef], { stdio: 'ignore' })
+  } catch {
+    failVerify(`commit ${sha} is not reachable from ${mainRef}`)
+  }
+
+  let checkRuns
+  const checksFile = argValue('checks-file')
+  if (checksFile) {
+    try {
+      checkRuns = JSON.parse(readFileSync(checksFile, 'utf-8')).check_runs
+    } catch (error) {
+      failVerify(`could not read --checks-file: ${String(error)}`)
+    }
+  } else {
+    const repo = argValue('repo') ?? process.env.GITHUB_REPOSITORY
+    const token = process.env.GITHUB_TOKEN
+    if (!repo || !token) failVerify('--repo (or GITHUB_REPOSITORY) and GITHUB_TOKEN are required')
+    const response = await fetch(
+      `https://api.github.com/repos/${repo}/commits/${sha}/check-runs?per_page=100`,
+      {
+        headers: {
+          Accept: 'application/vnd.github+json',
+          Authorization: `Bearer ${token}`,
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+      },
+    )
+    if (!response.ok) failVerify(`GitHub check-runs API answered HTTP ${String(response.status)}`)
+    checkRuns = (await response.json()).check_runs
+  }
+
+  const verdict = evaluateRequiredChecks(checkRuns)
+  if (!verdict.ok) {
+    failVerify(
+      `required CI is not green on ${sha} — missing: [${verdict.missing.join(', ')}], ` +
+        `not successful: [${verdict.notGreen.join(', ')}]`,
+    )
+  }
+  console.log(`release-guard: ${sha} is on ${mainRef} and all required checks succeeded`)
+  writeOutput('sha', sha)
 }

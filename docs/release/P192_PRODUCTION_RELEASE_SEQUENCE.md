@@ -1,5 +1,11 @@
 # Production release sequence (migrations 105–114, new Edge Functions, web client)
 
+> **P193 update:** §1 describes the pre-P193 coupling. Since P193 a push to `main` deploys nothing and
+> Cloudflare's automatic deploys are disabled; the final step (15) is now a manual **Deploy Production**
+> run (`dry_run` first, then `backend_ack = BACKEND-ROLLED-OUT`), and step 8 is already done. See
+> [P193_MAIN_AND_PRODUCTION_POLICY.md](P193_MAIN_AND_PRODUCTION_POLICY.md) and
+> [PRODUCTION_RELEASE_CHECKLIST.md](PRODUCTION_RELEASE_CHECKLIST.md).
+
 `STATUS=PLAN_ONLY` · nothing in this document has been executed. Hosted database: **104 migrations**
 (read-only check in P192: the newest applied version is `20260916121000`). Released `main` is
 `d8682e0`. Derived from `.github/workflows/ci.yml`, `docs/DEVELOPMENT.md` §4/§8, `docs/security/RELEASE_PREFLIGHT_P163.md`,
@@ -39,14 +45,14 @@ Steps 1–8 are owner actions or read-only checks and need no code. **Do not sta
 | 5 | Verify the **provider retention facts** (backup/PITR/log retention of the hosted project; the organisation plan is `free`) and record them in `docs/security/RESTORE_RUNBOOK.md`. Until then the "deleted data survives in provider backups" statement stays unverified. | owner | recorded values |
 | 6 | **Hosted Auth** (dashboard, Authentication): enable *Secure password change* (`security_update_password_require_reauthentication`) and *Require current password when updating* (`SECURITY_UPDATE_PASSWORD_REQUIRE_CURRENT_PASSWORD`). Not applied by any migration. If `supabase config push` is used instead, diff the local `config.toml` against the hosted settings first: it pushes the whole file including the invite-only hook. | owner | settings visible in the dashboard; one stale-session password change refused on a test user |
 | 7 | GitHub repository **secrets**: create `PRODUCTION_SUPABASE_URL` (`https://<ref>.supabase.co`) and `PRODUCTION_SUPABASE_PUBLISHABLE_KEY` (`sb_publishable_…`). Rotate the secret-shaped value that sits in the public Actions variable `VITE_SUPABASE_URL` (P163 Part A (a)–(b)), then delete the stale `VITE_SUPABASE_*` variables. | owner | `node scripts/check-github-release-config.mjs` (names only) |
-| 8 | **Cloudflare Pages**: turn *automatic production branch deployments* **off** and previews off, so the CI job is the only deployer (P163 Part A (c),(e); Part B step 3). | owner | dashboard shows Git integration off for Production |
+| 8 | **Cloudflare Pages**: automatic production branch deployments **off** — done in P193 (read back). Previews were left as configured. | done | dashboard shows automatic deployments Disabled |
 | 9 | `pnpm db:backup` — must print `BACKUP COMPLETE` (validated; restore is only via the runbook, never a plain replay). | operator | manifest SHA-256 recorded |
 | 10 | Read-only finance diagnostics against the hosted database (`scripts/finance-integrity-diagnostics.sql`): every counter 0; re-check the P144 date contract against existing rows (`1996-10-20` ≤ date ≤ today + 1 day). | operator | all 0 |
 | 11 | `supabase db push --dry-run` must list **exactly** the ten files `20260918120000` … `20261002140020` in order (see §3). Then `db push`. | operator | `list_migrations` shows 114, no gaps |
 | 12 | Grant audit (`scripts/grant-audit.sql`) on the hosted database: "privilege baseline OK" and "ledger write gate OK: 5 tables gated, 10 writers flagged". | operator | both pass |
 | 13 | Deploy the Edge Functions: **`delete-account` (new)**, `search-prices` (changed), plus `ingest-prices` and `sync-catalog` (they share the changed `_shared/tcgdex.ts`; the `fetch-fx-rate`, `ingest-fx`, `redeem-invitation` files are unchanged in behaviour). Set `verify_jwt` as in `supabase/config.toml`. | operator | `list_edge_functions` shows the new version/`delete-account` ACTIVE |
 | 14 | Backend smoke on the hosted project with a synthetic user: invite-only sign-up still works, Price Check reads, one purchase through the official RPC, a direct `purchases` insert **refused** (`42501`), deletion of a synthetic account writes one registry entry. | operator | all five pass |
-| 15 | Web deploy: merge the PR (squash). First push-to-`main` run must show `deploy-production` starting after both required jobs, passing its guard, and `/build-meta.json` reporting that exact SHA. | CI | P163 Part B step 4 |
+| 15 | Web deploy: **Deploy Production** (`workflow_dispatch`) with the exact `main` SHA — dry run first, then `dry_run = false` and `backend_ack = BACKEND-ROLLED-OUT`. `/build-meta.json` must report that SHA. Merging the PR is a separate, earlier act and deploys nothing. | operator | run id recorded |
 | 16 | Production authenticated smoke (login, Collection, Price Check, add/cancel a purchase, Profile → deletion section shows and refuses nothing it cannot do). | owner | pass |
 | 17 | Record the run id, SHA, migration count and function versions in `HANDOVER.md`; close P130-08 only with that evidence. | docs | — |
 
