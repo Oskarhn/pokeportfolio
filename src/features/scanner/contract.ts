@@ -1,4 +1,5 @@
 import type { CardCondition } from '../../data/collection'
+import type { IdentityLease } from '../../auth/identity-lease'
 import type { PixelRect } from './guide-geometry'
 import type { VisualPhaseTimings, AssetCacheStatusEstimate } from './visual/phase-timing'
 
@@ -21,6 +22,10 @@ import type { VisualPhaseTimings, AssetCacheStatusEstimate } from './visual/phas
  *   - Commit results report what ACTUALLY happened per item; an interrupted request is reported
  *     as needing verification, never assumed added or assumed failed.
  */
+
+/** Why a match's tier was held below what its raw score alone implies (diagnostics only). */
+export type ScannerTierCapReason =
+  'runner-up-margin-small' | 'visual-text-disagreement' | 'visual-only-uncorroborated'
 
 /** Coarse match quality bands (prompt §14). The UI renders badges per band; it never derives or
  *  displays numeric confidence — no calibrated meaning exists for one yet. */
@@ -187,7 +192,7 @@ export interface ScannerDiagnostics {
     textReliability: number
     visualReliability: number
     finalTier: ScannerConfidence
-    tierReason: 'runner-up-margin-small' | 'visual-text-disagreement' | null
+    tierReason: ScannerTierCapReason | null
   }[]
   visualError: string | null
   /** P88 §21 — the calibrated tier (visual-evidence.ts's `visualEvidenceTier`) of the STRONGEST
@@ -220,7 +225,7 @@ export interface ScannerDiagnostics {
    *  (F-26). Null when nothing capped the tier this scan. P93/D-106 removed the old
    *  'visual-dominance-guarded' cause: the redesigned visual-anchor mechanism only ever ADDS a
    *  corroboration boost, so it can never itself be a reason a tier was capped down. */
-  tierCapReason: 'runner-up-margin-small' | 'visual-text-disagreement' | null
+  tierCapReason: ScannerTierCapReason | null
   /** Backend-attempt diagnostics (P78 prompt §4/§11/§12) — what was actually tried, present
    *  whether the visual channel ended up ready or unavailable. */
   visualBackendRequested: 'auto' | 'wasm' | 'webgpu'
@@ -457,8 +462,10 @@ export interface ScannerUiController {
    *  candidate — prompt §22/I6). Empty means the card has no active variant to add. */
   listVariantChoices(cardId: string): Promise<ScannerVariantChoice[]>
   /** Commits the whole reviewed batch through the real acquisition path. Nothing is written by
-   *  anything else in the scanner. Per-item isolation: one failure never aborts the rest. */
-  commitBatch(items: ScannerCommitItem[]): Promise<ScannerCommitResult>
+   *  anything else in the scanner. Per-item isolation: one failure never aborts the rest. The batch
+   *  is written under `lease` (P145): every write is a separate request, and when the identity the
+   *  batch was reviewed under ends, no further item is attempted. */
+  commitBatch(items: ScannerCommitItem[], lease: IdentityLease): Promise<ScannerCommitResult>
   /** Releases the session's OCR worker and any retained engine resources. Called reliably on
    *  route exit/unmount (prompt §8/I16). Idempotent. */
   dispose(): void

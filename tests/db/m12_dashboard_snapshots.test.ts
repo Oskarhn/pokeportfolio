@@ -8,6 +8,7 @@ import {
   type SyntheticUser,
   type TestClient,
 } from './setup'
+import { monthlyFixtureDate } from './lib/fixture-dates'
 
 /**
  * M12: the snapshot cache engine (DATA_MODEL.md §6, FINANCIAL_MODEL.md §3, TESTING.md §3).
@@ -351,7 +352,9 @@ function expectSnap(
 
 beforeAll(async () => {
   service = createServiceClient()
-  user = await createSyntheticUser(service, 'm12-snap-a')
+  // P147: no user is created here. It used to be (`m12-snap-a`), but the beforeEach below replaces
+  // `user` before every test, so that user was never used and its id was lost when the variable was
+  // reassigned — it was never deleted and stayed in auth.users after every run.
 
   // Deterministic FX facts — deliberately ANCIENT only. This suite shares the ephemeral stack's
   // fx_rates with the pre-existing M9/M9.1 fixtures: any EUR rate dated inside their observation
@@ -391,6 +394,13 @@ afterEach(async () => {
 
 afterAll(async () => {
   await deleteSyntheticUser(service, user.id)
+  // Teardown contract (P147): this suite leaves none of its synthetic users behind. Every user it
+  // creates carries the label 'm12-snap-' in its address, so a future edit that loses an id again
+  // (the way the old beforeAll user was lost) fails here instead of leaking silently.
+  const { data, error } = await service.auth.admin.listUsers({ page: 1, perPage: 1000 })
+  expect(error).toBeNull()
+  const leaked = data.users.filter((u) => u.email?.includes('-m12-snap-'))
+  expect(leaked.map((u) => u.email)).toEqual([])
 })
 
 // ── Ownership timeline hard gates (prompt §17-§22, TESTING.md §3) ────────────────────────────
@@ -1409,10 +1419,9 @@ describe('M12 dashboard aggregates', () => {
         hobby: number,
         shipping: number,
       ) {
-        const d = new Date(today)
-        d.setUTCMonth(d.getUTCMonth() - monthsAgo)
-        d.setUTCDate(10)
-        const purchasedOn = d.toISOString().slice(0, 10)
+        // Calendar-safe: day 1 of the current month (the purchase date trigger rejects dates after
+        // today + 1 day, so the 10th fails on days 1-8), day 10 of earlier months, no overflow.
+        const purchasedOn = monthlyFixtureDate(today, monthsAgo)
         const subtotal = collectible + hobby
         const total = subtotal + shipping
         const { data: purchase, error } = await service

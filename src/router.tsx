@@ -12,12 +12,14 @@ import { AppShell } from './ui/AppShell'
 import { Button } from './ui/form'
 import { isChunkLoadFailure } from './platform/build-freshness'
 import { hasAnyUnsavedWork } from './platform/unsaved-work-registry'
+import { AuthIdentityBoundary } from './auth/AuthIdentityBoundary'
 import { RedirectIfSignedIn, RequireAdmin, RequireSession } from './auth/guards'
 import { LoginPage } from './features/auth/LoginPage'
 import { InvitePage } from './features/auth/InvitePage'
 import { ForgotPasswordPage } from './features/auth/ForgotPasswordPage'
 import { ResetPasswordPage } from './features/auth/ResetPasswordPage'
 import { HomePage } from './features/home/HomePage'
+import { AccountDeletionPage } from './features/legal/AccountDeletionPage'
 import { PrivacyPage } from './features/legal/PrivacyPage'
 import { TermsPage } from './features/legal/TermsPage'
 import { FaqPage } from './features/legal/FaqPage'
@@ -121,6 +123,22 @@ const ScannerPage = lazy(() =>
   import('./features/scanner/ScannerPage').then((m) => ({ default: m.ScannerPage })),
 )
 
+// P153 Price Check: a read-only lookup feature. Three separate chunks so the text search never
+// downloads the scanner, and the scan page loads the scanner controller only when it opens.
+const PriceCheckPage = lazy(() =>
+  import('./features/price-check/PriceCheckPage').then((m) => ({ default: m.PriceCheckPage })),
+)
+const PriceCheckScanPage = lazy(() =>
+  import('./features/price-check/PriceCheckScanPage').then((m) => ({
+    default: m.PriceCheckScanPage,
+  })),
+)
+const PriceCheckResultPage = lazy(() =>
+  import('./features/price-check/PriceCheckResultPage').then((m) => ({
+    default: m.PriceCheckResultPage,
+  })),
+)
+
 /** Matches the layout these pages render into (AppShell's `<main>`) closely enough that arriving
  *  content doesn't jump — a skeleton rather than a spinner-over-blank-region, per
  *  DESIGN_SYSTEM.md §7's loading-state rule. */
@@ -206,8 +224,9 @@ function AppErrorComponent(props: ErrorComponentProps) {
 /**
  * Three route classes (docs/UX_FLOWS.md):
  *
- *   public     /login, /invite/$token, /forgot-password, /reset-password, /privacy, /terms, /faq
- *              (only /privacy, /terms, /faq are crawlable — public/robots.txt disallows the rest;
+ *   public     /login, /invite/$token, /forgot-password, /reset-password, /privacy, /terms, /faq,
+ *              /account-deletion
+ *              (only /privacy, /terms, /faq, /account-deletion are crawlable — public/robots.txt disallows the rest;
  *              /invite/$token and /reset-password carry live tokens and must never be indexed)
  *   protected  /, /catalog, /catalog/$cardId, /catalog/sets/$setId,
  *              /catalog/sealed/$sealedProductId, /portfolio, /portfolio/$holdingId,
@@ -229,12 +248,17 @@ function AppErrorComponent(props: ErrorComponentProps) {
  */
 
 const rootRoute = createRootRoute({
+  // P143: everything user-scoped (nav, portals, the routed page) mounts under the auth USER ID,
+  // so an A -> B identity change destroys A's component state instead of re-rendering it under B.
+  // See auth/AuthIdentityBoundary.tsx for why this is the root route and not each guard.
   component: () => (
-    <AppShell>
-      <Suspense fallback={<RouteFallback />}>
-        <Outlet />
-      </Suspense>
-    </AppShell>
+    <AuthIdentityBoundary>
+      <AppShell>
+        <Suspense fallback={<RouteFallback />}>
+          <Outlet />
+        </Suspense>
+      </AppShell>
+    </AuthIdentityBoundary>
   ),
   // P101: there was no custom 404 before this — an unmatched path fell through to TanStack
   // Router's own bare default. Renders inside AppShell like every other route (so a signed-in
@@ -301,6 +325,14 @@ const termsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/terms',
   component: TermsPage,
+})
+
+// P189: the public account-deletion information URL (store listings point here). Public and
+// crawlable like the three above (and, like them, an aggregate-only analytics-eligible page).
+const accountDeletionRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/account-deletion',
+  component: AccountDeletionPage,
 })
 
 const faqRoute = createRoute({
@@ -716,6 +748,46 @@ const scannerRoute = createRoute({
   ),
 })
 
+const priceCheckRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/price-check',
+  // The query and language live in the URL so Back from a result returns to the same search.
+  validateSearch: (search: Record<string, unknown>): { q?: string; language?: 'en' | 'ja' } => ({
+    q: str(search.q),
+    language: search.language === 'en' || search.language === 'ja' ? search.language : undefined,
+  }),
+  component: () => (
+    <RequireSession>
+      <PriceCheckPage />
+    </RequireSession>
+  ),
+})
+
+const priceCheckScanRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/price-check/scan',
+  component: () => (
+    <RequireSession>
+      <PriceCheckScanPage />
+    </RequireSession>
+  ),
+})
+
+const priceCheckResultRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/price-check/$cardId',
+  // The chosen variant lives in the URL (like Card Detail), so a refresh or shared link lands on
+  // the same variant — and a link WITHOUT one never silently picks a variant for a multi-variant card.
+  validateSearch: (search: Record<string, unknown>): { variantId?: string } => ({
+    variantId: str(search.variantId),
+  }),
+  component: () => (
+    <RequireSession>
+      <PriceCheckResultPage />
+    </RequireSession>
+  ),
+})
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   loginRoute,
@@ -723,6 +795,7 @@ const routeTree = rootRoute.addChildren([
   forgotPasswordRoute,
   resetPasswordRoute,
   privacyRoute,
+  accountDeletionRoute,
   termsRoute,
   faqRoute,
   catalogRoute,
@@ -751,6 +824,9 @@ const routeTree = rootRoute.addChildren([
   profileRoute,
   profileExportRoute,
   scannerRoute,
+  priceCheckRoute,
+  priceCheckScanRoute,
+  priceCheckResultRoute,
   legacyMoreRoute,
   adminInvitationsRoute,
 ])

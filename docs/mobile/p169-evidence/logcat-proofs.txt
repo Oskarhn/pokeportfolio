@@ -1,0 +1,63 @@
+I/ReactNativeJS(17347): P166_PROOF PASS format zero NOK
+I/ReactNativeJS(17347): P166_PROOF PASS format one krone
+I/ReactNativeJS(17347): P166_PROOF PASS format NOK two decimals
+I/ReactNativeJS(17347): P166_PROOF PASS format minus one øre
+I/ReactNativeJS(17347): P166_PROOF PASS format negative 2^53+1
+I/ReactNativeJS(17347): P166_PROOF PASS format positive 2^53+1
+I/ReactNativeJS(17347): P166_PROOF PASS format 2^58+1 scale
+I/ReactNativeJS(17347): P166_PROOF PASS format EUR two decimals
+I/ReactNativeJS(17347): P166_PROOF PASS format USD two decimals
+I/ReactNativeJS(17347): P166_PROOF PASS format negative EUR
+I/ReactNativeJS(17347): P166_PROOF PASS format JPY zero decimals
+I/ReactNativeJS(17347): P166_PROOF PASS format JPY 1 is one yen, not 0.01
+I/ReactNativeJS(17347): P166_PROOF PASS format JPY above 2^53
+I/ReactNativeJS(17347): P166_PROOF PASS format JPY zero
+I/ReactNativeJS(17347): P166_PROOF PASS format null is a dash, not zero
+I/ReactNativeJS(17347): P166_PROOF PASS format undefined is a dash
+I/ReactNativeJS(17347): P166_PROOF PASS runtime has BigInt
+I/ReactNativeJS(17347): P166_PROOF PASS 2^53+1 exact as bigint
+I/ReactNativeJS(17347): P166_PROOF PASS Number() loses 2^53+1 (documents why money never uses it)
+I/ReactNativeJS(17347): P166_PROOF PASS 3 x (2^58+1) exact
+I/ReactNativeJS(17347): P166_PROOF PASS wire null -> null
+I/ReactNativeJS(17347): P166_PROOF PASS wire "0" -> 0n (zero is not absence)
+I/ReactNativeJS(17347): P166_PROOF PASS wire "9007199254740993" exact
+I/ReactNativeJS(17347): P166_PROOF PASS wire "288230376151711745" exact (2^58+1)
+I/ReactNativeJS(17347): P166_PROOF PASS wire "-9007199254740993" exact
+I/ReactNativeJS(17347): P166_PROOF PASS wire "" refused (not 0)
+I/ReactNativeJS(17347): P166_PROOF PASS wire unsafe JSON number refused
+I/ReactNativeJS(17347): P166_PROOF PASS wire safe JSON number accepted
+I/ReactNativeJS(17347): P166_PROOF PASS JSON.parse rounds an unquoted 2^53+1
+I/ReactNativeJS(17347): P166_PROOF PASS scan finds unquoted 2^53+1
+I/ReactNativeJS(17347): P166_PROOF PASS scan finds unquoted negative
+I/ReactNativeJS(17347): P166_PROOF PASS scan passes quoted 2^58+1
+I/ReactNativeJS(17347): P166_PROOF PASS scan passes null money
+I/ReactNativeJS(17347): P166_PROOF PASS quoted 2^58+1 survives JSON.parse byte-for-byte
+I/ReactNativeJS(17347): P166_PROOF PASS null cost survives JSON.parse as null
+I/ReactNativeJS(17347): P166_PROOF PASS JPY 2^53+1 via wire + formatter
+I/ReactNativeJS(17347): P166_PROOF RESULT pass=36 fail=0 engine=hermes 250829098.0.17
+I/ReactNativeJS(17347): P169_PROOF PASS Object.hasOwn exists (used by the P165 wire guard)
+I/ReactNativeJS(17347): P169_PROOF PASS 'constructor' is not an own entry
+I/ReactNativeJS(17347): P169_PROOF PASS 2^58 EUR observation kept exactly
+I/ReactNativeJS(17347): P169_PROOF PASS 2^53+1 USD observation kept exactly
+I/ReactNativeJS(17347): P169_PROOF PASS 2^58 EUR formats exactly
+I/ReactNativeJS(17347): P169_PROOF PASS negative / numeric / prototype-named values all dropped
+I/ReactNativeJS(17347): P169_PROOF PASS all-dropped response is malformed, not "no price"
+I/ReactNativeJS(17347): P169_PROOF PASS explicit provider zero is a real 0
+I/ReactNativeJS(17347): P169_PROOF PASS zero formats as zero
+I/ReactNativeJS(17347): P169_PROOF PASS absent formats as a dash
+I/ReactNativeJS(17347): P169_PROOF PASS no observations -> no_variant_price (never zero)
+I/ReactNativeJS(17347): P169_PROOF PASS EUR -> NOK above 2^53, half-up
+I/ReactNativeJS(17347): P169_PROOF PASS JPY (exponent 0) -> NOK (exponent 2)
+I/ReactNativeJS(17347): P169_PROOF PASS JPY formats with no decimals
+I/ReactNativeJS(17347): P169_PROOF PASS no FX rate -> unavailable, never invented
+I/ReactNativeJS(17347): P169_PROOF PASS large sum exact
+I/ReactNativeJS(17347): P169_PROOF PASS unquoted +(2^53+1) found before JSON.parse
+I/ReactNativeJS(17347): P169_PROOF PASS unquoted -(2^53+1) found before JSON.parse
+I/ReactNativeJS(17347): P169_PROOF PASS quoted "9007199254740993" is not a violation
+I/ReactNativeJS(17347): P169_PROOF PASS 10-day-old observation is stale
+I/ReactNativeJS(17347): P169_PROOF PASS 45-day-old observation is outdated
+I/ReactNativeJS(17347): P169_PROOF PASS missing timestamp is unknown, not fresh
+I/ReactNativeJS(17347): P169_PROOF PASS two active printings -> choice required
+I/ReactNativeJS(17347): P169_PROOF PASS foreign variant id -> mismatch
+I/ReactNativeJS(17347): P169_PROOF PASS same-name detection (toLocaleLowerCase)
+I/ReactNativeJS(17347): P169_PROOF RESULT pass=25 fail=0 engine=hermes 250829098.0.17

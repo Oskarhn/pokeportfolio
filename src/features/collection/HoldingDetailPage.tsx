@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useLeasedAction, useLeasedMutation } from '../../auth/useLeasedMutation'
+import { leasedDb } from '../../data/leased-db'
 import {
   clearManualValuation,
   getHoldingLots,
@@ -28,7 +30,7 @@ import { AdjustQuantitySheet } from './AdjustQuantitySheet'
 import { SealedIntentSheet } from './SealedIntentSheet'
 import { Sheet } from '../../ui/Sheet'
 import { Button, FormMessage, TextField } from '../../ui/form'
-import { formatNokMinor, parseNokInput } from '../../ui/money-format'
+import { formatNokMinor, formatSourcePriceMinor, parseNokInput } from '../../ui/money-format'
 import {
   CONDITION_LABEL,
   FINISH_LABEL,
@@ -37,6 +39,7 @@ import {
   PRICE_KIND_LABEL,
   PROVIDER_LABEL,
 } from './labels'
+import { userMessage } from '../../platform/user-error'
 
 /** Storage is a lot-level fact (D-036) — a holding's lots may legitimately sit in different
  *  places. Never pick one arbitrarily (M7 prompt §62): show the shared location when every open
@@ -84,8 +87,8 @@ export function HoldingDetailPage() {
     queryFn: () => getHoldingCollectionIds(holdingId),
   })
 
-  const favoriteMutation = useMutation({
-    mutationFn: (next: boolean) => toggleFavorite(holdingId, next),
+  const favoriteMutation = useLeasedMutation({
+    mutationFn: (next: boolean, lease) => toggleFavorite(holdingId, next, leasedDb(lease)),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['holding-summary', holdingId] })
       await queryClient.invalidateQueries({ queryKey: ['portfolio'] })
@@ -93,8 +96,8 @@ export function HoldingDetailPage() {
   })
 
   const [voidError, setVoidError] = useState<string | null>(null)
-  const voidMutation = useMutation({
-    mutationFn: (lotId: string) => voidAcquisitionLot(lotId),
+  const voidMutation = useLeasedMutation({
+    mutationFn: (lotId: string, lease) => voidAcquisitionLot(lotId, leasedDb(lease)),
     onSuccess: async () => {
       setVoidError(null)
       await queryClient.invalidateQueries({ queryKey: ['holding-lots', holdingId] })
@@ -107,7 +110,7 @@ export function HoldingDetailPage() {
       await queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] })
     },
     onError: (error: Error) => {
-      setVoidError(error.message)
+      setVoidError(userMessage(error))
     },
   })
 
@@ -115,8 +118,8 @@ export function HoldingDetailPage() {
   // needed). Reuses the M8.1 correction lifecycle unchanged: remove_holdings_from_portfolio voids
   // every live lot via void_acquisition_lot itself, so the same parent-purchase and
   // partially-disposed guards apply here as everywhere else.
-  const removeAllMutation = useMutation({
-    mutationFn: () => removeHoldingsFromPortfolio([holdingId]),
+  const removeAllMutation = useLeasedAction({
+    mutationFn: (lease) => removeHoldingsFromPortfolio([holdingId], leasedDb(lease)),
     onSuccess: async (results) => {
       const blocked = results.find((r) => r.blocked)
       if (blocked) {
@@ -136,12 +139,13 @@ export function HoldingDetailPage() {
       await navigate({ to: '/portfolio' })
     },
     onError: (error: Error) => {
-      setRemoveError(error.message)
+      setRemoveError(userMessage(error))
     },
   })
 
-  const valuationMutation = useMutation({
-    mutationFn: (valueMinor: bigint) => setManualValuation({ holdingId, valueMinor }),
+  const valuationMutation = useLeasedMutation({
+    mutationFn: (valueMinor: bigint, lease) =>
+      setManualValuation({ holdingId, valueMinor }, leasedDb(lease)),
     onSuccess: async () => {
       setManualValueInput('')
       await queryClient.invalidateQueries({ queryKey: ['holding-value-provenance', holdingId] })
@@ -152,8 +156,8 @@ export function HoldingDetailPage() {
     },
   })
 
-  const clearValuationMutation = useMutation({
-    mutationFn: () => clearManualValuation(holdingId),
+  const clearValuationMutation = useLeasedAction({
+    mutationFn: (lease) => clearManualValuation(holdingId, leasedDb(lease)),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['holding-value-provenance', holdingId] })
       await queryClient.invalidateQueries({ queryKey: ['portfolio'] })
@@ -162,11 +166,11 @@ export function HoldingDetailPage() {
     },
   })
 
-  const membershipMutation = useMutation({
-    mutationFn: (input: { collectionId: string; member: boolean }) =>
+  const membershipMutation = useLeasedMutation({
+    mutationFn: (input: { collectionId: string; member: boolean }, lease) =>
       input.member
-        ? removeHoldingFromCollection(input.collectionId, holdingId)
-        : addHoldingToCollection(input.collectionId, holdingId),
+        ? removeHoldingFromCollection(input.collectionId, holdingId, leasedDb(lease))
+        : addHoldingToCollection(input.collectionId, holdingId, leasedDb(lease)),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['holding-collections', holdingId] })
     },
@@ -414,7 +418,7 @@ export function HoldingDetailPage() {
                 {provenance.data.provider ? PROVIDER_LABEL[provenance.data.provider] : ''} ·{' '}
                 {provenance.data.priceKind ? PRICE_KIND_LABEL[provenance.data.priceKind] : ''}
                 {provenance.data.sourceValueMinor !== null && provenance.data.sourceCurrency
-                  ? ` · ${(Number(provenance.data.sourceValueMinor) / 100).toFixed(2)} ${provenance.data.sourceCurrency}`
+                  ? ` · ${formatSourcePriceMinor(provenance.data.sourceValueMinor)} ${provenance.data.sourceCurrency}`
                   : ''}
                 {provenance.data.snapshotDate ? ` · as of ${provenance.data.snapshotDate}` : ''}
                 {provenance.data.priceState === 'stale' ? ' · price hasn’t refreshed recently' : ''}

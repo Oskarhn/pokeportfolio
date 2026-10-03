@@ -1,0 +1,186 @@
+{
+  "generator": "scripts/p184/generate-fixtures.mjs",
+  "size": {
+    "width": 1200,
+    "height": 1600
+  },
+  "fixtures": [
+    {
+      "id": "f01-clean",
+      "file": "f01-clean.jpg",
+      "scenario": "clean",
+      "printed": {
+        "name": "Sparkfin",
+        "number": "007/999"
+      },
+      "artSeed": 1101
+    },
+    {
+      "id": "f02-perspective",
+      "file": "f02-perspective.jpg",
+      "scenario": "perspective",
+      "printed": {
+        "name": "Sparkfin",
+        "number": "007/999"
+      },
+      "artSeed": 1101
+    },
+    {
+      "id": "f03-blur-moderate",
+      "file": "f03-blur-moderate.jpg",
+      "scenario": "moderate blur",
+      "printed": {
+        "name": "Sparkfin",
+        "number": "007/999"
+      },
+      "artSeed": 1101
+    },
+    {
+      "id": "f04-blur-severe",
+      "file": "f04-blur-severe.jpg",
+      "scenario": "severe blur",
+      "printed": {
+        "name": "Sparkfin",
+        "number": "007/999"
+      },
+      "artSeed": 1101
+    },
+    {
+      "id": "f05-glare",
+      "file": "f05-glare.jpg",
+      "scenario": "glare across name and number",
+      "printed": {
+        "name": "Sparkfin",
+        "number": "007/999"
+      },
+      "artSeed": 1101
+    },
+    {
+      "id": "f06-cropped-top",
+      "file": "f06-cropped-top.jpg",
+      "scenario": "top of the card cut off (no name)",
+      "printed": {
+        "name": "Sparkfin",
+        "number": "007/999"
+      },
+      "artSeed": 1101
+    },
+    {
+      "id": "f07-cropped-bottom",
+      "file": "f07-cropped-bottom.jpg",
+      "scenario": "bottom of the card cut off (no number)",
+      "printed": {
+        "name": "Sparkfin",
+        "number": "007/999"
+      },
+      "artSeed": 1101
+    },
+    {
+      "id": "f08-upside-down",
+      "file": "f08-upside-down.jpg",
+      "scenario": "card upside-down",
+      "printed": {
+        "name": "Sparkfin",
+        "number": "007/999"
+      },
+      "artSeed": 1101
+    },
+    {
+      "id": "f09-rotated-90",
+      "file": "f09-rotated-90.jpg",
+      "scenario": "card rotated 90 degrees",
+      "printed": {
+        "name": "Sparkfin",
+        "number": "007/999"
+      },
+      "artSeed": 1101
+    },
+    {
+      "id": "f10-tiny-in-background",
+      "file": "f10-tiny-in-background.jpg",
+      "scenario": "small card far away among clutter",
+      "printed": {
+        "name": "Sparkfin",
+        "number": "007/999"
+      },
+      "artSeed": 1101
+    },
+    {
+      "id": "f11-non-card",
+      "file": "f11-non-card.jpg",
+      "scenario": "not a card at all",
+      "printed": null,
+      "artSeed": null
+    },
+    {
+      "id": "f12-unknown-card",
+      "file": "f12-unknown-card.jpg",
+      "scenario": "a card that exists in no catalog",
+      "printed": {
+        "name": "Zzyzx Quorble",
+        "number": "555/999"
+      },
+      "artSeed": 6606
+    },
+    {
+      "id": "f13-ocr-vs-visual",
+      "file": "f13-ocr-vs-visual.jpg",
+      "scenario": "OCR says one card, the artwork resembles another",
+      "printed": {
+        "name": "Voltmoth",
+        "number": "012/999"
+      },
+      "artSeed": 2202
+    },
+    {
+      "id": "f14-visual-vs-number",
+      "file": "f14-visual-vs-number.jpg",
+      "scenario": "artwork resembles one card, the printed number belongs to another",
+      "printed": {
+        "name": "Emberlyn",
+        "number": "044/999"
+      },
+      "artSeed": 3303
+    },
+    {
+      "id": "f15-same-art-reprint",
+      "file": "f15-same-art-reprint.jpg",
+      "scenario": "two catalog printings share this artwork",
+      "printed": {
+        "name": "Glimmerfox",
+        "number": "015/999"
+      },
+      "artSeed": 4404
+    },
+    {
+      "id": "f16-duplicate-number",
+      "file": "f16-duplicate-number.jpg",
+      "scenario": "same collector number exists in two sets",
+      "printed": {
+        "name": "Duskwing",
+        "number": "023/999"
+      },
+      "artSeed": 5505
+    },
+    {
+      "id": "f17-p169-charizard",
+      "file": "f17-p169-charizard.jpg",
+      "scenario": "text names a seeded card with two printings (flow fixture)",
+      "printed": {
+        "name": "P169 Charizard",
+        "number": "004/102"
+      },
+      "artSeed": 7707
+    },
+    {
+      "id": "f18-p169-pikachu",
+      "file": "f18-p169-pikachu.jpg",
+      "scenario": "same name and number in two sets with different printings (flow fixture)",
+      "printed": {
+        "name": "P169 Pikachu",
+        "number": "025/102"
+      },
+      "artSeed": 8808
+    }
+  ]
+}

@@ -6009,3 +6009,1172 @@ every non-Production restore target to clear `environment_ingest_config` uncondi
 restoring data, closing the one way a backup taken from an already-configured Production could
 otherwise carry the live configuration onto a disposable/local/staging restore target
 (`restore-drill.ts --mutation C`).
+
+## D-134 — The authenticated React subtree is keyed by the auth user id, and a deliberate sign-out ends local access unconditionally (P130-22 / P130-23 / P143)
+
+**2026-09-18 · Accepted**
+
+**Context.** Two findings from `ai_outputs/Claude_outputs/output_130.txt`, both reproduced in a real
+browser before any change (see Proof):
+
+- **P130-23.** Every protected route renders inside `RequireSession`, which renders its children
+  for any signed-in status. supabase-js broadcasts auth events to every tab that shares the browser
+  profile's storage, so a second tab signing in as B delivers `SIGNED_IN(B)` to a tab that is
+  showing A's half-typed form while `status` stays `'signed-in'` throughout. React only unmounts a
+  component when its key or type changes, so A's `useState` values survived under B, and the next
+  submit went out under B's bearer. P140 added page-local resets for its own new state and
+  explicitly did not claim the class was closed.
+- **P130-22.** `signOut()`'s result was ignored. The installed auth-js (2.112.3) loads the stored
+  session first and, when the ACCESS token has expired, refreshes before revoking. A network
+  failure there is a retryable error that is retried with backoff for up to ~25 s and then
+  returned WITHOUT removing the stored session or emitting SIGNED_OUT. A tab left idle past token
+  expiry with the Auth service unreachable therefore had a Sign out button that did nothing
+  visible, and a session that the service would accept again the moment it came back.
+
+**Decision.**
+
+1. **The whole authenticated subtree is mounted under a key derived from the user id**
+   (`src/auth/AuthIdentityBoundary.tsx`, rendered by the ROOT route around `AppShell`). A different
+   user id remounts app shell, nav, portals and the routed page; the same user id — token refresh,
+   `USER_UPDATED`, a repeated `SIGNED_IN` — keeps every component's state. Signed-out and
+   still-restoring share one key. It sits in the root route, never around `RouterProvider`
+   (remounting the provider would rebuild router state).
+2. **State outside React is cleared in the same auth callback, before the new identity is
+   renderable** (`applyAuthIdentityBoundary`): query cache and mutation cache (after
+   `cancelQueries`), `draftStore`, `scannerSessionStore`, and the scanner unsaved-work mirror. The
+   classification of everything else the app holds is recorded in that file's header (theme,
+   build-freshness timestamp and public scanner assets survive on purpose; the export-reminder key
+   is already user-namespaced; the unsaved-work registry empties itself through the remount's effect
+   cleanups).
+3. **Sign-out is two independent facts** (`src/auth/end-session.ts`): `local` (the stored session is
+   gone and the client has been told) must always end; `remote` (the service confirmed) is reported
+   as `confirmed`/`unconfirmed`, never implied. The request to revoke gets a 3 s deadline; after
+   it answers or the deadline passes the stored session is verified gone and, if the library left
+   it, removed through the same storage adapter followed by the library's own `signOut({ scope:
+   'local' })`, which with nothing in storage needs no network and notifies every subscriber and
+   every other tab. A `pagehide` listener removes the stored session synchronously while a sign-out
+   is pending. The person is shown fixed text only after an unconfirmed revocation (or an
+   unverifiable local cleanup) — never a raw error.
+4. **The storage key and medium are explicit** (`src/auth/session-storage.ts`, passed to
+   `createClient`): both are documented client options; the key equals the one supabase-js derives
+   by default (pinned by a test), so browsers already signed in keep their session.
+
+**Alternatives rejected.**
+
+- *Reset each form's state on identity change* (the P140 pattern, applied to every form). A
+  maintained convention across ~20 forms that a future form silently misses; the central key makes
+  "A's component state cannot reach B" structural. P140's page-local resets stay as defence in depth
+  — they also cover same-mount entity changes the user-id key cannot see.
+- *Key on the session or access token.* Refresh would destroy unsaved work on every token rotation;
+  the boundary is the user, not the credential.
+- *Only set React state to signed-out after a failed remote sign-out.* A fake logout: the persisted
+  session would resurrect on the next load.
+- *Write to auth-js's private storage internals / corrupt-then-signOut tricks.* Depends on
+  undocumented behaviour; the explicit `storageKey` + `storage` options give the same control
+  through the supported surface.
+- *`signOut({ scope: 'local' })` as the primary call.* Not sufficient: it takes the same
+  load-and-refresh path first, so it fails identically for an expired token, and it would stop
+  revoking the account's other sessions, which the product intends (D-093 / D-110 era behaviour).
+- *Waiting for the library to give up.* ~25 s of a button that appears to do nothing.
+
+**Consequences and residuals (stated, not hidden).**
+
+- With the service unreachable, the server-side session/refresh token is NOT revoked; local access
+  ends and the person is told so. A stolen copy of that token remains valid until it rotates or
+  expires; signing in and out again while online revokes it. This is a limitation of revoking over
+  a dead connection, not something this design can remove.
+- The deadline means a revocation that would have succeeded after 3 s is reported unconfirmed
+  (conservative).
+- **Not addressed here (closed by D-136, P145):** a multi-step submission already IN FLIGHT when the identity changes in another
+  tab (e.g. `PurchaseFormPage` creates a manual card, then `create_purchase`). The remount cannot
+  stop an async continuation, and a later step reads the CURRENT session, i.e. B's. Every RPC still
+  binds to its caller's `auth.uid()` (no cross-user data access), and the window is one submit's
+  duration during a concurrent switch, but it can mis-attribute A's already-typed inputs to B. The
+  fix would be an identity assertion between the steps of each multi-await `mutationFn`
+  (Purchase/Sale add + edit, Openings wizard); deliberately not done here.
+- The location (URL search params such as `?sealedProductId=`) is navigation state, not user state,
+  and is left as it is on a switch; every read/write it leads to is still RLS-bound.
+
+**Proof.** Reproduced first at the released base `d8682e0` (`tests/e2e/auth-identity-lifecycle.spec
+.ts`, `tests/e2e/auth-signout.spec.ts`, and the real-GoTrue `tests/e2e/authenticated/auth-identity-
+real.spec.ts` / `auth-signout-real.spec.ts`): A's marker survives a direct A → B; with an expired
+token and Auth unreachable, Sign out does nothing and the session comes back on reload. After the
+change the same specs pass, and four mutations (remove the boundary; key on the token; skip the
+external clear; skip the forced local removal; drop the `pagehide` guard) each make a named
+regression fail, at unit and browser level. Unit level:
+`tests/ui/auth-identity-boundary.test.ts` (the real component's key, the transition rules, property
+tests) and `tests/ui/auth-end-session.test.ts`, which runs the real installed `AuthClient` against
+a stub `fetch` and carries a CANARY that fails loudly if a future supabase-js starts removing the
+expired session itself, so the compensation is reconsidered rather than left to rot.
+
+## D-135 — Financial boundary semantics: a two-tier purchase discount, a signed uncosted-proceeds figure, a completed-event date contract, and blank is never a known zero (P130-16 / P130-17 / P130-18 date dimension / P130-25 / P144)
+
+**2026-09-18 · Accepted**
+
+**Context.** Four findings from the P130 audit (the P130 audit report (`output_130.txt`)) share one
+shape: the value a person types or a real transaction produces is legitimate, and a boundary either
+refuses it or quietly turns it into something else. All four were reproduced on the released code
+before any change (`tests/db/p144_financial_boundary.test.ts`, `tests/e2e/authenticated/
+blank-money-input.spec.ts`).
+
+- **P130-16.** `create_purchase`/`update_purchase` allocated shipping, customs and the discount each by
+  goods weight and set `attributable = line + ship + customs − discount`. While the discount does not
+  exceed the goods that is safe (each share is at most the line's own total). When the discount also
+  consumes shipping/customs — goods `[1,2]`, shipping 1, customs 1, discount 5, a free order — goods-
+  only weights take 2 from a line whose gross share is 1, the line goes to −1, and
+  `allocate_largest_remainder(total_nok, attributable)` raised "weights must be non-negative": a valid
+  receipt was refused. A second class (all-zero goods, shipping 3 + customs 7, discount 10) fails the same
+  way through the equal-split fallback's tie-breaking.
+- **P130-17.** `sales_amounts_non_negative` also constrained `proceeds_from_uncosted_nok_minor` (PUD) to
+  `>= 0`. PUD is the sum of the net proceeds of lines whose lot has no known cost basis, and net
+  proceeds are deliberately unclamped (§2.2), so an uncosted sale whose fees and shipping exceed its
+  gross failed with a raw 23514, while the identical sale on a known-basis lot was accepted. Whether a
+  real transaction could be recorded depended on an unrelated fact, the cost basis.
+- **P130-18 (date dimension).** No table or RPC checked a completed event's date beyond `NOT NULL`:
+  `0001-01-01`, `9999-12-31` and `2099-01-01` were accepted, and every ownership-timeline and history
+  read (§3) trusts these columns. (The currency dimension was closed by P133/D-132.)
+- **P130-25.** The four money forms that take a per-line price (Purchase Add/Edit, Sale Add/Edit)
+  substituted `'0'` for an empty field (`draft.unitPrice || '0'`), so a blank submitted a known zero.
+  Observed on the wire: `unit_price_minor: 0` / `unit_gross_minor: 0`.
+
+**Decision.**
+
+1. *Discount (P130-16).* The discount is allocated in two tiers, both the exact largest-remainder
+   allocator: `min(discount, subtotal)` by line total (the documented §4.1 rule, unchanged), then the
+   part of the discount that exceeds the goods by each line's already-allocated shipping + customs.
+   For non-negative integer weights `w` with sum `W` and `0 <= T <= W`, `allocate(T, w)[i] <= w[i]`;
+   applied per tier this gives `discount[i] <= line[i] + shipping[i] + customs[i]`, so no attributable
+   cost is negative and `Σ discount[i] = discount` exactly (F6 per tier). For `discount <= subtotal`
+   the second tier is empty and the result is byte-identical to the previous allocation, so no stored
+   or re-derived allocation of an existing purchase changes. A discount larger than subtotal +
+   shipping + customs still cannot be allocated and is still refused with the unchanged message
+   "discount cannot exceed the purchase subtotal plus shipping and customs". Implemented as SQL
+   `allocate_purchase_discount` (used by both RPCs) and its TypeScript twin `allocatePurchaseDiscount`/
+   `allocatePurchaseCharges` (used by the form previews); a 300-receipt parity test runs them against each
+   other across the full 2^58-scale domain.
+2. *Uncosted proceeds (P130-17).* PUD is a signed net cash flow. The `>= 0` clause is dropped; gross,
+   fees, shipping cost and shipping charged stay individually non-negative. An unknown basis still freezes
+   `cost_basis_at_sale`/`realized_result` as NULL — never a fabricated 0 — and F5
+   (`RRC + PUD = NSP − Σ cost basis`) holds for a negative PUD exactly as for a positive one. No RPC
+   changed; the sign of net proceeds no longer depends on whether the basis is known.
+3. *Event dates (P130-18).* A completed event's date is `1996-10-20 <= date <= (UTC today) + 1`.
+   The lower bound is the release date of the first Pokemon Trading Card Game product: no purchase,
+   sale, acquisition, opening or cost adjustment of a Pokemon card, sealed product or accessory can predate
+   it, so every real past date (including backdated and pre-tracking acquisitions) stays valid and
+   PRODUCT_SPEC §4.5 / UX_FLOWS "any past date" keep their meaning. The upper bound is the latest
+   calendar date that exists anywhere on Earth right now (UTC+14): the server does not know the user's
+   timezone, so it accepts "today" everywhere and refuses only dates no person is living in yet; the
+   released forms remain stricter (`max` = the user's local today). The check compares calendar dates and
+   never converts through a timestamp. It applies only to the user-supplied dates of completed ledger
+   events — `purchases.purchased_on`, `sales.sold_on`, `acquisition_lots.acquired_on`,
+   `lot_disposals.disposed_on`, `openings.opened_on`, `lot_cost_adjustments.occurred_on` — and not to audit
+   timestamps, FX/price observation dates, catalog dates or `manual_valuations.effective_from`. It is
+   enforced by one BEFORE trigger function shared by those six tables (a named domain error,
+   `invalid-event-date: …`, SQLSTATE 22008), which covers every writer including the client's direct
+   `acquired_on` column update, and validates only when the date is inserted or changed, so a row that
+   predates the contract stays editable. An unknown date is never fabricated as a placeholder; the columns
+   stay `NOT NULL`.
+4. *Blank money (P130-25).* One canonical parser, `parseNullableMoneyInput` (`src/ui/money-format.ts`),
+   answers `null` for blank or whitespace-only text and never `0n`; an explicit `0`/`0.00` is a known zero
+   for the currency's own exponent (JPY has none). Callers say what an absent amount means for their
+   field: a per-line price the server needs known is refused when blank (`requireKnownAmount` — the RPCs
+   have no representation for an unknown purchase or sale price, so the honest outcome is to ask, not to
+   send NULL or 0); an additive charge (shipping, customs, discount, fees) is `NOT NULL DEFAULT 0`
+   because an absent charge is zero, and says so by name (`parseOptionalChargeInput`, the only parser that
+   turns blank into `0n`). The allocation previews wait for a price instead of showing a fabricated 0.00
+   line. The acquisition flows that already model unknown cost explicitly (Add to collection, Add sealed,
+   scanner, openings) were audited and are unchanged.
+
+**Alternatives considered and rejected.**
+- *Take `abs()` of a negative weight, or clamp the line to 0 and push the difference elsewhere.* Hides an
+  inconsistency instead of removing it and breaks `Σ attributable = total`.
+- *Allocate the whole discount by gross attributable (line + ship + customs), single tier.* Also never
+  goes negative, but changes the rounding of existing receipts with both shipping and a discount and
+  contradicts the documented rule for every receipt, not only the ones that were broken.
+- *Keep PUD non-negative by refusing the sale, or by clamping PUD at 0.* Refusing a real transaction is the
+  bug; clamping falsifies F5.
+- *Date bounds as `CHECK` constraints or RPC-only checks.* CHECK yields a raw 23514 constraint name; RPC-only
+  leaves the direct column update and service-role writes open and requires restating a dozen RPC bodies.
+- *A rolling "N years back" or round-number lower bound (1970, 1900).* Arbitrary; the product's own first
+  release is a fact.
+- *Send NULL for a blank purchase price.* The ledger has no unknown-price purchase (an unknown cost is the
+  Add-to-collection flow's `cost_basis_state = unknown`); silently mapping a blank price to either 0 or NULL
+  would still fabricate a fact.
+
+**Consequences.** The released frontend keeps working against the migrated database — every server change
+accepts strictly more (P130-16, P130-17) or refuses only what the released forms already refuse
+(P130-18), so the two migrations and the frontend may deploy in either order
+(`COORDINATED_DEPLOYMENT_REQUIRED=no`). A read-only aggregate check of the hosted database before this
+change found 3 purchases, 4 lots and no sales/disposals/openings/adjustments, every date within
+2026-08-19..2026-08-25, no discount above goods, and no negative attributable or PUD row: no existing row
+violates the contract. P130-19 (bigint money through `Number()` on the client boundary) and P130-26
+(raw technical error messages) are unchanged and remain open.
+
+**Proof.** `tests/db/p144_financial_boundary.test.ts` (its reproductions fail on the pre-P144 schema),
+`tests/financial/purchase-charge-allocation.test.ts` (named cases and properties: conservation, non-
+negativity, determinism, equality with the single-tier rule inside the goods, bounded rounding, bounded
+effect of reordering), `tests/ui/money-input-parser.test.ts`, and `tests/e2e/authenticated/
+blank-money-input.spec.ts` (drives the real forms and asserts on the request that goes over the wire).
+
+## D-136 — A running authenticated operation belongs to one identity lease and cannot continue under another (P130-23 in-flight residual / P145)
+
+**2026-09-19 · Accepted**
+
+**Context.** D-134 keyed the authenticated React subtree by the auth user id, which destroys a stale
+*form*. It named one residual and did not claim it closed: a multi-step submission that had already
+started under A survives the remount, because a remount cannot cancel an async continuation, and
+every later step reads the CURRENT session. Reproduced first, at the D-134 code, in a real browser
+with two pages of one context and the service role as witness: A submits a purchase (exchange-rate
+step, then `create_purchase`), the other tab signs in as B while the first step is pending, the step
+is released — and a purchase carrying A's marker is inserted in B's account. The same window exists
+without any earlier step: between "the person pressed Save" and "supabase-js has chosen the bearer
+token for the request", `getSession()` may refresh a token over the network and reads whatever the
+shared browser storage holds, which another tab may already have rewritten ahead of the
+BroadcastChannel event that tells this tab. Reproduced for a plain single write as well, and for
+sales, purchase and sale edits, the openings wizard, add-to-collection, and — the sharpest — the
+Profile "reset my portfolio data" confirmation, which names no owner and therefore deleted **B's**
+whole portfolio when it ran under B.
+
+**Decision.** Every write to user data is a *leased* operation.
+
+- **Authority.** `IdentityAuthority` (`src/auth/identity-lease.ts`) records the identity the auth
+  callback reports: the user id plus a monotonic epoch, incremented on every real change — A → B,
+  A → signed out, signed out → A — and never on TOKEN_REFRESHED / USER_UPDATED / a repeated
+  SIGNED_IN. It is created once by `AuthProvider`, so it outlives the page that took a lease, and it
+  is fed by `observeIdentity` in the same synchronous step as the cache boundary. It is not a second
+  source of truth about the session, and no token string is ever consulted: an A → B → A round trip
+  does not revive a lease from the first A session, which the user id alone could not tell apart.
+  A tab that starts signing out calls `retire()` before the network call (the revocation may take up
+  to its 3 s deadline, and no operation may start another step in that time).
+- **Lease.** Taken in `mutate()` (`useLeasedMutation` / `useLeasedAction`, `src/auth/
+  useLeasedMutation.ts`) for the user the component was RENDERED under, not for the authority's own
+  current user: if the identity already changed but React has not committed the remount, a click on
+  the stale form gets a lease that is dead from the start.
+- **Request layer.** A lease owns a Supabase client (`createLeasedDb`, `src/data/leased-client.ts`)
+  built with the documented `accessToken` client option. Its provider asserts the lease is current,
+  asks the live `supabase.auth.getSession()`, and returns that session's access token **only if the
+  session's user is the lease's user** (asserting again after the await); otherwise it revokes the
+  lease and throws `AuthIdentityChangedError` (`auth-identity-changed`), so no request is sent. Every
+  write function in `src/data` takes `db: LeasedDb`; the compiler rejects the shared client there.
+- **What the caller sees.** `runWithLease` turns any failure that surfaces after the lease ended into
+  the fixed domain outcome (no server text, no data of A), and the hook does not call `onSuccess` /
+  `onError` for an ended lease: nothing is navigated, invalidated or shown to the identity that is on
+  screen now. A result that comes back from a request that was already dispatched is returned as it
+  is — it happened as the user the operation belongs to.
+- **Reads that assemble a file** (backup, CSV) run under a lease too: an export begun under A that
+  continued under B would put B's rows in A's file. The owner named in a leased profile write, custom
+  sealed product or export is the lease's user, not the answer of an `auth.getUser()` round trip.
+
+**The check-to-dispatch window, precisely.** A step-by-step `assertCurrent()` between awaits cannot
+close it, because the token is chosen later by other code. Here the token is chosen by the code that
+verified it: the provider returns a specific user's access token, checked synchronously after its
+last await, and supabase-js attaches exactly that value; between the provider's return and `fetch()`
+there are only promise continuations, no task boundary, so no auth-event handler can run in between.
+Whatever the identity does afterwards, the request authenticates as the user it belongs to. The one
+thing a still-later switch can change is whether the *next* step starts — and that is refused by the
+next provider call. Consequently a request can never present a token of a different user than its
+lease, whether the difference was already visible to this tab (epoch) or not yet (the browser storage
+already holds B, the event has not arrived): the second case is refused from the credentials alone
+and revokes the lease.
+
+**Partial side effects.** An operation of several writes may leave what was already dispatched: a
+manual-card definition created for A before the switch stays A's (owned by A through `auth.uid()`,
+referenced by nothing, visible only to A); nothing is created for B and nothing of A's can become
+B-owned. No cleanup is attempted under another identity, and no workflow was turned into a single
+transaction. A's next attempt starts a fresh form and may therefore create a second, identical
+definition next to the orphan; that is bounded clutter, not an integrity issue.
+
+**Alternatives considered and rejected.**
+
+- *Assert the lease between steps and nowhere else.* Leaves the window between the assertion and the
+  bearer choice open; the request layer closes it, the assertions are kept only where a non-request
+  side effect (a draft write, a form patch) follows an await.
+- *Store the token and replay it under A.* Writes could continue after a sign-out or revocation, and
+  a token would be held where it should not be. The behaviour on a change is to stop, not to finish
+  under stale credentials.
+- *Abort in-flight requests when the identity changes.* Dropping a request client-side does not tell
+  the person, or the code, whether the server had already committed it (a disconnect may or may not
+  cancel the statement), so the outcome of A's write becomes ambiguous. "An already-dispatched request
+  completes as its caller" is the unambiguous outcome.
+- *A tab-wide guard that refuses any request whose bearer differs from the observed identity.* It
+  cannot tell a continuation of A's operation from B's own fresh action once the identity has moved
+  on, and it would put every request of the app behind a new failure mode.
+- *An expected-user argument on every RPC.* Server-side, would need a migration per function and
+  materially changes the integration with the concurrent database work; not needed for closure.
+
+**Consequences and residuals (stated, not hidden).**
+
+- The Norges Bank preview button in the purchase form is the one `useMutation` left: it reads a
+  public rate into the form and writes nothing. `tests/ui/identity-lease-coverage.test.ts` fails on
+  any other raw `useMutation`, on a write function without `LeasedDb`, on a write body that touches
+  the shared client, and on missing wiring in `AuthProvider`/the hook/the provider.
+- Signed-out flows (recovery mail, invitation status and redemption, new password) have no identity
+  to lease.
+- Reliance on documented supabase-js behaviour: the `accessToken` option decides the `Authorization`
+  header of `from`/`rpc`/`functions`, and `client.auth` is absent on such a client. A test pins that
+  the provider's token is the header on the wire, so an upgrade that changes it fails loudly.
+- Idempotency (P138/P140) is unchanged: a same-identity retry re-sends the same key; an aborted
+  attempt sent nothing, so no key is consumed on anyone's behalf.
+
+**Proof.** Reproduced first at the D-134 code (`e9feab0`) with `tests/e2e/authenticated/
+auth-inflight-real.spec.ts` against an isolated local stack: of 17 scenarios, 14 fail there — a
+purchase carrying A's marker is inserted in B's account (both the exchange-rate-step and the
+parked-session-lookup cases), a purchase, sale, sale edit, opening, acquisition and export request is
+issued under B, and A's confirmed "reset my portfolio data" **deletes B's purchase**; the three that
+pass are the positive controls and the same-user refresh/update case. With the lease all 17 pass, and
+the whole authenticated project (114 tests, including every D-134 real-GoTrue spec) is green.
+Five mutations, each applied to the real production file and reverted: A, lease validity compares the
+user id only (4 unit + 1 browser failures, the A → B → A tests); B, the final purchase step bypasses
+the lease and the page-level assertions are removed (3 browser failures with a row in B; removing only
+the assertions leaves all three green, bypassing only the lease fails only the parked-lookup case —
+the two layers are independently effective); C, a same-user event starts a new epoch (9 unit + 1
+browser); D, sign-out does not end leases at the authority nor at the request layer (9 unit + 2
+browser; at the authority alone the request layer still refuses, which is the point of having both);
+E, the openings and sale flows run unguarded (2 browser failures plus the ledger test).
+
+## D-137 — Money crosses the client/database wire as a decimal string; the supported range is the whole signed `bigint` (P130-19 / P146)
+
+**2026-09-19 · Accepted.** Decision number D-137 is tentative: P143 owns D-134, P144 D-135 and P145 may use D-136 — verify uniqueness at integration.
+
+**Context.** The P130 audit (P130-19) found the client serialising money with `Number()`. P144 then hit
+the read side: PostgREST returned a `bigint[]` as JSON numbers and JavaScript changed a 2^58-scale value by
+2 minor units in an RPC round trip. Measured layer by layer against the real local stack
+(`tests/db/p146_transport_layers.test.ts`): Postgres holds the exact value; PostgREST writes every digit onto the
+wire; **`JSON.parse` is the first layer that loses it** (the rounding happens inside supabase-js, before
+application code runs); on the write side the loss is `Number(bigint)` in the application. Before the fix,
+13 of 14 real-stack round trips through the actual data layer (`tests/db/p146_exact_money_roundtrip.test.ts`)
+returned or stored a different amount — an edited unit price, a shipping charge, a negative net proceeds figure, a
+manual valuation, the low-value threshold and a keyset-pagination cursor whose rounded value repeated a row.
+The read side was already mostly text (every table select and money-returning function since M3/M12 casts
+`::text`); the holes were the writes, three response bodies that carried a whole row, the FX rate, and a few
+display paths that formatted money through a double.
+
+**Decision.** Strategy A — exact, arbitrary signed `bigint` — with a small guard, not a bounded domain.
+
+- *Wire.* A money amount is a decimal integer string in both directions. Outputs: `col::text`, functions
+  return `text`. Inputs: `serializeMinorUnits` / `moneyArg` in `src/data/money.ts`; PostgREST casts a JSON
+  string to a `bigint` parameter and to a `->>'…'::bigint` field of a `jsonb` argument exactly (verified against
+  the installed PostgREST for scalar parameters, `jsonb` fields and direct table writes; no client code sends a `bigint[]`).
+- *Client.* `bigint` internally; one parser (`parseMinorUnits`: canonical decimal text of any length, or a JSON
+  number only if it is a safe integer — never `BigInt(number)`), a null-preserving variant, a serialiser that
+  refuses anything outside the ledger range. `NULL` stays `null`, `0` stays `0n`. `moneyArg` is the single
+  place the generated `Database` types (which model `bigint` parameters as `number`) are deliberately
+  contradicted; a test pins that it is a string at runtime.
+- *Guard.* The app's fetch (`src/data/exact-json-guard.ts`, installed by `createAppSupabaseClient`) refuses a
+  request body with an integer literal above 2^53 − 1 and quotes such a literal in a JSON response before
+  `JSON.parse` sees it. The test suites install a reporter and require that quoting never occurs: it exists so a
+  forgotten cast cannot become a wrong amount, not so paths can rely on it. A response is never thrown away
+  after its write committed.
+- *Rows.* RPCs that return a whole money row and whose result is unused (`set_manual_valuation`,
+  `set_sealed_lot_intent`) are chained `.select('id')`.
+- *Rates.* `fx_rate_to_nok` and `fx_rates.rate` (`numeric(18,8)`, 18 significant digits) are read `::text` and
+  re-sent as text; the P136 contract is untouched.
+- *Display.* Amounts are formatted from the exact `bigint` (`formatNokMinor`, `formatSourcePriceMinor`,
+  `toDecimalString`). `Number(<bigint>)` remains only for a chart coordinate and for percentages shown to one
+  decimal, listed by name in `tests/data/money-wire-structure.test.ts` (S2). `chartMajorUnits` replaces
+  `safeMajorUnits`: it no longer throws above 2^53, because a valid ledger of that size must still draw.
+- *Provider prices.* A provider price whose minor-unit integer is not a safe integer is treated as absent
+  (`asFiniteNumber` in the TCGdex adapter) rather than rounded; `ingest-prices`/`search-prices` still carry
+  `valueMinor` as a JSON number because that value is bounded by a third-party float.
+- *No migration.* The server already accepts strings and returns text; nothing about the schema changed.
+
+**Alternatives considered and rejected.**
+- *Strategy B — a bounded domain (e.g. 2^53 − 1 minor units, about 90 trillion NOK).* Plausible for a Pokémon
+  portfolio, and simpler on the client, but it would have to be enforced by CHECK/trigger on every one of the
+  money column, on every product `quantity × price`, on every `numeric` aggregate over many
+  individually valid rows and on every FX conversion (`amount × rate × 10^Δ` grows the value) — and a single
+  missed path is exactly a silent-rounding bug again. It also needs a migration and a coordinated deployment.
+  Strategy A needs none of that: the database already fails loudly (`bigint out of range`) rather than wrapping.
+- *A hybrid (safe-range writes, text reads).* Leaves the same enforcement burden on writes for no gain, since
+  strings are already accepted.
+- *Make the guard throw on responses.* A write that committed would report failure and invite a duplicate retry.
+- *Regenerate `database.types.ts`.* Thousands of unrelated lines of drift, and the generated types would still
+  say `number` for a `bigint` parameter; the contradiction is confined to `moneyArg` instead.
+
+**Consequences.** No schema or RPC change, so the two P144 migrations remain the newest (106 migrations) and there is
+no deployment ordering: the released client keeps working against the current database, and the new client works
+against both. The change is entirely in the client bundle (and a one-line tightening of the TCGdex adapter used by two
+edge functions). Money above 2^53 minor units is now exact in the ledger views; it is still refused by Postgres
+above ±9.2e18. Not addressed here: P130-21 (Quick Portfolio CSV formula injection, labels, immediate object-URL
+revoke — only its float rendering of a value was corrected) and P130-26 (raw error text) remain open.
+
+**Proof.** `tests/db/p146_transport_layers.test.ts`, `tests/db/p146_exact_money_roundtrip.test.ts` (real
+PostgREST, real Postgres, real data layer; includes JPY/EUR/USD, negative values below −2^53, sums above 2^53, a
+keyset cursor), `tests/db/p146_transport_guard.test.ts`, `tests/db/p146_wire_surface_audit.test.ts`,
+`tests/data/money.test.ts` (property tests over the whole signed range), `tests/data/exact-json-guard.test.ts`,
+`tests/data/money-wire-structure.test.ts`.
+
+## D-138 — One client factory carries both the identity lease and the exact-money guard, and the two are proven together (P147)
+
+**2026-09-19 · Accepted**
+
+**Context.** D-136 (P145) binds every identity-bound write to a *leased* Supabase client whose bearer
+comes from the `accessToken` client option. D-137 (P146) installs the exact-transport guard — refuse a
+JSON integer a double cannot hold in a request, quote one in a response — through the app's client
+factory. The two tracks were built independently from the same base. Each was green on its own, and a
+textual merge would have compiled, because neither touches the other's client construction: P145's
+`createLeasedDb` called `createClient` itself, and P146's `createAppSupabaseClient` was the only place
+the guard was installed. The merged result would therefore have sent every leased write — which is
+every write to user data — through a client with **no guard**, while every P146 test kept passing (they
+used the shared client). The dangerous half of a combination is invisible to the suites of either half.
+
+**Decision.**
+
+1. `src/data/supabase-factory.ts` is the only file that calls `createClient`. It exposes
+   `createAppSupabaseClient` (the shared client, with the explicit auth storage of D-134) and
+   `createAccessTokenSupabaseClient` (the lease client). Both wrap the fetch that reaches the network in
+   `createExactTransportFetch`; a test requires that the number of `createClient` calls equals the
+   number of guarded fetches, so a third construction path cannot appear without the guard.
+2. `src/data/leased-client.ts` builds its client through the factory and keeps the D-136 provider
+   unchanged: lease current, live session's user equals the lease's user, then that session's token.
+   `auth` options are not accepted for an `accessToken` client — there is exactly one authentication
+   truth per client, and no token is read, stored or logged by the factory.
+3. The guard sits *beneath* supabase-js's authorization wrapper, so it sees the final request and
+   authentication stays entirely the provider's business. The ordinary app client does not require a
+   lease; only identity-bound operations do.
+4. Composition is tested as a property of the composition, not of its parts: the six scenarios of
+   `tests/data/p147-composition-scenarios.ts` (large amount, identity switch before dispatch with and
+   without the tab having heard, same-user refresh, A → B → A, sign-out, unsafe literal) run against
+   the production composition and must pass, and against five compositions each missing exactly one
+   protection and must fail. The same scenarios run against a real PostgREST/PostgreSQL/GoTrue stack
+   (`tests/db/p147_auth_money_integration.test.ts`) and in a seeded campaign
+   (`tests/db/p147_combined_stress.test.ts`).
+
+**Alternatives rejected.**
+
+- *Two factories with the same options.* Two nearly identical `createClient` configurations drift; the
+  drift is precisely the defect above.
+- *Guard only on the shared client; leased clients build their own.* The leased client is where every
+  write goes, so the guard would protect nothing that matters.
+- *A wrapper around the data functions instead of the transport.* A raw `db.rpc(...)` in a future page
+  bypasses it; the transport cannot be bypassed by a caller.
+- *Let the leased client read the shared client's session for its token.* A second, independent source
+  of authentication state, which is what the lease design exists to remove.
+- *Cache leased clients across leases.* A cache keyed by anything other than the lease object could
+  hand one identity's client to another. Construction costs ~25 µs (measured), so per-lease
+  memoisation (`leasedDb`, keyed by the lease object) is all that is kept.
+
+**Consequences.** A future change to how a client is built has one file to change and one test that
+fails if a construction path lacks the guard. The lease and the guard fail independently: removing the
+guard fails the unsafe-literal scenarios, removing the identity check fails the switch scenarios,
+`Number()` at a money argument fails the precision scenarios (each verified by editing the production
+file, see PROJECT_JOURNAL P147). The scenarios' "browser" is a model (a stub backend, or a
+`SimulatedTab` over real GoTrue sessions); the browser-level proof remains the real two-tab specs of
+D-134/D-136 and the exact-money spec of D-137.
+
+---
+
+## D-139 — A password change is an identity-bound write too: it is refused unless the browser's session belongs to the form's user (P148)
+
+**2026-09-19 · Accepted**
+
+**Context.** The independent review of the integrated candidate (P148) looked for user-scoped side effects
+that the identity lease of D-136 does not reach. One exists: the recovery form
+(`src/features/auth/ResetPasswordPage.tsx`) calls `supabase.auth.updateUser({ password })`. That is a write
+to the auth service, not to the data API, so it never went through a leased client, and supabase-js offers
+no per-request credential for it — it changes the password of whoever the browser's session belongs to
+*when the request is made*. Reproduced in a real browser against a real GoTrue: a tab that has not heard a
+cross-tab auth event (no `BroadcastChannel`, or an event still in flight) shows A's recovery form while the
+shared storage already holds B; submitting it set **B's** password to the text typed for A. The exposure is
+narrow (two accounts in one browser profile, a recovery form open, a tab that is deaf to or behind the other
+tab's sign-in) but it is exactly the class D-136 exists for, and `secure_password_change = false` (P130-20)
+means no re-authentication stands in the way.
+
+**Decision.** `src/auth/update-password.ts` (`updatePasswordForLease`) takes the lease the form was rendered
+under, refuses when the lease has ended, then looks up the browser's live session and refuses (revoking the
+lease) unless it belongs to the lease's user, and only then calls `updateUser`. The lookup and the call are
+adjacent awaits on one client with nothing but promise continuations between them, the same argument that
+makes the token provider of D-136 sound. Nothing is sent when it refuses; the form shows the fixed
+`auth-identity-changed` text. No token is read, stored or logged.
+
+**Not done / limits.** The check-to-call interval is not zero (auth-js re-reads storage inside
+`updateUser`); it contains no task boundary, so no auth event handler can run in it, but a storage write
+from another tab is not an event handler. A leased-client style guarantee (the credential chosen by the same
+code that verified it) would need the auth service's `PUT /auth/v1/user` called with an explicit bearer,
+which is a new code path around supabase-js and was judged out of scope for a review. Global sign-out
+(`AuthProvider.signOut`) has the mirror-image property — in a tab that never heard the switch it signs out the
+browser's current session — and is recorded rather than changed: it ends a session, it does not take one over.
+
+**Verification.** `tests/ui/update-password-lease.test.ts` (8 scenarios: same user, refresh, event gap, heard
+switch, sign-out, A → B → A, switch during the lookup, dead lease); `tests/e2e/authenticated/p148-reset-password-identity.spec.ts`
+(real browser: failed before the change with "B's password was changed by A's form", passes after; positive
+control included). The helper's user check was removed to confirm the event-gap unit test fails.
+
+## D-140 — A credential lookup that failed is not an identity change: the lease is kept, nothing is sent, and the person is told (P148-M2 / P149)
+
+**2026-09-19 · Accepted**
+
+**Context.** The token provider of the identity lease (D-136) treated `getSession()` answering `{ session: null }` as
+"signed out or somebody else": it revoked the lease and threw `AuthIdentityChangedError`. auth-js does not only answer
+that way when nobody is signed in — it also answers `{ session: null, error }` (it does not reject) when an expired access
+token could not be refreshed, for example because the auth service was unreachable. The P148 review found the consequence
+on a financial form: the identity had not changed (the authority still said user A, the stored session was still A's, no
+`SIGNED_OUT` had been heard), yet the lease was revoked, and because `useLeasedMutation` skips `onError` for a dead lease
+the Save button showed nothing at all. Reproduced before the fix against the real installed auth-js (network down, real
+backoff under a fake clock: `AuthIdentityChangedError`, `lease.isCurrent() === false`, authority user unchanged, no request
+sent, no message) and in a real browser (form intact, Save enabled, no message 90 s after the click).
+
+**What the installed auth-js (2.112.3) does** (pinned by `tests/data/p149-auth-lookup-contract.test.ts` against the real
+library with a scripted network — an upgrade that changes any of it fails a test):
+
+- `getSession()` returns the session when the access token is unexpired (no request) or was refreshed (`TOKEN_REFRESHED`);
+  `{ null, null }` when the storage holds no session; `{ null, error }` when an expired token could not be refreshed; and it
+  **rejects** on a storage failure or an expired stored session with an empty refresh token.
+- The class of the error does **not** say whether the person is still signed in. `AuthRetryableFetchError` (network failure,
+  5xx/52x) keeps the stored session and announces nothing. A non-retryable `AuthApiError` / `AuthSessionMissingError` from
+  the refresh endpoint makes the library remove the session and **await `SIGNED_OUT` before it answers**. But the same
+  non-retryable `AuthApiError` (`refresh_token_already_used`) is also what the caller gets that lost a refresh race to
+  another tab, whose fresh session is already stored: `{ null, AuthApiError }` with the person still signed in and no event.
+  `AuthRefreshDiscardedError` means another tab changed the storage under the refresh.
+- A retryable failure is retried with exponential backoff for about 25 s before it is reported, and the failure is cached
+  per refresh token for 60 s: a second lookup inside the minute answers from the cache without a request.
+
+**Decision.** One function, `sessionForLease` (`src/auth/identity-lease.ts`), reads a session lookup on behalf of a lease;
+the data client's token provider and the password change both use it. Three outcomes, told apart by what the *auth state*
+says and never by the error class:
+
+1. **Identity ended** — the lease was already over when the lookup answered (an auth event reached this tab, which is how a
+   confirmed sign-out arrives: the library announces `SIGNED_OUT` before it answers), or the lookup found nobody signed in
+   (`{ null, null }`), or somebody else's session: `AuthIdentityChangedError`, lease revoked, nothing sent. This check comes
+   *first*, so when the identity changed and the lookup also failed, the identity change is what is reported, and no error
+   about A's data appears in B's interface (A → B → A included: the epoch, not the user id, is what the lease holds).
+2. **Lookup failed** — the lookup rejected or answered `{ null, error }` while the lease is still current:
+   `AuthCredentialsUnavailableError` ("Could not verify your session. Check your connection and try again."), lease
+   untouched, nothing sent. The next attempt reads the storage again and gets the definitive answer: the session, B's
+   session (identity ended), or nothing (identity ended). Failing closed costs one more click; ending the lease would lose
+   the person's form, and an errored lookup is not evidence that anything ended.
+3. **Ok** — the session of the lease's user; the provider re-checks the lease after the last await and returns exactly that
+   token.
+
+`runWithLease` replaces an error that surfaces while the lease is current and whose latest credential lookup failed with the
+same fixed error, because the data layer rebuilds every request error from a message string and would otherwise show
+"AuthCredentialsUnavailableError: …". A later successful lookup clears the mark, so an unrelated error of the same operation
+is shown as itself. `useLeasedMutation` is unchanged: a current lease means `onError` runs and the form shows the message.
+The form keeps its input and its idempotency key (the key rotates only on an identity change, `useEntityKeyReset`), and a
+retry takes a fresh lease. No financial request is ever retried automatically, no token is cached, no second session source
+exists, and a repeat that follows an ambiguous commit is still made safe by the P138 key.
+
+**Not done / limits.**
+
+- A failing refresh is slow: auth-js backs off for about 25 s before it answers, so the person waits that long for the
+  message, and a retry inside the following minute is answered from the library's failure cache (the same message, at once).
+  Both are the library's; the app has no supported way to shorten them.
+- A stored session with an empty refresh token makes the lookup reject and stays "could not verify" until the person signs in
+  again. auth-js never writes such a session; it cannot be resolved into a sign-out without an event.
+- **Password change (review of D-139's limit, P149).** It shares the classification, so a failed lookup no longer shows
+  "your sign-in changed". Its residual limit is unchanged and exact: `updateUser` takes no credential and reads the shared
+  storage itself, so the identity verified by `updatePasswordForLease` and the identity the request is made as are two reads
+  of the same storage; another tab's storage write between them is not excluded. Nothing supported closes it without a
+  hand-made `PUT /auth/v1/user` with the stored access token (replaying a token), a re-authentication nonce (needs
+  `secure_password_change` — a hosted Auth setting — and a new user flow) or an undocumented parameter. So it stays a narrowed
+  window, not the guarantee of the data path.
+- Adjacent, not changed: on a cold start with an expired access token and no network, auth-js's initial `getSession()` and its
+  `INITIAL_SESSION` event both deliver a null session, so `AuthProvider` shows the sign-in page although the refresh token is
+  still stored; it recovers on the next load with a connection. No lease exists at that point.
+
+**Verification.** `tests/ui/p149-credential-lookup.test.ts` (scripted lookup: every answer, precedence in both orders,
+retry with the same key), `tests/ui/p149-credential-lookup-real-auth.test.ts` (the real auth-js: network down, 503, 400
+refresh token rejected → `SIGNED_OUT`, refresh race lost to another tab, same-user refresh, A → B → A during a failing
+refresh, retry after the cooldown), `tests/ui/p149-leased-mutation-hook.test.ts` (the real `useLeasedAction` driven through
+`react-dom/server`: the form's `onError` receives the message; it is not called for an ended identity),
+`tests/ui/update-password-lease.test.ts` (four new), `tests/ui/identity-lease-coverage.test.ts` (structural rules: a failed
+lookup never revokes, no auth-js error class decides a lease's fate) and `tests/e2e/authenticated/p149-refresh-failure.spec.ts`
+(real browser, real GoTrue: only the refresh endpoint is made unreachable; the message is shown, nothing is sent or written,
+form and key survive, the retry after the cooldown saves exactly one purchase of 2^53+1 minor units; A → B and A → B → A
+during the failing refresh; a definitively rejected refresh token signs the person out; an ordinary refresh still works).
+Each of these mutations fails at least one test: a failed lookup revokes the lease again (the old behaviour); a failed lookup hands the request layer an empty token; the hook swallows credential errors; a failed lookup outranks an identity change that was already observed; `runWithLease` stops replacing the surfaced error; the purchase form mints a new idempotency key after the failure (real browser only). The session lookup must be called as a method of the auth client, not handed over as a bare function: auth-js reads `this`, and a bare-function form rejects every time, which would turn every password change into "could not verify". The recovery-link browser test catches it, and `tests/ui/update-password-lease.test.ts` uses a receiver-bound client for the same reason.
+---
+
+## D-141 — Exports are written by declared column kind and run under the identity lease they started with; Quick CSV joins the shared writer (P130-21/P157/P162)
+
+**Context.** P130-21 found the Portfolio Quick CSV to be a second, hand-rolled writer: money through
+`Number()/100`, no formula defence, a bare CR left unquoted, no BOM, a mislabelled column, a silent
+truncation at the page ceiling and no failure surface. Reproduced against the released code in Excel
+16.0.20326 (nb-NO): `=1+1` and `-1+2` became formulas, a bare CR split a row in two, the missing BOM
+turned UTF-8 into mojibake, and 2^53+1 was written as …992. Independently, both export paths ran as
+plain async code after one `getUser()`: the D-093 boundary clears the query cache but cannot stop an
+in-flight export, so an A→B switch mid-run mixed accounts (or handed A's data to B's UI).
+
+**Decisions.**
+
+1. **One writer, kind-driven.** Every CSV cell is written according to its column's declared kind
+   (`text`, `id`, `date`, `timestamp`, `enum`, `boolean`, `integer`, `decimal`, `money`, `rate`). Text
+   is formula-sanitized (leading tab/CR/LF, or `= + - @`/full-width after any leading
+   whitespace/control/format characters → one leading `'`); canonical kinds are verbatim only when
+   they have the canonical shape, else treated as text (fail closed). Signed money stays numeric;
+   text that looks numeric does not. The prefix is CSV presentation — JSON and the database keep raw
+   text. A row whose width differs from the declared schema throws.
+2. **Schema v2, additive.** `purchase_lines.csv` and `sale_lines.csv` gain a trailing `Currency`
+   column (100× guard); the header list is pinned by a golden test. Quick CSV v2 renames
+   `Cost basis state` → `Value status` (the column never held a cost basis), renders the value from
+   exact minor units, adds BOM + terminating CRLF, and fails instead of truncating. JSON backup
+   `schema_version` (2) is unchanged.
+3. **Identity: the lease is the authority (D-136).** Exports and the Quick CSV run under the
+   identity lease taken at the button press and read through `leasedDb(lease)`.
+   `identity-guard.ts` keeps the seam P157 introduced but its body is the lease:
+   `assertUnchanged()` is `lease.assertCurrent()`, evaluated before and after every request and at
+   the end, throwing `AuthIdentityChangedError`. No user-id comparison decides anything on the
+   application path, so A → B → A is caught and a same-user refresh is not. `ExportPage` aborts on
+   Cancel, unmount and account change, ties the files to their lease and refuses to show or deliver
+   them once it has ended; the delivery layer re-checks before each file. No second auth framework.
+   (This entry was numbered D-134 in the P157 candidate; D-134 already names the P143 auth boundary,
+   so the export decision is D-141.)
+4. **No dialect change.** Comma delimiter stays (nb-NO Excel opens it in one column on double-click;
+   Data › From Text/CSV works). No `sep=` line, no semicolon variant — recorded as a known limit.
+
+**Consistency is not snapshot isolation.** The export is a paginated, fixed-ish-time view: many
+requests, not one transaction (D-077). COUNT and duplicate-key reconciliation catch a page that
+disappears, appears or repeats; an edit that keeps a section's row count unchanged while it is being
+paged (an update between two pages, or a delete plus an insert) is NOT detected. Never describe the
+files as a snapshot.
+
+**Alternatives rejected.** Prefixing every cell (corrupts negative money); sanitizing at call sites
+only (the defect class this fixes: a forgotten call site); reading identity from the React context or
+comparing user ids (a cross-tab switch is invisible to a stale closure, and A → B → A is invisible to
+a user-id comparison); a server-side export RPC (needs a migration for no exactness gain — the read
+path already uses `::text`).
+
+**Composition with the exact-money transport (D-137).** Export reads go through the leased client, so
+the exact-JSON guard sees them; every export money column is selected `::text` and the guard does
+not reject string amounts. The P130-19 write-path exactness is closed by the same P149 candidate.
+
+
+## D-151 — Scanner hardening rules: latest-scan-wins cancellation, pre-decode image limits, a bounded and non-poisonable worker cache, visual-only evidence never HIGH, and a read-only result contract (P151)
+
+**2026-09-20 · Accepted**
+
+*(Numbered D-151 rather than the next free integer: parallel worktrees already use D-134 to D-140, so
+a sequential number would collide at integration. Renumber freely; nothing references it by number.)*
+
+**Context.** A hardening pass over the shipped scanner (docs/SCANNER_RESEARCH.md §12) reproduced, on
+the baseline build, defects that are expensive to leave: a leaked OCR worker per exit during cold start
+(P130-10: 7 live workers after 6 cycles in real Chromium), a visual worker resurrected by any scan
+reaching a disposed client, hung calls that wedge the serialized OCR queue for the session, stale scans
+overwriting the controller's shared state, a raw camera frame's blob URL surviving unmount, an unbounded
+and poisonable worker cache, a bomb file measured only after being decoded, no message for a rejected
+photo outside the camera step, and a visual-only HIGH that preselected a same-artwork sibling printing.
+
+**Decision.**
+
+1. **Latest scan wins.** Every `analyzeCapture` owns an `AbortController` fired by the caller, by a
+   newer scan, or by `dispose()`; OCR checks it before and after each recognition, the visual stage
+   before decode, and a publish gate precedes every write to controller state. A disposed
+   `VisualRecognitionClient` is terminal. A single recognition is bounded (60 s) and a single visual
+   round trip is bounded (30 s); on expiry the worker is discarded, never left wedged. Rejected
+   alternative: serialising scans in a queue — the UI never has two live scans, the useful behaviour on
+   a retake is to drop the abandoned one, and a queue would need its own bound.
+2. **Image limits are enforced before the decoder** whenever the header can be read: 10 MiB, 40 MP,
+   12,000 px longest edge, 32 px shortest edge, 6 : 1 aspect ratio; empty and SVG inputs refused.
+   Formats the sniffer cannot read (HEIC/AVIF) keep the post-decode check and the limitation is
+   documented, not hidden. Rejected: lowering the 40 MP ceiling without device evidence (it would
+   refuse legitimate large photos to guard a case the header check now covers).
+3. **Capture is latest-wins and cannot outlive its route.** Shutter and file-picker captures share one
+   guard invalidated at every camera-release site; a stale frame is dropped before it becomes an object
+   URL. A rejected photo is shown wherever the picker can be opened.
+4. **The worker cache is bounded and cannot be poisoned.** Only the current index generation is kept
+   after a verified load; a generation that fails integrity is purged; `text/html` is never stored and a
+   stored one is deleted on read. Rejected: disabling `env.useBrowserCache` / dropping the Service
+   Worker rule to remove the model double-copy — the consequence on Safari (a 48 MB re-download per
+   session, if worker fetches bypass the Service Worker) cannot be measured without the physical device;
+   deferred to that gate rather than guessed.
+5. **Visual-only evidence can never be HIGH.** A would-be HIGH with no readable name and no readable
+   collector number is held at MEDIUM (`visual-only-uncorroborated`); any printed-text signal lifts the
+   cap; thresholds, weights and the index are untouched (content id `f25fc05d569b7cca` unchanged).
+   Measured before/after counts are in SCANNER_RESEARCH §12e (false-HIGH 5.7–10.7% of unindexed-printing
+   scans → 0; visual-only correct-HIGH → 0, i.e. one extra tap). The scanner still never infers a
+   printing; the variant is the user's explicit choice unless the catalog has exactly one.
+6. **A read-only scanner result contract** (`scanner-identification.ts`): typed, provider-neutral, over
+   the existing controller, with no `commitBatch` member and no import path to the collection writer.
+   It is the only sanctioned way for a non-scanner consumer (Price Check) to use recognition.
+
+**Consequences.** One additional tap on scans where OCR read nothing at all; the visual-only HIGH badge
+no longer appears. `describeAnalysisError` is unchanged (a timeout maps to the generic "try the same
+photo again"). The P116 test that pinned "a fresh worker is constructed after dispose()" now pins the
+opposite, deliberately (documented in that test). No migration, no schema, no financial semantics.
+
+**Proof.** Reproduced on the baseline build in real Chromium (`tests/e2e/scanner-lifecycle-p151.spec.ts`:
+7 live workers → 0, 1 leaked blob URL → 0, no alert → alert) and by unit tests that fail on the old code;
+`scripts/scanner-p151/run-mutations.mjs` re-introduces 13 defects and the permanent tests kill all 13
+(files restored byte-for-byte); `pnpm scanner:stress` (seven modes, 100 iterations each);
+`pnpm scanner:confidence:audit` (real index, real matcher, synthetic proxies — **no real captures exist**).
+Emulated mobile only; the physical-iPhone gate remains deferred by the owner.
+
+## D-153 — Price Check is strictly read-only; a price belongs to one confirmed variant; graded prices are shown only from a real, authorized source (P153)
+
+**Status: accepted.**
+
+**Context.** Owners want to look a card's price up — by search or by scanning it — without
+creating a holding, purchase or sale. The existing scanner and search surfaces are add-flows, and
+the only price sources available are the TCGdex relay of Cardmarket (EUR) and TCGplayer (USD)
+statistics. No graded price source is authorized (docs/API_SOURCES.md, "Graded price sources").
+
+**Decisions.**
+
+1. **Read-only by construction, proven in layers.** Price Check code may call only the catalog
+   reads, the non-persisting `search-prices` function and a `SELECT` on `fx_rates`; it imports no
+   ledger data module and cannot reach the scanner's `commitBatch` (the scanner is consumed through
+   a two-member port). Proof: a static source guard, runtime scan-session tests, a browser network
+   log, and a database check that every `public` table with a `user_id` column — discovered from
+   `information_schema` — is byte-identical (row count + md5 of every row) after repeated searches,
+   lookups, variant switches, real scans and a click into the Add page. The request log and the
+   database check each fail on their own when an acquisition is injected (mutation evidence in
+   HANDOVER).
+2. **A price belongs to one exact variant.** A card with several variants gets no default: the
+   person chooses, and a scan (which identifies artwork, not finish) never decides. A variant id
+   that is not the card's is rejected, never replaced. A name alone is not identity: results always
+   show set, number, language, and flag same-name collisions.
+3. **Honest raw semantics.** Every relayed metric is an `index` (provider-computed statistic); it
+   is never labelled `sold` or `listing` because TCGdex documents neither. No per-condition
+   breakdown exists, so none is shown ("condition not specified by source"). A provider-reported
+   `0` is a value; a missing, malformed or failed lookup is a named state (`no_variant_price`,
+   `provider_error`, `rate_limited`, `network`, `malformed_response`) and never a number. Observed
+   date (from the provider) and fetched time (when this client received it) are shown separately;
+   freshness (`fresh` ≤ 3 days, `stale` ≤ 30, `outdated`, `unknown`) matches the portfolio
+   resolver's thresholds, and nothing is called "live".
+4. **FX.** The NOK figure is a labelled reference computed with the exact, exponent-aware
+   `convert` (P136 semantics: NOK per one major unit), showing the rate and its date; a rate older
+   than 7 days is flagged; with no usable rate only the source currency is shown.
+5. **Graded prices: modelled, not sourced.** The graded model (company + grade + qualifier + price
+   kind + currency + observed date, `kind` mandatory) and its validation exist, and the page shows
+   an explicit "no authorized source" state. No graded number is derived from a raw price, PSA 10
+   is never BGS 10, and a fixture is always rendered as "Synthetic test data". Graded capability
+   is **PARTIAL** until an owner-approved source is integrated (plan in API_SOURCES.md).
+6. **Access.** Catalog tables, `search_cards` and `search-prices` are `authenticated`-only
+   (`verify_jwt = true`), so Price Check needs a session like every private page. Public
+   signed-out reads would require relaxing RLS/grants and were not done.
+7. **Cache.** No new cache. The existing react-query cache (cleared on every identity change,
+   D-093) is used with keys built from stable ids and the provider/currency, never a card name;
+   `staleTime` 5 minutes, failures are never cached as a value, and a cached hit keeps its original
+   fetch time and is labelled "Cached".
+
+**Consequences.** `search-prices` gained an additive `observations[]` per variant (both providers,
+exact minor units as strings, provider timestamps); a client older than the function, or a function
+older than the client, degrades to the single headline value and says so. The function must be
+redeployed for Price Check to show both providers — P153 deployed nothing. `CardDetailPage` still
+formats source amounts with `Number(minor)/100`, wrong for exponent-0 currencies (none reach it
+today); left untouched as out of scope.
+
+## D-161 — Price Check consumes the scanner only through the read-only contract, with one owner per concern (P161)
+
+**2026-09-24 · Accepted**
+
+*(Integration of P151 (D-151) and P153 (D-153). P153's decision was numbered D-134 in its own branch;
+D-134 to D-140 are taken by the unreleased P143–P149 chain, so it is D-153 here, mirroring D-151.
+Released ids (up to D-133) are untouched.)*
+
+**Context.** P151 hardened the scanner and added `scanner-identification.ts` (a read-only port and a
+never-throwing `identifyCapture`) for exactly one consumer. P153 built Price Check before that seam
+existed and therefore carried its own two-member narrowing of the full controller and its own
+generation counter for stale results. Both branches were green alone; run together they layered two
+owners of the same concern, and the combination exposed three defects neither parent had (the pick race, the runner-up
+pre-selection and the NO_MATCH semantics below).
+
+**Decision.**
+
+1. **The only door into the scanner is `scanner-identification.ts`.** Price Check builds its session
+   from `createReadOnlyScanner(userId)` and `identifyCapture`, loaded by dynamic import on the scan
+   page only. It may not name `getScannerUiController`, `ScannerUiController` or `commitBatch`
+   (structural guard, `tests/ui/price-check-read-only.test.ts`); the text search and the result page
+   contain no scanner import at all.
+2. **One owner per concern.** Request ordering (latest scan wins, abort on newer scan / caller abort /
+   dispose, publish gate) belongs to the scanner controller. Cancellation is one `AbortSignal` per
+   analysis shared with it. The session keeps no generation counter and the page adds no stale-result
+   guard for the analysis. Rejected: keeping both layers "for safety" — two owners disagree about which
+   result is stale, and each masks a regression in the other (the mutation runner showed the session's
+   abort hides the controller's supersession from every Price Check-level test, so the controller half
+   is pinned separately through the port).
+3. **A photo pick is latest-wins** with the scanner's own `CameraAcquisitionGuard`. Before this, the
+   older of two picks in flight (the picker stays visible while a photo decodes) could finish decoding
+   last and win regardless of which the person chose last.
+4. **HIGH vouches for the scanner's first candidate only.** Candidates whose id is not a catalog uuid
+   are dropped; if the dropped one was the scanner's best, the runner-up that inherited the top slot is
+   no longer pre-selected (it becomes a MEDIUM review).
+5. **One scan screen per signed-in identity** (`key`): an account switch discards the photo preview,
+   the candidates and the scanner together. Defence in depth: `RequireSession` already unmounts the
+   page on sign-out; the key covers a switch that never passes through signed-out (a cross-tab
+   sign-in), and P149's identity boundary will subsume it.
+6. **NO_MATCH is no candidates.** The read-only contract returns an empty shortlist for a scan the
+   scanner rates below LOW. P153, built on the raw controller, showed those below-threshold guesses as a
+   "review" list; the integrated screen shows the honest no-match state with the manual-search
+   fallback instead. (Found by the combined browser run: P153's own confirm-and-price spec relied on
+   an echo backend that returned three unrelated cards for any text; its fixture now returns the card
+   the printed text identifies.)
+7. **The scan result page still never picks a variant.** A card identity does not prove holo / reverse
+   holo; the person chooses unless the catalog has exactly one active printing (D-153, D-151).
+
+**Consequences.** `narrowScannerPort` and `PriceCheckScannerPort` are gone; `PriceCheckScanSession`
+takes a `ReadOnlyScannerPort`. A `review` outcome now carries the scanner's band (shown as
+"medium" / "low" confidence). No migration, no financial semantics, no scanner core, index, model or
+threshold change (content id `f25fc05d569b7cca`). Graded pricing is still
+`PARTIAL_NO_AUTHORIZED_PROVIDER`.
+
+**Proof.** `tests/ui/p161-scanner-price-check-integration.test.ts` (real controller and read-only
+port, doubles only for Tesseract / the visual worker / catalog / collection writer),
+`tests/e2e/price-check-p161-integration.spec.ts` (real workers, real build, desktop Chromium and
+WebKit emulation), the A/B scenarios appended to
+`tests/e2e/authenticated/price-check-ledger.spec.ts` (real local stack, every `user_id` table
+compared by row hash), and `scripts/scanner-p161/mutants.mjs` (17 mutants, all killed by an assertion;
+run with `node scripts/scanner-p151/run-mutations.mjs --mutants scripts/scanner-p161/mutants.mjs`).
+
+## D-164 — A response the transport guard had to rewrite is not evidence of a price; the three integrated tracks keep one owner each (P164)
+
+**2026-09-25 · Accepted**
+
+*(Integration of the auth/export candidate (P149 → P162: D-136…D-141) with the scanner + Price Check
+candidate (P161: D-151, D-153, D-161). Ids stay unique: D-134…D-141, D-151, D-153, D-161, D-164;
+`tests/config/decision-ids-unique.test.ts` passes. P157's cherry-picked docs commit still carries the
+subject "D-134" in history; its content is D-141.)*
+
+**Context.** The two lines were each green alone and merged with conflicts only in three append-only
+documents. Running them together exposed one defect that neither could see, because each tested the
+other's interface through a stub.
+
+The exact-transport guard (D-137, `src/data/exact-json-guard.ts`) *quotes* every bare JSON integer a
+JavaScript number cannot hold before `JSON.parse` sees it, so a PostgREST `bigint` keeps its digits.
+That is right for PostgREST, whose digits are the database's. It is wrong for an Edge Function: the
+function has already run `Number(bigint)` (`search-prices`: `sourceValueMinor: Number(chosen.valueMinor)`),
+so the digits in the text are the digits of a *rounded* double. After the quote they are a decimal string —
+and a 16–18 digit decimal string is exactly what Price Check's `valueMinor` grammar (`^\d{1,18}$`,
+D-153) and the existing pricing consumer (`parseNullableMinorUnits`, P149) accept as exact. A legacy or
+non-conforming function response therefore turned into a plausible-looking, exact-looking price.
+P161 tested Price Check's parser with the Supabase client replaced by a stub, so the guard was never
+between the wire and the parser. Measured before the fix: `searchPrices` on `"sourceValueMinor":9007199254740992`
+returned `9007199254740992n` (€90 trillion), and a bare unsafe `valueMinor` inside `observations[]` reached the
+Price Check section as an available exact price.
+
+**Decision.**
+
+1. **The guard marks a response it rewrote.** The `Response` it hands on carries
+   `x-exact-transport-rewritten: <count>` (`EXACT_TRANSPORT_REWRITE_HEADER`). Client-side only; it never
+   existed on the network. Nothing else about the guard changes (requests are still refused, responses are
+   still quoted, `onResponseRewrite` still fires).
+2. **A price consumer refuses a marked response.** Price Check (`fetchCardPriceResponse`) throws
+   `PriceCheckError('malformed_response')` for the whole response — it does not choose which fields to
+   trust. The existing pricing consumer (`searchPrices`) returns an empty map, its documented failure
+   behaviour ("pricing is a secondary enhancement"). Rejected: narrowing Price Check's grammar to
+   ≤ 15 digits (legitimate exact strings above 2^53 exist and are tested); trusting the quoted digits
+   because the function "should" send strings (the function's own rounding is precisely the case).
+3. **Second layer stays.** The headline parser accepts only a safe integer *number*; a quoted string is a
+   dropped `malformed_price`. If the marker were ever absent, the quoted digits still do not become a price.
+   Missing source price is still no price, never zero.
+4. **One owner per concern, unchanged by the merge.** Identity: P149's lease authority for every write
+   (the scanner's `commitBatch(items, lease)` writes through `leasedDb(lease)`, and stops on `!lease.isCurrent()`);
+   the read-only Price Check port has no `commitBatch`. Ordering/cancellation of a scan: the scanner
+   controller (D-161). Exports: the lease-bound delivery gate (D-141). The scan screen keeps its own identity
+   key **and** the authenticated subtree is keyed by user id (D-134): two independent layers. Removing either
+   alone changes no browser behaviour; removing both makes A's photo survive into B (browser-verified).
+5. **Test adaptation policy.** Where the leased `commitBatch` signature broke P161's scanner suites, the
+   production API stayed leased; the suites gained the same `leased-db` stand-in the other scanner suites use
+   and a REAL `IdentityLease` (`tests/ui/lease-support.ts`), so the controller's own
+   `disposed || !lease.isCurrent()` decision is what they exercise.
+
+**Consequences.** No migration (local 106, hosted still 104). Edge Functions affected by this candidate,
+against the released base: `search-prices` (P161 additive `observations[]` + P149's shared `tcgdex.ts`),
+`ingest-prices` (P149's shared `tcgdex.ts`: an absurd provider price is absent instead of rounded into
+`price_snapshots.value_minor`). `sync-catalog` bundles `tcgdex.ts` but calls none of the changed pricing code;
+`fetch-fx-rate`, `ingest-fx`, `redeem-invitation` are unchanged. Release order is in `docs/API_SOURCES.md`.
+Residual, stated: a hung request in an export has no built-in timeout (D-141); the Tesseract worker whose
+construction had begun when an account ended cannot be interrupted and is terminated when its initialisation
+completes (bounded, measured ~8 s with each asset artificially delayed 4 s; never permanent).
+
+**Proof.** `tests/data/p164-price-check-real-transport.test.ts` and `tests/data/p164-search-prices-skew.test.ts`
+(raw JSON text through the real guard and real clients; both skew directions; a legacy emission),
+`tests/e2e/authenticated/p164-cross-track.spec.ts` (12 scenarios, every request judged by the account its
+token belongs to and every `user_id` table by row hash for both accounts), `scripts/p164/mutants.mjs`
+(16 mutants, all killed by an assertion; three more killed against the real browser by hand).
+
+---
+
+## D-160 — Public build configuration is validated fail-closed; the deploy profile requires a real Supabase origin and a publishable key (P160)
+
+**2026-09-24 · Accepted**
+
+**Context.** The repository Actions variable `VITE_SUPABASE_URL` was found holding a value shaped like
+a Supabase secret key (`output_159.txt` S-1). Measured against the unguarded build (Vite 8): a bare
+`sb_secret_…` in the URL slot failed only in `generateBundle`, after `public/` and `sw.js` had
+already been written to `dist/` (no `index.html`); a *valid* URL carrying `?apikey=sb_secret_…`
+built with exit 0 and inlined the value into two public chunks. Nothing in CI or the deploy path
+judged these inputs, and the deploy job would evaluate `vars.*` into a public job log.
+
+**Decision.** One pure validator (`scripts/lib/public-env-guard.mjs`) judges the effective `VITE_*`
+environment (`.env*` files overridden by the process environment, Vite's own precedence). It runs as
+the first `prebuild` step and as the first Vite plugin's `config` hook (before any write), and a
+second gate scans the finished `dist/` (`scripts/check-dist-secrets.mjs`). Output is a field name and a
+category only. The **deploy profile** — `CF_PAGES=1` or `PP_REQUIRE_HOSTED_PUBLIC_ENV=1` — requires
+`https://<20-character ref>.supabase.co` and a `sb_publishable_…` key; a legacy `anon` JWT is
+accepted for a local stack only and is reported as a note, because an opaque JWT is not safe by shape.
+
+**Alternatives rejected.** *Regex in CI only*: misses Cloudflare's own builds and local builds.
+*Guard in `generateBundle`*: already too late (partial output). *Accept any `https` host*: a
+lookalike or a custom domain would pass; a custom domain in front of Supabase is not supported by the
+deploy profile and would need its own decision. *Match the bare `sb_secret_` prefix in the artefact
+scan*: `@supabase/supabase-js` carries the literal itself, so it would fail every correct bundle.
+
+**Consequences.** From the merge that lands this, a Cloudflare Pages build with a localhost URL, a
+placeholder or a legacy key fails. The served Production bundle already carries a `sb_publishable_`
+key and one Supabase origin, so a correct Pages configuration is unaffected. A new public variable
+must be added to `KNOWN_PUBLIC_VARS` deliberately. Not solved here (runbook §5): GitHub prints
+resolved step `env:` values into the job log, unmasked for variables.
+
+**Proof.** `tests/config/public-env-guard.test.ts` (31 cases: accepted configurations, every refusal
+category, no-leak windows through the library, the CLI and a real `vite build`, no output directory
+on refusal, wiring, source scan); five deliberate mutants of the guard each fail it.
+
+## D-163 — The CI Production deploy job reads its public build values from repository secrets, runs the configuration guard first, and integrates the P160 gates (P163)
+
+**Context.** P142 built a CI-gated `deploy-production` job; P150 corrected four defects in it; P160
+built the public-configuration guards. Integrated as they stood, the job would still have evaluated
+`${{ vars.VITE_SUPABASE_URL }}` into a step's `env:` block. GitHub writes that resolved block to the
+job log before the step runs and redacts secrets there but not variables (P160 confirmed this on a
+real past run), and the repository is public — so a wrong value would have been printed before any
+guard could object. The variable did hold a secret-shaped value (P159/P160).
+
+**Decision.**
+
+1. The deploy job reads the two build values from repository **secrets** `PRODUCTION_SUPABASE_URL`
+   and `PRODUCTION_SUPABASE_PUBLISHABLE_KEY` (masked in the step header). Both remain public in the
+   browser bundle; secrets are used for masking only. The names differ from the old `VITE_*`
+   variables so a stale variable can never be consumed. No `vars.*` expression and no `env:` block
+   above step level may exist in the workflow (asserted).
+2. Step order: `check-public-env.mjs --require-hosted --process-env-only` (before `pnpm install`) →
+   stale-run check → install → `rm -rf dist` → build in the deploy profile →
+   `check-dist-secrets.mjs` → build-identity check → `wrangler pages deploy` → live verification.
+   Everything after the stale-run check is gated on it; nothing may fail open.
+3. `release-guard.mjs remote-main-current` distinguishes a *proven* stale run (green, deploys
+   nothing) from an *unreadable* origin (fails). A green job that deployed nothing because it could
+   not look is a false success.
+4. `bundleDeclaresExactSha` requires the same quote character on both sides.
+5. The P160 value-reading variable check is replaced by `check-github-release-config.mjs`, which
+   reads **names only** (required secrets present, legacy variables absent).
+6. One deployment concurrency mechanism: the `production-deploy` job group with
+   `cancel-in-progress: false`; the workflow-level group cancels pull-request runs only (P150).
+
+**Alternatives rejected.** *Keep variables and rely on the guard*: the header is printed first.
+*Make the repository private*: the owner's decision, not a session's, and complementary — it does
+not remove the reason to mask. *Environment-scoped secrets*: unavailable for a private repository on
+the Free plan. *Reuse `build-and-test`'s artifact*: it is built against a placeholder URL on
+purpose. *A Cloudflare deploy hook*: builds whatever is newest, not the validated SHA.
+
+**Consequences.** The owner creates four repository secrets and deletes the two old variables
+(docs/security/RELEASE_PREFLIGHT_P163.md). The Supabase URL appears as `***` in verifier output.
+Masking matches the exact string only. A custom domain in front of Supabase remains unsupported by
+the deploy profile (D-160). None of this changes the fact that the key found in the variable must be
+treated as exposed until the owner rotates it. **P130-08 stays OPEN**: the pipeline is proven by
+local static and semantic tests and real guard-CLI runs, not by a hosted gated deployment.
+
+**Proof.** `tests/config/release-pipeline-integration.test.ts` (policy checker, GitHub step-semantics
+simulator, 17 mutation proofs, real guard-CLI and local-origin runs) and
+`tests/config/release-config-check.test.ts`; five further mutations were applied to the files on
+disk, each caught and restored byte-identically.
+
+## D-165 — Shared test data has one owner and a lease; "settled" means nobody else holds the rows; the DB suite leaves the catalog as it found it (P165)
+
+**2026-09-25 · Accepted**
+
+*(Independent verification of the P164 integrated candidate. No production code changed; no migration. Ids stay unique: D-165 follows D-164.)*
+
+**Context.** P164 reported one failure in the whole authenticated E2E project under `--workers=2` — `price-check-ledger.spec.ts`'s `beforeAll`, six
+dependent tests not run — and worked around it with `--workers=1`. Reproduced (2 workers, the two specs: 14 passed, 1 failed, 6 not run) and traced by
+polling the fixture rows and by a browser-free reproduction: not load. Both specs inserted their own row for the card the synthetic scanner photo prints
+("Fauxosaur EX 049", set = the seed set); `cards` is unique on `(set_id, local_id)`, so the second insert raised `23505 cards_set_id_local_id_key`. The
+spec's `afterAll` then threw a `TypeError` on its never-assigned user, hiding the cause. A card in another set would not isolate anything: `search_cards`
+looks across the whole catalog and returned **both** cards as candidates of one printed text (measured), so each spec could confirm the other's card.
+
+Running the whole project after a complete `pnpm test:db` — the order CI uses on one database — exposed a second, unrelated defect, reproducible with
+`--workers=1`: `catalog_constraints.test.ts` inserted two Pikachu printings and never removed them, and the ledger spec's "single-variant card" step
+searched Pikachu. Two further latent hazards were found while building the fix (below).
+
+**Decision.**
+
+1. **The printed card and its two printings are shared reference data with one owner: a lease.** `tests/e2e/authenticated/support/scanner-fixture-card.ts`
+   creates them with fixed ids, idempotently (`ON CONFLICT DO NOTHING`, untargeted), under a shared Postgres advisory lock held on a dedicated session for
+   the spec's lifetime; the rows are deleted only by the last holder (`pg_try_advisory_lock` exclusive after giving the shared lock back); a killed holder's
+   lease vanishes with its session; a third printing is refused so the explicit-variant tests stay meaningful. Users, ledgers and per-account provider prices
+   stay per spec. Rejected: one card per spec (constraint or double candidates, above); `--workers=1` (hides the defect and makes every future pair of
+   fixture-sharing specs a trap); a Playwright setup project owning the card (does not cover a single spec run alone or `--repeat-each`).
+2. **Settling the portfolio recompute queue waits for it to be free.** `drain_portfolio_recompute_queue` is one transaction taking `FOR UPDATE SKIP LOCKED`
+   on up to 100 users' rows, so a drain in another worker can hold this spec's rows and a plain drain returns 0 at once; the baseline was then taken before that
+   transaction committed and rewrote `portfolio_snapshots`. `settleDerivedTables` repeats the drain until no *due* row is left for the spec's own users (a
+   row stays visible until the processing transaction commits), bounded, with a clear message. Both specs call it in their first test, at the same moment.
+3. **The DB suite leaves the catalog as it found it** (`catalog_constraints.test.ts` removes its printings in a `finally`), and a spec never relies on a
+   seed card the DB suite can change: the ledger spec's single-printing step uses the seed Grass Energy and asserts that no choice is offered; its
+   held-lookup and provider-failure steps use Charizard (always two printings) and choose explicitly.
+4. **Static rules keep it so** (`tests/config/e2e-fixture-isolation.test.ts`): no spec inserts a catalog card; exactly the specs that scan the printed
+   photo lease it; users are removed before the lease is released; nobody drains the queue by themselves.
+
+**Findings of the independent review (the P164 code was not changed).**
+- The rewrite marker (D-164) defends against the **released** `search-prices` (skew), not against the new one: `asFiniteNumber` drops a provider price above
+  2^53 − 1 minor units before it becomes a `bigint`. Run for real under Deno: the released code answers `"sourceValueMinor":9999999999999998` for a provider
+  value of 99999999999999.99 EUR (already rounded) with a NOK string computed from it; the new code omits the price. See `docs/API_SOURCES.md`.
+- Both price consumers read the marker from `invoked.response`, which `@supabase/functions-js` 2.112.3 returns; a dependency bump that drops it would make
+  both fail open, and the frozen-wire tests would fail.
+- Any unsafe integer literal anywhere in a price response refuses the whole response (fail-closed); a large safe integer does not; an exponent-form number is
+  not an integer literal to the guard and no consumer accepts it as a price.
+- The identity layers are redundant on purpose (token provider *and* post-lookup check; before *and* after every export request): removing one of two alone
+  survives, so the mutants remove the layer a test claims to witness (see `scripts/p165/mutants.mjs`).
+- A helper bug caught by the interleaving test itself: `ON CONFLICT (id)` arbitrates one unique index, not both; concurrent inserts of the same card raised
+  `23505` on the other.
+
+**Consequences.** The authenticated project runs with any number of workers; `docs/TESTING.md` §6d/§6e say so. The Deno-backed tests skip, loudly, where
+`deno` is missing (CI has none today); the frozen-wire tests always run. A dependency bump of `npm:@supabase/supabase-js@2.112.3` in the functions needs the
+harness's `import_map.json` updated. No behaviour of the product changed.
+
+**Proof.** `tests/db/p165_scanner_fixture_lease.test.ts`, `p165_settle_derived_tables.test.ts`, `p165_scanner_commit_lease.test.ts`, `p165_export_overlap.test.ts`,
+`tests/data/p165-search-prices-real-function.test.ts` (+ `scripts/p165/edge-harness`), `tests/ui/p165-read-only-scanner-runtime.test.ts`,
+`p165-scan-session-latest-wins.test.ts`, `tests/domain/price-check/p165-variant-resolution.test.ts`; `scripts/p165/mutants.mjs` (14 mutants).
+
+## D-188 — One release-candidate line carries the web and native candidates; deletion stays out; native builds have three explicit profiles (P188)
+
+**2026-10-02 · Accepted**
+
+*(Local candidate only; nothing released, pushed or merged. Ids stay unique: D-188 follows D-165.)*
+
+**Context.** The native lineage (P173 → P187) and the web lineage (P149 … P165) were developed in parallel from the same released base, and the
+later prompt numbers were assumed to include the earlier fixes. They did not: a patch-id comparison found no web commit in the native line. Separately,
+the native app could only be a local candidate (placeholder identity, loopback-only backend guard, debug keystore), and one early P187 commit carried an
+attribution trailer the repository forbids.
+
+**Decision.**
+
+1. **One candidate line, built by merging, not by re-implementing.** `release/p188-cross-platform-rc` starts from P186, replays P187 *without* the
+   trailer (tree verified identical before any other change), then merges P164 (web integration), P163 (deploy gate and secret guard) and P165
+   (verification fixes). Conflicts are resolved to the native line where both sides had fixed the same thing; semantic overlaps that git could not see
+   (an env-guard test versus two comments; the native app's use of the shared money transport) are fixed in the test or the comment, never by
+   weakening a guard. Record: `docs/release/P188_INTEGRATION_MATRIX.md`.
+2. **Account deletion (P156) is not integrated.** Restoring a backup taken before a deletion resurrects the account, and the only mitigation
+   (an owner-kept off-backup erasure registry and a promotion gate) is an owner process this line does not have. Shipping the function without it would
+   promise something the next restore breaks. It stays `UNSAFE_OR_UNRESOLVED` until the owner decides.
+3. **Three build profiles, selected by one build-time value** (`EXPO_PUBLIC_BUILD_PROFILE`): `LOCAL_DEV`, `LOCAL_RELEASE_TEST`, `PRODUCTION_RELEASE`.
+   The native configuration and the runtime backend guard read the same value. Only `PRODUCTION_RELEASE` accepts a hosted backend, and then only
+   `https://<ref>.supabase.co` with an `sb_publishable_` key; every other profile keeps refusing Production. `PRODUCTION_RELEASE` takes its identity and
+   signing from the build environment, fails closed naming the variable (never a value), drops the local-only cleartext and local-network plumbing, and
+   cannot fall back to the debug keystore. No real identifier is committed; the placeholders stay for local builds until the owner chooses
+   (`docs/mobile/BUILD_CONFIGURATION_PROFILES.md` §4).
+4. **Release-candidate branches run CI.** A push to `release/**` starts the validation jobs; the deploy job stays restricted to a push to `main`.
+5. **Attribution.** A local candidate's history is cleaned before it is published; commits already on released `main` and pushed branches are not
+   rewritten by a session.
+
+**Consequences.** The candidate is 107 migrations (none new from the merges) and Production is unchanged. Releasing it still needs the owner-gated steps
+in `docs/release/P188_RELEASE_CANDIDATE.md` §6: visibility, secrets and Cloudflare (P163 Part A), a backup, the hosted migrations 105–107, the Edge Function
+deploys. P130-13, -14, -20, -26 and part of -09 remain OPEN (matrix §8).
+
+**Rejected.** Merging every active branch mechanically (P156 would have entered with an unresolved restore hazard); cherry-picking P164's content piecemeal
+(loses the P149/P151/P161/P162 ancestry that proves what is present); making `LOCAL_RELEASE_TEST` the production profile with different values
+(a local build would then be one wrong variable away from Production).
+
+
+## D-189 — Account deletion is restore-safe: the erasure is recorded off-platform before anything is destroyed, and a restored database must pass the erasure gate before it serves (P189)
+
+**Context.** P152/P156 built hard account deletion (a server-side workflow with a write barrier, a
+batched purge and password re-authentication) and found it could not be released: a backup taken
+while an account exists knows nothing about a later deletion, and restoring it resurrects the login
+and the whole ledger. P189 re-reproduced that on the P188 tree before changing anything: a real
+`pg_dump` of the database, the account deleted through the deployed function, the old dump restored
+— 24 of 24 account-owning relations came back (`auth.users`, `auth.identities` and 22 `public`
+tables). The defect cannot be fixed inside a backup, so the decision is about what lives outside it.
+
+**Decision.**
+
+1. **An erasure registry outside every backup is the source of truth.** One append-only,
+   hash-chained, HMAC-signed record per erasure: schema version, sequence number, random deletion id,
+   SHA-256 of the namespaced account UUID, UTC time, scope version. No address, name, financial data,
+   card data, credential or token — the random Auth UUID is sufficient because every owned row and the
+   login carry it. The write side is a small HTTP contract (`scripts/restore-gate/registry-sink.ts`);
+   the function holds only an append token, never the integrity key. The file-backed sink is the
+   reference implementation and the test double. **Where production keeps it is an owner decision**
+   (`COST_POLICY.md` applies); it is not decided here and `PRODUCTION_REGISTRY_STORAGE_READY=no`.
+2. **Registry before destruction, enforced by the database.** Sequence: authenticate → intent → fresh
+   password → `begin` (pending, writes blocked) → **record the erasure** (registry, then
+   `record_account_erasure`) → purge → delete the Auth user → scrub. `purge_account_data` raises
+   `account_erasure_not_recorded` until the record exists, so a future caller cannot reorder the steps.
+   If the registry is unreachable nothing has been deleted: the account stays pending with its data,
+   the answer is `deletion_incomplete`/`registry`, and the same request retries. With no registry
+   configured the function refuses every deletion (`503 deletion_unavailable`) — there is no
+   "delete anyway" mode. `abort_account_deletion` (operator-only) releases an unrecorded deletion, only
+   after the registry is checked.
+3. **A witness copy in the database.** `account_erasure_receipts` (deletion id, subject hash, registry
+   sequence; no foreign key, no personal data) lets a restore see that the registry is OLDER than the
+   backup — the one thing the registry file cannot show about its own truncated tail.
+4. **A promotion gate.** `restore-gate verify | apply | postcheck | promote-check` against the
+   restored, isolated image; replay re-uses the live workflow, is idempotent, fails closed (exit
+   codes in `docs/security/RESTORE_RUNBOOK.md`), and `promote-check` never trusts a stamp — it verifies
+   again for the current registry head. `scripts/p137/restore-drill.ts` fails unless the gate ran.
+5. **One backend seam, no second implementation.** Web and native call the same `delete-account`
+   contract through the shared client module; the native app only adds local cleanup (pending-write
+   journal, session, identity-scoped stores, scanner photo) after the server says the account is gone.
+6. **A truthful public page** (`/account-deletion`) states what is deleted, what is not and no
+   retention period; its only contact is the address the Privacy page already published.
+7. **P156 is evidence, not authority.** Its code was imported selectively (never merged): the three
+   migrations were re-timestamped after the P188 chain because they had never been applied anywhere,
+   and the P189 migration is appended after them. Its documentation set (privacy policy draft, store
+   worksheets) was not imported (`docs/release/P189_ACCOUNT_DELETION.md`).
+
+**Consequences.** A deletion in production requires configured registry storage and secrets; until
+the owner chooses them, deletion is correctly unavailable. Operators must run the gate on every
+restore; the hosted in-place restore (provider documentation: the project is restored in place)
+cannot be made isolated, which is the largest open gap and is written down as such. A registry
+record can never be dropped while an older restorable backup exists.
+
+**Rejected.** Tombstone table inside the database (it travels with, and is overwritten by, the
+backup being corrected); deleting inside backups (not possible, not claimed); a purge-mode flag to
+bypass the barrier (a switch to abuse); recording the erasure after the purge (data gone, nothing
+protecting it); registry-first-then-begin (a registered account whose deletion never started);
+storing the account e-mail or any content in the registry; a paid external service chosen here.
+
+
+## D-190 — The repository is public by the owner's choice; development phases are pushed after local checks (P190)
+
+**Decision (owner, 2026-10-02).** `Oskarhn/pokeportfolio` is intentionally **PUBLIC**
+(`PUBLIC_BY_OWNER_CHOICE`). The earlier position — that public visibility contradicted a
+"private" hard rule and that unreleased work must stay local while it was public — is withdrawn.
+Public visibility is neither a publication blocker nor a warning.
+
+**Standing rule.** Completed development phases SHOULD be pushed to their feature or release branch
+after local checks. GitHub Actions runs after the push (CI is post-push validation; a branch does not
+wait for another branch's run). A development branch does not need to be feature-complete or
+Production-ready. **Merging to `main` and deploying to Production keep their own, stricter gates**
+(`GIT_WORKFLOW.md` §1/§2/§11): green required CI, a reviewed diff, no secrets, and for a deploy the
+owner actions in `docs/security/RELEASE_PREFLIGHT_P163.md`.
+
+**What public does not change.** It does not authorize committing credentials, private keys,
+Production configuration secrets, personal data, signing material (Android keystores, Apple
+certificates and profiles) or backups. Before every push: a secret scan of the diff and, where CI
+does it, of the history; documentation must carry no real local usernames, Production account ids,
+real test-user credentials, registry records or backup content. Secret scanning remains mandatory.
+No session changes repository visibility.
+
+**Why.** Refusing every push because the repository is public left finished, verified work
+unreviewed and unvalidated by real CI (the first real run of the P189 Linux registry-sink wiring, for
+example, could not happen). The owner chose open development; the controls that matter are the
+secret gates, not secrecy of source.
+
+**Consequences.** `CLAUDE.md`, `AGENTS.md`, `HANDOVER.md`, `PROJECT_STATE.json`, `GIT_WORKFLOW.md` §13
+and `GIT_PUBLICATION_PLAN.md` state `PUBLIC_BY_OWNER_CHOICE`. Historical reports are not rewritten.
+`PUBLICATION_CHECKLIST.md` is retained as the pre-launch checklist for a deliberate public *launch*
+(announcement, README as portfolio piece), not as a gate for pushing branches. Branch protection is
+recommended, not applied (`GIT_PUBLICATION_PLAN.md` §5).
+
+
+## D-191 — Ledger writes go through a gate, private references are ownership-checked, failures use one vocabulary (P191)
+
+**Decision.** (1) A `BEFORE` trigger on the five ledger tables refuses direct client writes unless a
+transaction-local flag set by the ten authoritative INVOKER writers is present; grants are left as they
+were, because revoking breaks the INVOKER writers and flipping them to DEFINER would drop RLS from ten
+large bodies. (2) A sealed product may be referenced only by rows of the user who created it (or if it is
+curated), with one answer for "missing" and "not yours", and `sealed_products.id` is no longer
+client-insertable. (3) `secure_password_change` is enabled in the local config; the hosted setting is an
+owner action. (4) Screens render failures through `userMessage()`, a closed vocabulary; only
+product-authored errors pass through. (5) The Android ONNX runtime is pinned to the package version; `onnxruntime-node`'s
+install script (an unverified NuGet download) is not run; the model download is bounded.
+
+**Why.** Each was a reproduced or catalogued gap (docs/security/P191_SECURITY_BOUNDARY_CLOSURE.md): a
+stale session changing a password, a cross-user reference that blocked another user's erasure, a
+floating native runtime whose shipped binary was not the declared version.
+
+**Rejected.** Revoking the table grants (breaks the writers); a function-level `SET app.ledger_write`
+(Postgres refuses it for a non-superuser); a dedicated definer role (cannot be verified against the hosted
+project from a development phase); upgrading `sharp` to clear an advisory that is not reachable in a
+shipped artefact (it would change scanner preprocessing); showing a sanitised version of the backend message.
+
+**Accepted residual.** The gate flag is transaction-local, so inside a raw SQL transaction that has called
+a writer it stays set until commit; a client has no raw SQL.

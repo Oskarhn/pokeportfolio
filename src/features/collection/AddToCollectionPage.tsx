@@ -1,20 +1,24 @@
 import { useState } from 'react'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   addCardAcquisition,
   createStorageLocation,
   getManualCard,
   listStorageLocations,
+  type AddCardAcquisitionInput,
   type CardCondition,
   type CostBasisState,
   type Grader,
   type GradingState,
   type LotOrigin,
 } from '../../data/collection'
+import { leasedDb } from '../../data/leased-db'
+import { useLeasedMutation } from '../../auth/useLeasedMutation'
 import { getCardVariantWithCard, type CatalogVariantWithCard } from '../../data/catalog'
 import { localTodayIso } from '../../platform/local-date'
 import { useEntityKeyReset } from '../../platform/entity-key-change-tracker'
+import { useUnsavedWorkSnapshot } from '../../platform/unsaved-work-registry'
 import { useAuth } from '../../auth/useAuth'
 import { CardImage } from '../catalog/CardImage'
 import {
@@ -28,6 +32,7 @@ import {
 import { parseNokInput } from '../../ui/money-format'
 import { CONDITION_LABEL, FINISH_LABEL, GRADER_LABEL, ORIGIN_LABEL } from './labels'
 import { fixedCostBasisState } from './origin-basis'
+import { userMessage } from '../../platform/user-error'
 
 const CONDITIONS: CardCondition[] = ['MT', 'NM', 'EX', 'GD', 'LP', 'PL', 'PO']
 const GRADERS: Grader[] = ['psa', 'cgc', 'bgs', 'ace', 'sgc', 'tag', 'other']
@@ -84,6 +89,33 @@ export function AddToCollectionPage() {
   const [notes, setNotes] = useState('')
   const [error, setError] = useState<string | null>(null)
 
+  // P130-09: typed-but-unsaved input here must survive an automatic stale-deployment reload, like
+  // the purchase and sale forms (the reload is deferred while this reports dirty). Nothing is
+  // persisted: no draft storage is invented for a form that never had one. The baseline is the
+  // form's own initial state and resets when the card or the signed-in user changes.
+  useUnsavedWorkSnapshot(
+    'add-card-form',
+    {
+      gradingState,
+      condition,
+      grader,
+      grade,
+      certNumber,
+      manualValue,
+      quantity,
+      origin,
+      costKnown,
+      costPerCard,
+      acquiredOn,
+      storageLocationId,
+      newLocationName,
+      isFavorite,
+      notes,
+    },
+    true,
+    `${userId ?? ''}|${variantId ?? ''}|${manualCardId ?? ''}`,
+  )
+
   // P130-04: minted once per mount and reused for every retry of this same logical submission
   // (never regenerated merely because an error was shown) — identical contract to
   // PurchaseFormPage/SaleFormPage's own idempotencyKey (P108/P107 §17). add_card_acquisition
@@ -101,8 +133,9 @@ export function AddToCollectionPage() {
     setClientRequestKey(crypto.randomUUID())
   })
 
-  const addMutation = useMutation({
-    mutationFn: addCardAcquisition,
+  const addMutation = useLeasedMutation({
+    mutationFn: (input: AddCardAcquisitionInput, lease) =>
+      addCardAcquisition(input, leasedDb(lease)),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['portfolio'] })
       await queryClient.invalidateQueries({ queryKey: ['portfolio-counts'] })
@@ -112,8 +145,8 @@ export function AddToCollectionPage() {
     },
   })
 
-  const createLocationMutation = useMutation({
-    mutationFn: createStorageLocation,
+  const createLocationMutation = useLeasedMutation({
+    mutationFn: (name: string, lease) => createStorageLocation(name, leasedDb(lease)),
     onSuccess: async (location) => {
       await queryClient.invalidateQueries({ queryKey: ['storage-locations'] })
       setStorageLocationId(location.id)
@@ -234,7 +267,7 @@ export function AddToCollectionPage() {
         clientRequestKey,
       })
     } catch (mutationError) {
-      setError(mutationError instanceof Error ? mutationError.message : 'Could not save this card.')
+      setError(userMessage(mutationError, 'Could not save this card.'))
     }
   }
 
@@ -380,6 +413,7 @@ export function AddToCollectionPage() {
             label="Acquired on"
             type="date"
             value={acquiredOn}
+            max={localTodayIso()}
             onChange={(event) => {
               setAcquiredOn(event.target.value)
             }}

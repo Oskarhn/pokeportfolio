@@ -13,5 +13,6 @@ Disallow: /
 Allow: /privacy
 Allow: /terms
 Allow: /faq
+Allow: /account-deletion
 
 Sitemap: https://pokeportfolio-dev.pages.dev/sitemap.xml

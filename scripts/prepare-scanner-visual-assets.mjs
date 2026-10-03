@@ -24,6 +24,7 @@ import {
 } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { downloadPinnedFile } from './scanner-visual-index/lib/pinned-download.mjs'
 import {
   VISUAL_MODEL_REPO,
   VISUAL_MODEL_REVISION,
@@ -85,21 +86,14 @@ async function ensureCached(file) {
 
   const url = `https://huggingface.co/${VISUAL_MODEL_REPO}/resolve/${VISUAL_MODEL_REVISION}/${file.upstreamPath}`
   console.log(`prepare-scanner-visual-assets: fetching ${url}`)
-  const response = await fetch(url)
-  if (!response.ok) {
-    throw new Error(`prepare-scanner-visual-assets: GET ${url} -> ${response.status}`)
-  }
-  const buffer = Buffer.from(await response.arrayBuffer())
-  mkdirSync(dirname(cachedPath), { recursive: true })
-  writeFileSync(cachedPath, buffer)
-
-  const actual = sha256(cachedPath)
-  if (actual !== file.sha256) {
-    throw new Error(
-      `prepare-scanner-visual-assets: SHA-256 mismatch for ${file.upstreamPath} ` +
-        `(expected ${file.sha256}, got ${actual}). Refusing to stage unverified model weights.`,
-    )
-  }
+  // Bounded (timeout, size ceiling, https + Hugging Face hosts only) and verified BEFORE the file
+  // is placed in the cache: a failure of any kind leaves nothing at `cachedPath` (P191).
+  await downloadPinnedFile({
+    url,
+    dest: cachedPath,
+    expectedSha256: file.sha256,
+    file,
+  })
   return cachedPath
 }
 

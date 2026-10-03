@@ -991,3 +991,248 @@ results: `scripts/scanner-preprocess-parity/reports/parity-report.json`.
 (WebKit) project after this fix: PASSED, with a real non-empty search result (previously this
 engine could only reach the disclosed `OffscreenCanvas not supported` error — see D-105's
 addendum). The spec no longer accepts that error as a passing outcome for the visual channel.
+
+## 12. Scanner reliability, performance and mobile hardening (P151, D-151)
+
+A hardening pass over the scanner **as it shipped** (base `d8682e0`, visual index content id
+`f25fc05d569b7cca`, unchanged). No architecture change, no new dependency, no model change. Everything
+below was measured or reproduced; nothing here is a claim about a physical iPhone
+(`PHYSICAL_IPHONE_GATE=DEFERRED_BY_OWNER` stays open).
+
+### 12a. Defects reproduced, and what fixed them
+
+Every row was reproduced first (unit test on the old code, and — where a browser is needed — the real
+production build of the baseline), fixed, and is now pinned by a permanent test that fails when the fix
+is reverted (§12i).
+
+| # | Defect (baseline behaviour) | Evidence on baseline | Fix |
+|---|---|---|---|
+| 1 | **P130-10.** Leaving `/scan` while the OCR worker is still loading leaves a fully initialised Tesseract worker alive: `dispose()` can only terminate a worker that already exists and `prepare()` stored whatever arrived after. | Real Chromium, 6 enter/exit cycles: **7 live scanner workers** after leaving (fixed build: 0). Unit: `expected 1 to be 0`. | `ocr-engine.ts`: a worker resolving after `dispose()` is terminated; concurrent `prepare()` callers share one outcome. |
+| 2 | One `recognize()` that never settles wedges every later scan: recognitions are serialized and nothing bounds a call. | Unit: second call queued behind a hung one never runs. | 60 s per-call bound; on expiry the worker is discarded and the next `prepare()` builds a fresh one; queued calls fail fast instead of hanging. |
+| 3 | `VisualRecognitionClient` was reusable after `dispose()`: a stale in-flight scan reaching `ensureReady()` constructed a **new Worker nothing owned**; `dispose()` during init left `readyPromise` (and the awaiting `analyze()` and its bitmap) pending forever; a crashed or wedged worker was never terminated. | Unit: 9 failures (hangs and live-worker counts). | `dispose()` is terminal; settles a pending init; crash/timeout terminate the worker (30 s per embed round trip); `analyze()` closes its bitmap on every path. |
+| 4 | An abandoned scan kept running every remaining stage (up to ~a dozen OCR passes, an embed, catalog round trips), and when it finally finished it **overwrote the controller's diagnostics / match context / debug image URLs with the stale scan's data**, and after `dispose()` allocated object URLs nothing revoked. | Unit: 11 failures. | Latest-scan-wins (§12b). |
+| 5 | Pixel-bomb check ran only **after** `createImageBitmap` had decoded the whole raster. | Unit: decoder invoked for a 60000×60000 header. | Pre-decode header check (§12c). |
+| 6 | A shutter frame or picked file that finished after unmount / Close / tab-hide / a newer pick called `CaptureStore.set()` — a blob URL of a raw camera frame **alive until the tab closes** — and dispatched into a state machine that had moved on; with two picks in flight the last to *decode* won. | Real Chromium: **1 leaked blob URL** (fixed: 0). | `guarded-capture.ts` (latest-capture-wins), invalidated wherever the camera is released. |
+| 7 | A rejected photo (corrupt, oversized, bomb) chosen from the start screen or from "no match" showed **no message at all**: `captureError` was rendered only in the camera step. | Real Chromium: no alert. | Rendered on the start and no-match screens; cleared by every new attempt. |
+| 8 | The visual worker's Cache Storage entry `scanner-visual-worker-cache-v1` was **unbounded** (every index generation, ~15.7 MB each, kept forever) and **poisonable** (every `200` was stored, including a captive-portal `200 text/html`, which then failed the index checksum on every later session). | Unit: `expected 1 to be 0`; poisoned entry served. | §12d. |
+| 9 | Visual-only evidence could be **HIGH**, preselecting a same-art sibling printing. | §12e. | §12e. |
+
+### 12b. Ordering and cancellation semantics (the contract)
+
+**Latest scan wins.** `controller.analyzeCapture` gives every scan an internal `AbortController` that
+fires when (a) the caller aborts (cancel, retake, route exit, account switch — `ScannerPage` already
+did), (b) a **newer scan starts**, or (c) the controller is **disposed**. Every stage observes it:
+
+| Checkpoint | Effect of an abort |
+|---|---|
+| before `rectifyCapture` result is used, after OCR+visual `Promise.all`, after catalog retrieval (pre-existing) | `ScannerAnalysisAbortedError` |
+| `runOcrAnalysis`: on entry, after `prepare()`, after decode, when a queued run obtains the canvas pool, **before and after every `recognize()`** | stops within one further recognition; the bitmap is still closed |
+| visual stage: before `createImageBitmap`, after it (bitmap closed) | no decode/embed is started for a dead scan |
+| **publish gate** (the last `await` is `getCardsByIds`; everything after is synchronous) | a stale scan never touches `lastDiagnostics` / `lastMatchContext` / debug URLs |
+
+A single Tesseract `recognize`, a WASM embed and a catalog request cannot be interrupted; an abort takes
+effect at the *next* checkpoint. Concurrency is bounded: at most **one** recognition per scan is ever
+pending and the OCR engine serializes them (FIFO), so a burst of N overlapping scans runs the pipeline
+for essentially one of them (stress mode 5: 30 simultaneous scans → 1 completes, 29 abort, max in-flight
+recognitions = 1, total recognitions < 40). Worker embeds are serialized by transformers.js
+(`webInferenceChain`, verified in the installed 4.2.0 bundle). `ScannerPage`'s generation guards remain
+the second layer (they discard a stale *result*); the controller now also stops the *work*.
+
+Cancelled or superseded scans cannot cause a write: the only writer is `commitBatch`, which is reachable
+only from the user's batch review and checks `disposed` before each item (test: zero `addCardAcquisition`
+calls across cancel / supersede / dispose combinations).
+
+### 12c. Image input limits
+
+| Limit | Value | Placement | Rationale |
+|---|---|---|---|
+| Compressed size | 10 MiB (unchanged) | before any read | any phone photo; refuses obvious bombs cheaply |
+| Total decoded pixels | 40 MP (unchanged) | **pre-decode** (header) and post-decode | 12 MP is an ordinary phone photo; a 48 MP frame is normally over the byte bound first |
+| Long/short edge | ≤ 12,000 px / ≥ 32 px | pre- and post-decode | 12,000 > a 100 MP medium-format long edge (11,648); below 32 px nothing legible survives |
+| Aspect ratio | ≤ 6 : 1 | pre- and post-decode | card photos 3:4, screenshots ≤ ~2.2:1; refuses strips and panoramas |
+| Empty file / `image/svg+xml` / non-image MIME | refused | before any read | no intrinsic raster to bound / not a photograph |
+| Camera frames | long edge ≤ 1,800 px (unchanged) | canvas draw | bounded by construction |
+
+`image-header.ts` reads the declared dimensions of PNG, JPEG (through EXIF/ICC segments), GIF, WebP
+(VP8 / VP8L / VP8X) and BMP from the first 512 KiB, with no decoder. **Honest limitation:** HEIC/AVIF
+(`ispe` needs a full ISO-BMFF walk), a JPEG whose frame header lies beyond 512 KiB of metadata, and
+truncated/unknown data cannot be pre-checked; for those the post-decode check (the pre-P151 behaviour)
+is the only guard, so an extreme HEIC can still allocate its raster before being refused. Fixtures are
+hand-built headers of a few dozen bytes; no binary bomb is committed. Canvases are zeroed after
+encoding (Safari keeps a detached canvas's backing store until GC).
+
+### 12d. Memory and cache inventory and policy
+
+| Store | Key / version | Purpose | Sensitivity | Bound | Invalidation |
+|---|---|---|---|---|---|
+| SW `scanner-assets-v7` | URL under `/scanner-assets/v7/` | OCR runtime | public assets | 16 entries, 90 d | version in path; `cleanupObsoleteScannerCaches` drops other `scanner-assets-*` names |
+| SW `scanner-assets-visual-v1` | `visual-v1/{model,ort}/` | DINOv2 model + ORT wasm | public | 16 entries, 90 d | path version |
+| SW `scanner-assets-visual-v1-index` | `…/index/generations/<contentId>/` | index generations | public | 16 entries, 90 d (~5 generations) | content id in the URL |
+| Worker `scanner-visual-worker-cache-v1` | same generation URLs | index via the patched worker fetch | public | **P151: current generation only (3 entries, ~15.7 MB)**; before: unbounded | superseded generations pruned after a verified load; a generation that fails its integrity check is purged; `text/html` never stored, an existing one is deleted on read |
+| `transformers-cache` (transformers.js) | model + ORT URLs | same files as the SW cache | public | 5 entries, ~48 MB; stable per model revision | **unchanged** (see below) |
+| IndexedDB `keyval-store` (tesseract.js) | traineddata | OCR language data | public | ~3.7 MB | tesseract-managed |
+| Memory only | — | `CaptureStore` (**one** blob URL, the current photo), debug image URLs (one set of ≤ 4), ≤ 3 pooled canvases, decoded index (Int8, 39,000 × 384 ≈ 15 MB), model + OCR wasm heaps | the photo is user data | one photo at a time; cleared on analysis completion, retake, exit and dispose | — |
+
+**Raw camera frames are never persisted** (no `localStorage`, IndexedDB or Cache Storage path in the
+scanner tree handles pixels — see the standing network/storage audits) and P151 added no user-image
+storage. **Unchanged, disclosed:** on Chromium the model/ORT files are stored twice (`transformers-cache`
+and the SW cache; measured 139 MB of CacheStorage for ~73 MB of unique bytes in P130). Removing either
+copy trades storage for Safari behaviour that cannot be measured without the physical device (the worker
+cache exists because Safari did not historically route worker fetches through the Service Worker, and
+disabling `env.useBrowserCache` could turn every session into a 48 MB re-download there), so it is left
+for the physical-iPhone gate.
+
+Memory measured (proxies only): main-thread JS heap after a forced GC, 8 warm scans in one mounted
+scanner: **4.7 → 5.0 MB** (baseline and P151 alike); live scanner workers while mounted: 2 (OCR + visual);
+0 after leaving. Worker and WASM heaps are not observable from the driver and are **not** reported.
+
+### 12e. Confidence audit (`pnpm scanner:confidence:audit`)
+
+**Policy as found.** `HIGH` = raw score ≥ 80 with ≥ 15 margin over the runner-up. In production no set
+text is ever read (`rawSetText` is always `null`), so text alone tops out at 75 and **HIGH already
+required the visual channel**; but the visual channel *alone* could reach HIGH (similarity ≳ 0.80 with a
+separated runner-up). `ResultView` preselects the top candidate on HIGH (Confirm is live immediately) and
+requires a tap on MEDIUM/LOW. Variant handling was already correct and is pinned by tests: the scanner
+identifies a **card**; `confirmVariantId` is preselected only when the catalog has exactly one active
+printing, so holo / reverse / stamp are never inferred.
+
+**Method.** Real production index (19,500 cards × 2 prototypes), real matcher, 1,500 seeded samples per
+cell. Query = a card's own auxiliary prototype (centroid of six synthetic camera distortions), optionally
+plus seeded Gaussian noise to walk same-card similarity down through the regimes P84 measured (clean
+geometry: same-card mean 0.812, nearest-wrong mean 0.674). The searched set is the pristine prototypes
+only (a query never finds its own row). Two scenarios: **present** (true printing indexed) and **absent**
+(true card removed from the searched set — the ~7% of catalog cards with no reference image; every
+candidate is wrong by construction, so any HIGH is a false-HIGH). **Provenance: synthetic proxies built
+from the index itself; the repository contains no real-capture set** (`validate-real-captures.ts`), so
+these numbers bound the *structure* of the failure, not real-world accuracy.
+
+| Regime (same-card cos mean / nearest-wrong mean) | Scenario | Rule | HIGH: correct | HIGH: wrong (false-HIGH) | Manual confirm |
+|---|---|---|---:|---:|---:|
+| aux-as-is (0.963 / 0.774) | true printing present | before | 1404 | 1 | 95 |
+| aux-as-is (0.963 / 0.774) | true printing present | after | 0 | 0 | 1500 |
+| aux-as-is (0.963 / 0.774) | true printing absent | before | 0 | **161** | 1339 |
+| aux-as-is (0.963 / 0.774) | true printing absent | after | 0 | **0** | 1500 |
+| noise-0.35 (0.909 / 0.733) | true printing present | before | 1397 | 1 | 102 |
+| noise-0.35 (0.909 / 0.733) | true printing present | after | 0 | 0 | 1500 |
+| noise-0.35 (0.909 / 0.733) | true printing absent | before | 0 | **120** | 1380 |
+| noise-0.35 (0.909 / 0.733) | true printing absent | after | 0 | **0** | 1500 |
+| noise-0.55 (0.844 / 0.684) | true printing present | before | 1352 | 0 | 148 |
+| noise-0.55 (0.844 / 0.684) | true printing present | after | 0 | 0 | 1500 |
+| noise-0.55 (0.844 / 0.684) | true printing absent | before | 0 | **86** | 1414 |
+| noise-0.55 (0.844 / 0.684) | true printing absent | after | 0 | **0** | 1500 |
+| noise-0.70 (0.789 / 0.643) | true printing present | before | 430 | 0 | 1070 |
+| noise-0.70 (0.789 / 0.643) | true printing present | after | 0 | 0 | 1500 |
+| noise-0.70 (0.789 / 0.643) | true printing absent | before | 0 | **21** | 1479 |
+| noise-0.70 (0.789 / 0.643) | true printing absent | after | 0 | **0** | 1500 |
+
+(n = 1,500 per cell; 32 of 600 sampled cards have *another card* at cosine ≥ 0.95 and 53 at ≥ 0.90 —
+reprints and Basic Energy share artwork, so a picture cannot separate them.)
+
+**Change.** A would-be HIGH with **no readable name and no readable collector number** is held at
+MEDIUM (`visual-only-uncorroborated`, a new diagnostics `tierCapReason`). Any printed-text signal lifts
+the cap, so HIGH now always means two independent channels agree. **Trade-off, stated as counts:** in the
+visual-only case correct-HIGH falls from 90% (present, realistic regime) to 0 and manual confirmation
+rises by the same amount — one extra tap, on scans where OCR read nothing at all — in exchange for
+eliminating 5.7–10.7% wrong-preselected sibling printings when the true printing is unindexed. A considered
+alternative (keep visual-only HIGH but require top ≥ 0.90 and a ≥ 0.10 lead) still preselected 87 wrong
+siblings at the cleanest regime and preselected nothing at the realistic one, so it is no better than the
+cap. **Not changed, and why:** whether name-only text should suffice for HIGH (a name does not identify a
+printing; the collector number does) is a separate question that needs real captures. **Limitation to
+disclose:** the index holds one image per catalog *card*, not per variant, so holo vs reverse holo cannot
+be distinguished by any calibration asset here; the flow asks the user.
+
+Also pinned: the disagreement cap now has a test in the **moderate** similarity tier (the P130 surviving
+mutant M7).
+
+### 12f. Performance profile (before / after)
+
+Real Chromium 151 (headless, desktop, AMD Ryzen 5 7600X), real `/scan` UI and workers, synthetic
+fixtures, catalog RPC stubbed to "no rows" so every scan runs the full pipeline. `scripts/scanner-p151/
+browser-bench.mjs` measures any built copy; both builds were measured back to back on the same machine.
+**This is not an iPhone.** Timings are driver wall-clock (~16 ms resolution); n = 3 cold runs, 8 warm scans,
+5 cancel runs.
+
+| Metric | Baseline | P151 |
+|---|---:|---:|
+| Cold: OCR runtime ready (median of 3; first run pays a cold disk cache) | 956 ms | 981 ms |
+| Cold: first scan started immediately (median of 3) | 2,942 ms | 2,976 ms |
+| Warm full scan, median / p95 (n = 8, 0 failures) | 883 / 933 ms | 885 / 1,006 ms |
+| Click → analysing view | 22 ms | 33 ms |
+| Decode of a 500×700 PNG (`createImageBitmap`, median of 30) | 1.5 ms | 1.6 ms |
+| Main-thread JS heap over 8 scans (proxy) | 4.7 → 5.0 MB | 4.7 → 5.0 MB |
+| Cancel → restart: extra latency vs a solo scan | 56 ms | 20 ms |
+
+Phase attribution from the scanner's own diagnostics (warm, P151 build): model load 2,505 ms (background
+prewarm), OCR prepare 345 ms, index load 327 ms, **first embed 662 ms**, index search 35 ms, decode
+~1.5 ms, ranking ~0.7 ms (unit micro-benchmark, 40 candidates). **Conclusion: P151 is performance-neutral
+within measurement noise; it fixes leaks, hangs and stale work, it does not make a scan faster on this
+machine.** The p95 difference is one 1,006 ms sample of eight. The abort work matters more on slow
+hardware (a dozen serialized OCR passes on a phone-class CPU) than the desktop numbers can show; that
+claim is unmeasured here. Not benchmarked: real-model runs across 1,000 photos (deliberately — cost
+without information), Safari, a physical device.
+
+### 12g. Read-only scanner result contract (for Price Check / P153)
+
+`src/features/scanner/scanner-identification.ts` — a typed, provider-neutral view over the **existing**
+controller; there is no second recognition engine.
+
+```ts
+const scanner = createReadOnlyScanner(userId)          // one per mounted consumer + identity
+scanner.prewarm()                                      // optional, idempotent, non-blocking
+const result = await identifyCapture(scanner, capture, signal)   // never throws
+// result: ScannerIdentification
+//   status: 'identified' | 'needs-confirmation' | 'no-match' | 'error'
+//   confidence: 'HIGH' | 'MEDIUM' | 'LOW' | 'NO_MATCH'
+//   candidates: ScannerIdentifiedCard[]   // { catalogCardId, name, setName, collectorNumber, imageBaseUrl, languageLabel }
+//   best: ScannerIdentifiedCard | null    // a PROPOSAL about a card, never a fact about a printing
+//   requiresManualConfirmation: boolean   // false ONLY for HIGH
+//   variantEvidence: { identified: false, reason: 'card-level-recognition-only' }   // always
+//   error: { code: 'aborted' | 'catalog-unavailable' | 'engine-unavailable' | 'unknown', message } | null
+const printings = await scanner.listVariantChoices(result.best.catalogCardId)   // read-only catalog lookup
+scanner.dispose()                                       // on unmount / identity change
+```
+
+`ReadOnlyScannerPort` has exactly `analyzeCapture`, `searchFallback`, `listVariantChoices`, `prewarm`,
+`dispose`. `commitBatch` is **absent at runtime** (a fresh object, not a cast-able view), the module has
+no import path to `data/collection`, and both are asserted by test. Consumers must let the user choose the
+printing unless the catalog reports exactly one active printing. Starting a second identification on the
+same port aborts the first (`error.code === 'aborted'`). The scanner page's add-to-collection flow is
+unchanged.
+
+**Consumed by Price Check (P161).** `PriceCheckScanSession` is built on exactly this port and
+`identifyCapture`. Two behaviours a consumer must expect: a scan below LOW is `no-match` with an EMPTY
+shortlist (P153 had shown those guesses); and HIGH vouches for `best` only — a consumer that filters the
+list must not pre-select whatever inherited the top slot. See D-161.
+
+### 12h. Camera state machine and mobile emulation
+
+The camera lifecycle (`camera-session.ts`, `CameraAcquisitionGuard`) was already covered by deterministic
+ordering-matrix and soak tests (P94/P98/P113/P116/P122/P126) and was **not changed**. New: capture
+completing after a reset (§12a-6). Emulated iPhone-14 matrix in Chromium (touch, mobile UA, viewport,
+CPU throttle 6×; `tests/e2e/scanner-mobile-p151.spec.ts`, 6 tests): narrow portrait (no horizontal
+overflow, ≥ 44 px targets, touch tap scan), landscape and live rotation (shutter and review actions stay
+in the viewport), denied camera → photo path completes and repeats 3×, slow CPU + slow OCR assets (cancel
+control works, the abandoned scan never surfaces a result, the next scan succeeds), background/foreground
+×3 (camera released at once, restartable), leaving during a scan (no page error, no worker survives).
+Emulation only: real Safari `getUserMedia`, WebKit worker memory and cellular networks are not exercised.
+
+### 12i. Verification map
+
+`pnpm scanner:stress` (seven modes; §TESTING 6c), `pnpm scanner:confidence:audit`,
+`node scripts/scanner-p151/run-mutations.mjs` (13 mutants: remove camera cleanup, allow stale scan ×2,
+remove the pixel limit, skip worker termination ×2, remove the OCR timeout, resurrect the visual client,
+disable the cache bound, re-enable HTML caching, bypass the confidence rule, the P130 M7 mutant, apply a
+late capture — **13 killed, 0 survived**; the runner counts a test timeout as a kill for hang defects and
+never a load/compile error, and verifies each file is restored byte-for-byte).
+
+### 12j. Unchanged limitations (not corrected by P151)
+
+- Physical-iPhone validation is still owed; every number above is desktop Chromium or synthetic.
+- No real-capture calibration set exists; confidence conclusions are structural, not accuracy claims.
+- The visual index is card-level: holo / reverse / stamp variants are indistinguishable to any asset here.
+- Model/ORT double caching on Chromium (§12d), and no in-session restart of a crashed visual worker (a
+  route re-entry builds a new client; the scan degrades to OCR-only in the meantime — a deliberate,
+  bounded cost).
+- HEIC/AVIF cannot be size-checked before decode (§12c).
+- The router wedges the *next* navigation if `history.back()` runs while an exit navigation is still in
+  flight (reproduced on the untouched baseline; generic router behaviour, outside scanner code).

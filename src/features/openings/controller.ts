@@ -7,6 +7,8 @@ import {
   reconcileOpeningCost as reconcileOpeningCostRecord,
   voidOpening as voidOpeningRecord,
 } from '../../data/opening'
+import { leasedDb } from '../../data/leased-db'
+import type { IdentityLease } from '../../auth/identity-lease'
 import type {
   BoughtAndOpenedInput,
   CreateOpeningInput,
@@ -15,6 +17,7 @@ import type {
   OpeningSource,
   VoidOpeningOutcome,
 } from './contract'
+import { UserFacingError } from '../../platform/user-error'
 
 /**
  * The M16 integration adapter (P53): the single place the opening feature meets the backend.
@@ -80,7 +83,7 @@ export function mapOpeningErrorMessage(rawMessage: string): string {
 
 function toFriendlyError(error: unknown): Error {
   const message = error instanceof Error ? error.message : String(error)
-  return new Error(mapOpeningErrorMessage(message))
+  return new UserFacingError(mapOpeningErrorMessage(message), 'could_not_complete')
 }
 
 function mapSource(row: Awaited<ReturnType<typeof listOpeningSources>>[number]): OpeningSource {
@@ -152,50 +155,56 @@ const integratedController: OpeningController = {
     }
   },
 
-  async createOpening(input: CreateOpeningInput) {
+  async createOpening(input: CreateOpeningInput, lease: IdentityLease) {
     try {
-      const created = await createOpeningRecord({
-        sourceLotId: input.sourceLotId,
-        quantity: input.quantity,
-        openedOn: input.openedOn,
-        trackingCompleteness: input.trackingCompleteness,
-        pulls: input.pulls.map((pull) => ({
-          cardVariantId: pull.cardVariantId,
-          manualCardId: pull.manualCardId,
-          quantity: pull.quantity,
-          condition: pull.condition ?? 'NM',
-        })),
-        bulkRemainderEstimateNokMinor: input.bulkRemainderEstimateMinor,
-        bulkRemainderCount: input.bulkRemainderCount,
-        notes: input.notes,
-        idempotencyKey: input.idempotencyKey,
-      })
+      const created = await createOpeningRecord(
+        {
+          sourceLotId: input.sourceLotId,
+          quantity: input.quantity,
+          openedOn: input.openedOn,
+          trackingCompleteness: input.trackingCompleteness,
+          pulls: input.pulls.map((pull) => ({
+            cardVariantId: pull.cardVariantId,
+            manualCardId: pull.manualCardId,
+            quantity: pull.quantity,
+            condition: pull.condition ?? 'NM',
+          })),
+          bulkRemainderEstimateNokMinor: input.bulkRemainderEstimateMinor,
+          bulkRemainderCount: input.bulkRemainderCount,
+          notes: input.notes,
+          idempotencyKey: input.idempotencyKey,
+        },
+        leasedDb(lease),
+      )
       return { openingId: created.id }
     } catch (error) {
       throw toFriendlyError(error)
     }
   },
 
-  async createBoughtAndOpened(input: BoughtAndOpenedInput) {
+  async createBoughtAndOpened(input: BoughtAndOpenedInput, lease: IdentityLease) {
     try {
-      const created = await createProvisionalOpening({
-        sealedProductId: input.sealedProductId,
-        quantity: input.quantity,
-        totalPaidNokMinor: input.totalPaidNokMinor,
-        purchasedOn: input.purchasedOn,
-        openedOn: input.openedOn,
-        trackingCompleteness: input.trackingCompleteness,
-        pulls: input.pulls.map((pull) => ({
-          cardVariantId: pull.cardVariantId,
-          manualCardId: pull.manualCardId,
-          quantity: pull.quantity,
-          condition: pull.condition ?? 'NM',
-        })),
-        bulkRemainderEstimateNokMinor: input.bulkRemainderEstimateMinor,
-        bulkRemainderCount: input.bulkRemainderCount,
-        notes: input.notes,
-        idempotencyKey: input.idempotencyKey,
-      })
+      const created = await createProvisionalOpening(
+        {
+          sealedProductId: input.sealedProductId,
+          quantity: input.quantity,
+          totalPaidNokMinor: input.totalPaidNokMinor,
+          purchasedOn: input.purchasedOn,
+          openedOn: input.openedOn,
+          trackingCompleteness: input.trackingCompleteness,
+          pulls: input.pulls.map((pull) => ({
+            cardVariantId: pull.cardVariantId,
+            manualCardId: pull.manualCardId,
+            quantity: pull.quantity,
+            condition: pull.condition ?? 'NM',
+          })),
+          bulkRemainderEstimateNokMinor: input.bulkRemainderEstimateMinor,
+          bulkRemainderCount: input.bulkRemainderCount,
+          notes: input.notes,
+          idempotencyKey: input.idempotencyKey,
+        },
+        leasedDb(lease),
+      )
       return { openingId: created.id }
     } catch (error) {
       throw toFriendlyError(error)
@@ -214,9 +223,9 @@ const integratedController: OpeningController = {
     }
   },
 
-  async voidOpening(openingId, reason): Promise<VoidOpeningOutcome> {
+  async voidOpening(openingId, lease, reason): Promise<VoidOpeningOutcome> {
     try {
-      await voidOpeningRecord(openingId, reason)
+      await voidOpeningRecord(openingId, leasedDb(lease), reason)
       return { blocked: false }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -229,9 +238,13 @@ const integratedController: OpeningController = {
     }
   },
 
-  async reconcileOpeningCost(openingId, realSourceLotId) {
+  async reconcileOpeningCost(openingId, realSourceLotId, lease) {
     try {
-      const reconciled = await reconcileOpeningCostRecord(openingId, realSourceLotId)
+      const reconciled = await reconcileOpeningCostRecord(
+        openingId,
+        realSourceLotId,
+        leasedDb(lease),
+      )
       return { openingId: reconciled.id }
     } catch (error) {
       throw toFriendlyError(error)

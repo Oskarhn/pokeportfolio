@@ -1,26 +1,39 @@
 name: CI
 
+# P193: this workflow VALIDATES only. A push to `main` or `release/**` and every pull request run
+# build-and-test, db-tests and native-checks, and nothing here can deploy: Production is released by
+# the separate, manually dispatched .github/workflows/deploy-production.yml, which also needs the
+# owner to have finished the backend rollout. Merging to `main` is therefore not a release
+# (tests/config/release-control-plane.test.ts proves it, mutation by mutation).
 on:
   push:
-    branches: [main]
+    branches: [main, 'release/**']
   pull_request:
 
 # GitHub Actions is free for this private repo up to 2,000 minutes/month, and
 # the account's default spending limit is $0 — a run simply fails to start
 # past that, it never bills. See docs/COST_POLICY.md.
+#
+# Only pull-request runs are cancelled when a newer commit arrives; runs on `main` queue so the
+# check-runs that the Production release verifies exist for every main commit.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Least-privilege default for every job below (P142 §14): checkout only. No job reads a Production
+# or Cloudflare secret; those exist only in deploy-production.yml.
+permissions:
+  contents: read
 
 jobs:
   build-and-test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0 # full history for the secret-scan step below
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
 
@@ -41,6 +54,16 @@ jobs:
       - name: Format check
         run: pnpm format:check
 
+      # P188: the documentation set the next session reads first must stay readable and truthful in
+      # form: HANDOVER.md / PROJECT_STATE.json within their size budgets, PROJECT_STATE.json valid and
+      # pointing at files that exist, and every relative link in the current-state, release and mobile
+      # documents resolving. Pure filesystem checks, no network.
+      - name: Documentation checks (size budget, project state, links)
+        run: |
+          node scripts/check-doc-size.mjs
+          node scripts/check-project-state.mjs
+          node scripts/check-doc-links.mjs
+
       - name: Domain and property tests
         run: pnpm test
 
@@ -53,6 +76,12 @@ jobs:
         env:
           VITE_SUPABASE_URL: http://127.0.0.1:54321
           VITE_SUPABASE_PUBLISHABLE_KEY: ci-placeholder-not-a-key
+
+      # P160: `pnpm build` already refused a secret-shaped or misplaced public value (prebuild runs
+      # scripts/check-public-env.mjs first). This judges what was actually WRITTEN: dist/ must be
+      # complete and contain no secret-shaped string. Paths and categories only are printed.
+      - name: Built artefact secret scan (dist/)
+        run: node scripts/check-dist-secrets.mjs
 
       # P130-27/P130-28/P139: local-artifact release verifiers that were never wired into CI —
       # both are pure filesystem checks against dist/ from the build above, no network, seconds
@@ -82,7 +111,7 @@ jobs:
 
       - name: Upload Playwright report on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: playwright-report
           path: playwright-report
@@ -91,18 +120,66 @@ jobs:
       - name: Secret scan (gitleaks, open source, no license key)
         run: |
           docker run --rm -v "${{ github.workspace }}:/repo" \
-            zricethezav/gitleaks:latest detect --source=/repo --config=/repo/.gitleaks.toml -v --redact
+            zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f detect --source=/repo --config=/repo/.gitleaks.toml -v --redact
+
+  # P190: lightweight native gate (React Native / Expo app in apps/mobile-spike): typecheck, lint and
+  # the unit suites. No emulator, no Android SDK, no credentials, no Supabase stack (the backend
+  # integration suite `test:backend` and every device journey stay local — docs/TESTING.md). The
+  # scanner assets are gitignored, so they are staged here exactly as a local build stages them:
+  # the visual INDEX is copied from the committed generation, the MODEL is fetched from a Hugging
+  # Face revision pinned by commit and verified by SHA-256 (scripts/scanner-visual-index/lib/
+  # model-pin.mjs) before it is used. The cache below is keyed on that pin file only, so a changed
+  # pin is a cache miss; the staging script re-hashes whatever the cache restores and re-downloads on
+  # any mismatch, so the cache can never substitute different bytes.
+  native-checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Enable Corepack and activate the pinned pnpm
+        run: |
+          corepack enable
+          corepack prepare --activate
+
+      # The root install provides eslint (the native lint runs through the root toolchain) and tsx.
+      - name: Install dependencies (root)
+        run: pnpm install --frozen-lockfile
+
+      - name: Install dependencies (native app, its own lockfile)
+        run: pnpm --dir apps/mobile-spike install --frozen-lockfile
+
+      - name: Restore the pinned scanner model
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: apps/mobile-spike/assets/scanner/visual-v1/model
+          key: scanner-model-${{ hashFiles('scripts/scanner-visual-index/lib/model-pin.mjs') }}
+
+      - name: Stage the scanner assets (index from the repository, model verified by SHA-256)
+        run: pnpm --dir apps/mobile-spike assets:scanner
+
+      - name: Native typecheck
+        run: pnpm --dir apps/mobile-spike typecheck
+
+      - name: Native lint
+        run: pnpm --dir apps/mobile-spike lint
+
+      - name: Native unit tests
+        run: pnpm --dir apps/mobile-spike test
 
   # Migrations, RLS and the two-client authorization suite (docs/TESTING.md §4-5), against an
   # ephemeral local Supabase/Postgres stack — ubuntu-latest ships Docker, so this needs nothing
   # beyond what's already free. Never touches the real dev/production Supabase project: no
   # remote credentials are used anywhere in this job. See docs/DEVELOPMENT.md §4 and prompt §57-58.
   db-tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
 
@@ -113,6 +190,20 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # P189: the erasure registry the delete-account Edge Function records to. The values are
+      # generated for this run (never literals) and handed to the stack at start through
+      # supabase/config.toml [edge_runtime.secrets]; tests/db/global-setup.ts and the authenticated
+      # E2E start the file-backed reference sink on that address. 172.17.0.1 is the Docker host as
+      # seen from the stack's containers on a Linux runner (UNVERIFIED until the first CI run; the
+      # function refuses every deletion, fail closed, if the sink is not reachable).
+      - name: Generate the ephemeral erasure-registry credentials for this run
+        run: |
+          {
+            echo "ERASURE_REGISTRY_URL=http://172.17.0.1:8787"
+            echo "ERASURE_REGISTRY_TOKEN=$(openssl rand -hex 24)"
+            echo "ERASURE_REGISTRY_KEY=$(openssl rand -hex 32)"
+          } >> "$GITHUB_ENV"
 
       - name: Start local Supabase stack (applies every migration to an empty database)
         run: pnpm exec supabase start
@@ -128,6 +219,12 @@ jobs:
             echo "SUPABASE_ANON_KEY=$(grep '^ANON_KEY=' /tmp/supabase-status.env | cut -d= -f2- | tr -d '\"')"
             echo "SUPABASE_SERVICE_ROLE_KEY=$(grep '^SERVICE_ROLE_KEY=' /tmp/supabase-status.env | cut -d= -f2- | tr -d '\"')"
             echo "DB_URL=$(grep '^DB_URL=' /tmp/supabase-status.env | cut -d= -f2- | tr -d '\"')"
+            # The P161/P164 ledger specs read the local database URL under this name (TESTING.md §6e).
+            # Without it the authenticated E2E refuses to run price-check-ledger.spec.ts in CI.
+            echo "P153_DB_URL=$(grep '^DB_URL=' /tmp/supabase-status.env | cut -d= -f2- | tr -d '\"')"
+            # P189: the restore-safe-deletion suite runs pg_dump / pg_restore inside the stack's own
+            # database container as the superuser (tests/db/p189_restore_safe_erasure.test.ts).
+            echo "P156_DB_CONTAINER=$(docker ps --filter name=supabase_db_ --format '{{.Names}}' | head -n 1)"
           } >> "$GITHUB_ENV"
 
       # The privilege checks below talk to Postgres directly. Every runner image ships psql, but
@@ -251,7 +348,7 @@ jobs:
 
       - name: Upload authenticated-E2E Playwright report on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: playwright-report-authenticated
           path: playwright-report
@@ -349,7 +446,7 @@ jobs:
         run: pnpm db:types
 
       - name: Upload generated types (reviewed and committed by hand, not auto-merged)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: database-types
           path: src/data/database.types.ts

@@ -1,7 +1,9 @@
 # Publication Checklist
 
-The repository is **private**. It must not be made public without the owner's explicit approval
-and a completed pass through this document.
+The repository is **public by the owner's choice** (D-190, `PUBLIC_BY_OWNER_CHOICE`). This checklist is
+no longer a gate for pushing branches; `docs/GIT_WORKFLOW.md` §13 is. It remains the checklist for a
+deliberate public *launch* (announcement, the repository presented as a portfolio piece) and the
+reference for what must never be committed.
 
 No agent, session or automation may change repository visibility. That is an owner decision.
 

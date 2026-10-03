@@ -187,7 +187,6 @@ begin
     ('view',  'invitation_overview',    'authenticated', 'SELECT'),
     ('table', 'invitation_redemptions', 'authenticated', 'SELECT'),
     ('table', 'sealed_products',        'authenticated', 'SELECT'),
-    ('table', 'sealed_products',        'authenticated', 'INSERT'),
     ('table', 'sealed_products',        'authenticated', 'DELETE'),
     ('table', 'retailers',              'authenticated', 'SELECT'),
     ('table', 'retailers',              'authenticated', 'INSERT'),
@@ -263,6 +262,15 @@ begin
   -- Every UPDATE a session may perform, column by column. Absent everywhere, on purpose:
   -- id, user_id, created_at, updated_at, the parent FK on child rows, and the provenance columns
   -- named in the migration header.
+  -- P191 (P130-14): the one table whose INSERT is granted per column. `sealed_products.id` is
+  -- absent on purpose — a caller-chosen id is an existence oracle for other users' private rows.
+  expected_column_insert(obj) as (values
+    ('sealed_products.set_id'), ('sealed_products.product_type'), ('sealed_products.name'),
+    ('sealed_products.language'), ('sealed_products.pack_count'), ('sealed_products.image_url'),
+    ('sealed_products.cardmarket_product_id'), ('sealed_products.tcgplayer_product_id'),
+    ('sealed_products.created_by_user_id')
+  ),
+
   expected_column_update(obj) as (values
     ('profiles.display_name'), ('profiles.locale'), ('profiles.display_currency'),
     ('profiles.theme'), ('profiles.collection_grid_density'),
@@ -442,7 +450,11 @@ begin
     -- performs the write. Also granted to service_role (not checked by this audit, which covers
     -- only anon/authenticated) for the same CHECK-constraint reason on a direct service-role write.
     ('routine', 'currency_minor_unit_exponent(text)', 'authenticated', 'EXECUTE'),
-    ('routine', 'money_minor_to_nok_minor(bigint, text, numeric)', 'authenticated', 'EXECUTE')
+    ('routine', 'money_minor_to_nok_minor(bigint, text, numeric)', 'authenticated', 'EXECUTE'),
+    -- P144 (20260918120000, P130-16/D-135): the two-tier purchase discount allocator. Granted to
+    -- authenticated because create_purchase/update_purchase are SECURITY INVOKER and reach it as the
+    -- caller's own role. The completed-event-date trigger function holds no grant at all.
+    ('routine', 'allocate_purchase_discount(bigint, bigint[], bigint[], bigint[])', 'authenticated', 'EXECUTE')
   ),
 
   -- M7: the expected PUBLIC-EXECUTE surface for every routine in `public` is empty. No project
@@ -458,6 +470,7 @@ begin
     select kind, obj, grantee, priv from expected_schema
     union all select kind, obj, grantee, priv from expected_relation
     union all select 'column', obj, 'authenticated', 'SELECT' from expected_column_select
+    union all select 'column', obj, 'authenticated', 'INSERT' from expected_column_insert
     union all select 'column', obj, 'authenticated', 'UPDATE' from expected_column_update
     union all select kind, obj, grantee, priv from expected_routine
     union all select kind, obj, grantee, priv from expected_routine_public
@@ -491,5 +504,44 @@ begin
   end if;
 
   raise notice 'privilege baseline OK: anon and authenticated hold exactly the intended surface.';
+end;
+$$;
+
+-- ── P191: the ledger write gate (P130-13) ───────────────────────────────────────────────────────
+-- Table privileges alone do not keep the browser out of the ledger: ten SECURITY INVOKER writers
+-- need them. The boundary is the gate trigger on each ledger table plus the
+-- `set_config('app.ledger_write', ...)` call each of those writers makes (20261002140000_p191_
+-- ledger_write_gate.sql). Both halves are asserted here, independently of that migration: a table
+-- that lost its gate, or a writer re-created without the call, fails the audit.
+do $$
+declare
+  v_missing text;
+begin
+  select string_agg(t, E'
+' order by t) into v_missing
+  from (
+    select 'no a00_ledger_write_gate trigger on ' || tbl as t
+    from unnest(array['purchases','purchase_lines','acquisition_lots','holdings','manual_valuations']) as tbl
+    where not exists (
+      select 1 from pg_trigger g
+      where g.tgrelid = ('public.' || tbl)::regclass and g.tgname = 'a00_ledger_write_gate'
+        and not g.tgisinternal and g.tgenabled = 'O'
+    )
+    union all
+    select 'writer without the app.ledger_write call: ' || p.oid::regprocedure::text
+    from pg_proc p
+    where p.pronamespace = 'public'::regnamespace
+      and p.proname in ('add_card_acquisition','clear_manual_valuation','create_purchase',
+                        'reduce_holding_quantity','remove_holdings_from_portfolio',
+                        'set_manual_valuation','set_sealed_lot_intent','update_purchase',
+                        'void_acquisition_lot','void_purchase')
+      and p.prosrc not like '%set_config(''app.ledger_write'', ''rpc'', true)%'
+  ) x;
+
+  if v_missing is not null then
+    raise exception E'ledger write gate is incomplete:
+%', v_missing;
+  end if;
+  raise notice 'ledger write gate OK: five tables gated, ten writers flagged.';
 end;
 $$;

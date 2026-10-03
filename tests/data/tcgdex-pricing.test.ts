@@ -422,3 +422,50 @@ describe('fetchCardPricing — no pricing at all', () => {
     expect(result.variants[0]!.tcgplayer).toBeNull()
   })
 })
+
+describe('fetchCardPricing — a price a JS number cannot carry exactly is absent, never rounded (P146)', () => {
+  function cardWithTrend(trend: number) {
+    return {
+      id: 'sve-001',
+      localId: '1',
+      name: 'Grass Energy',
+      category: 'Energy',
+      variants: { firstEdition: false, holo: false, normal: true, reverse: false, wPromo: false },
+      variants_detailed: [
+        {
+          type: 'normal',
+          size: 'standard',
+          variantId: 'endfynwn4n10gzq',
+          pricing: {
+            cardmarket: {
+              updated: '2026-08-21T08:03:05.070Z',
+              unit: 'EUR',
+              idProduct: 689750,
+              trend,
+              avg30: null,
+              avg7: null,
+              avg: null,
+            },
+            tcgplayer: null,
+          },
+        },
+      ],
+      pricing: { cardmarket: { idProduct: 689750 }, tcgplayer: null },
+    }
+  }
+
+  it('keeps a large but exactly-convertible price', async () => {
+    mockFetchOnce(cardWithTrend(90_071_992_547_409))
+    const result = await fetchCardPricing('en', 'sve-001')
+    expect(result.variants[0]?.cardmarket?.valueMinor).toBe(9_007_199_254_740_900n)
+  })
+
+  it.each([1e14, 9.1e13, 1e300])(
+    'treats %s as no price instead of producing a rounded valueMinor',
+    async (trend) => {
+      mockFetchOnce(cardWithTrend(trend))
+      const result = await fetchCardPricing('en', 'sve-001')
+      expect(result.variants[0]?.cardmarket).toBeNull()
+    },
+  )
+})

@@ -431,7 +431,7 @@ A purchase is one receipt. It always has at least one line.
 |---|---|
 | `id uuid pk`, `user_id fk` | |
 | `origin` | enum `manual`, `provisional_opening`. See §5.8.1 |
-| `purchased_on date` | Business event date. Backdating fully supported. |
+| `purchased_on date` | Business event date. Backdating fully supported within the event-date contract (1996-10-20 .. UTC today + 1, enforced by trigger `purchases_event_date_contract`, D-135). |
 | `retailer_id fk nullable` | |
 | `currency` | ISO 4217 |
 | `subtotal_minor`, `shipping_minor`, `customs_minor`, `discount_minor`, `total_minor` | In `currency` |
@@ -883,6 +883,12 @@ sale's own lines (written by `create_sale`/`update_sale`/`void_sale`, never inde
 computed by a reader) — they exist so History's list view and the result-sort gate (never ranking
 an unknown-basis sale as +/-infinity) never need to fetch every `sale_lines` row per row shown.
 `realized_result_nok_minor` is `NULL` exactly when *no* line in the sale has a known cost basis.
+`proceeds_from_uncosted_nok_minor` is a signed net cash flow — it is negative when fees and shipping on
+uncosted lines exceed their gross — and is deliberately not constrained non-negative (D-135, P130-17);
+only `gross`, `fees`, `shipping_cost` and `shipping_charged` are individually `>= 0`
+(`sales_amounts_non_negative`). `sold_on` (and `purchases.purchased_on`, `acquisition_lots.acquired_on`,
+`lot_disposals.disposed_on`, `openings.opened_on`, `lot_cost_adjustments.occurred_on`) fall under the
+completed-event date contract enforced by the `*_event_date_contract` triggers (D-135).
 `idempotency_key` (unique per user) makes a retried `create_sale` call return the original sale
 rather than creating a duplicate.
 
@@ -1171,6 +1177,53 @@ lots per user**. Consequences already designed for:
 | Export | **Shipped in M13** (D-074): every section is fetched in bounded `.order(pk).range()` pages of 500 under stable ordering, with one exact COUNT per section up front, cross-page duplicate detection over each section's primary key and exact received-vs-expected reconciliation — offset-with-reconciliation (never labelled keyset), failing loudly rather than writing an incomplete backup. Implementation: `src/domain/export/` (pure) + `src/data/export/` (fetch). `lot_cost_adjustments` reaches exports via plain SELECT despite having no write RPC yet (its read authority is the point; the write path is M17's). |
 | Grouped display | The default list groups by holding, so 80 identical energies are one row with quantity 80 — a display concern, not a storage one. |
 
+### 10.2 Export schemas (P157, D-141)
+
+An export is a *representation* of stored data, never a recomputation: no formula, no rounding, no
+fallback value. Three artifacts exist; each has its own contract and they are not interchangeable.
+
+| Artifact | Where | Contract |
+|---|---|---|
+| **JSON backup** | `pokeportfolio-backup-YYYY-MM-DD.json` (`src/domain/export/backup-*.ts`) | Lossless and versioned (`schema_version`, currently 2, **unchanged** by P157). Money is a decimal *string* of integer minor units (`::text` on the wire, validated by `brandRow`); text is the raw stored value — never apostrophe-prefixed. No restore exists and none is promised. |
+| **CSV suite** (11 files) | `holdings.csv` … `custom_collections.csv` (`src/domain/export/csv-projections.ts`) | Analysis projection, schema **v2** (`EXPORT_CSV_SCHEMA_VERSION`). Spreadsheet-safe presentation of the same rows. Declared columns below. |
+| **Quick CSV** | `portfolio-export-YYYY-MM-DD.csv` (`src/domain/export/portfolio-quick-csv.ts`) | A report of the current filtered Portfolio view, one row per holding, schema **v2**. Not a backup. |
+
+**Column kinds** (`CsvColumnKind`; the *column*, never the call site, decides how a cell is written):
+
+| Kind | Cell content | Written verbatim when | Otherwise |
+|---|---|---|---|
+| `text` | names, notes, descriptions, retailer, marketplace, cert number, tags, storage, catalog card/set/number/variant | never | formula-sanitized (see below) |
+| `id` / `date` / `timestamp` / `enum` / `boolean` | uuid · `YYYY-MM-DD` (never time-zone shifted) · ISO 8601 as returned by PostgREST · lower-case enum · `true`/`false` | it has the kind's canonical shape | treated as `text` (fail closed) |
+| `integer` / `decimal` / `rate` | counts, grade, FX rate | canonical numeric | treated as `text` |
+| `money` | **major units**, exact, rendered from integer minor units with the currency's exponent (NOK/EUR/USD/GBP 2, JPY 0) — `571.23`, `-123.45`, `500` (yen) | canonical signed decimal | treated as `text` |
+
+- **Formula sanitization.** A text cell gets one leading `'` when its first character is tab/CR/LF,
+  or when the first character after any leading White_Space/Separator/Control/Format characters is
+  `=`, `+`, `-`, `@` or the full-width `＝＋－＠`. Idempotent. Negative *money* stays signed and
+  numeric; a text cell like `-5` becomes `'-5`. Presentation only — see SECURITY.md §9.4.
+- **Unknown ≠ zero.** `NULL` renders as an empty cell in every kind; a genuine zero renders `0.00`
+  (`0` for JPY). An unknown cost basis, an uncosted sale line's basis/result and an unresolved
+  Portfolio value are all empty cells, never `0.00`.
+- **100× guard.** Every original-currency amount has its currency in the same row. Schema v2
+  appends `Currency` to `purchase_lines.csv` and `sale_lines.csv` (their amounts are in the parent's
+  currency, which used to be only reachable by joining on the parent id) — additive, existing column
+  positions unchanged. Headers ending `NOK` are frozen NOK amounts.
+- **Framing.** UTF-8 with BOM, CRLF, terminating CRLF, RFC 4180 quoting (comma, quote, CR, LF).
+  A row whose width differs from the declared schema throws — cells can never shift silently.
+- **Quick CSV v2 changes** (from the released M7.1 file): the header `Cost basis state` is now
+  `Value status` (the column only ever held a value-state note, "No manual value set"); the value
+  is exact instead of `Number()/100`; a BOM and terminating CRLF are added; a CR/LF inside a name
+  is quoted; reaching the page ceiling with a cursor pending is an error, not a silent truncation.
+- **Completeness and consistency.** Every fetched section is reconciled against an exact COUNT and
+  duplicate keys fail the export (D-074). The multi-query fetch is *not* one transaction (D-077): a
+  concurrent edit between pages is detected when it changes counts or duplicates a key, but a
+  same-count edit is not — the file is a fixed-*ish* time view, never a database snapshot. An
+  export either completes or fails with an error; there is no partial-success file.
+- **Privacy.** Exports contain only the signed-in owner's rows (RLS is the boundary; the identity
+  is additionally bound to the identity lease and checked per request, SECURITY.md §9.4), no account e-mail, no tokens, no invite or
+  audit data and no privilege flags (the profile row goes through an allow-listed projection).
+  The CSV suite omits every idempotency key. New data collected or stored by P157: **none**.
+
 ---
 
 ## 11. Open modelling questions
@@ -1320,15 +1373,39 @@ joins `collection_grid_density`/`collection_default_view` as the third Portfolio
 preference. All three are read by the client and can be overridden per-request via URL search
 params (`src/router.tsx`'s `PortfolioSearch`) without changing the stored default.
 
-**Money serialization boundary.** `bigint` minor-unit columns are exact in Postgres, but
-PostgREST serializes `bigint` as a plain JSON number by default, and JSON/JS numbers only carry
-exact integer precision up to `Number.MAX_SAFE_INTEGER` (2^53 − 1). Every query that selects a
-money column must cast it to text in the select list (e.g. `total_minor::text`) and parse the
-result with `BigInt()` — see `src/data/money.ts` and the proof in
-`tests/db/money-boundary.test.ts`, which inserts a value one above that threshold and shows the
-cast path stays exact while the uncast path does not. Not a practical risk at this app's actual
-scale (collection values are nowhere near 2^53 øre), but the boundary is real and now tested
-rather than assumed.
+**Money serialization boundary (D-137).** `bigint` minor-unit columns are exact in Postgres, and
+PostgREST writes them onto the wire with every digit (`{"total_minor":9007199254740993}`), but
+`JSON.parse` — inside supabase-js, before any application code runs — turns that literal into the
+number 9007199254740992: JSON/JS numbers only carry exact integers up to `Number.MAX_SAFE_INTEGER`
+(2^53 − 1). The full stack was measured layer by layer in `tests/db/p146_transport_layers.test.ts`.
+The contract, in both directions, is a **decimal integer string on the wire and `bigint` in the
+client**:
+
+- *Output.* Every query that selects a money column casts it to text in the select list
+  (`total_minor::text`); every SQL function that returns money declares the column `text`; an RPC that
+  returns a whole money row (`create_purchase`, `set_manual_valuation`, …) is chained with an explicit
+  `.select('…::text')`. `parseMinorUnits` (`src/data/money.ts`) reads the exact digits.
+- *Input.* A `bigint` is written as its decimal string (`serializeMinorUnits`, `moneyArg`).
+  PostgREST casts a JSON string to a `bigint` parameter, and to a `->> '…'::bigint` field inside a `jsonb`
+  argument, exactly — verified against the installed PostgREST, not assumed. `Number(<bigint>)` never
+  appears on the write path.
+- *Range.* A stored amount is a Postgres `bigint` (±9223372036854775807); the client refuses anything
+  outside it before sending, the server refuses it too (`bigint out of range`). There is no smaller
+  product limit: every write RPC and every aggregate already either succeeds exactly or fails loudly, and
+  aggregates are returned as text (a `numeric` sum may even exceed the `bigint` range and still parse
+  exactly).
+- *Backstop.* The app's fetch (`src/data/exact-json-guard.ts`) refuses a request body carrying an integer
+  literal above 2^53 − 1 and quotes such a literal in a response body before it is parsed, so a column
+  someone forgets to cast arrives as exact text instead of a rounded number. The test suites require that
+  quoting never happens on any real path.
+- *Rates.* `fx_rate_to_nok` is `numeric(18,8)` — not money, but 18 significant digits do not fit in a
+  double either — and is read `::text` and re-sent as text.
+
+`tests/db/p146_wire_surface_audit.test.ts` derives the client-callable function list from `pg_proc`
+and fails when a new function returns money as `bigint`/`numeric`, or when a row-returning money RPC
+is called without a `.select(…)`. `tests/data/money-wire-structure.test.ts` fails when a select list
+names a money column without `::text`, when `Number(<money>)` reappears in the data layer, or when a
+`p_*_minor` argument is not serialised.
 
 ## 15. M7.1 implementation notes
 
@@ -1617,3 +1694,23 @@ event-sourcing table exists; Openings (M16)/Grading (M17)/Trades (M18) extend th
 their canonical tables land.
 
 
+
+
+## Account deletion lifecycle (P189)
+
+Full per-table decisions, FK behaviour and restore replay: [security/P189_DELETION_DATA_MAP.md](security/P189_DELETION_DATA_MAP.md).
+Mechanics and threat model: [SECURITY.md](SECURITY.md) §8.1; decision D-189.
+
+`account_deletion_requests` (one row per account whose deletion was authorised; cascades away with the
+auth user, so no tombstone with an id survives) carries the retryable state: `last_stage`
+(`requested → registry_failed | purge_failed | purged | auth_delete_failed`), `deletion_id` (random),
+`registry_state` (`not_recorded` → `recorded`), `registry_seq`. **`purge_account_data` only runs for
+`registry_state = 'recorded'`.** `account_erasure_receipts` (`deletion_id`, `subject_hash`,
+`registry_seq`, `recorded_at`) is a witness copy of the off-platform registry: no foreign key, no
+personal data. `restore_gate_runs` holds operator stamps of restore-gate runs. All three are
+service-role/operator tables with RLS enabled and no policy.
+
+Every foreign key from `public` to `auth.users` is `ON DELETE CASCADE` except
+`invitations.created_by` (`SET NULL`, an audit record that outlives its issuer); a new user-owned
+table must be added to `purge_account_data`, the write barrier and `USER_OWNED_TABLES` or the graph
+tests fail.

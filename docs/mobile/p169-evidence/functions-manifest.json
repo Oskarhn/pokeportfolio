@@ -1,0 +1,63 @@
+{
+  "mockBaseUrl": "http://host.docker.internal:55979/v2",
+  "files": [
+    {
+      "source": "3d03eec7a247:supabase/functions/search-prices/index.ts",
+      "dest": "functions/search-prices/index.ts",
+      "originalSha256": "cb8c20a6d54473af6a74e7ceaa9768ae201dd7285f672cf269b218d1e8ec1c6a",
+      "servedSha256": "cb8c20a6d54473af6a74e7ceaa9768ae201dd7285f672cf269b218d1e8ec1c6a",
+      "substitutions": []
+    },
+    {
+      "source": "3d03eec7a247:supabase/functions/_shared/tcgdex.ts",
+      "dest": "functions/_shared/tcgdex.ts",
+      "originalSha256": "c619ebd9ff34562127a6dce8bde9d8be5ec016e670a77f77bae7d923a0c9c82d",
+      "servedSha256": "6af168eca48cab30ed901fcac3e79eb982faec6d3188a06b02e2ad34abd303c5",
+      "substitutions": [
+        "TCGdex BASE_URL -> local synthetic mock"
+      ]
+    },
+    {
+      "source": "3d03eec7a247:supabase/functions/_shared/service-key.ts",
+      "dest": "functions/_shared/service-key.ts",
+      "originalSha256": "8221ac6e260056025c4afdf871d2f431f252521956b7934b6b5127e0db4ad929",
+      "servedSha256": "8221ac6e260056025c4afdf871d2f431f252521956b7934b6b5127e0db4ad929",
+      "substitutions": []
+    },
+    {
+      "source": "3d03eec7a247:supabase/functions/_shared/price-observations.ts",
+      "dest": "functions/_shared/price-observations.ts",
+      "originalSha256": "9a984b81cf9a0bdd19ab6b272c0ec988c80bfcab27528359326d1aabb20dbf83",
+      "servedSha256": "9a984b81cf9a0bdd19ab6b272c0ec988c80bfcab27528359326d1aabb20dbf83",
+      "substitutions": []
+    },
+    {
+      "source": "d8682e047b75:supabase/functions/search-prices/index.ts",
+      "dest": "functions/search-prices-released/index.ts",
+      "originalSha256": "700435e647a0c978ebf4bd7cd5ac877b01f2cf96fa9c5a2f5fdebb1c887356d1",
+      "servedSha256": "4cf4318aad6da8e5d580a5f23c050b17326a18f6caa1adebb395f424c82e5478",
+      "substitutions": [
+        "import path '../_shared/' -> '../_shared_released/'"
+      ]
+    },
+    {
+      "source": "d8682e047b75:supabase/functions/_shared/tcgdex.ts",
+      "dest": "functions/_shared_released/tcgdex.ts",
+      "originalSha256": "b8921a31c63d53ffcca09cadc2f8e08e8415db160041cf2b0c2c60739d6cf10e",
+      "servedSha256": "67bf714b37e7043511868d1ea86353134e206a2341164c084be0465684a49575",
+      "substitutions": [
+        "TCGdex BASE_URL -> local synthetic mock"
+      ]
+    },
+    {
+      "source": "d8682e047b75:supabase/functions/_shared/service-key.ts",
+      "dest": "functions/_shared_released/service-key.ts",
+      "originalSha256": "8221ac6e260056025c4afdf871d2f431f252521956b7934b6b5127e0db4ad929",
+      "servedSha256": "8221ac6e260056025c4afdf871d2f431f252521956b7934b6b5127e0db4ad929",
+      "substitutions": []
+    }
+  ],
+  "migrationSha": "d8682e047b757f63673a63ac8185a4806d68cb98",
+  "migrationCount": 104,
+  "projectId": "pokeportfolio-p169"
+}

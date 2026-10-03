@@ -1,7 +1,9 @@
 import { useRef, useState } from 'react'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { createManualCard } from '../../data/collection'
+import { leasedDb } from '../../data/leased-db'
+import { useLeasedAction } from '../../auth/useLeasedMutation'
 import { searchSealedProducts } from '../../data/sealedProducts'
 import { CardImage } from '../catalog/CardImage'
 import { SealedProductImage } from '../catalog/SealedProductImage'
@@ -42,6 +44,8 @@ import {
 } from './draft'
 import type { OpeningSource, TrackingCompleteness } from './contract'
 import { PullPickerSheet } from './PullPickerSheet'
+import { userMessage } from '../../platform/user-error'
+import { useUnsavedWorkSnapshot } from '../../platform/unsaved-work-registry'
 
 const STEP_LABELS: Record<OpeningStep, string> = {
   source: 'Product',
@@ -97,6 +101,11 @@ export function OpeningsWizardPage() {
     return initialDraft({ holdingId: search.holdingId, lotId: search.lotId })
   })
 
+  // P130-09: the draft survives in-app navigation (draftStore) but not a page reload. An automatic
+  // stale-deployment reload now waits while the wizard holds more than its initial state. The
+  // baseline resets with the signed-in user; nothing new is persisted.
+  useUnsavedWorkSnapshot('opening-wizard', draft, true, userId)
+
   function dispatch(action: DraftAction) {
     setDraft((current) => {
       const next = reduceDraft(current, action)
@@ -149,8 +158,11 @@ export function OpeningsWizardPage() {
   // reuses the SAME definition row instead of inserting an identical one (P56 §10).
   const resolvedManualCards = useRef(new Map<string, string>())
 
-  const submitMutation = useMutation({
-    mutationFn: async () => {
+  // P145: manual-card definitions, then the opening that consumes sealed inventory. One identity
+  // lease covers all of it: an opening begun under one account can never deplete another's stock,
+  // and a manual card typed under one account is never created in another.
+  const submitMutation = useLeasedAction({
+    mutationFn: async (lease) => {
       const error = reviewError(draft)
       if (error) throw new Error(error)
 
@@ -172,16 +184,22 @@ export function OpeningsWizardPage() {
           // never logged.
           try {
             manualCardId = (
-              await createManualCard({
-                name: identity.name,
-                setName: identity.setName,
-                collectorNumber: identity.collectorNumber,
-              })
+              await createManualCard(
+                {
+                  name: identity.name,
+                  setName: identity.setName,
+                  collectorNumber: identity.collectorNumber,
+                },
+                leasedDb(lease),
+              )
             ).id
           } catch {
+            // Identity changes are reported as themselves, not as a card-creation failure.
+            lease.assertCurrent()
             throw new Error(MANUAL_CARD_CREATE_FAILED)
           }
         }
+        lease.assertCurrent()
         if (!cached) resolvedManualCards.current.set(key, manualCardId)
         idByKey.set(pull.key, manualCardId)
       }
@@ -199,6 +217,7 @@ export function OpeningsWizardPage() {
       if (draft.mode === 'bought_now') {
         return controller.createBoughtAndOpened(
           buildBoughtAndOpenedInput(resolvedDraft, draft.idempotencyKey, parseNokInput),
+          lease,
         )
       }
       if (!selectedSource) throw new Error('Choose which acquisition lot you opened from.')
@@ -208,7 +227,7 @@ export function OpeningsWizardPage() {
         draft.idempotencyKey,
         parseNokInput,
       )
-      return controller.createOpening(input)
+      return controller.createOpening(input, lease)
     },
     onMutate: () => {
       dispatch({ type: 'BEGIN_SUBMIT' })
@@ -234,8 +253,9 @@ export function OpeningsWizardPage() {
     },
     onError: (mutationError: Error) => {
       // The entire draft survives untouched — pulls, quantities, dates (prompt §23).
-      dispatch({ type: 'SUBMIT_FAILED', message: mutationError.message })
-      setAnnouncement(mutationError.message)
+      const failure = userMessage(mutationError)
+      dispatch({ type: 'SUBMIT_FAILED', message: failure })
+      setAnnouncement(failure)
     },
   })
 
@@ -254,9 +274,7 @@ export function OpeningsWizardPage() {
           role="alert"
           className="rounded-lg border border-rose-900/60 bg-rose-950/40 p-3 text-sm text-rose-200"
         >
-          {sourcesQuery.error instanceof Error
-            ? sourcesQuery.error.message
-            : 'Openings could not be loaded.'}
+          {userMessage(sourcesQuery.error, 'Openings could not be loaded.')}
         </p>
       </div>
     )

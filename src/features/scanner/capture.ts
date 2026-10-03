@@ -13,6 +13,7 @@
  * exactly the pixels recognition sees.
  */
 
+import { sniffImageHeader } from './image-header'
 import {
   cardRectFromVideo,
   decideFileCardRect,
@@ -35,10 +36,72 @@ export const MAX_INPUT_FILE_BYTES = 10 * 1024 * 1024
 
 /** Hard ceiling on any decoded image's total pixels entering the pipeline (prompt §13) — the
  *  decompression-bomb guard. Generous enough for any realistic phone photo (a 12 MP shot is
- *  ~12 M px); a pathological file beyond it is refused before any canvas draw. Edge length is
- *  separately bounded by the capture path itself: everything drawn lands at ≤
+ *  ~12 M px; a 48 MP main-camera frame is ~48 M px but is normally over the 10 MB byte bound first);
+ *  a pathological file beyond it is refused. Since P151 this is enforced BEFORE any decoder runs
+ *  whenever the format's header can be read (see {@link assessImageDimensions}); the post-decode
+ *  check remains for formats the header sniffer cannot read (HEIC/AVIF) and as defence in depth.
+ *  Edge length is separately bounded by the capture path itself: everything drawn lands at ≤
  *  CAPTURE_MAX_LONG_EDGE. */
 export const MAX_DECODED_PIXELS = 40 * 1024 * 1024
+
+/** P151 per-edge and shape limits, checked together with {@link MAX_DECODED_PIXELS}:
+ *  - MAX_IMAGE_EDGE_PX 12,000: above a 100 MP medium-format frame's long edge (11,648). A file
+ *    within the pixel ceiling can still be absurdly long and thin (40,000 x 1,000) — that shape has
+ *    no card in it and would make the raster stride, not the pixel count, the problem.
+ *  - MIN_IMAGE_EDGE_PX 32: below this nothing legible survives; refusing it beats "no match".
+ *  - MAX_IMAGE_ASPECT_RATIO 6: real card photos are 3:4, screenshots up to ~2.2:1; 6:1 leaves wide
+ *    margin while still refusing panoramas and strips. */
+export const MAX_IMAGE_EDGE_PX = 12_000
+export const MIN_IMAGE_EDGE_PX = 32
+export const MAX_IMAGE_ASPECT_RATIO = 6
+
+/** How many leading bytes of a picked file are read to learn its declared dimensions without
+ *  decoding. 512 KiB comfortably contains the frame header of a JPEG behind its EXIF/ICC segments
+ *  (typically < 100 KiB); a file whose header lies beyond it is simply not pre-checked. */
+export const IMAGE_HEADER_SNIFF_BYTES = 512 * 1024
+
+export type ImageDimensionVerdict = 'ok' | 'empty' | 'too-large' | 'too-small' | 'extreme-ratio'
+
+/** Pure verdict on an image's (declared or decoded) dimensions against every P151 limit. */
+export function assessImageDimensions(width: number, height: number): ImageDimensionVerdict {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return 'empty'
+  }
+  if (
+    width > MAX_IMAGE_EDGE_PX ||
+    height > MAX_IMAGE_EDGE_PX ||
+    width * height > MAX_DECODED_PIXELS
+  ) {
+    return 'too-large'
+  }
+  const shortEdge = Math.min(width, height)
+  if (shortEdge < MIN_IMAGE_EDGE_PX) return 'too-small'
+  if (Math.max(width, height) / shortEdge > MAX_IMAGE_ASPECT_RATIO) return 'extreme-ratio'
+  return 'ok'
+}
+
+function throwForVerdict(verdict: ImageDimensionVerdict): void {
+  switch (verdict) {
+    case 'ok':
+      return
+    case 'too-large':
+      throw scannerError('ScannerFileTooLargeError', 'That image is too large to process here.')
+    case 'empty':
+      throw scannerError('ScannerDecodeError', 'That image has no usable dimensions.')
+    case 'too-small':
+      throw scannerError('ScannerDecodeError', 'That image is too small to read a card from.')
+    case 'extreme-ratio':
+      throw scannerError('ScannerDecodeError', 'That image is not shaped like a card photo.')
+  }
+}
+
+/** Releases a canvas's backing store right away. Safari in particular keeps a detached canvas's
+ *  pixel memory alive until GC, which on a phone means a burst of captures accumulates megabytes
+ *  per frame; zeroing the size is the documented way to drop it. */
+function releaseCanvas(canvas: HTMLCanvasElement): void {
+  canvas.width = 0
+  canvas.height = 0
+}
 
 /** Proportionally shrink (width, height) so the long edge is at most maxLongEdge; never upscale;
  *  never return zero. Pure so the bounding rule stays pinned by test independent of canvas code. */
@@ -138,8 +201,13 @@ export async function captureVideoFrame(video: HTMLVideoElement): Promise<Captur
     canvas.width / video.videoWidth,
     canvas.height / video.videoHeight,
   )
-  const blob = await canvasToJpeg(canvas)
-  return { blob, width: canvas.width, height: canvas.height, cardRect }
+  const { width: frameWidth, height: frameHeight } = canvas
+  try {
+    const blob = await canvasToJpeg(canvas)
+    return { blob, width: frameWidth, height: frameHeight, cardRect }
+  } finally {
+    releaseCanvas(canvas)
+  }
 }
 
 /**
@@ -153,9 +221,19 @@ export async function decodeImageFile(file: File): Promise<CapturedFrame> {
   if (!file.type.startsWith('image/')) {
     throw scannerError('ScannerDecodeError', 'That file is not an image.')
   }
+  if (file.type === 'image/svg+xml') {
+    // Vector input has no intrinsic raster size to bound and is not a photograph.
+    throw scannerError('ScannerDecodeError', 'That image format is not supported.')
+  }
+  if (file.size === 0) {
+    throw scannerError('ScannerDecodeError', 'That file is empty.')
+  }
   if (file.size > MAX_INPUT_FILE_BYTES) {
     throw scannerError('ScannerFileTooLargeError', 'That image is larger than 10 MB.')
   }
+  // P151: refuse a declared-huge (or absurdly shaped) image BEFORE the decoder allocates its raster.
+  const declared = await readDeclaredDimensions(file)
+  if (declared !== null) throwForVerdict(assessImageDimensions(declared.width, declared.height))
   if (typeof createImageBitmap !== 'function') {
     // Same friendly class as a decode failure: the file is fine, this browser just cannot read it.
     throw scannerError('ScannerDecodeError', 'This browser cannot decode images here.')
@@ -167,27 +245,36 @@ export async function decodeImageFile(file: File): Promise<CapturedFrame> {
     throw scannerError('ScannerDecodeError', 'That image could not be decoded.')
   }
   try {
-    if (
-      bitmap.width === 0 ||
-      bitmap.height === 0 ||
-      bitmap.width * bitmap.height > MAX_DECODED_PIXELS
-    ) {
-      throw scannerError('ScannerFileTooLargeError', 'That image is too large to process here.')
-    }
+    // Defence in depth and the only check for formats the header sniffer cannot read.
+    throwForVerdict(assessImageDimensions(bitmap.width, bitmap.height))
     // Deterministic file policy: whole image when it already has the card's shape, otherwise a
     // conservative centred card crop. The stored frame IS the crop, so review shows exactly what
     // recognition will read and no background pixels ever reach OCR.
     const cardRect = decideFileCardRect(bitmap.width, bitmap.height)
     const canvas = drawToBoundedCanvas(bitmap, bitmap.width, bitmap.height, cardRect)
-    const blob = await canvasToJpeg(canvas)
-    return {
-      blob,
-      width: canvas.width,
-      height: canvas.height,
-      cardRect: { left: 0, top: 0, width: canvas.width, height: canvas.height },
+    const { width, height } = canvas
+    try {
+      const blob = await canvasToJpeg(canvas)
+      return { blob, width, height, cardRect: { left: 0, top: 0, width, height } }
+    } finally {
+      releaseCanvas(canvas)
     }
   } finally {
     bitmap.close()
+  }
+}
+
+/** Reads the declared dimensions from the file's leading bytes; `null` means "could not tell"
+ *  (unknown/unsupported header format, truncated data, or an unreadable file — the decode that
+ *  follows reports the latter honestly). Never throws. */
+async function readDeclaredDimensions(
+  file: Blob,
+): Promise<{ width: number; height: number } | null> {
+  try {
+    const head = new Uint8Array(await file.slice(0, IMAGE_HEADER_SNIFF_BYTES).arrayBuffer())
+    return sniffImageHeader(head)
+  } catch {
+    return null
   }
 }
 

@@ -3,11 +3,13 @@
  * computation the Home screen performs lives here, never in a component (AGENTS.md: no
  * monetary arithmetic outside src/domain).
  *
- * Canonical storage is exact bigint NOK minor units (FINANCIAL_MODEL.md §1). The ONE place
- * values become JavaScript numbers is `toChartSeries` — the final visualization adapter
- * (prompt §78) — which refuses to represent anything above Number.MAX_SAFE_INTEGER rather
- * than silently lose øre.
+ * Canonical storage is exact bigint NOK minor units (FINANCIAL_MODEL.md §1). Values become JavaScript
+ * numbers in exactly two places, both display-only and non-authoritative (D-137): `chartMajorUnits`
+ * (a chart coordinate) and the period-change PERCENTAGE below, a ratio shown to one decimal. The
+ * amounts themselves stay bigint and are formatted exactly.
  */
+
+import { toDecimalString } from './money'
 
 export const DASHBOARD_RANGES = ['1D', '1W', '1M', '3M', '6M', '1Y', 'MAX'] as const
 
@@ -43,14 +45,16 @@ export interface ChartSeriesPoint {
   value?: number
 }
 
-const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER)
-
-/** Final display-boundary conversion: exact minor units → major units as a JS number.
- *  Throws on any value that cannot be represented exactly — the failure is loud by design. */
-export function safeMajorUnits(minor: bigint): number {
-  if (minor > MAX_SAFE || minor < -MAX_SAFE) {
-    throw new Error(`chart value ${minor} exceeds safe integer range`)
-  }
+/**
+ * The ONE conversion from exact minor units to a JavaScript number: a chart coordinate in major
+ * units (P146, D-137). NON-AUTHORITATIVE by construction — the charting library only accepts
+ * `number`, the value drives pixel positions and axis ticks, and nothing computed from it is ever
+ * stored, summed or shown as an amount (headline figures, the accessible text and every exported
+ * value come from the exact bigint). Exact for |minor| <= 2^53 - 1; beyond that the nearest double
+ * (relative error <= 2^-53, invisible in a plot) rather than throwing, because a valid ledger
+ * above 2^53 minor units must still draw a chart.
+ */
+export function chartMajorUnits(minor: bigint): number {
   return Number(minor) / 100
 }
 
@@ -155,7 +159,7 @@ export function toChartSeries(windowPoints: HistoryPoint[]): ChartSeriesPoint[] 
   for (const p of windowPoints) {
     if (p.hasCoverage && p.marketValueMinor !== null) {
       started = true
-      series.push({ time: p.snapshotDate, value: safeMajorUnits(p.marketValueMinor) })
+      series.push({ time: p.snapshotDate, value: chartMajorUnits(p.marketValueMinor) })
     } else if (started) {
       series.push({ time: p.snapshotDate })
     }
@@ -171,7 +175,7 @@ export function accessibleHistorySummary(windowPoints: HistoryPoint[], hidden: b
     .map((p) =>
       hidden
         ? `${p.snapshotDate}: ••••`
-        : `${p.snapshotDate}: ${(Number(p.marketValueMinor ?? 0n) / 100).toFixed(2)} kr`,
+        : `${p.snapshotDate}: ${toDecimalString({ minorUnits: p.marketValueMinor ?? 0n, currency: 'NOK' })} kr`,
     )
 }
 

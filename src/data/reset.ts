@@ -1,4 +1,4 @@
-import { supabase } from './supabase-client'
+import type { LeasedDb } from './leased-client'
 
 /**
  * The Profile Danger Zone's full reset (P43, 20260901120010_p43_reset_and_history.sql). ONE
@@ -40,8 +40,12 @@ interface ResetRow {
   opening_pull_lots_deleted: number
 }
 
-export async function resetMyPortfolioData(): Promise<ResetPortfolioResult> {
-  const { data, error } = await supabase
+/**
+ * Takes no argument that names WHOSE data to delete — it deletes the caller's — which makes it the
+ * sharpest case for P145: a confirmation given under one account must never execute under another.
+ */
+export async function resetMyPortfolioData(db: LeasedDb): Promise<ResetPortfolioResult> {
+  const { data, error } = await db
     .rpc('reset_my_portfolio_data')
     .overrideTypes<ResetRow[], { merge: false }>()
   if (error) throw new Error(error.message)

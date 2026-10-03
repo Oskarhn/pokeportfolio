@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { useInfiniteQuery, useMutation, useQueries, useQuery } from '@tanstack/react-query'
+import { useInfiniteQuery, useQueries, useQuery } from '@tanstack/react-query'
+import { useLeasedMutation } from '../../auth/useLeasedMutation'
+import { leasedDb } from '../../data/leased-db'
 import {
   searchCards,
   searchSets,
@@ -26,6 +28,7 @@ import { Button, ChoiceGroup, FormMessage, SelectField, TextField } from '../../
 import { naturalCompare } from '../../ui/naturalSort'
 import { useDebouncedValue } from '../../ui/useDebouncedValue'
 import { SearchIcon, XIcon, CameraIcon, StarIcon, SortIcon, CheckIcon } from '../../ui/icons'
+import { userMessage } from '../../platform/user-error'
 
 const PAGE_SIZE = 40
 const SEALED_PAGE_SIZE = 30
@@ -303,6 +306,14 @@ export function CatalogPage() {
         ) : null}
       </div>
 
+      <p className="text-xs text-slate-400">
+        Only want to know what a card is worth?{' '}
+        <Link to="/price-check" className="text-sky-400 underline underline-offset-4">
+          Check a price
+        </Link>{' '}
+        without adding anything.
+      </p>
+
       {trimmed.length === 0 && mode === 'cards' ? (
         <div className="space-y-2">
           <h2 className="text-sm font-semibold text-slate-300">Browse sets</h2>
@@ -536,14 +547,15 @@ function CustomSealedProductForm({
   const [packCount, setPackCount] = useState('')
   const [error, setError] = useState<string | null>(null)
 
-  const createMutation = useMutation({
-    mutationFn: createCustomSealedProduct,
+  const createMutation = useLeasedMutation({
+    mutationFn: (input: Parameters<typeof createCustomSealedProduct>[0], lease) =>
+      createCustomSealedProduct(input, leasedDb(lease)),
     onSuccess: async (product) => {
       onClose()
       await navigate({ to: '/portfolio/sealed/new', search: { sealedProductId: product.id } })
     },
     onError: (mutationError: Error) => {
-      setError(mutationError.message)
+      setError(userMessage(mutationError))
     },
   })
 

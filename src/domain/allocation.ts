@@ -93,6 +93,101 @@ export function allocateSigned(total: bigint, weights: readonly bigint[]): bigin
   return allocate(-total, weights).map((share) => -share)
 }
 
+/**
+ * A purchase discount, allocated per line (FINANCIAL_MODEL.md §4.1, D-135). The TypeScript twin of
+ * the SQL `allocate_purchase_discount` — tests/db/p144_financial_boundary.test.ts proves the two
+ * agree on generated receipts.
+ *
+ * Two tiers, both the exact largest-remainder `allocate`:
+ *   1. the goods tier, `min(discount, subtotal)`, by line total — the documented rule;
+ *   2. the charge tier, the part of the discount that exceeds the goods, by each line's already
+ *      allocated shipping + customs.
+ *
+ * For any non-negative integer weights `w` with sum `W` and `0 <= T <= W`, `allocate(T, w)[i] <=
+ * w[i]`; applied to each tier this gives `discount[i] <= lineTotal[i] + shipping[i] + customs[i]`,
+ * so no line's attributable cost is ever negative, and `Σ discount[i] === discount` exactly. When
+ * the discount does not exceed the subtotal the second tier is empty and the result equals plain
+ * `allocate(discount, lineTotals)`. A discount larger than subtotal + shipping + customs cannot be
+ * allocated (it would make the receipt total negative) and throws — it is never clipped.
+ */
+export function allocatePurchaseDiscount(
+  discount: bigint,
+  lineTotals: readonly bigint[],
+  allocatedShipping: readonly bigint[],
+  allocatedCustoms: readonly bigint[],
+): bigint[] {
+  if (lineTotals.length === 0) {
+    throw new AllocationError('Cannot allocate across zero weights')
+  }
+  if (
+    allocatedShipping.length !== lineTotals.length ||
+    allocatedCustoms.length !== lineTotals.length
+  ) {
+    throw new AllocationError('Line totals, shipping and customs must have the same length')
+  }
+  if (discount < 0n) {
+    throw new AllocationError('Cannot allocate a negative total')
+  }
+
+  const chargeWeights = lineTotals.map(
+    (_, i) => (allocatedShipping[i] ?? 0n) + (allocatedCustoms[i] ?? 0n),
+  )
+  const subtotal = lineTotals.reduce((acc, w) => acc + w, 0n)
+  const charges = chargeWeights.reduce((acc, w) => acc + w, 0n)
+  if (discount > subtotal + charges) {
+    throw new AllocationError(
+      'Discount cannot exceed the purchase subtotal plus shipping and customs',
+    )
+  }
+
+  const goodsDiscount = discount < subtotal ? discount : subtotal
+  const goodsShares = allocate(goodsDiscount, lineTotals)
+  const chargeShares = allocate(discount - goodsDiscount, chargeWeights)
+  return goodsShares.map((share, i) => share + (chargeShares[i] ?? 0n))
+}
+
+export interface PurchaseChargeAllocation {
+  readonly shipping: bigint[]
+  readonly customs: bigint[]
+  readonly discount: bigint[]
+  /** line total + shipping + customs − discount, per line; never negative. */
+  readonly attributable: bigint[]
+}
+
+/**
+ * Shipping, customs and discount for every line of one purchase (FINANCIAL_MODEL.md §4.1): the
+ * single source of the allocation the record/edit forms preview. Shipping and customs go by line
+ * total; the discount goes through {@link allocatePurchaseDiscount}. Throws the same
+ * `AllocationError` the SQL raises for a discount larger than the whole receipt.
+ */
+export function allocatePurchaseCharges(
+  lineTotals: readonly bigint[],
+  shipping: bigint,
+  customs: bigint,
+  discount: bigint,
+): PurchaseChargeAllocation {
+  const allocatedShipping = allocate(shipping, lineTotals)
+  const allocatedCustoms = allocate(customs, lineTotals)
+  const allocatedDiscount = allocatePurchaseDiscount(
+    discount,
+    lineTotals,
+    allocatedShipping,
+    allocatedCustoms,
+  )
+  return {
+    shipping: allocatedShipping,
+    customs: allocatedCustoms,
+    discount: allocatedDiscount,
+    attributable: lineTotals.map(
+      (lineTotal, i) =>
+        lineTotal +
+        (allocatedShipping[i] ?? 0n) +
+        (allocatedCustoms[i] ?? 0n) -
+        (allocatedDiscount[i] ?? 0n),
+    ),
+  }
+}
+
 /** Sums a set of allocated Money shares back to the original total. */
 export function sumShares(currency: CurrencyCode, shares: readonly Money[]): Money {
   return shares.reduce((acc, share) => add(acc, share), fromMinorUnits(0n, currency))

@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>P181 device-matrix screenshot gallery</title>
+<style>
+  body { background: #0F0F11; color: #E9E7E0; font-family: system-ui, sans-serif; margin: 0; padding: 24px; }
+  h1 { font-size: 20px; }
+  h2 { font-size: 16px; margin-top: 40px; border-bottom: 1px solid #333; padding-bottom: 8px; }
+  p.note { color: #9a978f; max-width: 800px; }
+  .grid { display: flex; flex-wrap: wrap; gap: 20px; margin-top: 16px; }
+  figure { margin: 0; width: 260px; }
+  figure img { width: 100%; border: 1px solid #333; border-radius: 8px; display: block; }
+  figcaption { font-size: 12px; color: #c9c6bd; margin-top: 6px; }
+  code { color: #C9A227; }
+</style>
+</head>
+<body>
+<h1>P181 native device-matrix screenshot gallery</h1>
+<p class="note">
+  Real device screenshots from a release APK on a Pixel 7 profile / API 36 emulator (AVD
+  <code>p181_api36</code>), same recipe as P178/P179/P180. This is a REPRESENTATIVE subset, not
+  the full 6-combo &times; 16-screen matrix the P181 mission specifies &mdash; see
+  <code>output_181.txt</code> and <code>P181_NATIVE_BASELINE_STATUS.md</code> for exactly what was
+  and was not covered this session.
+</p>
+
+<h2>Normal scale (360dp&ndash;411dp width, 100% font, dark)</h2>
+<div class="grid">
+  <figure><img src="screens/normal/01-login-dark-launch.png"><figcaption>Cold launch: Sign in, dark theme, no white flash</figcaption></figure>
+  <figure><img src="screens/normal/02-collection.png"><figcaption>Collection, 40 holdings, honest "no value" disclosure</figcaption></figure>
+</div>
+
+<h2>Narrow / keyboard (360dp, 430dp, 390dp light)</h2>
+<div class="grid">
+  <figure><img src="screens/narrow/card-detail-430dp-100pct.png"><figcaption>Card detail at 430dp: both large amounts fit on one line each</figcaption></figure>
+  <figure><img src="screens/narrow/record-sale-keyboard-360dp.png"><figcaption>Record sale, 360dp, keyboard open: focused field visible, KeyboardAvoidingView working</figcaption></figure>
+  <figure><img src="screens/narrow/collection-360dp-100pct-post-valuation.png"><figcaption>Collection total after the manual valuation write, 360dp/100%</figcaption></figure>
+</div>
+
+<h2>Large text (360dp / 200% font, dark) &mdash; the money/overflow stress combo</h2>
+<div class="grid">
+  <figure><img src="screens/large-text/collection-360dp-200pct.png"><figcaption>BEFORE fix: tab labels break mid-word ("Collectio"/"n")</figcaption></figure>
+  <figure><img src="screens/large-text/collection-360dp-200pct-AFTER-fix.png"><figcaption>AFTER fix: tab labels shrink to one line, all four fully legible</figcaption></figure>
+  <figure><img src="screens/large-text/card-detail-360dp-200pct.png"><figcaption>Card detail at 200%: buttons wrap at word boundaries correctly</figcaption></figure>
+  <figure><img src="screens/large-text/money-stress-90071992547409-93.png"><figcaption>Manual valuation input accepts the full stress amount unmangled</figcaption></figure>
+  <figure><img src="screens/large-text/money-stress-formatted.png"><figcaption>Confirmed save ("Saved.") of the stress amount</figcaption></figure>
+  <figure><img src="screens/large-text/money-stress-carddetail.png"><figcaption>Formatted render: "90 071 992 547 409,93 kr" and the &times;7 total "630 503 947 831 869,51 kr" &mdash; both exact, no truncation, no ellipsis</figcaption></figure>
+</div>
+
+<h2>Light smoke pass (390dp)</h2>
+<div class="grid">
+  <figure><img src="screens/light/card-detail-390dp-light.png"><figcaption>System set to light mode: app stays dark (userInterfaceStyle: "dark" &mdash; intentional, no light theme exists)</figcaption></figure>
+</div>
+
+</body>
+</html>

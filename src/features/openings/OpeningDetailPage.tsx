@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link, useParams, useSearch } from '@tanstack/react-router'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useLeasedAction, useLeasedMutation } from '../../auth/useLeasedMutation'
 import type { OpeningDetail } from './contract'
 import { getOpeningController } from './controller'
 import {
@@ -27,6 +28,7 @@ import {
 } from './copy'
 import { Button, FormMessage } from '../../ui/form'
 import { Sheet } from '../../ui/Sheet'
+import { userMessage } from '../../platform/user-error'
 
 /**
  * Opening Detail (prompt §16): everything the act of opening produced, with the honesty rules of
@@ -68,8 +70,8 @@ export function OpeningDetailPage() {
 
   // The backend owns every blocking rule (a pull already sold names its sale); this client shows
   // that reason verbatim and offers no workaround — there is deliberately no hard delete here.
-  const voidMutation = useMutation({
-    mutationFn: () => controller.voidOpening(openingId),
+  const voidMutation = useLeasedAction({
+    mutationFn: (lease) => controller.voidOpening(openingId, lease),
     onSuccess: async (outcome) => {
       if (outcome.blocked) {
         setVoidError(outcome.blockedReason ?? 'This opening cannot be corrected right now.')
@@ -81,15 +83,15 @@ export function OpeningDetailPage() {
       setVoidOpen(false)
     },
     onError: (error: Error) => {
-      setVoidError(error.message)
+      setVoidError(userMessage(error))
     },
   })
 
   // Linking a provisional opening to its real receipt (P59 §9). Hooks stay above every early
   // return so the component's hook order is stable while the query loads.
-  const reconcileMutation = useMutation({
-    mutationFn: (realSourceLotId: string) =>
-      controller.reconcileOpeningCost(openingId, realSourceLotId),
+  const reconcileMutation = useLeasedMutation({
+    mutationFn: (realSourceLotId: string, lease) =>
+      controller.reconcileOpeningCost(openingId, realSourceLotId, lease),
     onSuccess: async () => {
       setReconcileError(null)
       await invalidateAfterChange()
@@ -97,7 +99,7 @@ export function OpeningDetailPage() {
       setReconcileOpen(false)
     },
     onError: (error: Error) => {
-      setReconcileError(error.message)
+      setReconcileError(userMessage(error))
     },
   })
 
@@ -116,9 +118,7 @@ export function OpeningDetailPage() {
           role="alert"
           className="rounded-lg border border-rose-900/60 bg-rose-950/40 p-3 text-sm text-rose-200"
         >
-          {opening.error instanceof Error
-            ? opening.error.message
-            : 'That opening could not be found.'}
+          {userMessage(opening.error, 'That opening could not be found.')}
         </p>
       </div>
     )

@@ -2,6 +2,11 @@ import { describe, expect, it } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 import { fetchExportSnapshot } from '../../src/data/export/fetch-snapshot'
+import {
+  AuthIdentityChangedError,
+  IdentityAuthority,
+  type IdentityLease,
+} from '../../src/auth/identity-lease'
 import type { Database } from '../../src/data/database.types'
 
 /**
@@ -57,8 +62,13 @@ interface FakeState {
   onRequest?: (table: string, requestIndex: number) => void
   /** Simulates a server-side row cap below the requested window size (db-max-rows class). */
   capResponsesAt?: number
+  /** Every abort signal a request was given (`.abortSignal(signal)`), in request order. */
+  abortSignals?: AbortSignal[]
   /** Shared per-table request counters (builders are fresh per page). */
   requestCounts: Map<string, number>
+  /** The signed-in user at THIS instant (undefined = USER_A, null = signed out). Tests flip it to
+   *  simulate an account switch — in this tab or, through shared storage, in another one. */
+  sessionUserId?: string | null
 }
 
 class FakeBuilder {
@@ -100,9 +110,10 @@ class FakeBuilder {
     return this
   }
 
-  abortSignal(_signal: AbortSignal): this {
-    void _signal
-    // Cancellation is observed by the walker between pages; the transport itself succeeds.
+  abortSignal(signal: AbortSignal): this {
+    // Cancellation is observed by the walker between pages; the transport itself succeeds. The
+    // signal each request was handed is recorded so a test can see it reached the transport.
+    this.state.abortSignals?.push(signal)
     return this
   }
 
@@ -140,9 +151,18 @@ class FakeBuilder {
 }
 
 function fakeClient(state: FakeState): SupabaseClient<Database> {
+  const who = () => (state.sessionUserId === undefined ? USER_A : state.sessionUserId)
   return {
     auth: {
-      getUser: () => Promise.resolve({ data: { user: { id: USER_A } }, error: null }),
+      getUser: () =>
+        who() === null
+          ? Promise.resolve({ data: { user: null }, error: { message: 'no session' } })
+          : Promise.resolve({ data: { user: { id: who() } }, error: null }),
+      getSession: () =>
+        Promise.resolve({
+          data: { session: who() === null ? null : { user: { id: who() } } },
+          error: null,
+        }),
     },
     from: (table: string) => new FakeBuilder(table, state),
   } as unknown as SupabaseClient<Database>
@@ -359,5 +379,309 @@ describe('runtime guards driven through the real orchestrator', () => {
         tcgdex_set_id: 'neo1',
       },
     ])
+  })
+})
+
+const USER_B = 'bbbbbbbb-0000-4000-8000-00000000000b'
+
+describe('P157 account switch during a multi-request export', () => {
+  function holdingRowsFor(user: string, n: number, startOrd: number): Row[] {
+    return holdingRows(n, startOrd).map((row) => ({ ...row, user_id: user }))
+  }
+
+  it('A→B mid-pagination discards the export — B rows never enter A’s file', async () => {
+    const aRows = holdingRowsFor(USER_A, 7, 0)
+    const bRows = holdingRowsFor(USER_B, 7, 100)
+    const state: FakeState = {
+      requestCounts: new Map(),
+      tables: new Map(),
+      onRequest: (table, requestIndex) => {
+        // Request 1 is the COUNT, request 2 is page 1, request 3 is page 2 (pageSize 3).
+        if (table === 'holdings' && requestIndex === 3) {
+          state.sessionUserId = USER_B
+          state.tables.set('holdings', () => bRows)
+        }
+      },
+    }
+    registerStandardSections(state, { holdings: aRows })
+    const outcome = await fetchExportSnapshot(fakeClient(state), { pageSize: 3 }).then(
+      (snapshot) => ({ snapshot }),
+      (error: unknown) => ({ error }),
+    )
+    expect('snapshot' in outcome).toBe(false)
+    expect((outcome as { error: unknown }).error).toBeInstanceOf(AuthIdentityChangedError)
+  })
+
+  it('a switch in another tab between two sections is caught at the next request', async () => {
+    const state: FakeState = {
+      requestCounts: new Map(),
+      tables: new Map(),
+      onRequest: (table, requestIndex) => {
+        if (table === 'tags' && requestIndex === 2) state.sessionUserId = USER_B
+      },
+    }
+    registerStandardSections(state, { holdings: holdingRowsFor(USER_A, 2, 0) })
+    await expect(fetchExportSnapshot(fakeClient(state), { pageSize: 3 })).rejects.toBeInstanceOf(
+      AuthIdentityChangedError,
+    )
+    // Nothing after the switch was requested: the export stopped at the first bracket.
+    expect(state.requestCounts.get('holdings') ?? 0).toBe(0)
+  })
+
+  it('sign-out mid-export fails the export instead of finishing on an anonymous client', async () => {
+    const state: FakeState = {
+      requestCounts: new Map(),
+      tables: new Map(),
+      onRequest: (table, requestIndex) => {
+        if (table === 'holdings' && requestIndex === 2) state.sessionUserId = null
+      },
+    }
+    registerStandardSections(state, { holdings: holdingRowsFor(USER_A, 7, 0) })
+    await expect(fetchExportSnapshot(fakeClient(state), { pageSize: 3 })).rejects.toBeInstanceOf(
+      AuthIdentityChangedError,
+    )
+  })
+
+  it('a switch during the very last request is still caught by the final gate', async () => {
+    const state: FakeState = {
+      requestCounts: new Map(),
+      tables: new Map(),
+      onRequest: (table, requestIndex) => {
+        // openings is the last section: request 2 is its only page.
+        if (table === 'openings' && requestIndex === 2) state.sessionUserId = USER_B
+      },
+    }
+    registerStandardSections(state, { holdings: holdingRowsFor(USER_A, 2, 0) })
+    await expect(fetchExportSnapshot(fakeClient(state), { pageSize: 3 })).rejects.toBeInstanceOf(
+      AuthIdentityChangedError,
+    )
+  })
+
+  it('the same user across the whole run (token refresh) is not an identity change', async () => {
+    const state: FakeState = { tables: new Map(), requestCounts: new Map() }
+    registerStandardSections(state, { holdings: holdingRowsFor(USER_A, 7, 0) })
+    const snapshot = await fetchExportSnapshot(fakeClient(state), { pageSize: 3 })
+    expect(snapshot.holdings).toHaveLength(7)
+  })
+
+  it('an export that never had an authenticated session refuses to start', async () => {
+    const state: FakeState = { tables: new Map(), requestCounts: new Map(), sessionUserId: null }
+    registerStandardSections(state, { holdings: holdingRowsFor(USER_A, 2, 0) })
+    await expect(fetchExportSnapshot(fakeClient(state))).rejects.toThrow(
+      /requires an authenticated session/,
+    )
+  })
+})
+
+/**
+ * P162 — the export's identity guard is the identity LEASE of the leased client (P145/P149). These
+ * drive the real fetcher with a client that, like the real one, has NO auth subsystem (reading
+ * `.auth` throws) and carries only the lease it was created for. The session-based tests above
+ * cover the plain-client fallback; everything the app actually runs is exercised here.
+ */
+describe('P162 account switch during a multi-request export, leased client', () => {
+  function holdingRowsFor(user: string, n: number, startOrd: number): Row[] {
+    return holdingRows(n, startOrd).map((row) => ({ ...row, user_id: user }))
+  }
+
+  function leasedFakeClient(state: FakeState, lease: IdentityLease): SupabaseClient<Database> {
+    const client: Record<string, unknown> = {
+      from: (table: string) => new FakeBuilder(table, state),
+    }
+    Object.defineProperty(client, 'auth', {
+      get() {
+        throw new Error('a leased client has no auth subsystem')
+      },
+    })
+    Object.defineProperty(client, 'identityLease', { value: lease, enumerable: false })
+    return client as unknown as SupabaseClient<Database>
+  }
+
+  function signedInAs(user: string): { authority: IdentityAuthority; lease: IdentityLease } {
+    const authority = new IdentityAuthority()
+    authority.observe(user)
+    return { authority, lease: authority.begin(user) }
+  }
+
+  it('a healthy leased export completes without ever consulting an auth subsystem', async () => {
+    const { lease } = signedInAs(USER_A)
+    const state: FakeState = { tables: new Map(), requestCounts: new Map() }
+    registerStandardSections(state, { holdings: holdingRowsFor(USER_A, 7, 0) })
+    const snapshot = await fetchExportSnapshot(leasedFakeClient(state, lease), { pageSize: 3 })
+    expect(snapshot.holdings).toHaveLength(7)
+  })
+
+  it('A→B mid-pagination discards the export and stops issuing requests', async () => {
+    const { authority, lease } = signedInAs(USER_A)
+    const state: FakeState = {
+      requestCounts: new Map(),
+      tables: new Map(),
+      onRequest: (table, requestIndex) => {
+        if (table === 'holdings' && requestIndex === 3) {
+          authority.observe(USER_B)
+          state.tables.set('holdings', () => holdingRowsFor(USER_B, 7, 100))
+        }
+      },
+    }
+    registerStandardSections(state, { holdings: holdingRowsFor(USER_A, 7, 0) })
+    await expect(
+      fetchExportSnapshot(leasedFakeClient(state, lease), { pageSize: 3 }),
+    ).rejects.toBeInstanceOf(AuthIdentityChangedError)
+    // The request that was already in flight finished; nothing after it was issued.
+    expect(state.requestCounts.get('holdings')).toBe(3)
+    expect(state.requestCounts.get('acquisition_lots') ?? 0).toBe(0)
+  })
+
+  it('A→B→A is an identity change even though the old user id is back', async () => {
+    const { authority, lease } = signedInAs(USER_A)
+    const state: FakeState = {
+      requestCounts: new Map(),
+      tables: new Map(),
+      onRequest: (table, requestIndex) => {
+        if (table === 'holdings' && requestIndex === 2) {
+          authority.observe(USER_B)
+          authority.observe(USER_A)
+        }
+      },
+    }
+    registerStandardSections(state, { holdings: holdingRowsFor(USER_A, 7, 0) })
+    // The lease belongs to the first A generation: a user-id comparison would call this unchanged.
+    expect(authority.userId).toBe(USER_A)
+    await expect(
+      fetchExportSnapshot(leasedFakeClient(state, lease), { pageSize: 3 }),
+    ).rejects.toBeInstanceOf(AuthIdentityChangedError)
+    expect(authority.begin(USER_A).isCurrent()).toBe(true)
+  })
+
+  it('sign-out mid-export fails it instead of finishing', async () => {
+    const { authority, lease } = signedInAs(USER_A)
+    const state: FakeState = {
+      requestCounts: new Map(),
+      tables: new Map(),
+      onRequest: (table, requestIndex) => {
+        if (table === 'holdings' && requestIndex === 2) authority.observe(null)
+      },
+    }
+    registerStandardSections(state, { holdings: holdingRowsFor(USER_A, 7, 0) })
+    await expect(
+      fetchExportSnapshot(leasedFakeClient(state, lease), { pageSize: 3 }),
+    ).rejects.toBeInstanceOf(AuthIdentityChangedError)
+  })
+
+  it('a switch during the very last request is still caught by the final gate', async () => {
+    const { authority, lease } = signedInAs(USER_A)
+    const state: FakeState = {
+      requestCounts: new Map(),
+      tables: new Map(),
+      onRequest: (table, requestIndex) => {
+        // openings is the last section: request 2 is its only page.
+        if (table === 'openings' && requestIndex === 2) authority.observe(USER_B)
+      },
+    }
+    registerStandardSections(state, { holdings: holdingRowsFor(USER_A, 2, 0) })
+    await expect(
+      fetchExportSnapshot(leasedFakeClient(state, lease), { pageSize: 3 }),
+    ).rejects.toBeInstanceOf(AuthIdentityChangedError)
+  })
+
+  it('a lease that ended before the export started issues no request at all', async () => {
+    const { authority, lease } = signedInAs(USER_A)
+    authority.observe(USER_B)
+    const state: FakeState = { tables: new Map(), requestCounts: new Map() }
+    registerStandardSections(state, { holdings: holdingRowsFor(USER_A, 2, 0) })
+    await expect(fetchExportSnapshot(leasedFakeClient(state, lease))).rejects.toBeInstanceOf(
+      AuthIdentityChangedError,
+    )
+    expect([...state.requestCounts.values()].reduce((a, b) => a + b, 0)).toBe(0)
+  })
+
+  it('same-user auth events across the whole run (token refresh) do not end the export', async () => {
+    const { authority, lease } = signedInAs(USER_A)
+    let events = 0
+    const state: FakeState = {
+      requestCounts: new Map(),
+      tables: new Map(),
+      onRequest: () => {
+        // TOKEN_REFRESHED / USER_UPDATED / a repeated SIGNED_IN all report the same user.
+        if (!authority.observe(USER_A)) events += 1
+      },
+    }
+    registerStandardSections(state, { holdings: holdingRowsFor(USER_A, 7, 0) })
+    const snapshot = await fetchExportSnapshot(leasedFakeClient(state, lease), { pageSize: 3 })
+    expect(snapshot.holdings).toHaveLength(7)
+    expect(events).toBeGreaterThan(5)
+  })
+
+  it('every request — counts and pages — is handed the abort signal, so Cancel tears it down', async () => {
+    const { lease } = signedInAs(USER_A)
+    const controller = new AbortController()
+    const state: FakeState = { tables: new Map(), requestCounts: new Map(), abortSignals: [] }
+    registerStandardSections(state, { holdings: holdingRowsFor(USER_A, 7, 0) })
+    await fetchExportSnapshot(leasedFakeClient(state, lease), {
+      pageSize: 3,
+      signal: controller.signal,
+    })
+    const requests = [...state.requestCounts.values()].reduce((a, b) => a + b, 0)
+    expect(requests).toBeGreaterThan(30) // 18 sections: a COUNT and at least one page each
+    expect(state.abortSignals).toHaveLength(requests)
+    expect(state.abortSignals?.every((signal) => signal === controller.signal)).toBe(true)
+  })
+
+  it('a cancelled export stops requesting', async () => {
+    const { lease } = signedInAs(USER_A)
+    const controller = new AbortController()
+    const state: FakeState = {
+      requestCounts: new Map(),
+      tables: new Map(),
+      onRequest: (table, requestIndex) => {
+        if (table === 'holdings' && requestIndex === 2) controller.abort()
+      },
+    }
+    registerStandardSections(state, { holdings: holdingRowsFor(USER_A, 7, 0) })
+    await expect(
+      fetchExportSnapshot(leasedFakeClient(state, lease), {
+        pageSize: 3,
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    expect(state.requestCounts.get('holdings')).toBe(2)
+    expect(state.requestCounts.get('acquisition_lots') ?? 0).toBe(0)
+  })
+
+  it('the lease is checked BEFORE each request too: a switch between two requests sends nothing', async () => {
+    const { authority, lease } = signedInAs(USER_A)
+    const state: FakeState = { tables: new Map(), requestCounts: new Map() }
+    registerStandardSections(state, { holdings: holdingRowsFor(USER_A, 7, 0) })
+    let holdingsAtSwitch = -1
+    await expect(
+      fetchExportSnapshot(leasedFakeClient(state, lease), {
+        pageSize: 3,
+        // Runs between two requests: after a page landed (and was checked), before the next is issued.
+        onPage: ({ section, totalRows }) => {
+          if (section === 'holdings' && totalRows >= 3 && holdingsAtSwitch < 0) {
+            holdingsAtSwitch = state.requestCounts.get('holdings') ?? 0
+            authority.observe(USER_B)
+          }
+        },
+      }),
+    ).rejects.toBeInstanceOf(AuthIdentityChangedError)
+    expect(holdingsAtSwitch).toBeGreaterThan(0)
+    expect(state.requestCounts.get('holdings')).toBe(holdingsAtSwitch) // the next page was never requested
+  })
+
+  it('the final gate catches a switch that lands after the last request was checked', async () => {
+    const { authority, lease } = signedInAs(USER_A)
+    const state: FakeState = { tables: new Map(), requestCounts: new Map() }
+    registerStandardSections(state, { holdings: holdingRowsFor(USER_A, 2, 0) })
+    await expect(
+      fetchExportSnapshot(leasedFakeClient(state, lease), {
+        pageSize: 3,
+        // openings is the last section and no catalog ids are referenced, so nothing is requested
+        // after it: only the gate at the end of the fetch can see this switch.
+        onPage: ({ section }) => {
+          if (section === 'openings') authority.observe(USER_B)
+        },
+      }),
+    ).rejects.toBeInstanceOf(AuthIdentityChangedError)
   })
 })

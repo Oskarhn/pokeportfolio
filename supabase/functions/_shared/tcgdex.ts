@@ -286,8 +286,16 @@ function toMinorUnits(value: number): bigint {
   return BigInt(Math.round(value * 100))
 }
 
+/**
+ * A provider price this pipeline can convert EXACTLY: finite, and whose minor-unit integer is a
+ * safe integer. The two edge functions that carry `valueMinor` on (`ingest-prices` writes it to
+ * `price_snapshots.value_minor`, `search-prices` returns it) do so as a JavaScript number, which is
+ * only exact up to 2^53 - 1 (P146 / D-137). An absurd price above that is treated as absent — an
+ * honest "no price" — rather than rounded into a wrong one.
+ */
 function asFiniteNumber(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null
+  return Math.abs(Math.round(value * 100)) <= Number.MAX_SAFE_INTEGER ? value : null
 }
 
 /** Cardmarket's own price-selection fallback, FINANCIAL_MODEL.md §6: trend → avg30 → avg7 → avg. */

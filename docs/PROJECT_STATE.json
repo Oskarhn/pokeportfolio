@@ -1,0 +1,195 @@
+{
+  "schema_version": 1,
+  "generated_from_repo_state": true,
+  "readme": "Machine-readable pointer/state index for a fresh coding-agent session. This is NOT a replacement for HANDOVER.md or the canonical docs it points to (see HANDOVER.md §16) — it exists so a session can grep/parse exact SHAs and counts instead of re-deriving them from prose. Validate with `node scripts/check-project-state.mjs`. Every value was verified against the repository, git history or a live tool call during P176, P183 or P188 (2026-10-02); a value that could not be verified is `null`, never guessed.",
+  "released": {
+    "main_sha": "d8682e047b757f63673a63ac8185a4806d68cb98",
+    "production_frontend_sha": "d8682e047b757f63673a63ac8185a4806d68cb98",
+    "hosted_migration_count": 104
+  },
+  "local_candidates": {
+    "development_rc": {
+      "prompt": 190,
+      "branch": "release/p190-cross-platform-development-rc",
+      "builds_on": "P189 bde11f99d08545c45eb347a7d78e3bc47ec7bcd3",
+      "pull_request": 113,
+      "local_migration_count": 114,
+      "status": "PUSHED_DEVELOPMENT_RC",
+      "device_verified": true,
+      "fully_certified": false,
+      "notes": "Development RC, not merged, not deployed, hosted database untouched. Contains P188 and P189. The branch tip is read from git, not recorded here. Release blockers: PRODUCTION_REGISTRY_STORAGE_READY=no, PROVIDER_RETENTION_VERIFIED=no, no physical Android/iOS runtime, identifiers and signing not selected, P163 owner actions open. P192: P191 migrations re-timestamped to 20261002140000/10/20 (unapplied), P189 empty-registry test made self-contained, MERGE_READY=no because of deploy coupling, docs/release/P192_MERGE_READINESS.md. P193: release control plane — ci.yml validates only, manual deploy-production.yml (workflow_dispatch, explicit SHA, CI evidence, dry_run default), Cloudflare automatic production deployments disabled (read back), main protected, legacy VITE_SUPABASE_* variables deleted; MERGE_READY=yes, RELEASE_READY=no; exposed-key rotation is an owner action; docs/release/P193_MAIN_AND_PRODUCTION_POLICY.md. P191 (same branch): ledger write gate, sealed-product ownership, privilege baseline (3 migrations); P130-13/-14/-26/-09 closed in the RC, P130-20 OWNER_ACTION_REQUIRED, P130-29/-30 PARTIALLY_CLOSED. docs/security/P191_SECURITY_BOUNDARY_CLOSURE.md"
+    },
+    "release_candidate": {
+      "prompt": 188,
+      "branch": "release/p188-cross-platform-rc",
+      "sha": "a048da53926d0c501508136d7fb11457fada1d86",
+      "builds_on": "P186 3fac34ffb6834026fcda5ee01734197c46d3b445 (P187 rebuilt without its attribution trailer, tree f56103cfe4e9fd342663ef4a92635b4eae8ae309)",
+      "merges": [
+        "P164 bae0b604",
+        "P163 4f6be7be",
+        "P165 3d03eec7"
+      ],
+      "local_migration_count": 107,
+      "status": "LOCAL_ONLY",
+      "device_verified": true,
+      "fully_certified": false,
+      "notes": "SUCCESS_P188_CROSS_PLATFORM_RC_LOCAL. Contained in the pushed P190 development RC. Not released. Android release build verified on an emulator; IOS_RUNTIME_VERIFIED=no; not store-ready. docs/release/P188_RELEASE_CANDIDATE.md"
+    },
+    "account_deletion": {
+      "prompt": 189,
+      "branch": "security/p189-restore-safe-account-deletion",
+      "sha": "cb500fce9809b6bab57907300f9daf93ae684350",
+      "builds_on": "P188 2783c93e4ebc54a70b6678b6dc76ff848c2793b3",
+      "local_migration_count": 111,
+      "status": "LOCAL_ONLY",
+      "device_verified": true,
+      "fully_certified": false,
+      "notes": "SUCCESS_P189_RESTORE_SAFE_ACCOUNT_DELETION. Contained in the pushed P190 development RC; not merged to main, not deployed. Off-backup erasure registry + restore gate + web/native in-app deletion + /account-deletion page. PRODUCTION_REGISTRY_STORAGE_READY=no, PROVIDER_RETENTION_VERIFIED=no (owner gates). docs/release/P189_ACCOUNT_DELETION.md"
+    },
+    "deployment_gate": {
+      "prompt": 163,
+      "branch": "fix/p163-integrated-ci-secret-gate",
+      "sha": "4f6be7bee4a69f6c5807c7ab58c7c61ad7bca53e",
+      "supersedes": [
+        "fix/p142-ci-gated-production-deploy",
+        "fix/p160-predeploy-secret-guard"
+      ],
+      "integrated_in": "release_candidate",
+      "local_migration_count": 104,
+      "status": "BLOCKED",
+      "blocked_on": "owner Cloudflare action and secrets (docs/security/RELEASE_PREFLIGHT_P163.md Part A); Actions capacity unverified. PR #112 is SUPERSEDED_BY_P163"
+    },
+    "design": {
+      "prompt": 174,
+      "branch": "design/p174-stitch-owner-decision-pack",
+      "sha": "aacd218dab5f13047e082039871e1916e699ecff",
+      "local_migration_count": null,
+      "status": "DESIGN_ONLY",
+      "notes": "Design record; the direction is implemented by P178."
+    },
+    "native_lineage_p173": {
+      "prompt": 173,
+      "branch": "feat/p173-native-integration-recovered",
+      "sha": "0600361f71ee2dd5591fbbbfb2fe260ab68ba7a2",
+      "status": "SUPERSEDED",
+      "superseded_by": "release_candidate",
+      "notes": "P173..P187 native chain (ancestors of the release candidate)"
+    },
+    "native_p181": {
+      "prompt": 181,
+      "branch": "feat/p181-native-device-accessibility-performance-gate",
+      "sha": "45ebfefa9a5038e20dd1999644eb96c1ae6352ef",
+      "status": "SUPERSEDED",
+      "superseded_by": "release_candidate"
+    },
+    "native_p185": {
+      "prompt": 185,
+      "branch": "release/p185-native-rc-closure",
+      "sha": "b4100bcb4522d77fbf3e569f433e3307dea9c55e",
+      "status": "SUPERSEDED",
+      "superseded_by": "release_candidate"
+    },
+    "native_p186": {
+      "prompt": 186,
+      "branch": "perf/p186-native-packaging-scanner",
+      "sha": "3fac34ffb6834026fcda5ee01734197c46d3b445",
+      "status": "SUPERSEDED",
+      "superseded_by": "release_candidate",
+      "notes": "Base of the release candidate."
+    },
+    "native_p187": {
+      "prompt": 187,
+      "branch": "feat/p187-ios-readiness",
+      "sha": "79c447d9136093f5ee93f33db42b6aae794941ed",
+      "status": "SUPERSEDED",
+      "superseded_by": "release_candidate",
+      "notes": "Carries a forbidden attribution trailer in 60f2cd6; never push this branch. Content is in the release candidate"
+    },
+    "web_p164": {
+      "prompt": 164,
+      "branch": "feat/p164-integrated-auth-export-scanner-price",
+      "sha": "bae0b6047e668e260502567590ef6b16912d59be",
+      "status": "SUPERSEDED",
+      "superseded_by": "release_candidate",
+      "notes": "Carries P149, P151, P153, P161, P162 and P143-P148; merged"
+    },
+    "web_p165": {
+      "prompt": 165,
+      "branch": "test/p165-p164-independent-release-verification",
+      "sha": "3d03eec7",
+      "status": "SUPERSEDED",
+      "superseded_by": "release_candidate",
+      "notes": "Test and tooling fixes; merged."
+    },
+    "account_deletion_p156": {
+      "prompt": 156,
+      "branch": "audit/p156-account-deletion-security-recovery",
+      "sha": "6b3ac90362ea0f992e9223cbda3431e2da5699a5",
+      "local_migration_count": 107,
+      "status": "SUPERSEDED",
+      "notes": "SUPERSEDED_BY_P189: kept as evidence only, never merged. Its code was imported selectively into the P189 branch.",
+      "superseded_by": "account_deletion"
+    }
+  },
+  "database": {
+    "released_migration_count": 104,
+    "latest_local_migration_count": 111
+  },
+  "scanner": {
+    "content_id": "f25fc05d569b7cca",
+    "web_scanner_status": "RELEASED_UNCHANGED",
+    "native_card_recognition_status": "DEVICE_VERIFIED_HARDENED_LOCAL_ONLY",
+    "native_card_recognition_note": "Proven on a release APK (P182), hardened and device-verified (P184: 24/24 adversarial, 0 false HIGH, 0 image egress), release journey re-run on the P188 line (20/20). Local only; TalkBack not driven to a PASS; arm64/physical device deferred."
+  },
+  "production": {
+    "in_real_user_use": false
+  },
+  "repository": {
+    "visibility": "PUBLIC",
+    "visibility_policy": "PUBLIC_BY_OWNER_CHOICE",
+    "visibility_expected": "PUBLIC",
+    "visibility_contradiction": false,
+    "verified_at": "2026-10-02",
+    "branch_protection": "none",
+    "rulesets": "none",
+    "publication_status": "PUSHED_development_rc; branch release/p190-cross-platform-development-rc; public by owner choice (D-190); see docs/CURRENT_STATE/GIT_PUBLICATION_PLAN.md"
+  },
+  "canonical_docs": {
+    "product_scope": "docs/PRODUCT_SPEC.md",
+    "financial_semantics": "docs/FINANCIAL_MODEL.md",
+    "data_model": "docs/DATA_MODEL.md",
+    "architecture": "docs/ARCHITECTURE.md",
+    "security": "docs/SECURITY.md",
+    "cost_policy": "docs/COST_POLICY.md",
+    "planning_freeze": "docs/PLANNING_FREEZE.md",
+    "testing": "docs/TESTING.md",
+    "development": "docs/DEVELOPMENT.md",
+    "git_workflow": "docs/GIT_WORKFLOW.md",
+    "roadmap": "docs/ROADMAP.md",
+    "decisions": "docs/DECISIONS.md",
+    "research": "docs/RESEARCH.md",
+    "api_sources": "docs/API_SOURCES.md",
+    "ux_flows": "docs/UX_FLOWS.md",
+    "design_system": "docs/DESIGN_SYSTEM.md",
+    "scanner_research": "docs/SCANNER_RESEARCH.md",
+    "backlog": "docs/BACKLOG.md",
+    "publication_checklist": "docs/PUBLICATION_CHECKLIST.md",
+    "project_journal": "docs/PROJECT_JOURNAL.md",
+    "native_mobile_current_state": "docs/CURRENT_STATE/NATIVE_MOBILE.md",
+    "release_and_deployment_current_state": "docs/CURRENT_STATE/RELEASE_AND_DEPLOYMENT.md",
+    "database_current_state": "docs/CURRENT_STATE/DATABASE.md",
+    "security_and_privacy_current_state": "docs/CURRENT_STATE/SECURITY_AND_PRIVACY.md",
+    "state_reconciliation": "docs/handover/STATE_RECONCILIATION.md",
+    "archive_index": "docs/handover/README.md",
+    "git_publication_plan": "docs/CURRENT_STATE/GIT_PUBLICATION_PLAN.md",
+    "branch_pruning_plan": "docs/CURRENT_STATE/BRANCH_PRUNING_PLAN.md",
+    "p184_native_rc": "docs/mobile/P184_NATIVE_RELEASE_CANDIDATE.md",
+    "p185_native_rc_closure": "docs/mobile/P185_NATIVE_RC_CLOSURE.md",
+    "p186_android_packaging": "docs/mobile/P186_ANDROID_PACKAGING_PERFORMANCE.md",
+    "p187_ios_readiness": "docs/mobile/P187_IOS_READINESS.md",
+    "ios_build_runbook": "docs/mobile/IOS_BUILD_AND_DEVICE_RUNBOOK.md",
+    "p188_release_candidate": "docs/release/P188_RELEASE_CANDIDATE.md",
+    "p188_integration_matrix": "docs/release/P188_INTEGRATION_MATRIX.md",
+    "native_build_profiles": "docs/mobile/BUILD_CONFIGURATION_PROFILES.md"
+  }
+}

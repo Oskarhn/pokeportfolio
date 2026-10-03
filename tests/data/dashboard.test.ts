@@ -16,7 +16,7 @@ import {
   recomputeJustSettled,
   resolveActiveRange,
   resolveRangeWindow,
-  safeMajorUnits,
+  chartMajorUnits,
   ttepDisplayState,
   toChartSeries,
   type HistoryPoint,
@@ -173,9 +173,20 @@ describe('toChartSeries', () => {
     expect(series.map((s) => s.time)).toEqual(['2026-07-03'])
   })
 
-  it('refuses values beyond the exact-representation boundary instead of losing øre (§78)', () => {
-    expect(() => safeMajorUnits(9007199254740993n)).toThrow(/safe integer/)
-    expect(safeMajorUnits(9007199254740991n)).toBe(90071992547409.91)
+  it('the chart coordinate is exact inside the safe range and never throws beyond it (P146, D-137)', () => {
+    expect(chartMajorUnits(9007199254740991n)).toBe(90071992547409.91)
+    // Above 2^53 the coordinate is the nearest double — a plot position, not an amount — and a
+    // valid ledger of that size must still draw.
+    const huge = 2n ** 58n + 3n
+    expect(() => chartMajorUnits(huge)).not.toThrow()
+    expect(chartMajorUnits(huge)).toBeCloseTo(Number(huge) / 100, -3)
+    expect(chartMajorUnits(-huge)).toBe(-chartMajorUnits(huge))
+    expect(toChartSeries([point('2026-08-01', huge)])[0]?.value).toBe(chartMajorUnits(huge))
+  })
+
+  it('the accessible text is the exact amount, never a float rendering of it', () => {
+    const rows = [point('2026-08-01', 2n ** 58n + 3n)]
+    expect(accessibleHistorySummary(rows, false)).toEqual(['2026-08-01: 2882303761517117.47 kr'])
   })
 })
 

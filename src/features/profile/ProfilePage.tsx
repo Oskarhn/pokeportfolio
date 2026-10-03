@@ -1,11 +1,14 @@
 import { useState } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../../auth/useAuth'
+import { useLeasedAction, useLeasedMutation } from '../../auth/useLeasedMutation'
+import { leasedDb } from '../../data/leased-db'
 import {
   getMyProfile,
   updateMyProfile,
   type Profile,
+  type ProfileUpdate,
   type ThemePreference,
   type CollectionView,
 } from '../../data/profile'
@@ -13,6 +16,7 @@ import { getPortfolioCounts } from '../../data/portfolio'
 import { readLastReminderMark, shouldRemindExport } from '../../domain/export/export-reminder'
 import { resetMyPortfolioData } from '../../data/reset'
 import { Button, FormMessage, TextField } from '../../ui/form'
+import { DeleteAccountSection } from './DeleteAccountSection'
 import { formatNokMinor, parseNokInput } from '../../ui/money-format'
 import { applyTheme } from '../../ui/theme'
 import { MoneyDisplay } from '../../ui/MoneyDisplay'
@@ -28,6 +32,7 @@ import {
   DownloadIcon,
   ChevronDownIcon,
 } from '../../ui/icons'
+import { userMessage } from '../../platform/user-error'
 
 const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
   { value: 'system', label: 'System' },
@@ -181,6 +186,8 @@ export function ProfilePage() {
 
       <DangerZone />
 
+      <DeleteAccountSection />
+
       <Footer />
     </div>
   )
@@ -214,8 +221,8 @@ function ProfileSettings({ profile, isAdmin }: { profile: Profile; isAdmin: bool
   )
   const [thresholdError, setThresholdError] = useState<string | null>(null)
 
-  const saveMutation = useMutation({
-    mutationFn: updateMyProfile,
+  const saveMutation = useLeasedMutation({
+    mutationFn: (update: ProfileUpdate, lease) => updateMyProfile(update, leasedDb(lease)),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['my-profile'] })
     },
@@ -456,8 +463,8 @@ function DangerZone() {
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const resetMutation = useMutation({
-    mutationFn: resetMyPortfolioData,
+  const resetMutation = useLeasedAction({
+    mutationFn: (lease) => resetMyPortfolioData(leasedDb(lease)),
     onSuccess: async () => {
       setConfirmOpen(false)
       // Every user-data query is now stale by definition — invalidate all of them.
@@ -465,7 +472,7 @@ function DangerZone() {
       await navigate({ to: '/' })
     },
     onError: (mutationError: Error) => {
-      setError(mutationError.message)
+      setError(userMessage(mutationError))
     },
   })
 

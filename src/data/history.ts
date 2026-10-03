@@ -1,4 +1,5 @@
 import { supabase } from './supabase-client'
+import { parseNullableMinorUnits } from './money'
 
 /**
  * The unified History read surface (P43, 20260901120010_p43_reset_and_history.sql; M16 adds the
@@ -55,7 +56,7 @@ function mapEvent(row: HistoryEventRow): HistoryEvent {
     recordedAt: row.recorded_at,
     title: row.title,
     subtitle: row.subtitle,
-    amountNokMinor: row.amount_nok_minor === null ? null : BigInt(row.amount_nok_minor),
+    amountNokMinor: parseNullableMinorUnits(row.amount_nok_minor),
     status: row.status === 'voided' ? 'voided' : 'active',
     href: row.href,
   }

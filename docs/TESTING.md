@@ -295,6 +295,8 @@ One test per entry in the FINANCIAL_MODEL invariant register:
 | F12 | An opening never has two live cost sources; reconciliation does not double-count spend |
 | F13 | No trade produces a realized P/L figure |
 | F14 | A holding with no resolvable value is excluded from `CMV` and counted, never zeroed |
+| F15 | Every purchase line's attributable cost is `>= 0` and the lines sum to the receipt total, over generated receipts whose discount reaches into shipping/customs (`tests/financial/purchase-charge-allocation.test.ts`, SQL parity in `tests/db/p144_financial_boundary.test.ts`); a discount above the whole receipt is refused |
+| F16 | A completed event's date outside `[1996-10-20, UTC today + 1]` is refused by every writer, at both edges, under every session timezone, without making a pre-contract row un-updatable (`tests/db/p144_financial_boundary.test.ts`) |
 
 ### 2.4 All-card tracking
 
@@ -768,6 +770,43 @@ convergence via the M16 baseline ✓; m16-independent 53/53 with zero skips ✓;
 unchanged thresholds ✓. The hosted project is untouched; the first HOSTED execution remains the
 pre-merge gate when CI or a manual hosted window exists.
 
+**Exact money transport, P130-19 (`tests/db/p146_*.test.ts`, `tests/data/money*.test.ts`,
+`tests/data/exact-json-guard.test.ts`, `tests/data/money-wire-structure.test.ts`; D-137, invariant M3):**
+
+- `p146_transport_layers` — one exact bigint (2^53 − 1, 2^53, 2^53 + 1, 2^58 + 3, ~2^62) followed outward: Postgres,
+  the raw PostgREST body, `JSON.parse`, an unguarded supabase-js client, `Number()`. Documents that the wire is exact and
+  `JSON.parse` is the first layer to lose a value.
+- `p146_exact_money_roundtrip` — the real `src/data` functions against the real stack (only the Supabase client handle
+  is injected, and it is the app's own guarded client). Every money write and read above 2^53: purchase, edit, quantity
+  product, EUR/USD/JPY with the frozen NOK conversion compared with the domain twin, negative sale results below −2^53
+  (−(2^53 + 1), −2^58), a costed sale with F5 in bigint, aggregates whose *sum* exceeds 2^53 while every row is safe,
+  manual valuation, cost basis, threshold, opening, and a keyset cursor whose rounded value would repeat a row. A reporter
+  on the guard requires that no response ever needed its unsafe number quoted.
+- `p146_transport_guard` — request refusal (nothing written), response quoting of a forgotten `::text`, and NULL/0
+  through the data layer (unknown vs known-zero cost, uncosted vs break-even result).
+- `p146_wire_surface_audit` — `pg_proc` is the source: every `*_minor` result column of an exposed function is `text`,
+  a row-returning money RPC is always chained `.select(…)`, the raw-bigint helpers are never called by the client.
+- `money.test.ts` — strict parse/serialise (empty string, `+`, `-0`, exponent, hex, whitespace, full-width digits, unsafe
+  numbers rejected instead of `BigInt()`-ed), NULL vs 0, and property tests over the whole signed range with
+  0, ±1, ±MAX_SAFE ± 1, powers of two and ten and both bigint limits.
+- `money-wire-structure` — static rules: no `Number(<money>)` in the data layer, an explicit allowlist elsewhere, every
+  money column in a select list is `::text`, every `p_*_minor` argument is serialised, one guarded client.
+
+**Date-only defaults are local calendar dates — and the tests must be too (P147).** `initialDraft()`
+and the forms default a date to the person's LOCAL day (`src/platform/local-date.ts`, P114). Two
+assertions in `tests/ui/opening-draft.test.ts` expected the UTC day instead, so they failed only
+between local midnight and UTC midnight (00:00–02:00 in Norway) and passed the rest of the day; the
+product was right and the tests were wrong. They now build the expected date from the local getters,
+and a fake-clock block (`process.env.TZ` plus `vi.setSystemTime`, the pattern of
+`tests/ui/local-date.test.ts`) pins Oslo in summer and winter, UTC+14, UTC−11 and a control instant,
+including a check that the UTC/local mismatch the cases rely on really exists at those instants.
+
+**A suite must not leave its users behind (P147).** `tests/db/m12_dashboard_snapshots.test.ts` created
+a user in `beforeAll` that `beforeEach` immediately replaced, so its id was lost and it stayed in
+`auth.users` after every run (`deleteSyntheticUser` itself was correct). The user is no longer created,
+and the suite's `afterAll` fails if any `m12-snap` user remains — a cheap pattern for any suite that
+owns its fixtures.
+
 ---
 
 ## 6. E2E
@@ -807,6 +846,50 @@ any of them.
 
 Console errors and failed network requests fail the test. A flow that renders correctly while
 throwing in the console is not passing.
+
+
+### Price Check (P153)
+
+- **Unit:** `tests/domain/price-check/`, `tests/data/price-check-fetch.test.ts`,
+  `tests/ui/price-check-*.test.ts` (structural read-only guard, scan-session adapter, SSR render of
+  every state). Expected values are literals, not the production helpers.
+- **Browser (placeholder backend, desktop + iPhone profile):** `tests/e2e/price-check.spec.ts`,
+  `price-check-scan.spec.ts` (real on-device scanner over a synthetic photo) and
+  `price-check-graded-layout.spec.ts` (the real `ResultView` with synthetic graded fixtures:
+  scroll, keyboard, axe in light and dark). The backend stand-in is
+  `tests/e2e/support/price-check-backend.ts` (network boundary only, synthetic data); it logs every
+  request.
+- **Ledger non-mutation proof (real local stack, opt-in):**
+  `tests/e2e/authenticated/price-check-ledger.spec.ts` — stack as in §6b. It needs `SUPABASE_URL`,
+  `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` and `P153_DB_URL` (the local `DB_URL`), refuses
+  anything but a loopback stack, seeds one scannable catalog card, drains the portfolio recompute
+  queue before each baseline (a pg_cron worker otherwise changes it mid-test) and compares every
+  `user_id` table. Two worktrees must not share a stack: give each its own `project_id` and ports —
+  in a copy of `supabase/` used through `supabase start --workdir`, so the checkout stays clean.
+
+### Scanner + Price Check integration (P161)
+
+The parent suites never met: P151's tests did not use Price Check's session and P153's never ran over
+the real controller. These do.
+
+- **`tests/ui/p161-scanner-price-check-integration.test.ts`** — real controller, real read-only port,
+  real `PriceCheckScanSession`; doubles only for Tesseract, the visual worker (both counted), the
+  catalog and the collection writer. Covers HIGH / visual-only / no-match, latest-wins in both finishing
+  orders, 100 cancel/restart cycles with barriers, failure recovery, A→B during OCR, A→B→A, same-user
+  refresh, a 100-scan mixed valid/invalid workload, and "no write, no leaked engine/client/bitmap/URL".
+- **`tests/ui/p161-price-check-photo-input.test.ts`** — the shared decoder refuses pixel bombs before
+  decoding; structural wiring of the scan page (page cannot be mounted here); no derived prices.
+- **`tests/data/p161-search-prices-compat.test.ts`** — both skew directions of the function response.
+- **`tests/e2e/price-check-p161-integration.spec.ts`** (placeholder backend, desktop Chromium + iPhone
+  WebKit emulation, real workers): zero scanner workers after leaving, P130-10 through Price Check,
+  hostile / corrupt photos then recovery, Cancel during a slow read, latest pick wins, no camera / reader
+  / model for the text search, 320–430 px viewports, recorded cold-vs-warm text-search timing.
+- **A/B scenarios appended to `tests/e2e/authenticated/price-check-ledger.spec.ts`** (real local stack):
+  A→B during a scan, A→B→A, A→B during a held price lookup, same-user refresh mid-scan, overlapping
+  photos, provider failure — every `user_id` table compared before/after.
+- **Mutants:** `node scripts/scanner-p151/run-mutations.mjs --mutants scripts/scanner-p161/mutants.mjs`
+  (17; the P151 list of 13 still runs by default). Real-browser mutants were also run by hand (page
+  cleanup removed, pick guard removed): the browser specs failed for the intended reason.
 
 ---
 
@@ -958,6 +1041,119 @@ concurrent fixture creation (`add_card_acquisition`/`create_purchase`/`create_op
 provisional`) for the same user under the default parallel workers hit a real Postgres deadlock
 this session, unrelated to whatever behavior the spec exists to prove.
 
+**Two pages, one browser profile: identity switch and sign-out (P143, D-134).** Supabase auth state
+is shared between tabs through the same `localStorage` entry and a `BroadcastChannel` named after
+its storage key, so a cross-tab identity change can only be tested with two pages of ONE Playwright
+context. Two layers, deliberately:
+
+- `tests/e2e/auth-identity-lifecycle.spec.ts` and `tests/e2e/auth-signout.spec.ts` run in the
+  DEFAULT `desktop-chromium` project against the placeholder backend — no Supabase stack, so they
+  are part of the ordinary CI run. The "other tab" is played by `simulateOtherTabAuthChange`
+  (`support/fake-session.ts`), which writes the shared storage key and posts the very message
+  supabase-js would; every Auth endpoint is mocked with `page.route`, and the session is seeded ONCE
+  per tab (a plain `addInitScript` would re-seed on reload and hide a resurrected session).
+- `tests/e2e/authenticated/auth-identity-real.spec.ts` and `auth-signout-real.spec.ts` repeat the
+  scenarios against a real local GoTrue: page 2 imports the app's own client module from Vite's dev
+  server and performs a real `signInWithPassword` / `signOut` / `refreshSession`; the sign-out
+  file also asks the server whether the old refresh token is still accepted, which is what makes
+  "confirmed" and "unconfirmed" verifiable instead of asserted. Each test uses its own disposable
+  users (never the shared `e2e-auth` session — a sign-out is GLOBAL scope).
+
+Unit level: `tests/ui/auth-identity-boundary.test.ts` (the real component's key with `useAuth`
+mocked, transition rules, property tests) and `tests/ui/auth-end-session.test.ts` (scripted failure
+modes plus the REAL installed `AuthClient` over a stub `fetch`; its CANARY test fails if a future
+supabase-js starts removing an expired session on a failed sign-out by itself).
+
+**A running operation across an identity change (P145, D-136).** `tests/e2e/authenticated/auth-inflight-real.spec.ts`
+pauses a REAL submission of A's between its steps, switches the shared identity from the other tab,
+releases the pause, and asks the service role what reached the database. Two pauses, so the guarded
+window is named: `holdRequest` holds one request at the network layer (it already carries A's bearer;
+releasing it models "an already-dispatched request completes as A"), and `installSessionLookupGate`
+parks `supabase.auth.getSession()` — the call supabase-js makes to pick the token, in production a
+token-refresh round trip — so the operation has started but has no bearer yet. The helpers live in
+`tests/e2e/authenticated/support/two-tab.ts`. Every scenario has a positive control (the same
+operation with no switch is recorded for A), and the negative assertions also record that the guarded
+request was never ISSUED (`recordRequests`), because "nothing appeared in B" alone would pass if the
+continuation were merely slow. Covered: purchase create (multi-step, manual card, check-to-dispatch,
+same-user refresh/user update, other-tab and own sign-out, A -> B -> A), purchase edit, sale create and
+edit, the openings wizard, add-to-collection, profile, reset and export. Unit level:
+`tests/ui/identity-lease.test.ts` (rules and a model-based property), `tests/ui/leased-client-flows.test.ts`
+(the real data functions through the real supabase-js client against a stub backend that attributes
+every write to the bearer it received) and `tests/ui/identity-lease-coverage.test.ts` (the ledger:
+fails on a raw `useMutation`, a write function without `LeasedDb`, or missing wiring).
+
+**Both protections on one client (P147, D-138).** The identity lease (D-136) and the exact-money
+transport guard (D-137) were built and tested separately; a merge of the two would have left every
+leased write without the guard while every existing suite stayed green, so the combination has its
+own tests. `tests/data/p147-composition-scenarios.ts` holds six scenarios (a large amount through a
+leased client; an unsafe JSON number refused while a decimal string passes; an identity switch before
+dispatch, with and without this tab having heard about it; a same-user refresh; A → B → A; a sign-out)
+whose assertions read the BACKEND — what arrived, under whose bearer, what was stored — never what the
+client says it checked. `tests/data/p147-leased-transport-composition.test.ts` requires them to pass
+against the production composition and shows the guard is on the ordinary app client too;
+`tests/data/p147-cross-track-mutations.test.ts` runs the same scenarios against five compositions that
+each lack exactly one protection (no guard; no identity check; `Number()` at a money argument; a lease
+reactivated by A → B → A; a lease killed by a same-user refresh) and requires each to fail. The five
+were also applied to the production files one at a time (PROJECT_JOURNAL P147). Real stack:
+`tests/db/p147_auth_money_integration.test.ts` (real GoTrue sessions and a real `refreshSession()`,
+PostgREST, PostgreSQL; ledger read through the service role as `col::text`) and
+`tests/db/p147_combined_stress.test.ts`, a seeded campaign (`P147_STRESS_SEED`, `P147_STRESS_CASES`)
+that mixes switches, refreshes, sign-outs, large/zero/unsafe money, replays, ambiguous retries and
+concurrent duplicates with deterministic scheduling — every race is a parked session lookup released
+by the test, never a sleep. Both use `SimulatedTab` (`tests/db/leased.ts`), which hands out the
+production leased client.
+
+**Independent review tests (P148).** Written to be a second opinion, not a copy: `tests/data/p148-guard-adversarial.test.ts`
+checks the exact-money transport guard against the platform's own JSON parser (`JSON.parse` reviver source text, an
+independent definition of "number token") over generated documents, plus response, failure, stream and abort handling;
+`tests/db/p148_independent_identity_money.test.ts` runs a deterministic checkpoint matrix — an identity action performed
+inline at four points of a request's path (before the session is read, after it was read, before dispatch, after the server
+committed) x six actions — for a purchase, a negative-net uncosted sale and a portfolio reset, all with amounts a JavaScript
+number cannot hold, against a real stack, with the expected outcome derived from the D-136 contract rather than from the
+implementation; it also covers several operations pending at once, the idempotency matrix (property order, representation,
+FX rate, currency, one minor unit above 2^53, NULL vs known zero) and the completed-event date contract.
+`tests/e2e/authenticated/p148-*.spec.ts` repeat the identity scenarios in a real browser with 2^53-scale amounts, audit
+390/430 px layout for large amounts, and reproduce the password-change case of D-139. Mutations that each fail at least one of
+them: leased client bypassed on a write, guard removed from the leased client, `Number()` at a money argument, a stale lease
+after A → B → A, NULL read as 0 (mapper and helper), the idempotency comparison disabled in the database, four guard defects
+(string escapes, the 2^53−1 boundary, negative numbers, failed responses treated like successes).
+
+**Credential-lookup failure tests (P149, D-140).** A transient failure of the session lookup behind a write must neither end
+the identity lease nor be silent. `tests/data/p149-auth-lookup-contract.test.ts` pins what the installed auth-js does (session /
+`{ null, null }` / `{ null, error }` / rejection; retryable vs non-retryable errors; the backoff and the 60 s failure cache; the
+refresh race lost to another tab) with the real library and a scripted network under a fake clock, so an upgrade that changes it
+fails a test. `tests/ui/p149-credential-lookup.test.ts` scripts the lookup (every answer, identity precedence in both orders,
+retry with the same key), `tests/ui/p149-credential-lookup-real-auth.test.ts` produces the same answers with the real auth-js and
+an authority fed from its `onAuthStateChange` exactly like `AuthProvider`, and `tests/ui/p149-leased-mutation-hook.test.ts` drives
+the real `useLeasedAction` hook without a DOM (`react-dom/server` renders the component once; a mutation-level `onError` runs in
+TanStack Query's mutation cache whether or not anything is subscribed) to prove the form is told. `tests/e2e/authenticated/p149-refresh-failure.spec.ts`
+runs it in a real browser against the real local stack, making ONLY the refresh endpoint unreachable (the RPC is never blocked);
+its retry test waits out the library's one-minute failure cache, so the spec takes about three minutes. Do not edit files under
+the repository while it runs: the Vite dev server reloads the page on some changes and a test then fails for a reason that is not
+the product's. Mutations that each fail a test: a failed lookup revokes the lease again, a failed lookup returns an empty token,
+the hook swallows credential errors (the unit hook test and the browser test both fail), a failed lookup outranks an observed
+identity change, `runWithLease` stops replacing the surfaced error, and the form rotating its idempotency key after the failure
+(browser test only).
+
+**A second cross-file hazard, fixed: selling through the UI from the shared pool (P147).** Every
+spec of the authenticated project shares one synthetic user, and the fixtures default to the same
+Pikachu holding, so their lots share a pool. The sale form pre-fills a holding's first lot; a test that
+saved a sale on that holding could sell a lot another worker had just created for its own edit test,
+which then failed with "card has already been partially disposed" — in a parallel run only, passing
+alone. The rule: the shared Pikachu pool is read-and-edit-only, and a spec that presses "Save sale"
+sells from `ISOLATED_SALE_VARIANT` (`tests/e2e/authenticated/fixtures.ts`), which no other shared-user
+spec touches. `tests/config/e2e-fixture-isolation.test.ts` enforces both halves statically, because the
+failure needs parallel workers and an unlucky order and a run that happens to pass proves nothing.
+Specs that create their own users (`auth-*-real`) have their own inventory and are out of scope.
+
+**Check which tree a local E2E run actually tested (P147).** The authenticated project serves the app with `pnpm exec vite --port 4174` and `reuseExistingServer: !process.env.CI`, and the placeholder project does the same on 4173: if anything already listens there, Playwright uses it. With several worktrees and other tools on one machine that can be another tree's dev server. Before trusting a local run, confirm nothing listens on the port beforehand and that the server answers with this tree's source (for the integrated tree: `curl http://localhost:4174/src/data/supabase-factory.ts` contains `createAccessTokenSupabaseClient`). Two runs also raced when started twice by mistake — both rebuild `dist/` — and produced blank-page a11y failures that were not a product defect.
+
+**A third one: an absurd amount in the shared ledger (P147).** `exact-money-input.spec.ts` used to type 90 071 992 547 409,93 kr into the shared user's ledger. The Purchases list, which every smoke test loads, then overflowed a 390 px viewport by 6 px, and `private-routes-smoke` failed in one combined run while passing alone — reproduced deterministically with `--workers=1`, exact-money first. The spec now creates and signs in its own user, and rule 3 of the isolation check rejects any 15+ digit amount in a shared-user spec. The overflow itself (a 16-digit amount in a narrow list row) is pre-existing and recorded in BACKLOG; it is a product decision (wrap, truncate or limit), not something a test should hide.
+
+**A route that matches nothing looks like a test that passes (P147).** `edit-form-async-race` and the sale case of `entity-switch-regression` routed `**/rest/v1/rpc/update_purchase` (and `create_sale`) to hold a slow response. The data layer calls its RPCs as `.rpc(...).select(<columns>)`, so the real URL is `…/update_purchase?select=…` and a glob that ends at the name does not match it (probed: it matches the bare path only). Nothing was ever held — in the trace of a failing run the RPC completed in 28 ms — so the specs passed or failed on whether a poll happened to catch a 30 ms `Saving…` state, while claiming to test a slow response arriving after an entity switch. That is the intermittent failure of four combined runs on the integrated tree, and it exists at the released base too. Routes now match with or without a query string, each test asserts the request really was held (`expectHeld`, `holdRequest(...).reached`), and `tests/config/e2e-route-patterns.test.ts` forbids a bare-path RPC glob in any spec. With a genuine hold all seven tests pass in repeats — the product was right, the tests were not looking — and putting the bare glob back fails them loudly. A green result that never depended on the thing it names is the worst kind of green: when a test's premise is an interception, assert that it happened.
+
+**Count what the reloaded page sends, not what the old one still does (P147).** The real sign-out test (`auth-signout-real.spec.ts`, and its mocked twin) reloads after a failed remote sign-out and asserts that the old refresh token is never presented to Auth. The old document is still running auth-js's retry loop for its failed refresh, and one attempt falls at about 3.15 s — exactly where the test reaches `unroute()` and `reload()`. An attempt in that gap was counted although nothing was stored and the sign-in form was shown; it failed one combined run in three and 2 of 48 runs under CPU load (0 of 32 on the P145 tree in the same conditions: the window is a few tens of milliseconds and the trees differ by that much). Both tests now count only requests after the main frame's navigation commit (`framenavigated`); making `ensureStoredSessionRemoved` a no-op still fails them, and the fixed real test passed 48 of 48 under the same load. `expect.soft` around a count is a smell worth remembering: the soft assertion made the test look like it had several independent checks when only one of them was racing.
+
 **Cross-file hazard, fixed: a real sign-out used to invalidate every other test's session (P112).**
 `supabase.auth.signOut()` defaults to GLOBAL scope (correct, intended product behavior — it revokes
 every session for the account, not just one tab), so `account-boundary.spec.ts`'s two specs
@@ -1007,6 +1203,134 @@ Chromium launch flag this session did not wire up. The infrastructure (setup/tea
 project wiring) supports adding both without further scaffolding.
 
 ---
+
+## 6c. Scanner hardening suite (P151)
+
+Deterministic regressions for the scanner's lifecycle, cancellation, input safety, cache and confidence
+rules. Every asynchronous ordering is driven by explicit deferred promises (no sleep is the only proof).
+
+| File | Proves |
+|---|---|
+| `tests/ui/scanner-p151-ocr-lifecycle.test.ts` | worker finishing after `dispose()` is terminated (P130-10); 100 open/close cycles across every dispose-vs-load ordering → 0 live workers; a hung `recognize()` times out, discards its worker and does not wedge the queue |
+| `tests/ui/scanner-p151-visual-client-lifecycle.test.ts` | `dispose()` is terminal (no worker resurrection); dispose during init settles; crash and 30 s wedge terminate the worker; bitmaps closed on every path; 100 randomized lifecycles |
+| `tests/ui/scanner-p151-ocr-pipeline-cancel.test.ts` | `runOcrAnalysis` stops within one recognition of an abort, including while queued behind another scan for the canvas pool |
+| `tests/ui/scanner-p151-controller-ordering.test.ts` | latest-scan-wins, stale scans never publish diagnostics / debug URLs, dispose aborts, 100-scan burst → 1 result, no collection write |
+| `tests/ui/scanner-p151-image-input.test.ts` | header sniffing (PNG/JPEG/GIF/WebP/BMP, 20,000 fuzzed inputs), limits, bombs refused **with the decoder never invoked**, hostile and degenerate files, recovery |
+| `tests/ui/scanner-p151-guarded-capture.test.ts` | a capture finishing after a reset never reaches the store; 200 randomized interleavings → 0 live URLs |
+| `tests/ui/scanner-p151-state.test.ts` | a rejected photo is recorded on the start / no-match screens and cleared by every new attempt |
+| `tests/ui/scanner-p151-worker-cache.test.ts` | HTML never cached and self-healed; 50 index generations keep the cache at one generation; integrity purge |
+| `tests/domain/scanner/p151-confidence-policy.test.ts`, `tests/data/scanner-p151-confidence-real-index.test.ts` | visual-only never HIGH (20,000-run property); the moderate-tier disagreement cap; variant never inferred; a fixed-seed slice on the real index |
+| `tests/ui/scanner-p151-identification.test.ts` | the read-only contract: mapping, no `commitBatch`, cancellation as a result |
+| `tests/ui/scanner-p151-stress.test.ts` | orchestration stress (below) |
+| `tests/e2e/scanner-lifecycle-p151.spec.ts` | real Chromium, real workers: 0 live workers after repeated cold-start exits; a late capture leaves 0 blob URLs; bomb file → message and recovery; cancel/restart |
+| `tests/e2e/scanner-mobile-p151.spec.ts` | iPhone-14 emulation matrix (portrait, landscape, rotation, denied camera, slow CPU/assets, background/foreground, leave mid-scan) — emulation, not a device |
+
+**Stress (`pnpm scanner:stress`).** Seven modes — repeated scans, mixed valid/invalid frames, open/close,
+cancel/restart, bounded concurrency (in `scanner-p151-stress.test.ts`), plus worker crash/recovery and
+cache eviction (the lifecycle and cache files above, which the runner also invokes). `pnpm test` runs a
+20-iteration smoke size; `pnpm scanner:stress` runs 100 per mode (~35 s); `--scale 10` multiplies it;
+`-t "mode 4"` selects one mode. Real controller, `runOcrAnalysis` and canvas pool over doubles for
+Tesseract, the visual worker, the catalog and the canvas surface — it proves orchestration (no leaked
+worker / URL / bitmap / timer, no stale publication, bounded work), **not** recognition quality or
+real-browser memory.
+
+**Real-browser benchmark.** `pnpm exec tsx scripts/scanner-p151/browser-bench.mjs --url http://localhost:4391
+--label <name> [--cpu 4]` against any `pnpm build && pnpm preview` copy (fake session, stubbed catalog,
+synthetic fixtures). Compare two builds back to back on one machine; the numbers are not device numbers.
+
+**Confidence audit.** `pnpm scanner:confidence:audit [--samples 1500] [--out f.json]` — real production
+index, real matcher, synthetic proxies (there is no real-capture set); prints before/after HIGH-correct,
+false-HIGH and manual counts per distortion regime.
+
+**Mutation checks.** `node scripts/scanner-p151/run-mutations.mjs [--only M3,M6]` re-introduces 13 old
+defects one at a time; it refuses to run over uncommitted edits, counts a kill only for a real assertion
+failure (or a timeout for a hang defect — vitest reports a timeout as an opaque `STACK_TRACE_ERROR`),
+never for a load/compile error, and verifies every file is restored byte-for-byte (SHA-256).
+
+**Running the e2e specs.** `playwright.config.ts` gives `pnpm build && pnpm preview` 120 s to come up and
+a full build can exceed that on a loaded machine. Build first with the placeholder env, start
+`pnpm preview --port 4391`, then `PLAYWRIGHT_PREVIEW_PORT=4391 pnpm exec playwright test <spec>
+--project=desktop-chromium` — the global setup requires the served build to match the current commit and
+a clean tree.
+
+## 6d. Cross-track suite (P164)
+
+Everything here exercises two or three of the tracks at once. The witnesses are independent of the code under test: the account each
+request's bearer token belongs to (JWT `sub` read from the browser's own request log), the row count and md5 of **every** `user_id` table for
+**both** accounts (discovered from `information_schema`), and what the page shows.
+
+- `tests/data/p164-price-check-real-transport.test.ts` — raw JSON text through the real exact-transport guard and a real client into Price
+  Check: valid strings (18 digits) arrive exactly; an unsafe bare headline, an unsafe bare `valueMinor` and an unsafe literal anywhere else
+  are refused; the marker is absent for a conforming body.
+- `tests/data/p164-search-prices-skew.test.ts` — both skew directions of `search-prices` with the real mapper, wire builder and clients; a
+  legacy emission (`Number(bigint)`) is refused by Price Check and yields no price in the existing consumer. The rows are built by the function's
+  own expressions, pinned in its source text.
+- `tests/e2e/authenticated/p164-cross-track.spec.ts` — 12 scenarios: authenticated scan → explicit variant → price; direct A → B mid-scan;
+  A → B → A; same-user token refresh (in-progress scan and confirmed result); a held 620-line export (one line 2^53+1) while B signs in and prices;
+  the same export completing exactly; refresh outage during Price Check and during an export (recoverable error, identity untouched, retry works);
+  sign-out during scanner start-up; Add to Collection writes only on submit; a two-item `/scan` batch across an account switch.
+- `scripts/p164/mutants.mjs` — 16 mutants (`node scripts/scanner-p151/run-mutations.mjs --mutants scripts/p164/mutants.mjs`).
+
+**Run it.** Same as §6b, with one addition: export `P153_DB_URL="$DB_URL"` (the P161 ledger spec reads it). The authenticated project runs with
+**any number of workers** (P165: `--workers=1` is no longer needed; see §6e for why it was).
+
+**Local-stack hygiene learned here.** A `test:db` run that is killed midway leaves catalog fixtures behind (reset before re-running). pg_cron jobs are
+deactivated on the local stack (`update cron.job set active=false` as `supabase_admin`). Until P165 a *complete* DB run also left two extra Pikachu printings
+(`catalog_constraints.test.ts` never removed them), which CI's own order — `pnpm test:db`, then the authenticated project on the same database — turned into a
+failure of `price-check-ledger.spec.ts` (see §6e). The DB test now removes them; a spec that needs a single-printing card still must not pick one the DB suite
+touches, and a spec that uses a multi-printing card must choose a printing explicitly.
+
+## 6e. Parallel authenticated E2E: who owns what (P165)
+
+P164 recorded one failure in the full authenticated project under `--workers=2` (`price-check-ledger.spec.ts` `beforeAll`, six dependent tests not run) and
+worked around it with `--workers=1`. The cause was **not load**: both specs inserted their own row for the card the scanner photo prints, and `cards`
+is unique on `(set_id, local_id)` (`23505 cards_set_id_local_id_key`). A separate card in another set is no isolation either: `search_cards` looks across
+the whole catalog, so both cards would be candidates of every scan (measured: two rows for "Fauxosaur EX 049"). What can be isolated is ownership.
+
+| Fixture | Owner | Rule |
+|---|---|---|
+| Synthetic users, their ledgers, per-account provider prices | each spec | `createSyntheticUser` (unique email per call); deleted in that spec's `afterAll`, before the lease is given back |
+| The printed card "Fauxosaur EX 049" and its two printings | the lease helper `support/scanner-fixture-card.ts` | fixed ids, identical for every spec; a lease is a shared Postgres advisory lock on a dedicated session; idempotent untargeted `ON CONFLICT DO NOTHING`; deleted only by the **last** holder; a killed holder's lease disappears with its session; refuses a third printing (the explicit-variant tests stay meaningful) |
+| The portfolio recompute queue | `support/settle-derived-tables.ts` | wait until no due row is left for the spec's own users; a plain drain returns at once when another worker's transaction holds the rows (`SKIP LOCKED`) |
+| Market data (`fx_rates` EUR/USD → NOK) | shared, identical values | both specs upsert the same values on the same key; nothing deletes them |
+
+- `tests/db/p165_scanner_fixture_lease.test.ts` (real advisory locks, barriers observed in `pg_locks`, 25 seeded randomized interleavings, a killed
+  holder, a stray row on the printed identity, a third printing) and `tests/db/p165_settle_derived_tables.test.ts` (two real sessions).
+- `tests/config/e2e-fixture-isolation.test.ts` gained the static rules: no spec inserts a catalog card, exactly the specs that scan the printed photo lease it,
+  users are removed before the lease is released, nobody drains the queue by itself.
+- Verified under real parallelism (local stack, 106 migrations): the two specs together with 2 workers (21 passed); both specs with `--repeat-each=2` and
+  4 and 3 workers, i.e. all four serial groups running at once including a spec against itself (40 passed each). Repeat with `--repeat-each=N --workers=M`
+  where `M >=` the number of serial groups to force the worst overlap.
+- **Second defect, not about parallelism:** CI runs `pnpm test:db` and then the authenticated project on the same database. A complete DB run left two extra Pikachu
+  printings (`catalog_constraints.test.ts`), and the ledger spec's single-variant step searched Pikachu — a failure reproducible with `--workers=1`. Fixed at both
+  ends (see D-165).
+- **The whole authenticated project, 165 tests scheduled (`--workers=4`, this 12-thread desktop):**
+
+  | run | result |
+  |---|---|
+  | 1 (before the fixes above; after a full DB run) | 159 passed, 1 failed, 5 not run — the Pikachu assumption |
+  | 2 (fresh reset → DB suite → project) | 164 passed, 1 failed — `p149-refresh-failure` "refresh endpoint unreachable": `waitForURL` timed out 60 s after the 62 s cool-down. Not reproduced in 10 concurrent repeats of that test (12/12) nor in a six-worker run with two cross-track specs (36/36); **cause not established** |
+  | 3, 4 | 165 passed |
+  | 5 (slower machine: 10.2 min against 8.9) | 157 passed, 4 failed, 4 not run — a race in the ledger spec's phase log (the Home page's own dashboard reads, issued after the sign-in wait, counted as Price Check "writes"; fixed by attributing requests to the page that issued them) and three 30 s `networkidle` timeouts in `private-routes-smoke.spec.ts` |
+  | 6 (final test code; a Vite server that logged every event: no dependency re-optimisation or reload) | 165 passed |
+
+  Read a failing full run against this list before suspecting fixtures: the specs that wait on wall-clock windows (the P149 outage test's 62 s cool-down, the
+  30 s smoke tests) are the ones that move when the machine is busy. Against a database with 104 migrations the same project passes 162 of 165 (§ compatibility in HANDOVER).
+
+**Independent seam tests (P165).** Written from what the real code produces, not from P164's values:
+- `tests/data/p165-search-prices-real-function.test.ts` + `scripts/p165/edge-harness/` — the real `search-prices` code (index.ts and `_shared/*`)
+  executed under **Deno** with the provider's HTTP answer and the two database reads controlled (`import_map.json` stubs `npm:@supabase/supabase-js@2.112.3`,
+  so a version bump there needs the map updated). The response text is inspected before any parser sees it and then pushed through real clients into the
+  real consumers. Needs `deno` on the PATH; **without it those tests are skipped with a warning** (CI has no Deno today), the frozen-wire tests always run.
+- `tests/db/p165_scanner_commit_lease.test.ts` (real controller + real `addCardAcquisition` + production leased client, A → B → A with a lookup in flight,
+  an unheard storage rewrite), `tests/db/p165_export_overlap.test.ts` (two exports overlapping in one tab; the last request in flight),
+  `tests/ui/p165-read-only-scanner-runtime.test.ts`, `tests/domain/price-check/p165-variant-resolution.test.ts` (126 list shapes).
+- `tests/ui/p165-scan-session-latest-wins.test.ts` — 400 random orders of scan start / cancel / dispose against the real session.
+- `scripts/p165/mutants.mjs` — 14 mutants; the runner takes `config` per mutant for the database suites. Run it on a disposable copy of the tree:
+  `node scripts/scanner-p151/run-mutations.mjs --mutants scripts/p165/mutants.mjs`.
+- Tooling traps found here: scripting an edit turned `\b` into a backspace character inside a regular expression (an assertion that could never match) and a
+  `\n` inside a string literal into a real newline (a module that no longer loaded), in a shell heredoc and in a JS template literal alike. After scripting
+  edits into a file, load it and `grep -c $'\x08'` it.
 
 ## 7a. Privilege-convergence tests
 
@@ -1071,6 +1395,12 @@ round numbers chosen so allocation edge cases appear, one opening with tracked p
 grading submission, one partial sale, one holding with a missing price and one with a stale
 price.
 
+A fixture that depends on today's date goes through `tests/db/lib/fixture-dates.ts`
+(`monthlyFixtureDate`), never through `setUTCMonth` / `setUTCDate` arithmetic on a "10th of the
+month": the purchase-date trigger rejects a date after today + 1 day, so a hard-coded day passes on some days
+of the month and fails on others (P186: "monthly spend reconciles" failed on days 1-8). The helper has pure
+regression tests for day 1, 2, 10, month end, a leap day and the year boundary.
+
 Amounts are deliberately chosen to produce inexact division — a shipping charge of 100 over
 three lines is worth more as a test than one of 90.
 
@@ -1081,11 +1411,14 @@ three lines is worth more as a test than one of 90.
 Added when the application scaffold exists, not before — an empty pipeline in a docs-only
 repository is noise.
 
-Two jobs, on every push to `main` and every pull request. This diagram names every mandatory
+Three validation jobs (`build-and-test`, `native-checks`, `db-tests`), on every push to `main` or a
+`release/**` branch and every pull request. This diagram names every mandatory
 step; see §11 below for which of the two release-only/manual scripts and campaigns mentioned
 elsewhere in this document are deliberately NOT here.
 
 ```
+native-checks   install (root + apps/mobile-spike) → stage scanner assets (index from the repo,
+                model by pinned revision + SHA-256, cached) → native typecheck → lint → unit suites
 build-and-test  install → typecheck → lint → format → domain + property tests → build
                 → platform build verifier (dist/_headers, dist/sw.js artefact gate, P139)
                 → link/route checker (static dist/ mode, P139)
@@ -1099,6 +1432,12 @@ db-tests        supabase start → db reset → grant-audit → hostile-grant co
                 → independent M16 adversarial suite (execution, P139 — see §11)
                 → generate types
 ```
+
+`native-checks` (P190) is deliberately light: no emulator, no Android SDK, no credentials, no Supabase
+stack. The native backend suite (`test:backend`), device journeys and the Android/iOS builds stay local
+(§6g, docs/mobile). The scanner model is fetched from a Hugging Face revision pinned by commit and
+verified by SHA-256 before use; the cache is keyed on the pin file and the staging script re-hashes
+whatever it restores, so a cache can never substitute different bytes.
 
 `db-tests` runs a full ephemeral Supabase stack on the runner — migrations from empty, seed, then
 every database and authorization test. It uses **no remote credentials of any kind**, which is what
@@ -1140,6 +1479,10 @@ never run" does not count as covered — this table exists so that stops being t
 | Portfolio/snapshot/storage performance benchmarks | `FAST_REQUIRED_CI` (catastrophic-only threshold) | db-tests |
 | Independent M13 adversarial suite (typecheck + execution) | `FAST_REQUIRED_CI` | db-tests |
 | M13 export scale audit | `FAST_REQUIRED_CI` (catastrophic-only threshold) | db-tests |
+| P157 export suites: CSV formula/structure/exactness/scale/Quick CSV (`tests/data/export-*`, `pnpm test`) and `tests/db/p157_export_integrity.test.ts` | `FAST_REQUIRED_CI` | build-and-test, db-tests |
+| P157 export browser spec (`tests/e2e/authenticated/export-integrity.spec.ts`, real download + file read-back) | `FAST_REQUIRED_CI` | db-tests (authenticated E2E) |
+| P162 exports under the identity lease: the lease block of `tests/data/export-fetch-attacks.test.ts`, `tests/data/export-quick-portfolio-csv.test.ts`, `tests/ui/export-file-delivery.test.ts` (delivery gate), `tests/ui/export-identity-lease-coverage.test.ts` (wiring ledger), the production-path block of `tests/db/p157_export_integrity.test.ts` (real stack, `SimulatedTab.beforeRequest`) | `FAST_REQUIRED_CI` | build-and-test, db-tests |
+| P162 two-tab export browser spec (`tests/e2e/authenticated/p162-export-lease.spec.ts`: A → B → A, sign-out, a real token refresh, Quick CSV; downloads read back from disk) | `FAST_REQUIRED_CI` | db-tests (authenticated E2E) |
 | Independent M16 adversarial suite (tests/m16-independent) | `FAST_REQUIRED_CI` | db-tests (P139; was `NOT_RUN` — package existed, never wired in) |
 | `db:types` generation + diff-on-commit expectation | `FAST_REQUIRED_CI` | db-tests |
 | `scripts/deployment-check.mjs` (live Cloudflare headers/CSP/PWA) | `RELEASE_ONLY` | manual, after any deploy — needs a real `DEPLOYMENT_URL` + `SUPABASE_URL` CI never has |
@@ -1163,3 +1506,51 @@ supplies the env" and "an optional local convenience skip when it doesn't" descr
 correctly in its two different contexts, per this file's own §8 instruction not to make a local
 convenience test universally fail just because an env var it can supply for itself is briefly
 absent mid-setup.
+
+## 6f. The CI job must provide what the E2E specs read (P188)
+
+`price-check-ledger.spec.ts` reads `P153_DB_URL` (§6d "Run it") and refuses to run without it, but the `db-tests` job exported only `DB_URL`. Run by hand against a
+local stack with the CI's own variable names, the first full authenticated project of the merged line failed that spec's `beforeAll` and left six dependent tests
+unrun. Neither P164 nor P165 could have seen it: no GitHub run existed for either. The job now exports `P153_DB_URL` from `supabase status` (local stack only), and
+`tests/config/e2e-ci-env.test.ts` fails if any `process.env.X` read under `tests/e2e/authenticated/` is not exported by `ci.yml` (with an explicit allow-list of
+variables the runner or a default supplies). Lesson: after merging suites, run the authenticated project with exactly the environment the workflow builds, not the
+one a developer's shell happens to have.
+
+The same first run showed two timing failures under two workers on a busy desktop that passed when re-run alone (recorded with their re-run results in
+`docs/release/P188_RELEASE_CANDIDATE.md` §4): a sign-in that did not leave `/login` within 15 s, and the P149 refresh-outage spec waiting 90 s for its alert.
+Do not read a single red run of these as a regression without re-running the spec alone; do not read a green re-run as proof the cause is gone either.
+
+**Documentation checks in CI (P188).** `node scripts/check-doc-size.mjs`, `check-project-state.mjs` and `check-doc-links.mjs` run in `build-and-test`; the link check
+covers `HANDOVER.md`, `CLAUDE.md`, `AGENTS.md`, `docs/CURRENT_STATE/`, `docs/handover/`, `docs/release/` and `docs/mobile/`.
+
+
+## 6g. Restore-safe account deletion (P189)
+
+The one invariant under test: **after a deletion is confirmed, no normal restore of any backup — even
+one older than the deletion — leaves that identity active in a database that may serve.** Everything
+below is synthetic; no test touches a hosted project.
+
+Stack requirements (local; CI generates them, see `.github/workflows/ci.yml`): the edge runtime must
+be started with `ERASURE_REGISTRY_URL`, `ERASURE_REGISTRY_TOKEN` (`supabase/config.toml`
+`[edge_runtime.secrets]`), and the tests need `ERASURE_REGISTRY_KEY` and `P156_DB_CONTAINER` (the
+stack's database container). `tests/db/global-setup.ts` starts the file-backed registry sink on the
+function's address; without these variables the deletion suites are skipped or, through the function,
+correctly refused (`503 deletion_unavailable`). After `supabase db reset` re-deactivate the cron jobs
+and delete `%TEMP%/p189-erasure-registry-<port>.ndjson` (the database's receipts and the registry must
+reset together — a registry that vanished while receipts remain is exactly what the gate refuses).
+
+| Layer | File | Proves |
+|---|---|---|
+| format, integrity, sink contract | `tests/ops/erasure-registry.test.ts` (42) | strict parse; every kind of tampering/torn/duplicate/unsupported record is refused; idempotent append; the sink client only accepts a confirmed record for the record it sent |
+| gate decisions | `tests/ops/restore-gate.test.ts` (13) | verdict → exit code; a stamp never authorises promotion alone; only hashes and integers reach SQL |
+| workflow ordering | `tests/ops/account-deletion-core.test.ts` | registry append + confirmation precede the purge; unavailable/failed registry leaves nothing deleted |
+| real database + real registry | `tests/db/p189_restore_safe_erasure.test.ts` (22) | R0 hazard (24 relations resurrect); R1/R4/R8 deleted accounts replayed away, live account byte-identical; R2 backup after (some) deletions; R3 idempotent; R5/R6 missing/empty/malformed/torn/tampered/wrongly-keyed registry refused and the image untouched; R7 unknown/already-gone entry harmless; registry **older than the backup** and operator-pinned head refused; stamp invalidated by a grown registry |
+| deployed function + Auth | `tests/authorization/p189_deletion_restore_safety.test.ts` (15) | registry failure leaves the account pending with all data and a retry completes; the purge refuses before the record exists; receipt = registry record (SQL hash equals TS hash); operator-only surface; A cannot delete B; anonymous/stale/racing writes; no SQL/table/function text in any answer |
+| existing deletion suites | `p152_*`, `p156_*`, `function_grants`, hostile-grant convergence | adapted to the recorded-erasure contract |
+| full tooling drill | `P189_FULL_DRILL=1 pnpm test:db tests/db/p189_restore_safe_erasure.test.ts -t "full disaster"` | real `pnpm db:backup` → `scripts/p137/restore-drill.ts` with the gate as a required step; `--no-erasure-gate` fails loudly; mutation F refused |
+| web | `tests/data/account-deletion-client.test.ts`, `tests/ui/account-deletion-copy.test.ts`, `tests/e2e/account-deletion-public.spec.ts`, `tests/e2e/authenticated/account-deletion.spec.ts`, `a11y.spec.ts` | lease-bound client, closed error vocabulary, public page without a session, real-browser deletion against the deployed function, no unsupported retention claim |
+| native | `apps/mobile-spike/tests/unit/account-deletion.test.tsx` | same contract, confirmation friction, identity-change safety, journal/session/photo cleanup, fixed error copy |
+| mutations | `node scripts/p189/mutation-proofs.mjs` | 15 mutants (restore without registry, verification skipped, user omitted from replay, wrong/live user replayed, second replay corrupts, record after success, A deletes B, anonymous endpoint, no barrier, native journal survives, raw SQL error shown, retention claim, session valid after delete, promote before postcheck) — each must be killed by a real assertion |
+
+Commit before running the mutation harness: it patches tracked files and restores them with
+`git checkout`.

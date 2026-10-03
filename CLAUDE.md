@@ -7,12 +7,20 @@ global instructions still apply.
 
 ## Start every session
 
-1. Read [HANDOVER.md](HANDOVER.md). It is the current-state document and takes precedence over
-   assumptions carried from anywhere else.
-2. Read only the canonical docs relevant to the task at hand. Do not load all of `docs/`.
-3. Run `git status` and `git log --oneline -10`.
-4. Do not redo work marked complete in HANDOVER.
-5. Never ask the user to re-explain the project. Reconstruct state from the repository.
+1. Read [HANDOVER.md](HANDOVER.md) in full. It is the current-state document and takes
+   precedence over assumptions carried from anywhere else.
+2. Read [docs/PROJECT_STATE.json](docs/PROJECT_STATE.json) for machine-readable pointers
+   (released SHA, local candidate SHAs, migration counts) — cross-check against HANDOVER.md.
+3. Read only the canonical docs relevant to the task at hand (HANDOVER.md §16 has the map). Do
+   not load all of `docs/`.
+4. Run `git status` and `git log --oneline -10`.
+5. Do not redo work marked complete in HANDOVER.
+6. Never ask the user to re-explain the project. Reconstruct state from the repository.
+
+**Do not infer current project state from `docs/handover/archive/`.** Search it only when you
+need historical narrative or "why" context. It holds superseded material by design (see
+`docs/handover/README.md` and `docs/handover/STATE_RECONCILIATION.md`); if it disagrees with
+HANDOVER.md or PROJECT_STATE.json, those two win, always.
 
 ## Planning is frozen
 
@@ -31,38 +39,17 @@ a contradiction in place:
 3. [docs/FINANCIAL_MODEL.md](docs/FINANCIAL_MODEL.md) — every monetary semantic
 4. [docs/DECISIONS.md](docs/DECISIONS.md) — accepted decisions
 5. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/DATA_MODEL.md](docs/DATA_MODEL.md), [docs/SECURITY.md](docs/SECURITY.md)
-6. [HANDOVER.md](HANDOVER.md) — execution state
+6. [HANDOVER.md](HANDOVER.md) and [docs/PROJECT_STATE.json](docs/PROJECT_STATE.json) — execution state
 7. The implementation
 
 ## Canonical documents
 
-| File | Owns |
-|---|---|
-| `HANDOVER.md` | Current state. Read first, update last. |
-| `docs/PRODUCT_SPEC.md` | What the product does. Scope. Non-goals. |
-| `docs/FINANCIAL_MODEL.md` | Every formula, term and invariant involving money. |
-| `docs/DATA_MODEL.md` | Schema, ownership, lifecycle transitions. |
-| `docs/ARCHITECTURE.md` | Stack and why. |
-| `docs/SECURITY.md` | Trust boundaries, RLS, invites, secrets. |
-| `docs/COST_POLICY.md` | Zero-cost constraint and the verified service matrix. |
-| `docs/PLANNING_FREEZE.md` | The frozen scope and semantics implementation answers to. |
-| `docs/TESTING.md` | Test strategy and mandatory gates. |
-| `docs/DEVELOPMENT.md` | Environment, commands, migration rules. |
-| `docs/RESTORE_RUNBOOK.md` | Disaster-recovery restore procedure and its validation gates. |
-| `docs/GIT_WORKFLOW.md` | Branch/PR/CI/merge workflow, commit and release conventions. |
-| `docs/ROADMAP.md` | Phases and gates. |
-| `docs/DECISIONS.md` | Decisions that are expensive to reverse. |
-| `docs/RESEARCH.md` | Findings that changed a decision, with sources and dates. |
-| `docs/API_SOURCES.md` | External services: status, terms, failure strategy. |
-| `docs/UX_FLOWS.md` | Workflow behaviour. Source of E2E cases. |
-| `docs/DESIGN_SYSTEM.md` | Visual direction and component conventions. |
-| `docs/SCANNER_RESEARCH.md` | Scanner prep. Re-research before building. |
-| `docs/BACKLOG.md` | Unscheduled work, including what was rejected and why. |
-| `docs/PUBLICATION_CHECKLIST.md` | Gate before the repository ever goes public. |
-| `docs/PROJECT_JOURNAL.md` | Engineering record: real problems and their resolutions. |
-| `CHANGELOG.md` | Released changes. |
+The full, current canonical-documentation map (one authoritative file per concept) lives in
+[HANDOVER.md](HANDOVER.md) §16 — read it there, not here, so this list can't silently drift out
+of sync with HANDOVER.md's own copy. It now also covers the `docs/CURRENT_STATE/` current-state
+expansions and the `docs/handover/` archive introduced by P176.
 
-Each has one purpose. Do not duplicate content across them — link instead.
+Each canonical file has one purpose. Do not duplicate content across them — link instead.
 
 ---
 
@@ -98,8 +85,12 @@ frontend filtering for access control. The `service_role` key never reaches the 
 **Secrets.** Never commit any. Never print one into documentation, logs, error messages, test
 fixtures or commit messages. `.env.example` holds names and placeholders only.
 
-**GitHub visibility.** The repository is private. **Never make it public.** That requires the
-owner's explicit approval plus a completed pass through PUBLICATION_CHECKLIST.
+**GitHub visibility.** `PUBLIC_BY_OWNER_CHOICE` — the repository is intentionally public (owner
+decision, recorded in [DECISIONS.md](docs/DECISIONS.md) D-190). Public visibility is **not** a
+blocker or a warning and is **not** a reason to withhold a push. Public development does **not**
+authorize committing credentials, Production configuration secrets, personal data, signing material
+or private backups — secret scanning stays mandatory before every push. No session changes
+visibility. Push policy: [GIT_WORKFLOW.md](docs/GIT_WORKFLOW.md) §13.
 
 **Real data.** Everything committed is synthetic. Never commit the user's actual collection,
 purchases or valuations.

@@ -1,12 +1,15 @@
 import { useState } from 'react'
 import { Link, useParams, useSearch } from '@tanstack/react-router'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useLeasedAction } from '../../auth/useLeasedMutation'
+import { leasedDb } from '../../data/leased-db'
 import { getSale, voidSale } from '../../data/sales'
 import { toDecimalString } from '../../domain/money'
 import type { CurrencyCode } from '../../domain/currency'
 import { CONDITION_LABEL, ORIGIN_LABEL } from '../collection/labels'
 import { Button, FormMessage } from '../../ui/form'
 import { Sheet } from '../../ui/Sheet'
+import { userMessage } from '../../platform/user-error'
 
 /** UX_FLOWS.md F8.1's sale-detail audit trail (prompt §58). Every figure here is traceable back to
  *  the exact lots that left inventory — no internal UUIDs, no fabricated result where the cost
@@ -20,8 +23,8 @@ export function SaleDetailPage() {
 
   const detail = useQuery({ queryKey: ['sale', saleId], queryFn: () => getSale(saleId) })
 
-  const voidMutation = useMutation({
-    mutationFn: () => voidSale(saleId),
+  const voidMutation = useLeasedAction({
+    mutationFn: (lease) => voidSale(saleId, leasedDb(lease)),
     onSuccess: async () => {
       setVoidOpen(false)
       await queryClient.invalidateQueries({ queryKey: ['sale', saleId] })
@@ -33,7 +36,7 @@ export function SaleDetailPage() {
       await queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] })
     },
     onError: (err: Error) => {
-      setVoidError(err.message)
+      setVoidError(userMessage(err))
     },
   })
 

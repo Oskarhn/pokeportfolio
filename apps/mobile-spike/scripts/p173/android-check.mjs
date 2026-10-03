@@ -1,0 +1,1332 @@
+#!/usr/bin/env node
+/**
+ * P173 Android runtime check: drives the INSTALLED integrated app (release build, Hermes, embedded
+ * bundle, real native modules) on the P173 emulator through the catalog search / Price Check /
+ * identity / session journey. LOCAL ONLY, synthetic users only. The photo lifecycle around Activity
+ * recreation is scripts/android-p167-check.mjs (run against the same build).
+ *
+ *   ANDROID_SERIAL=emulator-5580 SPIKE_PACKAGE=invalid.pokeportfolio.spike.p173 node scripts/p173/android-check.mjs      (P173_STEPS=<regex> for a subset)
+ *
+ * Parallel-session safety: every adb call targets ANDROID_SERIAL (required; the script refuses to run
+ * without it and unless the device is the AVD p173_api36), and only this app's package is cleared,
+ * started or stopped. Global emulator settings it changes (font scale, night mode, density, stylus
+ * handwriting, autofill, network) are restored at the end.
+ *
+ * Preconditions: `node scripts/p173/backend.mjs start|seed|write-env` and the synthetic TCGdex mock
+ * (`node scripts/p169/mock-tcgdex.mjs --stack=p173`) are running, and the APK from
+ * scripts/p173/build-apk.mjs (EXPO_PUBLIC_RUNTIME_PROOF=1) is installed. Credentials come from the
+ * gitignored fixture files and go to adb only; no e-mail address is printed.
+ *
+ * Output: .build/p173-evidence/{report.json, *.png, logcat-*.txt} (gitignored).
+ */
+import './env.mjs'
+import { CARDS as FIXTURE_CARDS } from '../p169/catalog-fixture.mjs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { spawnSync } from 'node:child_process'
+import {
+  PACKAGE,
+  adb,
+  byId,
+  byIdPrefix,
+  byText,
+  dump,
+  screencap,
+  shell,
+  sleep,
+  tap,
+  waitFor,
+} from '../android-adb.mjs'
+import {
+  amStart,
+  appPid,
+  crashCount,
+  decodePng,
+  focusedWindow,
+  disableAutofill,
+  localActivityId,
+  rootAvailable,
+  openPhotoScreen,
+  waitForPickerOrState,
+  chooseNewestInPicker,
+  pushSyntheticImage,
+  pickerCacheFiles,
+  activityAfterChange,
+  plain,
+  pxPerDp,
+  rows,
+  text,
+} from '../android-p167-lib.mjs'
+
+if (!/^emulator-\d+$/.test(process.env.ANDROID_SERIAL ?? '')) {
+  console.error('set ANDROID_SERIAL to the P173 emulator serial (never another session’s)')
+  process.exit(2)
+}
+const SERIAL = process.env.ANDROID_SERIAL
+const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
+const outDir = join(appRoot, '.build', 'p173-evidence')
+mkdirSync(outDir, { recursive: true })
+const readJson = (rel) => JSON.parse(readFileSync(join(appRoot, '.local-backend', rel), 'utf8'))
+const shared = readJson('fixture.json') // P167 users A/B (collections)
+const catalog = readJson('p173/fixture.json').catalog // P169 catalog ids
+const pub = readJson('p173/public-env.json')
+const A = shared.users.a
+const B = shared.users.b
+const cardId = (key) => catalog[key].cardId
+const variantId = (key, printing) => catalog[key].variants[printing]
+
+const steps = []
+const metrics = {}
+const only = process.env.P173_STEPS ? new RegExp(process.env.P173_STEPS, 'i') : null
+class NotRun extends Error {}
+
+/** Which screen roots the view tree shows after a step (a native stack keeps lower screens listed). */
+function screenRoots() {
+  try {
+    return dump()
+      .map((n) => n.id.replace(/^.*:id./, ''))
+      .filter((id) =>
+        /^(p169-search|p169-card|p169-photo-entry|p170-add-intent|price-check-home|collection-list|card-detail|profile|login-screen)$/.test(
+          id,
+        ),
+      )
+  } catch {
+    return []
+  }
+}
+function record(step, status, detail) {
+  steps.push({ step, status, detail, screens: screenRoots() })
+  console.log(
+    `${status} ${step}${detail ? `  ${JSON.stringify(detail).slice(0, 600)}` : ''}  screens=${steps.at(-1).screens.join('+')}`,
+  )
+}
+async function run(step, fn) {
+  if (only && !only.test(step)) return
+  try {
+    record(step, 'PASS', await fn())
+  } catch (e) {
+    if (e instanceof NotRun) return record(step, 'NOT_RUN', { reason: e.message })
+    const name = `fail-${String(steps.length + 1)}`
+    try {
+      shot(name)
+    } catch {
+      // best effort; the failure is what gets recorded
+    }
+    record(step, 'FAIL', { error: String(e.message ?? e).slice(0, 500), screenshot: `${name}.png` })
+  }
+}
+const shot = (name) => {
+  const png = screencap()
+  writeFileSync(join(outDir, `${name}.png`), png)
+  return png
+}
+const assert = (cond, msg) => {
+  if (!cond) throw new Error(msg)
+}
+const NB = ' '
+
+// ---- input helpers (same verified-typing approach as P169's driver) --------------------------------
+function type(t) {
+  if (!/^[A-Za-z0-9 ._@+-]+$/.test(t)) throw new Error('type: unsupported characters')
+  // small chunks: one long injection is sometimes cut off by the keyboard (seen after hours of uptime)
+  for (let i = 0; i < t.length; i += 6) {
+    adb(['shell', 'input', 'text', t.slice(i, i + 6).replaceAll(' ', '%s')])
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 120)
+  }
+}
+async function typeInto(id, t, { secret = false } = {}) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const { value } = await waitFor((ns) => byId(ns, id), { label: id })
+    tap(value)
+    await sleep(700)
+    const before = byId(dump(), id)?.text ?? ''
+    if (attempt > 0 || (before !== '' && !secret && before === t)) {
+      shell('input keyevent KEYCODE_MOVE_END')
+      for (let i = 0; i < Math.max(before.length, t.length) + 2; i += 1) shell('input keyevent 67')
+    }
+    type(t)
+    await sleep(400)
+    const now = byId(dump(), id)?.text ?? ''
+    if (secret ? now.length === t.length : now === t) return
+  }
+  throw new Error(`input did not reach ${id}`)
+}
+const back = () => shell('input keyevent 4')
+async function tapId(id, label = id) {
+  tap((await waitFor((ns) => byId(ns, id), { label })).value)
+}
+/** Looks on the current screen, then scrolls down, then back up (the target may be above the fold). */
+async function findScrolling(id, tries = 8) {
+  for (const down of [true, false]) {
+    for (let i = 0; i < tries; i += 1) {
+      const nodes = dump()
+      const node = byId(nodes, id)
+      if (node) return { node, nodes }
+      shell(
+        down
+          ? 'input touchscreen swipe 540 1700 540 700 300'
+          : 'input touchscreen swipe 540 700 540 1700 300',
+      )
+      await sleep(400)
+    }
+  }
+  throw new Error(`not found after scrolling: ${id}`)
+}
+/** Every P169_PERF line seen so far in earlier windows (logcat is a small ring buffer: it wraps). */
+const perfArchive = []
+/** `P173_RUNTIME created count=N` lines from windows already cleared (one per created runtime). */
+const runtimeArchive = []
+/** Archives what logcat holds and clears it, so counts taken afterwards start from zero. */
+function perfMark() {
+  perfArchive.push(...perfLines())
+  runtimeArchive.push(...runtimeCounts())
+  adb(['logcat', '-c'], { allowFail: true })
+}
+function runtimeCounts() {
+  return adb(['logcat', '-d', '-v', 'brief', 'ReactNativeJS:V', '*:S'], { allowFail: true })
+    .split('\n')
+    .map((l) => /P173_RUNTIME created count=(\d+)/.exec(l))
+    .filter(Boolean)
+    .map((m) => Number(m[1]))
+}
+function perfLines() {
+  return adb(['logcat', '-d', '-v', 'brief', 'ReactNativeJS:V', '*:S'], { allowFail: true })
+    .split('\n')
+    .filter((l) => l.includes('P169_PERF'))
+    .map((l) => JSON.parse(l.slice(l.indexOf('{'))))
+}
+
+// ---- journey helpers -----------------------------------------------------------------------------------
+async function goSearch() {
+  for (let i = 0; i < 10; i += 1) {
+    let n = dump()
+    if (byId(n, 'p169-search')) return
+    if (!n.some((x) => x.pkg === PACKAGE)) {
+      // mid-recreation (an empty tree) or the app left the foreground: never press Back then
+      if (!focusedWindow().includes(PACKAGE)) amStart()
+      await sleep(1500)
+      continue
+    }
+    // a deeper Search-stack screen: pop it
+    if (byId(n, 'p169-card') || byId(n, 'p169-photo-entry') || byId(n, 'p170-add-intent')) {
+      back()
+      await sleep(800)
+      continue
+    }
+    if (byId(n, 'tab-search')) {
+      tap(byId(n, 'tab-search'))
+      for (let w = 0; w < 10; w += 1) {
+        await sleep(400)
+        n = dump()
+        if (byId(n, 'p169-search')) return
+      }
+    } else await sleep(800)
+  }
+  const ids = [
+    ...new Set(
+      dump()
+        .map((n) => n.id.replace(/^.*:id./, ''))
+        .filter(Boolean),
+    ),
+  ]
+  throw new Error(`could not reach the search screen; visible: ${ids.slice(0, 25).join(', ')}`)
+}
+async function search(query) {
+  await goSearch()
+  const n = dump()
+  const current = byId(n, 'p169-search-input')?.text ?? ''
+  if (current !== '' && !byId(n, 'p169-search-status-idle')) {
+    await tapId('p169-search-input')
+    shell('input keyevent KEYCODE_MOVE_END')
+    for (let i = 0; i < current.length; i += 1) shell('input keyevent 67')
+  }
+  const t0 = Date.now()
+  await typeInto('p169-search-input', query)
+  shell('input keyevent 66')
+  const r = await waitFor(
+    (ns) => byIdPrefix(ns, 'p169-search-status-').find((x) => /ready|empty|error/.test(x.id)),
+    { timeoutMs: 30000, label: `results for ${query}` },
+  )
+  return {
+    ms: Date.now() - t0,
+    status: r.value.id.replace(/.*p169-search-status-/, ''),
+    nodes: r.nodes,
+  }
+}
+async function openHit(key) {
+  const { node } = await findScrolling(`p169-hit-${cardId(key)}`)
+  tap(node)
+  await waitFor((ns) => byId(ns, 'p169-card') || byId(ns, 'p169-card-identity'), {
+    label: 'card screen',
+    timeoutMs: 30000,
+  })
+}
+async function choose(key, printing) {
+  const { node } = await findScrolling(`p169-variant-${variantId(key, printing)}`)
+  const t0 = Date.now()
+  tap(node)
+  const r = await waitFor(
+    (ns) => byIdPrefix(ns, 'p169-raw-')[0] || byIdPrefix(ns, 'p169-lookup-error-')[0],
+    { timeoutMs: 30000, label: 'price result' },
+  )
+  return { ms: Date.now() - t0, nodes: r.nodes }
+}
+/**
+ * Signs in with VERIFIED typing (injected input is sometimes dropped, the keyboard's own suggestions
+ * can interfere): each field is checked to hold what was typed, with one retry. The address is
+ * compared in-process and never printed.
+ */
+async function signIn(user) {
+  await waitFor((ns) => byId(ns, 'login-email'), { label: 'login form', timeoutMs: 60000 })
+  await typeInto('login-email', user.email)
+  await typeInto('login-password', user.password, { secret: true })
+  shell('input keyevent 66')
+  const t0 = Date.now()
+  const r = await waitFor((ns) => (rows(ns).length > 0 || byId(ns, 'login-error')) && ns, {
+    timeoutMs: 60000,
+    label: 'first collection page',
+  })
+  if (byId(r.value, 'login-error')) throw new Error('login error: ' + text(r.value, 'login-error'))
+  return { firstPageVisibleMs: Date.now() - t0, nodes: r.value }
+}
+
+async function signOut() {
+  await tapId('tab-profile', 'profile tab')
+  tap((await findScrolling('sign-out')).node)
+  await waitFor((ns) => byId(ns, 'login-screen'), { label: 'login after sign-out' })
+}
+
+// ---- read-only ledger proof (docker exec into THIS project's database only) ----------------------------
+const LEDGER = [
+  'holdings',
+  'acquisition_lots',
+  'manual_valuations',
+  'manual_card_definitions',
+  'purchases',
+  'purchase_lines',
+  'sales',
+  'sale_lines',
+  'lot_disposals',
+  'lot_cost_adjustments',
+  'sealed_products',
+  'openings',
+  'price_snapshots',
+  'fx_rates',
+  'profiles',
+]
+function psqlValue(sql) {
+  const r = spawnSync(
+    'docker',
+    [
+      'exec',
+      '-i',
+      pub.dbContainer,
+      'psql',
+      '-U',
+      'postgres',
+      '-d',
+      'postgres',
+      '-At',
+      '-v',
+      'ON_ERROR_STOP=1',
+    ],
+    { input: sql, encoding: 'utf8', env: { ...process.env, MSYS_NO_PATHCONV: '1' } },
+  )
+  if (r.status !== 0) throw new Error(`psql failed: ${r.stderr}`)
+  return r.stdout.trim()
+}
+function ledgerHashes() {
+  const sql = LEDGER.map(
+    (t) =>
+      `select '${t}' || '=' || count(*) || ':' || coalesce(md5(string_agg(x::text, '|' order by x::text)), '-') from public.${t} x;`,
+  ).join('\n')
+  const r = spawnSync(
+    'docker',
+    [
+      'exec',
+      '-i',
+      pub.dbContainer,
+      'psql',
+      '-U',
+      'postgres',
+      '-d',
+      'postgres',
+      '-At',
+      '-v',
+      'ON_ERROR_STOP=1',
+    ],
+    { input: sql, encoding: 'utf8', env: { ...process.env, MSYS_NO_PATHCONV: '1' } },
+  )
+  if (r.status !== 0) throw new Error(`psql failed: ${r.stderr}`)
+  return Object.fromEntries(
+    r.stdout
+      .trim()
+      .split('\n')
+      .map((l) => l.split('=')),
+  )
+}
+
+// ---------------------------------------------------------------------------------------------------
+const device = {
+  serial: SERIAL,
+  avd: adb(['emu', 'avd', 'name']).split('\n')[0].trim(),
+  model: shell('getprop ro.product.model').trim(),
+  android: shell('getprop ro.build.version.release').trim(),
+  sdk: shell('getprop ro.build.version.sdk').trim(),
+  abi: shell('getprop ro.product.cpu.abi').trim(),
+  size: shell('wm size').trim(),
+  density: shell('wm density').trim(),
+}
+metrics.device = device
+if (device.avd !== 'p173_api36') {
+  console.error(`refusing: ${SERIAL} runs AVD ${device.avd}, not p173_api36`)
+  process.exit(2)
+}
+const width = Number(/(\d+)x\d+/.exec(device.size)?.[1] ?? 1080)
+const dp = pxPerDp()
+const MIN_PX = Math.floor(48 * dp)
+
+/** Clickable controls of the app under 48 dp (a row cut off by the list's own edge is not undersized). */
+function undersized(nodes, minPx = MIN_PX) {
+  const list = byId(nodes, 'p169-results')?.bounds
+  const tabTop = byId(nodes, 'tab-search')?.bounds?.y1 ?? Infinity
+  return nodes
+    .filter((x) => x.clickable && x.pkg === PACKAGE && x.bounds && !/^tab-/.test(x.id))
+    .filter((x) => {
+      const b = x.bounds
+      // a result row cut off by the list edge or by the tab bar is partly scrolled out, not undersized
+      if (
+        list &&
+        /^p169-hit-/.test(x.id) &&
+        (b.y1 <= list.y1 + 2 || b.y2 >= Math.min(list.y2, tabTop) - 2)
+      )
+        return false
+      return b.y2 - b.y1 < minPx || b.x2 - b.x1 < minPx
+    })
+    .map((x) => ({
+      id: x.id || x.desc || x.text,
+      hDp: Math.round((x.bounds.y2 - x.bounds.y1) / dp),
+      wDp: Math.round((x.bounds.x2 - x.bounds.x1) / dp),
+    }))
+}
+const targets = {}
+function checkTargets(name, nodes) {
+  const bad = undersized(nodes)
+  targets[name] = bad
+  assert(bad.length === 0, `${name}: targets under 48 dp ${JSON.stringify(bad)}`)
+}
+
+const stylusBefore = shell('settings get secure stylus_handwriting_enabled').trim()
+shell('settings put secure stylus_handwriting_enabled 0')
+const restoreAutofill = disableAutofill()
+shell('settings put system font_scale 1.0')
+shell('cmd uimode night no')
+shell(`am force-stop ${PACKAGE}`)
+shell(`pm clear ${PACKAGE}`)
+adb(['logcat', '-c'])
+adb(['logcat', '-b', 'crash', '-c'], { allowFail: true })
+
+await run('1 cold start (clean data) to the login screen', async () => {
+  const s = amStart()
+  metrics.coldStart = s
+  await waitFor((ns) => byId(ns, 'login-screen'), { label: 'login screen', timeoutMs: 60000 })
+  shot('01-login')
+  return s
+})
+
+await run('2 Hermes: P166 (shell money) + P169 (Price Check domain) proofs on device', async () => {
+  const log = adb(['logcat', '-d', '-v', 'brief', 'ReactNativeJS:V', '*:S'])
+  writeFileSync(
+    join(outDir, 'logcat-proofs.txt'),
+    log
+      .split('\n')
+      .filter((l) => /P16[69]_PROOF/.test(l))
+      .join('\n'),
+  )
+  const p166 = log.split('\n').find((l) => l.includes('P166_PROOF RESULT'))
+  const p169 = log.split('\n').find((l) => l.includes('P169_PROOF RESULT'))
+  assert(p166 && /fail=0/.test(p166) && /hermes/.test(p166), `P166 proof: ${String(p166)}`)
+  assert(p169 && /fail=0/.test(p169) && /hermes/.test(p169), `P169 proof: ${String(p169)}`)
+  return { p166: p166.slice(p166.indexOf('RESULT')), p169: p169.slice(p169.indexOf('RESULT')) }
+})
+
+let ledgerBefore = null
+await run('3 sign in as A: the collection loads with the exact seeded total', async () => {
+  const r = await signIn(A)
+  const total = plain(text(r.nodes, 'collection-total') ?? '')
+  assert(total === '8 917 127 262 195 456,87 kr', `collection total ${JSON.stringify(total)}`)
+  shot('03-collection-a')
+  ledgerBefore = ledgerHashes()
+  return { firstPageVisibleMs: r.firstPageVisibleMs, total, rowsVisible: rows(r.nodes).length }
+})
+
+await run('4 four tabs with clean names (Collection, Search, Price Check, Profile)', async () => {
+  const n = dump()
+  const names = ['tab-collection', 'tab-search', 'tab-pricecheck', 'tab-profile'].map(
+    (id) => byId(n, id)?.desc,
+  )
+  assert(
+    JSON.stringify(names) === JSON.stringify(['Collection', 'Search', 'Price Check', 'Profile']),
+    `tab names ${JSON.stringify(names)}`,
+  )
+  return { names }
+})
+
+await run('5 Price Check tab: read-only landing, explicit photo copy', async () => {
+  await tapId('tab-pricecheck')
+  const n = (await waitFor((ns) => byId(ns, 'price-check-home') && ns, { label: 'landing' })).value
+  assert(byId(n, 'price-check-read-only'), 'read-only statement')
+  assert(
+    text(n, 'pc-home-photo-note') === 'A photo does not currently identify the card automatically.',
+    `photo note ${String(text(n, 'pc-home-photo-note'))}`,
+  )
+  checkTargets('price check landing', n)
+  shot('05-price-check-landing')
+  return {}
+})
+
+await run(
+  '6 search: same-name cards are shown distinctly (set + number), none selected',
+  async () => {
+    await tapId('tab-search')
+    const r = await search('P169 Pikachu')
+    metrics.coldSearchMs = r.ms
+    assert(r.status === 'ready', `status ${r.status}`)
+    const base = byId(r.nodes, `p169-hit-${cardId('pika-base-025')}`)
+    const reprint = byId(r.nodes, `p169-hit-${cardId('pika-reprint-025')}`)
+    assert(base && reprint, 'both #025 Pikachu hits visible')
+    assert(
+      /P169 Base Set, number 025/.test(base.desc) &&
+        /P169 Legends Reprint, number 025/.test(reprint.desc),
+      'set + number in the labels',
+    )
+    assert(/Same name as another result/.test(base.desc), 'same-name flag')
+    assert(!byId(r.nodes, 'p169-card'), 'no card auto-opened')
+    checkTargets('search results', r.nodes)
+    shot('06-search-results')
+    return { ms: r.ms }
+  },
+)
+
+await run('7 choose the card: two printings require a choice, no price before it', async () => {
+  await openHit('pika-base-025')
+  const n = (await waitFor((ns) => byId(ns, 'p169-printing-choice') && ns, { label: 'choice' }))
+    .value
+  assert(!byIdPrefix(n, 'p169-obs-')[0], 'no observation before the choice')
+  assert(!byId(n, 'p169-add-to-collection'), 'no add-to-collection before the choice')
+  checkTargets('printing choice', n)
+  shot('07-choose-printing')
+  return {}
+})
+
+await run(
+  '8 raw provider price: both providers, source money, NOK reference, freshness',
+  async () => {
+    const r = await choose('pika-base-025', 'reverse|')
+    metrics.firstPriceRequestMs = r.ms
+    const n = r.nodes
+    const cm = text(n, 'p169-obs-tcgdex_cardmarket-source')
+    // the second provider's card may be below the fold
+    const tp = text(
+      (await findScrolling('p169-obs-tcgdex_tcgplayer-source')).nodes,
+      'p169-obs-tcgdex_tcgplayer-source',
+    )
+    const nok = plain(text(n, 'p169-obs-tcgdex_cardmarket-nok') ?? '')
+    assert(cm === '€4.20' && tp === '$5.00', `source ${String(cm)} ${String(tp)}`)
+    assert(nok === '48,30 kr', `nok ${nok}`)
+    assert(byId(n, 'p169-contract-search_prices_observations'), 'observations contract label')
+    assert(
+      /\S/.test(text(n, 'p169-obs-tcgdex_cardmarket-observed') ?? ''),
+      'observed/freshness text',
+    )
+    const fetched = text((await findScrolling('p169-fetched')).nodes, 'p169-fetched') ?? ''
+    assert(/\S/.test(fetched), 'fetched text')
+    checkTargets('card prices', n)
+    shot('08-price-reverse')
+    return { ms: r.ms, cm, tp, nok }
+  },
+)
+
+await run('9 graded: unavailable, never derived from a raw price', async () => {
+  const { nodes } = await findScrolling('p169-graded-status')
+  const t = text(nodes, 'p169-graded-status') ?? ''
+  assert(/No verified graded market data available/.test(t), `graded text ${t.slice(0, 80)}`)
+  assert(!/PSA|BGS|CGC/.test(plain(t)) || /never derived/.test(t), 'no graded figure')
+  return { text: t.slice(0, 140) }
+})
+
+await run(
+  '10 same card, other printing: answered from the session cache, then stored snapshot',
+  async () => {
+    perfMark()
+    const before = 0
+    const { node } = await findScrolling(`p169-variant-${variantId('pika-base-025', 'normal|')}`)
+    tap(node)
+    // the Normal printing's Cardmarket price (EUR 1.50) replaces the Reverse one (4.20)
+    await waitFor((ns) => text(ns, 'p169-obs-tcgdex_cardmarket-source') === '€1.50' && ns, {
+      label: 'normal price',
+      timeoutMs: 30000,
+    })
+    const after = perfLines().filter((p) => p.type === 'provider_request').length
+    metrics.printingSwitchNewProviderRequests = after - before
+    await tapId('p169-source-snapshot_rpc')
+    await waitFor((ns) => byId(ns, 'p169-raw-snapshot'), { label: 'snapshot' })
+    const n = (await findScrolling('p169-snap-tcgdex_cardmarket-nok')).nodes
+    const nok = plain(text(n, 'p169-snap-tcgdex_cardmarket-nok') ?? '')
+    assert(nok === '17,25 kr', `A snapshot ${nok}`)
+    assert(!byId(n, 'p169-snap-tcgdex_tcgplayer-nok'), 'only the account provider')
+    shot('10-snapshot')
+    await tapId('p169-source-search_prices')
+    await waitFor((ns) => byId(ns, 'p169-raw-observations'), { label: 'provider prices again' })
+    return { snapshotNok: nok, newProviderRequestsForSwitch: after - before }
+  },
+)
+
+await run('11 add to collection is an intent only: nothing saved', async () => {
+  const { node } = await findScrolling('p169-add-to-collection')
+  tap(node)
+  const n = (await waitFor((ns) => byId(ns, 'p170-add-intent') && ns, { label: 'intent screen' }))
+    .value
+  assert(/nothing was saved/.test(text(n, 'p170-add-intent-text') ?? ''), 'intent text')
+  checkTargets('add intent', n)
+  shot('11-add-intent')
+  back()
+  await waitFor((ns) => byId(ns, 'p169-card'), { label: 'back to the card' })
+  return {}
+})
+
+await run('12 large value: a NOK reference above 2^53 is exact', async () => {
+  await goSearch()
+  await search('P169 Charizard')
+  await openHit('zard-base-004')
+  const r = await choose('zard-base-004', 'holo|')
+  const nok = plain(text(r.nodes, 'p169-obs-tcgdex_cardmarket-nok') ?? '')
+  assert(nok === '113 580 246 926 357,98 kr', `nok ${nok}`)
+  assert(text(r.nodes, 'p169-obs-tcgdex_cardmarket-source') === '€9,876,543,210,987.65', 'source')
+  shot('12-above-2p53')
+  return { nok }
+})
+
+await run(
+  '13 NULL is not zero: a card without a price says so; an explicit zero shows zero',
+  async () => {
+    await goSearch()
+    await search('P169 Unpriced')
+    await openHit('unpriced-098')
+    const u = (
+      await waitFor((ns) => byId(ns, 'p169-unavailable-no_variant_price') && ns, {
+        label: 'no price',
+        timeoutMs: 30000,
+      })
+    ).value
+    assert(!byIdPrefix(u, 'p169-obs-')[0], 'no observation for an unpriced card')
+    assert(
+      !/€0\.00|0,00 kr/.test(u.map((x) => x.text).join(' ')),
+      'an absent price rendered as zero',
+    )
+    shot('13a-no-price')
+    await goSearch()
+    await search('P169 Zero Energy')
+    await openHit('zero-099')
+    const z = (
+      await waitFor((ns) => byId(ns, 'p169-obs-tcgdex_cardmarket-source') && ns, {
+        label: 'zero',
+        timeoutMs: 30000,
+      })
+    ).value
+    assert(text(z, 'p169-obs-tcgdex_cardmarket-source') === '€0.00', 'explicit zero shown as zero')
+    shot('13b-explicit-zero')
+    return {}
+  },
+)
+
+await run('14 provider failure is its own state (never a price)', async () => {
+  await goSearch()
+  await search('P169 Missing Provider')
+  await openHit('missing-097')
+  const n = (
+    await waitFor((ns) => byId(ns, 'p169-unavailable-provider_error') && ns, {
+      label: 'provider_error',
+      timeoutMs: 30000,
+    })
+  ).value
+  assert(!byIdPrefix(n, 'p169-obs-')[0], 'no observation')
+  return {}
+})
+
+await run(
+  '15 photo entry -> manual search (no recognition claimed, nothing uploaded)',
+  async () => {
+    await tapId('tab-pricecheck')
+    await tapId('pc-home-photo')
+    const n = (await waitFor((ns) => byId(ns, 'p169-photo-entry') && ns, { label: 'photo entry' }))
+      .value
+    assert(byId(n, 'p169-recognition-unavailable'), 'unavailable statement')
+    checkTargets('photo entry', n)
+    shot('15-photo-entry')
+    await tapId('p169-choose-manually')
+    await waitFor((ns) => byId(ns, 'p169-search'), { label: 'search after manual' })
+    return {}
+  },
+)
+
+await run(
+  '16 read-only: the ledger tables are byte-identical after the whole Price Check journey',
+  async () => {
+    const after = ledgerHashes()
+    const changed = Object.keys(after).filter((t) => after[t] !== ledgerBefore[t])
+    assert(changed.length === 0, `changed tables: ${changed.join(', ')}`)
+    return { tables: Object.keys(after).length, changed: 0 }
+  },
+)
+
+await run('17 a slow lookup that is left is aborted; no late publication, no crash', async () => {
+  await goSearch()
+  await search('P169 Slow Provider')
+  await openHit('slow-093')
+  await sleep(500)
+  back()
+  await sleep(5000)
+  assert(byId(dump(), 'p169-search'), 'back on search, app alive')
+  const perf = perfLines().filter((p) => p.type === 'provider_request')
+  return { lastProviderRequest: perf.at(-1) ?? null }
+})
+
+await run('18 warm and multi-page search (timings; emulator only)', async () => {
+  perfMark()
+  const warm = await search('P169 Pikachu')
+  metrics.warmSearchMs = warm.ms
+  const bulk = await search('P169 Bulk')
+  await sleep(500)
+  for (let i = 0; i < 4; i += 1) {
+    shell('input touchscreen swipe 540 1900 540 400 200')
+    await sleep(700)
+  }
+  const requests = perfLines().filter((p) => p.type === 'search_request')
+  const offsets = [...new Set(requests.map((p) => p.offset))].sort((a, b) => a - b)
+  metrics.multiPage = { firstPageMs: bulk.ms, offsetsLoaded: offsets }
+  assert(
+    offsets.length >= 2,
+    `the bulk query did not load a second page (offsets ${offsets.join(',')})`,
+  )
+  return { warmMs: warm.ms, bulkFirstMs: bulk.ms, offsetsLoaded: offsets }
+})
+
+/** A global emulator setting is put back even when the step fails, so one failure cannot cascade. */
+async function restoring(restore, fn) {
+  try {
+    return await fn()
+  } finally {
+    restore()
+    await sleep(3000)
+  }
+}
+
+await run('19 200 % text: search and price screens, amounts complete and inside the screen', () =>
+  restoring(
+    () => shell('settings put system font_scale 1.0'),
+    async () => {
+      shell('settings put system font_scale 2.0')
+      await sleep(3500)
+      await search('P169 Charizard')
+      shot('19a-search-200')
+      await openHit('zard-base-004')
+      await choose('zard-base-004', 'holo|')
+      const { node } = await findScrolling('p169-obs-tcgdex_cardmarket-nok')
+      assert(plain(node.text) === '113 580 246 926 357,98 kr', `amount ${plain(node.text)}`)
+      assert(node.bounds.x1 >= 0 && node.bounds.x2 <= width, 'amount inside the screen width')
+      const over = dump().filter((x) => x.bounds && x.bounds.x2 > width + 1)
+      assert(over.length === 0, `${String(over.length)} nodes wider than the screen`)
+      shot('19b-price-200')
+      return { amountBounds: node.bounds, lineHeightPx: node.bounds.y2 - node.bounds.y1 }
+    },
+  ),
+)
+
+await run('20 dark mode: the new screens and the chrome are dark', () =>
+  restoring(
+    () => shell('cmd uimode night no'),
+    async () => {
+      shell('cmd uimode night yes')
+      await sleep(2500)
+      return darkStep()
+    },
+  ),
+)
+
+async function darkStep() {
+  await goSearch()
+  const png = decodePng(shot('20-dark-search'))
+  const header = png.bandLuminance(Math.round(30 * dp), Math.round(80 * dp))
+  const content = png.bandLuminance(Math.round(400 * dp), Math.round(600 * dp))
+  const tabBar = png.bandLuminance(png.h - Math.round(80 * dp), png.h - Math.round(30 * dp))
+  assert(
+    header < 0.35 && content < 0.35 && tabBar < 0.35,
+    `luminance ${header}/${content}/${tabBar}`,
+  )
+  await tapId('tab-pricecheck')
+  await waitFor((ns) => byId(ns, 'price-check-home'), { label: 'landing dark' })
+  const landing = decodePng(shot('20-dark-landing'))
+  const l = landing.bandLuminance(Math.round(400 * dp), Math.round(600 * dp))
+  assert(l < 0.35, `landing luminance ${l}`)
+  return { header, content, tabBar, landing: l }
+}
+
+await run(
+  '21 360 / 390 / 430 dp widths: no node wider than the screen, no target under 48 dp',
+  () =>
+    restoring(
+      () => shell('wm density reset'),
+      async () => {
+        const min = Math.floor(48 * dp)
+        const out = {}
+        for (const w of [360, 390, 430]) {
+          shell(`wm density ${String(Math.round((width * 160) / w))}`)
+          await sleep(2500)
+          const r = await search('P169 Pikachu')
+          const overflow = r.nodes.filter((x) => x.bounds && x.bounds.x2 > width + 1).length
+          const localMin = Math.floor(48 * (Math.round((width * 160) / w) / 160))
+          const small = undersized(r.nodes, localMin).map((x) => x.id)
+          shot(`21-width-${String(w)}dp`)
+          out[w] = { overflow, small }
+          assert(overflow === 0, `${String(w)}dp overflow ${String(overflow)}`)
+          assert(small.length === 0, `${String(w)}dp targets under 48 dp: ${small.join(',')}`)
+        }
+        return { ...out, minPxAtDefault: min }
+      },
+    ),
+)
+
+await run(
+  '22 A -> B: A signs out, B signs in: B starts empty and gets ITS OWN provider',
+  async () => {
+    await goSearch()
+    await search('P169 Pikachu')
+    await openHit('pika-base-025')
+    await choose('pika-base-025', 'normal|')
+    await signOut()
+    const r = await signIn(B)
+    await tapId('tab-search')
+    const fresh = (await waitFor((ns) => byId(ns, 'p169-search') && ns, { label: 'B search' }))
+      .value
+    // uiautomator reports an empty EditText's hint as its text: the store's own idle status is the
+    // evidence that A's draft, results and card did not survive.
+    assert(byId(fresh, 'p169-search-status-idle'), 'B starts with an empty, idle search')
+    assert(!byIdPrefix(fresh, 'p169-hit-')[0], 'no A results under B')
+    assert(!byId(fresh, 'p169-card'), 'no A card under B')
+    await search('P169 Pikachu')
+    await openHit('pika-base-025')
+    await choose('pika-base-025', 'normal|')
+    await tapId('p169-source-snapshot_rpc')
+    await waitFor((ns) => byId(ns, 'p169-raw-snapshot'), { label: 'B snapshot' })
+    const b = (await findScrolling('p169-snap-tcgdex_tcgplayer-nok')).nodes
+    assert(!byId(b, 'p169-snap-tcgdex_cardmarket-nok'), 'no A provider under B')
+    const nok = plain(text(b, 'p169-snap-tcgdex_tcgplayer-nok') ?? '')
+    assert(nok === '22,05 kr', `B snapshot ${nok}`)
+    shot('22-b-snapshot')
+    return { bRows: rows(r.nodes).length, bTotal: text(r.nodes, 'collection-total'), snapshot: nok }
+  },
+)
+
+await run('23 A -> B -> A: nothing of the first A session or of B is resurrected', async () => {
+  await signOut()
+  await signIn(A)
+  await tapId('tab-search')
+  const n = (await waitFor((ns) => byId(ns, 'p169-search') && ns, { label: 'A search again' }))
+    .value
+  assert(byId(n, 'p169-search-status-idle'), 'A starts idle after B')
+  assert(!byIdPrefix(n, 'p169-hit-')[0], 'no results resurrected')
+  assert(!byId(n, 'p169-card'), 'no card resurrected')
+  // The same card is a NEW request, not a cached answer from the earlier A session.
+  perfMark()
+  const count = (type) => perfLines().filter((p) => p.type === type).length
+  const requestsBefore = 0
+  const hitsBefore = 0
+  await search('P169 Pikachu')
+  await openHit('pika-base-025')
+  await choose('pika-base-025', 'normal|')
+  assert(
+    count('provider_request') === requestsBefore + 1,
+    `expected a fresh provider request (${requestsBefore} -> ${count('provider_request')})`,
+  )
+  assert(count('cache_hit') === hitsBefore, 'the answer came from a cache of an earlier session')
+  return { freshProviderRequest: true }
+})
+
+await run(
+  '24 background and resume: the screen, the printing and the price are kept, no repeat request',
+  async () => {
+    perfMark()
+    const before = 0
+    shell('input keyevent 3')
+    await sleep(3000)
+    amStart()
+    await waitFor((ns) => byId(ns, 'p169-card') && ns, { label: 'card after resume' })
+    const n = dump()
+    assert(byId(n, 'p169-printing-confirmed'), 'printing choice kept')
+    assert(byId(n, 'p169-obs-tcgdex_cardmarket-source'), 'price kept')
+    const after = perfLines().filter((p) => p.type === 'provider_request').length
+    assert(after === before, `resume repeated a provider request (${before} -> ${after})`)
+    return { providerRequestsRepeated: 0 }
+  },
+)
+
+await run('25 process restart restores the session (and the search starts empty)', async () => {
+  shell(`am force-stop ${PACKAGE}`)
+  const s = amStart()
+  const r = await waitFor((ns) => (rows(ns).length > 0 || byId(ns, 'login-screen')) && ns, {
+    timeoutMs: 60000,
+    label: 'app after restart',
+  })
+  assert(!byId(r.value, 'login-screen'), 'the session was not restored')
+  await tapId('tab-search')
+  const n = (await waitFor((ns) => byId(ns, 'p169-search') && ns, { label: 'search' })).value
+  assert(byId(n, 'p169-search-status-idle'), 'stores are not persisted')
+  return { restart: s }
+})
+
+await run('26 sign-out removes the session: a restart shows the login screen', async () => {
+  await signOut()
+  shell(`am force-stop ${PACKAGE}`)
+  amStart()
+  await waitFor((ns) => byId(ns, 'login-screen'), {
+    label: 'login after restart',
+    timeoutMs: 60000,
+  })
+  await signIn(A)
+  return {}
+})
+
+// ---- P173: what needs the wire (capture-proxy.mjs) and the clock ---------------------------------------
+// The recording proxy sits between the app and the stack's API. It shows WHO each request was made as
+// (the `sub` claim of its Authorization JWT), HOW MANY there were, and can hold a response so that a
+// lookup is genuinely in flight while the account or the Activity changes.
+const PROXY = pub.appUrl ?? 'http://127.0.0.1:55401'
+async function proxyCall(path, method = 'GET') {
+  const r = await fetch(`${PROXY}${path}`, { method })
+  return r.json()
+}
+const proxyLog = async () => (await proxyCall('/__proxy/log')).requests
+const proxyReset = () => proxyCall('/__proxy/reset', 'POST')
+const proxyHold = (match) => proxyCall(`/__proxy/hold?match=${match}`, 'POST')
+const proxyRelease = () => proxyCall('/__proxy/release', 'POST')
+const proxyHeld = async () => (await proxyCall('/__proxy/held')).held
+const isPriceCall = (r) => r.method === 'POST' && r.path.includes('/functions/v1/search-prices')
+const priceCalls = async () => (await proxyLog()).filter(isPriceCall)
+async function waitUntil(fn, { timeoutMs = 30000, label = 'condition' } = {}) {
+  const t0 = Date.now()
+  for (;;) {
+    if (await fn()) return Date.now() - t0
+    if (Date.now() - t0 > timeoutMs) throw new Error(`timed out waiting for ${label}`)
+    await sleep(500)
+  }
+}
+/** Which user is signed in, tracked by this driver (a login screen resets it). */
+let current = 'A'
+const userOf = (key) => (key === 'A' ? A : B)
+async function switchTo(key) {
+  if (byId(dump(), 'login-screen')) current = null
+  if (current === key) return
+  if (current !== null) await signOut()
+  await signIn(userOf(key))
+  current = key
+}
+/** Taps a printing WITHOUT waiting for the price (the lookup is what the caller is timing). */
+async function tapPrinting(key, printing) {
+  const { node } = await findScrolling(`p169-variant-${variantId(key, printing)}`)
+  tap(node)
+}
+const priceShown = (nodes) => byIdPrefix(nodes, 'p169-obs-').length > 0
+// ---- 27: a same-user token refresh on the device ----------------------------------------------------
+await run(
+  '27 same-user token refresh (device clock moved): the screen, printing and price stay; nothing is requested again',
+  async () => {
+    if (!rootAvailable())
+      throw new NotRun('adb root is unavailable (needed to move the emulator clock)')
+    await switchTo('A')
+    await goSearch()
+    await search('P169 Pikachu')
+    await openHit('pika-base-025')
+    await choose('pika-base-025', 'normal|')
+    const priceBefore = text(dump(), 'p169-obs-tcgdex_cardmarket-source')
+    assert(priceBefore === '€1.50', `price before ${String(priceBefore)}`)
+    await proxyReset()
+    const setClock = (ms) => {
+      const d = new Date(ms)
+      const p = (n) => String(n).padStart(2, '0')
+      const stamp = `${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}${p(d.getUTCHours())}${p(d.getUTCMinutes())}${String(d.getUTCFullYear())}.${p(d.getUTCSeconds())}`
+      shell(`date -u ${stamp}`)
+      shell('am broadcast -a android.intent.action.TIME_SET', { allowFail: true })
+    }
+    shell('settings put global auto_time 0')
+    let refreshed = null
+    try {
+      // 59.5 minutes ahead: the access token (1 h) is inside the client's refresh window
+      setClock(Date.now() + 3570 * 1000)
+      await waitUntil(
+        async () => {
+          refreshed = (await proxyLog()).find((r) => r.path.includes('grant_type=refresh_token'))
+          return refreshed !== undefined
+        },
+        { timeoutMs: 100000, label: 'a token refresh request' },
+      )
+      await sleep(3000)
+    } finally {
+      setClock(Date.now())
+      shell('settings put global auto_time 1')
+    }
+    const n = dump()
+    assert(byId(n, 'p169-card'), 'the card screen was replaced')
+    assert(byId(n, 'p169-printing-confirmed'), 'the confirmed printing was lost')
+    assert(text(n, 'p169-obs-tcgdex_cardmarket-source') === priceBefore, 'the price changed')
+    const log = await proxyLog()
+    assert((await priceCalls()).length === 0, 'the refresh repeated a provider request')
+    assert(
+      !log.some((r) => r.path.includes('/rpc/search_cards')),
+      'the refresh repeated a catalog search',
+    )
+    return {
+      refreshCalls: log.filter((r) => r.path.includes('grant_type=refresh_token')).length,
+      screenKept: true,
+    }
+  },
+)
+
+// ---- 28 / 29: an answer that arrives after the account changed --------------------------------------
+// A card with ONE active printing starts its provider lookup the moment it is opened, and it has not
+// been looked up in this session, so the request really goes out (a cached card would send nothing).
+async function inFlightAccountSwitch(route, { key, query, marker }) {
+  // route: ['B'] = A -> B ; ['B', 'A'] = A -> B -> A
+  await switchTo('A')
+  await goSearch()
+  await search(query)
+  await proxyReset()
+  await proxyHold('search-prices')
+  try {
+    await openHit(key) // the lookup starts; its response is held by the proxy
+    await waitUntil(async () => (await proxyHeld()) === 1, { label: 'the lookup to be in flight' })
+    const aCall = (await priceCalls())[0]
+    assert(aCall?.sub === A.id, 'the in-flight request was not made as A')
+    assert(byText(dump(), /Looking up prices/), 'the lookup is not shown as pending')
+    for (const who of route) await switchTo(who)
+    assert((await proxyHeld()) === 1, 'the held answer was delivered early')
+    perfMark()
+    await proxyRelease() // A's answer now reaches the app, long after the identity changed
+    await sleep(3500)
+    const perf = perfLines()
+    // Whoever is signed in now starts clean: nothing of A's lookup is on any screen.
+    await tapId('tab-search')
+    const n = (
+      await waitFor((ns) => byId(ns, 'p169-search') && ns, { label: 'search after the switch' })
+    ).value
+    assert(byId(n, 'p169-search-status-idle'), 'the search is not idle after the switch')
+    assert(!byId(n, 'p169-card') && !byIdPrefix(n, 'p169-hit-')[0], 'a screen of A survived')
+    assert(!dump().some((x) => marker.test(`${x.text} ${x.desc}`)), "A's price is on screen")
+    return { aCall, perf }
+  } finally {
+    await proxyRelease()
+  }
+}
+
+const STALE = { key: 'stale-095', query: 'P169 Stale Price', marker: /€7\.77/ }
+const SLOW = { key: 'slow-093', query: 'P169 Slow Provider', marker: /€9\.99/ }
+
+await run(
+  "28 in flight: A starts a slow Price Check, B signs in, A's answer arrives: never shown, B clean",
+  async () => {
+    const { aCall } = await inFlightAccountSwitch(['B'], STALE)
+    // B's own lookup is a NEW request made as B, not A's answer and not A's cache.
+    await proxyReset()
+    perfMark()
+    await search(STALE.query)
+    await openHit(STALE.key)
+    await waitFor((ns) => byIdPrefix(ns, 'p169-obs-')[0] && ns, {
+      label: "B's own price",
+      timeoutMs: 30000,
+    })
+    const calls = await priceCalls()
+    assert(calls.length === 1, `B made ${String(calls.length)} provider requests`)
+    assert(calls[0].sub === B.id, "B's first request was not made as B")
+    assert(calls[0].sub !== aCall.sub, 'the request carries the previous identity')
+    const hits = perfLines().filter((p) => p.type === 'cache_hit').length
+    assert(hits === 0, `B was answered from a cache (${String(hits)} hits)`)
+    return { aSub: 'A', bRequests: calls.length, bSub: 'B', cacheHits: hits }
+  },
+)
+
+await run(
+  "29 in flight: A -> B -> A, then A's first answer arrives: it does not come back",
+  async () => {
+    const { aCall } = await inFlightAccountSwitch(['B', 'A'], SLOW)
+    await proxyReset()
+    perfMark()
+    await search(SLOW.query)
+    await openHit(SLOW.key)
+    await waitFor((ns) => byIdPrefix(ns, 'p169-obs-')[0] && ns, {
+      label: "A's second session price",
+      timeoutMs: 40000,
+    })
+    const calls = await priceCalls()
+    assert(
+      calls.length === 1 && calls[0].sub === A.id,
+      "A's second session did not make its own request",
+    )
+    const hits = perfLines().filter((p) => p.type === 'cache_hit').length
+    assert(hits === 0, "the second A session was answered from the first one's answer")
+    return {
+      firstRequestAs: 'A',
+      secondSessionRequests: calls.length,
+      cacheHits: hits,
+      aCall: aCall.n,
+    }
+  },
+)
+
+// ---- 30: Activity recreation with a Price Check on screen -------------------------------------------
+const RECREATIONS = [
+  {
+    name: 'font scale 1.3',
+    apply: () => shell('settings put system font_scale 1.3'),
+    revert: () => shell('settings put system font_scale 1.0'),
+  },
+  {
+    name: 'display density 480',
+    apply: () => shell('wm density 480'),
+    revert: () => shell('wm density reset'),
+  },
+  {
+    name: 'app locale nb-NO',
+    apply: () => shell(`cmd locale set-app-locales ${PACKAGE} --locales nb-NO`),
+    revert: () => shell(`cmd locale set-app-locales ${PACKAGE} --locales ""`, { allowFail: true }),
+  },
+]
+await run(
+  '30 Activity recreation with a finished Price Check: screen, printing and price kept, no repeat request, ONE runtime',
+  async () => {
+    await switchTo('A')
+    await goSearch()
+    await search('P169 Pikachu')
+    await openHit('pika-base-025')
+    await choose('pika-base-025', 'normal|')
+    const price = text(dump(), 'p169-obs-tcgdex_cardmarket-source')
+    await proxyReset()
+    const out = []
+    for (const change of RECREATIONS) {
+      const before = localActivityId()
+      change.apply()
+      let after
+      try {
+        after = await activityAfterChange(before)
+        assert(
+          before !== null && after !== null && before !== after,
+          `${change.name}: the Activity was not recreated`,
+        )
+        await waitFor((ns) => byId(ns, 'p169-card'), {
+          label: `card screen after ${change.name}`,
+          timeoutMs: 30000,
+        })
+        await sleep(1500)
+        const n = dump()
+        assert(
+          byId(n, 'p169-printing-confirmed'),
+          `${change.name}: the confirmed printing was lost`,
+        )
+        assert(
+          text(n, 'p169-obs-tcgdex_cardmarket-source') === price,
+          `${change.name}: the price changed`,
+        )
+      } finally {
+        change.revert()
+        await sleep(2500)
+      }
+      out.push({ change: change.name, recreated: true })
+    }
+    assert((await priceCalls()).length === 0, 'a recreation repeated a provider request')
+    const perf = [...perfArchive, ...perfLines()]
+    const runtimes = [...runtimeArchive, ...runtimeCounts()]
+    assert(
+      Math.max(0, ...runtimes) === 1,
+      `a second runtime was created in one process (${runtimes.join(',')})`,
+    )
+    return {
+      changes: out,
+      providerRequests: 0,
+      runtimeCreatedCounts: runtimes,
+      perfEvents: perf.length,
+    }
+  },
+)
+
+await run(
+  '30b Activity recreation while a lookup is in flight: one request, the printing kept, the answer shown once',
+  async () => {
+    await switchTo('A')
+    await goSearch()
+    await search('P169 Charizard')
+    await openHit('zard-base-004')
+    await proxyReset()
+    await proxyHold('search-prices')
+    const change = RECREATIONS[0]
+    try {
+      await tapPrinting('zard-base-004', 'holo|')
+      await waitUntil(async () => (await proxyHeld()) === 1, {
+        label: 'the lookup to be in flight',
+      })
+      const before = localActivityId()
+      change.apply()
+      const after = await activityAfterChange(before)
+      assert(before !== after && after !== null, 'the Activity was not recreated')
+      await waitFor((ns) => byId(ns, 'p169-card'), {
+        label: 'card after recreation',
+        timeoutMs: 30000,
+      })
+      await sleep(1500)
+      const n = dump()
+      assert(byId(n, 'p169-printing-confirmed'), 'the printing was lost')
+      assert(byText(n, /Looking up prices/), 'the lookup is no longer shown as pending')
+      assert((await priceCalls()).length === 1, 'the recreation sent the request again')
+      await proxyRelease()
+      const r = await waitFor((ns) => byIdPrefix(ns, 'p169-obs-')[0] && ns, {
+        label: 'the answer',
+        timeoutMs: 30000,
+      })
+      assert((await priceCalls()).length === 1, 'a second request appeared after the answer')
+      return {
+        requests: 1,
+        answerShown: true,
+        sample: text(r.value, 'p169-obs-tcgdex_cardmarket-source'),
+      }
+    } finally {
+      await proxyRelease()
+      change.revert()
+      await sleep(2500)
+    }
+  },
+)
+
+// ---- 31: exact money through the real screen, checked against an independent BigInt computation -----
+await run(
+  '31 Hermes, integrated: provider string -> bigint -> NOK -> the rendered text equals an independent BigInt result',
+  async () => {
+    await switchTo('A')
+    await goSearch()
+    await search('P169 Charizard')
+    await openHit('zard-base-004')
+    const r = await choose('zard-base-004', 'holo|')
+    const rendered = plain(text(r.nodes, 'p169-obs-tcgdex_cardmarket-nok') ?? '')
+    // The provider amount and the stored rate, read from the fixtures / database, never from the app.
+    const sourceMinor = BigInt(
+      FIXTURE_CARDS.find((c) => c.key === 'zard-base-004').provider.prices['holo|'].cm,
+    )
+    const rateText = psqlValue(
+      "select rate::text from public.fx_rates where base_currency = 'EUR' and quote_currency = 'NOK' order by rate_date desc limit 1",
+    )
+    const [whole, frac = ''] = rateText.split('.')
+    const scale = 10n ** BigInt(frac.length)
+    const scaled = BigInt(whole + frac)
+    const product = sourceMinor * scaled
+    const nokMinor = (product * 2n + scale) / (2n * scale) // half-up, both currencies have 2 decimals
+    const digits = nokMinor.toString().padStart(3, '0')
+    const intPart = digits.slice(0, -2).replace(/\B(?=(\d{3})+(?!\d))/g, ' ')
+    const expected = `${intPart},${digits.slice(-2)} kr`
+    assert(rendered === expected, `rendered ${rendered} != independent ${expected}`)
+    assert(nokMinor > BigInt(Number.MAX_SAFE_INTEGER), 'the vector is not above 2^53')
+    assert(
+      text(r.nodes, 'p169-obs-tcgdex_cardmarket-source') === '€9,876,543,210,987.65',
+      'source amount',
+    )
+    return {
+      sourceMinor: sourceMinor.toString(),
+      rate: rateText,
+      nokMinor: nokMinor.toString(),
+      rendered,
+    }
+  },
+)
+
+// ---- 32: search language filter (catalog) ----------------------------------------------------------
+await run('32 catalog search: the language filter narrows to Japanese and back', async () => {
+  await goSearch()
+  await tapId('p169-lang-ja')
+  const ja = await search('Japanese Starter')
+  assert(byId(ja.nodes, `p169-hit-${cardId('jp-001')}`), 'the Japanese card is missing under JA')
+  assert(
+    !byId(ja.nodes, `p169-hit-${cardId('pika-base-025')}`),
+    'an English card is shown under JA',
+  )
+  await tapId('p169-lang-all')
+  return { japaneseOnly: true }
+})
+
+// ---- 33: a picked photo never leaves the device ------------------------------------------------------
+await run(
+  '33 photo: pick a synthetic image on the Price Check photo entry; not one request reaches the API; the copy is deleted on leaving',
+  async () => {
+    await switchTo('A')
+    await pushSyntheticImage(join(outDir, 'p173-synthetic-card.png'), 'p173-synthetic-card.png')
+    await proxyReset()
+    const n = await openPhotoScreen()
+    tap(byId(n, 'p169-photo-library'))
+    const o = await waitForPickerOrState()
+    assert(o.picker, `the picker did not open (${String(o.state)})`)
+    await sleep(1200)
+    await chooseNewestInPicker()
+    await waitFor((ns) => byId(ns, 'p169-photo-ready') && ns, {
+      timeoutMs: 20000,
+      label: 'photo shown',
+    })
+    await sleep(2000)
+    const requests = await proxyLog()
+    assert(
+      requests.length === 0,
+      `${String(requests.length)} request(s) reached the API while a photo was picked and shown: ${requests.map((r) => r.path).join(', ')}`,
+    )
+    const shown = rootAvailable() ? pickerCacheFiles() : null
+    back()
+    await sleep(1500)
+    const left = rootAvailable() ? pickerCacheFiles() : null
+    if (left !== null)
+      assert(left.length === 0, `an owned copy remained after leaving: ${left.join(',')}`)
+    return {
+      requestsWhilePicked: 0,
+      ownedCopiesWhileShown: shown?.length ?? null,
+      ownedCopiesAfterLeaving: left?.length ?? null,
+    }
+  },
+)
+
+await run(
+  '34 read-only, at the very end: after every identity change, restart, recreation, refresh and held answer, no ledger row changed',
+  async () => {
+    const after = ledgerHashes()
+    const changed = Object.keys(after).filter((t) => after[t] !== ledgerBefore[t])
+    assert(changed.length === 0, `changed tables: ${changed.join(', ')}`)
+    return { tables: Object.keys(after).length, changed: 0 }
+  },
+)
+
+// Restore global emulator settings and collect the device-side timings.
+shell('settings put system font_scale 1.0')
+shell('cmd uimode night no')
+shell('wm density reset')
+shell('svc wifi enable')
+shell('svc data enable')
+restoreAutofill()
+if (stylusBefore !== '' && stylusBefore !== 'null')
+  shell(`settings put secure stylus_handwriting_enabled ${stylusBefore}`)
+
+metrics.touchTargets = { minDp: 48, checked: Object.keys(targets), undersized: targets }
+metrics.perf = [...perfArchive, ...perfLines()]
+metrics.crashes = crashCount()
+metrics.appPidAlive = appPid() !== ''
+writeFileSync(
+  join(outDir, 'logcat-perf.txt'),
+  metrics.perf.map((p) => JSON.stringify(p)).join('\n'),
+)
+const pass = steps.filter((s) => s.status === 'PASS').length
+const fail = steps.filter((s) => s.status === 'FAIL').length
+const report = { serial: SERIAL, package: PACKAGE, pass, fail, steps, metrics }
+writeFileSync(join(outDir, 'report.json'), JSON.stringify(report, null, 2))
+console.log(`\n${String(pass)} PASS, ${String(fail)} FAIL -> ${join(outDir, 'report.json')}`)
+process.exit(fail === 0 ? 0 : 1)

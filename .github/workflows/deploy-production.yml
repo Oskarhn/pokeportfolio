@@ -1,0 +1,183 @@
+name: Deploy Production
+
+# P193: Production is released by a deliberate, separate act, never by merging a pull request or
+# pushing to `main`. This workflow has exactly one trigger, `workflow_dispatch`, so GitHub offers no
+# way to start it from a push, a pull request, a tag or a schedule. `main` is the integrated
+# development branch; Production is a validated `main` SHA that the operator names here.
+#
+# The pre-release steps (backup, migrations, Edge Functions, Auth settings, erasure registry) are NOT
+# automated here and are not implied by a green run of this workflow: see
+# docs/release/PRODUCTION_RELEASE_CHECKLIST.md. The `backend_ack` input exists so a real deploy cannot
+# start without the operator having typed that acknowledgement.
+#
+# Dry run (the default) runs only the `verify` job: it uses no Production secret and uploads nothing.
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Full 40-character commit SHA to release. Must be on main with green CI.'
+        required: true
+        type: string
+      dry_run:
+        description: 'Validate only: check the SHA and its CI, upload nothing.'
+        required: true
+        type: boolean
+        default: true
+      backend_ack:
+        description: 'Real deploy only: type BACKEND-ROLLED-OUT once the release checklist is complete.'
+        required: false
+        type: string
+        default: ''
+
+# `checks: read` lets the verification step read the check-runs of the requested commit with the
+# job token. Nothing here can write to the repository.
+permissions:
+  contents: read
+  checks: read
+
+# One Production upload at a time; a later one queues instead of cancelling an upload mid-flight.
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  # Reads no Production secret: it can run (as a dry run) at any time without side effects.
+  verify:
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.verify-sha.outputs.sha }}
+    steps:
+      # The workflow file itself must come from `main`, so a branch cannot dispatch a modified copy.
+      - name: Require dispatch from main
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Production can only be released from a dispatch on main (got $GITHUB_REF)"
+            exit 1
+          fi
+
+      - name: Require the backend acknowledgement (real deploy only)
+        if: inputs.dry_run == false
+        run: |
+          if [ "$BACKEND_ACK" != "BACKEND-ROLLED-OUT" ]; then
+            echo "::error::backend_ack must be BACKEND-ROLLED-OUT (docs/release/PRODUCTION_RELEASE_CHECKLIST.md)"
+            exit 1
+          fi
+        env:
+          BACKEND_ACK: ${{ inputs.backend_ack }}
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+
+      # Full 40-hex SHA, exists, reachable from origin/main, and build-and-test + db-tests +
+      # native-checks all succeeded on exactly that commit. Fails closed on anything else.
+      - name: Verify the requested SHA and its CI
+        id: verify-sha
+        run: node scripts/release-guard.mjs verify-release-sha --sha "$RELEASE_SHA"
+        env:
+          RELEASE_SHA: ${{ inputs.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+
+  # Skipped on a dry run. Reads the Production secrets only in the steps that need them.
+  #
+  # CONFIGURATION (P163). The two build-time values are the Supabase project URL and its PUBLISHABLE
+  # key. Both end up PUBLIC in the browser bundle whichever way GitHub stores them. They are stored
+  # as repository SECRETS, not variables, for one reason only: GitHub prints every step's resolved
+  # `env:` block in the job log BEFORE the step runs, and it redacts secrets there but not
+  # variables. No `vars.*` expression may appear in any workflow
+  # (tests/config/release-pipeline-integration.test.ts). Neither the configuration secrets nor the
+  # Cloudflare credentials may appear in any env block above step level.
+  deploy:
+    needs: [verify]
+    if: inputs.dry_run == false
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+
+      # FIRST guard, before dependencies are installed and before anything is built: the public
+      # configuration must be a real `https://<ref>.supabase.co` URL and a `sb_publishable_` key.
+      # A secret-shaped value, a key in the URL slot, or a local/placeholder value fails here with a
+      # field name and a category, never a value. Missing secrets fail here too.
+      - name: Public configuration guard (deploy profile)
+        run: node scripts/check-public-env.mjs --require-hosted --process-env-only
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.PRODUCTION_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.PRODUCTION_SUPABASE_PUBLISHABLE_KEY }}
+
+      - name: Enable Corepack and activate the pinned pnpm
+        run: |
+          corepack enable
+          corepack prepare --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # A clean build, always: nothing built earlier may survive into the upload directory.
+      - name: Remove any pre-existing build output
+        run: rm -rf dist
+
+      # A SEPARATE production build against the real public configuration. `pnpm build` runs the
+      # guard again as `prebuild` and vite.config.ts runs it a third time before any output is written.
+      - name: Build for Production
+        run: pnpm build
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.PRODUCTION_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.PRODUCTION_SUPABASE_PUBLISHABLE_KEY }}
+          # Selects the deploy profile inside `prebuild` and vite.config.ts (P160).
+          PP_REQUIRE_HOSTED_PUBLIC_ENV: '1'
+
+      - name: Built artefact secret scan (dist/)
+        run: node scripts/check-dist-secrets.mjs
+
+      # The artifact about to be uploaded must declare exactly the verified commit, not a `+dirty`
+      # build or any other SHA.
+      - name: Verify build identity before upload
+        run: node scripts/release-guard.mjs build-identity --github-sha "$RELEASE_SHA" --build-meta dist/build-meta.json
+        env:
+          RELEASE_SHA: ${{ needs.verify.outputs.sha }}
+
+      # The exact-SHA deploy: `--commit-hash` ties the upload to the commit that was verified.
+      # No `|| true`: an upload failure fails the job and Production keeps serving what it served.
+      - name: Deploy to Cloudflare Pages (Production)
+        run: |
+          pnpm exec wrangler pages deploy dist \
+            --project-name=pokeportfolio-dev \
+            --branch=main \
+            --commit-hash="$RELEASE_SHA" \
+            --commit-dirty=false
+        env:
+          RELEASE_SHA: ${{ needs.verify.outputs.sha }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      # Post-deploy verification: bounded retry only for CDN propagation. A failure fails this job;
+      # it does not roll back (rollback stays a manual decision, docs/GIT_WORKFLOW.md §11).
+      - name: Verify Production actually serves this exact commit
+        run: |
+          for attempt in $(seq 1 15); do
+            if node scripts/preview-verify.mjs --url https://pokeportfolio-dev.pages.dev --sha "$RELEASE_SHA"; then
+              echo "preview-verify passed on attempt $attempt"
+              break
+            fi
+            if [ "$attempt" = "15" ]; then
+              echo "::error::Production never reached exact SHA $RELEASE_SHA after 15 attempts"
+              exit 1
+            fi
+            echo "attempt $attempt: Production not yet at $RELEASE_SHA, retrying"
+            sleep 10
+          done
+          node scripts/deployment-check.mjs
+        env:
+          RELEASE_SHA: ${{ needs.verify.outputs.sha }}
+          DEPLOYMENT_URL: https://pokeportfolio-dev.pages.dev
+          SUPABASE_URL: ${{ secrets.PRODUCTION_SUPABASE_URL }}

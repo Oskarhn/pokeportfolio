@@ -290,6 +290,99 @@ user-entered text.
 
 ---
 
+## Graded price sources — status and integration plan (P153, verified 2026-09-20)
+
+**Status: NO authorized source exists. Price Check's graded section reports "not available".**
+
+Re-checked against the official pages on 2026-09-20 (no scraping, no authenticated access):
+
+| Source | Finding | URL |
+|---|---|---|
+| TCGdex | The FAQ does not mention graded prices. It says pricing is "matched to Cardmarket and TCGPlayer listings" without saying whether a figure is a sale or a listing, and publishes "no published hard rate limits" (be considerate; cache instead of refetching). | https://tcgdex.dev/faq |
+| PSA public API | Offers only Cert Verification by cert number. No prices, no population data. | https://www.psacard.com/publicapi/documentation |
+| PriceCharting API | Returns graded prices per company (PSA, BGS, CGC, SGC and others) and grade, but requires a paid subscription and is limited to 1 call per second. Rejected for cost above; adopting it needs the owner's explicit approval under COST_POLICY §1a. | https://www.pricecharting.com/api-documentation |
+
+**Consequences implemented in P153.**
+
+- Raw prices come only from the TCGdex relay (Cardmarket EUR, TCGplayer USD). Every relayed
+  metric is labelled an **index** — a provider-computed statistic — never "sold" or "listing",
+  because TCGdex documents neither. No per-condition breakdown exists, so "condition not
+  specified by source" is shown instead of an invented NM/LP.
+- Graded prices are modelled (company + grade + qualifier + price kind + currency + observed date)
+  and validated (`src/domain/price-check/graded.ts`), but no source is wired, so no graded number
+  is ever shown. A graded price is never derived from a raw price and one company's grade is
+  never treated as another's.
+
+**Integration plan if a graded source is later approved.** (1) An owner-approved provider whose
+terms allow display and caching. (2) A server-side adapter (an Edge Function; the provider token
+never reaches the client) returning `{ company, grade, qualifier?, kind, currency, valueMinor,
+observedAt }` rows — `kind` mandatory (`sold`, `listing` or `index`); a row without it is
+dropped, not defaulted. (3) Register it in the graded-source list consulted by the result page
+and add its own rate-limit handling (PriceCharting: 1 call/second). (4) Real fixtures captured
+from the provider replace the synthetic ones, and this section changes from "none" to the
+provider's verified terms. Until then graded data is `PARTIAL`, not `WORKING`.
+
+---
+
+## `search-prices` response contract and deployment order (P153, checked in P161)
+
+The Edge Function gained ONE additive field: each result row carries `observations[]` (every provider
+value the exact variant has, exact integer minor units as decimal strings, provider timestamps). The
+headline fields are unchanged.
+
+| Client | Function | Result |
+|---|---|---|
+| old | new | The old consumer (`src/data/pricing.ts`) reads named fields and ignores the new one. |
+| new | old | Price Check uses the single headline value, marks the section "partial" and says so. A missing price stays "no price". |
+
+Deploy order: **(1) the function, (2) the frontend.** Rollback: redeploy the previous function version;
+the deployed frontend degrades as above. Neither step needs a migration. Not done in P161 (no hosted
+change); the hosted project is the Production project, so deploying is an owner action after a green
+release gate. Graded prices remain `PARTIAL_NO_AUTHORIZED_PROVIDER`: no authorized source exists (see
+"Graded price sources" above); nothing derives a graded price from a raw one.
+
+### Release order for the integrated candidate (P164)
+
+Edge Functions that differ from the released base (`d8682e0`) in this candidate — every one is a separate hosted deploy, and a Cloudflare
+frontend deploy does not update any of them:
+
+| Function | Changed by | Why it matters |
+|---|---|---|
+| `search-prices` | P161 (`index.ts` +8, new `_shared/price-observations.ts`) and P149 (`_shared/tcgdex.ts`) | additive `observations[]`; an absurd provider price is absent instead of `Number()`-rounded |
+| `ingest-prices` | P149 (`_shared/tcgdex.ts`) | the same rule for `price_snapshots.value_minor` |
+| `sync-catalog` | bundles `tcgdex.ts`, calls none of the changed pricing code | no redeploy required (harmless if redeployed) |
+| `fetch-fx-rate`, `ingest-fx`, `redeem-invitation` | unchanged | — |
+
+Order: (1) fresh backup, then P149's two migrations (hosted 104 → 106); (2) deploy `search-prices` and `ingest-prices`; (3) the frontend.
+The functions do not depend on the migrations and the migrations do not depend on the functions; the frontend needs both. Skew, tested in
+`tests/data/p164-search-prices-skew.test.ts`: released client + new function reads the same headline (extra field ignored); new client + released
+function shows the single headline value, marked partial; a function that still emits an unsafe JSON number is refused by the new client (whole
+response) and produces no price in the existing pricing consumer. Rollback of a function: redeploy the previous version. Nothing is deployed by
+these sessions.
+
+### Independent check of the function half (P165)
+
+Which shared modules each function bundles (import graph, multi-line imports included): `search-prices` → `tcgdex.ts`, `service-key.ts`,
+`price-observations.ts`; `ingest-prices` → `tcgdex.ts`, `service-key.ts`; `sync-catalog` → `tcgdex.ts` (only `fetchCardDetail`, `fetchSetDetail`,
+`isPocketSeries`, `TcgdexNotFoundError`; none reaches the changed `asFiniteNumber`), `service-key.ts`; `fetch-fx-rate` and `ingest-fx` →
+`norges-bank.ts`, `service-key.ts`; `redeem-invitation` → `service-key.ts`. So exactly `search-prices` and `ingest-prices` need a deploy.
+
+The real `search-prices` code was run under Deno (`scripts/p165/edge-harness`, `tests/data/p165-search-prices-real-function.test.ts`) with the provider's
+answer controlled — **not** against the live provider and **not** against a deployed function:
+
+- The candidate can never emit an unsafe number itself: `asFiniteNumber` drops a provider price whose minor units exceed 2^53 − 1 *before* it becomes a
+  `bigint`, so `Number(valueMinor)` is exact and every `observations[].valueMinor` is a decimal string. The rewrite marker (D-164) therefore defends
+  against the **released** function, not the new one.
+- The released function (d8682e0), given a provider value of 99999999999999.99 EUR, answers `"sourceValueMinor":9999999999999998` (already rounded) and a
+  `valueNokMinor` string computed from that rounded number. The guard flags the bare number, the marker refuses the whole response, so the string next to
+  it is never shown either. Frozen in the test as the old-function/new-frontend half.
+- When the preferred provider's price is dropped, the headline falls back to the other provider under the existing D-052 rule (a USD TCGplayer value
+  can become the headline of a variant whose Cardmarket price is absurd); `observations[]` shows only what exists.
+- Consumer dependency worth knowing: both consumers read the marker from `invoked.response`, which `@supabase/functions-js` 2.112.3 returns. A dependency
+  upgrade that drops `response` would make both consumers fail open; the frozen-wire tests fail in that case.
+- Behaviour when a number that is not a price is unsafe: any unsafe integer literal anywhere in the response refuses the whole response (fail-closed); a
+  large but safe integer does not; an exponent-form number (`1.5e+21`) is not an integer literal to the guard, and no consumer accepts it as a price.
+
 ## Scrydex
 
 **Status: Rejected for now — cost**

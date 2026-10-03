@@ -1,0 +1,594 @@
+{
+  "serial": "emulator-5560",
+  "package": "invalid.pokeportfolio.spike.p169",
+  "pass": 17,
+  "fail": 0,
+  "steps": [
+    {
+      "step": "cold start (clean data) to the login screen",
+      "status": "PASS",
+      "detail": {
+        "totalTimeMs": 1835,
+        "launchState": "COLD"
+      }
+    },
+    {
+      "step": "Hermes: P166 + P169 in-app money/domain proofs on device",
+      "status": "PASS",
+      "detail": {
+        "p166": "RESULT pass=36 fail=0 engine=hermes 250829098.0.17\r",
+        "p169": "RESULT pass=25 fail=0 engine=hermes 250829098.0.17\r"
+      }
+    },
+    {
+      "step": "sign in as synthetic user A -> search screen",
+      "status": "PASS",
+      "detail": {
+        "searchVisibleAfterSubmitMs": 2849
+      }
+    },
+    {
+      "step": "search \"P169 Pikachu\": same-named cards with set/number, flagged, nothing selected",
+      "status": "PASS",
+      "detail": {
+        "ms": 11695,
+        "baseLabel": "P169 Pikachu. P169 Base Set, number 025, English, 2 printings, Common. Same name as another result: check the set and nu"
+      }
+    },
+    {
+      "step": "two active printings: choice required, no price shown before choosing",
+      "status": "PASS",
+      "detail": {}
+    },
+    {
+      "step": "choose Reverse holo: both providers, exact source money + NOK reference, graded unavailable",
+      "status": "PASS",
+      "detail": {
+        "ms": 2531,
+        "cm": "€4.20",
+        "tp": "$5.00",
+        "cmNok": "48,30 kr"
+      }
+    },
+    {
+      "step": "Add to collection returns a navigation intent only",
+      "status": "PASS",
+      "detail": {}
+    },
+    {
+      "step": "Charizard holo: a NOK reference above 2^53 shown exactly on the device",
+      "status": "PASS",
+      "detail": {
+        "nok": "113 580 246 926 357,98 kr"
+      }
+    },
+    {
+      "step": "provider failure and an explicit zero are distinct on screen",
+      "status": "PASS",
+      "detail": {}
+    },
+    {
+      "step": "search again: warm (cached) query",
+      "status": "PASS",
+      "detail": {
+        "ms": 12737
+      }
+    },
+    {
+      "step": "photo -> manual fallback: recognition stated unavailable, manual route works",
+      "status": "PASS",
+      "detail": {
+        "photoPickerExercised": false,
+        "note": "the image picker itself is P167 scope (F1); not asserted here"
+      }
+    },
+    {
+      "step": "leaving a slow lookup: aborted, no late publication, no crash",
+      "status": "PASS",
+      "detail": {
+        "lastProviderRequest": {
+          "type": "provider_request",
+          "cardId": "ed8e4713",
+          "ms": 2891,
+          "outcome": "aborted"
+        }
+      }
+    },
+    {
+      "step": "200 % font: amounts stay on one line and complete",
+      "status": "PASS",
+      "detail": {
+        "amountBounds": {
+          "x1": 85,
+          "y1": 1995,
+          "x2": 995,
+          "y2": 2095
+        },
+        "lineHeightPx": 100
+      }
+    },
+    {
+      "step": "dark mode renders the P169 screens on a dark background",
+      "status": "PASS",
+      "detail": {
+        "screenshot": "12-dark-search.png"
+      }
+    },
+    {
+      "step": "360 / 390 / 430 dp widths: no text node wider than the screen",
+      "status": "PASS",
+      "detail": {
+        "360": {
+          "density": 480,
+          "overflowing": 0
+        },
+        "390": {
+          "density": 443,
+          "overflowing": 0
+        },
+        "430": {
+          "density": 402,
+          "overflowing": 0
+        }
+      }
+    },
+    {
+      "step": "A -> B: sign out A, sign in B; B starts empty and gets ITS OWN snapshot provider",
+      "status": "PASS",
+      "detail": {
+        "a": "17,25 kr",
+        "b": "22,05 kr"
+      }
+    },
+    {
+      "step": "restart: session restored (B), search works; offline shows a retryable error",
+      "status": "PASS",
+      "detail": {
+        "restart": {
+          "totalTimeMs": 1573,
+          "launchState": "COLD"
+        },
+        "recoveredTo": "ready"
+      }
+    }
+  ],
+  "metrics": {
+    "device": {
+      "serial": "emulator-5560",
+      "avd": "p169_api36",
+      "model": "sdk_gphone64_x86_64",
+      "android": "16",
+      "sdk": "36",
+      "abi": "x86_64",
+      "size": "Physical size: 1080x2400",
+      "density": "Physical density: 420"
+    },
+    "coldStart": {
+      "totalTimeMs": 1835,
+      "launchState": "COLD"
+    },
+    "coldSearchMs": 11695,
+    "priceRequestMs": 2531,
+    "warmSearchMs": 12737,
+    "p169Perf": [
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 182,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_cache_hit"
+      },
+      {
+        "type": "provider_request",
+        "cardId": "3b689aad",
+        "ms": 436,
+        "outcome": "ok"
+      },
+      {
+        "type": "fx_request",
+        "currency": "EUR",
+        "ms": 34
+      },
+      {
+        "type": "fx_request",
+        "currency": "USD",
+        "ms": 20
+      },
+      {
+        "type": "add_to_collection_intent"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 63,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 1069,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_dropped_stale"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 649,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 476,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_dropped_stale"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 35,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 140,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_cache_hit"
+      },
+      {
+        "type": "provider_request",
+        "cardId": "d095d154",
+        "ms": 99,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_cache_hit"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 96,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_cache_hit"
+      },
+      {
+        "type": "search_cache_hit"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 27,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 112,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_cache_hit"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 100,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 44,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_cache_hit"
+      },
+      {
+        "type": "provider_request",
+        "cardId": "60d8c789",
+        "ms": 96,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 51,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 57,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 51,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 38,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 178,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 43,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_cache_hit"
+      },
+      {
+        "type": "search_cache_hit"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 153,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 200,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 36,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 67,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_cache_hit"
+      },
+      {
+        "type": "provider_request",
+        "cardId": "510023e7",
+        "ms": 133,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 67,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 62,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_dropped_stale"
+      },
+      {
+        "type": "search_cache_hit"
+      },
+      {
+        "type": "search_cache_hit"
+      },
+      {
+        "type": "search_cache_hit"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 110,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 76,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 219,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_cache_hit"
+      },
+      {
+        "type": "search_cache_hit"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 32,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 81,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 34,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_cache_hit"
+      },
+      {
+        "type": "provider_request",
+        "cardId": "ed8e4713",
+        "ms": 2891,
+        "outcome": "aborted"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 76,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_cache_hit"
+      },
+      {
+        "type": "provider_request",
+        "cardId": "d095d154",
+        "ms": 208,
+        "outcome": "ok"
+      },
+      {
+        "type": "fx_request",
+        "currency": "EUR",
+        "ms": 43
+      },
+      {
+        "type": "fx_request",
+        "currency": "USD",
+        "ms": 22
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 49,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_cache_hit"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 65,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_cache_hit"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 55,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_cache_hit"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 694,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 30,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_cache_hit"
+      },
+      {
+        "type": "provider_request",
+        "cardId": "3b689aad",
+        "ms": 64,
+        "outcome": "ok"
+      },
+      {
+        "type": "fx_request",
+        "currency": "EUR",
+        "ms": 357
+      },
+      {
+        "type": "fx_request",
+        "currency": "USD",
+        "ms": 22
+      },
+      {
+        "type": "snapshot_request",
+        "variantId": "3eac4598",
+        "ms": 126,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 77,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_cache_hit"
+      },
+      {
+        "type": "provider_request",
+        "cardId": "3b689aad",
+        "ms": 97,
+        "outcome": "ok"
+      },
+      {
+        "type": "fx_request",
+        "currency": "EUR",
+        "ms": 96
+      },
+      {
+        "type": "fx_request",
+        "currency": "USD",
+        "ms": 98
+      },
+      {
+        "type": "snapshot_request",
+        "variantId": "3eac4598",
+        "ms": 35,
+        "outcome": "ok"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 149,
+        "outcome": "error"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 166,
+        "outcome": "error"
+      },
+      {
+        "type": "search_request",
+        "offset": 0,
+        "ms": 76,
+        "outcome": "ok"
+      }
+    ]
+  }
+}

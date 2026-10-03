@@ -93,3 +93,9 @@ test('404 page has no automated accessibility violations in DARK mode (P103 prim
   await expect(page.getByRole('heading', { name: 'Page not found' })).toBeVisible()
   await expectNoViolations(page)
 })
+
+test('account deletion page has no automated accessibility violations', async ({ page }) => {
+  await page.goto('/account-deletion')
+  await expect(page.getByRole('heading', { name: 'Delete your account' })).toBeVisible()
+  await expectNoViolations(page)
+})

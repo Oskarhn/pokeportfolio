@@ -30,7 +30,7 @@ import { summarizeResults } from './lib/verifier-summary.mjs'
 /** Kept in sync BY THIS CHECK with public/robots.txt's Allow list and public/sitemap.xml's URLs —
  *  see router.tsx's "Three route classes" comment for the authoritative route-class list this is
  *  drawn from. */
-const PUBLIC_ROUTES = ['/privacy', '/terms', '/faq']
+const PUBLIC_ROUTES = ['/privacy', '/terms', '/faq', '/account-deletion']
 
 /** Mirrors vite.config.ts's `ASSET_FALLBACK_DIRECTORIES` (not imported directly: that file is
  *  TypeScript with real side effects at module load — a `git rev-parse` call and a full

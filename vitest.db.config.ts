@@ -8,6 +8,8 @@ import { defineConfig } from 'vite'
 export default defineConfig({
   test: {
     environment: 'node',
+    // P189: the erasure registry sink the delete-account function records to (tests/db/global-setup.ts).
+    globalSetup: ['tests/db/global-setup.ts'],
     include: ['tests/db/**/*.test.ts', 'tests/authorization/**/*.test.ts'],
     // These suites share one Postgres instance and create/delete real auth.users rows —
     // running them in parallel across files risks cross-test interference.

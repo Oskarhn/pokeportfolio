@@ -16,6 +16,26 @@
  * `pokeportfolio-dev` carries both once migrated, and this always prefers the new one when both
  * are present.
  */
+/**
+ * The publishable (browser-safe) key an Edge Function needs to act as an ordinary client — for
+ * example to ask Auth to verify a password. Same preference order as the secret key: the current
+ * `SUPABASE_PUBLISHABLE_KEYS` dictionary first, the legacy `SUPABASE_ANON_KEY` as the fallback the
+ * local stack still emits.
+ */
+export function resolvePublishableKey(): string | undefined {
+  const publishableKeys = Deno.env.get('SUPABASE_PUBLISHABLE_KEYS')
+  if (publishableKeys) {
+    try {
+      const parsed = JSON.parse(publishableKeys) as Record<string, string>
+      const value = parsed.default ?? Object.values(parsed)[0]
+      if (value) return value
+    } catch {
+      // Malformed value: fall through to the legacy variable rather than failing outright.
+    }
+  }
+  return Deno.env.get('SUPABASE_ANON_KEY')
+}
+
 export function resolveServiceRoleKey(): string | undefined {
   const secretKeys = Deno.env.get('SUPABASE_SECRET_KEYS')
   if (secretKeys) {

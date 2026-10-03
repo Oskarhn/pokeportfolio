@@ -191,7 +191,7 @@ Three ways to run a database, each serving a different purpose — this is a hyb
 either/or choice.
 
 **CI (authoritative for the M3+ gate).** `.github/workflows/ci.yml`'s `db-tests` job runs the
-full local Supabase stack in Docker on GitHub's `ubuntu-latest` runner — which has Docker
+full local Supabase stack in Docker on GitHub's `ubuntu-24.04` runner — which has Docker
 preinstalled — on every push and PR. It applies every migration to an empty database, resets and
 reapplies to prove reproducibility, runs the database and authorization suites, and generates
 TypeScript types. This never touches any remote project or credential, so it is safe to run on
@@ -205,6 +205,31 @@ the CLI runs `pg_dump` in a container even against the linked remote. Any databa
 migration applied — local stack, CI stack, disposable container — runs the M9 cron jobs that POST
 to the hosted edge functions every 15 minutes (P130-12); deactivate those two jobs locally
 (`cron.alter_job(jobid, active := false)`) on any stack that stays up.
+
+### Docker shutdown policy
+
+The owner's preference stands: Docker Desktop should not stay running for days unnecessarily when
+nothing needs it. But **safe shutdown takes precedence over destructive force termination.** A
+real incident (P181) showed why: a prior session's forced kill left a stale
+`sailor-ingest.sock`/`.sock.stale` pair that Docker's own graceful `--quit` could not clear on its
+next launch, blocking Docker Desktop entirely until the owner intervened manually — a
+multi-session-costing failure mode a repeated force-kill can trigger again. The procedure:
+
+1. Stop this session's own project containers (`backend.mjs stop` or equivalent) and confirm none
+   remain (`docker ps` for this project's names).
+2. Attempt a graceful Docker Desktop quit (`Docker Desktop.exe --quit`) and verify it actually
+   exited.
+3. **Do not repeatedly force-kill Docker/WSL after a failed graceful quit if doing so risks stale
+   Docker socket state.** One force-kill attempt after a failed graceful quit is the established
+   pattern (P167 onward); if a session observes signs of a prior forced-shutdown artifact (a
+   `.sock.stale` file, Docker Desktop failing to relaunch cleanly, `wsl --shutdown` not releasing a
+   lock `icacls`/`tasklist` shows nothing holding), **stop** — do not retry the force-kill loop.
+   Prefer leaving Docker idle (zero containers, process still running) over corrupting its local
+   runtime state; record the state and let the owner restart it. This is a considered exception,
+   not a default: most sessions with a clean environment should still force-stop the leftover
+   Docker processes once after a failed graceful quit, same as always — only escalate to "leave it
+   running" when there is a concrete signal of stale-socket risk, not merely because quitting is
+   inconvenient.
 
 **Remote dev project (for manual/interactive work, once linked).** A second free Supabase
 project, separate from any project holding real data — see the Supabase environment note in
@@ -456,6 +481,18 @@ the bundle by design. The Supabase secret key lives in the Edge Function environ
 database password in the owner's password manager; neither belongs in a frontend build, and a
 frontend build has no use for either.
 
+**The build refuses a wrong public configuration (P160, D-160).** `pnpm build` starts with
+`node scripts/check-public-env.mjs`; `vite.config.ts` repeats the check for a direct `vite build`;
+`node scripts/check-dist-secrets.mjs` judges the finished `dist/`. On Cloudflare Pages (`CF_PAGES=1`)
+the URL must be exactly `https://<ref>.supabase.co` and the key a `sb_publishable_…` key — a
+localhost URL, a placeholder or a legacy JWT there fails the build with a category, never a value.
+`pnpm check:public-env` runs the input check by hand; `pnpm check:github-config` lists, by **name**
+only, whether the four repository secrets the CI Production deploy job needs exist and the two
+legacy `VITE_*` Actions variables are gone (P163, D-163). That job reads its two public build values
+from repository secrets — not variables — because GitHub prints a step's resolved `env:` block
+before the step runs and redacts secrets there but not variables; the values are public in the bundle
+either way. See [security/RELEASE_PREFLIGHT_P163.md](security/RELEASE_PREFLIGHT_P163.md).
+
 **Environment variables are baked in at build time.** Editing one in the dashboard changes nothing
 until a redeploy. This is not theoretical — the first deployment of this project went out with two
 transposed characters in the Supabase project ref, so every request failed and the invite page said
@@ -491,3 +528,27 @@ environment that was deployed to. A green CI run is not one of them.
 - Mobile: Safari Web Inspector over USB for a real iPhone. Emulation is a first pass, not proof.
 - Never log monetary amounts, collection contents, tokens or full email addresses — this applies
   to development logging too, because that is where such lines get committed by accident.
+
+
+## Account deletion and restores (P189)
+
+Deleting an account is a server-side workflow (`delete-account` Edge Function) that records the
+erasure in an **off-platform registry before it destroys anything**; a restored database must pass the
+erasure gate before it serves. Operator procedure: [security/RESTORE_RUNBOOK.md](security/RESTORE_RUNBOOK.md)
+(read it before any restore; the key points are repeated here because they are easy to forget):
+
+- **Never promote a restored database before `restore-gate postcheck` and `promote-check` exit 0.** The
+  restore drill (`scripts/p137/restore-drill.ts`) fails unless the gate ran (`--erasure-registry <file>`,
+  key in `ERASURE_REGISTRY_KEY`).
+- **Function secrets** (hosted: `supabase secrets set`, never committed): `ERASURE_REGISTRY_URL`
+  (https), `ERASURE_REGISTRY_TOKEN` (append only). Without them every deletion is refused with
+  `503 deletion_unavailable`. The registry key is **not** an Edge Function secret; it lives with the
+  registry and the operator.
+- **Deploy order for the deletion migrations** (never executed against the hosted project in P189):
+  verified backup (`pnpm db:backup`, `BACKUP COMPLETE`) → read-only finance diagnostics → `db push
+  --dry-run` must list the four P189 migrations (`20261002120000`…`20261002130000`) in order → push →
+  deploy the function **before** the client → grant audit → client. Do not push until the owner has
+  chosen registry storage; the function would only refuse deletions, but the UI would show them.
+- **Local stacks:** the stack's `supabase/config.toml` reads `ERASURE_REGISTRY_*` from the environment
+  at `supabase start`; the test suites start the reference sink (`tests/db/global-setup.ts`). After
+  `supabase db reset`, deactivate the cron jobs and delete the temp registry file together with it.

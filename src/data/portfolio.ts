@@ -1,5 +1,6 @@
 import { supabase } from './supabase-client'
-import { parseMinorUnits } from './money'
+import type { Db } from './leased-client'
+import { optionalMoneyArg, parseMinorUnits } from './money'
 import type { Database } from './database.types'
 import type { CardCondition, GradingState, Grader, HoldingKind, SealedIntent } from './collection'
 
@@ -280,47 +281,52 @@ function mapRow(row: ListPortfolioRow): PortfolioTile {
 
 const PAGE_SIZE = 30
 
-export async function listPortfolio(params: {
-  sort: PortfolioSortOrder
-  filters?: PortfolioFilters
-  cursor?: PortfolioCursor | null
-  limit?: number
-}): Promise<PortfolioPage> {
+export async function listPortfolio(
+  params: {
+    sort: PortfolioSortOrder
+    filters?: PortfolioFilters
+    cursor?: PortfolioCursor | null
+    limit?: number
+    /** Tears the request down when it fires (the Quick CSV export's Cancel). */
+    signal?: AbortSignal
+  },
+  db: Db = supabase,
+): Promise<PortfolioPage> {
   const limit = params.limit ?? PAGE_SIZE
   const f = params.filters ?? {}
   const cursor = params.cursor ?? null
 
-  const { data, error } = await supabase
-    .rpc('list_portfolio', {
-      p_sort: params.sort,
-      p_limit: limit,
-      p_query: f.query || undefined,
-      p_set_id: f.setId,
-      p_condition: f.condition,
-      p_graded: f.graded,
-      p_grader: f.grader,
-      p_favorite: f.favorite,
-      p_language: f.language,
-      p_manual_only: f.manualOnly,
-      p_custom_collection_id: f.customCollectionId,
-      p_storage_location_id: f.storageLocationId,
-      p_tag_id: f.tagId,
-      p_low_value: f.lowValue,
-      p_missing_value: f.missingValue,
-      p_holding_kind: f.holdingKind,
-      p_sealed_product_type: f.sealedProductType,
-      p_sealed_intent: f.sealedIntent,
-      p_cursor_holding_id: cursor?.holdingId,
-      p_cursor_name: cursor?.name,
-      p_cursor_set_name: cursor?.setName,
-      p_cursor_quantity: cursor?.quantity,
-      p_cursor_acquired_on: cursor?.acquiredOn ?? undefined,
-      p_cursor_added_at: cursor?.addedAt,
-      p_cursor_value_minor: cursor?.valueMinor === null ? undefined : Number(cursor?.valueMinor),
-      p_cursor_has_value: cursor?.hasValue,
-      p_cursor_number_key: cursor?.numberKey,
-    })
-    .overrideTypes<ListPortfolioRow[], { merge: false }>()
+  const call = db.rpc('list_portfolio', {
+    p_sort: params.sort,
+    p_limit: limit,
+    p_query: f.query || undefined,
+    p_set_id: f.setId,
+    p_condition: f.condition,
+    p_graded: f.graded,
+    p_grader: f.grader,
+    p_favorite: f.favorite,
+    p_language: f.language,
+    p_manual_only: f.manualOnly,
+    p_custom_collection_id: f.customCollectionId,
+    p_storage_location_id: f.storageLocationId,
+    p_tag_id: f.tagId,
+    p_low_value: f.lowValue,
+    p_missing_value: f.missingValue,
+    p_holding_kind: f.holdingKind,
+    p_sealed_product_type: f.sealedProductType,
+    p_sealed_intent: f.sealedIntent,
+    p_cursor_holding_id: cursor?.holdingId,
+    p_cursor_name: cursor?.name,
+    p_cursor_set_name: cursor?.setName,
+    p_cursor_quantity: cursor?.quantity,
+    p_cursor_acquired_on: cursor?.acquiredOn ?? undefined,
+    p_cursor_added_at: cursor?.addedAt,
+    p_cursor_value_minor: optionalMoneyArg(cursor?.valueMinor ?? undefined),
+    p_cursor_has_value: cursor?.hasValue,
+    p_cursor_number_key: cursor?.numberKey,
+  })
+  const ready = params.signal === undefined ? call : call.abortSignal(params.signal)
+  const { data, error } = await ready.overrideTypes<ListPortfolioRow[], { merge: false }>()
   if (error) throw new Error(error.message)
 
   const results = data.map(mapRow)

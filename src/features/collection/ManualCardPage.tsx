@@ -1,8 +1,11 @@
 import { useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { useMutation } from '@tanstack/react-query'
 import { createManualCard } from '../../data/collection'
+import { leasedDb } from '../../data/leased-db'
+import { useLeasedMutation } from '../../auth/useLeasedMutation'
 import { Button, FormMessage, TextField } from '../../ui/form'
+import { useUnsavedWorkSnapshot } from '../../platform/unsaved-work-registry'
+import { userMessage } from '../../platform/user-error'
 
 /** The honest fallback when the shared catalog does not (yet) have a physical card the owner
  *  holds (M6 prompt §16-19, D-017). Deliberately thin: only what identifies the item — no fake
@@ -16,8 +19,12 @@ export function ManualCardPage() {
   const [notes, setNotes] = useState('')
   const [error, setError] = useState<string | null>(null)
 
-  const createMutation = useMutation({
-    mutationFn: createManualCard,
+  // P130-09: an automatic stale-deployment reload waits while typed input is unsaved.
+  useUnsavedWorkSnapshot('manual-card-form', { name, setName_, collectorNumber, language, notes })
+
+  const createMutation = useLeasedMutation({
+    mutationFn: (input: Parameters<typeof createManualCard>[0], lease) =>
+      createManualCard(input, leasedDb(lease)),
     onSuccess: async (card) => {
       await navigate({ to: '/add', search: { manualCardId: card.id } })
     },
@@ -38,7 +45,7 @@ export function ManualCardPage() {
         notes: notes.trim() || undefined,
       })
     } catch (mutationError) {
-      setError(mutationError instanceof Error ? mutationError.message : 'Could not save this card.')
+      setError(userMessage(mutationError, 'Could not save this card.'))
     }
   }
 

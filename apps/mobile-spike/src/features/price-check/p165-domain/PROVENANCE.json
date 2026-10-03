@@ -1,0 +1,16 @@
+{
+  "note": "Byte-identical copies of the P165 candidate web domain src/domain/price-check/*.ts. Do not edit: delete this directory and import @shared/domain/price-check/* once P165 is released. Pinned by tests/unit/p169-p165-domain-pin.test.ts.",
+  "sourceRepoPath": "src/domain/price-check",
+  "sourceCommit": "3d03eec7a24756c635857bc7320b51e17cc8572c",
+  "gitBlobIds": {
+    "freshness.ts": "8912a524c385c62d70926b7573442767118ff085",
+    "fx.ts": "69af4d9a0df227b3f3a63b3d9da1113be6f189c5",
+    "graded.ts": "3ab613bb34689f187a2a6a107e299e45dda0e252",
+    "identity.ts": "02ebb7a098625f5e2b1c115273cd0c34c4a3888b",
+    "raw-observations.ts": "72d3ec687507f07ee238b3914b051ed2b3ac1502",
+    "raw-section.ts": "46ff61117db44cc87899744b903ca8b655c2eada",
+    "scan.ts": "0bca93f86054155aa45f4904604900de48954e15",
+    "types.ts": "c5ec845758d08b430c57421682296fb314e88875",
+    "wire.ts": "124a6a0724d61854b9e7965761ecadf5f3701c69"
+  }
+}

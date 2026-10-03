@@ -5,7 +5,7 @@ title = "pokeportfolio gitleaks config"
 [extend]
 useDefault = true
 
-[allowlist]
+[[allowlists]]
 description = "Known-public, non-sensitive values that structurally match a secret rule"
 regexes = [
   # Supabase's well-known LOCAL-only demo `service_role` JWT, printed by `supabase status` on
@@ -18,4 +18,27 @@ regexes = [
   # Docker container the restore drill creates and destroys (docker rm -f -v) on every run. A
   # fixed, self-descriptive, non-secret placeholder — never a credential for any real database.
   '''p137-disposable''',
+  # tests/config/doc-link-checker.test.ts: the public jwt.io documentation sample token (subject
+  # "1234567890", signature = the ASCII text "thisisasignature"), used only to prove that the
+  # JWT-shape detector fires. Synthetic; not issued by or valid for any service.
+  '''eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiIxMjM0NTY3ODkwIn0\.dGhpc2lzYXNpZ25hdHVyZQ''',
+  # apps/mobile-spike/scripts/p169/catalog-fixture.mjs: the fixture row key "unpriced-098" of a
+  # synthetic catalog card (matches the generic-api-key shape `key: '...'`); not a credential.
+  '''unpriced-098''',
+  # tests/authorization/p152_account_deletion_attacks.test.ts forges HS256 tokens to prove the
+  # delete-account function refuses a correctly signed token for a session that does not exist.
+  # This is the Supabase CLI's documented default `jwt_secret` for the LOCAL stack — identical on
+  # every install, never valid against a hosted project (which has its own signing keys).
+  '''super-secret-jwt-token-with-at-least-32-characters-long''',
 ]
+
+# P189 / P190: tests/ops/erasure-registry.test.ts uses a fixed, repeating-hex 32-byte HMAC key
+# ('0123456789abcdef' x 4) to prove registry integrity checks. A synthetic test vector: never used by
+# any deployed function. Scoped to this one file AND this one line (both must match), so the same
+# pattern anywhere else, or any other key in this file, is still reported.
+[[allowlists]]
+description = "Synthetic registry HMAC test vector in erasure-registry.test.ts"
+condition = "AND"
+paths = ['''^tests/ops/erasure-registry\.test\.ts$''']
+regexTarget = "line"
+regexes = ['''const KEY_HEX = '0123456789abcdef'\.repeat\(4\)''']

@@ -1,5 +1,5 @@
 /// <reference types="vitest/config" />
-import { defineConfig, type Plugin } from 'vite'
+import { defineConfig, loadEnv, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
@@ -7,6 +7,11 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { execSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
+import {
+  assertPublicEnv,
+  collectPublicEnv,
+  resolveRequireHosted,
+} from './scripts/lib/public-env-guard.mjs'
 
 // Single source of truth for the app version shown in Profile's footer (M7.1 prompt §65) —
 // package.json, not a hardcoded string that drifts from it.
@@ -146,6 +151,35 @@ export function buildContentSecurityPolicy(
     "frame-ancestors 'none'",
     'upgrade-insecure-requests',
   ].join('; ')
+}
+
+/**
+ * Refuses to build or serve with a public (`VITE_*`) value that is secret-shaped or in the wrong
+ * slot (P160). Everything with that prefix is inlined into the browser bundle, so a Supabase
+ * secret key in `VITE_SUPABASE_URL` would be published. Runs in the `config` hook — before any
+ * transform, asset copy or `dist/` write — so a refusal leaves no partial artefact behind (a
+ * failure later, in `generateBundle`, had already copied `public/` and `sw.js` into `dist/`).
+ *
+ * The first plugin on purpose, and pinned by tests/config/public-env-guard.test.ts. Reports field
+ * names and error categories only (scripts/lib/public-env-guard.mjs); the same validator also
+ * runs as the first `prebuild` step (scripts/check-public-env.mjs).
+ *
+ * Presence (URL and key set) and the hosted deploy profile are enforced for `build` only — `vite`,
+ * `vite preview` and Vitest legitimately run with nothing configured.
+ */
+function publicEnvGuard(): Plugin {
+  return {
+    name: 'pokeportfolio:public-env-guard',
+    config(userConfig, { command, mode }) {
+      const root = userConfig.root ?? process.cwd()
+      const env = collectPublicEnv(loadEnv(mode, root, 'VITE_'), process.env)
+      const building = command === 'build'
+      assertPublicEnv(env, {
+        requirePresent: building,
+        requireHosted: building && resolveRequireHosted(process.env),
+      })
+    },
+  }
 }
 
 /**
@@ -516,7 +550,10 @@ export default defineConfig({
     include: ['tesseract.js'],
     entries: ['src/features/scanner/visual/visual-worker.ts'],
   },
+  // Pinned rather than defaulted: widening this would inline more of the environment.
+  envPrefix: 'VITE_',
   plugins: [
+    publicEnvGuard(),
     react(),
     tailwindcss(),
     themeBootstrapHtml(),
@@ -564,6 +601,9 @@ export default defineConfig({
   ],
   test: {
     environment: 'node',
+    // Several tests/config suites spawn real `node`/`vite` subprocesses; under a full-suite run on a
+    // loaded machine a single one can exceed Vitest's 5 s default without anything being wrong.
+    testTimeout: 30_000,
     // Infrastructure-free suites only. Database and authorization tests need a live Supabase
     // stack and run separately via `pnpm test:db` (vitest.db.config.ts) — see docs/TESTING.md §1.
     // tests/ui/ covers browser-platform logic that is pure enough to verify without a DOM
@@ -573,6 +613,8 @@ export default defineConfig({
       'tests/financial/**/*.test.ts',
       'tests/data/**/*.test.ts',
       'tests/ui/**/*.test.ts',
+      // Pure fixture helpers of the database suites (no stack needed).
+      'tests/db/lib/**/*.test.ts',
       // Build/platform security configuration (M15): CSP policy shape and scanner asset
       // caching rules, asserted at config level; dist artefacts are checked separately by
       // scripts/verify-scanner-platform-build.mjs after a real build.

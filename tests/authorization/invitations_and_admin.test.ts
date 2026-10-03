@@ -245,7 +245,8 @@ describe('a user cannot make themselves an admin', () => {
 describe('admin has no access to another user private data (SECURITY.md §4)', () => {
   it('admin cannot read another user purchases through the app API', async () => {
     const today = new Date().toISOString().slice(0, 10)
-    const { data: purchase } = await otherClient
+    // P191 (P130-13): a client cannot insert purchases; the fixture row is service-written.
+    const { data: purchase } = await service
       .from('purchases')
       .insert({
         user_id: otherUser.id,

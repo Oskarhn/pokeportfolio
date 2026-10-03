@@ -25,6 +25,15 @@ export interface CacheThroughDeps {
   cacheName: string
 }
 
+/** P151: a response an ASSET request must never legitimately receive and must never be cached.
+ *  A captive portal (public Wi-Fi at a card shop or convention), a proxy error page or an SPA
+ *  fallback answers an asset URL with `200 text/html`. Cached, it would be served for the rest of
+ *  that generation's life: the index checksum fails every session and the visual channel stays
+ *  unavailable until the user clears site data. */
+function isHtmlResponse(response: Response): boolean {
+  return /^\s*text\/html/i.test(response.headers.get('content-type') ?? '')
+}
+
 export interface CacheThroughFetch {
   /** Drop-in replacement for `fetch` carrying the exact cache-through semantics described in
    *  visual-worker.ts's own module doc: a `cache: 'no-store'` request bypasses BOTH the HTTP
@@ -34,6 +43,36 @@ export interface CacheThroughFetch {
   fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>
   getLog(): RecordedFetch[]
   resetLog(): void
+  /** Deletes every cached entry whose URL satisfies `shouldEvict` (P151: prune superseded index
+   *  generations, purge a generation that failed its integrity check). Returns the evicted URLs.
+   *  Never throws — an unavailable or failing cache simply evicts nothing. */
+  evict(shouldEvict: (url: string) => boolean): Promise<string[]>
+}
+
+/** True for an entry of ANY index generation other than `contentId` under `indexBase`
+ *  (`<indexBase>/generations/<id>/...`). Everything else — including the model/runtime files, should
+ *  an engine route them through the patched fetch — is left alone. */
+export function isSupersededIndexGeneration(
+  url: string,
+  indexBase: string,
+  contentId: string,
+): boolean {
+  const path = pathnameOf(url)
+  const generations = `${indexBase}/generations/`
+  return path.startsWith(generations) && !path.startsWith(`${generations}${contentId}/`)
+}
+
+/** True for an entry of exactly the generation `contentId`. */
+export function isIndexGeneration(url: string, indexBase: string, contentId: string): boolean {
+  return pathnameOf(url).startsWith(`${indexBase}/generations/${contentId}/`)
+}
+
+function pathnameOf(url: string): string {
+  try {
+    return new URL(url, 'https://cache.invalid').pathname
+  } catch {
+    return url
+  }
 }
 
 function requestUrl(input: RequestInfo | URL): string {
@@ -91,6 +130,12 @@ export function createCacheThroughFetch(deps: CacheThroughDeps): CacheThroughFet
       } catch {
         cached = undefined
       }
+      if (cached !== undefined && isHtmlResponse(cached)) {
+        // A poisoned entry written before this guard existed (or by another engine): drop it and
+        // fall through to the network so the device self-heals on the next load.
+        void cache.delete(input).catch(() => {})
+        cached = undefined
+      }
       if (cached !== undefined) {
         const ms = performance.now() - start
         const bytesHeader = cached.headers.get('content-length')
@@ -115,7 +160,8 @@ export function createCacheThroughFetch(deps: CacheThroughDeps): CacheThroughFet
       cache !== null &&
       isCacheableRequest &&
       response.ok &&
-      response.status === 200
+      response.status === 200 &&
+      !isHtmlResponse(response)
     ) {
       const toCache = response.clone()
       void cache.put(input, toCache).catch(() => {
@@ -130,6 +176,21 @@ export function createCacheThroughFetch(deps: CacheThroughDeps): CacheThroughFet
     getLog: () => fetchLog,
     resetLog: () => {
       fetchLog = []
+    },
+    evict: async (shouldEvict) => {
+      const cache = await getCache()
+      if (cache === null) return []
+      const evicted: string[] = []
+      try {
+        for (const request of await cache.keys()) {
+          if (!shouldEvict(request.url)) continue
+          const deleted = await cache.delete(request).catch(() => false)
+          if (deleted) evicted.push(request.url)
+        }
+      } catch {
+        // keys() failing means nothing more can be evicted right now; never surface it.
+      }
+      return evicted
     },
   }
 }

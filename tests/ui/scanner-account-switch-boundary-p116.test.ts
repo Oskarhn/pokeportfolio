@@ -38,6 +38,11 @@ vi.mock('../../src/data/catalog', () => ({
 vi.mock('../../src/data/collection', () => ({
   addCardAcquisition: vi.fn(),
 }))
+
+// The controller forwards a leased client to the (mocked) data layer; a stand-in is enough.
+vi.mock('../../src/data/leased-db', () => ({
+  leasedDb: (lease: unknown) => ({ identityLease: lease }),
+}))
 const visualMocks = vi.hoisted(() => ({
   analyze: vi.fn(),
   getDiagnosticsSnapshot: vi.fn(),

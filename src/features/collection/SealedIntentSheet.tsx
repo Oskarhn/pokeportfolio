@@ -1,5 +1,7 @@
 import { useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQueryClient } from '@tanstack/react-query'
+import { useLeasedMutation } from '../../auth/useLeasedMutation'
+import { leasedDb } from '../../data/leased-db'
 import {
   setSealedLotIntent,
   SEALED_INTENT_LABEL,
@@ -8,6 +10,7 @@ import {
 } from '../../data/collection'
 import { Sheet } from '../../ui/Sheet'
 import { Button, ChoiceGroup, FormMessage, TextField } from '../../ui/form'
+import { userMessage } from '../../platform/user-error'
 
 const INTENTS: SealedIntent[] = ['keep_sealed', 'planned_to_open', 'undecided']
 
@@ -33,13 +36,16 @@ export function SealedIntentSheet({
   const [quantity, setQuantity] = useState(String(lot.quantityRemaining))
   const [error, setError] = useState<string | null>(null)
 
-  const mutation = useMutation({
-    mutationFn: (qty: number) =>
-      setSealedLotIntent({
-        lotId: lot.id,
-        intent,
-        quantity: qty === lot.quantityRemaining ? undefined : qty,
-      }),
+  const mutation = useLeasedMutation({
+    mutationFn: (qty: number, lease) =>
+      setSealedLotIntent(
+        {
+          lotId: lot.id,
+          intent,
+          quantity: qty === lot.quantityRemaining ? undefined : qty,
+        },
+        leasedDb(lease),
+      ),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['holding-lots', holdingId] })
       await queryClient.invalidateQueries({ queryKey: ['holding-summary', holdingId] })
@@ -48,7 +54,7 @@ export function SealedIntentSheet({
       onClose()
     },
     onError: (mutationError: Error) => {
-      setError(mutationError.message)
+      setError(userMessage(mutationError))
     },
   })
 

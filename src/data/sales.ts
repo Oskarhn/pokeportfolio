@@ -1,5 +1,11 @@
 import { supabase } from './supabase-client'
-import { parseMinorUnits } from './money'
+import type { LeasedDb } from './leased-client'
+import {
+  normalizeDecimalText,
+  parseMinorUnits,
+  serializeMinorUnits,
+  optionalMoneyArg,
+} from './money'
 import type { Database, Json } from './database.types'
 
 /**
@@ -66,7 +72,7 @@ interface SaleRow {
   shipping_cost_minor: string
   shipping_charged_minor: string
   net_proceeds_minor: string
-  fx_rate_to_nok: number
+  fx_rate_to_nok: string
   fx_rate_date: string
   fx_source: FxSource
   net_proceeds_nok_minor: string
@@ -87,7 +93,7 @@ function mapSale(row: SaleRow): Sale {
     shippingCostMinor: parseMinorUnits(row.shipping_cost_minor),
     shippingChargedMinor: parseMinorUnits(row.shipping_charged_minor),
     netProceedsMinor: parseMinorUnits(row.net_proceeds_minor),
-    fxRateToNok: String(row.fx_rate_to_nok),
+    fxRateToNok: normalizeDecimalText(row.fx_rate_to_nok),
     fxRateDate: row.fx_rate_date,
     fxSource: row.fx_source,
     netProceedsNokMinor: parseMinorUnits(row.net_proceeds_nok_minor),
@@ -104,30 +110,29 @@ function mapSale(row: SaleRow): Sale {
 const SALE_COLUMNS =
   'id, sold_on, marketplace, currency, gross_minor::text, fees_minor::text, ' +
   'shipping_cost_minor::text, shipping_charged_minor::text, net_proceeds_minor::text, ' +
-  'fx_rate_to_nok, fx_rate_date, fx_source, net_proceeds_nok_minor::text, ' +
+  'fx_rate_to_nok::text, fx_rate_date, fx_source, net_proceeds_nok_minor::text, ' +
   'realized_result_nok_minor::text, proceeds_from_uncosted_nok_minor::text, notes, voided_at'
 
 export async function createSale(
   lines: SaleLineInput[],
   input: SaleWriteInput,
   idempotencyKey: string,
+  db: LeasedDb,
 ): Promise<Sale> {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .rpc('create_sale', {
       p_sold_on: input.soldOn,
       p_currency: input.currency,
       p_lines: lines.map((line): Json => ({
         lot_id: line.lotId,
         quantity: line.quantity,
-        unit_gross_minor: Number(line.unitGrossMinor),
+        unit_gross_minor: serializeMinorUnits(line.unitGrossMinor),
       })),
       p_idempotency_key: idempotencyKey,
       p_marketplace: input.marketplace,
-      p_fees_minor: input.feesMinor === undefined ? undefined : Number(input.feesMinor),
-      p_shipping_cost_minor:
-        input.shippingCostMinor === undefined ? undefined : Number(input.shippingCostMinor),
-      p_shipping_charged_minor:
-        input.shippingChargedMinor === undefined ? undefined : Number(input.shippingChargedMinor),
+      p_fees_minor: optionalMoneyArg(input.feesMinor),
+      p_shipping_cost_minor: optionalMoneyArg(input.shippingCostMinor),
+      p_shipping_charged_minor: optionalMoneyArg(input.shippingChargedMinor),
       p_fx_rate_to_nok: input.fxRateToNok,
       p_fx_rate_date: input.fxRateDate,
       p_fx_source: input.fxSource,
@@ -144,22 +149,21 @@ export async function updateSale(
   saleId: string,
   lines: SaleLineUpdateInput[],
   input: SaleWriteInput,
+  db: LeasedDb,
 ): Promise<Sale> {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .rpc('update_sale', {
       p_sale_id: saleId,
       p_sold_on: input.soldOn,
       p_currency: input.currency,
       p_lines: lines.map((line): Json => ({
         line_id: line.lineId,
-        unit_gross_minor: Number(line.unitGrossMinor),
+        unit_gross_minor: serializeMinorUnits(line.unitGrossMinor),
       })),
       p_marketplace: input.marketplace,
-      p_fees_minor: input.feesMinor === undefined ? undefined : Number(input.feesMinor),
-      p_shipping_cost_minor:
-        input.shippingCostMinor === undefined ? undefined : Number(input.shippingCostMinor),
-      p_shipping_charged_minor:
-        input.shippingChargedMinor === undefined ? undefined : Number(input.shippingChargedMinor),
+      p_fees_minor: optionalMoneyArg(input.feesMinor),
+      p_shipping_cost_minor: optionalMoneyArg(input.shippingCostMinor),
+      p_shipping_charged_minor: optionalMoneyArg(input.shippingChargedMinor),
       p_fx_rate_to_nok: input.fxRateToNok,
       p_fx_rate_date: input.fxRateDate,
       p_fx_source: input.fxSource,
@@ -172,8 +176,8 @@ export async function updateSale(
   return mapSale(data)
 }
 
-export async function voidSale(saleId: string, reason?: string): Promise<void> {
-  const { error } = await supabase.rpc('void_sale', { p_sale_id: saleId, p_reason: reason })
+export async function voidSale(saleId: string, db: LeasedDb, reason?: string): Promise<void> {
+  const { error } = await db.rpc('void_sale', { p_sale_id: saleId, p_reason: reason })
   if (error) throw new Error(error.message)
 }
 

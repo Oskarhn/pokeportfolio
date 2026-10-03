@@ -1,0 +1,37 @@
+diff --git a/android/build.gradle b/android/build.gradle
+index 41b43599a9af6ef1c170047d39db1f3baa6ca682..ec4f98cf2a62e9e72f9c58e29dd08e7ee68448e0 100644
+--- a/android/build.gradle
++++ b/android/build.gradle
+@@ -241,17 +241,26 @@ dependencies {
+ 
+   implementation "junit:junit:4.12"
+ 
++  // P191 (P130-30): the upstream build resolves these AARs as `latest.integration`, i.e. whatever
++  // Maven Central serves on the day of the build — an unreviewed, unpinned native runtime. Pinned to
++  // the release train of this package (the JS package, the iOS onnxruntime-c pod and this AAR must be
++  // the same version; tests/unit/p191-onnxruntime-provenance.test.ts checks all three).
+   if (useQnn) {
+-    extractLibs "com.microsoft.onnxruntime:onnxruntime-android-qnn:latest.integration@aar"
++    extractLibs "com.microsoft.onnxruntime:onnxruntime-android-qnn:1.24.3@aar"
+   } else {
+-    extractLibs "com.microsoft.onnxruntime:onnxruntime-android:latest.integration@aar"
++    extractLibs "com.microsoft.onnxruntime:onnxruntime-android:1.24.3@aar"
+   }
+ 
+-  if (VersionNumber.parse(REACT_NATIVE_VERSION) < VersionNumber.parse("0.71")) {
+-    extractLibs "com.facebook.fbjni:fbjni:+:headers"
+-    extractLibs "com.facebook.fbjni:fbjni:+"
+-  }
++  // P182: this project's REACT_NATIVE_VERSION (0.86.3) is always >= 0.71, so the upstream
++  // fbjni-extraction branch this guarded never ran here anyway. The guard itself used
++  // org.gradle.util.VersionNumber, a class Gradle 9 removed outright (not merely an import gap —
++  // confirmed by the build's own "unable to resolve class" failure) — removed rather than patched
++  // around, since keeping a dead branch alive with a Gradle-version-specific workaround would only
++  // reintroduce the same fragility this patch exists to fix.
+ 
++  // Extensions are OFF in this app (package.json has no onnxruntimeExtensionsEnabled); its AAR follows a
++  // different release train than the runtime, so it is deliberately left as upstream wrote it. Turning
++  // the flag on requires pinning this line too (tests/unit/p191-onnxruntime-provenance.test.ts).
+   // By default it will just include onnxruntime full aar package
+   if (ortExtensionsEnabled) {
+     implementation "com.microsoft.onnxruntime:onnxruntime-extensions-android:latest.integration@aar"
