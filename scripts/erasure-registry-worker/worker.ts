@@ -132,7 +132,7 @@ export default {
 
 export class ErasureLedger {
   private readonly ledger: Ledger | null
-  constructor(state: DurableObjectState, env: Env) {
+  constructor(state: DurableObjectState, env: Pick<Env, 'ERASURE_REGISTRY_KEY'>) {
     const sql: LedgerSql = {
       all: (query, ...b) => state.storage.sql.exec(query, ...b).toArray(),
       run: (query, ...b) => {

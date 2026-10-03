@@ -7178,3 +7178,29 @@ shipped artefact (it would change scanner preprocessing); showing a sanitised ve
 
 **Accepted residual.** The gate flag is transaction-local, so inside a raw SQL transaction that has called
 a writer it stays set until commit; a client has no raw SQL.
+
+## D-195 — The production erasure registry is a Cloudflare Worker over one SQLite Durable Object (P195)
+
+**Decision.** (1) The off-backup erasure registry that P189 specified lives in a Cloudflare Worker in front of a
+single SQLite-backed Durable Object on the **Workers Free** plan (no payment method, $0). It exposes append
+(append token), head and export (operator token) and nothing else; the HMAC root key and the operator token never
+reach Supabase; the Edge Function holds only the registry URL and the append token. (2) The export is the registry
+file format the restore gate already reads; `scripts/restore-gate/registry-export.ts` verifies it with the operator's
+key before writing it atomically and never lets an older download replace a newer file. (3) Synthetic testing uses a
+completely separate Worker/Durable Object (`-test`); the production ledger has no cleanup path and is only ever read
+by tests. (4) Retention is **indefinite**: no backup horizon is known (the Supabase project is on the free plan with no
+scheduled backups and no PITR), so no record may expire. (5) The two hosted Auth settings (*Secure password change*,
+*Require current password when updating*) were enabled on `pokeportfolio-dev`; GoTrue exempts recovery sessions from
+the current-password requirement, so the released client's reset flow is unaffected.
+
+**Why.** [P195_ERASURE_REGISTRY.md](security/P195_ERASURE_REGISTRY.md) §2 compares D1, R2, KV and Durable Objects: only
+the Durable Object gives strong consistency, serialised appends and no operator SQL console at $0; KV is eventually
+consistent, R2 has no append and needs a payment method, D1 lets any dashboard user edit rows.
+
+**Rejected.** KV, R2, D1 as the ledger; a second Supabase project (same provider and operator surface as the data it
+protects); a scheduled export through GitHub Actions (would put the operator token in repository secrets); a finite
+retention window without a known backup horizon.
+
+**Accepted residual.** The HMAC does not protect against a compromise of the Cloudflare account itself (it can redeploy
+the Worker and read its secrets) — account 2FA and off-platform verified exports are the mitigation; the export is
+manual until the owner schedules it; the HMAC key cannot be rotated without a re-signing tool that does not exist.

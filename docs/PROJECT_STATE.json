@@ -207,5 +207,36 @@
     "manual_deploy_dry_run_run_id": 37117692463,
     "production_release_ready": "no",
     "note": "main is the integrated development line. released.main_sha / released.production_frontend_sha are the PRODUCTION SHA (older than main); the key name \"main_sha\" under released is historical."
+  },
+  "backend_rehearsal": {
+    "prompt": 195,
+    "branch": "release/p195-production-backend-readiness",
+    "base_main_sha": "fae5250955fe2a2d9c142bfa7e2213b823218ae2",
+    "status": "PARTIAL_P195_BACKEND_RELEASE_REHEARSAL",
+    "rehearsal_environment": "LOCAL_ONLY",
+    "production_changed": false,
+    "hosted_auth_secure_password_change": "on",
+    "hosted_auth_require_current_password": "on",
+    "registry": {
+      "provider": "cloudflare_workers_free",
+      "storage": "sqlite_durable_object",
+      "production_worker": "pokeportfolio-erasure-registry",
+      "test_worker": "pokeportfolio-erasure-registry-test",
+      "production_ledger_seq": 0,
+      "storage_ready": "yes"
+    },
+    "exposed_key": "not_identifiable_owner_action",
+    "provider_plan": "free",
+    "provider_backups": "none",
+    "provider_pitr": "not_available",
+    "provider_log_retention": "unknown",
+    "registry_retention": "indefinite",
+    "compatibility": {
+      "released_web_db114": "79/79",
+      "main_web_db114": "167/167",
+      "db_suite": "1242 passed, 4 skipped"
+    },
+    "ready_for_p196": "no",
+    "note": "Open owner items: rotate secret keys, PRODUCTION_SUPABASE_* secrets, Supabase function secrets, supabase login for the Production backup."
   }
 }

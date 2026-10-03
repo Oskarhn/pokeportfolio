@@ -110,3 +110,7 @@ candidate line, not in Production.**
   Recommended (not applied) settings: `docs/CURRENT_STATE/GIT_PUBLICATION_PLAN.md` §5.
 - The secret-shaped `VITE_SUPABASE_URL` Actions variable (above) is unchanged and still needs the
   owner's rotation and deletion; the new deploy job does not read `vars.*` at all.
+
+## P195 backend readiness (2026-10-03)
+
+Production unchanged (web `d8682e0`, DB 104, functions v7/6/3/2/3/3). Erasure registry deployed on Cloudflare Workers Free (production empty, `-test` exercised) — [P195_ERASURE_REGISTRY.md](../security/P195_ERASURE_REGISTRY.md). Hosted Auth: *Secure password change* and *Require current password when updating* ON. Backend rehearsal (LOCAL_ONLY): [P195_BACKEND_RELEASE_REHEARSAL.md](../release/P195_BACKEND_RELEASE_REHEARSAL.md). Sequence steps 2–6 of [P192_PRODUCTION_RELEASE_SEQUENCE.md](../release/P192_PRODUCTION_RELEASE_SEQUENCE.md) are done except the owner items listed there (key rotation, `PRODUCTION_SUPABASE_*` secrets, function secrets, Production backup login).
