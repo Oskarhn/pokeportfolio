@@ -130,16 +130,29 @@ function forgeJwt(claims: Record<string, unknown>): string {
 
 const now = () => Math.floor(Date.now() / 1000)
 
+/**
+ * Digests of everything the account owns, minus the two tables the `m12-recompute-snapshots` pg_cron
+ * job rewrites on its own (`portfolio_recompute_queue` drained, `portfolio_snapshots` recomputed).
+ * They change between two reads without any request being involved, so comparing them is a race.
+ */
+const CRON_DERIVED_TABLES = ['portfolio_recompute_queue', 'portfolio_snapshots']
+
+async function stableDigests(id: string): Promise<Record<string, string>> {
+  const owned = await ownedDigests(db, id)
+  for (const table of CRON_DERIVED_TABLES) Reflect.deleteProperty(owned, table)
+  return owned
+}
+
 async function untouched(who: Actor, before: Record<string, string>) {
   expect(await exists(who.user.id)).toBe(true)
   expect(await pending(who.user.id)).toBe(false)
-  expect(await ownedDigests(db, who.user.id)).toEqual(before)
+  expect(await stableDigests(who.user.id)).toEqual(before)
 }
 
 describe('unauthenticated and forged callers delete nothing', () => {
   it('no Authorization header at all is refused by the gateway', async () => {
     const victim = await actor('p152-atk-anon-victim')
-    const before = await ownedDigests(db, victim.user.id)
+    const before = await stableDigests(victim.user.id)
     const res = await call(null, good(victim))
     expect(res.status).toBe(401)
     await untouched(victim, before)
@@ -147,7 +160,7 @@ describe('unauthenticated and forged callers delete nothing', () => {
 
   it('the publishable (anon) key as bearer is refused by the function itself', async () => {
     const victim = await actor('p152-atk-anonkey-victim')
-    const before = await ownedDigests(db, victim.user.id)
+    const before = await stableDigests(victim.user.id)
     const res = await call(process.env.SUPABASE_ANON_KEY ?? '', good(victim))
     expect(res.status).toBe(401)
     expect(res.json).toEqual({ error: 'unauthenticated' })
@@ -158,7 +171,7 @@ describe('unauthenticated and forged callers delete nothing', () => {
     // Even a caller holding the secret key cannot use this endpoint as an "impersonate anyone"
     // primitive: it is not a user session, so the function refuses it.
     const victim = await actor('p152-atk-svc-victim')
-    const before = await ownedDigests(db, victim.user.id)
+    const before = await stableDigests(victim.user.id)
     const res = await call(process.env.SUPABASE_SERVICE_ROLE_KEY ?? '', good(victim))
     expect(res.status).toBe(401)
     await untouched(victim, before)
@@ -166,7 +179,7 @@ describe('unauthenticated and forged callers delete nothing', () => {
 
   it('garbage and truncated tokens are refused', async () => {
     const victim = await actor('p152-atk-garbage-victim')
-    const before = await ownedDigests(db, victim.user.id)
+    const before = await stableDigests(victim.user.id)
     for (const token of ['garbage', 'a.b.c', victim.token.slice(0, -5), `${victim.token}x`]) {
       const res = await call(token, good(victim))
       expect(res.status, token.slice(0, 12)).toBe(401)
@@ -176,7 +189,7 @@ describe('unauthenticated and forged callers delete nothing', () => {
 
   it('an expired token with a valid signature is refused', async () => {
     const victim = await actor('p152-atk-expired-victim')
-    const before = await ownedDigests(db, victim.user.id)
+    const before = await stableDigests(victim.user.id)
     const expired = forgeJwt({
       aud: 'authenticated',
       role: 'authenticated',
@@ -195,7 +208,7 @@ describe('unauthenticated and forged callers delete nothing', () => {
     // The forger knows the signing secret and names the victim in `sub`. Authority comes from a
     // live session server-side, not from a well-formed claim set.
     const victim = await actor('p152-atk-forged-victim')
-    const before = await ownedDigests(db, victim.user.id)
+    const before = await stableDigests(victim.user.id)
     const forged = forgeJwt({
       aud: 'authenticated',
       role: 'authenticated',
@@ -212,7 +225,7 @@ describe('unauthenticated and forged callers delete nothing', () => {
 
   it('a session revoked after the token was issued is refused even though the JWT still verifies', async () => {
     const a = await actor('p152-atk-revoked')
-    const before = await ownedDigests(db, a.user.id)
+    const before = await stableDigests(a.user.id)
     await service.auth.admin.signOut(a.token, 'global')
     const res = await call(a.token, good(a))
     expect(res.status).toBe(401)
@@ -224,8 +237,8 @@ describe('a signed-in user cannot name anyone else', () => {
   it('A with B as the intended account: 409, and A, B and every pending table are untouched', async () => {
     const a = await actor('p152-atk-mismatch-a')
     const b = await actor('p152-atk-mismatch-b')
-    const beforeA = await ownedDigests(db, a.user.id)
-    const beforeB = await ownedDigests(db, b.user.id)
+    const beforeA = await stableDigests(a.user.id)
+    const beforeB = await stableDigests(b.user.id)
     const res = await call(a.token, good(a, { expectedUserId: b.user.id }))
     expect(res.status).toBe(409)
     expect(res.json).toEqual({ error: 'identity_mismatch' })
@@ -236,8 +249,8 @@ describe('a signed-in user cannot name anyone else', () => {
   it("A with B's password and B's id: still refused, nothing changes", async () => {
     const a = await actor('p152-atk-pw-a')
     const b = await actor('p152-atk-pw-b')
-    const beforeA = await ownedDigests(db, a.user.id)
-    const beforeB = await ownedDigests(db, b.user.id)
+    const beforeA = await stableDigests(a.user.id)
+    const beforeB = await stableDigests(b.user.id)
     const res = await call(a.token, {
       expectedUserId: b.user.id,
       password: b.user.password,
@@ -251,8 +264,8 @@ describe('a signed-in user cannot name anyone else', () => {
   it("A's token with A's id but B's password: the password is checked against A, not B", async () => {
     const a = await actor('p152-atk-pw2-a')
     const b = await actor('p152-atk-pw2-b')
-    const beforeA = await ownedDigests(db, a.user.id)
-    const beforeB = await ownedDigests(db, b.user.id)
+    const beforeA = await stableDigests(a.user.id)
+    const beforeB = await stableDigests(b.user.id)
     const res = await call(a.token, good(a, { password: b.user.password }))
     expect(res.status).toBe(403)
     expect(res.json).toEqual({ error: 'reauthentication_failed' })
@@ -263,7 +276,7 @@ describe('a signed-in user cannot name anyone else', () => {
   it("A naming B's email/id in every other field deletes only A — and only with A's password", async () => {
     const a = await actor('p152-atk-fields-a')
     const b = await actor('p152-atk-fields-b')
-    const beforeB = await ownedDigests(db, b.user.id)
+    const beforeB = await stableDigests(b.user.id)
     const res = await call(
       a.token,
       good(a, {
@@ -295,7 +308,7 @@ describe('a signed-in user cannot name anyone else', () => {
     })
     expect(upd.error).toBeNull()
     const token = (await a.client.auth.getSession()).data.session!.access_token
-    const beforeB = await ownedDigests(db, b.user.id)
+    const beforeB = await stableDigests(b.user.id)
 
     // Claiming B via the intent field is still an identity mismatch.
     const asB = await call(token, good(a, { expectedUserId: b.user.id }))
@@ -316,7 +329,7 @@ describe('a signed-in user cannot name anyone else', () => {
 
   it('a direct call that skips the UI but has the wrong password is refused and leaves no pending state', async () => {
     const a = await actor('p152-atk-nopw')
-    const before = await ownedDigests(db, a.user.id)
+    const before = await stableDigests(a.user.id)
     for (const password of ['wrong-password-000', ' ', a.user.password + 'x']) {
       const res = await call(a.token, good(a, { password }))
       expect(res.status, password).toBe(403)
@@ -441,7 +454,7 @@ describe('replay and parallelism', () => {
   it("A's captured request, replayed after A is deleted (even naming B), is inert", async () => {
     const a = await actor('p152-atk-replay-a')
     const b = await actor('p152-atk-replay-b')
-    const beforeB = await ownedDigests(db, b.user.id)
+    const beforeB = await stableDigests(b.user.id)
     expect((await call(a.token, good(a))).status).toBe(200)
     expect((await call(a.token, good(a))).status).toBe(401)
     expect((await call(a.token, good(a, { expectedUserId: b.user.id }))).status).toBe(401)
@@ -451,7 +464,7 @@ describe('replay and parallelism', () => {
   it("A's captured body replayed with B's session is an identity mismatch, not B's deletion", async () => {
     const a = await actor('p152-atk-swap-a', false)
     const b = await actor('p152-atk-swap-b')
-    const beforeB = await ownedDigests(db, b.user.id)
+    const beforeB = await stableDigests(b.user.id)
     const res = await call(b.token, good(a))
     expect(res.status).toBe(409)
     await untouched(b, beforeB)
@@ -460,7 +473,7 @@ describe('replay and parallelism', () => {
   it('parallel requests for one account converge and never spill onto a neighbour', async () => {
     const a = await actor('p152-atk-par-a')
     const b = await actor('p152-atk-par-b')
-    const beforeB = await ownedDigests(db, b.user.id)
+    const beforeB = await stableDigests(b.user.id)
     const results = await Promise.all([1, 2, 3].map(() => call(a.token, good(a))))
     for (const r of results) expect([200, 401, 500]).toContain(r.status)
     expect(results.some((r) => r.status === 200)).toBe(true)
@@ -483,7 +496,7 @@ describe('privilege inspection: the destructive surface is not browser-reachable
   it('anon and authenticated cannot execute any of them, even with a real victim id', async () => {
     const a = await actor('p152-atk-priv-a', false)
     const victim = await actor('p152-atk-priv-victim')
-    const before = await ownedDigests(db, victim.user.id)
+    const before = await stableDigests(victim.user.id)
     for (const [name] of RPCS) {
       for (const client of [createAnonClient(), a.client]) {
         const { error } = await client.rpc(name, { p_user_id: victim.user.id })
