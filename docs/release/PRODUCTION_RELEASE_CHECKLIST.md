@@ -33,3 +33,12 @@ the **Deploy Production** workflow exists so a real deploy cannot start before t
 - [ ] Real run (`dry_run = false`, `backend_ack = BACKEND-ROLLED-OUT`) green; `/build-meta.json` reports the SHA.
 - [ ] Production authenticated smoke passed.
 - [ ] Run id, SHA, migration count and function versions recorded in `HANDOVER.md`.
+
+## P195 evidence (2026-10-03)
+
+- [x] Erasure registry storage chosen, deployed (production Worker empty) and exercised in a test namespace; export verifies and feeds the restore gate — [P195_ERASURE_REGISTRY.md](../security/P195_ERASURE_REGISTRY.md).
+- [x] Hosted Auth: *Secure password change* and *Require current password when updating* ON.
+- [x] Provider retention facts: free plan, no scheduled backups, no PITR, log retention unknown (registry retention indefinite).
+- [x] Migrations 105–114, functions, delete-account, registry failure, restore gate and rollback rehearsed locally; old and new web clients safe against DB114 — [P195_BACKEND_RELEASE_REHEARSAL.md](P195_BACKEND_RELEASE_REHEARSAL.md).
+- [ ] **Owner:** rotate the unidentifiable secret keys (record §2).
+- [ ] **Owner:** `PRODUCTION_SUPABASE_URL` / `PRODUCTION_SUPABASE_PUBLISHABLE_KEY` GitHub secrets; Supabase secrets `ERASURE_REGISTRY_URL` / `ERASURE_REGISTRY_TOKEN`; `supabase login` + `link` for `pnpm db:backup` on Production.

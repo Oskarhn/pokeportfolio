@@ -115,7 +115,9 @@ Which of these the owner can actually do depends on settings this repository can
   (`ERASURE_REGISTRY_URL` + `ERASURE_REGISTRY_TOKEN`, contract in `scripts/restore-gate/registry-sink.ts`).
   If either is missing or invalid the function refuses every deletion with `503 deletion_unavailable`
   before touching anything — there is no "delete without recording" mode. The reference sink is a
-  file-backed server (`registry-sink.ts`); it is **not** a production storage decision.
+  file-backed server (`registry-sink.ts`) used by the tests; **production** uses the Cloudflare Worker + Durable Object
+  of [P195_ERASURE_REGISTRY.md](P195_ERASURE_REGISTRY.md) (same contract; `GET /v1/export` is the registry file the
+  gate reads; `scripts/restore-gate/registry-export.ts` pulls and verifies it). Take an export before every restore.
 - **A deletion that cannot reach the registry** leaves the account *pending* (writes blocked) with
   all its data intact and answers `deletion_incomplete`, stage `registry`; repeating the request
   retries. To release such an account an operator may call `abort_account_deletion(<id>)` as the
@@ -149,3 +151,12 @@ same is run through `pnpm db:backup` and `scripts/p137/restore-drill.ts`.
   impossible. The hosted in-place restore (§5) is the largest open gap.
 - Production registry storage and the provider retention facts are owner gates
   (`PRODUCTION_REGISTRY_STORAGE_READY=no`, `PROVIDER_RETENTION_VERIFIED=no`).
+
+## 7. Known limitation: scheduled jobs are not part of a backup (P195, pre-existing P137 finding)
+
+`cron.job` is not captured by `pnpm db:backup`; it is recreated only by replaying migrations the backup lacks. A restore of an
+already-current backup therefore comes up **without** the recurring jobs (price and FX ingestion, snapshot recompute, retention).
+The restore drill reports this as `POST_RESTORE_CRON_PRODUCTION_CALLS` FAIL on a current backup (measured again in P195: every
+erasure-gate step passed, this one check failed, in both the DB104 and the DB114 drill). Until a fix exists, after promoting a
+restored image re-create the jobs by re-running the `cron.schedule` statements of the migrations that define them
+(`m9_cron_schedule`, `m12_cron`, `p42_cron_cadence`, `p137_environment_scoped_ingest_dispatch`) and check `select jobname, active from cron.job`.

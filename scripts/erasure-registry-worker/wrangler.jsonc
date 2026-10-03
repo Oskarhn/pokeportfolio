@@ -1,0 +1,22 @@
+{
+  // Erasure registry Worker (P195). Deploy with `wrangler deploy` (production store) or
+  // `wrangler deploy --env test` (a completely separate Worker and Durable Object namespace used
+  // only for synthetic subjects). Secrets are set with `wrangler secret put`, never in this file:
+  // ERASURE_REGISTRY_KEY, ERASURE_APPEND_TOKEN, ERASURE_OPERATOR_TOKEN.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "pokeportfolio-erasure-registry",
+  "main": "worker.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "durable_objects": { "bindings": [{ "name": "LEDGER", "class_name": "ErasureLedger" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ErasureLedger"] }],
+  "env": {
+    "test": {
+      "name": "pokeportfolio-erasure-registry-test",
+      "workers_dev": true,
+      "durable_objects": { "bindings": [{ "name": "LEDGER", "class_name": "ErasureLedger" }] },
+      "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ErasureLedger"] }],
+    },
+  },
+}
