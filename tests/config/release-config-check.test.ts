@@ -41,7 +41,7 @@ describe('evaluateReleaseConfig', () => {
   })
 
   it('the names it demands match what the workflow actually references', () => {
-    const workflow = readFileSync('.github/workflows/ci.yml', 'utf-8')
+    const workflow = readFileSync('.github/workflows/deploy-production.yml', 'utf-8')
     for (const name of REQUIRED_SECRETS) expect(workflow).toContain(`secrets.${name}`)
     for (const name of LEGACY_VARIABLES) expect(workflow).not.toContain(`vars.${name}`)
   })

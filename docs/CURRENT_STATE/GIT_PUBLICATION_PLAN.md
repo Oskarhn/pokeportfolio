@@ -58,32 +58,28 @@ credentials, registry records or backup content in committed documentation.
 
 1. Push **only** the `release/**` branch (no `main`, no force, no old P17x/P18x branches).
 2. `.github/workflows/ci.yml` triggers on pushes to `release/**` as well as pull requests, so the push
-   starts `build-and-test` and `db-tests`. `deploy-production` is restricted to a push to
-   `refs/heads/main` and needs no Production secret on this branch; the validation jobs read none.
+   starts `build-and-test`, `db-tests` and `native-checks`. Since P193 no workflow triggered by a push can
+   deploy: Production is a separate manual release (`docs/release/P193_MAIN_AND_PRODUCTION_POLICY.md`).
 3. Watch that run. If a job fails, classify it (product, test, workflow, CI environment, transient,
    capacity) before changing anything; never weaken a required gate to get green.
 4. Open a **draft** PR into `main`. Merge only after the owner decisions in
    `docs/release/P188_RELEASE_CANDIDATE.md` §6 and `docs/release/P189_ACCOUNT_DELETION.md`; squash per
    `GIT_WORKFLOW.md`.
 
-## 5. Recommended GitHub settings (NOT applied — owner action)
+## 5. GitHub and Cloudflare settings (APPLIED in P193, 2026-10-03, read back)
 
-Read-only observation: no protection, no rulesets. Recommended baseline, now more relevant because the
-repository is public and a large integration PR is open:
-
-1. A ruleset or branch protection on `main`: require a pull request; require status checks
-   `build-and-test` and `db-tests`; block force pushes and deletion; conversation resolution
-   optional. Do not allow bypass for admins.
-2. Delete the stale `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` **variables**, create the
-   four secrets in `docs/security/RELEASE_PREFLIGHT_P163.md` Part A, and rotate the key implicated by
-   the secret-shaped variable value (P159/P160 S-1). Treat the repository as public when judging what
-   that value exposed.
-3. Cloudflare Pages: turn off the Git-integrated automatic deploy and preview builds against the
-   Production Supabase project, so the gated job is the only path (P130-08).
+1. Branch protection on `main`: pull request required (0 approvals), checks `build-and-test`,
+   `db-tests`, `native-checks`, force pushes and deletion blocked. Admins are deliberately not enforced
+   (sole maintainer; recovery path).
+2. The stale `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` **variables** are deleted. The key
+   implicated by the secret-shaped value is **not** known to be revoked: owner action in
+   `docs/release/PRODUCTION_RELEASE_CHECKLIST.md`. The four deploy secrets are still to be created
+   (`PRODUCTION_SUPABASE_*` are absent, which keeps a real deploy failing closed).
+3. Cloudflare Pages: automatic production deployments disabled. Preview-branch settings were left as they were.
 
 ## 6. What must pass before a `main` merge
 
-Unchanged (`GIT_WORKFLOW.md` §1/§2/§4/§11): CI green on both jobs for the exact head SHA, a reviewed
-diff, no secrets. A merge of the P190 line additionally needs the owner decisions in
-`docs/release/P188_RELEASE_CANDIDATE.md` §6 (hosted migration order, Edge Function deploys) and the
-P189 blockers (production erasure-registry storage, provider retention settings).
+CI green on all three required jobs for the exact head SHA, a reviewed diff, no secrets. Since P193 a
+merge is **not** a release, so the hosted migration order, Edge Function deploys and the P189 blockers
+(erasure-registry storage, provider retention settings) gate the *Production release*
+(`docs/release/PRODUCTION_RELEASE_CHECKLIST.md`), not the merge.
