@@ -30,9 +30,10 @@ believed at the time and are known to contain claims later superseded — see
 
 ---
 
-## 1. Released Production state — **RELEASED**
+## 1. Production state — **RELEASED = `d8682e0`, older than `main`**
 
-- **`main` HEAD / Production frontend:** `d8682e047b757f63673a63ac8185a4806d68cb98`
+- **P194 (2026-10-03): the P190 development RC is merged into `main`.** `main` is now the *integrated development line*, **not** Production. `MAIN_SHA=b26fcf249e2254570672daee3756779339664e04` (merge commit of PR #113, normal merge commit, head `9aa5e252…`; CI run 37116493073 green: build-and-test, db-tests, native-checks). `PRODUCTION_SHA=d8682e047b757f63673a63ac8185a4806d68cb98` is unchanged. `HOSTED_DB_MIGRATIONS=104`; `main` carries 114 source migrations (105–114 unapplied). `PRODUCTION_RELEASE_READY=no`. The manual `deploy-production.yml` dry run on the `main` SHA passed (run 37117692463; no upload, no secrets). New work branches from `main` (`git fetch origin && git switch main && git pull --ff-only && git switch -c <feature>`); `release/p190-cross-platform-development-rc` is `MERGED_TO_MAIN` and kept only for traceability.
+- **Production frontend (the older, explicitly released SHA):** `d8682e047b757f63673a63ac8185a4806d68cb98`
   ("docs(handover): close out P141 as released, hosted and live in Production (#111)"). Confirmed
   independently by `git ls-remote origin refs/heads/main` (re-checked 2026-10-02, P188) and by
   Production's own `/build-meta.json` (`builtAt 2026-09-18T08:22:20Z`, P159/P160).
@@ -41,7 +42,7 @@ believed at the time and are known to contain claims later superseded — see
 - **Scanner content id:** `f25fc05d569b7cca` — unchanged across P130–P188 (web build verified again in
   P188: `scanner:index:verify` OK, 19,500 cards, `dist/…/current.json` = this id).
 - **Repository visibility: `PUBLIC_BY_OWNER_CHOICE`** (D-190, 2026-10-02). Intentional; not a
-  blocker or a warning. No branch protection on `main`, no rulesets (P188 live check). **Standing push
+  blocker or a warning. `main` is protected since P193 (PR + `build-and-test`/`db-tests`/`native-checks`, no force push/deletion, admins not enforced; read back in P194). **Standing push
   rule:** completed development phases SHOULD be pushed to their feature/release branch after local
   checks; GitHub Actions runs after the push; a development branch need not be feature-complete or
   Production-ready. Main merge and Production deploy keep their own stricter gates. Public does
@@ -62,7 +63,7 @@ believed at the time and are known to contain claims later superseded — see
 
 ## 2. Current unreleased candidates — **not released**, do not confuse with §1
 
-`RELEASED_MAIN` = `d8682e0` = Production. The development RC is the P190 line (P188 + P189 + CI/publication work), pushed and under draft PR #113. Nothing here is live.
+`PRODUCTION_SHA` = `d8682e0` (Production). The P190 line (P188 + P189 + P191 + CI/publication work) was merged into `main` by P194 (PR #113). Merged is not released: nothing from it is live.
 Machine pointers: `docs/PROJECT_STATE.json` → `local_candidates`.
 
 **P193** (release control plane, 2026-10-03): `main` is the integrated development branch and a merge is **not** a release. `ci.yml` validates only; Production is deployed by the manually dispatched `.github/workflows/deploy-production.yml` (explicit full SHA, on `main`, CI evidence for that exact SHA, `dry_run` default true, `backend_ack` for a real run); Cloudflare Pages automatic production deployments were **disabled** and read back (Production unchanged at `d8682e0`); `main` is protected (PR + `build-and-test`/`db-tests`/`native-checks`, no force push/deletion, admins not enforced); the legacy `VITE_SUPABASE_*` Actions variables were deleted. **Open, owner:** whether the secret-shaped legacy `VITE_SUPABASE_URL` value is an active key could not be established without reading it, so rotation is an owner action; `PRODUCTION_SUPABASE_*` secrets still absent. Policy: [docs/release/P193_MAIN_AND_PRODUCTION_POLICY.md](docs/release/P193_MAIN_AND_PRODUCTION_POLICY.md); gates: [docs/release/PRODUCTION_RELEASE_CHECKLIST.md](docs/release/PRODUCTION_RELEASE_CHECKLIST.md).
@@ -71,7 +72,7 @@ Machine pointers: `docs/PROJECT_STATE.json` → `local_candidates`.
 
 | Candidate | Branch | SHA | Migrations | Status |
 |---|---|---|---|---|
-| **Development RC (P190, extended by P191)** | `release/p190-cross-platform-development-rc` | branch tip (read `git ls-remote`; not recorded here) | **114** (111 + 3 P191, re-timestamped `20261002140000/10/20` in P192) | **PUSHED, draft PR #113 into `main`. DEVELOPMENT RC — DO NOT MERGE/DEPLOY YET.** Contains P188 and P189. CI (`build-and-test`, `db-tests`, `native-checks`) green on its head; no deploy job exists in `ci.yml` any more (P193). **P192** audited merge readiness: `CODE_REVIEW_READY=yes`, `MERGE_READY=no` (deploy coupling: CI never applies migrations or functions), `RELEASE_READY=no`; **P193 removed that coupling**: `CODE_REVIEW_READY=yes`, `MERGE_READY=yes`, `RELEASE_READY=no` (merge and release are now separate acts) — [P192_MERGE_READINESS.md](docs/release/P192_MERGE_READINESS.md), ordered plan [P192_PRODUCTION_RELEASE_SEQUENCE.md](docs/release/P192_PRODUCTION_RELEASE_SEQUENCE.md). Release blockers: [P189 record](docs/release/P189_ACCOUNT_DELETION.md), [P188 RC](docs/release/P188_RELEASE_CANDIDATE.md) §6. |
+| **Development RC (P190, extended by P191)** | `release/p190-cross-platform-development-rc` | branch tip (read `git ls-remote`; not recorded here) | **114** (111 + 3 P191, re-timestamped `20261002140000/10/20` in P192) | **`MERGED_TO_MAIN` (P194, PR #113, merge commit `b26fcf249e2254570672daee3756779339664e04`). Not deployed — DO NOT DEPLOY until the release checklist is complete.** Contains P188 and P189. CI (`build-and-test`, `db-tests`, `native-checks`) green on its head; no deploy job exists in `ci.yml` any more (P193). **P192** audited merge readiness: `CODE_REVIEW_READY=yes`, `MERGE_READY=no` (deploy coupling: CI never applies migrations or functions), `RELEASE_READY=no`; **P193 removed that coupling**: `CODE_REVIEW_READY=yes`, `MERGE_READY=yes`, `RELEASE_READY=no` (merge and release are now separate acts) — [P192_MERGE_READINESS.md](docs/release/P192_MERGE_READINESS.md), ordered plan [P192_PRODUCTION_RELEASE_SEQUENCE.md](docs/release/P192_PRODUCTION_RELEASE_SEQUENCE.md). Release blockers: [P189 record](docs/release/P189_ACCOUNT_DELETION.md), [P188 RC](docs/release/P188_RELEASE_CANDIDATE.md) §6. |
 | **Cross-platform release candidate (P188)** | `release/p188-cross-platform-rc` | code tip `a048da53926d0c501508136d7fb11457fada1d86` | 107 | **LOCAL ONLY — `SUCCESS_P188_CROSS_PLATFORM_RC_LOCAL`.** P186 + P187 (rebuilt without its attribution trailer; tree-identical) + merges of **P164** (auth/exact money/exports/scanner hardening/Price Check), **P163** (deploy gate + secret guard) and **P165** (verification fixes). Native build profiles. [RC doc](docs/release/P188_RELEASE_CANDIDATE.md), [matrix](docs/release/P188_INTEGRATION_MATRIX.md) |
 | **Restore-safe account deletion (P189)** | `security/p189-restore-safe-account-deletion` | see `docs/PROJECT_STATE.json` → `local_candidates.account_deletion` | **111** | **LOCAL ONLY — `SUCCESS_P189_RESTORE_SAFE_ACCOUNT_DELETION`**, built on the exact P188 candidate `2783c93e…` (descends from it; not merged, not pushed, not deployed). Selective integration of P152/P156 plus the erasure registry, the restore gate, the in-app web and native deletion flows and the public `/account-deletion` page. [Record](docs/release/P189_ACCOUNT_DELETION.md) |
 | Account deletion (P152 → P156) | `audit/p156-account-deletion-security-recovery` | `6b3ac903…` | 107 (+3 own) | **`SUPERSEDED_BY_P189`** — kept as evidence only; never merged. |

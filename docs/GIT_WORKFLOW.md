@@ -9,7 +9,7 @@ standing rules for Claude sessions live in [CLAUDE.md](../CLAUDE.md).
 ## 1. `main` is stable
 
 `main` represents tested, working project state at all times and is the integrated development
-branch (P193): merging to it is **not** a Production release. Every push to `main` triggers CI
+branch (P193; the P190 RC was merged into it in P194): merging to it is **not** a Production release, and `main` is generally **ahead of** Production. Start new work from updated `main` (`git fetch origin && git switch main && git pull --ff-only && git switch -c <feature>`). Every push to `main` triggers CI
 (`.github/workflows/ci.yml`); `main` should never be red for longer than it takes to notice and
 fix. CI also runs for every pull request and, since P188, for every push to a `release/**` branch, so
 a release candidate is validated before any PR exists. `ci.yml` only validates; Production is released

@@ -5,7 +5,8 @@ Authority: this file for current status; `HANDOVER.md` §1/§13/§14 for the sum
 
 ## Released state
 
-- `main` HEAD and the live Production frontend both serve `d8682e047b757f63673a63ac8185a4806d68cb98`
+- **P194 (2026-10-03):** `main` = `b26fcf249e2254570672daee3756779339664e04` is the integrated development line (PR #113 merged with a normal merge commit; main CI green, run 37116493073). Production is the older, explicitly released `d8682e0…` below and was verified unchanged after the merge. Manual `deploy-production.yml` dry run on the `main` SHA: PASS (run 37117692463, `verify` only, `deploy` skipped). Hosted DB stays at 104 migrations; `main` has 114 source migrations. `PRODUCTION_RELEASE_READY=no`.
+- (Pre-P194 statement, `main` was then also Production:) the live Production frontend serves `d8682e047b757f63673a63ac8185a4806d68cb98`
   ("docs(handover): close out P141 as released, hosted and live in Production (#111)"), confirmed
   via `git ls-remote origin refs/heads/main` and Production's own `/build-meta.json`
   (`builtAt 2026-09-18T08:22:20Z`) independently by both P159 and P160.
@@ -80,7 +81,7 @@ promoted to a canonical doc).
 
 ## P188 update (2026-10-02): what is now in the candidate line
 
-`RELEASED_MAIN` = `d8682e047b757f63673a63ac8185a4806d68cb98` = Production. The local release
+`PRODUCTION_SHA` = `d8682e047b757f63673a63ac8185a4806d68cb98` (Production; no longer equal to `main` after P194). The local release
 candidate `release/p188-cross-platform-rc` is **not released, not pushed, not merged** and Production
 is unchanged. Rule: **the CI-gated deploy job, the public-build guard and the P130-19 fix are in the
 candidate line, not in Production.**

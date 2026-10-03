@@ -5,7 +5,8 @@
   "released": {
     "main_sha": "d8682e047b757f63673a63ac8185a4806d68cb98",
     "production_frontend_sha": "d8682e047b757f63673a63ac8185a4806d68cb98",
-    "hosted_migration_count": 104
+    "hosted_migration_count": 104,
+    "note": "Production only. Since P194 this is NOT the SHA of main; see integrated_main.main_sha."
   },
   "local_candidates": {
     "development_rc": {
@@ -14,10 +15,11 @@
       "builds_on": "P189 bde11f99d08545c45eb347a7d78e3bc47ec7bcd3",
       "pull_request": 113,
       "local_migration_count": 114,
-      "status": "PUSHED_DEVELOPMENT_RC",
+      "status": "SUPERSEDED",
       "device_verified": true,
       "fully_certified": false,
-      "notes": "Development RC, not merged, not deployed, hosted database untouched. Contains P188 and P189. The branch tip is read from git, not recorded here. Release blockers: PRODUCTION_REGISTRY_STORAGE_READY=no, PROVIDER_RETENTION_VERIFIED=no, no physical Android/iOS runtime, identifiers and signing not selected, P163 owner actions open. P192: P191 migrations re-timestamped to 20261002140000/10/20 (unapplied), P189 empty-registry test made self-contained, MERGE_READY=no because of deploy coupling, docs/release/P192_MERGE_READINESS.md. P193: release control plane — ci.yml validates only, manual deploy-production.yml (workflow_dispatch, explicit SHA, CI evidence, dry_run default), Cloudflare automatic production deployments disabled (read back), main protected, legacy VITE_SUPABASE_* variables deleted; MERGE_READY=yes, RELEASE_READY=no; exposed-key rotation is an owner action; docs/release/P193_MAIN_AND_PRODUCTION_POLICY.md. P191 (same branch): ledger write gate, sealed-product ownership, privilege baseline (3 migrations); P130-13/-14/-26/-09 closed in the RC, P130-20 OWNER_ACTION_REQUIRED, P130-29/-30 PARTIALLY_CLOSED. docs/security/P191_SECURITY_BOUNDARY_CLOSURE.md"
+      "notes": "MERGED_TO_MAIN by P194; not deployed. Development RC, not merged, not deployed, hosted database untouched. Contains P188 and P189. The branch tip is read from git, not recorded here. Release blockers: PRODUCTION_REGISTRY_STORAGE_READY=no, PROVIDER_RETENTION_VERIFIED=no, no physical Android/iOS runtime, identifiers and signing not selected, P163 owner actions open. P192: P191 migrations re-timestamped to 20261002140000/10/20 (unapplied), P189 empty-registry test made self-contained, MERGE_READY=no because of deploy coupling, docs/release/P192_MERGE_READINESS.md. P193: release control plane — ci.yml validates only, manual deploy-production.yml (workflow_dispatch, explicit SHA, CI evidence, dry_run default), Cloudflare automatic production deployments disabled (read back), main protected, legacy VITE_SUPABASE_* variables deleted; MERGE_READY=yes, RELEASE_READY=no; exposed-key rotation is an owner action; docs/release/P193_MAIN_AND_PRODUCTION_POLICY.md. P191 (same branch): ledger write gate, sealed-product ownership, privilege baseline (3 migrations); P130-13/-14/-26/-09 closed in the RC, P130-20 OWNER_ACTION_REQUIRED, P130-29/-30 PARTIALLY_CLOSED. docs/security/P191_SECURITY_BOUNDARY_CLOSURE.md",
+      "superseded_by": "main (MERGED_TO_MAIN, P194, PR #113)"
     },
     "release_candidate": {
       "prompt": 188,
@@ -150,7 +152,7 @@
     "visibility_expected": "PUBLIC",
     "visibility_contradiction": false,
     "verified_at": "2026-10-02",
-    "branch_protection": "none",
+    "branch_protection": "main: PR + build-and-test/db-tests/native-checks, no force push/deletion, enforce_admins=false (P193, read back P194)",
     "rulesets": "none",
     "publication_status": "PUSHED_development_rc; branch release/p190-cross-platform-development-rc; public by owner choice (D-190); see docs/CURRENT_STATE/GIT_PUBLICATION_PLAN.md"
   },
@@ -190,6 +192,20 @@
     "ios_build_runbook": "docs/mobile/IOS_BUILD_AND_DEVICE_RUNBOOK.md",
     "p188_release_candidate": "docs/release/P188_RELEASE_CANDIDATE.md",
     "p188_integration_matrix": "docs/release/P188_INTEGRATION_MATRIX.md",
-    "native_build_profiles": "docs/mobile/BUILD_CONFIGURATION_PROFILES.md"
+    "native_build_profiles": "docs/mobile/BUILD_CONFIGURATION_PROFILES.md",
+    "p194_main_merge": "docs/release/P194_MAIN_MERGE.md"
+  },
+  "integrated_main": {
+    "prompt": 194,
+    "main_sha": "b26fcf249e2254570672daee3756779339664e04",
+    "pull_request": 113,
+    "merge_method": "merge_commit",
+    "merged_head_sha": "9aa5e252fe1ca8bc5cdacf6e677d5d4225a42fb0",
+    "merged_at": "2026-10-03T10:27:36Z",
+    "source_migration_count": 114,
+    "main_ci_run_id": 37116493073,
+    "manual_deploy_dry_run_run_id": 37117692463,
+    "production_release_ready": "no",
+    "note": "main is the integrated development line. released.main_sha / released.production_frontend_sha are the PRODUCTION SHA (older than main); the key name \"main_sha\" under released is historical."
   }
 }
