@@ -34,6 +34,14 @@ the **Deploy Production** workflow exists so a real deploy cannot start before t
 - [ ] Production authenticated smoke passed.
 - [ ] Run id, SHA, migration count and function versions recorded in `HANDOVER.md`.
 
+## P197 evidence (2026-10-04) — backend
+
+- [x] Exposed key resolved: only `production_2026_10_rotation` remains as secret key; GitHub `PRODUCTION_SUPABASE_*` secrets and Supabase `ERASURE_REGISTRY_URL`/`_TOKEN` present.
+- [x] `pnpm db:backup` BACKUP COMPLETE, restored into a disposable database (18/19, documented cron limitation) — [P197](P197_PRODUCTION_BACKEND_ROLLOUT.md) §2.
+- [x] Finance diagnostics 0; dry-run listed exactly 105–114; applied; grant audit clean; hosted = 114.
+- [x] Edge Functions deployed: `search-prices`, `ingest-prices`, `sync-catalog`, `delete-account`.
+- [ ] **Owner:** authenticated backend smoke with one synthetic account, `delete-account` end to end, registry head/export and restore gate against the live registry (P197 §6). Required before or explicitly accepted at P198.
+
 ## P195 evidence (2026-10-03)
 
 - [x] Erasure registry storage chosen, deployed (production Worker empty) and exercised in a test namespace; export verifies and feeds the restore gate — [P195_ERASURE_REGISTRY.md](../security/P195_ERASURE_REGISTRY.md).

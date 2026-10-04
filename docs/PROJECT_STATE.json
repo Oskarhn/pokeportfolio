@@ -5,8 +5,8 @@
   "released": {
     "main_sha": "d8682e047b757f63673a63ac8185a4806d68cb98",
     "production_frontend_sha": "d8682e047b757f63673a63ac8185a4806d68cb98",
-    "hosted_migration_count": 104,
-    "note": "Production only. Since P194 this is NOT the SHA of main; see integrated_main.main_sha."
+    "hosted_migration_count": 114,
+    "note": "Production only; the frontend SHA is d8682e0 while the hosted database is at 114 since P197 (2026-10-04). Since P194 this is NOT the SHA of main; see integrated_main.main_sha."
   },
   "local_candidates": {
     "development_rc": {
@@ -134,8 +134,8 @@
     }
   },
   "database": {
-    "released_migration_count": 104,
-    "latest_local_migration_count": 111
+    "released_migration_count": 114,
+    "latest_local_migration_count": 114
   },
   "scanner": {
     "content_id": "f25fc05d569b7cca",
@@ -193,7 +193,8 @@
     "p188_release_candidate": "docs/release/P188_RELEASE_CANDIDATE.md",
     "p188_integration_matrix": "docs/release/P188_INTEGRATION_MATRIX.md",
     "native_build_profiles": "docs/mobile/BUILD_CONFIGURATION_PROFILES.md",
-    "p194_main_merge": "docs/release/P194_MAIN_MERGE.md"
+    "p194_main_merge": "docs/release/P194_MAIN_MERGE.md",
+    "p197_production_backend_rollout": "docs/release/P197_PRODUCTION_BACKEND_ROLLOUT.md"
   },
   "integrated_main": {
     "prompt": 194,
