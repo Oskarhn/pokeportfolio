@@ -95,6 +95,11 @@ Recurring subscriptions:               prohibited by default
 Payment gate reached (§1b):            no
 ```
 
+P195 (2026-10-03): the erasure registry runs on **Cloudflare Workers Free** (Worker + SQLite Durable Object, two
+Workers: production and `-test`). No payment method was added and nothing was upgraded; on the free plan an exhausted
+limit makes operations fail (fail closed), it does not bill. Spent: $0. See
+[P195_ERASURE_REGISTRY.md](security/P195_ERASURE_REGISTRY.md) §6.
+
 The remaining ceiling is not money available to spend — it is the maximum the owner is currently
 willing to *consider*. If an item is ever approved, append a row here (or in DECISIONS.md,
 cross-linked) recording: date, item/service, amount, currency and approximate USD equivalent,
