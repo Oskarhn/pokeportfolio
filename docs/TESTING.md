@@ -1554,3 +1554,50 @@ reset together — a registry that vanished while receipts remain is exactly wha
 
 Commit before running the mutation harness: it patches tracked files and restores them with
 `git checkout`.
+
+
+## 6h. Request-body bound over the local gateway (P196C)
+
+The `delete-account` function refuses a body over 4 KiB with `413` before parsing it. Through the
+local stack (Kong → Edge Runtime 1.74.3) that refusal is only reliably *delivered* for bodies up to
+about 16 KiB. Measured on one stack (60 requests per size, a raw `node:http` client, 4 s deadline):
+
+| Body | Hung (no response in 4 s) |
+|---|---|
+| 4 097 B – 16 384 B, Content-Length or chunked | **0 of ~600** |
+| 20 000 B | 1 of 60 |
+| 24 576 B | 6–9 of 60 |
+| 32 768 B / 49 152 B | 11 / 12 of 60 |
+| 60 000 B | 14 of 25 |
+
+What the layers show, and what they do not: Kong buffers a body above `client_body_buffer_size 8k` to a
+temporary file and forwards it without logging any upstream error. The Edge Runtime logs `user body
+write aborted` for each hang (88 hangs ↔ 88 log lines in one session), and Kong logs 499 only once
+the client gives up. So the response is lost between the function's early answer and the gateway, in
+the Edge Runtime; this is not the client (the body was fully handed to the socket), not
+`Connection: close`/keep-alive (no difference with it, with a fresh socket, with Content-Length or
+chunked), and not Kong failing to reach the function. Not established: whether the function draining
+the body before answering would remove it — that would change production code for a local-gateway
+behaviour and was deliberately not tried. A hosted gateway is not measured here.
+
+Consequences for the suites (`tests/authorization/p156_account_deletion_trust_boundary.test.ts`,
+`tests/authorization/p152_account_deletion_attacks.test.ts`, helper `tests/db/lib/bounded-post.ts`):
+
+- **Deterministic tier (≤ 8 KiB, half the threshold):** exactly 4096 B reaches password handling
+  (`403 reauthentication_failed`, or `401` for the publishable key), 4097 B and 8 KiB are `413`, with
+  an explicit Content-Length and chunked. The exact-limit case is what keeps a "block every request"
+  regression from passing.
+- **Spooled tier (24 KiB):** `413`, or a transport failure that arrives only **after** the whole body
+  was handed over (`bodyFlushed`) within a 5 s deadline. A transport failure alone proves nothing; the
+  test also asserts the account exists, has no pending deletion and its owned rows are byte-identical,
+  and that the function still answers afterwards. A client that gives up before sending is a violation.
+- Every request has an explicit per-request deadline (`AbortSignal.timeout`) on a fresh connection;
+  the vitest 20 s timeout is no longer the bound.
+- State digests exclude `portfolio_recompute_queue` and `portfolio_snapshots`: the
+  `m12-recompute-snapshots` cron job rewrites them every minute, independent of any request.
+- `tests/db/bounded-post.test.ts` pins the helper's classification against a local server (no stack).
+
+Reproduce: `docker logs` the stack's `supabase_edge_runtime_*` and `supabase_kong_*` containers while
+POSTing a 24 KiB body to `/functions/v1/delete-account` in a loop. Do not `docker restart` a single
+stack container to get a "cold" run: Kong keeps the old upstream address and answers 502/hangs for
+reasons unrelated to this.
