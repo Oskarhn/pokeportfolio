@@ -5,12 +5,13 @@ Authority: this file for current status; `HANDOVER.md` §1/§13/§14 for the sum
 
 ## Released state
 
+- **P197 (2026-10-04):** Production backend rolled out, frontend unchanged — web `d8682e0…`, hosted DB **114**, current-main Edge Functions (`delete-account` v1 new; `search-prices` v10, `ingest-prices` v9, `sync-catalog` v13 updated). Authenticated Production proofs and the live-registry checks are owner-pending. Record: [../release/P197_PRODUCTION_BACKEND_ROLLOUT.md](../release/P197_PRODUCTION_BACKEND_ROLLOUT.md).
 - **P194 (2026-10-03):** `main` = `b26fcf249e2254570672daee3756779339664e04` is the integrated development line (PR #113 merged with a normal merge commit; main CI green, run 37116493073). Production is the older, explicitly released `d8682e0…` below and was verified unchanged after the merge. Manual `deploy-production.yml` dry run on the `main` SHA: PASS (run 37117692463, `verify` only, `deploy` skipped). Hosted DB stays at 104 migrations; `main` has 114 source migrations. `PRODUCTION_RELEASE_READY=no`.
 - (Pre-P194 statement, `main` was then also Production:) the live Production frontend serves `d8682e047b757f63673a63ac8185a4806d68cb98`
   ("docs(handover): close out P141 as released, hosted and live in Production (#111)"), confirmed
   via `git ls-remote origin refs/heads/main` and Production's own `/build-meta.json`
   (`builtAt 2026-09-18T08:22:20Z`) independently by both P159 and P160.
-- Hosted Supabase project `pokeportfolio-dev` (eu-west-3): 104 migrations applied, 0 pending.
+- Hosted Supabase project `pokeportfolio-dev` (eu-west-3): **114** migrations applied, 0 pending (104 until P197, 2026-10-04).
 - **P193:** a merge to `main` no longer deploys. `ci.yml` validates only; Production is released by the
   manual `deploy-production.yml` (explicit SHA, CI evidence, dry run default) and Cloudflare Pages' automatic
   production deployments are disabled (read back 2026-10-03). Policy:
