@@ -9,6 +9,7 @@ import {
   type TestClient,
 } from '../db/setup'
 import { connectDb, ownedDigests } from '../db/lib/account-deletion-deps'
+import { boundedPost, classifyHostileOutcome, type BoundedPostResult } from '../db/lib/bounded-post'
 import { seedAccountLedger } from '../db/lib/account-ledger-fixture'
 
 /**
@@ -27,8 +28,8 @@ const created: SyntheticUser[] = []
 beforeAll(async () => {
   service = createServiceClient()
   db = await connectDb()
-  // A cold Edge worker plus a streamed request body is slow on the local relay; warm it first so
-  // the assertions below measure the function and not the boot.
+  // A cold Edge worker is slow on its first request; warm it first so the assertions below
+  // measure the function and not the boot.
   await send({ token: ANON, body: '{}' })
 })
 
@@ -58,7 +59,6 @@ async function send(init: {
   method?: string
   body?: BodyInit | null
   headers?: Record<string, string>
-  duplex?: boolean
 }) {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -70,7 +70,6 @@ async function send(init: {
     method: init.method ?? 'POST',
     headers,
     body: init.body ?? null,
-    ...(init.duplex ? { duplex: 'half' } : {}),
   })
   const text = await res.text()
   let json: Record<string, unknown> | null
@@ -85,27 +84,26 @@ async function send(init: {
 const bodyFor = (a: Actor) =>
   JSON.stringify({ expectedUserId: a.user.id, password: a.user.password, confirm: true })
 
+/**
+ * Per-table digests of everything the account owns, minus the two tables the
+ * `m12-recompute-snapshots` pg_cron job (every minute) rewrites on its own: `portfolio_recompute_queue`
+ * (drained) and `portfolio_snapshots` (recomputed). Both are derived, cron-owned and changed mid-test
+ * in P196C without any request being involved; neither is account data a deletion path acts on.
+ */
+const CRON_DERIVED_TABLES = ['portfolio_recompute_queue', 'portfolio_snapshots']
+
+const stableDigests = async (id: string): Promise<Record<string, string>> => {
+  const owned = await ownedDigests(db, id)
+  for (const table of CRON_DERIVED_TABLES) Reflect.deleteProperty(owned, table)
+  return owned
+}
+
 const exists = async (id: string): Promise<boolean> =>
   Boolean((await service.auth.admin.getUserById(id)).data.user)
 
 const pendingRow = async (id: string): Promise<boolean> =>
   ((await service.from('account_deletion_requests').select('user_id').eq('user_id', id)).data ?? [])
     .length > 0
-
-/** A stream that yields `chunks` chunks of `size` bytes and never sets a Content-Length. */
-function chunked(chunks: number, size: number): ReadableStream<Uint8Array> {
-  let sent = 0
-  return new ReadableStream<Uint8Array>({
-    pull(controller) {
-      if (sent >= chunks) {
-        controller.close()
-        return
-      }
-      sent += 1
-      controller.enqueue(new TextEncoder().encode('x'.repeat(size)))
-    },
-  })
-}
 
 describe('an account a password cannot stand in for is refused explicitly', () => {
   it('no email/password identity: 403 reauthentication_unsupported, no password check, nothing pending, nothing deleted', async () => {
@@ -119,14 +117,14 @@ describe('an account a password cannot stand in for is refused explicitly', () =
       app_metadata: { provider: 'google', providers: ['google'] },
     })
     expect(updated.error).toBeNull()
-    const before = await ownedDigests(db, a.user.id)
+    const before = await stableDigests(a.user.id)
 
     const res = await send({ token: a.token, body: bodyFor(a) })
     expect(res.status).toBe(403)
     expect(res.json).toEqual({ error: 'reauthentication_unsupported' })
     expect(await exists(a.user.id)).toBe(true)
     expect(await pendingRow(a.user.id)).toBe(false)
-    expect(await ownedDigests(db, a.user.id)).toEqual(before)
+    expect(await stableDigests(a.user.id)).toEqual(before)
   })
 
   it('the same refusal holds with the CORRECT password: a correct password must not unlock it', async () => {
@@ -152,23 +150,164 @@ describe('an account a password cannot stand in for is refused explicitly', () =
   })
 })
 
-// Sizes are kept small on purpose: the LOCAL gateway relay does not complete a request whose body is
-// larger than roughly 48-50 KB when the function answers before reading it (measured with curl and
-// undici; the function's own bound is 4 KiB and does not depend on this). A hosted gateway's limit
-// is not verified here.
+// The function's own bound (supabase/functions/delete-account/index.ts MAX_BODY_BYTES): a body of
+// exactly this many bytes is read, one byte more is refused with 413.
+const FUNCTION_BODY_LIMIT = 4096
+
+// Measured behaviour of the LOCAL gateway (Kong -> Edge Runtime), P196C, docs/TESTING.md
+// "Request-body bound over the local gateway". When the function answers 413 without consuming a
+// body larger than about 16 KiB, the response intermittently never reaches the client: the Edge
+// Runtime logs `user body write aborted` and Kong logs 499 once the client gives up, with no upstream
+// error. Measured per request: 0 of ~600 at <= 16 KiB, 1-20 % at 20-48 KiB. Tests that must see the
+// refusal therefore stay at or below 8 KiB (half the threshold) and demand exactly 413; the larger
+// bodies are a separate, explicitly bounded tier that proves fail-closed behaviour with state checks.
+const DETERMINISTIC_BODY_BYTES = 8192
+const SPOOLED_BODY_BYTES = 24 * 1024
+const REFUSAL_DEADLINE_MS = 10_000
+const SPOOLED_DEADLINE_MS = 5_000
+const SETTLE_MS = 1_000
+
+const encoder = new TextEncoder()
+const zeros = (n: number): Uint8Array => encoder.encode('x'.repeat(n))
+
+/** `parts` chunks of `total / parts` bytes: sent with Transfer-Encoding: chunked, no Content-Length. */
+const splitChunks = (total: number, parts: number): Uint8Array[] =>
+  Array.from({ length: parts }, () => zeros(total / parts))
+
+function hostile(
+  token: string,
+  payload: { body?: Uint8Array; chunks?: Uint8Array[] },
+  deadlineMs: number,
+): Promise<BoundedPostResult> {
+  return boundedPost(FUNCTION_URL, {
+    headers: {
+      'Content-Type': 'application/json',
+      apikey: ANON,
+      Authorization: `Bearer ${token}`,
+      Connection: 'close',
+    },
+    ...payload,
+    deadlineMs,
+  })
+}
+
+/** A syntactically valid body padded with an ignored field to exactly `bytes` bytes. */
+function paddedBody(base: Record<string, unknown>, bytes: number): Uint8Array {
+  const unpadded = JSON.stringify({ ...base, pad: '' })
+  const body = JSON.stringify({ ...base, pad: 'x'.repeat(bytes - unpadded.length) })
+  expect(body.length).toBe(bytes)
+  return encoder.encode(body)
+}
+
+/** The server-side proof that a refused or aborted request changed nothing about the account. */
+async function expectAccountUntouched(a: Actor, before: unknown): Promise<void> {
+  expect(await exists(a.user.id)).toBe(true)
+  expect(await pendingRow(a.user.id)).toBe(false)
+  expect(await stableDigests(a.user.id)).toEqual(before)
+}
+
 describe('the request body is bounded before it is buffered, and only for someone who is signed in', () => {
-  it('a chunked (streamed) body of 24 KB with no Content-Length is refused with 413 for a real session, and nothing is deleted', async () => {
-    const a = await actor('p156-chunked')
-    const res = await send({ token: a.token, body: chunked(6, 4096), duplex: true })
-    expect(res.status).toBe(413)
-    expect(await exists(a.user.id)).toBe(true)
-    expect(await pendingRow(a.user.id)).toBe(false)
+  it('a body of exactly the limit is NOT refused as oversize: it reaches password handling (403 for a wrong password)', async () => {
+    const a = await actor('p156-limit-under')
+    const other = await actor('p156-limit-under-other')
+    const before = await stableDigests(a.user.id)
+    const body = paddedBody(
+      { expectedUserId: a.user.id, password: other.user.password, confirm: true },
+      FUNCTION_BODY_LIMIT,
+    )
+    const res = await hostile(a.token, { body }, REFUSAL_DEADLINE_MS)
+    expect(res.status).toBe(403)
+    expect(JSON.parse(res.text)).toEqual({ error: 'reauthentication_failed' })
+    await expectAccountUntouched(a, before)
   })
 
-  it('the publishable key (a real JWT for a non-user) is 401 with a small body and 413 with an oversize one, never 200', async () => {
-    expect((await send({ token: ANON, body: '{}' })).status).toBe(401)
-    expect((await send({ token: ANON, body: chunked(6, 4096), duplex: true })).status).toBe(413)
+  it('the same exact-limit body from the publishable key (a real JWT for a non-user) reaches authentication: 401, not 413', async () => {
+    const body = paddedBody(
+      { expectedUserId: '00000000-0000-4000-8000-000000000000', password: 'x', confirm: true },
+      FUNCTION_BODY_LIMIT,
+    )
+    expect((await hostile(ANON, { body }, REFUSAL_DEADLINE_MS)).status).toBe(401)
   })
+
+  it('one byte over the limit, with an explicit Content-Length, is refused with 413 for a real session, and nothing is deleted', async () => {
+    const a = await actor('p156-limit-over')
+    const before = await stableDigests(a.user.id)
+    const res = await hostile(
+      a.token,
+      { body: zeros(FUNCTION_BODY_LIMIT + 1) },
+      REFUSAL_DEADLINE_MS,
+    )
+    expect(classifyHostileOutcome(res)).toBe('refused')
+    expect(res.status).toBe(413)
+    await expectAccountUntouched(a, before)
+  })
+
+  it('a chunked (streamed) body of 6 KB with no Content-Length is refused with 413 for a real session, and nothing is deleted', async () => {
+    const a = await actor('p156-chunked')
+    const before = await stableDigests(a.user.id)
+    const res = await hostile(a.token, { chunks: splitChunks(6144, 3) }, REFUSAL_DEADLINE_MS)
+    expect(classifyHostileOutcome(res)).toBe('refused')
+    expect(res.status).toBe(413)
+    await expectAccountUntouched(a, before)
+  })
+
+  it('the largest body that stays below the gateway threshold (8 KiB) is refused with 413 both ways', async () => {
+    const a = await actor('p156-limit-max-det')
+    const before = await stableDigests(a.user.id)
+    const withLength = await hostile(
+      a.token,
+      { body: zeros(DETERMINISTIC_BODY_BYTES) },
+      REFUSAL_DEADLINE_MS,
+    )
+    const streamed = await hostile(
+      a.token,
+      { chunks: splitChunks(DETERMINISTIC_BODY_BYTES, 4) },
+      REFUSAL_DEADLINE_MS,
+    )
+    expect(withLength.status).toBe(413)
+    expect(streamed.status).toBe(413)
+    await expectAccountUntouched(a, before)
+  })
+
+  it('the publishable key is 401 with a small body and 413 with an oversize one (both framings), never 200', async () => {
+    expect((await send({ token: ANON, body: '{}' })).status).toBe(401)
+    const withLength = await hostile(
+      ANON,
+      { body: zeros(FUNCTION_BODY_LIMIT + 1) },
+      REFUSAL_DEADLINE_MS,
+    )
+    const streamed = await hostile(ANON, { chunks: splitChunks(6144, 3) }, REFUSAL_DEADLINE_MS)
+    expect(withLength.status).toBe(413)
+    expect(streamed.status).toBe(413)
+  })
+})
+
+describe('a body beyond the gateway threshold is bounded and fails closed, with the account proven untouched', () => {
+  // 413 is the expected answer. The only other outcome allowed is the measured gateway behaviour: no
+  // response before the deadline although every body byte was handed over. That is accepted ONLY
+  // together with the state proof below; it is never accepted for a client that gave up before sending.
+  const framings: Array<[string, { body?: Uint8Array; chunks?: Uint8Array[] }]> = [
+    ['an explicit Content-Length', { body: zeros(SPOOLED_BODY_BYTES) }],
+    ['chunked, no Content-Length', { chunks: splitChunks(SPOOLED_BODY_BYTES, 6) }],
+  ]
+  it.each(framings)(
+    '24 KiB with %s: 413 or a bounded transport failure after the body was sent; never 2xx; nothing deleted',
+    async (_name, payload) => {
+      const a = await actor('p156-spooled')
+      const before = await stableDigests(a.user.id)
+      const res = await hostile(a.token, payload, SPOOLED_DEADLINE_MS)
+      expect(['refused', 'fail-closed-transport']).toContain(classifyHostileOutcome(res))
+      expect(res.elapsedMs).toBeLessThan(SPOOLED_DEADLINE_MS + 2_000)
+      if (res.status !== null) expect(res.status).toBe(413)
+      // With no response the server may still be working on the request; let it finish before the
+      // state proof, otherwise a late mutation would be missed.
+      if (res.status === null) await new Promise((resolve) => setTimeout(resolve, SETTLE_MS))
+      await expectAccountUntouched(a, before)
+      // The aborted request must not have wedged the function: a normal request still works.
+      expect((await send({ token: ANON, body: '{}' })).status).toBe(401)
+    },
+    30_000,
+  )
 })
 
 describe('only POST does anything', () => {
