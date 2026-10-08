@@ -311,3 +311,26 @@ export function explainExportRefusal(message: string): string | null {
   }
   return null
 }
+
+/**
+ * Whether a typed registry credential is really one of the TEST registry's (a separate Worker and
+ * ledger, P195). `testEnvText` is the content of the operator's `registry-test.env`; it is only
+ * compared, never returned or printed. Returns what matched, or null.
+ */
+export function matchesTestRegistryCredential(
+  typedToken: string,
+  typedKeyText: string,
+  testEnvText: string,
+): 'operator token' | 'HMAC key' | null {
+  const values = new Map<string, string>()
+  for (const line of testEnvText.split(/\r?\n/)) {
+    const i = line.indexOf('=')
+    if (i > 0) values.set(line.slice(0, i).trim(), cleanSecret(line.slice(i + 1)))
+  }
+  const testKey = values.get('ERASURE_REGISTRY_KEY')
+  const testTokens = [values.get('ERASURE_OPERATOR_TOKEN'), values.get('ERASURE_APPEND_TOKEN')]
+  if (testKey && typedKeyText.toLowerCase() === testKey.toLowerCase()) return 'HMAC key'
+  if (testTokens.some((t) => t && t === typedToken)) return 'operator token'
+  if (testKey && typedToken.toLowerCase() === testKey.toLowerCase()) return 'operator token'
+  return null
+}

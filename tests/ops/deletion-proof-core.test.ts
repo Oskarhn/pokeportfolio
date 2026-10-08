@@ -9,6 +9,7 @@ import {
   evaluateDrillLog,
   explainExportRefusal,
   inspectBackupAccount,
+  matchesTestRegistryCredential,
   operatorTokenProblem,
   parsePgTimestamp,
   PRODUCTION_PROJECT_REF,
@@ -319,5 +320,25 @@ describe('secret hygiene', () => {
     expect(explainExportRefusal('the registry refused the export (401)')).toContain('neither')
     expect(explainExportRefusal('the registry refused the export (403)')).toContain('APPEND')
     expect(explainExportRefusal('the registry is unreachable')).toBeNull()
+  })
+})
+
+describe('test-registry guard', () => {
+  const testEnv = [
+    `ERASURE_REGISTRY_KEY=${'1a'.repeat(32)}`,
+    `ERASURE_APPEND_TOKEN=${'b'.repeat(48)}`,
+    `ERASURE_OPERATOR_TOKEN=${'c'.repeat(48)}`,
+  ].join('\r\n')
+  it('recognises the test registry credentials, never anything else', () => {
+    const prodKey = '2b'.repeat(32)
+    expect(matchesTestRegistryCredential('d'.repeat(48), prodKey, testEnv)).toBeNull()
+    expect(matchesTestRegistryCredential('c'.repeat(48), prodKey, testEnv)).toBe('operator token')
+    expect(matchesTestRegistryCredential('b'.repeat(48), prodKey, testEnv)).toBe('operator token')
+    expect(matchesTestRegistryCredential('d'.repeat(48), '1A'.repeat(32), testEnv)).toBe('HMAC key')
+    expect(matchesTestRegistryCredential('1a'.repeat(32), prodKey, testEnv)).toBe('operator token')
+  })
+  it('does not match on an empty or malformed file', () => {
+    expect(matchesTestRegistryCredential('c'.repeat(48), '2b'.repeat(32), '')).toBeNull()
+    expect(matchesTestRegistryCredential('c'.repeat(48), '2b'.repeat(32), 'garbage')).toBeNull()
   })
 })

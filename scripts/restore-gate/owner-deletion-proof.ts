@@ -40,7 +40,8 @@
  */
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { verifyBackupDirectory } from '../db-backup/backup-core'
@@ -51,6 +52,7 @@ import {
   cleanSecret,
   evaluateDrillLog,
   explainExportRefusal,
+  matchesTestRegistryCredential,
   inspectBackupAccount,
   operatorTokenProblem,
   PRODUCTION_FRONTEND_ORIGIN,
@@ -358,6 +360,22 @@ async function main(): Promise<void> {
     tokenProblem === null,
     'registry operator token has a plausible shape',
     tokenProblem ?? undefined,
+  )
+  const testEnvPath = join(homedir(), '.pokeportfolio-p195', 'registry-test.env')
+  let testMatch: ReturnType<typeof matchesTestRegistryCredential> = null
+  if (target.kind === 'production' && existsSync(testEnvPath)) {
+    testMatch = matchesTestRegistryCredential(
+      registryToken,
+      registryKeyText,
+      readFileSync(testEnvPath, 'utf8'),
+    )
+  }
+  must(
+    testMatch === null,
+    'registry credentials are not those of the TEST registry',
+    testMatch === null
+      ? undefined
+      : `the ${testMatch} entered is the test registry's, not Production's`,
   )
   const beforeFile = join(args.outDir, 'registry-before.ndjson')
   let probe: Awaited<ReturnType<typeof exportRegistry>>
