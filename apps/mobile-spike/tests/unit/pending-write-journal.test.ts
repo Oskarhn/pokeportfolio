@@ -5,13 +5,25 @@ import {
 } from '../../src/write/pending-write-journal'
 import { MemoryKeyValueStore } from '../support/fakes'
 
+/** The journal prunes entries older than its retention window against the wall clock, so the tests
+ *  pin the clock: a fixture timestamp that is merely 'recent' today silently expires later. */
+const FIXED_NOW = Date.parse('2026-09-28T10:00:00.000Z')
+
+beforeEach(() => {
+  jest.spyOn(Date, 'now').mockReturnValue(FIXED_NOW)
+})
+
+afterEach(() => {
+  jest.restoreAllMocks()
+})
+
 function entry(overrides: Partial<PendingWriteEntry> = {}): PendingWriteEntry {
   return {
     idempotencyKey: 'key-1',
     operationKind: 'create_purchase',
     payloadHash: hashPendingPayload({ currency: 'NOK' }),
     userId: 'A',
-    createdAt: new Date('2026-09-28T10:00:00.000Z').toISOString(),
+    createdAt: new Date(FIXED_NOW).toISOString(),
     ...overrides,
   }
 }
@@ -65,7 +77,7 @@ describe('PendingWriteJournal', () => {
       entry({ idempotencyKey: 'ancient', createdAt: old.toISOString() }),
       old.getTime(),
     )
-    const now = Date.parse('2026-09-28T10:00:00.000Z')
+    const now = FIXED_NOW
     expect(await journal.listFor('A', now)).toEqual([])
   })
 
