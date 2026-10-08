@@ -271,3 +271,66 @@ export function evaluateDrillLog(log: string): DrillVerdict {
     problems,
   }
 }
+
+/**
+ * A secret as typed or pasted by a person: whitespace, a `NAME=` / `export NAME=` / `$env:NAME=`
+ * prefix copied from an env file, and one pair of surrounding quotes are not part of the value.
+ */
+export function cleanSecret(raw: string): string {
+  let value = raw.trim()
+  value = value.replace(/^(?:export\s+|\$env:)?[A-Z][A-Z0-9]*_[A-Z0-9_]*\s*=\s*/, '').trim()
+  value = value.replace(/^(['"])(.*)\1$/, '$2').trim()
+  return value
+}
+
+/** Why a typed operator token cannot be right before any network call is made (null = plausible). */
+export function operatorTokenProblem(token: string, hmacKeyText: string): string | null {
+  if (token.length < 24) return `it is too short (${String(token.length)} characters)`
+  if (/\s/.test(token)) return 'it contains whitespace'
+  if (token === hmacKeyText) {
+    return 'it is identical to the HMAC key (the same value was entered at both prompts)'
+  }
+  return null
+}
+
+/**
+ * What a registry refusal of the export means, in words that tell the operator which credential to
+ * look for. The Worker answers 401 when the bearer matches neither the operator nor the append
+ * token, and 403 when it matches the append token (which may not read).
+ */
+export function explainExportRefusal(message: string): string | null {
+  if (message.includes('(401)')) {
+    return (
+      'the registry accepts this value as neither the operator token nor the append token (401). ' +
+      "Use the PRODUCTION entry's ERASURE_OPERATOR_TOKEN - not the test registry's, not the append token, " +
+      'not the HMAC key - or rotate the operator token'
+    )
+  }
+  if (message.includes('(403)')) {
+    return 'this is the APPEND token (403): the operator token is a different value'
+  }
+  return null
+}
+
+/**
+ * Whether a typed registry credential is really one of the TEST registry's (a separate Worker and
+ * ledger, P195). `testEnvText` is the content of the operator's `registry-test.env`; it is only
+ * compared, never returned or printed. Returns what matched, or null.
+ */
+export function matchesTestRegistryCredential(
+  typedToken: string,
+  typedKeyText: string,
+  testEnvText: string,
+): 'operator token' | 'HMAC key' | null {
+  const values = new Map<string, string>()
+  for (const line of testEnvText.split(/\r?\n/)) {
+    const i = line.indexOf('=')
+    if (i > 0) values.set(line.slice(0, i).trim(), cleanSecret(line.slice(i + 1)))
+  }
+  const testKey = values.get('ERASURE_REGISTRY_KEY')
+  const testTokens = [values.get('ERASURE_OPERATOR_TOKEN'), values.get('ERASURE_APPEND_TOKEN')]
+  if (testKey && typedKeyText.toLowerCase() === testKey.toLowerCase()) return 'HMAC key'
+  if (testTokens.some((t) => t && t === typedToken)) return 'operator token'
+  if (testKey && typedToken.toLowerCase() === testKey.toLowerCase()) return 'operator token'
+  return null
+}

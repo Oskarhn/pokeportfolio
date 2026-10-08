@@ -40,7 +40,8 @@
  */
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { verifyBackupDirectory } from '../db-backup/backup-core'
@@ -48,8 +49,12 @@ import { REPO_ROOT } from '../db-backup/supabase-cli'
 import {
   backupFingerprintForRef,
   backupUnfitReasons,
+  cleanSecret,
   evaluateDrillLog,
+  explainExportRefusal,
+  matchesTestRegistryCredential,
   inspectBackupAccount,
+  operatorTokenProblem,
   PRODUCTION_FRONTEND_ORIGIN,
   PRODUCTION_PROJECT_REF,
   PRODUCTION_REGISTRY_URL,
@@ -343,18 +348,52 @@ async function main(): Promise<void> {
   )
 
   // 2 - registry secrets, reachability and chain integrity
-  const registryToken =
-    process.env.ERASURE_OPERATOR_TOKEN ?? (await prompt('Registry operator token', true))
-  const registryKeyText =
-    process.env.ERASURE_REGISTRY_KEY ?? (await prompt('Registry HMAC key', true))
+  const registryToken = cleanSecret(
+    process.env.ERASURE_OPERATOR_TOKEN ?? (await prompt('Registry operator token', true)),
+  )
+  const registryKeyText = cleanSecret(
+    process.env.ERASURE_REGISTRY_KEY ?? (await prompt('Registry HMAC key', true)),
+  )
   const registryKey = parseRegistryKey(registryKeyText)
+  const tokenProblem = operatorTokenProblem(registryToken, registryKeyText)
+  must(
+    tokenProblem === null,
+    'registry operator token has a plausible shape',
+    tokenProblem ?? undefined,
+  )
+  const testEnvPath = join(homedir(), '.pokeportfolio-p195', 'registry-test.env')
+  let testMatch: ReturnType<typeof matchesTestRegistryCredential> = null
+  if (target.kind === 'production' && existsSync(testEnvPath)) {
+    testMatch = matchesTestRegistryCredential(
+      registryToken,
+      registryKeyText,
+      readFileSync(testEnvPath, 'utf8'),
+    )
+  }
+  must(
+    testMatch === null,
+    'registry credentials are not those of the TEST registry',
+    testMatch === null
+      ? undefined
+      : `the ${testMatch} entered is the test registry's, not Production's`,
+  )
   const beforeFile = join(args.outDir, 'registry-before.ndjson')
-  const probe = await exportRegistry({
-    url: target.registryUrl,
-    token: registryToken,
-    key: registryKey,
-    out: beforeFile,
-  })
+  let probe: Awaited<ReturnType<typeof exportRegistry>>
+  try {
+    probe = await exportRegistry({
+      url: target.registryUrl,
+      token: registryToken,
+      key: registryKey,
+      out: beforeFile,
+    })
+  } catch (e) {
+    const why = e instanceof RegistryError ? explainExportRefusal(e.message) : null
+    if (why !== null) {
+      report('registry reachable, key valid, chain verified', false, why)
+      throw new GateFailure('registry credentials refused - nothing was deleted')
+    }
+    throw e
+  }
   report(
     'registry reachable, key valid, chain verified',
     true,
