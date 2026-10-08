@@ -47,18 +47,25 @@ const SORT_LABEL: Record<CardSort, string> = {
 }
 
 function SetRow({ set }: { set: CatalogSet }) {
+  // Compact row icon: symbol first, logo second. An image the CDN fails to serve is skipped (never
+  // a browser broken-image frame) and the neutral placeholder is the last resort (P197D).
+  const [failedUrls, setFailedUrls] = useState<ReadonlySet<string>>(new Set())
+  const iconUrl = [set.symbolUrl, set.logoUrl].find((url) => url && !failedUrls.has(url))
   return (
     <Link
       to="/catalog/sets/$setId"
       params={{ setId: set.id }}
       className="flex items-center gap-3 p-3 hover:bg-slate-800/60 focus-visible:bg-slate-800/60 focus-visible:outline-none"
     >
-      {set.symbolUrl || set.logoUrl ? (
+      {iconUrl ? (
         <img
-          src={set.symbolUrl ?? set.logoUrl ?? undefined}
+          src={iconUrl}
           alt=""
           className="size-8 shrink-0 object-contain"
           loading="lazy"
+          onError={() => {
+            setFailedUrls((previous) => new Set(previous).add(iconUrl))
+          }}
         />
       ) : (
         <div className="size-8 shrink-0 rounded bg-slate-800" aria-hidden />

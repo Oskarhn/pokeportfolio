@@ -25,6 +25,7 @@ import { createClient } from 'npm:@supabase/supabase-js@2.112.3'
 import { fetchCardPricing, TcgdexNotFoundError, type Language } from '../_shared/tcgdex.ts'
 import { resolveServiceRoleKey } from '../_shared/service-key.ts'
 import { observationsForVariant, type PriceObservationWire } from '../_shared/price-observations.ts'
+import { withCors } from '../_shared/cors.ts'
 
 const MAX_CARD_IDS = 20
 const FETCH_CONCURRENCY = 5
@@ -58,7 +59,7 @@ async function mapWithConcurrency<T, R>(
   return results
 }
 
-Deno.serve(async (request: Request): Promise<Response> => {
+async function handle(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
     return json(405, { error: 'method_not_allowed' })
   }
@@ -269,4 +270,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
   }
 
   return json(200, { ok: true, results, providerErrorCount })
-})
+}
+
+// Browser calls are cross-origin: answer the preflight and carry CORS headers on every response.
+Deno.serve(withCors(handle))

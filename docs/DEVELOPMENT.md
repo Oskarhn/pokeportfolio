@@ -508,7 +508,7 @@ quietly rather than loudly:
 
 | What | Where | Symptom if wrong |
 |---|---|---|
-| `ALLOWED_ORIGINS` | `supabase secrets set` | Redemption blocked by CORS before the token is read |
+| `ALLOWED_ORIGINS` | `supabase secrets set` | Redemption, `delete-account`, `search-prices` and `fetch-fx-rate` blocked by CORS in the browser (the last two show as a silent `—` for prices / an unavailable FX rate) |
 | `site_url` | `config.toml` → `config push` | Recovery links point at the wrong host |
 | `connect-src` in the CSP | derived from `VITE_SUPABASE_URL` at build | Every Supabase call blocked |
 

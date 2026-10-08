@@ -3,6 +3,10 @@
  * symbol, otherwise a neutral initials tile. Pure logic, separate from the component file so
  * both fast-refresh and tests can import it without dragging JSX along. A missing or failed
  * upstream image resolves to a deliberate fallback here — never a browser broken-image icon.
+ *
+ * P197D: a logo URL the CDN fails to serve (3 of 154 live English logos 404 — Wizards Black Star
+ * Promos, Undaunted, Furious Fists) now falls through to the symbol before the initials tile,
+ * instead of dropping straight to initials while a working symbol exists.
  */
 
 export interface SetVisualChoice {
@@ -17,12 +21,14 @@ export function initialsFor(name: string): string {
   return name.slice(0, 2).toUpperCase()
 }
 
+/** `failedUrls` are image URLs the browser already failed to load; they are skipped, never retried. */
 export function chooseSetVisual(
   logoUrl: string | null,
   symbolUrl: string | null,
   name: string,
+  failedUrls: ReadonlySet<string> = new Set(),
 ): SetVisualChoice {
-  const url = logoUrl ?? symbolUrl
+  const url = [logoUrl, symbolUrl].find((candidate) => candidate && !failedUrls.has(candidate))
   if (!url) return { kind: 'initials', label: initialsFor(name) }
   return { kind: 'image', url, label: name }
 }

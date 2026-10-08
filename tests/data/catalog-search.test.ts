@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   CatalogQueryError,
   setImageUrl,
+  setSymbolUrl,
   searchCards,
   searchSets,
   listRecentSets,
@@ -111,6 +112,37 @@ describe('setImageUrl — TCGdex asset URL normalization', () => {
   })
 })
 
+describe('setSymbolUrl — the CDN does not serve /univ/ (P197D)', () => {
+  // Probed 2026-10-08: every https://assets.tcgdex.net/univ/**/symbol[.webp|.png] answers
+  // 400 InvalidBucketName, while /en/{series}/{set}/symbol.webp returned 200 for Temporal Forces.
+  it('rewrites the dead /univ/ symbol path to the language tree with .webp', () => {
+    expect(setSymbolUrl('https://assets.tcgdex.net/univ/sv/sv05/symbol', 'en')).toBe(
+      'https://assets.tcgdex.net/en/sv/sv05/symbol.webp',
+    )
+    expect(setSymbolUrl('https://assets.tcgdex.net/univ/sv/sv10.5b/symbol', 'ja')).toBe(
+      'https://assets.tcgdex.net/ja/sv/sv10.5b/symbol.webp',
+    )
+  })
+
+  it('leaves every other shape to the ordinary extension normalization', () => {
+    expect(setSymbolUrl('https://assets.tcgdex.net/en/sv/sv05/symbol', 'en')).toBe(
+      'https://assets.tcgdex.net/en/sv/sv05/symbol.webp',
+    )
+    expect(setSymbolUrl('https://assets.tcgdex.net/univ/sv/sv05/symbol.png', 'en')).toBe(
+      'https://assets.tcgdex.net/univ/sv/sv05/symbol.png',
+    )
+    expect(setSymbolUrl('https://example.test/univ/sv/sv05/symbol', 'en')).toBe(
+      'https://example.test/univ/sv/sv05/symbol.webp',
+    )
+  })
+
+  it('maps absent upstream values to null — never to an invented URL', () => {
+    expect(setSymbolUrl(null, 'en')).toBeNull()
+    expect(setSymbolUrl(undefined, 'en')).toBeNull()
+    expect(setSymbolUrl('', 'en')).toBeNull()
+  })
+})
+
 describe('chooseSetVisual — deliberate fallbacks, never a broken-image icon', () => {
   it('prefers the logo when the set has both visuals', () => {
     const choice = chooseSetVisual('/logo.webp', '/symbol.webp', 'Base Set')
@@ -121,6 +153,25 @@ describe('chooseSetVisual — deliberate fallbacks, never a broken-image icon', 
     const choice = chooseSetVisual(null, '/symbol.webp', 'Jungle')
     expect(choice.kind).toBe('image')
     if (choice.kind === 'image') expect(choice.url).toBe('/symbol.webp')
+  })
+
+  it('skips a logo the browser already failed to load and uses the symbol (P197D)', () => {
+    const choice = chooseSetVisual(
+      '/logo.webp',
+      '/symbol.webp',
+      'Undaunted',
+      new Set(['/logo.webp']),
+    )
+    expect(choice).toEqual({ kind: 'image', url: '/symbol.webp', label: 'Undaunted' })
+  })
+
+  it('falls back to initials only when every candidate has failed', () => {
+    const failed = new Set(['/logo.webp', '/symbol.webp'])
+    expect(chooseSetVisual('/logo.webp', '/symbol.webp', 'Temporal Forces', failed)).toEqual({
+      kind: 'initials',
+      label: 'TF',
+    })
+    expect(chooseSetVisual(null, '/symbol.webp', 'Temporal Forces', failed).kind).toBe('initials')
   })
 
   it('resolves a set with neither visual (39 of 218 live en rows) to an initials tile', () => {
@@ -223,7 +274,7 @@ describe('searchSets — same normalization on text-searched sets', () => {
     const sets = await searchSets({ query: 'base', language: null })
 
     expect(sets[0]!.logoUrl).toBe('https://assets.tcgdex.net/en/base/base1/logo.webp')
-    expect(sets[0]!.symbolUrl).toBe('https://assets.tcgdex.net/univ/base/base2/symbol.webp')
+    expect(sets[0]!.symbolUrl).toBe('https://assets.tcgdex.net/en/base/base2/symbol.webp')
   })
 })
 

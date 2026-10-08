@@ -324,7 +324,7 @@ export async function searchSets(params: {
     cardCountOfficial: row.card_count_official,
     cardCountTotal: row.card_count_total,
     logoUrl: setImageUrl(row.logo_url),
-    symbolUrl: setImageUrl(row.symbol_url),
+    symbolUrl: setSymbolUrl(row.symbol_url, row.language as CatalogLanguage),
   }))
 }
 
@@ -359,7 +359,7 @@ export async function listRecentSets(params: {
     cardCountOfficial: row.card_count_official,
     cardCountTotal: row.card_count_total,
     logoUrl: setImageUrl(row.logo_url),
-    symbolUrl: setImageUrl(row.symbol_url),
+    symbolUrl: setSymbolUrl(row.symbol_url, row.language as CatalogLanguage),
   }))
 }
 
@@ -384,7 +384,7 @@ export async function getSet(setId: string): Promise<CatalogSet | null> {
     cardCountOfficial: data.card_count_official,
     cardCountTotal: data.card_count_total,
     logoUrl: setImageUrl(data.logo_url),
-    symbolUrl: setImageUrl(data.symbol_url),
+    symbolUrl: setSymbolUrl(data.symbol_url, data.language as CatalogLanguage),
   }
 }
 
@@ -450,4 +450,28 @@ export function setImageUrl(url: string | null | undefined): string | null {
   const path = url.slice(0, markerIndex)
   const suffix = url.slice(markerIndex)
   return IMAGE_EXTENSION.test(path) ? url : `${path}.webp${suffix}`
+}
+
+const UNIV_SYMBOL = /^(https:\/\/assets\.tcgdex\.net)\/univ\/([^/?#]+)\/([^/?#]+)\/symbol$/
+
+/**
+ * Set symbols arrive as `…/univ/{series}/{set}/symbol`, and the asset CDN does not serve the
+ * `/univ/` tree at all: every variant (bare, `.webp`, `.png`) answers **400 `InvalidBucketName`**
+ * (probed 2026-10-08 across all 169 English symbol URLs). The same mark is published under the
+ * language tree for most sets — `…/{language}/{series}/{set}/symbol.webp` returned 200 for 125 of
+ * those 169 (sv05, sma, basep, hgss3, xy3 among them) and 404 for the rest (trainer kits, McDonald's
+ * promos), which then fall through to the initials tile via the image `onError` path.
+ *
+ * Only the exact `univ/…/symbol` shape on the TCGdex asset host is rewritten; anything else takes
+ * the ordinary {@link setImageUrl} path. The rewrite points at a real published asset — it never
+ * invents an image for a set whose upstream record has no symbol.
+ */
+export function setSymbolUrl(
+  url: string | null | undefined,
+  language: CatalogLanguage,
+): string | null {
+  if (!url) return null
+  const match = UNIV_SYMBOL.exec(url)
+  if (match) return `${match[1]}/${language}/${match[2]}/${match[3]}/symbol.webp`
+  return setImageUrl(url)
 }
