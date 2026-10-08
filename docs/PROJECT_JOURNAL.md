@@ -2497,3 +2497,19 @@ a blanket refusal. Two side findings: a state digest that included cron-rewritte
 30 runs of the new test, and restarting one container of a local stack (to get a cold start) made
 Kong send to a stale address, which produced a convincing but false "cold start hangs" signal.
 Details: docs/TESTING.md §6h.
+
+## 2026-10-08 — Two blank spots in the app, two different causes (P197D)
+
+The owner saw set tiles with initials instead of logos, and a market price that was missing and then
+arrived late. Neither was what it looked like. Of the initials tiles, MEP Black Star Promos and
+McDonald's Collection 2024 have no logo or symbol in TCGdex at all (initials are correct); Temporal
+Forces has a symbol, but the catalog stores it under `/univ/…`, which the asset CDN answers with
+400 `InvalidBucketName` for all 169 English symbols, while the same mark exists under
+`/en/{series}/{set}/symbol.webp` for 125 of them. The price was the bigger miss: from the Production
+origin a real browser could not call `search-prices` or `fetch-fx-rate` at all — the CORS preflight got
+a 405 — so Search and Card Detail never showed a market price, and `searchPrices` (which swallows
+failures by design) turned that into a silent "—". What the owner eventually saw was the scheduled
+path: a new holding is watched at once, but its first snapshot waits for the next 15-minute
+`ingest-prices` tick. Server logs showed zero `search-prices` POSTs in 24 hours and a single OPTIONS;
+no unit or Playwright test could notice, because none crosses an origin. Lesson: a client that hides
+failure needs a test that proves the request can leave the browser.

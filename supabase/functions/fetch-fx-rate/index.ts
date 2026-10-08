@@ -34,6 +34,7 @@
 import { createClient } from 'npm:@supabase/supabase-js@2.112.3'
 import { fetchNorgesBankRates, NorgesBankError } from '../_shared/norges-bank.ts'
 import { resolveServiceRoleKey } from '../_shared/service-key.ts'
+import { withCors } from '../_shared/cors.ts'
 
 const LOOKBACK_DAYS = 10
 const DATE_SHAPE = /^\d{4}-\d{2}-\d{2}$/
@@ -53,7 +54,7 @@ function shiftDate(isoDate: string, days: number): string {
   return iso
 }
 
-Deno.serve(async (request: Request): Promise<Response> => {
+async function handle(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
     return json(405, { ok: false, error: 'method_not_allowed' })
   }
@@ -161,4 +162,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
   }
 
   return json(200, { ok: true, rate: latest.rate, rateDate: latest.date, source: 'norges_bank' })
-})
+}
+
+// Browser calls are cross-origin: answer the preflight and carry CORS headers on every response.
+Deno.serve(withCors(handle))

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { listRecentSets, type CatalogSet } from '../../data/catalog'
-import { chooseSetVisual, initialsFor } from './set-visuals'
+import { chooseSetVisual } from './set-visuals'
 
 /**
  * Search's set-browsing grid (P27 owner feedback), replacing M7.1's horizontal carousel: the
@@ -32,17 +32,18 @@ const TILES_PER_STEP = 24
 
 function SetTile({
   set,
-  imageFailed,
+  failedUrls,
   onImageError,
 }: {
   set: CatalogSet
-  imageFailed: boolean
+  failedUrls: ReadonlySet<string>
   onImageError: (url: string) => void
 }) {
-  const visual = chooseSetVisual(set.logoUrl, set.symbolUrl, set.name)
+  // A failed logo falls through to the symbol, and only then to the initials tile (P197D).
+  const visual = chooseSetVisual(set.logoUrl, set.symbolUrl, set.name, failedUrls)
   const imageUrl = visual.kind === 'image' ? (visual.url ?? null) : null
-  const showImage = imageUrl !== null && !imageFailed
-  const fallbackLabel = imageUrl === null ? visual.label : initialsFor(set.name)
+  const showImage = imageUrl !== null
+  const fallbackLabel = visual.label
   const meta = [
     set.releasedOn ? set.releasedOn.slice(0, 4) : null,
     set.cardCountOfficial ? `${set.cardCountOfficial} cards` : null,
@@ -153,17 +154,9 @@ export function SetGrid() {
         role="list"
         aria-label="Browse sets"
       >
-        {visible.map((set) => {
-          const displayUrl = set.logoUrl ?? set.symbolUrl
-          return (
-            <SetTile
-              key={set.id}
-              set={set}
-              imageFailed={displayUrl !== null && failedUrls.has(displayUrl)}
-              onImageError={markFailed}
-            />
-          )
-        })}
+        {visible.map((set) => (
+          <SetTile key={set.id} set={set} failedUrls={failedUrls} onImageError={markFailed} />
+        ))}
       </div>
       {remaining > 0 ? (
         <button
