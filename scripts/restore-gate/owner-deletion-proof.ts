@@ -48,8 +48,11 @@ import { REPO_ROOT } from '../db-backup/supabase-cli'
 import {
   backupFingerprintForRef,
   backupUnfitReasons,
+  cleanSecret,
   evaluateDrillLog,
+  explainExportRefusal,
   inspectBackupAccount,
+  operatorTokenProblem,
   PRODUCTION_FRONTEND_ORIGIN,
   PRODUCTION_PROJECT_REF,
   PRODUCTION_REGISTRY_URL,
@@ -343,18 +346,36 @@ async function main(): Promise<void> {
   )
 
   // 2 - registry secrets, reachability and chain integrity
-  const registryToken =
-    process.env.ERASURE_OPERATOR_TOKEN ?? (await prompt('Registry operator token', true))
-  const registryKeyText =
-    process.env.ERASURE_REGISTRY_KEY ?? (await prompt('Registry HMAC key', true))
+  const registryToken = cleanSecret(
+    process.env.ERASURE_OPERATOR_TOKEN ?? (await prompt('Registry operator token', true)),
+  )
+  const registryKeyText = cleanSecret(
+    process.env.ERASURE_REGISTRY_KEY ?? (await prompt('Registry HMAC key', true)),
+  )
   const registryKey = parseRegistryKey(registryKeyText)
+  const tokenProblem = operatorTokenProblem(registryToken, registryKeyText)
+  must(
+    tokenProblem === null,
+    'registry operator token has a plausible shape',
+    tokenProblem ?? undefined,
+  )
   const beforeFile = join(args.outDir, 'registry-before.ndjson')
-  const probe = await exportRegistry({
-    url: target.registryUrl,
-    token: registryToken,
-    key: registryKey,
-    out: beforeFile,
-  })
+  let probe: Awaited<ReturnType<typeof exportRegistry>>
+  try {
+    probe = await exportRegistry({
+      url: target.registryUrl,
+      token: registryToken,
+      key: registryKey,
+      out: beforeFile,
+    })
+  } catch (e) {
+    const why = e instanceof RegistryError ? explainExportRefusal(e.message) : null
+    if (why !== null) {
+      report('registry reachable, key valid, chain verified', false, why)
+      throw new GateFailure('registry credentials refused - nothing was deleted')
+    }
+    throw e
+  }
   report(
     'registry reachable, key valid, chain verified',
     true,

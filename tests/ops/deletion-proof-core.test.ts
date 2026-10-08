@@ -5,8 +5,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   backupFingerprintForRef,
   backupUnfitReasons,
+  cleanSecret,
   evaluateDrillLog,
+  explainExportRefusal,
   inspectBackupAccount,
+  operatorTokenProblem,
   parsePgTimestamp,
   PRODUCTION_PROJECT_REF,
   PRODUCTION_REGISTRY_URL,
@@ -293,5 +296,28 @@ describe('evaluateDrillLog', () => {
     )
     expect(v.pass).toBe(false)
     expect(v.onlyKnownLimitationFailed).toBe(false)
+  })
+})
+
+describe('secret hygiene', () => {
+  it('cleans copy-paste decoration without touching the value', () => {
+    const v = 'a'.repeat(48)
+    expect(cleanSecret(`  ${v}  `)).toBe(v)
+    expect(cleanSecret(`ERASURE_OPERATOR_TOKEN=${v}`)).toBe(v)
+    expect(cleanSecret(`export ERASURE_OPERATOR_TOKEN="${v}"`)).toBe(v)
+    expect(cleanSecret(`$env:ERASURE_OPERATOR_TOKEN='${v}'`)).toBe(v)
+    expect(cleanSecret(`${v}==`)).toBe(`${v}==`) // base64 padding survives
+  })
+  it('rejects implausible operator tokens before any network call', () => {
+    const key = 'ab'.repeat(32)
+    expect(operatorTokenProblem('short', key)).toContain('too short')
+    expect(operatorTokenProblem(`${'a'.repeat(30)} ${'b'.repeat(30)}`, key)).toContain('whitespace')
+    expect(operatorTokenProblem(key, key)).toContain('identical to the HMAC key')
+    expect(operatorTokenProblem('c'.repeat(48), key)).toBeNull()
+  })
+  it('tells 401 (neither token) from 403 (append token)', () => {
+    expect(explainExportRefusal('the registry refused the export (401)')).toContain('neither')
+    expect(explainExportRefusal('the registry refused the export (403)')).toContain('APPEND')
+    expect(explainExportRefusal('the registry is unreachable')).toBeNull()
   })
 })
