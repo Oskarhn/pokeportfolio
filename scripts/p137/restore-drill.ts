@@ -42,6 +42,14 @@
  *   tsx scripts/p137/restore-drill.ts --backup <dir> --mutation F    skip the replay but still
  *                                                                    postcheck (must be refused)
  *
+ *   tsx scripts/p137/restore-drill.ts --backup <dir> --erasure-registry <file> --expect-erased-present
+ *                                                                    the backup is a PRE-deletion image:
+ *                                                                    additionally requires that the replay
+ *                                                                    found the erased account (P197B)
+ *
+ * With a registry the drill also checks that the replay left every non-erased account, its holdings and the
+ * administrator data unchanged ("ERASURE_GATE untouched", aggregate counts only).
+ *
  * Prints only aggregate counts/hashes/pass-fail — never row contents. Needs Docker. Touches no
  * hosted project. The target container has --network none for the entire drill.
  */
@@ -283,6 +291,36 @@ function dockerRunner(container: string): SqlRunner {
   }
 }
 
+/** `--expect-erased-present`: the backup is a PRE-deletion image, so the replay must find the account. */
+const EXPECT_ERASED_PRESENT = process.argv.includes('--expect-erased-present')
+
+/**
+ * Aggregate counts only. `subjects` are registry hashes (validated hex by the registry parser), so
+ * inlining them cannot inject SQL. "kept" = owned by an account the registry does NOT erase.
+ */
+async function accountSnapshot(
+  runner: SqlRunner,
+  subjects: readonly string[],
+): Promise<Record<string, number>> {
+  if (!subjects.every((s) => /^[0-9a-f]{64}$/.test(s))) throw new Error('invalid registry subject')
+  const list = `array[${subjects.map((s) => `'${s}'`).join(',')}]::text[]`
+  const kept = (table: string, column: string): string =>
+    `(select count(*) from ${table} t where public.erasure_subject_hash(t.${column}) <> all(${list}))`
+  const admin = (table: string, column: string): string =>
+    `(select count(*) from ${table} t join public.profiles p on p.id = t.${column} where p.is_admin)`
+  return (await runner.json(`select jsonb_build_object(
+      'erased_present', (select count(*) from auth.users t where public.erasure_subject_hash(t.id) = any(${list})),
+      'kept_users', ${kept('auth.users', 'id')},
+      'kept_profiles', ${kept('public.profiles', 'id')},
+      'kept_purchases', ${kept('public.purchases', 'user_id')},
+      'kept_holdings', ${kept('public.holdings', 'user_id')},
+      'kept_lots', ${kept('public.acquisition_lots', 'user_id')},
+      'admin_profiles', (select count(*) from public.profiles where is_admin),
+      'admin_purchases', ${admin('public.purchases', 'user_id')},
+      'admin_lots', ${admin('public.acquisition_lots', 'user_id')}
+    ) as r`)) as Record<string, number>
+}
+
 async function runErasureGate(
   db: ReturnType<typeof psqlOf>,
   registryPath: string | null,
@@ -318,12 +356,30 @@ async function runErasureGate(
   )
   if (!machinery.present) return
   const options = { allowEmpty: false }
+  const subjects = registry.records.map((r) => r.subject)
+  const snapshotBefore = await accountSnapshot(runner, subjects)
+  if (EXPECT_ERASED_PRESENT) {
+    check(
+      'ERASURE_GATE hazard: the pre-deletion image still held the erased account before the replay',
+      (snapshotBefore.erased_present ?? 0) >= 1,
+      `erased accounts present before replay=${String(snapshotBefore.erased_present)}`,
+    )
+  }
   if (mutation !== 'F') {
     const applied = await apply(runner, registry, { ...options, dryRun: false })
     check(
       'ERASURE_GATE apply: erased accounts replayed onto the restored image and re-verified clean',
       applied.exit === EXIT.OK,
       `replayed=${String(applied.replayed_accounts)} verdict=${applied.after?.verdict ?? '?'} tables_with_residue=${JSON.stringify(applied.after?.report.tables ?? {})}`,
+    )
+    const snapshotAfter = await accountSnapshot(runner, subjects)
+    const changed = Object.keys(snapshotBefore).filter(
+      (k) => k !== 'erased_present' && snapshotBefore[k] !== snapshotAfter[k],
+    )
+    check(
+      'ERASURE_GATE untouched: every non-erased account, its holdings and the administrator data are unchanged by the replay',
+      snapshotAfter.erased_present === 0 && changed.length === 0,
+      `erased_present_after=${String(snapshotAfter.erased_present)} changed_counts=${changed.length === 0 ? 'none' : changed.join(',')} admin_profiles=${String(snapshotAfter.admin_profiles)} admin_purchases=${String(snapshotAfter.admin_purchases)} admin_lots=${String(snapshotAfter.admin_lots)}`,
     )
   }
   const post = await postcheck(runner, registry, options)

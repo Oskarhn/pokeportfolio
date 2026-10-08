@@ -160,3 +160,44 @@ The restore drill reports this as `POST_RESTORE_CRON_PRODUCTION_CALLS` FAIL on a
 erasure-gate step passed, this one check failed, in both the DB104 and the DB114 drill). Until a fix exists, after promoting a
 restored image re-create the jobs by re-running the `cron.schedule` statements of the migrations that define them
 (`m9_cron_schedule`, `m12_cron`, `p42_cron_cadence`, `p137_environment_scoped_ingest_dispatch`) and check `select jobname, active from cron.job`.
+
+## 9. Proving restore-safe deletion against Production (owner-operated)
+
+`scripts/restore-gate/owner-deletion-proof.ts` deletes **one** named synthetic account through the real
+`delete-account` Edge Function and then proves the invariant of §1 against a *pre-deletion* backup. It runs
+on the owner's machine because it needs the account password, the registry operator token and the registry
+HMAC key, none of which may be pasted into a chat, a command line or Git. Passwords and keys are read from
+the TTY with echo off (the two registry values may come from `ERASURE_OPERATOR_TOKEN` / `ERASURE_REGISTRY_KEY`);
+tokens live only in process memory; output is PASS/FAIL lines and counts.
+
+```text
+pnpm exec tsx scripts/restore-gate/owner-deletion-proof.ts \
+  --backup <pre-deletion backup dir> --out-dir <private dir outside every checkout> \
+  --expect-user-id <full UUID of the account> --publishable-key <sb_publishable_…> [--skip-drill]
+```
+
+Gates, in order; a failed gate stops the run and nothing is ever re-sent:
+
+1. Target is Production (project `nopmkroeygmlvndzjjqs` + the Production registry Worker) or a loopback
+   rehearsal; a mixture is refused. Backup verified from disk, stamped with the Production fingerprint,
+   taken **after** the account existed, holding its live purchase and lot, and naming the administrator(s).
+2. Registry reachable, key valid, chain verified.
+3. Sign-in; the id equals `--expect-user-id`; e-mail identity and no verified second factor (the function
+   would refuse otherwise); `profiles.is_admin = false` read through RLS with the account's own session.
+4. The account's own holding exists. 5. Read-only authenticated smoke: Search, the browser CORS preflight
+   and an authenticated call of `search-prices`, and the finance read RPCs. A failure stops the run **before**
+   the deletion, with the account intact.
+6. Registry head read immediately before; the operator types `DELETE <first 8 hex of the id>`.
+7. `POST /functions/v1/delete-account {expectedUserId, password, confirm:true}` → `200 {"status":"deleted"}`.
+8. The stale access token, the stale refresh token and a password sign-in are all refused.
+9. The registry gained **exactly one** record — this account — with every earlier record byte-identical,
+   verified with the operator's own key.
+10. The restore drill runs the pre-deletion backup with the live registry export
+    (`--erasure-registry`, `--expect-erased-present`) and is judged by **content**: the image must have
+    contained the erased account, the replay must have removed at least one account and left the image
+    `clean`, postcheck and promote-check must pass, and every other account — administrator data included —
+    must be unchanged. The only check allowed to fail is the documented cron limitation of §7.
+
+If the Edge Function answers `503 deletion_unavailable` / `deletion_incomplete`, or gives no answer, the
+account may be *pending* (writes blocked, data intact). Do not rerun the tool; diagnose from the stage label
+and the registry head, as in §6. Nothing here recreates or resets the registry to obtain a green result.
