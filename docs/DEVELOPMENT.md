@@ -388,6 +388,11 @@ files.
   created only through the factory functions in that module — never through a struct literal or a
   JS float.
 - Prettier for formatting; no debate.
+- Claude Code project defaults: the one tracked file under `.claude/` is `.claude/settings.json`
+  (default model `claude-sonnet-5-5`, `effortLevel` `high`). A fresh worktree therefore starts on
+  Sonnet 5.5 at High without flags. Per-session `--model`/`--effort` and the git-ignored
+  `.claude/settings.local.json` override it. Everything else under `.claude/` stays ignored; keep
+  secrets, permissions and session state out of the shared file.
 - Conventional commit prefixes (`feat:`, `fix:`, `docs:`, `chore:`, `test:`, `refactor:`).
 - Comments explain intent and constraints. Code that needs a comment to explain *what* it does
   gets rewritten instead.
