@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it } from 'vitest'
 
 /**
  * P197D — the browser-reachable, JWT-verified Edge Functions must answer a CORS preflight.
@@ -61,7 +62,11 @@ function probe(slug: string): Probe {
 }
 
 withDeno.each(['search-prices', 'fetch-fx-rate'])('%s — CORS (P197D)', (slug) => {
-  const result = probe(slug)
+  // In a hook, not the suite body: a skipped suite's body still runs during collection.
+  let result: Probe
+  beforeAll(() => {
+    result = probe(slug)
+  })
 
   it('answers the preflight 204 and allows the app origin with the headers supabase-js sends', () => {
     expect(result.preflight.status).toBe(204)
@@ -82,5 +87,17 @@ withDeno.each(['search-prices', 'fetch-fx-rate'])('%s — CORS (P197D)', (slug) 
     expect(result.unauthorized.status).toBe(401)
     expect(result.unauthorized.allowOrigin).toBe(ORIGIN)
     expect(result.unauthorized.vary).toBe('Origin')
+  })
+})
+
+// Runs everywhere (CI has no deno): the registration itself is pinned, so a refactor cannot quietly
+// drop the wrapper and bring the browser-blocking 405 back.
+describe.each(['search-prices', 'fetch-fx-rate'])('%s — source pin (P197D)', (slug) => {
+  const source = readFileSync(resolve(FUNCTIONS_DIR, slug, 'index.ts'), 'utf8')
+
+  it('registers its handler through withCors', () => {
+    expect(source).toContain("import { withCors } from '../_shared/cors.ts'")
+    expect(source).toContain('Deno.serve(withCors(handle))')
+    expect(source).not.toContain('Deno.serve(async')
   })
 })
