@@ -132,7 +132,11 @@ desktop.ini
 
 # ── Agent and session state ────────────────────────────────────────────────
 # This repository documents the project, not the conversations that produced it.
-.claude/
+# Everything under .claude/ at any depth stays ignored (local settings, credentials, session state,
+# worktree copies) EXCEPT the one shared project-defaults file at the repository root, which holds
+# only the default model and effort (see docs/DEVELOPMENT.md). Do not widen this exception.
+**/.claude/*
+!/.claude/settings.json
 *.session.json
 transcripts/
 
