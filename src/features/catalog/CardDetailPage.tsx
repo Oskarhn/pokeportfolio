@@ -1,8 +1,16 @@
+import { useState } from 'react'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { getCard, getCardVariants } from '../../data/catalog'
-import { getCardVariantPriceHistory, searchPrices } from '../../data/pricing'
+import { getCardVariantPriceHistory, searchPricesDetailed } from '../../data/pricing'
+import {
+  classifySearchPrice,
+  freshnessBadge,
+  type LookupStatus,
+  type PriceStatus,
+} from '../../domain/pricing-status'
 import { getMyProfile } from '../../data/profile'
+import { FreshnessBadge } from '../price-check/components'
 import { CardImage } from './CardImage'
 import { MoneyDisplay } from '../../ui/MoneyDisplay'
 import { formatSourcePriceMinor } from '../../ui/money-format'
@@ -60,9 +68,22 @@ export function CardDetailPage() {
   // card, never per-variant. A pricing failure never blocks the catalog page itself (prompt §80).
   const prices = useQuery({
     queryKey: ['card-search-prices', cardId, useEuPricing],
-    queryFn: () => searchPrices([cardId], useEuPricing),
+    queryFn: () => searchPricesDetailed([cardId], useEuPricing),
     enabled: card.isSuccess && card.data !== null,
   })
+  // Wall-clock reference for the age of a price, captured once per mount so re-renders are stable.
+  const [mountedAtMs] = useState(() => Date.now())
+  const lookup: LookupStatus = prices.isPending
+    ? 'pending'
+    : prices.isError
+      ? 'request_failed'
+      : prices.data.status
+  const priceStatusOf = (variantId: string | undefined): PriceStatus =>
+    classifySearchPrice(
+      lookup,
+      variantId === undefined ? undefined : prices.data?.prices.get(variantId),
+      mountedAtMs,
+    )
 
   // Deterministic default: the first variant in catalog ordering (§15) — never auto-switched once
   // async pricing arrives, and never silently jumping to "the cheapest" or "the priced one", which
@@ -84,7 +105,8 @@ export function CardDetailPage() {
     queryFn: () => getCardVariantPriceHistory(selectedVariantId as string),
     enabled: selectedVariantId !== undefined,
   })
-  const selectedPrice = selectedVariantId ? prices.data?.get(selectedVariantId) : undefined
+  const selectedPrice = selectedVariantId ? prices.data?.prices.get(selectedVariantId) : undefined
+  const selectedStatus = priceStatusOf(selectedVariantId)
 
   if (card.isPending) {
     return (
@@ -184,19 +206,31 @@ export function CardDetailPage() {
               ) : null}
               <ul className="divide-y divide-slate-800 rounded-xl border border-slate-800">
                 {variants.data.map((v) => {
-                  const price = prices.data?.get(v.id)
+                  const price = prices.data?.prices.get(v.id)
+                  const status = priceStatusOf(v.id)
+                  const badge = status.kind === 'priced' ? freshnessBadge(status) : null
                   return (
                     <li key={v.id} className="flex items-center justify-between gap-3 p-3 text-sm">
                       <span className="text-slate-200">
                         {variantLabel(v) || 'Standard'}
                         {v.size === 'oversized' ? ' · Oversized' : ''}
                         <span className="ml-2 text-xs text-slate-500">
-                          {prices.isPending
+                          {status.kind === 'loading'
                             ? '…'
-                            : price?.priceState === 'available'
-                              ? sourceValueText(price.sourceCurrency, price.sourceValueMinor)
-                              : '—'}
+                            : status.kind === 'unavailable'
+                              ? 'Lookup failed'
+                              : price?.priceState === 'available'
+                                ? sourceValueText(price.sourceCurrency, price.sourceValueMinor)
+                                : '—'}
                         </span>
+                        {badge !== null ? (
+                          <span className="ml-2">
+                            <FreshnessBadge
+                              observedAt={price?.providerUpdatedAt ?? null}
+                              nowMs={mountedAtMs}
+                            />
+                          </span>
+                        ) : null}
                       </span>
                       <span className="flex items-center gap-3">
                         {!v.isActive ? (
@@ -227,6 +261,25 @@ export function CardDetailPage() {
           <h2 className="text-sm font-semibold text-slate-300">Current value</h2>
           {prices.isPending ? (
             <div className="h-10 animate-pulse rounded-xl bg-slate-800/60" />
+          ) : selectedStatus.kind === 'unavailable' ? (
+            <div role="alert" className="space-y-2 text-sm" data-testid="price-lookup-failed">
+              <p className="text-slate-300">
+                <span className="font-medium text-slate-100">— Not available. </span>
+                {selectedStatus.cause === 'provider'
+                  ? 'The price source could not be reached for this card.'
+                  : 'The price lookup failed.'}{' '}
+                This is a lookup failure, not a zero price.
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  void prices.refetch()
+                }}
+                className="min-h-11 rounded-full border border-slate-700 px-4 text-sm font-medium text-slate-200 hover:bg-slate-800"
+              >
+                Try again
+              </button>
+            </div>
           ) : (
             <div className="space-y-1">
               <MoneyDisplay
@@ -239,6 +292,24 @@ export function CardDetailPage() {
                 displayCurrency={profile.data?.displayCurrency}
                 size="sm"
               />
+              {selectedStatus.kind === 'none' ? (
+                <p className="text-xs text-slate-500" data-testid="price-none">
+                  The price source has no price for this exact variant.
+                </p>
+              ) : null}
+              {selectedStatus.kind === 'priced' && freshnessBadge(selectedStatus) !== null ? (
+                <p data-testid="price-freshness">
+                  <FreshnessBadge
+                    observedAt={selectedPrice?.providerUpdatedAt ?? null}
+                    nowMs={mountedAtMs}
+                  />
+                </p>
+              ) : null}
+              {selectedStatus.kind === 'priced' && !selectedStatus.nokKnown ? (
+                <p className="text-xs text-slate-500">
+                  No exchange rate is cached yet, so no NOK reference is shown.
+                </p>
+              ) : null}
               {selectedPrice?.priceState === 'available' ? (
                 <p className="text-xs text-slate-500">
                   {PROVIDER_LABEL[selectedPrice.provider ?? ''] ?? 'Unknown provider'} ·{' '}

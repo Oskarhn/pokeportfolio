@@ -20,6 +20,28 @@ export interface CardPriceResponse {
   /** Number of upstream card lookups that failed. One card is requested per call, so a value > 0
    *  means THIS card's provider lookup failed — its rows are then "unknown", not "no price". */
   readonly providerErrorCount: number
+  /** Failures of those lookups by class (`rate_limited`, `timeout`, `not_found`, …), when the
+   *  deployed function reports them. Older deployments do not; the count above still holds. */
+  readonly providerFailures?: Readonly<Record<string, number>>
+}
+
+/**
+ * Why this card's provider lookup failed, from the failure classes the function reports. One card is
+ * requested per call, so the classes describe exactly this card. A class this client does not know
+ * stays the generic `provider_error`; `not_found` (the provider does not know the card id) is a
+ * deterministic answer, not an outage, so retrying it is pointless.
+ */
+export function unavailableReasonForFailures(
+  failures: Readonly<Record<string, number>> | undefined,
+): 'provider_error' | 'rate_limited' | 'timeout' | 'no_variant_price' {
+  if (failures === undefined) return 'provider_error'
+  const has = (kind: string) => Object.hasOwn(failures, kind) && (failures[kind] ?? 0) > 0
+  if (has('rate_limited')) return 'rate_limited'
+  if (has('timeout') || has('budget_exhausted')) return 'timeout'
+  if (has('not_found') && !has('server_error') && !has('network') && !has('invalid_json')) {
+    return 'no_variant_price'
+  }
+  return 'provider_error'
 }
 
 /** Result of a section build, plus whether it came from the limited pre-`observations` shape. */
@@ -40,7 +62,7 @@ export function buildRawSection(
       section: {
         status: 'unavailable',
         observations: [],
-        unavailable: 'provider_error',
+        unavailable: unavailableReasonForFailures(response.providerFailures),
         dropped: [],
       },
     }

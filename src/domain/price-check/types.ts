@@ -97,6 +97,7 @@ export type UnavailableReason =
   | 'variant_not_in_response'
   | 'provider_error'
   | 'rate_limited'
+  | 'timeout'
   | 'network'
   | 'malformed_response'
   | 'not_found'

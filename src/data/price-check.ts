@@ -6,6 +6,14 @@ import type { CardPriceResponse } from '../domain/price-check/raw-section'
 import type { UnavailableReason } from '../domain/price-check/types'
 
 /**
+ * How long a price lookup may take before the client gives up on it. The function's own provider
+ * budget is 12 s; anything past this is a stuck request, and without a bound the page shows its
+ * loading state until the platform closes the connection (minutes). The caller's own abort signal
+ * still wins and is never reported as a timeout.
+ */
+export const PRICE_LOOKUP_TIMEOUT_MS = 20_000
+
+/**
  * Read-only data access for Price Check (P153). The ONLY things this module talks to are:
  *   - the `search-prices` Edge Function (non-persisting: a search never becomes history, see
  *     src/data/pricing.ts and DATA_MODEL.md §4.2), and
@@ -79,10 +87,30 @@ export async function fetchCardPriceResponse(
     signal?: AbortSignal
     invoke?: SearchPricesInvoker
     now?: () => number
+    timeoutMs?: number
   } = {},
 ): Promise<CardPriceResponse> {
-  const { signal, invoke = realInvoker, now = Date.now } = options
+  const {
+    signal,
+    invoke = realInvoker,
+    now = Date.now,
+    timeoutMs = PRICE_LOOKUP_TIMEOUT_MS,
+  } = options
   if (isAborted(signal)) throw abortError()
+
+  // One controller for the request: it aborts when the caller aborts OR when the lookup times out.
+  // Which of the two happened is tracked explicitly, because the caller's cancellation must stay a
+  // silent AbortError and only a timeout is a user-visible failure.
+  const controller = new AbortController()
+  const lookup = { timedOut: false }
+  const onCallerAbort = () => {
+    controller.abort()
+  }
+  signal?.addEventListener('abort', onCallerAbort)
+  const timer = setTimeout(() => {
+    lookup.timedOut = true
+    controller.abort()
+  }, timeoutMs)
 
   let invoked: Awaited<ReturnType<SearchPricesInvoker>>
   try {
@@ -90,13 +118,18 @@ export async function fetchCardPriceResponse(
       // `useEuPricing` only picks the legacy headline; Price Check reads `observations`, which
       // carries both providers regardless.
       body: { cardIds: [cardId], useEuPricing: true },
-      signal,
+      signal: controller.signal,
     })
   } catch (error) {
     if (isAborted(signal)) throw abortError()
+    if (lookup.timedOut) throw new PriceCheckError('timeout')
     throw new PriceCheckError('network', error instanceof Error ? error.message : undefined)
+  } finally {
+    clearTimeout(timer)
+    signal?.removeEventListener('abort', onCallerAbort)
   }
   if (isAborted(signal)) throw abortError()
+  if (lookup.timedOut) throw new PriceCheckError('timeout')
 
   if (invoked.error !== null && invoked.error !== undefined) {
     const context = (invoked.error as { context?: unknown } | null)?.context
@@ -122,6 +155,7 @@ export async function fetchCardPriceResponse(
     ok?: unknown
     results?: unknown
     providerErrorCount?: unknown
+    providerFailures?: unknown
   } | null
   if (
     body === null ||
@@ -140,7 +174,18 @@ export async function fetchCardPriceResponse(
     fetchedAt: new Date(now()).toISOString(),
     rows: body.results as unknown[],
     providerErrorCount: errorCount,
+    providerFailures: parseProviderFailures(body.providerFailures),
   }
+}
+
+/** The failure classes the function reports: own, finite, non-negative integer counts only. */
+export function parseProviderFailures(value: unknown): Record<string, number> | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const out: Record<string, number> = {}
+  for (const [key, count] of Object.entries(value)) {
+    if (typeof count === 'number' && Number.isSafeInteger(count) && count >= 0) out[key] = count
+  }
+  return Object.keys(out).length > 0 ? out : undefined
 }
 
 /** Minimal shape of the `fx_rates` query so it can be faked in tests. */
