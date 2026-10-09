@@ -52,6 +52,22 @@ const OK = (id: string, trend = 5) =>
   [{ status: 200, body: cardWithTrend(id, trend) }] as ProviderStep[]
 const DOWN: ProviderStep[] = [{ status: 503, body: 'down' }]
 
+const INGEST_RPC = 'rpc:ingest_price_observations'
+
+/** Every observation the function handed to the ingest RPC, across chunks. */
+function observations(result: ReturnType<typeof runFunction>): Record<string, unknown>[] {
+  return opsOn(result, INGEST_RPC, 'call').flatMap(
+    (o) => (o.payload as { p_observations: Record<string, unknown>[] }).p_observations,
+  )
+}
+
+/** Every per-variant attempt it reported, across chunks. */
+function attemptsOf(result: ReturnType<typeof runFunction>): Record<string, unknown>[] {
+  return opsOn(result, INGEST_RPC, 'call').flatMap(
+    (o) => (o.payload as { p_attempts: Record<string, unknown>[] }).p_attempts,
+  )
+}
+
 function runRecord(result: ReturnType<typeof runFunction>) {
   const inserts = opsOn(result, 'price_sync_runs', 'insert')
   expect(inserts).toHaveLength(1)
@@ -64,9 +80,7 @@ withDeno('ingest-prices — provider failure is isolated, bounded and reported h
       ingest([batchRow(1), batchRow(2)], { '/en/cards/c1': OK('c1'), '/en/cards/c2': DOWN }),
     )
     expect(result.status).toBe(200)
-    const upserts = opsOn(result, 'price_snapshots', 'upsert')
-    expect(upserts).toHaveLength(1)
-    const rows = upserts[0]!.payload as { card_variant_id: string }[]
+    const rows = observations(result) as { card_variant_id: string }[]
     expect(rows.map((r) => r.card_variant_id)).toEqual([batchRow(1).card_variant_id])
     const run = runRecord(result)
     expect(run.status).toBe('partial')
@@ -86,7 +100,7 @@ withDeno('ingest-prices — provider failure is isolated, bounded and reported h
     const result = runFunction(
       ingest([batchRow(1), batchRow(2)], { '/en/cards/c1': DOWN, '/en/cards/c2': DOWN }),
     )
-    expect(opsOn(result, 'price_snapshots')).toHaveLength(0)
+    expect(observations(result)).toHaveLength(0)
     expect(runRecord(result).status).toBe('failed')
   })
 
@@ -117,7 +131,7 @@ withDeno('ingest-prices — provider failure is isolated, bounded and reported h
     const run = runRecord(result)
     expect(run.provider_error_count).toBe(1)
     expect(String(run.error)).toContain('not_found=1')
-    expect(opsOn(result, 'price_snapshots', 'upsert')).toHaveLength(1)
+    expect(observations(result)).toHaveLength(1)
   })
 
   it('classifies invalid JSON without retrying it', () => {
@@ -163,9 +177,7 @@ withDeno('ingest-prices — provider failure is isolated, bounded and reported h
 
 withDeno('ingest-prices — provider data that would poison a whole upsert chunk', () => {
   function snapshotRows(result: ReturnType<typeof runFunction>) {
-    return opsOn(result, 'price_snapshots', 'upsert').flatMap(
-      (o) => o.payload as Record<string, unknown>[],
-    )
+    return observations(result)
   }
 
   it('stamps a non-existent provider date with the retrieval day instead of sending it to Postgres', () => {
@@ -216,11 +228,10 @@ withDeno('ingest-prices — provider data that would poison a whole upsert chunk
     const keys = (r: ReturnType<typeof runFunction>) =>
       snapshotRows(r).map((x) => `${x.card_variant_id}|${x.provider}|${x.snapshot_date}`)
     expect(keys(runFunction(scenario))).toEqual(keys(runFunction(scenario)))
-    const upsert = opsOn(runFunction(scenario), 'price_snapshots', 'upsert')[0]!
-    expect(upsert.payload).toHaveLength(1)
+    expect(observations(runFunction(scenario))).toHaveLength(1)
   })
 
-  it('reports a database rejection of every chunk as a failed run with the error recorded', () => {
+  it('reports a rejected database call as a failed run with the error recorded', () => {
     const result = runFunction(
       ingest(
         [batchRow(1)],
@@ -229,7 +240,7 @@ withDeno('ingest-prices — provider data that would poison a whole upsert chunk
           db: {
             rpc: { select_price_sync_batch: { data: [batchRow(1)] } },
             fail: {
-              'price_snapshots:upsert': { message: 'check constraint violated', code: '23514' },
+              'rpc:ingest_price_observations:call': { message: 'connection reset', code: '08006' },
             },
           },
         },
@@ -238,6 +249,121 @@ withDeno('ingest-prices — provider data that would poison a whole upsert chunk
     const run = runRecord(result)
     expect(run.status).toBe('failed')
     expect(String(run.error)).toContain('upsert:')
+  })
+
+  it('counts rows the database rejected and downgrades the run to partial', () => {
+    const result = runFunction(
+      ingest(
+        [batchRow(1)],
+        { '/en/cards/c1': OK('c1') },
+        {
+          db: {
+            rpc: {
+              select_price_sync_batch: { data: [batchRow(1)] },
+              ingest_price_observations: {
+                data: [
+                  { written: 0, unchanged: 0, superseded: 1, rejected: 2, attempts_recorded: 1 },
+                ],
+              },
+            },
+          },
+        },
+      ),
+    )
+    const run = runRecord(result)
+    expect(run.status).toBe('partial')
+    expect(String(run.error)).toContain('rejected_rows=2')
+    expect(String(run.error)).toContain('superseded=1')
+    expect(result.json).toMatchObject({ rowsRejected: 2, snapshotsSuperseded: 1 })
+  })
+
+  it('records unchanged redeliveries so a quiet provider is visible, not silent', () => {
+    const result = runFunction(
+      ingest(
+        [batchRow(1)],
+        { '/en/cards/c1': OK('c1') },
+        {
+          db: {
+            rpc: {
+              select_price_sync_batch: { data: [batchRow(1)] },
+              ingest_price_observations: {
+                data: [
+                  { written: 0, unchanged: 1, superseded: 0, rejected: 0, attempts_recorded: 1 },
+                ],
+              },
+            },
+          },
+        },
+      ),
+    )
+    expect(runRecord(result)).toMatchObject({ status: 'succeeded', snapshots_unchanged: 1 })
+  })
+
+  it('falls back to the previous chunked upsert when the migration has not been applied yet', () => {
+    const result = runFunction(
+      ingest(
+        [batchRow(1)],
+        { '/en/cards/c1': OK('c1') },
+        {
+          db: {
+            rpc: { select_price_sync_batch: { data: [batchRow(1)] } },
+            fail: {
+              'rpc:ingest_price_observations:call': {
+                message: 'Could not find the function public.ingest_price_observations',
+                code: 'PGRST202',
+              },
+            },
+          },
+        },
+      ),
+    )
+    const upserts = opsOn(result, 'price_snapshots', 'upsert')
+    expect(upserts).toHaveLength(1)
+    expect(upserts[0]!.payload).toHaveLength(1)
+    expect(runRecord(result).status).toBe('succeeded')
+  })
+})
+
+withDeno('ingest-prices — the attempts that drive the work queue', () => {
+  it('records priced / no_price / provider_failed per variant and nothing for a skipped card', () => {
+    const result = runFunction(
+      ingest([batchRow(1), batchRow(2), batchRow(3)], {
+        '/en/cards/c1': OK('c1'),
+        '/en/cards/c2': [{ status: 200, body: { id: 'c2', variants: { normal: true } } }],
+        '/en/cards/c3': DOWN,
+      }),
+    )
+    const outcomes = Object.fromEntries(
+      attemptsOf(result).map((a) => [a.card_variant_id as string, a.outcome as string]),
+    )
+    expect(outcomes).toEqual({
+      [batchRow(1).card_variant_id]: 'priced',
+      [batchRow(2).card_variant_id]: 'no_price',
+      [batchRow(3).card_variant_id]: 'provider_failed',
+    })
+  })
+
+  it('records no attempt for cards it chose not to request', () => {
+    const rows = Array.from({ length: 24 }, (_, i) => batchRow(i + 1))
+    const provider: Record<string, ProviderStep[]> = {}
+    for (const row of rows) {
+      provider[`/en/cards/${row.tcgdex_card_id}`] = [
+        { status: 429, headers: { 'retry-after': '600' }, body: '' },
+      ]
+    }
+    const result = runFunction(ingest(rows, provider))
+    const attempted = attemptsOf(result).length
+    expect(attempted).toBeGreaterThan(0)
+    expect(attempted).toBeLessThan(rows.length)
+    expect(attemptsOf(result).every((a) => a.outcome === 'provider_failed')).toBe(true)
+  })
+
+  it('treats a variant the provider payload does not contain as no_price, not as a failure', () => {
+    const row = { ...batchRow(1), finish: 'reverse' }
+    const result = runFunction(ingest([row], { '/en/cards/c1': OK('c1') }))
+    expect(attemptsOf(result)).toEqual([
+      { card_variant_id: row.card_variant_id, outcome: 'no_price' },
+    ])
   })
 })
 

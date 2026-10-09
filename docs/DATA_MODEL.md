@@ -309,6 +309,24 @@ provider observation upserts onto the same `(card_variant_id, provider, snapshot
 than fabricating a new day's fact; a provider's price genuinely changing on a later real business
 date is what produces the next distinct row.
 
+**Write path and work queue (P201, D-203; `20261009140000_p201_price_ingest_reliability.sql`).**
+`ingest-prices` writes through `ingest_price_observations(p_observations jsonb, p_attempts jsonb)`
+(service role only): row by row, so a row the database refuses (a date that does not exist, a negative
+value, an unknown variant, a future date) is counted as `rejected` and never costs the valid rows their
+write; an observation whose `provider_updated_at` is OLDER than the stored one for the same
+`(card_variant_id, provider, snapshot_date)` never replaces it (`superseded`); an identical one is
+`unchanged` (`price_sync_runs.snapshots_unchanged`). A trigger refuses a `snapshot_date` more than one
+day ahead of the database date: a far-future date would win `ORDER BY snapshot_date DESC` in the
+resolver for good and pin the variant "fresh".
+
+`price_sync_attempts` (service-role only; one row per variant: `last_attempt_at`, `last_outcome` ∈
+`priced`/`no_price`/`provider_failed`, `consecutive_unpriced`, `consecutive_failed`) records when each
+watched variant was last tried. `select_price_sync_batch` orders by it — never-attempted first, then
+least recently attempted — and a variant the provider had no price for backs off 1, 2 … 7 days. The
+queue used to order by the newest `snapshot_date`, which is the PROVIDER's date, not a record of our
+attempt: variants with no price at all (nulls first) and variants whose provider data is simply old
+never left the head of the queue, and 200 of them stop every other watched variant from refreshing.
+
 ### 4.3 `fx_rates`
 
 | Column | Notes |
