@@ -18,7 +18,9 @@ function duplicates(values: string[]): string[] {
 describe('repository namespace integrity', () => {
   it('DECISIONS.md allocates each D-number exactly once', () => {
     const text = readFileSync(join(repoRoot, 'docs', 'DECISIONS.md'), 'utf8')
-    const ids = [...text.matchAll(/^## (D-\d+)/gm)].map((m) => m[1] as string)
+    // A trailing capital letter belongs to the id: D-199, D-199B and D-199C are three allocations,
+    // while a second "## D-199" heading would still be reported.
+    const ids = [...text.matchAll(/^## (D-\d+[A-Z]?)\b/gm)].map((m) => m[1] as string)
     expect(ids.length).toBeGreaterThan(50)
     expect(duplicates(ids)).toEqual([])
   })
