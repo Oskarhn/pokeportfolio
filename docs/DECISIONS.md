@@ -7232,5 +7232,16 @@ until a user's queue row drains, Home shows the old cost basis and the pending-r
 requirement:** the hosted database must receive `20261009120000_p199_snapshot_cost_basis_residual.sql` (a release blocker for
 this fix, not for the application).
 
+**Known limitation (found by the same oracle, deliberately not fixed here).** D-060 freezes the residual on the disposal that
+exhausts the lot, at creation time. If an *earlier* sale of that lot is voided while the exhausting sale stays live, quantity
+returns to the lot but the live sale keeps the residual it already carries, so the same minor units sit on the lot and on the
+sale (lot of 5, unit 100, residual 1: sell 4, sell 1 → frozen 101, void the first → the lot shows 4 × 100 + 1, total 502
+against a purchase cost of 501). The error is bounded by the residual (less than the lot's quantity in minor units), needs an
+inexact lot, two sales and an out-of-order void, and no frozen value is wrong — only the *remaining* basis and a later
+exhausting sale's frozen basis. A correct fix needs a design choice (derive the already-carried residual from live frozen bases
+at every consumption site — `create_sale`, `create_opening`, `reconcile_opening_cost`, the snapshot — or refuse the void), so it
+is pinned by `it.fails` in `tests/db/p199_snapshot_cost_basis.test.ts` and recorded as an open policy question. The reconciliation
+suite therefore only voids the latest-created live sale of each lot.
+
 **Rejected.** Adding the residual to the unit basis (breaks `unit × q` as the per-unit display and the D-060 consumption
 rule); carrying the residual only on the last unit sold in the snapshot (the snapshot replays dates, not creation order).

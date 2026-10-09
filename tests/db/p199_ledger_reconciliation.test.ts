@@ -30,7 +30,7 @@ import {
  *   the live resolver and the snapshot of today agree with each other and with the oracle
  */
 
-const SEEDS = Array.from({ length: 24 }, (_, i) => 1000 + i)
+const SEEDS = Array.from({ length: 32 }, (_, i) => 1000 + i)
 
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0
@@ -337,7 +337,7 @@ async function buildScenario(seed: number): Promise<Scenario> {
         .gt('quantity_remaining', 0),
     )
     const liveLots = lots as { id: string; acquired_on: string; quantity_remaining: number }[]
-    if (roll < 0.55 || liveLots.length === 0) {
+    if (roll < 0.4 || liveLots.length === 0) {
       const currency = (['NOK', 'NOK', 'EUR', 'USD', 'JPY'] as const)[ri(0, 4)]!
       const date = isoDaysAgo(ri(0, 60))
       const lineCount = ri(1, 3)
@@ -370,7 +370,7 @@ async function buildScenario(seed: number): Promise<Scenario> {
       log.push(`buy ${currency} ${date} ${r.error ? 'ERR ' + r.error.message : 'ok'}`)
       if (r.error)
         throw new Error(`create_purchase failed: ${r.error.message} ${JSON.stringify(args)}`)
-    } else if (roll < 0.85) {
+    } else if (roll < 0.62) {
       const nLines = Math.min(ri(1, 2), liveLots.length)
       const picked = [...liveLots].sort(() => rng() - 0.5).slice(0, nLines)
       const earliest = picked
@@ -402,7 +402,7 @@ async function buildScenario(seed: number): Promise<Scenario> {
       const r = await client.rpc('create_sale', args)
       log.push(`sell ${currency} ${soldOn} ${r.error ? 'ERR ' + r.error.message : 'ok'}`)
       if (r.error) throw new Error(`create_sale failed: ${r.error.message} ${JSON.stringify(args)}`)
-    } else if (roll < 0.93) {
+    } else if (roll < 0.72) {
       const sales = await must(
         'sales',
         service.from('sales').select('id').eq('user_id', user.id).is('voided_at', null),
@@ -410,10 +410,40 @@ async function buildScenario(seed: number): Promise<Scenario> {
       const list = sales as { id: string }[]
       if (list.length > 0) {
         const s = list[ri(0, list.length - 1)]!
-        const r = await client.rpc('void_sale', { p_sale_id: s.id, p_reason: 'p199' })
-        log.push(`void_sale ${r.error ? 'ERR ' + r.error.message : 'ok'}`)
+        // Only the latest-created live sale of each of its lots is voided here. Voiding an earlier
+        // sale while a later one already exhausted the lot leaves the exhausting sale carrying the
+        // lot's residual AND the lot carrying it again (docs/DECISIONS.md D-199 "known limitation",
+        // pinned by tests/db/p199_snapshot_cost_basis.test.ts).
+        const mine = (await must(
+          'mine',
+          service.from('sale_lines').select('lot_id').eq('sale_id', s.id),
+        )) as { lot_id: string }[]
+        const later = (await must(
+          'later',
+          service
+            .from('sale_lines')
+            .select('sale_id, sales!inner(created_at, voided_at)')
+            .in(
+              'lot_id',
+              mine.map((x) => x.lot_id),
+            )
+            .neq('sale_id', s.id)
+            .is('sales.voided_at', null)
+            .gt('sales.created_at', '1970-01-01'),
+        )) as unknown as { sale_id: string; sales: { created_at: string } }[]
+        const own = (await must(
+          'own',
+          service.from('sales').select('created_at').eq('id', s.id).single(),
+        )) as unknown as { created_at: string }
+        const isLatest = later.every((x) => x.sales.created_at < own.created_at)
+        if (isLatest) {
+          const r = await client.rpc('void_sale', { p_sale_id: s.id, p_reason: 'p199' })
+          log.push(`void_sale ${r.error ? 'ERR ' + r.error.message : 'ok'}`)
+        } else {
+          log.push('void_sale skipped (not the latest sale of its lot)')
+        }
       }
-    } else {
+    } else if (roll < 0.78) {
       const purchases = await must(
         'purchases',
         service.from('purchases').select('id').eq('user_id', user.id).is('voided_at', null),
@@ -423,6 +453,104 @@ async function buildScenario(seed: number): Promise<Scenario> {
         const p = list[ri(0, list.length - 1)]!
         const r = await client.rpc('void_purchase', { p_purchase_id: p.id, p_reason: 'p199' })
         log.push(`void_purchase ${r.error ? 'ERR(expected if sold) ' + r.error.message : 'ok'}`)
+      }
+    } else if (roll < 0.9) {
+      const purchases = await must(
+        'purchases',
+        service.from('purchases').select('id').eq('user_id', user.id).is('voided_at', null),
+      )
+      const list = purchases as { id: string }[]
+      if (list.length > 0) {
+        const p = list[ri(0, list.length - 1)]!
+        const lines = (await must(
+          'pl',
+          service.from('purchase_lines').select('id').eq('purchase_id', p.id),
+        )) as { id: string }[]
+        const lotsOf = (await must(
+          'lotsOf',
+          service
+            .from('acquisition_lots')
+            .select('id, quantity, quantity_remaining, voided_at')
+            .in(
+              'purchase_line_id',
+              lines.map((l) => l.id),
+            ),
+        )) as { quantity: number; quantity_remaining: number; voided_at: string | null }[]
+        const untouched =
+          lotsOf.length > 0 &&
+          lotsOf.every((l) => l.voided_at === null && l.quantity_remaining === l.quantity)
+        if (untouched) {
+          const currency = (['NOK', 'NOK', 'EUR', 'USD', 'JPY'] as const)[ri(0, 4)]!
+          const date = isoDaysAgo(ri(0, 60))
+          const newLines = lines.map((l) => ({
+            line_id: l.id,
+            quantity: ri(1, 5),
+            unit_price_minor: currency === 'JPY' ? ri(1, 90_000) : ri(1, 60_000),
+          }))
+          const subtotal = newLines.reduce((a, l) => a + l.quantity * l.unit_price_minor, 0)
+          const args: Record<string, unknown> = {
+            p_purchase_id: p.id,
+            p_purchased_on: date,
+            p_currency: currency,
+            p_lines: newLines,
+            p_shipping_minor: rng() < 0.6 ? ri(0, 3000) : 0,
+            p_customs_minor: rng() < 0.2 ? ri(0, 1500) : 0,
+            p_discount_minor: rng() < 0.3 ? ri(0, Math.min(subtotal, 5000)) : 0,
+          }
+          if (currency !== 'NOK') {
+            const [lo, hi] = rates[currency]!
+            args.p_fx_rate_to_nok = (lo + rng() * (hi - lo)).toFixed(8)
+            args.p_fx_rate_date = date
+            args.p_fx_source = 'manual'
+          }
+          const r = await client.rpc('update_purchase', args)
+          log.push(`update_purchase ${currency} ${r.error ? 'ERR ' + r.error.message : 'ok'}`)
+        }
+      }
+    } else {
+      const sales = (await must(
+        'sales',
+        service.from('sales').select('id').eq('user_id', user.id).is('voided_at', null),
+      )) as { id: string }[]
+      if (sales.length > 0) {
+        const sale = sales[ri(0, sales.length - 1)]!
+        const sl = (await must(
+          'sl',
+          service.from('sale_lines').select('id, lot_id').eq('sale_id', sale.id),
+        )) as { id: string; lot_id: string }[]
+        const lotRows = (await must(
+          'slots',
+          service
+            .from('acquisition_lots')
+            .select('acquired_on')
+            .in(
+              'id',
+              sl.map((x) => x.lot_id),
+            ),
+        )) as { acquired_on: string }[]
+        const earliest = lotRows
+          .map((l) => l.acquired_on)
+          .sort()
+          .pop()!
+        const soldOn = addDaysIso(earliest, ri(0, dayNumber(TODAY) - dayNumber(earliest)))
+        const currency = (['NOK', 'EUR', 'USD'] as const)[ri(0, 2)]!
+        const args: Record<string, unknown> = {
+          p_sale_id: sale.id,
+          p_sold_on: soldOn,
+          p_currency: currency,
+          p_fees_minor: rng() < 0.7 ? ri(0, 4000) : 0,
+          p_shipping_cost_minor: rng() < 0.5 ? ri(0, 2500) : 0,
+          p_shipping_charged_minor: rng() < 0.4 ? ri(0, 2500) : 0,
+          p_lines: sl.map((x) => ({ line_id: x.id, unit_gross_minor: ri(0, 70_000) })),
+        }
+        if (currency !== 'NOK') {
+          const [lo, hi] = rates[currency]!
+          args.p_fx_rate_to_nok = (lo + rng() * (hi - lo)).toFixed(8)
+          args.p_fx_rate_date = soldOn
+          args.p_fx_source = 'manual'
+        }
+        const r = await client.rpc('update_sale', args)
+        log.push(`update_sale ${currency} ${r.error ? 'ERR ' + r.error.message : 'ok'}`)
       }
     }
   }
@@ -486,6 +614,9 @@ const coverage = {
   zeroValuedSnapshots: 0,
   partlySoldLots: 0,
   residualLots: 0,
+  editedPurchases: 0,
+  editedSales: 0,
+  voidedSales: 0,
 }
 
 describe('P199 deterministic cross-surface reconciliation', () => {
@@ -647,6 +778,9 @@ describe('P199 deterministic cross-surface reconciliation', () => {
         coverage.partlySoldLots += liveLotList.filter(
           (l) => l.quantity_remaining > 0 && l.quantity_remaining < l.quantity,
         ).length
+        coverage.editedPurchases += sc.log.filter((l) => /^update_purchase [A-Z]+ ok$/.test(l)).length
+        coverage.editedSales += sc.log.filter((l) => /^update_sale [A-Z]+ ok$/.test(l)).length
+        coverage.voidedSales += sc.log.filter((l) => l === 'void_sale ok').length
         coverage.residualLots += liveLotList.filter((l) => l.residual_nok_minor > 0).length
         expectEq('manual_valued', d.manual_valued_holding_count, manualValued)
         expectEq('auto_priced', d.auto_priced_holding_count, priced - manualValued)
@@ -753,5 +887,8 @@ describe('P199 deterministic cross-surface reconciliation', () => {
     expect(coverage.zeroValuedSnapshots).toBeGreaterThanOrEqual(1)
     expect(coverage.partlySoldLots).toBeGreaterThanOrEqual(3)
     expect(coverage.residualLots).toBeGreaterThanOrEqual(10)
+    expect(coverage.editedPurchases).toBeGreaterThanOrEqual(8)
+    expect(coverage.editedSales).toBeGreaterThanOrEqual(5)
+    expect(coverage.voidedSales).toBeGreaterThanOrEqual(2)
   })
 })
