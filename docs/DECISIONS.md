@@ -7263,3 +7263,30 @@ market-data table for a saving of one request on weekend dates).
 rate was published in between). `resolve_variant_market_values` still converts a snapshot at the latest rate on or
 before its date with no age bound; FX freshness is watched by the read-only health checks
 (the P201 pricing health checklist) instead of changing a resolver formula.
+
+## D-203 — The price work queue orders by our attempts; the ingest write is row-by-row and order-aware; no far-future snapshot dates (P201)
+
+**Decision.** (1) `select_price_sync_batch` orders watched variants by when we last *attempted* them
+(`price_sync_attempts`), never-attempted first; a variant the provider had no price for is retried after
+`min(consecutive_unpriced, 7)` days. (2) `ingest-prices` writes through `ingest_price_observations`: each row is
+validated by the database on its own (data and integrity errors reject that row only), an observation older than the
+stored one for the same key never replaces it, an identical one is "unchanged". (3) A trigger refuses a
+`snapshot_date` more than one day ahead of the database date (a trigger, not a CHECK on `current_date`, so a restore
+on a machine with a wrong clock cannot fail on it). (4) The Edge Function falls back to the previous chunked upsert
+when the RPC does not exist, so deploying it before the migration degrades instead of failing.
+
+**Why.** The old queue ordered by the newest `snapshot_date` — the provider's date. A watched variant that never
+gets a snapshot (no price for that printing, or an ambiguous mapping the mapper rightly refuses to guess) sorts first
+on every tick for ever, and a variant whose provider data is old keeps its old date after each successful fetch;
+200 such variants (the batch size) freeze the queue. One refused row failed a whole 500-row chunk, and because the
+same card re-entered the next tick, the same chunk failed again. Measured and reproduced in
+tests/db/p201_price_ingest_reliability.test.ts.
+
+**Rejected.** A `consecutive_*` counter on `card_variants` (shared catalog table, wrong place for operational state);
+dropping unpriced variants from the watch set (they are owned, and a later provider update must still reach them —
+they are only slowed down); `ON CONFLICT DO NOTHING` (would freeze the first, possibly wrong, observation of a day).
+
+**Deployment dependency.** The migration is **not applied to Production** by this change. Order: green CI →
+`pnpm db:backup` (`BACKUP_COMPLETE`) → `supabase db push` → deploy `ingest-prices`. The function works without the
+migration (fallback), so a rollback is "deploy the previous function"; the migration is additive and needs no data
+repair.

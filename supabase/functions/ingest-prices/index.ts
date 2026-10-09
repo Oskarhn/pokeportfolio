@@ -44,6 +44,11 @@ interface WatchedVariantRow {
   size: string
 }
 
+/** PostgREST reports an RPC that does not exist as PGRST202; Postgres itself as 42883. */
+function isMissingFunction(error: { code?: string | null }): boolean {
+  return error.code === 'PGRST202' || error.code === '42883'
+}
+
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -158,10 +163,12 @@ Deno.serve(async (request: Request): Promise<Response> => {
   // Failures by class. `skipped` cards were never requested (deadline or an unhealthy provider):
   // they say nothing about the card, so they are not provider errors, and they stay queued.
   const failuresByClass: Record<string, number> = {}
+  const failedCardKeys = new Set<string>()
   let providerErrorCount = 0
   let skippedCount = 0
   let cardsFetched = 0
-  for (const result of fetchResults) {
+  const cardEntries = [...cardsToFetch.keys()]
+  for (const [index, result] of fetchResults.entries()) {
     if (result.status === 'fulfilled') {
       pricingByCard.set(result.value.key, result.value.pricing)
       cardsFetched++
@@ -169,8 +176,12 @@ Deno.serve(async (request: Request): Promise<Response> => {
     }
     const failureClass = classifyFailure(result.reason)
     failuresByClass[failureClass] = (failuresByClass[failureClass] ?? 0) + 1
-    if (failureClass === 'skipped') skippedCount++
-    else providerErrorCount++
+    if (failureClass === 'skipped') {
+      skippedCount++
+    } else {
+      providerErrorCount++
+      failedCardKeys.add(cardEntries[index]!)
+    }
   }
   const failureSummary = Object.entries(failuresByClass)
     .sort(([a], [b]) => (a < b ? -1 : 1))
@@ -188,11 +199,23 @@ Deno.serve(async (request: Request): Promise<Response> => {
     provider_updated_at: string | null
   }[] = []
   let missingProviderCount = 0
+  // What came of each variant we actually tried, so the work queue can order by attempt and back off
+  // variants the provider has no price for. A variant whose card was never requested (deadline,
+  // unhealthy provider) gets no entry: we did not try, and it stays at the head of the queue.
+  const attempts: {
+    card_variant_id: string
+    outcome: 'priced' | 'no_price' | 'provider_failed'
+  }[] = []
 
   for (const row of rows) {
     const key = cardKey(row.language, row.tcgdex_card_id)
     const pricing = pricingByCard.get(key)
-    if (!pricing) continue
+    if (!pricing) {
+      if (failedCardKeys.has(key)) {
+        attempts.push({ card_variant_id: row.card_variant_id, outcome: 'provider_failed' })
+      }
+      continue
+    }
 
     const match = pricing.variants.find(
       (v) =>
@@ -203,6 +226,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
     )
     if (!match) {
       missingProviderCount++
+      attempts.push({ card_variant_id: row.card_variant_id, outcome: 'no_price' })
       continue
     }
 
@@ -224,21 +248,62 @@ Deno.serve(async (request: Request): Promise<Response> => {
       })
     }
     if (!wroteAny) missingProviderCount++
+    attempts.push({
+      card_variant_id: row.card_variant_id,
+      outcome: wroteAny ? 'priced' : 'no_price',
+    })
   }
 
   let snapshotsWritten = 0
+  let snapshotsUnchanged = 0
+  let snapshotsSuperseded = 0
+  let rowsRejected = 0
   const upsertFailures: string[] = []
-  // Batched upsert, chunked to keep each request small.
   const CHUNK = 500
-  for (let i = 0; i < snapshotRows.length; i += CHUNK) {
-    const chunk = snapshotRows.slice(i, i + CHUNK)
-    const { error, count } = await db
-      .from('price_snapshots')
-      .upsert(chunk, { onConflict: 'card_variant_id,provider,snapshot_date', count: 'exact' })
+  let useRpc = true
+
+  // Preferred path: `ingest_price_observations` writes row by row (a bad row is rejected on its
+  // own, an older observation never replaces a newer one, an identical one is "unchanged") and
+  // records the per-variant attempts the work queue orders by. If the migration that adds it has
+  // not been applied yet, fall back to the previous chunked upsert: deploying this function before
+  // the migration degrades to the old behaviour instead of failing every run.
+  for (let i = 0; useRpc && i < Math.max(snapshotRows.length, attempts.length); i += CHUNK) {
+    const { data, error } = await db.rpc('ingest_price_observations', {
+      p_observations: snapshotRows.slice(i, i + CHUNK),
+      p_attempts: attempts.slice(i, i + CHUNK),
+    })
     if (error) {
-      upsertFailures.push(error.message)
-    } else {
-      snapshotsWritten += count ?? chunk.length
+      if (isMissingFunction(error)) {
+        useRpc = false
+        logEvent('ingest-prices', 'ingest_rpc_missing', { code: error.code ?? null }, 'warn')
+      } else {
+        upsertFailures.push(error.message)
+      }
+      continue
+    }
+    const counts = (Array.isArray(data) ? data[0] : data) as {
+      written?: number
+      unchanged?: number
+      superseded?: number
+      rejected?: number
+    } | null
+    snapshotsWritten += counts?.written ?? 0
+    snapshotsUnchanged += counts?.unchanged ?? 0
+    snapshotsSuperseded += counts?.superseded ?? 0
+    rowsRejected += counts?.rejected ?? 0
+  }
+
+  if (!useRpc) {
+    for (let i = 0; i < snapshotRows.length; i += CHUNK) {
+      const chunk = snapshotRows.slice(i, i + CHUNK)
+      const { error, count } = await db
+        .from('price_snapshots')
+        .upsert(chunk, { onConflict: 'card_variant_id,provider,snapshot_date', count: 'exact' })
+      if (error) {
+        upsertFailures.push(error.message)
+      } else {
+        snapshotsWritten += count ?? chunk.length
+      }
     }
   }
 
@@ -249,12 +314,14 @@ Deno.serve(async (request: Request): Promise<Response> => {
   const status: 'succeeded' | 'partial' | 'failed' =
     nothingFetched || (upsertFailures.length > 0 && snapshotsWritten === 0)
       ? 'failed'
-      : providerErrorCount > 0 || skippedCount > 0 || upsertFailures.length > 0
+      : providerErrorCount > 0 || skippedCount > 0 || upsertFailures.length > 0 || rowsRejected > 0
         ? 'partial'
         : 'succeeded'
   const runError = [
     failureSummary !== '' ? `provider: ${failureSummary}` : null,
     guard.tripReason !== null ? `stopped: ${guard.tripReason}` : null,
+    rowsRejected > 0 ? `rejected_rows=${rowsRejected}` : null,
+    snapshotsSuperseded > 0 ? `superseded=${snapshotsSuperseded}` : null,
     upsertFailures.length > 0 ? `upsert: ${upsertFailures.slice(0, 5).join('; ')}` : null,
   ]
     .filter((part): part is string => part !== null)
@@ -267,6 +334,9 @@ Deno.serve(async (request: Request): Promise<Response> => {
       variants_considered: rows.length,
       cards_fetched: cardsFetched,
       snapshots_written: snapshotsWritten,
+      snapshots_unchanged: snapshotsUnchanged,
+      snapshots_superseded: snapshotsSuperseded,
+      rows_rejected: rowsRejected,
       missing_provider_count: missingProviderCount,
       provider_error_count: providerErrorCount,
       skipped_count: skippedCount,
@@ -281,6 +351,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
     cards_fetched: cardsFetched,
     variants_considered: rows.length,
     snapshots_written: snapshotsWritten,
+    snapshots_unchanged: snapshotsUnchanged,
     missing_provider_count: missingProviderCount,
     provider_error_count: providerErrorCount,
     error: runError !== '' ? runError.slice(0, 1000) : null,
@@ -293,6 +364,9 @@ Deno.serve(async (request: Request): Promise<Response> => {
     variantsConsidered: rows.length,
     cardsFetched,
     snapshotsWritten,
+    snapshotsUnchanged,
+    snapshotsSuperseded,
+    rowsRejected,
     missingProviderCount,
     providerErrorCount,
     skippedCount,
