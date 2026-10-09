@@ -7,6 +7,12 @@ import { CardImage } from './CardImage'
 import { MoneyDisplay } from '../../ui/MoneyDisplay'
 import { formatSourcePriceMinor } from '../../ui/money-format'
 import { PriceHistoryChart } from '../../ui/PriceHistoryChart'
+import {
+  PageLoading,
+  PageUnavailable,
+  BACK_LINK_CLASS,
+  unavailableMessage,
+} from '../../ui/PageState'
 
 const FINISH_LABEL: Record<string, string> = {
   normal: 'Normal',
@@ -87,24 +93,20 @@ export function CardDetailPage() {
   const selectedPrice = selectedVariantId ? prices.data?.get(selectedVariantId) : undefined
 
   if (card.isPending) {
-    return (
-      <div className="mx-auto h-64 w-full max-w-2xl animate-pulse rounded-xl bg-slate-800/60" />
-    )
+    return <PageLoading label="Loading card" />
   }
 
   if (card.isError || !card.data) {
     return (
-      <div className="mx-auto w-full max-w-2xl space-y-4 py-2">
-        <p
-          role="alert"
-          className="rounded-xl border border-rose-900/60 bg-rose-950/40 p-3 text-sm text-rose-200"
-        >
-          That card could not be found.
-        </p>
-        <Link to="/catalog" className="text-sm text-sky-400 underline-offset-4 hover:underline">
+      <PageUnavailable
+        title="Card"
+        message={unavailableMessage('That card', card.isError)}
+        onRetry={card.isError ? () => void card.refetch() : undefined}
+      >
+        <Link to="/catalog" className={BACK_LINK_CLASS}>
           Back to search
         </Link>
-      </div>
+      </PageUnavailable>
     )
   }
 

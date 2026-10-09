@@ -1,6 +1,12 @@
 import { useState } from 'react'
 import { Link, useParams } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
+import {
+  PageLoading,
+  PageUnavailable,
+  BACK_LINK_CLASS,
+  unavailableMessage,
+} from '../../ui/PageState'
 import { getSet, listCardsInSet } from '../../data/catalog'
 import { CardResultCard } from './CardResultCard'
 
@@ -38,23 +44,19 @@ export function SetDetailPage() {
   })
 
   if (set.isPending) {
-    return (
-      <div className="mx-auto h-32 w-full max-w-2xl animate-pulse rounded-lg bg-slate-800/60" />
-    )
+    return <PageLoading label="Loading set" />
   }
   if (set.isError || !set.data) {
     return (
-      <div className="mx-auto w-full max-w-2xl space-y-4 py-2">
-        <p
-          role="alert"
-          className="rounded-lg border border-rose-900/60 bg-rose-950/40 p-3 text-sm text-rose-200"
-        >
-          That set could not be found.
-        </p>
-        <Link to="/catalog" className="text-sm text-sky-400 underline-offset-4 hover:underline">
+      <PageUnavailable
+        title="Set"
+        message={unavailableMessage('That set', set.isError)}
+        onRetry={set.isError ? () => void set.refetch() : undefined}
+      >
+        <Link to="/catalog" className={BACK_LINK_CLASS}>
           Back to search
         </Link>
-      </div>
+      </PageUnavailable>
     )
   }
 

@@ -1,3 +1,9 @@
+import {
+  PageLoading,
+  PageUnavailable,
+  BACK_LINK_CLASS,
+  unavailableMessage,
+} from '../../ui/PageState'
 import { useState } from 'react'
 import { Link, useParams, useSearch } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -104,23 +110,19 @@ export function OpeningDetailPage() {
   })
 
   if (opening.isPending) {
-    return (
-      <div className="mx-auto h-64 w-full max-w-2xl animate-pulse rounded-lg bg-slate-800/60" />
-    )
+    return <PageLoading label="Loading opening" />
   }
   if (opening.isError) {
     return (
-      <div className="mx-auto w-full max-w-2xl space-y-4 py-2">
-        <Link to="/history" className="text-sm text-sky-400 underline-offset-4 hover:underline">
+      <PageUnavailable
+        title="Opening"
+        message={userMessage(opening.error, unavailableMessage('That opening', true))}
+        onRetry={() => void opening.refetch()}
+      >
+        <Link to="/history" className={BACK_LINK_CLASS}>
           ← Back to History
         </Link>
-        <p
-          role="alert"
-          className="rounded-lg border border-rose-900/60 bg-rose-950/40 p-3 text-sm text-rose-200"
-        >
-          {userMessage(opening.error, 'That opening could not be found.')}
-        </p>
-      </div>
+      </PageUnavailable>
     )
   }
 
