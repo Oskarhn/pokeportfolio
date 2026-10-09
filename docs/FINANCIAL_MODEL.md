@@ -262,6 +262,10 @@ double credit), so summing every disposal's frozen basis reproduces the lot's ex
 exactly. The identical rule applies to a lot's `lot_cost_adjustments` division (§4.4) when a
 partial disposal must freeze its per-unit share. Full derivation: DATA_MODEL.md §5.7, D-060.
 
+**Snapshot cost basis (D-199).** The historical `DCB(D)` counts, for every lot open on `D`, `qty_open × unit_cost_basis`
+**plus the lot's residual** (the residual is consumed only by the disposal that exhausts the lot, so an open lot always still
+carries all of it). Omitting it understated inventory cost by up to `quantity − 1` minor units per lot.
+
 **What if a line has more than one live lot?** (D-129.) A sealed-intent split
 (`set_sealed_lot_intent`, DATA_MODEL.md §5.4) can leave several live `acquisition_lots` rows
 pointing at the same purchase line — one per sealed_intent the owner has split the quantity into.
@@ -1051,3 +1055,4 @@ Every invariant below has a corresponding automated test. See [TESTING.md](TESTI
 | F14 | A holding with no resolvable market value is excluded from `CMV` and counted in `UHC` — never valued at zero |
 | F15 | Every purchase line's attributable cost is `>= 0` and the lines sum to the receipt total; a discount above the whole receipt is refused, never clipped |
 | F16 | The date of a completed ledger event lies in `[1996-10-20, UTC today + 1]`; an unknown date is never fabricated |
+| F17 | Cost is conserved: for every live known lot, remaining basis + frozen basis on live sale lines = quantity × unit basis + residual; a snapshot's cost basis is the remaining basis of the lots open on its date (D-199) |
