@@ -294,8 +294,15 @@ export function runningCount(containers: readonly ContainerInfo[]): number {
   return containers.filter((c) => c.state === 'running').length
 }
 
+/** A container that restarts in a loop flips between these on its own; that is not collateral. */
+function isRestartFlap(from: string, to: string): boolean {
+  const flap = new Set(['running', 'restarting'])
+  return flap.has(from) && flap.has(to)
+}
+
 /**
- * After a stop: containers outside the stopped project must be exactly as before. Returns the
+ * After a stop: containers outside the stopped project must be exactly as before, apart from a
+ * restart loop's own running/restarting flips (seen on other stacks' log-shipper containers). Returns the
  * differences, empty when nothing unrelated changed.
  */
 export function unrelatedChanges(
@@ -309,7 +316,7 @@ export function unrelatedChanges(
     if (container.labels[LABEL_PROJECT] === projectId) continue
     const now = afterById.get(container.id)
     if (now === undefined) problems.push(`${container.name} disappeared`)
-    else if (now.state !== container.state) {
+    else if (now.state !== container.state && !isRestartFlap(container.state, now.state)) {
       problems.push(`${container.name} changed state ${container.state} -> ${now.state}`)
     }
   }

@@ -319,6 +319,12 @@ describe('unrelatedChanges', () => {
     expect(unrelatedChanges(before, after, 'pokeportfolio-p999')).toEqual([])
   })
 
+  it('ignores a restart loop flipping between running and restarting', () => {
+    const before = [container('u1', 'pokeportfolio-p500', { state: 'restarting' })]
+    const after = [container('u1', 'pokeportfolio-p500', { state: 'running' })]
+    expect(unrelatedChanges(before, after, 'pokeportfolio-p999')).toEqual([])
+  })
+
   it('names an unrelated container that vanished or stopped', () => {
     const before = [container('u1', 'pokeportfolio-p500'), container('u2', 'infra')]
     const after = [container('u2', 'infra', { state: 'exited' })]

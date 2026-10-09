@@ -300,6 +300,80 @@ try {
     forgedDefault.code === 1,
     forgedDefault.out.slice(-200),
   )
+  // --- 8. crash recovery: an attached stack whose owner died is stopped; one whose owner lives is not
+  const makeStack = async (
+    name: string,
+    owner: { pid: number; startTime: string },
+    port: number,
+  ) => {
+    const project = `pokeportfolio-${name}`
+    const dir = join(home, 'stacks', name)
+    mkdirSync(join(dir, 'supabase'), { recursive: true })
+    writeFileSync(
+      join(dir, 'supabase', 'config.toml'),
+      deriveConfigToml(
+        readFileSync(join(repoRoot, 'supabase', 'config.toml'), 'utf8'),
+        project,
+        port,
+      ),
+    )
+    const labels = { [LABEL_PROJECT]: project, [LABEL_WORKDIR]: dir }
+    const names = [`supabase_db_${project}`, `supabase_auth_${project}`]
+    const ids: string[] = []
+    for (const n of names) ids.push(await runSynthetic(n, labels))
+    io.writeEntry({
+      tool: TOOL_ID,
+      version: LEDGER_VERSION,
+      name,
+      projectId: project,
+      workdir: dir,
+      createdAt: new Date(Date.now() - 60_000).toISOString(),
+      kind: 'attached',
+      owner: { ...owner, host: 'selftest' },
+      state: 'running',
+      containers: ids.map((id, i) => ({ id, name: names[i] ?? '' })),
+      processes: [],
+      counts: { runningBefore: 0 },
+    })
+    return { ids }
+  }
+  const crashed = spawnDummy()
+  await new Promise((r) => setTimeout(r, 1500))
+  const crashedLive = await io.probeProcess(crashed.pid ?? 0)
+  if (!crashedLive) throw new Error('could not probe the crash-simulation process')
+  const crashedStack = await makeStack(
+    `st${suffix}b`,
+    { pid: crashed.pid ?? 0, startTime: crashedLive.startTime },
+    59700,
+  )
+  crashed.kill() // the "run" process dies without cleaning up
+  const aliveSelf = await io.probeProcess(process.pid)
+  const livingStack = await makeStack(
+    `st${suffix}c`,
+    { pid: process.pid, startTime: aliveSelf?.startTime ?? '' },
+    59800,
+  )
+  await new Promise((r) => setTimeout(r, 1500))
+  const beforeRecover = await ownSnapshot()
+  const dry = await lifecycleCli(['recover'])
+  check('recover without --execute stops nothing', (await ownSnapshot()) === beforeRecover)
+  check(
+    'recover (dry run) names the abandoned stack and refuses the live one',
+    dry.out.includes(`pokeportfolio-st${suffix}b`) && /still running/.test(dry.out),
+    dry.out.slice(-400),
+  )
+  const executed = await lifecycleCli(['recover', '--execute'])
+  const afterRecover = await snapshot()
+  check(
+    'recover --execute stops the stack whose owner process is gone',
+    crashedStack.ids.every((id) => !afterRecover.has(id)),
+    executed.out.slice(-300),
+  )
+  check(
+    'recover --execute leaves the stack whose owner is alive running',
+    livingStack.ids.every((id) => afterRecover.get(id)?.endsWith(':running') === true),
+  )
+
   const finalSnapshot = await snapshot()
   const gone = [...baseline.entries()].filter(([id]) => !finalSnapshot.has(id))
   process.stdout.write(
