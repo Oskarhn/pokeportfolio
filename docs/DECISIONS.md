@@ -7262,7 +7262,7 @@ market-data table for a saving of one request on weekend dates).
 **Accepted residual.** A weekend or holiday date always costs one Norges Bank request (the cache cannot prove no
 rate was published in between). `resolve_variant_market_values` still converts a snapshot at the latest rate on or
 before its date with no age bound; FX freshness is watched by the read-only health checks
-(the P201 pricing health checklist) instead of changing a resolver formula.
+([P201 checklist](reliability/P201_PRICING_HEALTH_CHECKLIST.md)) instead of changing a resolver formula.
 
 ## D-203 — The price work queue orders by our attempts; the ingest write is row-by-row and order-aware; no far-future snapshot dates (P201)
 
