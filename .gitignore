@@ -166,3 +166,6 @@ scratch/
 # Wrangler local state (P195 registry Worker)
 .wrangler/
 .dev.vars
+
+# P203: pnpm release:evidence output (per-commit verification reports).
+release-evidence/

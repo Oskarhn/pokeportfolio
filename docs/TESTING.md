@@ -1457,6 +1457,23 @@ proves the thing under test is actually there.
 
 Migrations are applied deliberately through the Supabase CLI, never automatically from CI.
 
+### 10.1 Release evidence report (P203)
+
+`pnpm release:evidence [--run required|all|<gate,...>] [--sha <40-hex>] [--no-ci]` writes a non-secret
+per-commit report to `release-evidence/<sha12>.md` and `.json` (gitignored): the exact commit and
+whether the tree is clean, the local gates it ran on that commit (typecheck, lint, format, unit
+tests, build; optionally Browser E2E and the DB suites) with durations and redacted failure tails,
+the status of `build-and-test`, `db-tests` and `native-checks` on that exact SHA read through
+`gh api`, the declared standing gaps (`scripts/lib/release-evidence-gaps.json`) and the static
+skip sites in test code.
+
+An item that did not execute is never PASS: it is NOT_RUN (not requested), MISSING (GitHub reports
+no run), PENDING or UNKNOWN. The verdict is READY only when every required item is PASS on a clean
+checkout at the reported commit; otherwise INCOMPLETE, or FAILED when something failed. Exit codes:
+0 READY, 1 FAILED, 2 INCOMPLETE, 3 the checkout moved while gates ran. A READY report authorises
+nothing — the script cannot deploy and `tests/ops/release-evidence.test.ts` fails if a deploy,
+push or workflow-dispatch command appears in it.
+
 ## 11. CI coverage inventory (P130-28/P139)
 
 Every validation surface in this repository, classified by where it actually runs. "Documented but

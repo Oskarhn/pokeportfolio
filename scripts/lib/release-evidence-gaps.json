@@ -1,0 +1,26 @@
+[
+  {
+    "id": "PHYSICAL_IPHONE_GATE",
+    "summary": "Physical iPhone scanner validation has not happened; Chromium/WebKit emulation does not replace it.",
+    "source": "HANDOVER.md (deferred by owner)",
+    "asOf": "2026-09-15"
+  },
+  {
+    "id": "PRODUCTION_AUTH_SMOKE",
+    "summary": "No authenticated flow has been exercised against Production since M7.1; remote-security-check phase 2 needs an invite token.",
+    "source": "HANDOVER.md (owner deferred)",
+    "asOf": "2026-09-15"
+  },
+  {
+    "id": "RESTORE_UNVALIDATED",
+    "summary": "Database backup is validated; restore is not. A plain psql replay of a dump yields an insecure database (P130-07).",
+    "source": "CLAUDE.md Migrations rule, HANDOVER.md",
+    "asOf": "2026-09-15"
+  },
+  {
+    "id": "NATIVE_DEVICE_JOURNEYS",
+    "summary": "Native-checks in CI is typecheck, lint and unit tests only; emulator journeys and iOS runtime run locally or not at all.",
+    "source": ".github/workflows/ci.yml (native-checks comment)",
+    "asOf": "2026-10-09"
+  }
+]
