@@ -25,7 +25,7 @@ Not deployed. Web only unless stated; Production unchanged.
 - Manifest gets an explicit `id` equal to `start_url` (installs keep their identity).
 - Native: `BottomSheet` is modal for VoiceOver, its scrim is a button, and it scrolls within 90 % of the window.
 - Tests: route × state × viewport matrix (312 cells, axe WCAG 2.2 AA), shell/dialog, PWA, and a source guard for
-  control font size. See docs/TESTING.md §6i.
+  control font size. See docs/TESTING.md §6l.
 
 ### Changed — 2026-10-02 — One local release-candidate line for web and native (P188)
 

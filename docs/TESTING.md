@@ -1602,7 +1602,7 @@ POSTing a 24 KiB body to `/functions/v1/delete-account` in a loop. Do not `docke
 stack container to get a "cold" run: Kong keeps the old upstream address and answers 502/hangs for
 reasons unrelated to this.
 
-## 6i. UI quality suite: route matrix, shell, PWA (P202)
+## 6l. UI quality suite: route matrix, shell, PWA (P202)
 
 Four specs run against the placeholder-backend preview build with a synthetic session
 (`tests/e2e/support/fake-session.ts`) and a network-boundary backend stand-in
