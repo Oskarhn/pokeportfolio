@@ -7290,3 +7290,19 @@ they are only slowed down); `ON CONFLICT DO NOTHING` (would freeze the first, po
 `pnpm db:backup` (`BACKUP_COMPLETE`) → `supabase db push` → deploy `ingest-prices`. The function works without the
 migration (fallback), so a rollback is "deploy the previous function"; the migration is additive and needs no data
 repair.
+
+## D-204 — Collector numbers match modulo leading zeros, and the set size after the slash ranks the set (P201)
+
+**Decision.** `search_cards` treats two collector numbers as equal when they are equal after removing leading zeros
+that are followed by a digit (`004` = `4`; `SV004` is untouched), uses that equality both as a match predicate and as
+the "exact number first" ranking tier, and — for a query written `N/M` — ranks cards whose set has
+`card_count_official = M` ahead of other number matches. The denominator only orders rows; no row is excluded because
+of it. The earlier prefix/suffix predicates, the signature, the grants and the stable paging key (P173) are unchanged.
+
+**Why.** Printed numbers are zero-padded (`058/102`) and providers store them either way, so `Charizard 004` found
+nothing for a set that stores `4`; and the same name and number in a reprint set tied on every key. Reproduced in
+tests/db/p201_search_number_matching.test.ts (four failures on the previous function).
+
+**Rejected.** Normalising `local_id` at ingest (a data migration on a shared table, and the provider's own spelling
+is what the scanner and exports compare against); excluding cards whose set size differs from the typed denominator
+(a misprinted or mistyped denominator would hide the card).
