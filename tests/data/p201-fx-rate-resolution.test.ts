@@ -203,7 +203,7 @@ withDeno('ingest-fx — a missed day is backfilled and a silent provider is repo
       provider,
     }
   }
-  const recentObs = (base: string, rate: string): [string, string][] => [
+  const recentObs = (rate: string): [string, string][] => [
     [iso(-3), rate],
     [iso(-2), rate],
     [iso(-1), rate],
@@ -219,8 +219,8 @@ withDeno('ingest-fx — a missed day is backfilled and a silent provider is repo
   it('upserts every observation of the lookback window, not only the newest', () => {
     const result = runFunction(
       ingestFx({
-        [norgesPath('EUR')]: upstreamOk('EUR', recentObs('EUR', '11.5000')),
-        [norgesPath('USD')]: upstreamOk('USD', recentObs('USD', '10.2000')),
+        [norgesPath('EUR')]: upstreamOk('EUR', recentObs('11.5000')),
+        [norgesPath('USD')]: upstreamOk('USD', recentObs('10.2000')),
       }),
     )
     expect(new Set(upsertedDates(result))).toEqual(
@@ -236,7 +236,7 @@ withDeno('ingest-fx — a missed day is backfilled and a silent provider is repo
   it('records a partial run when one currency fails and still stores the other', () => {
     const result = runFunction(
       ingestFx({
-        [norgesPath('EUR')]: upstreamOk('EUR', recentObs('EUR', '11.5000')),
+        [norgesPath('EUR')]: upstreamOk('EUR', recentObs('11.5000')),
         [norgesPath('USD')]: [{ status: 503, body: '' }],
       }),
     )
@@ -250,7 +250,7 @@ withDeno('ingest-fx — a missed day is backfilled and a silent provider is repo
     const result = runFunction(
       ingestFx({
         [norgesPath('EUR')]: upstreamOk('EUR', [[iso(-9), '11.5000']]),
-        [norgesPath('USD')]: upstreamOk('USD', recentObs('USD', '10.2000')),
+        [norgesPath('USD')]: upstreamOk('USD', recentObs('10.2000')),
       }),
     )
     const run = opsOn(result, 'price_sync_runs', 'insert')[0]!.payload as Record<string, unknown>
@@ -260,8 +260,8 @@ withDeno('ingest-fx — a missed day is backfilled and a silent provider is repo
 
   it('is idempotent: delivering the same run twice writes the same keys', () => {
     const scenario = ingestFx({
-      [norgesPath('EUR')]: upstreamOk('EUR', recentObs('EUR', '11.5000')),
-      [norgesPath('USD')]: upstreamOk('USD', recentObs('USD', '10.2000')),
+      [norgesPath('EUR')]: upstreamOk('EUR', recentObs('11.5000')),
+      [norgesPath('USD')]: upstreamOk('USD', recentObs('10.2000')),
     })
     expect(upsertedDates(runFunction(scenario)).sort()).toEqual(
       upsertedDates(runFunction(scenario)).sort(),
