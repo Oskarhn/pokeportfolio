@@ -612,6 +612,9 @@ value_nok(variant, D) = price_snapshot(variant, D).value
 If no rate exists for `D` (weekend, holiday — Norges Bank publishes business days only), the
 most recent prior business-day rate is used and recorded as such.
 
+On-demand resolution (`fetch-fx-rate`) only reuses a cached row for exactly `D`; a row from an earlier day is
+not evidence that nothing was published since, so the provider window is consulted instead (D-202).
+
 ---
 
 ## 8. Worked examples

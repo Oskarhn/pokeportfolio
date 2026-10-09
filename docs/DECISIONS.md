@@ -7237,3 +7237,29 @@ sorting stamp tokens to canonicalise variant keys (would orphan existing variant
 **Accepted residual.** Variant identity still joins a multi-stamp array in provider order; a provider that reorders
 stamps would create a second variant. The retry policy is per process and the harness shortens it only through
 `providerRuntime`, never an environment variable.
+
+## D-202 — An FX cache hit must be for the requested date; the cache is filled by window and by backfill (P201)
+
+**Decision.** (1) `fetch-fx-rate` serves a cached `fx_rates` row only when its `rate_date` equals the requested
+date. Otherwise it asks Norges Bank for the ten-day window ending at that date, caches **every** observation of the
+window, and returns the latest one (FINANCIAL_MODEL.md §7: "the most recent prior business-day rate"). When Norges
+Bank cannot be reached and there is no exact row, it answers `norges_bank_unreachable` — it does not serve an older
+cached rate; the manual-rate override on the purchase form is the way through. A failed cache write does not fail
+the request (the rate is the provider's own answer). (2) `ingest-fx` upserts every observation of its lookback
+window, not only the newest, runs EUR and USD side by side under one deadline, and records a currency whose newest
+rate is more than seven days old as a failure (`stale_rate`). (3) Norges Bank requests use the shared provider policy
+(D-201): timeout, bounded retry, 429 handling.
+
+**Why.** The previous cache check accepted any cached row within ten days *before* the date. A purchase dated
+Wednesday was therefore frozen at Monday's rate whenever Monday was cached and Tuesday's and Wednesday's were not
+(any backdated purchase, any day the cron missed) — and F11 makes that rate permanent. Reproduced in
+tests/data/p201-fx-rate-resolution.test.ts (six failures on the previous code).
+
+**Rejected.** Keeping the old hit rule and adding a staleness bound (no bound is right for both a Monday-after-a-
+long-weekend request and a backdated one); caching a "negative" row for non-business days (a second kind of row in a
+market-data table for a saving of one request on weekend dates).
+
+**Accepted residual.** A weekend or holiday date always costs one Norges Bank request (the cache cannot prove no
+rate was published in between). `resolve_variant_market_values` still converts a snapshot at the latest rate on or
+before its date with no age bound; FX freshness is watched by the read-only health checks
+(the P201 pricing health checklist) instead of changing a resolver formula.

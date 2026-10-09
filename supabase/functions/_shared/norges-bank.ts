@@ -28,10 +28,22 @@
  * rate") correct by construction rather than by a guessed date arithmetic rule.
  */
 
+import { fetchJsonWithPolicy, ProviderError, type ProviderFailureKind } from './provider-http.ts'
+
 const NORGES_BANK_HOST = 'https://data.norges-bank.no'
+/** Norges Bank answers in well under a second; a stalled request is a fault, not a slow answer. */
 const REQUEST_TIMEOUT_MS = 8000
 
-export class NorgesBankError extends Error {}
+export class NorgesBankError extends Error {
+  /** The provider failure class when the error came from the HTTP layer, else null (shape errors). */
+  readonly failureKind: ProviderFailureKind | null
+
+  constructor(message: string, failureKind: ProviderFailureKind | null = null) {
+    super(message)
+    this.name = 'NorgesBankError'
+    this.failureKind = failureKind
+  }
+}
 
 export interface NorgesBankObservation {
   /** ISO date (YYYY-MM-DD) the observation applies to. */
@@ -56,6 +68,8 @@ export async function fetchNorgesBankRates(params: {
   baseCurrency: string
   startDate: string
   endDate: string
+  /** Absolute epoch-ms deadline shared with the caller's other work; no attempt starts after it. */
+  deadlineMs?: number
 }): Promise<NorgesBankObservation[]> {
   if (!CURRENCY_SHAPE.test(params.baseCurrency)) {
     throw new NorgesBankError('invalid base currency code')
@@ -70,32 +84,24 @@ export async function fetchNorgesBankRates(params: {
   url.searchParams.set('endPeriod', params.endDate)
   url.searchParams.set('locale', 'en')
 
-  const controller = new AbortController()
-  const timeoutHandle = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
-  let response: Response
-  try {
-    response = await fetch(url, { method: 'GET', signal: controller.signal })
-  } catch (error) {
-    throw new NorgesBankError(
-      `Norges Bank request failed: ${error instanceof Error ? error.message : 'unknown error'}`,
-    )
-  } finally {
-    clearTimeout(timeoutHandle)
-  }
-
-  if (response.status === 404) {
-    // No series for this currency pair, or genuinely no observation in range — not an error.
-    return []
-  }
-  if (!response.ok) {
-    throw new NorgesBankError(`Norges Bank returned HTTP ${response.status}`)
-  }
-
+  // Timeout, bounded retry with backoff and 429/5xx handling are the shared provider policy
+  // (./provider-http.ts, D-201). A 404 is "no series / no observation in range", not an error.
   let body: unknown
   try {
-    body = await response.json()
-  } catch {
-    throw new NorgesBankError('Norges Bank response was not valid JSON')
+    body = await fetchJsonWithPolicy(url.toString(), `EXR/B.${params.baseCurrency}.NOK.SP`, {
+      deadlineMs: params.deadlineMs,
+      policy: { attemptTimeoutMs: REQUEST_TIMEOUT_MS },
+    })
+  } catch (error) {
+    if (error instanceof ProviderError) {
+      if (error.kind === 'not_found') return []
+      if (error.kind === 'invalid_json') {
+        throw new NorgesBankError('Norges Bank response was not valid JSON', error.kind)
+      }
+      const detail = error.status !== null ? `HTTP ${error.status}` : error.kind
+      throw new NorgesBankError(`Norges Bank request failed (${detail})`, error.kind)
+    }
+    throw error
   }
 
   return parseSdmxJson(body)

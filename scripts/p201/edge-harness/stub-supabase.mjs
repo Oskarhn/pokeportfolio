@@ -5,7 +5,9 @@
  * Function issues (table, operation, payload, filters) is appended to `globalThis.__ops`, and the
  * answer comes from the scenario installed on `globalThis.__scenario.db`:
  *
- *   db.rows[table]            rows a plain select resolves to
+ *   db.rows[table]            rows a plain select resolves to (filters ignored)
+ *   db.data[table]            rows a select is evaluated AGAINST: eq / neq / in / lte / gte filters are
+ *                             applied, so a cache lookup returns what the real query would
  *   db.single[table]          row `.single()` / `.maybeSingle()` resolves to (default: a synthetic id)
  *   db.counts[table]          `count` for a `{ count: 'exact', head: true }` select
  *   db.rpc[name]              { data } or { error } for `rpc(name)`
@@ -107,6 +109,17 @@ class Query {
     this.wantSingle = true
     return this
   }
+  _matches(row) {
+    return this.filters.every(([kind, column, value]) => {
+      const cell = row[column]
+      if (kind === 'eq') return cell === value
+      if (kind === 'neq') return cell !== value
+      if (kind === 'in') return Array.isArray(value) && value.includes(cell)
+      if (kind === 'lte') return cell <= value
+      if (kind === 'gte') return cell >= value
+      return true
+    })
+  }
   _settle() {
     const failure = failureFor(this.table, this.op)
     ops.push({
@@ -120,6 +133,12 @@ class Query {
     const db = scenarioDb()
     if (this.opts.head === true) {
       return { data: null, error: null, count: db.counts?.[this.table] ?? 0 }
+    }
+    if (this.op === 'select' && db.data?.[this.table] !== undefined) {
+      const matching = db.data[this.table].filter((row) => this._matches(row))
+      return this.wantSingle
+        ? { data: matching[0] ?? null, error: null, count: null }
+        : { data: matching, error: null, count: matching.length }
     }
     if (this.wantSingle) {
       const configured = db.single?.[this.table]

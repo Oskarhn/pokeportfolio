@@ -43,6 +43,8 @@ export interface Scenario {
   policy?: Record<string, number>
   db?: {
     rows?: Record<string, unknown[]>
+    /** Rows a select is evaluated against, with eq/neq/in/lte/gte filters applied. */
+    data?: Record<string, Record<string, unknown>[]>
     single?: Record<string, unknown>
     counts?: Record<string, number>
     rpc?: Record<string, { data?: unknown; error?: { message: string; code?: string } }>
