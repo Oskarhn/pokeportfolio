@@ -7204,3 +7204,36 @@ retention window without a known backup horizon.
 **Accepted residual.** The HMAC does not protect against a compromise of the Cloudflare account itself (it can redeploy
 the Worker and read its secrets) — account 2FA and off-platform verified exports are the mitigation; the export is
 manual until the owner schedules it; the HMAC key cannot be rotated without a re-signing tool that does not exist.
+
+## D-201 — Provider calls are bounded and classified; a failed detail request never removes a card; a price needs a believable currency, date and edition (P201)
+
+**Decision.** (1) Every TCGdex request goes through one policy (`supabase/functions/_shared/provider-http.ts`):
+a 6 s timeout per attempt, at most 3 attempts, exponential backoff with full jitter (300 ms ceiling doubling to
+2 s), a 15 s total budget and a batch-wide deadline. Only network errors, timeouts, HTTP 429 and 5xx are retried;
+404, other 4xx and invalid JSON are not. A `Retry-After` up to 3 s is honoured, a longer one fails the call at once
+as `rate_limited` instead of parking the function. Failures carry a stable class (`timeout`, `network`,
+`rate_limited`, `server_error`, `client_error`, `not_found`, `invalid_json`, `budget_exhausted`) and are counted by
+class. (2) `ingest-prices` stops issuing provider requests after 38 s of its 55 s cron window or after five
+provider failures; unattempted cards are *skipped*, not errors, and stay queued. Its run is `failed` when nothing was
+fetched, `partial` when anything failed or was skipped, `succeeded` otherwise. (3) `sync-catalog` decides which cards
+the provider "no longer lists" from the set LISTING, never from which detail requests succeeded; an empty listing, or
+one under half of the currently active cards, deactivates nothing. (4) A TCGdex price is accepted only if it is
+non-negative, its record names no other currency than the provider is mapped to (Cardmarket EUR, TCGplayer USD),
+and its timestamp is a real calendar instant no more than a day ahead; otherwise the timestamp is treated as unknown
+(retrieval date) or the price as absent. (5) TCGplayer buckets are matched on finish **and edition**
+(`1st-edition-*` only ever prices a first-edition-stamped variant); more than one matching bucket is ambiguous and
+yields no price.
+
+**Why.** Reproduced with scripted providers (tests/data/p201-*): a 503 burst on card-detail requests deactivated
+every card whose request had failed; a `2026-02-31` provider date (which `Date.parse` rolls over to March) or a
+negative price made Postgres reject the whole 500-row upsert chunk, repeatedly, because the same card re-entered the
+next tick; a far-future date pinned a variant "fresh" forever; a `1st-edition-holofoil` price was attributed to an
+unstamped holo variant. docs/API_SOURCES.md already promised "retry with backoff" — the adapter had none.
+
+**Rejected.** Retrying forever or sleeping through a long `Retry-After` (an Edge Function is billed in wall time and
+the cron caller gives up at 55 s); treating an unattempted card as a provider error (it says nothing about the card);
+sorting stamp tokens to canonicalise variant keys (would orphan existing variant rows — recorded in BACKLOG).
+
+**Accepted residual.** Variant identity still joins a multi-stamp array in provider order; a provider that reorders
+stamps would create a second variant. The retry policy is per process and the harness shortens it only through
+`providerRuntime`, never an environment variable.

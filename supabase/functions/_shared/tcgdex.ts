@@ -19,6 +19,8 @@
  *   `isPocketSeries` is the single place that rule lives.
  */
 
+import { fetchJsonWithPolicy, ProviderError, providerRuntime } from './provider-http.ts'
+
 const BASE_URL = 'https://api.tcgdex.net/v2'
 
 export type Language = 'en' | 'ja'
@@ -64,19 +66,39 @@ export interface ProviderCard {
   variants: ProviderVariant[]
 }
 
-export class TcgdexNotFoundError extends Error {}
-
-class TcgdexShapeError extends Error {}
-
-async function fetchJson(path: string): Promise<unknown> {
-  const response = await fetch(`${BASE_URL}${path}`)
-  if (response.status === 404) {
-    throw new TcgdexNotFoundError(`not found: ${path}`)
+export class TcgdexNotFoundError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'TcgdexNotFoundError'
   }
-  if (!response.ok) {
-    throw new Error(`TCGdex ${response.status} for ${path}`)
+}
+
+export class TcgdexShapeError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'TcgdexShapeError'
   }
-  return response.json()
+}
+
+/** Per-call options. `deadlineMs` is an absolute epoch-ms deadline a whole batch shares. */
+export interface TcgdexCallOptions {
+  deadlineMs?: number
+}
+
+/**
+ * Every provider call goes through `fetchJsonWithPolicy` (timeout, bounded retry with backoff,
+ * 429/5xx handling — see ./provider-http.ts). A 404 keeps its dedicated error class because callers
+ * treat "the provider does not know this id" differently from "the provider is unwell".
+ */
+async function fetchJson(path: string, options: TcgdexCallOptions = {}): Promise<unknown> {
+  try {
+    return await fetchJsonWithPolicy(`${BASE_URL}${path}`, path, { deadlineMs: options.deadlineMs })
+  } catch (error) {
+    if (error instanceof ProviderError && error.kind === 'not_found') {
+      throw new TcgdexNotFoundError(error.message)
+    }
+    throw error
+  }
 }
 
 function asString(value: unknown): string | null {
@@ -95,8 +117,11 @@ export function isPocketSeries(tcgdexSeriesId: string): boolean {
 export async function fetchSetDetail(
   language: Language,
   tcgdexSetId: string,
+  options: TcgdexCallOptions = {},
 ): Promise<ProviderSetSummary> {
-  const raw = asRecord(await fetchJson(`/${language}/sets/${encodeURIComponent(tcgdexSetId)}`))
+  const raw = asRecord(
+    await fetchJson(`/${language}/sets/${encodeURIComponent(tcgdexSetId)}`, options),
+  )
   if (!raw) throw new TcgdexShapeError('set detail was not an object')
 
   const id = asString(raw.id)
@@ -295,7 +320,62 @@ function toMinorUnits(value: number): bigint {
  */
 function asFiniteNumber(value: unknown): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) return null
+  // A negative price is not a price: `price_snapshots.value_minor` is CHECK (>= 0), so one negative
+  // value would not just be wrong — it would make the database reject the whole upsert chunk it
+  // travels in, taking up to 499 unrelated, valid observations down with it.
+  if (value < 0) return null
   return Math.abs(Math.round(value * 100)) <= Number.MAX_SAFE_INTEGER ? value : null
+}
+
+const ISO_INSTANT =
+  /^(\d{4})-(\d{2})-(\d{2})(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/
+/** A provider timestamp further ahead than this is a malformed value, not "observed just now". */
+const MAX_FUTURE_SKEW_MS = 24 * 60 * 60 * 1000
+
+/**
+ * A provider-supplied observation time this pipeline may write, or null.
+ *
+ * The string is later sliced to its date part and sent to Postgres as `snapshot_date` and
+ * `provider_updated_at`, where an unparseable or non-existent date ("2026-02-31", which
+ * `Date.parse` silently rolls over to March) fails the entire batched upsert, and a far-future one
+ * wins `ORDER BY snapshot_date DESC` forever and pins the variant as permanently "fresh". Anything
+ * that is not a real calendar instant within a day of now is treated as unknown (null) — the caller
+ * then falls back to the retrieval date, exactly as for a payload that carries no timestamp at all.
+ */
+export function normalizeProviderInstant(value: unknown, nowMs: number): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  const match = ISO_INSTANT.exec(trimmed)
+  if (!match) return null
+  const [, y, m, d] = match
+  const probe = new Date(Date.UTC(Number(y), Number(m) - 1, Number(d)))
+  if (
+    probe.getUTCFullYear() !== Number(y) ||
+    probe.getUTCMonth() !== Number(m) - 1 ||
+    probe.getUTCDate() !== Number(d)
+  ) {
+    return null
+  }
+  const ms = Date.parse(trimmed)
+  if (Number.isNaN(ms)) return null
+  if (ms - nowMs > MAX_FUTURE_SKEW_MS) return null
+  return trimmed
+}
+
+/** Reads `<record>.updated` through `normalizeProviderInstant` against the runtime clock. */
+function observedAt(record: Record<string, unknown>): string | null {
+  return normalizeProviderInstant(record.updated, providerRuntime.clock.now())
+}
+
+/**
+ * Cardmarket prices are EUR and TCGplayer prices are USD, and the snapshot constraint hard-codes
+ * that pairing. A record that names a different unit is a different currency's number: it is not
+ * relabelled, it is absent. A record that names no unit is accepted as before.
+ */
+function unitMatches(record: Record<string, unknown>, expected: 'EUR' | 'USD'): boolean {
+  const unit = record.unit
+  if (unit === undefined || unit === null) return true
+  return typeof unit === 'string' && unit.trim().toUpperCase() === expected
 }
 
 /** Cardmarket's own price-selection fallback, FINANCIAL_MODEL.md §6: trend → avg30 → avg7 → avg. */
@@ -342,12 +422,48 @@ function pickTcgplayerCandidate(
   }
 }
 
-/** Classifies a TCGplayer finish-bucket key ("reverse-holofoil", "1st-edition-holofoil", …). */
-function bucketKeyToFinish(key: string): CardFinish | null {
-  if (key === 'normal') return 'normal'
-  if (key.includes('reverse')) return 'reverse'
-  if (key.includes('holofoil')) return 'holo'
+/**
+ * Classifies a TCGplayer finish-bucket key ("normal", "reverse-holofoil", "1st-edition-holofoil",
+ * "unlimited", …) into the finish it prices AND whether it is the first-edition product.
+ *
+ * The edition matters as much as the finish: a `1st-edition-holofoil` bucket is a different,
+ * usually far more expensive, product than `holofoil`. Treating both as just "holo" let a first-edition
+ * price be attributed to a variant without the first-edition stamp whenever it was the only holo
+ * bucket present, and let an embedded object with two holo buckets silently take whichever came
+ * first. A key this function does not recognise is not a bucket at all.
+ */
+interface BucketClass {
+  finish: CardFinish
+  firstEdition: boolean
+}
+
+function classifyBucketKey(key: string): BucketClass | null {
+  if (key === 'updated' || key === 'unit') return null
+  const firstEdition = key.startsWith('1st-edition')
+  const rest = key.replace(/^(1st-edition|unlimited)-?/, '')
+  if (rest === '' || rest === 'normal') return { finish: 'normal', firstEdition }
+  if (rest.includes('reverse')) return { finish: 'reverse', firstEdition }
+  if (rest.includes('holofoil')) return { finish: 'holo', firstEdition }
   return null
+}
+
+/** True for a variant whose stamp marks it as the first-edition print. */
+function isFirstEditionVariant(variant: Pick<VariantKey, 'stamp'>): boolean {
+  return /(^|\+)1st/i.test(variant.stamp)
+}
+
+/** The bucket keys of one TCGplayer record that price exactly this variant's finish and edition. */
+function matchingBucketKeys(tcgplayer: Record<string, unknown>, variant: VariantKey): string[] {
+  const firstEdition = isFirstEditionVariant(variant)
+  return Object.keys(tcgplayer).filter((key) => {
+    const bucket = classifyBucketKey(key)
+    return (
+      bucket !== null &&
+      asRecord(tcgplayer[key]) !== null &&
+      bucket.finish === variant.finish &&
+      bucket.firstEdition === firstEdition
+    )
+  })
 }
 
 interface VariantKey {
@@ -387,6 +503,12 @@ function mapCardPricing(
   const nonNormalFinishes = new Set(
     declaredVariants.filter((v) => v.finish !== 'normal').map((v) => v.finish),
   )
+  // The TCGplayer buckets are keyed by finish AND edition, so ambiguity is counted the same way.
+  const editionKey = (v: VariantKey) =>
+    `${v.finish}:${isFirstEditionVariant(v) ? 'first' : 'regular'}`
+  const editionCounts = new Map<string, number>()
+  for (const v of declaredVariants)
+    editionCounts.set(editionKey(v), (editionCounts.get(editionKey(v)) ?? 0) + 1)
 
   return declaredVariants.map((variant) => {
     // 1. Embedded per-variant pricing, matched by the exact structural key TCGdex itself declared
@@ -412,20 +534,17 @@ function mapCardPricing(
     if (embeddedPricing) {
       const cm = asRecord(embeddedPricing.cardmarket)
       const tp = asRecord(embeddedPricing.tcgplayer)
-      const cardmarket = cm ? pickCardmarketCandidate(cm, asString(cm.updated)) : null
+      const cardmarket =
+        cm && unitMatches(cm, 'EUR') ? pickCardmarketCandidate(cm, observedAt(cm)) : null
       let tcgplayer: PriceCandidate | null = null
-      if (tp) {
+      if (tp && unitMatches(tp, 'USD')) {
         // Embedded tcgplayer pricing is itself keyed by finish bucket (mirrors the top-level
-        // shape) — take the bucket matching this variant's own finish; a variant-scoped embedded
-        // object naming a different finish than itself is not evidence for anything.
-        const updated = asString(tp.updated)
-        for (const [key, value] of Object.entries(tp)) {
-          if (key === 'updated' || key === 'unit') continue
-          const bucket = asRecord(value)
-          if (bucket && bucketKeyToFinish(key) === variant.finish) {
-            tcgplayer = pickTcgplayerCandidate(bucket, updated)
-            break
-          }
+        // shape) — take the bucket matching this variant's own finish and edition. More than one
+        // matching bucket is ambiguous (two holo products on one variant): no price, never the
+        // first one by object order.
+        const matching = matchingBucketKeys(tp, variant)
+        if (matching.length === 1) {
+          tcgplayer = pickTcgplayerCandidate(asRecord(tp[matching[0]!])!, observedAt(tp))
         }
       }
       if (cardmarket || tcgplayer) {
@@ -438,8 +557,8 @@ function mapCardPricing(
 
     // 2. Card-level fallback — only when unambiguous.
     let cardmarket: PriceCandidate | null = null
-    if (topCardmarket) {
-      const updated = asString(topCardmarket.updated)
+    if (topCardmarket && unitMatches(topCardmarket, 'EUR')) {
+      const updated = observedAt(topCardmarket)
       if (variant.finish === 'normal' && (finishCounts.get('normal') ?? 0) === 1) {
         cardmarket = pickCardmarketCandidate(topCardmarket, updated)
       } else if (
@@ -458,14 +577,13 @@ function mapCardPricing(
     }
 
     let tcgplayer: PriceCandidate | null = null
-    if (topTcgplayer) {
-      const updated = asString(topTcgplayer.updated)
-      const matchingKeys = Object.keys(topTcgplayer).filter(
-        (key) => key !== 'updated' && key !== 'unit' && bucketKeyToFinish(key) === variant.finish,
-      )
-      if (matchingKeys.length === 1 && (finishCounts.get(variant.finish) ?? 0) === 1) {
-        const bucket = asRecord(topTcgplayer[matchingKeys[0]!])
-        if (bucket) tcgplayer = pickTcgplayerCandidate(bucket, updated)
+    if (topTcgplayer && unitMatches(topTcgplayer, 'USD')) {
+      const matchingKeys = matchingBucketKeys(topTcgplayer, variant)
+      if (matchingKeys.length === 1 && (editionCounts.get(editionKey(variant)) ?? 0) === 1) {
+        tcgplayer = pickTcgplayerCandidate(
+          asRecord(topTcgplayer[matchingKeys[0]!])!,
+          observedAt(topTcgplayer),
+        )
       }
     }
 
@@ -476,8 +594,11 @@ function mapCardPricing(
 export async function fetchCardPricing(
   language: Language,
   tcgdexCardId: string,
+  options: TcgdexCallOptions = {},
 ): Promise<ProviderCardPricing> {
-  const raw = asRecord(await fetchJson(`/${language}/cards/${encodeURIComponent(tcgdexCardId)}`))
+  const raw = asRecord(
+    await fetchJson(`/${language}/cards/${encodeURIComponent(tcgdexCardId)}`, options),
+  )
   if (!raw) throw new TcgdexShapeError('card detail was not an object')
   const id = asString(raw.id)
   if (!id) throw new TcgdexShapeError(`card detail missing id for ${tcgdexCardId}`)
@@ -504,8 +625,11 @@ export async function fetchCardPricing(
 export async function fetchCardDetail(
   language: Language,
   tcgdexCardId: string,
+  options: TcgdexCallOptions = {},
 ): Promise<ProviderCard> {
-  const raw = asRecord(await fetchJson(`/${language}/cards/${encodeURIComponent(tcgdexCardId)}`))
+  const raw = asRecord(
+    await fetchJson(`/${language}/cards/${encodeURIComponent(tcgdexCardId)}`, options),
+  )
   if (!raw) throw new TcgdexShapeError('card detail was not an object')
 
   const id = asString(raw.id)

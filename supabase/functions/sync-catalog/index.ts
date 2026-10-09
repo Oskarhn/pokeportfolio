@@ -31,8 +31,13 @@ import {
   type ProviderCard,
 } from '../_shared/tcgdex.ts'
 import { resolveServiceRoleKey } from '../_shared/service-key.ts'
+import { classifyFailure, mapWithConcurrency } from '../_shared/batch.ts'
+import { logEvent } from '../_shared/log.ts'
 
 const CARD_FETCH_CONCURRENCY = 5
+/** Below this share of the currently-active cards, a set listing is treated as a provider glitch. */
+const MIN_PLAUSIBLE_LISTING_SHARE = 0.5
+const MIN_ACTIVE_FOR_SHRINK_GUARD = 10
 
 interface SyncBody {
   language?: unknown
@@ -52,27 +57,6 @@ function secretsMatch(a: string, b: string): boolean {
   let diff = 0
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
   return diff === 0
-}
-
-async function mapWithConcurrency<T, R>(
-  items: T[],
-  limit: number,
-  fn: (item: T) => Promise<R>,
-): Promise<PromiseSettledResult<R>[]> {
-  const results: PromiseSettledResult<R>[] = new Array(items.length)
-  let next = 0
-  async function worker() {
-    while (next < items.length) {
-      const i = next++
-      try {
-        results[i] = { status: 'fulfilled', value: await fn(items[i]!) }
-      } catch (error) {
-        results[i] = { status: 'rejected', reason: error }
-      }
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
-  return results
 }
 
 Deno.serve(async (request: Request): Promise<Response> => {
@@ -111,7 +95,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
   const supabaseUrl = Deno.env.get('SUPABASE_URL')
   const serviceRoleKey = resolveServiceRoleKey()
   if (!supabaseUrl || !serviceRoleKey) {
-    console.error('sync-catalog is missing its Supabase environment configuration')
+    logEvent('sync-catalog', 'misconfigured', {}, 'error')
     return json(500, { error: 'server_error' })
   }
   const db = createClient(supabaseUrl, serviceRoleKey, {
@@ -154,7 +138,12 @@ Deno.serve(async (request: Request): Promise<Response> => {
       return json(404, { error: 'set_not_found' })
     }
     const message = error instanceof Error ? error.message : 'unknown error'
-    console.error('sync-catalog: fetching set detail failed', language, setId)
+    logEvent(
+      'sync-catalog',
+      'set_detail_failed',
+      { language: String(language), set_id: setId, failure_kind: classifyFailure(error) },
+      'warn',
+    )
     await recordRun(
       'failed',
       { cardsSeen: 0, cardsUpserted: 0, variantsUpserted: 0 },
@@ -193,7 +182,12 @@ Deno.serve(async (request: Request): Promise<Response> => {
 
   if (seriesError || !series) {
     const message = seriesError?.message ?? 'series upsert returned no row'
-    console.error('sync-catalog: series upsert failed', language, setId)
+    logEvent(
+      'sync-catalog',
+      'series_upsert_failed',
+      { language: String(language), set_id: setId },
+      'error',
+    )
     await recordRun(
       'failed',
       { cardsSeen: 0, cardsUpserted: 0, variantsUpserted: 0 },
@@ -227,7 +221,12 @@ Deno.serve(async (request: Request): Promise<Response> => {
 
   if (setError || !set) {
     const message = setError?.message ?? 'set upsert returned no row'
-    console.error('sync-catalog: set upsert failed', language, setId)
+    logEvent(
+      'sync-catalog',
+      'set_upsert_failed',
+      { language: String(language), set_id: setId },
+      'error',
+    )
     await recordRun(
       'failed',
       { cardsSeen: 0, cardsUpserted: 0, variantsUpserted: 0 },
@@ -240,7 +239,6 @@ Deno.serve(async (request: Request): Promise<Response> => {
   let cardsUpserted = 0
   let variantsUpserted = 0
   const failures: string[] = []
-  const seenCardTcgdexIds: string[] = []
 
   const results = await mapWithConcurrency(
     setDetail.cardIds,
@@ -261,7 +259,6 @@ Deno.serve(async (request: Request): Promise<Response> => {
       continue
     }
     const card: ProviderCard = result.value
-    seenCardTcgdexIds.push(card.tcgdexCardId)
 
     const { data: cardRow, error: cardError } = await db
       .from('cards')
@@ -316,14 +313,42 @@ Deno.serve(async (request: Request): Promise<Response> => {
 
   // Cards TCGdex no longer lists for this set are deactivated, never deleted (M5 prompt §19/§59) —
   // a holding pointing at a deactivated variant stays valid, it just stops appearing in search.
-  if (seenCardTcgdexIds.length > 0) {
-    await db
+  //
+  // "No longer lists" is decided from the set LISTING (`setDetail.cardIds`), never from which card
+  // detail requests happened to succeed. It used to be the latter: a rate-limit or 5xx burst on the
+  // detail endpoint left `seen` short, and every card whose detail request had merely failed was
+  // deactivated — vanishing from search until a later full re-sync, with nothing recorded about it.
+  // Two further guards: an empty listing never deactivates anything, and a listing that is less than
+  // half of what is currently active is treated as a provider glitch, not as a mass removal.
+  const listedIds = [...new Set(setDetail.cardIds)]
+  let deactivationNote: string | null = null
+  if (listedIds.length === 0) {
+    deactivationNote = 'deactivation skipped: provider listed no cards'
+  } else {
+    const { count: activeCount, error: countError } = await db
       .from('cards')
-      .update({ is_active: false })
+      .select('id', { count: 'exact', head: true })
       .eq('set_id', set.id)
       .eq('language', language)
-      .not('tcgdex_card_id', 'in', `(${seenCardTcgdexIds.map((id) => `"${id}"`).join(',')})`)
+      .eq('is_active', true)
+    if (countError) {
+      deactivationNote = 'deactivation skipped: could not count active cards'
+    } else if (
+      (activeCount ?? 0) >= MIN_ACTIVE_FOR_SHRINK_GUARD &&
+      listedIds.length < (activeCount ?? 0) * MIN_PLAUSIBLE_LISTING_SHARE
+    ) {
+      deactivationNote = `deactivation skipped: listing has ${listedIds.length} of ${activeCount} active cards`
+    } else {
+      const { error: deactivateError } = await db
+        .from('cards')
+        .update({ is_active: false })
+        .eq('set_id', set.id)
+        .eq('language', language)
+        .not('tcgdex_card_id', 'in', `(${listedIds.map((id) => `"${id}"`).join(',')})`)
+      if (deactivateError) deactivationNote = 'deactivation failed'
+    }
   }
+  if (deactivationNote !== null) failures.push(deactivationNote)
 
   const status = failures.length === 0 ? 'succeeded' : cardsUpserted > 0 ? 'succeeded' : 'failed'
   await recordRun(
@@ -331,6 +356,21 @@ Deno.serve(async (request: Request): Promise<Response> => {
     { cardsSeen: setDetail.cardIds.length, cardsUpserted, variantsUpserted },
     setDetail.series.tcgdexSeriesId,
     failures.length > 0 ? failures.slice(0, 20).join('; ') : null,
+  )
+
+  logEvent(
+    'sync-catalog',
+    'set_finished',
+    {
+      language: String(language),
+      set_id: setId,
+      status,
+      cards_seen: setDetail.cardIds.length,
+      cards_upserted: cardsUpserted,
+      variants_upserted: variantsUpserted,
+      failure_count: failures.length,
+    },
+    failures.length === 0 ? 'info' : 'warn',
   )
 
   return json(200, {
@@ -341,5 +381,8 @@ Deno.serve(async (request: Request): Promise<Response> => {
     cardsUpserted,
     variantsUpserted,
     failureCount: failures.length,
+    // Additive: lets the operator script re-run a set that did not fully land instead of treating
+    // every HTTP 200 as "done".
+    complete: failures.length === 0,
   })
 })
