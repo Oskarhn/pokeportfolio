@@ -10,6 +10,23 @@ they were**.
 
 ## [Unreleased]
 
+### Changed — 2026-10-09 — Frontend quality pass: states, shell, mobile inputs, native sheet (P202)
+
+Not deployed. Web only unless stated; Production unchanged.
+
+- Detail, edit and add pages now share `PageLoading` / `PageUnavailable` (`src/ui/PageState.tsx`): an announced
+  loading status, a real `<h1>`, and — new — a "Try again" action and different wording when a request *failed*
+  rather than the record being missing.
+- Home had 21 px horizontal overflow at 320 px (chart period buttons); icon-only Portfolio toolbar buttons had
+  no accessible name below `sm`; in-text links were distinguished by colour only.
+- App shell: skip-to-content link, polite route announcements with per-route tab titles, an offline notice.
+  `Sheet` is capped to the visible height and scrolls; its scrim leaves the tab order.
+- 18 text-entry controls were 14 px, which makes iOS Safari zoom the page on focus; now 16 px below `md`.
+- Manifest gets an explicit `id` equal to `start_url` (installs keep their identity).
+- Native: `BottomSheet` is modal for VoiceOver, its scrim is a button, and it scrolls within 90 % of the window.
+- Tests: route × state × viewport matrix (312 cells, axe WCAG 2.2 AA), shell/dialog, PWA, and a source guard for
+  control font size. See docs/TESTING.md §6i.
+
 ### Changed — 2026-10-02 — One local release-candidate line for web and native (P188)
 
 Not released, not pushed. `release/p188-cross-platform-rc` merges the web candidates the native line never carried (P164 with P149/P151/P153/P161/P162, P163, P165) into the P186/P187

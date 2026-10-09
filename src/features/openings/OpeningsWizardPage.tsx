@@ -587,7 +587,7 @@ function BoughtNowProductPicker({
             setQueryInput(event.target.value)
           }}
           placeholder="e.g. Booster bundle"
-          className="min-h-11 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100 outline-none focus-visible:border-sky-500"
+          className="min-h-11 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 text-base md:text-sm text-slate-100 outline-none focus-visible:border-sky-500"
         />
         <Button type="submit" variant="quiet" className="w-auto">
           Search
@@ -924,7 +924,7 @@ function PullsStep({
                     const parsed = Number.parseInt(event.target.value, 10)
                     onSetPullQuantity(pull.key, Number.isFinite(parsed) ? parsed : 1)
                   }}
-                  className="ml-2 w-14 rounded-lg border border-slate-700 bg-slate-900 px-2 py-1 text-center text-sm text-slate-100 outline-none focus-visible:border-sky-500"
+                  className="ml-2 w-14 rounded-lg border border-slate-700 bg-slate-900 px-2 py-1 text-center text-base md:text-sm text-slate-100 outline-none focus-visible:border-sky-500"
                 />
               </label>
               <button

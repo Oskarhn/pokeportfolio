@@ -77,7 +77,7 @@ export function PullPickerSheet({
             }}
             placeholder="Search for cards…"
             aria-label="Search for cards"
-            className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none focus-visible:border-sky-500"
+            className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-base md:text-sm text-slate-100 outline-none focus-visible:border-sky-500"
           />
           <CatalogResults
             query={query}
