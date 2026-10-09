@@ -74,6 +74,8 @@ export interface LedgerEntry {
   /** Container ids that existed with this project label after start. */
   containers: { id: string; name: string }[]
   processes: ProcessRecord[]
+  /** The erasure-registry chain file this stack's test sink writes (removed when the stack stops). */
+  registryChainFile?: string
   /** Counts for the audit trail the final report quotes. */
   counts: { runningBefore: number; runningAfterStart?: number; runningAfterStop?: number }
   stoppedAt?: string

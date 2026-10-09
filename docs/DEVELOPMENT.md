@@ -215,9 +215,12 @@ the host. Every automated session therefore follows the same lifecycle, implemen
 
 1. **Start the minimum.** A suite that needs no database (unit, placeholder-backend Playwright,
    UI work) starts no stack. A suite that needs one starts exactly **one**, from a unique name:
-   `pnpm lifecycle up --name p210 --base-port 57010` (project id `pokeportfolio-p210`, its own
-   port block and working directory, migrations applied, recurring cron jobs deactivated so the
-   stack never calls Production). `pnpm lifecycle env --name p210` prints the connection variables
+   `pnpm lifecycle up --name p210` (project id `pokeportfolio-p210`; a free port block is found
+   by checking Docker's published ports as well as the host's, or pass `--base-port`; its own working
+   directory; migrations applied; recurring cron jobs deactivated so the stack never calls
+   Production; its own erasure-registry sink port, because the sink's chain file is named by port in
+   the temp directory and is keyed to the stack that wrote it — a shared port such as 8787 meets
+   another session's chain and refuses every deletion; the file is removed when the stack stops). `pnpm lifecycle env --name p210` prints the connection variables
    (`--format ps1` for PowerShell). Run `pnpm lifecycle inventory` first and prefer reusing the
    stack you already own to starting a second one.
 2. **Record the before count.** `inventory` and `up` print the running-container count; copy it

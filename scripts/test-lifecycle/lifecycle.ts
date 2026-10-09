@@ -29,7 +29,7 @@ import {
   cpSync,
 } from 'node:fs'
 import { createServer } from 'node:net'
-import { homedir, hostname } from 'node:os'
+import { homedir, hostname, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -255,18 +255,51 @@ function log(message: string): void {
   process.stdout.write(`${message}\n`)
 }
 
-async function portIsFree(port: number): Promise<boolean> {
+/** Host ports other containers publish. Docker Desktop binds them in its VM, where a plain
+ *  bind test on the Windows host does not see them (the first real `up` hit exactly that). */
+async function dockerPublishedPorts(): Promise<Set<number>> {
+  const result = await exec('docker', ['ps', '--format', '{{.Ports}}'])
+  const ports = new Set<number>()
+  for (const match of result.stdout.matchAll(/:(d+)(?:-(d+))?->/g)) {
+    const from = Number(match[1])
+    const to = match[2] === undefined ? from : Number(match[2])
+    for (let port = from; port <= to && port - from < 1000; port += 1) ports.add(port)
+  }
+  return ports
+}
+
+async function bindableOnHost(port: number): Promise<boolean> {
   return new Promise((resolvePromise) => {
     const server = createServer()
     server.once('error', () => {
       resolvePromise(false)
     })
-    server.listen(port, '127.0.0.1', () => {
+    server.listen(port, '0.0.0.0', () => {
       server.close(() => {
         resolvePromise(true)
       })
     })
   })
+}
+
+async function portIsFree(port: number, published: ReadonlySet<number>): Promise<boolean> {
+  return !published.has(port) && (await bindableOnHost(port))
+}
+
+/** First block of ports, scanning upward in steps of 100, in which nothing is taken. */
+async function findFreeBlock(start: number): Promise<number> {
+  const published = await dockerPublishedPorts()
+  for (let base = start; base + 80 <= 65000; base += 100) {
+    let free = true
+    for (const port of stackPorts(base)) {
+      if (!(await portIsFree(port, published))) {
+        free = false
+        break
+      }
+    }
+    if (free) return base
+  }
+  throw new Error('no free port block found')
 }
 
 function defaultWorkdir(name: string): string {
@@ -337,9 +370,26 @@ async function cmdUp(
       `containers labelled ${projectId} already exist and are not in the ledger; refusing to adopt them`,
     )
   }
+  if (opts.basePort === 0) opts.basePort = await findFreeBlock(57200)
+  // One registry sink port per stack (base + 79, inside the block). The sink's chain file is named
+  // by port in the temp directory and is keyed to the stack that wrote it: a shared port such as
+  // 8787 meets another session's file and refuses every deletion with a key mismatch.
+  if (opts.registryUrl === '') {
+    opts.registryUrl = `http://host.docker.internal:${String(opts.basePort + 79)}`
+  }
+  const sinkPort = new URL(opts.registryUrl).port
+  const chainFile = join(tmpdir(), `p189-erasure-registry-${sinkPort}.ndjson`)
+  if (existsSync(chainFile)) {
+    throw new Error(
+      `${chainFile} already exists (a sink chain from another run, keyed to another stack); ` +
+        'it is not removed automatically. Choose another --base-port or --registry-url.',
+    )
+  }
+  if (opts.basePort === 0) opts.basePort = await findFreeBlock(57200)
+  const published = await dockerPublishedPorts()
   for (const port of stackPorts(opts.basePort)) {
-    if (!(await portIsFree(port)))
-      throw new Error(`port ${port} is in use; pick another --base-port`)
+    if (!(await portIsFree(port, published)))
+      throw new Error(`port ${port} is in use; omit --base-port to pick a free block`)
   }
   if (!existsSync(join(repoRoot, 'node_modules', 'supabase')))
     throw new Error('run pnpm install first')
@@ -373,6 +423,7 @@ async function cmdUp(
     containers: [],
     processes: [],
     counts: { runningBefore: runningCount(before) },
+    registryChainFile: chainFile,
   }
   writeEntry(entry)
   log(`ledger: ${ledgerPath(opts.name)}`)
@@ -395,7 +446,7 @@ async function cmdUp(
 
   if (started.code !== 0) {
     log(`supabase start failed (exit ${started.code}); cleaning up what this attempt created`)
-    log(started.stderr.split(/\r?\n/).slice(-8).join('\n'))
+    log((started.stderr + started.stdout).trim().split(/\r?\n/).slice(-12).join('\n'))
     entry.state = 'failed'
     writeEntry(entry)
     await stopStack(entry, 'own', true)
@@ -502,6 +553,9 @@ async function stopStack(
   if (leftovers.length === 0) {
     entry.state = 'stopped'
     entry.stoppedAt = new Date().toISOString()
+    // The sink's chain is keyed to this stack's generated key and is useless (and in the way of the
+    // next start) once the stack is gone. Only the file this entry recorded is removed.
+    if (entry.registryChainFile) rmSync(entry.registryChainFile, { force: true })
   }
   writeEntry(entry)
   log(
@@ -735,8 +789,10 @@ function parseArgs(argv: string[]): Parsed {
 function upOptions(flags: Map<string, string | true>): UpOptions {
   const name = flags.get('name')
   if (typeof name !== 'string') throw new Error('--name is required')
-  const basePort = Number(flags.get('base-port') ?? 57010)
-  if (!Number.isInteger(basePort) || basePort < 1024 || basePort + 80 > 65535) {
+  const requested = flags.get('base-port')
+  // 0 means "find one": resolved in main() because it needs Docker.
+  const basePort = requested === undefined ? 0 : Number(requested)
+  if (basePort !== 0 && (!Number.isInteger(basePort) || basePort < 1024 || basePort + 80 > 65535)) {
     throw new Error('--base-port must be an integer in 1024..65455')
   }
   const workdir =
