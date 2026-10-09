@@ -390,7 +390,7 @@ export function PurchaseFormPage() {
             }}
             placeholder="Add a new retailer"
             aria-label="Add a new retailer"
-            className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none focus-visible:border-sky-500"
+            className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-base md:text-sm text-slate-100 outline-none focus-visible:border-sky-500"
           />
           <button
             type="button"
@@ -541,7 +541,7 @@ export function PurchaseFormPage() {
             patch({ notes: event.target.value })
           }}
           rows={2}
-          className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none focus-visible:border-sky-500"
+          className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-base md:text-sm text-slate-100 outline-none focus-visible:border-sky-500"
         />
       </div>
 

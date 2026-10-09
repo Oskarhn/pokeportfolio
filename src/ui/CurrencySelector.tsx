@@ -20,7 +20,7 @@ export function CurrencySelector({
       onChange={(event) => {
         onChange(event.target.value)
       }}
-      className="min-h-9 rounded-lg border border-slate-700 bg-slate-900 px-2 text-sm font-medium text-slate-200 outline-none focus-visible:border-sky-500 focus-visible:ring-2 focus-visible:ring-sky-500/40"
+      className="min-h-9 rounded-lg border border-slate-700 bg-slate-900 px-2 text-base md:text-sm font-medium text-slate-200 outline-none focus-visible:border-sky-500 focus-visible:ring-2 focus-visible:ring-sky-500/40"
     >
       {CURRENCIES.map((code) => (
         <option key={code} value={code}>

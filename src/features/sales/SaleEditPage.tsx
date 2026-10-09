@@ -249,7 +249,7 @@ function SaleEditForm({ saleId, sale, lines }: { saleId: string; sale: Sale; lin
               onChange={(event) => {
                 setLineInputs((current) => ({ ...current, [line.id]: event.target.value }))
               }}
-              className="w-28 shrink-0 rounded-lg border border-slate-700 bg-slate-900 px-2 py-1.5 text-right text-sm text-slate-100 outline-none focus-visible:border-sky-500"
+              className="w-28 shrink-0 rounded-lg border border-slate-700 bg-slate-900 px-2 py-1.5 text-right text-base md:text-sm text-slate-100 outline-none focus-visible:border-sky-500"
             />
           </div>
         ))}
@@ -310,7 +310,7 @@ function SaleEditForm({ saleId, sale, lines }: { saleId: string; sale: Sale; lin
             setNotes(event.target.value)
           }}
           rows={2}
-          className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none focus-visible:border-sky-500"
+          className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-base md:text-sm text-slate-100 outline-none focus-visible:border-sky-500"
         />
       </div>
 

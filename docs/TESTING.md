@@ -1601,3 +1601,30 @@ Reproduce: `docker logs` the stack's `supabase_edge_runtime_*` and `supabase_kon
 POSTing a 24 KiB body to `/functions/v1/delete-account` in a loop. Do not `docker restart` a single
 stack container to get a "cold" run: Kong keeps the old upstream address and answers 502/hangs for
 reasons unrelated to this.
+
+## 6l. UI quality suite: route matrix, shell, PWA (P202)
+
+Four specs run against the placeholder-backend preview build with a synthetic session
+(`tests/e2e/support/fake-session.ts`) and a network-boundary backend stand-in
+(`tests/e2e/support/generic-backend.ts`). No database, no Docker.
+
+| Spec | What it pins |
+|---|---|
+| `p202-route-matrix.spec.ts` | 26 private routes × `empty` / `error` / `expired` × 320 / 390 / 768 / 1440 px: exactly one visible `<h1>`, a `<main>`, no horizontal overflow, no axe violation at WCAG 2.2 AA, and an expired session lands on `/login`. 312 cells. |
+| `p202-shell-dialog.spec.ts` | Skip link, route announcement and tab title, offline notice, and the shared `Sheet` dialog on a 320×420 screen (inside the viewport, focus trapped, Escape closes and restores focus, one exposed close control). |
+| `p202-pwa.spec.ts` | Manifest identity and icon pixel sizes match what the manifest claims; with the shell precached, a refresh offline still opens the app. |
+| `tests/ui/form-control-font-size.test.ts` | Source guard: every text-entry control is `text-base` below `md` (iOS Safari zooms on focus below 16px). |
+
+Run: `PLAYWRIGHT_PREVIEW_PORT=<free port> pnpm exec playwright test p202- --project=desktop-chromium`
+(needs `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` set to any placeholder; the
+`desktop-chromium` project is required because viewports are set per cell).
+
+What this is not: axe finds a fraction of real accessibility barriers, and the matrix runs against
+empty or failing data, not realistic rows. It is a regression net, not a WCAG conformance claim. A
+screen-reader pass, a real-iPhone pass and realistic-data layout checks remain manual
+(docs/DESIGN_SYSTEM.md §9, §8 above).
+
+Failed reads are retried by react-query (default 3, roughly 7 s of backoff), so the error state of a
+page appears several seconds after the request first fails; the matrix waits for it. A failing
+backend is therefore a long skeleton before an error, not an instant error — see
+`PageLoading`/`PageUnavailable` in `src/ui/PageState.tsx`.

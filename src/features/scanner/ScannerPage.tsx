@@ -1561,7 +1561,7 @@ function SessionDefaultsBar({
             onChange={(event) => {
               onPatch({ origin: event.target.value as ScannerSessionDefaults['origin'] })
             }}
-            className="mt-1 min-h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100 outline-none focus-visible:border-sky-500 focus-visible:ring-2 focus-visible:ring-sky-500/40"
+            className="mt-1 min-h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-base md:text-sm text-slate-100 outline-none focus-visible:border-sky-500 focus-visible:ring-2 focus-visible:ring-sky-500/40"
           >
             {SCANNER_ORIGINS.map((origin) => (
               <option key={origin} value={origin}>
@@ -1577,7 +1577,7 @@ function SessionDefaultsBar({
             onChange={(event) => {
               onPatch({ condition: event.target.value as CardCondition })
             }}
-            className="mt-1 min-h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100 outline-none focus-visible:border-sky-500 focus-visible:ring-2 focus-visible:ring-sky-500/40"
+            className="mt-1 min-h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-base md:text-sm text-slate-100 outline-none focus-visible:border-sky-500 focus-visible:ring-2 focus-visible:ring-sky-500/40"
           >
             {CONDITIONS.map((value) => (
               <option key={value} value={value}>
@@ -1592,7 +1592,7 @@ function SessionDefaultsBar({
             value="English"
             readOnly
             aria-label="Recognition language: English"
-            className="mt-1 min-h-11 w-full cursor-not-allowed rounded-lg border border-slate-800 bg-slate-900/60 px-3 text-sm text-slate-500"
+            className="mt-1 min-h-11 w-full cursor-not-allowed rounded-lg border border-slate-800 bg-slate-900/60 px-3 text-base md:text-sm text-slate-500"
           />
         </label>
         <label className="text-xs text-slate-400">
@@ -1602,7 +1602,7 @@ function SessionDefaultsBar({
             onChange={(event) => {
               onPatch({ storageLocationId: event.target.value === '' ? null : event.target.value })
             }}
-            className="mt-1 min-h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100 outline-none focus-visible:border-sky-500 focus-visible:ring-2 focus-visible:ring-sky-500/40"
+            className="mt-1 min-h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-base md:text-sm text-slate-100 outline-none focus-visible:border-sky-500 focus-visible:ring-2 focus-visible:ring-sky-500/40"
           >
             <option value="">Not set</option>
             {locations.map((location) => (
@@ -1621,7 +1621,7 @@ function SessionDefaultsBar({
             onChange={(event) => {
               onPatch({ acquiredOn: event.target.value })
             }}
-            className="mt-1 min-h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100 outline-none focus-visible:border-sky-500 focus-visible:ring-2 focus-visible:ring-sky-500/40"
+            className="mt-1 min-h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-base md:text-sm text-slate-100 outline-none focus-visible:border-sky-500 focus-visible:ring-2 focus-visible:ring-sky-500/40"
           />
         </label>
       </div>
