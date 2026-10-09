@@ -10,6 +10,12 @@ they were**.
 
 ## [Unreleased]
 
+### Changed — 2026-10-09 — CI split into parallel jobs behind unchanged required checks (P210)
+
+CI configuration only; no application, schema or Production change.
+
+- `build-and-test` is now an aggregator over `static-checks` and three Browser E2E shards; `db-tests` an aggregator over `db-suites` and `authenticated-e2e` (own stack, own runner). The required check names, the secret scan, redaction, retention and failure diagnostics are unchanged; an aggregator fails unless every needed job succeeded (`scripts/ci/require-jobs.mjs`).
+
 ### Changed — 2026-10-02 — One local release-candidate line for web and native (P188)
 
 Not released, not pushed. `release/p188-cross-platform-rc` merges the web candidates the native line never carried (P164 with P149/P151/P153/P161/P162, P163, P165) into the P186/P187

@@ -146,11 +146,15 @@ describe('the real workflows satisfy the control-plane policy', () => {
     expect(controlPlaneViolations(ci, release)).toEqual([])
   })
 
-  it('ci.yml still runs build-and-test, db-tests and native-checks with no job-level condition', () => {
+  it('ci.yml still runs build-and-test, db-tests and native-checks, each reporting on every run', () => {
     for (const job of ['build-and-test', 'db-tests', 'native-checks']) {
       const block = jobBlock(ci, job)
       expect(block, `${job} missing`).not.toBe('')
-      expect(block).not.toMatch(/^ {4}if:/m)
+      // No job-level condition may let a required check go missing. The two aggregators (P210) run
+      // `if: always()`, which is the opposite of a skip: it makes them report even when a needed job
+      // failed. Any other condition (branch, event, path) is refused.
+      const conditions = [...block.matchAll(/^ {4}if:\s*(.+)$/gm)].map((m) => m[1]?.trim())
+      expect(conditions.filter((c) => c !== 'always()')).toEqual([])
     }
   })
 
