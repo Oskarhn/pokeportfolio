@@ -1,7 +1,7 @@
 /// <reference types="node" />
 import { createHash, randomUUID } from 'node:crypto'
 import { createClient } from '@supabase/supabase-js'
-import { assertLocalUrl } from '../support/local-target'
+import { assertLocalTestTarget } from '../support/local-target'
 
 /**
  * Shared harness for the database and authorization suites (docs/TESTING.md §4-5).
@@ -31,7 +31,7 @@ function requireEnv(name: string): string {
 
 export function createServiceClient() {
   const url = requireEnv('SUPABASE_URL')
-  assertLocalUrl('SUPABASE_URL', url)
+  assertLocalTestTarget(process.env)
   const serviceRoleKey = requireEnv('SUPABASE_SERVICE_ROLE_KEY')
   return createClient(url, serviceRoleKey, {
     auth: { autoRefreshToken: false, persistSession: false },
@@ -40,7 +40,7 @@ export function createServiceClient() {
 
 export function createAnonClient() {
   const url = requireEnv('SUPABASE_URL')
-  assertLocalUrl('SUPABASE_URL', url)
+  assertLocalTestTarget(process.env)
   const anonKey = requireEnv('SUPABASE_ANON_KEY')
   return createClient(url, anonKey, {
     auth: { autoRefreshToken: false, persistSession: false },

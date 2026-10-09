@@ -12,12 +12,10 @@
  */
 import { createServiceClient, createSyntheticUser, signInAs } from '../../tests/db/setup'
 import { seedAccountLedger } from '../../tests/db/lib/account-ledger-fixture'
+import { assertLocalTestTarget } from '../lib/local-target.mjs'
 
-const url = process.env.SUPABASE_URL ?? ''
-if (!/^http:\/\/(127\.0\.0\.1|localhost):\d+$/.test(url)) {
-  console.error('refusing: SUPABASE_URL must be a local stack address')
-  process.exit(2)
-}
+// P206: the shared fail-closed guard (SUPABASE_URL, DB_URL, registry, keys) replaces a per-script regex.
+assertLocalTestTarget(process.env)
 
 const service = createServiceClient()
 const user = await createSyntheticUser(service, 'emu-delete')

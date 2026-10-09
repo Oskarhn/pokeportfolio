@@ -1404,23 +1404,50 @@ regression tests for day 1, 2, 10, month end, a leap day and the year boundary.
 Amounts are deliberately chosen to produce inexact division — a shipping charge of 100 over
 three lines is worth more as a test than one of 90.
 
-### 9.1 Destructive suites only run against a local stack (P203)
+### 9.1 Destructive suites and tools only run against a local stack (P203, P206)
 
-The database, authorization, independent adversarial and authenticated-E2E suites create and
-delete `auth.users` rows with the service-role key. They read their target from the same
-environment variables an operator exports for a hosted-project script, so a shell still holding
-hosted values must not be able to aim them at Production. `tests/support/local-target.ts` is the one
-definition of "local": a loopback host (`localhost`, `*.localhost`, `127.0.0.1`, `[::1]`) for
-`SUPABASE_URL`, `VITE_SUPABASE_URL`, `DB_URL` and `P153_DB_URL`; a loopback, Docker-host
-(`host.docker.internal`) or private-network address for `ERASURE_REGISTRY_URL` (the address the
-stack's containers use to reach the harness's own sink — `172.17.0.1` on a CI runner); and no
-`ref` claim in a legacy JWT key. There is no override switch.
+The database, authorization, independent adversarial and authenticated-E2E suites, the P117 / P120 /
+P123 / P132 campaigns, the portfolio benchmarks and the synthetic-account seeders create and delete
+`auth.users` rows with the service-role key or write over a direct Postgres connection. They read
+their target from the same environment variables an operator exports for a hosted-project script, so
+a shell still holding hosted values must not be able to aim them at Production. There is no
+"throwaway hosted project": the only hosted project is Production.
 
-It is enforced by a Vitest `globalSetup` in `vitest.db.config.ts` and the three independent
-packages, by `playwright.config.ts` when the config loads, and again inside
-`createServiceClient()` / `createAnonClient()`. `tests/config/local-target-guard.test.ts` (in
-`pnpm test`) covers the policy, asserts every runner is wired to it, and starts each runner against a
-hosted-looking URL to prove it aborts before a test executes. A new Supabase-backed vitest config
+`scripts/lib/local-target.mjs` is the one definition of "local" (`tests/support/local-target.ts`
+re-exports it). It is plain ESM so `node`, `tsx`, Vitest, Playwright and CI shell steps load the
+same code.
+
+- **API URLs** (`SUPABASE_URL`, `VITE_SUPABASE_URL`): http(s), host exactly `localhost`, `127.0.0.1`
+  or `[::1]`, no userinfo. The WHATWG-parsed hostname is judged, never a substring, so
+  `localhost.evil.com`, `127.0.0.1.nip.io`, `http://localhost:80@evil.example` and
+  `http://127.0.0.1@evil.example` are remote. Numeric spellings of 127.0.0.1 are normalised and
+  accepted; `0.0.0.0`, other 127/8 addresses, IPv4-mapped IPv6, `localhost.` and `*.localhost` are
+  refused because a name that must be resolved is not a verified loopback endpoint.
+- **Postgres URLs** (`DB_URL`, `P153_DB_URL`): postgres(ql), the same host rule, and no query
+  parameter beyond `sslmode`, `connect_timeout`, `application_name`, `statement_timeout`: libpq and
+  node-postgres let `?host=`, `?hostaddr=` and `?service=` override the host written in the URL.
+- Values containing whitespace, control characters or a backslash are refused: the URL parser
+  rewrites them, another parser (libpq, curl) may not.
+- **Erasure registry** (`ERASURE_REGISTRY_URL`): the address the stack's *containers* use to reach the
+  harness's own sink — loopback, `host.docker.internal` or a private IPv4 literal (`172.17.0.1` on a CI
+  runner). This is a separate rule from the database rule, so a safe local stack is not rejected
+  because Docker names its host differently, and a public registry name is still refused.
+- **Keys**: a legacy JWT carrying a project `ref` claim is refused behind any URL (a tunnelled hosted
+  project). Opaque `sb_*` keys cannot be inspected and rely on the URL rules.
+- Unset variables are accepted; error messages name the variable and the host, never userinfo,
+  query or a key.
+
+Enforcement is layered. A Vitest `globalSetup` (`tests/support/local-target-global-setup.ts`) runs in
+`vitest.db.config.ts` and the three independent packages; `playwright.config.ts` asserts when the
+config loads; `createServiceClient()` / `createAnonClient()`, `tests/db/raw-sql.ts`,
+`HeldLockSession` and `scripts/lib/psql-exec.mjs` re-check at the point of use; and every script
+under `scripts/` that can reach a service-role key or a database either calls
+`assertLocalTestTarget(process.env)` as its first statement or reaches the service role only through
+the guarded harness. `tests/config/local-target-guard.test.ts` covers the policy and the runners
+(it starts each runner against a hosted-looking URL); `tests/config/local-target-entrypoints.test.ts`
+classifies every tool under `scripts/` (a new tool fails until it is classified; read-only and
+Production-by-design tools are listed with a reason), tests the harness helpers and starts each guarded
+tool as a process to prove it exits before any network traffic. A new Supabase-backed vitest config
 must add `tests/support/local-target-global-setup.ts` to its `globalSetup`.
 
 ---

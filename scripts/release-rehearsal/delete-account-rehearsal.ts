@@ -24,18 +24,16 @@ import {
   signInAs,
   type SyntheticUser,
 } from '../../tests/db/setup'
+import { assertLocalTestTarget } from '../lib/local-target.mjs'
 
+// P206: the shared fail-closed guard (SUPABASE_URL, DB_URL, keys) replaces a per-script regex. It
+// does not judge REGISTRY_URL: this rehearsal talks to a real test-namespace registry by design.
+assertLocalTestTarget(process.env)
 const [command, file] = process.argv.slice(2)
 const url = process.env.SUPABASE_URL ?? ''
 const registry = process.env.REGISTRY_URL
 const operator = process.env.ERASURE_OPERATOR_TOKEN
-if (
-  !command ||
-  !file ||
-  !registry ||
-  !operator ||
-  !/^http:\/\/(127\.0\.0\.1|localhost)[:/]/.test(url)
-) {
+if (!command || !file || !registry || !operator || url === '') {
   console.error(
     'usage: see header; needs a loopback SUPABASE_URL, REGISTRY_URL and ERASURE_OPERATOR_TOKEN',
   )

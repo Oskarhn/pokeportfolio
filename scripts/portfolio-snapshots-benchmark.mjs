@@ -31,11 +31,12 @@
 import { createClient } from '@supabase/supabase-js'
 import { createHash, randomUUID } from 'node:crypto'
 import { runPsql as execPsql } from './lib/psql-exec.mjs'
-import { assertLoopbackSupabaseUrl } from './lib/local-stack-guard.mjs'
+import { assertLocalTestTarget } from './lib/local-target.mjs'
 
+// P206: seeds and deletes accounts with the service role — refuse a non-local target (SUPABASE_URL,
+// DB_URL, keys) before the first client or connection exists. No override; see lib/local-target.mjs.
+assertLocalTestTarget(process.env)
 const url = process.env.SUPABASE_URL
-  ? assertLoopbackSupabaseUrl(process.env.SUPABASE_URL)
-  : undefined
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
 if (!url || !serviceRoleKey) {
   throw new Error(

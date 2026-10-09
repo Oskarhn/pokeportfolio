@@ -19,12 +19,10 @@ import {
   seedCatalog,
   signInAs,
 } from '../../tests/db/setup'
+import { assertLocalTestTarget } from '../lib/local-target.mjs'
 
-const url = process.env.SUPABASE_URL ?? ''
-if (!/^http:\/\/(127\.0\.0\.1|localhost)[:/]/.test(url)) {
-  console.error('refused: the seed writes synthetic data and runs only against a loopback stack')
-  process.exit(64)
-}
+// P206: the shared fail-closed guard (SUPABASE_URL, DB_URL, registry, keys) replaces a per-script regex.
+assertLocalTestTarget(process.env)
 const out = process.argv[2]
 if (!out) {
   console.error('usage: seed-db104.ts <ids-output.json>')
