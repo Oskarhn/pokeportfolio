@@ -1213,6 +1213,22 @@ basis, see that a card with no market price shows **no value** (not zero), see a
 not move, return to market value, sign out (protected routes refuse, no session left in storage), sign
 back in to the same data, and treat an emptied session store as signed out.
 
+**P210 extension.** The same account's journey now also: lets a provider price go stale (ten days:
+still shown, marked stale, cost untouched), disappear (value absent again, never zero or the cost) and
+return; adds a second holding through the add-to-collection form with an unknown cost (counted,
+unpriced, "No recorded cost for any lot", adds nothing to value or spend); cross-checks the totals
+(`portfolio_counts`, `get_dashboard_summary`) as the **signed-in user's own RPCs** in exact minor units
+against what the page shows and the ledger holds; has a second invited person see none of it in the
+browser and through RLS; ends a session whose refresh token the server refuses; and finally deletes
+the journey's own account through the UI and proves nothing it owned is left.
+
+The deletion step is destructive for the account it signs in as, so it runs only when the Supabase
+target is loopback AND `ERASURE_REGISTRY_URL` is a local test sink that answers
+(`deletionStepBlocker`); otherwise a `deletion-step-skipped` annotation names the reason and the
+step is not counted as exercised. Local runs: `pnpm lifecycle up --name <n>` gives each stack its own
+registry port (the sink's chain file is named by port in the temp directory and is keyed to the stack
+that wrote it, so the shared default 8787 meets a stale chain and refuses every deletion).
+
 The other authenticated specs each prove one mechanism; this one covers the seams between them. It
 uses a private catalog card made for the run (the shared catalog is read by other specs and
 `price_snapshots` is unique per day), seeds only the provider price and an FX rate behind the UI, waits on
