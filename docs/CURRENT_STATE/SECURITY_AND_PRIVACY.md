@@ -33,7 +33,9 @@ Code-side only — none of it is in Production, and the hosted database still ha
 - **P130-36** advisories — reviewed; none reachable in a shipped artefact.
 - **P130-09** — **CLOSED**: all typed-input forms defer an automatic reload.
 
-## Account deletion — restore-safe, LOCAL ONLY (P189), supersedes P156
+## Account deletion — restore-safe (P189), proven in Production (P197B), supersedes P156
+
+- **P197B (2026-10-09):** one real Production deletion of a synthetic non-admin account passed every proof (200 deleted; stale tokens and re-login refused; registry seq 0 → 1 with a verified HMAC chain; restore of the pre-deletion backup with the live registry replays the erasure, `PROMOTABLE`; drill 20/21 with only the documented cron limitation). `PRODUCTION_REGISTRY_STORAGE_READY=yes`. Still open: provider retention facts, the in-place-restore plan, off-machine copies are owner-attested only. Record: [`docs/release/P197B_PRODUCTION_DELETION_PROOF.md`](../release/P197B_PRODUCTION_DELETION_PROOF.md).
 
 - **P189** (`security/p189-restore-safe-account-deletion`, on the exact P188 candidate) integrates the
   P152/P156 deletion work *selectively* and closes the restore resurrection: the erasure is recorded in
@@ -44,13 +46,13 @@ Code-side only — none of it is in Production, and the hosted database still ha
   data scope [`docs/security/P189_DELETION_DATA_MAP.md`](../security/P189_DELETION_DATA_MAP.md).
   `audit/p156-account-deletion-security-recovery` is `SUPERSEDED_BY_P189` (kept as evidence, not merged).
 - **Still owner decisions / gates, stated rather than hidden:** where the production registry lives and
-  its credentials (`PRODUCTION_REGISTRY_STORAGE_READY=no` — without them every deletion is refused);
+  its credentials (`PRODUCTION_REGISTRY_STORAGE_READY=yes` since P197B — a missing or mismatched credential still refuses every deletion);
   the hosted project's backup/PITR/log settings (`PROVIDER_RETENTION_VERIFIED=no`); the hosted
   **in-place restore** cannot be isolated, so the runbook's two options need an owner choice; the
   completion time of an e-mailed deletion request; whether a hash of a deleted account id is acceptable
   personal-data handling. None of these is invented or promised in the product copy.
-- Not deployed, not pushed (the repository is PUBLIC), hosted database untouched. The four P189
-  migrations (`20261002120000`…`20261002130000`) follow `20260926120000`.
+- (Historical, P189) not deployed, not pushed, hosted database untouched. Since then the four P189 migrations
+  (`20261002120000`…`20261002130000`) were applied to Production by P197; the in-app deletion UI is still not released.
 
 ## Toolchain / access findings (P159, P160) still relevant
 

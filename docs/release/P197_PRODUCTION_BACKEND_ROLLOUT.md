@@ -86,6 +86,8 @@ first `delete-account` deploy attempt returned a platform 500 (no function was c
 
 ## 6. What was NOT done, and why (truthful gaps)
 
+> **Closed by P197B (2026-10-09):** the authenticated `delete-account` run, the registry head/export, the Edge-token pairing and the restore gate against the live registry were completed — see [P197B_PRODUCTION_DELETION_PROOF.md](P197B_PRODUCTION_DELETION_PROOF.md). The list below is the state at 2026-10-04.
+
 The session's operating rules forbid creating accounts and entering passwords on a non-local host, even when the task asks
 for it; the registry operator credentials had been moved out of the machine by the owner. Therefore **not verified**:
 
@@ -117,6 +119,6 @@ failure: redeploy the downloaded source of that function (the only failure seen 
 
 ## 8. Next
 
-P198 = release the current validated `main` frontend (manual `deploy-production.yml`, `backend_ack = BACKEND-ROLLED-OUT`),
+(Update 2026-10-09: the owner proofs are done — P197B.) P198 = release the current validated `main` frontend (manual `deploy-production.yml`, `backend_ack = BACKEND-ROLLED-OUT`),
 after the owner-run proofs in §6 — in particular the delete-account and registry checks — or an explicit owner decision to
 accept them as open. Production is now **old frontend + DB114 + current functions**; do not read `main` as Production.

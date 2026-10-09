@@ -194,7 +194,8 @@
     "p188_integration_matrix": "docs/release/P188_INTEGRATION_MATRIX.md",
     "native_build_profiles": "docs/mobile/BUILD_CONFIGURATION_PROFILES.md",
     "p194_main_merge": "docs/release/P194_MAIN_MERGE.md",
-    "p197_production_backend_rollout": "docs/release/P197_PRODUCTION_BACKEND_ROLLOUT.md"
+    "p197_production_backend_rollout": "docs/release/P197_PRODUCTION_BACKEND_ROLLOUT.md",
+    "p197b_production_deletion_proof": "docs/release/P197B_PRODUCTION_DELETION_PROOF.md"
   },
   "integrated_main": {
     "prompt": 194,
@@ -239,5 +240,20 @@
     },
     "ready_for_p196": "no",
     "note": "Open owner items: rotate secret keys, PRODUCTION_SUPABASE_* secrets, Supabase function secrets, supabase login for the Production backup."
+  },
+  "account_deletion_proof": {
+    "prompt": "197B",
+    "status": "COMPLETE",
+    "date": "2026-10-09",
+    "tooling_pull_requests": [124, 125],
+    "real_deletion": "pass",
+    "registry_seq_before_after": [0, 1],
+    "restore_drill": "20/21 pass (only POST_RESTORE_CRON_PRODUCTION_CALLS, documented limitation)",
+    "promote_check": "PROMOTABLE",
+    "off_machine_copies": "owner_attested_not_verified",
+    "graded_sealed_valuation_test": "outstanding",
+    "frontend_deployed": false,
+    "ready_for_p198": "yes",
+    "note": "Eligible, not started. docs/release/P197B_PRODUCTION_DELETION_PROOF.md"
   }
 }
