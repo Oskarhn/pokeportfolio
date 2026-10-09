@@ -350,7 +350,7 @@ export function AddToCollectionPage() {
               />
               <TextField
                 label="Manual value (NOK)"
-                hint="Optional — separate from acquisition cost, marked as your own estimate"
+                hint="Optional — your own estimate per copy, separate from acquisition cost. Replaces this card’s current manual value, if it has one."
                 inputMode="decimal"
                 placeholder="2500"
                 value={manualValue}

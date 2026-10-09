@@ -1601,3 +1601,11 @@ Reproduce: `docker logs` the stack's `supabase_edge_runtime_*` and `supabase_kon
 POSTing a 24 KiB body to `/functions/v1/delete-account` in a loop. Do not `docker restart` a single
 stack container to get a "cold" run: Kong keeps the old upstream address and answers 502/hangs for
 reasons unrelated to this.
+
+## 6j. Manual value on add (P199)
+
+`tests/db/p199_manual_value_on_add.test.ts` (db-tests job): the second graded copy, a second receipt, two lines for one holding in one
+receipt and a sealed line each carry a manual value for a holding that already has one — the acquisition succeeds, the active
+valuation is replaced atomically (`superseded_at` equals the new row's `created_at`), a copy without a value leaves it alone, a
+backdated copy cannot start the replacement earlier than the row it replaces, raw cards still refuse a value, and the rebuilt
+history values every day from the later value (no unvalued lots). Each case failed with a raw `23505` before D-199B.

@@ -2513,3 +2513,11 @@ path: a new holding is watched at once, but its first snapshot waits for the nex
 `ingest-prices` tick. Server logs showed zero `search-prices` POSTs in 24 hours and a single OPTIONS;
 no unit or Playwright test could notice, because none crosses an origin. Lesson: a client that hides
 failure needs a test that proves the request can leave the browser.
+
+## 2026-10-09 — "Add another copy" with a value lost the whole acquisition (P199)
+
+Adding a second copy of a graded card with a manual value failed with `duplicate key value violates unique constraint
+"manual_valuations_one_active"`, and the failure took the lot and its purchase with it. The first copy's flow had been tested; the
+second copy of the same holding never was, because every fixture used a fresh card. Lesson: the second occurrence of an identity is
+a different code path from the first, and a form that invites it ("Add another copy") must have it under test. Details: D-199B,
+docs/TESTING.md §6j.

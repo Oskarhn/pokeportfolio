@@ -437,7 +437,7 @@ export function HoldingDetailPage() {
 
             <div className="flex items-end gap-2 pt-1">
               <TextField
-                label="Set manual value (NOK)"
+                label="Set manual value per copy (NOK)"
                 inputMode="decimal"
                 placeholder="2500"
                 value={manualValueInput}
