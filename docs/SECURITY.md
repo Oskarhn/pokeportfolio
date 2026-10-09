@@ -487,6 +487,20 @@ reserved for password recovery. **The trust assumption is explicit:** the owner 
 sending an invitation link only to the person they intend, over a channel they trust. The link is
 the credential.
 
+**Request body (P200/P206).** The endpoint is public (no JWT), so it bounds what it reads before it
+parses anything: a declared `Content-Length` above 4 KiB, or a stream that crosses 4 KiB (a chunked
+upload has no length), is answered `413` and the stream is cancelled at the limit rather than buffered
+(a valid body is under 1 KiB). A body that is not a JSON *object* (`null`, a number, a string, an array,
+malformed or empty) is `400 bad_request`; it used to reach `body.token` and fail with a 500. Refusals
+carry the same CORS headers as every other answer, a refused oversize body consumes nothing (the
+invitation still redeems), and no request token or password is ever logged. The reader is
+`supabase/functions/_shared/bounded-body.ts`; `delete-account` keeps its own private copy (P152) and is
+untouched. Tests: `tests/data/p206-redeem-invitation-body.test.ts` (real function under Deno, no
+database) and `tests/authorization/p200_redeem_invitation_hardening.test.ts` (local stack).
+**This is an Edge Function change: it takes effect in Production only after `redeem-invitation` is
+redeployed, which is an owner-gated deployment step that has NOT been performed.** No migration is
+needed.
+
 ### 5.6 The initial administrator
 
 There is no "first user to register becomes admin" path, and no email address hardcoded anywhere.
