@@ -1,3 +1,9 @@
+import {
+  PageLoading,
+  PageUnavailable,
+  BACK_LINK_CLASS,
+  unavailableMessage,
+} from '../../ui/PageState'
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -64,10 +70,20 @@ export function PurchaseEditPage() {
   })
 
   if (detail.isLoading) {
-    return <p className="py-8 text-center text-sm text-slate-500">Loading…</p>
+    return <PageLoading label="Loading purchase" />
   }
-  if (!detail.data) {
-    return <p className="py-8 text-center text-sm text-slate-400">Purchase not found.</p>
+  if (detail.isError || !detail.data) {
+    return (
+      <PageUnavailable
+        title="Edit purchase"
+        message={unavailableMessage('That purchase', detail.isError)}
+        onRetry={detail.isError ? () => void detail.refetch() : undefined}
+      >
+        <Link to="/purchases" className={BACK_LINK_CLASS}>
+          Back to purchases
+        </Link>
+      </PageUnavailable>
+    )
   }
   if (detail.data.purchase.voidedAt) {
     return (

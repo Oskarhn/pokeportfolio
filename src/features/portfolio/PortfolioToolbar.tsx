@@ -209,6 +209,8 @@ function ToolbarButton({
     <button
       type="button"
       onClick={onClick}
+      // The visible label is display:none below sm, which leaves an icon-only button with no name.
+      aria-label={iconOnlyOnMobile ? label : undefined}
       className="flex min-h-9 items-center gap-1.5 rounded-lg border border-slate-700 px-3 text-sm font-medium text-slate-300 hover:bg-slate-800"
     >
       {icon}

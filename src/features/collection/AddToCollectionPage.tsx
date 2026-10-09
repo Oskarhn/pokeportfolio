@@ -1,3 +1,4 @@
+import { PageLoading, PageUnavailable, unavailableMessage } from '../../ui/PageState'
 import { useState } from 'react'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -157,6 +158,7 @@ export function AddToCollectionPage() {
   if (!search.variantId && !search.manualCardId) {
     return (
       <div className="mx-auto w-full max-w-md space-y-3 py-8 text-center">
+        <h1 className="sr-only">Add to Portfolio</h1>
         <p className="text-sm text-slate-400">
           Start from a card's detail page, or add a card the catalog doesn't have.
         </p>
@@ -171,19 +173,26 @@ export function AddToCollectionPage() {
     (search.variantId ? variantQuery.isPending : false) ||
     (search.manualCardId ? manualQuery.isPending : false)
   if (loading) {
-    return <div className="mx-auto h-64 w-full max-w-xl animate-pulse rounded-lg bg-slate-800/60" />
+    return <PageLoading label="Loading card" className="h-64 max-w-xl rounded-lg" />
   }
 
   const variant: CatalogVariantWithCard | null | undefined = variantQuery.data
   const manual = manualQuery.data
   if ((variantId && !variant) || (manualCardId && !manual)) {
     return (
-      <p
-        role="alert"
-        className="mx-auto w-full max-w-xl rounded-lg border border-rose-900/60 bg-rose-950/40 p-3 text-sm text-rose-200"
-      >
-        That card could not be found.
-      </p>
+      <PageUnavailable
+        title="Add to Portfolio"
+        message={unavailableMessage('That card', variantQuery.isError || manualQuery.isError)}
+        onRetry={
+          variantQuery.isError || manualQuery.isError
+            ? () => {
+                void variantQuery.refetch()
+                void manualQuery.refetch()
+              }
+            : undefined
+        }
+        className="max-w-xl"
+      />
     )
   }
 

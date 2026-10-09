@@ -1,3 +1,9 @@
+import {
+  PageLoading,
+  PageUnavailable,
+  BACK_LINK_CLASS,
+  unavailableMessage,
+} from '../../ui/PageState'
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -195,23 +201,19 @@ export function HoldingDetailPage() {
   }, [lots.data])
 
   if (holding.isPending) {
-    return (
-      <div className="mx-auto h-64 w-full max-w-2xl animate-pulse rounded-lg bg-slate-800/60" />
-    )
+    return <PageLoading label="Loading holding" />
   }
   if (holding.isError || !holding.data) {
     return (
-      <div className="mx-auto w-full max-w-2xl space-y-4 py-2">
-        <p
-          role="alert"
-          className="rounded-lg border border-rose-900/60 bg-rose-950/40 p-3 text-sm text-rose-200"
-        >
-          That holding could not be found.
-        </p>
-        <Link to="/portfolio" className="text-sm text-sky-400 underline-offset-4 hover:underline">
+      <PageUnavailable
+        title="Holding"
+        message={unavailableMessage('That holding', holding.isError)}
+        onRetry={holding.isError ? () => void holding.refetch() : undefined}
+      >
+        <Link to="/portfolio" className={BACK_LINK_CLASS}>
           ← Back to Portfolio
         </Link>
-      </div>
+      </PageUnavailable>
     )
   }
 

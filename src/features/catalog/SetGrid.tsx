@@ -107,6 +107,7 @@ export function SetGrid() {
     return (
       <div
         className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4"
+        role="status"
         aria-busy="true"
         aria-label="Loading sets"
       >

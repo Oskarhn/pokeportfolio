@@ -1,6 +1,12 @@
 import { Link, useParams } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import {
+  PageLoading,
+  PageUnavailable,
+  BACK_LINK_CLASS,
+  unavailableMessage,
+} from '../../ui/PageState'
+import {
   getOwnedSealedSummary,
   getSealedProduct,
   SEALED_PRODUCT_TYPE_LABEL,
@@ -29,23 +35,19 @@ export function SealedProductDetailPage() {
   })
 
   if (product.isPending) {
-    return (
-      <div className="mx-auto h-64 w-full max-w-2xl animate-pulse rounded-lg bg-slate-800/60" />
-    )
+    return <PageLoading label="Loading sealed product" />
   }
   if (product.isError || !product.data) {
     return (
-      <div className="mx-auto w-full max-w-2xl space-y-4 py-2">
-        <p
-          role="alert"
-          className="rounded-lg border border-rose-900/60 bg-rose-950/40 p-3 text-sm text-rose-200"
-        >
-          That sealed product could not be found.
-        </p>
-        <Link to="/catalog" className="text-sm text-sky-400 underline-offset-4 hover:underline">
+      <PageUnavailable
+        title="Sealed product"
+        message={unavailableMessage('That sealed product', product.isError)}
+        onRetry={product.isError ? () => void product.refetch() : undefined}
+      >
+        <Link to="/catalog" className={BACK_LINK_CLASS}>
           ← Back to Search
         </Link>
-      </div>
+      </PageUnavailable>
     )
   }
 

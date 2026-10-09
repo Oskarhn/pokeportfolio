@@ -222,7 +222,8 @@ export function HomePage() {
 
   return (
     <div className="mx-auto w-full max-w-2xl space-y-6 py-2">
-      <div className="md:hidden">
+      <h1 className="sr-only">Home</h1>
+      <div className="md:hidden" aria-hidden="true">
         <span className="text-lg font-semibold tracking-tight text-slate-100">PokePortfolio</span>
       </div>
 

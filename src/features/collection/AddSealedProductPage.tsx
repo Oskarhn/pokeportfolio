@@ -1,3 +1,4 @@
+import { PageLoading, PageUnavailable, unavailableMessage } from '../../ui/PageState'
 import { useState } from 'react'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -228,16 +229,16 @@ export function AddSealedProductPage() {
   }
 
   if (productQuery.isPending) {
-    return <div className="mx-auto h-64 w-full max-w-xl animate-pulse rounded-lg bg-slate-800/60" />
+    return <PageLoading label="Loading sealed product" className="h-64 max-w-xl rounded-lg" />
   }
   if (productQuery.isError || !productQuery.data) {
     return (
-      <p
-        role="alert"
-        className="mx-auto w-full max-w-xl rounded-lg border border-rose-900/60 bg-rose-950/40 p-3 text-sm text-rose-200"
-      >
-        That sealed product could not be found.
-      </p>
+      <PageUnavailable
+        title="Add sealed product"
+        message={unavailableMessage('That sealed product', productQuery.isError)}
+        onRetry={productQuery.isError ? () => void productQuery.refetch() : undefined}
+        className="max-w-xl"
+      />
     )
   }
 

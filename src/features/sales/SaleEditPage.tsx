@@ -1,3 +1,9 @@
+import {
+  PageLoading,
+  PageUnavailable,
+  BACK_LINK_CLASS,
+  unavailableMessage,
+} from '../../ui/PageState'
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -38,20 +44,19 @@ export function SaleEditPage() {
   const detail = useQuery({ queryKey: ['sale', saleId], queryFn: () => getSale(saleId) })
 
   if (detail.isPending) {
-    return (
-      <div className="mx-auto h-64 w-full max-w-2xl animate-pulse rounded-lg bg-slate-800/60" />
-    )
+    return <PageLoading label="Loading sale" />
   }
   if (detail.isError || !detail.data) {
     return (
-      <div className="mx-auto w-full max-w-2xl space-y-4 py-2">
-        <p
-          role="alert"
-          className="rounded-lg border border-rose-900/60 bg-rose-950/40 p-3 text-sm text-rose-200"
-        >
-          That sale could not be found.
-        </p>
-      </div>
+      <PageUnavailable
+        title="Edit sale"
+        message={unavailableMessage('That sale', detail.isError)}
+        onRetry={detail.isError ? () => void detail.refetch() : undefined}
+      >
+        <Link to="/history" className={BACK_LINK_CLASS}>
+          ← Back to History
+        </Link>
+      </PageUnavailable>
     )
   }
   if (detail.data.sale.voidedAt) {
