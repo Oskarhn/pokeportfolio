@@ -191,6 +191,10 @@ const UNAVAILABLE_COPY: Record<UnavailableReason, { text: string; retry: boolean
     text: 'The price source is rate limiting requests. Wait a moment and try again.',
     retry: true,
   },
+  timeout: {
+    text: 'The price lookup took too long and was stopped. This is a lookup failure, not a zero price. Try again.',
+    retry: true,
+  },
   network: {
     text: 'The connection failed. Check your network and try again.',
     retry: true,

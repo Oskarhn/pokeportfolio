@@ -43,7 +43,17 @@ interface SearchPricesFunctionRow {
 interface SearchPricesFunctionBody {
   ok: boolean
   results?: SearchPricesFunctionRow[]
+  providerErrorCount?: number
   error?: string
+}
+
+/** How the lookup went — kept apart from the rows so "the source has no price" and "the lookup
+ *  failed" can never look alike to a caller. */
+export type SearchPricesStatus = 'ok' | 'provider_failed' | 'request_failed'
+
+export interface SearchPricesOutcome {
+  prices: Map<string, SearchPriceResult>
+  status: SearchPricesStatus
 }
 
 export const SEARCH_PRICES_MAX_CARD_IDS = 20
@@ -56,21 +66,33 @@ export async function searchPrices(
   cardIds: string[],
   useEuPricing: boolean,
 ): Promise<Map<string, SearchPriceResult>> {
+  return (await searchPricesDetailed(cardIds, useEuPricing)).prices
+}
+
+/** Same lookup as `searchPrices`, but says whether it worked. A caller that renders a single card
+ *  (Card Detail) uses this so a failed lookup is shown as a failure, not as "no price". */
+export async function searchPricesDetailed(
+  cardIds: string[],
+  useEuPricing: boolean,
+): Promise<SearchPricesOutcome> {
   const bounded = cardIds.slice(0, MAX_CARD_IDS)
-  if (bounded.length === 0) return new Map()
+  if (bounded.length === 0) return { prices: new Map(), status: 'ok' }
+  const failed: SearchPricesOutcome = { prices: new Map(), status: 'request_failed' }
 
   try {
     const invoked = await supabase.functions.invoke('search-prices', {
       body: { cardIds: bounded, useEuPricing },
     })
     const body = invoked.data as SearchPricesFunctionBody | null
-    if (invoked.error || !body?.ok || !body.results) return new Map()
+    if (invoked.error || !body?.ok || !body.results) return failed
     // A bare JSON integer this client cannot hold was quoted by the transport guard, which turns a
     // number the function ALREADY rounded (`Number(bigint)`) into exact-looking digits. A price
     // cannot be trusted after that: no prices, like any other malformed response (D-164).
-    if (invoked.response?.headers.get(EXACT_TRANSPORT_REWRITE_HEADER) != null) return new Map()
+    if (invoked.response?.headers.get(EXACT_TRANSPORT_REWRITE_HEADER) != null) return failed
 
-    return new Map(
+    const providerFailed =
+      typeof body.providerErrorCount === 'number' && body.providerErrorCount > 0
+    const prices = new Map(
       body.results.map((r) => [
         r.cardVariantId,
         {
@@ -85,8 +107,9 @@ export async function searchPrices(
         },
       ]),
     )
+    return { prices, status: providerFailed ? 'provider_failed' : 'ok' }
   } catch {
-    return new Map()
+    return failed
   }
 }
 
