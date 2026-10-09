@@ -25,9 +25,15 @@ concurrency:
 permissions:
   contents: read
 
+# Job timeouts (P203). Measured on the last two green runs of main (2026-10-08): build-and-test
+# 1322-1339 s and db-tests 1314-1337 s (~22 min each), native-checks 71-79 s. The limit is about twice
+# the observed time: tight enough that a hung step frees the runner in under an hour instead of the
+# platform's 6-hour default, loose enough to absorb a slow runner. Raise a limit only after the
+# measurement above (the job summary's slowest-file tables) shows the work genuinely grew.
 jobs:
   build-and-test:
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -64,8 +70,9 @@ jobs:
           node scripts/check-project-state.mjs
           node scripts/check-doc-links.mjs
 
+      # JUnit beside the console output (P203): the job summary's slowest-file table reads it.
       - name: Domain and property tests
-        run: pnpm test
+        run: pnpm test --reporter=default --reporter=junit --outputFile.junit=ci-results/unit-junit.xml
 
       # The same placeholder Supabase configuration the E2E suite builds against
       # (playwright.config.ts). vite.config.ts derives the deployed Content-Security-Policy from
@@ -109,6 +116,16 @@ jobs:
       - name: Browser E2E
         run: pnpm test:e2e
 
+      # Always runs (P203): a red job still shows where the time went, and a green one shows which
+      # tests passed only on a retry (playwright.config.ts allows two in CI, which hides flakiness).
+      - name: Test duration and flaky-test summary
+        if: always()
+        run: |
+          node scripts/ci/test-summary.mjs --title "build-and-test: test durations and flaky tests" \
+            --junit "Unit, domain, property and config tests=ci-results/unit-junit.xml" \
+            --playwright "Browser E2E (placeholder backend)=ci-results/playwright.json" \
+            >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload Playwright report on failure
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -133,6 +150,7 @@ jobs:
   # any mismatch, so the cache can never substitute different bytes.
   native-checks:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
@@ -176,6 +194,7 @@ jobs:
   # remote credentials are used anywhere in this job. See docs/DEVELOPMENT.md §4 and prompt §57-58.
   db-tests:
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
@@ -199,10 +218,17 @@ jobs:
       # function refuses every deletion, fail closed, if the sink is not reachable).
       - name: Generate the ephemeral erasure-registry credentials for this run
         run: |
+          ERASURE_TOKEN="$(openssl rand -hex 24)"
+          ERASURE_KEY="$(openssl rand -hex 32)"
+          # Values written to $GITHUB_ENV are not secrets as far as Actions knows, so they would be
+          # printed verbatim by any later step that echoes its environment or a container log.
+          # Masking them first keeps the failure-diagnostics artifact below free of them (P203).
+          echo "::add-mask::$ERASURE_TOKEN"
+          echo "::add-mask::$ERASURE_KEY"
           {
             echo "ERASURE_REGISTRY_URL=http://172.17.0.1:8787"
-            echo "ERASURE_REGISTRY_TOKEN=$(openssl rand -hex 24)"
-            echo "ERASURE_REGISTRY_KEY=$(openssl rand -hex 32)"
+            echo "ERASURE_REGISTRY_TOKEN=$ERASURE_TOKEN"
+            echo "ERASURE_REGISTRY_KEY=$ERASURE_KEY"
           } >> "$GITHUB_ENV"
 
       - name: Start local Supabase stack (applies every migration to an empty database)
@@ -275,7 +301,24 @@ jobs:
         run: |
           psql "$DB_URL" -v ON_ERROR_STOP=1 -c "alter role authenticator set statement_timeout = '2min'; alter role authenticator set lock_timeout = '2min';"
           docker restart "$(docker ps --filter name=supabase_rest_ --format '{{.Names}}')"
-          sleep 3
+          # Wait for the gateway to serve REST again instead of sleeping a fixed 3 s (P203). After a
+          # PostgREST restart the API gateway can keep routing to the container's previous address;
+          # reproduced locally as "An invalid response was received from the upstream server" on the
+          # first request of every suite. If REST is still unreachable after 20 s the gateway is
+          # restarted too, and the step fails — not the first test — if it never recovers.
+          for attempt in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" -m 5 -H "apikey: $SUPABASE_ANON_KEY" "$SUPABASE_URL/rest/v1/" || true)
+            if [ "$code" = "200" ]; then echo "REST is serving through the gateway (attempt $attempt)"; break; fi
+            echo "attempt $attempt: HTTP $code"
+            if [ "$attempt" = "10" ]; then
+              docker restart "$(docker ps --filter name=supabase_kong_ --format '{{.Names}}')"
+            fi
+            if [ "$attempt" = "30" ]; then
+              echo "::error::REST never became reachable through the gateway after the restart"
+              exit 1
+            fi
+            sleep 2
+          done
 
       # What the catalog actually grants `anon` and `authenticated`, asserted against the intended
       # surface rather than inferred from behaviour. docs/SECURITY.md §5.9.
@@ -329,7 +372,7 @@ jobs:
           exit 1
 
       - name: Database and authorization tests
-        run: pnpm test:db
+        run: pnpm test:db --reporter=default --reporter=junit --outputFile.junit=ci-results/db-junit.xml
 
       # P130-28/P139: real, signed-in, UI-driven authenticated form behavior (TESTING.md §6b, P94)
       # never ran anywhere but by hand before this — the placeholder-backend suite in build-and-
@@ -450,6 +493,31 @@ jobs:
         with:
           name: database-types
           path: src/data/database.types.ts
+          retention-days: 7
+
+      # P203: the stack is stopped by the next step, and its container logs are the only evidence of a
+      # gateway, auth or edge-runtime fault behind a red suite. Redacted by the repository's own
+      # credential redactor; the step never fails, so it cannot mask the real failure.
+      - name: Collect Supabase container logs
+        if: failure()
+        run: node scripts/ci/collect-diagnostics.mjs --out ci-diagnostics
+
+      - name: Upload Supabase container logs on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: supabase-container-logs
+          path: ci-diagnostics
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Test duration and flaky-test summary
+        if: always()
+        run: |
+          node scripts/ci/test-summary.mjs --title "db-tests: test durations and flaky tests" \
+            --junit "Database and authorization tests=ci-results/db-junit.xml" \
+            --playwright "Authenticated E2E (real Supabase)=ci-results/playwright.json" \
+            >> "$GITHUB_STEP_SUMMARY"
 
       - name: Stop local Supabase stack
         if: always()
