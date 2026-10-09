@@ -316,7 +316,8 @@ function CardLineFields({
             }}
           />
           <TextField
-            label="Manual value (NOK)"
+            label="Manual value per copy (NOK)"
+            hint="Optional — replaces this card’s current manual value, if it has one"
             inputMode="decimal"
             value={draft.manualValue}
             onChange={(event) => {

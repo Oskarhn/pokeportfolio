@@ -461,6 +461,9 @@ zero — some bulk commons really do trade at nothing. That is categorically dif
 no observation, and the two must never collapse into the same state. `price_state` distinguishes
 them; `value_minor = 0` with `price_state = 'fresh'` is valid data.
 
+**A manual value entered while adding a copy (D-199B)** is a new per-copy valuation for the holding: it supersedes the active
+one atomically and starts no earlier than the one it replaces. It is never a cost basis.
+
 Provider price selection for raw cards (Cardmarket, EUR):
 
 1. `trend`

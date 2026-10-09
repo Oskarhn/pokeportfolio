@@ -7204,3 +7204,29 @@ retention window without a known backup horizon.
 **Accepted residual.** The HMAC does not protect against a compromise of the Cloudflare account itself (it can redeploy
 the Worker and read its secrets) — account 2FA and off-platform verified exports are the mitigation; the export is
 manual until the owner schedules it; the HMAC key cannot be rotated without a re-signing tool that does not exist.
+
+## D-199B — A manual value typed while adding a copy replaces the holding's active valuation (P199)
+
+**2026-10-09 · Accepted**
+
+**Context.** `add_card_acquisition` (`p_manual_value_minor`) and `create_purchase` (a line's `manual_value_minor`) inserted a
+manual valuation unconditionally. A holding has at most one active valuation (`manual_valuations_one_active`, FINANCIAL_MODEL.md
+§6), so adding a second copy of a graded card or sealed product that was already valued — "Add another copy" on the holding, or a
+second receipt, or two lines for one holding in one receipt — raised a raw `23505` and rolled the whole acquisition back (lot,
+synthetic purchase or receipt included). The form text promised an optional value; the user lost the acquisition.
+
+**Decision.** (1) The value typed is the same fact as pressing **Update** on the holding: a per-copy manual value that supersedes
+the active valuation atomically (`superseded_at` = the new row's `created_at`, D-062). (2) The replacement starts at
+`greatest(acquisition date, replaced valuation's effective_from)`: a replacement that began *before* the row it supersedes would
+sort ahead of it in the historical rebuild and the active value would vanish from that row's start. (3) The two timestamps are
+one explicit value strictly later than the replaced row's `created_at`, so two lines for one holding in one transaction (same
+`now()`) still order deterministically. (4) A copy added without a manual value never touches the active valuation. (5) Raw cards
+still refuse a manual value.
+
+**Consequences.** Earlier copies of the holding are re-valued at the new per-copy value from the replacement date on (a manual
+valuation is per holding, not per lot — unchanged). No cost basis changes; a manual value is never a purchase cost (F4). Migration
+`20261009130000_p199_manual_value_on_add_replaces.sql` replaces the two functions with unchanged signatures and grants.
+**Production requirement:** apply the migration; no data repair.
+
+**Accepted residual.** Two simultaneous adds with a manual value for the same holding can still collide on the unique index (the
+same window `set_manual_valuation` has); the loser gets the unique violation and retries.
