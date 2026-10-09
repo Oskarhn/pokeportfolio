@@ -18,6 +18,9 @@ import {
 } from '../../data/collection'
 import { SEALED_PRODUCT_TYPE_LABEL } from '../../data/sealedProducts'
 import { MoneyDisplay } from '../../ui/MoneyDisplay'
+import { heldCostBasisNok } from '../../domain/cost-basis'
+import { lotUnitCostLabel } from './lot-cost'
+import { perCopyCaption } from './value-caption'
 import {
   addHoldingToCollection,
   getHoldingCollectionIds,
@@ -179,17 +182,15 @@ export function HoldingDetailPage() {
   const costSummary = useMemo(() => {
     const live = (lots.data ?? []).filter((l) => !l.voidedAt)
     if (live.length === 0) return null
-    const known = live.filter((l) => l.costBasisState === 'known' && l.unitCostBasisMinor !== null)
-    if (known.length === 0) return { text: 'No recorded cost for any lot', qualified: false }
-    const total = known.reduce(
-      (sum, l) => sum + (l.unitCostBasisMinor as bigint) * BigInt(l.quantityRemaining),
-      0n,
-    )
-    if (known.length === live.length) {
-      return { text: `Total paid: ${formatNokMinor(total)} NOK`, qualified: false }
+    const held = heldCostBasisNok(live)
+    if (held.heldLotCount === 0) return null
+    if (held.knownLotCount === 0) return { text: 'No recorded cost for any lot', qualified: false }
+    const total = formatNokMinor(held.totalNokMinor)
+    if (held.knownLotCount === held.heldLotCount) {
+      return { text: `Cost of the copies you hold: ${total} NOK`, qualified: false }
     }
     return {
-      text: `${formatNokMinor(total)} NOK known across ${known.length} of ${live.length} lots — the rest have no recorded cost`,
+      text: `${total} NOK known across ${held.knownLotCount} of ${held.heldLotCount} lots — the rest have no recorded cost`,
       qualified: true,
     }
   }, [lots.data])
@@ -391,9 +392,9 @@ export function HoldingDetailPage() {
                 minorUnits={provenance.data?.holdingValueMinor ?? undefined}
                 stale={provenance.data?.priceState === 'stale'}
               />
-              {h.quantity > 1 && provenance.data?.unitValueMinor !== null ? (
+              {perCopyCaption(provenance.data?.unitValueMinor, h.quantity) ? (
                 <span className="text-xs text-slate-500">
-                  {formatNokMinor(provenance.data?.unitValueMinor ?? 0n)} NOK / card × {h.quantity}
+                  {perCopyCaption(provenance.data?.unitValueMinor, h.quantity)}
                 </span>
               ) : null}
             </div>
@@ -552,8 +553,8 @@ export function HoldingDetailPage() {
                     </p>
                   ) : null}
                   <p className="text-xs text-slate-400">
-                    {lot.costBasisState === 'known' && lot.unitCostBasisMinor !== null
-                      ? `${formatNokMinor(lot.unitCostBasisMinor)} NOK / card`
+                    {lot.costBasisState === 'known' && lotUnitCostLabel(lot) !== null
+                      ? lotUnitCostLabel(lot)
                       : lot.costBasisState === 'unallocated_opening'
                         ? 'From opening — no individual purchase cost'
                         : lot.costBasisState === 'not_paid'

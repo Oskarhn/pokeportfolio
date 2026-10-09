@@ -9,6 +9,7 @@ import { SealedProductImage } from '../catalog/SealedProductImage'
 import { CONDITION_LABEL } from '../collection/labels'
 import { formatNokMinor } from '../../ui/money-format'
 import { CheckIcon } from '../../ui/icons'
+import { PriceStateMark } from '../../ui/PriceStateMark'
 import { useScrollMargin } from './useScrollMargin'
 
 interface SelectModeProps {
@@ -17,10 +18,14 @@ interface SelectModeProps {
   onToggleSelect?: (holdingId: string) => void
 }
 
-function valueText(tile: PortfolioTile): string {
-  if (tile.holdingValueMinor === null) return '—'
-  const suffix = tile.priceState === 'stale' ? ' ·' : ''
-  return `${formatNokMinor(tile.holdingValueMinor)} NOK${suffix}`
+function ValueText({ tile }: { tile: PortfolioTile }) {
+  if (tile.holdingValueMinor === null) return <PriceStateMark state="missing" />
+  return (
+    <span className="inline-flex items-center gap-1">
+      {formatNokMinor(tile.holdingValueMinor)} NOK
+      {tile.priceState === 'stale' ? <PriceStateMark state="stale" /> : null}
+    </span>
+  )
 }
 
 function conditionText(tile: PortfolioTile): string {
@@ -148,7 +153,9 @@ export function PortfolioListView({
                         {tile.quantity > 1 ? (
                           <p className="text-sm font-semibold text-slate-200">×{tile.quantity}</p>
                         ) : null}
-                        <p className="text-xs text-slate-400">{valueText(tile)}</p>
+                        <p className="text-xs text-slate-400">
+                          <ValueText tile={tile} />
+                        </p>
                       </div>
                     </>
                   )
@@ -185,6 +192,10 @@ export function PortfolioListView({
   )
 }
 
+/* The rows below are `display: flex` / `block` so the window virtualizer can position them, which makes
+ * WebKit and Blink drop the implicit table semantics. The roles are therefore re-asserted explicitly;
+ * jsx-a11y calls them redundant or interactive-to-noninteractive because it cannot see the CSS. */
+/* eslint-disable jsx-a11y/no-redundant-roles, jsx-a11y/no-interactive-element-to-noninteractive-role */
 /**
  * Table view (M7 prompt §45-46) — also available on mobile, deliberately horizontally scrollable
  * rather than squeezed. Holdings stay grouped: one row per holding, never one row per lot.
@@ -218,19 +229,42 @@ export function PortfolioTableView({
 
   return (
     <div className="overflow-x-auto rounded-lg border border-slate-800">
-      <table className="w-full min-w-[720px] border-collapse text-sm">
-        <thead className="sticky top-0 bg-slate-950 text-left text-xs text-slate-500">
-          <tr>
-            {selectMode ? <th className="w-8 p-2" aria-label="Select" /> : null}
-            <th className="p-2 font-medium">Card</th>
-            <th className="p-2 font-medium">Set / #</th>
-            <th className="p-2 font-medium">Qty</th>
-            <th className="p-2 font-medium">Condition / grade</th>
-            <th className="p-2 font-medium">Storage</th>
-            <th className="p-2 text-right font-medium">Value</th>
+      <table
+        role="table"
+        aria-label="Portfolio holdings"
+        aria-rowcount={hasMore ? -1 : tiles.length + 1}
+        className="w-full min-w-[720px] border-collapse text-sm"
+      >
+        <thead
+          role="rowgroup"
+          className="sticky top-0 bg-slate-950 text-left text-xs text-slate-500"
+        >
+          <tr role="row" aria-rowindex={1}>
+            {selectMode ? (
+              <th role="columnheader" scope="col" className="w-8 p-2" aria-label="Select" />
+            ) : null}
+            <th role="columnheader" scope="col" className="p-2 font-medium">
+              Card
+            </th>
+            <th role="columnheader" scope="col" className="p-2 font-medium">
+              Set / #
+            </th>
+            <th role="columnheader" scope="col" className="p-2 font-medium">
+              Qty
+            </th>
+            <th role="columnheader" scope="col" className="p-2 font-medium">
+              Condition / grade
+            </th>
+            <th role="columnheader" scope="col" className="p-2 font-medium">
+              Storage
+            </th>
+            <th role="columnheader" scope="col" className="p-2 text-right font-medium">
+              Value
+            </th>
           </tr>
         </thead>
         <tbody
+          role="rowgroup"
           ref={parentRef}
           className="relative block"
           style={{ height: virtualizer.getTotalSize() }}
@@ -241,6 +275,8 @@ export function PortfolioTableView({
             return (
               <tr
                 key={row.key}
+                role="row"
+                aria-rowindex={row.index + 2}
                 ref={virtualizer.measureElement}
                 data-index={row.index}
                 className="absolute left-0 flex w-full border-t border-slate-800 [&>td]:flex [&>td]:items-center"
@@ -249,11 +285,13 @@ export function PortfolioTableView({
                 }}
               >
                 {isLoaderRow || !tile ? (
-                  <td className="h-10 w-full justify-center text-slate-500">Loading more…</td>
+                  <td role="cell" className="h-10 w-full justify-center text-slate-500">
+                    Loading more…
+                  </td>
                 ) : (
                   <>
                     {selectMode ? (
-                      <td className="w-8 p-2">
+                      <td role="cell" className="w-8 p-2">
                         <button
                           type="button"
                           aria-pressed={selectedIds?.has(tile.holdingId)}
@@ -273,7 +311,7 @@ export function PortfolioTableView({
                         </button>
                       </td>
                     ) : null}
-                    <td className="min-w-0 flex-[2] gap-2 p-2">
+                    <td role="cell" className="min-w-0 flex-[2] gap-2 p-2">
                       {selectMode ? (
                         <button
                           type="button"
@@ -310,16 +348,20 @@ export function PortfolioTableView({
                         </Link>
                       )}
                     </td>
-                    <td className="min-w-0 flex-[1.5] p-2 text-slate-400">
+                    <td role="cell" className="min-w-0 flex-[1.5] p-2 text-slate-400">
                       {portfolioSubtitle(tile)}
                     </td>
-                    <td className="flex-1 p-2 text-slate-200">×{tile.quantity}</td>
-                    <td className="flex-1 p-2 text-slate-400">{conditionText(tile)}</td>
-                    <td className="flex-1 p-2 text-slate-400">
+                    <td role="cell" className="flex-1 p-2 text-slate-200">
+                      ×{tile.quantity}
+                    </td>
+                    <td role="cell" className="flex-1 p-2 text-slate-400">
+                      {conditionText(tile)}
+                    </td>
+                    <td role="cell" className="flex-1 p-2 text-slate-400">
                       {tile.hasMultipleStorageLocations ? 'Multiple locations' : '—'}
                     </td>
-                    <td className="flex-1 justify-end p-2 text-right text-slate-200">
-                      {valueText(tile)}
+                    <td role="cell" className="flex-1 justify-end p-2 text-right text-slate-200">
+                      <ValueText tile={tile} />
                     </td>
                   </>
                 )}
@@ -331,3 +373,4 @@ export function PortfolioTableView({
     </div>
   )
 }
+/* eslint-enable jsx-a11y/no-redundant-roles, jsx-a11y/no-interactive-element-to-noninteractive-role */

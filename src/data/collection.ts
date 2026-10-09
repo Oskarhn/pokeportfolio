@@ -164,8 +164,13 @@ export interface AcquisitionLot {
   acquiredOn: string
   quantity: number
   quantityRemaining: number
+  /** In the lot's ORIGINAL currency (`costBasisCurrency`) - not NOK unless that is NOK. */
   unitCostBasisMinor: bigint | null
   costBasisCurrency: string | null
+  /** Frozen NOK conversion of the unit basis (null exactly when there is no recorded cost). */
+  unitCostBasisNokMinor: bigint | null
+  /** NOK remainder that rides on the lot until the disposal that exhausts it (D-060/D-199). */
+  residualNokMinor: bigint
   storageLocationId: string | null
   storageLocationName: string | null
   notes: string | null
@@ -192,6 +197,8 @@ interface AcquisitionLotRow {
   quantity_remaining: number
   unit_cost_basis_minor: string | null
   cost_basis_currency: string | null
+  unit_cost_basis_nok_minor: string | null
+  residual_nok_minor: string
   storage_location_id: string | null
   notes: string | null
   voided_at: string | null
@@ -206,7 +213,7 @@ export async function getHoldingLots(holdingId: string): Promise<AcquisitionLot[
   const { data, error } = await supabase
     .from('acquisition_lots')
     .select(
-      'id, origin, cost_basis_state, acquired_on, quantity, quantity_remaining, unit_cost_basis_minor::text, cost_basis_currency, storage_location_id, notes, voided_at, created_at, storage_locations(name), sealed_intent, purchase_line_id, purchase_lines(purchase_id)',
+      'id, origin, cost_basis_state, acquired_on, quantity, quantity_remaining, unit_cost_basis_minor::text, cost_basis_currency, unit_cost_basis_nok_minor::text, residual_nok_minor::text, storage_location_id, notes, voided_at, created_at, storage_locations(name), sealed_intent, purchase_line_id, purchase_lines(purchase_id)',
     )
     .eq('holding_id', holdingId)
     .order('acquired_on', { ascending: false })
@@ -223,6 +230,11 @@ export async function getHoldingLots(holdingId: string): Promise<AcquisitionLot[
     unitCostBasisMinor:
       row.unit_cost_basis_minor === null ? null : parseMinorUnits(row.unit_cost_basis_minor),
     costBasisCurrency: row.cost_basis_currency,
+    unitCostBasisNokMinor:
+      row.unit_cost_basis_nok_minor === null
+        ? null
+        : parseMinorUnits(row.unit_cost_basis_nok_minor),
+    residualNokMinor: parseMinorUnits(row.residual_nok_minor),
     storageLocationId: row.storage_location_id,
     storageLocationName: row.storage_locations?.name ?? null,
     notes: row.notes,

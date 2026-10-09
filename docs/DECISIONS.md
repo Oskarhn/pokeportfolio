@@ -7204,3 +7204,25 @@ retention window without a known backup horizon.
 **Accepted residual.** The HMAC does not protect against a compromise of the Cloudflare account itself (it can redeploy
 the Worker and read its secrets) — account 2FA and off-platform verified exports are the mitigation; the export is
 manual until the owner schedules it; the HMAC key cannot be rotated without a re-signing tool that does not exist.
+
+## D-199C — Holding Detail shows the frozen NOK cost, names the currency of any other amount, and every missing or stale price has a text alternative (P199)
+
+**2026-10-09 · Accepted**
+
+**Context.** Holding Detail read `unit_cost_basis_minor` — the lot's *original-currency* unit cost — and printed it as "NOK / card",
+then summed it over `quantity_remaining` as "Total paid", across lots of different currencies, without the lot residual. A 45.00 EUR
+copy bought at 11.54 read "45,00 NOK" (the frozen cost is 519,30 NOK); a 10 000 JPY copy read "100,00 NOK". The same page printed
+"0,00 NOK / card × n" beside a "—" total when the provenance query had not answered, and `MoneyDisplay` rendered `state="known"`
+without an amount as 0. Staleness was a coloured dot with a `title` (Grid) or a bare " ·" (List/Table); a missing price had no text
+alternative; the virtualised Portfolio table lost its table semantics (`display: flex/block` rows).
+
+**Decision.** (1) The cost of the copies you hold is `domain.heldCostBasisNok`: frozen NOK basis × remaining + the lot residual while
+units remain, lots without a cost counted as unknown (never 0), nothing summed across original currencies. The line is labelled
+"Cost of the copies you hold". (2) A lot row shows its original-currency amount *with* its currency and, for a foreign lot, the frozen
+NOK conversion (`lotUnitCostLabel`). (3) An absent amount is never a number: `MoneyDisplay` renders "—" whenever the amount is
+absent, and `perCopyCaption` returns nothing for an unknown unit value. (4) `PriceStateMark` gives stale (4–30 days) and missing prices
+a screen-reader text; the Portfolio table declares `aria-label`, `aria-rowcount`/`aria-rowindex`, column headers with `scope` and explicit
+roles (a justified, scoped lint exemption).
+
+**Consequences.** Presentation and data-selection only: the two lot columns `unit_cost_basis_nok_minor` and `residual_nok_minor` are now
+selected; no schema, RPC, formula or stored value changes. No migration.
