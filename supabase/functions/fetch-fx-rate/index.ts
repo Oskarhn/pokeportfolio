@@ -9,15 +9,22 @@
  * (DATA_MODEL.md §1) — the JWT requirement exists only to keep this off the fully public internet,
  * matching ARCHITECTURE.md §2's "every screen is authenticated".
  *
- * Cache-then-fetch: a cached observation already covering the resolved date is reused; otherwise a
- * bounded window ending at the requested date is fetched from Norges Bank (fixed host, no
- * caller-supplied URL — see _shared/norges-bank.ts), the latest observation in that window is
- * cached under the service role, and returned. This is what makes the weekend/holiday fallback
- * (FINANCIAL_MODEL.md §7) and the same-day-before-publication case (a purchase recorded today,
- * before Norges Bank's ~16:00 CET release, naturally resolves to the last published business day)
- * both correct without special-casing either: the window always contains whatever was actually
- * published, and the caller is told which date it actually got back (`rateDate`), never a label
- * that pretends today's request used today's rate when it did not.
+ * Cache-then-fetch: a cached observation is reused ONLY when it is for exactly the requested date.
+ * Anything else — a row from an earlier business day included — is not proof that no later rate was
+ * published in between, and the rate returned here is frozen onto a purchase for good (F11), so
+ * "the most recent prior business-day rate" (FINANCIAL_MODEL.md §7) is established by asking Norges
+ * Bank for a bounded window ending at the requested date (fixed host, no caller-supplied URL — see
+ * _shared/norges-bank.ts). Every observation in that window is cached under the service role (so the
+ * neighbouring dates become exact hits), and the latest one is returned. This is also what makes the
+ * same-day-before-publication case (a purchase recorded today, before Norges Bank's ~16:00 CET
+ * release) correct without special-casing: the window holds whatever was actually published, and the
+ * caller is told which date it got back (`rateDate`), never a label that pretends today's request
+ * used today's rate when it did not.
+ *
+ * Before P201 the cache check accepted ANY cached row within ten days before the date, so a purchase
+ * dated Wednesday was frozen at Monday's rate whenever Monday happened to be cached and Tuesday's and
+ * Wednesday's were not. It now fails closed instead: when Norges Bank cannot be reached and there is
+ * no exact row, the answer is an error (and the manual-rate override), not an older rate.
  *
  * A manual override never reaches this function or `fx_rates` at all — it is written straight onto
  * the caller's own `purchases` row with `fx_source = 'manual'`, so one user's manual rate can never
@@ -35,8 +42,11 @@ import { createClient } from 'npm:@supabase/supabase-js@2.112.3'
 import { fetchNorgesBankRates, NorgesBankError } from '../_shared/norges-bank.ts'
 import { resolveServiceRoleKey } from '../_shared/service-key.ts'
 import { withCors } from '../_shared/cors.ts'
+import { logEvent } from '../_shared/log.ts'
 
 const LOOKBACK_DAYS = 10
+/** A person is waiting on the purchase form; give up on the provider well before they do. */
+const FETCH_BUDGET_MS = 12_000
 const DATE_SHAPE = /^\d{4}-\d{2}-\d{2}$/
 const CURRENCY_SHAPE = /^[A-Z]{3}$/
 
@@ -107,16 +117,13 @@ async function handle(request: Request): Promise<Response> {
     .eq('base_currency', baseCurrency)
     .eq('quote_currency', 'NOK')
     .eq('source', 'norges_bank')
-    .lte('rate_date', date)
-    .gte('rate_date', windowStart)
-    .order('rate_date', { ascending: false })
-    .limit(1)
+    .eq('rate_date', date)
     .maybeSingle()
 
   if (cacheError) {
-    return json(200, { ok: false, error: 'cache_read_failed' })
-  }
-  if (cached) {
+    // The cache is an optimisation: a failed read falls through to the authoritative source.
+    logEvent('fetch-fx-rate', 'cache_read_failed', { currency: baseCurrency }, 'warn')
+  } else if (cached) {
     return json(200, {
       ok: true,
       rate: cached.rate,
@@ -131,9 +138,20 @@ async function handle(request: Request): Promise<Response> {
       baseCurrency,
       startDate: windowStart,
       endDate: date,
+      deadlineMs: Date.now() + FETCH_BUDGET_MS,
     })
   } catch (error) {
     const message = error instanceof NorgesBankError ? error.message : 'Norges Bank unreachable'
+    logEvent(
+      'fetch-fx-rate',
+      'norges_bank_failed',
+      {
+        currency: baseCurrency,
+        failure_kind:
+          error instanceof NorgesBankError ? (error.failureKind ?? 'shape') : 'unexpected',
+      },
+      'warn',
+    )
     return json(200, { ok: false, error: 'norges_bank_unreachable', message })
   }
 
@@ -147,18 +165,21 @@ async function handle(request: Request): Promise<Response> {
 
   const latest = observations[observations.length - 1]!
 
+  // Cache the whole window so neighbouring dates become exact hits. The rate in hand is the
+  // provider's own answer, so a failed cache write does not make it any less correct: it is
+  // logged and the caller still gets the rate.
   const { error: upsertError } = await service.from('fx_rates').upsert(
-    {
+    observations.map((observation) => ({
       base_currency: baseCurrency,
       quote_currency: 'NOK',
-      rate_date: latest.date,
-      rate: latest.rate,
+      rate_date: observation.date,
+      rate: observation.rate,
       source: 'norges_bank',
-    },
+    })),
     { onConflict: 'base_currency,quote_currency,rate_date,source' },
   )
   if (upsertError) {
-    return json(200, { ok: false, error: 'cache_write_failed' })
+    logEvent('fetch-fx-rate', 'cache_write_failed', { currency: baseCurrency }, 'warn')
   }
 
   return json(200, { ok: true, rate: latest.rate, rateDate: latest.date, source: 'norges_bank' })
