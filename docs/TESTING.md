@@ -1404,6 +1404,25 @@ regression tests for day 1, 2, 10, month end, a leap day and the year boundary.
 Amounts are deliberately chosen to produce inexact division — a shipping charge of 100 over
 three lines is worth more as a test than one of 90.
 
+### 9.1 Destructive suites only run against a local stack (P203)
+
+The database, authorization, independent adversarial and authenticated-E2E suites create and
+delete `auth.users` rows with the service-role key. They read their target from the same
+environment variables an operator exports for a hosted-project script, so a shell still holding
+hosted values must not be able to aim them at Production. `tests/support/local-target.ts` is the one
+definition of "local": a loopback host (`localhost`, `*.localhost`, `127.0.0.1`, `[::1]`) for
+`SUPABASE_URL`, `VITE_SUPABASE_URL`, `DB_URL` and `P153_DB_URL`; a loopback, Docker-host
+(`host.docker.internal`) or private-network address for `ERASURE_REGISTRY_URL` (the address the
+stack's containers use to reach the harness's own sink — `172.17.0.1` on a CI runner); and no
+`ref` claim in a legacy JWT key. There is no override switch.
+
+It is enforced by a Vitest `globalSetup` in `vitest.db.config.ts` and the three independent
+packages, by `playwright.config.ts` when the config loads, and again inside
+`createServiceClient()` / `createAnonClient()`. `tests/config/local-target-guard.test.ts` (in
+`pnpm test`) covers the policy, asserts every runner is wired to it, and starts each runner against a
+hosted-looking URL to prove it aborts before a test executes. A new Supabase-backed vitest config
+must add `tests/support/local-target-global-setup.ts` to its `globalSetup`.
+
 ---
 
 ## 10. CI

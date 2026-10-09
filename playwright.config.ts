@@ -1,12 +1,17 @@
 import { defineConfig, devices } from '@playwright/test'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { assertLocalTestTarget } from './tests/support/local-target.ts'
 
 // P94 §20-22: local-authenticated-E2E infrastructure. Set when a caller wants the
 // `*-authenticated` project to run at all — see docs/TESTING.md §6a. Absent by
 // default so `pnpm test:e2e` on a machine with no local Supabase stack running still exercises
 // the placeholder-backend suite exactly as before; nothing here changes unauthenticated behavior.
 const AUTHENTICATED_E2E_ENABLED = process.env.PLAYWRIGHT_AUTHENTICATED_E2E === '1'
+// P203: every Playwright run builds or serves the app against VITE_SUPABASE_URL, and the
+// authenticated project also creates and deletes users through SUPABASE_URL / DB_URL. Evaluated
+// when the config loads, so a hosted target aborts before a browser or a fixture exists.
+assertLocalTestTarget(process.env)
 const AUTH_STATE_FILE = 'playwright/.auth/e2e-user.json'
 // P113: overridable so an isolated worktree (e.g. a parallel chaos-hardening session) never binds
 // the same port as another session's own preview server — see global-setup.ts. Defaults to 4173,
