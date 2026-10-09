@@ -5,7 +5,7 @@
  *   pnpm lifecycle inventory [--json]                 read-only: every container group and who owns it
  *   pnpm lifecycle up --name p210 [--base-port N]     start a new isolated stack and record it
  *   pnpm lifecycle env --name p210 [--format sh|ps1]  print the connection variables of that stack
- *   pnpm lifecycle run --name p210 [--keep-stack] -- <command...>
+ *   pnpm lifecycle run --name p210 [--keep-stack] [--no-stack] -- <command...>
  *                                                     up (if needed) + run + always down on exit/signal
  *   pnpm lifecycle down --name p210                   stop that stack only (volumes preserved)
  *   pnpm lifecycle recover [--name p210] [--execute]  dry-run by default: abandoned task-owned stacks
@@ -362,6 +362,8 @@ interface UpOptions {
 
 async function cmdUp(
   opts: UpOptions,
+  /** True when the caller is `run`: its process owns the stack from the first container on. */
+  attached = false,
 ): Promise<{ entry: LedgerEntry; env: Record<string, string> }> {
   const projectId = projectIdFor(opts.name)
   if (protectedProjects(process.env.PP_LIFECYCLE_PROTECTED).has(projectId)) {
@@ -444,7 +446,7 @@ async function cmdUp(
     projectId,
     workdir: opts.workdir,
     createdAt: new Date().toISOString(),
-    kind: 'detached',
+    kind: attached ? 'attached' : 'detached',
     owner: await selfRecord(),
     state: 'starting',
     containers: [],
@@ -696,17 +698,43 @@ function readStackEnv(name: string): Record<string, string> {
   return JSON.parse(readFileSync(join(entry.workdir, 'env.json'), 'utf8')) as Record<string, string>
 }
 
-async function cmdRun(base: UpOptions, keepStack: boolean, command: string[]): Promise<number> {
+async function cmdRun(
+  base: UpOptions,
+  keepStack: boolean,
+  noStack: boolean,
+  command: string[],
+): Promise<number> {
   const [file, ...args] = command
   if (file === undefined) throw new Error('run needs a command after --')
   let startedHere = false
   const entry0 = readEntry(base.name)
   let env: Record<string, string>
-  if (entry0 && entry0.state === 'running') {
+  if (noStack) {
+    // No database: the command and everything it starts are still recorded and cleaned up, but no
+    // stack is started, reused or stopped.
+    if (entry0 && entry0.state === 'running') {
+      throw new Error(`ledger entry "${base.name}" is running; use another --name`)
+    }
+    writeEntry({
+      tool: TOOL_ID,
+      version: LEDGER_VERSION,
+      name: base.name,
+      projectId: projectIdFor(base.name),
+      workdir: base.workdir,
+      createdAt: new Date().toISOString(),
+      kind: 'attached',
+      owner: await selfRecord(),
+      state: 'running',
+      containers: [],
+      processes: [],
+      counts: { runningBefore: 0 },
+    })
+    env = {}
+  } else if (entry0 && entry0.state === 'running') {
     log(`reusing running stack ${entry0.projectId}`)
     env = readStackEnv(base.name)
   } else {
-    env = (await cmdUp(base)).env
+    env = (await cmdUp(base, true)).env
     startedHere = true
   }
   const entry = readEntry(base.name)
@@ -726,7 +754,11 @@ async function cmdRun(base: UpOptions, keepStack: boolean, command: string[]): P
     log(`lifecycle: cleaning up (${reason})`)
     const fresh = readEntry(base.name) ?? entry
     await stopRecordedProcesses(fresh)
-    if (startedHere && !keepStack) await stopStack(fresh, 'own', true)
+    if (noStack) {
+      fresh.state = 'stopped'
+      fresh.stoppedAt = new Date().toISOString()
+      writeEntry(fresh)
+    } else if (startedHere && !keepStack) await stopStack(fresh, 'own', true)
     else if (!keepStack) log('stack was not started by this invocation; leaving it (use down)')
   }
   const signals: NodeJS.Signals[] = [
@@ -805,7 +837,7 @@ function parseArgs(argv: string[]): Parsed {
     if (!item.startsWith('--')) throw new Error(`unexpected argument "${item}"`)
     const key = item.slice(2)
     const next = tail[i + 1]
-    if (['json', 'execute', 'keep-stack'].includes(key)) flags.set(key, true)
+    if (['json', 'execute', 'keep-stack', 'no-stack'].includes(key)) flags.set(key, true)
     else if (next === undefined || next.startsWith('--')) throw new Error(`--${key} needs a value`)
     else {
       flags.set(key, next)
@@ -858,7 +890,12 @@ async function main(): Promise<number> {
       return 0
     }
     case 'run':
-      return cmdRun(upOptions(flags), flags.get('keep-stack') === true, rest)
+      return cmdRun(
+        upOptions(flags),
+        flags.get('keep-stack') === true,
+        flags.get('no-stack') === true,
+        rest,
+      )
     case 'down': {
       const name = flags.get('name')
       if (typeof name !== 'string') throw new Error('--name is required')
