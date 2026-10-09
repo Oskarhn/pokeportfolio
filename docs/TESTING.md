@@ -1204,6 +1204,21 @@ project wiring) supports adding both without further scaffolding.
 
 ---
 
+### 6b.1 The connected user journey (P203)
+
+`tests/e2e/authenticated/journey-invited-user.spec.ts` walks one new person through the product in a
+clean account, UI only: redeem a real invitation, search the catalog, record a purchase, see the cost
+basis, see that a card with no market price shows **no value** (not zero), see a provider price appear
+**with its source and date**, set a manual valuation and prove the cost basis and the ledger total do
+not move, return to market value, sign out (protected routes refuse, no session left in storage), sign
+back in to the same data, and treat an emptied session store as signed out.
+
+The other authenticated specs each prove one mechanism; this one covers the seams between them. It
+uses a private catalog card made for the run (the shared catalog is read by other specs and
+`price_snapshots` is unique per day), seeds only the provider price and an FX rate behind the UI, waits on
+visible state rather than time, and removes everything it created in `afterAll`. Mutating an expected
+value (market value or cost) makes it fail, which was checked when it was written.
+
 ## 6c. Scanner hardening suite (P151)
 
 Deterministic regressions for the scanner's lifecycle, cancellation, input safety, cache and confidence
