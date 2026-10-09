@@ -2513,3 +2513,14 @@ path: a new holding is watched at once, but its first snapshot waits for the nex
 `ingest-prices` tick. Server logs showed zero `search-prices` POSTs in 24 hours and a single OPTIONS;
 no unit or Playwright test could notice, because none crosses an origin. Lesson: a client that hides
 failure needs a test that proves the request can leave the browser.
+
+## 2026-10-09 — A cost basis that lost its remainder (P199)
+
+The first thing a seeded cross-surface reconciliation found was not in the code that does the hard arithmetic. Purchases, sales,
+FX, allocation, provider preference, the 30-day window and manual-valuation intervals all agreed, to the minor unit, with an
+oracle written from the model in plain bigint. What disagreed was the snapshot's cost basis, in 23 of 24 scenarios: it summed
+`qty_open × unit_cost_basis` and ignored the residual that makes `q × unit + residual` equal the real cost. Every earlier test
+covered a lot whose cost divided evenly, so the dropped remainder was always zero. The residual rule (D-060) lived in the sale
+path and was never restated for the historical one. Lesson: a conservation property ("every minor unit of cost is either on the
+lot or frozen on a sale") written across surfaces catches what per-surface examples with round numbers cannot. Details: D-199,
+docs/TESTING.md §6i.

@@ -7204,3 +7204,44 @@ retention window without a known backup horizon.
 **Accepted residual.** The HMAC does not protect against a compromise of the Cloudflare account itself (it can redeploy
 the Worker and read its secrets) — account 2FA and off-platform verified exports are the mitigation; the export is
 manual until the owner schedules it; the HMAC key cannot be rotated without a re-signing tool that does not exist.
+
+## D-199 — The historical cost basis includes the lot residual; cost is conserved (P199)
+
+**2026-10-09 · Accepted**
+
+**Context.** A lot stores `unit_cost_basis = floor(C / q)` and `residual_nok_minor = C − q × unit` so that
+`q × unit + residual = C` exactly (FINANCIAL_MODEL.md §4.3, D-060); the residual stays on the lot until the disposal that
+exhausts it. `rebuild_portfolio_snapshots` summed `qty_open × unit` for the snapshot's `cost_basis_nok_minor` and dropped
+the residual, so every open multi-unit lot with an inexact division was understated by up to q − 1 minor units, and Home's
+cost of inventory and unrealized result (`ACMV − DCB`) were off by the same amount (3 × 333 + 1 shipping: lot cost 1000,
+snapshot 999). A seeded reconciliation against an independent oracle (`tests/db/p199_ledger_reconciliation.test.ts`) found
+it in 23 of 24 scenarios; every other surface it compares — live dashboard sums, F1, F5, the resolver, the snapshot market
+value and manual-valuation intervals — already agreed.
+
+**Decision.** (1) `DCB(D)` of a snapshot is `Σ over known lots open on D of qty_open × unit_cost_basis + residual_nok_minor
+(+ the floored adjustment share of D-068)`. A lot that is sold out contributes nothing, as before; a partly sold lot keeps its
+residual because the residual is only consumed by the exhausting disposal. (2) New invariant **F17 (cost conservation)**:
+for every live known lot, `remaining basis + Σ cost_basis_at_sale of its live sale lines = q × unit + residual` (= its purchase
+line's attributable cost), and a snapshot's cost basis equals the remaining basis of the lots open on that date.
+(3) The migration is a `CREATE OR REPLACE` of the M12 definition with one added term and an unchanged signature, ACL and
+comment; it queues a full rebuild for every user holding a live known lot with a non-zero residual (the cache is rebuildable,
+D-070).
+
+**Consequences.** No frozen ledger value changes. Snapshot rows of affected users are recomputed on the existing cron cadence;
+until a user's queue row drains, Home shows the old cost basis and the pending-recompute flag is true. **Production
+requirement:** the hosted database must receive `20261009120000_p199_snapshot_cost_basis_residual.sql` (a release blocker for
+this fix, not for the application).
+
+**Known limitation (found by the same oracle, deliberately not fixed here).** D-060 freezes the residual on the disposal that
+exhausts the lot, at creation time. If an *earlier* sale of that lot is voided while the exhausting sale stays live, quantity
+returns to the lot but the live sale keeps the residual it already carries, so the same minor units sit on the lot and on the
+sale (lot of 5, unit 100, residual 1: sell 4, sell 1 → frozen 101, void the first → the lot shows 4 × 100 + 1, total 502
+against a purchase cost of 501). The error is bounded by the residual (less than the lot's quantity in minor units), needs an
+inexact lot, two sales and an out-of-order void, and no frozen value is wrong — only the *remaining* basis and a later
+exhausting sale's frozen basis. A correct fix needs a design choice (derive the already-carried residual from live frozen bases
+at every consumption site — `create_sale`, `create_opening`, `reconcile_opening_cost`, the snapshot — or refuse the void), so it
+is pinned by `it.fails` in `tests/db/p199_snapshot_cost_basis.test.ts` and recorded as an open policy question. The reconciliation
+suite therefore only voids the latest-created live sale of each lot.
+
+**Rejected.** Adding the residual to the unit basis (breaks `unit × q` as the per-unit display and the D-060 consumption
+rule); carrying the residual only on the last unit sold in the snapshot (the snapshot replays dates, not creation order).
