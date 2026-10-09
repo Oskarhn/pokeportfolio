@@ -91,7 +91,7 @@ export function HistoryPage() {
                 },
               })
             }}
-            className={`min-h-9 flex-1 whitespace-nowrap rounded-md text-sm font-medium transition-colors ${
+            className={`min-h-9 flex-1 whitespace-nowrap rounded-md px-3 text-sm font-medium transition-colors ${
               kind === filter.value
                 ? 'bg-slate-800 text-slate-100'
                 : 'text-slate-400 hover:text-slate-200'
