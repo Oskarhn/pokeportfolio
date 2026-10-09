@@ -49,7 +49,7 @@ delete the Auth user → scrub), so the behaviour is identical to a live deletio
 | `restore_gate_runs` (P189) | none | kept | TECHNICALLY_REQUIRED | operator stamp of a gate run | none | written by `postcheck` |
 
 Not touched, by design: the shared catalog and market data (`card_series`, `card_sets`, `cards`,
-`card_variants`, `price_snapshots`, `fx_rates`, `catalog_sync_runs`, `price_sync_runs`,
+`card_variants`, `price_snapshots`, `fx_rates`, `catalog_sync_runs`, `price_sync_runs`, `price_sync_attempts`,
 `portfolio_recompute_runs`, `environment_ingest_config`) and shared (`created_by_user_id IS NULL`)
 sealed products. A digest of all of them is asserted unchanged by the deletion suites.
 
