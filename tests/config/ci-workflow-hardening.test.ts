@@ -136,7 +136,7 @@ describe.each(['db-suites', 'authenticated-e2e'])('%s diagnostics', (job) => {
 
   it('collects container logs on failure BEFORE the stack is stopped', () => {
     const collect = block.indexOf('scripts/ci/collect-diagnostics.mjs')
-    const stop = block.indexOf('pnpm exec supabase stop')
+    const stop = block.lastIndexOf('pnpm exec supabase stop')
     expect(collect).toBeGreaterThan(-1)
     expect(collect).toBeLessThan(stop)
     const stepStart = block.lastIndexOf('- name:', collect)
@@ -170,7 +170,7 @@ describe.each(['db-suites', 'authenticated-e2e'])('%s diagnostics', (job) => {
   })
 
   it('stops its own stack even when a step failed', () => {
-    const at = block.indexOf('pnpm exec supabase stop')
+    const at = block.lastIndexOf('pnpm exec supabase stop')
     expect(at).toBeGreaterThan(-1)
     const stepStart = block.lastIndexOf('- name:', at)
     expect(block.slice(stepStart, at)).toMatch(/if: always\(\)/)
