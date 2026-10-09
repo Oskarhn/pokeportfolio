@@ -10,6 +10,13 @@ they were**.
 
 ## [Unreleased]
 
+### Added — 2026-10-09 — Longer connected journey: price states, totals, isolation, deletion (P210)
+
+Test-only. The invited-user journey also covers stale, missing and returning prices, a holding added
+through the form with unknown cost, exact totals from the user's own RPCs, cross-user isolation, a
+revoked session and (against a loopback stack with a test registry sink only) deletion of its own
+account through the UI.
+
 ### Changed — 2026-10-02 — One local release-candidate line for web and native (P188)
 
 Not released, not pushed. `release/p188-cross-platform-rc` merges the web candidates the native line never carried (P164 with P149/P151/P153/P161/P162, P163, P165) into the P186/P187
