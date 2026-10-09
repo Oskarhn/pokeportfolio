@@ -778,7 +778,9 @@ describe('P199 deterministic cross-surface reconciliation', () => {
         coverage.partlySoldLots += liveLotList.filter(
           (l) => l.quantity_remaining > 0 && l.quantity_remaining < l.quantity,
         ).length
-        coverage.editedPurchases += sc.log.filter((l) => /^update_purchase [A-Z]+ ok$/.test(l)).length
+        coverage.editedPurchases += sc.log.filter((l) =>
+          /^update_purchase [A-Z]+ ok$/.test(l),
+        ).length
         coverage.editedSales += sc.log.filter((l) => /^update_sale [A-Z]+ ok$/.test(l)).length
         coverage.voidedSales += sc.log.filter((l) => l === 'void_sale ok').length
         coverage.residualLots += liveLotList.filter((l) => l.residual_nok_minor > 0).length
