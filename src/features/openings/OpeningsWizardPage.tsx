@@ -1,3 +1,4 @@
+import { PageUnavailable, BACK_LINK_CLASS } from '../../ui/PageState'
 import { useRef, useState } from 'react'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -266,17 +267,15 @@ export function OpeningsWizardPage() {
   }
   if (sourcesQuery.isError) {
     return (
-      <div className="mx-auto w-full max-w-2xl space-y-4 py-2">
-        <Link to="/portfolio" className="text-sm text-sky-400 underline-offset-4 hover:underline">
+      <PageUnavailable
+        title="Record an opening"
+        message={userMessage(sourcesQuery.error, 'Openings could not be loaded.')}
+        onRetry={() => void sourcesQuery.refetch()}
+      >
+        <Link to="/portfolio" className={BACK_LINK_CLASS}>
           ← Back to Portfolio
         </Link>
-        <p
-          role="alert"
-          className="rounded-lg border border-rose-900/60 bg-rose-950/40 p-3 text-sm text-rose-200"
-        >
-          {userMessage(sourcesQuery.error, 'Openings could not be loaded.')}
-        </p>
-      </div>
+      </PageUnavailable>
     )
   }
 
