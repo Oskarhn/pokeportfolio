@@ -24,7 +24,17 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
-  reporter: 'html',
+  // P203: in CI the console shows each test as it finishes (the html reporter alone prints nothing
+  // per test, so a hung run left no trace of where it stopped), and a JSON file feeds the job
+  // summary's slowest-spec and flaky-test report (scripts/ci/test-summary.mjs). `retries: 2` above
+  // makes a flaky test green; the JSON is the only place that records it needed a retry.
+  reporter: process.env.CI
+    ? [
+        ['list'],
+        ['html', { open: 'never' }],
+        ['json', { outputFile: 'ci-results/playwright.json' }],
+      ]
+    : 'html',
   use: {
     baseURL: `http://localhost:${PREVIEW_PORT}`,
     trace: 'on-first-retry',

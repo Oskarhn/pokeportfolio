@@ -169,3 +169,7 @@ scratch/
 
 # P203: pnpm release:evidence output (per-commit verification reports).
 release-evidence/
+
+# P203: CI test-result and failure-diagnostics output (junit, playwright json, container logs).
+ci-results/
+ci-diagnostics/
