@@ -9,6 +9,8 @@ import {
   type TestClient,
 } from './setup'
 import { allocate } from '../../src/domain/allocation'
+import { connectMonitor, HeldLockSession } from './lib/held-lock-session'
+import type { Client as PgClient } from 'pg'
 
 /**
  * M8: the multi-line purchase ledger (FINANCIAL_MODEL.md §1-4/§7, DATA_MODEL.md §5.3).
@@ -825,6 +827,16 @@ describe('fx_rates: market data, service-role writes only', () => {
 })
 
 describe('idempotency — create_purchase never double-writes on retry (P108, P107 §17)', () => {
+  let monitor: PgClient
+
+  beforeAll(async () => {
+    monitor = await connectMonitor()
+  })
+
+  afterAll(async () => {
+    await monitor.end()
+  })
+
   function sealedArgs(overrides: Record<string, unknown> = {}) {
     return {
       p_purchased_on: today,
@@ -992,74 +1004,60 @@ describe('idempotency — create_purchase never double-writes on retry (P108, P1
   })
 
   it('P111 (prompt §10): an UNRELATED unique_violation with a key present is re-raised, never mistaken for an idempotency race', async () => {
-    // First purchase: a sealed line with a manual valuation. Creates a new sealed holding plus
-    // its one active `manual_valuations` row.
-    const firstKey = crypto.randomUUID()
-    const { data: first, error: firstError } = await callCreate(
-      clientA,
-      sealedArgs({
-        p_idempotency_key: firstKey,
-        p_lines: [
-          {
-            ...sealedArgs().p_lines[0],
-            manual_value_minor: 9000,
-          },
-        ],
-      }),
-    )
-    expect(firstError).toBeNull()
-
-    // Second purchase: the SAME sealed_product_id (holdings-dedup reuses the SAME holding, since
-    // condition/grading_state/grader/grade are all forced identical for a sealed line) and ALSO
-    // sets a manual_value_minor — its `manual_valuations` INSERT collides with
-    // `manual_valuations_one_active` (one active valuation per holding), a unique_violation with
-    // NOTHING to do with `purchases_user_idempotency_key_idx`. This second call uses its OWN
-    // fresh idempotency key, one that was never (and — because the whole transaction rolls back —
-    // never will be) stored on any purchases row.
+    // Until P199 (D-199B) this was provoked by a second manual value on the same sealed holding,
+    // which collided with `manual_valuations_one_active`. A manual value typed while adding a copy
+    // now REPLACES the active valuation (and the holding row lock serialises concurrent writers),
+    // so that collision no longer exists. The invariant under test - a unique_violation that is
+    // NOT the idempotency index, raised while a key is present, is re-raised and never reported
+    // as a replay - is reproduced instead by a fault injected inside a held transaction: a trigger
+    // that raises unique_violation on the first purchase_lines insert. The trigger and function are
+    // created in that transaction only, so the rollback below removes them and no other session
+    // ever sees them.
     const secondKey = crypto.randomUUID()
-    const { data: second, error: secondError } = await callCreate(
-      clientA,
-      sealedArgs({
-        p_idempotency_key: secondKey,
-        p_lines: [
-          {
-            ...sealedArgs().p_lines[0],
-            manual_value_minor: 15000,
-          },
-        ],
-      }),
-    )
+    const session = await HeldLockSession.beginAs(userA.id)
+    try {
+      await session.query(
+        `create function public.p205_inject_unique_violation() returns trigger
+           language plpgsql as $fn$
+         begin
+           raise unique_violation using message = 'injected unique violation unrelated to the idempotency key';
+         end
+         $fn$`,
+      )
+      await session.query(
+        `create trigger p205_inject_unique_violation before insert on public.purchase_lines
+           for each row execute function public.p205_inject_unique_violation()`,
+      )
 
-    // Must surface as a real error — NOT silently treated as a replay of `first`, and NOT
-    // silently swallowed. The handler can only conclude "this is a legitimate replay" by finding
-    // an existing purchases row under `secondKey`; since that INSERT rolled back with everything
-    // else in the same transaction, no such row exists, so it must re-raise the real error.
-    expect(second).toBeNull()
-    expect(secondError).not.toBeNull()
-    expect(secondError?.message).not.toMatch(/idempotency-key-reuse/i)
-    expect(secondError?.message).toMatch(/manual_valuations_one_active|duplicate key/i)
+      // Must surface as a real error - NOT silently treated as a replay, and NOT swallowed. The
+      // handler can only conclude "this is a legitimate replay" by finding an existing purchases
+      // row under `secondKey`; that INSERT rolled back with everything else in the same
+      // transaction, so no such row exists and the original error must be re-raised.
+      const attempt = session.query(
+        `select id from public.create_purchase(
+           p_purchased_on => $1::date,
+           p_currency => 'NOK',
+           p_lines => $2::jsonb,
+           p_idempotency_key => $3::uuid
+         )`,
+        [today, JSON.stringify(sealedArgs().p_lines), secondKey],
+      )
+      await expect(attempt).rejects.toThrow(/injected unique violation/)
+      await expect(attempt).rejects.not.toThrow(/idempotency-key-reuse/i)
+    } finally {
+      await session.end()
+    }
 
-    // The failed second attempt must not have committed a purchase under its own key, and must
-    // not have disturbed the first purchase's own valuation.
+    // Nothing of the failed attempt survives: no purchase under its key, and the injected objects
+    // were rolled back with the transaction.
     const { data: matchingSecond } = await service
       .from('purchases')
       .select('id')
       .eq('idempotency_key', secondKey)
     expect(matchingSecond).toHaveLength(0)
-
-    const firstLines = await linesFor(first!.id)
-    const { data: firstLots } = await service
-      .from('acquisition_lots')
-      .select('holding_id')
-      .in(
-        'purchase_line_id',
-        firstLines.map((l) => l.id),
-      )
-    const { data: valuations } = await service
-      .from('manual_valuations')
-      .select('value_minor')
-      .eq('holding_id', firstLots?.[0]?.holding_id ?? '')
-    expect(valuations).toHaveLength(1)
-    expect(valuations?.[0]?.value_minor).toBe(9000)
+    const leftover = await monitor.query(
+      "select to_regprocedure('public.p205_inject_unique_violation()') as fn",
+    )
+    expect(leftover.rows[0]?.fn).toBeNull()
   })
 })
