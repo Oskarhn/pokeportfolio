@@ -22,13 +22,17 @@
  * (prompt §48's explicit "do not request every result individually from React").
  */
 import { createClient } from 'npm:@supabase/supabase-js@2.112.3'
-import { fetchCardPricing, TcgdexNotFoundError, type Language } from '../_shared/tcgdex.ts'
+import { fetchCardPricing, type Language } from '../_shared/tcgdex.ts'
+import { classifyFailure, mapWithConcurrency } from '../_shared/batch.ts'
+import { logEvent } from '../_shared/log.ts'
 import { resolveServiceRoleKey } from '../_shared/service-key.ts'
 import { observationsForVariant, type PriceObservationWire } from '../_shared/price-observations.ts'
 import { withCors } from '../_shared/cors.ts'
 
 const MAX_CARD_IDS = 20
 const FETCH_CONCURRENCY = 5
+/** A person is waiting: no provider request starts after this, and the answer says what failed. */
+const FETCH_BUDGET_MS = 12_000
 const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 function json(status: number, body: unknown): Response {
@@ -36,27 +40,6 @@ function json(status: number, body: unknown): Response {
     status,
     headers: { 'Content-Type': 'application/json' },
   })
-}
-
-async function mapWithConcurrency<T, R>(
-  items: T[],
-  limit: number,
-  fn: (item: T) => Promise<R>,
-): Promise<PromiseSettledResult<R>[]> {
-  const results: PromiseSettledResult<R>[] = new Array(items.length)
-  let next = 0
-  async function worker() {
-    while (next < items.length) {
-      const i = next++
-      try {
-        results[i] = { status: 'fulfilled', value: await fn(items[i]!) }
-      } catch (error) {
-        results[i] = { status: 'rejected', reason: error }
-      }
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
-  return results
 }
 
 async function handle(request: Request): Promise<Response> {
@@ -90,7 +73,7 @@ async function handle(request: Request): Promise<Response> {
   const supabaseUrl = Deno.env.get('SUPABASE_URL')
   const serviceRoleKey = resolveServiceRoleKey()
   if (!supabaseUrl || !serviceRoleKey) {
-    console.error('search-prices is missing its Supabase environment configuration')
+    logEvent('search-prices', 'misconfigured', {}, 'error')
     return json(500, { error: 'server_error' })
   }
   const db = createClient(supabaseUrl, serviceRoleKey, {
@@ -103,7 +86,7 @@ async function handle(request: Request): Promise<Response> {
     .in('card_id', cardIds as string[])
 
   if (variantError) {
-    console.error('search-prices: card_variants lookup failed', variantError.message)
+    logEvent('search-prices', 'variant_lookup_failed', { code: variantError.code ?? null }, 'error')
     return json(500, { error: 'server_error' })
   }
 
@@ -131,30 +114,41 @@ async function handle(request: Request): Promise<Response> {
     }
   }
 
+  const deadlineMs = Date.now() + FETCH_BUDGET_MS
   const fetchResults = await mapWithConcurrency(
     [...cardsToFetch.entries()],
     FETCH_CONCURRENCY,
     async ([key, { language, tcgdexCardId }]) => {
-      const pricing = await fetchCardPricing(language, tcgdexCardId)
+      const pricing = await fetchCardPricing(language, tcgdexCardId, { deadlineMs })
       return { key, pricing }
     },
   )
 
   const pricingByCard = new Map<string, Awaited<ReturnType<typeof fetchCardPricing>>>()
   let providerErrorCount = 0
+  // Failure classes (rate_limited, timeout, server_error, …) so a client can say WHY a price is
+  // unavailable instead of presenting a provider outage as "this card has no price".
+  const providerFailures: Record<string, number> = {}
   for (const result of fetchResults) {
     if (result.status === 'fulfilled') {
       pricingByCard.set(result.value.key, result.value.pricing)
     } else {
       providerErrorCount++
-      const message =
-        result.reason instanceof TcgdexNotFoundError
-          ? 'not found'
-          : result.reason instanceof Error
-            ? result.reason.message
-            : 'unknown error'
-      console.error('search-prices: fetchCardPricing failed', message)
+      const failureClass = classifyFailure(result.reason)
+      providerFailures[failureClass] = (providerFailures[failureClass] ?? 0) + 1
     }
+  }
+  if (providerErrorCount > 0) {
+    logEvent(
+      'search-prices',
+      'provider_failures',
+      {
+        cards_requested: cardsToFetch.size,
+        provider_error_count: providerErrorCount,
+        ...Object.fromEntries(Object.entries(providerFailures).map(([k, v]) => [`failed_${k}`, v])),
+      },
+      'warn',
+    )
   }
 
   interface Chosen {
@@ -204,7 +198,7 @@ async function handle(request: Request): Promise<Response> {
   const fxRateByKey = new Map<string, string>()
   await Promise.all(
     [...fxNeeded.entries()].map(async ([key, { currency, date }]) => {
-      const { data } = await db
+      const { data, error: fxError } = await db
         .from('fx_rates')
         .select('rate')
         .eq('base_currency', currency)
@@ -219,6 +213,16 @@ async function handle(request: Request): Promise<Response> {
       // `text` — see the money-column serialization note in DATA_MODEL.md §17) — `.toString()`
       // here is exact for a rate in this magnitude (well within float64's integer precision times
       // 10^8), the same conversion src/data/fx.ts's client-side equivalent does.
+      if (fxError) {
+        // A failed rate lookup is not "no rate": say so in the logs, show "—" to the user.
+        logEvent(
+          'search-prices',
+          'fx_lookup_failed',
+          { currency, code: fxError.code ?? null },
+          'warn',
+        )
+        return
+      }
       if (typeof data?.rate === 'number') fxRateByKey.set(key, data.rate.toString())
     }),
   )
@@ -269,7 +273,7 @@ async function handle(request: Request): Promise<Response> {
     })
   }
 
-  return json(200, { ok: true, results, providerErrorCount })
+  return json(200, { ok: true, results, providerErrorCount, providerFailures })
 }
 
 // Browser calls are cross-origin: answer the preflight and carry CORS headers on every response.

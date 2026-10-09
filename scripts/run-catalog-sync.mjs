@@ -132,10 +132,18 @@ async function main() {
     }),
     { cards: 0, variants: 0, failedSets: 0 },
   )
+  // A set the function answered 200 for but did not fully land (card failures) is not "done": it is
+  // listed so the same command can be re-run for just those sets (`--only=<setId>`).
+  const incomplete = summary.filter((r) => r.ok === true && r.complete === false)
   console.log(
-    `\n=== Done: ${totals.cards} cards, ${totals.variants} variants upserted, ${totals.failedSets} sets failed outright ===`,
+    `\n=== Done: ${totals.cards} cards, ${totals.variants} variants upserted, ${totals.failedSets} sets failed outright, ${incomplete.length} sets incomplete ===`,
   )
-  if (totals.failedSets > 0) process.exitCode = 1
+  for (const r of incomplete) {
+    console.log(
+      `  incomplete: --language=${r.language} --only=${r.setId} (${r.failureCount} failures)`,
+    )
+  }
+  if (totals.failedSets > 0 || incomplete.length > 0) process.exitCode = 1
 }
 
 main().catch((error) => {

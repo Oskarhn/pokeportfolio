@@ -19,11 +19,19 @@
  * a guess, never a zero. A genuinely observed zero price is written as-is (F14).
  */
 import { createClient } from 'npm:@supabase/supabase-js@2.112.3'
-import { fetchCardPricing, TcgdexNotFoundError, type Language } from '../_shared/tcgdex.ts'
+import { fetchCardPricing, type Language } from '../_shared/tcgdex.ts'
 import { resolveServiceRoleKey } from '../_shared/service-key.ts'
+import { classifyFailure, createBatchGuard, mapWithConcurrency } from '../_shared/batch.ts'
+import { logEvent } from '../_shared/log.ts'
 
 const DEFAULT_BATCH_SIZE = 200
 const CARD_FETCH_CONCURRENCY = 5
+/**
+ * The cron caller gives up after 55 s (supabase/migrations/…_cron_schedule.sql). No new provider
+ * request starts after this much of that budget is spent, so the run still has time to write what it
+ * fetched and record itself — an unfinished batch is picked up by the next tick, not lost.
+ */
+const FETCH_BUDGET_MS = 38_000
 
 interface WatchedVariantRow {
   card_variant_id: string
@@ -48,27 +56,6 @@ function secretsMatch(a: string, b: string): boolean {
   let diff = 0
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
   return diff === 0
-}
-
-async function mapWithConcurrency<T, R>(
-  items: T[],
-  limit: number,
-  fn: (item: T) => Promise<R>,
-): Promise<PromiseSettledResult<R>[]> {
-  const results: PromiseSettledResult<R>[] = new Array(items.length)
-  let next = 0
-  async function worker() {
-    while (next < items.length) {
-      const i = next++
-      try {
-        results[i] = { status: 'fulfilled', value: await fn(items[i]!) }
-      } catch (error) {
-        results[i] = { status: 'rejected', reason: error }
-      }
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
-  return results
 }
 
 Deno.serve(async (request: Request): Promise<Response> => {
@@ -96,7 +83,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
   const supabaseUrl = Deno.env.get('SUPABASE_URL')
   const serviceRoleKey = resolveServiceRoleKey()
   if (!supabaseUrl || !serviceRoleKey) {
-    console.error('ingest-prices is missing its Supabase environment configuration')
+    logEvent('ingest-prices', 'misconfigured', {}, 'error')
     return json(500, { error: 'server_error' })
   }
   const db = createClient(supabaseUrl, serviceRoleKey, {
@@ -109,7 +96,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
     p_batch_size: batchSize,
   })
   if (batchError) {
-    console.error('ingest-prices: select_price_sync_batch failed', batchError.message)
+    logEvent('ingest-prices', 'batch_select_failed', { code: batchError.code ?? null }, 'error')
     await db.from('price_sync_runs').insert({
       kind: 'prices',
       status: 'failed',
@@ -146,36 +133,49 @@ Deno.serve(async (request: Request): Promise<Response> => {
     }
   }
 
+  const guard = createBatchGuard({
+    deadlineMs: Date.now() + FETCH_BUDGET_MS,
+    now: Date.now,
+  })
   const fetchResults = await mapWithConcurrency(
     [...cardsToFetch.entries()],
     CARD_FETCH_CONCURRENCY,
     async ([key, { language, tcgdexCardId }]) => {
-      const pricing = await fetchCardPricing(language, tcgdexCardId)
-      return { key, pricing }
+      try {
+        const pricing = await fetchCardPricing(language, tcgdexCardId, {
+          deadlineMs: Date.now() + FETCH_BUDGET_MS,
+        })
+        return { key, pricing }
+      } catch (error) {
+        guard.record(error)
+        throw error
+      }
     },
+    { shouldStop: () => guard.shouldStop() },
   )
 
-  const pricingByCard = new Map<
-    string,
-    Awaited<ReturnType<typeof fetchCardPricing>> | { error: string }
-  >()
+  const pricingByCard = new Map<string, Awaited<ReturnType<typeof fetchCardPricing>>>()
+  // Failures by class. `skipped` cards were never requested (deadline or an unhealthy provider):
+  // they say nothing about the card, so they are not provider errors, and they stay queued.
+  const failuresByClass: Record<string, number> = {}
   let providerErrorCount = 0
+  let skippedCount = 0
   let cardsFetched = 0
   for (const result of fetchResults) {
     if (result.status === 'fulfilled') {
       pricingByCard.set(result.value.key, result.value.pricing)
       cardsFetched++
-    } else {
-      const message =
-        result.reason instanceof TcgdexNotFoundError
-          ? 'not found'
-          : result.reason instanceof Error
-            ? result.reason.message
-            : 'unknown error'
-      providerErrorCount++
-      console.error('ingest-prices: fetchCardPricing failed', message)
+      continue
     }
+    const failureClass = classifyFailure(result.reason)
+    failuresByClass[failureClass] = (failuresByClass[failureClass] ?? 0) + 1
+    if (failureClass === 'skipped') skippedCount++
+    else providerErrorCount++
   }
+  const failureSummary = Object.entries(failuresByClass)
+    .sort(([a], [b]) => (a < b ? -1 : 1))
+    .map(([failureClass, count]) => `${failureClass}=${count}`)
+    .join(',')
 
   const todayIso = new Date().toISOString().slice(0, 10)
   const snapshotRows: {
@@ -192,7 +192,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
   for (const row of rows) {
     const key = cardKey(row.language, row.tcgdex_card_id)
     const pricing = pricingByCard.get(key)
-    if (!pricing || 'error' in pricing) continue
+    if (!pricing) continue
 
     const match = pricing.variants.find(
       (v) =>
@@ -242,7 +242,38 @@ Deno.serve(async (request: Request): Promise<Response> => {
     }
   }
 
-  const status = upsertFailures.length > 0 && snapshotsWritten === 0 ? 'failed' : 'succeeded'
+  // 'failed' = the run achieved nothing it set out to do; 'partial' = it did some of it. A run in
+  // which every provider request failed used to be recorded as 'succeeded' with a counter nobody
+  // watched.
+  const nothingFetched = cardsFetched === 0
+  const status: 'succeeded' | 'partial' | 'failed' =
+    nothingFetched || (upsertFailures.length > 0 && snapshotsWritten === 0)
+      ? 'failed'
+      : providerErrorCount > 0 || skippedCount > 0 || upsertFailures.length > 0
+        ? 'partial'
+        : 'succeeded'
+  const runError = [
+    failureSummary !== '' ? `provider: ${failureSummary}` : null,
+    guard.tripReason !== null ? `stopped: ${guard.tripReason}` : null,
+    upsertFailures.length > 0 ? `upsert: ${upsertFailures.slice(0, 5).join('; ')}` : null,
+  ]
+    .filter((part): part is string => part !== null)
+    .join(' | ')
+  logEvent(
+    'ingest-prices',
+    'run_finished',
+    {
+      status,
+      variants_considered: rows.length,
+      cards_fetched: cardsFetched,
+      snapshots_written: snapshotsWritten,
+      missing_provider_count: missingProviderCount,
+      provider_error_count: providerErrorCount,
+      skipped_count: skippedCount,
+      stopped: guard.tripReason,
+    },
+    status === 'succeeded' ? 'info' : 'warn',
+  )
   await db.from('price_sync_runs').insert({
     kind: 'prices',
     status,
@@ -252,7 +283,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
     snapshots_written: snapshotsWritten,
     missing_provider_count: missingProviderCount,
     provider_error_count: providerErrorCount,
-    error: upsertFailures.length > 0 ? upsertFailures.slice(0, 5).join('; ') : null,
+    error: runError !== '' ? runError.slice(0, 1000) : null,
     started_at: startedAt,
     finished_at: new Date().toISOString(),
   })
@@ -264,5 +295,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
     snapshotsWritten,
     missingProviderCount,
     providerErrorCount,
+    skippedCount,
+    status,
   })
 })

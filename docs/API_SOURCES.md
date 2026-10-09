@@ -140,7 +140,10 @@ re-running a set changes only `last_seen_at`. A card TCGdex stops listing for a 
 ### Failure strategy
 
 Retry with backoff, per-variant error isolation, never write a zero price, last known snapshot
-retained and aged (F9). If TCGdex disappears permanently, our accumulated `price_snapshots`
+retained and aged (F9). Implemented in `supabase/functions/_shared/provider-http.ts` (D-201): 6 s per
+attempt, 3 attempts, jittered exponential backoff, 15 s total budget, `Retry-After` honoured up to 3 s, only
+429/5xx/network/timeout retried, failures counted by class; `ingest-prices` stops after 38 s or five provider
+failures and leaves the rest queued. If TCGdex disappears permanently, our accumulated `price_snapshots`
 survive intact because internal `uuid` identity is canonical and provider ids are only mapping
 columns.
 
