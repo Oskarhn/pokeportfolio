@@ -2513,3 +2513,31 @@ path: a new holding is watched at once, but its first snapshot waits for the nex
 `ingest-prices` tick. Server logs showed zero `search-prices` POSTs in 24 hours and a single OPTIONS;
 no unit or Playwright test could notice, because none crosses an origin. Lesson: a client that hides
 failure needs a test that proves the request can leave the browser.
+
+## 2026-10-10 — CI wall time, and what "green" was hiding (P210)
+
+CI took about 22 minutes because two jobs each ran one long serial chain: Browser E2E (about 15 min)
+inside `build-and-test`, and the authenticated browser journey (about 10 min) after the database
+suites inside `db-tests`. Splitting them behind unchanged required check names (aggregator jobs that
+need every part to have succeeded) brought the wall time of a green run to 858 s (static-checks 286 s,
+Browser E2E shards 212/435/560 s, db-suites 645 s, authenticated-e2e 808 s); the first split run before
+the fixes below was 820 s. A shard failing fails `build-and-test`: the same run showed a red
+`static-checks` giving a red aggregator in 11 s. What the split does not do: the authenticated suite is
+still one runner (808 s is now the critical path), and Playwright's `--shard` balances by test count,
+not duration (212 s against 560 s).
+
+Three things surfaced on the way, each cheaper to find by measuring than by arguing:
+
+- **The secret scan reads every remote branch.** `gitleaks detect` runs on a full clone, so one
+  superseded branch of mine that still contained a rewritten commit made the scan of every other
+  PR fail, in jobs that had nothing to do with it. Deleting a superseded branch is part of
+  superseding it.
+- **Waiting for a backoff in real time is the expensive way to test an error state.** 104 error-state
+  cells per browser project waited out react-query's 1+2+4 s retry delays; adding WebKit to the
+  matrix would have added ~20 min of CI. The page's timers now run on Playwright's fast-forwardable
+  clock, advanced between short real waits (each retry is still a real mocked round trip): all 234
+  error cells on three engines pass in ~3 min.
+- **Starting two stacks per run doubles registry pulls.** `public.ecr.aws` answered "toomanyrequests:
+  Rate exceeded" to a Supabase start (the "infrastructure" failure P202 saw twice). The start is now
+  retried up to three times with the partial containers stopped in between; tests are not retried by
+  it.
