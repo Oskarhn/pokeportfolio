@@ -104,6 +104,12 @@ migration history with a SHA-256 manifest to a private directory **outside every
 been removed. Backup is validated; **restore is not** — never restore those files with a plain
 psql replay (P130-07), only through a dedicated, validated restore runbook.
 
+**Local infrastructure.** Start the minimum, one local Supabase stack at a time, through
+`pnpm lifecycle` (docs/DEVELOPMENT.md §4 "Task-owned local stacks"). Stop your own stack when you
+finish, with volumes preserved, and report running-container counts before and after. Never stop a
+stack, container or process you did not start; never prune Docker, run `wsl --shutdown`, quit Docker
+Desktop or kill processes by name without the owner's explicit authorization in the current prompt.
+
 **Completion.** A feature is complete when its behaviour has been exercised, not when TypeScript
 accepts it. Compilation is not evidence. Browser-test UI work; run the financial and
 authorization suites for anything touching money or ownership.

@@ -206,7 +206,57 @@ migration applied — local stack, CI stack, disposable container — runs the M
 to the hosted edge functions every 15 minutes (P130-12); deactivate those two jobs locally
 (`cron.alter_job(jobid, active := false)`) on any stack that stays up.
 
+### Task-owned local stacks (mandatory for automated sessions, P210)
+
+Several sessions share one Docker Desktop VM (20 GB cap on the development machine). One Supabase
+stack is 11 containers and about 2-3 GB; four forgotten stacks plus a browser are enough to starve
+the host. Every automated session therefore follows the same lifecycle, implemented by
+`scripts/test-lifecycle/` and exercised by `pnpm lifecycle:selftest`:
+
+1. **Start the minimum.** A suite that needs no database (unit, placeholder-backend Playwright,
+   UI work) starts no stack. A suite that needs one starts exactly **one**, from a unique name:
+   `pnpm lifecycle up --name p210 --base-port 57010` (project id `pokeportfolio-p210`, its own
+   port block and working directory, migrations applied, recurring cron jobs deactivated so the
+   stack never calls Production). `pnpm lifecycle env --name p210` prints the connection variables
+   (`--format ps1` for PowerShell). Run `pnpm lifecycle inventory` first and prefer reusing the
+   stack you already own to starting a second one.
+2. **Record the before count.** `inventory` and `up` print the running-container count; copy it
+   into the session report. `down` prints the after count.
+3. **Prefer `run` for anything that can crash.** `pnpm lifecycle run --name p210 -- pnpm exec
+   playwright test --project desktop-chromium-authenticated` starts the stack if needed, runs the
+   command with the connection variables, and stops the stack and the command's process tree on
+   normal exit, on SIGINT/SIGTERM/SIGHUP (SIGBREAK on Windows) and on an uncaught error
+   (`--keep-stack` opts out). A hard kill (`taskkill /F`, `SIGKILL`, a usage-limit termination)
+   cannot be caught; that is what `recover` is for.
+4. **Stop your own stack at the end.** `pnpm lifecycle down --name p210`. It runs
+   `supabase stop --workdir <that stack>` — volumes and local data are preserved, never
+   `--no-backup` — and then verifies that nothing of the project remains, that the project volumes
+   are still there and that no unrelated container changed state.
+5. **After a crash or an abrupt end:** `pnpm lifecycle recover` is a dry run that lists what it
+   would stop. Stacks started by `run` whose owning process is gone are stopped by
+   `pnpm lifecycle recover --execute`; a stack started by `up` has no owning process and is stopped
+   only by naming it (`pnpm lifecycle recover --name p210 --execute` or `down --name p210`).
+   Anything without positive ownership evidence is reported as "not mine, left alone".
+
+**What counts as ownership evidence.** A ledger entry written by the tool (kept outside every git
+checkout in `~/.pokeportfolio-test-lifecycle/`, override with `PP_LIFECYCLE_HOME`); every live
+container carrying that project id having the recorded working directory and being recorded at
+start or created after it; the project id not being protected (`pokeportfolio`, the default stack,
+and `pokeportfolio-p196c` are, plus anything in `PP_LIFECYCLE_PROTECTED`); for a child process, pid
+**and** start time **and** command line all matching what was recorded. One failing container makes
+the whole stack ambiguous and nothing is stopped, because the Supabase CLI removes every container
+that carries the project label.
+
+**Never, without the owner's explicit authorization in the current prompt:** stop the p196c stack
+or any stack that is not in your own ledger; `docker system prune` / `docker volume prune` /
+`docker rm` by pattern; `supabase stop --all`; kill processes by executable name (`taskkill /IM
+node.exe`, `Stop-Process -Name`, `pkill`); `wsl --shutdown`; quit Docker Desktop. These are shared
+services; the tool contains none of them and `tests/ops/test-lifecycle.test.ts` fails if one is added.
+A session that needs more memory asks the owner. It does not clean up other people's workloads.
+
 ### Docker shutdown policy
+
+This section applies **only when the owner has asked for Docker to be shut down** in the current prompt; no session quits Docker Desktop or runs `wsl --shutdown` on its own initiative (see the previous subsection).
 
 The owner's preference stands: Docker Desktop should not stay running for days unnecessarily when
 nothing needs it. But **safe shutdown takes precedence over destructive force termination.** A
@@ -215,8 +265,9 @@ real incident (P181) showed why: a prior session's forced kill left a stale
 next launch, blocking Docker Desktop entirely until the owner intervened manually — a
 multi-session-costing failure mode a repeated force-kill can trigger again. The procedure:
 
-1. Stop this session's own project containers (`backend.mjs stop` or equivalent) and confirm none
-   remain (`docker ps` for this project's names).
+1. Stop this session's own stacks (`pnpm lifecycle down --name <name>`) and confirm none remain
+   (`pnpm lifecycle inventory`). Stacks that are not in your own ledger are not yours to stop; if they
+   are all that keeps Docker running, report that instead of quitting Docker.
 2. Attempt a graceful Docker Desktop quit (`Docker Desktop.exe --quit`) and verify it actually
    exited.
 3. **Do not repeatedly force-kill Docker/WSL after a failed graceful quit if doing so risks stale

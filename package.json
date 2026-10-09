@@ -39,6 +39,8 @@
     "db:seed": "supabase db reset",
     "db:backup": "tsx scripts/db-backup/run-backup.ts",
     "db:backup:regression": "tsx scripts/db-backup/local-regression.ts",
+    "lifecycle": "tsx scripts/test-lifecycle/lifecycle.ts",
+    "lifecycle:selftest": "tsx scripts/test-lifecycle/selftest.ts",
     "db:types": "supabase gen types typescript --local --schema public > src/data/database.types.ts",
     "scanner:visual:benchmark": "tsx scripts/scanner-visual-benchmark/run-benchmark.ts",
     "scanner:visual:benchmark:hard": "tsx scripts/scanner-visual-benchmark/run-hard-benchmark.ts",
