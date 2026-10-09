@@ -19,12 +19,17 @@ import { defineConfig } from 'vite'
 // suites skip with explicit reasons; every pure-oracle suite still runs. This package must never
 // be pointed at a hosted project.
 const packageRoot = dirname(fileURLToPath(import.meta.url))
+// P203: aborts the run when SUPABASE_URL / DB_URL / a key names anything but a local stack.
+const localTargetGuard = fileURLToPath(
+  new URL('../../tests/support/local-target-global-setup.ts', import.meta.url),
+)
 
 export default defineConfig({
   root: packageRoot,
   test: {
     environment: 'node',
     include: ['**/*.test.ts'],
+    globalSetup: [localTargetGuard],
     fileParallelism: false,
     testTimeout: 30_000,
     hookTimeout: 180_000,

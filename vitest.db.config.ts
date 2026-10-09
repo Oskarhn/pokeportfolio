@@ -9,7 +9,9 @@ export default defineConfig({
   test: {
     environment: 'node',
     // P189: the erasure registry sink the delete-account function records to (tests/db/global-setup.ts).
-    globalSetup: ['tests/db/global-setup.ts'],
+    // P203: the first entry refuses a non-loopback SUPABASE_URL/DB_URL/key before any fixture can
+    // create a user (tests/support/local-target.ts).
+    globalSetup: ['tests/support/local-target-global-setup.ts', 'tests/db/global-setup.ts'],
     include: ['tests/db/**/*.test.ts', 'tests/authorization/**/*.test.ts'],
     // These suites share one Postgres instance and create/delete real auth.users rows —
     // running them in parallel across files risks cross-test interference.
