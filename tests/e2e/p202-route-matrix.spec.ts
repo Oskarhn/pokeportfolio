@@ -113,7 +113,7 @@ for (const state of ['empty', 'error', 'expired'] as const) {
       // would only repeat the matrix under a different user agent.
 
       for (const route of ROUTES) {
-        test(`${route}`, async ({ page }) => {
+        test(route, async ({ page }) => {
           await installBackend(page, state)
           await page.goto(route)
           // Let loading → settled transitions finish; the matrix asserts the settled state.
@@ -122,8 +122,10 @@ for (const state of ['empty', 'error', 'expired'] as const) {
             // An expired session must land on the sign-in page, never a half-rendered private page.
             await expect(page).toHaveURL(/\/login/)
           }
-          const h1 = await page.locator('h1:visible').count()
-          expect(h1, 'exactly one visible <h1>').toBe(1)
+          // Failed requests are retried (react-query default: 3, ~7 s) before the error state shows.
+          await expect(page.locator('h1:visible'), 'exactly one visible <h1>').toHaveCount(1, {
+            timeout: 12_000,
+          })
           expect(await page.locator('main').count(), 'a <main> landmark').toBeGreaterThanOrEqual(1)
           const overflow = await page.evaluate(
             () => document.documentElement.scrollWidth - document.documentElement.clientWidth,

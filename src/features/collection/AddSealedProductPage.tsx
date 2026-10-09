@@ -218,7 +218,7 @@ export function AddSealedProductPage() {
         ) : (
           <p className="text-sm text-slate-500">
             No match.{' '}
-            <Link to="/catalog" className="text-sky-400 underline-offset-4 hover:underline">
+            <Link to="/catalog" className="text-sky-400 underline underline-offset-4">
               Search the full sealed catalog
             </Link>{' '}
             to add a custom product instead.
