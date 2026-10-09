@@ -1608,7 +1608,7 @@ Both run in the `db-tests` job (`pnpm test:db`) against the real stack; neither 
 
 - `tests/db/p199_ledger_reconciliation.test.ts` — **cross-surface reconciliation, seeded.** 32 deterministic scenarios
   (mulberry32 seeds 1000–1031) drive the real write RPCs (`create_purchase` in NOK/EUR/USD/JPY with manual FX,
-  `create_sale` in NOK/EUR/USD, `update_purchase` incl. currency change, `update_sale`, `void_sale` (latest sale of a lot only),
+  `create_sale` in NOK/EUR/USD, `update_purchase` incl. currency change, `update_sale`, `void_sale` (any live sale, in any order since D-209),
   `void_purchase`, `set_manual_valuation` with an atomic replacement) on private
   card variants with seeded Cardmarket/TCGplayer observations, then compare the live `get_dashboard_summary`, the rebuilt
   `portfolio_snapshots` of **every day** and the frozen ledger rows against an oracle written from FINANCIAL_MODEL.md in
@@ -1618,7 +1618,15 @@ Both run in the `db-tests` job (`pnpm test:db`) against the real stack; neither 
   (a vacuous oracle is a bug). It inserts a few `fx_rates` rows on dates other suites do not use and deletes them in
   `afterAll`; like every `tests/db` file it must not run concurrently with another file (`fileParallelism: false`).
 - `tests/db/p199_snapshot_cost_basis.test.ts` — the focused regression for D-199: 3 × 333 + 1 shipping, partial sale, exhausting
-  sale; plus an `it.fails` pin of the known out-of-order-void limitation (it turns red when that defect is fixed — delete the pin then).
+  sale; and the original out-of-order-void reproduction (the former `it.fails` pin, passing since D-209).
+- `tests/db/p209_residual_conservation.test.ts` — **cost conservation for arbitrary void sequences (D-209).** Deterministic cases
+  (the P199 pin, a second exhausting sale after an out-of-order void, voiding the carrier, a backdated exhausting sale, the
+  sealed-lot equivalents through `create_opening`, `void_opening`, `list_opening_sources` and `reconcile_opening_cost`) and 28
+  seeded random sale/void sequences on a lot with an inexact division. The oracle reads only frozen facts: after every step,
+  for every day, `snapshot cost(D) = lot cost − Σ frozen basis of live disposals up to D`, and a sold-out lot has frozen exactly
+  its cost. A final test fails if the seeds stop producing out-of-order voids and sold-out lots.
+- `tests/db/p209_residual_backfill.test.ts` — runs the migration's own backfill statement over a user whose flags were reset
+  to the pre-migration shape, and checks that the read-only diagnostic counts a doubly-carried lot.
 
 To reproduce a failing seed: `pnpm exec vitest run --config vitest.db.config.ts p199_ledger_reconciliation -t "seed 1007"`; the
 assertion message carries the operation log of that seed.

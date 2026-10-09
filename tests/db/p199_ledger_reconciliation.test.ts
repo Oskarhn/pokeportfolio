@@ -25,7 +25,7 @@ import {
  *   F14 a holding with no resolvable value is excluded from CMV and counted, never valued at 0
  *   F10 graded/sealed never valued from raw prices (covered by the unit-level suites; raw only here)
  *   conservation: every krone of a lot's basis is either still on the lot or frozen on a live sale
- *   DCB(D) of a snapshot = sum over lots open on D of qty_open * unit basis + the lot's residual
+ *   DCB(D) of a snapshot = sum over lots open on D of (the lot cost - what live disposals up to D froze)
  *   CMV(D) of a snapshot = the section 6 resolution applied AS OF D (age measured from D)
  *   the live resolver and the snapshot of today agree with each other and with the oracle
  */
@@ -137,6 +137,7 @@ interface Lot {
 }
 interface Disposal {
   lot_id: string
+  sale_line_id: string | null
   quantity: number
   disposed_on: string
   voided_at: string | null
@@ -410,38 +411,10 @@ async function buildScenario(seed: number): Promise<Scenario> {
       const list = sales as { id: string }[]
       if (list.length > 0) {
         const s = list[ri(0, list.length - 1)]!
-        // Only the latest-created live sale of each of its lots is voided here. Voiding an earlier
-        // sale while a later one already exhausted the lot leaves the exhausting sale carrying the
-        // lot's residual AND the lot carrying it again (docs/DECISIONS.md D-199 "known limitation",
-        // pinned by tests/db/p199_snapshot_cost_basis.test.ts).
-        const mine = (await must(
-          'mine',
-          service.from('sale_lines').select('lot_id').eq('sale_id', s.id),
-        )) as { lot_id: string }[]
-        const later = (await must(
-          'later',
-          service
-            .from('sale_lines')
-            .select('sale_id, sales!inner(created_at, voided_at)')
-            .in(
-              'lot_id',
-              mine.map((x) => x.lot_id),
-            )
-            .neq('sale_id', s.id)
-            .is('sales.voided_at', null)
-            .gt('sales.created_at', '1970-01-01'),
-        )) as unknown as { sale_id: string; sales: { created_at: string } }[]
-        const own = (await must(
-          'own',
-          service.from('sales').select('created_at').eq('id', s.id).single(),
-        )) as unknown as { created_at: string }
-        const isLatest = later.every((x) => x.sales.created_at < own.created_at)
-        if (isLatest) {
-          const r = await client.rpc('void_sale', { p_sale_id: s.id, p_reason: 'p199' })
-          log.push(`void_sale ${r.error ? 'ERR ' + r.error.message : 'ok'}`)
-        } else {
-          log.push('void_sale skipped (not the latest sale of its lot)')
-        }
+        // Any live sale may be voided, in any order (D-209: the residual is carried by exactly one
+        // live disposal, so an out-of-order void conserves cost).
+        const r = await client.rpc('void_sale', { p_sale_id: s.id, p_reason: 'p199' })
+        log.push(`void_sale ${r.error ? 'ERR ' + r.error.message : 'ok'}`)
       }
     } else if (roll < 0.78) {
       const purchases = await must(
@@ -630,7 +603,7 @@ describe('P199 deterministic cross-surface reconciliation', () => {
           service.from('acquisition_lots').select('*').eq('user_id', uid),
           service
             .from('lot_disposals')
-            .select('lot_id, quantity, disposed_on, voided_at')
+            .select('lot_id, quantity, disposed_on, voided_at, sale_line_id')
             .eq('user_id', uid),
           service.from('purchases').select('*').eq('user_id', uid),
           service.from('purchase_lines').select('*').eq('user_id', uid),
@@ -700,14 +673,18 @@ describe('P199 deterministic cross-surface reconciliation', () => {
           const frozen = liveSaleLines
             .filter((l) => String(l.lot_id) === lot.id)
             .reduce((s, l) => s + big(l.cost_basis_at_sale_nok_minor), 0n)
-          const remaining =
-            lot.quantity_remaining > 0
-              ? BigInt(lot.quantity_remaining) * BigInt(lot.unit_cost_basis_nok_minor) +
-                BigInt(lot.residual_nok_minor)
-              : 0n
-          if (frozen + remaining !== total) {
+          // What is still on the lot is whatever the frozen sales did not take. A sold-out lot must
+          // be fully frozen; a lot with units left holds at least their unit cost and at most that
+          // plus its residual (the residual is on the lot or on exactly one live sale).
+          const left = total - frozen
+          const units = BigInt(lot.quantity_remaining) * BigInt(lot.unit_cost_basis_nok_minor)
+          if (
+            lot.quantity_remaining === 0
+              ? left !== 0n
+              : left < units || left > units + BigInt(lot.residual_nok_minor)
+          ) {
             problems.push(
-              `conservation lot ${lot.id}: frozen ${frozen} + remaining ${remaining} != total ${total}`,
+              `conservation lot ${lot.id}: total ${total} frozen ${frozen} left ${left} units ${units} residual ${lot.residual_nok_minor}`,
             )
           }
           const line = lot.purchase_line_id ? lotLines.get(lot.purchase_line_id) : undefined
@@ -823,7 +800,27 @@ describe('P199 deterministic cross-surface reconciliation', () => {
                 .filter((x) => x.lot_id === lot.id && x.voided_at === null && x.disposed_on <= day)
                 .reduce((s, x) => s + x.quantity, 0)
               const qtyOpen = lot.quantity - sold
-              if (qtyOpen <= 0) continue
+              if (qtyOpen <= 0) {
+                // Sold out on this day: live disposals up to the day must have frozen the whole lot.
+                if (lot.cost_basis_state === 'known' && lot.unit_cost_basis_nok_minor !== null) {
+                  const lotTotal =
+                    BigInt(lot.quantity) * BigInt(lot.unit_cost_basis_nok_minor) +
+                    BigInt(lot.residual_nok_minor)
+                  const frozen = disposals
+                    .filter(
+                      (x) => x.lot_id === lot.id && x.voided_at === null && x.disposed_on <= day,
+                    )
+                    .reduce((acc, x) => {
+                      const line = liveSaleLines.find((l) => String(l.id) === x.sale_line_id)
+                      return acc + (line ? big(line.cost_basis_at_sale_nok_minor) : 0n)
+                    }, 0n)
+                  if (frozen !== lotTotal)
+                    problems.push(
+                      `${day}: lot ${lot.id} sold out, frozen ${frozen} != cost ${lotTotal}`,
+                    )
+                }
+                continue
+              }
               open += 1
               const unit =
                 manualAt(sc.manuals, lot.holding_id, day) ??
@@ -834,9 +831,19 @@ describe('P199 deterministic cross-surface reconciliation', () => {
                 if (lot.cost_basis_state === 'known') acmv += unit * BigInt(qtyOpen)
               }
               if (lot.cost_basis_state === 'known' && lot.unit_cost_basis_nok_minor !== null) {
-                dcb +=
-                  BigInt(qtyOpen) * BigInt(lot.unit_cost_basis_nok_minor) +
+                // F17 as of the day: what the lot cost minus what live disposals up to the day froze.
+                const lotTotal =
+                  BigInt(lot.quantity) * BigInt(lot.unit_cost_basis_nok_minor) +
                   BigInt(lot.residual_nok_minor)
+                const frozenToDay = disposals
+                  .filter(
+                    (x) => x.lot_id === lot.id && x.voided_at === null && x.disposed_on <= day,
+                  )
+                  .reduce((acc, x) => {
+                    const line = liveSaleLines.find((l) => String(l.id) === x.sale_line_id)
+                    return acc + (line ? big(line.cost_basis_at_sale_nok_minor) : 0n)
+                  }, 0n)
+                dcb += lotTotal - frozenToDay
               }
             }
             const csD = liveLines

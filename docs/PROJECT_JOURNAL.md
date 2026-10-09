@@ -2524,3 +2524,15 @@ covered a lot whose cost divided evenly, so the dropped remainder was always zer
 path and was never restated for the historical one. Lesson: a conservation property ("every minor unit of cost is either on the
 lot or frozen on a sale") written across surfaces catches what per-surface examples with round numbers cannot. Details: D-199,
 docs/TESTING.md §6i.
+
+## 2026-10-09 — The remainder that was assigned once and never reconsidered (P209)
+
+P199 pinned one known failure: void an earlier sale of a lot while the sale that exhausted it stays live, and the lot's leftover
+cost of a few øre sits in two places. The first instinct was a design question (refuse the void, or rewrite the live sale), and
+both bad answers share a root: the residual was treated as a property of the exhausting *sale*, decided once at creation. It is
+really a property of the lot that is *attributed* to exactly one live disposal at any moment. Storing that attribution on the
+disposal made the fix a flag plus one guard in each of three write paths, and made the snapshot a function of dates instead of
+of creation order. Writing the oracle first from frozen facts only (lot cost minus what live disposals froze up to the day) found
+two more forms of the same defect, a second exhausting sale and a backdated one, that the original reproduction did not show, and
+a separate bug in the opening picker: `list_opening_sources` returned numeric text such as '1.00000000000000000000' for cost
+components because `sum(bigint)` is numeric. Details: D-209, docs/TESTING.md §6i.

@@ -678,6 +678,7 @@ pattern D-038 already established for `acquisition_lots.origin`; M10 only ever w
 | `disposed_on date` | |
 | `sale_line_id fk nullable` | Required (and unique) exactly when `kind = 'sale'`. `opening_id`/`trade_line_id` arrive with M16/M18. |
 | `cost_basis_at_disposal_nok_minor nullable` | Frozen copy for non-sale disposals — a sale disposal's frozen basis lives on `sale_lines.cost_basis_at_sale_nok_minor` instead (which `sale_line_id` already points at), so this stays `NULL` for `kind='sale'` rows |
+| `consumed_lot_residual boolean not null default false` | D-209. True when this disposal froze the lot's exhaustion residual (`residual_nok_minor` + adjustment remainder) into its basis. At most one live disposal of a lot carries it (legacy data may have more); voiding the carrier returns the residual to the lot. |
 | `created_at`, `voided_at nullable` | |
 
 > **Invariant D1:** `lot.quantity_remaining = lot.quantity − Σ non-voided disposals`.

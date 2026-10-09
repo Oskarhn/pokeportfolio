@@ -124,73 +124,68 @@ describe('P199 snapshot cost basis keeps the lot residual', () => {
   })
 })
 
-describe('P199 known limitation: the residual can be carried twice after an out-of-order void', () => {
-  // KNOWN DEFECT, deliberately pinned and NOT fixed in this change (docs/DECISIONS.md D-199, "Known
-  // limitation"). D-060 hands a lot's residual to the disposal that exhausts it, frozen at creation. If
-  // an EARLIER sale is then voided, quantity returns to the lot while the later, exhausting sale stays
-  // live and keeps the residual it already carries - so the same minor unit is on the lot and on the sale.
-  // The error is bounded by the residual (< the lot's quantity in minor units). `it.fails` keeps CI green
-  // while the defect exists and turns red the day it is fixed, which is the signal to delete this pin.
-  it.fails(
-    'voiding an earlier sale while the exhausting sale stays live conserves cost',
-    async () => {
-      const u = await createSyntheticUser(service, 'p199-dcb-void')
-      const c = await signInAs(u)
-      try {
-        // 5 x 100 + 1 shipping = 501: unit 100, residual 1.
-        const purchase = await c.rpc('create_purchase', {
-          p_purchased_on: today,
-          p_currency: 'NOK',
-          p_shipping_minor: 1,
-          p_lines: [
-            {
-              line_type: 'card',
-              card_variant_id: seedCatalog.pikachuVariantId,
-              condition: 'NM',
-              quantity: 5,
-              unit_price_minor: 100,
-            },
-          ],
-        })
-        expect(purchase.error).toBeNull()
-        const { data: lot } = await service
-          .from('acquisition_lots')
-          .select('id')
-          .eq('user_id', u.id)
+describe('P199 out-of-order void (fixed by D-209)', () => {
+  // Was an it.fails pin of a known limitation: D-060 froze the residual on the exhausting sale and the
+  // void path never re-asked, so the same minor unit sat on the live sale and on the lot again. D-209
+  // records which live disposal carries the residual; the full sequence and property coverage is in
+  // tests/db/p209_residual_conservation.test.ts, this keeps the original reproduction readable here.
+  it('voiding an earlier sale while the exhausting sale stays live conserves cost', async () => {
+    const u = await createSyntheticUser(service, 'p199-dcb-void')
+    const c = await signInAs(u)
+    try {
+      // 5 x 100 + 1 shipping = 501: unit 100, residual 1.
+      const purchase = await c.rpc('create_purchase', {
+        p_purchased_on: today,
+        p_currency: 'NOK',
+        p_shipping_minor: 1,
+        p_lines: [
+          {
+            line_type: 'card',
+            card_variant_id: seedCatalog.pikachuVariantId,
+            condition: 'NM',
+            quantity: 5,
+            unit_price_minor: 100,
+          },
+        ],
+      })
+      expect(purchase.error).toBeNull()
+      const { data: lot } = await service
+        .from('acquisition_lots')
+        .select('id')
+        .eq('user_id', u.id)
+        .single<{ id: string }>()
+      const sell = async (quantity: number) => {
+        const r = await c
+          .rpc('create_sale', {
+            p_idempotency_key: crypto.randomUUID(),
+            p_sold_on: today,
+            p_currency: 'NOK',
+            p_lines: [{ lot_id: lot!.id, quantity, unit_gross_minor: 500 }],
+          })
           .single<{ id: string }>()
-        const sell = async (quantity: number) => {
-          const r = await c
-            .rpc('create_sale', {
-              p_idempotency_key: crypto.randomUUID(),
-              p_sold_on: today,
-              p_currency: 'NOK',
-              p_lines: [{ lot_id: lot!.id, quantity, unit_gross_minor: 500 }],
-            })
-            .single<{ id: string }>()
-          expect(r.error).toBeNull()
-          return r.data!.id
-        }
-        const first = await sell(4) // not exhausting: freezes 4 x 100
-        await sell(1) // exhausting: freezes 100 + residual 1
-        expect((await c.rpc('void_sale', { p_sale_id: first, p_reason: 'p199' })).error).toBeNull()
-
-        // 4 units are back on the lot; the live exhausting sale already holds the residual (101).
-        const rb = await service.rpc('rebuild_portfolio_snapshots', {
-          p_user_id: u.id,
-          p_from: today,
-          p_through: today,
-        })
-        expect(rb.error).toBeNull()
-        const { data: snap } = await service
-          .from('portfolio_snapshots')
-          .select('cost_basis_nok_minor')
-          .eq('user_id', u.id)
-          .eq('snapshot_date', today)
-          .single<{ cost_basis_nok_minor: number }>()
-        expect(BigInt(snap!.cost_basis_nok_minor)).toBe(400n) // total 501 - frozen 101; the snapshot says 401
-      } finally {
-        await deleteSyntheticUser(service, u.id)
+        expect(r.error).toBeNull()
+        return r.data!.id
       }
-    },
-  )
+      const first = await sell(4) // not exhausting: freezes 4 x 100
+      await sell(1) // exhausting: freezes 100 + residual 1
+      expect((await c.rpc('void_sale', { p_sale_id: first, p_reason: 'p199' })).error).toBeNull()
+
+      // 4 units are back on the lot; the live exhausting sale already holds the residual (101).
+      const rb = await service.rpc('rebuild_portfolio_snapshots', {
+        p_user_id: u.id,
+        p_from: today,
+        p_through: today,
+      })
+      expect(rb.error).toBeNull()
+      const { data: snap } = await service
+        .from('portfolio_snapshots')
+        .select('cost_basis_nok_minor')
+        .eq('user_id', u.id)
+        .eq('snapshot_date', today)
+        .single<{ cost_basis_nok_minor: number }>()
+      expect(BigInt(snap!.cost_basis_nok_minor)).toBe(400n) // total 501 - frozen 101; the snapshot says 401
+    } finally {
+      await deleteSyntheticUser(service, u.id)
+    }
+  })
 })
