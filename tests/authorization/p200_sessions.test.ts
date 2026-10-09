@@ -55,15 +55,21 @@ afterAll(async () => {
 }, 60_000)
 
 describe('P200 expired and malformed tokens', () => {
-  it('a correctly signed token is accepted until it expires, and refused after', async () => {
+  it('a correctly signed token is accepted until it expires, and refused after', async (ctx) => {
     const now = Math.floor(Date.now() / 1000)
     const claims = { sub: user.id, role: 'authenticated', aud: 'authenticated' }
     const live = mint({ ...claims, iat: now - 10, exp: now + 300 })
     const expired = mint({ ...claims, iat: now - 7200, exp: now - 3600 })
     const control = await restStatus(live)
-    // A different secret (a non-default stack) makes every minted token invalid: nothing to conclude.
+    // A different secret (a non-default stack) makes every minted token invalid, so "expired is
+    // refused" would be satisfied by a token that was never accepted. That is not a pass: the case
+    // is reported as skipped, with the reason, instead.
     if (control !== 200) {
-      expect(control).toBeGreaterThanOrEqual(400)
+      ctx.skip(
+        'the stack does not use the default JWT secret, so the control token was refused (' +
+          String(control) +
+          ') and expiry cannot be isolated',
+      )
       return
     }
     expect(await restStatus(expired)).toBeGreaterThanOrEqual(400)

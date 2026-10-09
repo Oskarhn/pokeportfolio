@@ -54,6 +54,15 @@ const SHARED_OR_SYSTEM_TABLES = [
   'restore_gate_runs',
 ] as const
 
+/**
+ * Server-only operational tables that a migration still waiting to be merged adds (P201:
+ * price_sync_attempts). They are classified in advance so the matrix is green on both sides of that
+ * merge: absent on a database without the migration, they are not "stale"; present, they are
+ * exercised by the server-only test below. An entry belongs here only until its migration is on
+ * main; then it moves into SHARED_OR_SYSTEM_TABLES and SERVER_ONLY_TABLES.
+ */
+const PENDING_SERVER_ONLY_TABLES = ['price_sync_attempts'] as const
+
 /** Operational tables no browser role may read or write at all (service_role / postgres only). */
 const SERVER_ONLY_TABLES = [
   'account_erasure_receipts',
@@ -141,12 +150,15 @@ describe.skipIf(!rawSqlAvailable())('P200 catalog classification', () => {
     const noRls = tables.filter(([, rls]) => rls !== 'true').map(([t]) => t)
     expect(noRls).toEqual([])
     const owned = new Set(USER_OWNED_TABLES.map((t) => t.table))
-    const shared = new Set<string>(SHARED_OR_SYSTEM_TABLES)
+    const pending = new Set<string>(PENDING_SERVER_ONLY_TABLES)
+    const shared = new Set<string>([...SHARED_OR_SYSTEM_TABLES, ...PENDING_SERVER_ONLY_TABLES])
     const unclassified = tables.map(([t]) => t).filter((t) => !owned.has(t) && !shared.has(t))
     // A new table must be added to USER_OWNED_TABLES (and thereby to the cross-tenant matrix
     // below and the account-deletion purge) or to SHARED_OR_SYSTEM_TABLES with a reason.
     expect(unclassified).toEqual([])
-    const stale = [...owned, ...shared].filter((t) => !tables.some(([name]) => name === t))
+    const stale = [...owned, ...shared]
+      .filter((t) => !pending.has(t))
+      .filter((t) => !tables.some(([name]) => name === t))
     expect(stale).toEqual([])
   })
 
@@ -625,7 +637,18 @@ describe('P200 tenant B versus tenant A: RPCs addressed at A’s ids', () => {
 describe('P200 server-only tables', () => {
   it('neither anon nor an authenticated tenant can read or write them', async () => {
     const anon = createAnonClient()
-    for (const table of SERVER_ONLY_TABLES) {
+    // The pending tables are exercised exactly when the database has them.
+    const existing = new Set(
+      await psql(
+        `select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace
+          where n.nspname = 'public' and c.relkind in ('r','p');`,
+      ),
+    )
+    const serverOnly = [...SERVER_ONLY_TABLES, ...PENDING_SERVER_ONLY_TABLES].filter((t) =>
+      existing.has(t),
+    )
+    expect(serverOnly.length).toBeGreaterThanOrEqual(SERVER_ONLY_TABLES.length)
+    for (const table of serverOnly) {
       for (const [who, client] of [
         ['anon', anon],
         ['authenticated', b.client],
