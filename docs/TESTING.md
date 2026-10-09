@@ -1474,6 +1474,31 @@ checkout at the reported commit; otherwise INCOMPLETE, or FAILED when something 
 nothing — the script cannot deploy and `tests/ops/release-evidence.test.ts` fails if a deploy,
 push or workflow-dispatch command appears in it.
 
+### 10.2 CI runtime, reporting and failure evidence (P203)
+
+Measured on the green runs of `main` on 2026-10-08: `build-and-test` and `db-tests` take about 22
+minutes each — Browser E2E ~16 min, authenticated E2E ~10 min, database and authorization suites
+~5 min, Supabase stack start ~2 min — and `native-checks` about 75 seconds. Dependency installation is
+8-10 seconds, so no pnpm cache is configured; it would not pay for itself.
+
+- **Timeouts.** Every job has `timeout-minutes` (45 / 45 / 15, about twice the observed time).
+  `tests/config/ci-workflow-hardening.test.ts` requires it and also pins the job names (they are the
+  required status checks), the read-only default permission and a retention period on every artifact.
+- **Job summary.** Each of `build-and-test` and `db-tests` ends with a step, run even when the job
+  failed, that writes the slowest files per suite and **every Playwright test that passed only on a
+  retry** (`scripts/ci/test-summary.mjs`, fed by Vitest JUnit and Playwright JSON under `ci-results/`).
+  CI allows two retries, so a flaky test is green; this summary is the only place that records it. It
+  reports and never gates.
+- **Failure evidence.** A failed `db-tests` uploads redacted logs of every Supabase container for seven
+  days (`scripts/ci/collect-diagnostics.mjs`) before the stack is stopped. The generated erasure-registry
+  credentials are masked before they reach any later step.
+- **REST readiness.** After the PostgREST restart the job polls REST through the gateway instead of
+  sleeping; a gateway that kept the old upstream is restarted.
+
+Not changed, deliberately: the two long jobs still run serially inside one job each. Sharding Browser
+E2E would shorten wall time but needs the three required check names preserved by an aggregating job;
+that is a separate change (recommended in the P203 report), not a side effect of this one.
+
 ## 11. CI coverage inventory (P130-28/P139)
 
 Every validation surface in this repository, classified by where it actually runs. "Documented but
