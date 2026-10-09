@@ -10,6 +10,7 @@ import {
   type PriceStatus,
 } from '../../domain/pricing-status'
 import { getMyProfile } from '../../data/profile'
+import { FreshnessBadge } from '../price-check/components'
 import { CardImage } from './CardImage'
 import { MoneyDisplay } from '../../ui/MoneyDisplay'
 import { formatSourcePriceMinor } from '../../ui/money-format'
@@ -223,8 +224,11 @@ export function CardDetailPage() {
                                 : '—'}
                         </span>
                         {badge !== null ? (
-                          <span className="ml-2 rounded-full border border-amber-700/60 px-1.5 py-0.5 text-[10px] font-medium text-amber-300">
-                            {badge}
+                          <span className="ml-2">
+                            <FreshnessBadge
+                              observedAt={price?.providerUpdatedAt ?? null}
+                              nowMs={mountedAtMs}
+                            />
                           </span>
                         ) : null}
                       </span>
@@ -294,8 +298,11 @@ export function CardDetailPage() {
                 </p>
               ) : null}
               {selectedStatus.kind === 'priced' && freshnessBadge(selectedStatus) !== null ? (
-                <p className="text-xs text-amber-300" data-testid="price-freshness">
-                  {freshnessBadge(selectedStatus)}
+                <p data-testid="price-freshness">
+                  <FreshnessBadge
+                    observedAt={selectedPrice?.providerUpdatedAt ?? null}
+                    nowMs={mountedAtMs}
+                  />
                 </p>
               ) : null}
               {selectedStatus.kind === 'priced' && !selectedStatus.nokKnown ? (
