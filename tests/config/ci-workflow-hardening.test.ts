@@ -156,6 +156,15 @@ describe.each(['db-suites', 'authenticated-e2e'])('%s diagnostics', (job) => {
     expect(part).toMatch(/\/rest\/v1\//)
   })
 
+  it('retries the stack start a bounded number of times, and only the start', () => {
+    const at = block.indexOf('Start local Supabase stack')
+    expect(at).toBeGreaterThan(-1)
+    const step = block.slice(at, block.indexOf('- name:', at + 10))
+    expect(step).toMatch(/for attempt in 1 2 3/)
+    expect(step).toContain('pnpm exec supabase start')
+    expect(step).toMatch(/exit 1/)
+  })
+
   it('deactivates the recurring cron jobs so the stack never calls Production', () => {
     expect(block).toContain('select cron.alter_job(jobid, active := false) from cron.job;')
   })

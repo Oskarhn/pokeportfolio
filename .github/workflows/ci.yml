@@ -295,8 +295,21 @@ jobs:
             echo "ERASURE_REGISTRY_KEY=$ERASURE_KEY"
           } >> "$GITHUB_ENV"
 
+      # The images come from a public registry that rate-limits pulls ("toomanyrequests: Rate
+      # exceeded", seen on P202's db-tests more than once). Two stacks per CI run (db-suites and
+      # authenticated-e2e) pull twice, so the start itself is retried, bounded: this retries
+      # infrastructure only, never a test, and a stack that is still down after three attempts fails
+      # the job with the CLI's own output.
       - name: Start local Supabase stack (applies every migration to an empty database)
-        run: pnpm exec supabase start
+        run: |
+          for attempt in 1 2 3; do
+            if pnpm exec supabase start; then exit 0; fi
+            echo "::warning::supabase start failed (attempt $attempt of 3); stopping partial containers"
+            pnpm exec supabase stop || true
+            sleep $((attempt * 30))
+          done
+          echo "::error::supabase start failed three times"
+          exit 1
 
       - name: 'Reset and reapply from scratch (reproducibility: empty DB -> migrations -> seed)'
         run: pnpm exec supabase db reset
@@ -606,8 +619,21 @@ jobs:
             echo "ERASURE_REGISTRY_KEY=$ERASURE_KEY"
           } >> "$GITHUB_ENV"
 
+      # The images come from a public registry that rate-limits pulls ("toomanyrequests: Rate
+      # exceeded", seen on P202's db-tests more than once). Two stacks per CI run (db-suites and
+      # authenticated-e2e) pull twice, so the start itself is retried, bounded: this retries
+      # infrastructure only, never a test, and a stack that is still down after three attempts fails
+      # the job with the CLI's own output.
       - name: Start local Supabase stack (applies every migration to an empty database)
-        run: pnpm exec supabase start
+        run: |
+          for attempt in 1 2 3; do
+            if pnpm exec supabase start; then exit 0; fi
+            echo "::warning::supabase start failed (attempt $attempt of 3); stopping partial containers"
+            pnpm exec supabase stop || true
+            sleep $((attempt * 30))
+          done
+          echo "::error::supabase start failed three times"
+          exit 1
 
       - name: Export local Supabase connection details
         run: |
