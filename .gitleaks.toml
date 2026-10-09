@@ -53,3 +53,15 @@ condition = "AND"
 paths = ['''^tests/ops/erasure-registry-worker\.test\.ts$''']
 regexTarget = "line"
 regexes = ['''const KEY_HEX = '0123456789abcdef'\.repeat\(4\)''']
+
+# P203: tests/ops/release-evidence.test.ts feeds a JWT-shaped string ({"alg":"HS256","typ":"JWT"} .
+# {"role":"service_role"} . the ASCII text "signature-value") to the evidence report's redactor to
+# prove the redactor removes it. Synthetic: signed by nothing and valid for no service. Scoped to
+# this one file AND this exact token (both must match), so the same shape anywhere else is still
+# reported. Needed because the scan covers every commit on every branch, so an intermediate commit
+# that held the literal fails every later pull request until the pattern is allowlisted.
+[[allowlists]]
+description = "Synthetic JWT redaction fixture in release-evidence.test.ts"
+condition = "AND"
+paths = ['''^tests/ops/release-evidence\.test\.ts$''']
+regexes = ['''eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.eyJyb2xlIjoic2VydmljZV9yb2xlIn0\.c2lnbmF0dXJlLXZhbHVl''']
