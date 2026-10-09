@@ -33,8 +33,11 @@ import { createHash, randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { runPsql as execPsql } from './lib/psql-exec.mjs'
+import { assertLoopbackSupabaseUrl } from './lib/local-stack-guard.mjs'
 
 const url = process.env.SUPABASE_URL
+  ? assertLoopbackSupabaseUrl(process.env.SUPABASE_URL)
+  : undefined
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
 if (!url || !serviceRoleKey) {
   throw new Error(

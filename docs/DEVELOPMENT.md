@@ -163,7 +163,7 @@ Live since M7 (Portfolio performance):
 
 | Command | Does |
 |---|---|
-| `SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... SUPABASE_ANON_KEY=... node scripts/portfolio-perf-benchmark.mjs [--lots=10000] [--keep]` | Seeds one throwaway synthetic account with N lots and times `list_portfolio`/`portfolio_counts`. Deletes the account (cascading every row it created) on exit unless `--keep` is passed. **Never run this against the owner's real account** — an isolated `.invalid` synthetic account only (M7 prompt §101), against either the local stack or a throwaway/dev project. |
+| `SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... SUPABASE_ANON_KEY=... node scripts/portfolio-perf-benchmark.mjs [--lots=10000] [--keep]` | Seeds one throwaway synthetic account with N lots and times `list_portfolio`/`portfolio_counts`. Deletes the account (cascading every row it created) on exit unless `--keep` is passed. **Never run this against the owner's real account** — an isolated `.invalid` synthetic account only (M7 prompt §101), against the local stack. Since P200 every service-role tool and `pnpm test:db` refuse a non-loopback `SUPABASE_URL` (`scripts/lib/local-stack-guard.mjs`, no override): the only hosted project is Production. |
 
 `config push` is not optional housekeeping. Gate 1 of the invite-only enforcement lives in
 `config.toml`, so a remote project that has had migrations pushed but not config is running with
