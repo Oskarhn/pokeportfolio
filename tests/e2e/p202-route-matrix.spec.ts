@@ -2,6 +2,11 @@ import { test, expect, type Page } from '@playwright/test'
 import AxeBuilder from '@axe-core/playwright'
 import { installFakeSession } from './support/fake-session'
 
+test.skip(
+  ({ browserName }) => browserName !== 'chromium',
+  'Viewports are set per cell; the WebKit/iPhone project is not part of this matrix (see docs/TESTING.md §6i).',
+)
+
 /**
  * P202: route × state × viewport matrix against the placeholder-backend preview build.
  *
