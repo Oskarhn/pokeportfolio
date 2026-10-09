@@ -109,9 +109,8 @@ for (const state of ['empty', 'error', 'expired'] as const) {
   for (const vp of VIEWPORTS) {
     test.describe(`p202 matrix · ${state} · ${vp.name}`, () => {
       test.use({ viewport: { width: vp.width, height: vp.height } })
-      // Desktop project only: the viewport is set explicitly per cell, so running the matrix on
-      // the iPhone project would just repeat it with a different UA.
-      test.skip(({ browserName }, info) => info.project.name !== 'desktop-chromium')
+      // Run with --project=desktop-chromium: the viewport is set per cell, so the iPhone project
+      // would only repeat the matrix under a different user agent.
 
       for (const route of ROUTES) {
         test(`${route}`, async ({ page }) => {
