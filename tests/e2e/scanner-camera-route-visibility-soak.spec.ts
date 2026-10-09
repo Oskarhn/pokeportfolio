@@ -62,7 +62,9 @@ test.describe('scanner camera route + visibility soak (P119 §10/§11)', () => {
     let maxObservedActiveStreams = 0
     for (let cycle = 0; cycle < CYCLES; cycle += 1) {
       await page.goto('/scan')
-      await expect(page.getByRole('heading', { name: 'Scan cards' })).toBeVisible()
+      await expect(page.getByRole('heading', { name: 'Scan cards' })).toBeVisible({
+        timeout: 20_000,
+      })
       await page.getByRole('button', { name: 'Start camera' }).click()
       await expect(page.getByRole('button', { name: 'Capture card' })).toBeVisible({
         timeout: 10_000,
@@ -171,7 +173,9 @@ test.describe('scanner camera route + visibility soak (P119 §10/§11)', () => {
     for (let cycle = 0; cycle < CYCLES; cycle += 1) {
       if (cycle > 0) await openCyclePage()
       await page.goto('/scan')
-      await expect(page.getByRole('heading', { name: 'Scan cards' })).toBeVisible()
+      await expect(page.getByRole('heading', { name: 'Scan cards' })).toBeVisible({
+        timeout: 20_000,
+      })
       await page.getByRole('button', { name: 'Start camera' }).click()
       const shutter = page.getByRole('button', { name: 'Capture card' })
       // Corrected diagnosis (P126): this button is NOT gated by DINOv2/OCR analysis — it enables
@@ -314,7 +318,9 @@ test.describe('scanner camera route + visibility soak (P119 §10/§11)', () => {
         // the heading becoming visible does not by itself guarantee the effect has already fired.
         // `expect.poll` (not a fixed extra sleep) waits exactly as long as that real, bounded
         // scheduling gap actually takes.
-        await expect(page.getByRole('heading', { name: 'Scan cards' })).toBeVisible()
+        await expect(page.getByRole('heading', { name: 'Scan cards' })).toBeVisible({
+          timeout: 20_000,
+        })
         await expect
           .poll(async () => (await getCameraMockDiagnostics(page)).activeStreamCount, {
             timeout: 2_000,

@@ -38,7 +38,10 @@ export function MoneyDisplay({
   stale?: boolean
 }) {
   const sizeClass = {
-    lg: 'text-3xl font-semibold tracking-tight',
+    // One step smaller below `sm`: a 15-digit total in kr (a large collection, or any value past
+    // 2^53 minor units) is ~320 px wide at text-3xl and pushed the page sideways on a 320 px phone
+    // (P210). The wrapper below also lets an even longer figure wrap instead of overflowing.
+    lg: 'text-2xl font-semibold tracking-tight sm:text-3xl',
     md: 'text-xl font-semibold tracking-tight',
     sm: 'text-sm font-medium',
   }[size]
@@ -58,8 +61,8 @@ export function MoneyDisplay({
       : null
 
   return (
-    <span className="inline-flex items-baseline gap-1.5">
-      <span className={`tabular-nums ${sizeClass}`}>
+    <span className="inline-flex max-w-full flex-wrap items-baseline gap-x-1.5">
+      <span className={`min-w-0 tabular-nums [overflow-wrap:anywhere] ${sizeClass}`}>
         {state === 'missing' ? (
           <span className="text-slate-500">—</span>
         ) : hidden ? (

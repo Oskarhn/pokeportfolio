@@ -10,6 +10,15 @@ they were**.
 
 ## [Unreleased]
 
+### Fixed — 2026-10-09 — Realistic-data layout and accessibility, WebKit coverage, flakes (P210)
+
+- A 15-digit total no longer pushes Home and Portfolio sideways on a 320 px phone; voided purchases and
+  history entries are no longer faded below AA contrast; the "Voided" badge can no longer be truncated
+  away by a long retailer name; the Home chart's attribution link is out of the tab order inside its
+  `aria-hidden` container.
+- Test infrastructure: WebKit coverage for the route matrix (desktop WebKit and iPhone), a realistic-data
+  suite, a lazy build-artifact read in the graded-layout spec, and three deterministic flake fixes.
+
 ### Changed — 2026-10-09 — Frontend quality pass: states, shell, mobile inputs, native sheet (P202)
 
 Not deployed. Web only unless stated; Production unchanged.

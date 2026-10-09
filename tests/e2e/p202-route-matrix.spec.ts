@@ -2,10 +2,11 @@ import { test, expect } from '@playwright/test'
 import AxeBuilder from '@axe-core/playwright'
 import { installBackend } from './support/generic-backend'
 
-test.skip(
-  ({ browserName }) => browserName !== 'chromium',
-  'Viewports are set per cell; the WebKit/iPhone project is not part of this matrix (see docs/TESTING.md §6i).',
-)
+// The service worker takes control of the page shortly after the first load. In WebKit, page.route()
+// does not see requests a service worker forwards, so the later retries of a failed read reached the
+// real (absent) backend and the error state never settled. The matrix is about the rendered UI, not
+// the service worker (p202-pwa.spec.ts covers that), so the worker is blocked here (P210).
+test.use({ serviceWorkers: 'block' })
 
 /**
  * P202: route × state × viewport matrix against the placeholder-backend preview build.
@@ -65,8 +66,12 @@ for (const state of ['empty', 'error', 'expired'] as const) {
   for (const vp of VIEWPORTS) {
     test.describe(`p202 matrix · ${state} · ${vp.name}`, () => {
       test.use({ viewport: { width: vp.width, height: vp.height } })
-      // Run with --project=desktop-chromium: the viewport is set per cell, so the iPhone project
-      // would only repeat the matrix under a different user agent.
+      // The iPhone project is a device emulation (touch, mobile viewport meta handling): it runs the
+      // device-native width only. desktop-chromium and desktop-webkit run all four widths.
+      test.skip(
+        ({ isMobile }) => isMobile && vp.name !== '390',
+        'The iPhone project runs the device-native cell only.',
+      )
 
       for (const route of ROUTES) {
         test(route, async ({ page }) => {

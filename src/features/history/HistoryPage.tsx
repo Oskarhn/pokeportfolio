@@ -176,7 +176,9 @@ function HistoryEventRow({ event }: { event: HistoryEvent }) {
         {...target}
         className={`block rounded-lg border p-3 hover:bg-slate-800/40 ${
           event.status === 'voided'
-            ? 'border-dashed border-slate-800 opacity-70'
+            ? // Not faded (P210): opacity-70 put the secondary text under WCAG AA contrast. The
+              // dashed border and the "Voided" badge carry the state.
+              'border-dashed border-slate-800'
             : 'border-slate-800'
         }`}
       >

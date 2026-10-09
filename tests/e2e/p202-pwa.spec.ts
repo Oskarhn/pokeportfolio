@@ -1,11 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { installBackend } from './support/generic-backend'
 
-test.skip(
-  ({ browserName }) => browserName !== 'chromium',
-  'Viewports are set per cell; the WebKit/iPhone project is not part of this matrix (see docs/TESTING.md §6i).',
-)
-
 /**
  * P202: deterministic checks on the installable-app contract and on the service worker's
  * offline-shell behaviour. Private-data caching is covered by cachestorage-privacy.spec.ts; this
@@ -61,6 +56,7 @@ test('manifest declares a stable identity and installable icons that really exis
 test('with the shell precached, a refresh offline still opens the app shell', async ({
   page,
   context,
+  browserName,
 }) => {
   await installBackend(page, 'empty')
   await page.goto('/portfolio')
@@ -87,6 +83,27 @@ test('with the shell precached, a refresh offline still opens the app shell', as
     )
     .toBe(true)
 
+  // What the precache holds is judged in every engine: the shell document and its scripts.
+  const precached = await page.evaluate(async () => {
+    const urls: string[] = []
+    for (const name of await caches.keys()) {
+      if (!name.includes('precache')) continue
+      for (const request of await (await caches.open(name)).keys()) urls.push(request.url)
+    }
+    return urls
+  })
+  expect(precached.some((u) => /\/index\.html(\?|$)/.test(u) || u.endsWith('/'))).toBe(true)
+  expect(precached.some((u) => /\.js(\?|$)/.test(u))).toBe(true)
+
+  // The offline reload itself is Chromium-only (P210): under Playwright's WebKit, any navigation
+  // while `setOffline(true)` is in force fails with "WebKit encountered an internal error" before
+  // the service worker can answer, in both the desktop-webkit and iPhone projects. That is the
+  // emulation, not the worker; real offline behaviour on Safari/iOS needs a real device (the
+  // physical-iPhone gate), and nothing here claims it.
+  test.skip(
+    browserName !== 'chromium',
+    'Playwright WebKit cannot navigate under setOffline(true); verify offline start on a device.',
+  )
   await context.setOffline(true)
   await page.reload()
   // The shell comes from the precache and renders; no private data is shown because none was ever

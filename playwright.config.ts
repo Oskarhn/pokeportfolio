@@ -40,6 +40,17 @@ export default defineConfig({
       testIgnore: '**/authenticated/**',
       use: { ...devices['iPhone 14'] },
     },
+    // P210: desktop WebKit (Safari engine, no mobile emulation) for the specs that set their own
+    // viewports. The route/state/viewport matrix is the main consumer; the whole suite is NOT run here
+    // because the iPhone project already covers WebKit for the rest.
+    {
+      name: 'desktop-webkit',
+      // Anchored to the FILE NAME: an unanchored pattern also matched the absolute path of a
+      // worktree called "p210-...", which silently ran the whole suite on this project.
+      testMatch: /[\\/](p202|p210)-[^\\/]*\.spec\.ts$/,
+      testIgnore: '**/authenticated/**',
+      use: { ...devices['Desktop Safari'], viewport: { width: 1440, height: 900 } },
+    },
     // P94 §20-22: local-authenticated-E2E infrastructure — a REAL local Supabase stack, a real
     // synthetic invite-redeemed user, a real sign-in through the real login form, and real
     // per-test data (a real holding to prefill Sale Add against, etc). Only registered when

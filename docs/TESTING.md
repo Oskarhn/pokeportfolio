@@ -1616,13 +1616,48 @@ Four specs run against the placeholder-backend preview build with a synthetic se
 | `tests/ui/form-control-font-size.test.ts` | Source guard: every text-entry control is `text-base` below `md` (iOS Safari zooms on focus below 16px). |
 
 Run: `PLAYWRIGHT_PREVIEW_PORT=<free port> pnpm exec playwright test p202- --project=desktop-chromium`
+(P210: the same specs also run on `desktop-webkit` — every width — and `mobile-iphone` — the
+device-native width; see "WebKit, and what it cannot tell you" below.)
 (needs `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` set to any placeholder; the
 `desktop-chromium` project is required because viewports are set per cell).
 
-What this is not: axe finds a fraction of real accessibility barriers, and the matrix runs against
-empty or failing data, not realistic rows. It is a regression net, not a WCAG conformance claim. A
+What this is not: axe finds a fraction of real accessibility barriers, and this matrix runs against
+empty or failing data (realistic rows are `p210-realistic-data.spec.ts`, below). It is a regression net, not a WCAG conformance claim. A
 screen-reader pass, a real-iPhone pass and realistic-data layout checks remain manual
 (docs/DESIGN_SYSTEM.md §9, §8 above).
+
+### Realistic data (P210)
+
+`p210-realistic-data.spec.ts` renders the same bundle with deterministic realistic rows from
+`tests/e2e/support/realistic-backend.ts` (a network-boundary stand-in that answers in the exact wire
+shapes `src/data/*` parses — money as text, `.single()` as an object, `.maybeSingle()` as a one-row
+array): a 600-holding portfolio paged by keyset, long Pokémon and set names, raw / graded / sealed,
+fresh / stale / manual / missing prices, eight-figure and beyond-2^53 amounts, seven lots in mixed
+currencies, purchase and history ledgers with voided entries, a 2.5 s slow read, and a failing
+dashboard summary or portfolio list. Per cell at 320 / 768 / 1440 px (the iPhone project runs 320 only):
+one visible `<h1>`, no page overflow, no text laid out past the right edge outside a deliberate
+scroller, no `NaN`/`undefined` leakage, no axe violation at WCAG 2.2 AA. Amounts are shown, never
+asserted as correct totals: it is a layout and accessibility net, not a financial oracle.
+
+Defects it found on first run, all fixed: a 15-digit total overflowed the page at 320 px
+(`MoneyDisplay` `lg`); voided purchase and history rows were faded with `opacity-60/70`, taking
+secondary text to ~2.3:1 (below AA); the "Voided" badge sat inside a truncating element and was
+ellipsised away by a long retailer name; the chart library's attribution link was focusable inside an
+`aria-hidden` container.
+
+### WebKit, and what it cannot tell you (P210)
+
+The first WebKit run of the P202 matrix failed for three reasons, none of them an application defect:
+
+| Symptom | Cause | Handling |
+|---|---|---|
+| error-state cells never settled | After first load the service worker controls the page, and WebKit's `page.route()` does not see requests it forwards, so retries reached the real (absent) backend | `serviceWorkers: 'block'` in the specs that mock the network; `p202-pwa.spec.ts` keeps the worker |
+| skip link not focused by `Tab` | WebKit's Tab order skips links by default (macOS Safari needs Option+Tab, iOS needs Full Keyboard Access) | the WebKit run focuses the link and asserts what activating it does |
+| offline reload fails with "WebKit encountered an internal error" | Playwright's WebKit cannot navigate under `setOffline(true)` | the offline reload is Chromium-only; the precache contents are asserted on every engine |
+
+`desktop-webkit` is the desktop Safari engine without mobile emulation, restricted by file name to
+`p202-*` and `p210-*` specs. Desktop-browser emulation is not a physical-iPhone result:
+`PHYSICAL_IPHONE_GATE` stays deferred.
 
 Failed reads are retried by react-query (default 3, roughly 7 s of backoff), so the error state of a
 page appears several seconds after the request first fails; the matrix waits for it. A failing
