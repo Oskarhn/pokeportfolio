@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from 'react'
+import { useEffect, useId, useRef, type ReactNode } from 'react'
 
 const FOCUSABLE_SELECTOR =
   'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
@@ -30,6 +30,7 @@ export function Sheet({
 }) {
   const panelRef = useRef<HTMLDivElement>(null)
   const previouslyFocusedRef = useRef<HTMLElement | null>(null)
+  const titleId = useId()
 
   useEffect(() => {
     if (!open) return
@@ -81,6 +82,10 @@ export function Sheet({
       <button
         type="button"
         aria-label="Close"
+        // The visible ✕ inside the panel is the keyboard/screen-reader close control; this scrim is
+        // pointer-only, so it stays out of the tab order and the accessibility tree.
+        tabIndex={-1}
+        aria-hidden="true"
         onClick={onClose}
         className="absolute inset-0 bg-slate-950/60 motion-reduce:transition-none"
       />
@@ -88,13 +93,17 @@ export function Sheet({
         ref={panelRef}
         role="dialog"
         aria-modal="true"
-        aria-label={title}
+        aria-labelledby={titleId}
         tabIndex={-1}
-        className="relative w-full max-w-lg rounded-t-2xl border border-slate-800 bg-slate-900 p-4 shadow-xl outline-none motion-reduce:transition-none sm:rounded-2xl sm:p-5"
+        // Capped to the visible height so a long picker scrolls inside the panel instead of running
+        // off-screen on a short phone or with the on-screen keyboard open.
+        className="relative max-h-[90svh] w-full overflow-y-auto overscroll-contain max-w-lg rounded-t-2xl border border-slate-800 bg-slate-900 p-4 shadow-xl outline-none motion-reduce:transition-none sm:rounded-2xl sm:p-5"
         style={{ paddingBottom: 'max(1rem, env(safe-area-inset-bottom))' }}
       >
         <div className="mb-3 flex items-center justify-between gap-3">
-          <h2 className="text-sm font-semibold text-slate-100">{title}</h2>
+          <h2 id={titleId} className="text-sm font-semibold text-slate-100">
+            {title}
+          </h2>
           <button
             type="button"
             onClick={onClose}

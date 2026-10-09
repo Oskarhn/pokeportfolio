@@ -6,6 +6,8 @@ import { DesktopNav } from '../features/nav/DesktopNav'
 import { getMyProfile } from '../data/profile'
 import { applyTheme } from './theme'
 import { StaleDeploymentBanner } from './StaleDeploymentBanner'
+import { NetworkStatusBanner } from './NetworkStatusBanner'
+import { RouteAnnouncer } from './RouteAnnouncer'
 
 interface AppShellProps {
   children: ReactNode
@@ -48,7 +50,15 @@ export function AppShell({ children }: AppShellProps) {
   // and the visual viewport are all the same number.
   return (
     <div className="flex min-h-svh flex-col">
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-2 focus:top-2 focus:z-[70] focus:rounded-lg focus:bg-slate-100 focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-slate-900"
+      >
+        Skip to content
+      </a>
       <StaleDeploymentBanner />
+      <NetworkStatusBanner />
+      <RouteAnnouncer />
       {!signedIn ? (
         <header
           className="flex items-center px-4 py-3 md:hidden"
@@ -59,10 +69,12 @@ export function AppShell({ children }: AppShellProps) {
       ) : null}
       {signedIn ? <DesktopNav /> : null}
       <main
+        id="main-content"
+        tabIndex={-1}
         className={
           signedIn
-            ? 'flex flex-1 flex-col px-4 py-6 pb-[calc(4.5rem+env(safe-area-inset-bottom))] md:pb-6'
-            : 'flex flex-1 flex-col px-4 py-6'
+            ? 'flex flex-1 flex-col outline-none px-4 py-6 pb-[calc(4.5rem+env(safe-area-inset-bottom))] md:pb-6'
+            : 'flex flex-1 flex-col outline-none px-4 py-6'
         }
         style={
           signedIn
