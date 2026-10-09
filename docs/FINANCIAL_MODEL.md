@@ -32,8 +32,8 @@ gifts, and cards acquired before tracking began.
 2^53 − 1 (9007199254740991) `JSON.parse` and `Number()` return a different integer without an
 error. Reads therefore arrive as text (`col::text`, functions that return money declare `text`) and
 writes are sent as text; the client holds `bigint`. The supported range is the whole signed `bigint`
-(±9223372036854775807): a value outside it is refused, never wrapped or clamped, and an aggregate
-(`sum` is `numeric`) is returned as exact text. Sign, `NULL` and `0` survive the crossing unchanged
+(±9223372036854775807): a value outside it is refused, never wrapped or clamped — and that includes the value of one holding,
+unit value × owned copies (D-210) — and an aggregate (`sum` is `numeric`) is returned as exact text. Sign, `NULL` and `0` survive the crossing unchanged
 (M1): `NULL` reads as `null`, a stored zero as `0n`. A `Number` of an amount exists only as a
 non-authoritative chart coordinate or a percentage shown to one decimal, and no ledger value is ever
 computed from it. FX rates (`numeric(18,8)`) are read and re-sent as text for the same reason.

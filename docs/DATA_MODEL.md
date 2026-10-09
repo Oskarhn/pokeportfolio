@@ -1392,9 +1392,10 @@ client**:
   appears on the write path.
 - *Range.* A stored amount is a Postgres `bigint` (±9223372036854775807); the client refuses anything
   outside it before sending, the server refuses it too (`bigint out of range`). There is no smaller
-  product limit: every write RPC and every aggregate already either succeeds exactly or fails loudly, and
-  aggregates are returned as text (a `numeric` sum may even exceed the `bigint` range and still parse
-  exactly).
+  product limit, but the same range applies to the value of one holding (unit value × owned copies): a
+  write that would exceed it is refused with SQLSTATE 22003 (D-210). Every aggregate across holdings or
+  days is exact `numeric`, `portfolio_snapshots` stores its money sums as `numeric(38,0)`, and aggregates
+  are returned as text (a sum may exceed the `bigint` range and still parse exactly).
 - *Backstop.* The app's fetch (`src/data/exact-json-guard.ts`) refuses a request body carrying an integer
   literal above 2^53 − 1 and quotes such a literal in a response body before it is parsed, so a column
   someone forgets to cast arrives as exact text instead of a rounded number. The test suites require that

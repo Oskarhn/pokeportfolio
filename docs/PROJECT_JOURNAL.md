@@ -2536,3 +2536,13 @@ of creation order. Writing the oracle first from frozen facts only (lot cost min
 two more forms of the same defect, a second exhausting sale and a backdated one, that the original reproduction did not show, and
 a separate bug in the opening picker: `list_opening_sources` returned numeric text such as '1.00000000000000000000' for cost
 components because `sum(bigint)` is numeric. Details: D-209, docs/TESTING.md §6i.
+
+## 2026-10-09 — "Supports the whole bigint" was true of writes and false of reads (P209)
+
+The model said an amount may be anything a bigint holds, and the write RPCs honoured it. The reads multiplied that amount by a
+quantity in the same type, so the documented range was only as wide as one factor's square root. Nothing failed until a
+valuation near 9e18 met two copies, and then it failed in the one place the owner needed to open to fix it. The cure was not a
+ceiling (any fixed one is either too low for a real price or does not bound a sum) but stating the invariant at the right
+level: one holding's value must itself be a bigint, enforced where it can become false; everything above that is numeric.
+Reading the results back as a JSON number in the first version of the test rounded the very value under test: the wire rule
+(M3) applies to assertions too. Details: D-210.

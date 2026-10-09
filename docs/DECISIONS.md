@@ -7292,3 +7292,40 @@ returned `effective_unit_basis_nok_minor` and `exhaustion_residual_nok_minor` as
 numbering), `CREATE OR REPLACE` of five functions with unchanged signatures and ACLs plus one column. **Production
 requirement:** the hosted database must receive it after `20261009120000` (P199) — it replaces `rebuild_portfolio_snapshots`
 from that migration. Run `pnpm db:backup` first; no data repair is performed.
+
+## D-210 — One range invariant for money: a holding's value fits a bigint, every aggregate is exact numeric (P209)
+
+**2026-10-09 · Accepted**
+
+**Context.** M3 says the supported range of an amount is the whole signed `bigint` and that aggregates are returned as exact
+text, "a numeric sum may even exceed the bigint range and still parse exactly". Reads did not honour the second half: every
+valuation read multiplied a unit value by the owned quantity in `bigint` arithmetic. P199 reproduced it: a manual valuation of
+9e18 minor with two copies made `get_dashboard_summary`, `portfolio_counts`, `list_portfolio` and
+`get_holding_value_provenance` fail with 22003, so one mistyped number made the whole portfolio unreadable and the owner could
+not open the holding to correct it. `rebuild_portfolio_snapshots` failed the same way (history froze, flagged pending).
+
+**Decision.** (1) *Per holding:* unit manual value × owned copies must fit a signed `bigint`. A write that would break it is
+refused with SQLSTATE 22003 and a message, by two triggers (`manual_valuations` insert; `acquisition_lots` insert, or update of
+`quantity_remaining` / `voided_at`), so no writer can bypass it. Nothing is clamped or rounded. (2) *Across holdings and days:*
+every sum is `numeric` and leaves the database as text; `portfolio_snapshots` stores its five money sums as `numeric(38,0)`
+(`bigint` × `int` copies × any realistic holding count is far below 10^38). (3) The restated reads are `get_dashboard_summary`,
+`portfolio_counts`, `list_portfolio`, `get_holding_value_provenance`, `get_opening` and `rebuild_portfolio_snapshots`;
+all outputs were already text, so no signature or client change. The adjustment share in the snapshot's cost basis was
+`floor(bigint)`, i.e. float8; it is `floor(numeric)` now.
+
+**Why not a smaller input ceiling.** A fixed per-copy ceiling that keeps `value × int32 quantity` inside `bigint` is about
+4.29e9 minor (≈ 43 M NOK): a price record for a single card is above that, and a ceiling does not bound a *sum* over holdings
+anyway. The dynamic per-holding rule rejects exactly the writes that cannot be represented and allows everything else. A softer
+UI guard (confirm an implausible valuation) is a product question and is listed in the P209 report; it is not needed for
+correctness.
+
+**Not changed.** `get_market_movers` multiplies a provider price *difference* by a quantity; its operand is bounded by the
+provider's range, not by user input.
+
+**Legacy data.** The triggers only look at new writes. A holding already past the range (only reachable before this change by a
+deliberately absurd valuation) now reads exactly, but cannot gain copies or have a sale voided until its valuation is
+corrected. `holdings_value_out_of_range` in `scripts/finance-integrity-diagnostics.sql` counts them.
+
+**Consequences.** One migration, `20261009170000_p209_value_range.sql`, after D-209's; an `ALTER COLUMN TYPE` on a rebuildable
+cache table (D-070) and `CREATE OR REPLACE` of six functions. **Production requirement:** apply after
+`20261009160000_p209_residual_conservation.sql`; `pnpm db:backup` first.
