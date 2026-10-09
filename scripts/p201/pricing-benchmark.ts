@@ -11,7 +11,7 @@
  *   1. QUEUE STARVATION — 400 watched variants the provider has no price for + 1,100 priced ones, batch
  *      200, twelve simulated ticks. How many distinct priced variants does each queue refresh?
  *   2. QUEUE COST — `select_price_sync_batch(200)` against N watched variants and M snapshots
- *      (EXPLAIN ANALYZE execution time, median of 7).
+ *      (EXPLAIN ANALYZE execution time, median of 15 after 3 warm-up runs).
  *   3. SEARCH COST — `search_cards` over a large synthetic catalog for representative queries.
  *
  * SAFETY. Refuses a non-loopback database. Every row it creates carries a `p201-bench` marker and one
@@ -188,11 +188,12 @@ async function main() {
     await q('analyze public.price_snapshots')
     async function timeMs(sql: string, values: unknown[] = []) {
       const samples: number[] = []
-      for (let i = 0; i < 7; i++) {
+      for (let i = 0; i < 18; i++) {
         const plan = await q(`explain (analyze, format json) ${sql}`, values)
         samples.push(plan.rows[0]['QUERY PLAN'][0]['Execution Time'] as number)
       }
-      return Math.round(median(samples) * 100) / 100
+      // the first three runs warm the caches and are discarded; the median of the rest is reported
+      return Math.round(median(samples.slice(3)) * 100) / 100
     }
     const snapshotCount = Number(
       (await q('select count(*) n from public.price_snapshots')).rows[0].n,
