@@ -76,9 +76,24 @@ for (const state of ['empty', 'error', 'expired'] as const) {
       for (const route of ROUTES) {
         test(route, async ({ page }) => {
           await installBackend(page, state)
-          await page.goto(route)
-          // Let loading → settled transitions finish; the matrix asserts the settled state.
-          await page.waitForTimeout(state === 'error' ? 2500 : 1200)
+          if (state === 'error') {
+            // Failed reads are retried with exponential backoff (react-query: 1 s, 2 s, 4 s) before the
+            // error state shows, and the matrix has 104 such cells per browser project: waiting that
+            // out in real time was ~10 minutes of CI per project (P210). The page's own timers run on
+            // a fast-forwardable clock instead; each retry still makes a real (mocked) round trip, so
+            // the clock is advanced between short real waits until the settled heading is there.
+            await page.clock.install()
+            await page.goto(route)
+            for (let step = 0; step < 12; step += 1) {
+              await page.clock.fastForward(8_000)
+              if ((await page.locator('h1:visible').count()) === 1) break
+              await page.waitForTimeout(150)
+            }
+          } else {
+            await page.goto(route)
+            // Let loading → settled transitions finish; the matrix asserts the settled state.
+            await page.waitForTimeout(1200)
+          }
           if (state === 'expired') {
             // An expired session must land on the sign-in page, never a half-rendered private page.
             await expect(page).toHaveURL(/\/login/)

@@ -36,6 +36,20 @@ const STALE_MULTILOT = uuid(18)
 const MISSING_MULTILOT = uuid(63)
 const MANUAL_VALUED = uuid(22)
 
+/**
+ * Failed reads are retried with exponential backoff (react-query: 1 s, 2 s, 4 s) before the failure is
+ * shown. The page's timers run on a fast-forwardable clock so that backoff is not waited out in real
+ * time; every retry still makes a real (mocked) round trip, hence the short real waits in between.
+ */
+async function gotoAndLetRetriesRun(page: Page, route: string): Promise<void> {
+  await page.clock.install()
+  await page.goto(route)
+  for (let step = 0; step < 8; step += 1) {
+    await page.clock.fastForward(8_000)
+    await page.waitForTimeout(150)
+  }
+}
+
 async function settle(page: Page): Promise<void> {
   await page.waitForLoadState('networkidle')
   // One frame for React to commit what the last response produced.
@@ -218,17 +232,14 @@ for (const vp of VIEWPORTS) {
       page,
     }) => {
       await installRealisticBackend(page, { ...LARGE, failing: ['get_dashboard_summary'] })
-      await page.goto('/')
-      // The default query retry (3 × backoff) runs before the failure is shown.
-      await page.waitForTimeout(9000)
+      await gotoAndLetRetriesRun(page, '/')
       await settle(page)
       await expectSound(page, 'home (summary failing)')
     })
 
     test('partial failure: the portfolio list fails while counts succeed', async ({ page }) => {
       await installRealisticBackend(page, { ...LARGE, failing: ['list_portfolio'] })
-      await page.goto('/portfolio')
-      await page.waitForTimeout(9000)
+      await gotoAndLetRetriesRun(page, '/portfolio')
       await settle(page)
       await expectSound(page, 'portfolio (list failing)')
       await expect(page.getByRole('alert').first()).toBeVisible()
