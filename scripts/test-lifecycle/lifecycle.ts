@@ -302,6 +302,15 @@ async function findFreeBlock(start: number): Promise<number> {
   throw new Error('no free port block found')
 }
 
+/** The previous run's connection file for this stack directory, if there is one. */
+function readPreviousEnv(workdir: string): Record<string, string> | null {
+  try {
+    return JSON.parse(readFileSync(join(workdir, 'env.json'), 'utf8')) as Record<string, string>
+  } catch {
+    return null
+  }
+}
+
 function defaultWorkdir(name: string): string {
   return join(ledgerDir, 'stacks', name)
 }
@@ -370,6 +379,19 @@ async function cmdUp(
       `containers labelled ${projectId} already exist and are not in the ledger; refusing to adopt them`,
     )
   }
+  // A stopped stack keeps its volumes, and with them the erasure receipts of any deletion a test made.
+  // Those receipts only agree with a registry chain that was written under the SAME key and port, so
+  // a restart of this stack name reuses its previous block, sink port, token and key.
+  const previous = readPreviousEnv(opts.workdir)
+  const previousBase = Number(previous?.PP_LIFECYCLE_BASE_PORT ?? 0)
+  if (opts.basePort === 0 && Number.isInteger(previousBase) && previousBase >= 1024) {
+    const taken = await dockerPublishedPorts()
+    let free = true
+    for (const port of stackPorts(previousBase)) {
+      if (!(await portIsFree(port, taken))) free = false
+    }
+    if (free) opts.basePort = previousBase
+  }
   if (opts.basePort === 0) opts.basePort = await findFreeBlock(57200)
   // One registry sink port per stack (base + 79, inside the block). The sink's chain file is named
   // by port in the temp directory and is keyed to the stack that wrote it: a shared port such as
@@ -379,7 +401,12 @@ async function cmdUp(
   }
   const sinkPort = new URL(opts.registryUrl).port
   const chainFile = join(tmpdir(), `p189-erasure-registry-${sinkPort}.ndjson`)
-  if (existsSync(chainFile)) {
+  const reuseCredentials =
+    previous !== null &&
+    previous.ERASURE_REGISTRY_URL === opts.registryUrl &&
+    Boolean(previous.ERASURE_REGISTRY_TOKEN) &&
+    Boolean(previous.ERASURE_REGISTRY_KEY)
+  if (existsSync(chainFile) && !reuseCredentials) {
     throw new Error(
       `${chainFile} already exists (a sink chain from another run, keyed to another stack); ` +
         'it is not removed automatically. Choose another --base-port or --registry-url.',
@@ -429,8 +456,12 @@ async function cmdUp(
   log(`ledger: ${ledgerPath(opts.name)}`)
   log(`containers running before start: ${entry.counts.runningBefore}`)
 
-  const registryToken = randomBytes(24).toString('hex')
-  const registryKey = randomBytes(32).toString('hex')
+  const registryToken = reuseCredentials
+    ? (previous.ERASURE_REGISTRY_TOKEN ?? '')
+    : randomBytes(24).toString('hex')
+  const registryKey = reuseCredentials
+    ? (previous.ERASURE_REGISTRY_KEY ?? '')
+    : randomBytes(32).toString('hex')
   const startEnv = {
     ...process.env,
     ERASURE_REGISTRY_URL: opts.registryUrl,
@@ -470,6 +501,7 @@ async function cmdUp(
     ERASURE_REGISTRY_URL: opts.registryUrl,
     ERASURE_REGISTRY_TOKEN: registryToken,
     ERASURE_REGISTRY_KEY: registryKey,
+    PP_LIFECYCLE_BASE_PORT: String(opts.basePort),
   }
   if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY || !dbContainer) {
     await stopStack(entry, 'own', true)
@@ -553,9 +585,6 @@ async function stopStack(
   if (leftovers.length === 0) {
     entry.state = 'stopped'
     entry.stoppedAt = new Date().toISOString()
-    // The sink's chain is keyed to this stack's generated key and is useless (and in the way of the
-    // next start) once the stack is gone. Only the file this entry recorded is removed.
-    if (entry.registryChainFile) rmSync(entry.registryChainFile, { force: true })
   }
   writeEntry(entry)
   log(

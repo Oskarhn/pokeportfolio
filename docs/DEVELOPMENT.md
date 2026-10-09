@@ -220,7 +220,12 @@ the host. Every automated session therefore follows the same lifecycle, implemen
    directory; migrations applied; recurring cron jobs deactivated so the stack never calls
    Production; its own erasure-registry sink port, because the sink's chain file is named by port in
    the temp directory and is keyed to the stack that wrote it — a shared port such as 8787 meets
-   another session's chain and refuses every deletion; the file is removed when the stack stops). `pnpm lifecycle env --name p210` prints the connection variables
+   another session's chain and refuses every deletion). A stack keeps its volumes when it stops, and
+   with them the receipts of any deletion a test made, which only agree with the chain written under
+   the same key and port; a restart of the same name therefore reuses its port block, sink port,
+   token and key, and the chain file is kept with the volume. A chain file that exists without those
+   credentials is another run's: `up` refuses and names it, and removing it is the owner's call.
+   `pnpm lifecycle env --name p210` prints the connection variables
    (`--format ps1` for PowerShell). Run `pnpm lifecycle inventory` first and prefer reusing the
    stack you already own to starting a second one.
 2. **Record the before count.** `inventory` and `up` print the running-container count; copy it
