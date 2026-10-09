@@ -565,6 +565,9 @@ export default defineConfig({
       includeAssets: ['icons/apple-touch-icon.png'],
       manifest: {
         name: 'PokePortfolio',
+        // Explicit and equal to start_url, which is what the identity defaulted to: an already
+        // installed app keeps its identity, and a future start_url change cannot orphan installs.
+        id: '/',
         short_name: 'PokePortfolio',
         description: 'A private Pokémon TCG collection and financial tracker.',
         theme_color: '#101113',

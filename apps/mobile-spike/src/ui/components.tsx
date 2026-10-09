@@ -9,6 +9,7 @@ import {
   Switch,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
   type KeyboardTypeOptions,
   type ViewStyle,
@@ -1242,17 +1243,24 @@ export function BottomSheet({
 }) {
   const t = useTheme()
   const insets = useSafeAreaInsets()
+  const { height: windowHeight } = useWindowDimensions()
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <Pressable
         testID={testID !== undefined ? `${testID}-scrim` : undefined}
+        accessibilityRole="button"
         accessibilityLabel="Close"
         onPress={onClose}
         style={{ flex: 1, backgroundColor: t.overlay, justifyContent: 'flex-end' }}
       >
         <Pressable testID={testID} onPress={(e) => e.stopPropagation()}>
           <View
+            // iOS: keep VoiceOver inside the sheet instead of reading the screen behind it.
+            accessibilityViewIsModal
             style={{
+              // A long picker (or a large font scale) scrolls inside the sheet rather than running off
+              // the top of a small screen.
+              maxHeight: windowHeight * 0.9,
               backgroundColor: t.surfaceRaised,
               borderTopLeftRadius: RADIUS.lg,
               borderTopRightRadius: RADIUS.lg,
@@ -1275,7 +1283,14 @@ export function BottomSheet({
             <Text accessibilityRole="header" style={{ color: t.textPrimary, ...TYPE.section }}>
               {title}
             </Text>
-            {children}
+            <ScrollView
+              style={{ flexGrow: 0 }}
+              contentContainerStyle={{ gap: SPACE.sm }}
+              keyboardShouldPersistTaps="handled"
+              bounces={false}
+            >
+              {children}
+            </ScrollView>
           </View>
         </Pressable>
       </Pressable>

@@ -6,7 +6,7 @@
 // nothing in the UI source pins a width or a height that a narrow screen or a 200% font would break.
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { Platform, StyleSheet, Text } from 'react-native'
+import { Dimensions, Platform, StyleSheet, Text } from 'react-native'
 import {
   SafeAreaInsetsContext,
   SafeAreaProvider,
@@ -149,5 +149,28 @@ describe('no layout literal that a narrow iPhone or a 200% font would break', ()
       }
     }
     expect(offenders).toEqual([])
+  })
+})
+
+describe('P202 bottom sheet on a short screen at a large font scale', () => {
+  it('is capped to the window height, scrolls its content, and is modal for VoiceOver', async () => {
+    const frame = { x: 0, y: 0, width: 320, height: 568 }
+    await render(
+      <SafeAreaProvider
+        initialMetrics={{ frame, insets: { top: 20, left: 0, right: 0, bottom: 0 } }}
+      >
+        <BottomSheet visible onClose={() => {}} title="Pick" testID="sheet">
+          <Text>Option</Text>
+        </BottomSheet>
+      </SafeAreaProvider>,
+    )
+    const sheet = screen.getByTestId('sheet')
+    const container = sheet.children[0] as { props: Record<string, unknown> }
+    const style = styleOf(container)
+    expect(typeof style.maxHeight).toBe('number')
+    expect(style.maxHeight).toBeLessThanOrEqual(Dimensions.get('window').height * 0.9)
+    expect(container.props.accessibilityViewIsModal).toBe(true)
+    // The scrim announces itself as a button, not as bare text labelled "Close".
+    expect(screen.getByTestId('sheet-scrim').props.accessibilityRole).toBe('button')
   })
 })
