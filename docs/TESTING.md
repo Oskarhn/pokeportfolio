@@ -992,6 +992,8 @@ reload | Against a live stack; manual or remote, not public CI") is now closeabl
 automated — not solved for public CI (no Supabase credential belongs there), but no longer an
 excuse for every signed-in form flow to go untested by anything but manual owner review.
 
+**Stack lifecycle (P210).** Start the stack with `pnpm lifecycle up --name <name>` or run the whole suite under `pnpm lifecycle run --name <name> -- <command>`, and stop it with `pnpm lifecycle down --name <name>` when you finish; one stack at a time, volumes preserved, never someone else's stack. The rules and the recovery mode are in [DEVELOPMENT.md §4](DEVELOPMENT.md#task-owned-local-stacks-mandatory-for-automated-sessions-p210).
+
 **What it is.** A THIRD Playwright project, `desktop-chromium-authenticated`
 (`playwright.config.ts`), driven against a real local Supabase stack:
 

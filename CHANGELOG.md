@@ -10,6 +10,13 @@ they were**.
 
 ## [Unreleased]
 
+### Added — 2026-10-09 — Safe lifecycle for task-owned local test stacks (P210)
+
+Tooling and documentation only; no application, schema or Production change.
+
+- `pnpm lifecycle inventory | up | env | run | down | recover` starts, uses and stops exactly the local Supabase stack a session created, on positive ownership evidence only (ledger entry + container labels + working directory; pid + start time + command line for processes). Volumes are preserved; protected stacks (`pokeportfolio`, `pokeportfolio-p196c`) are never stopped; ambiguous resources are reported, not touched. `pnpm lifecycle:selftest` proves it against a synthetic stack on real Docker.
+- DEVELOPMENT.md §4 makes the lifecycle mandatory for automated sessions and states that no session quits Docker Desktop or runs `wsl --shutdown` without the owner's authorization.
+
 ### Changed — 2026-10-02 — One local release-candidate line for web and native (P188)
 
 Not released, not pushed. `release/p188-cross-platform-rc` merges the web candidates the native line never carried (P164 with P149/P151/P153/P161/P162, P163, P165) into the P186/P187
