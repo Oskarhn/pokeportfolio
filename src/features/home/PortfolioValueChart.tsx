@@ -94,6 +94,7 @@ export function PortfolioValueChart({
     const state = { disposed: false }
     const isDisposed = () => state.disposed
     let resizeObserver: ResizeObserver | null = null
+    let linkObserver: MutationObserver | null = null
 
     async function mount() {
       const container = containerRef.current
@@ -128,6 +129,16 @@ export function PortfolioValueChart({
       }
 
       const chart = lib.createChart(containerNow, options)
+      // The library's attribution logo is a link inside this aria-hidden container: a focusable
+      // element hidden from assistive technology (axe aria-hidden-focus), a trap for keyboard and
+      // screen-reader users. It stays clickable; the visible, keyboard-reachable TradingView link
+      // below the chart is the one the license note above relies on (P210).
+      const keepLinksOutOfTabOrder = () => {
+        for (const anchor of containerNow.querySelectorAll('a')) anchor.tabIndex = -1
+      }
+      keepLinksOutOfTabOrder()
+      linkObserver = new MutationObserver(keepLinksOutOfTabOrder)
+      linkObserver.observe(containerNow, { childList: true, subtree: true })
       const area: Partial<AreaSeriesOptions> = {
         lineColor: colors.line,
         topColor: colors.areaTop,
@@ -155,6 +166,7 @@ export function PortfolioValueChart({
     return () => {
       state.disposed = true
       resizeObserver?.disconnect()
+      linkObserver?.disconnect()
       chartRef.current?.remove()
       chartRef.current = null
       seriesRef.current = null

@@ -2,10 +2,8 @@ import { test, expect } from '@playwright/test'
 import AxeBuilder from '@axe-core/playwright'
 import { installBackend } from './support/generic-backend'
 
-test.skip(
-  ({ browserName }) => browserName !== 'chromium',
-  'Viewports are set per cell; the WebKit/iPhone project is not part of this matrix (see docs/TESTING.md §6i).',
-)
+// See p202-route-matrix.spec.ts: WebKit's page.route() does not see service-worker traffic (P210).
+test.use({ serviceWorkers: 'block' })
 
 /**
  * P202: app-shell behaviour that every private screen inherits — skip link, route announcements,
@@ -14,12 +12,23 @@ test.skip(
  */
 
 test.describe('p202 shell', () => {
-  test('skip link is the first tab stop and moves keyboard focus into <main>', async ({ page }) => {
+  test('skip link is the first tab stop and moves keyboard focus into <main>', async ({
+    page,
+    browserName,
+  }) => {
     await installBackend(page, 'empty')
     await page.goto('/portfolio')
     await expect(page.getByRole('heading', { name: 'Portfolio', level: 1 })).toBeAttached()
-    await page.keyboard.press('Tab')
     const skip = page.getByRole('link', { name: 'Skip to content' })
+    if (browserName === 'webkit') {
+      // WebKit's Tab order skips links by default (macOS Safari needs Option+Tab or the "Press Tab to
+      // highlight each item" preference; iOS needs Full Keyboard Access), so Tab can never land on the
+      // skip link here. That is browser behaviour, not an application defect: assert what the link
+      // does once focus reaches it by the means a WebKit user actually has.
+      await skip.focus()
+    } else {
+      await page.keyboard.press('Tab')
+    }
     await expect(skip).toBeFocused()
     await expect(skip).toBeVisible()
     await page.keyboard.press('Enter')

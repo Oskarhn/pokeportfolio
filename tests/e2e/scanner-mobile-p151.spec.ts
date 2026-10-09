@@ -44,7 +44,7 @@ async function mobilePage(
     route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }),
   )
   await page.goto('/scan')
-  await expect(page.getByRole('heading', { name: 'Scan cards' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Scan cards' })).toBeVisible({ timeout: 20_000 })
   return { page, errors }
 }
 

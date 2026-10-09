@@ -56,11 +56,20 @@ test.afterAll(async () => {
   await vite.close()
 })
 
-const distAssets = fileURLToPath(new URL('../../dist/assets/', import.meta.url))
-const appCss = readdirSync(distAssets)
-  .filter((name) => name.endsWith('.css'))
-  .map((name) => readFileSync(`${distAssets}${name}`, 'utf-8'))
-  .join('\n')
+// Read when a page is rendered, never at import time (P210): Playwright loads every spec file
+// BEFORE its webServer builds the app, so an import-time read made `playwright test --list` fail on
+// a checkout without a build and silently used the PREVIOUS build's stylesheet on one with a stale
+// dist.
+let cachedCss: string | undefined
+function appCssText(): string {
+  if (cachedCss !== undefined) return cachedCss
+  const distAssets = fileURLToPath(new URL('../../dist/assets/', import.meta.url))
+  cachedCss = readdirSync(distAssets)
+    .filter((name) => name.endsWith('.css'))
+    .map((name) => readFileSync(`${distAssets}${name}`, 'utf-8'))
+    .join('\n')
+  return cachedCss
+}
 
 const row = (o: Record<string, unknown>) => ({
   kind: 'sold',
@@ -155,7 +164,7 @@ function pageHtml(theme: 'light' | 'dark'): string {
   )
   return `<!doctype html><html lang="en" data-theme="${theme}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Price check layout</title>
-<style>${appCss}</style></head><body><main class="flex flex-1 flex-col px-4 py-6">${body}</main></body></html>`
+<style>${appCssText()}</style></head><body><main class="flex flex-1 flex-col px-4 py-6">${body}</main></body></html>`
 }
 
 async function load(page: Page, theme: 'light' | 'dark') {

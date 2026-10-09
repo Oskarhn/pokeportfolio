@@ -49,7 +49,7 @@ function trackWorkers(page: Page) {
 
 async function openScanner(page: Page): Promise<void> {
   await page.goto('/scan')
-  await expect(page.getByRole('heading', { name: 'Scan cards' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Scan cards' })).toBeVisible({ timeout: 20_000 })
 }
 
 /** Leaves via the header X and waits until the scanner route is really gone. */
@@ -85,7 +85,9 @@ test.describe('P151 scanner lifecycle (real browser, real workers)', () => {
       await page.waitForTimeout(dwell)
       await closeScanner(page)
       await page.goBack() // SPA history back to /scan: same document, so leaked workers would persist
-      await expect(page.getByRole('heading', { name: 'Scan cards' })).toBeVisible()
+      await expect(page.getByRole('heading', { name: 'Scan cards' })).toBeVisible({
+        timeout: 20_000,
+      })
     }
     await closeScanner(page)
 

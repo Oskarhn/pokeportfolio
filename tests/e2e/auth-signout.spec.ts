@@ -83,6 +83,20 @@ async function clickSignOut(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'Sign out' }).click()
 }
 
+/**
+ * For a session whose refresh token the server already rejects, the app may end the session ON ITS
+ * OWN (and navigate to /login) before the click lands: the button then detaches and a plain
+ * `click()` waits out the whole test timeout. Reproduced 1 time in 10 on WebKit under parallel load
+ * (P210). Either order is a correct outcome; the assertions after this call judge the end state.
+ */
+async function clickSignOutUnlessAlreadySignedOut(page: Page): Promise<void> {
+  try {
+    await page.getByRole('button', { name: 'Sign out' }).click({ timeout: 5_000 })
+  } catch (error) {
+    if (!/\/login/.test(page.url())) throw error
+  }
+}
+
 const abortAuth = (route: Route) => route.abort('connectionrefused')
 
 test.describe('P143 — sign-out ends local access and never resurrects (mocked Auth endpoints)', () => {
@@ -233,7 +247,7 @@ test.describe('P143 — sign-out ends local access and never resurrects (mocked 
     await signedInAt(page, '/purchases/new')
     await expireStoredAccessToken(page)
 
-    await clickSignOut(page)
+    await clickSignOutUnlessAlreadySignedOut(page)
 
     await expect(page).toHaveURL(/\/login/, { timeout: 10_000 })
     await expect.poll(() => storedSession(page)).toBeNull()

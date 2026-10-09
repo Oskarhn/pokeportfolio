@@ -68,20 +68,26 @@ export function PurchasesListPage() {
                 params={{ purchaseId: item.purchase.id }}
                 className={`block rounded-xl border px-4 py-3 hover:bg-slate-800/40 ${
                   item.purchase.voidedAt
-                    ? 'border-slate-800/60 opacity-60'
+                    ? // Not faded: opacity-60 took the secondary text to ~2.3:1, below WCAG AA (P210).
+                      // The "Voided" badge and the dashed border carry the state.
+                      'border-dashed border-slate-800'
                     : 'border-slate-800 bg-slate-900/40'
                 }`}
               >
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-medium text-slate-100">
-                      {item.retailerName ?? 'No retailer'}
+                    {/* The badge sits OUTSIDE the truncating element: inside it, a long retailer name
+                        ellipsised the "Voided" state away entirely (P210). */}
+                    <div className="flex items-center gap-2">
+                      <p className="min-w-0 truncate text-sm font-medium text-slate-100">
+                        {item.retailerName ?? 'No retailer'}
+                      </p>
                       {item.purchase.voidedAt ? (
-                        <span className="ml-2 rounded-full bg-slate-800 px-2 py-0.5 text-[11px] font-semibold tracking-wide text-slate-400 uppercase">
+                        <span className="shrink-0 rounded-full bg-slate-800 px-2 py-0.5 text-[11px] font-semibold tracking-wide text-slate-400 uppercase">
                           Voided
                         </span>
                       ) : null}
-                    </p>
+                    </div>
                     <p className="text-xs text-slate-500">
                       {item.purchase.purchasedOn} · {item.lineCount} line
                       {item.lineCount === 1 ? '' : 's'}

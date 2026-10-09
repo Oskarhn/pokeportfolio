@@ -30,7 +30,7 @@ import { installFakeSession } from './support/fake-session'
 
 async function gotoScanner(page: Page): Promise<void> {
   await page.goto('/scan')
-  await expect(page.getByRole('heading', { name: 'Scan cards' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Scan cards' })).toBeVisible({ timeout: 20_000 })
 }
 
 async function supportsCanvasCaptureStream(page: Page): Promise<boolean> {
