@@ -1,4 +1,5 @@
 import { Link } from '@tanstack/react-router'
+import { PriceStateMark } from '../../ui/PriceStateMark'
 import type { PortfolioTile } from '../../data/portfolio'
 import { portfolioDisplayName, portfolioSubtitle } from '../../data/portfolio'
 import { sealedIntentBreakdown } from '../../data/collection'
@@ -153,7 +154,11 @@ export function GridTile({
  *  still shows, with a subtle marker, never hidden (FINANCIAL_MODEL.md §6). */
 function ValueLine({ tile, compact }: { tile: PortfolioTile; compact?: boolean }) {
   if (tile.holdingValueMinor === null) {
-    return <p className={compact ? 'text-[10px] text-slate-600' : 'text-xs text-slate-600'}>—</p>
+    return (
+      <p className={compact ? 'text-[10px] text-slate-600' : 'text-xs text-slate-600'}>
+        <PriceStateMark state="missing" />
+      </p>
+    )
   }
   return (
     <p
@@ -164,9 +169,7 @@ function ValueLine({ tile, compact }: { tile: PortfolioTile; compact?: boolean }
       }
     >
       {formatNokMinor(tile.holdingValueMinor)} NOK
-      {tile.priceState === 'stale' ? (
-        <span className="size-1.5 rounded-full bg-slate-400" title="Price is a few days old" />
-      ) : null}
+      {tile.priceState === 'stale' ? <PriceStateMark state="stale" /> : null}
     </p>
   )
 }

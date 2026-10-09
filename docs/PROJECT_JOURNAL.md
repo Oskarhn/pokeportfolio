@@ -2513,3 +2513,11 @@ path: a new holding is watched at once, but its first snapshot waits for the nex
 `ingest-prices` tick. Server logs showed zero `search-prices` POSTs in 24 hours and a single OPTIONS;
 no unit or Playwright test could notice, because none crosses an origin. Lesson: a client that hides
 failure needs a test that proves the request can leave the browser.
+
+## 2026-10-09 — The cost line that printed euros as kroner (P199)
+
+Holding Detail showed a lot's cost from the column that holds the *original* currency and labelled it NOK, then added those numbers
+across lots. With NOK-only test data the two columns are identical, so every test and screenshot looked right; a EUR or JPY lot was
+wrong by a factor of 11 or 600. The currency was one field away (`cost_basis_currency`) and was ignored. Lesson: a column named
+"minor" with a sibling currency column must never be formatted without reading the sibling; fixtures that make two columns equal hide
+exactly this class. Details: D-199C, docs/TESTING.md §6k.

@@ -1601,3 +1601,10 @@ Reproduce: `docker logs` the stack's `supabase_edge_runtime_*` and `supabase_kon
 POSTing a 24 KiB body to `/functions/v1/delete-account` in a loop. Do not `docker restart` a single
 stack container to get a "cold" run: Kong keeps the old upstream address and answers 502/hangs for
 reasons unrelated to this.
+
+## 6k. Money honesty in the UI (P199)
+
+`tests/financial/held-cost-basis.test.ts` (frozen NOK basis, residual while units remain, unknown cost never 0, exact above 2^53),
+`tests/ui/p199-lot-cost-label.test.ts` (EUR/JPY lots name their currency and show the NOK conversion; JPY is not divided by 100) and
+`tests/ui/p199-money-honesty.test.ts` (`MoneyDisplay` never renders an absent amount as a number and keeps a genuine zero; the per-copy
+caption exists only for a known unit value; stale and missing prices have text alternatives; the Portfolio table keeps table semantics).

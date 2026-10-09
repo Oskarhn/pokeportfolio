@@ -84,3 +84,35 @@ export function directCostBasisOfInventory(
     )
   return sum(currency, knownLotCosts)
 }
+
+/** A lot as the "cost of the copies you hold" line sees it: frozen NOK basis only. */
+export interface HeldLotCost {
+  readonly quantityRemaining: number
+  readonly unitCostBasisNokMinor: bigint | null
+  readonly residualNokMinor: bigint
+}
+
+/**
+ * Cost basis of the copies still held, in NOK (FINANCIAL_MODEL.md section 4.3, D-199): per lot
+ * `quantityRemaining x unit_cost_basis_nok + residual_nok` while any unit is left (the residual is
+ * consumed only by the disposal that exhausts the lot). Only the frozen NOK columns are used - the
+ * lot's original-currency amount is a different unit and is never summed here. A lot without a
+ * recorded cost is counted as held-but-unknown, never as zero. Lots with nothing left are ignored.
+ */
+export function heldCostBasisNok(lots: readonly HeldLotCost[]): {
+  totalNokMinor: bigint
+  knownLotCount: number
+  heldLotCount: number
+} {
+  let total = 0n
+  let known = 0
+  let held = 0
+  for (const lot of lots) {
+    if (lot.quantityRemaining <= 0) continue
+    held += 1
+    if (lot.unitCostBasisNokMinor === null) continue
+    known += 1
+    total += lot.unitCostBasisNokMinor * BigInt(lot.quantityRemaining) + lot.residualNokMinor
+  }
+  return { totalNokMinor: total, knownLotCount: known, heldLotCount: held }
+}

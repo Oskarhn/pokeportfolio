@@ -37,6 +37,9 @@ export function MoneyDisplay({
    *  (FINANCIAL_MODEL.md §6) — shown as a subtle marker, never hidden or treated as missing. */
   stale?: boolean
 }) {
+  // An absent amount is never rendered as a number: `state: 'known'` without `minorUnits` is a
+  // caller mistake that must show as missing, not as "0,00" (M1: absence is not zero).
+  const amount = state === 'known' ? minorUnits : undefined
   const sizeClass = {
     lg: 'text-3xl font-semibold tracking-tight',
     md: 'text-xl font-semibold tracking-tight',
@@ -48,19 +51,19 @@ export function MoneyDisplay({
   const rates = useQuery({
     queryKey: ['fx-rates-latest'],
     queryFn: getLatestFxRatesToNok,
-    enabled: targetCurrency !== undefined && state === 'known' && !hidden,
+    enabled: targetCurrency !== undefined && amount !== undefined && !hidden,
     staleTime: 60 * 60 * 1000, // FX updates at most daily (ingest-fx) — an hour of staleness is fine
   })
   const rateToNok = targetCurrency ? rates.data?.[targetCurrency] : undefined
   const converted =
-    targetCurrency && rateToNok && minorUnits !== undefined
-      ? convertNokToDisplayCurrency(minorUnits, targetCurrency, rateToNok)
+    targetCurrency && rateToNok && amount !== undefined
+      ? convertNokToDisplayCurrency(amount, targetCurrency, rateToNok)
       : null
 
   return (
     <span className="inline-flex items-baseline gap-1.5">
       <span className={`tabular-nums ${sizeClass}`}>
-        {state === 'missing' ? (
+        {amount === undefined ? (
           <span className="text-slate-500">—</span>
         ) : hidden ? (
           <span aria-label="Value hidden">••••</span>
@@ -69,20 +72,20 @@ export function MoneyDisplay({
         ) : (
           <>
             <span className="mr-1 text-[0.6em] font-normal text-slate-500 align-baseline">kr</span>
-            {formatNokMinor(minorUnits ?? 0n)}
+            {formatNokMinor(amount)}
           </>
         )}
       </span>
       {converted && !hidden ? (
         <span className="text-xs font-normal text-slate-500">
-          kr {formatNokMinor(minorUnits ?? 0n)}
+          kr {formatNokMinor(amount ?? 0n)}
         </span>
-      ) : targetCurrency && state === 'known' && !hidden ? (
+      ) : targetCurrency && amount !== undefined && !hidden ? (
         <span className="text-xs font-normal text-slate-500">
           NOK — {displayCurrency} rate not available yet
         </span>
       ) : null}
-      {state === 'known' && stale && !hidden ? (
+      {amount !== undefined && stale && !hidden ? (
         <span
           className="rounded-full border border-slate-600 bg-slate-800/60 px-1.5 py-0.5 text-[10px] font-medium text-slate-200"
           title="This price hasn't refreshed in a few days — still used, just not brand new."
