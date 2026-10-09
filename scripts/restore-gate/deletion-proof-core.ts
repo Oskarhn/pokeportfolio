@@ -334,3 +334,70 @@ export function matchesTestRegistryCredential(
   if (testKey && typedToken.toLowerCase() === testKey.toLowerCase()) return 'operator token'
   return null
 }
+
+/** The facts an interruption report is built from. Nothing here is a secret. */
+export interface InterruptionFacts {
+  /** The tool had begun the one delete-account request (`fetch` was entered). */
+  requestSent: boolean
+  /** A response (any status) had been received for it. */
+  requestAnswered: boolean
+  /** The response reported `{"status":"deleted"}`. */
+  deleted: boolean
+}
+
+export type InterruptionPhase = 'before-send' | 'outcome-unknown' | 'after-answer'
+
+export interface InterruptionReport {
+  phase: InterruptionPhase
+  /** Conventional 128+SIGINT, so a wrapper script can tell an interruption from a gate failure. */
+  exitCode: number
+  /** Printed verbatim to stderr. Fixed text only: no id, token, address or response content. */
+  lines: string[]
+}
+
+/**
+ * What a Ctrl+C / termination signal means, given how far the run got. A silent exit is dangerous
+ * in exactly one place: once the delete request has left, the account may be deleted, pending, or
+ * untouched, and the operator must not re-run the tool on the guess that "nothing happened".
+ *
+ *   before-send       the request was never sent: nothing was changed, re-running is safe.
+ *   outcome-unknown   the request was sent and no answer was seen: AMBIGUOUS. Never re-run; the
+ *                     registry and the account are read independently.
+ *   after-answer      the answer arrived; the interruption hit the verification that follows.
+ */
+export function describeInterruption(facts: InterruptionFacts): InterruptionReport {
+  if (!facts.requestSent) {
+    return {
+      phase: 'before-send',
+      exitCode: 130,
+      lines: [
+        'CANCELLED BEFORE THE DELETION REQUEST WAS SENT.',
+        'Nothing was changed: no account, registry record or Production data was touched.',
+        'It is safe to start the tool again.',
+      ],
+    }
+  }
+  if (!facts.requestAnswered) {
+    return {
+      phase: 'outcome-unknown',
+      exitCode: 130,
+      lines: [
+        'INTERRUPTED AFTER THE DELETION REQUEST WAS SENT - THE OUTCOME IS UNKNOWN.',
+        'The account may be deleted, pending (writes blocked, data intact) or untouched.',
+        'DO NOT RUN THIS TOOL AGAIN. Nothing was retried. Report this message; the account and the',
+        'erasure registry will be read independently to establish what happened.',
+      ],
+    }
+  }
+  return {
+    phase: 'after-answer',
+    exitCode: 130,
+    lines: [
+      facts.deleted
+        ? 'INTERRUPTED AFTER THE DELETION REQUEST WAS ANSWERED AS DELETED; verification did not finish.'
+        : 'INTERRUPTED AFTER THE DELETION REQUEST WAS ANSWERED (NOT AS DELETED); verification did not finish.',
+      'DO NOT RUN THIS TOOL AGAIN. Report the PASS/FAIL lines printed so far; the account and the',
+      'erasure registry will be read independently.',
+    ],
+  }
+}

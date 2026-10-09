@@ -50,6 +50,7 @@ import {
   backupFingerprintForRef,
   backupUnfitReasons,
   cleanSecret,
+  describeInterruption,
   evaluateDrillLog,
   explainExportRefusal,
   matchesTestRegistryCredential,
@@ -84,10 +85,51 @@ class GateFailure extends Error {}
 /** What the final handler must know to describe an interrupted run truthfully. */
 interface RunState {
   requestSent: boolean
+  /** A response (any status) to the delete request was received. */
+  requestAnswered: boolean
   deleted: boolean
   outDir: string | null
 }
-const state = { requestSent: false, deleted: false, outDir: null } as RunState
+const state = {
+  requestSent: false,
+  requestAnswered: false,
+  deleted: false,
+  outDir: null,
+} as RunState
+
+/**
+ * Ctrl+C at a prompt, SIGINT/SIGTERM/SIGHUP at any other time. This used to be a bare
+ * `bare exit call` / the default signal action: no output at all, so once the delete request had
+ * left the operator could not tell "cancelled, nothing happened" from "cancelled, outcome unknown".
+ * Both now say which one it is (describeInterruption) and the summary file records it. Idempotent:
+ * a second signal while the report is being written does nothing.
+ */
+let interrupted = false
+function handleInterruption(): never {
+  if (!interrupted) {
+    interrupted = true
+    const report = describeInterruption(state)
+    process.stderr.write(`\n${report.lines.join('\n')}\n`)
+    if (state.outDir) {
+      try {
+        writeSummary(state.outDir, {
+          stopped: true,
+          interrupted: report.phase,
+          deletionRequestSent: state.requestSent,
+          deleted: state.deleted,
+          results,
+        })
+      } catch {
+        // the console output above is the record
+      }
+    }
+    process.exitCode = report.exitCode
+  }
+  process.exit()
+}
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
+  process.on(signal, handleInterruption)
+}
 
 function outsideRepository(path: string): boolean {
   return !resolve(path).toLowerCase().startsWith(resolve(REPO_ROOT).toLowerCase())
@@ -140,7 +182,7 @@ function prompt(label: string, hidden: boolean): Promise<string> {
         if (ch === '\u0003') {
           stdin.setRawMode(false)
           process.stdout.write('\n')
-          process.exit(130)
+          handleInterruption()
         }
         if (ch === '\u007f' || ch === '\b') {
           buffer = buffer.slice(0, -1)
@@ -505,6 +547,9 @@ async function main(): Promise<void> {
   }
   const deleted = requestCompleted && status === 200 && body.status === 'deleted'
   state.deleted = deleted
+  // Only now is the answer fully read: an interruption while the body was still arriving must keep
+  // reporting the outcome as unknown.
+  state.requestAnswered = requestCompleted
   report(
     'delete-account answered 200 {"status":"deleted"}',
     deleted,
