@@ -26,6 +26,7 @@
     "test:e2e": "playwright test",
     "check": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test",
     "check:links": "node scripts/check-links.mjs",
+    "release:evidence": "node scripts/release-evidence.mjs",
     "check:doc-size": "node scripts/check-doc-size.mjs",
     "check:project-state": "node scripts/check-project-state.mjs",
     "check:doc-links": "node scripts/check-doc-links.mjs",
