@@ -1419,19 +1419,35 @@ elsewhere in this document are deliberately NOT here.
 ```
 native-checks   install (root + apps/mobile-spike) → stage scanner assets (index from the repo,
                 model by pinned revision + SHA-256, cached) → native typecheck → lint → unit suites
-build-and-test  install → typecheck → lint → format → domain + property tests → build
-                → platform build verifier (dist/_headers, dist/sw.js artefact gate, P139)
-                → link/route checker (static dist/ mode, P139)
-                → browser E2E (desktop + iPhone, placeholder backend) → secret scan
-db-tests        supabase start → db reset → grant-audit → hostile-grant convergence
+build-and-test  = static-checks + browser-e2e (3 shards)            [aggregator, P210]
+  static-checks   install → typecheck → lint → format → domain + property tests → build
+                  → platform build verifier (dist/_headers, dist/sw.js artefact gate, P139)
+                  → link/route checker (static dist/ mode, P139) → secret scan
+  browser-e2e     install → browsers → playwright --shard=N/3 (desktop + iPhone + desktop WebKit
+                  for the p202/p210 specs, placeholder backend); each shard builds its own app
+db-tests        = db-suites + authenticated-e2e                     [aggregator, P210]
+  authenticated-e2e  own stack → cron off → timeouts → redeem-invitation reachable
+                  → authenticated E2E (real sign-in, real local Supabase, §6b, P139)
+  db-suites       supabase start → db reset → grant-audit → hostile-grant convergence
                 → assert redeem-invitation is reachable → database + authorization suites
-                → authenticated E2E (real sign-in, real local Supabase, §6b, P139)
                 → independent M12 adversarial suite (typecheck + execution + perf audit)
                 → portfolio/snapshot/storage performance benchmarks
                 → independent M13 adversarial suite (typecheck + execution) → export perf audit
                 → independent M16 adversarial suite (execution, P139 — see §11)
                 → generate types
 ```
+
+**Aggregated required checks (P210).** The three required check NAMES are unchanged
+(`build-and-test`, `db-tests`, `native-checks`; the Production release verifies them by name,
+`scripts/lib/release-verify.mjs`). The first two are aggregator jobs that `needs` the parallel jobs
+above with `if: always()` and run `scripts/ci/require-jobs.mjs`, which fails unless every needed
+job **succeeded**; skipped, cancelled, missing and unexpected jobs fail it
+(`tests/ops/ci-require-jobs.test.ts`). A matrix job's result is the combination of all its shards,
+so one red shard fails `build-and-test`. `tests/config/ci-workflow-hardening.test.ts` fails if a
+job is added without being listed in an aggregator, if `continue-on-error` appears, or if the full
+Browser E2E or the authenticated run is dropped or duplicated. Measured effect: docs/PROJECT_JOURNAL.md
+"P210". To change the shard count, change both `matrix.shard` and the `/3` in the Playwright command,
+which that test pins together.
 
 `native-checks` (P190) is deliberately light: no emulator, no Android SDK, no credentials, no Supabase
 stack. The native backend suite (`test:backend`), device journeys and the Android/iOS builds stay local
