@@ -72,14 +72,15 @@ function oldSearchSql(): string {
     .replace(/^--.*$/gm, '')
 }
 
-const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]!
+const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)] ?? 0
 
 async function main() {
   const client = new pg.Client({ connectionString: dbUrl })
   await client.connect()
   const service = createServiceClient()
   const user = await createSyntheticUser(service, 'p201-bench')
-  const q = (text: string, values?: unknown[]) => client.query(text, values)
+  const q = <T extends pg.QueryResultRow = pg.QueryResultRow>(text: string, values?: unknown[]) =>
+    client.query<T>(text, values)
   const results: Record<string, unknown> = { cards: CARDS, watched: WATCHED, snapshots: SNAPSHOTS }
 
   try {
@@ -92,7 +93,7 @@ async function main() {
        values ($1, 'p201-bench-set', 'P201 Bench Set', 'en', 200) returning id`,
       [seedCatalog.cardSeriesId],
     )
-    const setId = set.rows[0].id as string
+    const setId = (set.rows[0] as { id: string }).id
     await q(
       `insert into public.cards (set_id, local_id, name, language, tcgdex_card_id, rarity)
        select $1, lpad(g::text, 6, '0'),
@@ -112,7 +113,7 @@ async function main() {
        where c.set_id = $1 order by c.tcgdex_card_id limit $2`,
       [setId, WATCHED],
     )
-    const ids = watched.rows.map((r) => r.id as string)
+    const ids = watched.rows.map((r) => (r as { id: string }).id)
     await q(
       `with h as (
          insert into public.holdings (user_id, holding_kind, card_variant_id, condition, grading_state)
@@ -137,7 +138,7 @@ async function main() {
       for (let tick = 0; tick < TICKS; tick++) {
         const fn = kind === 'old' ? 'zz_p201_old_queue' : 'select_price_sync_batch'
         const batch = (await q(`select card_variant_id from public.${fn}($1)`, [BATCH])).rows
-          .map((r) => r.card_variant_id as string)
+          .map((r) => (r as { card_variant_id: string }).card_variant_id)
           .filter((id) => mine.has(id))
         unpricedTries.push(batch.filter((id) => unpriced.has(id)).length)
         const pricedNow = batch.filter((id) => !unpriced.has(id))
@@ -190,13 +191,16 @@ async function main() {
       const samples: number[] = []
       for (let i = 0; i < 18; i++) {
         const plan = await q(`explain (analyze, format json) ${sql}`, values)
-        samples.push(plan.rows[0]['QUERY PLAN'][0]['Execution Time'] as number)
+        const json = (plan.rows[0] as { 'QUERY PLAN': { 'Execution Time': number }[] })[
+          'QUERY PLAN'
+        ]
+        samples.push(json[0]?.['Execution Time'] ?? 0)
       }
       // the first three runs warm the caches and are discarded; the median of the rest is reported
       return Math.round(median(samples.slice(3)) * 100) / 100
     }
     const snapshotCount = Number(
-      (await q('select count(*) n from public.price_snapshots')).rows[0].n,
+      ((await q('select count(*) n from public.price_snapshots')).rows[0] as { n: string }).n,
     )
     results.queueCostMs = {
       snapshotRows: snapshotCount,
@@ -214,7 +218,9 @@ async function main() {
       }
     }
     results.searchMs = searchMs
-    results.totalCardsInDb = Number((await q('select count(*) n from public.cards')).rows[0].n)
+    results.totalCardsInDb = Number(
+      ((await q('select count(*) n from public.cards')).rows[0] as { n: string }).n,
+    )
   } finally {
     await q('drop function if exists public.zz_p201_old_queue(int)').catch(() => undefined)
     await q('drop function if exists public.zz_p201_old_search(text, text, int, int)').catch(
