@@ -40,7 +40,9 @@ the **Deploy Production** workflow exists so a real deploy cannot start before t
 - [x] `pnpm db:backup` BACKUP COMPLETE, restored into a disposable database (18/19, documented cron limitation) — [P197](P197_PRODUCTION_BACKEND_ROLLOUT.md) §2.
 - [x] Finance diagnostics 0; dry-run listed exactly 105–114; applied; grant audit clean; hosted = 114.
 - [x] Edge Functions deployed: `search-prices`, `ingest-prices`, `sync-catalog`, `delete-account`.
-- [ ] **Owner:** authenticated backend smoke with one synthetic account, `delete-account` end to end, registry head/export and restore gate against the live registry (P197 §6). Required before or explicitly accepted at P198.
+- [x] Authenticated read smoke, `delete-account` end to end (one synthetic non-admin account), registry head/export (seq 0 → 1, chain verified), Edge-token pairing and restore gate against the **live** registry (drill 20/21, only the documented cron limitation) — [P197B](P197B_PRODUCTION_DELETION_PROOF.md), 2026-10-09.
+- [ ] **Owner (not blocking):** off-machine copies of the pre-deletion backup and the proof folder are owner-attested, not independently hash-verified; mark the old operator-token password-manager entry REVOKED.
+- [ ] Authenticated graded/sealed valuation test (not run in P197B); the finance read RPCs passed.
 
 ## P195 evidence (2026-10-03)
 

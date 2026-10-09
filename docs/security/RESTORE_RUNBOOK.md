@@ -163,6 +163,8 @@ restored image re-create the jobs by re-running the `cron.schedule` statements o
 
 ## 9. Proving restore-safe deletion against Production (owner-operated)
 
+> **Executed once, 2026-10-09 (P197B): all gates passed** — see [P197B_PRODUCTION_DELETION_PROOF.md](../release/P197B_PRODUCTION_DELETION_PROOF.md). Do not re-run this against Production as a rehearsal: it deletes an account and appends to the live registry. If the final prompt ends silently, check the account and the registry head first (a silent exit with code 130 on Ctrl+C sends nothing).
+
 `scripts/restore-gate/owner-deletion-proof.ts` deletes **one** named synthetic account through the real
 `delete-account` Edge Function and then proves the invariant of §1 against a *pre-deletion* backup. It runs
 on the owner's machine because it needs the account password, the registry operator token and the registry
