@@ -1,5 +1,6 @@
 import { supabase } from './supabase-client'
 import { parseMinorUnits } from './money'
+import { localTodayIso } from '../platform/local-date'
 
 /**
  * Typed wrappers over the four M12 dashboard RPCs
@@ -246,7 +247,8 @@ interface MonthlySpendRow {
 
 export async function getMonthlySpend(months = 12): Promise<MonthlySpendMonth[]> {
   const { data, error } = await supabase
-    .rpc('get_monthly_spend', { p_months: months })
+    // D-212: the month window follows the owner's calendar, not the database's UTC date.
+    .rpc('get_monthly_spend', { p_months: months, p_as_of: localTodayIso() })
     .overrideTypes<MonthlySpendRow[], { merge: false }>()
   if (error) throw new Error(error.message)
   return data.map((row) => ({

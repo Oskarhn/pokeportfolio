@@ -2553,3 +2553,12 @@ E9 had said since M2 that the dashboard shows a staleness marker. The card row g
 the suite could notice because no test read the sentence: tests are written from the behaviour that exists. The reconciliation
 oracle was extended in the same change to compare the breakdown and every snapshot day, but the lesson is the cheaper one: when
 a worked example in the model names a surface, the surface needs a test with the example's name in it. D-211.
+
+## 2026-10-10 — Which boundary is a bug and which is a decision (P209)
+
+Seven things looked wrong at the date and currency edges. Two were inconsistencies with text that already existed (the bars must
+sum to the spend printed beside them; the components must satisfy NSP = SGP − SF − OSC + SCB) and were fixed. Four were
+behaviours nobody had decided (a sale before the purchase, a future-dated valuation, a rate years old, movers for manually
+valued cards) and were pinned instead, each with its options, because a pin turns a later change into a decision. The one
+that was only a boundary-day effect had to be tested with a conditional case plus a client test faking the local clock:
+the honest statement is that a test that can only fire one day a month is partly a code review. D-212.

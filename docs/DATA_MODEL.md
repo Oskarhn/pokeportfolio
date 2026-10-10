@@ -1628,7 +1628,7 @@ from the user's first tracked date onward — no fabricated pre-history.
 lifetime GPO/CS/HS/NSP/RRC/PUD/NCCO/THCO/THP + an honest `pending_recompute`, one request;
 TTEP and THP are NULL until a snapshot exists — §6.5 of FINANCIAL_MODEL.md — never 0-based),
 `get_portfolio_history(display_currency, from, to)` (stored snapshots, coverage flags,
-D-067 display conversion), `get_monthly_spend(months)` (calendar months from purchase lines;
+D-067 display conversion), `get_monthly_spend(months[, as_of])` (calendar months from purchase lines, newest month = the owner's local month when `as_of` is given, D-212;
 GPO = CS + HS per row by construction), `get_recent_activity(limit)` (bounded union over
 canonical purchases/sales/valuations/non-purchase acquisitions). All money leaves as text.
 

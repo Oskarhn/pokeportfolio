@@ -423,6 +423,7 @@ begin
     ('routine', 'get_dashboard_summary()', 'authenticated', 'EXECUTE'),
     ('routine', 'get_portfolio_history(text, date, date)', 'authenticated', 'EXECUTE'),
     ('routine', 'get_monthly_spend(integer)', 'authenticated', 'EXECUTE'),
+    ('routine', 'get_monthly_spend(integer, date)', 'authenticated', 'EXECUTE'),
     ('routine', 'get_recent_activity(integer)', 'authenticated', 'EXECUTE'),
     -- M12: summary's pending-recompute helper — answers one boolean about auth.uid()'s own queue
     -- row; direct browser calls are harmless by construction (see baseline migration).
