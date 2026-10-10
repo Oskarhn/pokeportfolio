@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -6,6 +6,7 @@ import {
   backupFingerprintForRef,
   backupUnfitReasons,
   cleanSecret,
+  describeInterruption,
   evaluateDrillLog,
   explainExportRefusal,
   inspectBackupAccount,
@@ -340,5 +341,78 @@ describe('test-registry guard', () => {
   it('does not match on an empty or malformed file', () => {
     expect(matchesTestRegistryCredential('c'.repeat(48), '2b'.repeat(32), '')).toBeNull()
     expect(matchesTestRegistryCredential('c'.repeat(48), '2b'.repeat(32), 'garbage')).toBeNull()
+  })
+})
+
+describe('interruption report (Ctrl+C / termination signal)', () => {
+  const sent = { requestSent: true, requestAnswered: false, deleted: false }
+
+  it('before the request is sent: states that nothing changed and that re-running is safe', () => {
+    const report = describeInterruption({
+      requestSent: false,
+      requestAnswered: false,
+      deleted: false,
+    })
+    expect(report.phase).toBe('before-send')
+    expect(report.exitCode).toBe(130)
+    const text = report.lines.join('\n')
+    expect(text).toContain('BEFORE THE DELETION REQUEST WAS SENT')
+    expect(text).toContain('safe to start the tool again')
+    expect(text).not.toMatch(/DO NOT RUN/)
+  })
+
+  it('after the request is sent without an answer: ambiguous, never advises a re-run', () => {
+    const report = describeInterruption(sent)
+    expect(report.phase).toBe('outcome-unknown')
+    const text = report.lines.join('\n')
+    expect(text).toContain('OUTCOME IS UNKNOWN')
+    expect(text).toContain('DO NOT RUN THIS TOOL AGAIN')
+    expect(text).not.toMatch(/safe to start/i)
+    expect(text).not.toMatch(/nothing was changed/i)
+  })
+
+  it('after an answer: never claims nothing happened, distinguishes deleted from not deleted', () => {
+    const deleted = describeInterruption({ ...sent, requestAnswered: true, deleted: true })
+    const refused = describeInterruption({ ...sent, requestAnswered: true, deleted: false })
+    expect(deleted.phase).toBe('after-answer')
+    expect(deleted.lines.join('\n')).toContain('ANSWERED AS DELETED')
+    expect(refused.lines.join('\n')).toContain('NOT AS DELETED')
+    for (const r of [deleted, refused])
+      expect(r.lines.join('\n')).toContain('DO NOT RUN THIS TOOL AGAIN')
+  })
+
+  it('the two cancellation outcomes are never worded alike', () => {
+    const before = describeInterruption({
+      requestSent: false,
+      requestAnswered: false,
+      deleted: false,
+    })
+    const after = describeInterruption(sent)
+    expect(before.lines.join('\n')).not.toBe(after.lines.join('\n'))
+    expect(before.phase).not.toBe(after.phase)
+  })
+
+  it('emits fixed text only: nothing derived from a secret, id or response can appear', () => {
+    for (const facts of [
+      { requestSent: false, requestAnswered: false, deleted: false },
+      sent,
+      { ...sent, requestAnswered: true, deleted: true },
+    ]) {
+      const text = describeInterruption(facts).lines.join('\n')
+      expect(text).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-/i)
+      expect(text).not.toMatch(/https?:\/\//)
+      expect(text).not.toMatch(/Bearer|token=|password/i)
+    }
+  })
+})
+
+describe('the tool marks the request answered only when the answer is whole', () => {
+  // How the signals reach describeInterruption is covered in deletion-proof-interruption.test.ts.
+  const source = readFileSync(
+    join(import.meta.dirname, '../../scripts/restore-gate/owner-deletion-proof.ts'),
+    'utf8',
+  )
+  it('marks the request answered only once the response body was read', () => {
+    expect(source).toMatch(/state.requestAnswered = requestCompleted/)
   })
 })
