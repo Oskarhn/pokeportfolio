@@ -1,4 +1,5 @@
 import { Client } from 'pg'
+import { assertLocalUrl } from '../../support/local-target'
 
 /**
  * P132-B concurrency harness (P130-03). The DB/authorization suites in tests/db/** exercise the
@@ -53,7 +54,9 @@ export class HeldLockSession {
 
   /** Opens a fresh connection, starts an explicit transaction, and sets auth.uid() to `userId`. */
   static async beginAs(userId: string): Promise<HeldLockSession> {
-    const client = new Client({ connectionString: requireEnv('DB_URL') })
+    const connectionString = requireEnv('DB_URL')
+    assertLocalUrl('DB_URL', connectionString)
+    const client = new Client({ connectionString })
     await client.connect()
     const pidResult = await client.query<{ pid: number }>('select pg_backend_pid() as pid')
     const pid = pidResult.rows[0]?.pid

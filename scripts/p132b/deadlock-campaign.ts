@@ -22,6 +22,7 @@
  * Usage: pnpm exec tsx scripts/p132b/deadlock-campaign.ts [iterations]
  */
 import { createClient } from '@supabase/supabase-js'
+import { assertLocalTestTarget } from '../lib/local-target.mjs'
 import { createHash, randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { Client as PgClient } from 'pg'
@@ -32,6 +33,9 @@ function requireEnv(name: string): string {
   return value
 }
 
+// P206: this campaign creates accounts and writes at volume — refuse a non-local target before any
+// client or connection exists.
+assertLocalTestTarget(process.env)
 const SUPABASE_URL = requireEnv('SUPABASE_URL')
 const SUPABASE_ANON_KEY = requireEnv('SUPABASE_ANON_KEY')
 const SUPABASE_SERVICE_ROLE_KEY = requireEnv('SUPABASE_SERVICE_ROLE_KEY')

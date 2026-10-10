@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
+import { assertLocalUrl } from '../support/local-target'
 
 /**
  * P132-A: a raw postgres session for tests that need transaction control the supabase-js/
@@ -26,6 +27,7 @@ function commandExists(cmd: string): boolean {
 
 function dbUrl(): string {
   const url = process.env.DB_URL
+  assertLocalUrl('DB_URL', url)
   if (!url) {
     throw new Error(
       'DB_URL is not set. Export it the same way CI does: ' +

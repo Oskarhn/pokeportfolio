@@ -30,12 +30,9 @@ function jwt(payload: object): string {
 }
 
 describe('isLocalHostname', () => {
-  it.each(['localhost', 'LOCALHOST', '127.0.0.1', '[::1]', 'api.localhost', 'a.b.localhost'])(
-    'accepts %s',
-    (host) => {
-      expect(isLocalHostname(host)).toBe(true)
-    },
-  )
+  it.each(['localhost', 'LOCALHOST', '127.0.0.1', '[::1]'])('accepts %s', (host) => {
+    expect(isLocalHostname(host)).toBe(true)
+  })
 
   it.each([
     'abcdefghijklmnopqrst.supabase.co',
@@ -46,6 +43,14 @@ describe('isLocalHostname', () => {
     '10.0.0.5',
     '0.0.0.0',
     'host.docker.internal',
+    // A name that has to be resolved is not a verified loopback endpoint (P206): no subdomains,
+    // no trailing dot, no other 127/8 address, no IPv4-mapped IPv6.
+    'api.localhost',
+    'a.b.localhost',
+    'localhost.',
+    '127.0.0.2',
+    '[::ffff:7f00:1]',
+    '[::ffff:127.0.0.1]',
     '',
   ])('refuses %j', (host) => {
     expect(isLocalHostname(host)).toBe(false)
@@ -57,13 +62,14 @@ describe('assertLocalUrl', () => {
     'http://127.0.0.1:54321',
     'http://localhost:55330',
     'http://[::1]:54321',
-    'http://stack.localhost:8000',
+    'http://[0:0:0:0:0:0:0:1]:54321',
     'postgresql://postgres:postgres@127.0.0.1:54322/postgres',
-    // The WHATWG parser normalises numeric IPv4 spellings, so they cannot smuggle a remote host.
+    'postgres://postgres:postgres@localhost:54322/postgres?sslmode=disable',
+    // The WHATWG parser normalises numeric IPv4 spellings, so they cannot smuggle a remote host:
+    // what is contacted is the loopback address.
     'http://2130706433:54321',
     'http://0x7f.0.0.1:54321',
-    // Userinfo does not change the host being contacted.
-    'http://anything@127.0.0.1:54321',
+    'http://127.1:54321',
   ])('accepts %s', (url) => {
     expect(() => {
       assertLocalUrl('SUPABASE_URL', url)
@@ -84,15 +90,66 @@ describe('assertLocalUrl', () => {
     'http://127.0.0.1@evil.example:54321',
     'postgresql://postgres:secret-value@db.abcdefghijklmnopqrst.supabase.co:5432/postgres',
     'http://10.1.2.3:54321',
+    // The Production project's own identifier (already public in docs/DECISIONS.md and the bundle).
+    'https://nopmkroeygmlvndzjjqs.supabase.co',
+    'postgresql://postgres:pw@db.nopmkroeygmlvndzjjqs.supabase.co:5432/postgres',
+    // Loopback-looking prefixes that really name a remote host.
+    'http://localhost:80@evil.example:54321',
+    'http://localhost:pw@evil.example',
+    'http://evil.example/localhost',
+    // Userinfo on an API URL is never legitimate, even in front of a loopback host.
+    'http://anything@127.0.0.1:54321',
+    'http://user:pw@localhost:54321',
+    // Loopback is exactly 127.0.0.1, localhost and [::1].
+    'http://0.0.0.0:54321',
+    'http://127.0.0.2:54321',
+    'http://[::ffff:127.0.0.1]:54321',
+    'http://localhost.:54321',
+    'http://api.localhost:54321',
+    // Wrong protocol or no host.
+    'ftp://127.0.0.1',
+    'file:///etc/passwd',
+    'ws://127.0.0.1:54321',
   ])('refuses %s', (url) => {
     expect(() => {
       assertLocalUrl('SUPABASE_URL', url)
     }).toThrow(NonLocalTargetError)
   })
 
+  it.each([
+    // Backslash and embedded line breaks make different URL parsers read different hosts.
+    'http://127.0.0.1\\@evil.example:54321',
+    'http://127.0.0.1\n.evil.example:54321',
+    'http://127.0.0.1\t.evil.example:54321',
+    ' http://127.0.0.1:54321',
+    'http://127.0.0.1:54321\r',
+    'http://127.0.0.1:54321\u0000',
+    'http://127.0.0.1:54321 .evil.example',
+  ])('refuses the ambiguous value %j', (url) => {
+    expect(() => {
+      assertLocalUrl('SUPABASE_URL', url)
+    }).toThrow(/whitespace, a control character or a backslash/)
+  })
+
+  it.each([
+    // libpq and node-postgres let query parameters override the host written in the authority.
+    'postgresql://postgres:pw@127.0.0.1:54322/postgres?host=db.example.org',
+    'postgresql://postgres:pw@127.0.0.1:54322/postgres?HOST=db.example.org',
+    'postgresql://postgres:pw@127.0.0.1:54322/postgres?hostaddr=203.0.113.9',
+    'postgresql://postgres:pw@127.0.0.1:54322/postgres?sslmode=disable&service=prod',
+    'postgresql://postgres:pw@127.0.0.1:54322/postgres?options=-c%20search_path%3Dx',
+    // Multi-host and socket-path authorities are not a single verified loopback endpoint.
+    'postgresql://postgres@127.0.0.1,db.example.org/postgres',
+    'postgresql://postgres@%2Fvar%2Frun%2Fpostgresql/postgres',
+  ])('refuses the redirectable Postgres URL %s', (url) => {
+    expect(() => {
+      assertLocalUrl('DB_URL', url)
+    }).toThrow(NonLocalTargetError)
+  })
+
   it('fails closed on a value that is not a URL at all', () => {
     expect(() => {
-      assertLocalUrl('DB_URL', 'not a url')
+      assertLocalUrl('DB_URL', 'not-a-url')
     }).toThrow(/not a parseable URL/)
   })
 
@@ -113,6 +170,18 @@ describe('assertLocalUrl', () => {
     expect(message).toContain('DB_URL')
     expect(message).toContain('db.example.org')
     expect(message).not.toContain(secret)
+  })
+
+  it('does not repeat userinfo or query values of an API URL either', () => {
+    let message = ''
+    try {
+      assertLocalUrl('SUPABASE_URL', 'http://anon:hunter2@127.0.0.1:54321/?apikey=sb_secret_value')
+    } catch (error) {
+      message = (error as Error).message
+    }
+    expect(message).toContain('SUPABASE_URL')
+    expect(message).not.toContain('hunter2')
+    expect(message).not.toContain('sb_secret_value')
   })
 })
 
@@ -140,6 +209,9 @@ describe('assertLocalOrDockerHostUrl (the erasure-registry address)', () => {
     'http://192.169.0.1:8787',
     'http://11.0.0.1:8787',
     'http://host.docker.internal.evil.example:8787',
+    'http://user:pw@127.0.0.1:8787',
+    'ftp://127.0.0.1:8787',
+    'http://127.0.0.1\\@registry.example.org',
     'not a url',
   ])('refuses %s', (url) => {
     expect(() => {
@@ -251,10 +323,17 @@ describe('every destructive runner is wired to the guard', () => {
     expect(source).toMatch(/^assertLocalTestTarget\(process\.env\)$/m)
   })
 
-  it('the shared client factories re-check the URL at the point of use', () => {
+  it('the shared client factories re-check the whole target at the point of use', () => {
     const source = read('tests/db/setup.ts')
-    expect(source.match(/assertLocalUrl\('SUPABASE_URL', url\)/g)).toHaveLength(2)
+    expect(source.match(/assertLocalTestTarget\(process\.env\)/g)).toHaveLength(2)
   })
+
+  it.each(['tests/db/raw-sql.ts', 'tests/db/lib/held-lock-session.ts'])(
+    '%s checks DB_URL before opening a direct Postgres connection',
+    (rel) => {
+      expect(read(rel)).toContain("assertLocalUrl('DB_URL'")
+    },
+  )
 
   it('no vitest config that names a Supabase-backed include omits the guard', () => {
     // Any future config under test/ or tests/ that starts a DB-backed package must opt in too.

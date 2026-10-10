@@ -15,12 +15,13 @@
  *      postgres -d postgres`, the fixed local-stack superuser Supabase's CLI always provisions —
  *      the caller's own `DB_URL` (a host-side `postgresql://postgres:postgres@127.0.0.1:<port>/…`
  *      string, meaningless from inside the container) is used ONLY to confirm the caller believes
- *      it is talking to the local stack (refused otherwise — see `assertLocalDbUrl` below), never
- *      passed through to the container's own `psql`.
+ *      it is talking to the local stack (refused otherwise by lib/local-target.mjs on EVERY path,
+ *      native psql included), never passed through to the container's own `psql`.
  *   3. Neither available — throw a clear, actionable error naming both attempted paths, rather
  *      than letting execFileSync's own ENOENT bubble up unexplained.
  */
 import { execFileSync } from 'node:child_process'
+import { assertLocalUrl } from './local-target.mjs'
 
 let resolved = null
 
@@ -47,24 +48,7 @@ export function findLocalSupabaseContainer() {
   }
 }
 
-/**
- * Refuses a `DB_URL` that doesn't look like this machine's own local Supabase stack before ever
- * routing a command through `docker exec` — the docker-fallback path has no way to honor a
- * caller's real (possibly remote) connection string, so silently ignoring it would risk running a
- * command against the wrong database with no indication anything was off.
- */
-function assertLocalDbUrl(dbUrl) {
-  if (!/^postgresql:\/\/[^@]*@(127\.0\.0\.1|localhost)[:/]/.test(dbUrl)) {
-    throw new Error(
-      'psql-exec: no native `psql` on PATH, and DB_URL does not look like the local Supabase ' +
-        `stack (got: ${dbUrl}) — refusing to route this through \`docker exec\`, which only ever ` +
-        'targets the local container regardless of what DB_URL says. Install a native psql ' +
-        'client, or run this against the local stack only.',
-    )
-  }
-}
-
-function resolveMode(dbUrl) {
+function resolveMode() {
   if (resolved !== null) return resolved
   if (nativePsqlAvailable()) {
     resolved = { mode: 'native' }
@@ -72,7 +56,6 @@ function resolveMode(dbUrl) {
   }
   const container = findLocalSupabaseContainer()
   if (container !== null) {
-    assertLocalDbUrl(dbUrl)
     resolved = { mode: 'docker', container }
     console.log(
       `psql-exec: no native psql on PATH — using \`docker exec ${container} psql\` instead.`,
@@ -91,7 +74,16 @@ function resolveMode(dbUrl) {
  * stdout as a string when `options.encoding` is set, matching every existing call site.
  */
 export function runPsql(dbUrl, args, options = {}) {
-  const mode = resolveMode(dbUrl)
+  // P206: psql would fall back to PGHOST & co. without a URL, and the docker fallback ignores the
+  // URL entirely, so a missing or non-local DB_URL is refused before either path is chosen. The
+  // check is the shared fail-closed one (lib/local-target.mjs) and never echoes the URL.
+  if (typeof dbUrl !== 'string' || dbUrl === '') {
+    throw new Error(
+      'psql-exec: a local DB_URL is required; refusing to fall back to PG* variables.',
+    )
+  }
+  assertLocalUrl('DB_URL', dbUrl)
+  const mode = resolveMode()
   if (mode.mode === 'native') {
     return execFileSync('psql', [dbUrl, ...args], options)
   }

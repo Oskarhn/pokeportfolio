@@ -33,7 +33,11 @@ import { createHash, randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { runPsql as execPsql } from './lib/psql-exec.mjs'
+import { assertLocalTestTarget } from './lib/local-target.mjs'
 
+// P206: seeds and deletes accounts with the service role — refuse a non-local target (SUPABASE_URL,
+// DB_URL, keys) before the first client or connection exists. No override; see lib/local-target.mjs.
+assertLocalTestTarget(process.env)
 const url = process.env.SUPABASE_URL
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
 if (!url || !serviceRoleKey) {
