@@ -676,7 +676,11 @@ describe('P199 deterministic cross-surface reconciliation', () => {
         const pLines = (plR.data ?? []) as Record<string, unknown>[]
         const sales = (salesR.data ?? []) as Record<string, unknown>[]
         const sLines = (slR.data ?? []) as Record<string, unknown>[]
-        const holdings = (holdR.data ?? []) as { id: string; card_variant_id: string }[]
+        const holdings = (holdR.data ?? []) as {
+          id: string
+          card_variant_id: string
+          holding_kind: string
+        }[]
         const fx: FxRow[] = (
           (fxR.data ?? []) as { base_currency: string; rate_date: string; rate: string | number }[]
         ).map((r) => ({ base: r.base_currency, date: r.rate_date, rate: String(r.rate) }))
