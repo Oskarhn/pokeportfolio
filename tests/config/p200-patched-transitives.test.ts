@@ -41,6 +41,18 @@ const atLeast = (version: string, minimum: string): boolean => {
 }
 
 describe('patched transitive dependencies', () => {
+  it('overrides are caret-bounded: a lockfile regeneration can never jump a major version', () => {
+    const pkg = JSON.parse(
+      readFileSync(join(import.meta.dirname, '../../package.json'), 'utf8'),
+    ) as { pnpm: { overrides: Record<string, string> } }
+    for (const name of ['seroval', 'source-map-js']) {
+      expect(pkg.pnpm.overrides[name], name).toMatch(/^\^\d+\.\d+\.\d+$/)
+    }
+    // The lockfile records the same specifiers it was generated with.
+    expect(lock).toMatch(/^ {2}seroval: \^1\.6\.3$/m)
+    expect(lock).toMatch(/^ {2}source-map-js: \^1\.2\.2$/m)
+  })
+
   for (const [name, minimum] of [
     ['seroval', '1.6.3'],
     ['source-map-js', '1.2.2'],
@@ -56,7 +68,7 @@ describe('patched transitive dependencies', () => {
     const pkg = JSON.parse(
       readFileSync(join(import.meta.dirname, '../../package.json'), 'utf8'),
     ) as { pnpm: { overrides: Record<string, string> } }
-    expect(pkg.pnpm.overrides.seroval).toBe('>=1.6.3')
-    expect(pkg.pnpm.overrides['source-map-js']).toBe('>=1.2.2')
+    expect(pkg.pnpm.overrides.seroval).toBe('^1.6.3')
+    expect(pkg.pnpm.overrides['source-map-js']).toBe('^1.2.2')
   })
 })

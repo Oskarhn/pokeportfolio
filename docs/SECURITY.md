@@ -972,6 +972,14 @@ price is still no price, never zero, and no graded price is ever derived from a 
   React, TanStack Router/Query, Supabase JS, Tailwind, Base UI, lightweight-charts, Zod, Vitest,
   Playwright.
 - No `curl | sh` installs. No postinstall scripts from unvetted packages.
+- **Advisories (P200/P206).** `pnpm audit --prod` is read against what ships. `seroval` and
+  `source-map-js` are pinned past their advisories with caret-bounded `pnpm.overrides` (a lockfile
+  regeneration cannot jump a major; `tests/config/p200-patched-transitives.test.ts` reads the lockfile).
+  The remaining production advisories (`sharp`, `sprintf-js` under `@huggingface/transformers`) are
+  Node-side only: the built bundle contains no `sharp` module, and forcing a newer `sharp` would change
+  image decoding beneath the pinned scanner-index content id, so they are accepted and re-checked at
+  each audit. Development-only advisories (`fast-uri`, `brace-expansion`, `undici`, `vitest`) run on a
+  developer or CI machine against trusted input and are not shipped.
 
 ---
 
