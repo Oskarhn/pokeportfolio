@@ -384,3 +384,68 @@ export const PENDING_HISTORY_LABEL = 'Updating history…'
 export function historyStatusVisible(pendingRecompute: boolean | undefined): boolean {
   return pendingRecompute === true
 }
+
+/** What the live value is built from (D-211, FINANCIAL_MODEL.md E9). Counts are holdings. */
+export interface ValueBasisInput {
+  priced: number
+  unpriced: number
+  /** Subset of `unpriced` that no provider price can value (graded, sealed, custom). */
+  unpricedManualOnly: number
+  manualValued: number
+  autoPriced: number
+  /** Valued from a provider observation 4-30 days old. */
+  stalePriced: number
+  /** Oldest provider observation date (YYYY-MM-DD) behind the live value, or null. */
+  oldestPriceDate: string | null
+  /** Holdings whose value is exactly 0. */
+  zeroValued: number
+  uncostedLots: number
+}
+
+const nb = (n: number) => n.toLocaleString('nb-NO')
+
+function formatPriceDate(iso: string): string {
+  const date = new Date(`${iso}T00:00:00Z`)
+  if (Number.isNaN(date.getTime())) return iso
+  return date.toLocaleDateString('nb-NO', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'UTC',
+  })
+}
+
+/**
+ * The lines Home prints under the headline value. Missing, stale and zero are three different
+ * statements and each is only made when it is true; nothing here implies a value for a holding
+ * that has none. Plain text on purpose: it is also the accessible description of the figure.
+ */
+export function valueBasisLines(input: ValueBasisInput): string[] {
+  const lines: string[] = []
+  lines.push(
+    `${nb(input.priced)} priced${input.unpriced > 0 ? ` · ${nb(input.unpriced)} without a price` : ''}`,
+  )
+  if (input.unpricedManualOnly > 0) {
+    lines.push(
+      `${nb(input.unpricedManualOnly)} need a manual value (graded, sealed and custom cards have no market price)`,
+    )
+  }
+  if (input.manualValued > 0 || input.autoPriced > 0) {
+    lines.push(
+      `${nb(input.autoPriced)} automatic${input.manualValued > 0 ? ` · ${nb(input.manualValued)} manual` : ''}`,
+    )
+  }
+  if (input.stalePriced > 0) {
+    const oldest = input.oldestPriceDate
+      ? ` — oldest observation ${formatPriceDate(input.oldestPriceDate)}`
+      : ''
+    lines.push(`${nb(input.stalePriced)} priced from an observation older than 3 days${oldest}`)
+  }
+  if (input.zeroValued > 0) {
+    lines.push(`${nb(input.zeroValued)} valued at 0 kr (a recorded value, not a missing price)`)
+  }
+  if (input.uncostedLots > 0) {
+    lines.push(`${nb(input.uncostedLots)} lots without a recorded cost`)
+  }
+  return lines
+}

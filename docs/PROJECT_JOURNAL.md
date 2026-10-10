@@ -2546,3 +2546,10 @@ ceiling (any fixed one is either too low for a real price or does not bound a su
 level: one holding's value must itself be a bigint, enforced where it can become false; everything above that is numeric.
 Reading the results back as a JSON number in the first version of the test rounded the very value under test: the wire rule
 (M3) applies to assertions too. Details: D-210.
+
+## 2026-10-10 — A specification sentence nobody implemented (P209)
+
+E9 had said since M2 that the dashboard shows a staleness marker. The card row got one, the dashboard did not, and nothing in
+the suite could notice because no test read the sentence: tests are written from the behaviour that exists. The reconciliation
+oracle was extended in the same change to compare the breakdown and every snapshot day, but the lesson is the cheaper one: when
+a worked example in the model names a surface, the surface needs a test with the example's name in it. D-211.

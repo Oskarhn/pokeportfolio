@@ -7329,3 +7329,30 @@ corrected. `holdings_value_out_of_range` in `scripts/finance-integrity-diagnosti
 **Consequences.** One migration, `20261009170000_p209_value_range.sql`, after D-209's; an `ALTER COLUMN TYPE` on a rebuildable
 cache table (D-070) and `CREATE OR REPLACE` of six functions. **Production requirement:** apply after
 `20261009160000_p209_residual_conservation.sql`; `pnpm db:backup` first.
+
+## D-211 — Home discloses what the live value is built from: stale, missing and zero are three statements (P209)
+
+**2026-10-10 · Accepted**
+
+**Context.** FINANCIAL_MODEL.md E9 requires that "the card row and the dashboard both show a staleness marker with the snapshot
+date". The card row did. Home printed only "N priced · M without a price", so a portfolio valued from 20-day-old observations
+read exactly like one valued this morning (P199 U5). The headline is already live (D-086), so the disclosure describes the live
+resolver pass, not the snapshot cache.
+
+**Decision.** `get_dashboard_summary` gains four columns computed in the same pass as the value they describe:
+`stale_priced_holding_count` (provider-valued holdings whose observation is 4-30 days old),
+`oldest_price_date` (the oldest observation date among provider-valued holdings; NULL when none),
+`zero_valued_holding_count` (value exactly 0 — manual or provider) and `unpriced_manual_only_holding_count` (unpriced
+holdings no provider price can value: graded, sealed, custom). Home prints them as plain text lines under the headline
+(`valueBasisLines`, an accessible name on the block); each statement appears only when it is true. A missing price is never
+summed or shown as 0, a recorded 0 is stated as a value, and a portfolio with nothing priced makes no staleness claim.
+
+**What the UI can and cannot disclose.** It can say how many holdings use an observation older than the 3-day fresh window and
+the oldest date among them. It cannot say how old the *snapshot-backed* history points were priced (history is derived data, D-070)
+and it does not claim the portfolio "has a current market value" when no holding is priced: the headline already renders
+missing in that case (`livePortfolioValue`).
+
+**Consequences.** One migration, `20261009180000_p209_dashboard_price_disclosure.sql` (drop and re-create, same grant; the
+return type gains columns at the end). **Production requirement:** after `20261009170000`. Client and database must ship
+together within a release: an older client ignores the new columns, a newer client against an older database reads them as
+undefined and prints `NaN` — release order is database first (already the owner's order: backup, db push, deploy).

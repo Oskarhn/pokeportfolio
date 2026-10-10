@@ -42,6 +42,16 @@ export interface DashboardSummary {
   sealedValueMinor: bigint
   uncostedOpenLotCount: number
 
+  /** D-211: holdings valued from a provider observation 4-30 days old (a value, flagged). */
+  stalePricedHoldingCount: number
+  /** Oldest observation date among provider-valued holdings; null when none is provider-valued. */
+  oldestPriceDate: string | null
+  /** Holdings whose value is exactly 0 - a value, never to be confused with "no price". */
+  zeroValuedHoldingCount: number
+  /** Unpriced holdings no provider price can value (graded, sealed, custom): they need a manual
+   *  value. A subset of unpricedHoldingCount. */
+  unpricedManualOnlyHoldingCount: number
+
   gpoMinor: bigint
   csMinor: bigint
   hsMinor: bigint
@@ -56,7 +66,7 @@ export interface DashboardSummary {
   thpMinor: bigint | null
 }
 
-interface SummaryRow {
+export interface SummaryRow {
   pending_recompute: boolean
   latest_snapshot_date: string | null
   first_tracked_date: string | null
@@ -93,6 +103,11 @@ interface SummaryRow {
   ncco_nok_minor: string
   thco_nok_minor: string
   thp_nok_minor: string | null
+  /** Optional: absent when the database predates D-211. */
+  stale_priced_holding_count?: string
+  oldest_price_date?: string | null
+  zero_valued_holding_count?: string
+  unpriced_manual_only_holding_count?: string
 }
 
 export async function getDashboardSummary(): Promise<DashboardSummary> {
@@ -101,6 +116,11 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
     .single()
     .overrideTypes<SummaryRow, { merge: false }>()
   if (error) throw new Error(error.message)
+  return summaryFromRow(data)
+}
+
+/** The wire row -> the typed summary. Pure, so the RPC-to-UI mapping is testable without a network. */
+export function summaryFromRow(data: SummaryRow): DashboardSummary {
   return {
     pendingRecompute: data.pending_recompute,
     latestSnapshotDate: data.latest_snapshot_date,
@@ -146,6 +166,12 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
     gradedValueMinor: parseMinorUnits(data.graded_value_nok_minor),
     sealedValueMinor: parseMinorUnits(data.sealed_value_nok_minor),
     uncostedOpenLotCount: Number(data.uncosted_open_lot_count),
+    // D-211 columns: a database that predates them yields undefined, which must read as "no
+    // disclosure" (0 / null), never as NaN.
+    stalePricedHoldingCount: Number(data.stale_priced_holding_count ?? 0),
+    oldestPriceDate: data.oldest_price_date ?? null,
+    zeroValuedHoldingCount: Number(data.zero_valued_holding_count ?? 0),
+    unpricedManualOnlyHoldingCount: Number(data.unpriced_manual_only_holding_count ?? 0),
 
     gpoMinor: parseMinorUnits(data.gpo_nok_minor),
     csMinor: parseMinorUnits(data.cs_nok_minor),

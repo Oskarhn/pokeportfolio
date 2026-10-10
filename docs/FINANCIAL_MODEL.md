@@ -810,7 +810,9 @@ table with `created_by` and `created_at`, and the resolver simply prefers them.
 The daily job fails for six days. A card's last snapshot is 6 days old at 340.
 
 - `price_state = stale`; 340 is still used in `CMV`.
-- The card row and the dashboard both show a staleness marker with the snapshot date.
+- The card row and the dashboard both show a staleness marker with the snapshot date. Home states the count of provider-valued
+  holdings older than the 3-day fresh window and the oldest observation date (D-211); a recorded value of 0 is stated apart
+  from a missing price.
 - At day 31 the state becomes `missing`, the card leaves `CMV`, and `UHC` increments.
 - At no point does the value become 0. (F9)
 
